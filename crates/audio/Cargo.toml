@@ -1,0 +1,15 @@
+[package]
+name = "audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+symphonia = { workspace = true, features = ["mkv", "all-codecs"] }
+cpal = "0.15"
+ringbuf = "0.4"
+opus = "0.3"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+webm-demux = { path = "../webm-demux" }

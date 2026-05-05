@@ -1,0 +1,3 @@
+(dyn cros_codecs::decoder::stateless::StatelessVideoDecoder<Handle = Box<(dyn cros_codecs::decoder::DecodedHandle<Frame = cros_codecs::video_frame::generic_dma_video_frame::GenericDmaVideoFrame> + 'static)>> + 'static)
+Unique<(dyn cros_codecs::decoder::stateless::StatelessVideoDecoder<Handle = Box<(dyn cros_codecs::decoder::DecodedHandle<Frame = cros_codecs::video_frame::generic_dma_video_frame::GenericDmaVideoFrame> + 'static)>> + 'static)>
+Box<(dyn cros_codecs::decoder::stateless::StatelessVideoDecoder<Handle = Box<(dyn cros_codecs::decoder::DecodedHandle<Frame = cros_codecs::video_frame::generic_dma_video_frame::GenericDmaVideoFrame> + 'static)>> + 'static)>

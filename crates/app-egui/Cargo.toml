@@ -1,0 +1,37 @@
+[package]
+name = "app-egui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "youtube-player"
+path = "src/main.rs"
+
+[dependencies]
+wgpu.workspace = true
+winit.workspace = true
+egui.workspace = true
+egui-winit.workspace = true
+egui-wgpu.workspace = true
+pollster.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+bytemuck = "1.25"
+
+# Новые зависимости для Этапа 2a
+webm-demux = { path = "../webm-demux" }
+rfd = "0.15"
+
+# Этап 2b: audio pipeline
+audio = { path = "../audio" }
+
+# Stage 2.5: video decode pipeline
+video-core = { path = "../video-core" }
+video-vulkan = { path = "../video-vulkan" }
+video-vaapi = { path = "../video-vaapi" }
+render = { path = "../render" }
+vp9-parser = { path = "../vp9-parser" }
+bytes.workspace = true

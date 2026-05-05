@@ -1,0 +1,15 @@
+[package]
+name = "webm-demux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# mkv включает поддержку WebM/MKV контейнеров (default)
+# all-codecs включает Opus и другие кодеки
+symphonia = { workspace = true, features = ["mkv", "all-codecs"] }
+bytes = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+vp9-parser = { path = "../vp9-parser" }

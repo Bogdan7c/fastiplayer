@@ -1,0 +1,44 @@
+[workspace]
+members = [
+    "crates/app-egui",
+    "crates/webm-demux",
+    "crates/audio",
+    "crates/vp9-parser",
+    "crates/video-core",
+    "crates/video-vulkan",
+    "crates/render",
+    "crates/video-vaapi",
+]
+resolver = "2"
+
+# Patch для cros-libva: системные заголовки libva новее чем ожидает cros-libva 0.0.12.
+# Локальная копия 0.0.13 с фиксом отсутствующих полей в VP9 encoder struct.
+# Можно удалить когда cros-codecs обновит зависимость cros-libva.
+[replace]
+"cros-libva:0.0.12" = { path = "crates/cros-libva-patch" }
+"cros-codecs:0.0.6" = { path = "crates/cros-codecs-patch" }
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.dependencies]
+wgpu = { version = "29", features = ["vulkan"] }
+winit = "0.30"
+egui = "0.34"
+egui-winit = "0.34"
+egui-wgpu = "0.34"
+pollster = "0.4"
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+symphonia = "0.5"
+bytes = "1.0"
+ringbuf = "0.4"
+vp9-parser = { path = "crates/vp9-parser" }
+video-core = { path = "crates/video-core" }
+video-vulkan = { path = "crates/video-vulkan" }
+video-vaapi = { path = "crates/video-vaapi" }
+render = { path = "crates/render" }

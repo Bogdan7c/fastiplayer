@@ -1,0 +1,16 @@
+# Rust build output.
+target/
+
+# Local environment files.
+.env
+.env.*
+
+# Editor and OS noise.
+.idea/
+.vscode/
+*.swp
+*~
+
+# Runtime logs and temporary diagnostics.
+*.log
+*.tmp
