@@ -30,6 +30,13 @@ use crate::texture_cache::WgpuTexturePool;
 /// что предотвращает исчерпание пула при быстром decode.
 const FRAME_POOL_SIZE: usize = 16;
 
+/// Максимум кадров, которые decoder держит уже импортированными, но ещё не отданными UI.
+///
+/// Presentation queue живёт в app-egui, но cros-codecs может вернуть несколько
+/// `FrameReady` events за один decode call. Этот лимит не даёт скрытой decoder
+/// очереди занять все zero-copy texture slots.
+const READY_QUEUE_LIMIT: usize = 3;
+
 /// Начальное разрешение для создания пула кадров.
 ///
 /// VA-API декодер требует выходные буферы до первого decode call.
@@ -81,6 +88,14 @@ fn upload_frame_with_cpu_fallback(
             Err(anyhow::anyhow!("Texture upload failed: {}", upload_error))
         }
     }
+}
+
+/// Готовый кадр вместе с причиной, по которой он помещается в очередь.
+enum ReadyFrameSource {
+    /// Кадр пришёл через zero-copy DMA-BUF import.
+    ZeroCopy,
+    /// Кадр пришёл через стабильный CPU upload path.
+    CpuUpload,
 }
 
 /// VA-API VP9 hardware decoder, реализующий трейт [`VideoDecoder`].
@@ -279,6 +294,44 @@ impl VaapiVideoDecoder {
         }
     }
 
+    /// Добавляет готовый кадр в decoder ready queue, сбрасывая самый старый backlog.
+    ///
+    /// UI получает кадры через отдельный канал, поэтому decoder может временно
+    /// накопить уже импортированные textures внутри `ready_queue`. Для видео важнее
+    /// держать низкую задержку и не исчерпывать GPU slots, чем сохранить каждый
+    /// промежуточный кадр при backlog.
+    fn push_ready_frame(&mut self, frame: DecodedFrame, source: ReadyFrameSource) {
+        while self.ready_queue.len() >= READY_QUEUE_LIMIT {
+            let Some(stale_frame) = self.ready_queue.pop_front() else {
+                break;
+            };
+            let stale_pts_ms = stale_frame.pts.as_millis();
+            self.release_frame(stale_frame.texture_handle);
+            debug!(
+                stale_pts_ms,
+                ready_queue_limit = READY_QUEUE_LIMIT,
+                "Dropping stale decoded frame from internal ready queue"
+            );
+        }
+
+        match source {
+            ReadyFrameSource::ZeroCopy => trace!(
+                pts_ms = frame.pts.as_millis(),
+                handle_id = frame.texture_handle.0,
+                queue_len = self.ready_queue.len() + 1,
+                "Zero-copy frame queued for presentation"
+            ),
+            ReadyFrameSource::CpuUpload => trace!(
+                pts_ms = frame.pts.as_millis(),
+                handle_id = frame.texture_handle.0,
+                queue_len = self.ready_queue.len() + 1,
+                "CPU-upload frame queued for presentation"
+            ),
+        }
+
+        self.ready_queue.push_back(frame);
+    }
+
     /// Обрабатывает готовый кадр от decoder: синхронизация, upload в wgpu, возврат буфера в пул.
     ///
     /// # Аргументы
@@ -331,19 +384,17 @@ impl VaapiVideoDecoder {
                                 );
                             }
                             self.zero_copy_guards.insert(texture_handle.0, handle);
-                            self.ready_queue.push_back(DecodedFrame {
-                                pts: Duration::from_micros(timestamp),
-                                width: resolution.width,
-                                height: resolution.height,
-                                render_width: display_resolution.width,
-                                render_height: display_resolution.height,
-                                color_space: ColorSpace::Bt709Limited,
-                                texture_handle,
-                            });
-                            trace!(
-                                pts_ms = timestamp / 1000,
-                                handle_id = texture_handle.0,
-                                "Zero-copy frame queued for presentation"
+                            self.push_ready_frame(
+                                DecodedFrame {
+                                    pts: Duration::from_micros(timestamp),
+                                    width: resolution.width,
+                                    height: resolution.height,
+                                    render_width: display_resolution.width,
+                                    render_height: display_resolution.height,
+                                    color_space: ColorSpace::Bt709Limited,
+                                    texture_handle,
+                                },
+                                ReadyFrameSource::ZeroCopy,
                             );
                             return Ok(());
                         }
@@ -406,17 +457,18 @@ impl VaapiVideoDecoder {
         self.return_frame_from_handle(handle);
 
         // Шаг 5: Добавляем кадр в очередь готовых к отображению.
-        self.ready_queue.push_back(DecodedFrame {
-            pts: Duration::from_micros(timestamp),
-            width: resolution.width,
-            height: resolution.height,
-            render_width: display_resolution.width,
-            render_height: display_resolution.height,
-            color_space: ColorSpace::Bt709Limited,
-            texture_handle,
-        });
-
-        trace!(pts_ms = timestamp / 1000, "Frame queued for presentation");
+        self.push_ready_frame(
+            DecodedFrame {
+                pts: Duration::from_micros(timestamp),
+                width: resolution.width,
+                height: resolution.height,
+                render_width: display_resolution.width,
+                render_height: display_resolution.height,
+                color_space: ColorSpace::Bt709Limited,
+                texture_handle,
+            },
+            ReadyFrameSource::CpuUpload,
+        );
 
         Ok(())
     }

@@ -65,8 +65,16 @@ const MAX_DEMUX_PACKETS_PER_REDRAW: usize = 6;
 
 /// Максимум готовых видеокадров в очереди presentation.
 ///
-/// 12 кадров для 25-30 FPS дают примерно 400-480ms буфера и не исчерпывают texture pool.
-const MAX_VIDEO_PRESENT_QUEUE: usize = 12;
+/// 8 кадров дают примерно 133ms при 60 FPS и примерно 267ms при 30 FPS.
+/// Этого достаточно для сглаживания decode jitter, но очередь больше не
+/// забирает почти весь zero-copy texture pool.
+const MAX_VIDEO_PRESENT_QUEUE: usize = 8;
+
+/// Минимальный запас свободных texture slots перед отправкой новых video packets.
+///
+/// Запас нужен для текущего present frame, кадров в decoder channel и transient
+/// imported textures, которые освобождаются после `on_submitted_work_done`.
+const MIN_TEXTURE_SLOTS_AVAILABLE_FOR_DECODE: usize = 2;
 
 /// Максимум сырых video packets, которые можно держать между demuxer и decoder thread.
 ///
@@ -319,6 +327,10 @@ impl ApplicationHandler for App {
 
 /// Проверяет, можно ли отправить video packet в decoder thread без чрезмерного decode-ahead.
 fn can_send_video_packet_to_decoder(app_state: &AppState, packet_pts: std::time::Duration) -> bool {
+    if !has_texture_capacity_for_decode(app_state) {
+        return false;
+    }
+
     // Для файлов без audio track нет внешнего clock, поэтому video может идти самостоятельно.
     if app_state.audio_track_id.is_none() || app_state.audio_clock.is_none() {
         return true;
@@ -334,8 +346,39 @@ fn can_send_video_packet_to_decoder(app_state: &AppState, packet_pts: std::time:
     packet_lead <= MAX_VIDEO_DECODE_AHEAD
 }
 
+/// Проверяет, есть ли запас texture slots для ещё одного decoded frame.
+fn has_texture_capacity_for_decode(app_state: &AppState) -> bool {
+    let Some(ref thread) = app_state.video_decoder_thread else {
+        return true;
+    };
+
+    let Some(stats) = thread.texture_pool_stats() else {
+        return true;
+    };
+
+    let available_slots = stats.available_slots();
+    if available_slots <= MIN_TEXTURE_SLOTS_AVAILABLE_FOR_DECODE {
+        trace!(
+            texture_slots = stats.slots,
+            texture_in_use = stats.in_use,
+            texture_capacity = stats.capacity,
+            available_slots,
+            reserve = MIN_TEXTURE_SLOTS_AVAILABLE_FOR_DECODE,
+            "Video backpressure: waiting for texture slots"
+        );
+        return false;
+    }
+
+    true
+}
+
 /// Проверяет, можно ли читать следующий packet из demuxer.
 fn can_read_next_demux_packet(app_state: &AppState) -> bool {
+    // Если texture pool почти заполнен, сначала даём presentation освободить frames.
+    if !has_texture_capacity_for_decode(app_state) {
+        return false;
+    }
+
     // Если очередь сырых video packets заполнена, demuxer должен подождать decoder.
     if app_state.pending_video_packets.len() >= MAX_PENDING_VIDEO_PACKETS {
         return false;
@@ -349,30 +392,35 @@ fn can_read_next_demux_packet(app_state: &AppState) -> bool {
     true
 }
 
+/// Кладёт decoded frame в presentation queue, сохраняя фиксированный размер очереди.
+fn enqueue_decoded_video_frame(
+    app_state: &mut AppState,
+    telemetry: &Telemetry,
+    frame: video_core::DecodedFrame,
+) {
+    while app_state.video_frame_queue.len() >= MAX_VIDEO_PRESENT_QUEUE {
+        let Some(stale_frame) = app_state.video_frame_queue.pop_front() else {
+            break;
+        };
+
+        if let Some(ref thread) = app_state.video_decoder_thread {
+            thread.release_frame(stale_frame.texture_handle);
+        }
+
+        telemetry.record_video_frame_dropped();
+        tracing::debug!(
+            pts_ms = stale_frame.pts.as_millis(),
+            queue_limit = MAX_VIDEO_PRESENT_QUEUE,
+            "Dropping oldest queued video frame before enqueue"
+        );
+    }
+
+    app_state.video_frame_queue.push_back(frame);
+}
+
 /// Забирает готовые кадры из decoder thread и кладёт их в presentation queue.
 fn drain_decoded_video_frames(app_state: &mut AppState, telemetry: &Telemetry) {
-    if let Some(ref thread) = app_state.video_decoder_thread {
-        while let Some(frame) = thread.try_recv_frame() {
-            tracing::debug!(
-                pts_ms = frame.pts.as_millis(),
-                width = frame.width,
-                height = frame.height,
-                "Video frame decoded"
-            );
-            telemetry.record_video_frame_decoded();
-
-            // В Paused кадры могли доехать из decoder thread уже после клика по паузе.
-            // Их нельзя показывать: pause должен заморозить текущий present frame.
-            if app_state.player_state == crate::state::PlayerState::Playing
-                || app_state.draining_after_eof
-            {
-                app_state.video_frame_queue.push_back(frame);
-            } else {
-                thread.release_frame(frame.texture_handle);
-                tracing::debug!("Dropping decoded frame received while playback is paused");
-            }
-        }
-    } else {
+    let Some(ref thread) = app_state.video_decoder_thread else {
         if !app_state.pending_video_packets.is_empty() {
             tracing::warn!(
                 count = app_state.pending_video_packets.len(),
@@ -380,6 +428,33 @@ fn drain_decoded_video_frames(app_state: &mut AppState, telemetry: &Telemetry) {
             );
         }
         app_state.pending_video_packets.clear();
+        return;
+    };
+
+    let mut decoded_frames = Vec::new();
+    while let Some(frame) = thread.try_recv_frame() {
+        decoded_frames.push(frame);
+    }
+
+    for frame in decoded_frames {
+        tracing::debug!(
+            pts_ms = frame.pts.as_millis(),
+            width = frame.width,
+            height = frame.height,
+            "Video frame decoded"
+        );
+        telemetry.record_video_frame_decoded();
+
+        // В Paused кадры могли доехать из decoder thread уже после клика по паузе.
+        // Их нельзя показывать: pause должен заморозить текущий present frame.
+        if app_state.player_state == crate::state::PlayerState::Playing
+            || app_state.draining_after_eof
+        {
+            enqueue_decoded_video_frame(app_state, telemetry, frame);
+        } else if let Some(ref thread) = app_state.video_decoder_thread {
+            thread.release_frame(frame.texture_handle);
+            tracing::debug!("Dropping decoded frame received while playback is paused");
+        }
     }
 }
 

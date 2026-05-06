@@ -18,6 +18,24 @@ use video_core::FrameTextureHandle;
 /// ~3 кадра (очередь + текущий), остальные свободны для reuse.
 const MAX_TEXTURE_SLOTS: usize = 16;
 
+/// Снимок заполнения texture pool для render-loop backpressure и UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TexturePoolStats {
+    /// Максимальное число texture slots, которое pool разрешает держать одновременно.
+    pub capacity: usize,
+    /// Сколько slots сейчас существует в pool.
+    pub slots: usize,
+    /// Сколько slots сейчас занято кадрами, которые ещё нельзя переиспользовать.
+    pub in_use: usize,
+}
+
+impl TexturePoolStats {
+    /// Возвращает число slots, которые ещё можно занять без риска исчерпать pool.
+    pub fn available_slots(self) -> usize {
+        self.capacity.saturating_sub(self.in_use)
+    }
+}
+
 /// Переменная окружения, которая включает диагностику содержимого NV12-плоскостей.
 const PLANE_SAMPLE_LOG_ENV_VAR: &str = "VIDEOPLAYER_LOG_NV12_SAMPLES";
 
@@ -1047,6 +1065,15 @@ impl WgpuTexturePool {
     /// Возвращает количество занятых (in_use) слотов.
     pub fn num_in_use(&self) -> usize {
         self.slots.iter().filter(|s| s.in_use).count()
+    }
+
+    /// Возвращает компактную статистику pool для backpressure и UI.
+    pub fn stats(&self) -> TexturePoolStats {
+        TexturePoolStats {
+            capacity: MAX_TEXTURE_SLOTS,
+            slots: self.num_slots(),
+            in_use: self.num_in_use(),
+        }
     }
 
     /// Находит свободный слот с подходящим разрешением или создаёт новый.

@@ -501,6 +501,13 @@ impl AppState {
                             ));
                             ui.monospace(format!("Dropped: {}", telemetry.video_frames_dropped()));
                             ui.monospace(format!("Queue: {}", self.video_frame_queue.len()));
+                            if let Some(stats) = thread.texture_pool_stats() {
+                                ui.monospace(format!(
+                                    "Textures: {}/{}",
+                                    stats.in_use, stats.capacity
+                                ));
+                                ui.monospace(format!("Texture slots: {}", stats.slots));
+                            }
                         }
                     } else {
                         ui.monospace("No file loaded");

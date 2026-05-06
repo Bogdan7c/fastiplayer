@@ -16,6 +16,7 @@ use std::time::Duration;
 use tracing::{info, trace};
 use video_core::{DecodedFrame, VideoDecoder};
 
+use crate::texture_cache::TexturePoolStats;
 use crate::upload_config::UploadConfig;
 
 /// Команда для decoder thread.
@@ -210,6 +211,17 @@ impl VideoDecodeThread {
             Ok(texture_pool) => texture_pool.get_views(handle),
             Err(error) => {
                 tracing::warn!(error = %error, "Texture pool mutex poisoned during get_views");
+                None
+            }
+        }
+    }
+
+    /// Возвращает состояние texture pool для backpressure и UI.
+    pub fn texture_pool_stats(&self) -> Option<TexturePoolStats> {
+        match self.texture_pool.lock() {
+            Ok(texture_pool) => Some(texture_pool.stats()),
+            Err(error) => {
+                tracing::warn!(error = %error, "Texture pool mutex poisoned during stats read");
                 None
             }
         }
