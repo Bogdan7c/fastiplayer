@@ -16,11 +16,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tracing::{info, instrument, warn};
-use video_core::AvSync;
 use webm_demux::{Demuxer, TrackKind};
 use winit::window::Window;
 
 use crate::telemetry::Telemetry;
+
+/// Начальная оценка длительности video frame: 60 FPS.
+const DEFAULT_VIDEO_FRAME_DURATION: std::time::Duration = std::time::Duration::from_micros(16_667);
+
+/// Минимальная разумная длительность кадра для оценки FPS.
+const MIN_OBSERVED_VIDEO_FRAME_DURATION: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// Максимальная разумная длительность кадра для оценки FPS.
+const MAX_OBSERVED_VIDEO_FRAME_DURATION: std::time::Duration =
+    std::time::Duration::from_millis(100);
 
 /// Состояние воспроизведения плеера.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,11 +112,14 @@ pub struct AppState {
     /// Video decoder thread — VA-API VP9 decode в отдельном потоке.
     pub video_decoder_thread: Option<video_vaapi::VideoDecodeThread>,
 
-    /// A/V sync logic для синхронизации видео и аудио.
-    pub av_sync: AvSync,
-
     /// Очередь декодированных видеокадров перед presentation.
     pub video_frame_queue: VecDeque<video_core::DecodedFrame>,
+
+    /// Текущая оценка длительности одного video frame.
+    pub video_frame_duration_estimate: std::time::Duration,
+
+    /// PTS последнего decoded frame для обновления оценки frame duration.
+    pub last_decoded_video_pts: Option<std::time::Duration>,
 
     /// Текущий кадр для отображения (если синхронизация разрешила показ).
     pub present_video_frame: Option<video_core::DecodedFrame>,
@@ -176,8 +188,9 @@ impl AppState {
             audio_track_id: None,
             pending_audio_packets: VecDeque::new(),
             video_decoder_thread: None,
-            av_sync: AvSync::default(),
             video_frame_queue: VecDeque::new(),
+            video_frame_duration_estimate: DEFAULT_VIDEO_FRAME_DURATION,
+            last_decoded_video_pts: None,
             present_video_frame: None,
             video_track_id: None,
             pending_video_packets: VecDeque::new(),
@@ -273,7 +286,11 @@ impl AppState {
 
         // Обновляем позицию если играем
         if is_playing {
-            self.update_position(1.0 / 60.0);
+            if let Some(audio_secs) = self.audio_clock_secs() {
+                self.current_position = audio_secs;
+            } else {
+                self.update_position(1.0 / 60.0);
+            }
             self.next_frame();
         }
 
@@ -284,6 +301,10 @@ impl AppState {
         // Извлекаем audio данные ДО mutable borrows
         let audio_clock_secs = self.audio_clock_secs();
         let audio_buffer_ms = self.audio_buffer_level_ms();
+        let audio_underruns = self
+            .audio_clock
+            .as_ref()
+            .map(|clock| clock.underrun_callbacks());
 
         // Извлекаем поля для closure
         let video_backend = self.video_backend;
@@ -488,6 +509,9 @@ impl AppState {
                             };
                             ui.colored_label(buf_color, format!("Audio buf: {:.1}ms", buffer_ms));
                         }
+                        if let Some(underruns) = audio_underruns {
+                            ui.monospace(format!("Audio underruns: {}", underruns));
+                        }
 
                         // Video telemetry
                         if let Some(ref thread) = self.video_decoder_thread {
@@ -500,6 +524,26 @@ impl AppState {
                                 telemetry.video_frames_presented()
                             ));
                             ui.monospace(format!("Dropped: {}", telemetry.video_frames_dropped()));
+                            ui.monospace(format!(
+                                "  Late: {}",
+                                telemetry.video_frames_late_dropped()
+                            ));
+                            ui.monospace(format!(
+                                "  Queue: {}",
+                                telemetry.video_frames_queue_dropped()
+                            ));
+                            ui.monospace(format!(
+                                "  Pause: {}",
+                                telemetry.video_frames_pause_dropped()
+                            ));
+                            ui.monospace(format!(
+                                "Repeated: {}",
+                                telemetry.video_frames_repeated()
+                            ));
+                            ui.monospace(format!(
+                                "Frame dur: {:.2}ms",
+                                self.video_frame_duration_estimate.as_secs_f64() * 1000.0
+                            ));
                             ui.monospace(format!("Queue: {}", self.video_frame_queue.len()));
                             if let Some(stats) = thread.texture_pool_stats() {
                                 ui.monospace(format!(
@@ -714,8 +758,28 @@ impl AppState {
         self.audio_clock = None;
         self.current_position = 0.0;
         self.duration = 0.0;
+        self.video_frame_duration_estimate = DEFAULT_VIDEO_FRAME_DURATION;
+        self.last_decoded_video_pts = None;
         self.last_audio_clock = std::time::Duration::ZERO;
         self.last_audio_clock_change_at = std::time::Instant::now();
+    }
+
+    /// Обновляет оценку длительности video frame по очередному decoded PTS.
+    pub fn observe_video_frame_pts(&mut self, pts: std::time::Duration) {
+        if let Some(previous_pts) = self.last_decoded_video_pts {
+            let observed_duration = pts.saturating_sub(previous_pts);
+            if (MIN_OBSERVED_VIDEO_FRAME_DURATION..=MAX_OBSERVED_VIDEO_FRAME_DURATION)
+                .contains(&observed_duration)
+            {
+                let old_micros = self.video_frame_duration_estimate.as_micros() as u64;
+                let new_micros = observed_duration.as_micros() as u64;
+                let smoothed_micros = (old_micros.saturating_mul(7) + new_micros) / 8;
+                self.video_frame_duration_estimate =
+                    std::time::Duration::from_micros(smoothed_micros.max(1));
+            }
+        }
+
+        self.last_decoded_video_pts = Some(pts);
     }
 
     /// Очищает video frame queue и present frame, освобождая texture slots.

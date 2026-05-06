@@ -18,6 +18,19 @@ use std::time::{Duration, Instant};
 
 use webm_demux::TrackKind;
 
+/// Причина, по которой video frame был удалён из playback pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoDropReason {
+    /// Кадр устарел относительно audio-master media time.
+    Late,
+
+    /// Кадр вытеснен из-за переполнения очереди presentation.
+    QueueOverflow,
+
+    /// Кадр пришёл после пользовательской паузы и не должен менять картинку.
+    Paused,
+}
+
 /// Глобальные счётчики телеметрии.
 ///
 /// Синглтон через OnceLock для ленивой инициализации.
@@ -58,6 +71,18 @@ pub struct Telemetry {
 
     /// Количество пропущенных видеокадров (A/V sync drop).
     video_frames_dropped: AtomicU64,
+
+    /// Количество видеокадров, пропущенных из-за опоздания к media time.
+    video_frames_late_dropped: AtomicU64,
+
+    /// Количество видеокадров, вытесненных из-за переполнения очереди.
+    video_frames_queue_dropped: AtomicU64,
+
+    /// Количество видеокадров, отброшенных во время pause.
+    video_frames_pause_dropped: AtomicU64,
+
+    /// Количество render ticks, где был повторно показан предыдущий video frame.
+    video_frames_repeated: AtomicU64,
 }
 
 /// Внутренний трекер для расчёта FPS через скользящее окно.
@@ -90,6 +115,10 @@ impl Telemetry {
             video_frames_decoded: AtomicU64::new(0),
             video_frames_presented: AtomicU64::new(0),
             video_frames_dropped: AtomicU64::new(0),
+            video_frames_late_dropped: AtomicU64::new(0),
+            video_frames_queue_dropped: AtomicU64::new(0),
+            video_frames_pause_dropped: AtomicU64::new(0),
+            video_frames_repeated: AtomicU64::new(0),
         }
     }
 
@@ -215,8 +244,24 @@ impl Telemetry {
     }
 
     #[inline]
-    pub fn record_video_frame_dropped(&self) {
+    pub fn record_video_frame_dropped(&self, reason: VideoDropReason) {
         self.video_frames_dropped.fetch_add(1, Ordering::Relaxed);
+        match reason {
+            VideoDropReason::Late => self
+                .video_frames_late_dropped
+                .fetch_add(1, Ordering::Relaxed),
+            VideoDropReason::QueueOverflow => self
+                .video_frames_queue_dropped
+                .fetch_add(1, Ordering::Relaxed),
+            VideoDropReason::Paused => self
+                .video_frames_pause_dropped
+                .fetch_add(1, Ordering::Relaxed),
+        };
+    }
+
+    #[inline]
+    pub fn record_video_frame_repeated(&self) {
+        self.video_frames_repeated.fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
@@ -232,6 +277,26 @@ impl Telemetry {
     #[inline]
     pub fn video_frames_dropped(&self) -> u64 {
         self.video_frames_dropped.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn video_frames_late_dropped(&self) -> u64 {
+        self.video_frames_late_dropped.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn video_frames_queue_dropped(&self) -> u64 {
+        self.video_frames_queue_dropped.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn video_frames_pause_dropped(&self) -> u64 {
+        self.video_frames_pause_dropped.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn video_frames_repeated(&self) -> u64 {
+        self.video_frames_repeated.load(Ordering::Relaxed)
     }
 }
 

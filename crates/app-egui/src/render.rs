@@ -252,6 +252,7 @@ impl Renderer {
     /// 6. Submit и present
     pub fn render_frame(
         &mut self,
+        window: &Window,
         _time: f32,
         video_frame: Option<&video_core::DecodedFrame>,
         video_y_view: Option<&wgpu::TextureView>,
@@ -363,7 +364,6 @@ impl Renderer {
                 ) {
                     Ok(()) => {
                         video_rendered = true;
-                        self.telemetry.record_video_frame_presented();
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "NV12 render failed");
@@ -427,7 +427,10 @@ impl Renderer {
         // что приводит к Out of Memory через несколько десятков секунд 4K playback.
         let _ = self.gpu.device.poll(wgpu::PollType::Poll);
 
-        // Показываем кадр на экране
+        // Сообщаем winit, что сейчас будет present: это помогает backend/compositor timing.
+        window.pre_present_notify();
+
+        // Показываем кадр на экране.
         surface_texture.present();
         self.telemetry.record_presented_frame();
     }

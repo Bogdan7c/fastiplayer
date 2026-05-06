@@ -13,6 +13,7 @@
 //! использует другой rate.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -312,8 +313,15 @@ impl AudioOutput {
 
         let stream = device.build_output_stream(
             config,
-            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                Self::fill_buffer_f32(data, &mut consumer, &clock, channels);
+            move |data: &mut [f32], callback_info: &cpal::OutputCallbackInfo| {
+                Self::fill_buffer_f32(
+                    data,
+                    &mut consumer,
+                    &clock,
+                    channels,
+                    callback_info,
+                    Instant::now(),
+                );
             },
             err_callback,
             None,
@@ -336,8 +344,15 @@ impl AudioOutput {
 
         let stream = device.build_output_stream(
             config,
-            move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-                Self::fill_buffer_i16(data, &mut consumer, &clock, channels);
+            move |data: &mut [i16], callback_info: &cpal::OutputCallbackInfo| {
+                Self::fill_buffer_i16(
+                    data,
+                    &mut consumer,
+                    &clock,
+                    channels,
+                    callback_info,
+                    Instant::now(),
+                );
             },
             err_callback,
             None,
@@ -360,8 +375,15 @@ impl AudioOutput {
 
         let stream = device.build_output_stream(
             config,
-            move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
-                Self::fill_buffer_u16(data, &mut consumer, &clock, channels);
+            move |data: &mut [u16], callback_info: &cpal::OutputCallbackInfo| {
+                Self::fill_buffer_u16(
+                    data,
+                    &mut consumer,
+                    &clock,
+                    channels,
+                    callback_info,
+                    Instant::now(),
+                );
             },
             err_callback,
             None,
@@ -376,6 +398,8 @@ impl AudioOutput {
         consumer: &mut HeapCons<f32>,
         clock: &AudioClock,
         _channels: usize,
+        callback_info: &cpal::OutputCallbackInfo,
+        callback_observed_at: Instant,
     ) {
         let mut filled = 0u64;
         let mut silence = 0u64;
@@ -393,9 +417,7 @@ impl AudioOutput {
             }
         }
 
-        if filled > 0 {
-            clock.record_played(filled);
-        }
+        clock.record_output_callback(filled, silence, callback_info, callback_observed_at);
         if filled == 0 && silence > 0 {
             tracing::debug!(
                 silence,
@@ -411,8 +433,11 @@ impl AudioOutput {
         consumer: &mut HeapCons<f32>,
         clock: &AudioClock,
         _channels: usize,
+        callback_info: &cpal::OutputCallbackInfo,
+        callback_observed_at: Instant,
     ) {
         let mut filled = 0u64;
+        let mut silence = 0u64;
 
         for sample in data.iter_mut() {
             match consumer.try_pop() {
@@ -423,13 +448,12 @@ impl AudioOutput {
                 }
                 None => {
                     *sample = 0;
+                    silence += 1;
                 }
             }
         }
 
-        if filled > 0 {
-            clock.record_played(filled);
-        }
+        clock.record_output_callback(filled, silence, callback_info, callback_observed_at);
     }
 
     /// Заполняет output buffer из ring buffer (u16).
@@ -438,8 +462,11 @@ impl AudioOutput {
         consumer: &mut HeapCons<f32>,
         clock: &AudioClock,
         _channels: usize,
+        callback_info: &cpal::OutputCallbackInfo,
+        callback_observed_at: Instant,
     ) {
         let mut filled = 0u64;
+        let mut silence = 0u64;
 
         for sample in data.iter_mut() {
             match consumer.try_pop() {
@@ -450,13 +477,12 @@ impl AudioOutput {
                 }
                 None => {
                     *sample = 32768;
+                    silence += 1;
                 }
             }
         }
 
-        if filled > 0 {
-            clock.record_played(filled);
-        }
+        clock.record_output_callback(filled, silence, callback_info, callback_observed_at);
     }
 }
 

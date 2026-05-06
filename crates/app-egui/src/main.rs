@@ -34,8 +34,7 @@ use winit::{
 
 use crate::render::Renderer;
 use crate::state::AppState;
-use crate::telemetry::Telemetry;
-use video_core::FrameAction;
+use crate::telemetry::{Telemetry, VideoDropReason};
 
 /// Media, которое нужно автоматически открыть после создания окна.
 enum InitialMedia {
@@ -95,6 +94,22 @@ const MAX_VIDEO_PACKETS_SENT_PER_REDRAW: usize = 2;
 /// звук, а пользователь увидит "зависший" старый кадр. 500ms оставляют рабочий буфер,
 /// но не позволяют видео накопить многосекундный отрыв.
 const MAX_VIDEO_DECODE_AHEAD: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Небольшой phase lead при выборе кадра относительно audio clock.
+///
+/// Половина video frame компенсирует задержку render→present и не заставляет
+/// scheduler перескакивать кадры из-за мелкого phase jitter.
+const VIDEO_PRESENT_LEAD_FRAMES: f64 = 0.5;
+
+/// Окно, внутри которого следующий sequential frame можно показывать без ожидания.
+const VIDEO_PRESENT_WINDOW_FRAMES: f64 = 1.0;
+
+/// Запас перед late-drop.
+///
+/// Даже если следующий кадр математически ближе к target, текущий кадр лучше
+/// показать, если он не опоздал реально. Иначе 60 FPS легко превращаются в
+/// регулярный skip на границе половины frame interval.
+const VIDEO_LATE_DROP_GRACE_FRAMES: f64 = 2.0;
 
 /// Главное приложение — реализует ApplicationHandler для winit.
 ///
@@ -407,7 +422,7 @@ fn enqueue_decoded_video_frame(
             thread.release_frame(stale_frame.texture_handle);
         }
 
-        telemetry.record_video_frame_dropped();
+        telemetry.record_video_frame_dropped(VideoDropReason::QueueOverflow);
         tracing::debug!(
             pts_ms = stale_frame.pts.as_millis(),
             queue_limit = MAX_VIDEO_PRESENT_QUEUE,
@@ -444,6 +459,7 @@ fn drain_decoded_video_frames(app_state: &mut AppState, telemetry: &Telemetry) {
             "Video frame decoded"
         );
         telemetry.record_video_frame_decoded();
+        app_state.observe_video_frame_pts(frame.pts);
 
         // В Paused кадры могли доехать из decoder thread уже после клика по паузе.
         // Их нельзя показывать: pause должен заморозить текущий present frame.
@@ -453,6 +469,7 @@ fn drain_decoded_video_frames(app_state: &mut AppState, telemetry: &Telemetry) {
             enqueue_decoded_video_frame(app_state, telemetry, frame);
         } else if let Some(ref thread) = app_state.video_decoder_thread {
             thread.release_frame(frame.texture_handle);
+            telemetry.record_video_frame_dropped(VideoDropReason::Paused);
             tracing::debug!("Dropping decoded frame received while playback is paused");
         }
     }
@@ -526,12 +543,131 @@ fn trim_video_present_queue(app_state: &mut AppState, telemetry: &Telemetry) {
             if let Some(ref thread) = app_state.video_decoder_thread {
                 thread.release_frame(frame.texture_handle);
             }
-            telemetry.record_video_frame_dropped();
+            telemetry.record_video_frame_dropped(VideoDropReason::QueueOverflow);
             tracing::debug!(
                 pts_ms = frame.pts.as_millis(),
                 "Dropping frame: queue overflow protection"
             );
         }
+    }
+}
+
+/// Добавляет duration без panic при переполнении.
+fn saturating_duration_add(
+    timestamp: std::time::Duration,
+    offset: std::time::Duration,
+) -> std::time::Duration {
+    timestamp
+        .checked_add(offset)
+        .unwrap_or(std::time::Duration::MAX)
+}
+
+/// Рассчитывает media time, под который выбираем frame для ближайшего present.
+fn target_media_time_for_present(
+    app_state: &AppState,
+    audio_now: std::time::Duration,
+) -> std::time::Duration {
+    let present_lead = app_state
+        .video_frame_duration_estimate
+        .mul_f64(VIDEO_PRESENT_LEAD_FRAMES);
+    saturating_duration_add(audio_now, present_lead)
+}
+
+/// Возвращает допустимое окно выбора кадра вокруг target media time.
+fn video_present_window(app_state: &AppState) -> std::time::Duration {
+    app_state
+        .video_frame_duration_estimate
+        .mul_f64(VIDEO_PRESENT_WINDOW_FRAMES)
+}
+
+/// Возвращает допустимое опоздание кадра перед forced catch-up drop.
+fn video_late_drop_grace(app_state: &AppState) -> std::time::Duration {
+    app_state
+        .video_frame_duration_estimate
+        .mul_f64(VIDEO_LATE_DROP_GRACE_FRAMES)
+}
+
+/// Проверяет, нужно ли дропнуть первый queued frame как реально устаревший.
+fn should_drop_front_frame_as_late(
+    app_state: &AppState,
+    target_media_time: std::time::Duration,
+    late_drop_grace: std::time::Duration,
+) -> bool {
+    let Some(front_frame) = app_state.video_frame_queue.front() else {
+        return false;
+    };
+    let Some(next_frame) = app_state.video_frame_queue.get(1) else {
+        return false;
+    };
+
+    let latest_front_pts = saturating_duration_add(front_frame.pts, late_drop_grace);
+    if target_media_time <= latest_front_pts {
+        return false;
+    }
+
+    next_frame.pts <= target_media_time
+}
+
+/// Проверяет, слишком ли рано показывать первый queued frame.
+fn should_wait_for_front_frame(
+    frame_pts: std::time::Duration,
+    target_media_time: std::time::Duration,
+    present_window: std::time::Duration,
+) -> bool {
+    frame_pts > saturating_duration_add(target_media_time, present_window)
+}
+
+/// Освобождает texture handle через decoder thread, если он ещё существует.
+fn release_video_texture(app_state: &AppState, texture_handle: video_core::FrameTextureHandle) {
+    if let Some(ref thread) = app_state.video_decoder_thread {
+        thread.release_frame(texture_handle);
+    }
+}
+
+/// Удаляет первый queued frame и записывает причину drop.
+fn drop_front_queued_video_frame(
+    app_state: &mut AppState,
+    telemetry: &Telemetry,
+    reason: VideoDropReason,
+) -> bool {
+    let Some(frame) = app_state.video_frame_queue.pop_front() else {
+        return false;
+    };
+
+    let frame_pts_ms = frame.pts.as_millis();
+    release_video_texture(app_state, frame.texture_handle);
+    telemetry.record_video_frame_dropped(reason);
+    tracing::debug!(
+        pts_ms = frame_pts_ms,
+        ?reason,
+        "Dropping queued video frame"
+    );
+    true
+}
+
+/// Делает первый queued frame текущим present frame.
+fn present_front_queued_video_frame(app_state: &mut AppState, telemetry: &Telemetry) -> bool {
+    let Some(frame) = app_state.video_frame_queue.pop_front() else {
+        return false;
+    };
+
+    if let Some(old_frame) = app_state.present_video_frame.take() {
+        release_video_texture(app_state, old_frame.texture_handle);
+    }
+
+    tracing::debug!(
+        pts_ms = frame.pts.as_millis(),
+        "Presenting scheduled video frame"
+    );
+    app_state.present_video_frame = Some(frame);
+    telemetry.record_video_frame_presented();
+    true
+}
+
+/// Повторно показывает текущий кадр и учитывает это в telemetry.
+fn repeat_present_video_frame(app_state: &AppState, telemetry: &Telemetry) {
+    if app_state.present_video_frame.is_some() {
+        telemetry.record_video_frame_repeated();
     }
 }
 
@@ -557,7 +693,7 @@ fn process_pending_video_packets(app_state: &mut AppState, telemetry: &Telemetry
     // Старое значение 4 кадра было слишком маленьким и вызывало лишние drop/skip при 4K readback.
     trim_video_present_queue(app_state, telemetry);
 
-    // 5. A/V sync: decide what to do with queued frames
+    // 5. A/V sync: выбираем кадр через audio-master scheduler.
     if !app_state.video_frame_queue.is_empty() {
         tracing::debug!(
             queue_len = app_state.video_frame_queue.len(),
@@ -587,95 +723,53 @@ fn process_pending_video_packets(app_state: &mut AppState, telemetry: &Telemetry
         );
     }
 
-    // Показываем максимум один кадр за вызов рендера при stalled audio.
-    let mut presented_this_frame = false;
-
-    while let Some(frame) = app_state.video_frame_queue.front() {
-        let diff_ms = frame.pts.as_secs_f64() * 1000.0 - audio_now.as_secs_f64() * 1000.0;
-
-        // Если audio clock ещё не запустился (менее 50ms), показываем кадры без sync
-        // чтобы видео не зависло в ожидении audio. Это критично на старте playback,
-        // когда audio callback ещё не начал инкрементировать samples_played.
-        let action = if audio_ms < 50.0 {
-            if presented_this_frame {
-                // Уже показали один стартовый кадр в этом redraw.
-                // Остальные кадры ждут следующего redraw или запуска audio clock.
-                break;
-            }
-            // На старте audio clock ещё не запустился — показываем один кадр без sync,
-            // иначе пользователь видит чёрный экран до первого CPAL callback.
-            tracing::trace!(
-                pts_ms = frame.pts.as_millis(),
-                audio_ms,
-                "A/V sync: audio clock at startup, presenting one frame"
-            );
-            video_core::FrameAction::Present
-        } else if audio_stalled {
-            if presented_this_frame {
-                // Уже показали один кадр в этом render frame — оставляем остальные в queue.
-                break;
-            }
-            tracing::debug!(
-                pts_ms = frame.pts.as_millis(),
-                audio_ms,
-                "A/V sync: audio stalled, presenting frame"
-            );
-            video_core::FrameAction::Present
-        } else {
-            app_state.av_sync.decide(frame.pts, audio_now)
-        };
-
-        if matches!(
-            action,
-            video_core::FrameAction::Present | video_core::FrameAction::Drop
-        ) {
-            tracing::debug!(
-                pts_ms = frame.pts.as_millis(),
-                audio_ms = audio_now.as_millis(),
-                diff_ms = diff_ms,
-                ?action,
-                "A/V sync decision"
-            );
-        } else {
-            trace!(
-                pts_ms = frame.pts.as_millis(),
-                audio_ms = audio_now.as_millis(),
-                diff_ms = diff_ms,
-                ?action,
-                "A/V sync decision"
-            );
+    // При stalled audio показываем максимум один кадр за redraw, чтобы EOF drain не завис.
+    if audio_stalled {
+        if !present_front_queued_video_frame(app_state, telemetry) {
+            repeat_present_video_frame(app_state, telemetry);
         }
-        match action {
-            FrameAction::Present => {
-                let Some(frame) = app_state.video_frame_queue.pop_front() else {
-                    break;
-                };
-                // Освобождаем texture slot предыдущего present frame если есть.
-                if let Some(ref old_frame) = app_state.present_video_frame {
-                    if let Some(ref thread) = app_state.video_decoder_thread {
-                        thread.release_frame(old_frame.texture_handle);
-                    }
-                }
-                app_state.present_video_frame = Some(frame);
-                presented_this_frame = true;
-            }
-            FrameAction::Wait(_) => {
-                // Кадр ещё не пора показывать — оставляем в очереди
-                // и прерываем обработку остальных (они ещё дальше по времени).
-                break;
-            }
-            FrameAction::Drop => {
-                let Some(frame) = app_state.video_frame_queue.pop_front() else {
-                    break;
-                };
-                // Освобождаем texture slot дропнутого кадра.
-                if let Some(ref thread) = app_state.video_decoder_thread {
-                    thread.release_frame(frame.texture_handle);
-                }
-                telemetry.record_video_frame_dropped();
-            }
+        return;
+    }
+
+    let target_media_time = target_media_time_for_present(app_state, audio_now);
+    let present_window = video_present_window(app_state);
+    let late_drop_grace = video_late_drop_grace(app_state);
+
+    // Дропаем только реальный backlog. Небольшой phase jitter должен идти через
+    // sequential present, иначе 60 FPS поток начинает регулярно терять кадры.
+    while should_drop_front_frame_as_late(app_state, target_media_time, late_drop_grace) {
+        if !drop_front_queued_video_frame(app_state, telemetry, VideoDropReason::Late) {
+            break;
         }
     }
+
+    let Some(frame) = app_state.video_frame_queue.front() else {
+        repeat_present_video_frame(app_state, telemetry);
+        return;
+    };
+
+    let diff_ms = frame.pts.as_secs_f64() * 1000.0 - target_media_time.as_secs_f64() * 1000.0;
+    if should_wait_for_front_frame(frame.pts, target_media_time, present_window) {
+        trace!(
+            pts_ms = frame.pts.as_millis(),
+            target_ms = target_media_time.as_millis(),
+            diff_ms,
+            window_ms = present_window.as_millis(),
+            "A/V scheduler: waiting for target media time"
+        );
+        repeat_present_video_frame(app_state, telemetry);
+        return;
+    }
+
+    tracing::debug!(
+        pts_ms = frame.pts.as_millis(),
+        audio_ms = audio_now.as_millis(),
+        target_ms = target_media_time.as_millis(),
+        diff_ms,
+        window_ms = present_window.as_millis(),
+        "A/V scheduler: frame selected"
+    );
+    present_front_queued_video_frame(app_state, telemetry);
 }
 
 /// Рендерит один полный кадр: видео + egui overlay.
@@ -826,6 +920,7 @@ fn render_frame(
 
     // Рендерим полный кадр (видео + egui overlay)
     renderer.render_frame(
+        window,
         time,
         app_state.present_video_frame.as_ref(),
         video_y_view.as_ref(),
