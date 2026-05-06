@@ -71,7 +71,7 @@ impl VideoDecodeThread {
         let dma_buf_importer = if upload_config.enable_dma_buf_zero_copy {
             info!(
                 env_var = UploadConfig::ZERO_COPY_ENV_VAR,
-                "Experimental DMA-BUF zero-copy upload enabled"
+                "DMA-BUF zero-copy upload enabled by default"
             );
             Some(crate::dma_buf_import::DmaBufImporter::new(
                 (*device).clone(),
@@ -81,7 +81,7 @@ impl VideoDecodeThread {
         } else {
             info!(
                 env_var = UploadConfig::ZERO_COPY_ENV_VAR,
-                "Using stable CPU texture upload; set env var to 1 to test DMA-BUF zero-copy"
+                "Using CPU texture upload because DMA-BUF zero-copy was explicitly disabled"
             );
             None
         };
