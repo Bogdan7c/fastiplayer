@@ -1,7 +1,12 @@
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::Context;
+use anyhow::{Context, ensure};
 use cros_codecs::decoder::DecodedHandle;
 use cros_codecs::video_frame::VideoFrame;
 use cros_codecs::video_frame::generic_dma_video_frame::GenericDmaVideoFrame;
@@ -13,16 +18,339 @@ use video_core::FrameTextureHandle;
 /// ~3 кадра (очередь + текущий), остальные свободны для reuse.
 const MAX_TEXTURE_SLOTS: usize = 16;
 
+/// Переменная окружения, которая включает диагностику содержимого NV12-плоскостей.
+const PLANE_SAMPLE_LOG_ENV_VAR: &str = "VIDEOPLAYER_LOG_NV12_SAMPLES";
+
+/// Переменная окружения, которая сохраняет первый NV12 кадр в файлы `/tmp`.
+const FRAME_DUMP_ENV_VAR: &str = "VIDEOPLAYER_DUMP_FIRST_NV12_FRAME";
+
+/// Возвращает `true`, если включена диагностика содержимого NV12-плоскостей.
+fn should_log_plane_samples() -> bool {
+    static SHOULD_LOG: OnceLock<bool> = OnceLock::new();
+    *SHOULD_LOG.get_or_init(|| {
+        std::env::var(PLANE_SAMPLE_LOG_ENV_VAR)
+            .ok()
+            .as_deref()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// Возвращает `true`, если текстовое значение env-переменной включает режим диагностики.
+fn is_enabled_env_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Возвращает директорию, куда нужно сохранить dump первого NV12 кадра.
+fn first_frame_dump_dir() -> Option<PathBuf> {
+    static DUMP_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DUMP_DIR
+        .get_or_init(|| {
+            let value = std::env::var(FRAME_DUMP_ENV_VAR).ok()?;
+            if !is_enabled_env_value(&value) {
+                return None;
+            }
+            Some(std::env::temp_dir())
+        })
+        .clone()
+}
+
+/// Ограничивает значение цветового канала диапазоном PPM.
+fn clamp_to_u8(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Простая статистика по одной 8-bit плоскости.
+#[derive(Debug, Clone, Copy)]
+struct PlaneStats {
+    /// Минимальное значение по выбранной области.
+    min: u8,
+    /// Максимальное значение по выбранной области.
+    max: u8,
+    /// Среднее значение по выбранной области.
+    average: u64,
+}
+
+/// Считает статистику по прямоугольной 8-bit области с заданным stride.
+fn plane_stats(
+    plane: &[u8],
+    width: u32,
+    height: u32,
+    stride: u32,
+    component_offset: usize,
+    component_step: usize,
+) -> anyhow::Result<PlaneStats> {
+    ensure!(width > 0, "Plane stats width must be > 0");
+    ensure!(height > 0, "Plane stats height must be > 0");
+    ensure!(component_step > 0, "Plane stats component_step must be > 0");
+
+    let mut min_value = u8::MAX;
+    let mut max_value = u8::MIN;
+    let mut sum = 0u64;
+    let mut count = 0u64;
+
+    for row_index in 0..height as usize {
+        let row_start = row_index
+            .saturating_mul(stride as usize)
+            .saturating_add(component_offset);
+        let row_visible_bytes = width as usize;
+
+        for column_offset in (0..row_visible_bytes).step_by(component_step) {
+            let value = *plane.get(row_start + column_offset).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Plane stats out of bounds: row={} column={} len={}",
+                    row_index,
+                    column_offset,
+                    plane.len()
+                )
+            })?;
+            min_value = min_value.min(value);
+            max_value = max_value.max(value);
+            sum += u64::from(value);
+            count += 1;
+        }
+    }
+
+    Ok(PlaneStats {
+        min: min_value,
+        max: max_value,
+        average: sum / count.max(1),
+    })
+}
+
+/// Конвертирует один пиксель NV12/BT.709 limited в RGB.
+fn nv12_pixel_to_rgb(y_value: u8, u_value: u8, v_value: u8) -> [u8; 3] {
+    let y = f32::from(y_value) / 255.0;
+    let u = f32::from(u_value) / 255.0 - 0.5;
+    let v = f32::from(v_value) / 255.0 - 0.5;
+    let y_scaled = (y - 0.0625) * 1.164_383_5;
+
+    let red = y_scaled + 1.792_741_1 * v;
+    let green = y_scaled - 0.532_909_33 * v - 0.213_248_61 * u;
+    let blue = y_scaled + 2.112_401_7 * u;
+
+    [clamp_to_u8(red), clamp_to_u8(green), clamp_to_u8(blue)]
+}
+
+/// Сохраняет Y-плоскость как PGM для проверки яркости до GPU upload.
+fn write_y_plane_pgm(
+    path: &Path,
+    width: u32,
+    height: u32,
+    y_stride: u32,
+    y_plane: &[u8],
+) -> anyhow::Result<()> {
+    let required_len = (height.saturating_sub(1) as usize)
+        .saturating_mul(y_stride as usize)
+        .saturating_add(width as usize);
+    ensure!(
+        y_plane.len() >= required_len,
+        "Y plane is too short: len={} required={}",
+        y_plane.len(),
+        required_len
+    );
+
+    let mut writer = BufWriter::new(File::create(path)?);
+    writeln!(writer, "P5")?;
+    writeln!(writer, "{} {}", width, height)?;
+    writeln!(writer, "255")?;
+
+    for row_index in 0..height as usize {
+        let row_start = row_index * y_stride as usize;
+        let row_end = row_start + width as usize;
+        writer.write_all(&y_plane[row_start..row_end])?;
+    }
+
+    Ok(())
+}
+
+/// Сохраняет одну chroma-компоненту NV12 как PGM для проверки UV до RGB-конверсии.
+fn write_uv_component_pgm(
+    path: &Path,
+    width: u32,
+    height: u32,
+    uv_stride: u32,
+    uv_plane: &[u8],
+    component_offset: usize,
+) -> anyhow::Result<()> {
+    let chroma_width = width / 2;
+    let chroma_height = height / 2;
+    let required_len = (chroma_height.saturating_sub(1) as usize)
+        .saturating_mul(uv_stride as usize)
+        .saturating_add(width as usize);
+    ensure!(
+        uv_plane.len() >= required_len,
+        "UV plane is too short: len={} required={}",
+        uv_plane.len(),
+        required_len
+    );
+
+    let mut writer = BufWriter::new(File::create(path)?);
+    writeln!(writer, "P5")?;
+    writeln!(writer, "{} {}", chroma_width, chroma_height)?;
+    writeln!(writer, "255")?;
+
+    for row_index in 0..chroma_height as usize {
+        let row_start = row_index * uv_stride as usize + component_offset;
+        for column_index in 0..chroma_width as usize {
+            writer.write_all(&[uv_plane[row_start + column_index * 2]])?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Сохраняет полный NV12 кадр как RGB PPM для проверки цвета до GPU upload.
+fn write_nv12_as_ppm(
+    path: &Path,
+    width: u32,
+    height: u32,
+    y_stride: u32,
+    uv_stride: u32,
+    y_plane: &[u8],
+    uv_plane: &[u8],
+) -> anyhow::Result<()> {
+    let required_y_len = (height.saturating_sub(1) as usize)
+        .saturating_mul(y_stride as usize)
+        .saturating_add(width as usize);
+    let uv_rows = height / 2;
+    let required_uv_len = (uv_rows.saturating_sub(1) as usize)
+        .saturating_mul(uv_stride as usize)
+        .saturating_add(width as usize);
+    ensure!(
+        y_plane.len() >= required_y_len,
+        "Y plane is too short: len={} required={}",
+        y_plane.len(),
+        required_y_len
+    );
+    ensure!(
+        uv_plane.len() >= required_uv_len,
+        "UV plane is too short: len={} required={}",
+        uv_plane.len(),
+        required_uv_len
+    );
+
+    let mut writer = BufWriter::new(File::create(path)?);
+    writeln!(writer, "P6")?;
+    writeln!(writer, "{} {}", width, height)?;
+    writeln!(writer, "255")?;
+
+    for y_index in 0..height as usize {
+        let y_row_start = y_index * y_stride as usize;
+        let uv_row_start = (y_index / 2) * uv_stride as usize;
+
+        for x_index in 0..width as usize {
+            let y_value = y_plane[y_row_start + x_index];
+            let uv_index = uv_row_start + (x_index / 2) * 2;
+            let u_value = uv_plane[uv_index];
+            let v_value = uv_plane[uv_index + 1];
+            writer.write_all(&nv12_pixel_to_rgb(y_value, u_value, v_value))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Сохраняет первый NV12 кадр в `/tmp`, если диагностика явно включена.
+fn dump_first_nv12_frame(
+    width: u32,
+    height: u32,
+    y_stride: u32,
+    uv_stride: u32,
+    y_plane: &[u8],
+    uv_plane: &[u8],
+) {
+    static DUMPED: AtomicBool = AtomicBool::new(false);
+
+    let Some(dump_dir) = first_frame_dump_dir() else {
+        return;
+    };
+    if DUMPED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    let y_path = dump_dir.join("videoplayer-first-frame-y.pgm");
+    let u_path = dump_dir.join("videoplayer-first-frame-u.pgm");
+    let v_path = dump_dir.join("videoplayer-first-frame-v.pgm");
+    let rgb_path = dump_dir.join("videoplayer-first-frame-rgb.ppm");
+
+    if let Err(error) = write_y_plane_pgm(&y_path, width, height, y_stride, y_plane) {
+        tracing::warn!(error = %error, path = %y_path.display(), "Failed to dump Y plane");
+    }
+    if let Err(error) = write_uv_component_pgm(&u_path, width, height, uv_stride, uv_plane, 0) {
+        tracing::warn!(error = %error, path = %u_path.display(), "Failed to dump U plane");
+    }
+    if let Err(error) = write_uv_component_pgm(&v_path, width, height, uv_stride, uv_plane, 1) {
+        tracing::warn!(error = %error, path = %v_path.display(), "Failed to dump V plane");
+    }
+    if let Err(error) = write_nv12_as_ppm(
+        &rgb_path, width, height, y_stride, uv_stride, y_plane, uv_plane,
+    ) {
+        tracing::warn!(error = %error, path = %rgb_path.display(), "Failed to dump NV12 as RGB");
+    } else {
+        let y_stats = plane_stats(y_plane, width, height, y_stride, 0, 1).ok();
+        let u_stats = plane_stats(uv_plane, width, height / 2, uv_stride, 0, 2).ok();
+        let v_stats = plane_stats(uv_plane, width, height / 2, uv_stride, 1, 2).ok();
+        tracing::info!(
+            y_path = %y_path.display(),
+            u_path = %u_path.display(),
+            v_path = %v_path.display(),
+            rgb_path = %rgb_path.display(),
+            y_min = y_stats.map(|stats| stats.min),
+            y_max = y_stats.map(|stats| stats.max),
+            y_avg = y_stats.map(|stats| stats.average),
+            u_min = u_stats.map(|stats| stats.min),
+            u_max = u_stats.map(|stats| stats.max),
+            u_avg = u_stats.map(|stats| stats.average),
+            v_min = v_stats.map(|stats| stats.min),
+            v_max = v_stats.map(|stats| stats.max),
+            v_avg = v_stats.map(|stats| stats.average),
+            "First NV12 frame dumped"
+        );
+    }
+}
+
+/// Считает лёгкую среднюю яркость по нескольким точкам без полного прохода по 4K буферу.
+fn sparse_average(plane: &[u8]) -> u64 {
+    if plane.is_empty() {
+        return 0;
+    }
+
+    const SAMPLE_COUNT: usize = 16;
+    let step = (plane.len() / SAMPLE_COUNT).max(1);
+    let mut sum = 0u64;
+    let mut count = 0u64;
+
+    for value in plane.iter().step_by(step).take(SAMPLE_COUNT) {
+        sum += u64::from(*value);
+        count += 1;
+    }
+
+    sum / count.max(1)
+}
+
 /// Логирует короткие samples Y/UV плоскостей для диагностики зелёного/чёрного экрана.
 fn log_plane_samples(y_plane: &[u8], uv_plane: Option<&[u8]>) {
+    if !should_log_plane_samples() {
+        return;
+    }
+
     if !y_plane.is_empty() {
         let y_first = y_plane[0];
         let y_mid = y_plane[y_plane.len() / 2];
-        let y_avg = y_plane.iter().map(|&b| b as u64).sum::<u64>() / y_plane.len().max(1) as u64;
-        tracing::info!(
+        let y_sparse_avg = sparse_average(y_plane);
+        tracing::debug!(
             y_first,
             y_mid,
-            y_avg,
+            y_sparse_avg,
             y_len = y_plane.len(),
             "Y-plane sample"
         );
@@ -33,11 +361,11 @@ fn log_plane_samples(y_plane: &[u8], uv_plane: Option<&[u8]>) {
     {
         let uv_first_u = uv_plane[0];
         let uv_first_v = uv_plane[1];
-        let uv_avg = uv_plane.iter().map(|&b| b as u64).sum::<u64>() / uv_plane.len().max(1) as u64;
-        tracing::info!(
+        let uv_sparse_avg = sparse_average(uv_plane);
+        tracing::debug!(
             uv_first_u,
             uv_first_v,
-            uv_avg,
+            uv_sparse_avg,
             uv_len = uv_plane.len(),
             "UV-plane sample"
         );
@@ -157,7 +485,7 @@ impl WgpuTexturePool {
         if let Some(image) = handle.nv12_image()? {
             let map_elapsed = total_start.elapsed().as_millis();
 
-            tracing::info!(
+            tracing::debug!(
                 width = image.width,
                 height = image.height,
                 y_stride = image.y_stride,
@@ -165,6 +493,14 @@ impl WgpuTexturePool {
                 "VA image readback acquired"
             );
             log_plane_samples(&image.y_plane, Some(&image.uv_plane));
+            dump_first_nv12_frame(
+                image.width,
+                image.height,
+                image.y_stride,
+                image.uv_stride,
+                &image.y_plane,
+                &image.uv_plane,
+            );
 
             let slot_start = std::time::Instant::now();
             let slot_index = self.find_or_create_slot(image.width, image.height)?;
@@ -221,7 +557,7 @@ impl WgpuTexturePool {
             self.next_handle += 1;
             self.handle_to_slot.insert(handle_id, slot_index);
 
-            tracing::info!(
+            tracing::debug!(
                 handle_id,
                 map_ms = map_elapsed,
                 slot_ms = slot_elapsed,
@@ -264,6 +600,7 @@ impl WgpuTexturePool {
             .get(1)
             .copied()
             .unwrap_or(y_stride as usize) as u32;
+        dump_first_nv12_frame(width, height, y_stride, uv_stride, planes[0], planes[1]);
 
         // Шаг 3: Находим или создаём свободный слот подходящего разрешения.
         let slot_start = std::time::Instant::now();
@@ -325,7 +662,7 @@ impl WgpuTexturePool {
         self.handle_to_slot.insert(handle_id, slot_index);
 
         let total_elapsed = total_start.elapsed().as_millis();
-        tracing::info!(
+        tracing::debug!(
             handle_id,
             map_ms = map_elapsed,
             slot_ms = slot_elapsed,

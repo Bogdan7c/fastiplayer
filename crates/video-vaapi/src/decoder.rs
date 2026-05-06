@@ -4,11 +4,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
+use cros_codecs::DecodedFormat;
 use cros_codecs::decoder::BlockingMode;
 use cros_codecs::decoder::DecodedHandle;
 use cros_codecs::decoder::DecoderEvent;
 use cros_codecs::decoder::DynDecodedHandle;
 use cros_codecs::decoder::stateless::StatelessVideoDecoder;
+use cros_codecs::libva::{
+    VA_RT_FORMAT_YUV420, VA_RT_FORMAT_YUV420_10, VA_RT_FORMAT_YUV420_12, VA_RT_FORMAT_YUV422,
+    VA_RT_FORMAT_YUV422_10, VA_RT_FORMAT_YUV422_12, VA_RT_FORMAT_YUV444, VA_RT_FORMAT_YUV444_10,
+    VA_RT_FORMAT_YUV444_12,
+};
 use tracing::{debug, info, trace, warn};
 use video_core::{ColorSpace, DecodedFrame, FrameTextureHandle, VideoDecoder};
 use webm_demux::packet::Packet;
@@ -32,6 +38,25 @@ const FRAME_POOL_SIZE: usize = 16;
 const INITIAL_WIDTH: u32 = 1920;
 const INITIAL_HEIGHT: u32 = 1080;
 
+/// Преобразует decoded output format из `StreamInfo` в VA RT format для surface pool.
+fn rt_format_for_decoded_format(decoded_format: DecodedFormat) -> Result<u32> {
+    match decoded_format {
+        DecodedFormat::NV12 | DecodedFormat::I420 => Ok(VA_RT_FORMAT_YUV420),
+        DecodedFormat::I010 => Ok(VA_RT_FORMAT_YUV420_10),
+        DecodedFormat::I012 => Ok(VA_RT_FORMAT_YUV420_12),
+        DecodedFormat::I422 => Ok(VA_RT_FORMAT_YUV422),
+        DecodedFormat::I210 => Ok(VA_RT_FORMAT_YUV422_10),
+        DecodedFormat::I212 => Ok(VA_RT_FORMAT_YUV422_12),
+        DecodedFormat::I444 => Ok(VA_RT_FORMAT_YUV444),
+        DecodedFormat::I410 => Ok(VA_RT_FORMAT_YUV444_10),
+        DecodedFormat::I412 => Ok(VA_RT_FORMAT_YUV444_12),
+        other => Err(anyhow::anyhow!(
+            "Unsupported VA decoded format for internal surface pool: {:?}",
+            other
+        )),
+    }
+}
+
 /// Загружает кадр стабильным CPU-путём: `map()` DMA-BUF и `Queue::write_texture()`.
 fn upload_frame_with_cpu_fallback(
     texture_cache: &mut WgpuTexturePool,
@@ -43,7 +68,7 @@ fn upload_frame_with_cpu_fallback(
     match texture_cache.upload_frame(decoded_handle, queue) {
         Ok(texture_handle) => {
             let elapsed = upload_start.elapsed().as_millis();
-            info!(
+            debug!(
                 handle_id = texture_handle.0,
                 sync_ms = sync_elapsed,
                 upload_ms = elapsed,
@@ -220,7 +245,7 @@ impl VaapiVideoDecoder {
         let display_resolution = handle.display_resolution();
         let timestamp = handle.timestamp();
 
-        info!(
+        debug!(
             pts_ms = timestamp / 1000,
             coded_width = resolution.width,
             coded_height = resolution.height,
@@ -357,7 +382,7 @@ impl VideoDecoder for VaapiVideoDecoder {
             match event {
                 DecoderEvent::FrameReady(handle) => {
                     let pts_ms = handle.timestamp() / 1000;
-                    info!(pts_ms = pts_ms, "DecoderEvent::FrameReady");
+                    trace!(pts_ms = pts_ms, "DecoderEvent::FrameReady");
                     if let Err(e) = self.process_ready_frame(handle) {
                         warn!(error = %e, "Failed to process ready frame");
                     }
@@ -379,20 +404,36 @@ impl VideoDecoder for VaapiVideoDecoder {
                     // `stream_info()` уже обновлён через `new_sequence()` внутри decode().
                     if let Some(stream_info) = self.inner.stream_info() {
                         let res = stream_info.coded_resolution;
-                        if let Err(e) =
-                            self.frame_pool
-                                .resize(res.width, res.height, FRAME_POOL_SIZE)
-                        {
+                        let rt_format = match rt_format_for_decoded_format(stream_info.format) {
+                            Ok(rt_format) => rt_format,
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    decoded_format = ?stream_info.format,
+                                    "Cannot map decoded format to VA RT format"
+                                );
+                                continue;
+                            }
+                        };
+                        if let Err(e) = self.frame_pool.resize_with_rt_format(
+                            res.width,
+                            res.height,
+                            FRAME_POOL_SIZE,
+                            rt_format,
+                        ) {
                             warn!(
                                 error = %e,
                                 width = res.width,
                                 height = res.height,
+                                rt_format,
                                 "Failed to resize frame pool after format change"
                             );
                         } else {
                             info!(
                                 width = res.width,
                                 height = res.height,
+                                decoded_format = ?stream_info.format,
+                                rt_format,
                                 "Frame pool resized for new format"
                             );
                         }
@@ -408,7 +449,7 @@ impl VideoDecoder for VaapiVideoDecoder {
         let decode_elapsed = decode_start.elapsed().as_millis();
         let drain_elapsed = drain_start.elapsed().as_millis();
         if let Some(ref frame) = result {
-            info!(
+            debug!(
                 pts_ms = frame.pts.as_millis(),
                 width = frame.width,
                 height = frame.height,
@@ -418,7 +459,7 @@ impl VideoDecoder for VaapiVideoDecoder {
                 "decode() returning frame"
             );
         } else if events_count > 0 {
-            info!(
+            debug!(
                 inner_decode_ms = inner_decode_elapsed,
                 drain_ms = drain_elapsed,
                 decode_ms = decode_elapsed,

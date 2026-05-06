@@ -1,8 +1,11 @@
 use std::rc::Rc;
 
-use cros_codecs::libva::{Display, Surface, UsageHint, VA_RT_FORMAT_YUV420};
+use cros_codecs::libva::{
+    Display, Surface, UsageHint, VA_RT_FORMAT_YUV420_10, VA_RT_FORMAT_YUV420_12,
+};
 use cros_codecs::video_frame::{ReadMapping, VideoFrame, WriteMapping};
 use cros_codecs::{Fourcc, Resolution};
+use tracing::debug;
 
 /// Лёгкий descriptor кадра для decode в internal VA surface.
 ///
@@ -12,12 +15,30 @@ use cros_codecs::{Fourcc, Resolution};
 pub struct InternalVaapiFrame {
     /// Coded resolution кадра.
     resolution: Resolution,
+    /// VA RT format поверхности, который должен совпадать с VAConfig decoder context.
+    rt_format: u32,
 }
 
 impl InternalVaapiFrame {
     /// Создаёт descriptor внутреннего VA кадра.
-    pub fn new(resolution: Resolution) -> Self {
-        Self { resolution }
+    pub fn new(resolution: Resolution, rt_format: u32) -> Self {
+        Self {
+            resolution,
+            rt_format,
+        }
+    }
+
+    /// Возвращает VA RT format поверхности.
+    pub fn rt_format(&self) -> u32 {
+        self.rt_format
+    }
+
+    /// Возвращает количество байт на один luma sample для текущего RT format.
+    fn bytes_per_sample(&self) -> usize {
+        match self.rt_format {
+            VA_RT_FORMAT_YUV420_10 | VA_RT_FORMAT_YUV420_12 => 2,
+            _ => 1,
+        }
     }
 }
 
@@ -26,7 +47,11 @@ impl VideoFrame for InternalVaapiFrame {
     type NativeHandle = Surface<()>;
 
     fn fourcc(&self) -> Fourcc {
-        Fourcc::from(b"NV12")
+        match self.rt_format {
+            VA_RT_FORMAT_YUV420_10 => Fourcc::from(b"P010"),
+            VA_RT_FORMAT_YUV420_12 => Fourcc::from(b"P012"),
+            _ => Fourcc::from(b"NV12"),
+        }
     }
 
     fn resolution(&self) -> Resolution {
@@ -36,13 +61,18 @@ impl VideoFrame for InternalVaapiFrame {
     fn get_plane_size(&self) -> Vec<usize> {
         let width = self.resolution.width as usize;
         let height = self.resolution.height as usize;
-        vec![width * height, width * height / 2]
+        let bytes_per_sample = self.bytes_per_sample();
+        vec![
+            width * height * bytes_per_sample,
+            width * height / 2 * bytes_per_sample,
+        ]
     }
 
     fn get_plane_pitch(&self) -> Vec<usize> {
+        let bytes_per_sample = self.bytes_per_sample();
         vec![
-            self.resolution.width as usize,
-            self.resolution.width as usize,
+            self.resolution.width as usize * bytes_per_sample,
+            self.resolution.width as usize * bytes_per_sample,
         ]
     }
 
@@ -55,10 +85,19 @@ impl VideoFrame for InternalVaapiFrame {
     }
 
     fn to_native_handle(&self, display: &Rc<Display>) -> Result<Self::NativeHandle, String> {
+        // Для decoder surface не задаём FourCC вручную: VA-драйвер сам выбирает
+        // внутренний layout поверхности, а NV12 мы запрашиваем позже на readback.
+        debug!(
+            width = self.resolution.width,
+            height = self.resolution.height,
+            rt_format = self.rt_format,
+            "Creating internal VA decoder surface without forced FourCC"
+        );
+
         let mut surfaces = display
             .create_surfaces(
-                VA_RT_FORMAT_YUV420,
-                Some(u32::from(self.fourcc())),
+                self.rt_format,
+                None,
                 self.resolution.width,
                 self.resolution.height,
                 Some(UsageHint::USAGE_HINT_DECODER),

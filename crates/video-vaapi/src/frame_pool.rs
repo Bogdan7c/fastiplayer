@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use cros_codecs::Resolution;
+use cros_codecs::libva::VA_RT_FORMAT_YUV420;
 use cros_codecs::video_frame::VideoFrame;
 
 use crate::internal_vaapi_frame::InternalVaapiFrame;
@@ -12,6 +13,8 @@ use crate::internal_vaapi_frame::InternalVaapiFrame;
 pub struct DmaFramePool {
     /// Текущее разрешение пула (coded resolution).
     resolution: Resolution,
+    /// VA RT format для output surfaces текущего decoder sequence.
+    rt_format: u32,
     /// Свободные кадры, готовые к выделению.
     free_frames: VecDeque<InternalVaapiFrame>,
 }
@@ -27,27 +30,44 @@ impl DmaFramePool {
     /// # Ошибки
     /// Возвращает ошибку если не удалось создать internal frame descriptors.
     pub fn new(width: u32, height: u32, count: usize) -> anyhow::Result<Self> {
-        Self::new_for_resolution(width, height, count)
+        Self::new_with_rt_format(width, height, count, VA_RT_FORMAT_YUV420)
+    }
+
+    /// Создаёт новый пул с явным VA RT format для output surfaces.
+    pub fn new_with_rt_format(
+        width: u32,
+        height: u32,
+        count: usize,
+        rt_format: u32,
+    ) -> anyhow::Result<Self> {
+        Self::new_for_resolution(width, height, count, rt_format)
     }
 
     /// Создаёт новый пул для заданного разрешения.
-    fn new_for_resolution(width: u32, height: u32, count: usize) -> anyhow::Result<Self> {
+    fn new_for_resolution(
+        width: u32,
+        height: u32,
+        count: usize,
+        rt_format: u32,
+    ) -> anyhow::Result<Self> {
         let resolution = Resolution::from((width, height));
         let mut free_frames = VecDeque::with_capacity(count);
 
         for i in 0..count {
-            free_frames.push_back(Self::allocate_frame(resolution, i)?);
+            free_frames.push_back(Self::allocate_frame(resolution, rt_format, i)?);
         }
 
         tracing::info!(
             width = width,
             height = height,
             count = count,
+            rt_format = rt_format,
             "DmaFramePool created for internal VA surfaces"
         );
 
         Ok(Self {
             resolution,
+            rt_format,
             free_frames,
         })
     }
@@ -55,14 +75,16 @@ impl DmaFramePool {
     /// Создаёт один internal VA output frame descriptor.
     fn allocate_frame(
         resolution: Resolution,
+        rt_format: u32,
         frame_index: usize,
     ) -> anyhow::Result<InternalVaapiFrame> {
         tracing::trace!(
             frame_index,
             ?resolution,
+            rt_format,
             "Internal VA frame descriptor allocated"
         );
-        Ok(InternalVaapiFrame::new(resolution))
+        Ok(InternalVaapiFrame::new(resolution, rt_format))
     }
 
     /// Выделяет свободный кадр из пула.
@@ -88,7 +110,7 @@ impl DmaFramePool {
         }
 
         // Pool exhausted — выделяем новый descriptor с тем же разрешением.
-        Self::allocate_frame(self.resolution, self.free_frames.len()).ok()
+        Self::allocate_frame(self.resolution, self.rt_format, self.free_frames.len()).ok()
     }
 
     /// Возвращает кадр в пул для повторного использования.
@@ -99,11 +121,13 @@ impl DmaFramePool {
     pub fn return_frame(&mut self, frame: InternalVaapiFrame) {
         // Проверяем что разрешение кадра совпадает с текущим разрешением пула.
         // После FormatChanged старые кадры могут вернуться с неправильным разрешением.
-        if frame.resolution() != self.resolution {
+        if frame.resolution() != self.resolution || frame.rt_format() != self.rt_format {
             tracing::debug!(
                 frame_res = ?frame.resolution(),
                 pool_res = ?self.resolution,
-                "Dropping frame with mismatched resolution after format change"
+                frame_rt_format = frame.rt_format(),
+                pool_rt_format = self.rt_format,
+                "Dropping frame with mismatched pool parameters after format change"
             );
             return;
         }
@@ -114,9 +138,21 @@ impl DmaFramePool {
     ///
     /// Старые кадры удаляются (drop).
     pub fn resize(&mut self, width: u32, height: u32, count: usize) -> anyhow::Result<()> {
+        self.resize_with_rt_format(width, height, count, self.rt_format)
+    }
+
+    /// Пересоздаёт пул для нового разрешения и нового VA RT format.
+    pub fn resize_with_rt_format(
+        &mut self,
+        width: u32,
+        height: u32,
+        count: usize,
+        rt_format: u32,
+    ) -> anyhow::Result<()> {
         self.free_frames.clear();
-        let new_pool = Self::new_for_resolution(width, height, count)?;
+        let new_pool = Self::new_for_resolution(width, height, count, rt_format)?;
         self.resolution = new_pool.resolution;
+        self.rt_format = new_pool.rt_format;
         self.free_frames = new_pool.free_frames;
         Ok(())
     }

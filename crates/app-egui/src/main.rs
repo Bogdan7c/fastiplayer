@@ -20,12 +20,13 @@
 mod render;
 mod state;
 mod telemetry;
+mod youtube;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use tracing::{debug, info, instrument, trace};
+use tracing::{debug, info, instrument, trace, warn};
 use winit::{
     application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
     event_loop::ActiveEventLoop, window::Window,
@@ -35,6 +36,21 @@ use crate::render::Renderer;
 use crate::state::AppState;
 use crate::telemetry::Telemetry;
 use video_core::FrameAction;
+
+/// Media, которое нужно автоматически открыть после создания окна.
+enum InitialMedia {
+    /// Локальный файл.
+    File(PathBuf),
+
+    /// Уже открытый streaming demuxer.
+    Streaming {
+        /// Описание stream для логов/UI.
+        label: String,
+
+        /// Demuxer, читающий из HTTP-backed потоков.
+        demuxer: Box<dyn webm_demux::Demuxer>,
+    },
+}
 
 /// Минимальная длительность без движения audio clock, после которой считаем звук stalled.
 ///
@@ -51,6 +67,13 @@ const MAX_DEMUX_PACKETS_PER_REDRAW: usize = 6;
 ///
 /// 12 кадров для 25-30 FPS дают примерно 400-480ms буфера и не исчерпывают texture pool.
 const MAX_VIDEO_PRESENT_QUEUE: usize = 12;
+
+/// Максимум сырых video packets, которые можно держать между demuxer и decoder thread.
+///
+/// Этот лимит важен для pause/resume: demuxer не должен уходить далеко вперёд, пока
+/// decode-ahead guard ждёт audio clock. Иначе после resume следующий video packet будет
+/// слишком далеко от audio clock и видео не сможет продолжить декодирование.
+const MAX_PENDING_VIDEO_PACKETS: usize = 8;
 
 /// Максимум video packets, которые render thread отправляет decoder thread за один redraw.
 ///
@@ -86,21 +109,25 @@ struct App {
     /// Общая телеметрия.
     telemetry: Arc<Telemetry>,
 
-    /// Путь к файлу, переданный через CLI, для автозагрузки при старте.
-    initial_file: Option<PathBuf>,
+    /// Media, переданное через CLI, для автозагрузки при старте.
+    initial_media: Option<InitialMedia>,
+
+    /// Сообщение об ошибке, которое нужно показать после создания UI.
+    initial_error: Option<String>,
 }
 
 impl App {
     /// Создаёт пустое приложение.
     ///
     /// Ресурсы инициализируются в Resumed, когда окно готово.
-    fn new(initial_file: Option<PathBuf>) -> Self {
+    fn new(initial_media: Option<InitialMedia>, initial_error: Option<String>) -> Self {
         Self {
             window: None,
             renderer: None,
             app_state: None,
             telemetry: Arc::new(Telemetry::new()),
-            initial_file,
+            initial_media,
+            initial_error,
         }
     }
 
@@ -132,9 +159,22 @@ impl App {
             &renderer.gpu.queue,
         );
 
-        if let Some(ref path) = self.initial_file {
-            info!(path = %path.display(), "Автозагрузка файла из CLI");
-            app_state.load_file(path);
+        if let Some(error) = self.initial_error.take() {
+            app_state.error_message = Some(error);
+        }
+
+        if let Some(initial_media) = self.initial_media.take() {
+            match initial_media {
+                InitialMedia::File(path) => {
+                    info!(path = %path.display(), "Автозагрузка файла из CLI");
+                    app_state.load_file(&path);
+                }
+                InitialMedia::Streaming { label, demuxer } => {
+                    info!(source = %label, "Автозагрузка streaming media из CLI");
+                    app_state.load_demuxer(label, demuxer);
+                }
+            }
+
             if app_state.demuxer.is_some() {
                 app_state.toggle_playback();
             }
@@ -150,7 +190,7 @@ impl App {
         if let Some(app_state) = &self.app_state
             && let Some(path) = &app_state.file_path
         {
-            self.initial_file = Some(path.clone());
+            self.initial_media = Some(InitialMedia::File(path.clone()));
         }
         self.app_state = None;
         self.renderer = None;
@@ -294,11 +334,26 @@ fn can_send_video_packet_to_decoder(app_state: &AppState, packet_pts: std::time:
     packet_lead <= MAX_VIDEO_DECODE_AHEAD
 }
 
+/// Проверяет, можно ли читать следующий packet из demuxer.
+fn can_read_next_demux_packet(app_state: &AppState) -> bool {
+    // Если очередь сырых video packets заполнена, demuxer должен подождать decoder.
+    if app_state.pending_video_packets.len() >= MAX_PENDING_VIDEO_PACKETS {
+        return false;
+    }
+
+    // Если presentation queue заполнена, чтение новых packets только увеличит задержку.
+    if app_state.video_frame_queue.len() >= MAX_VIDEO_PRESENT_QUEUE {
+        return false;
+    }
+
+    true
+}
+
 /// Забирает готовые кадры из decoder thread и кладёт их в presentation queue.
 fn drain_decoded_video_frames(app_state: &mut AppState, telemetry: &Telemetry) {
     if let Some(ref thread) = app_state.video_decoder_thread {
         while let Some(frame) = thread.try_recv_frame() {
-            tracing::info!(
+            tracing::debug!(
                 pts_ms = frame.pts.as_millis(),
                 width = frame.width,
                 height = frame.height,
@@ -415,7 +470,6 @@ fn process_pending_video_packets(app_state: &mut AppState, telemetry: &Telemetry
 
     // 2. В пользовательской pause нельзя менять present frame и нельзя отправлять новые packets.
     if !playback_can_present {
-        app_state.pending_video_packets.clear();
         return;
     }
 
@@ -500,7 +554,7 @@ fn process_pending_video_packets(app_state: &mut AppState, telemetry: &Telemetry
             action,
             video_core::FrameAction::Present | video_core::FrameAction::Drop
         ) {
-            tracing::info!(
+            tracing::debug!(
                 pts_ms = frame.pts.as_millis(),
                 audio_ms = audio_now.as_millis(),
                 diff_ms = diff_ms,
@@ -569,9 +623,25 @@ fn render_frame(
     // При EOF переходим в Paused, но НЕ очищаем очередь кадров —
     // A/V sync должен успеть отобразить оставшиеся decoded frames.
     if app_state.player_state == crate::state::PlayerState::Playing {
-        if let Some(ref mut demuxer) = app_state.demuxer {
+        if app_state.demuxer.is_some() {
             for _ in 0..MAX_DEMUX_PACKETS_PER_REDRAW {
-                match demuxer.next_packet() {
+                if !can_read_next_demux_packet(app_state) {
+                    trace!(
+                        pending_video_packets = app_state.pending_video_packets.len(),
+                        queued_video_frames = app_state.video_frame_queue.len(),
+                        "Demux backpressure: waiting for decoder/presentation"
+                    );
+                    break;
+                }
+
+                let packet_result = {
+                    let Some(demuxer) = app_state.demuxer.as_mut() else {
+                        break;
+                    };
+                    demuxer.next_packet()
+                };
+
+                match packet_result {
                     Ok(Some(packet)) => {
                         telemetry.record_packet(packet.kind, packet.pts);
 
@@ -648,14 +718,14 @@ fn render_frame(
     let (video_y_view, video_uv_view): (Option<wgpu::TextureView>, Option<wgpu::TextureView>) = {
         if let Some(ref thread) = app_state.video_decoder_thread {
             if let Some(ref frame) = app_state.present_video_frame {
-                info!(
+                tracing::trace!(
                     handle_id = frame.texture_handle.0,
                     pts_ms = frame.pts.as_millis(),
                     "Getting texture views for present frame"
                 );
                 match thread.get_views(frame.texture_handle) {
                     Some((y_view, uv_view)) => {
-                        info!("Texture views acquired — WILL render NV12 video");
+                        trace!("Texture views acquired — WILL render NV12 video");
                         (Some(y_view), Some(uv_view))
                     }
                     None => {
@@ -724,13 +794,52 @@ fn main() -> Result<()> {
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
 
     // Создаём и запускаем приложение
-    let initial_file = std::env::args().nth(1).map(PathBuf::from);
-    if let Some(ref path) = initial_file {
+    let (initial_media, initial_error) = resolve_initial_media_from_cli();
+    if let Some(InitialMedia::File(path)) = &initial_media {
         info!(path = %path.display(), "CLI аргумент: файл для воспроизведения");
     }
-    let mut app = App::new(initial_file);
+    let mut app = App::new(initial_media, initial_error);
     event_loop.run_app(&mut app)?;
 
     info!("Приложение завершено");
     Ok(())
+}
+
+/// Подготавливает стартовый media-файл из CLI-аргумента.
+///
+/// Локальный путь возвращается как файл.
+/// HTTP URL открывается через streaming adapter.
+fn resolve_initial_media_from_cli() -> (Option<InitialMedia>, Option<String>) {
+    // Берём только первый пользовательский аргумент, чтобы не вводить неполный CLI parser.
+    let Some(argument) = std::env::args().nth(1) else {
+        return (None, None);
+    };
+
+    // URL обрабатываем отдельно: текущий demuxer умеет только локальные файлы.
+    if youtube::is_probably_url(&argument) {
+        info!(url = %argument, "CLI аргумент распознан как YouTube/web URL");
+
+        return match youtube::open_streaming_media(&argument) {
+            Ok(streaming_media) => {
+                info!(
+                    description = %streaming_media.description,
+                    "YouTube media подготовлен для streaming playback"
+                );
+                (
+                    Some(InitialMedia::Streaming {
+                        label: streaming_media.description,
+                        demuxer: streaming_media.demuxer,
+                    }),
+                    None,
+                )
+            }
+            Err(error) => {
+                warn!(error = %error, "Не удалось подготовить YouTube URL");
+                (None, Some(format!("YouTube error: {error}")))
+            }
+        };
+    }
+
+    // Всё остальное считаем локальным путём, как работало раньше.
+    (Some(InitialMedia::File(PathBuf::from(argument))), None)
 }

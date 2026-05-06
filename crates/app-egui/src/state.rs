@@ -200,8 +200,9 @@ impl AppState {
 
         // При pause очищаем только будущие packets/frames, но оставляем текущий кадр на экране.
         if self.player_state == PlayerState::Paused {
-            self.pending_audio_packets.clear();
-            self.pending_video_packets.clear();
+            // Сырые pending packets сохраняем для resume.
+            // Их уже прочитал demuxer, поэтому очистка сдвинула бы demuxer вперёд
+            // относительно audio clock и могла бы навсегда заблокировать video decode-ahead.
             self.clear_queued_video_frames();
         }
 
@@ -645,6 +646,41 @@ impl AppState {
                 self.error_message = Some(format!("Ошибка: {}", e));
             }
         }
+    }
+
+    /// Загружает уже открытый demuxer.
+    ///
+    /// Используется для streaming sources, где media не существует как готовый локальный файл.
+    pub fn load_demuxer(&mut self, label: String, demuxer: Box<dyn Demuxer>) {
+        self.reset_media_state();
+
+        let tracks = demuxer.tracks();
+        let duration = demuxer.duration();
+
+        info!(
+            source = %label,
+            tracks = tracks.len(),
+            duration = ?duration,
+            "Streaming demuxer загружен"
+        );
+
+        // Ищем audio track и инициализируем audio pipeline.
+        self.init_audio_pipeline(tracks);
+
+        // Ищем VP9 video track.
+        let video_track = tracks
+            .iter()
+            .find(|track| track.kind == webm_demux::TrackKind::Video && track.codec_id == "V_VP9");
+        if let Some(track) = video_track {
+            self.video_track_id = Some(track.id);
+        } else {
+            info!("Поддерживаемый VP9 video track не найден в streaming demuxer");
+        }
+
+        self.demuxer = Some(demuxer);
+        self.file_path = None;
+        self.error_message = None;
+        self.duration = duration.map(|value| value.as_secs_f64()).unwrap_or(0.0);
     }
 
     /// Полностью сбрасывает состояние текущего media-файла.

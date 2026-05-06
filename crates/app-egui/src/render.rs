@@ -26,6 +26,27 @@ use crate::telemetry::Telemetry;
 // VideoRenderer trait not used directly — we use Nv12VideoRenderer concrete type.
 use video_vulkan::UnifiedVulkanInstance;
 
+/// Выбирает формат swapchain для SDR-видео.
+fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> wgpu::TextureFormat {
+    // Для текущего NV12 renderer предпочитаем обычный 8-bit формат.
+    const PREFERRED_FORMATS: &[wgpu::TextureFormat] = &[
+        wgpu::TextureFormat::Bgra8Unorm,
+        wgpu::TextureFormat::Rgba8Unorm,
+        wgpu::TextureFormat::Bgra8UnormSrgb,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    ];
+
+    // Сначала ищем явно поддерживаемый 8-bit формат.
+    for preferred_format in PREFERRED_FORMATS {
+        if formats.contains(preferred_format) {
+            return *preferred_format;
+        }
+    }
+
+    // Если 8-bit форматов нет, используем первый формат из capabilities.
+    formats[0]
+}
+
 /// GPU ресурсы: device, queue, surface и их конфигурация.
 ///
 /// Владеет всеми wgpu объектами, необходимыми для рендеринга.
@@ -106,13 +127,8 @@ impl GpuContext {
 
         let surface_caps = surface.get_capabilities(&adapter);
 
-        // Предпочитаем non-sRGB формат для видео (цвета управляем сами)
-        let surface_format = surface_caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| !f.is_srgb())
-            .unwrap_or(surface_caps.formats[0]);
+        // Предпочитаем 8-bit формат: текущий SDR/NV12 shader пишет обычный RGBA.
+        let surface_format = choose_surface_format(&surface_caps.formats);
 
         let present_mode = if surface_caps
             .present_modes

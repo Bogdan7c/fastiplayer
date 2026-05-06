@@ -7,7 +7,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use symphonia::core::codecs::{CODEC_TYPE_OPUS, CODEC_TYPE_VORBIS};
 use symphonia::core::formats::{FormatOptions, FormatReader, Packet, Track};
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::core::units::TimeBase;
@@ -55,7 +55,39 @@ impl SymphoniaDemuxer {
             .format(&hint, mss, &fmt_opts, &MetadataOptions::default())
             .map_err(|e| DemuxError::UnsupportedFormat(format!("{}", e)))?;
 
-        let format = probe_result.format;
+        Self::from_format_reader(probe_result.format, &path.display().to_string())
+    }
+
+    /// Открывает WebM/MKV из потокового reader-а без seek.
+    pub fn from_stream<R>(reader: R, extension_hint: &str, label: &str) -> Result<Self, DemuxError>
+    where
+        R: std::io::Read + Send + Sync + 'static,
+    {
+        // ReadOnlySource объявляет источник как unseekable для Symphonia.
+        let media_source = ReadOnlySource::new(reader);
+        let media_source_stream =
+            MediaSourceStream::new(Box::new(media_source), Default::default());
+
+        // Hint нужен probe-еру, потому что URL/файлового расширения у streaming source нет.
+        let mut hint = Hint::new();
+        hint.with_extension(extension_hint);
+
+        let format_options = FormatOptions::default();
+
+        let probe_result = symphonia::default::get_probe()
+            .format(
+                &hint,
+                media_source_stream,
+                &format_options,
+                &MetadataOptions::default(),
+            )
+            .map_err(|error| DemuxError::UnsupportedFormat(format!("{}", error)))?;
+
+        Self::from_format_reader(probe_result.format, label)
+    }
+
+    /// Собирает metadata и track map из готового Symphonia format reader.
+    fn from_format_reader(format: Box<dyn FormatReader>, label: &str) -> Result<Self, DemuxError> {
         let mut tracks = Vec::new();
         let mut track_map = HashMap::new();
 
@@ -91,13 +123,13 @@ impl SymphoniaDemuxer {
             });
         }
 
-        let global_duration = tracks.iter().filter_map(|t| t.duration).max();
+        let global_duration = tracks.iter().filter_map(|track| track.duration).max();
 
         info!(
-            path = %path.display(),
+            source = %label,
             tracks = tracks.len(),
             duration = ?global_duration,
-            "WebM файл открыт"
+            "WebM source открыт"
         );
 
         Ok(Self {

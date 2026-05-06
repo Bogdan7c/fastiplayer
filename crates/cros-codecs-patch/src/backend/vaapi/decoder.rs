@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use anyhow::anyhow;
 use anyhow::Context as AnyhowContext;
@@ -37,6 +38,58 @@ pub(crate) fn va_surface_id<V: VideoFrame>(
         None => libva::VA_INVALID_SURFACE,
         Some(handle) => handle.borrow().surface().id(),
     }
+}
+
+/// Maps VA RT format selected from codec headers to the decoded frame format
+/// expected from output surfaces.
+fn decoded_format_from_rt_format(rt_format: u32) -> anyhow::Result<DecodedFormat> {
+    match rt_format {
+        libva::VA_RT_FORMAT_YUV420 => Ok(DecodedFormat::NV12),
+        libva::VA_RT_FORMAT_YUV420_10 => Ok(DecodedFormat::I010),
+        libva::VA_RT_FORMAT_YUV420_12 => Ok(DecodedFormat::I012),
+        libva::VA_RT_FORMAT_YUV422 => Ok(DecodedFormat::I422),
+        libva::VA_RT_FORMAT_YUV422_10 => Ok(DecodedFormat::I210),
+        libva::VA_RT_FORMAT_YUV422_12 => Ok(DecodedFormat::I212),
+        libva::VA_RT_FORMAT_YUV444 => Ok(DecodedFormat::I444),
+        libva::VA_RT_FORMAT_YUV444_10 => Ok(DecodedFormat::I410),
+        libva::VA_RT_FORMAT_YUV444_12 => Ok(DecodedFormat::I412),
+        other => Err(anyhow!("Unsupported VA RT format: {:#x}", other)),
+    }
+}
+
+/// Parses a boolean environment flag used by VA-API diagnostics.
+fn env_flag_enabled(env_name: &'static str) -> bool {
+    std::env::var(env_name)
+        .ok()
+        .as_deref()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Returns true when readback should try `vaDeriveImage` before stable `vaGetImage`.
+///
+/// `vaDeriveImage` can expose driver-native/tiled memory. On Intel UHD 620
+/// it produced black/invalid frames for VP9, while `vaGetImage` returned
+/// correct NV12 pixels, so the stable path is the default.
+fn should_try_derived_image_readback() -> bool {
+    static TRY_DERIVED_IMAGE: OnceLock<bool> = OnceLock::new();
+    *TRY_DERIVED_IMAGE.get_or_init(|| {
+        std::env::var("VIDEOPLAYER_TRY_VA_DERIVE_IMAGE")
+            .ok()
+            .as_deref()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+    })
 }
 
 impl<V: VideoFrame> DecodedHandleTrait for DecodedHandle<V> {
@@ -264,33 +317,31 @@ impl<V: VideoFrame> VaapiDecodedHandle<V> {
         Ok(plane)
     }
 
-    /// Copies decoded pixels from the VA surface into CPU-owned NV12 plane buffers.
-    fn create_nv12_image(&self) -> anyhow::Result<DecodedNv12Image> {
-        let surface = self.surface();
-        let image_format = self
-            .display
-            .query_image_formats()
-            .context("while querying VA image formats")?
-            .into_iter()
-            .find(|format| format.fourcc == libva::VA_FOURCC_NV12)
-            .ok_or_else(|| anyhow!("VA driver does not expose NV12 image format"))?;
-
-        let coded_resolution = surface.size();
-        let image = Image::create_from(
-            surface,
-            image_format,
-            coded_resolution,
-            coded_resolution,
-        )
-        .context("while creating NV12 VA image from decoded surface")?;
+    fn copy_nv12_from_image(
+        image: &Image<'_>,
+        width: usize,
+        height: usize,
+    ) -> anyhow::Result<DecodedNv12Image> {
         let va_image = *image.image();
-        let image_data = image.as_ref();
-        let width = coded_resolution.0 as usize;
-        let height = coded_resolution.1 as usize;
+
+        if va_image.format.fourcc != libva::VA_FOURCC_NV12 {
+            return Err(anyhow!(
+                "VA image format is not NV12: fourcc={:#x}",
+                va_image.format.fourcc
+            ));
+        }
+        if va_image.num_planes < 2 {
+            return Err(anyhow!(
+                "VA image has fewer than 2 planes: num_planes={}",
+                va_image.num_planes
+            ));
+        }
+
         let y_stride = va_image.pitches[0] as usize;
         let uv_stride = va_image.pitches[1] as usize;
         let y_offset = va_image.offsets[0] as usize;
         let uv_offset = va_image.offsets[1] as usize;
+        let image_data = image.as_ref();
 
         if y_stride < width {
             return Err(anyhow!(
@@ -320,6 +371,56 @@ impl<V: VideoFrame> VaapiDecodedHandle<V> {
             y_stride: y_stride as u32,
             uv_stride: uv_stride as u32,
         })
+    }
+
+    /// Copies decoded pixels from the VA surface into CPU-owned NV12 plane buffers.
+    fn create_nv12_image(&self) -> anyhow::Result<DecodedNv12Image> {
+        let surface = self.surface();
+        let coded_resolution = surface.size();
+        let width = coded_resolution.0 as usize;
+        let height = coded_resolution.1 as usize;
+
+        if should_try_derived_image_readback() {
+            match Image::derive_from(surface, coded_resolution) {
+                Ok(derived_image) => {
+                    log::debug!(
+                        "VA readback using derived image: fourcc={:#x} num_planes={}",
+                        derived_image.image().format.fourcc,
+                        derived_image.image().num_planes
+                    );
+                    match Self::copy_nv12_from_image(&derived_image, width, height) {
+                        Ok(decoded_image) => return Ok(decoded_image),
+                        Err(error) => {
+                            log::debug!(
+                                "Derived VA image is not usable as NV12, falling back to vaGetImage: {}",
+                                error
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    log::debug!(
+                        "vaDeriveImage failed, falling back to vaGetImage: {:?}",
+                        error
+                    );
+                }
+            }
+        } else if env_flag_enabled("VIDEOPLAYER_FORCE_VA_GET_IMAGE") {
+            log::debug!("VA readback uses stable vaGetImage path");
+        }
+
+        let image_format = self
+            .display
+            .query_image_formats()
+            .context("while querying VA image formats")?
+            .into_iter()
+            .find(|format| format.fourcc == libva::VA_FOURCC_NV12)
+            .ok_or_else(|| anyhow!("VA driver does not expose NV12 image format"))?;
+
+        let image = Image::create_from(surface, image_format, coded_resolution, coded_resolution)
+            .context("while creating NV12 VA image from decoded surface")?;
+
+        Self::copy_nv12_from_image(&image, width, height)
     }
 }
 
@@ -380,13 +481,18 @@ impl<V: VideoFrame> VaapiBackend<V> {
         self.stream_info.min_num_frames = stream_params.min_num_surfaces();
 
         // TODO: Handle context re-use
-        // TODO: We should obtain RT_FORMAT from stream_info
+        // VAConfig должен соответствовать текущему codec sequence header:
+        // VP9 profile0 использует 8-bit YUV420, а HDR/profile2 требует 10/12-bit RT format.
+        let rt_format =
+            stream_params.rt_format().map_err(|_| anyhow!("Could not get VA RT format!"))?;
+        self.stream_info.format = decoded_format_from_rt_format(rt_format)?;
+
         let config = self
             .display
             .create_config(
                 vec![libva::VAConfigAttrib {
                     type_: libva::VAConfigAttribType::VAConfigAttribRTFormat,
-                    value: libva::VA_RT_FORMAT_YUV420,
+                    value: rt_format,
                 }],
                 stream_params.va_profile().map_err(|_| anyhow!("Could not get VAProfile!"))?,
                 libva::VAEntrypoint::VAEntrypointVLD,
