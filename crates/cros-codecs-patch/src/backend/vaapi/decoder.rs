@@ -15,7 +15,9 @@ use libva::{
     SurfaceMemoryDescriptor, VaError,
 };
 
-use crate::decoder::DecodedNv12Image;
+use crate::decoder::{
+    DecodedDmaBufImage, DecodedDmaBufLayer, DecodedDmaBufObject, DecodedNv12Image,
+};
 use crate::decoder::stateless::StatelessBackendResult;
 use crate::decoder::stateless::StatelessCodec;
 use crate::decoder::stateless::StatelessDecoderBackend;
@@ -127,6 +129,11 @@ impl<V: VideoFrame> DecodedHandleTrait for DecodedHandle<V> {
             .sync()
             .context("while syncing picture before VA image readback")?;
         borrowed_handle.create_nv12_image().map(Some)
+    }
+
+    fn dma_buf_image(&self) -> anyhow::Result<Option<DecodedDmaBufImage>> {
+        let borrowed_handle = self.borrow();
+        borrowed_handle.export_dma_buf_image().map(Some)
     }
 }
 
@@ -421,6 +428,45 @@ impl<V: VideoFrame> VaapiDecodedHandle<V> {
             .context("while creating NV12 VA image from decoded surface")?;
 
         Self::copy_nv12_from_image(&image, width, height)
+    }
+
+    /// Exports the decoded VA surface as DRM PRIME/DMA-BUF.
+    fn export_dma_buf_image(&self) -> anyhow::Result<DecodedDmaBufImage> {
+        let exported_surface = self
+            .surface()
+            .export_prime()
+            .context("while exporting decoded VA surface as DRM PRIME")?;
+
+        let objects = exported_surface
+            .objects
+            .into_iter()
+            .map(|object| DecodedDmaBufObject {
+                fd: object.fd,
+                size: object.size,
+                drm_format_modifier: object.drm_format_modifier,
+            })
+            .collect();
+
+        let layers = exported_surface
+            .layers
+            .into_iter()
+            .map(|layer| DecodedDmaBufLayer {
+                drm_format: layer.drm_format,
+                num_planes: layer.num_planes,
+                object_index: layer.object_index,
+                offset: layer.offset,
+                pitch: layer.pitch,
+            })
+            .collect();
+
+        Ok(DecodedDmaBufImage {
+            surface_id: u64::from(self.surface().id()),
+            fourcc: exported_surface.fourcc,
+            width: exported_surface.width,
+            height: exported_surface.height,
+            objects,
+            layers,
+        })
     }
 }
 

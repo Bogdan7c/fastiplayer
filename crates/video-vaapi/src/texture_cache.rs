@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, ensure};
-use cros_codecs::decoder::DecodedHandle;
+use cros_codecs::decoder::{DecodedDmaBufImage, DecodedHandle};
 use cros_codecs::video_frame::VideoFrame;
 use cros_codecs::video_frame::generic_dma_video_frame::GenericDmaVideoFrame;
 use video_core::FrameTextureHandle;
@@ -23,6 +23,12 @@ const PLANE_SAMPLE_LOG_ENV_VAR: &str = "VIDEOPLAYER_LOG_NV12_SAMPLES";
 
 /// Переменная окружения, которая сохраняет первый NV12 кадр в файлы `/tmp`.
 const FRAME_DUMP_ENV_VAR: &str = "VIDEOPLAYER_DUMP_FIRST_NV12_FRAME";
+
+/// Переменная окружения для рискованного кеша imported DMA-BUF textures.
+///
+/// По умолчанию выключено: persistent external image требует явных Vulkan
+/// layout/ownership transitions между VA-API writer и Vulkan sampler.
+const ZERO_COPY_IMPORT_CACHE_ENV_VAR: &str = "VIDEOPLAYER_ZERO_COPY_CACHE_IMPORTS";
 
 /// Возвращает `true`, если включена диагностика содержимого NV12-плоскостей.
 fn should_log_plane_samples() -> bool {
@@ -47,6 +53,18 @@ fn is_enabled_env_value(value: &str) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+/// Возвращает `true`, если включён экспериментальный кеш zero-copy imports.
+fn should_cache_zero_copy_imports() -> bool {
+    static SHOULD_CACHE: OnceLock<bool> = OnceLock::new();
+    *SHOULD_CACHE.get_or_init(|| {
+        std::env::var(ZERO_COPY_IMPORT_CACHE_ENV_VAR)
+            .ok()
+            .as_deref()
+            .map(is_enabled_env_value)
+            .unwrap_or(false)
+    })
 }
 
 /// Возвращает директорию, куда нужно сохранить dump первого NV12 кадра.
@@ -372,15 +390,63 @@ fn log_plane_samples(y_plane: &[u8], uv_plane: Option<&[u8]>) {
     }
 }
 
-/// Один слот пула, содержащий пару wgpu-текстур (Y + UV) для одного кадра.
+/// GPU-storage, на котором построены Y/UV views одного кадра.
+enum TextureSlotStorage {
+    /// Обычный CPU-upload путь: две независимые текстуры под Y и UV planes.
+    SeparatePlanes {
+        /// wgpu-текстура для Y-плоскости (формат R8Unorm, 1 байт на пиксель).
+        y_texture: wgpu::Texture,
+        /// wgpu-текстура для UV-плоскости (формат Rg8Unorm, 2 байта на пиксель).
+        uv_texture: wgpu::Texture,
+    },
+    /// Zero-copy путь: один multi-planar NV12 texture, экспортированный из VA surface.
+    ImportedNv12 {
+        /// Владелец imported VkImage/VkDeviceMemory через wgpu texture wrapper.
+        _texture: wgpu::Texture,
+    },
+}
+
+impl TextureSlotStorage {
+    /// Возвращает отдельные Y/UV textures для CPU upload.
+    ///
+    /// Imported NV12 slots не поддерживают `Queue::write_texture()`, потому что
+    /// данные уже лежат в VA-owned DMA-BUF и видны через plane views.
+    fn separate_textures(&self) -> anyhow::Result<(&wgpu::Texture, &wgpu::Texture)> {
+        match self {
+            Self::SeparatePlanes {
+                y_texture,
+                uv_texture,
+            } => Ok((y_texture, uv_texture)),
+            Self::ImportedNv12 { .. } => Err(anyhow::anyhow!(
+                "imported NV12 slot cannot be used for CPU upload"
+            )),
+        }
+    }
+
+    /// Просит wgpu как можно раньше освободить native texture storage.
+    fn destroy(&self) {
+        match self {
+            Self::SeparatePlanes {
+                y_texture,
+                uv_texture,
+            } => {
+                y_texture.destroy();
+                uv_texture.destroy();
+            }
+            Self::ImportedNv12 { _texture } => {
+                _texture.destroy();
+            }
+        }
+    }
+}
+
+/// Один слот пула, содержащий GPU-storage и пару Y/UV views для одного кадра.
 ///
 /// Каждый слот привязан к конкретному разрешению. При смене разрешения
 /// все слоты инвалидируются через [`WgpuTexturePool::invalidate_all`].
 struct TextureSlot {
-    /// wgpu-текстура для Y-плоскости (формат R8Unorm, 1 байт на пиксель).
-    y_texture: wgpu::Texture,
-    /// wgpu-текстура для UV-плоскости (формат Rg8Unorm, 2 байта на пиксель).
-    uv_texture: wgpu::Texture,
+    /// Владение GPU texture/storage для кадра.
+    storage: TextureSlotStorage,
     /// Представление (view) Y-текстуры для биндинга в шейдер.
     y_view: wgpu::TextureView,
     /// Представление (view) UV-текстуры для биндинга в шейдер.
@@ -395,6 +461,39 @@ struct TextureSlot {
     /// `true` если текстуры созданы через zero-copy DMA-BUF import.
     /// Такие слоты не переиспользуются — при release удаляются из пула.
     is_imported: bool,
+}
+
+/// Released imported slot, который ещё нельзя дропать немедленно.
+pub struct RetiredImportedSlot {
+    /// Handle кадра; по нему decoder thread найдёт VA guard и вернёт surface в pool.
+    pub frame_handle: FrameTextureHandle,
+    /// Сам slot держит imported wgpu texture и тем самым raw VkImage/VkDeviceMemory.
+    _slot: TextureSlot,
+}
+
+impl Drop for RetiredImportedSlot {
+    fn drop(&mut self) {
+        self._slot.storage.destroy();
+    }
+}
+
+/// Cached imported texture for one VA surface.
+///
+/// VA decoder reuses a small pool of output surfaces. A persistent imported
+/// texture can therefore be reused every time the same `VASurfaceID` appears
+/// again, instead of creating a new Vulkan image and importing external memory
+/// for every decoded frame.
+struct CachedImportedNv12Texture {
+    /// Persistent imported NV12 texture for this VA surface.
+    texture: wgpu::Texture,
+    /// Persistent luma view.
+    y_view: wgpu::TextureView,
+    /// Persistent chroma view.
+    uv_view: wgpu::TextureView,
+    /// Cached coded width.
+    width: u32,
+    /// Cached coded height.
+    height: u32,
 }
 
 /// Пул пар wgpu-текстур (Y + UV), индексируемых через [`FrameTextureHandle`].
@@ -414,6 +513,8 @@ pub struct WgpuTexturePool {
     dma_buf_importer: Option<crate::dma_buf_import::DmaBufImporter>,
     /// Слоты с текстурами. Индекс в векторе — внутренний slot_index.
     slots: Vec<TextureSlot>,
+    /// Persistent zero-copy imports keyed by backend surface id.
+    imported_nv12_cache: HashMap<u64, CachedImportedNv12Texture>,
     /// Отображение handle id -> индекс слота в `slots`.
     ///
     /// Позволяет за O(1) находить слот по [`FrameTextureHandle`].
@@ -436,6 +537,7 @@ impl WgpuTexturePool {
             device,
             dma_buf_importer,
             slots: Vec::with_capacity(MAX_TEXTURE_SLOTS),
+            imported_nv12_cache: HashMap::new(),
             handle_to_slot: HashMap::new(),
             next_handle: 0,
         }
@@ -444,6 +546,15 @@ impl WgpuTexturePool {
     /// Возвращает `true`, если пул может попробовать zero-copy DMA-BUF import.
     pub fn can_import_dma_buf(&self) -> bool {
         self.dma_buf_importer.is_some()
+    }
+
+    /// Возвращает `true`, если handle указывает на zero-copy imported slot.
+    pub fn is_imported_handle(&self, handle: FrameTextureHandle) -> bool {
+        self.handle_to_slot
+            .get(&handle.0)
+            .and_then(|slot_index| self.slots.get(*slot_index))
+            .map(|slot| slot.is_imported)
+            .unwrap_or(false)
     }
 
     /// Загружает декодированный кадр в свободный слот пула.
@@ -505,12 +616,13 @@ impl WgpuTexturePool {
             let slot_start = std::time::Instant::now();
             let slot_index = self.find_or_create_slot(image.width, image.height)?;
             let slot = &self.slots[slot_index];
+            let (y_texture, uv_texture) = slot.storage.separate_textures()?;
             let slot_elapsed = slot_start.elapsed().as_millis();
 
             let write_y_start = std::time::Instant::now();
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
-                    texture: &slot.y_texture,
+                    texture: y_texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
@@ -532,7 +644,7 @@ impl WgpuTexturePool {
             let write_uv_start = std::time::Instant::now();
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
-                    texture: &slot.uv_texture,
+                    texture: uv_texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
@@ -606,13 +718,14 @@ impl WgpuTexturePool {
         let slot_start = std::time::Instant::now();
         let slot_index = self.find_or_create_slot(width, height)?;
         let slot = &self.slots[slot_index];
+        let (y_texture, uv_texture) = slot.storage.separate_textures()?;
         let slot_elapsed = slot_start.elapsed().as_millis();
 
         // Шаг 4: Загружаем Y-плоскость в текстуру формата R8Unorm.
         let write_y_start = std::time::Instant::now();
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &slot.y_texture,
+                texture: y_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -635,7 +748,7 @@ impl WgpuTexturePool {
         let write_uv_start = std::time::Instant::now();
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &slot.uv_texture,
+                texture: uv_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -713,6 +826,13 @@ impl WgpuTexturePool {
         &mut self,
         handle: &dyn DecodedHandle<Frame = GenericDmaVideoFrame>,
     ) -> anyhow::Result<FrameTextureHandle> {
+        ensure!(
+            self.slots.len() < MAX_TEXTURE_SLOTS,
+            "zero-copy texture slot limit reached before importing GenericDmaVideoFrame: active_slots={}, max_slots={}",
+            self.slots.len(),
+            MAX_TEXTURE_SLOTS
+        );
+
         let frame = handle.video_frame();
         let (y_texture, uv_texture) = self
             .dma_buf_importer
@@ -725,8 +845,10 @@ impl WgpuTexturePool {
 
         let slot_index = self.slots.len();
         self.slots.push(TextureSlot {
-            y_texture,
-            uv_texture,
+            storage: TextureSlotStorage::SeparatePlanes {
+                y_texture,
+                uv_texture,
+            },
             y_view,
             uv_view,
             width: frame.resolution().width,
@@ -742,6 +864,104 @@ impl WgpuTexturePool {
         Ok(FrameTextureHandle(handle_id))
     }
 
+    /// Импортирует DMA-BUF descriptor, экспортированный из decoded VA surface.
+    pub fn import_dma_buf_image(
+        &mut self,
+        image: &DecodedDmaBufImage,
+    ) -> anyhow::Result<FrameTextureHandle> {
+        ensure!(
+            self.slots.len() < MAX_TEXTURE_SLOTS,
+            "zero-copy texture slot limit reached before importing VA surface: active_slots={}, max_slots={}, surface_id={}",
+            self.slots.len(),
+            MAX_TEXTURE_SLOTS,
+            image.surface_id
+        );
+
+        let imported_texture = if should_cache_zero_copy_imports() {
+            self.import_cached_dma_buf_image(image)?
+        } else {
+            self.dma_buf_importer
+                .as_ref()
+                .context("DMA-BUF importer not available")?
+                .import_exported_nv12(image)?
+        };
+
+        let slot_index = self.slots.len();
+        self.slots.push(TextureSlot {
+            storage: TextureSlotStorage::ImportedNv12 {
+                _texture: imported_texture.texture,
+            },
+            y_view: imported_texture.y_view,
+            uv_view: imported_texture.uv_view,
+            width: image.width,
+            height: image.height,
+            in_use: true,
+            is_imported: true,
+        });
+
+        let handle_id = self.next_handle;
+        self.next_handle += 1;
+        self.handle_to_slot.insert(handle_id, slot_index);
+
+        Ok(FrameTextureHandle(handle_id))
+    }
+
+    /// Импортирует DMA-BUF descriptor с экспериментальным кешем по VA surface id.
+    ///
+    /// Кеш выключен по умолчанию, потому что persistent external image требует
+    /// явных Vulkan layout/ownership transitions между повторными VA writes.
+    fn import_cached_dma_buf_image(
+        &mut self,
+        image: &DecodedDmaBufImage,
+    ) -> anyhow::Result<crate::dma_buf_import::ImportedNv12Texture> {
+        if let Some(cached_import) = self.imported_nv12_cache.get(&image.surface_id) {
+            if cached_import.width != image.width || cached_import.height != image.height {
+                anyhow::bail!(
+                    "cached imported VA surface changed size: surface_id={}, cached={}x{}, new={}x{}",
+                    image.surface_id,
+                    cached_import.width,
+                    cached_import.height,
+                    image.width,
+                    image.height
+                );
+            }
+            tracing::trace!(
+                surface_id = image.surface_id,
+                "Reusing cached zero-copy DMA-BUF import"
+            );
+            return Ok(crate::dma_buf_import::ImportedNv12Texture {
+                texture: cached_import.texture.clone(),
+                y_view: cached_import.y_view.clone(),
+                uv_view: cached_import.uv_view.clone(),
+            });
+        }
+
+        let imported_texture = self
+            .dma_buf_importer
+            .as_ref()
+            .context("DMA-BUF importer not available")?
+            .import_exported_nv12(image)?;
+
+        tracing::debug!(
+            surface_id = image.surface_id,
+            cache_len = self.imported_nv12_cache.len() + 1,
+            "Caching zero-copy DMA-BUF import for VA surface"
+        );
+
+        self.imported_nv12_cache.insert(
+            image.surface_id,
+            CachedImportedNv12Texture {
+                texture: imported_texture.texture.clone(),
+                y_view: imported_texture.y_view.clone(),
+                uv_view: imported_texture.uv_view.clone(),
+                width: image.width,
+                height: image.height,
+            },
+        );
+
+        Ok(imported_texture)
+    }
+
     /// Освобождает слот, связанный с данным handle.
     ///
     /// Для обычных слотов (CPU upload): помечает как свободный для reuse.
@@ -750,7 +970,7 @@ impl WgpuTexturePool {
     ///
     /// # Аргументы
     /// * `handle` — [`FrameTextureHandle`] для освобождения.
-    pub fn release_slot(&mut self, handle: FrameTextureHandle) {
+    pub fn release_slot(&mut self, handle: FrameTextureHandle) -> Option<RetiredImportedSlot> {
         tracing::debug!(
             handle_id = handle.0,
             pool_len = self.slots.len(),
@@ -768,12 +988,16 @@ impl WgpuTexturePool {
                 // Удаляем imported slot из пула — textures привязаны к fd.
                 // Используем Vec::remove вместо swap_remove чтобы не портить индексы
                 // других слотов в handle_to_slot.
-                tracing::info!(
+                tracing::debug!(
                     slot_index,
                     pool_len = self.slots.len(),
-                    "Removing imported slot from pool"
+                    "Retiring imported slot until GPU completion"
                 );
-                self.slots.remove(slot_index);
+                let slot = self.slots.remove(slot_index);
+                let retired_slot = RetiredImportedSlot {
+                    frame_handle: handle,
+                    _slot: slot,
+                };
 
                 // Обновляем handle_to_slot: все индексы > slot_index уменьшаем на 1
                 // (элементы сдвинулись влево после remove).
@@ -782,7 +1006,8 @@ impl WgpuTexturePool {
                         *idx -= 1;
                     }
                 }
-                tracing::debug!(slot_index, "Imported slot removed from pool");
+                self.handle_to_slot.remove(&handle.0);
+                return Some(retired_slot);
             } else {
                 // Обычный slot: помечаем как свободный для reuse.
                 if let Some(slot) = self.slots.get_mut(slot_index) {
@@ -798,6 +1023,8 @@ impl WgpuTexturePool {
                 "release_slot: handle not found in map"
             );
         }
+
+        None
     }
 
     /// Сбрасывает все слоты и handle mappings.
@@ -807,6 +1034,7 @@ impl WgpuTexturePool {
     /// память GPU освобождается.
     pub fn invalidate_all(&mut self) {
         self.slots.clear();
+        self.imported_nv12_cache.clear();
         self.handle_to_slot.clear();
         self.next_handle = 0;
     }
@@ -891,8 +1119,10 @@ impl WgpuTexturePool {
         // Шаг 6: Добавляем слот в пул.
         let slot_index = self.slots.len();
         self.slots.push(TextureSlot {
-            y_texture,
-            uv_texture,
+            storage: TextureSlotStorage::SeparatePlanes {
+                y_texture,
+                uv_texture,
+            },
             y_view,
             uv_view,
             width,

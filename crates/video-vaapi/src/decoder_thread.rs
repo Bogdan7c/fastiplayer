@@ -23,6 +23,9 @@ pub enum ThreadMsg {
     /// Декодировать один VP9 packet.
     Packet(DecodePacket),
 
+    /// Освободить decoded handle, удерживаемый zero-copy кадром.
+    ReleaseZeroCopy(video_core::FrameTextureHandle),
+
     /// Сбросить decoder state и подтвердить завершение операции.
     Flush(std::sync::mpsc::Sender<()>),
 }
@@ -41,6 +44,7 @@ pub struct DecodePacket {
 pub struct VideoDecodeThread {
     msg_tx: std::sync::mpsc::Sender<ThreadMsg>,
     frame_rx: std::sync::mpsc::Receiver<DecodedFrame>,
+    queue: Arc<wgpu::Queue>,
     texture_pool: Arc<Mutex<crate::texture_cache::WgpuTexturePool>>,
     backend_name: &'static str,
 }
@@ -85,6 +89,7 @@ impl VideoDecodeThread {
             dma_buf_importer,
         )));
         let texture_pool_for_thread = texture_pool.clone();
+        let queue_for_release_callbacks = queue.clone();
 
         let (msg_tx, msg_rx) = std::sync::mpsc::channel::<ThreadMsg>();
         let (frame_tx, frame_rx) = std::sync::mpsc::channel::<DecodedFrame>();
@@ -114,6 +119,7 @@ impl VideoDecodeThread {
         Ok(Self {
             msg_tx,
             frame_rx,
+            queue: queue_for_release_callbacks,
             texture_pool,
             backend_name: "VA-API VP9",
         })
@@ -134,12 +140,43 @@ impl VideoDecodeThread {
     /// обработать новый Packet ДО Release, создав новый слот вместо reuse.
     pub fn release_frame(&self, handle: video_core::FrameTextureHandle) {
         trace!(handle_id = handle.0, "Releasing texture slot directly");
-        match self.texture_pool.lock() {
-            Ok(mut texture_pool) => texture_pool.release_slot(handle),
+        let retired_slot = match self.texture_pool.lock() {
+            Ok(mut texture_pool) => {
+                let retired_slot = texture_pool.release_slot(handle);
+                if retired_slot.is_some() {
+                    trace!(
+                        handle_id = handle.0,
+                        "Zero-copy frame retired until submitted GPU work completes"
+                    );
+                }
+                retired_slot
+            }
             Err(error) => {
                 tracing::warn!(error = %error, "Texture pool mutex poisoned during release");
+                None
             }
-        }
+        };
+
+        let Some(retired_slot) = retired_slot else {
+            return;
+        };
+
+        let msg_tx = self.msg_tx.clone();
+        self.queue.on_submitted_work_done(move || {
+            let ready_handle = retired_slot.frame_handle;
+            drop(retired_slot);
+            trace!(
+                handle_id = ready_handle.0,
+                "Submitted GPU work completed; releasing zero-copy VA handle"
+            );
+            if let Err(error) = msg_tx.send(ThreadMsg::ReleaseZeroCopy(ready_handle)) {
+                tracing::warn!(
+                    error = %error,
+                    handle_id = ready_handle.0,
+                    "Failed to send zero-copy release to decoder thread"
+                );
+            }
+        });
     }
 
     /// Забирает готовый decoded frame из очереди (неблокирующий).
@@ -214,6 +251,9 @@ fn decoder_thread_loop(
                         tracing::warn!(error = %e, "Decoder thread: decode error");
                     }
                 }
+            }
+            ThreadMsg::ReleaseZeroCopy(handle) => {
+                decoder.release_zero_copy_frame(handle);
             }
             ThreadMsg::Flush(done_tx) => {
                 if let Err(error) = decoder.flush() {

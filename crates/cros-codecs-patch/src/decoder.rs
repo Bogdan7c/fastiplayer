@@ -14,6 +14,7 @@ pub mod stateless;
 use std::collections::VecDeque;
 use std::os::fd::AsFd;
 use std::os::fd::BorrowedFd;
+use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
 use nix::errno::Errno;
@@ -42,6 +43,52 @@ pub struct DecodedNv12Image {
     pub y_stride: u32,
     /// UV plane row pitch in bytes.
     pub uv_stride: u32,
+}
+
+/// One exported DMA-BUF object from a decoded surface.
+pub struct DecodedDmaBufObject {
+    /// Owned DMA-BUF file descriptor.
+    pub fd: OwnedFd,
+    /// Object size in bytes as reported by VA-API.
+    pub size: u32,
+    /// DRM format modifier for this object.
+    pub drm_format_modifier: u64,
+}
+
+/// One DRM PRIME layer from a decoded surface export.
+pub struct DecodedDmaBufLayer {
+    /// DRM fourcc for this layer.
+    pub drm_format: u32,
+    /// Number of planes described by this layer.
+    pub num_planes: u32,
+    /// Object index for each plane.
+    pub object_index: [u8; 4],
+    /// Byte offset for each plane inside its object.
+    pub offset: [u32; 4],
+    /// Row pitch for each plane in bytes.
+    pub pitch: [u32; 4],
+}
+
+/// DMA-BUF/DRM PRIME export of a decoded surface.
+///
+/// The descriptor owns exported file descriptors. Importers may borrow or dup
+/// those descriptors while this value is alive.
+pub struct DecodedDmaBufImage {
+    /// Backend-native id of the decoded surface.
+    ///
+    /// VA-API fills this with `VASurfaceID`. Consumers can use it as a stable
+    /// cache key while the decoder output surface pool is alive.
+    pub surface_id: u64,
+    /// Top-level DRM fourcc reported by VA-API.
+    pub fourcc: u32,
+    /// Coded width.
+    pub width: u32,
+    /// Coded height.
+    pub height: u32,
+    /// Exported DMA-BUF objects.
+    pub objects: Vec<DecodedDmaBufObject>,
+    /// DRM PRIME layers.
+    pub layers: Vec<DecodedDmaBufLayer>,
 }
 
 /// Trait for a pool of frames in a particular format.
@@ -127,6 +174,13 @@ pub trait DecodedHandle {
     fn nv12_image(&self) -> anyhow::Result<Option<DecodedNv12Image>> {
         Ok(None)
     }
+
+    /// Optionally exports the backend's decoded surface as DMA-BUF/DRM PRIME.
+    ///
+    /// Backends that do not own native surfaces can keep the default `None`.
+    fn dma_buf_image(&self) -> anyhow::Result<Option<DecodedDmaBufImage>> {
+        Ok(None)
+    }
 }
 
 /// Implementation for any boxed [`DecodedHandle`], including trait objects.
@@ -162,6 +216,10 @@ where
 
     fn nv12_image(&self) -> anyhow::Result<Option<DecodedNv12Image>> {
         self.as_ref().nv12_image()
+    }
+
+    fn dma_buf_image(&self) -> anyhow::Result<Option<DecodedDmaBufImage>> {
+        self.as_ref().dma_buf_image()
     }
 }
 

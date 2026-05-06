@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -110,6 +110,18 @@ pub struct VaapiVideoDecoder {
     /// из `decode()` в порядке FIFO.
     ready_queue: VecDeque<DecodedFrame>,
 
+    /// Handles кадров, которые сейчас отображаются через zero-copy DMA-BUF.
+    ///
+    /// Пока handle находится в этой map, VA surface не возвращается в frame pool
+    /// и decoder не может перезаписать память, которую семплит renderer.
+    zero_copy_guards: HashMap<u64, DynDecodedHandle<InternalVaapiFrame>>,
+
+    /// Был ли уже залогирован fallback с zero-copy на CPU upload.
+    zero_copy_failure_logged: bool,
+
+    /// Был ли уже залогирован первый успешный zero-copy кадр.
+    zero_copy_success_logged: bool,
+
     /// wgpu device — нужен для создания текстур в `WgpuTexturePool`.
     ///
     /// В настоящий момент device передаётся в `WgpuTexturePool` при создании,
@@ -185,6 +197,9 @@ impl VaapiVideoDecoder {
             frame_pool,
             texture_cache,
             ready_queue: VecDeque::new(),
+            zero_copy_guards: HashMap::new(),
+            zero_copy_failure_logged: false,
+            zero_copy_success_logged: false,
             device,
             queue,
             backend_name: "VA-API VP9",
@@ -220,16 +235,48 @@ impl VaapiVideoDecoder {
     /// Thread-safe: вызывается из decoder thread (через channel) или render thread.
     pub fn release_frame(&mut self, texture_handle: FrameTextureHandle) {
         trace!(handle_id = texture_handle.0, "Releasing texture slot");
-        self.texture_cache
+        let retired_slot = self
+            .texture_cache
             .lock()
             .unwrap()
             .release_slot(texture_handle);
+        if let Some(retired_slot) = retired_slot {
+            let ready_handle = retired_slot.frame_handle;
+            drop(retired_slot);
+            self.release_zero_copy_frame(ready_handle);
+        }
     }
 
     /// Возвращает статистику texture pool для отладки.
     pub fn texture_pool_stats(&self) -> (usize, usize) {
         let cache = self.texture_cache.lock().unwrap();
         (cache.num_slots(), cache.num_in_use())
+    }
+
+    /// Освобождает VA handle, удерживаемый zero-copy кадром.
+    pub fn release_zero_copy_frame(&mut self, texture_handle: FrameTextureHandle) {
+        let Some(handle) = self.zero_copy_guards.remove(&texture_handle.0) else {
+            trace!(
+                handle_id = texture_handle.0,
+                "No zero-copy guard found for released frame"
+            );
+            return;
+        };
+
+        self.return_frame_from_handle(handle);
+    }
+
+    /// Возвращает backing frame в pool после того, как decoded handle больше не нужен.
+    fn return_frame_from_handle(&mut self, handle: DynDecodedHandle<InternalVaapiFrame>) {
+        let frame_arc = handle.video_frame();
+        drop(handle);
+
+        if let Ok(frame) = Arc::try_unwrap(frame_arc) {
+            self.frame_pool.return_frame(frame);
+            trace!("Frame returned to pool");
+        } else {
+            debug!("Frame still referenced by decoder, cannot return to pool yet");
+        }
     }
 
     /// Обрабатывает готовый кадр от decoder: синхронизация, upload в wgpu, возврат буфера в пул.
@@ -263,7 +310,80 @@ impl VaapiVideoDecoder {
         }
         let sync_elapsed = sync_start.elapsed().as_millis();
 
-        // Шаг 2: Загружаем кадр через VA image readback.
+        // Шаг 2: Если включён zero-copy importer, пробуем экспортировать VA surface
+        // как DMA-BUF и импортировать её в Vulkan/wgpu texture без CPU readback.
+        if self.texture_cache.lock().unwrap().can_import_dma_buf() {
+            match handle.dma_buf_image() {
+                Ok(Some(dma_buf_image)) => {
+                    let import_result = self
+                        .texture_cache
+                        .lock()
+                        .unwrap()
+                        .import_dma_buf_image(&dma_buf_image);
+
+                    match import_result {
+                        Ok(texture_handle) => {
+                            if !self.zero_copy_success_logged {
+                                self.zero_copy_success_logged = true;
+                                info!(
+                                    handle_id = texture_handle.0,
+                                    "Zero-copy DMA-BUF import succeeded"
+                                );
+                            }
+                            self.zero_copy_guards.insert(texture_handle.0, handle);
+                            self.ready_queue.push_back(DecodedFrame {
+                                pts: Duration::from_micros(timestamp),
+                                width: resolution.width,
+                                height: resolution.height,
+                                render_width: display_resolution.width,
+                                render_height: display_resolution.height,
+                                color_space: ColorSpace::Bt709Limited,
+                                texture_handle,
+                            });
+                            trace!(
+                                pts_ms = timestamp / 1000,
+                                handle_id = texture_handle.0,
+                                "Zero-copy frame queued for presentation"
+                            );
+                            return Ok(());
+                        }
+                        Err(import_error) => {
+                            if self.zero_copy_failure_logged {
+                                debug!(
+                                    error = %import_error,
+                                    "Zero-copy DMA-BUF import failed — falling back to VA image readback"
+                                );
+                            } else {
+                                self.zero_copy_failure_logged = true;
+                                warn!(
+                                    error = %import_error,
+                                    "Zero-copy DMA-BUF import failed — falling back to VA image readback"
+                                );
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {
+                    debug!("Decoded handle does not expose DMA-BUF export");
+                }
+                Err(export_error) => {
+                    if self.zero_copy_failure_logged {
+                        debug!(
+                            error = %export_error,
+                            "VA surface DMA-BUF export failed — falling back to VA image readback"
+                        );
+                    } else {
+                        self.zero_copy_failure_logged = true;
+                        warn!(
+                            error = %export_error,
+                            "VA surface DMA-BUF export failed — falling back to VA image readback"
+                        );
+                    }
+                }
+            }
+        }
+
+        // Шаг 3: Загружаем кадр через стабильный VA image readback.
         let upload_start = std::time::Instant::now();
         let mut cache = self.texture_cache.lock().unwrap();
         let texture_handle = upload_frame_with_cpu_fallback(
@@ -275,7 +395,7 @@ impl VaapiVideoDecoder {
         )?;
         drop(cache);
 
-        // Шаг 3: Возвращаем backing frame в пул для повторного использования.
+        // Шаг 4: Возвращаем backing frame в пул для повторного использования.
         //
         // `handle.video_frame()` возвращает `Arc<InternalVaapiFrame>` (clone).
         // Чтобы `Arc::try_unwrap` сработал, нужно убедиться что refcount == 1.
@@ -283,16 +403,9 @@ impl VaapiVideoDecoder {
         // так что после clone refcount >= 2. Drop handle уменьшает refcount.
         // Если decoder не держит этот кадр как reference frame, refcount станет 1
         // и `Arc::try_unwrap` вернёт Ok — frame возвращается в пул.
-        let frame_arc = handle.video_frame();
-        drop(handle); // дропаем handle, уменьшаем refcount Arc
-        if let Ok(frame) = Arc::try_unwrap(frame_arc) {
-            self.frame_pool.return_frame(frame);
-            trace!("Frame returned to pool");
-        } else {
-            debug!("Frame still referenced by decoder, cannot return to pool yet");
-        }
+        self.return_frame_from_handle(handle);
 
-        // Шаг 4: Добавляем кадр в очередь готовых к отображению.
+        // Шаг 5: Добавляем кадр в очередь готовых к отображению.
         self.ready_queue.push_back(DecodedFrame {
             pts: Duration::from_micros(timestamp),
             width: resolution.width,
@@ -485,6 +598,10 @@ impl VideoDecoder for VaapiVideoDecoder {
             .flush()
             .map_err(|e| anyhow::anyhow!("Flush error: {:?}", e))?;
         self.ready_queue.clear();
+        let guards = std::mem::take(&mut self.zero_copy_guards);
+        for (_, handle) in guards {
+            self.return_frame_from_handle(handle);
+        }
         Ok(())
     }
 
