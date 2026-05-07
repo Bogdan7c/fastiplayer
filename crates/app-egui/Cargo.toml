@@ -25,6 +25,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 bytemuck = "1.25"
 
 # Новые зависимости для Этапа 2a
+player-core.workspace = true
 webm-demux = { path = "../webm-demux" }
 rfd = "0.15"
 

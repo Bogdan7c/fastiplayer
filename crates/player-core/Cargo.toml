@@ -1,0 +1,11 @@
+[package]
+name = "player-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "player_core"
+path = "src/lib.rs"
+
+[dependencies]

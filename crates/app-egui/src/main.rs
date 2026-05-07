@@ -203,6 +203,9 @@ impl App {
             }
         }
 
+        // Phase 1 smoke path: shell умеет собрать core snapshot без переноса pipeline.
+        let _player_snapshot = app_state.player_snapshot();
+
         self.renderer = Some(renderer);
         self.app_state = Some(app_state);
         window.request_redraw();

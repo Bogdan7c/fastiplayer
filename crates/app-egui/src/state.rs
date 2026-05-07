@@ -15,6 +15,11 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use player_core::{
+    AudioBufferSnapshot, BackendSnapshot, FrameCounters, PlaybackState, PlayerError,
+    PlayerErrorKind, PlayerSnapshot, QueueSnapshot, TexturePoolSnapshot, TrackId,
+    TrackSelectionSnapshot, VideoFrameSnapshot,
+};
 use tracing::{info, instrument, warn};
 use webm_demux::{Demuxer, TrackKind};
 use winit::window::Window;
@@ -39,6 +44,16 @@ pub enum PlayerState {
 
     /// Воспроизведение активно.
     Playing,
+}
+
+impl From<PlayerState> for PlaybackState {
+    /// Переводит старое UI-состояние в новый core-контракт.
+    fn from(player_state: PlayerState) -> Self {
+        match player_state {
+            PlayerState::Paused => Self::Paused,
+            PlayerState::Playing => Self::Playing,
+        }
+    }
 }
 
 /// Состояние приложения.
@@ -256,6 +271,157 @@ impl AppState {
     #[inline]
     pub fn elapsed_seconds(&self) -> f64 {
         self.start_time.elapsed().as_secs_f64()
+    }
+
+    /// Возвращает read-only snapshot в формате `player-core`.
+    ///
+    /// Этот адаптер нужен Phase 1, чтобы `app-egui` уже импортировал core-типы,
+    /// но текущий playback pipeline оставался во владении `AppState`.
+    #[must_use]
+    pub fn player_snapshot(&self) -> PlayerSnapshot {
+        PlayerSnapshot {
+            playback_state: self.core_playback_state(),
+            source_label: self.source_label(),
+            media_title: self.media_title(),
+            duration: Self::known_duration_from_seconds(self.duration),
+            current_position: Self::duration_from_seconds_lossy(self.current_position),
+            volume: self.volume,
+            muted: self.volume <= f32::EPSILON,
+            selected_tracks: self.track_selection_snapshot(),
+            available_qualities: Vec::new(),
+            active_backend: self.backend_snapshot(),
+            current_video_frame: self.current_video_frame_snapshot(),
+            audio_buffer: self.audio_buffer_snapshot(),
+            queues: self.queue_snapshot(),
+            frame_counters: self.frame_counters_snapshot(),
+            last_error: self.player_error_snapshot(),
+            capability_summary: None,
+        }
+    }
+
+    /// Учитывает EOF-drain режим, которого нет в старом `PlayerState`.
+    fn core_playback_state(&self) -> PlaybackState {
+        if self.draining_after_eof {
+            PlaybackState::Draining
+        } else {
+            PlaybackState::from(self.player_state)
+        }
+    }
+
+    /// Формирует метку источника без раскрытия mutable demuxer state.
+    fn source_label(&self) -> Option<String> {
+        self.file_path
+            .as_ref()
+            .map(|file_path| file_path.display().to_string())
+    }
+
+    /// Возвращает имя файла как текущий media title.
+    fn media_title(&self) -> Option<String> {
+        self.file_path
+            .as_ref()
+            .and_then(|file_path| file_path.file_name())
+            .map(|file_name| file_name.to_string_lossy().into_owned())
+    }
+
+    /// Собирает snapshot выбранных tracks.
+    fn track_selection_snapshot(&self) -> TrackSelectionSnapshot {
+        TrackSelectionSnapshot {
+            video_track: self.video_track_id.map(TrackId::new),
+            audio_track: self.audio_track_id.map(TrackId::new),
+            subtitle_track: None,
+        }
+    }
+
+    /// Собирает snapshot активного backend и texture pool.
+    fn backend_snapshot(&self) -> BackendSnapshot {
+        BackendSnapshot {
+            name: Some(self.video_backend.to_string()),
+            texture_pool: self.texture_pool_snapshot(),
+        }
+    }
+
+    /// Конвертирует VA-API texture pool stats в core snapshot.
+    fn texture_pool_snapshot(&self) -> Option<TexturePoolSnapshot> {
+        self.video_decoder_thread
+            .as_ref()
+            .and_then(|decoder_thread| decoder_thread.texture_pool_stats())
+            .map(|texture_stats| TexturePoolSnapshot {
+                capacity: texture_stats.capacity,
+                slots: texture_stats.slots,
+                in_use: texture_stats.in_use,
+            })
+    }
+
+    /// Описывает текущий кадр без передачи renderer-owned ресурсов.
+    fn current_video_frame_snapshot(&self) -> Option<VideoFrameSnapshot> {
+        self.present_video_frame
+            .as_ref()
+            .map(|present_frame| VideoFrameSnapshot {
+                handle: present_frame.texture_handle.0,
+                pts: present_frame.pts,
+                width: present_frame.width,
+                height: present_frame.height,
+                render_width: present_frame.render_width,
+                render_height: present_frame.render_height,
+            })
+    }
+
+    /// Собирает snapshot audio buffer.
+    fn audio_buffer_snapshot(&self) -> AudioBufferSnapshot {
+        AudioBufferSnapshot {
+            level: self
+                .audio_buffer_level_ms()
+                .and_then(|level_ms| Self::optional_duration_from_seconds(level_ms / 1000.0)),
+            underruns: self
+                .audio_clock
+                .as_ref()
+                .map(|audio_clock| audio_clock.underrun_callbacks())
+                .unwrap_or(0),
+        }
+    }
+
+    /// Собирает snapshot очередей без раскрытия их содержимого.
+    fn queue_snapshot(&self) -> QueueSnapshot {
+        QueueSnapshot {
+            pending_audio_packets: self.pending_audio_packets.len(),
+            pending_video_packets: self.pending_video_packets.len(),
+            decoded_video_frames: self.video_frame_queue.len(),
+        }
+    }
+
+    /// Собирает frame counters из текущей телеметрии.
+    fn frame_counters_snapshot(&self) -> FrameCounters {
+        FrameCounters {
+            presented: self.telemetry.video_frames_presented(),
+            dropped: self.telemetry.video_frames_dropped(),
+            repeated: self.telemetry.video_frames_repeated(),
+        }
+    }
+
+    /// Переносит старое строковое сообщение об ошибке в typed core error.
+    fn player_error_snapshot(&self) -> Option<PlayerError> {
+        self.error_message
+            .as_ref()
+            .map(|message| PlayerError::new(PlayerErrorKind::RuntimeError, message.clone()))
+    }
+
+    /// Безопасно создаёт `Duration` для обязательных неотрицательных позиций.
+    fn duration_from_seconds_lossy(seconds: f64) -> std::time::Duration {
+        Self::optional_duration_from_seconds(seconds).unwrap_or(std::time::Duration::ZERO)
+    }
+
+    /// Безопасно создаёт `Duration` только из finite и положительной длительности.
+    fn known_duration_from_seconds(seconds: f64) -> Option<std::time::Duration> {
+        if seconds > 0.0 {
+            Self::optional_duration_from_seconds(seconds)
+        } else {
+            None
+        }
+    }
+
+    /// Безопасно создаёт `Duration` только из finite и неотрицательных секунд.
+    fn optional_duration_from_seconds(seconds: f64) -> Option<std::time::Duration> {
+        std::time::Duration::try_from_secs_f64(seconds).ok()
     }
 
     /// Форматирует время в строку MM:SS.
