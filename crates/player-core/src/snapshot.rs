@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use media_core::TrackKind;
+
 use crate::{PlaybackState, PlayerError, QualityId, TrackId};
 
 /// Read-only snapshot player state для UI, renderer и desktop integration.
@@ -28,6 +30,9 @@ pub struct PlayerSnapshot {
 
     /// Выбранные треки.
     pub selected_tracks: TrackSelectionSnapshot,
+
+    /// Доступные media tracks без доступа к demuxer handle.
+    pub tracks: Vec<TrackSummarySnapshot>,
 
     /// Доступные варианты качества.
     pub available_qualities: Vec<QualitySummary>,
@@ -74,6 +79,7 @@ impl Default for PlayerSnapshot {
             volume: 1.0,
             muted: false,
             selected_tracks: TrackSelectionSnapshot::default(),
+            tracks: Vec::new(),
             available_qualities: Vec::new(),
             active_backend: BackendSnapshot::default(),
             current_video_frame: None,
@@ -97,6 +103,25 @@ pub struct TrackSelectionSnapshot {
 
     /// Активный subtitle track или `None`, если субтитры отключены.
     pub subtitle_track: Option<TrackId>,
+}
+
+/// Snapshot media track для UI и диагностики.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackSummarySnapshot {
+    /// Уникальный ID трека внутри текущего media.
+    pub id: TrackId,
+
+    /// Тип трека: video или audio.
+    pub kind: TrackKind,
+
+    /// Container codec id, например `V_VP9` или `A_OPUS`.
+    pub codec_id: String,
+
+    /// Sample rate audio-трека, если он известен.
+    pub sample_rate: Option<u32>,
+
+    /// Количество audio-каналов, если оно известно.
+    pub channels: Option<u32>,
 }
 
 /// Описание качества, которое UI может показать в списке.

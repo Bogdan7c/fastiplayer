@@ -9,4 +9,11 @@ name = "player_core"
 path = "src/lib.rs"
 
 [dependencies]
+anyhow = { workspace = true }
+audio = { path = "../audio" }
 media-core = { workspace = true }
+tracing = { workspace = true }
+video-core = { path = "../video-core" }
+video-vaapi = { path = "../video-vaapi" }
+webm-demux = { path = "../webm-demux" }
+wgpu = { workspace = true }
