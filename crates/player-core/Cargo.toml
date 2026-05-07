@@ -12,6 +12,7 @@ path = "src/lib.rs"
 anyhow = { workspace = true }
 audio = { path = "../audio" }
 media-core = { workspace = true }
+rustiplayer-config = { workspace = true }
 tracing = { workspace = true }
 video-core = { path = "../video-core" }
 video-vaapi = { path = "../video-vaapi" }

@@ -9,7 +9,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use media_core::TrackKind;
-use player_core::{FrameCounters, PlaybackState, PlayerCommand, PlayerSession, PlayerSnapshot};
+use player_core::{
+    FrameCounters, PlaybackState, PlayerCommand, PlayerSession, PlayerSnapshot, PlayerTickConfig,
+};
+use rustiplayer_config::AppConfig;
 use tracing::{instrument, warn};
 use winit::window::Window;
 
@@ -35,14 +38,20 @@ pub struct AppState {
     /// Телеметрия — общие счётчики производительности.
     pub telemetry: Arc<Telemetry>,
 
+    /// Валидированная пользовательская конфигурация.
+    pub app_config: AppConfig,
+
+    /// Runtime-лимиты playback tick, собранные из config.
+    tick_config: PlayerTickConfig,
+
     /// Версия приложения для отображения в UI.
     pub app_version: &'static str,
 }
 
 impl AppState {
     /// Создаёт новое состояние приложения и пустую player session.
-    #[instrument(skip(window, telemetry))]
-    pub fn new(window: &Window, telemetry: Arc<Telemetry>) -> Self {
+    #[instrument(skip(window, telemetry, app_config))]
+    pub fn new(window: &Window, telemetry: Arc<Telemetry>, app_config: AppConfig) -> Self {
         let egui_ctx = egui::Context::default();
         egui_ctx.set_theme(egui::Theme::Dark);
 
@@ -55,14 +64,23 @@ impl AppState {
             Some(winit::window::Theme::Dark),
             None,
         );
+        let tick_config = PlayerTickConfig::from(&app_config);
+        let mut player_session = PlayerSession::new();
+        if let Err(error) = player_session
+            .dispatch_command(PlayerCommand::SetVolume(app_config.audio.volume as f32))
+        {
+            warn!(error = %error, "Не удалось применить начальную громкость из config");
+        }
 
         Self {
             egui_ctx,
             egui_winit_state,
-            player_session: PlayerSession::new(),
+            player_session,
             frame_index: 0,
             start_time: std::time::Instant::now(),
             telemetry,
+            app_config,
+            tick_config,
             app_version: env!("CARGO_PKG_VERSION"),
         }
     }
@@ -89,6 +107,12 @@ impl AppState {
         self.start_time.elapsed().as_secs_f64()
     }
 
+    /// Возвращает runtime config для одного playback tick.
+    #[must_use]
+    pub const fn tick_config(&self) -> PlayerTickConfig {
+        self.tick_config
+    }
+
     /// Возвращает read-only snapshot из `player-core` для UI и renderer diagnostics.
     #[must_use]
     pub fn player_snapshot(&self) -> PlayerSnapshot {
@@ -99,11 +123,13 @@ impl AppState {
     /// Загружает локальный файл через player session.
     pub fn load_file(&mut self, path: &Path) {
         self.player_session.load_file(path);
+        self.apply_opened_media_playback_policy();
     }
 
     /// Загружает уже открытый demuxer через player session.
     pub fn load_demuxer(&mut self, label: String, demuxer: Box<dyn webm_demux::Demuxer>) {
         self.player_session.load_demuxer(label, demuxer);
+        self.apply_opened_media_playback_policy();
     }
 
     /// Инициализирует video pipeline в player session.
@@ -252,14 +278,16 @@ impl AppState {
                     });
                 });
 
-            Self::render_telemetry_panel(
-                ui,
-                &player_snapshot,
-                &telemetry,
-                &backend_name,
-                start_time,
-                frame_duration_estimate_ms,
-            );
+            if self.app_config.ui.show_telemetry {
+                Self::render_telemetry_panel(
+                    ui,
+                    &player_snapshot,
+                    &telemetry,
+                    &backend_name,
+                    start_time,
+                    frame_duration_estimate_ms,
+                );
+            }
             Self::render_center_overlay(ui, is_playing, error_message.as_deref());
         });
 
@@ -315,7 +343,11 @@ impl AppState {
             }
             winit::keyboard::KeyCode::KeyM => {
                 let current_volume = self.player_snapshot().volume;
-                let next_volume = if current_volume > 0.0 { 0.0 } else { 0.8 };
+                let next_volume = if current_volume > 0.0 {
+                    0.0
+                } else {
+                    self.app_config.audio.volume as f32
+                };
                 if let Err(error) = self
                     .player_session
                     .dispatch_command(PlayerCommand::SetVolume(next_volume))
@@ -338,6 +370,21 @@ impl AppState {
 
         if let Some(path) = file {
             self.load_file(&path);
+        }
+    }
+
+    /// Применяет config-политику автозапуска после успешного открытия media.
+    fn apply_opened_media_playback_policy(&mut self) {
+        if self.app_config.player.start_paused {
+            return;
+        }
+
+        if !self.player_session.has_loaded_media_pipeline() {
+            return;
+        }
+
+        if let Err(error) = self.player_session.dispatch_command(PlayerCommand::Play) {
+            warn!(error = %error, "Не удалось запустить playback после открытия media");
         }
     }
 

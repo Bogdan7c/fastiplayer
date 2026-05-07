@@ -19,7 +19,8 @@ anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-serde = { version = "1.0", features = ["derive"] }
+rustiplayer-config.workspace = true
+serde.workspace = true
 serde_json = "1.0"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 bytemuck = "1.25"

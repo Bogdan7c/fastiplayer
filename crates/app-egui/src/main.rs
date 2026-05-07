@@ -29,6 +29,7 @@ use anyhow::{Context, Result};
 use player_core::{
     PlayerError, PlayerErrorKind, PlayerTickContext, PlayerTickResult, PlayerVideoDropReason,
 };
+use rustiplayer_config::AppConfig;
 use tracing::{debug, info, instrument, trace, warn};
 use winit::{
     application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
@@ -80,13 +81,20 @@ struct App {
 
     /// Сообщение об ошибке, которое нужно показать после создания UI.
     initial_error: Option<String>,
+
+    /// Валидированная пользовательская конфигурация.
+    app_config: AppConfig,
 }
 
 impl App {
     /// Создаёт пустое приложение.
     ///
     /// Ресурсы инициализируются в Resumed, когда окно готово.
-    fn new(initial_media: Option<InitialMedia>, initial_error: Option<String>) -> Self {
+    fn new(
+        initial_media: Option<InitialMedia>,
+        initial_error: Option<String>,
+        app_config: AppConfig,
+    ) -> Self {
         Self {
             window: None,
             renderer: None,
@@ -94,6 +102,7 @@ impl App {
             telemetry: Arc::new(Telemetry::new()),
             initial_media,
             initial_error,
+            app_config,
         }
     }
 
@@ -117,7 +126,7 @@ impl App {
             }
         };
 
-        let mut app_state = AppState::new(&window, self.telemetry.clone());
+        let mut app_state = AppState::new(&window, self.telemetry.clone(), self.app_config.clone());
         app_state.init_video_pipeline(
             &renderer.gpu.instance,
             &renderer.gpu.adapter,
@@ -141,10 +150,6 @@ impl App {
                     info!(source = %label, "Автозагрузка streaming media из CLI");
                     app_state.load_demuxer(label, demuxer);
                 }
-            }
-
-            if app_state.player_session.has_loaded_media_pipeline() {
-                app_state.toggle_playback();
             }
         }
 
@@ -350,7 +355,10 @@ fn render_frame(
     // Player tick продвигает demux/audio/video/scheduler, а shell только пишет telemetry.
     let tick_result = app_state
         .player_session
-        .tick(PlayerTickContext::new(frame_start));
+        .tick(PlayerTickContext::with_config(
+            frame_start,
+            app_state.tick_config(),
+        ));
     record_player_tick_result(telemetry, &tick_result);
 
     // Рендерим egui UI — получаем paint jobs и texture updates
@@ -450,6 +458,14 @@ fn main() -> Result<()> {
     info!("=== YouTube Player Stage 1: Render Shell ===");
     info!("Запуск приложения");
 
+    let loaded_config =
+        rustiplayer_config::load_or_create().context("Не удалось загрузить config rustiplayer")?;
+    info!(
+        path = %loaded_config.path.display(),
+        created = loaded_config.created,
+        "Config rustiplayer готов"
+    );
+
     // Создаём event loop
     let event_loop = winit::event_loop::EventLoop::builder()
         .build()
@@ -463,7 +479,7 @@ fn main() -> Result<()> {
     if let Some(InitialMedia::File(path)) = &initial_media {
         info!(path = %path.display(), "CLI аргумент: файл для воспроизведения");
     }
-    let mut app = App::new(initial_media, initial_error);
+    let mut app = App::new(initial_media, initial_error, loaded_config.config);
     event_loop.run_app(&mut app)?;
 
     info!("Приложение завершено");

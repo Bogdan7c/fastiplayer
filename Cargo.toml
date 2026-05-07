@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/app-egui",
+    "crates/config",
     "crates/player-core",
     "crates/media-core",
     "crates/webm-demux",
@@ -33,7 +34,11 @@ egui-winit = "0.34"
 egui-wgpu = "0.34"
 pollster = "0.4"
 anyhow = "1.0"
+directories = "6.0"
+rustiplayer-config = { path = "crates/config" }
+serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
+toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 symphonia = "0.5"

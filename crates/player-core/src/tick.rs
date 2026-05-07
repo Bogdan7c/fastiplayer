@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use media_core::{TrackId, TrackKind};
+use rustiplayer_config::AppConfig;
 use tracing::trace;
 
 use crate::{
@@ -106,6 +107,24 @@ impl Default for PlayerTickConfig {
             video_present_lead_frames: 0.5,
             video_present_window_frames: 1.0,
             video_late_drop_grace_frames: 2.0,
+        }
+    }
+}
+
+impl From<&AppConfig> for PlayerTickConfig {
+    /// Собирает runtime-лимиты playback из пользовательского TOML-config.
+    ///
+    /// Низкоуровневые scheduler knobs, которых ещё нет в публичной TOML-схеме,
+    /// остаются на production defaults `player-core`. Пользовательские поля из
+    /// `config` перекрывают те лимиты, которые уже зафиксированы в Phase 5.
+    fn from(config: &AppConfig) -> Self {
+        let defaults = Self::default();
+
+        Self {
+            max_video_present_queue: config.video.present_queue_frames,
+            max_video_decode_ahead: Duration::from_millis(config.video.max_decode_ahead_ms),
+            audio_buffer_high_water_mark_ms: config.audio.buffer_target_ms as f64,
+            ..defaults
         }
     }
 }

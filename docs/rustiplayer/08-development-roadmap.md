@@ -30,6 +30,8 @@ Acceptance:
 
 ## Phase 1: Extract `player-core` skeleton
 
+Статус: реализовано.
+
 Цель:
 
 - создать `crates/player-core`;
@@ -41,9 +43,11 @@ Acceptance:
 
 - `cargo check` проходит;
 - `app-egui` может импортировать типы;
-- текущий playback не сломан.
+- текущий playback проверен вручную и не сломан.
 
 ## Phase 2: Extract `media-core`
+
+Статус: реализовано.
 
 Цель:
 
@@ -58,6 +62,8 @@ Acceptance:
 - тесты demux/packet timestamp проходят.
 
 ## Phase 3: Move playback state out of `AppState`
+
+Статус: реализовано.
 
 Цель:
 
@@ -87,6 +93,8 @@ Acceptance:
 
 ## Phase 4: Move tick/scheduler out of `main.rs`
 
+Статус: реализовано.
+
 Цель:
 
 - перенести demux loop;
@@ -110,6 +118,8 @@ Acceptance:
 - scheduler unit tests появляются в `player-core`.
 
 ## Phase 5: Config crate
+
+Статус: реализовано.
 
 Цель:
 
@@ -330,4 +340,3 @@ macOS:
 3. не принимать важные архитектурные решения молча;
 4. сохранить MVP working state;
 5. сделать self-review после реализации.
-
