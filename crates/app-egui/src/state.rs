@@ -41,6 +41,9 @@ pub struct AppState {
     /// Валидированная пользовательская конфигурация.
     pub app_config: AppConfig,
 
+    /// Startup-ошибка shell-слоя, которую нужно показать без перевода player в Failed.
+    pub startup_error: Option<String>,
+
     /// Runtime-лимиты playback tick, собранные из config.
     tick_config: PlayerTickConfig,
 
@@ -50,8 +53,13 @@ pub struct AppState {
 
 impl AppState {
     /// Создаёт новое состояние приложения и пустую player session.
-    #[instrument(skip(window, telemetry, app_config))]
-    pub fn new(window: &Window, telemetry: Arc<Telemetry>, app_config: AppConfig) -> Self {
+    #[instrument(skip(window, telemetry, app_config, startup_error))]
+    pub fn new(
+        window: &Window,
+        telemetry: Arc<Telemetry>,
+        app_config: AppConfig,
+        startup_error: Option<String>,
+    ) -> Self {
         let egui_ctx = egui::Context::default();
         egui_ctx.set_theme(egui::Theme::Dark);
 
@@ -80,6 +88,7 @@ impl AppState {
             start_time: std::time::Instant::now(),
             telemetry,
             app_config,
+            startup_error,
             tick_config,
             app_version: env!("CARGO_PKG_VERSION"),
         }
@@ -181,10 +190,13 @@ impl AppState {
         let open_file_clicked = Cell::new(false);
         let volume_change_request = Cell::new(None::<f32>);
         let position_change_request = Cell::new(None::<f64>);
-        let error_message = player_snapshot
+        let player_error_message = player_snapshot
             .last_error
             .as_ref()
             .map(std::string::ToString::to_string);
+        let error_message = player_error_message
+            .as_deref()
+            .or(self.startup_error.as_deref());
 
         let full_output = self.egui_ctx.run_ui(egui_input, |ui| {
             let top_frame =
@@ -288,7 +300,7 @@ impl AppState {
                     frame_duration_estimate_ms,
                 );
             }
-            Self::render_center_overlay(ui, is_playing, error_message.as_deref());
+            Self::render_center_overlay(ui, is_playing, error_message);
         });
 
         if toggle_playback_clicked.get() {

@@ -2,6 +2,7 @@
 members = [
     "crates/app-egui",
     "crates/config",
+    "crates/storage",
     "crates/player-core",
     "crates/media-core",
     "crates/webm-demux",
@@ -36,11 +37,13 @@ pollster = "0.4"
 anyhow = "1.0"
 directories = "6.0"
 rustiplayer-config = { path = "crates/config" }
+rustiplayer-storage = { path = "crates/storage" }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 symphonia = "0.5"
 bytes = "1.0"
 ringbuf = "0.4"

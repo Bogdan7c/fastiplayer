@@ -26,10 +26,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use player_core::{
-    PlayerError, PlayerErrorKind, PlayerTickContext, PlayerTickResult, PlayerVideoDropReason,
-};
+use player_core::{PlayerTickContext, PlayerTickResult, PlayerVideoDropReason};
 use rustiplayer_config::AppConfig;
+use rustiplayer_storage::StorageConnection;
 use tracing::{debug, info, instrument, trace, warn};
 use winit::{
     application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
@@ -79,11 +78,14 @@ struct App {
     /// Media, переданное через CLI, для автозагрузки при старте.
     initial_media: Option<InitialMedia>,
 
-    /// Сообщение об ошибке, которое нужно показать после создания UI.
-    initial_error: Option<String>,
+    /// Startup-ошибка shell-слоя, которую нужно показать после создания UI.
+    startup_error: Option<String>,
 
     /// Валидированная пользовательская конфигурация.
     app_config: AppConfig,
+
+    /// SQLite storage connection, открытый на время жизни приложения.
+    storage_connection: Option<StorageConnection>,
 }
 
 impl App {
@@ -92,8 +94,9 @@ impl App {
     /// Ресурсы инициализируются в Resumed, когда окно готово.
     fn new(
         initial_media: Option<InitialMedia>,
-        initial_error: Option<String>,
+        startup_error: Option<String>,
         app_config: AppConfig,
+        storage_connection: Option<StorageConnection>,
     ) -> Self {
         Self {
             window: None,
@@ -101,8 +104,9 @@ impl App {
             app_state: None,
             telemetry: Arc::new(Telemetry::new()),
             initial_media,
-            initial_error,
+            startup_error,
             app_config,
+            storage_connection,
         }
     }
 
@@ -126,19 +130,22 @@ impl App {
             }
         };
 
-        let mut app_state = AppState::new(&window, self.telemetry.clone(), self.app_config.clone());
+        if self.storage_connection.is_none() {
+            trace!("Storage connection недоступен; долговременные записи отключены");
+        }
+
+        let mut app_state = AppState::new(
+            &window,
+            self.telemetry.clone(),
+            self.app_config.clone(),
+            self.startup_error.clone(),
+        );
         app_state.init_video_pipeline(
             &renderer.gpu.instance,
             &renderer.gpu.adapter,
             &renderer.gpu.device,
             &renderer.gpu.queue,
         );
-
-        if let Some(error) = self.initial_error.take() {
-            app_state
-                .player_session
-                .mark_fatal_error(PlayerError::new(PlayerErrorKind::RuntimeError, error));
-        }
 
         if let Some(initial_media) = self.initial_media.take() {
             match initial_media {
@@ -475,11 +482,19 @@ fn main() -> Result<()> {
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
 
     // Создаём и запускаем приложение
-    let (initial_media, initial_error) = resolve_initial_media_from_cli();
+    let (storage_connection, storage_startup_error) = initialize_storage();
+
+    let (initial_media, cli_startup_error) = resolve_initial_media_from_cli();
     if let Some(InitialMedia::File(path)) = &initial_media {
         info!(path = %path.display(), "CLI аргумент: файл для воспроизведения");
     }
-    let mut app = App::new(initial_media, initial_error, loaded_config.config);
+    let startup_error = combine_startup_errors([storage_startup_error, cli_startup_error]);
+    let mut app = App::new(
+        initial_media,
+        startup_error,
+        loaded_config.config,
+        storage_connection,
+    );
     event_loop.run_app(&mut app)?;
 
     info!("Приложение завершено");
@@ -516,11 +531,41 @@ fn resolve_initial_media_from_cli() -> (Option<InitialMedia>, Option<String>) {
             }
             Err(error) => {
                 warn!(error = %error, "Не удалось подготовить YouTube URL");
-                (None, Some(format!("YouTube error: {error}")))
+                (None, Some(format!("NetworkError: YouTube error: {error}")))
             }
         };
     }
 
     // Всё остальное считаем локальным путём, как работало раньше.
     (Some(InitialMedia::File(PathBuf::from(argument))), None)
+}
+
+/// Открывает SQLite storage и возвращает user-facing startup error при сбое.
+fn initialize_storage() -> (Option<StorageConnection>, Option<String>) {
+    match rustiplayer_storage::open_or_create() {
+        Ok(opened_storage) => {
+            info!(
+                path = %opened_storage.path.display(),
+                schema_version = opened_storage.migration_report.current_version,
+                applied_migrations = opened_storage.migration_report.applied_migrations.len(),
+                "Storage rustiplayer готов"
+            );
+            (Some(opened_storage.connection), None)
+        }
+        Err(error) => {
+            tracing::error!(error = %error, "Не удалось инициализировать storage rustiplayer");
+            (None, Some(format!("StorageError: {error}")))
+        }
+    }
+}
+
+/// Объединяет startup-ошибки shell-слоя в одно UI-сообщение.
+fn combine_startup_errors(errors: [Option<String>; 2]) -> Option<String> {
+    let messages = errors.into_iter().flatten().collect::<Vec<_>>();
+
+    if messages.is_empty() {
+        None
+    } else {
+        Some(messages.join("\n"))
+    }
 }

@@ -137,6 +137,8 @@ Acceptance:
 
 ## Phase 6: Storage crate
 
+Статус: реализовано.
+
 Цель:
 
 - создать `crates/storage`;
