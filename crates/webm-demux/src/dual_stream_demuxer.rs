@@ -6,9 +6,9 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use media_core::{Packet, TrackId, TrackInfo, TrackKind};
 
 use crate::demuxer::Demuxer;
-use crate::packet::{Packet, TrackInfo, TrackKind};
 use crate::symphonia_demuxer::SymphoniaDemuxer;
 
 /// Track id для video после remap.
@@ -65,10 +65,10 @@ impl DualStreamDemuxer {
 
         // Remap нужен, потому что в двух отдельных WebM оба track id часто равны 1.
         let mut remapped_video_track = video_track;
-        remapped_video_track.id = REMAPPED_VIDEO_TRACK_ID;
+        remapped_video_track.id = TrackId::new(REMAPPED_VIDEO_TRACK_ID);
 
         let mut remapped_audio_track = audio_track;
-        remapped_audio_track.id = REMAPPED_AUDIO_TRACK_ID;
+        remapped_audio_track.id = TrackId::new(REMAPPED_AUDIO_TRACK_ID);
 
         let duration = remapped_video_track
             .duration
@@ -98,7 +98,7 @@ impl DualStreamDemuxer {
         // Пропускаем не-video packets на всякий случай, хотя stream должен быть video-only.
         while let Some(mut packet) = self.video_demuxer.next_packet()? {
             if packet.kind == TrackKind::Video {
-                packet.track_id = REMAPPED_VIDEO_TRACK_ID;
+                packet.track_id = TrackId::new(REMAPPED_VIDEO_TRACK_ID);
                 self.pending_video_packet = Some(packet);
                 return Ok(());
             }
@@ -118,7 +118,7 @@ impl DualStreamDemuxer {
         // Пропускаем не-audio packets на всякий случай, хотя stream должен быть audio-only.
         while let Some(mut packet) = self.audio_demuxer.next_packet()? {
             if packet.kind == TrackKind::Audio {
-                packet.track_id = REMAPPED_AUDIO_TRACK_ID;
+                packet.track_id = TrackId::new(REMAPPED_AUDIO_TRACK_ID);
                 self.pending_audio_packet = Some(packet);
                 return Ok(());
             }

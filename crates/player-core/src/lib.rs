@@ -15,12 +15,13 @@ mod state;
 
 pub use command::{
     MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, SeekMode,
-    SeekRequest, TrackId,
+    SeekRequest,
 };
 pub use error::{PlayerError, PlayerErrorKind, PlayerResult};
 pub use event::{
     BufferingState, CapabilitySummary, FramePresentationInfo, MediaSummary, PlayerEvent,
 };
+pub use media_core::TrackId;
 pub use session::PlayerSession;
 pub use snapshot::{
     AudioBufferSnapshot, BackendSnapshot, FrameCounters, PlayerSnapshot, QualitySummary,

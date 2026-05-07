@@ -13,7 +13,7 @@ ash = "0.38"
 wgpu-types = "29"
 nix = { version = "0.29", features = ["ioctl", "fs"] }
 
-webm-demux = { path = "../webm-demux" }
+media-core = { workspace = true }
 video-core = { path = "../video-core" }
 cros-codecs = { version = "0.0.6", features = ["vaapi", "backend"] }
 gbm = { version = "0.15", features = ["drm-support"] }

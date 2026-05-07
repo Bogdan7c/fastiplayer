@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::packet::{Packet, TrackInfo};
+use media_core::{Packet, TrackInfo};
 
 /// Trait, абстрагирующий источник media packets.
 ///

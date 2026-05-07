@@ -2,7 +2,7 @@
 //!
 //! Архитектура:
 //! ```text
-//! Demuxer::next_packet() → Packet { kind: Audio, data: raw Opus }
+//! Demuxer::next_packet() → media_core::Packet { kind: Audio, data: raw Opus }
 //!     ↓
 //! OpusDecoder::decode() → Vec<f32> (PCM interleaved)
 //!     ↓

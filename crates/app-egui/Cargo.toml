@@ -26,6 +26,7 @@ bytemuck = "1.25"
 
 # Новые зависимости для Этапа 2a
 player-core.workspace = true
+media-core.workspace = true
 webm-demux = { path = "../webm-demux" }
 rfd = "0.15"
 

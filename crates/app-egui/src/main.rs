@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use media_core::TrackKind;
 use tracing::{debug, info, instrument, trace, warn};
 use winit::{
     application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
@@ -817,12 +818,12 @@ fn render_frame(
                     Ok(Some(packet)) => {
                         telemetry.record_packet(packet.kind, packet.pts);
 
-                        if packet.kind == webm_demux::TrackKind::Audio {
+                        if packet.kind == TrackKind::Audio {
                             app_state
                                 .pending_audio_packets
                                 .push_back((packet.track_id, packet.data.to_vec()));
                         }
-                        if packet.kind == webm_demux::TrackKind::Video {
+                        if packet.kind == TrackKind::Video {
                             app_state.pending_video_packets.push_back((
                                 packet.track_id,
                                 packet.pts,
@@ -833,7 +834,7 @@ fn render_frame(
 
                         if telemetry.packets_read() <= 50 {
                             tracing::debug!(
-                                track_id = packet.track_id,
+                                track_id = %packet.track_id,
                                 kind = ?packet.kind,
                                 pts_ms = packet.pts.as_millis(),
                                 size = packet.data.len(),

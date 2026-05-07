@@ -1,12 +1,12 @@
 [package]
-name = "player-core"
+name = "media-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "player_core"
+name = "media_core"
 path = "src/lib.rs"
 
 [dependencies]
-media-core = { workspace = true }
+bytes.workspace = true

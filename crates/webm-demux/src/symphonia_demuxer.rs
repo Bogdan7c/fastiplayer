@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
+use media_core::{Packet as OurPacket, TimeBase as OurTimeBase, TrackId, TrackInfo, TrackKind};
 use symphonia::core::codecs::{CODEC_TYPE_OPUS, CODEC_TYPE_VORBIS};
 use symphonia::core::formats::{FormatOptions, FormatReader, Packet, Track};
 use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
@@ -15,7 +16,6 @@ use tracing::{info, warn};
 
 use crate::demuxer::Demuxer;
 use crate::error::DemuxError;
-use crate::packet::{Packet as OurPacket, TimeBase as OurTimeBase, TrackInfo, TrackKind};
 
 /// Demuxer на базе symphonia для WebM/MKV файлов.
 pub struct SymphoniaDemuxer {
@@ -99,13 +99,12 @@ impl SymphoniaDemuxer {
                 entry
                     .time_base
                     .zip(track.codec_params.n_frames)
-                    .map(|(tb, n_frames)| {
-                        let time = tb.calc_time(n_frames);
-                        Duration::from_secs_f64(time.seconds as f64 + time.frac)
+                    .map(|(time_base, frame_count)| {
+                        symphonia_timestamp_to_duration(time_base, frame_count)
                     });
 
             tracks.push(TrackInfo {
-                id: track.id,
+                id: TrackId::new(track.id),
                 kind: entry.kind,
                 codec_id: entry.codec_id.clone(),
                 codec_private: track
@@ -113,10 +112,9 @@ impl SymphoniaDemuxer {
                     .extra_data
                     .as_ref()
                     .map(|data| Bytes::copy_from_slice(data)),
-                time_base: entry.time_base.map(|tb| OurTimeBase {
-                    numer: tb.numer,
-                    denom: tb.denom,
-                }),
+                time_base: entry
+                    .time_base
+                    .and_then(|time_base| OurTimeBase::new(time_base.numer, time_base.denom)),
                 duration,
                 sample_rate: entry.sample_rate,
                 channels: entry.channels,
@@ -145,10 +143,7 @@ impl SymphoniaDemuxer {
 
         let pts = entry
             .time_base
-            .map(|tb| {
-                let time = tb.calc_time(packet.ts());
-                Duration::from_secs_f64(time.seconds as f64 + time.frac)
-            })
+            .map(|time_base| symphonia_timestamp_to_duration(time_base, packet.ts()))
             .unwrap_or_default();
 
         let keyframe = if entry.kind == TrackKind::Video && entry.codec_id == "V_VP9" {
@@ -164,7 +159,7 @@ impl SymphoniaDemuxer {
         };
 
         Some(OurPacket {
-            track_id: packet.track_id(),
+            track_id: TrackId::new(packet.track_id()),
             kind: entry.kind,
             pts,
             dts: None,
@@ -314,4 +309,29 @@ fn parse_opus_head(data: &[u8]) -> Option<(u32, u32)> {
     );
 
     Some((sample_rate, channel_count))
+}
+
+/// Конвертирует Symphonia timestamp units в [`Duration`] без размазывания формулы по demuxer-у.
+fn symphonia_timestamp_to_duration(time_base: TimeBase, timestamp_units: u64) -> Duration {
+    OurTimeBase::new(time_base.numer, time_base.denom)
+        .map(|media_time_base| media_time_base.timestamp_to_duration(timestamp_units))
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use symphonia::core::units::TimeBase;
+
+    use super::symphonia_timestamp_to_duration;
+
+    #[test]
+    fn converts_packet_timestamp_to_duration() {
+        let time_base = TimeBase::new(1, 1_000);
+
+        let duration = symphonia_timestamp_to_duration(time_base, 2_750);
+
+        assert_eq!(duration, Duration::from_millis(2_750));
+    }
 }

@@ -15,9 +15,9 @@ use cros_codecs::libva::{
     VA_RT_FORMAT_YUV422_10, VA_RT_FORMAT_YUV422_12, VA_RT_FORMAT_YUV444, VA_RT_FORMAT_YUV444_10,
     VA_RT_FORMAT_YUV444_12,
 };
+use media_core::Packet;
 use tracing::{debug, info, trace, warn};
 use video_core::{ColorSpace, DecodedFrame, FrameTextureHandle, VideoDecoder};
-use webm_demux::packet::Packet;
 
 use crate::frame_pool::DmaFramePool;
 use crate::internal_vaapi_frame::InternalVaapiFrame;

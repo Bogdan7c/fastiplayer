@@ -1,9 +1,9 @@
 use anyhow::Result;
+use media_core::Packet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tracing::{info, warn};
 use video_core::{ColorSpace, DecodedFrame, FrameTextureHandle, VideoDecoder};
-use webm_demux::packet::Packet;
 
 use crate::decode::{CompletedFrame, DecodeEngine};
 use crate::device::VulkanVideoDevice;

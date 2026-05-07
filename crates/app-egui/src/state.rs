@@ -15,13 +15,14 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use media_core::{TrackInfo, TrackKind};
 use player_core::{
     AudioBufferSnapshot, BackendSnapshot, FrameCounters, PlaybackState, PlayerError,
     PlayerErrorKind, PlayerSnapshot, QueueSnapshot, TexturePoolSnapshot, TrackId,
     TrackSelectionSnapshot, VideoFrameSnapshot,
 };
 use tracing::{info, instrument, warn};
-use webm_demux::{Demuxer, TrackKind};
+use webm_demux::Demuxer;
 use winit::window::Window;
 
 use crate::telemetry::Telemetry;
@@ -118,11 +119,11 @@ pub struct AppState {
     pub audio_output: Option<audio::AudioOutput>,
 
     /// Track ID audio трека (для фильтрации packets).
-    pub audio_track_id: Option<u32>,
+    pub audio_track_id: Option<TrackId>,
 
     /// Очередь сырых audio packets для throttle.
     /// Предотвращает переполнение ring buffer при burst decode.
-    pub pending_audio_packets: VecDeque<(u32, Vec<u8>)>,
+    pub pending_audio_packets: VecDeque<(TrackId, Vec<u8>)>,
 
     /// Video decoder thread — VA-API VP9 decode в отдельном потоке.
     pub video_decoder_thread: Option<video_vaapi::VideoDecodeThread>,
@@ -140,10 +141,10 @@ pub struct AppState {
     pub present_video_frame: Option<video_core::DecodedFrame>,
 
     /// Track ID video трека.
-    pub video_track_id: Option<u32>,
+    pub video_track_id: Option<TrackId>,
 
     /// Очередь сырых video packets для decode.
-    pub pending_video_packets: VecDeque<(u32, std::time::Duration, Vec<u8>, bool)>,
+    pub pending_video_packets: VecDeque<(TrackId, std::time::Duration, Vec<u8>, bool)>,
 
     /// Audio clock для A/V sync.
     pub audio_clock: Option<std::sync::Arc<audio::clock::AudioClock>>,
@@ -326,8 +327,8 @@ impl AppState {
     /// Собирает snapshot выбранных tracks.
     fn track_selection_snapshot(&self) -> TrackSelectionSnapshot {
         TrackSelectionSnapshot {
-            video_track: self.video_track_id.map(TrackId::new),
-            audio_track: self.audio_track_id.map(TrackId::new),
+            video_track: self.video_track_id,
+            audio_track: self.audio_track_id,
             subtitle_track: None,
         }
     }
@@ -618,11 +619,11 @@ impl AppState {
                         let tracks = demuxer.tracks();
                         let video_tracks: Vec<_> = tracks
                             .iter()
-                            .filter(|t| t.kind == webm_demux::TrackKind::Video)
+                            .filter(|track| track.kind == TrackKind::Video)
                             .collect();
                         let audio_tracks: Vec<_> = tracks
                             .iter()
-                            .filter(|t| t.kind == webm_demux::TrackKind::Audio)
+                            .filter(|track| track.kind == TrackKind::Audio)
                             .collect();
 
                         for t in &video_tracks {
@@ -846,7 +847,7 @@ impl AppState {
                 // Ищем video track
                 let video_track = tracks
                     .iter()
-                    .find(|t| t.kind == webm_demux::TrackKind::Video && t.codec_id == "V_VP9");
+                    .find(|track| track.kind == TrackKind::Video && track.codec_id == "V_VP9");
                 if let Some(track) = video_track {
                     self.video_track_id = Some(track.id);
                 } else {
@@ -887,7 +888,7 @@ impl AppState {
         // Ищем VP9 video track.
         let video_track = tracks
             .iter()
-            .find(|track| track.kind == webm_demux::TrackKind::Video && track.codec_id == "V_VP9");
+            .find(|track| track.kind == TrackKind::Video && track.codec_id == "V_VP9");
         if let Some(track) = video_track {
             self.video_track_id = Some(track.id);
         } else {
@@ -973,7 +974,7 @@ impl AppState {
     }
 
     /// Инициализирует audio pipeline если есть Opus audio track.
-    fn init_audio_pipeline(&mut self, tracks: &[webm_demux::TrackInfo]) {
+    fn init_audio_pipeline(&mut self, tracks: &[TrackInfo]) {
         // Находим первый audio track с известными параметрами
         let audio_track = tracks.iter().find(|t| {
             t.kind == TrackKind::Audio && t.sample_rate.is_some() && t.channels.is_some()
@@ -986,14 +987,14 @@ impl AppState {
 
         let (Some(sample_rate), Some(channels)) = (track.sample_rate, track.channels) else {
             warn!(
-                track_id = track.id,
+                track_id = %track.id,
                 "Audio track выбран без sample_rate/channels"
             );
             return;
         };
 
         info!(
-            track_id = track.id,
+            track_id = %track.id,
             codec = %track.codec_id,
             sample_rate,
             channels,
@@ -1038,7 +1039,7 @@ impl AppState {
     /// Обрабатывает audio packet: decode → write to AudioOutput.
     ///
     /// Вызывается из render_frame() для каждого audio packet.
-    pub fn process_audio_packet(&mut self, track_id: u32, data: &[u8]) {
+    pub fn process_audio_packet(&mut self, track_id: TrackId, data: &[u8]) {
         // Пропускаем packets не нашего audio трека
         if self.audio_track_id != Some(track_id) {
             return;

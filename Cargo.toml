@@ -2,6 +2,7 @@
 members = [
     "crates/app-egui",
     "crates/player-core",
+    "crates/media-core",
     "crates/webm-demux",
     "crates/audio",
     "crates/vp9-parser",
@@ -44,3 +45,4 @@ video-vulkan = { path = "crates/video-vulkan" }
 video-vaapi = { path = "crates/video-vaapi" }
 render = { path = "crates/render" }
 player-core = { path = "crates/player-core" }
+media-core = { path = "crates/media-core" }

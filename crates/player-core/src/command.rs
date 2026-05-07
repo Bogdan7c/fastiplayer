@@ -1,23 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Идентификатор media-трека внутри текущего контейнера.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TrackId(u32);
-
-impl TrackId {
-    /// Создаёт typed wrapper вокруг числового ID трека.
-    #[must_use]
-    pub const fn new(raw_track_id: u32) -> Self {
-        Self(raw_track_id)
-    }
-
-    /// Возвращает исходный ID трека для адаптеров старого pipeline.
-    #[must_use]
-    pub const fn get(self) -> u32 {
-        self.0
-    }
-}
+use media_core::TrackId;
 
 /// Идентификатор качества или варианта потока.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

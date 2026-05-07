@@ -134,6 +134,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
+ "media-core",
  "player-core",
  "pollster",
  "render",
@@ -392,7 +393,6 @@ dependencies = [
  "symphonia",
  "thiserror 2.0.18",
  "tracing",
- "webm-demux",
 ]
 
 [[package]]
@@ -2092,6 +2092,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "media-core"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2807,6 +2814,9 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "player-core"
 version = "0.1.0"
+dependencies = [
+ "media-core",
+]
 
 [[package]]
 name = "png"
@@ -4271,7 +4281,7 @@ name = "video-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "webm-demux",
+ "media-core",
 ]
 
 [[package]]
@@ -4284,10 +4294,10 @@ dependencies = [
  "cros-codecs 0.0.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "gbm",
  "gbm-sys",
+ "media-core",
  "nix 0.29.0",
  "tracing",
  "video-core",
- "webm-demux",
  "wgpu",
  "wgpu-types",
 ]
@@ -4299,11 +4309,11 @@ dependencies = [
  "anyhow",
  "ash",
  "gpu-allocator 0.27.0",
+ "media-core",
  "thiserror 2.0.18",
  "tracing",
  "video-core",
  "vp9-parser",
- "webm-demux",
  "wgpu",
  "wgpu-hal",
  "wgpu-types",
@@ -4641,6 +4651,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "media-core",
  "symphonia",
  "thiserror 2.0.18",
  "tracing",

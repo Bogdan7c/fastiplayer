@@ -12,4 +12,3 @@ opus = "0.3"
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-webm-demux = { path = "../webm-demux" }

@@ -16,7 +16,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use webm_demux::TrackKind;
+use media_core::TrackKind;
 
 /// Причина, по которой video frame был удалён из playback pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

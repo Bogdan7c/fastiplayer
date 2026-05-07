@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::time::Duration;
 
-use webm_demux::packet::Packet;
+use media_core::Packet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameTextureHandle(pub u64);

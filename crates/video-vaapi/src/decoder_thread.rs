@@ -13,6 +13,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use media_core::{Packet, TrackId, TrackKind};
 use tracing::{info, trace};
 use video_core::{DecodedFrame, VideoDecoder};
 
@@ -33,7 +34,7 @@ pub enum ThreadMsg {
 
 /// Сырые данные видео-пакета для передачи в decoder thread.
 pub struct DecodePacket {
-    pub track_id: u32,
+    pub track_id: TrackId,
     pub pts: Duration,
     pub data: Vec<u8>,
     pub keyframe: bool,
@@ -242,9 +243,9 @@ fn decoder_thread_loop(
     while let Ok(msg) = msg_rx.recv() {
         match msg {
             ThreadMsg::Packet(packet) => {
-                let pkt = webm_demux::packet::Packet {
+                let pkt = Packet {
                     track_id: packet.track_id,
-                    kind: webm_demux::TrackKind::Video,
+                    kind: TrackKind::Video,
                     pts: packet.pts,
                     dts: None,
                     keyframe: packet.keyframe,
