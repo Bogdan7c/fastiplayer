@@ -1,8 +1,7 @@
-//! Минимальный core-контракт плеера.
+//! Core-контракт и runtime state machine плеера.
 //!
-//! Phase 1 намеренно не переносит media pipeline из `app-egui`.
-//! Этот crate фиксирует публичные типы команд, событий, snapshot'ов и состояний,
-//! чтобы следующие фазы могли переносить логику маленькими проверяемыми шагами.
+//! После Phase 4 этот crate владеет media pipeline и playback tick:
+//! demux loop, audio throttle, video backpressure и A/V scheduler не живут в UI shell.
 
 #![forbid(unsafe_code)]
 
@@ -13,6 +12,7 @@ mod pipeline;
 mod session;
 mod snapshot;
 mod state;
+mod tick;
 
 pub use command::{
     MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, SeekMode,
@@ -31,3 +31,7 @@ pub use snapshot::{
     VideoFrameSnapshot,
 };
 pub use state::PlaybackState;
+pub use tick::{
+    PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult, PlayerVideoDropReason,
+    PlayerVideoFrameDrop,
+};

@@ -127,13 +127,6 @@ impl AppState {
         let is_playing = self.player_session.playback_state() == PlaybackState::Playing;
 
         if is_playing {
-            if let Some(audio_secs) = self.player_session.audio_clock_secs() {
-                self.player_session
-                    .update_current_position(duration_from_seconds_lossy(audio_secs));
-            } else {
-                self.player_session
-                    .advance_position(Duration::from_secs_f64(1.0 / 60.0));
-            }
             self.next_frame();
         }
 

@@ -96,6 +96,18 @@ impl PlayerSession {
         matches!(self.snapshot.playback_state, PlaybackState::Playing) || self.draining_after_eof
     }
 
+    /// Возвращает `true`, если текущая session владеет открытым demuxer-ом.
+    #[must_use]
+    pub fn has_loaded_media_pipeline(&self) -> bool {
+        self.pipeline.demuxer.is_some()
+    }
+
+    /// Возвращает путь текущего локального файла, если media было открыто с диска.
+    #[must_use]
+    pub fn current_file_path(&self) -> Option<&Path> {
+        self.pipeline.file_path.as_deref()
+    }
+
     /// Применяет команду к state machine.
     pub fn dispatch_command(&mut self, command: PlayerCommand) -> PlayerResult<()> {
         match command {
@@ -374,20 +386,9 @@ impl PlayerSession {
 
     /// Process pending audio packets с throttle по buffer level.
     pub fn process_pending_audio_packets(&mut self) {
-        let buffer_ms = self.audio_buffer_level_ms().unwrap_or(0.0);
-        if buffer_ms > 200.0 {
-            return;
-        }
-
-        while let Some(packet) = self.pipeline.pending_audio_packets.pop_front() {
-            let buffer_ms = self.audio_buffer_level_ms().unwrap_or(0.0);
-            if buffer_ms > 200.0 {
-                self.pipeline.pending_audio_packets.push_front(packet);
-                break;
-            }
-
-            self.process_audio_packet(packet.track_id, &packet.data);
-        }
+        self.process_pending_audio_packets_with_buffer_limit(
+            crate::PlayerTickConfig::default().audio_buffer_high_water_mark_ms,
+        );
     }
 
     /// Возвращает audio clock time для отображения в UI.

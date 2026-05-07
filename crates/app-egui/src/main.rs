@@ -26,8 +26,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use media_core::TrackKind;
-use player_core::{PendingAudioPacket, PendingVideoPacket, PlayerError, PlayerErrorKind};
+use player_core::{
+    PlayerError, PlayerErrorKind, PlayerTickContext, PlayerTickResult, PlayerVideoDropReason,
+};
 use tracing::{debug, info, instrument, trace, warn};
 use winit::{
     application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
@@ -52,73 +53,6 @@ enum InitialMedia {
         demuxer: Box<dyn webm_demux::Demuxer>,
     },
 }
-
-/// Минимальная длительность без движения audio clock, после которой считаем звук stalled.
-///
-/// CPAL callback обычно обновляет clock пачками samples, а render loop может сработать между
-/// двумя callbacks. Поэтому один одинаковый `audio_now` ещё не означает underrun.
-const AUDIO_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
-
-/// Сколько container packets читаем за один redraw.
-///
-/// Это ограничивает read-ahead: decoder не должен убегать на секунды вперёд от presentation.
-const MAX_DEMUX_PACKETS_PER_REDRAW: usize = 6;
-
-/// Максимум готовых видеокадров в очереди presentation.
-///
-/// 8 кадров дают примерно 133ms при 60 FPS и примерно 267ms при 30 FPS.
-/// Этого достаточно для сглаживания decode jitter, но очередь больше не
-/// забирает почти весь zero-copy texture pool.
-const MAX_VIDEO_PRESENT_QUEUE: usize = 8;
-
-/// Минимальный запас свободных texture slots перед отправкой новых video packets.
-///
-/// Запас нужен для текущего present frame, кадров в decoder channel и transient
-/// imported textures, которые освобождаются после `on_submitted_work_done`.
-const MIN_TEXTURE_SLOTS_AVAILABLE_FOR_DECODE: usize = 2;
-
-/// Максимум сырых video packets, которые можно держать между demuxer и decoder thread.
-///
-/// Этот лимит важен для pause/resume: demuxer не должен уходить далеко вперёд, пока
-/// decode-ahead guard ждёт audio clock. Иначе после resume следующий video packet будет
-/// слишком далеко от audio clock и видео не сможет продолжить декодирование.
-const MAX_PENDING_VIDEO_PACKETS: usize = 8;
-
-/// Максимум video packets, которые render thread отправляет decoder thread за один redraw.
-///
-/// Один packet за redraw достаточно для 60 FPS media при 60 Hz render loop.
-/// Более высокий лимит даёт decoder thread burst из нескольких кадров, а затем
-/// presentation queue начинает штатно дропать кадры как `QueueOverflow`.
-const MAX_VIDEO_PACKETS_SENT_PER_REDRAW: usize = 1;
-
-/// Максимум decoded frames, которые render thread принимает из decoder thread за redraw.
-///
-/// Приём должен идти по свободным presentation slots. Если вычитать весь decoder channel
-/// сразу, decoder burst обгоняет scheduler, и очередь превращается в drop-механизм.
-const MAX_DECODED_VIDEO_FRAMES_DRAINED_PER_REDRAW: usize = 1;
-
-/// Максимальный допустимый decode-ahead относительно audio clock.
-///
-/// Если отправлять в decoder thread кадры на секунды вперёд, A/V sync будет честно ждать
-/// звук, а пользователь увидит "зависший" старый кадр. 500ms оставляют рабочий буфер,
-/// но не позволяют видео накопить многосекундный отрыв.
-const MAX_VIDEO_DECODE_AHEAD: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// Небольшой phase lead при выборе кадра относительно audio clock.
-///
-/// Половина video frame компенсирует задержку render→present и не заставляет
-/// scheduler перескакивать кадры из-за мелкого phase jitter.
-const VIDEO_PRESENT_LEAD_FRAMES: f64 = 0.5;
-
-/// Окно, внутри которого следующий sequential frame можно показывать без ожидания.
-const VIDEO_PRESENT_WINDOW_FRAMES: f64 = 1.0;
-
-/// Запас перед late-drop.
-///
-/// Даже если следующий кадр математически ближе к target, текущий кадр лучше
-/// показать, если он не опоздал реально. Иначе 60 FPS легко превращаются в
-/// регулярный skip на границе половины frame interval.
-const VIDEO_LATE_DROP_GRACE_FRAMES: f64 = 2.0;
 
 /// Главное приложение — реализует ApplicationHandler для winit.
 ///
@@ -209,12 +143,12 @@ impl App {
                 }
             }
 
-            if app_state.player_session.pipeline.demuxer.is_some() {
+            if app_state.player_session.has_loaded_media_pipeline() {
                 app_state.toggle_playback();
             }
         }
 
-        // Phase 1 smoke path: shell умеет собрать core snapshot без переноса pipeline.
+        // Shell получает read-only snapshot без доступа к mutable playback internals.
         let _player_snapshot = app_state.player_snapshot();
 
         self.renderer = Some(renderer);
@@ -225,9 +159,9 @@ impl App {
     /// Освобождает runtime-ресурсы в порядке, безопасном для GPU/audio cleanup.
     fn drop_runtime(&mut self) {
         if let Some(app_state) = &self.app_state
-            && let Some(path) = &app_state.player_session.pipeline.file_path
+            && let Some(path) = app_state.player_session.current_file_path()
         {
-            self.initial_media = Some(InitialMedia::File(path.clone()));
+            self.initial_media = Some(InitialMedia::File(path.to_path_buf()));
         }
         self.app_state = None;
         self.renderer = None;
@@ -354,528 +288,47 @@ impl ApplicationHandler for App {
     }
 }
 
-/// Проверяет, можно ли отправить video packet в decoder thread без чрезмерного decode-ahead.
-fn can_send_video_packet_to_decoder(app_state: &AppState, packet_pts: std::time::Duration) -> bool {
-    if !has_texture_capacity_for_decode(app_state) {
-        return false;
-    }
+/// Переносит результат `PlayerSession::tick` в shell telemetry.
+fn record_player_tick_result(telemetry: &Telemetry, tick_result: &PlayerTickResult) {
+    for packet in &tick_result.demuxed_packets {
+        telemetry.record_packet(packet.kind, packet.pts);
 
-    // Для файлов без audio track нет внешнего clock, поэтому video может идти самостоятельно.
-    if app_state.player_session.pipeline.audio_track_id.is_none()
-        || app_state.player_session.pipeline.audio_clock.is_none()
-    {
-        return true;
-    }
-
-    // Audio clock — главный источник времени для A/V sync.
-    let audio_now = app_state.player_session.audio_clock_now();
-
-    // Saturating diff защищает от underflow, когда packet слегка позади audio clock.
-    let packet_lead = packet_pts.saturating_sub(audio_now);
-
-    // Decode-ahead разрешён только в пределах небольшого буфера.
-    packet_lead <= MAX_VIDEO_DECODE_AHEAD
-}
-
-/// Проверяет, есть ли запас texture slots для ещё одного decoded frame.
-fn has_texture_capacity_for_decode(app_state: &AppState) -> bool {
-    let Some(ref thread) = app_state.player_session.pipeline.video_decoder_thread else {
-        return true;
-    };
-
-    let Some(stats) = thread.texture_pool_stats() else {
-        return true;
-    };
-
-    let available_slots = stats.available_slots();
-    if available_slots <= MIN_TEXTURE_SLOTS_AVAILABLE_FOR_DECODE {
-        trace!(
-            texture_slots = stats.slots,
-            texture_in_use = stats.in_use,
-            texture_capacity = stats.capacity,
-            available_slots,
-            reserve = MIN_TEXTURE_SLOTS_AVAILABLE_FOR_DECODE,
-            "Video backpressure: waiting for texture slots"
-        );
-        return false;
-    }
-
-    true
-}
-
-/// Проверяет, можно ли читать следующий packet из demuxer.
-fn can_read_next_demux_packet(app_state: &AppState) -> bool {
-    // Если texture pool почти заполнен, сначала даём presentation освободить frames.
-    if !has_texture_capacity_for_decode(app_state) {
-        return false;
-    }
-
-    // Если очередь сырых video packets заполнена, demuxer должен подождать decoder.
-    if app_state
-        .player_session
-        .pipeline
-        .pending_video_packets
-        .len()
-        >= MAX_PENDING_VIDEO_PACKETS
-    {
-        return false;
-    }
-
-    // Если presentation queue заполнена, чтение новых packets только увеличит задержку.
-    if available_video_present_slots(app_state) == 0 {
-        return false;
-    }
-
-    true
-}
-
-/// Возвращает количество свободных мест в presentation queue.
-fn available_video_present_slots(app_state: &AppState) -> usize {
-    MAX_VIDEO_PRESENT_QUEUE
-        .saturating_sub(app_state.player_session.pipeline.video_frame_queue.len())
-}
-
-/// Кладёт decoded frame в presentation queue, сохраняя фиксированный размер очереди.
-fn enqueue_decoded_video_frame(
-    app_state: &mut AppState,
-    telemetry: &Telemetry,
-    frame: video_core::DecodedFrame,
-) {
-    while app_state.player_session.pipeline.video_frame_queue.len() >= MAX_VIDEO_PRESENT_QUEUE {
-        let Some(stale_frame) = app_state
-            .player_session
-            .pipeline
-            .video_frame_queue
-            .pop_front()
-        else {
-            break;
-        };
-
-        if let Some(ref thread) = app_state.player_session.pipeline.video_decoder_thread {
-            thread.release_frame(stale_frame.texture_handle);
-        }
-
-        telemetry.record_video_frame_dropped(VideoDropReason::QueueOverflow);
-        tracing::debug!(
-            pts_ms = stale_frame.pts.as_millis(),
-            queue_limit = MAX_VIDEO_PRESENT_QUEUE,
-            "Dropping oldest queued video frame before enqueue"
-        );
-    }
-
-    app_state
-        .player_session
-        .pipeline
-        .video_frame_queue
-        .push_back(frame);
-}
-
-/// Забирает готовые кадры из decoder thread и кладёт их в presentation queue.
-fn drain_decoded_video_frames(app_state: &mut AppState, telemetry: &Telemetry) {
-    let Some(ref thread) = app_state.player_session.pipeline.video_decoder_thread else {
-        if !app_state
-            .player_session
-            .pipeline
-            .pending_video_packets
-            .is_empty()
-        {
-            tracing::warn!(
-                count = app_state
-                    .player_session
-                    .pipeline
-                    .pending_video_packets
-                    .len(),
-                "No video decoder thread — dropping video packets"
-            );
-        }
-        app_state
-            .player_session
-            .pipeline
-            .pending_video_packets
-            .clear();
-        return;
-    };
-
-    let playback_can_present = app_state.player_session.can_present_video();
-    let receive_budget = if playback_can_present {
-        available_video_present_slots(app_state).min(MAX_DECODED_VIDEO_FRAMES_DRAINED_PER_REDRAW)
-    } else {
-        usize::MAX
-    };
-
-    if receive_budget == 0 {
-        return;
-    }
-
-    let mut decoded_frames = Vec::new();
-    for _ in 0..receive_budget {
-        let Some(frame) = thread.try_recv_frame() else {
-            break;
-        };
-        decoded_frames.push(frame);
-    }
-
-    for frame in decoded_frames {
-        tracing::debug!(
-            pts_ms = frame.pts.as_millis(),
-            width = frame.width,
-            height = frame.height,
-            "Video frame decoded"
-        );
-        telemetry.record_video_frame_decoded();
-        app_state.player_session.observe_video_frame_pts(frame.pts);
-
-        // В Paused кадры могли доехать из decoder thread уже после клика по паузе.
-        // Их нельзя показывать: pause должен заморозить текущий present frame.
-        if playback_can_present {
-            enqueue_decoded_video_frame(app_state, telemetry, frame);
-        } else if let Some(ref thread) = app_state.player_session.pipeline.video_decoder_thread {
-            thread.release_frame(frame.texture_handle);
-            telemetry.record_video_frame_dropped(VideoDropReason::Paused);
-            tracing::debug!("Dropping decoded frame received while playback is paused");
-        }
-    }
-}
-
-/// Отправляет ограниченное число pending video packets в decoder thread.
-fn send_pending_video_packets_to_decoder(app_state: &mut AppState) {
-    let Some(ref thread) = app_state.player_session.pipeline.video_decoder_thread else {
-        return;
-    };
-
-    let mut sent_packets = 0usize;
-
-    while sent_packets < MAX_VIDEO_PACKETS_SENT_PER_REDRAW {
-        let available_slots = available_video_present_slots(app_state);
-        if available_slots == 0 || sent_packets >= available_slots {
-            break;
-        }
-
-        let Some(packet) = app_state
-            .player_session
-            .pipeline
-            .pending_video_packets
-            .front()
-        else {
-            break;
-        };
-
-        if app_state.player_session.pipeline.video_track_id != Some(packet.track_id) {
-            app_state
-                .player_session
-                .pipeline
-                .pending_video_packets
-                .pop_front();
-            continue;
-        }
-
-        if !can_send_video_packet_to_decoder(app_state, packet.pts) {
-            trace!(
-                pts_ms = packet.pts.as_millis(),
-                audio_ms = app_state.player_session.audio_clock_now().as_millis(),
-                max_ahead_ms = MAX_VIDEO_DECODE_AHEAD.as_millis(),
-                "A/V sync: holding video packet to limit decode-ahead"
-            );
-            break;
-        }
-
-        let Some(packet) = app_state
-            .player_session
-            .pipeline
-            .pending_video_packets
-            .pop_front()
-        else {
-            break;
-        };
-
-        trace!(
-            pts_ms = packet.pts.as_millis(),
-            data_len = packet.data.len(),
-            keyframe = packet.keyframe,
-            "Sending video packet to decoder thread"
-        );
-
-        let packet = video_vaapi::DecodePacket {
-            track_id: packet.track_id,
-            pts: packet.pts,
-            data: packet.data,
-            keyframe: packet.keyframe,
-        };
-
-        if let Err(e) = thread.send_packet(packet) {
-            tracing::warn!(error = %e, "Failed to send packet to decoder thread");
-            break;
-        }
-
-        sent_packets += 1;
-    }
-}
-
-/// Удаляет лишние кадры, если presentation queue стала больше безопасного лимита.
-fn trim_video_present_queue(app_state: &mut AppState, telemetry: &Telemetry) {
-    while app_state.player_session.pipeline.video_frame_queue.len() > MAX_VIDEO_PRESENT_QUEUE {
-        if let Some(frame) = app_state
-            .player_session
-            .pipeline
-            .video_frame_queue
-            .pop_front()
-        {
-            if let Some(ref thread) = app_state.player_session.pipeline.video_decoder_thread {
-                thread.release_frame(frame.texture_handle);
-            }
-            telemetry.record_video_frame_dropped(VideoDropReason::QueueOverflow);
+        if telemetry.packets_read() <= 50 {
             tracing::debug!(
-                pts_ms = frame.pts.as_millis(),
-                "Dropping frame: queue overflow protection"
+                track_id = %packet.track_id,
+                kind = ?packet.kind,
+                pts_ms = packet.pts.as_millis(),
+                size = packet.size,
+                keyframe = packet.keyframe,
+                "Packet"
             );
         }
     }
-}
 
-/// Добавляет duration без panic при переполнении.
-fn saturating_duration_add(
-    timestamp: std::time::Duration,
-    offset: std::time::Duration,
-) -> std::time::Duration {
-    timestamp
-        .checked_add(offset)
-        .unwrap_or(std::time::Duration::MAX)
-}
-
-/// Рассчитывает media time, под который выбираем frame для ближайшего present.
-fn target_media_time_for_present(
-    app_state: &AppState,
-    audio_now: std::time::Duration,
-) -> std::time::Duration {
-    let present_lead = app_state
-        .player_session
-        .pipeline
-        .video_frame_duration_estimate
-        .mul_f64(VIDEO_PRESENT_LEAD_FRAMES);
-    saturating_duration_add(audio_now, present_lead)
-}
-
-/// Возвращает допустимое окно выбора кадра вокруг target media time.
-fn video_present_window(app_state: &AppState) -> std::time::Duration {
-    app_state
-        .player_session
-        .pipeline
-        .video_frame_duration_estimate
-        .mul_f64(VIDEO_PRESENT_WINDOW_FRAMES)
-}
-
-/// Возвращает допустимое опоздание кадра перед forced catch-up drop.
-fn video_late_drop_grace(app_state: &AppState) -> std::time::Duration {
-    app_state
-        .player_session
-        .pipeline
-        .video_frame_duration_estimate
-        .mul_f64(VIDEO_LATE_DROP_GRACE_FRAMES)
-}
-
-/// Проверяет, нужно ли дропнуть первый queued frame как реально устаревший.
-fn should_drop_front_frame_as_late(
-    app_state: &AppState,
-    target_media_time: std::time::Duration,
-    late_drop_grace: std::time::Duration,
-) -> bool {
-    let Some(front_frame) = app_state.player_session.pipeline.video_frame_queue.front() else {
-        return false;
-    };
-    let Some(next_frame) = app_state.player_session.pipeline.video_frame_queue.get(1) else {
-        return false;
-    };
-
-    let latest_front_pts = saturating_duration_add(front_frame.pts, late_drop_grace);
-    if target_media_time <= latest_front_pts {
-        return false;
+    for _ in 0..tick_result.decoded_video_frames {
+        telemetry.record_video_frame_decoded();
     }
 
-    next_frame.pts <= target_media_time
-}
-
-/// Проверяет, слишком ли рано показывать первый queued frame.
-fn should_wait_for_front_frame(
-    frame_pts: std::time::Duration,
-    target_media_time: std::time::Duration,
-    present_window: std::time::Duration,
-) -> bool {
-    frame_pts > saturating_duration_add(target_media_time, present_window)
-}
-
-/// Освобождает texture handle через decoder thread, если он ещё существует.
-fn release_video_texture(app_state: &AppState, texture_handle: video_core::FrameTextureHandle) {
-    if let Some(ref thread) = app_state.player_session.pipeline.video_decoder_thread {
-        thread.release_frame(texture_handle);
-    }
-}
-
-/// Удаляет первый queued frame и записывает причину drop.
-fn drop_front_queued_video_frame(
-    app_state: &mut AppState,
-    telemetry: &Telemetry,
-    reason: VideoDropReason,
-) -> bool {
-    let Some(frame) = app_state
-        .player_session
-        .pipeline
-        .video_frame_queue
-        .pop_front()
-    else {
-        return false;
-    };
-
-    let frame_pts_ms = frame.pts.as_millis();
-    release_video_texture(app_state, frame.texture_handle);
-    telemetry.record_video_frame_dropped(reason);
-    tracing::debug!(
-        pts_ms = frame_pts_ms,
-        ?reason,
-        "Dropping queued video frame"
-    );
-    true
-}
-
-/// Делает первый queued frame текущим present frame.
-fn present_front_queued_video_frame(app_state: &mut AppState, telemetry: &Telemetry) -> bool {
-    let Some(frame) = app_state
-        .player_session
-        .pipeline
-        .video_frame_queue
-        .pop_front()
-    else {
-        return false;
-    };
-
-    if let Some(old_frame) = app_state.player_session.pipeline.present_video_frame.take() {
-        release_video_texture(app_state, old_frame.texture_handle);
+    for _ in 0..tick_result.video_frames_presented {
+        telemetry.record_video_frame_presented();
     }
 
-    tracing::debug!(
-        pts_ms = frame.pts.as_millis(),
-        "Presenting scheduled video frame"
-    );
-    app_state.player_session.pipeline.present_video_frame = Some(frame);
-    telemetry.record_video_frame_presented();
-    true
-}
-
-/// Повторно показывает текущий кадр и учитывает это в telemetry.
-fn repeat_present_video_frame(app_state: &AppState, telemetry: &Telemetry) {
-    if app_state
-        .player_session
-        .pipeline
-        .present_video_frame
-        .is_some()
-    {
+    for _ in 0..tick_result.video_frames_repeated {
         telemetry.record_video_frame_repeated();
     }
+
+    for dropped_frame in &tick_result.dropped_video_frames {
+        telemetry.record_video_frame_dropped(map_video_drop_reason(dropped_frame.reason));
+    }
 }
 
-/// Обрабатывает pending video packets: приём готовых кадров, backpressure и A/V sync.
-fn process_pending_video_packets(app_state: &mut AppState, telemetry: &Telemetry) {
-    // 1. Сначала забираем уже готовые кадры, чтобы decoder thread не забил frame channel.
-    drain_decoded_video_frames(app_state, telemetry);
-
-    let playback_can_present = app_state.player_session.can_present_video();
-
-    // 2. В пользовательской pause нельзя менять present frame и нельзя отправлять новые packets.
-    if !playback_can_present {
-        return;
+/// Конвертирует core-причину drop в app telemetry enum.
+fn map_video_drop_reason(reason: PlayerVideoDropReason) -> VideoDropReason {
+    match reason {
+        PlayerVideoDropReason::Late => VideoDropReason::Late,
+        PlayerVideoDropReason::QueueOverflow => VideoDropReason::QueueOverflow,
+        PlayerVideoDropReason::Paused => VideoDropReason::Paused,
     }
-
-    // 3. При обычном playback отправляем в decoder небольшой realtime-бюджет video packets.
-    if app_state.player_session.is_demuxing_active() {
-        send_pending_video_packets_to_decoder(app_state);
-    }
-
-    // 4. Защита от переполнения texture pool: не даём decoder'у убежать слишком далеко.
-    // Старое значение 4 кадра было слишком маленьким и вызывало лишние drop/skip при 4K readback.
-    trim_video_present_queue(app_state, telemetry);
-
-    // 5. A/V sync: выбираем кадр через audio-master scheduler.
-    if !app_state
-        .player_session
-        .pipeline
-        .video_frame_queue
-        .is_empty()
-    {
-        tracing::debug!(
-            queue_len = app_state.player_session.pipeline.video_frame_queue.len(),
-            "A/V sync: processing frame queue"
-        );
-    }
-    // Флаг: audio playback остановлен (buffer underrun / EOF).
-    // Важно: render loop может быть быстрее CPAL callback, поэтому stalled определяется
-    // по времени с последнего изменения clock, а не по одному повторившемуся значению.
-    let audio_now = app_state.player_session.audio_clock_now();
-    let audio_ms = audio_now.as_secs_f64() * 1000.0;
-    let now = std::time::Instant::now();
-    if audio_now != app_state.player_session.pipeline.last_audio_clock {
-        app_state.player_session.pipeline.last_audio_clock = audio_now;
-        app_state.player_session.pipeline.last_audio_clock_change_at = now;
-    }
-    let audio_stalled = audio_ms > 100.0
-        && now.duration_since(app_state.player_session.pipeline.last_audio_clock_change_at)
-            >= AUDIO_STALL_TIMEOUT;
-    if audio_stalled {
-        tracing::debug!(
-            audio_ms,
-            stalled_ms = now
-                .duration_since(app_state.player_session.pipeline.last_audio_clock_change_at)
-                .as_millis(),
-            queue_len = app_state.player_session.pipeline.video_frame_queue.len(),
-            "A/V sync: audio stalled"
-        );
-    }
-
-    // При stalled audio показываем максимум один кадр за redraw, чтобы EOF drain не завис.
-    if audio_stalled {
-        if !present_front_queued_video_frame(app_state, telemetry) {
-            repeat_present_video_frame(app_state, telemetry);
-        }
-        return;
-    }
-
-    let target_media_time = target_media_time_for_present(app_state, audio_now);
-    let present_window = video_present_window(app_state);
-    let late_drop_grace = video_late_drop_grace(app_state);
-
-    // Дропаем только реальный backlog. Небольшой phase jitter должен идти через
-    // sequential present, иначе 60 FPS поток начинает регулярно терять кадры.
-    while should_drop_front_frame_as_late(app_state, target_media_time, late_drop_grace) {
-        if !drop_front_queued_video_frame(app_state, telemetry, VideoDropReason::Late) {
-            break;
-        }
-    }
-
-    let Some(frame) = app_state.player_session.pipeline.video_frame_queue.front() else {
-        repeat_present_video_frame(app_state, telemetry);
-        return;
-    };
-
-    let diff_ms = frame.pts.as_secs_f64() * 1000.0 - target_media_time.as_secs_f64() * 1000.0;
-    if should_wait_for_front_frame(frame.pts, target_media_time, present_window) {
-        trace!(
-            pts_ms = frame.pts.as_millis(),
-            target_ms = target_media_time.as_millis(),
-            diff_ms,
-            window_ms = present_window.as_millis(),
-            "A/V scheduler: waiting for target media time"
-        );
-        repeat_present_video_frame(app_state, telemetry);
-        return;
-    }
-
-    tracing::debug!(
-        pts_ms = frame.pts.as_millis(),
-        audio_ms = audio_now.as_millis(),
-        target_ms = target_media_time.as_millis(),
-        diff_ms,
-        window_ms = present_window.as_millis(),
-        "A/V scheduler: frame selected"
-    );
-    present_front_queued_video_frame(app_state, telemetry);
 }
 
 /// Рендерит один полный кадр: видео + egui overlay.
@@ -894,95 +347,11 @@ fn render_frame(
     // Получаем ввод от egui_winit
     let egui_input = app_state.egui_winit_state.take_egui_input(window);
 
-    // 1. Demux new packets только если playing.
-    // При EOF переходим в Paused, но НЕ очищаем очередь кадров —
-    // A/V sync должен успеть отобразить оставшиеся decoded frames.
-    if app_state.player_session.is_demuxing_active() {
-        if app_state.player_session.pipeline.demuxer.is_some() {
-            for _ in 0..MAX_DEMUX_PACKETS_PER_REDRAW {
-                if !can_read_next_demux_packet(app_state) {
-                    trace!(
-                        pending_video_packets = app_state
-                            .player_session
-                            .pipeline
-                            .pending_video_packets
-                            .len(),
-                        queued_video_frames =
-                            app_state.player_session.pipeline.video_frame_queue.len(),
-                        "Demux backpressure: waiting for decoder/presentation"
-                    );
-                    break;
-                }
-
-                let packet_result = {
-                    let Some(demuxer) = app_state.player_session.pipeline.demuxer.as_mut() else {
-                        break;
-                    };
-                    demuxer.next_packet()
-                };
-
-                match packet_result {
-                    Ok(Some(packet)) => {
-                        telemetry.record_packet(packet.kind, packet.pts);
-
-                        if packet.kind == TrackKind::Audio {
-                            app_state
-                                .player_session
-                                .pipeline
-                                .pending_audio_packets
-                                .push_back(PendingAudioPacket::new(
-                                    packet.track_id,
-                                    packet.data.to_vec(),
-                                ));
-                        }
-                        if packet.kind == TrackKind::Video {
-                            app_state
-                                .player_session
-                                .pipeline
-                                .pending_video_packets
-                                .push_back(PendingVideoPacket::new(
-                                    packet.track_id,
-                                    packet.pts,
-                                    packet.data.to_vec(),
-                                    packet.keyframe,
-                                ));
-                        }
-
-                        if telemetry.packets_read() <= 50 {
-                            tracing::debug!(
-                                track_id = %packet.track_id,
-                                kind = ?packet.kind,
-                                pts_ms = packet.pts.as_millis(),
-                                size = packet.data.len(),
-                                keyframe = packet.keyframe,
-                                "Packet"
-                            );
-                        }
-                    }
-                    Ok(None) => {
-                        // EOF: останавливаем demux, но оставляем frames для A/V sync.
-                        app_state.player_session.enter_eof_drain();
-                        break;
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Ошибка чтения packet");
-                        app_state.player_session.mark_fatal_error(PlayerError::new(
-                            PlayerErrorKind::DemuxError,
-                            format!("Ошибка чтения packet: {e}"),
-                        ));
-                        break;
-                    }
-                }
-            }
-
-            // Process pending audio packets с throttle по buffer level
-            app_state.player_session.process_pending_audio_packets();
-        }
-    }
-
-    // 2. Всегда обрабатываем decoder output: отправка pending packets + приём готовых кадров + A/V sync.
-    // Это критично после EOF — decoder thread может ещё выдавать кадры из внутренней очереди.
-    process_pending_video_packets(app_state, telemetry);
+    // Player tick продвигает demux/audio/video/scheduler, а shell только пишет telemetry.
+    let tick_result = app_state
+        .player_session
+        .tick(PlayerTickContext::new(frame_start));
+    record_player_tick_result(telemetry, &tick_result);
 
     // Рендерим egui UI — получаем paint jobs и texture updates
     let egui_full_output = app_state.render_ui(window, egui_input);

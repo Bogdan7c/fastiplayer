@@ -61,9 +61,8 @@ impl PendingVideoPacket {
 
 /// Внутреннее владение media pipeline для текущей player session.
 ///
-/// Phase 3 переносит владение ресурсами из `AppState`, но Phase 4 ещё не переносит tick.
-/// Поэтому часть полей пока остаётся публичной для render shell, который постепенно станет
-/// тонким вызовом `PlayerSession::tick`.
+/// Phase 4 переносит playback tick в `PlayerSession`. Часть полей пока остаётся публичной,
+/// потому что renderer ещё забирает текущий кадр и backend-specific texture views напрямую.
 pub struct PlaybackPipeline {
     /// Demuxer текущего WebM/Matroska media.
     pub demuxer: Option<Box<dyn webm_demux::Demuxer>>,
