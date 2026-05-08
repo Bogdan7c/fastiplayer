@@ -25,6 +25,7 @@
 | Видео decode | Только аппаратное ускорение, software fallback для видео отсутствует |
 | Audio decode | Software decode допустим |
 | Linux video backend | VA-API primary, с поддержкой i965 и iHD |
+| Bitstream probing | Только через проверенные parser'ы/адаптеры, без новых ad-hoc bit parser'ов в `player-core` |
 | Renderer primary | `wgpu`/Vulkan |
 | Renderer legacy | Отдельный будущий OpenGL ES 2.0 crate для SDR 8-bit NV12 |
 | Windows | Second target, через DX12 |
@@ -35,4 +36,3 @@
 | Services | Модульные crate'ы, компилируются в один бинарь |
 | YouTube | Будущий полноценный клиент с account/session/cookies |
 | DRM | Дальняя архитектурная возможность, не текущий scope |
-

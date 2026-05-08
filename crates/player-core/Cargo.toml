@@ -11,10 +11,13 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = { workspace = true }
 audio = { path = "../audio" }
+capability-core = { workspace = true }
+codec-core = { workspace = true }
 media-core = { workspace = true }
 rustiplayer-config = { workspace = true }
 tracing = { workspace = true }
 video-core = { path = "../video-core" }
 video-vaapi = { path = "../video-vaapi" }
+vp9-parser = { workspace = true }
 webm-demux = { path = "../webm-demux" }
 wgpu = { workspace = true }

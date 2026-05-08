@@ -39,6 +39,34 @@ Capability scan должен запускаться при старте или �
 
 Результат scan должен быть типизированным, а не набором строк из `vainfo`.
 
+## Bitstream probing policy
+
+Capability matrix описывает, что система умеет декодировать. Stream requirement описывает, что требует конкретный поток. Requirement можно уточнять из трёх источников:
+
+1. service manifest: codec string, profile, resolution, HDR, bitrate/FPS;
+2. container metadata: codec id, codec private data, coded/display dimensions;
+3. codec bitstream headers: VP9 uncompressed header, AV1 sequence header OBU, H.264 SPS, H.265 VPS/SPS.
+
+Правила probing:
+
+- сначала использовать metadata из manifest/container;
+- bitstream parser запускать только как уточнение, а не как единственный источник истины;
+- сверять bitstream resolution с container/display metadata, если оба источника доступны;
+- fatal reject делать только когда parser успешно прочитал валидный header и typed requirement точно не проходит capability matrix;
+- parse error, неполный packet, non-keyframe без нужного header'а или неизвестное поле не должны становиться `HardwareDecoderUnavailable`;
+- при неуверенном результате нужно логировать diagnostic/recoverable событие и продолжать decode path;
+- parser output с невозможными значениями, например нулевой размер или размер сильно больше container metadata, считается invalid probe result и не используется для отказа.
+
+Нельзя добавлять новые самописные bit-level parser'ы в `player-core` ради быстрого capability check. Для будущих codec'ов нужно использовать parser, который уже применяет decode backend, или тонкий adapter над ним:
+
+- VP9: текущий `vp9-parser` допустим только как минимальный header adapter, покрытый golden tests и сверенный с parser order из `cros-codecs`;
+- AV1: использовать `cros-codecs` AV1 sequence header parser или adapter над ним;
+- H.264: использовать `cros-codecs` H.264 SPS parser или adapter над ним;
+- H.265: использовать `cros-codecs` H.265 VPS/SPS parser или adapter над ним;
+- VP8: не добавлять strict probing без реальной необходимости, потому что profile/format matrix проще и обычно определяется backend capability.
+
+Цель этого правила - не блокировать воспроизводимый поток из-за ошибки предварительного parser'а. Capability probing должен уменьшать число поздних decoder errors, но не заменять decoder validation неполным дубликатом.
+
 ## Модель данных
 
 Пример целевых типов:
@@ -96,6 +124,13 @@ Stream selection должен использовать capability matrix.
 4. Отфильтровать stream'ы, которые renderer не может показать.
 5. Выбрать лучший stream по политике качества, сети и настройкам.
 6. Если stream не найден, вернуть понятную ошибку с reason list.
+
+Если точная metadata появляется только после первого keyframe/header packet, selection должен уметь делать два этапа:
+
+1. предварительный выбор по codec/container/service metadata;
+2. уточнение requirement перед decode с мягкой probing policy из раздела выше.
+
+Второй этап не должен уничтожать выбранный stream при неуверенности parser'а. Отказ допустим только при подтверждённо неподдерживаемом profile/format/resolution/HDR.
 
 Пример user-facing ошибки:
 
@@ -175,6 +210,7 @@ trait VideoDecodeBackendProvider {
 - container;
 - expected hardware support;
 - expected renderer path.
+- expected probing behavior: confirmed support, confirmed rejection или мягкий fallback probing.
 
 Пример manifest:
 
@@ -206,4 +242,3 @@ render_gles = "yes"
 - Capability scan должен быть тестируемым без запуска playback.
 - Stream selection не должен выбирать неподдерживаемый поток "на авось".
 - Renderer capabilities так же важны, как decoder capabilities.
-

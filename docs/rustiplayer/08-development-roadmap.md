@@ -154,6 +154,8 @@ Acceptance:
 
 ## Phase 7: Capability core and VA-API probing
 
+Статус: реализовано.
+
 Цель:
 
 - создать `codec-core`;
@@ -203,6 +205,8 @@ Acceptance:
 
 - закрыть текущие ограничения VP9;
 - добавить profile/bit-depth handling;
+- закрепить VP9 header probing как adapter с мягким поведением при ошибке;
+- добавить sanity-check bitstream metadata против container/service metadata, если она доступна;
 - обновить test matrix;
 - стабилизировать performance.
 
@@ -210,6 +214,8 @@ Acceptance:
 
 - VP9 capability matrix accurate;
 - VP9 SDR/HDR samples покрыты тестами;
+- ошибки parser'а или невозможные размеры не дают ложный `HardwareDecoderUnavailable`;
+- strict reject происходит только для подтверждённо неподдерживаемого VP9 profile/format/resolution/HDR;
 - frame pacing metrics стабильны.
 
 ## Phase 11: AV1 backend
@@ -218,12 +224,14 @@ Acceptance:
 
 - добавить AV1 capability probing;
 - добавить AV1 decode path через VA-API/cros-codecs или другой Rust-compatible backend;
+- использовать AV1 sequence header parser из decode backend или adapter над ним;
 - интегрировать stream selection.
 
 Acceptance:
 
 - AV1 stream выбирается только при hardware support;
-- unsupported AV1 profile дает понятную ошибку.
+- unsupported AV1 profile дает понятную ошибку;
+- неполный или recoverable parse error sequence header не блокирует playback как hardware unsupported.
 
 ## Phase 12: H.264 backend and legacy path
 
@@ -231,11 +239,14 @@ Acceptance:
 
 - добавить H.264 VA-API;
 - прицел на старые Intel/i965;
+- использовать H.264 SPS parser из decode backend или adapter над ним;
 - подготовить будущий GLES renderer contract.
 
 Acceptance:
 
 - старые устройства с hardware H.264 могут воспроизводить SDR 8-bit H.264;
+- SPS-derived profile/bit-depth/resolution покрыты golden tests;
+- неуверенность parser'а не превращается в fatal capability rejection;
 - Vulkan renderer работает там, где доступен;
 - GLES path остается reserved, но архитектура готова.
 
@@ -319,7 +330,10 @@ Acceptance:
 Acceptance:
 
 - каждый codec добавляется через capability model;
-- stream selection не получает codec-specific hacks в app layer.
+- stream selection не получает codec-specific hacks в app layer;
+- H.265 использует VPS/SPS parser из decode backend или adapter над ним;
+- VP8 не получает strict bitstream probing без доказанной необходимости;
+- каждый новый probe на основе parser'а имеет golden tests и мягкое поведение при ошибке.
 
 ## Phase 19: Future platform expansion
 
@@ -342,3 +356,11 @@ macOS:
 3. не принимать важные архитектурные решения молча;
 4. сохранить MVP working state;
 5. сделать self-review после реализации.
+
+Для этапов, которые добавляют codec probing или backend decode:
+
+1. сначала проверить, есть ли parser в уже используемом backend crate;
+2. не писать новый bit-level parser в `player-core`;
+3. отделить подтверждённо неподдерживаемый stream от неуверенности parser'а;
+4. покрыть реальные codec headers golden tests;
+5. вручную проверить старый VP9 MVP после изменения общей capability логики.

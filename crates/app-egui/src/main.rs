@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use capability_core::CapabilityScanner;
 use player_core::{PlayerTickContext, PlayerTickResult, PlayerVideoDropReason};
 use rustiplayer_config::AppConfig;
 use rustiplayer_storage::StorageConnection;
@@ -140,6 +141,9 @@ impl App {
             self.app_config.clone(),
             self.startup_error.clone(),
         );
+        let system_capabilities = probe_system_capabilities();
+        info!("{}", system_capabilities.summary_text());
+        app_state.set_system_capabilities(system_capabilities);
         app_state.init_video_pipeline(
             &renderer.gpu.instance,
             &renderer.gpu.adapter,
@@ -557,6 +561,13 @@ fn initialize_storage() -> (Option<StorageConnection>, Option<String>) {
             (None, Some(format!("StorageError: {error}")))
         }
     }
+}
+
+/// Запускает compile-time зарегистрированные capability probes.
+fn probe_system_capabilities() -> capability_core::SystemCapabilities {
+    let mut scanner = CapabilityScanner::new();
+    scanner.register_provider(Box::new(video_vaapi::VaapiCapabilityProvider::new()));
+    scanner.scan()
 }
 
 /// Объединяет startup-ошибки shell-слоя в одно UI-сообщение.

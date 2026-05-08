@@ -71,6 +71,21 @@ PlayerSnapshot
         +--> telemetry/storage
 ```
 
+## Bitstream metadata probing
+
+Capability-based selection может уточнять stream requirement из container metadata, service manifest и codec bitstream headers.
+
+Правило разделения ответственности:
+
+- demux/source layer отдаёт metadata, которую контейнер или manifest сообщает без decode;
+- codec/backend layer разбирает codec-specific headers: VP9 uncompressed header, AV1 sequence header OBU, H.264 SPS, H.265 VPS/SPS;
+- `player-core` только оркестрирует probing и принимает typed `VideoDecodeRequirement`;
+- UI показывает итоговую причину отказа, но не содержит codec-specific logic.
+
+Парсинг bitstream headers не должен жить в `app-egui` или расползаться по scheduler коду. Если для codec'а уже есть parser в используемом decode backend, нужно адаптировать его, а не писать второй неполный bit-level parser.
+
+Fatal capability reject допустим только после успешного и валидного разбора header'а. Если header неполный, packet не keyframe, parser вернул recoverable parse error или metadata нельзя проверить, probing должен быть мягким: логировать диагностическое событие и дать decoder-у продолжить работу. Нельзя превращать неуверенный parser output в user-facing `HardwareDecoderUnavailable`.
+
 ## Command/event model
 
 `player-core` должен быть command-driven.
@@ -198,4 +213,3 @@ enum PlayerErrorKind {
 - Linux-first реализацию без блокировки Windows/macOS;
 - возможность добавить YouTube/account/cache без загрязнения player loop;
 - понятный путь от MVP к полноценному плееру.
-

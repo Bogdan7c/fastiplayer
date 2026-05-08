@@ -105,7 +105,8 @@ Desktop shell.
 - `ContainerKind`;
 - `StreamDescriptor`;
 - subtitle descriptors;
-- audio/video track metadata.
+- audio/video track metadata;
+- optional video coded/display width and height, если контейнер или manifest сообщает их до decode.
 
 Текущие типы из `webm-demux::packet` должны переехать сюда.
 
@@ -126,6 +127,14 @@ Desktop shell.
 - `TransferFunction`;
 - `SupportedDecodeFormat`;
 - normalization codec ids из контейнеров и сервисов.
+
+Не отвечает за:
+
+- прямое чтение VA-API;
+- запуск decode backend;
+- ad-hoc bitstream parsing в обход codec backend parser'ов.
+
+Если capability selection требует profile/bit-depth/chroma/resolution из bitstream, `codec-core` должен хранить typed модель и conversion helpers, а сам parser должен жить рядом с codec/backend integration или быть адаптером над уже используемым parser'ом.
 
 ### `capability-core`
 
@@ -231,6 +240,7 @@ Linux hardware decode backend.
 - VA-API display open;
 - i965/iHD probing;
 - codec/profile capability scan;
+- adapter'ы над codec parser'ами, если decode path уже содержит проверенный parser;
 - hardware decode;
 - frame pool;
 - DMA-BUF/texture upload integration;
@@ -350,7 +360,8 @@ Runtime metrics.
 - каталог sample assets;
 - описание codec/profile/HDR/FPS expectations;
 - capability-based skip rules;
-- regression tests для parser/demux/scheduler.
+- regression tests для parser/demux/scheduler;
+- golden samples для codec headers: VP9 uncompressed header, AV1 sequence header OBU, H.264 SPS, H.265 VPS/SPS.
 
 ## Правило зависимостей
 
@@ -385,4 +396,3 @@ backend crates
 - `codec-core -> VA-API backend`;
 - `service-youtube -> app-egui`;
 - `storage -> app-egui`.
-

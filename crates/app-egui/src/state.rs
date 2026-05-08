@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use capability_core::SystemCapabilities;
 use media_core::TrackKind;
 use player_core::{
     FrameCounters, PlaybackState, PlayerCommand, PlayerSession, PlayerSnapshot, PlayerTickConfig,
@@ -151,6 +152,11 @@ impl AppState {
     ) {
         self.player_session
             .init_video_pipeline(instance, adapter, device, queue);
+    }
+
+    /// Передаёт capability report из shell/backend layer в player-core.
+    pub fn set_system_capabilities(&mut self, capabilities: SystemCapabilities) {
+        self.player_session.set_system_capabilities(capabilities);
     }
 
     /// Рендерит egui UI поверх видео.
@@ -565,6 +571,14 @@ impl AppState {
                 texture_pool.in_use, texture_pool.capacity
             ));
             ui.monospace(format!("Texture slots: {}", texture_pool.slots));
+        }
+
+        if let Some(capability_summary) = &player_snapshot.capability_summary {
+            ui.separator();
+            ui.heading("Capabilities");
+            for line in capability_summary.lines().take(10) {
+                ui.monospace(line);
+            }
         }
     }
 

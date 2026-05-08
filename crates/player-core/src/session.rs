@@ -2,6 +2,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use capability_core::{SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection};
+use codec_core::{VideoCodec, VideoDecodeRequirement};
 use media_core::{TrackInfo, TrackKind};
 use tracing::{info, warn};
 use webm_demux::Demuxer;
@@ -36,6 +38,9 @@ pub struct PlayerSession {
 
     /// Флаг дорендера хвоста после EOF.
     pub draining_after_eof: bool,
+
+    /// Последний системный capability report, полученный от shell/backend layer.
+    capabilities: Option<SystemCapabilities>,
 }
 
 impl PlayerSession {
@@ -72,6 +77,17 @@ impl PlayerSession {
     #[must_use]
     pub const fn is_shutdown_requested(&self) -> bool {
         self.shutdown_requested
+    }
+
+    /// Устанавливает capability report и публикует событие для UI/log layer.
+    pub fn set_system_capabilities(&mut self, capabilities: SystemCapabilities) {
+        let summary = capabilities.detailed_report_text();
+        self.snapshot.capability_summary = Some(summary.clone());
+        self.pending_events
+            .push(PlayerEvent::CapabilityScanCompleted(
+                crate::CapabilitySummary { summary },
+            ));
+        self.capabilities = Some(capabilities);
     }
 
     /// Возвращает effective playback state с учётом EOF-drain режима.
@@ -176,10 +192,12 @@ impl PlayerSession {
                 );
 
                 self.init_audio_pipeline(&tracks);
-                self.select_default_video_track(
-                    &tracks,
-                    "Поддерживаемый VP9 video track не найден",
-                );
+                if let Err(error) =
+                    self.select_default_video_track(&tracks, "Поддерживаемый video track не найден")
+                {
+                    self.mark_fatal_error(error);
+                    return;
+                }
                 self.pipeline.demuxer = Some(Box::new(demuxer));
                 self.pipeline.file_path = Some(path.to_path_buf());
                 self.pipeline.tracks = tracks;
@@ -226,10 +244,13 @@ impl PlayerSession {
         );
 
         self.init_audio_pipeline(&tracks);
-        self.select_default_video_track(
+        if let Err(error) = self.select_default_video_track(
             &tracks,
-            "Поддерживаемый VP9 video track не найден в streaming demuxer",
-        );
+            "Поддерживаемый video track не найден в streaming demuxer",
+        ) {
+            self.mark_fatal_error(error);
+            return;
+        }
         self.pipeline.demuxer = Some(demuxer);
         self.pipeline.file_path = None;
         self.pipeline.tracks = tracks;
@@ -309,6 +330,7 @@ impl PlayerSession {
         self.pipeline.last_decoded_video_pts = None;
         self.pipeline.last_audio_clock = Duration::ZERO;
         self.pipeline.last_audio_clock_change_at = std::time::Instant::now();
+        self.pipeline.active_video_requirement = None;
 
         self.pending_autoplay = false;
         self.snapshot.source_label = None;
@@ -630,17 +652,85 @@ impl PlayerSession {
         self.snapshot.last_error = None;
     }
 
-    /// Ищет первый поддерживаемый VP9 video track.
-    fn select_default_video_track(&mut self, tracks: &[TrackInfo], missing_message: &str) {
-        let video_track = tracks
+    /// Ищет первый video track, который проходит capability-based selection.
+    fn select_default_video_track(
+        &mut self,
+        tracks: &[TrackInfo],
+        missing_message: &str,
+    ) -> PlayerResult<()> {
+        let video_tracks = tracks
             .iter()
-            .find(|track| track.kind == TrackKind::Video && track.codec_id == "V_VP9");
-        if let Some(track) = video_track {
-            self.pipeline.video_track_id = Some(track.id);
-            self.snapshot.selected_tracks.video_track = Some(track.id);
-        } else {
+            .filter(|track| track.kind == TrackKind::Video)
+            .collect::<Vec<_>>();
+
+        if video_tracks.is_empty() {
             info!("{missing_message}");
+            return Ok(());
         }
+
+        let mut last_rejection = None;
+        for track in video_tracks {
+            let Some(requirement) = video_requirement_from_track(track) else {
+                last_rejection = Some(PlayerError::new(
+                    PlayerErrorKind::UnsupportedVideoCodec,
+                    format!(
+                        "Video codec `{}` не поддерживается текущей capability model",
+                        track.codec_id
+                    ),
+                ));
+                continue;
+            };
+
+            match self.validate_video_decode_requirement(&requirement) {
+                Ok(()) => {
+                    self.pipeline.video_track_id = Some(track.id);
+                    self.pipeline.active_video_requirement = Some(requirement);
+                    self.snapshot.selected_tracks.video_track = Some(track.id);
+                    return Ok(());
+                }
+                Err(error) => {
+                    last_rejection = Some(error);
+                }
+            }
+        }
+
+        Err(last_rejection.unwrap_or_else(|| {
+            PlayerError::new(PlayerErrorKind::UnsupportedVideoCodec, missing_message)
+        }))
+    }
+
+    /// Проверяет video stream requirement по последнему capability report.
+    pub(crate) fn validate_video_decode_requirement(
+        &self,
+        requirement: &VideoDecodeRequirement,
+    ) -> PlayerResult<()> {
+        let Some(capabilities) = &self.capabilities else {
+            return Ok(());
+        };
+
+        capabilities
+            .check_video_requirement(requirement)
+            .map(|_| ())
+            .map_err(player_error_from_unsupported_requirement)
+    }
+
+    /// Уточняет active video requirement после bitstream probe.
+    pub(crate) fn refine_active_video_requirement(
+        &mut self,
+        requirement: VideoDecodeRequirement,
+    ) -> PlayerResult<()> {
+        self.validate_video_decode_requirement(&requirement)?;
+        self.pipeline.active_video_requirement = Some(requirement);
+        Ok(())
+    }
+
+    /// Возвращает codec текущего video track по `TrackId`.
+    pub(crate) fn video_codec_for_track(&self, track_id: TrackId) -> Option<VideoCodec> {
+        self.pipeline
+            .tracks
+            .iter()
+            .find(|track| track.id == track_id && track.kind == TrackKind::Video)
+            .and_then(|track| VideoCodec::from_container_codec_id(&track.codec_id))
     }
 
     /// Инициализирует audio pipeline если есть Opus-compatible audio track.
@@ -810,6 +900,32 @@ impl PlayerSession {
     }
 }
 
+/// Строит минимальное decode requirement из container track metadata.
+fn video_requirement_from_track(track: &TrackInfo) -> Option<VideoDecodeRequirement> {
+    let codec = VideoCodec::from_container_codec_id(&track.codec_id)?;
+    Some(VideoDecodeRequirement::new(codec))
+}
+
+/// Переводит structured capability error в player error model.
+fn player_error_from_unsupported_requirement(error: UnsupportedVideoRequirement) -> PlayerError {
+    let kind = match error.rejections.first() {
+        Some(VideoCapabilityRejection::UnsupportedCodec { .. }) => {
+            PlayerErrorKind::UnsupportedVideoCodec
+        }
+        Some(VideoCapabilityRejection::UnsupportedProfile { .. }) => {
+            PlayerErrorKind::UnsupportedVideoProfile
+        }
+        Some(VideoCapabilityRejection::UnsupportedFormat { .. }) if error.requirement.hdr => {
+            PlayerErrorKind::UnsupportedHdrMode
+        }
+        Some(VideoCapabilityRejection::NoAvailableBackend)
+        | Some(VideoCapabilityRejection::UnsupportedFormat { .. })
+        | None => PlayerErrorKind::HardwareDecoderUnavailable,
+    };
+
+    PlayerError::new(kind, error.user_message())
+}
+
 impl Default for PlayerSession {
     /// Создаёт пустую session с default snapshot.
     fn default() -> Self {
@@ -820,6 +936,7 @@ impl Default for PlayerSession {
             pending_autoplay: false,
             shutdown_requested: false,
             draining_after_eof: false,
+            capabilities: None,
         }
     }
 }
@@ -833,6 +950,41 @@ fn optional_duration_from_seconds(seconds: f64) -> Option<Duration> {
 mod tests {
     use super::*;
     use crate::{MediaSource, PlayerCommand};
+    use capability_core::{BackendCapabilities, BackendDriverInfo, BackendProbeStatus};
+    use codec_core::{
+        BitDepth, ChromaSubsampling, DecodeBackendId, SupportedVideoDecodeFormat, VideoProfile,
+        Vp9Profile,
+    };
+
+    fn capabilities_with_vp9_profile0() -> SystemCapabilities {
+        SystemCapabilities {
+            schema_version: capability_core::CURRENT_CAPABILITY_SCHEMA_VERSION,
+            probed_at_unix_seconds: 1,
+            video_backends: vec![BackendCapabilities {
+                backend_id: DecodeBackendId::vaapi(),
+                display_name: "VA-API".to_string(),
+                status: BackendProbeStatus::Available,
+                driver: BackendDriverInfo::default(),
+                supported_video_decode_formats: vec![SupportedVideoDecodeFormat {
+                    codec: VideoCodec::Vp9,
+                    profile: VideoProfile::Vp9(Vp9Profile::Profile0),
+                    bit_depth: BitDepth::Eight,
+                    chroma: ChromaSubsampling::Yuv420,
+                    max_width: Some(1920),
+                    max_height: Some(1080),
+                    max_fps: None,
+                    hdr_input: false,
+                    backend: DecodeBackendId::vaapi(),
+                }],
+                raw_profiles: Vec::new(),
+                raw_entrypoints: Vec::new(),
+                raw_rt_formats: Vec::new(),
+                quirks: Vec::new(),
+                export_paths: Vec::new(),
+                diagnostics: Vec::new(),
+            }],
+        }
+    }
 
     #[test]
     fn default_session_starts_idle() {
@@ -902,5 +1054,35 @@ mod tests {
 
         assert_eq!(session.playback_state(), PlaybackState::Draining);
         assert!(session.can_present_video());
+    }
+
+    #[test]
+    fn capability_report_updates_snapshot_and_event_queue() {
+        let mut session = PlayerSession::new();
+
+        session.set_system_capabilities(capabilities_with_vp9_profile0());
+
+        assert!(session.snapshot().capability_summary.is_some());
+        assert!(
+            session
+                .take_events()
+                .iter()
+                .any(|event| matches!(event, PlayerEvent::CapabilityScanCompleted(_)))
+        );
+    }
+
+    #[test]
+    fn unsupported_profile_returns_player_error_before_decode() {
+        let mut session = PlayerSession::new();
+        session.set_system_capabilities(capabilities_with_vp9_profile0());
+        let requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_profile(VideoProfile::Vp9(Vp9Profile::Profile2));
+
+        let error = session
+            .validate_video_decode_requirement(&requirement)
+            .expect_err("VP9 profile2 must be rejected by profile0-only capabilities");
+
+        assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoProfile);
+        assert!(error.message.contains("profile VP9 Profile 2"));
     }
 }

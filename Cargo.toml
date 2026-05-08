@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/app-egui",
+    "crates/capability-core",
+    "crates/codec-core",
     "crates/config",
     "crates/storage",
     "crates/player-core",
@@ -38,6 +40,8 @@ anyhow = "1.0"
 directories = "6.0"
 rustiplayer-config = { path = "crates/config" }
 rustiplayer-storage = { path = "crates/storage" }
+capability-core = { path = "crates/capability-core" }
+codec-core = { path = "crates/codec-core" }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
 toml = "0.9"

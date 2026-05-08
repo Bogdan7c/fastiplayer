@@ -14,6 +14,8 @@ wgpu-types = "29"
 nix = { version = "0.29", features = ["ioctl", "fs"] }
 
 media-core = { workspace = true }
+codec-core = { workspace = true }
+capability-core = { workspace = true }
 video-core = { path = "../video-core" }
 cros-codecs = { version = "0.0.6", features = ["vaapi", "backend"] }
 gbm = { version = "0.15", features = ["drm-support"] }

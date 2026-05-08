@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use codec_core::VideoDecodeRequirement;
 use media_core::{TrackId, TrackInfo};
 
 /// Начальная оценка длительности video frame: 60 FPS.
@@ -120,6 +121,9 @@ pub struct PlaybackPipeline {
 
     /// Индикатор текущего видео backend для UI и диагностики.
     pub video_backend: &'static str,
+
+    /// Требование активного video track, уточнённое container metadata или bitstream probe.
+    pub active_video_requirement: Option<VideoDecodeRequirement>,
 }
 
 impl PlaybackPipeline {
@@ -153,6 +157,7 @@ impl Default for PlaybackPipeline {
             last_audio_clock: Duration::ZERO,
             last_audio_clock_change_at: Instant::now(),
             video_backend: "Synthetic (test)",
+            active_video_requirement: None,
         }
     }
 }

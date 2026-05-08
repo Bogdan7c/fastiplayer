@@ -7,9 +7,12 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use codec_core::{
+    BitDepth, ChromaSubsampling, VideoCodec, VideoDecodeRequirement, VideoProfile, Vp9Profile,
+};
 use media_core::{TrackId, TrackKind};
 use rustiplayer_config::AppConfig;
-use tracing::trace;
+use tracing::{trace, warn};
 
 use crate::{
     PendingAudioPacket, PendingVideoPacket, PlaybackState, PlayerError, PlayerErrorKind,
@@ -534,9 +537,9 @@ fn send_pending_video_packets_to_decoder(
     session: &mut PlayerSession,
     tick_config: &PlayerTickConfig,
 ) {
-    let Some(ref thread) = session.pipeline.video_decoder_thread else {
+    if session.pipeline.video_decoder_thread.is_none() {
         return;
-    };
+    }
 
     let mut sent_packets = 0usize;
 
@@ -549,15 +552,26 @@ fn send_pending_video_packets_to_decoder(
         let Some(packet) = session.pipeline.pending_video_packets.front() else {
             break;
         };
+        let packet_track_id = packet.track_id;
+        let packet_pts = packet.pts;
+        let packet_data = packet.data.clone();
 
-        if session.pipeline.video_track_id != Some(packet.track_id) {
+        if session.pipeline.video_track_id != Some(packet_track_id) {
             session.pipeline.pending_video_packets.pop_front();
             continue;
         }
 
-        if !can_send_video_packet_to_decoder(session, tick_config, packet.pts) {
+        let packet_probe = PendingVideoPacketProbe {
+            track_id: packet_track_id,
+            data: packet_data,
+        };
+        if !validate_pending_video_packet_before_decode(session, &packet_probe) {
+            break;
+        }
+
+        if !can_send_video_packet_to_decoder(session, tick_config, packet_pts) {
             trace!(
-                pts_ms = packet.pts.as_millis(),
+                pts_ms = packet_pts.as_millis(),
                 audio_ms = session.audio_clock_now().as_millis(),
                 max_ahead_ms = tick_config.max_video_decode_ahead.as_millis(),
                 "A/V sync: holding video packet to limit decode-ahead"
@@ -583,12 +597,126 @@ fn send_pending_video_packets_to_decoder(
             keyframe: packet.keyframe,
         };
 
+        let Some(ref thread) = session.pipeline.video_decoder_thread else {
+            break;
+        };
         if let Err(error) = thread.send_packet(decode_packet) {
             tracing::warn!(error = %error, "Failed to send packet to decoder thread");
             break;
         }
 
         sent_packets += 1;
+    }
+}
+
+/// Минимальный view pending packet-а для bitstream capability validation.
+struct PendingVideoPacketProbe {
+    /// Track ID нужен, чтобы найти container codec.
+    track_id: TrackId,
+
+    /// Codec payload нужен VP9 parser-у для чтения profile из uncompressed header.
+    data: Vec<u8>,
+}
+
+/// Проверяет profile/format до отправки packet-а в hardware decoder.
+fn validate_pending_video_packet_before_decode(
+    session: &mut PlayerSession,
+    packet: &PendingVideoPacketProbe,
+) -> bool {
+    if session
+        .pipeline
+        .active_video_requirement
+        .as_ref()
+        .and_then(|requirement| requirement.profile)
+        .is_some()
+    {
+        return true;
+    }
+
+    let Some(requirement) = video_requirement_from_packet(session, packet) else {
+        return true;
+    };
+
+    match session.refine_active_video_requirement(requirement) {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(error = %error, "Video stream rejected before hardware decode");
+            session.mark_fatal_error(error);
+            session.pipeline.pending_video_packets.clear();
+            false
+        }
+    }
+}
+
+/// Извлекает codec-specific requirement из первого доступного packet-а.
+fn video_requirement_from_packet(
+    session: &PlayerSession,
+    packet: &PendingVideoPacketProbe,
+) -> Option<VideoDecodeRequirement> {
+    match session.video_codec_for_track(packet.track_id)? {
+        VideoCodec::Vp9 => vp9_requirement_from_packet(&packet.data),
+        codec => Some(VideoDecodeRequirement::new(codec)),
+    }
+}
+
+/// Читает VP9 profile из uncompressed header и строит уточнённое requirement.
+fn vp9_requirement_from_packet(packet_data: &[u8]) -> Option<VideoDecodeRequirement> {
+    match vp9_parser::parse_uncompressed_header(packet_data) {
+        Ok(frame_info) => {
+            let profile = Vp9Profile::from_bitstream_value(frame_info.profile)?;
+            let mut requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
+                .with_profile(VideoProfile::Vp9(profile));
+
+            if let Some(bit_depth) = bit_depth_from_vp9_header(frame_info.bit_depth) {
+                requirement = requirement.with_bit_depth(bit_depth);
+            }
+
+            if let Some(chroma) =
+                chroma_from_vp9_header(frame_info.subsampling_x, frame_info.subsampling_y)
+            {
+                requirement = requirement.with_chroma(chroma);
+            }
+
+            if frame_info.width > 0 && frame_info.height > 0 {
+                requirement = requirement.with_resolution(frame_info.width, frame_info.height);
+            }
+
+            Some(requirement)
+        }
+        Err(vp9_parser::ParseError::UnsupportedProfile(profile)) => {
+            let profile = Vp9Profile::from_bitstream_value(profile)?;
+            Some(
+                VideoDecodeRequirement::new(VideoCodec::Vp9)
+                    .with_profile(VideoProfile::Vp9(profile)),
+            )
+        }
+        Err(error) => {
+            trace!(error = %error, "VP9 header probe skipped before decode");
+            None
+        }
+    }
+}
+
+/// Переводит VP9 parser bit depth в общую capability model.
+fn bit_depth_from_vp9_header(bit_depth: Option<u8>) -> Option<BitDepth> {
+    match bit_depth {
+        Some(8) => Some(BitDepth::Eight),
+        Some(10) => Some(BitDepth::Ten),
+        Some(12) => Some(BitDepth::Twelve),
+        _ => None,
+    }
+}
+
+/// Переводит VP9 subsampling flags в общую capability model.
+fn chroma_from_vp9_header(
+    subsampling_x: Option<bool>,
+    subsampling_y: Option<bool>,
+) -> Option<ChromaSubsampling> {
+    match (subsampling_x, subsampling_y) {
+        (Some(true), Some(true)) => Some(ChromaSubsampling::Yuv420),
+        (Some(true), Some(false)) => Some(ChromaSubsampling::Yuv422),
+        (Some(false), Some(false)) => Some(ChromaSubsampling::Yuv444),
+        _ => None,
     }
 }
 

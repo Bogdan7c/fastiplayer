@@ -131,6 +131,7 @@ dependencies = [
  "audio",
  "bytemuck",
  "bytes",
+ "capability-core",
  "egui",
  "egui-wgpu",
  "egui-winit",
@@ -612,6 +613,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "capability-core"
+version = "0.1.0"
+dependencies = [
+ "codec-core",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -683,6 +694,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "codec-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -2878,11 +2896,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "audio",
+ "capability-core",
+ "codec-core",
  "media-core",
  "rustiplayer-config",
  "tracing",
  "video-core",
  "video-vaapi",
+ "vp9-parser",
  "webm-demux",
  "wgpu",
 ]
@@ -4476,6 +4497,8 @@ dependencies = [
  "anyhow",
  "ash",
  "bytes",
+ "capability-core",
+ "codec-core",
  "cros-codecs 0.0.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "gbm",
  "gbm-sys",
