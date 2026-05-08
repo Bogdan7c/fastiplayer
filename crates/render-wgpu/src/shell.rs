@@ -1,9 +1,9 @@
-/// Модуль рендеринга: инициализация wgpu, swapchain, синтетическое видео.
+/// Модуль рендеринга: инициализация wgpu, swapchain и video render backend.
 ///
 /// Отвечает за:
 /// - создание wgpu instance, adapter, device, queue
 /// - настройку surface и swapchain для окна
-/// - создание render pipeline для синтетического видео
+/// - создание render backend facade для decoded frames
 /// - рендеринг видео + egui overlay в swapchain
 ///
 /// Почему не eframe:
@@ -13,17 +13,17 @@
 ///
 /// Архитектура рендеринга:
 /// 1. Получаем surface texture из swapchain
-/// 2. Рендерим синтетическое видео (полноэкранный pass)
+/// 2. Рендерим decoded video frame или чёрный фон
 /// 3. Рендерим egui overlay поверх видео
 /// 4. Present на экран
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use render_core::RenderCapabilities;
 use tracing::{debug, info, instrument};
 use winit::window::Window;
 
-use crate::telemetry::Telemetry;
-// VideoRenderer trait not used directly — we use Nv12VideoRenderer concrete type.
+use crate::{WgpuRenderableFrame, WgpuVideoRenderer, clear_to_black};
 use video_vulkan::UnifiedVulkanInstance;
 
 /// Выбирает формат swapchain для SDR-видео.
@@ -190,21 +190,47 @@ impl GpuContext {
     }
 }
 
+/// Итог одного render-frame вызова.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderFrameOutcome {
+    /// Кадр был отправлен в swapchain и представлен.
+    Presented,
+
+    /// Кадр был пропущен из-за состояния surface/window.
+    Dropped(RenderFrameDropReason),
+}
+
+/// Причина пропуска кадра renderer backend-ом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderFrameDropReason {
+    /// Surface acquisition не успел завершиться.
+    SurfaceTimeout,
+
+    /// Окно occluded, compositor не принимает кадр.
+    SurfaceOccluded,
+
+    /// Surface потерян; renderer выполнил reconfigure и ждёт следующий redraw.
+    SurfaceLost,
+
+    /// Surface validation error при acquisition.
+    SurfaceValidation,
+
+    /// Повторный acquisition после Outdated/Reconfigure тоже не дал frame.
+    SurfaceOutdatedRecoveryFailed,
+}
+
 /// Полный рендерер: GPU контекст + видеопайплайн + egui рендерер.
 ///
 /// Координирует рендеринг видео и UI overlay в каждом кадре.
 pub struct Renderer {
     /// GPU ресурсы (device, queue, surface).
-    pub gpu: GpuContext,
+    gpu: GpuContext,
 
     /// Рендерер egui для отрисовки UI поверх видео.
-    pub egui_renderer: egui_wgpu::Renderer,
+    egui_renderer: egui_wgpu::Renderer,
 
-    /// Ссылка на телеметрию для логирования в render pass.
-    telemetry: Arc<Telemetry>,
-
-    /// Video renderer — NV12 renderer for decoded frames.
-    pub video_renderer: Option<render::nv12_renderer::Nv12VideoRenderer>,
+    /// Video renderer facade — скрывает конкретный NV12 shader/backend детали.
+    video_renderer: WgpuVideoRenderer,
 }
 
 impl Renderer {
@@ -212,10 +238,10 @@ impl Renderer {
     ///
     /// Инициализирует:
     /// - GPU контекст (async)
-    /// - synthetic video pipeline
+    /// - video renderer facade
     /// - egui_wgpu renderer
-    #[instrument(skip(window, telemetry))]
-    pub fn new(window: Arc<Window>, telemetry: Arc<Telemetry>) -> Result<Self> {
+    #[instrument(skip(window))]
+    pub fn new(window: Arc<Window>) -> Result<Self> {
         let gpu = pollster::block_on(GpuContext::new(window.clone()))?;
 
         let egui_renderer = egui_wgpu::Renderer::new(
@@ -228,39 +254,75 @@ impl Renderer {
             },
         );
 
-        let video_renderer =
-            render::nv12_renderer::Nv12VideoRenderer::new(&gpu.device, gpu.surface_format);
+        let video_renderer = WgpuVideoRenderer::new(&gpu.device, gpu.surface_format);
 
         info!("Рендерер полностью инициализирован");
 
         Ok(Self {
             gpu,
             egui_renderer,
-            telemetry,
-            video_renderer: Some(video_renderer),
+            video_renderer,
         })
+    }
+
+    /// Возвращает wgpu instance для decoder backend-ов, которым нужен shared GPU context.
+    #[must_use]
+    pub const fn instance(&self) -> &wgpu::Instance {
+        &self.gpu.instance
+    }
+
+    /// Возвращает выбранный wgpu adapter.
+    #[must_use]
+    pub const fn adapter(&self) -> &wgpu::Adapter {
+        &self.gpu.adapter
+    }
+
+    /// Возвращает wgpu device для decoder texture pool.
+    #[must_use]
+    pub const fn device(&self) -> &wgpu::Device {
+        &self.gpu.device
+    }
+
+    /// Возвращает wgpu queue для decoder uploads.
+    #[must_use]
+    pub const fn queue(&self) -> &wgpu::Queue {
+        &self.gpu.queue
+    }
+
+    /// Пересоздаёт surface configuration при изменении размера окна.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.gpu.resize(width, height);
+    }
+
+    /// Возвращает renderer capabilities для общего system capability report.
+    #[must_use]
+    pub fn render_capabilities(&self) -> RenderCapabilities {
+        self.video_renderer.capabilities().clone()
     }
 
     /// Рендерит один полный кадр: видео + egui overlay.
     ///
     /// Последовательность:
-    /// 1. Обновляем uniform buffer временем
+    /// 1. Обновляем egui textures/buffers
     /// 2. Получаем surface texture из swapchain
-    /// 3. Рендерим NV12 видео (если есть y/uv views) или синтетическое видео
-    /// 4. Обновляем egui текстуры и буферы
-    /// 5. Рендерим egui поверх видео
-    /// 6. Submit и present
+    /// 3. Рендерим video frame через backend facade или очищаем target
+    /// 4. Рендерим egui поверх видео
+    /// 5. Submit и present
     pub fn render_frame(
         &mut self,
         window: &Window,
         _time: f32,
-        video_frame: Option<&video_core::DecodedFrame>,
-        video_y_view: Option<&wgpu::TextureView>,
-        video_uv_view: Option<&wgpu::TextureView>,
+        video_frame: Option<&WgpuRenderableFrame<'_>>,
         egui_paint_jobs: Vec<egui::epaint::ClippedPrimitive>,
         egui_textures_delta: egui::TexturesDelta,
-        screen_descriptor: egui_wgpu::ScreenDescriptor,
-    ) {
+        screen_size_in_pixels: [u32; 2],
+        pixels_per_point: f32,
+    ) -> RenderFrameOutcome {
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: screen_size_in_pixels,
+            pixels_per_point,
+        };
+
         // Обновляем egui текстуры (новые и удалённые)
         for (id, image_delta) in &egui_textures_delta.set {
             self.egui_renderer
@@ -304,20 +366,20 @@ impl Renderer {
                             "Не удалось получить surface texture после reconfigure: {:?}",
                             other
                         );
-                        return;
+                        return RenderFrameOutcome::Dropped(
+                            RenderFrameDropReason::SurfaceOutdatedRecoveryFailed,
+                        );
                     }
                 }
             }
             wgpu::CurrentSurfaceTexture::Timeout => {
                 // Таймаут — пропускаем кадр, не блокируем
-                self.telemetry.record_dropped_frame();
-                return;
+                return RenderFrameOutcome::Dropped(RenderFrameDropReason::SurfaceTimeout);
             }
             wgpu::CurrentSurfaceTexture::Occluded => {
                 // Окно скрыто другим окном — пропускаем кадр
                 tracing::debug!("Surface occluded — skipping frame");
-                self.telemetry.record_dropped_frame();
-                return;
+                return RenderFrameOutcome::Dropped(RenderFrameDropReason::SurfaceOccluded);
             }
             wgpu::CurrentSurfaceTexture::Lost => {
                 // Surface потерян: сначала пробуем штатный reconfigure текущей surface.
@@ -327,14 +389,12 @@ impl Renderer {
                 self.gpu
                     .surface
                     .configure(&self.gpu.device, &self.gpu.surface_config);
-                self.telemetry.record_dropped_frame();
-                return;
+                return RenderFrameOutcome::Dropped(RenderFrameDropReason::SurfaceLost);
             }
             wgpu::CurrentSurfaceTexture::Validation => {
                 // Validation error при получении surface texture — пропускаем кадр
                 tracing::warn!("Surface validation error — skipping frame");
-                self.telemetry.record_dropped_frame();
-                return;
+                return RenderFrameOutcome::Dropped(RenderFrameDropReason::SurfaceValidation);
             }
         };
 
@@ -342,54 +402,23 @@ impl Renderer {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Render NV12 video frame if views available, otherwise clear to black
-        let mut video_rendered = false;
-        if let (Some(frame), Some(y_view), Some(uv_view)) =
-            (video_frame, video_y_view, video_uv_view)
-        {
-            if let Some(ref mut renderer) = self.video_renderer {
-                renderer.set_window_size(
-                    self.gpu.surface_config.width,
-                    self.gpu.surface_config.height,
-                );
-                match renderer.render_frame(
-                    y_view,
-                    uv_view,
-                    frame.render_width,
-                    frame.render_height,
-                    &surface_view,
-                    &mut encoder,
-                    &self.gpu.device,
-                    &self.gpu.queue,
-                ) {
-                    Ok(()) => {
-                        video_rendered = true;
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "NV12 render failed");
-                    }
-                }
-            }
-        }
+        self.video_renderer.resize(
+            self.gpu.surface_config.width,
+            self.gpu.surface_config.height,
+        );
 
-        if !video_rendered {
-            // Если видео не отрендерено — заливаем чёрным
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("clear to black pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &surface_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+        match self.video_renderer.render_or_clear(
+            video_frame,
+            &surface_view,
+            &mut encoder,
+            &self.gpu.device,
+            &self.gpu.queue,
+        ) {
+            Ok(_video_rendered) => {}
+            Err(error) => {
+                tracing::error!(error = %error, "Video render failed");
+                clear_to_black(&surface_view, &mut encoder);
+            }
         }
 
         // Рендерим egui поверх видео
@@ -432,6 +461,6 @@ impl Renderer {
 
         // Показываем кадр на экране.
         surface_texture.present();
-        self.telemetry.record_presented_frame();
+        RenderFrameOutcome::Presented
     }
 }

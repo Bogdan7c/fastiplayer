@@ -7,17 +7,15 @@
 /// - поддержание 60 fps через VSync (Fifo present mode)
 /// - координацию между рендерингом видео и UI
 ///
-/// Почему winit + wgpu, а не eframe:
-/// eframe скрывает детали инициализации, но нам нужен
-/// прямой контроль над swapchain и render pass для zero-copy video.
-/// В будущем decoded VkImage будет рендериться напрямую без CPU readback,
-/// и eframe не даст нужного уровня контроля.
+/// Почему winit + render-wgpu, а не eframe:
+/// eframe скрывает lifecycle и swapchain детали, а нам нужен явный контроль
+/// над окном и shared GPU context для zero-copy video path. Сам render pass
+/// теперь живёт в `render-wgpu`, а app shell только передаёт input/snapshot.
 ///
 /// Архитектура event loop:
 /// - winit 0.30 использует ApplicationHandler trait
 /// - события: Resumed (создание окна), Suspended (уничтожение), WindowEvent
 /// - RedrawRequested — основной hook для рендеринга каждого кадра
-mod render;
 mod state;
 mod telemetry;
 mod youtube;
@@ -28,6 +26,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use capability_core::CapabilityScanner;
 use player_core::{PlayerTickContext, PlayerTickResult, PlayerVideoDropReason};
+use render_core::RenderCapabilities;
+use render_wgpu::{RenderFrameOutcome, Renderer};
 use rustiplayer_config::AppConfig;
 use rustiplayer_storage::StorageConnection;
 use tracing::{debug, info, instrument, trace, warn};
@@ -36,7 +36,6 @@ use winit::{
     event_loop::ActiveEventLoop, window::Window,
 };
 
-use crate::render::Renderer;
 use crate::state::AppState;
 use crate::telemetry::{Telemetry, VideoDropReason};
 
@@ -59,7 +58,7 @@ enum InitialMedia {
 ///
 /// Владеет:
 /// - окном (Arc<Window>)
-/// - рендерером (GPU + video pipeline + egui_wgpu)
+/// - рендерером (`render-wgpu` backend)
 /// - состоянием приложения (egui + player state)
 /// - телеметрией
 /// - путём к файлу для автозагрузки из CLI
@@ -122,7 +121,7 @@ impl App {
             return;
         }
 
-        let renderer = match Renderer::new(window.clone(), self.telemetry.clone()) {
+        let renderer = match Renderer::new(window.clone()) {
             Ok(renderer) => renderer,
             Err(error) => {
                 tracing::error!("Не удалось инициализировать рендерер: {}", error);
@@ -141,14 +140,14 @@ impl App {
             self.app_config.clone(),
             self.startup_error.clone(),
         );
-        let system_capabilities = probe_system_capabilities();
+        let system_capabilities = probe_system_capabilities(renderer.render_capabilities());
         info!("{}", system_capabilities.summary_text());
         app_state.set_system_capabilities(system_capabilities);
         app_state.init_video_pipeline(
-            &renderer.gpu.instance,
-            &renderer.gpu.adapter,
-            &renderer.gpu.device,
-            &renderer.gpu.queue,
+            renderer.instance(),
+            renderer.adapter(),
+            renderer.device(),
+            renderer.queue(),
         );
 
         if let Some(initial_media) = self.initial_media.take() {
@@ -263,7 +262,7 @@ impl ApplicationHandler for App {
 
             WindowEvent::Resized(PhysicalSize { width, height }) => {
                 debug!(width, height, "Изменение размера окна");
-                renderer.gpu.resize(width, height);
+                renderer.resize(width, height);
             }
 
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -386,12 +385,9 @@ fn render_frame(
         .egui_ctx
         .tessellate(egui_full_output.shapes, pixels_per_point);
 
-    // Screen descriptor для egui_wgpu
+    // Размер и scale передаются renderer backend-у без прямой зависимости от egui-wgpu.
     let size = window.inner_size();
-    let screen_descriptor = egui_wgpu::ScreenDescriptor {
-        size_in_pixels: [size.width.max(1), size.height.max(1)],
-        pixels_per_point,
-    };
+    let screen_size_in_pixels = [size.width.max(1), size.height.max(1)];
 
     // Получаем wgpu texture views для decoded frame если decoder thread доступен.
     let (video_y_view, video_uv_view): (Option<wgpu::TextureView>, Option<wgpu::TextureView>) = {
@@ -425,13 +421,11 @@ fn render_frame(
         }
     };
 
-    // Время для анимации синтетического видео
+    // Время оставлено в сигнатуре renderer-а для будущих diagnostics/animation hooks.
     let time = app_state.elapsed_seconds() as f32;
 
-    // Рендерим полный кадр (видео + egui overlay)
-    renderer.render_frame(
-        window,
-        time,
+    // Собираем renderer boundary frame только если есть metadata и обе texture planes.
+    let video_frame = match (
         app_state
             .player_session
             .pipeline
@@ -439,10 +433,26 @@ fn render_frame(
             .as_ref(),
         video_y_view.as_ref(),
         video_uv_view.as_ref(),
+    ) {
+        (Some(frame), Some(y_view), Some(uv_view)) => Some(
+            render_wgpu::WgpuRenderableFrame::from_decoded_nv12(frame, y_view, uv_view),
+        ),
+        _ => None,
+    };
+
+    // Рендерим полный кадр (видео + egui overlay)
+    match renderer.render_frame(
+        window,
+        time,
+        video_frame.as_ref(),
         paint_jobs,
         egui_full_output.textures_delta,
-        screen_descriptor,
-    );
+        screen_size_in_pixels,
+        pixels_per_point,
+    ) {
+        RenderFrameOutcome::Presented => telemetry.record_presented_frame(),
+        RenderFrameOutcome::Dropped(_reason) => telemetry.record_dropped_frame(),
+    }
 
     // Измеряем время кадра и обновляем телеметрию
     let frame_duration = frame_start.elapsed();
@@ -564,9 +574,12 @@ fn initialize_storage() -> (Option<StorageConnection>, Option<String>) {
 }
 
 /// Запускает compile-time зарегистрированные capability probes.
-fn probe_system_capabilities() -> capability_core::SystemCapabilities {
+fn probe_system_capabilities(
+    render_capabilities: RenderCapabilities,
+) -> capability_core::SystemCapabilities {
     let mut scanner = CapabilityScanner::new();
     scanner.register_provider(Box::new(video_vaapi::VaapiCapabilityProvider::new()));
+    scanner.register_render_capabilities(render_capabilities);
     scanner.scan()
 }
 

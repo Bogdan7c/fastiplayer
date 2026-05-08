@@ -1,18 +1,18 @@
 use anyhow::Result;
-use video_core::DecodedFrame;
 
-use crate::VideoRenderer;
-
-/// Uniform buffer data for letterboxing.
+/// Uniform buffer для расчёта letterbox в fragment shader.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
+    /// Масштаб UV относительно полного экрана.
     uv_scale: [f32; 2],
+
+    /// Смещение UV, которое создаёт black bars.
     uv_offset: [f32; 2],
 }
 
-/// Renderer for NV12 decoded frames with YUV→RGB conversion and letterboxing.
-pub struct Nv12VideoRenderer {
+/// Приватный renderer для NV12 decoded frames с YUV->RGB conversion.
+pub(crate) struct Nv12VideoRenderer {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
@@ -21,6 +21,7 @@ pub struct Nv12VideoRenderer {
 }
 
 impl Nv12VideoRenderer {
+    /// Создаёт pipeline и immutable GPU state для NV12 shader path.
     pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nv12 to rgba shader"),
@@ -46,7 +47,7 @@ impl Nv12VideoRenderer {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("nv12 bind group layout"),
             entries: &[
-                // uniforms
+                // Uniform buffer с scale/offset для letterbox.
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -60,14 +61,14 @@ impl Nv12VideoRenderer {
                     },
                     count: None,
                 },
-                // y_sampler
+                // Sampler для luma plane.
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-                // y_texture
+                // Texture view для luma plane.
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -78,14 +79,14 @@ impl Nv12VideoRenderer {
                     },
                     count: None,
                 },
-                // uv_sampler
+                // Sampler для chroma plane.
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-                // uv_texture
+                // Texture view для interleaved UV plane.
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -152,12 +153,12 @@ impl Nv12VideoRenderer {
         }
     }
 
-    /// Update window size for letterbox calculation.
+    /// Обновляет размер surface для расчёта letterbox.
     pub fn set_window_size(&mut self, width: u32, height: u32) {
         self.window_size = (width, height);
     }
 
-    /// Render NV12 frame with letterboxing.
+    /// Рендерит NV12 frame с letterbox и YUV->RGB conversion.
     pub fn render_frame(
         &mut self,
         y_view: &wgpu::TextureView,
@@ -169,16 +170,16 @@ impl Nv12VideoRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> Result<()> {
-        // Calculate letterbox UV scale and offset.
+        // Считаем отношение сторон видео и текущего окна.
         let video_aspect = video_width as f32 / video_height.max(1) as f32;
         let window_aspect = self.window_size.0 as f32 / self.window_size.1.max(1) as f32;
 
         let (scale_x, scale_y, offset_x, offset_y) = if video_aspect > window_aspect {
-            // Video wider than window: black bars on top/bottom.
+            // Видео шире окна: shader оставит чёрные полосы сверху и снизу.
             let scale = window_aspect / video_aspect;
             (1.0, scale, 0.0, (1.0 - scale) * 0.5)
         } else {
-            // Video taller than window (or same): black bars on left/right.
+            // Видео выше окна: shader оставит чёрные полосы слева и справа.
             let scale = video_aspect / window_aspect;
             (scale, 1.0, (1.0 - scale) * 0.5, 0.0)
         };
@@ -190,9 +191,8 @@ impl Nv12VideoRenderer {
 
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
-        // Note: create_bind_group needs device, not queue.
-        // We create it each frame since texture views change per frame.
-        // In a production renderer, this would use a bind group pool.
+        // Bind group создаётся на кадр, потому что texture views приходят из decoder pool.
+        // Позже это место можно заменить на pool/cache без изменения public facade.
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("nv12 bind group"),
             layout: &self.bind_group_layout,
@@ -241,19 +241,6 @@ impl Nv12VideoRenderer {
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
 
-        Ok(())
-    }
-}
-
-impl VideoRenderer for Nv12VideoRenderer {
-    fn render_frame(
-        &mut self,
-        _frame: &DecodedFrame,
-        _target: &wgpu::TextureView,
-        _encoder: &mut wgpu::CommandEncoder,
-    ) -> Result<()> {
-        // The trait method is not used directly for NV12 rendering.
-        // app-egui calls render_frame() with y_view/uv_view explicitly.
         Ok(())
     }
 }

@@ -1,4 +1,5 @@
 use codec_core::{SupportedVideoDecodeFormat, VideoCodec, VideoDecodeRequirement, VideoProfile};
+use render_core::{RenderCapabilities, VideoFrameFormat};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -108,6 +109,12 @@ pub enum VideoCapabilityRejection {
         /// Описание несовпадения.
         details: String,
     },
+
+    /// Decode возможен, но renderer не умеет показать выходной frame format.
+    UnsupportedRenderFormat {
+        /// Описание renderer-ограничения.
+        details: String,
+    },
 }
 
 impl VideoCapabilityRejection {
@@ -121,6 +128,7 @@ impl VideoCapabilityRejection {
                 format!("profile {profile} не поддерживается аппаратным backend-ом")
             }
             Self::UnsupportedFormat { details } => details.clone(),
+            Self::UnsupportedRenderFormat { details } => details.clone(),
         }
     }
 }
@@ -136,16 +144,33 @@ impl SystemCapabilities {
             .find(|format| format.satisfies(requirement))
     }
 
+    /// Ищет renderer backend, который сможет показать stream requirement.
+    #[must_use]
+    pub fn find_supported_render_capability(
+        &self,
+        requirement: &VideoDecodeRequirement,
+    ) -> Option<&RenderCapabilities> {
+        self.render_backends
+            .iter()
+            .find(|capabilities| capabilities.supports_decode_requirement(requirement))
+    }
+
     /// Проверяет одно stream requirement и возвращает detailed error при отказе.
     pub fn check_video_requirement(
         &self,
         requirement: &VideoDecodeRequirement,
     ) -> Result<&SupportedVideoDecodeFormat, UnsupportedVideoRequirement> {
-        if let Some(format) = self.find_supported_video_format(requirement) {
-            return Ok(format);
+        let Some(format) = self.find_supported_video_format(requirement) else {
+            return Err(self.explain_unsupported_video_requirement(requirement));
+        };
+
+        if !self.render_backends.is_empty()
+            && self.find_supported_render_capability(requirement).is_none()
+        {
+            return Err(self.explain_unsupported_video_requirement(requirement));
         }
 
-        Err(self.explain_unsupported_video_requirement(requirement))
+        Ok(format)
     }
 
     /// Выбирает лучший поддерживаемый stream из candidates.
@@ -166,7 +191,7 @@ impl SystemCapabilities {
         });
 
         for candidate in ordered_candidates {
-            if let Some(format) = self.find_supported_video_format(&candidate.requirement) {
+            if let Ok(format) = self.check_video_requirement(&candidate.requirement) {
                 return Ok(SelectedVideoStream {
                     stream_id: candidate.stream_id.clone(),
                     requirement: candidate.requirement.clone(),
@@ -187,6 +212,9 @@ impl SystemCapabilities {
         requirement: &VideoDecodeRequirement,
     ) -> UnsupportedVideoRequirement {
         let supported_formats = self.supported_video_formats().collect::<Vec<_>>();
+        let decode_match = supported_formats
+            .iter()
+            .any(|format| format.satisfies(requirement));
         let rejections = if supported_formats.is_empty() {
             vec![VideoCapabilityRejection::NoAvailableBackend]
         } else if !supported_formats
@@ -196,19 +224,25 @@ impl SystemCapabilities {
             vec![VideoCapabilityRejection::UnsupportedCodec {
                 codec: requirement.codec,
             }]
-        } else if let Some(profile) = requirement.profile {
-            if !supported_formats
+        } else if let Some(profile) = requirement.profile
+            && !supported_formats
                 .iter()
                 .any(|format| format.codec == requirement.codec && format.profile == profile)
-            {
-                vec![VideoCapabilityRejection::UnsupportedProfile { profile }]
-            } else {
-                vec![VideoCapabilityRejection::UnsupportedFormat {
-                    details: format!(
-                        "codec/profile найден, но bit depth/chroma/resolution/HDR не совпали"
-                    ),
-                }]
-            }
+        {
+            vec![VideoCapabilityRejection::UnsupportedProfile { profile }]
+        } else if decode_match
+            && !self.render_backends.is_empty()
+            && self.find_supported_render_capability(requirement).is_none()
+        {
+            vec![VideoCapabilityRejection::UnsupportedRenderFormat {
+                details: render_rejection_details(requirement, &self.render_backends),
+            }]
+        } else if requirement.profile.is_some() {
+            vec![VideoCapabilityRejection::UnsupportedFormat {
+                details: format!(
+                    "codec/profile найден, но bit depth/chroma/resolution/HDR не совпали"
+                ),
+            }]
         } else {
             vec![VideoCapabilityRejection::UnsupportedFormat {
                 details: "codec найден, но stream metadata недостаточно точна для выбора"
@@ -219,12 +253,31 @@ impl SystemCapabilities {
         UnsupportedVideoRequirement {
             requirement: requirement.clone(),
             rejections,
-            supported_formats_summary: summarize_supported_formats(&supported_formats),
+            supported_formats_summary: summarize_system_support(
+                &supported_formats,
+                &self.render_backends,
+            ),
         }
     }
 }
 
-/// Формирует компактный список поддерживаемых форматов для ошибки.
+/// Формирует компактный список decode/render возможностей для ошибки.
+fn summarize_system_support(
+    supported_formats: &[&SupportedVideoDecodeFormat],
+    render_backends: &[RenderCapabilities],
+) -> String {
+    let decode_summary = summarize_supported_formats(supported_formats);
+    if render_backends.is_empty() {
+        return decode_summary;
+    }
+
+    format!(
+        "decode: {decode_summary}; render: {}",
+        summarize_render_capabilities(render_backends)
+    )
+}
+
+/// Формирует компактный список поддерживаемых decode форматов для ошибки.
 fn summarize_supported_formats(supported_formats: &[&SupportedVideoDecodeFormat]) -> String {
     if supported_formats.is_empty() {
         return "нет доступных аппаратных video formats".to_string();
@@ -246,12 +299,41 @@ fn summarize_supported_formats(supported_formats: &[&SupportedVideoDecodeFormat]
     descriptions.join("; ")
 }
 
+/// Формирует компактный список renderer capabilities.
+fn summarize_render_capabilities(render_backends: &[RenderCapabilities]) -> String {
+    if render_backends.is_empty() {
+        return "renderer capabilities не зарегистрированы".to_string();
+    }
+
+    render_backends
+        .iter()
+        .map(RenderCapabilities::summary_text)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Описывает, какого renderer input format не хватает системе.
+fn render_rejection_details(
+    requirement: &VideoDecodeRequirement,
+    render_backends: &[RenderCapabilities],
+) -> String {
+    let expected_frame_format = VideoFrameFormat::from_decode_requirement(requirement)
+        .map(|format| format.to_string())
+        .unwrap_or_else(|| "неподдерживаемый chroma/bit depth".to_string());
+
+    format!(
+        "decoder поддерживает stream, но renderer не поддерживает input format {expected_frame_format}. Доступно: {}",
+        summarize_render_capabilities(render_backends)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use codec_core::{
         BitDepth, ChromaSubsampling, DecodeBackendId, SupportedVideoDecodeFormat, VideoCodec,
         VideoDecodeRequirement, VideoProfile, Vp9Profile,
     };
+    use render_core::RenderCapabilities;
 
     use crate::{BackendCapabilities, BackendDriverInfo, BackendProbeStatus, SystemCapabilities};
 
@@ -284,6 +366,7 @@ mod tests {
                 export_paths: Vec::new(),
                 diagnostics: Vec::new(),
             }],
+            render_backends: vec![RenderCapabilities::wgpu_nv12(Some(4096))],
         }
     }
 
@@ -327,5 +410,25 @@ mod tests {
             Some(VideoCapabilityRejection::UnsupportedProfile { .. })
         ));
         assert!(error.user_message().contains("profile VP9 Profile 2"));
+    }
+
+    #[test]
+    fn renderer_rejection_is_reported_after_decode_match() {
+        let mut capabilities = capabilities_with_vp9_profile0();
+        capabilities.video_backends[0].supported_video_decode_formats[0].bit_depth = BitDepth::Ten;
+        capabilities.video_backends[0].supported_video_decode_formats[0].hdr_input = true;
+        let requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0))
+            .with_bit_depth(BitDepth::Ten);
+
+        let error = capabilities
+            .check_video_requirement(&requirement)
+            .expect_err("P010 must be rejected by current NV12-only renderer");
+
+        assert!(matches!(
+            error.rejections.first(),
+            Some(VideoCapabilityRejection::UnsupportedRenderFormat { .. })
+        ));
+        assert!(error.user_message().contains("renderer не поддерживает"));
     }
 }

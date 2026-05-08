@@ -12,7 +12,8 @@ members = [
     "crates/vp9-parser",
     "crates/video-core",
     "crates/video-vulkan",
-    "crates/render",
+    "crates/render-core",
+    "crates/render-wgpu",
     "crates/video-vaapi",
 ]
 resolver = "2"
@@ -55,6 +56,7 @@ vp9-parser = { path = "crates/vp9-parser" }
 video-core = { path = "crates/video-core" }
 video-vulkan = { path = "crates/video-vulkan" }
 video-vaapi = { path = "crates/video-vaapi" }
-render = { path = "crates/render" }
+render-core = { path = "crates/render-core" }
+render-wgpu = { path = "crates/render-wgpu" }
 player-core = { path = "crates/player-core" }
 media-core = { path = "crates/media-core" }

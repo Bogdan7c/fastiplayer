@@ -171,6 +171,8 @@ Acceptance:
 
 ## Phase 8: Renderer split
 
+Статус: реализовано.
+
 Цель:
 
 - создать `render-core`;

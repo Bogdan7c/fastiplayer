@@ -15,6 +15,9 @@ pub enum PlayerErrorKind {
     /// HDR-режим пока не может быть корректно отображён.
     UnsupportedHdrMode,
 
+    /// Renderer backend не умеет принять формат кадра после decode.
+    UnsupportedRenderFormat,
+
     /// Hardware decoder недоступен или не прошёл probe.
     HardwareDecoderUnavailable,
 

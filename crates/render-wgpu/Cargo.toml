@@ -1,0 +1,18 @@
+[package]
+name = "render-wgpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+pollster.workspace = true
+tracing.workspace = true
+video-vulkan.workspace = true
+winit.workspace = true
+wgpu.workspace = true
+render-core = { path = "../render-core" }
+video-core = { path = "../video-core" }
+bytemuck = "1.25"

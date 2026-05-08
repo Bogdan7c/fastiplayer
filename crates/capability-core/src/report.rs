@@ -1,6 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use codec_core::{DecodeBackendId, SupportedVideoDecodeFormat};
+use render_core::RenderCapabilities;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
@@ -24,6 +25,9 @@ pub trait VideoCapabilityProvider {
 pub struct CapabilityScanner {
     /// Список backend providers, зарегистрированных compile-time.
     providers: Vec<Box<dyn VideoCapabilityProvider>>,
+
+    /// Render capabilities, полученные от уже созданных renderer backend-ов.
+    render_backends: Vec<RenderCapabilities>,
 }
 
 impl CapabilityScanner {
@@ -36,6 +40,11 @@ impl CapabilityScanner {
     /// Регистрирует backend provider.
     pub fn register_provider(&mut self, provider: Box<dyn VideoCapabilityProvider>) {
         self.providers.push(provider);
+    }
+
+    /// Регистрирует capabilities renderer backend-а.
+    pub fn register_render_capabilities(&mut self, capabilities: RenderCapabilities) {
+        self.render_backends.push(capabilities);
     }
 
     /// Запускает все probes и возвращает системный report.
@@ -72,6 +81,7 @@ impl CapabilityScanner {
             schema_version: CURRENT_CAPABILITY_SCHEMA_VERSION,
             probed_at_unix_seconds,
             video_backends,
+            render_backends: self.render_backends.clone(),
         }
     }
 }
@@ -88,6 +98,9 @@ pub struct SystemCapabilities {
 
     /// Capabilities всех video decode backend-ов.
     pub video_backends: Vec<BackendCapabilities>,
+
+    /// Capabilities renderer backend-ов, доступных shell-слою.
+    pub render_backends: Vec<RenderCapabilities>,
 }
 
 impl SystemCapabilities {
@@ -98,6 +111,7 @@ impl SystemCapabilities {
             schema_version: CURRENT_CAPABILITY_SCHEMA_VERSION,
             probed_at_unix_seconds,
             video_backends: Vec::new(),
+            render_backends: Vec::new(),
         }
     }
 
@@ -112,8 +126,8 @@ impl SystemCapabilities {
     /// Формирует короткую сводку для верхнего UI.
     #[must_use]
     pub fn summary_text(&self) -> String {
-        if self.video_backends.is_empty() {
-            return "Capability probe: video backends не зарегистрированы".to_string();
+        if self.video_backends.is_empty() && self.render_backends.is_empty() {
+            return "Capability probe: backend-ы не зарегистрированы".to_string();
         }
 
         let available_backends = self
@@ -124,8 +138,9 @@ impl SystemCapabilities {
         let supported_formats = self.supported_video_formats().count();
 
         format!(
-            "Capability probe: {available_backends}/{} video backend доступно, {supported_formats} decode formats",
-            self.video_backends.len()
+            "Capability probe: {available_backends}/{} video backend доступно, {supported_formats} decode formats, {} render backend",
+            self.video_backends.len(),
+            self.render_backends.len()
         )
     }
 
@@ -148,6 +163,9 @@ impl SystemCapabilities {
                     backend.supported_video_decode_formats.len() - 12
                 ));
             }
+        }
+        for renderer in &self.render_backends {
+            lines.push(renderer.summary_text());
         }
 
         lines.join("\n")

@@ -918,6 +918,12 @@ fn player_error_from_unsupported_requirement(error: UnsupportedVideoRequirement)
         Some(VideoCapabilityRejection::UnsupportedFormat { .. }) if error.requirement.hdr => {
             PlayerErrorKind::UnsupportedHdrMode
         }
+        Some(VideoCapabilityRejection::UnsupportedRenderFormat { .. }) if error.requirement.hdr => {
+            PlayerErrorKind::UnsupportedHdrMode
+        }
+        Some(VideoCapabilityRejection::UnsupportedRenderFormat { .. }) => {
+            PlayerErrorKind::UnsupportedRenderFormat
+        }
         Some(VideoCapabilityRejection::NoAvailableBackend)
         | Some(VideoCapabilityRejection::UnsupportedFormat { .. })
         | None => PlayerErrorKind::HardwareDecoderUnavailable,
@@ -983,6 +989,7 @@ mod tests {
                 export_paths: Vec::new(),
                 diagnostics: Vec::new(),
             }],
+            render_backends: Vec::new(),
         }
     }
 

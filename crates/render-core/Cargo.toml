@@ -1,12 +1,9 @@
 [package]
-name = "capability-core"
+name = "render-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 codec-core.workspace = true
-render-core.workspace = true
 serde.workspace = true
-thiserror.workspace = true
-tracing.workspace = true

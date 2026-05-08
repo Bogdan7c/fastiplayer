@@ -7,7 +7,8 @@
 ```text
 crates/app-egui       - окно, egui, render loop, часть player logic
 crates/audio          - Opus decode, CPAL output, audio clock
-crates/render         - NV12 renderer
+crates/render-core    - контракты renderer capabilities и renderable frame
+crates/render-wgpu    - WGPU surface/egui composition и текущий NV12 renderer
 crates/video-core     - базовые video types и AvSync
 crates/video-vaapi    - VA-API VP9 decode thread и texture cache
 crates/video-vulkan   - reference Vulkan Video код
