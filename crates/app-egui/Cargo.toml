@@ -40,3 +40,6 @@ render-core.workspace = true
 render-wgpu.workspace = true
 vp9-parser = { path = "../vp9-parser" }
 bytes.workspace = true
+
+[dev-dependencies]
+codec-core.workspace = true

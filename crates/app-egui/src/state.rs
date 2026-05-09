@@ -13,6 +13,7 @@ use media_core::TrackKind;
 use player_core::{
     FrameCounters, PlaybackState, PlayerCommand, PlayerSession, PlayerSnapshot, PlayerTickConfig,
 };
+use render_core::RenderDiagnostics;
 use rustiplayer_config::AppConfig;
 use tracing::{instrument, warn};
 use winit::window::Window;
@@ -47,6 +48,9 @@ pub struct AppState {
 
     /// Runtime-лимиты playback tick, собранные из config.
     tick_config: PlayerTickConfig,
+
+    /// Последняя renderer-neutral диагностика без GPU handles.
+    render_diagnostics: RenderDiagnostics,
 
     /// Версия приложения для отображения в UI.
     pub app_version: &'static str,
@@ -91,6 +95,7 @@ impl AppState {
             app_config,
             startup_error,
             tick_config,
+            render_diagnostics: RenderDiagnostics::default(),
             app_version: env!("CARGO_PKG_VERSION"),
         }
     }
@@ -121,6 +126,11 @@ impl AppState {
     #[must_use]
     pub const fn tick_config(&self) -> PlayerTickConfig {
         self.tick_config
+    }
+
+    /// Обновляет renderer diagnostics, которые UI покажет в telemetry panel.
+    pub fn set_render_diagnostics(&mut self, render_diagnostics: RenderDiagnostics) {
+        self.render_diagnostics = render_diagnostics;
     }
 
     /// Возвращает read-only snapshot из `player-core` для UI и renderer diagnostics.
@@ -203,6 +213,7 @@ impl AppState {
         let error_message = player_error_message
             .as_deref()
             .or(self.startup_error.as_deref());
+        let render_diagnostics = self.render_diagnostics.clone();
 
         let full_output = self.egui_ctx.run_ui(egui_input, |ui| {
             let top_frame =
@@ -301,6 +312,7 @@ impl AppState {
                     ui,
                     &player_snapshot,
                     &telemetry,
+                    &render_diagnostics,
                     &backend_name,
                     start_time,
                     frame_duration_estimate_ms,
@@ -420,6 +432,7 @@ impl AppState {
         ui: &mut egui::Ui,
         player_snapshot: &PlayerSnapshot,
         telemetry: &Telemetry,
+        render_diagnostics: &RenderDiagnostics,
         backend_name: &str,
         start_time: std::time::Instant,
         frame_duration_estimate_ms: f64,
@@ -475,6 +488,7 @@ impl AppState {
                             ui,
                             player_snapshot,
                             telemetry,
+                            render_diagnostics,
                             frame_duration_estimate_ms,
                         );
                     });
@@ -486,6 +500,7 @@ impl AppState {
         ui: &mut egui::Ui,
         player_snapshot: &PlayerSnapshot,
         telemetry: &Telemetry,
+        render_diagnostics: &RenderDiagnostics,
         frame_duration_estimate_ms: f64,
     ) {
         if player_snapshot.source_label.is_none() {
@@ -549,6 +564,11 @@ impl AppState {
         if let Some(backend_name) = &player_snapshot.active_backend.name {
             ui.monospace(format!("Backend: {backend_name}"));
         }
+        if let Some(active_color_path_text) =
+            Self::active_color_path_text_for_ui(render_diagnostics)
+        {
+            ui.monospace(format!("Color: {active_color_path_text}"));
+        }
         ui.monospace(format!("Decoded: {}", telemetry.video_frames_decoded()));
         ui.monospace(format!(
             "Presented: {}",
@@ -593,6 +613,11 @@ impl AppState {
         }
     }
 
+    /// Формирует UI-строку active color path из renderer-neutral diagnostics.
+    fn active_color_path_text_for_ui(render_diagnostics: &RenderDiagnostics) -> Option<String> {
+        render_diagnostics.active_color_path_text()
+    }
+
     /// Рендерит центральный overlay состояния.
     fn render_center_overlay(ui: &mut egui::Ui, is_playing: bool, error_message: Option<&str>) {
         egui::CentralPanel::default()
@@ -618,6 +643,37 @@ impl AppState {
         let minutes = total_secs / 60;
         let secs = total_secs % 60;
         format!("{minutes:02}:{secs:02}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
+    use render_core::{
+        ActiveColorPath, ColorPipelineSettings, RenderDiagnostics, VideoFrameFormat,
+    };
+
+    use super::AppState;
+
+    /// Проверяет, что UI diagnostics получает active path как renderer-neutral данные.
+    #[test]
+    fn ui_diagnostics_reads_active_color_path_without_gpu_handles() {
+        let settings = ColorPipelineSettings::default();
+        let active_path = ActiveColorPath::from_parts(
+            VideoFrameFormat::Nv12,
+            BitDepth::Eight,
+            ChromaSubsampling::Yuv420,
+            VideoColorMetadata::sdr_bt709_limited(),
+            &settings,
+        );
+        let render_diagnostics = RenderDiagnostics {
+            active_color_path: Some(active_path),
+        };
+
+        assert_eq!(
+            AppState::active_color_path_text_for_ui(&render_diagnostics).as_deref(),
+            Some("NV12 8-bit BT.709 limited -> SDR BT.709 preserve-current-unorm")
+        );
     }
 }
 

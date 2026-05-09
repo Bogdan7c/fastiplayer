@@ -129,6 +129,24 @@ impl fmt::Display for RenderOutputColorSpace {
     }
 }
 
+/// Renderer-neutral diagnostics, которые UI может читать без GPU handles.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RenderDiagnostics {
+    /// Последний color path, реально выбранный renderer-ом для video frame.
+    pub active_color_path: Option<ActiveColorPath>,
+}
+
+impl RenderDiagnostics {
+    /// Возвращает строку active color path для telemetry panel.
+    #[must_use]
+    pub fn active_color_path_text(&self) -> Option<String> {
+        self.active_color_path
+            .as_ref()
+            .map(ActiveColorPath::diagnostic_text)
+    }
+}
+
 /// Поведение swapchain transfer на финальной записи в render target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -728,6 +746,26 @@ mod tests {
         assert_eq!(
             active_path.diagnostic_text(),
             "NV12 8-bit BT.2020 limited -> SDR BT.709 fallback preserve-current-unorm"
+        );
+    }
+
+    #[test]
+    fn render_diagnostics_exposes_active_color_path_without_gpu_handles() {
+        let settings = ColorPipelineSettings::default();
+        let active_path = ActiveColorPath::from_parts(
+            VideoFrameFormat::Nv12,
+            BitDepth::Eight,
+            ChromaSubsampling::Yuv420,
+            VideoColorMetadata::sdr_bt709_limited(),
+            &settings,
+        );
+        let diagnostics = RenderDiagnostics {
+            active_color_path: Some(active_path),
+        };
+
+        assert_eq!(
+            diagnostics.active_color_path_text().as_deref(),
+            Some("NV12 8-bit BT.709 limited -> SDR BT.709 preserve-current-unorm")
         );
     }
 

@@ -146,6 +146,20 @@ mod tests {
             .expect("default config valid");
     }
 
+    /// Проверяет, что render.color_adjustment defaults являются identity.
+    #[test]
+    fn render_color_adjustment_defaults_are_identity() {
+        let config = AppConfig::default();
+
+        assert!(config.render.color_adjustment.is_identity());
+        assert_eq!(config.render.color_adjustment.brightness, 0.0);
+        assert_eq!(config.render.color_adjustment.contrast, 1.0);
+        assert_eq!(config.render.color_adjustment.saturation, 1.0);
+        assert_eq!(config.render.color_adjustment.exposure, 0.0);
+        assert_eq!(config.render.color_adjustment.rgb_gain, [1.0, 1.0, 1.0]);
+        assert_eq!(config.render.color_adjustment.rgb_offset, [0.0, 0.0, 0.0]);
+    }
+
     /// Проверяет первый запуск без существующего config-файла.
     #[test]
     fn missing_config_is_created_with_defaults() {
@@ -158,6 +172,28 @@ mod tests {
         assert_eq!(loaded.path, config_path);
         assert_eq!(loaded.config, AppConfig::default());
         assert!(loaded.path.exists());
+        assert!(loaded.config.render.color_adjustment.is_identity());
+    }
+
+    /// Проверяет, что старый config без color_adjustment получает identity defaults.
+    #[test]
+    fn existing_config_without_color_adjustment_gets_identity_defaults() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 1
+
+[render]
+profile = "vulkan"
+"#,
+        )
+        .expect("legacy config written");
+
+        let loaded = load_from_path(&config_path).expect("legacy config accepted");
+
+        assert!(loaded.config.render.color_adjustment.is_identity());
     }
 
     /// Проверяет понятную ошибку validation для некорректной громкости.
@@ -179,6 +215,56 @@ volume = 1.5
         let error = load_from_path(&config_path).expect_err("invalid volume rejected");
 
         assert!(error.to_string().contains("audio.volume"));
+    }
+
+    /// Проверяет validation error для RGB-массива неверной длины.
+    #[test]
+    fn invalid_rgb_gain_array_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 1
+
+[render.color_adjustment]
+rgb_gain = [1.0, 1.0]
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid rgb_gain rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("render.color_adjustment.rgb_gain")
+        );
+    }
+
+    /// Проверяет validation error для RGB offset неверной длины.
+    #[test]
+    fn invalid_rgb_offset_array_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 1
+
+[render.color_adjustment]
+rgb_offset = [0.0, 0.0, 0.0, 0.0]
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid rgb_offset rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("render.color_adjustment.rgb_offset")
+        );
     }
 
     /// Проверяет отказ от неподдержанной версии схемы.

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use render_core::{ColorPipelineSettings, RenderableFrame};
+use render_core::{ActiveColorPath, ColorPipelineSettings, RenderableFrame};
 
 use crate::color_pipeline::{COLOR_PIPELINE_UNIFORM_SIZE, prepare_nv12_color_pipeline};
 
@@ -151,6 +151,11 @@ impl Nv12VideoRenderer {
         self.window_size = (width, height);
     }
 
+    /// Обновляет SDR color settings без пересоздания GPU pipeline.
+    pub fn set_color_pipeline_settings(&mut self, color_settings: ColorPipelineSettings) {
+        self.color_settings = color_settings;
+    }
+
     /// Рендерит NV12 frame с letterbox и YUV->RGB conversion.
     pub fn render_frame(
         &mut self,
@@ -161,7 +166,7 @@ impl Nv12VideoRenderer {
         encoder: &mut wgpu::CommandEncoder,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-    ) -> Result<()> {
+    ) -> Result<ActiveColorPath> {
         // Считаем отношение сторон видео и текущего окна.
         let video_aspect = frame.render_width as f32 / frame.render_height.max(1) as f32;
         let window_aspect = self.window_size.0 as f32 / self.window_size.1.max(1) as f32;
@@ -239,7 +244,7 @@ impl Nv12VideoRenderer {
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
 
-        Ok(())
+        Ok(prepared_color_pipeline.active_path)
     }
 }
 

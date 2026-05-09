@@ -171,7 +171,7 @@ pub enum VideoBackendPreference {
 }
 
 /// Render-настройки верхнего уровня.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RenderConfig {
     /// Активный render profile.
@@ -182,6 +182,9 @@ pub struct RenderConfig {
 
     /// Алгоритм tone mapping для HDR content.
     pub tone_mapping: ToneMappingMode,
+
+    /// Пользовательские SDR/RGB корректировки без HDR controls.
+    pub color_adjustment: RenderColorAdjustmentConfig,
 
     /// Vulkan-specific параметры.
     pub vulkan: VulkanConfig,
@@ -197,6 +200,7 @@ impl Default for RenderConfig {
             profile: RenderProfile::Vulkan,
             hdr_to_sdr: true,
             tone_mapping: ToneMappingMode::Auto,
+            color_adjustment: RenderColorAdjustmentConfig::default(),
             vulkan: VulkanConfig::default(),
             opengles: OpenGlesConfig::default(),
         }
@@ -227,6 +231,59 @@ pub enum ToneMappingMode {
 
     /// Tone mapping отключён.
     Disabled,
+}
+
+/// Пользовательские SDR/RGB корректировки с identity defaults.
+///
+/// RGB-массивы хранятся как `Vec<f32>`, чтобы validation-слой мог выдать
+/// понятную ошибку для неверной длины, а не прятать её внутри Serde parsing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RenderColorAdjustmentConfig {
+    /// Аддитивное смещение яркости; `0.0` не меняет картинку.
+    pub brightness: f32,
+
+    /// Множитель контраста; `1.0` не меняет картинку.
+    pub contrast: f32,
+
+    /// Множитель насыщенности; `1.0` не меняет картинку.
+    pub saturation: f32,
+
+    /// Exposure offset для будущего SDR/HDR pipeline; `0.0` не меняет картинку.
+    pub exposure: f32,
+
+    /// Поканальный RGB gain в порядке R, G, B.
+    pub rgb_gain: Vec<f32>,
+
+    /// Поканальный RGB offset в порядке R, G, B.
+    pub rgb_offset: Vec<f32>,
+}
+
+impl RenderColorAdjustmentConfig {
+    /// Возвращает `true`, если корректировки не должны менять SDR output.
+    #[must_use]
+    pub fn is_identity(&self) -> bool {
+        self.brightness == 0.0
+            && self.contrast == 1.0
+            && self.saturation == 1.0
+            && self.exposure == 0.0
+            && self.rgb_gain == [1.0, 1.0, 1.0]
+            && self.rgb_offset == [0.0, 0.0, 0.0]
+    }
+}
+
+impl Default for RenderColorAdjustmentConfig {
+    /// Возвращает defaults, которые сохраняют текущую SDR картинку.
+    fn default() -> Self {
+        Self {
+            brightness: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            exposure: 0.0,
+            rgb_gain: vec![1.0, 1.0, 1.0],
+            rgb_offset: vec![0.0, 0.0, 0.0],
+        }
+    }
 }
 
 /// Vulkan-specific настройки.

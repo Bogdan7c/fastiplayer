@@ -8,7 +8,9 @@
 
 use anyhow::{Result, bail};
 use codec_core::{BitDepth, ChromaSubsampling};
-use render_core::{RenderCapabilities, RenderableFrame, VideoFrameFormat};
+use render_core::{
+    ColorPipelineSettings, RenderCapabilities, RenderDiagnostics, RenderableFrame, VideoFrameFormat,
+};
 
 mod color_pipeline;
 mod nv12_renderer;
@@ -72,6 +74,9 @@ pub struct WgpuVideoRenderer {
 
     /// Снимок возможностей backend-а для capability report и stream selection.
     capabilities: RenderCapabilities,
+
+    /// Последняя renderer-neutral диагностика без GPU handles.
+    diagnostics: RenderDiagnostics,
 }
 
 impl WgpuVideoRenderer {
@@ -83,6 +88,7 @@ impl WgpuVideoRenderer {
         Self {
             nv12_renderer: Nv12VideoRenderer::new(device, surface_format),
             capabilities: RenderCapabilities::wgpu_nv12(max_texture_size),
+            diagnostics: RenderDiagnostics::default(),
         }
     }
 
@@ -90,6 +96,17 @@ impl WgpuVideoRenderer {
     #[must_use]
     pub const fn capabilities(&self) -> &RenderCapabilities {
         &self.capabilities
+    }
+
+    /// Возвращает последнюю диагностику renderer-а без backend-specific handles.
+    #[must_use]
+    pub const fn diagnostics(&self) -> &RenderDiagnostics {
+        &self.diagnostics
+    }
+
+    /// Обновляет color pipeline settings для всех текущих video paths.
+    pub fn set_color_pipeline_settings(&mut self, settings: ColorPipelineSettings) {
+        self.nv12_renderer.set_color_pipeline_settings(settings);
     }
 
     /// Обновляет размер swapchain для расчёта letterbox.
@@ -109,9 +126,11 @@ impl WgpuVideoRenderer {
         queue: &wgpu::Queue,
     ) -> Result<bool> {
         let Some(frame) = frame else {
+            self.diagnostics.active_color_path = None;
             clear_to_black(target, encoder);
             return Ok(false);
         };
+        self.diagnostics.active_color_path = None;
 
         if !frame.metadata.has_display_size() {
             bail!(
@@ -123,7 +142,7 @@ impl WgpuVideoRenderer {
 
         match (&frame.metadata.format, &frame.planes) {
             (VideoFrameFormat::Nv12, WgpuFramePlanes::Nv12 { y_view, uv_view }) => {
-                self.nv12_renderer.render_frame(
+                let active_color_path = self.nv12_renderer.render_frame(
                     &frame.metadata,
                     y_view,
                     uv_view,
@@ -132,6 +151,7 @@ impl WgpuVideoRenderer {
                     device,
                     queue,
                 )?;
+                self.diagnostics.active_color_path = Some(active_color_path);
                 Ok(true)
             }
             (format, _) => {

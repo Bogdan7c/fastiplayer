@@ -23,10 +23,12 @@ mod youtube;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use capability_core::CapabilityScanner;
 use player_core::{PlayerTickContext, PlayerTickResult, PlayerVideoDropReason};
-use render_core::RenderCapabilities;
+use render_core::{
+    ColorAdjustment, ColorPipelineSettings, RenderCapabilities, SwapchainTransferMode,
+};
 use render_wgpu::{RenderFrameOutcome, Renderer};
 use rustiplayer_config::AppConfig;
 use rustiplayer_storage::StorageConnection;
@@ -121,7 +123,7 @@ impl App {
             return;
         }
 
-        let renderer = match Renderer::new(window.clone()) {
+        let mut renderer = match Renderer::new(window.clone()) {
             Ok(renderer) => renderer,
             Err(error) => {
                 tracing::error!("Не удалось инициализировать рендерер: {}", error);
@@ -129,6 +131,15 @@ impl App {
                 return;
             }
         };
+        let color_pipeline_settings = match color_pipeline_settings_from_config(&self.app_config) {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::error!(error = %error, "Некорректные render color settings");
+                event_loop.exit();
+                return;
+            }
+        };
+        renderer.set_color_pipeline_settings(color_pipeline_settings);
 
         if self.storage_connection.is_none() {
             trace!("Storage connection недоступен; долговременные записи отключены");
@@ -361,6 +372,7 @@ fn render_frame(
 
     // Получаем ввод от egui_winit
     let egui_input = app_state.egui_winit_state.take_egui_input(window);
+    app_state.set_render_diagnostics(renderer.diagnostics());
 
     // Player tick продвигает demux/audio/video/scheduler, а shell только пишет telemetry.
     let tick_result = app_state
@@ -453,6 +465,7 @@ fn render_frame(
         RenderFrameOutcome::Presented => telemetry.record_presented_frame(),
         RenderFrameOutcome::Dropped(_reason) => telemetry.record_dropped_frame(),
     }
+    app_state.set_render_diagnostics(renderer.diagnostics());
 
     // Измеряем время кадра и обновляем телеметрию
     let frame_duration = frame_start.elapsed();
@@ -591,5 +604,61 @@ fn combine_startup_errors(errors: [Option<String>; 2]) -> Option<String> {
         None
     } else {
         Some(messages.join("\n"))
+    }
+}
+
+/// Собирает renderer color settings из валидированного пользовательского config.
+fn color_pipeline_settings_from_config(app_config: &AppConfig) -> Result<ColorPipelineSettings> {
+    let color_adjustment = &app_config.render.color_adjustment;
+
+    Ok(ColorPipelineSettings {
+        adjustment: ColorAdjustment {
+            brightness: color_adjustment.brightness,
+            contrast: color_adjustment.contrast,
+            saturation: color_adjustment.saturation,
+            exposure: color_adjustment.exposure,
+            rgb_gain: rgb_triplet_from_config(
+                "render.color_adjustment.rgb_gain",
+                &color_adjustment.rgb_gain,
+            )?,
+            rgb_offset: rgb_triplet_from_config(
+                "render.color_adjustment.rgb_offset",
+                &color_adjustment.rgb_offset,
+            )?,
+        },
+        tone_mapping: render_core::ToneMappingMode::Off,
+        swapchain_transfer: SwapchainTransferMode::PreserveCurrentUnorm,
+    })
+}
+
+/// Конвертирует validated RGB list из config в fixed-size renderer contract.
+fn rgb_triplet_from_config(field: &'static str, values: &[f32]) -> Result<[f32; 3]> {
+    if values.len() != 3 {
+        bail!(
+            "{field} должен содержать ровно 3 значения, получено {}",
+            values.len()
+        );
+    }
+
+    for (channel_index, channel_value) in values.iter().copied().enumerate() {
+        if !channel_value.is_finite() {
+            bail!("{field}[{channel_index}] должен быть конечным числом, получено {channel_value}");
+        }
+    }
+
+    Ok([values[0], values[1], values[2]])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Проверяет, что identity config доезжает до renderer без изменения SDR картинки.
+    #[test]
+    fn default_config_maps_to_identity_color_pipeline_settings() {
+        let settings =
+            color_pipeline_settings_from_config(&AppConfig::default()).expect("settings mapped");
+
+        assert_eq!(settings, ColorPipelineSettings::identity());
     }
 }

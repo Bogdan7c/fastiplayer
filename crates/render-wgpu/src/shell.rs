@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use render_core::RenderCapabilities;
+use render_core::{ColorPipelineSettings, RenderCapabilities, RenderDiagnostics};
 use tracing::{debug, info, instrument};
 use winit::window::Window;
 
@@ -298,6 +298,17 @@ impl Renderer {
     #[must_use]
     pub fn render_capabilities(&self) -> RenderCapabilities {
         self.video_renderer.capabilities().clone()
+    }
+
+    /// Возвращает renderer-neutral диагностику последнего video pass.
+    #[must_use]
+    pub fn diagnostics(&self) -> RenderDiagnostics {
+        self.video_renderer.diagnostics().clone()
+    }
+
+    /// Передаёт пользовательские SDR color settings во внутренний video renderer.
+    pub fn set_color_pipeline_settings(&mut self, settings: ColorPipelineSettings) {
+        self.video_renderer.set_color_pipeline_settings(settings);
     }
 
     /// Рендерит один полный кадр: видео + egui overlay.

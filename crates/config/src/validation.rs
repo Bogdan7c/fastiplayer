@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 
-use crate::{AppConfig, CURRENT_SCHEMA_VERSION, ConfigError, ConfigResult, VideoCodec};
+use crate::{
+    AppConfig, CURRENT_SCHEMA_VERSION, ConfigError, ConfigResult, RenderColorAdjustmentConfig,
+    VideoCodec,
+};
 
 /// Минимальный decode-ahead: ноль ломает смысл backpressure окна.
 const MIN_DECODE_AHEAD_MS: u64 = 1;
@@ -25,6 +28,9 @@ const MAX_NETWORK_READ_AHEAD_MB: u64 = 4096;
 
 /// Верхний предел render latency, выше которого config почти наверняка ошибочен.
 const MAX_VULKAN_FRAME_LATENCY: u32 = 8;
+
+/// Количество каналов в пользовательских RGB triplet-полях.
+const RGB_CHANNEL_COUNT: usize = 3;
 
 /// Проверяет весь config после TOML/Serde deserialization.
 pub(crate) fn validate_app_config(config: &AppConfig) -> ConfigResult<()> {
@@ -133,12 +139,45 @@ fn validate_network_section(config: &AppConfig) -> ConfigResult<()> {
 
 /// Проверяет render section.
 fn validate_render_section(config: &AppConfig) -> ConfigResult<()> {
+    validate_render_color_adjustment(&config.render.color_adjustment)?;
     validate_u32_range(
         "render.vulkan.max_frame_latency",
         config.render.vulkan.max_frame_latency,
         1,
         MAX_VULKAN_FRAME_LATENCY,
     )
+}
+
+/// Проверяет SDR/RGB корректировки до передачи значений renderer-у.
+fn validate_render_color_adjustment(
+    color_adjustment: &RenderColorAdjustmentConfig,
+) -> ConfigResult<()> {
+    validate_f32_finite(
+        "render.color_adjustment.brightness",
+        color_adjustment.brightness,
+    )?;
+    validate_f32_finite(
+        "render.color_adjustment.contrast",
+        color_adjustment.contrast,
+    )?;
+    validate_f32_finite(
+        "render.color_adjustment.saturation",
+        color_adjustment.saturation,
+    )?;
+    validate_f32_finite(
+        "render.color_adjustment.exposure",
+        color_adjustment.exposure,
+    )?;
+    validate_rgb_triplet(
+        "render.color_adjustment.rgb_gain",
+        &color_adjustment.rgb_gain,
+    )?;
+    validate_rgb_triplet(
+        "render.color_adjustment.rgb_offset",
+        &color_adjustment.rgb_offset,
+    )?;
+
+    Ok(())
 }
 
 /// Проверяет UI section.
@@ -200,6 +239,44 @@ fn validate_usize_range(
         field,
         format!("значение должно быть в диапазоне {min}..={max}, получено {value}"),
     ))
+}
+
+/// Проверяет, что `f32` поле можно безопасно отправить в shader uniforms.
+fn validate_f32_finite(field: &'static str, value: f32) -> ConfigResult<()> {
+    if value.is_finite() {
+        return Ok(());
+    }
+
+    Err(invalid_value(
+        field,
+        format!("значение должно быть конечным числом, получено {value}"),
+    ))
+}
+
+/// Проверяет RGB-массив: ровно три конечных значения в порядке R, G, B.
+fn validate_rgb_triplet(field: &'static str, values: &[f32]) -> ConfigResult<()> {
+    if values.len() != RGB_CHANNEL_COUNT {
+        return Err(invalid_value(
+            field,
+            format!(
+                "RGB-массив должен содержать ровно {RGB_CHANNEL_COUNT} значения, получено {}",
+                values.len()
+            ),
+        ));
+    }
+
+    for (channel_index, channel_value) in values.iter().copied().enumerate() {
+        if !channel_value.is_finite() {
+            return Err(invalid_value(
+                field,
+                format!(
+                    "RGB-канал #{channel_index} должен быть конечным числом, получено {channel_value}"
+                ),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 /// Создаёт validation error без потери имени TOML-поля.

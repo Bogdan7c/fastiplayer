@@ -131,6 +131,7 @@ dependencies = [
  "audio",
  "bytes",
  "capability-core",
+ "codec-core",
  "egui",
  "egui-winit",
  "media-core",
