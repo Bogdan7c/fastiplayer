@@ -427,46 +427,57 @@ impl AppState {
         let telemetry_frame =
             egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160));
         egui::Panel::right("telemetry")
-            .resizable(false)
-            .exact_size(200.0)
+            .resizable(true)
+            .default_size(280.0)
+            .size_range(220.0..=520.0)
             .frame(telemetry_frame)
             .show_inside(ui, |ui| {
                 ui.heading("Telemetry");
                 ui.separator();
 
-                let fps = telemetry.current_fps();
-                let frame_time = telemetry.last_frame_time_ms();
-                let presented = telemetry.presented_frames();
-                let dropped = telemetry.dropped_frames();
-                let drop_rate = telemetry.drop_rate_percent();
+                egui::ScrollArea::vertical()
+                    .id_salt("telemetry_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let fps = telemetry.current_fps();
+                        let frame_time = telemetry.last_frame_time_ms();
+                        let presented = telemetry.presented_frames();
+                        let dropped = telemetry.dropped_frames();
+                        let drop_rate = telemetry.drop_rate_percent();
 
-                ui.monospace(format!("FPS: {fps}"));
-                ui.monospace(format!("Frame time: {:.2} ms", frame_time as f64));
-                ui.separator();
-                ui.monospace(format!("Presented: {presented}"));
-                ui.monospace(format!("Dropped: {dropped}"));
-                ui.monospace(format!("Drop rate: {drop_rate:.2}%"));
-                ui.separator();
+                        ui.monospace(format!("FPS: {fps}"));
+                        ui.monospace(format!("Frame time: {:.2} ms", frame_time as f64));
+                        ui.separator();
+                        ui.monospace(format!("Presented: {presented}"));
+                        ui.monospace(format!("Dropped: {dropped}"));
+                        ui.monospace(format!("Drop rate: {drop_rate:.2}%"));
+                        ui.separator();
 
-                let quality_color = if fps >= 55 {
-                    egui::Color32::GREEN
-                } else if fps >= 30 {
-                    egui::Color32::YELLOW
-                } else {
-                    egui::Color32::RED
-                };
-                ui.colored_label(quality_color, "Frame pacing: OK");
+                        let quality_color = if fps >= 55 {
+                            egui::Color32::GREEN
+                        } else if fps >= 30 {
+                            egui::Color32::YELLOW
+                        } else {
+                            egui::Color32::RED
+                        };
+                        ui.colored_label(quality_color, "Frame pacing: OK");
 
-                ui.separator();
-                ui.monospace(format!("Backend: {backend_name}"));
-                ui.monospace(format!(
-                    "Elapsed: {:.1}s",
-                    start_time.elapsed().as_secs_f64()
-                ));
+                        ui.separator();
+                        ui.monospace(format!("Backend: {backend_name}"));
+                        ui.monospace(format!(
+                            "Elapsed: {:.1}s",
+                            start_time.elapsed().as_secs_f64()
+                        ));
 
-                ui.separator();
-                ui.heading("Media Info");
-                Self::render_media_info(ui, player_snapshot, telemetry, frame_duration_estimate_ms);
+                        ui.separator();
+                        ui.heading("Media Info");
+                        Self::render_media_info(
+                            ui,
+                            player_snapshot,
+                            telemetry,
+                            frame_duration_estimate_ms,
+                        );
+                    });
             });
     }
 
@@ -576,7 +587,7 @@ impl AppState {
         if let Some(capability_summary) = &player_snapshot.capability_summary {
             ui.separator();
             ui.heading("Capabilities");
-            for line in capability_summary.lines().take(10) {
+            for line in capability_summary.lines() {
                 ui.monospace(line);
             }
         }
