@@ -292,6 +292,8 @@ Manual tests:
 
 ### Сессия 3: render-wgpu uniforms и shader boundary
 
+Статус: реализовано
+
 Задачи:
 
 - добавить `render-wgpu/src/color_pipeline.rs`;

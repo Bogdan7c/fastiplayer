@@ -1,15 +1,7 @@
 use anyhow::Result;
+use render_core::{ColorPipelineSettings, RenderableFrame};
 
-/// Uniform buffer для расчёта letterbox в fragment shader.
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Uniforms {
-    /// Масштаб UV относительно полного экрана.
-    uv_scale: [f32; 2],
-
-    /// Смещение UV, которое создаёт black bars.
-    uv_offset: [f32; 2],
-}
+use crate::color_pipeline::{COLOR_PIPELINE_UNIFORM_SIZE, prepare_nv12_color_pipeline};
 
 /// Приватный renderer для NV12 decoded frames с YUV->RGB conversion.
 pub(crate) struct Nv12VideoRenderer {
@@ -17,6 +9,7 @@ pub(crate) struct Nv12VideoRenderer {
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
+    color_settings: ColorPipelineSettings,
     window_size: (u32, u32),
 }
 
@@ -30,7 +23,7 @@ impl Nv12VideoRenderer {
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nv12 uniform buffer"),
-            size: std::mem::size_of::<Uniforms>() as u64,
+            size: COLOR_PIPELINE_UNIFORM_SIZE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -55,8 +48,7 @@ impl Nv12VideoRenderer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: Some(
-                            std::num::NonZeroU64::new(std::mem::size_of::<Uniforms>() as u64)
-                                .unwrap(),
+                            std::num::NonZeroU64::new(COLOR_PIPELINE_UNIFORM_SIZE).unwrap(),
                         ),
                     },
                     count: None,
@@ -149,6 +141,7 @@ impl Nv12VideoRenderer {
             bind_group_layout,
             uniform_buffer,
             sampler,
+            color_settings: ColorPipelineSettings::default(),
             window_size: (1280, 720),
         }
     }
@@ -161,17 +154,16 @@ impl Nv12VideoRenderer {
     /// Рендерит NV12 frame с letterbox и YUV->RGB conversion.
     pub fn render_frame(
         &mut self,
+        frame: &RenderableFrame,
         y_view: &wgpu::TextureView,
         uv_view: &wgpu::TextureView,
-        video_width: u32,
-        video_height: u32,
         target: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> Result<()> {
         // Считаем отношение сторон видео и текущего окна.
-        let video_aspect = video_width as f32 / video_height.max(1) as f32;
+        let video_aspect = frame.render_width as f32 / frame.render_height.max(1) as f32;
         let window_aspect = self.window_size.0 as f32 / self.window_size.1.max(1) as f32;
 
         let (scale_x, scale_y, offset_x, offset_y) = if video_aspect > window_aspect {
@@ -184,12 +176,18 @@ impl Nv12VideoRenderer {
             (scale, 1.0, (1.0 - scale) * 0.5, 0.0)
         };
 
-        let uniforms = Uniforms {
-            uv_scale: [scale_x, scale_y],
-            uv_offset: [offset_x, offset_y],
-        };
+        let prepared_color_pipeline = prepare_nv12_color_pipeline(
+            frame,
+            &self.color_settings,
+            [scale_x, scale_y],
+            [offset_x, offset_y],
+        );
 
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::bytes_of(&prepared_color_pipeline.uniforms),
+        );
 
         // Bind group создаётся на кадр, потому что texture views приходят из decoder pool.
         // Позже это место можно заменить на pool/cache без изменения public facade.
@@ -253,8 +251,27 @@ mod tests {
         let shader_source = include_str!("../shaders/nv12_to_rgba.wgsl");
 
         assert!(
-            shader_source.contains("nv12_to_rgb(y, uv.r, uv.g)"),
-            "NV12 в Rg8Unorm должен передавать U из .r и V из .g"
+            shader_source.contains("let sampled_u = sampled_uv.r;"),
+            "NV12 в Rg8Unorm должен читать U из .r"
+        );
+        assert!(
+            shader_source.contains("let sampled_v = sampled_uv.g;"),
+            "NV12 в Rg8Unorm должен читать V из .g"
+        );
+    }
+
+    /// Проверяем, что shader contract больше не завязан на hardcoded BT.709 helper.
+    #[test]
+    fn nv12_shader_uses_uniform_color_pipeline_contract() {
+        let shader_source = include_str!("../shaders/nv12_to_rgba.wgsl");
+
+        assert!(
+            !shader_source.contains("fn nv12_to_rgb"),
+            "YUV->RGB conversion должен идти через generic uniform-driven helper"
+        );
+        assert!(
+            shader_source.contains("yuv_to_rgb_row0"),
+            "Shader должен читать matrix coefficients из uniforms"
         );
     }
 }

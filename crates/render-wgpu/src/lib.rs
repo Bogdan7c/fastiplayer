@@ -10,6 +10,7 @@ use anyhow::{Result, bail};
 use codec_core::{BitDepth, ChromaSubsampling};
 use render_core::{RenderCapabilities, RenderableFrame, VideoFrameFormat};
 
+mod color_pipeline;
 mod nv12_renderer;
 mod shell;
 
@@ -123,10 +124,9 @@ impl WgpuVideoRenderer {
         match (&frame.metadata.format, &frame.planes) {
             (VideoFrameFormat::Nv12, WgpuFramePlanes::Nv12 { y_view, uv_view }) => {
                 self.nv12_renderer.render_frame(
+                    &frame.metadata,
                     y_view,
                     uv_view,
-                    frame.metadata.render_width,
-                    frame.metadata.render_height,
                     target,
                     encoder,
                     device,
