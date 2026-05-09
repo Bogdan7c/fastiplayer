@@ -1,4 +1,6 @@
 use anyhow::Result;
+use std::num::NonZeroU64;
+
 use render_core::{ActiveColorPath, ColorPipelineSettings, RenderableFrame};
 
 use crate::color_pipeline::{COLOR_PIPELINE_UNIFORM_SIZE, prepare_nv12_color_pipeline};
@@ -11,6 +13,13 @@ pub(crate) struct Nv12VideoRenderer {
     sampler: wgpu::Sampler,
     color_settings: ColorPipelineSettings,
     window_size: (u32, u32),
+}
+
+/// Возвращает non-zero binding size для uniform buffer-а.
+fn color_pipeline_uniform_binding_size() -> NonZeroU64 {
+    // Инвариант защищён layout test-ом `color_pipeline_uniforms_match_wgsl_uniform_layout`.
+    NonZeroU64::new(COLOR_PIPELINE_UNIFORM_SIZE)
+        .expect("размер color pipeline uniform buffer должен быть non-zero")
 }
 
 impl Nv12VideoRenderer {
@@ -47,9 +56,7 @@ impl Nv12VideoRenderer {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: Some(
-                            std::num::NonZeroU64::new(COLOR_PIPELINE_UNIFORM_SIZE).unwrap(),
-                        ),
+                        min_binding_size: Some(color_pipeline_uniform_binding_size()),
                     },
                     count: None,
                 },

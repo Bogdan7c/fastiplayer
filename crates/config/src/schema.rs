@@ -177,10 +177,10 @@ pub struct RenderConfig {
     /// Активный render profile.
     pub profile: RenderProfile,
 
-    /// Включает будущий HDR-to-SDR path.
+    /// Compatibility placeholder для будущего HDR-to-SDR path; Phase 8.5 держит `false`.
     pub hdr_to_sdr: bool,
 
-    /// Алгоритм tone mapping для HDR content.
+    /// Compatibility placeholder для будущего HDR tone mapping; Phase 8.5 держит `Disabled`.
     pub tone_mapping: ToneMappingMode,
 
     /// Пользовательские SDR/RGB корректировки без HDR controls.
@@ -198,8 +198,8 @@ impl Default for RenderConfig {
     fn default() -> Self {
         Self {
             profile: RenderProfile::Vulkan,
-            hdr_to_sdr: true,
-            tone_mapping: ToneMappingMode::Auto,
+            hdr_to_sdr: false,
+            tone_mapping: ToneMappingMode::Disabled,
             color_adjustment: RenderColorAdjustmentConfig::default(),
             vulkan: VulkanConfig::default(),
             opengles: OpenGlesConfig::default(),

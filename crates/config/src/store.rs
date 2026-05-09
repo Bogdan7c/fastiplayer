@@ -137,6 +137,7 @@ fn parse_config_text(path: &Path, toml_text: &str) -> ConfigResult<AppConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ToneMappingMode;
 
     /// Проверяет, что default schema остаётся самосогласованной.
     #[test]
@@ -158,6 +159,15 @@ mod tests {
         assert_eq!(config.render.color_adjustment.exposure, 0.0);
         assert_eq!(config.render.color_adjustment.rgb_gain, [1.0, 1.0, 1.0]);
         assert_eq!(config.render.color_adjustment.rgb_offset, [0.0, 0.0, 0.0]);
+    }
+
+    /// Проверяет, что default config не обещает HDR до Phase 9.
+    #[test]
+    fn render_hdr_placeholders_default_to_disabled_until_phase9() {
+        let config = AppConfig::default();
+
+        assert!(!config.render.hdr_to_sdr);
+        assert_eq!(config.render.tone_mapping, ToneMappingMode::Disabled);
     }
 
     /// Проверяет первый запуск без существующего config-файла.

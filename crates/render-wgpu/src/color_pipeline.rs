@@ -1,5 +1,7 @@
 use codec_core::{ColorRange, MatrixCoefficients, VideoColorMetadata};
-use render_core::{ActiveColorPath, ColorPipelineSettings, RenderableFrame};
+use render_core::{
+    ActiveColorPath, ActiveColorPathFallback, ColorPipelineSettings, RenderableFrame,
+};
 
 /// Размер GPU uniform buffer-а, который должен совпадать с WGSL struct layout.
 pub(crate) const COLOR_PIPELINE_UNIFORM_SIZE: u64 =
@@ -160,11 +162,18 @@ pub(crate) fn prepare_nv12_color_pipeline(
 
 /// Выбирает metadata, которая реально идёт в shader uniforms.
 fn effective_shader_color_metadata(active_path: &ActiveColorPath) -> VideoColorMetadata {
-    if active_path.fallback.is_some() {
-        return VideoColorMetadata::sdr_bt709_limited();
-    }
+    match active_path.fallback {
+        // Полностью поддержанный SDR path использует metadata кадра без подмены.
+        None => active_path.input_color.clone(),
 
-    active_path.input_color.clone()
+        // Эти fallback-и намеренно видны в `ActiveColorPath`, но shader Phase 8.5
+        // остаётся SDR BT.709/NV12 path и получает безопасные SDR uniforms.
+        Some(
+            ActiveColorPathFallback::UnknownInputMetadata
+            | ActiveColorPathFallback::WideGamutToSdrBt709
+            | ActiveColorPathFallback::UnsupportedHdrInput,
+        ) => VideoColorMetadata::sdr_bt709_limited(),
+    }
 }
 
 /// Набор coefficients, уже разложенный под WGSL uniform rows.
@@ -489,6 +498,10 @@ mod tests {
             assert_eq!(
                 prepared_color_pipeline.active_path.output_color_space,
                 RenderOutputColorSpace::SdrBt709
+            );
+            assert_eq!(
+                prepared_color_pipeline.uniforms,
+                uniforms_for_color(VideoColorMetadata::sdr_bt709_limited()).uniforms
             );
         }
     }

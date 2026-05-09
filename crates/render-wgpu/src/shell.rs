@@ -27,7 +27,7 @@ use crate::{WgpuRenderableFrame, WgpuVideoRenderer, clear_to_black};
 use video_vulkan::UnifiedVulkanInstance;
 
 /// Выбирает формат swapchain для SDR-видео.
-fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> wgpu::TextureFormat {
+fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> Result<wgpu::TextureFormat> {
     // Для текущего NV12 renderer предпочитаем обычный 8-bit формат.
     const PREFERRED_FORMATS: &[wgpu::TextureFormat] = &[
         wgpu::TextureFormat::Bgra8Unorm,
@@ -39,12 +39,38 @@ fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> wgpu::TextureFormat
     // Сначала ищем явно поддерживаемый 8-bit формат.
     for preferred_format in PREFERRED_FORMATS {
         if formats.contains(preferred_format) {
-            return *preferred_format;
+            return Ok(*preferred_format);
         }
     }
 
     // Если 8-bit форматов нет, используем первый формат из capabilities.
-    formats[0]
+    formats
+        .first()
+        .copied()
+        .context("Surface capabilities не вернул ни одного texture format")
+}
+
+/// Выбирает present mode без тихого fallback на пустой список capabilities.
+fn choose_present_mode(present_modes: &[wgpu::PresentMode]) -> Result<wgpu::PresentMode> {
+    // FIFO остаётся безопасным VSync default для текущего shell.
+    if present_modes.contains(&wgpu::PresentMode::Fifo) {
+        return Ok(wgpu::PresentMode::Fifo);
+    }
+
+    // Если FIFO нет, берём первый режим, явно сообщённый backend-ом.
+    present_modes
+        .first()
+        .copied()
+        .context("Surface capabilities не вернул ни одного present mode")
+}
+
+/// Выбирает alpha mode без неявного panic на некорректных capabilities.
+fn choose_alpha_mode(alpha_modes: &[wgpu::CompositeAlphaMode]) -> Result<wgpu::CompositeAlphaMode> {
+    // Phase 8.5 не вводит отдельную alpha policy, поэтому используем первый режим backend-а.
+    alpha_modes
+        .first()
+        .copied()
+        .context("Surface capabilities не вернул ни одного alpha mode")
 }
 
 /// GPU ресурсы: device, queue, surface и их конфигурация.
@@ -128,16 +154,10 @@ impl GpuContext {
         let surface_caps = surface.get_capabilities(&adapter);
 
         // Предпочитаем 8-bit формат: текущий SDR/NV12 shader пишет обычный RGBA.
-        let surface_format = choose_surface_format(&surface_caps.formats);
+        let surface_format = choose_surface_format(&surface_caps.formats)?;
 
-        let present_mode = if surface_caps
-            .present_modes
-            .contains(&wgpu::PresentMode::Fifo)
-        {
-            wgpu::PresentMode::Fifo
-        } else {
-            surface_caps.present_modes[0]
-        };
+        let present_mode = choose_present_mode(&surface_caps.present_modes)?;
+        let alpha_mode = choose_alpha_mode(&surface_caps.alpha_modes)?;
 
         let size = window.inner_size();
         let surface_config = wgpu::SurfaceConfiguration {
@@ -146,7 +166,7 @@ impl GpuContext {
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode,
-            alpha_mode: surface_caps.alpha_modes[0],
+            alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -465,7 +485,9 @@ impl Renderer {
         // Критично для zero-copy DMA-BUF import: каждый кадр создаёт и уничтожает
         // wgpu textures, и без poll wgpu откладывает destruction до неопределённого момента,
         // что приводит к Out of Memory через несколько десятков секунд 4K playback.
-        let _ = self.gpu.device.poll(wgpu::PollType::Poll);
+        if let Err(error) = self.gpu.device.poll(wgpu::PollType::Poll) {
+            tracing::warn!(error = %error, "wgpu device poll завершился ошибкой во время GPU cleanup");
+        }
 
         // Сообщаем winit, что сейчас будет present: это помогает backend/compositor timing.
         window.pre_present_notify();
@@ -473,5 +495,71 @@ impl Renderer {
         // Показываем кадр на экране.
         surface_texture.present();
         RenderFrameOutcome::Presented
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Проверяет, что SDR path предпочитает Unorm, чтобы не включить implicit sRGB transfer.
+    #[test]
+    fn surface_format_prefers_current_unorm_path_before_srgb() {
+        let formats = [
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Bgra8Unorm,
+        ];
+
+        let selected_format = choose_surface_format(&formats).expect("surface format selected");
+
+        assert_eq!(selected_format, wgpu::TextureFormat::Bgra8Unorm);
+    }
+
+    /// Проверяет явную ошибку вместо panic при некорректных surface capabilities.
+    #[test]
+    fn empty_surface_format_list_is_reported_as_error() {
+        let error = choose_surface_format(&[]).expect_err("empty format list rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Surface capabilities не вернул ни одного texture format")
+        );
+    }
+
+    /// Проверяет VSync-friendly present mode policy.
+    #[test]
+    fn present_mode_prefers_fifo_when_available() {
+        let present_modes = [wgpu::PresentMode::Immediate, wgpu::PresentMode::Fifo];
+
+        let selected_present_mode =
+            choose_present_mode(&present_modes).expect("present mode selected");
+
+        assert_eq!(selected_present_mode, wgpu::PresentMode::Fifo);
+    }
+
+    /// Проверяет явную ошибку вместо panic при пустом списке present modes.
+    #[test]
+    fn empty_present_mode_list_is_reported_as_error() {
+        let error = choose_present_mode(&[]).expect_err("empty present mode list rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Surface capabilities не вернул ни одного present mode")
+        );
+    }
+
+    /// Проверяет явную ошибку вместо panic при пустом списке alpha modes.
+    #[test]
+    fn empty_alpha_mode_list_is_reported_as_error() {
+        let error = choose_alpha_mode(&[]).expect_err("empty alpha mode list rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Surface capabilities не вернул ни одного alpha mode")
+        );
     }
 }

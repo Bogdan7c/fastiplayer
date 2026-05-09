@@ -139,6 +139,7 @@ impl App {
                 return;
             }
         };
+        warn_ignored_phase8_5_hdr_config(&self.app_config);
         renderer.set_color_pipeline_settings(color_pipeline_settings);
 
         if self.storage_connection.is_none() {
@@ -605,6 +606,22 @@ fn combine_startup_errors(errors: [Option<String>; 2]) -> Option<String> {
     } else {
         Some(messages.join("\n"))
     }
+}
+
+/// Логирует HDR config placeholders, которые Phase 8.5 ещё не применяет.
+fn warn_ignored_phase8_5_hdr_config(app_config: &AppConfig) {
+    let tone_mapping_is_disabled =
+        app_config.render.tone_mapping == rustiplayer_config::ToneMappingMode::Disabled;
+
+    if !app_config.render.hdr_to_sdr && tone_mapping_is_disabled {
+        return;
+    }
+
+    warn!(
+        hdr_to_sdr = app_config.render.hdr_to_sdr,
+        tone_mapping = ?app_config.render.tone_mapping,
+        "HDR render config игнорируется до Phase 9; текущий renderer остаётся SDR-only"
+    );
 }
 
 /// Собирает renderer color settings из валидированного пользовательского config.

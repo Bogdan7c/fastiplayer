@@ -323,6 +323,8 @@ Manual tests:
 
 ### Сессия 4: config и UI diagnostics
 
+Статус: реализовано
+
 Задачи:
 
 - добавить `render.color_adjustment` config defaults;
@@ -384,3 +386,8 @@ Verification:
 - `ActiveColorPath` уже умеет объяснять output path;
 - swapchain transfer behavior уже не скрыт в порядке выбора surface format;
 - SDR path уже защищён tests и не должен ломаться при добавлении P010/HDR.
+
+
+
+
+ФАЗА ПОЛНОСТЬЮ ЗАКРЫТА!

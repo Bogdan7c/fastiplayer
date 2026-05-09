@@ -51,6 +51,8 @@ present_queue_frames = 8
 
 [render]
 profile = "vulkan"
+hdr_to_sdr = false
+tone_mapping = "disabled"
 
 [render.color_adjustment]
 brightness = 0.0
@@ -97,7 +99,14 @@ language = "ru"
 
 ## Render color config policy
 
-Phase 8.5 добавляет пользовательские SDR/RGB adjustments в config, но не включает HDR tone mapping как пользовательскую настройку до реализации Phase 9.
+Phase 8.5 добавляет пользовательские SDR/RGB adjustments в config, но не включает HDR tone mapping в активный renderer path до реализации Phase 9.
+
+В текущей схеме `render.hdr_to_sdr` и `render.tone_mapping` остаются compatibility placeholders:
+
+- default значения: `hdr_to_sdr = false`, `tone_mapping = "disabled"`;
+- `app-egui` не пробрасывает эти поля в `ColorPipelineSettings`;
+- если пользовательский или старый config включает HDR placeholders, shell логирует warning и продолжает использовать SDR-only capabilities;
+- `RenderCapabilities::wgpu_nv12()` всё равно не объявляет HDR/P010 support.
 
 Identity defaults обязательны:
 
