@@ -245,6 +245,8 @@ Phase 8.5 matrix policy:
 
 ### Сессия 1: typed metadata foundation
 
+Статус: реализовано
+
 Задачи:
 
 - добавить color metadata types в `codec-core`;
@@ -266,6 +268,8 @@ Manual tests:
 - проверить logs, что fallback metadata не выглядит как bitstream metadata.
 
 ### Сессия 2: render-core contract
+
+Статус: реализовано
 
 Задачи:
 
