@@ -186,19 +186,44 @@ Acceptance:
 - renderer capabilities участвуют в stream selection;
 - текущий NV12 VP9 path работает.
 
+## Phase 8.5: SDR color pipeline prep
+
+Подробный план: [09. Phase 8.5 SDR Color Pipeline Prep](09-phase-8-5-sdr-color-pipeline-prep.md).
+
+Цель:
+
+- сохранить текущий рабочий SDR VP9/NV12 путь;
+- не менять намеренно визуальный SDR результат;
+- заменить hardcoded `NV12 + BT.709 limited SDR` assumptions на явный renderer color pipeline contract;
+- добавить typed color metadata path от decoder boundary до renderer uniforms;
+- заложить SDR/RGB adjustments и active color path diagnostics;
+- сохранить zero-copy DMA-BUF import как целевой path;
+- подготовить Phase 9 P010/HDR без превращения `nv12_to_rgba.wgsl` в универсальный HDR shader.
+
+Acceptance:
+
+- SDR VP9/NV12 playback работает как до refactor;
+- `BT.709 limited` conversion даёт тот же или объяснимо близкий результат;
+- `RenderCapabilities` не объявляет HDR/P010 support преждевременно;
+- UI/telemetry может показать active color path вроде `NV12 8-bit BT.709 limited -> SDR BT.709 preserve-current-unorm`;
+- unit tests покрывают metadata -> uniforms mapping;
+- shader/source tests проверяют, что NV12 UV order не сломан;
+- zero-copy decoded NV12 DMA-BUF import не заменён CPU color conversion path.
+
 ## Phase 9: HDR-to-SDR baseline
 
 Цель:
 
-- расширить frame metadata;
-- добавить color metadata path;
-- добавить HDR-to-SDR shader path;
+- использовать frame/color metadata path из Phase 8.5;
+- добавить отдельный P010/HDR shader path;
+- добавить HDR-to-SDR tone mapping implementation;
 - начать с PQ/HLG to SDR BT.709.
 
 Acceptance:
 
 - HDR input не отображается как washed-out SDR;
 - UI показывает active color path;
+- SDR path из Phase 8.5 остаётся стабильным;
 - SDR видео не ломается.
 
 ## Phase 10: Full VP9 completion

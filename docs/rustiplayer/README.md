@@ -14,6 +14,7 @@
 - [06. Rendering, UI and Platform](06-rendering-ui-platform.md) - wgpu/Vulkan, GLES fallback, egui, MPRIS, мультиплатформа.
 - [07. Services and Network](07-services-network.md) - YouTube-клиент, будущие сервисы, cache, streaming.
 - [08. Development Roadmap](08-development-roadmap.md) - поэтапный план разработки в порядке приоритета.
+- [09. Phase 8.5 SDR Color Pipeline Prep](09-phase-8-5-sdr-color-pipeline-prep.md) - подготовка SDR color pipeline перед HDR.
 
 ## Ключевые решения
 
@@ -28,6 +29,11 @@
 | Bitstream probing | Только через проверенные parser'ы/адаптеры, без новых ad-hoc bit parser'ов в `player-core` |
 | Renderer primary | `wgpu`/Vulkan |
 | Renderer legacy | Отдельный будущий OpenGL ES 2.0 crate для SDR 8-bit NV12 |
+| Color pipeline | Phase 8.5 вводит явный SDR color pipeline contract перед HDR |
+| Swapchain transfer | По умолчанию сохраняем текущий `Unorm` path через `PreserveCurrentUnorm`; `SrgbRenderTarget` и explicit shader OETF остаются future modes |
+| Color metadata | Используем layered metadata с origin/confidence: manifest/container/bitstream/decoder/fallback |
+| SDR adjustments | В contract закладываются brightness/contrast/saturation/exposure и RGB gain/offset с identity defaults |
+| BT.2020 SDR | Сейчас показываем как fallback в SDR BT.709 diagnostics, позже добавляем настоящий gamut mapping |
 | Windows | Second target, через DX12 |
 | macOS | Later target |
 | FFmpeg | Полностью вне проекта |

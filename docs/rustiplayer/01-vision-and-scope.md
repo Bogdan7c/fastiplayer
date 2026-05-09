@@ -96,6 +96,10 @@ FFmpeg не используется ни для decode, ни для demux/probe
 - 8/10/12-bit;
 - PQ и HLG.
 
+Перед HDR-to-SDR этапом нужен отдельный SDR-prep refactor. Он должен сохранить текущий VP9/NV12 SDR результат, но заменить неявное предположение `NV12 + BT.709 limited SDR` на явный renderer color pipeline contract. Этот contract должен включать typed metadata, active color path diagnostics, SDR adjustment settings и future hooks для tone mapping.
+
+Для SDR output текущий `wgpu` path сохраняет поведение `Unorm` swapchain как default. Это фиксируется как `PreserveCurrentUnorm`, чтобы будущий переход на `SrgbRenderTarget` или explicit shader OETF был осознанным решением, а не побочным эффектом порядка выбора surface format.
+
 Первая практическая HDR-цель: смотреть HDR-видео на SDR-мониторе через корректный shader tone mapping.
 
 ### YouTube and services
@@ -134,4 +138,3 @@ FFmpeg не используется ни для decode, ни для demux/probe
 - MPRIS desktop control;
 - platform-specific hardware decode backends;
 - OpenGL ES 2.0 legacy renderer.
-

@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+codec-core = { workspace = true }
 thiserror.workspace = true
 tracing.workspace = true
 wgpu.workspace = true

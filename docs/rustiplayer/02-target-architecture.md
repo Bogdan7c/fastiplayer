@@ -71,6 +71,36 @@ PlayerSnapshot
         +--> telemetry/storage
 ```
 
+## Renderer color data flow
+
+Цветовой путь должен быть отдельной частью renderer boundary, а не знанием внутри одного shader-а.
+
+```text
+container/service/bitstream hints
+        |
+        v
+codec-core VideoColorMetadata
+        |
+        v
+video-core DecodedFrame
+  pixel format, bit depth, chroma, color metadata, texture handle
+        |
+        v
+render-core RenderableFrame
+  renderer-neutral metadata, ColorPipelineSettings, ActiveColorPath
+        |
+        v
+render-wgpu
+  metadata/settings -> ColorPipelineUniforms -> NV12/P010 shader path
+        |
+        v
+swapchain output
+```
+
+Phase 8.5 сохраняет текущий SDR VP9/NV12 путь и не добавляет HDR support. Цель этапа - сделать явными metadata, defaults и shader uniforms, чтобы Phase 9 мог добавить P010/HDR renderer без повторного рефакторинга `DecodedFrame` и `RenderableFrame`.
+
+Color metadata выбирается layered-моделью: manifest/container metadata используется как ранний hint, codec bitstream parser уточняет colorimetry, decoder/backend подтверждает фактический decoded format, а fallback явно помечается как fallback. Текущий fallback для старого SDR пути - `BT.709 limited SDR`.
+
 ## Bitstream metadata probing
 
 Capability-based selection может уточнять stream requirement из container metadata, service manifest и codec bitstream headers.
@@ -139,6 +169,7 @@ Snapshot должен содержать:
 - available qualities;
 - active backend;
 - current video frame handle;
+- active color path;
 - audio buffer status;
 - video queue status;
 - dropped/repeated/presented frames;

@@ -699,6 +699,7 @@ name = "codec-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3253,6 +3254,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "codec-core",
  "egui",
  "egui-wgpu",
  "pollster",
@@ -4500,6 +4502,7 @@ name = "video-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "codec-core",
  "media-core",
 ]
 
@@ -4529,6 +4532,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ash",
+ "codec-core",
  "gpu-allocator 0.27.0",
  "media-core",
  "thiserror 2.0.18",

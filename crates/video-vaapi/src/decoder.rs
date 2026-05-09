@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
+use codec_core::VideoColorMetadata;
 use cros_codecs::DecodedFormat;
 use cros_codecs::decoder::BlockingMode;
 use cros_codecs::decoder::DecodedHandle;
@@ -17,7 +18,7 @@ use cros_codecs::libva::{
 };
 use media_core::Packet;
 use tracing::{debug, info, trace, warn};
-use video_core::{ColorSpace, DecodedFrame, FrameTextureHandle, VideoDecoder};
+use video_core::{DecodedFrame, FrameTextureHandle, VideoDecoder};
 
 use crate::frame_pool::DmaFramePool;
 use crate::internal_vaapi_frame::InternalVaapiFrame;
@@ -318,12 +319,16 @@ impl VaapiVideoDecoder {
             ReadyFrameSource::ZeroCopy => trace!(
                 pts_ms = frame.pts.as_millis(),
                 handle_id = frame.texture_handle.0,
+                color_origin = ?frame.color.origin,
+                color_confidence = ?frame.color.confidence,
                 queue_len = self.ready_queue.len() + 1,
                 "Zero-copy frame queued for presentation"
             ),
             ReadyFrameSource::CpuUpload => trace!(
                 pts_ms = frame.pts.as_millis(),
                 handle_id = frame.texture_handle.0,
+                color_origin = ?frame.color.origin,
+                color_confidence = ?frame.color.confidence,
                 queue_len = self.ready_queue.len() + 1,
                 "CPU-upload frame queued for presentation"
             ),
@@ -391,7 +396,7 @@ impl VaapiVideoDecoder {
                                     height: resolution.height,
                                     render_width: display_resolution.width,
                                     render_height: display_resolution.height,
-                                    color_space: ColorSpace::Bt709Limited,
+                                    color: VideoColorMetadata::sdr_bt709_limited(),
                                     texture_handle,
                                 },
                                 ReadyFrameSource::ZeroCopy,
@@ -464,7 +469,7 @@ impl VaapiVideoDecoder {
                 height: resolution.height,
                 render_width: display_resolution.width,
                 render_height: display_resolution.height,
-                color_space: ColorSpace::Bt709Limited,
+                color: VideoColorMetadata::sdr_bt709_limited(),
                 texture_handle,
             },
             ReadyFrameSource::CpuUpload,

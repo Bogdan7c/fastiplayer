@@ -124,8 +124,13 @@ Desktop shell.
 - `BitDepth`;
 - `ChromaSubsampling`;
 - `HdrMetadata`;
+- `ColorRange`;
+- `MatrixCoefficients`;
 - `ColorPrimaries`;
 - `TransferFunction`;
+- `VideoColorMetadata`;
+- `ColorMetadataOrigin`;
+- `ColorMetadataConfidence`;
 - `SupportedDecodeFormat`;
 - normalization codec ids из контейнеров и сервисов.
 
@@ -136,6 +141,8 @@ Desktop shell.
 - ad-hoc bitstream parsing в обход codec backend parser'ов.
 
 Если capability selection требует profile/bit-depth/chroma/resolution из bitstream, `codec-core` должен хранить typed модель и conversion helpers, а сам parser должен жить рядом с codec/backend integration или быть адаптером над уже используемым parser'ом.
+
+Color metadata в `codec-core` описывает факты о потоке, а не пользовательские настройки изображения. Defaults вроде `sdr_bt709_limited()` должны быть явными helper-ами, чтобы fallback не выглядел как metadata, полученная из bitstream.
 
 ### `capability-core`
 
@@ -227,6 +234,8 @@ Software audio pipeline.
 - decoded frame descriptor;
 - frame handles;
 - color metadata;
+- decoded pixel format;
+- bit depth/chroma metadata;
 - video frame lifecycle contracts;
 - backend-independent decode traits.
 
@@ -270,6 +279,9 @@ Renderer contracts.
 - `RenderableFrame`;
 - color conversion contract;
 - tone mapping contract;
+- color pipeline settings contract;
+- active color path diagnostics;
+- swapchain transfer mode contract;
 - UI composition contract;
 - present timing diagnostics.
 
@@ -284,6 +296,8 @@ Primary renderer.
 - DX12 path later;
 - Metal path later;
 - NV12/P010/etc shaders;
+- mapping typed color metadata to GPU uniforms;
+- SDR color adjustments in shader uniforms;
 - HDR-to-SDR tone mapping;
 - egui composition.
 

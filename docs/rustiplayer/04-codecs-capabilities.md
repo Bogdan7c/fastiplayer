@@ -92,11 +92,57 @@ enum ChromaSubsampling {
     Yuv444,
 }
 
+enum ColorRange {
+    Limited,
+    Full,
+    Unknown,
+}
+
+enum MatrixCoefficients {
+    Bt601,
+    Bt709,
+    Bt2020,
+    Unknown,
+}
+
+enum ColorPrimaries {
+    Bt709,
+    Bt2020,
+    Smpte170m,
+    Bt470Bg,
+    Unknown,
+}
+
 enum TransferFunction {
     Bt709,
     Srgb,
     Pq,
     Hlg,
+    Unknown,
+}
+
+enum ColorMetadataOrigin {
+    FallbackDefault,
+    Manifest,
+    Container,
+    Bitstream,
+    DecoderBackend,
+}
+
+enum ColorMetadataConfidence {
+    Fallback,
+    Hint,
+    Confirmed,
+}
+
+struct VideoColorMetadata {
+    range: ColorRange,
+    matrix: MatrixCoefficients,
+    primaries: ColorPrimaries,
+    transfer: TransferFunction,
+    hdr_metadata: Option<HdrMetadata>,
+    origin: ColorMetadataOrigin,
+    confidence: ColorMetadataConfidence,
 }
 
 struct SupportedVideoDecodeFormat {
@@ -111,6 +157,26 @@ struct SupportedVideoDecodeFormat {
     backend: DecodeBackendId,
 }
 ```
+
+`VideoColorMetadata::sdr_bt709_limited()` является явным fallback default для текущего VP9/NV12 SDR path. Этот helper не должен маскировать источник metadata: diagnostics должны отличать fallback от metadata, прочитанной из manifest/container/bitstream/decoder.
+
+## Color metadata resolution
+
+Color metadata собирается layered-моделью:
+
+1. service manifest даёт ранний hint для stream selection;
+2. container metadata уточняет track-level fields, если они есть;
+3. codec bitstream parser подтверждает codec-specific colorimetry;
+4. decoder/backend подтверждает фактический decoded pixel format, bit depth и chroma;
+5. fallback default применяется только если metadata не была получена надёжно.
+
+Правило конфликтов: bitstream metadata сильнее manifest/container, если parser успешно прочитал валидный header. Decoder/backend сильнее всех для фактического decoded surface format, но не обязан быть единственным источником colorimetry. Если источники конфликтуют, player должен логировать diagnostic note и использовать наиболее надёжный источник без ложного `HardwareDecoderUnavailable`.
+
+Confidence policy:
+
+- `Fallback` - значение выбрано default-ом, потому что metadata не была получена;
+- `Hint` - значение пришло из manifest/container и пригодно для предварительного выбора;
+- `Confirmed` - значение подтверждено bitstream parser-ом или decoder/backend-ом.
 
 ## Stream selection
 
@@ -168,6 +234,15 @@ trait VideoDecodeBackendProvider {
 
 ## HDR stages
 
+### Stage 0: SDR color pipeline prep
+
+Перед HDR этапом нужно вынести текущие SDR assumptions из shader-а в явный renderer contract:
+
+- сохранить `NV12 BT.709 limited -> SDR` визуально как раньше;
+- передавать range/matrix/adjustments через uniforms;
+- добавить active color path diagnostics;
+- не объявлять HDR support и не добавлять P010 renderer преждевременно.
+
 ### Stage 1: HDR input to SDR output
 
 Первая цель:
@@ -205,12 +280,18 @@ trait VideoDecodeBackendProvider {
 - bit depth;
 - chroma;
 - HDR/SDR;
+- color range;
+- matrix coefficients;
+- color primaries;
+- transfer function;
+- color metadata origin/confidence;
 - resolution;
 - FPS;
 - container;
 - expected hardware support;
 - expected renderer path.
 - expected probing behavior: confirmed support, confirmed rejection или мягкий fallback probing.
+- expected active color path.
 
 Пример manifest:
 

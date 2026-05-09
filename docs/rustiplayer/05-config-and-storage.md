@@ -51,8 +51,14 @@ present_queue_frames = 8
 
 [render]
 profile = "vulkan"
-hdr_to_sdr = true
-tone_mapping = "auto"
+
+[render.color_adjustment]
+brightness = 0.0
+contrast = 1.0
+saturation = 1.0
+exposure = 0.0
+rgb_gain = [1.0, 1.0, 1.0]
+rgb_offset = [0.0, 0.0, 0.0]
 
 [render.vulkan]
 present_mode = "fifo"
@@ -88,6 +94,21 @@ language = "ru"
 - Неизвестные поля на ранних этапах можно логировать как warning.
 - Значения проходят validation после deserialization.
 - Config не содержит историю, cookies, cache metadata и bookmarks.
+
+## Render color config policy
+
+Phase 8.5 добавляет пользовательские SDR/RGB adjustments в config, но не включает HDR tone mapping как пользовательскую настройку до реализации Phase 9.
+
+Identity defaults обязательны:
+
+- `brightness = 0.0`;
+- `contrast = 1.0`;
+- `saturation = 1.0`;
+- `exposure = 0.0`;
+- `rgb_gain = [1.0, 1.0, 1.0]`;
+- `rgb_offset = [0.0, 0.0, 0.0]`.
+
+`swapchain_transfer` и `tone_mapping` сначала живут как typed renderer settings/defaults. Их можно вынести в user config позже, когда появятся tests и UI, которые объясняют разницу между `PreserveCurrentUnorm`, `SrgbRenderTarget`, explicit shader OETF и HDR tone mapping modes.
 
 ## Config layering
 
@@ -180,4 +201,3 @@ trait CredentialStore {
 ```
 
 Первичная реализация может быть SQLite-backed.
-

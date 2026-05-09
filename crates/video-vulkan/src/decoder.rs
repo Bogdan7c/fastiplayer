@@ -1,9 +1,10 @@
 use anyhow::Result;
+use codec_core::VideoColorMetadata;
 use media_core::Packet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tracing::{info, warn};
-use video_core::{ColorSpace, DecodedFrame, FrameTextureHandle, VideoDecoder};
+use video_core::{DecodedFrame, FrameTextureHandle, VideoDecoder};
 
 use crate::decode::{CompletedFrame, DecodeEngine};
 use crate::device::VulkanVideoDevice;
@@ -239,7 +240,7 @@ impl VideoDecoder for VulkanVideoDecoder {
                 height: completed.height,
                 render_width: completed.render_width,
                 render_height: completed.render_height,
-                color_space: ColorSpace::Bt709Limited,
+                color: VideoColorMetadata::sdr_bt709_limited(),
                 texture_handle: FrameTextureHandle(completed.slot_index as u64),
             }));
         }
@@ -263,7 +264,7 @@ impl VideoDecoder for VulkanVideoDecoder {
                         height: slot.height,
                         render_width: slot.width,
                         render_height: slot.height,
-                        color_space: ColorSpace::Bt709Limited,
+                        color: VideoColorMetadata::sdr_bt709_limited(),
                         texture_handle: FrameTextureHandle(slot.slot_index as u64),
                     }));
                 }

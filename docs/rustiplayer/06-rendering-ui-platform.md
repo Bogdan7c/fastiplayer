@@ -65,6 +65,23 @@ struct RenderCapabilities {
     max_texture_size: Option<u32>,
     advanced_ui: bool,
 }
+
+enum SwapchainTransferMode {
+    PreserveCurrentUnorm,
+    SrgbRenderTarget,
+    ExplicitShaderOetf,
+}
+
+struct ColorPipelineSettings {
+    brightness: f32,
+    contrast: f32,
+    saturation: f32,
+    exposure: f32,
+    rgb_gain: [f32; 3],
+    rgb_offset: [f32; 3],
+    tone_mapping: ToneMappingMode,
+    swapchain_transfer: SwapchainTransferMode,
+}
 ```
 
 ## Vulkan profile
@@ -188,3 +205,39 @@ decoded frame metadata
 
 Нельзя считать все видео BT.709 limited 8-bit. Это приемлемо для MVP, но не для целевой архитектуры.
 
+## Phase 8.5 SDR color pipeline prep
+
+Phase 8.5 готовит renderer к HDR, но сам HDR не реализует.
+
+Принятые решения:
+
+- swapchain transfer описывается enum-ом; default - `PreserveCurrentUnorm`, чтобы не менять текущий SDR result;
+- реальные color metadata собираются layered-моделью с origin/confidence;
+- tone mapping presets добавляются в typed contract, но не становятся user config до Phase 9;
+- SDR/RGB adjustments добавляются в settings/config с identity defaults;
+- BT.2020 SDR сейчас отображается как fallback path в SDR BT.709 diagnostics, настоящий gamut mapping добавляется позже.
+
+### Swapchain transfer
+
+`Unorm` и `UnormSrgb` нельзя выбирать как взаимозаменяемые форматы. При `UnormSrgb` GPU применяет sRGB conversion при записи в render target, а при `Unorm` shader output должен уже быть display-referred. Поэтому текущий порядок выбора surface format фиксируется как осознанный режим `PreserveCurrentUnorm`.
+
+Future modes:
+
+- `SrgbRenderTarget` - shader отдаёт linear SDR, target делает sRGB encode;
+- `ExplicitShaderOetf` - shader явно применяет output transfer и пишет в `Unorm`;
+- HDR/native output modes - только после отдельного platform-specific решения.
+
+### Active color path
+
+Renderer должен уметь вернуть diagnostics вроде:
+
+```text
+NV12 8-bit BT.709 limited -> SDR BT.709 preserve-current-unorm
+NV12 8-bit BT.2020 limited -> SDR BT.709 fallback preserve-current-unorm
+```
+
+BT.2020 SDR fallback не означает wide-gamut output support. Это только честная диагностика временного поведения до gamut mapping.
+
+### Shader boundary
+
+`nv12_to_rgba.wgsl` остаётся NV12 SDR shader path. Он получает range normalization, YUV->RGB matrix, SDR adjustments и debug mode через uniforms. Shader не должен превращаться в универсальный HDR-комбайн; P010/HDR получает отдельный renderer path.

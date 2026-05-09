@@ -995,7 +995,7 @@ mod tests {
             height: 360,
             render_width: 640,
             render_height: 360,
-            color_space: video_core::ColorSpace::Bt709Limited,
+            color: codec_core::VideoColorMetadata::sdr_bt709_limited(),
             texture_handle: video_core::FrameTextureHandle(handle),
         }
     }

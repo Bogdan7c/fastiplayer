@@ -132,6 +132,37 @@ impl fmt::Display for ChromaSubsampling {
     }
 }
 
+/// Диапазон кодовых значений YUV/RGB компоненты.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorRange {
+    /// Limited/video range: luma 16..235 и chroma 16..240 для 8-bit SDR.
+    Limited,
+
+    /// Full/JPEG range: вся доступная шкала компоненты.
+    Full,
+
+    /// Диапазон не указан или не удалось надёжно определить.
+    Unknown,
+}
+
+/// YUV->RGB matrix coefficients из stream metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatrixCoefficients {
+    /// BT.601 matrix, чаще legacy SD-контент.
+    Bt601,
+
+    /// BT.709 matrix, основной SDR HD path.
+    Bt709,
+
+    /// BT.2020 non-constant-luminance matrix.
+    Bt2020,
+
+    /// Matrix coefficients не указаны или не поддержаны текущей typed model.
+    Unknown,
+}
+
 /// Цветовые primaries из bitstream/container metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -141,6 +172,12 @@ pub enum ColorPrimaries {
 
     /// BT.2020 primaries.
     Bt2020,
+
+    /// SMPTE 170M primaries, типичные для NTSC SD.
+    Smpte170m,
+
+    /// BT.470 BG primaries, типичные для PAL/SECAM SD.
+    Bt470Bg,
 
     /// Неизвестные или неуказанные primaries.
     Unknown,
@@ -187,6 +224,82 @@ pub struct HdrMetadata {
 
     /// MaxFALL, если контейнер или bitstream его сообщил.
     pub max_frame_average_light_level_nits: Option<u32>,
+}
+
+/// Источник, из которого получена color metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorMetadataOrigin {
+    /// Явный project default, применённый только при отсутствии metadata.
+    FallbackDefault,
+
+    /// Service manifest сообщил ранний hint до demux/decode.
+    Manifest,
+
+    /// Container/track metadata сообщила colorimetry.
+    Container,
+
+    /// Codec bitstream parser подтвердил colorimetry.
+    Bitstream,
+
+    /// Decoder/backend подтвердил фактический decoded output.
+    DecoderBackend,
+}
+
+/// Уровень доверия к color metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorMetadataConfidence {
+    /// Fallback default, а не факт из media stream.
+    Fallback,
+
+    /// Неполная metadata, полезная для раннего выбора path.
+    Hint,
+
+    /// Metadata подтверждена parser-ом или backend-ом.
+    Confirmed,
+}
+
+/// Полная typed color metadata одного video stream или decoded frame.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct VideoColorMetadata {
+    /// Диапазон YUV/RGB значений.
+    pub range: ColorRange,
+
+    /// Matrix coefficients для YUV->RGB conversion.
+    pub matrix: MatrixCoefficients,
+
+    /// Color primaries исходного изображения.
+    pub primaries: ColorPrimaries,
+
+    /// Transfer function исходного изображения.
+    pub transfer: TransferFunction,
+
+    /// HDR mastering/content metadata, если stream её сообщил.
+    pub hdr_metadata: Option<HdrMetadata>,
+
+    /// Источник metadata.
+    pub origin: ColorMetadataOrigin,
+
+    /// Уровень доверия к metadata.
+    pub confidence: ColorMetadataConfidence,
+}
+
+impl VideoColorMetadata {
+    /// Возвращает текущий SDR fallback: NV12/8-bit BT.709 limited без HDR metadata.
+    #[must_use]
+    pub const fn sdr_bt709_limited() -> Self {
+        Self {
+            range: ColorRange::Limited,
+            matrix: MatrixCoefficients::Bt709,
+            primaries: ColorPrimaries::Bt709,
+            transfer: TransferFunction::Bt709,
+            hdr_metadata: None,
+            origin: ColorMetadataOrigin::FallbackDefault,
+            confidence: ColorMetadataConfidence::Fallback,
+        }
+    }
 }
 
 /// Codec level без привязки к конкретному стандарту.
@@ -498,5 +611,46 @@ mod tests {
         let requirement = VideoDecodeRequirement::new(VideoCodec::Vp9);
 
         assert!(supported_format.satisfies(&requirement));
+    }
+
+    #[test]
+    fn sdr_bt709_limited_uses_explicit_fallback_metadata() {
+        let metadata = VideoColorMetadata::sdr_bt709_limited();
+
+        assert_eq!(metadata.range, ColorRange::Limited);
+        assert_eq!(metadata.matrix, MatrixCoefficients::Bt709);
+        assert_eq!(metadata.primaries, ColorPrimaries::Bt709);
+        assert_eq!(metadata.transfer, TransferFunction::Bt709);
+        assert_eq!(metadata.origin, ColorMetadataOrigin::FallbackDefault);
+        assert_eq!(metadata.confidence, ColorMetadataConfidence::Fallback);
+        assert!(metadata.hdr_metadata.is_none());
+    }
+
+    #[test]
+    fn color_enums_serialize_as_expected_snake_case_values() {
+        assert_json_string(&ColorRange::Limited, "limited");
+        assert_json_string(&ColorRange::Full, "full");
+        assert_json_string(&ColorRange::Unknown, "unknown");
+        assert_json_string(&MatrixCoefficients::Bt601, "bt601");
+        assert_json_string(&MatrixCoefficients::Bt709, "bt709");
+        assert_json_string(&MatrixCoefficients::Bt2020, "bt2020");
+        assert_json_string(&MatrixCoefficients::Unknown, "unknown");
+        assert_json_string(&ColorPrimaries::Bt709, "bt709");
+        assert_json_string(&ColorPrimaries::Bt2020, "bt2020");
+        assert_json_string(&ColorPrimaries::Smpte170m, "smpte170m");
+        assert_json_string(&ColorPrimaries::Bt470Bg, "bt470_bg");
+        assert_json_string(&ColorPrimaries::Unknown, "unknown");
+        assert_json_string(&TransferFunction::Bt709, "bt709");
+        assert_json_string(&TransferFunction::Srgb, "srgb");
+        assert_json_string(&TransferFunction::Pq, "pq");
+        assert_json_string(&TransferFunction::Hlg, "hlg");
+        assert_json_string(&TransferFunction::Unknown, "unknown");
+    }
+
+    fn assert_json_string(value: &impl Serialize, expected_value: &str) {
+        assert_eq!(
+            serde_json::to_string(value).unwrap(),
+            format!("\"{expected_value}\"")
+        );
     }
 }

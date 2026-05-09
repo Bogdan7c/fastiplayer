@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 use anyhow::{Result, bail};
+use codec_core::{ColorRange, MatrixCoefficients, VideoColorMetadata};
 use render_core::{RenderCapabilities, RenderColorSpace, RenderableFrame, VideoFrameFormat};
 
 mod nv12_renderer;
@@ -54,7 +55,7 @@ impl<'frame> WgpuRenderableFrame<'frame> {
                 coded_height: frame.height,
                 render_width: frame.render_width,
                 render_height: frame.render_height,
-                color_space: render_color_space_from_video_core(frame.color_space),
+                color_space: render_color_space_from_metadata(&frame.color),
             },
             planes: WgpuFramePlanes::Nv12 { y_view, uv_view },
         }
@@ -158,11 +159,12 @@ pub fn clear_to_black(target: &wgpu::TextureView, encoder: &mut wgpu::CommandEnc
     });
 }
 
-/// Переводит color metadata decoder layer в render-core модель.
-fn render_color_space_from_video_core(color_space: video_core::ColorSpace) -> RenderColorSpace {
-    match color_space {
-        video_core::ColorSpace::Bt709Limited => RenderColorSpace::Bt709Limited,
-        video_core::ColorSpace::Bt709Full => RenderColorSpace::Bt709Full,
-        video_core::ColorSpace::Bt601 => RenderColorSpace::Bt601,
+/// Переводит typed color metadata decoder layer в текущую render-core модель.
+fn render_color_space_from_metadata(color_metadata: &VideoColorMetadata) -> RenderColorSpace {
+    match (color_metadata.matrix, color_metadata.range) {
+        (MatrixCoefficients::Bt709, ColorRange::Limited) => RenderColorSpace::Bt709Limited,
+        (MatrixCoefficients::Bt709, ColorRange::Full) => RenderColorSpace::Bt709Full,
+        (MatrixCoefficients::Bt601, _) => RenderColorSpace::Bt601,
+        _ => RenderColorSpace::Unknown,
     }
 }
