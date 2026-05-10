@@ -1,0 +1,80 @@
+[
+  {
+    "name": "profile0_8bit_yuv420_bt709_limited_64x64",
+    "packet_hex": "824983424003f003f0",
+    "expected": {
+      "kind": "candidate",
+      "profile": "profile0",
+      "bit_depth": "eight",
+      "chroma": "yuv420",
+      "decoded_format": "nv12",
+      "width": 64,
+      "height": 64,
+      "range": "limited",
+      "matrix": "bt709",
+      "primaries": "bt709",
+      "transfer": "bt709"
+    }
+  },
+  {
+    "name": "profile2_10bit_yuv420_bt2020_limited_3840x2160",
+    "packet_hex": "924983425077f84378",
+    "expected": {
+      "kind": "candidate",
+      "profile": "profile2",
+      "bit_depth": "ten",
+      "chroma": "yuv420",
+      "decoded_format": "p010",
+      "width": 3840,
+      "height": 2160,
+      "range": "limited",
+      "matrix": "bt2020",
+      "primaries": "bt2020",
+      "transfer": "unknown"
+    }
+  },
+  {
+    "name": "profile2_10bit_yuv420_bt2020_full_3840x2160",
+    "packet_hex": "924983425877f84378",
+    "expected": {
+      "kind": "candidate",
+      "profile": "profile2",
+      "bit_depth": "ten",
+      "chroma": "yuv420",
+      "decoded_format": "p010",
+      "width": 3840,
+      "height": 2160,
+      "range": "full",
+      "matrix": "bt2020",
+      "primaries": "bt2020",
+      "transfer": "unknown"
+    }
+  },
+  {
+    "name": "profile2_12bit_yuv420_bt2020_limited_128x72",
+    "packet_hex": "92498342d003f80238",
+    "expected": {
+      "kind": "rejected",
+      "rejection": "unsupported_bit_depth",
+      "unsupported_bit_depth": 12
+    }
+  },
+  {
+    "name": "profile1_8bit_yuv422_bt709_limited_128x72",
+    "packet_hex": "a24983424800fe008e",
+    "expected": {
+      "kind": "rejected",
+      "rejection": "unsupported_chroma",
+      "unsupported_chroma": "yuv422"
+    }
+  },
+  {
+    "name": "profile3_10bit_yuv444_bt2020_limited_128x72",
+    "packet_hex": "b124c1a128003f802380",
+    "expected": {
+      "kind": "rejected",
+      "rejection": "unsupported_chroma",
+      "unsupported_chroma": "yuv444"
+    }
+  }
+]

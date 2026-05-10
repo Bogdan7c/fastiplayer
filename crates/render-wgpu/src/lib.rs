@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 use anyhow::{Result, bail, ensure};
+use codec_core::{ColorPrimaries, MatrixCoefficients, TransferFunction};
 use render_core::{
     ColorPipelineSettings, RenderCapabilities, RenderDiagnostics, RenderableFrame, VideoFrameFormat,
 };
@@ -209,9 +210,7 @@ impl WgpuVideoRenderer {
             (VideoFrameFormat::P010, WgpuFramePlanes::P010 { .. }) => {
                 if !self.p010_render_unavailable_logged {
                     self.p010_render_unavailable_logged = true;
-                    tracing::warn!(
-                        "WGPU renderer received verified P010 boundary frame; clearing target until P010 renderer is enabled"
-                    );
+                    tracing::warn!("{}", p010_boundary_manual_diagnostic_text(&frame.metadata));
                 }
                 clear_to_black(target, encoder);
                 Ok(false)
@@ -241,4 +240,103 @@ pub fn clear_to_black(target: &wgpu::TextureView, encoder: &mut wgpu::CommandEnc
         occlusion_query_set: None,
         multiview_mask: None,
     });
+}
+
+/// Формирует финальную строку ручной Phase 9 диагностики для P010 boundary.
+///
+/// Сейчас единственный P010 producer в проекте - VP9 Profile 2. Когда AV1/H.265
+/// начнут отдавать P010, этот текст нужно заменить codec-aware diagnostic-ом.
+fn p010_boundary_manual_diagnostic_text(frame: &RenderableFrame) -> String {
+    format!(
+        "P010 zero-copy boundary verified: VP9 Profile2 {} {} {} {}\nHDR-to-SDR renderer unavailable until Phase 10",
+        frame.bit_depth,
+        bt2020_boundary_label(frame),
+        hdr_transfer_contract_label(frame.color.transfer),
+        chroma_contract_label(frame.chroma),
+    )
+}
+
+/// Возвращает BT.2020 label только когда primaries и matrix совпали со strict core.
+fn bt2020_boundary_label(frame: &RenderableFrame) -> &'static str {
+    if frame.color.primaries == ColorPrimaries::Bt2020
+        && frame.color.matrix == MatrixCoefficients::Bt2020
+    {
+        "BT.2020"
+    } else {
+        "non-BT.2020"
+    }
+}
+
+/// Возвращает stable HDR transfer contract label для ручной Phase 9 проверки.
+fn hdr_transfer_contract_label(transfer: TransferFunction) -> &'static str {
+    match transfer {
+        TransferFunction::Pq | TransferFunction::Hlg => "PQ/HLG",
+        TransferFunction::Bt709 => "BT.709",
+        TransferFunction::Srgb => "sRGB",
+        TransferFunction::Unknown => "unknown-transfer",
+    }
+}
+
+/// Возвращает chroma label в форме, ожидаемой manual diagnostics.
+fn chroma_contract_label(chroma: codec_core::ChromaSubsampling) -> &'static str {
+    match chroma {
+        codec_core::ChromaSubsampling::Yuv420 => "YUV420",
+        codec_core::ChromaSubsampling::Yuv422 => "YUV422",
+        codec_core::ChromaSubsampling::Yuv444 => "YUV444",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use codec_core::{
+        BitDepth, ChromaSubsampling, ColorMetadataOrigin, ColorPrimaries, ColorRange,
+        MatrixCoefficients, TransferFunction, VideoColorMetadata,
+    };
+
+    #[test]
+    fn p010_boundary_manual_diagnostic_uses_phase9_contract_text_for_pq() {
+        let frame = p010_test_frame(TransferFunction::Pq);
+
+        assert_eq!(
+            p010_boundary_manual_diagnostic_text(&frame),
+            "P010 zero-copy boundary verified: VP9 Profile2 10-bit BT.2020 PQ/HLG YUV420\nHDR-to-SDR renderer unavailable until Phase 10"
+        );
+    }
+
+    #[test]
+    fn p010_boundary_manual_diagnostic_uses_same_contract_text_for_hlg() {
+        let frame = p010_test_frame(TransferFunction::Hlg);
+
+        assert_eq!(
+            p010_boundary_manual_diagnostic_text(&frame),
+            "P010 zero-copy boundary verified: VP9 Profile2 10-bit BT.2020 PQ/HLG YUV420\nHDR-to-SDR renderer unavailable until Phase 10"
+        );
+    }
+
+    /// Создаёт renderer-neutral P010 frame без GPU resources.
+    fn p010_test_frame(transfer: TransferFunction) -> RenderableFrame {
+        RenderableFrame {
+            handle: 1,
+            pts: Duration::ZERO,
+            format: VideoFrameFormat::P010,
+            bit_depth: BitDepth::Ten,
+            chroma: ChromaSubsampling::Yuv420,
+            coded_width: 3840,
+            coded_height: 2160,
+            render_width: 3840,
+            render_height: 2160,
+            color: VideoColorMetadata {
+                range: ColorRange::Limited,
+                matrix: MatrixCoefficients::Bt2020,
+                primaries: ColorPrimaries::Bt2020,
+                transfer,
+                hdr_metadata: None,
+                origin: ColorMetadataOrigin::Container,
+                confidence: codec_core::ColorMetadataConfidence::Hint,
+            },
+        }
+    }
 }

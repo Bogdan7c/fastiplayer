@@ -13,6 +13,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use codec_core::VideoColorMetadata;
 use media_core::{Packet, TrackId, TrackKind};
 use tracing::{info, trace};
 use video_core::{DecodedFrame, VideoDecoder};
@@ -38,6 +39,8 @@ pub struct DecodePacket {
     pub pts: Duration,
     pub data: Vec<u8>,
     pub keyframe: bool,
+    /// Resolved color metadata из player/capability layer для decoded frame contract.
+    pub resolved_color: Option<VideoColorMetadata>,
 }
 
 /// Управляющая структура decoder thread.
@@ -253,7 +256,10 @@ fn decoder_thread_loop(
                 };
 
                 match decoder.decode(&pkt) {
-                    Ok(Some(frame)) => {
+                    Ok(Some(mut frame)) => {
+                        if let Some(resolved_color) = &packet.resolved_color {
+                            frame.color = resolved_color.clone();
+                        }
                         if frame_tx.send(frame).is_err() {
                             trace!("Render thread dropped — exiting decoder loop");
                             break;

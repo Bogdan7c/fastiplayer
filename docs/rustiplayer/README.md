@@ -36,6 +36,7 @@
 | Phase 10 | HDR-to-SDR baseline поверх Phase 9: P010 zero-copy only, BT.2446 Method C, PQ+HLG, SDR BT.709 output |
 | Swapchain transfer | SDR path сохраняет `PreserveCurrentUnorm`; Phase 10 HDR path использует `ExplicitShaderOetf` поверх `Unorm`; `SrgbRenderTarget` остаётся future mode |
 | Color metadata | Используем layered metadata с origin/confidence: manifest/container/bitstream/decoder/fallback |
+| Test assets | Маленькие VP9 headers/metadata/conflict fixtures коммитятся в repo; большие media samples остаются external/manual с documented expected logs |
 | SDR adjustments | В contract закладываются brightness/contrast/saturation/exposure и RGB gain/offset с identity defaults |
 | BT.2020 SDR | Сейчас показываем как fallback в SDR BT.709 diagnostics, позже добавляем настоящий gamut mapping |
 | Windows | Second target, через DX12 |

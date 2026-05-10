@@ -594,11 +594,17 @@ fn send_pending_video_packets_to_decoder(
             "Sending video packet to decoder thread"
         );
 
+        let resolved_color = session
+            .pipeline
+            .active_video_requirement
+            .as_ref()
+            .and_then(|requirement| requirement.color.clone());
         let decode_packet = video_vaapi::DecodePacket {
             track_id: packet.track_id,
             pts: packet.pts,
             data: packet.data,
             keyframe: packet.keyframe,
+            resolved_color,
         };
 
         let Some(ref thread) = session.pipeline.video_decoder_thread else {

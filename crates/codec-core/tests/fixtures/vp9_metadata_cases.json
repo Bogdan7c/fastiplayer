@@ -1,0 +1,101 @@
+[
+  {
+    "name": "container_bt2020_pq_limited_profile2_10bit",
+    "container": {
+      "profile": "profile2",
+      "bit_depth": "ten",
+      "chroma": "yuv420",
+      "width": 3840,
+      "height": 2160,
+      "color": {
+        "range": "limited",
+        "matrix": "bt2020",
+        "primaries": "bt2020",
+        "transfer": "pq"
+      }
+    },
+    "bitstream_header": "profile2_10bit_yuv420_bt2020_limited_3840x2160",
+    "expected": {
+      "profile": "profile2",
+      "bit_depth": "ten",
+      "chroma": "yuv420",
+      "decoded_format": "p010",
+      "width": 3840,
+      "height": 2160,
+      "range": "limited",
+      "matrix": "bt2020",
+      "primaries": "bt2020",
+      "transfer": "pq",
+      "strict_hdr_core_valid": true,
+      "conflict_fields": []
+    }
+  },
+  {
+    "name": "container_bt2020_hlg_full_profile2_10bit",
+    "container": {
+      "profile": "profile2",
+      "bit_depth": "ten",
+      "chroma": "yuv420",
+      "width": 3840,
+      "height": 2160,
+      "color": {
+        "range": "full",
+        "matrix": "bt2020",
+        "primaries": "bt2020",
+        "transfer": "hlg"
+      }
+    },
+    "bitstream_header": "profile2_10bit_yuv420_bt2020_full_3840x2160",
+    "expected": {
+      "profile": "profile2",
+      "bit_depth": "ten",
+      "chroma": "yuv420",
+      "decoded_format": "p010",
+      "width": 3840,
+      "height": 2160,
+      "range": "full",
+      "matrix": "bt2020",
+      "primaries": "bt2020",
+      "transfer": "hlg",
+      "strict_hdr_core_valid": true,
+      "conflict_fields": []
+    }
+  },
+  {
+    "name": "container_profile0_conflicts_with_profile2_bitstream",
+    "container": {
+      "profile": "profile0",
+      "bit_depth": "eight",
+      "chroma": "yuv420",
+      "width": 1920,
+      "height": 1080,
+      "color": {
+        "range": "limited",
+        "matrix": "bt709",
+        "primaries": "bt709",
+        "transfer": "bt709"
+      }
+    },
+    "bitstream_header": "profile2_10bit_yuv420_bt2020_limited_3840x2160",
+    "expected": {
+      "profile": "profile2",
+      "bit_depth": "ten",
+      "chroma": "yuv420",
+      "decoded_format": "p010",
+      "width": 3840,
+      "height": 2160,
+      "range": "limited",
+      "matrix": "bt709",
+      "primaries": "bt709",
+      "transfer": "bt709",
+      "strict_hdr_core_valid": false,
+      "conflict_fields": [
+        "profile",
+        "bit_depth",
+        "resolution",
+        "matrix",
+        "primaries"
+      ]
+    }
+  }
+]

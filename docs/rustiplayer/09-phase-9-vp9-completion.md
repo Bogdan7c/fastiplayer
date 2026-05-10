@@ -177,6 +177,25 @@ production HDR playback = rejected with clear reason
 
 Большие media files не нужно коммитить в repo, но manual test policy должна фиксировать expected logs и expected capability state.
 
+### External sample policy
+
+В repo коммитятся только маленькие deterministic fixtures:
+
+- raw VP9 golden headers в hex/JSON;
+- metadata resolver fixtures в JSON/TOML;
+- conflict fixtures для diagnostics;
+- capability/rejection fixtures без media payload.
+
+Реальные `.webm`, `.ivf`, `.mp4` и другие media samples остаются внешними:
+
+- sample должен быть получен из легального источника или сгенерирован локально;
+- путь к sample не хардкодится в коде и не попадает в config defaults;
+- manual-команда указывает sample path явно;
+- expected logs фиксируются в docs, чтобы результат можно было сверить без коммита большого файла;
+- если sample имеет лицензионные ограничения или cookies/session requirements, в repo попадает только описание проверки, а не сам файл.
+
+Для Phase 9 обязательный внешний manual sample - VP9 Profile 2 10-bit 4:2:0 HDR WebM, который на поддержанном VA-API backend-е доходит до P010 DMA-BUF zero-copy boundary.
+
 ## Non-goals
 
 - Не реализовывать BT.2446, tone mapping или HDR shader.
@@ -493,6 +512,8 @@ Manual tests:
 
 ### Сессия 6: test matrix and manual diagnostic mode
 
+Статус: реализовано
+
 Задачи:
 
 - добавить golden VP9 header fixtures;
@@ -516,6 +537,22 @@ Manual tests:
 P010 zero-copy boundary verified: VP9 Profile2 10-bit BT.2020 PQ/HLG YUV420
 HDR-to-SDR renderer unavailable until Phase 10
 ```
+
+Manual command template:
+
+```bash
+RUSTIPLAYER_DEV_VERIFY_P010_BOUNDARY=1 \
+VIDEOPLAYER_ZERO_COPY_DMA_BUF=1 \
+cargo run -p app-egui -- /path/to/vp9-profile2-10bit-hdr.webm
+```
+
+Production control check:
+
+```bash
+cargo run -p app-egui -- /path/to/vp9-profile2-10bit-hdr.webm
+```
+
+Без `RUSTIPLAYER_DEV_VERIFY_P010_BOUNDARY=1` HDR stream должен остаться rejected до Phase 10 с причиной про недоступный HDR-to-SDR renderer.
 
 ### Сессия 7: SDR regression, self-review and docs
 
