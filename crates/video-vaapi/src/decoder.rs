@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use codec_core::VideoColorMetadata;
+use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
 use cros_codecs::DecodedFormat;
 use cros_codecs::decoder::BlockingMode;
 use cros_codecs::decoder::DecodedHandle;
@@ -18,7 +18,9 @@ use cros_codecs::libva::{
 };
 use media_core::Packet;
 use tracing::{debug, info, trace, warn};
-use video_core::{DecodedFrame, FrameTextureHandle, VideoDecoder};
+use video_core::{
+    DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle, VideoDecoder,
+};
 
 use crate::frame_pool::DmaFramePool;
 use crate::internal_vaapi_frame::InternalVaapiFrame;
@@ -302,6 +304,18 @@ impl VaapiVideoDecoder {
     /// держать низкую задержку и не исчерпывать GPU slots, чем сохранить каждый
     /// промежуточный кадр при backlog.
     fn push_ready_frame(&mut self, frame: DecodedFrame, source: ReadyFrameSource) {
+        if let Err(error) = frame.validate_contract() {
+            let invalid_texture_handle = frame.texture_handle;
+            warn!(
+                error = %error,
+                format = %frame.format,
+                memory_path = %frame.memory_path,
+                "Decoded frame contract validation failed before ready queue"
+            );
+            self.release_frame(invalid_texture_handle);
+            return;
+        }
+
         while self.ready_queue.len() >= READY_QUEUE_LIMIT {
             let Some(stale_frame) = self.ready_queue.pop_front() else {
                 break;
@@ -319,6 +333,9 @@ impl VaapiVideoDecoder {
             ReadyFrameSource::ZeroCopy => trace!(
                 pts_ms = frame.pts.as_millis(),
                 handle_id = frame.texture_handle.0,
+                format = %frame.format,
+                bit_depth = %frame.bit_depth,
+                chroma = %frame.chroma,
                 color_origin = ?frame.color.origin,
                 color_confidence = ?frame.color.confidence,
                 queue_len = self.ready_queue.len() + 1,
@@ -327,6 +344,9 @@ impl VaapiVideoDecoder {
             ReadyFrameSource::CpuUpload => trace!(
                 pts_ms = frame.pts.as_millis(),
                 handle_id = frame.texture_handle.0,
+                format = %frame.format,
+                bit_depth = %frame.bit_depth,
+                chroma = %frame.chroma,
                 color_origin = ?frame.color.origin,
                 color_confidence = ?frame.color.confidence,
                 queue_len = self.ready_queue.len() + 1,
@@ -392,6 +412,10 @@ impl VaapiVideoDecoder {
                             self.push_ready_frame(
                                 DecodedFrame {
                                     pts: Duration::from_micros(timestamp),
+                                    format: DecodedPixelFormat::Nv12,
+                                    bit_depth: BitDepth::Eight,
+                                    chroma: ChromaSubsampling::Yuv420,
+                                    memory_path: FrameMemoryPath::DmaBufZeroCopy,
                                     width: resolution.width,
                                     height: resolution.height,
                                     render_width: display_resolution.width,
@@ -465,6 +489,10 @@ impl VaapiVideoDecoder {
         self.push_ready_frame(
             DecodedFrame {
                 pts: Duration::from_micros(timestamp),
+                format: DecodedPixelFormat::Nv12,
+                bit_depth: BitDepth::Eight,
+                chroma: ChromaSubsampling::Yuv420,
+                memory_path: FrameMemoryPath::CpuUpload,
                 width: resolution.width,
                 height: resolution.height,
                 render_width: display_resolution.width,

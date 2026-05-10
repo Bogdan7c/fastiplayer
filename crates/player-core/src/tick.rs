@@ -516,6 +516,9 @@ fn drain_decoded_video_frames(
     for frame in decoded_frames {
         tracing::debug!(
             pts_ms = frame.pts.as_millis(),
+            format = %frame.format,
+            bit_depth = %frame.bit_depth,
+            memory_path = %frame.memory_path,
             width = frame.width,
             height = frame.height,
             "Video frame decoded"
@@ -970,10 +973,29 @@ mod tests {
     use super::*;
     use crate::{PlayerCommand, PlayerSession};
 
-    /// Создаёт test frame без реальных GPU resources.
-    fn decoded_frame(pts: Duration, handle: u64) -> video_core::DecodedFrame {
+    /// Создаёт test frame без реальных GPU resources с явным decoded contract.
+    fn decoded_frame_with_format(
+        pts: Duration,
+        handle: u64,
+        format: video_core::DecodedPixelFormat,
+    ) -> video_core::DecodedFrame {
+        let (bit_depth, memory_path) = match format {
+            video_core::DecodedPixelFormat::Nv12 => (
+                codec_core::BitDepth::Eight,
+                video_core::FrameMemoryPath::CpuUpload,
+            ),
+            video_core::DecodedPixelFormat::P010 => (
+                codec_core::BitDepth::Ten,
+                video_core::FrameMemoryPath::DmaBufZeroCopy,
+            ),
+        };
+
         video_core::DecodedFrame {
             pts,
+            format,
+            bit_depth,
+            chroma: codec_core::ChromaSubsampling::Yuv420,
+            memory_path,
             width: 640,
             height: 360,
             render_width: 640,
@@ -981,6 +1003,11 @@ mod tests {
             color: codec_core::VideoColorMetadata::sdr_bt709_limited(),
             texture_handle: video_core::FrameTextureHandle(handle),
         }
+    }
+
+    /// Создаёт текущий production NV12 test frame без привязки scheduler assertions к формату.
+    fn decoded_frame(pts: Duration, handle: u64) -> video_core::DecodedFrame {
+        decoded_frame_with_format(pts, handle, video_core::DecodedPixelFormat::Nv12)
     }
 
     #[test]
@@ -1068,6 +1095,33 @@ mod tests {
                 .map(|frame| frame.pts),
             Some(Duration::ZERO)
         );
+    }
+
+    #[test]
+    fn scheduler_preserves_p010_boundary_frame_without_format_branching() {
+        let mut session = PlayerSession::new();
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session
+            .pipeline
+            .video_frame_queue
+            .push_back(decoded_frame_with_format(
+                Duration::ZERO,
+                10,
+                video_core::DecodedPixelFormat::P010,
+            ));
+
+        let tick_result = session.tick(PlayerTickContext::new(Instant::now()));
+
+        assert_eq!(tick_result.video_frames_presented, 1);
+        assert_eq!(
+            session
+                .pipeline
+                .present_video_frame
+                .as_ref()
+                .map(|frame| frame.format),
+            Some(video_core::DecodedPixelFormat::P010)
+        );
+        assert!(session.pipeline.video_frame_queue.is_empty());
     }
 
     #[test]

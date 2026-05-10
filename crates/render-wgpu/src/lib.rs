@@ -6,11 +6,11 @@
 
 #![forbid(unsafe_code)]
 
-use anyhow::{Result, bail};
-use codec_core::{BitDepth, ChromaSubsampling};
+use anyhow::{Result, bail, ensure};
 use render_core::{
     ColorPipelineSettings, RenderCapabilities, RenderDiagnostics, RenderableFrame, VideoFrameFormat,
 };
+use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath};
 
 mod color_pipeline;
 mod nv12_renderer;
@@ -24,6 +24,15 @@ pub use shell::{GpuContext, RenderFrameDropReason, RenderFrameOutcome, Renderer}
 pub enum WgpuFramePlanes<'frame> {
     /// NV12 frame: отдельная luma plane и interleaved chroma plane.
     Nv12 {
+        /// Texture view с Y/luma plane.
+        y_view: &'frame wgpu::TextureView,
+
+        /// Texture view с interleaved UV/chroma plane.
+        uv_view: &'frame wgpu::TextureView,
+    },
+
+    /// P010 frame: отдельная luma plane и interleaved chroma plane в 10-bit контракте.
+    P010 {
         /// Texture view с Y/luma plane.
         y_view: &'frame wgpu::TextureView,
 
@@ -45,25 +54,64 @@ impl<'frame> WgpuRenderableFrame<'frame> {
     /// Собирает WGPU frame wrapper из decoded NV12 frame и texture views.
     #[must_use]
     pub fn from_decoded_nv12(
-        frame: &video_core::DecodedFrame,
+        frame: &DecodedFrame,
         y_view: &'frame wgpu::TextureView,
         uv_view: &'frame wgpu::TextureView,
-    ) -> Self {
-        Self {
-            metadata: RenderableFrame {
-                handle: frame.texture_handle.0,
-                pts: frame.pts,
-                format: VideoFrameFormat::Nv12,
-                bit_depth: BitDepth::Eight,
-                chroma: ChromaSubsampling::Yuv420,
-                coded_width: frame.width,
-                coded_height: frame.height,
-                render_width: frame.render_width,
-                render_height: frame.render_height,
-                color: frame.color.clone(),
-            },
+    ) -> Result<Self> {
+        frame.validate_contract()?;
+        ensure!(
+            frame.format == DecodedPixelFormat::Nv12,
+            "from_decoded_nv12 received {} frame",
+            frame.format
+        );
+
+        Ok(Self {
+            metadata: renderable_metadata_from_decoded(frame, VideoFrameFormat::Nv12),
             planes: WgpuFramePlanes::Nv12 { y_view, uv_view },
-        }
+        })
+    }
+
+    /// Собирает WGPU frame wrapper из P010 boundary frame и texture views.
+    pub fn from_decoded_p010(
+        frame: &DecodedFrame,
+        y_view: &'frame wgpu::TextureView,
+        uv_view: &'frame wgpu::TextureView,
+    ) -> Result<Self> {
+        frame.validate_contract()?;
+        ensure!(
+            frame.format == DecodedPixelFormat::P010,
+            "from_decoded_p010 received {} frame",
+            frame.format
+        );
+        ensure!(
+            frame.memory_path == FrameMemoryPath::DmaBufZeroCopy,
+            "P010 WGPU boundary requires zero-copy memory path, got {}",
+            frame.memory_path
+        );
+
+        Ok(Self {
+            metadata: renderable_metadata_from_decoded(frame, VideoFrameFormat::P010),
+            planes: WgpuFramePlanes::P010 { y_view, uv_view },
+        })
+    }
+}
+
+/// Копирует renderer-neutral metadata из decoded frame без backend-specific handles.
+fn renderable_metadata_from_decoded(
+    frame: &DecodedFrame,
+    format: VideoFrameFormat,
+) -> RenderableFrame {
+    RenderableFrame {
+        handle: frame.texture_handle.0,
+        pts: frame.pts,
+        format,
+        bit_depth: frame.bit_depth,
+        chroma: frame.chroma,
+        coded_width: frame.width,
+        coded_height: frame.height,
+        render_width: frame.render_width,
+        render_height: frame.render_height,
+        color: frame.color.clone(),
     }
 }
 
@@ -154,8 +202,11 @@ impl WgpuVideoRenderer {
                 self.diagnostics.active_color_path = Some(active_color_path);
                 Ok(true)
             }
+            (VideoFrameFormat::P010, WgpuFramePlanes::P010 { .. }) => {
+                bail!("WGPU renderer received P010 boundary frame before P010 renderer is enabled");
+            }
             (format, _) => {
-                bail!("WGPU renderer received unsupported frame format: {format}");
+                bail!("WGPU renderer frame metadata/plane mismatch for format: {format}");
             }
         }
     }

@@ -33,6 +33,7 @@ use render_wgpu::{RenderFrameOutcome, Renderer};
 use rustiplayer_config::AppConfig;
 use rustiplayer_storage::StorageConnection;
 use tracing::{debug, info, instrument, trace, warn};
+use video_core::DecodedPixelFormat;
 use winit::{
     application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
     event_loop::ActiveEventLoop, window::Window,
@@ -409,11 +410,13 @@ fn render_frame(
                 tracing::trace!(
                     handle_id = frame.texture_handle.0,
                     pts_ms = frame.pts.as_millis(),
+                    format = %frame.format,
+                    memory_path = %frame.memory_path,
                     "Getting texture views for present frame"
                 );
                 match thread.get_views(frame.texture_handle) {
                     Some((y_view, uv_view)) => {
-                        trace!("Texture views acquired — WILL render NV12 video");
+                        trace!(format = %frame.format, "Texture views acquired for video frame");
                         (Some(y_view), Some(uv_view))
                     }
                     None => {
@@ -447,9 +450,29 @@ fn render_frame(
         video_y_view.as_ref(),
         video_uv_view.as_ref(),
     ) {
-        (Some(frame), Some(y_view), Some(uv_view)) => Some(
-            render_wgpu::WgpuRenderableFrame::from_decoded_nv12(frame, y_view, uv_view),
-        ),
+        (Some(frame), Some(y_view), Some(uv_view)) => {
+            let boundary_frame = match frame.format {
+                DecodedPixelFormat::Nv12 => {
+                    render_wgpu::WgpuRenderableFrame::from_decoded_nv12(frame, y_view, uv_view)
+                }
+                DecodedPixelFormat::P010 => {
+                    render_wgpu::WgpuRenderableFrame::from_decoded_p010(frame, y_view, uv_view)
+                }
+            };
+
+            match boundary_frame {
+                Ok(boundary_frame) => Some(boundary_frame),
+                Err(error) => {
+                    tracing::error!(
+                        error = %error,
+                        format = %frame.format,
+                        memory_path = %frame.memory_path,
+                        "Failed to build WGPU renderable frame"
+                    );
+                    None
+                }
+            }
+        }
         _ => None,
     };
 

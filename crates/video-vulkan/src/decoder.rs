@@ -1,10 +1,12 @@
 use anyhow::Result;
-use codec_core::VideoColorMetadata;
+use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
 use media_core::Packet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tracing::{info, warn};
-use video_core::{DecodedFrame, FrameTextureHandle, VideoDecoder};
+use video_core::{
+    DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle, VideoDecoder,
+};
 
 use crate::decode::{CompletedFrame, DecodeEngine};
 use crate::device::VulkanVideoDevice;
@@ -236,6 +238,10 @@ impl VideoDecoder for VulkanVideoDecoder {
         if let Some(completed) = self.pending_frames.pop_front() {
             return Ok(Some(DecodedFrame {
                 pts: completed.pts,
+                format: DecodedPixelFormat::Nv12,
+                bit_depth: BitDepth::Eight,
+                chroma: ChromaSubsampling::Yuv420,
+                memory_path: FrameMemoryPath::CpuUpload,
                 width: completed.width,
                 height: completed.height,
                 render_width: completed.render_width,
@@ -260,6 +266,10 @@ impl VideoDecoder for VulkanVideoDecoder {
                 if let Some(slot) = dpb.get_existing_frame(frame_info.ref_frame_idx[0]) {
                     return Ok(Some(DecodedFrame {
                         pts: packet.pts,
+                        format: DecodedPixelFormat::Nv12,
+                        bit_depth: BitDepth::Eight,
+                        chroma: ChromaSubsampling::Yuv420,
+                        memory_path: FrameMemoryPath::CpuUpload,
                         width: slot.width,
                         height: slot.height,
                         render_width: slot.width,

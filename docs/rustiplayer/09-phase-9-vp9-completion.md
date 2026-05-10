@@ -443,6 +443,8 @@ Manual tests:
 
 ### Сессия 4: decoded frame and WGPU frame contract
 
+Статус: реализовано
+
 Задачи:
 
 - добавить `format`, `bit_depth`, `chroma`, `memory_path` в `DecodedFrame`;
