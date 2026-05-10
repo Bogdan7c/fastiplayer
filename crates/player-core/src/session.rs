@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use capability_core::{SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection};
 use codec_core::{
-    BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction,
-    VideoCodec, VideoDecodeRequirement, Vp9MetadataSource, resolve_vp9_metadata,
+    ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction, VideoCodec,
+    VideoDecodeRequirement, Vp9MetadataSource, resolve_vp9_metadata,
 };
 use media_core::{TrackInfo, TrackKind};
 use tracing::{info, warn};
@@ -1033,32 +1033,27 @@ fn player_error_from_unsupported_requirement(error: UnsupportedVideoRequirement)
         Some(VideoCapabilityRejection::UnsupportedProfile { .. }) => {
             PlayerErrorKind::UnsupportedVideoProfile
         }
-        Some(VideoCapabilityRejection::UnsupportedFormat { .. })
-        | Some(VideoCapabilityRejection::UnsupportedRenderFormat { .. })
-            if error.requirement.bit_depth == Some(BitDepth::Twelve) =>
-        {
+        Some(VideoCapabilityRejection::UnsupportedBitDepth { .. }) => {
             PlayerErrorKind::UnsupportedVideoBitDepth
         }
-        Some(VideoCapabilityRejection::UnsupportedFormat { .. })
-        | Some(VideoCapabilityRejection::UnsupportedRenderFormat { .. })
-            if matches!(
-                error.requirement.chroma,
-                Some(ChromaSubsampling::Yuv422 | ChromaSubsampling::Yuv444)
-            ) =>
-        {
+        Some(VideoCapabilityRejection::UnsupportedChroma { .. }) => {
             PlayerErrorKind::UnsupportedVideoChroma
         }
-        Some(VideoCapabilityRejection::UnsupportedFormat { .. }) if error.requirement.hdr => {
+        Some(VideoCapabilityRejection::UnsupportedHdrRenderer { .. }) => {
             PlayerErrorKind::UnsupportedHdrMode
         }
-        Some(VideoCapabilityRejection::UnsupportedRenderFormat { .. }) if error.requirement.hdr => {
+        Some(VideoCapabilityRejection::P010NotRenderable { .. }) if error.requirement.hdr => {
             PlayerErrorKind::UnsupportedHdrMode
         }
-        Some(VideoCapabilityRejection::UnsupportedRenderFormat { .. }) => {
+        Some(VideoCapabilityRejection::NoAvailableRenderer)
+        | Some(VideoCapabilityRejection::UnsupportedDeviceExportPath { .. })
+        | Some(VideoCapabilityRejection::UnsupportedRenderFrameFormat { .. })
+        | Some(VideoCapabilityRejection::P010NotRenderable { .. }) => {
             PlayerErrorKind::UnsupportedRenderFormat
         }
         Some(VideoCapabilityRejection::NoAvailableBackend)
-        | Some(VideoCapabilityRejection::UnsupportedFormat { .. })
+        | Some(VideoCapabilityRejection::UnsupportedDecodeFormat { .. })
+        | Some(VideoCapabilityRejection::InsufficientStreamMetadata { .. })
         | None => PlayerErrorKind::HardwareDecoderUnavailable,
     };
 
@@ -1089,11 +1084,14 @@ fn optional_duration_from_seconds(seconds: f64) -> Option<Duration> {
 mod tests {
     use super::*;
     use crate::{MediaSource, PlayerCommand};
-    use capability_core::{BackendCapabilities, BackendDriverInfo, BackendProbeStatus};
+    use capability_core::{
+        BackendCapabilities, BackendDriverInfo, BackendProbeStatus, VideoExportPath,
+    };
     use codec_core::{
         BitDepth, ChromaSubsampling, DecodeBackendId, SupportedVideoDecodeFormat, VideoProfile,
         Vp9Profile,
     };
+    use render_core::RenderCapabilities;
 
     fn capabilities_with_vp9_profile0() -> SystemCapabilities {
         SystemCapabilities {
@@ -1119,10 +1117,10 @@ mod tests {
                 raw_entrypoints: Vec::new(),
                 raw_rt_formats: Vec::new(),
                 quirks: Vec::new(),
-                export_paths: Vec::new(),
+                export_paths: vec![VideoExportPath::DmaBuf],
                 diagnostics: Vec::new(),
             }],
-            render_backends: Vec::new(),
+            render_backends: vec![RenderCapabilities::wgpu_nv12(Some(4096))],
         }
     }
 

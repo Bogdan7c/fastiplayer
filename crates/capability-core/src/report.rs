@@ -9,7 +9,7 @@ use tracing::{debug, warn};
 pub type CapabilitySchemaVersion = u32;
 
 /// Текущая версия capability report.
-pub const CURRENT_CAPABILITY_SCHEMA_VERSION: CapabilitySchemaVersion = 1;
+pub const CURRENT_CAPABILITY_SCHEMA_VERSION: CapabilitySchemaVersion = 2;
 
 /// Provider, который умеет построить capabilities для одного video backend.
 pub trait VideoCapabilityProvider {
@@ -312,4 +312,15 @@ pub enum VideoExportPath {
 
     /// CPU readback/upload fallback path.
     CpuReadback,
+}
+
+impl std::fmt::Display for VideoExportPath {
+    /// Печатает export path в стабильной diagnostic форме.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::DmaBuf => "DMA-BUF",
+            Self::CpuReadback => "CPU readback",
+        };
+        formatter.write_str(label)
+    }
 }

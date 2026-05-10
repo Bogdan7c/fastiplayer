@@ -21,3 +21,6 @@ video-vaapi = { path = "../video-vaapi" }
 vp9-parser = { workspace = true }
 webm-demux = { path = "../webm-demux" }
 wgpu = { workspace = true }
+
+[dev-dependencies]
+render-core = { workspace = true }

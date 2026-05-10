@@ -2901,6 +2901,7 @@ dependencies = [
  "capability-core",
  "codec-core",
  "media-core",
+ "render-core",
  "rustiplayer-config",
  "tracing",
  "video-core",

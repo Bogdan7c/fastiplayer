@@ -419,6 +419,8 @@ Manual tests:
 
 ### Сессия 3: capability and rejection reason model
 
+Статус: реализовано
+
 Задачи:
 
 - ввести codec-agnostic typed rejection reasons;

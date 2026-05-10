@@ -101,6 +101,54 @@ impl fmt::Display for VideoFrameFormat {
     }
 }
 
+/// Состояние P010 на границе decoder/renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum P010RenderReadiness {
+    /// P010 path недоступен даже как проверенная zero-copy граница.
+    Unavailable,
+
+    /// DMA-BUF/P010 boundary проверен диагностически, но production renderer ещё не рисует P010.
+    ZeroCopyBoundaryVerified,
+
+    /// Renderer умеет принять P010 и вывести его в production path.
+    Renderable,
+}
+
+impl P010RenderReadiness {
+    /// Возвращает `true`, только если P010 можно выбирать для production playback.
+    #[must_use]
+    pub const fn is_renderable(self) -> bool {
+        matches!(self, Self::Renderable)
+    }
+
+    /// Возвращает короткое описание для capability report.
+    #[must_use]
+    pub const fn diagnostic_label(self) -> &'static str {
+        match self {
+            Self::Unavailable => "P010 unavailable",
+            Self::ZeroCopyBoundaryVerified => {
+                "P010 zero-copy boundary verified, render unavailable"
+            }
+            Self::Renderable => "P010 renderable",
+        }
+    }
+}
+
+impl fmt::Display for P010RenderReadiness {
+    /// Печатает стабильное diagnostic-описание P010 readiness.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.diagnostic_label())
+    }
+}
+
+impl Default for P010RenderReadiness {
+    /// Старые reports без P010 readiness безопасно считаются production-неготовыми.
+    fn default() -> Self {
+        Self::Unavailable
+    }
+}
+
 /// Нейтральная для renderer-а color metadata, проброшенная с decoder boundary.
 pub type RenderColorMetadata = VideoColorMetadata;
 
@@ -536,6 +584,10 @@ pub struct RenderCapabilities {
     /// Форматы decoded frame, которые backend может принять.
     pub supported_frame_formats: Vec<VideoFrameFormat>,
 
+    /// Состояние P010: diagnostic boundary отдельно от production renderability.
+    #[serde(default)]
+    pub p010_render_readiness: P010RenderReadiness,
+
     /// Может ли backend выполнить HDR-to-SDR tone mapping.
     pub supports_hdr_to_sdr: bool,
 
@@ -563,6 +615,7 @@ impl RenderCapabilities {
             backend: RenderBackendKind::Wgpu,
             display_name: "WGPU NV12 renderer".to_string(),
             supported_frame_formats: vec![VideoFrameFormat::Nv12],
+            p010_render_readiness: P010RenderReadiness::Unavailable,
             supports_hdr_to_sdr: false,
             supports_native_hdr_output: false,
             max_texture_size,
@@ -578,6 +631,13 @@ impl RenderCapabilities {
         self.supported_frame_formats.contains(&format)
     }
 
+    /// Проверяет, что P010 доступен именно как production-renderable path.
+    #[must_use]
+    pub fn supports_p010_rendering(&self) -> bool {
+        self.p010_render_readiness.is_renderable()
+            && self.supports_frame_format(VideoFrameFormat::P010)
+    }
+
     /// Проверяет, сможет ли renderer показать stream с указанными требованиями.
     #[must_use]
     pub fn supports_decode_requirement(&self, requirement: &VideoDecodeRequirement) -> bool {
@@ -588,6 +648,10 @@ impl RenderCapabilities {
         let Some(frame_format) = VideoFrameFormat::from_decode_requirement(requirement) else {
             return false;
         };
+
+        if frame_format == VideoFrameFormat::P010 && !self.supports_p010_rendering() {
+            return false;
+        }
 
         if !self.supports_frame_format(frame_format) {
             return false;
@@ -624,17 +688,11 @@ impl RenderCapabilities {
             "SDR only, HDR unavailable"
         };
 
-        let p010_support_label = if self.supports_frame_format(VideoFrameFormat::P010) {
-            "P010 input available"
-        } else {
-            "P010 input unavailable"
-        };
-
         format!(
             "{}: {}, {}, formats: {}, max texture: {}",
             self.display_name,
             hdr_support_label,
-            p010_support_label,
+            self.p010_render_readiness,
             frame_formats,
             self.max_texture_size
                 .map(|size| size.to_string())
@@ -775,15 +833,32 @@ mod tests {
 
         assert!(capabilities.supports_frame_format(VideoFrameFormat::Nv12));
         assert!(!capabilities.supports_frame_format(VideoFrameFormat::P010));
+        assert_eq!(
+            capabilities.p010_render_readiness,
+            P010RenderReadiness::Unavailable
+        );
+        assert!(!capabilities.supports_p010_rendering());
         assert!(!capabilities.supports_hdr_to_sdr);
         assert!(!capabilities.supports_native_hdr_output);
         assert!(capabilities.summary_text().contains("SDR only"));
+        assert!(capabilities.summary_text().contains("P010 unavailable"));
+        assert!(!capabilities.summary_text().contains("HDR supported"));
+    }
+
+    #[test]
+    fn p010_zero_copy_boundary_state_is_not_renderable() {
+        let mut capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
+        capabilities.p010_render_readiness = P010RenderReadiness::ZeroCopyBoundaryVerified;
+        let requirement =
+            VideoDecodeRequirement::new(VideoCodec::Vp9).with_bit_depth(BitDepth::Ten);
+
+        assert!(!capabilities.supports_p010_rendering());
+        assert!(!capabilities.supports_decode_requirement(&requirement));
         assert!(
             capabilities
                 .summary_text()
-                .contains("P010 input unavailable")
+                .contains("P010 zero-copy boundary verified")
         );
-        assert!(!capabilities.summary_text().contains("HDR supported"));
     }
 
     #[test]

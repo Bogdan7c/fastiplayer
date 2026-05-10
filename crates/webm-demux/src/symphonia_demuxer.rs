@@ -109,7 +109,7 @@ impl SymphoniaDemuxer {
     fn from_format_reader(
         format: Box<dyn FormatReader>,
         label: &str,
-        video_metadata_by_track: HashMap<TrackId, VideoTrackMetadata>,
+        mut video_metadata_by_track: HashMap<TrackId, VideoTrackMetadata>,
     ) -> Result<Self, DemuxError> {
         let mut tracks = Vec::new();
         let mut track_map = HashMap::new();
@@ -141,9 +141,11 @@ impl SymphoniaDemuxer {
                 duration,
                 sample_rate: entry.sample_rate,
                 channels: entry.channels,
-                video: video_metadata_by_track
-                    .get(&TrackId::new(track.id))
-                    .cloned(),
+                video: take_video_metadata_for_track_id(
+                    TrackId::new(track.id),
+                    entry.kind,
+                    &mut video_metadata_by_track,
+                ),
             });
         }
 
@@ -193,6 +195,40 @@ impl SymphoniaDemuxer {
             data: Bytes::copy_from_slice(packet.buf()),
         })
     }
+}
+
+/// Достаёт Matroska video metadata для Symphonia track id.
+///
+/// Symphonia может использовать внутренний `track.id`, который не равен Matroska
+/// `TrackNumber`. Если pre-scan нашёл ровно один video entry, fallback безопасен:
+/// двусмысленности между несколькими видеотреками нет, а HDR metadata не теряется.
+fn take_video_metadata_for_track_id(
+    symphonia_track_id: TrackId,
+    track_kind: TrackKind,
+    metadata_by_track: &mut HashMap<TrackId, VideoTrackMetadata>,
+) -> Option<VideoTrackMetadata> {
+    if track_kind != TrackKind::Video {
+        return None;
+    }
+
+    if let Some(metadata) = metadata_by_track.remove(&symphonia_track_id) {
+        return Some(metadata);
+    }
+
+    if metadata_by_track.len() != 1 {
+        return None;
+    }
+
+    let matroska_track_id = metadata_by_track.keys().next().copied()?;
+    let metadata = metadata_by_track.remove(&matroska_track_id);
+    if metadata.is_some() {
+        warn!(
+            symphonia_track_id = %symphonia_track_id,
+            matroska_track_id = %matroska_track_id,
+            "Matroska video metadata сопоставлена по единственному video track fallback"
+        );
+    }
+    metadata
 }
 
 impl Demuxer for SymphoniaDemuxer {
@@ -346,11 +382,13 @@ fn symphonia_timestamp_to_duration(time_base: TimeBase, timestamp_units: u64) ->
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::time::Duration;
 
+    use media_core::{TrackId, TrackKind, VideoTrackMetadata};
     use symphonia::core::units::TimeBase;
 
-    use super::symphonia_timestamp_to_duration;
+    use super::{symphonia_timestamp_to_duration, take_video_metadata_for_track_id};
 
     #[test]
     fn converts_packet_timestamp_to_duration() {
@@ -359,5 +397,72 @@ mod tests {
         let duration = symphonia_timestamp_to_duration(time_base, 2_750);
 
         assert_eq!(duration, Duration::from_millis(2_750));
+    }
+
+    #[test]
+    fn video_metadata_exact_track_id_match_is_used_first() {
+        let mut metadata_by_track = HashMap::from([(
+            TrackId::new(7),
+            VideoTrackMetadata {
+                coded_width: Some(3840),
+                coded_height: None,
+                profile: None,
+                bit_depth: None,
+                chroma: None,
+                color: None,
+            },
+        )]);
+
+        let metadata = take_video_metadata_for_track_id(
+            TrackId::new(7),
+            TrackKind::Video,
+            &mut metadata_by_track,
+        )
+        .expect("exact metadata должна быть найдена");
+
+        assert_eq!(metadata.coded_width, Some(3840));
+        assert!(metadata_by_track.is_empty());
+    }
+
+    #[test]
+    fn single_matroska_video_metadata_entry_can_fallback_to_symphonia_track_id() {
+        let mut metadata_by_track = HashMap::from([(
+            TrackId::new(1),
+            VideoTrackMetadata {
+                coded_width: Some(3840),
+                coded_height: Some(2160),
+                profile: None,
+                bit_depth: None,
+                chroma: None,
+                color: None,
+            },
+        )]);
+
+        let metadata = take_video_metadata_for_track_id(
+            TrackId::new(0),
+            TrackKind::Video,
+            &mut metadata_by_track,
+        )
+        .expect("single video metadata fallback должен сработать");
+
+        assert_eq!(metadata.coded_height, Some(2160));
+        assert!(metadata_by_track.is_empty());
+    }
+
+    #[test]
+    fn multiple_unmatched_video_metadata_entries_do_not_fallback() {
+        let mut metadata_by_track = HashMap::from([
+            (TrackId::new(1), VideoTrackMetadata::empty()),
+            (TrackId::new(2), VideoTrackMetadata::empty()),
+        ]);
+
+        let metadata = take_video_metadata_for_track_id(
+            TrackId::new(0),
+            TrackKind::Video,
+            &mut metadata_by_track,
+        );
+
+        assert!(metadata.is_none());
+        assert_eq!(metadata_by_track.len(), 2);
     }
 }

@@ -332,6 +332,7 @@ struct ElementHeader {
     id: u64,
     data_start: usize,
     data_end: usize,
+    data_complete: bool,
     next_position: usize,
 }
 
@@ -345,19 +346,22 @@ fn read_element_header(bytes: &[u8], position: usize, parent_end: usize) -> Opti
     let size_position = position.checked_add(id_width)?;
     let (data_size, size_width) = read_element_size(bytes, size_position)?;
     let data_start = size_position.checked_add(size_width)?;
-    let data_end = data_size
+    let declared_data_end = data_size
         .and_then(|size| usize::try_from(size).ok())
-        .and_then(|size| data_start.checked_add(size))
-        .unwrap_or(parent_end);
+        .and_then(|size| data_start.checked_add(size));
 
-    if data_start > parent_end || data_end > parent_end {
+    if data_start > parent_end {
         return None;
     }
+
+    let data_complete = declared_data_end.is_some_and(|data_end| data_end <= parent_end);
+    let data_end = declared_data_end.unwrap_or(parent_end).min(parent_end);
 
     Some(ElementHeader {
         id,
         data_start,
         data_end,
+        data_complete,
         next_position: data_end,
     })
 }
@@ -412,6 +416,10 @@ fn ebml_vint_width(first_byte: u8) -> Option<usize> {
 
 /// Читает unsigned integer payload в big-endian форме.
 fn read_unsigned(bytes: &[u8], header: &ElementHeader) -> Option<u64> {
+    if !header.data_complete {
+        return None;
+    }
+
     if header.data_start >= header.data_end || header.data_end - header.data_start > 8 {
         return None;
     }
@@ -427,6 +435,10 @@ fn read_unsigned(bytes: &[u8], header: &ElementHeader) -> Option<u64> {
 
 /// Читает ASCII payload, который нужен только для CodecID diagnostics.
 fn read_ascii(bytes: &[u8], header: &ElementHeader) -> Option<String> {
+    if !header.data_complete {
+        return None;
+    }
+
     std::str::from_utf8(&bytes[header.data_start..header.data_end])
         .ok()
         .map(ToOwned::to_owned)
@@ -434,6 +446,10 @@ fn read_ascii(bytes: &[u8], header: &ElementHeader) -> Option<String> {
 
 /// Читает Matroska float payload: 32-bit или 64-bit big-endian.
 fn read_float(bytes: &[u8], header: &ElementHeader) -> Option<f64> {
+    if !header.data_complete {
+        return None;
+    }
+
     match header.data_end.checked_sub(header.data_start)? {
         4 => {
             let value =
@@ -512,6 +528,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn extracts_tracks_when_segment_declared_size_exceeds_prescan_prefix() {
+        let colour = master(
+            ID_COLOUR,
+            vec![
+                unsigned(ID_BITS_PER_CHANNEL, 10),
+                unsigned(ID_TRANSFER_CHARACTERISTICS, 16),
+                unsigned(ID_PRIMARIES, 9),
+            ],
+        );
+        let video = master(ID_VIDEO, vec![unsigned(ID_PIXEL_WIDTH, 3840), colour]);
+        let track_entry = master(
+            ID_TRACK_ENTRY,
+            vec![
+                unsigned(ID_TRACK_NUMBER, 1),
+                unsigned(ID_TRACK_TYPE, 1),
+                ascii(ID_CODEC_ID, "V_VP9"),
+                video,
+            ],
+        );
+        let tracks = master(ID_TRACKS, vec![track_entry]);
+        let declared_segment_size = tracks.len() + 4096;
+        let bytes = element_with_declared_size(ID_SEGMENT, declared_segment_size, &tracks);
+
+        let metadata_by_track = extract_video_track_metadata_from_bytes(&bytes);
+        let metadata = metadata_by_track
+            .get(&TrackId::new(1))
+            .expect("video metadata должна читаться из prefix-а большого Segment");
+        let color = metadata
+            .color
+            .as_ref()
+            .expect("Colour metadata должна сохраниться из prefix-а");
+
+        assert_eq!(metadata.coded_width, Some(3840));
+        assert_eq!(metadata.bit_depth, Some(BitDepth::Ten));
+        assert_eq!(color.transfer, TransferFunction::Pq);
+        assert_eq!(color.primaries, ColorPrimaries::Bt2020);
+    }
+
     fn master(id: u64, children: Vec<Vec<u8>>) -> Vec<u8> {
         let payload = children.into_iter().flatten().collect::<Vec<_>>();
         element(id, &payload)
@@ -537,8 +592,12 @@ mod tests {
     }
 
     fn element(id: u64, payload: &[u8]) -> Vec<u8> {
+        element_with_declared_size(id, payload.len(), payload)
+    }
+
+    fn element_with_declared_size(id: u64, declared_size: usize, payload: &[u8]) -> Vec<u8> {
         let mut bytes = encode_id(id);
-        bytes.extend(encode_size(payload.len()));
+        bytes.extend(encode_size(declared_size));
         bytes.extend_from_slice(payload);
         bytes
     }
