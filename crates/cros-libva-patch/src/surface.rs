@@ -346,8 +346,8 @@ impl<D: SurfaceMemoryDescriptor> Surface<D> {
         (self.width, self.height)
     }
 
-    /// Returns a PRIME descriptor for this surface.
-    pub fn export_prime(&self) -> Result<DrmPrimeSurfaceDescriptor, VaError> {
+    /// Returns a PRIME descriptor for this surface using caller-provided export flags.
+    fn export_prime_with_flags(&self, flags: u32) -> Result<DrmPrimeSurfaceDescriptor, VaError> {
         let mut desc: bindings::VADRMPRIMESurfaceDescriptor = Default::default();
 
         va_check(unsafe {
@@ -355,7 +355,7 @@ impl<D: SurfaceMemoryDescriptor> Surface<D> {
                 self.display.handle(),
                 self.id(),
                 bindings::VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
-                bindings::VA_EXPORT_SURFACE_READ_ONLY | bindings::VA_EXPORT_SURFACE_COMPOSED_LAYERS,
+                flags,
                 &mut desc as *mut _ as *mut c_void,
             )
         })?;
@@ -404,6 +404,20 @@ impl<D: SurfaceMemoryDescriptor> Surface<D> {
             objects,
             layers,
         })
+    }
+
+    /// Returns a composed PRIME descriptor for this surface.
+    pub fn export_prime(&self) -> Result<DrmPrimeSurfaceDescriptor, VaError> {
+        self.export_prime_with_flags(
+            bindings::VA_EXPORT_SURFACE_READ_ONLY | bindings::VA_EXPORT_SURFACE_COMPOSED_LAYERS,
+        )
+    }
+
+    /// Returns a separate-layer PRIME descriptor for diagnostics and EGL-style import paths.
+    pub fn export_prime_separate_layers(&self) -> Result<DrmPrimeSurfaceDescriptor, VaError> {
+        self.export_prime_with_flags(
+            bindings::VA_EXPORT_SURFACE_READ_ONLY | bindings::VA_EXPORT_SURFACE_SEPARATE_LAYERS,
+        )
     }
 }
 

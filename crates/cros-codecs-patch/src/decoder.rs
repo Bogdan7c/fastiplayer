@@ -69,6 +69,16 @@ pub struct DecodedDmaBufLayer {
     pub pitch: [u32; 4],
 }
 
+/// Layout requested from `vaExportSurfaceHandle()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodedDmaBufExportLayout {
+    /// One composed DRM layer describes the full multi-planar image.
+    ComposedLayers,
+
+    /// Separate DRM layers describe luma and chroma planes independently.
+    SeparateLayers,
+}
+
 /// DMA-BUF/DRM PRIME export of a decoded surface.
 ///
 /// The descriptor owns exported file descriptors. Importers may borrow or dup
@@ -81,6 +91,8 @@ pub struct DecodedDmaBufImage {
     pub surface_id: u64,
     /// Top-level DRM fourcc reported by VA-API.
     pub fourcc: u32,
+    /// Export layout returned by VA-API.
+    pub export_layout: DecodedDmaBufExportLayout,
     /// Coded width.
     pub width: u32,
     /// Coded height.

@@ -16,7 +16,8 @@ Phase 10 не чинит VP9 parser/decode. Если Phase 9 не доказал
 - VP9 Profile 2 10-bit 4:2:0 requirement detection;
 - strict HDR core metadata validation;
 - `DecodedFrame { format=P010, bit_depth=10, chroma=YUV420, color=BT.2020 PQ/HLG, memory_path=DmaBufZeroCopy }`;
-- P010 DMA-BUF zero-copy import boundary;
+- P010 DMA-BUF zero-copy import boundary with separate-layer `R16 + Rg16` as the baseline storage;
+- composed P010 zero-copy import kept only as a compatibility storage layout;
 - typed capability/rejection reasons;
 - production HDR playback rejected until HDR renderer is implemented.
 
@@ -25,7 +26,7 @@ Phase 10 не чинит VP9 parser/decode. Если Phase 9 не доказал
 Перед планированием Phase 10 были проверены актуальные внешние reference-точки:
 
 - Context7 по `wgpu` 29: texture creation, bind group layouts, uniforms, feature checks;
-- `wgpu` docs: `TextureFormat::P010`, `TextureAspect::Plane0/Plane1`, `TEXTURE_FORMAT_P010`;
+- `wgpu` docs: `TextureFormat::P010`, `TextureAspect::Plane0/Plane1`, `TEXTURE_FORMAT_P010`, `TEXTURE_FORMAT_16BIT_NORM`, `R16Unorm`, `Rg16Unorm`;
 - ITU-R BT.2446: HDR-to-SDR conversion methods, выбран Method C;
 - SMPTE ST 2084 / PQ и HLG transfer model через BT.2100-compatible references;
 - Matroska/WebM Colour metadata fields для PQ/HLG/BT.2020.
@@ -51,7 +52,14 @@ Phase 10 принимает P010 только через zero-copy.
 - временный RGB/RGBA intermediate ради обхода P010 import;
 - показ HDR как SDR fallback.
 
-Если `TEXTURE_FORMAT_P010` или zero-copy import недоступны, HDR stream не выбирается.
+P010 import capability зависит от фактического VA-API export layout:
+
+```text
+baseline separate-layer P010 export -> требует TEXTURE_FORMAT_16BIT_NORM и plane textures R16Unorm/Rg16Unorm
+compat composed P010 export         -> требует TEXTURE_FORMAT_P010
+```
+
+Если zero-copy import для фактически экспортированного layout недоступен, HDR stream не выбирается. Phase 10 должна считать separate-layer `R16 + GR32/Rg16` основным P010 storage layout, потому что именно этот path проверен на Intel i965. Composed `TextureFormat::P010` остаётся совместимостью для драйверов, где он реально работает.
 
 ### Tone mapping
 
@@ -140,6 +148,14 @@ render-wgpu/shaders/p010_bt2446c_to_sdr.wgsl
 - P010 renderer добавляет небольшой sibling shader для `P010 10-bit SDR -> SDR BT.709`.
 
 В обоих случаях `nv12_to_rgba.wgsl` не превращается в HDR/P010 shader.
+
+P010 renderer получает уже нормализованный renderer boundary:
+
+```text
+WgpuFramePlanes::P010 { y_view, uv_view }
+```
+
+Renderer не должен зависеть от того, создана ли эта пара views из baseline separate-layer textures `R16Unorm + Rg16Unorm` или из compatibility composed `TextureFormat::P010` texture. Storage layout остаётся обязанностью `video-vaapi`/texture cache; shader/bind group работают с plane views.
 
 ### P010 не равно HDR
 
@@ -235,6 +251,7 @@ render-core
         v
 render-wgpu
   P010VideoRenderer
+  P010 plane bindings independent of composed/separate storage layout
   HdrColorPipelineUniforms
   p010_bt2446c_to_sdr.wgsl
         |
@@ -311,7 +328,7 @@ UI не считает transfer functions, matrices или tone mapping.
 
 1. Player выбирает HDR stream только если decode + P010 zero-copy + renderer HDR-to-SDR capability проходят intersection.
 2. Decoder отдаёт `DecodedFrame` с `P010`, `10-bit`, `YUV420`, strict HDR metadata.
-3. `WgpuRenderableFrame::from_decoded_p010` создаёт `RenderableFrame` и `WgpuFramePlanes::P010`.
+3. `WgpuRenderableFrame::from_decoded_p010` создаёт `RenderableFrame` и `WgpuFramePlanes::P010` из existing plane views, не делая assumptions о backing storage.
 4. `WgpuVideoRenderer::render_or_clear` выбирает `P010VideoRenderer`.
 5. `P010VideoRenderer` валидирует metadata и settings.
 6. CPU-side color pipeline строит `HdrColorPipelineUniforms`.
@@ -358,6 +375,7 @@ Manual tests:
 - добавить `WgpuRenderableFrame::from_decoded_p010`;
 - создать bind group layout для P010 planes + HDR uniforms;
 - выбрать P010 renderer только для `P010` frames;
+- поддержать baseline separate-layer P010 bindings и не завязать renderer на compatibility composed storage;
 - заложить отдельный metadata branch для `P010 SDR BT.709`, который не вызывает BT.2446-C;
 - оставить `Nv12VideoRenderer` неизменным для SDR.
 
@@ -366,6 +384,7 @@ Unit tests:
 - P010 frame dispatches to P010 renderer path;
 - NV12 frame dispatches to NV12 renderer path;
 - P010 renderer rejects non-zero-copy memory path;
+- baseline separate-layer P010 и compatibility composed P010 дают одинаковый renderer-facing `WgpuFramePlanes::P010`;
 - P010 SDR BT.709 dispatches to non-HDR P010 path;
 - shader source file exists and is not `nv12_to_rgba.wgsl`.
 
@@ -487,7 +506,7 @@ Manual tests:
 Unit tests:
 
 - HDR stream selected only when decode + P010 renderable + HDR-to-SDR pass;
-- missing `TEXTURE_FORMAT_P010` rejects stream;
+- missing required P010 import feature rejects stream: baseline separate-layer layout needs `TEXTURE_FORMAT_16BIT_NORM`, compatibility composed layout needs `TEXTURE_FORMAT_P010`;
 - missing strict HDR metadata rejects stream;
 - renderer error becomes fatal media error, not fallback.
 
@@ -524,6 +543,7 @@ Verification:
 ## Acceptance checklist
 
 - Phase 9 P010 zero-copy boundary используется без CPU fallback.
+- Phase 10 использует Intel/i965 separate-layer P010 path как baseline и не регрессирует его.
 - HDR stream выбирается только при passing capability intersection.
 - `supports_hdr_to_sdr = true` только после рабочей BT.2446-C реализации.
 - `supports_native_hdr_output = false`.

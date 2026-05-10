@@ -125,6 +125,9 @@ pub struct WgpuVideoRenderer {
 
     /// Последняя renderer-neutral диагностика без GPU handles.
     diagnostics: RenderDiagnostics,
+
+    /// Уже логировали P010 boundary frame, который пока нельзя вывести на экран.
+    p010_render_unavailable_logged: bool,
 }
 
 impl WgpuVideoRenderer {
@@ -137,6 +140,7 @@ impl WgpuVideoRenderer {
             nv12_renderer: Nv12VideoRenderer::new(device, surface_format),
             capabilities: RenderCapabilities::wgpu_nv12(max_texture_size),
             diagnostics: RenderDiagnostics::default(),
+            p010_render_unavailable_logged: false,
         }
     }
 
@@ -203,7 +207,14 @@ impl WgpuVideoRenderer {
                 Ok(true)
             }
             (VideoFrameFormat::P010, WgpuFramePlanes::P010 { .. }) => {
-                bail!("WGPU renderer received P010 boundary frame before P010 renderer is enabled");
+                if !self.p010_render_unavailable_logged {
+                    self.p010_render_unavailable_logged = true;
+                    tracing::warn!(
+                        "WGPU renderer received verified P010 boundary frame; clearing target until P010 renderer is enabled"
+                    );
+                }
+                clear_to_black(target, encoder);
+                Ok(false)
             }
             (format, _) => {
                 bail!("WGPU renderer frame metadata/plane mismatch for format: {format}");

@@ -606,6 +606,10 @@ fn send_pending_video_packets_to_decoder(
         };
         if let Err(error) = thread.send_packet(decode_packet) {
             tracing::warn!(error = %error, "Failed to send packet to decoder thread");
+            session.mark_fatal_error(PlayerError::new(
+                PlayerErrorKind::RuntimeError,
+                format!("Video decoder thread stopped before accepting packet: {error}"),
+            ));
             break;
         }
 

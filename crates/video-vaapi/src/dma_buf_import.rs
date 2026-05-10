@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 use ash::vk;
-use cros_codecs::decoder::DecodedDmaBufImage;
+use cros_codecs::decoder::{DecodedDmaBufExportLayout, DecodedDmaBufImage, DecodedDmaBufLayer};
 use cros_codecs::libva::ExternalBufferDescriptor;
 use cros_codecs::video_frame::generic_dma_video_frame::GenericDmaVideoFrame;
 
@@ -25,8 +25,226 @@ const VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT: i32 = 1000158000;
 /// DRM fourcc для NV12 (`'N' 'V' '1' '2'` в little-endian представлении).
 const DRM_FORMAT_NV12: u32 = 0x3231_564e;
 
+/// DRM fourcc для P010 (`'P' '0' '1' '0'` в little-endian представлении).
+const DRM_FORMAT_P010: u32 = 0x3031_3050;
+
+/// DRM fourcc для отдельной 8-bit luma plane (`R8`).
+const DRM_FORMAT_R8: u32 = 0x2020_3852;
+
+/// DRM fourcc для отдельной 8-bit interleaved chroma plane (`GR88`).
+const DRM_FORMAT_GR88: u32 = 0x3838_5247;
+
+/// DRM fourcc для отдельной 16-bit luma plane (`R16`).
+const DRM_FORMAT_R16: u32 = 0x2036_3152;
+
+/// DRM fourcc для отдельной 16-bit interleaved chroma plane (`GR32` / `GR1616`).
+const DRM_FORMAT_GR1616: u32 = 0x3233_5247;
+
 /// Значение DRM_FORMAT_MOD_LINEAR = 0 (linear, untiled).
 const DRM_FORMAT_MOD_LINEAR: u64 = 0;
+
+/// Формат decoded DMA-BUF descriptor-а, который можно импортировать в wgpu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DmaBufFrameFormat {
+    /// 8-bit 4:2:0 NV12: Y plane + interleaved UV plane.
+    Nv12,
+
+    /// 10-bit 4:2:0 P010: Y plane + interleaved UV plane в 16-bit контейнере.
+    P010,
+}
+
+impl DmaBufFrameFormat {
+    /// Определяет формат по DRM fourcc из exported VA descriptor-а.
+    pub(crate) fn from_fourcc(image_fourcc: u32, layer_fourcc: u32) -> anyhow::Result<Self> {
+        match (image_fourcc, layer_fourcc) {
+            (DRM_FORMAT_NV12, DRM_FORMAT_NV12) => Ok(Self::Nv12),
+            (DRM_FORMAT_P010, DRM_FORMAT_P010) => Ok(Self::P010),
+            _ => anyhow::bail!(
+                "unsupported exported VA surface format: image_fourcc={:#x}, layer_fourcc={:#x}",
+                image_fourcc,
+                layer_fourcc
+            ),
+        }
+    }
+
+    /// Определяет формат по separate-layer DRM descriptor-у VA-API.
+    pub(crate) fn from_separate_layers(
+        image_fourcc: u32,
+        layers: &[DecodedDmaBufLayer],
+    ) -> anyhow::Result<Self> {
+        let y_layer = layers
+            .first()
+            .context("separate-layer DMA-BUF image has no luma layer")?;
+        let uv_layer = layers
+            .get(1)
+            .context("separate-layer DMA-BUF image has no chroma layer")?;
+
+        if y_layer.num_planes != 1 || uv_layer.num_planes != 1 {
+            anyhow::bail!(
+                "separate-layer DMA-BUF descriptor must use one plane per layer: y_planes={}, uv_planes={}",
+                y_layer.num_planes,
+                uv_layer.num_planes
+            );
+        }
+
+        match (image_fourcc, y_layer.drm_format, uv_layer.drm_format) {
+            (DRM_FORMAT_NV12, DRM_FORMAT_R8, DRM_FORMAT_GR88) => Ok(Self::Nv12),
+            (DRM_FORMAT_P010, DRM_FORMAT_R16, DRM_FORMAT_GR1616) => Ok(Self::P010),
+            _ => anyhow::bail!(
+                "unsupported separate-layer VA surface format: image_fourcc={:#x}, y_fourcc={:#x}, uv_fourcc={:#x}",
+                image_fourcc,
+                y_layer.drm_format,
+                uv_layer.drm_format
+            ),
+        }
+    }
+
+    /// Возвращает wgpu multi-planar texture format для whole-image import.
+    pub(crate) const fn wgpu_texture_format(self) -> wgpu::TextureFormat {
+        match self {
+            Self::Nv12 => wgpu::TextureFormat::NV12,
+            Self::P010 => wgpu::TextureFormat::P010,
+        }
+    }
+
+    /// Возвращает Vulkan format, совместимый с DRM descriptor-ом VA-API.
+    const fn vulkan_texture_format(self) -> vk::Format {
+        match self {
+            Self::Nv12 => vk::Format::G8_B8R8_2PLANE_420_UNORM,
+            Self::P010 => vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16,
+        }
+    }
+
+    /// Возвращает feature, который wgpu требует для создания такого texture format.
+    const fn required_wgpu_feature(self) -> wgpu::Features {
+        match self {
+            Self::Nv12 => wgpu::Features::TEXTURE_FORMAT_NV12,
+            Self::P010 => wgpu::Features::TEXTURE_FORMAT_P010,
+        }
+    }
+
+    /// Возвращает имя required feature для понятной ошибки без Debug шума.
+    const fn required_wgpu_feature_name(self) -> &'static str {
+        match self {
+            Self::Nv12 => "TEXTURE_FORMAT_NV12",
+            Self::P010 => "TEXTURE_FORMAT_P010",
+        }
+    }
+
+    /// Возвращает короткий форматный label для diagnostics.
+    pub(crate) const fn diagnostic_label(self) -> &'static str {
+        match self {
+            Self::Nv12 => "NV12",
+            Self::P010 => "P010",
+        }
+    }
+
+    /// Возвращает label для imported wgpu texture.
+    const fn texture_label(self) -> &'static str {
+        match self {
+            Self::Nv12 => "dma-buf-imported-nv12",
+            Self::P010 => "dma-buf-imported-p010",
+        }
+    }
+
+    /// Возвращает label для luma view.
+    const fn y_view_label(self) -> &'static str {
+        match self {
+            Self::Nv12 => "dma-buf-imported-nv12-y",
+            Self::P010 => "dma-buf-imported-p010-y",
+        }
+    }
+
+    /// Возвращает label для chroma view.
+    const fn uv_view_label(self) -> &'static str {
+        match self {
+            Self::Nv12 => "dma-buf-imported-nv12-uv",
+            Self::P010 => "dma-buf-imported-p010-uv",
+        }
+    }
+
+    /// Проверяет, что wgpu device был создан с feature для нужного texture format.
+    fn ensure_device_feature(self, device_features: wgpu::Features) -> anyhow::Result<()> {
+        let required_feature = self.required_wgpu_feature();
+        if device_features.contains(required_feature) {
+            return Ok(());
+        }
+
+        anyhow::bail!(
+            "wgpu device was created without {} support required for {} DMA-BUF import",
+            self.required_wgpu_feature_name(),
+            self.diagnostic_label()
+        );
+    }
+
+    /// Проверяет feature gate для baseline path, где VA отдаёт P010 как R16/GR32 layers.
+    fn ensure_separate_layer_device_features(
+        self,
+        device_features: wgpu::Features,
+    ) -> anyhow::Result<()> {
+        if self != Self::P010 || device_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
+        {
+            return Ok(());
+        }
+
+        anyhow::bail!(
+            "wgpu device was created without TEXTURE_FORMAT_16BIT_NORM support required for separate-layer P010 DMA-BUF import"
+        );
+    }
+}
+
+/// Описание одного plane view, создаваемого поверх multi-planar texture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DmaBufPlaneViewContract {
+    /// Формат plane view, который видит shader binding.
+    pub format: wgpu::TextureFormat,
+
+    /// Plane aspect внутри multi-planar texture.
+    pub aspect: wgpu::TextureAspect,
+}
+
+/// Полный view contract для импортированного NV12/P010 texture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DmaBufViewContract {
+    /// Whole-image texture format.
+    pub texture_format: wgpu::TextureFormat,
+
+    /// Luma/Y plane view.
+    pub y_plane: DmaBufPlaneViewContract,
+
+    /// Interleaved chroma/UV plane view.
+    pub uv_plane: DmaBufPlaneViewContract,
+}
+
+/// Возвращает plane view contract для imported multi-planar texture.
+pub(crate) const fn plane_view_contract_for_imported_format(
+    frame_format: DmaBufFrameFormat,
+) -> DmaBufViewContract {
+    match frame_format {
+        DmaBufFrameFormat::Nv12 => DmaBufViewContract {
+            texture_format: wgpu::TextureFormat::NV12,
+            y_plane: DmaBufPlaneViewContract {
+                format: wgpu::TextureFormat::R8Unorm,
+                aspect: wgpu::TextureAspect::Plane0,
+            },
+            uv_plane: DmaBufPlaneViewContract {
+                format: wgpu::TextureFormat::Rg8Unorm,
+                aspect: wgpu::TextureAspect::Plane1,
+            },
+        },
+        DmaBufFrameFormat::P010 => DmaBufViewContract {
+            texture_format: wgpu::TextureFormat::P010,
+            y_plane: DmaBufPlaneViewContract {
+                format: wgpu::TextureFormat::R16Unorm,
+                aspect: wgpu::TextureAspect::Plane0,
+            },
+            uv_plane: DmaBufPlaneViewContract {
+                format: wgpu::TextureFormat::Rg16Unorm,
+                aspect: wgpu::TextureAspect::Plane1,
+            },
+        },
+    }
+}
 
 /// Дублирует DMA-BUF fd перед передачей во Vulkan import.
 ///
@@ -107,12 +325,15 @@ fn bind_imported_memory_to_image(
 }
 
 /// Логирует первый VA export descriptor на info-уровне для диагностики zero-copy.
-fn log_first_export_descriptor(
-    image: &DecodedDmaBufImage,
-    layer: &cros_codecs::decoder::DecodedDmaBufLayer,
-) {
-    static LOGGED_EXPORT_DESCRIPTOR: AtomicBool = AtomicBool::new(false);
-    if LOGGED_EXPORT_DESCRIPTOR.swap(true, Ordering::Relaxed) {
+fn log_first_export_descriptor(image: &DecodedDmaBufImage, frame_format: DmaBufFrameFormat) {
+    static LOGGED_NV12_EXPORT_DESCRIPTOR: AtomicBool = AtomicBool::new(false);
+    static LOGGED_P010_EXPORT_DESCRIPTOR: AtomicBool = AtomicBool::new(false);
+
+    let already_logged = match frame_format {
+        DmaBufFrameFormat::Nv12 => LOGGED_NV12_EXPORT_DESCRIPTOR.swap(true, Ordering::Relaxed),
+        DmaBufFrameFormat::P010 => LOGGED_P010_EXPORT_DESCRIPTOR.swap(true, Ordering::Relaxed),
+    };
+    if already_logged {
         return;
     }
 
@@ -126,21 +347,66 @@ fn log_first_export_descriptor(
         .iter()
         .map(|object| object.size)
         .collect::<Vec<_>>();
+    let layer_formats = image
+        .layers
+        .iter()
+        .map(|layer| layer.drm_format)
+        .collect::<Vec<_>>();
+    let plane_counts = image
+        .layers
+        .iter()
+        .map(|layer| layer.num_planes)
+        .collect::<Vec<_>>();
+    let object_indices = image
+        .layers
+        .iter()
+        .map(|layer| layer.object_index)
+        .collect::<Vec<_>>();
+    let offsets = image
+        .layers
+        .iter()
+        .map(|layer| layer.offset)
+        .collect::<Vec<_>>();
+    let pitches = image
+        .layers
+        .iter()
+        .map(|layer| layer.pitch)
+        .collect::<Vec<_>>();
 
-    tracing::info!(
-        fourcc = image.fourcc,
-        layer_fourcc = layer.drm_format,
-        width = image.width,
-        height = image.height,
-        objects = image.objects.len(),
-        planes = layer.num_planes,
-        object_index = ?layer.object_index,
-        offsets = ?layer.offset,
-        pitches = ?layer.pitch,
-        modifiers = ?modifiers,
-        object_sizes = ?object_sizes,
-        "First VA DMA-BUF export descriptor"
-    );
+    match frame_format {
+        DmaBufFrameFormat::Nv12 => tracing::info!(
+            fourcc = image.fourcc,
+            layout = ?image.export_layout,
+            width = image.width,
+            height = image.height,
+            objects = image.objects.len(),
+            layers = image.layers.len(),
+            layer_formats = ?layer_formats,
+            plane_counts = ?plane_counts,
+            object_indices = ?object_indices,
+            offsets = ?offsets,
+            pitches = ?pitches,
+            modifiers = ?modifiers,
+            object_sizes = ?object_sizes,
+            "First VA NV12 DMA-BUF export descriptor"
+        ),
+        DmaBufFrameFormat::P010 => tracing::info!(
+            fourcc = image.fourcc,
+            layout = ?image.export_layout,
+            width = image.width,
+            height = image.height,
+            objects = image.objects.len(),
+            layers = image.layers.len(),
+            layer_formats = ?layer_formats,
+            plane_counts = ?plane_counts,
+            object_indices = ?object_indices,
+            offsets = ?offsets,
+            pitches = ?pitches,
+            modifiers = ?modifiers,
+            object_sizes = ?object_sizes,
+            "First VA P010 DMA-BUF export descriptor"
+        ),
+    }
 }
 
 /// Импортёр DMA-BUF fd в wgpu textures.
@@ -152,17 +418,36 @@ pub struct DmaBufImporter {
     adapter: wgpu::Adapter,
 }
 
-/// Результат zero-copy импорта NV12 DMA-BUF.
+/// Владелец wgpu textures, созданных из exported DMA-BUF.
+#[derive(Clone)]
+pub(crate) enum ImportedDmaBufStorage {
+    /// Один multi-planar texture для composed NV12/P010 descriptor-а.
+    Multiplanar(wgpu::Texture),
+
+    /// Два отдельных texture для VA separate-layer descriptor-а.
+    SeparatePlanes {
+        /// Luma plane texture.
+        y_texture: wgpu::Texture,
+        /// Interleaved chroma plane texture.
+        uv_texture: wgpu::Texture,
+    },
+}
+
+/// Результат zero-copy импорта multi-planar DMA-BUF.
 ///
-/// Хранит один multi-planar `TextureFormat::NV12` texture и два view,
-/// которые совместимы с текущим NV12 shader pipeline (`R8Unorm` + `Rg8Unorm`).
-pub struct ImportedNv12Texture {
-    /// Единый imported texture, который владеет raw VkImage и imported VkDeviceMemory.
-    pub texture: wgpu::Texture,
-    /// View первой NV12 plane: luma/Y, формат `R8Unorm`.
-    pub y_view: wgpu::TextureView,
-    /// View второй NV12 plane: interleaved chroma/UV, формат `Rg8Unorm`.
-    pub uv_view: wgpu::TextureView,
+/// Хранит texture storage и два typed plane view.
+pub(crate) struct ImportedDmaBufTexture {
+    /// Формат decoded frame, выбранный из DRM fourcc descriptor-а.
+    pub(crate) frame_format: DmaBufFrameFormat,
+
+    /// Imported texture storage, который владеет raw VkImage/VkDeviceMemory.
+    pub(crate) storage: ImportedDmaBufStorage,
+
+    /// View первой plane: luma/Y.
+    pub(crate) y_view: wgpu::TextureView,
+
+    /// View второй plane: interleaved chroma/UV.
+    pub(crate) uv_view: wgpu::TextureView,
 }
 
 impl DmaBufImporter {
@@ -276,62 +561,75 @@ impl DmaBufImporter {
         Ok((y_texture, uv_texture))
     }
 
-    /// Импортирует NV12 DMA-BUF, экспортированный напрямую из decoded VA surface.
+    /// Импортирует DMA-BUF, экспортированный напрямую из decoded VA surface.
     ///
-    /// Это zero-copy path A: decoder остаётся на internal VA surfaces, а готовая
-    /// поверхность экспортируется через `vaExportSurfaceHandle()` и импортируется
-    /// в Vulkan как один multi-planar NV12 image.
-    pub fn import_exported_nv12(
+    /// Decoder остаётся на internal VA surfaces, а готовая поверхность экспортируется через
+    /// `vaExportSurfaceHandle()`. Драйвер может вернуть composed multi-planar image или
+    /// отдельные luma/chroma layers; оба варианта остаются zero-copy.
+    pub(crate) fn import_exported_dma_buf_image(
         &self,
         image: &DecodedDmaBufImage,
-    ) -> anyhow::Result<ImportedNv12Texture> {
-        let layer = image
-            .layers
-            .first()
-            .context("exported DMA-BUF image has no DRM PRIME layers")?;
-        if layer.num_planes < 2 {
-            anyhow::bail!(
-                "exported DMA-BUF layer has fewer than 2 planes: {}",
-                layer.num_planes
-            );
+    ) -> anyhow::Result<ImportedDmaBufTexture> {
+        match image.export_layout {
+            DecodedDmaBufExportLayout::ComposedLayers => {
+                let layer = image
+                    .layers
+                    .first()
+                    .context("exported DMA-BUF image has no DRM PRIME layers")?;
+                if layer.num_planes < 2 {
+                    anyhow::bail!(
+                        "exported DMA-BUF layer has fewer than 2 planes: {}",
+                        layer.num_planes
+                    );
+                }
+
+                let frame_format = DmaBufFrameFormat::from_fourcc(image.fourcc, layer.drm_format)?;
+
+                log_first_export_descriptor(image, frame_format);
+
+                self.import_multiplanar_dma_buf(image, layer, frame_format)
+                    .with_context(|| {
+                        format!(
+                            "multi-planar exported VA {} surface import failed",
+                            frame_format.diagnostic_label()
+                        )
+                    })
+            }
+            DecodedDmaBufExportLayout::SeparateLayers => {
+                let frame_format =
+                    DmaBufFrameFormat::from_separate_layers(image.fourcc, &image.layers)?;
+
+                log_first_export_descriptor(image, frame_format);
+
+                self.import_separate_layer_dma_buf(image, frame_format)
+                    .with_context(|| {
+                        format!(
+                            "separate-layer exported VA {} surface import failed",
+                            frame_format.diagnostic_label()
+                        )
+                    })
+            }
         }
-
-        log_first_export_descriptor(image, layer);
-
-        self.import_multiplanar_nv12(image, layer)
-            .context("multi-planar exported VA surface import failed")
     }
 
-    /// Импортирует exported VA NV12 descriptor как один Vulkan multi-planar image.
+    /// Импортирует exported VA descriptor как один Vulkan multi-planar image.
     ///
-    /// Важная деталь: tiled/non-linear NV12 нельзя безопасно импортировать как две
-    /// независимые R8/RG8 картинки. DRM modifier описывает layout всего
+    /// Важная деталь: tiled/non-linear NV12/P010 нельзя безопасно импортировать как
+    /// две независимые картинки. DRM modifier описывает layout всего
     /// multi-planar image, поэтому обе plane layout передаются в один
     /// `VkImageDrmFormatModifierExplicitCreateInfoEXT`.
-    fn import_multiplanar_nv12(
+    fn import_multiplanar_dma_buf(
         &self,
         image: &DecodedDmaBufImage,
         layer: &cros_codecs::decoder::DecodedDmaBufLayer,
-    ) -> anyhow::Result<ImportedNv12Texture> {
-        if !self
-            .device
-            .features()
-            .contains(wgpu::Features::TEXTURE_FORMAT_NV12)
-        {
-            anyhow::bail!("wgpu device was created without TEXTURE_FORMAT_NV12 support");
-        }
-
-        if image.fourcc != DRM_FORMAT_NV12 || layer.drm_format != DRM_FORMAT_NV12 {
-            anyhow::bail!(
-                "exported VA surface is not NV12: image_fourcc={:#x}, layer_fourcc={:#x}",
-                image.fourcc,
-                layer.drm_format
-            );
-        }
+        frame_format: DmaBufFrameFormat,
+    ) -> anyhow::Result<ImportedDmaBufTexture> {
+        frame_format.ensure_device_feature(self.device.features())?;
 
         if layer.object_index[0] != layer.object_index[1] {
             anyhow::bail!(
-                "multi-object NV12 DMA-BUF export is not implemented yet: object_index={:?}",
+                "multi-object {} DMA-BUF export is not implemented yet: object_index={:?}",
+                frame_format.diagnostic_label(),
                 layer.object_index
             );
         }
@@ -339,7 +637,8 @@ impl DmaBufImporter {
         let object_index = layer.object_index[0] as usize;
         let object = image.objects.get(object_index).ok_or_else(|| {
             anyhow::anyhow!(
-                "exported NV12 layer references missing object {}",
+                "exported {} layer references missing object {}",
+                frame_format.diagnostic_label(),
                 object_index
             )
         })?;
@@ -349,11 +648,15 @@ impl DmaBufImporter {
         let tiling = if use_drm_modifier {
             tracing::debug!(
                 modifier,
-                "Using VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT for multi-planar NV12 import"
+                format = frame_format.diagnostic_label(),
+                "Using VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT for multi-planar DMA-BUF import"
             );
             vk::ImageTiling::from_raw(VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT)
         } else {
-            tracing::debug!("Using VK_IMAGE_TILING_LINEAR for linear multi-planar NV12 import");
+            tracing::debug!(
+                format = frame_format.diagnostic_label(),
+                "Using VK_IMAGE_TILING_LINEAR for linear multi-planar DMA-BUF import"
+            );
             vk::ImageTiling::LINEAR
         };
 
@@ -399,7 +702,7 @@ impl DmaBufImporter {
         let mut image_info = vk::ImageCreateInfo::default()
             .flags(vk::ImageCreateFlags::MUTABLE_FORMAT)
             .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
+            .format(frame_format.vulkan_texture_format())
             .extent(vk::Extent3D {
                 width: image.width,
                 height: image.height,
@@ -431,8 +734,12 @@ impl DmaBufImporter {
                         .property_flags
                         .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
             })
-            .context("No suitable Vulkan memory type for multi-planar NV12 DMA-BUF import")
-        {
+            .with_context(|| {
+                format!(
+                    "No suitable Vulkan memory type for multi-planar {} DMA-BUF import",
+                    frame_format.diagnostic_label()
+                )
+            }) {
             Ok(memory_type_index) => memory_type_index as u32,
             Err(error) => {
                 unsafe { raw_device.destroy_image(vk_image, None) };
@@ -446,7 +753,7 @@ impl DmaBufImporter {
             mem_requirements,
             memory_type_index,
             object.fd.as_raw_fd(),
-            "multi-planar NV12 DMA-BUF import",
+            "multi-planar DMA-BUF import",
         ) {
             Ok(memory) => memory,
             Err(error) => {
@@ -460,18 +767,18 @@ impl DmaBufImporter {
             vk_image,
             memory,
             0,
-            "multi-planar NV12 DMA-BUF import",
+            "multi-planar DMA-BUF import",
         )?;
 
         let raw_device_clone = raw_device.clone();
         let drop_callback: Option<wgpu::hal::DropCallback> = Some(Box::new(move || {
-            tracing::trace!("Destroying imported multi-planar NV12 Vulkan image and memory");
+            tracing::trace!("Destroying imported multi-planar Vulkan image and memory");
             unsafe { raw_device_clone.destroy_image(vk_image, None) };
             unsafe { raw_device_clone.free_memory(memory, None) };
         }));
 
         let hal_desc = wgpu::hal::TextureDescriptor {
-            label: Some("dma-buf-imported-nv12"),
+            label: Some(frame_format.texture_label()),
             size: wgpu::Extent3d {
                 width: image.width,
                 height: image.height,
@@ -480,7 +787,7 @@ impl DmaBufImporter {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::NV12,
+            format: frame_format.wgpu_texture_format(),
             usage: wgpu_types::TextureUses::RESOURCE,
             memory_flags: wgpu::hal::MemoryFlags::empty(),
             view_formats: vec![],
@@ -496,7 +803,7 @@ impl DmaBufImporter {
         };
 
         let wgpu_desc = wgpu::TextureDescriptor {
-            label: Some("dma-buf-imported-nv12"),
+            label: Some(frame_format.texture_label()),
             size: wgpu::Extent3d {
                 width: image.width,
                 height: image.height,
@@ -505,7 +812,7 @@ impl DmaBufImporter {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::NV12,
+            format: frame_format.wgpu_texture_format(),
             usage: wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         };
@@ -515,21 +822,106 @@ impl DmaBufImporter {
                 .create_texture_from_hal::<wgpu::hal::vulkan::Api>(hal_texture, &wgpu_desc)
         };
 
+        let view_contract = plane_view_contract_for_imported_format(frame_format);
         let y_view = texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("dma-buf-imported-nv12-y"),
-            format: Some(wgpu::TextureFormat::R8Unorm),
-            aspect: wgpu::TextureAspect::Plane0,
+            label: Some(frame_format.y_view_label()),
+            format: Some(view_contract.y_plane.format),
+            aspect: view_contract.y_plane.aspect,
             ..Default::default()
         });
         let uv_view = texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("dma-buf-imported-nv12-uv"),
-            format: Some(wgpu::TextureFormat::Rg8Unorm),
-            aspect: wgpu::TextureAspect::Plane1,
+            label: Some(frame_format.uv_view_label()),
+            format: Some(view_contract.uv_plane.format),
+            aspect: view_contract.uv_plane.aspect,
             ..Default::default()
         });
 
-        Ok(ImportedNv12Texture {
-            texture,
+        Ok(ImportedDmaBufTexture {
+            frame_format,
+            storage: ImportedDmaBufStorage::Multiplanar(texture),
+            y_view,
+            uv_view,
+        })
+    }
+
+    /// Импортирует VA separate-layer descriptor как два отдельных Vulkan images.
+    ///
+    /// Это основной проверенный path для Intel i965 P010: driver отдаёт zero-copy
+    /// descriptor как `R16` luma + `GR32` interleaved chroma.
+    fn import_separate_layer_dma_buf(
+        &self,
+        image: &DecodedDmaBufImage,
+        frame_format: DmaBufFrameFormat,
+    ) -> anyhow::Result<ImportedDmaBufTexture> {
+        frame_format.ensure_separate_layer_device_features(self.device.features())?;
+
+        let y_layer = image
+            .layers
+            .first()
+            .context("separate-layer DMA-BUF image has no luma layer")?;
+        let uv_layer = image
+            .layers
+            .get(1)
+            .context("separate-layer DMA-BUF image has no chroma layer")?;
+
+        let y_object = image
+            .objects
+            .get(y_layer.object_index[0] as usize)
+            .context("separate-layer luma layer references missing DMA-BUF object")?;
+        let uv_object = image
+            .objects
+            .get(uv_layer.object_index[0] as usize)
+            .context("separate-layer chroma layer references missing DMA-BUF object")?;
+
+        let view_contract = plane_view_contract_for_imported_format(frame_format);
+        tracing::debug!(
+            format = frame_format.diagnostic_label(),
+            y_modifier = y_object.drm_format_modifier,
+            uv_modifier = uv_object.drm_format_modifier,
+            "Importing separate-layer VA DMA-BUF descriptor"
+        );
+
+        let y_texture = self
+            .import_plane(
+                y_object.fd.as_raw_fd(),
+                u64::from(y_layer.offset[0]),
+                image.width,
+                image.height,
+                y_layer.pitch[0],
+                y_object.drm_format_modifier,
+                view_contract.y_plane.format,
+            )
+            .context("separate-layer luma DMA-BUF import failed")?;
+
+        let uv_texture = self
+            .import_plane(
+                uv_object.fd.as_raw_fd(),
+                u64::from(uv_layer.offset[0]),
+                image.width / 2,
+                image.height / 2,
+                uv_layer.pitch[0],
+                uv_object.drm_format_modifier,
+                view_contract.uv_plane.format,
+            )
+            .context("separate-layer chroma DMA-BUF import failed")?;
+
+        let y_view = y_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some(frame_format.y_view_label()),
+            format: Some(view_contract.y_plane.format),
+            ..Default::default()
+        });
+        let uv_view = uv_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some(frame_format.uv_view_label()),
+            format: Some(view_contract.uv_plane.format),
+            ..Default::default()
+        });
+
+        Ok(ImportedDmaBufTexture {
+            frame_format,
+            storage: ImportedDmaBufStorage::SeparatePlanes {
+                y_texture,
+                uv_texture,
+            },
             y_view,
             uv_view,
         })
@@ -543,7 +935,7 @@ impl DmaBufImporter {
     /// * `width`, `height` — размеры плоскости.
     /// * `pitch` — row pitch плоскости в байтах.
     /// * `modifier` — DRM format modifier из dma-buf descriptor.
-    /// * `format` — `R8Unorm` для Y, `Rg8Unorm` для UV.
+    /// * `format` — plane texture format (`R8/Rg8` или `R16/Rg16`).
     fn import_plane(
         &self,
         fd: RawFd,
@@ -574,6 +966,8 @@ impl DmaBufImporter {
         let vk_format = match format {
             wgpu::TextureFormat::R8Unorm => vk::Format::R8_UNORM,
             wgpu::TextureFormat::Rg8Unorm => vk::Format::R8G8_UNORM,
+            wgpu::TextureFormat::R16Unorm => vk::Format::R16_UNORM,
+            wgpu::TextureFormat::Rg16Unorm => vk::Format::R16G16_UNORM,
             _ => anyhow::bail!("Unsupported format for DMA-BUF import: {:?}", format),
         };
 
@@ -764,5 +1158,91 @@ impl DmaBufImporter {
         };
 
         Ok(texture)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Проверяет, что P010 import не разрешается без wgpu feature gate.
+    #[test]
+    fn p010_import_requires_texture_format_p010_feature() {
+        let error = DmaBufFrameFormat::P010
+            .ensure_device_feature(wgpu::Features::TEXTURE_FORMAT_NV12)
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("TEXTURE_FORMAT_P010"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// Проверяет, что P010 descriptor выбирает именно P010 import contract.
+    #[test]
+    fn p010_fourcc_maps_to_dma_buf_frame_format() {
+        let frame_format = DmaBufFrameFormat::from_fourcc(DRM_FORMAT_P010, DRM_FORMAT_P010)
+            .expect("P010 fourcc must be supported");
+
+        assert_eq!(frame_format, DmaBufFrameFormat::P010);
+        assert_eq!(
+            frame_format.wgpu_texture_format(),
+            wgpu::TextureFormat::P010
+        );
+    }
+
+    /// Проверяет P010 descriptor в форме VA separate layers: R16 + GR32.
+    #[test]
+    fn separate_layer_p010_maps_to_dma_buf_frame_format() {
+        let layers = vec![
+            DecodedDmaBufLayer {
+                drm_format: DRM_FORMAT_R16,
+                num_planes: 1,
+                object_index: [0, 0, 0, 0],
+                offset: [0, 0, 0, 0],
+                pitch: [7680, 0, 0, 0],
+            },
+            DecodedDmaBufLayer {
+                drm_format: DRM_FORMAT_GR1616,
+                num_planes: 1,
+                object_index: [0, 0, 0, 0],
+                offset: [16_588_800, 0, 0, 0],
+                pitch: [7680, 0, 0, 0],
+            },
+        ];
+
+        let frame_format = DmaBufFrameFormat::from_separate_layers(DRM_FORMAT_P010, &layers)
+            .expect("separate-layer P010 descriptor must be supported");
+
+        assert_eq!(frame_format, DmaBufFrameFormat::P010);
+    }
+
+    /// Проверяет, что separate-layer P010 требует 16-bit normalized plane formats.
+    #[test]
+    fn separate_layer_p010_requires_16bit_norm_feature() {
+        let error = DmaBufFrameFormat::P010
+            .ensure_separate_layer_device_features(wgpu::Features::TEXTURE_FORMAT_NV12)
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("TEXTURE_FORMAT_16BIT_NORM"),
+            "unexpected error: {error}"
+        );
+
+        DmaBufFrameFormat::P010
+            .ensure_separate_layer_device_features(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
+            .unwrap();
+    }
+
+    /// Проверяет plane views для P010: plane0/plane1 и 16-bit normalized formats.
+    #[test]
+    fn imported_p010_views_use_plane_aspects_and_16bit_formats() {
+        let contract = plane_view_contract_for_imported_format(DmaBufFrameFormat::P010);
+
+        assert_eq!(contract.texture_format, wgpu::TextureFormat::P010);
+        assert_eq!(contract.y_plane.aspect, wgpu::TextureAspect::Plane0);
+        assert_eq!(contract.y_plane.format, wgpu::TextureFormat::R16Unorm);
+        assert_eq!(contract.uv_plane.aspect, wgpu::TextureAspect::Plane1);
+        assert_eq!(contract.uv_plane.format, wgpu::TextureFormat::Rg16Unorm);
     }
 }

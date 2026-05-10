@@ -1,6 +1,6 @@
 use codec_core::{
     BitDepth, ChromaSubsampling, DecodeBackendId, SupportedVideoDecodeFormat, VideoCodec,
-    VideoDecodeRequirement, VideoProfile,
+    VideoDecodeRequirement, VideoProfile, Vp9Profile,
 };
 use render_core::{P010RenderReadiness, RenderCapabilities, VideoFrameFormat};
 use serde::{Deserialize, Serialize};
@@ -297,6 +297,84 @@ impl SystemCapabilities {
         Ok(format)
     }
 
+    /// Проверяет stream requirement для ручной Phase 9 P010 boundary diagnostics.
+    ///
+    /// Production `check_video_requirement()` обязан учитывать renderer и HDR-to-SDR
+    /// readiness. Этот метод намеренно проверяет только то, что нужно до renderer-а:
+    /// hardware decode format и обязательный DMA-BUF export path для P010.
+    pub fn check_video_requirement_for_p010_boundary_diagnostic(
+        &self,
+        requirement: &VideoDecodeRequirement,
+    ) -> Result<&SupportedVideoDecodeFormat, UnsupportedVideoRequirement> {
+        let frame_format = match frame_format_for_requirement(requirement) {
+            Ok(frame_format) => frame_format,
+            Err(rejection) => {
+                return Err(
+                    self.unsupported_requirement_with_rejections(requirement, vec![rejection])
+                );
+            }
+        };
+
+        if frame_format != VideoFrameFormat::P010 {
+            if !can_probe_p010_boundary_from_incomplete_hdr(requirement) {
+                return self.check_video_requirement(requirement);
+            }
+
+            let Some(format) = self.find_p010_boundary_diagnostic_format(requirement) else {
+                return Err(self.explain_unsupported_video_requirement(requirement));
+            };
+
+            let Some(backend) = self.backend_for_decode_format(format) else {
+                return Err(self.unsupported_requirement_with_rejections(
+                    requirement,
+                    vec![VideoCapabilityRejection::UnsupportedDecodeFormat {
+                        codec: requirement.codec,
+                    }],
+                ));
+            };
+
+            if let Some(rejection) = device_boundary_rejection(VideoFrameFormat::P010, backend) {
+                return Err(
+                    self.unsupported_requirement_with_rejections(requirement, vec![rejection])
+                );
+            }
+
+            return Ok(format);
+        }
+
+        let Some(format) = self.find_supported_video_format(requirement) else {
+            return Err(self.explain_unsupported_video_requirement(requirement));
+        };
+
+        let Some(backend) = self.backend_for_decode_format(format) else {
+            return Err(self.unsupported_requirement_with_rejections(
+                requirement,
+                vec![VideoCapabilityRejection::UnsupportedDecodeFormat {
+                    codec: requirement.codec,
+                }],
+            ));
+        };
+
+        if let Some(rejection) = device_boundary_rejection(frame_format, backend) {
+            return Err(self.unsupported_requirement_with_rejections(requirement, vec![rejection]));
+        }
+
+        Ok(format)
+    }
+
+    /// Ищет hardware format, который может довести неполный VP9 HDR requirement до P010 probe.
+    fn find_p010_boundary_diagnostic_format(
+        &self,
+        requirement: &VideoDecodeRequirement,
+    ) -> Option<&SupportedVideoDecodeFormat> {
+        self.supported_video_formats().find(|format| {
+            format.satisfies(requirement)
+                && format.bit_depth == BitDepth::Ten
+                && format.chroma == ChromaSubsampling::Yuv420
+                && matches!(format.profile, VideoProfile::Vp9(Vp9Profile::Profile2))
+        })
+    }
+
     /// Выбирает лучший поддерживаемый stream из candidates.
     pub fn select_best_video_stream(
         &self,
@@ -560,6 +638,21 @@ fn frame_format_for_requirement(
     )
 }
 
+/// Разрешает Phase 9 dev-mode попробовать VP9 bitstream probe до production renderer gate.
+fn can_probe_p010_boundary_from_incomplete_hdr(requirement: &VideoDecodeRequirement) -> bool {
+    requirement.codec == VideoCodec::Vp9
+        && requirement.hdr
+        && requirement
+            .profile
+            .is_none_or(|profile| matches!(profile, VideoProfile::Vp9(Vp9Profile::Profile2)))
+        && requirement
+            .bit_depth
+            .is_none_or(|bit_depth| bit_depth == BitDepth::Ten)
+        && requirement
+            .chroma
+            .is_none_or(|chroma| chroma == ChromaSubsampling::Yuv420)
+}
+
 /// Проверяет device/export часть intersection для decoded frame format-а.
 fn device_boundary_rejection(
     frame_format: VideoFrameFormat,
@@ -820,6 +913,157 @@ mod tests {
             })
         ));
         assert!(error.user_message().contains("HDR-to-SDR renderer"));
+    }
+
+    #[test]
+    fn p010_boundary_diagnostic_allows_decode_without_hdr_renderer() {
+        let capabilities = capabilities_with_formats(
+            vec![vp9_format(
+                Vp9Profile::Profile2,
+                BitDepth::Ten,
+                ChromaSubsampling::Yuv420,
+                true,
+            )],
+            vec![RenderCapabilities::wgpu_nv12(Some(4096))],
+            vec![VideoExportPath::DmaBuf],
+        );
+        let requirement = vp9_requirement(
+            Vp9Profile::Profile2,
+            BitDepth::Ten,
+            ChromaSubsampling::Yuv420,
+        )
+        .with_color(bt2020_pq_limited());
+
+        capabilities
+            .check_video_requirement(&requirement)
+            .expect_err("production HDR playback must remain rejected before Phase 10");
+
+        let selected_format = capabilities
+            .check_video_requirement_for_p010_boundary_diagnostic(&requirement)
+            .expect("Phase 9 diagnostic path should allow decode/P010 boundary verification");
+
+        assert_eq!(selected_format.bit_depth, BitDepth::Ten);
+        assert_eq!(selected_format.chroma, ChromaSubsampling::Yuv420);
+    }
+
+    #[test]
+    fn p010_boundary_diagnostic_allows_incomplete_vp9_hdr_track_metadata() {
+        let capabilities = capabilities_with_formats(
+            vec![
+                vp9_format(
+                    Vp9Profile::Profile0,
+                    BitDepth::Eight,
+                    ChromaSubsampling::Yuv420,
+                    false,
+                ),
+                vp9_format(
+                    Vp9Profile::Profile2,
+                    BitDepth::Ten,
+                    ChromaSubsampling::Yuv420,
+                    true,
+                ),
+            ],
+            vec![RenderCapabilities::wgpu_nv12(Some(4096))],
+            vec![VideoExportPath::DmaBuf],
+        );
+        let requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_resolution(3840, 2160)
+            .with_color(bt2020_pq_limited());
+
+        let production_error = capabilities
+            .check_video_requirement(&requirement)
+            .expect_err("production selection must still reject HDR before Phase 10");
+        assert!(matches!(
+            production_error.rejections.first(),
+            Some(VideoCapabilityRejection::UnsupportedHdrRenderer {
+                frame_format: Some(VideoFrameFormat::Nv12),
+            })
+        ));
+
+        let selected_format = capabilities
+            .check_video_requirement_for_p010_boundary_diagnostic(&requirement)
+            .expect("Phase 9 diagnostic mode should let packet probe refine VP9 HDR to P010");
+
+        assert_eq!(
+            selected_format.profile,
+            VideoProfile::Vp9(Vp9Profile::Profile2)
+        );
+        assert_eq!(selected_format.bit_depth, BitDepth::Ten);
+        assert!(selected_format.hdr_input);
+    }
+
+    #[test]
+    fn p010_boundary_diagnostic_does_not_bypass_explicit_8bit_hdr_requirement() {
+        let capabilities = capabilities_with_formats(
+            vec![
+                vp9_format(
+                    Vp9Profile::Profile0,
+                    BitDepth::Eight,
+                    ChromaSubsampling::Yuv420,
+                    false,
+                ),
+                vp9_format(
+                    Vp9Profile::Profile2,
+                    BitDepth::Ten,
+                    ChromaSubsampling::Yuv420,
+                    true,
+                ),
+            ],
+            vec![RenderCapabilities::wgpu_nv12(Some(4096))],
+            vec![VideoExportPath::DmaBuf],
+        );
+        let requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_bit_depth(BitDepth::Eight)
+            .with_color(bt2020_pq_limited());
+
+        let error = capabilities
+            .check_video_requirement_for_p010_boundary_diagnostic(&requirement)
+            .expect_err("explicit NV12/HDR requirement must remain gated by HDR renderer");
+
+        assert!(!matches!(
+            error.rejections.first(),
+            Some(VideoCapabilityRejection::UnsupportedDeviceExportPath {
+                frame_format: VideoFrameFormat::P010,
+                ..
+            })
+        ));
+        assert!(
+            !can_probe_p010_boundary_from_incomplete_hdr(&requirement),
+            "explicit 8-bit HDR must not enter the P010 diagnostic probe branch"
+        );
+    }
+
+    #[test]
+    fn p010_boundary_diagnostic_requires_dma_buf_export_path() {
+        let capabilities = capabilities_with_formats(
+            vec![vp9_format(
+                Vp9Profile::Profile2,
+                BitDepth::Ten,
+                ChromaSubsampling::Yuv420,
+                true,
+            )],
+            vec![RenderCapabilities::wgpu_nv12(Some(4096))],
+            Vec::new(),
+        );
+        let requirement = vp9_requirement(
+            Vp9Profile::Profile2,
+            BitDepth::Ten,
+            ChromaSubsampling::Yuv420,
+        )
+        .with_color(bt2020_pq_limited());
+
+        let error = capabilities
+            .check_video_requirement_for_p010_boundary_diagnostic(&requirement)
+            .expect_err("P010 boundary diagnostics must require DMA-BUF export");
+
+        assert!(matches!(
+            error.rejections.first(),
+            Some(VideoCapabilityRejection::UnsupportedDeviceExportPath {
+                frame_format: VideoFrameFormat::P010,
+                required_export_path: VideoExportPath::DmaBuf,
+                ..
+            })
+        ));
     }
 
     #[test]

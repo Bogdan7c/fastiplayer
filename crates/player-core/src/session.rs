@@ -22,6 +22,9 @@ use crate::{
     TexturePoolSnapshot, TrackId, TrackSelectionSnapshot, TrackSummarySnapshot, VideoFrameSnapshot,
 };
 
+/// Dev-only режим, который разрешает VP9 Profile 2 HDR дойти до P010 zero-copy boundary.
+const P010_BOUNDARY_DIAGNOSTIC_ENV_VAR: &str = "RUSTIPLAYER_DEV_VERIFY_P010_BOUNDARY";
+
 /// Центральная session плеера: high-level state machine и владение playback pipeline.
 pub struct PlayerSession {
     /// Последний базовый read-only snapshot без runtime diagnostics, зависящих от shell.
@@ -715,10 +718,25 @@ impl PlayerSession {
             return Ok(());
         };
 
-        capabilities
-            .check_video_requirement(requirement)
-            .map(|_| ())
-            .map_err(player_error_from_unsupported_requirement)
+        match capabilities.check_video_requirement(requirement) {
+            Ok(_) => Ok(()),
+            Err(production_error) => {
+                if !p010_boundary_diagnostic_mode_enabled() {
+                    return Err(player_error_from_unsupported_requirement(production_error));
+                }
+
+                capabilities
+                    .check_video_requirement_for_p010_boundary_diagnostic(requirement)
+                    .map(|_| {
+                        warn!(
+                            env_var = P010_BOUNDARY_DIAGNOSTIC_ENV_VAR,
+                            requirement = %requirement.describe(),
+                            "P010 boundary diagnostic mode bypassed production render selection"
+                        );
+                    })
+                    .map_err(player_error_from_unsupported_requirement)
+            }
+        }
     }
 
     /// Уточняет active video requirement после bitstream probe.
@@ -1080,6 +1098,22 @@ fn optional_duration_from_seconds(seconds: f64) -> Option<Duration> {
     Duration::try_from_secs_f64(seconds).ok()
 }
 
+/// Возвращает `true`, если ручной Phase 9 P010 boundary diagnostic mode включён.
+fn p010_boundary_diagnostic_mode_enabled() -> bool {
+    std::env::var(P010_BOUNDARY_DIAGNOSTIC_ENV_VAR)
+        .ok()
+        .as_deref()
+        .is_some_and(is_enabled_env_value)
+}
+
+/// Разбирает env flag без неявного включения от случайного значения.
+fn is_enabled_env_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1222,5 +1256,16 @@ mod tests {
 
         assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoProfile);
         assert!(error.message.contains("profile VP9 Profile 2"));
+    }
+
+    #[test]
+    fn p010_boundary_diagnostic_env_parser_requires_explicit_enabled_value() {
+        for enabled_value in ["1", "true", "TRUE", "yes", "on", " on "] {
+            assert!(is_enabled_env_value(enabled_value));
+        }
+
+        for disabled_value in ["", "0", "false", "no", "off", "debug"] {
+            assert!(!is_enabled_env_value(disabled_value));
+        }
     }
 }

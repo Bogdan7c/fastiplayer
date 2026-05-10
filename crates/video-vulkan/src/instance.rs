@@ -2,6 +2,27 @@ use anyhow::Result;
 use tracing::info;
 use wgpu::hal::api::Vulkan;
 
+/// Выбирает wgpu texture features для video import/render boundary.
+fn required_video_texture_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    let mut features = wgpu::Features::TEXTURE_FORMAT_NV12;
+
+    if adapter
+        .features()
+        .contains(wgpu::Features::TEXTURE_FORMAT_P010)
+    {
+        features |= wgpu::Features::TEXTURE_FORMAT_P010;
+    }
+
+    if adapter
+        .features()
+        .contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
+    {
+        features |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+    }
+
+    features
+}
+
 /// Единый Vulkan instance для decode + render.
 ///
 /// Владеет `wgpu::Instance`, созданной из `wgpu_hal::vulkan::Instance::init_with_callback()`
@@ -165,10 +186,17 @@ impl UnifiedVulkanInstance {
 
         if !has_video_exts {
             info!("Video decode extensions not supported by device, using standard request_device");
+            let features = required_video_texture_features(adapter);
+            info!(
+                p010_texture_format = features.contains(wgpu::Features::TEXTURE_FORMAT_P010),
+                texture_format_16bit_norm =
+                    features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
+                "Requesting wgpu video texture features"
+            );
             return adapter
                 .request_device(&wgpu::DeviceDescriptor {
                     label: Some("youtube-player device"),
-                    required_features: wgpu::Features::TEXTURE_FORMAT_NV12,
+                    required_features: features,
                     required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
                     memory_hints: wgpu::MemoryHints::MemoryUsage,
                     trace: wgpu::Trace::Off,
@@ -185,7 +213,13 @@ impl UnifiedVulkanInstance {
                 .ok_or_else(|| anyhow::anyhow!("Adapter is not Vulkan backend"))?
         };
 
-        let features = wgpu::Features::TEXTURE_FORMAT_NV12;
+        let features = required_video_texture_features(adapter);
+        info!(
+            p010_texture_format = features.contains(wgpu::Features::TEXTURE_FORMAT_P010),
+            texture_format_16bit_norm =
+                features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
+            "Requesting wgpu video texture features"
+        );
         let limits = wgpu::Limits::default().using_resolution(adapter.limits());
         let memory_hints = wgpu::MemoryHints::MemoryUsage;
 

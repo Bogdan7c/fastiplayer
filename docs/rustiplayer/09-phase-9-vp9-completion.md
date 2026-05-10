@@ -467,6 +467,8 @@ Manual tests:
 
 ### Сессия 5: VA-API VP9 P010 output and zero-copy boundary
 
+Статус: реализовано
+
 Задачи:
 
 - поддержать VA-API Profile 2 10-bit output surface allocation;

@@ -48,6 +48,122 @@ const READY_QUEUE_LIMIT: usize = 3;
 const INITIAL_WIDTH: u32 = 1920;
 const INITIAL_HEIGHT: u32 = 1080;
 
+/// Typed контракт decoded surface, который VA-API backend отдаёт renderer boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DecodedSurfaceContract {
+    /// Pixel format renderer boundary.
+    format: DecodedPixelFormat,
+
+    /// Bit depth decoded samples.
+    bit_depth: BitDepth,
+
+    /// Chroma subsampling decoded frame-а.
+    chroma: ChromaSubsampling,
+}
+
+/// Фатальное нарушение P010 boundary contract.
+///
+/// P010 кадр нельзя безопасно отправлять в CPU fallback: так мы потеряем
+/// 10-bit surface contract и замаскируем отсутствие zero-copy path. Поэтому
+/// такие ошибки должны останавливать decoder thread, а не повторяться на
+/// каждом следующем кадре.
+#[derive(Debug)]
+struct P010BoundaryViolation {
+    /// Человекочитаемое объяснение конкретной причины отказа.
+    detail: String,
+}
+
+impl P010BoundaryViolation {
+    /// Создаёт ошибку P010 boundary с понятной причиной для лога/UI.
+    fn new(detail: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for P010BoundaryViolation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for P010BoundaryViolation {}
+
+/// Проверяет, что decode error требует остановить decoder thread.
+pub(crate) fn is_fatal_decoder_error(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<P010BoundaryViolation>().is_some()
+}
+
+/// Создаёт typed anyhow error для фатальной P010 boundary ошибки.
+fn p010_boundary_violation(detail: impl Into<String>) -> anyhow::Error {
+    P010BoundaryViolation::new(detail).into()
+}
+
+impl DecodedSurfaceContract {
+    /// Создаёт контракт для текущего production NV12 path.
+    const fn nv12() -> Self {
+        Self {
+            format: DecodedPixelFormat::Nv12,
+            bit_depth: BitDepth::Eight,
+            chroma: ChromaSubsampling::Yuv420,
+        }
+    }
+
+    /// Создаёт контракт для P010 zero-copy boundary.
+    const fn p010() -> Self {
+        Self {
+            format: DecodedPixelFormat::P010,
+            bit_depth: BitDepth::Ten,
+            chroma: ChromaSubsampling::Yuv420,
+        }
+    }
+}
+
+/// Преобразует `cros-codecs` decoded format в внешний frame contract.
+///
+/// Важно: `cros-codecs::DecodedFormat::I010` здесь приходит из VA `P010`
+/// image format mapping. Для renderer boundary это не planar I010 upload path,
+/// а P010 DMA-BUF zero-copy contract.
+fn decoded_contract_for_stream_format(
+    decoded_format: DecodedFormat,
+) -> Result<DecodedSurfaceContract> {
+    match decoded_format {
+        DecodedFormat::NV12 | DecodedFormat::I420 => Ok(DecodedSurfaceContract::nv12()),
+        DecodedFormat::I010 => Ok(DecodedSurfaceContract::p010()),
+        other => Err(anyhow::anyhow!(
+            "Unsupported decoded stream format for VA-API renderer boundary: {:?}",
+            other
+        )),
+    }
+}
+
+/// Преобразует VA RT format в тот же внешний frame contract.
+fn decoded_contract_for_rt_format(rt_format: u32) -> Result<DecodedSurfaceContract> {
+    match rt_format {
+        VA_RT_FORMAT_YUV420 => Ok(DecodedSurfaceContract::nv12()),
+        VA_RT_FORMAT_YUV420_10 => Ok(DecodedSurfaceContract::p010()),
+        other => Err(anyhow::anyhow!(
+            "Unsupported VA RT format for VA-API renderer boundary: {:#x}",
+            other
+        )),
+    }
+}
+
+/// Проверяет zero-copy boundary requirement до CPU fallback.
+fn ensure_zero_copy_importer_for_contract(
+    decoded_contract: DecodedSurfaceContract,
+    can_import_dma_buf: bool,
+) -> Result<()> {
+    if decoded_contract.format == DecodedPixelFormat::P010 && !can_import_dma_buf {
+        return Err(p010_boundary_violation(
+            "P010 decoded frame requires DMA-BUF zero-copy importer, but importer is unavailable",
+        ));
+    }
+
+    Ok(())
+}
+
 /// Преобразует decoded output format из `StreamInfo` в VA RT format для surface pool.
 fn rt_format_for_decoded_format(decoded_format: DecodedFormat) -> Result<u32> {
     match decoded_format {
@@ -140,6 +256,9 @@ pub struct VaapiVideoDecoder {
     /// Был ли уже залогирован первый успешный zero-copy кадр.
     zero_copy_success_logged: bool,
 
+    /// Была ли уже залогирована проверенная P010 zero-copy boundary.
+    p010_boundary_verified_logged: bool,
+
     /// wgpu device — нужен для создания текстур в `WgpuTexturePool`.
     ///
     /// В настоящий момент device передаётся в `WgpuTexturePool` при создании,
@@ -218,6 +337,7 @@ impl VaapiVideoDecoder {
             zero_copy_guards: HashMap::new(),
             zero_copy_failure_logged: false,
             zero_copy_success_logged: false,
+            p010_boundary_verified_logged: false,
             device,
             queue,
             backend_name: "VA-API VP9",
@@ -269,6 +389,19 @@ impl VaapiVideoDecoder {
     pub fn texture_pool_stats(&self) -> (usize, usize) {
         let cache = self.texture_cache.lock().unwrap();
         (cache.num_slots(), cache.num_in_use())
+    }
+
+    /// Определяет decoded surface contract для текущего ready handle.
+    fn current_decoded_contract(
+        &self,
+        handle: &DynDecodedHandle<InternalVaapiFrame>,
+    ) -> Result<DecodedSurfaceContract> {
+        if let Some(stream_info) = self.inner.stream_info() {
+            return decoded_contract_for_stream_format(stream_info.format);
+        }
+
+        let backing_frame = handle.video_frame();
+        decoded_contract_for_rt_format(backing_frame.rt_format())
     }
 
     /// Освобождает VA handle, удерживаемый zero-copy кадром.
@@ -387,10 +520,12 @@ impl VaapiVideoDecoder {
             return Err(anyhow::anyhow!("GPU decode sync failed: {}", e));
         }
         let sync_elapsed = sync_start.elapsed().as_millis();
+        let decoded_contract = self.current_decoded_contract(&handle)?;
 
         // Шаг 2: Если включён zero-copy importer, пробуем экспортировать VA surface
         // как DMA-BUF и импортировать её в Vulkan/wgpu texture без CPU readback.
-        if self.texture_cache.lock().unwrap().can_import_dma_buf() {
+        let can_import_dma_buf = self.texture_cache.lock().unwrap().can_import_dma_buf();
+        if can_import_dma_buf {
             match handle.dma_buf_image() {
                 Ok(Some(dma_buf_image)) => {
                     let import_result = self
@@ -405,16 +540,30 @@ impl VaapiVideoDecoder {
                                 self.zero_copy_success_logged = true;
                                 info!(
                                     handle_id = texture_handle.0,
+                                    format = %decoded_contract.format,
                                     "Zero-copy DMA-BUF import succeeded"
+                                );
+                            }
+                            if decoded_contract.format == DecodedPixelFormat::P010
+                                && !self.p010_boundary_verified_logged
+                            {
+                                self.p010_boundary_verified_logged = true;
+                                info!(
+                                    handle_id = texture_handle.0,
+                                    width = resolution.width,
+                                    height = resolution.height,
+                                    bit_depth = %decoded_contract.bit_depth,
+                                    chroma = %decoded_contract.chroma,
+                                    "P010 zero-copy boundary verified"
                                 );
                             }
                             self.zero_copy_guards.insert(texture_handle.0, handle);
                             self.push_ready_frame(
                                 DecodedFrame {
                                     pts: Duration::from_micros(timestamp),
-                                    format: DecodedPixelFormat::Nv12,
-                                    bit_depth: BitDepth::Eight,
-                                    chroma: ChromaSubsampling::Yuv420,
+                                    format: decoded_contract.format,
+                                    bit_depth: decoded_contract.bit_depth,
+                                    chroma: decoded_contract.chroma,
                                     memory_path: FrameMemoryPath::DmaBufZeroCopy,
                                     width: resolution.width,
                                     height: resolution.height,
@@ -428,6 +577,17 @@ impl VaapiVideoDecoder {
                             return Ok(());
                         }
                         Err(import_error) => {
+                            if decoded_contract.format == DecodedPixelFormat::P010 {
+                                let import_error_chain = format!("{:#}", import_error);
+                                warn!(
+                                    error = %import_error_chain,
+                                    "P010 DMA-BUF zero-copy import failed; CPU fallback is disabled for P010"
+                                );
+                                return Err(p010_boundary_violation(format!(
+                                    "P010 DMA-BUF zero-copy import failed: {}",
+                                    import_error_chain
+                                )));
+                            }
                             if self.zero_copy_failure_logged {
                                 debug!(
                                     error = %import_error,
@@ -444,9 +604,28 @@ impl VaapiVideoDecoder {
                     }
                 }
                 Ok(None) => {
+                    if decoded_contract.format == DecodedPixelFormat::P010 {
+                        warn!(
+                            "P010 decoded handle does not expose DMA-BUF export; CPU fallback is disabled for P010"
+                        );
+                        return Err(p010_boundary_violation(
+                            "P010 decoded handle does not expose DMA-BUF export",
+                        ));
+                    }
                     debug!("Decoded handle does not expose DMA-BUF export");
                 }
                 Err(export_error) => {
+                    if decoded_contract.format == DecodedPixelFormat::P010 {
+                        let export_error_chain = format!("{:#}", export_error);
+                        warn!(
+                            error = %export_error_chain,
+                            "P010 VA surface DMA-BUF export failed; CPU fallback is disabled for P010"
+                        );
+                        return Err(p010_boundary_violation(format!(
+                            "P010 VA surface DMA-BUF export failed: {}",
+                            export_error_chain
+                        )));
+                    }
                     if self.zero_copy_failure_logged {
                         debug!(
                             error = %export_error,
@@ -461,6 +640,13 @@ impl VaapiVideoDecoder {
                     }
                 }
             }
+        } else if let Err(error) =
+            ensure_zero_copy_importer_for_contract(decoded_contract, can_import_dma_buf)
+        {
+            warn!(
+                "P010 decoded frame requires DMA-BUF zero-copy importer; CPU fallback is disabled for P010"
+            );
+            return Err(error);
         }
 
         // Шаг 3: Загружаем кадр через стабильный VA image readback.
@@ -489,9 +675,9 @@ impl VaapiVideoDecoder {
         self.push_ready_frame(
             DecodedFrame {
                 pts: Duration::from_micros(timestamp),
-                format: DecodedPixelFormat::Nv12,
-                bit_depth: BitDepth::Eight,
-                chroma: ChromaSubsampling::Yuv420,
+                format: decoded_contract.format,
+                bit_depth: decoded_contract.bit_depth,
+                chroma: decoded_contract.chroma,
                 memory_path: FrameMemoryPath::CpuUpload,
                 width: resolution.width,
                 height: resolution.height,
@@ -582,6 +768,9 @@ impl VideoDecoder for VaapiVideoDecoder {
                     let pts_ms = handle.timestamp() / 1000;
                     trace!(pts_ms = pts_ms, "DecoderEvent::FrameReady");
                     if let Err(e) = self.process_ready_frame(handle) {
+                        if is_fatal_decoder_error(&e) {
+                            return Err(e);
+                        }
                         warn!(error = %e, "Failed to process ready frame");
                     }
                 }
@@ -703,5 +892,70 @@ impl VideoDecoder for VaapiVideoDecoder {
     /// Mutable downcast к конкретному типу.
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Проверяет, что VA 10-bit 4:2:0 surface становится P010 boundary contract.
+    #[test]
+    fn va_yuv420_10_rt_format_maps_to_p010_decoded_contract() {
+        let contract = decoded_contract_for_rt_format(VA_RT_FORMAT_YUV420_10).unwrap();
+
+        assert_eq!(contract.format, DecodedPixelFormat::P010);
+        assert_eq!(contract.bit_depth, BitDepth::Ten);
+        assert_eq!(contract.chroma, ChromaSubsampling::Yuv420);
+    }
+
+    /// Проверяет `cros-codecs` I010 alias, который VA-API отдаёт для P010 FourCC.
+    #[test]
+    fn i010_stream_format_maps_to_p010_decoded_contract() {
+        let contract = decoded_contract_for_stream_format(DecodedFormat::I010).unwrap();
+
+        assert_eq!(contract.format, DecodedPixelFormat::P010);
+        assert_eq!(contract.bit_depth, BitDepth::Ten);
+        assert_eq!(contract.chroma, ChromaSubsampling::Yuv420);
+    }
+
+    /// Проверяет, что 12-bit VA format не маскируется под P010.
+    #[test]
+    fn va_yuv420_12_rt_format_is_not_p010_contract() {
+        let error = decoded_contract_for_rt_format(VA_RT_FORMAT_YUV420_12).unwrap_err();
+
+        assert!(
+            error.to_string().contains("Unsupported VA RT format"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// Проверяет, что P010 boundary не уходит в CPU fallback без importer-а.
+    #[test]
+    fn p010_boundary_rejects_missing_zero_copy_importer() {
+        let error = ensure_zero_copy_importer_for_contract(DecodedSurfaceContract::p010(), false)
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires DMA-BUF zero-copy importer"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// Проверяет, что P010 без zero-copy считается фатальной ошибкой decoder thread.
+    #[test]
+    fn p010_boundary_missing_importer_is_fatal_decoder_error() {
+        let error = ensure_zero_copy_importer_for_contract(DecodedSurfaceContract::p010(), false)
+            .unwrap_err();
+
+        assert!(is_fatal_decoder_error(&error));
+    }
+
+    /// Проверяет, что NV12 не требует zero-copy importer-а и может остаться на CPU upload path.
+    #[test]
+    fn nv12_boundary_allows_missing_zero_copy_importer() {
+        ensure_zero_copy_importer_for_contract(DecodedSurfaceContract::nv12(), false).unwrap();
     }
 }

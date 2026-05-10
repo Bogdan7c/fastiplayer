@@ -214,6 +214,8 @@ Acceptance:
 
 Подробный план: [09. Phase 9 Full VP9 Completion](09-phase-9-vp9-completion.md).
 
+Статус: в работе; сессии 1-5 реализованы, VP9 Profile 2 P010 zero-copy boundary проверен на реальном HDR sample.
+
 Цель:
 
 - закрыть текущие ограничения VP9 до уровня полной typed capability/selection модели;
@@ -231,6 +233,8 @@ Acceptance:
 - VP9 Profile 1/3 rejected как unsupported chroma, а не generic hardware failure;
 - VP9 12-bit rejected как unsupported bit depth;
 - VP9 Profile 2 10-bit 4:2:0 на поддержанном hardware доходит до P010 zero-copy boundary;
+- P010 zero-copy boundary использует separate-layer `R16 + Rg16` DMA-BUF layout как baseline;
+- composed P010 остаётся compatibility layout для драйверов, где он работает;
 - production HDR playback всё ещё rejected до Phase 10 с понятной причиной;
 - P010 path не имеет CPU upload/readback fallback;
 - metadata resolver покрыт conflict tests;
@@ -245,6 +249,7 @@ Acceptance:
 
 - использовать готовый Phase 9 `P010 + HDR metadata + zero-copy` render boundary;
 - добавить отдельный P010/HDR shader path;
+- принимать `WgpuFramePlanes::P010`, где separate-layer backing storage является baseline, а composed storage только compatibility;
 - реализовать HDR-to-SDR conversion по ITU-R BT.2446 Method C;
 - поддержать PQ и HLG input;
 - вывести SDR BT.709 через explicit shader OETF;
@@ -254,6 +259,7 @@ Acceptance:
 
 - HDR input не отображается как washed-out SDR;
 - P010 используется только через zero-copy path;
+- P010 renderer строится вокруг Intel/i965 separate-layer `R16 + Rg16` baseline path;
 - `supports_hdr_to_sdr = true` появляется только после рабочей BT.2446-C реализации;
 - `supports_native_hdr_output = false`;
 - PQ и HLG покрыты tests;

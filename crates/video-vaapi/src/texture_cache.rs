@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, ensure};
-use cros_codecs::decoder::{DecodedDmaBufImage, DecodedHandle};
+use cros_codecs::decoder::{DecodedDmaBufExportLayout, DecodedDmaBufImage, DecodedHandle};
 use cros_codecs::video_frame::VideoFrame;
 use cros_codecs::video_frame::generic_dma_video_frame::GenericDmaVideoFrame;
 use video_core::FrameTextureHandle;
@@ -417,10 +417,13 @@ enum TextureSlotStorage {
         /// wgpu-текстура для UV-плоскости (формат Rg8Unorm, 2 байта на пиксель).
         uv_texture: wgpu::Texture,
     },
-    /// Zero-copy путь: один multi-planar NV12 texture, экспортированный из VA surface.
-    ImportedNv12 {
+    /// Zero-copy путь: imported DMA-BUF storage, экспортированный из VA surface.
+    ImportedDmaBuf {
         /// Владелец imported VkImage/VkDeviceMemory через wgpu texture wrapper.
-        _texture: wgpu::Texture,
+        _storage: crate::dma_buf_import::ImportedDmaBufStorage,
+
+        /// Формат imported texture; нужен для диагностики release/invalidate path.
+        _frame_format: crate::dma_buf_import::DmaBufFrameFormat,
     },
 }
 
@@ -435,8 +438,8 @@ impl TextureSlotStorage {
                 y_texture,
                 uv_texture,
             } => Ok((y_texture, uv_texture)),
-            Self::ImportedNv12 { .. } => Err(anyhow::anyhow!(
-                "imported NV12 slot cannot be used for CPU upload"
+            Self::ImportedDmaBuf { .. } => Err(anyhow::anyhow!(
+                "imported DMA-BUF slot cannot be used for CPU upload"
             )),
         }
     }
@@ -451,9 +454,18 @@ impl TextureSlotStorage {
                 y_texture.destroy();
                 uv_texture.destroy();
             }
-            Self::ImportedNv12 { _texture } => {
-                _texture.destroy();
-            }
+            Self::ImportedDmaBuf { _storage, .. } => match _storage {
+                crate::dma_buf_import::ImportedDmaBufStorage::Multiplanar(texture) => {
+                    texture.destroy();
+                }
+                crate::dma_buf_import::ImportedDmaBufStorage::SeparatePlanes {
+                    y_texture,
+                    uv_texture,
+                } => {
+                    y_texture.destroy();
+                    uv_texture.destroy();
+                }
+            },
         }
     }
 }
@@ -501,15 +513,22 @@ impl Drop for RetiredImportedSlot {
 /// texture can therefore be reused every time the same `VASurfaceID` appears
 /// again, instead of creating a new Vulkan image and importing external memory
 /// for every decoded frame.
-struct CachedImportedNv12Texture {
-    /// Persistent imported NV12 texture for this VA surface.
-    texture: wgpu::Texture,
+struct CachedImportedDmaBufTexture {
+    /// Persistent imported texture storage for this VA surface.
+    storage: crate::dma_buf_import::ImportedDmaBufStorage,
+
     /// Persistent luma view.
     y_view: wgpu::TextureView,
+
     /// Persistent chroma view.
     uv_view: wgpu::TextureView,
+
+    /// Cached decoded frame format.
+    frame_format: crate::dma_buf_import::DmaBufFrameFormat,
+
     /// Cached coded width.
     width: u32,
+
     /// Cached coded height.
     height: u32,
 }
@@ -532,7 +551,7 @@ pub struct WgpuTexturePool {
     /// Слоты с текстурами. Индекс в векторе — внутренний slot_index.
     slots: Vec<TextureSlot>,
     /// Persistent zero-copy imports keyed by backend surface id.
-    imported_nv12_cache: HashMap<u64, CachedImportedNv12Texture>,
+    imported_dma_buf_cache: HashMap<u64, CachedImportedDmaBufTexture>,
     /// Отображение handle id -> индекс слота в `slots`.
     ///
     /// Позволяет за O(1) находить слот по [`FrameTextureHandle`].
@@ -555,7 +574,7 @@ impl WgpuTexturePool {
             device,
             dma_buf_importer,
             slots: Vec::with_capacity(MAX_TEXTURE_SLOTS),
-            imported_nv12_cache: HashMap::new(),
+            imported_dma_buf_cache: HashMap::new(),
             handle_to_slot: HashMap::new(),
             next_handle: 0,
         }
@@ -901,13 +920,14 @@ impl WgpuTexturePool {
             self.dma_buf_importer
                 .as_ref()
                 .context("DMA-BUF importer not available")?
-                .import_exported_nv12(image)?
+                .import_exported_dma_buf_image(image)?
         };
 
         let slot_index = self.slots.len();
         self.slots.push(TextureSlot {
-            storage: TextureSlotStorage::ImportedNv12 {
-                _texture: imported_texture.texture,
+            storage: TextureSlotStorage::ImportedDmaBuf {
+                _storage: imported_texture.storage,
+                _frame_format: imported_texture.frame_format,
             },
             y_view: imported_texture.y_view,
             uv_view: imported_texture.uv_view,
@@ -931,8 +951,35 @@ impl WgpuTexturePool {
     fn import_cached_dma_buf_image(
         &mut self,
         image: &DecodedDmaBufImage,
-    ) -> anyhow::Result<crate::dma_buf_import::ImportedNv12Texture> {
-        if let Some(cached_import) = self.imported_nv12_cache.get(&image.surface_id) {
+    ) -> anyhow::Result<crate::dma_buf_import::ImportedDmaBufTexture> {
+        let frame_format = match image.export_layout {
+            DecodedDmaBufExportLayout::ComposedLayers => {
+                let layer = image
+                    .layers
+                    .first()
+                    .context("exported DMA-BUF image has no DRM PRIME layers")?;
+                crate::dma_buf_import::DmaBufFrameFormat::from_fourcc(
+                    image.fourcc,
+                    layer.drm_format,
+                )?
+            }
+            DecodedDmaBufExportLayout::SeparateLayers => {
+                crate::dma_buf_import::DmaBufFrameFormat::from_separate_layers(
+                    image.fourcc,
+                    &image.layers,
+                )?
+            }
+        };
+
+        if let Some(cached_import) = self.imported_dma_buf_cache.get(&image.surface_id) {
+            if cached_import.frame_format != frame_format {
+                anyhow::bail!(
+                    "cached imported VA surface changed format: surface_id={}, cached={}, new={}",
+                    image.surface_id,
+                    cached_import.frame_format.diagnostic_label(),
+                    frame_format.diagnostic_label()
+                );
+            }
             if cached_import.width != image.width || cached_import.height != image.height {
                 anyhow::bail!(
                     "cached imported VA surface changed size: surface_id={}, cached={}x{}, new={}x{}",
@@ -947,8 +994,9 @@ impl WgpuTexturePool {
                 surface_id = image.surface_id,
                 "Reusing cached zero-copy DMA-BUF import"
             );
-            return Ok(crate::dma_buf_import::ImportedNv12Texture {
-                texture: cached_import.texture.clone(),
+            return Ok(crate::dma_buf_import::ImportedDmaBufTexture {
+                frame_format: cached_import.frame_format,
+                storage: cached_import.storage.clone(),
                 y_view: cached_import.y_view.clone(),
                 uv_view: cached_import.uv_view.clone(),
             });
@@ -958,20 +1006,22 @@ impl WgpuTexturePool {
             .dma_buf_importer
             .as_ref()
             .context("DMA-BUF importer not available")?
-            .import_exported_nv12(image)?;
+            .import_exported_dma_buf_image(image)?;
 
         tracing::debug!(
             surface_id = image.surface_id,
-            cache_len = self.imported_nv12_cache.len() + 1,
+            format = imported_texture.frame_format.diagnostic_label(),
+            cache_len = self.imported_dma_buf_cache.len() + 1,
             "Caching zero-copy DMA-BUF import for VA surface"
         );
 
-        self.imported_nv12_cache.insert(
+        self.imported_dma_buf_cache.insert(
             image.surface_id,
-            CachedImportedNv12Texture {
-                texture: imported_texture.texture.clone(),
+            CachedImportedDmaBufTexture {
+                storage: imported_texture.storage.clone(),
                 y_view: imported_texture.y_view.clone(),
                 uv_view: imported_texture.uv_view.clone(),
+                frame_format: imported_texture.frame_format,
                 width: image.width,
                 height: image.height,
             },
@@ -1052,7 +1102,7 @@ impl WgpuTexturePool {
     /// память GPU освобождается.
     pub fn invalidate_all(&mut self) {
         self.slots.clear();
-        self.imported_nv12_cache.clear();
+        self.imported_dma_buf_cache.clear();
         self.handle_to_slot.clear();
         self.next_handle = 0;
     }

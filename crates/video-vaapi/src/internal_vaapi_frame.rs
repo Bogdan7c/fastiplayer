@@ -87,11 +87,16 @@ impl VideoFrame for InternalVaapiFrame {
     fn to_native_handle(&self, display: &Rc<Display>) -> Result<Self::NativeHandle, String> {
         // Для decoder surface не задаём FourCC вручную: VA-драйвер сам выбирает
         // внутренний layout поверхности, а NV12 мы запрашиваем позже на readback.
+        //
+        // `USAGE_HINT_EXPORT` важен для P010 zero-copy: без него часть драйверов
+        // создаёт decode-only surface, который потом отвергает `vaExportSurfaceHandle`.
+        let usage_hint = UsageHint::USAGE_HINT_DECODER | UsageHint::USAGE_HINT_EXPORT;
         debug!(
             width = self.resolution.width,
             height = self.resolution.height,
             rt_format = self.rt_format,
-            "Creating internal VA decoder surface without forced FourCC"
+            usage_hint = usage_hint.bits(),
+            "Creating internal VA decoder/export surface without forced FourCC"
         );
 
         let mut surfaces = display
@@ -100,7 +105,7 @@ impl VideoFrame for InternalVaapiFrame {
                 None,
                 self.resolution.width,
                 self.resolution.height,
-                Some(UsageHint::USAGE_HINT_DECODER),
+                Some(usage_hint),
                 vec![()],
             )
             .map_err(|e| format!("Failed to create internal VA surface: {e:?}"))?;

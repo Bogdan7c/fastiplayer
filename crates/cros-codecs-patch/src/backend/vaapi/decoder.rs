@@ -16,7 +16,8 @@ use libva::{
 };
 
 use crate::decoder::{
-    DecodedDmaBufImage, DecodedDmaBufLayer, DecodedDmaBufObject, DecodedNv12Image,
+    DecodedDmaBufExportLayout, DecodedDmaBufImage, DecodedDmaBufLayer, DecodedDmaBufObject,
+    DecodedNv12Image,
 };
 use crate::decoder::stateless::StatelessBackendResult;
 use crate::decoder::stateless::StatelessCodec;
@@ -26,6 +27,7 @@ use crate::decoder::DecodedHandle as DecodedHandleTrait;
 use crate::decoder::StreamInfo;
 use crate::video_frame::VideoFrame;
 use crate::DecodedFormat;
+use crate::Fourcc;
 use crate::Rect;
 use crate::Resolution;
 
@@ -132,7 +134,10 @@ impl<V: VideoFrame> DecodedHandleTrait for DecodedHandle<V> {
     }
 
     fn dma_buf_image(&self) -> anyhow::Result<Option<DecodedDmaBufImage>> {
-        let borrowed_handle = self.borrow();
+        let mut borrowed_handle = self.borrow_mut();
+        borrowed_handle
+            .sync()
+            .context("while syncing picture before VA surface DMA-BUF export")?;
         borrowed_handle.export_dma_buf_image().map(Some)
     }
 }
@@ -430,12 +435,145 @@ impl<V: VideoFrame> VaapiDecodedHandle<V> {
         Self::copy_nv12_from_image(&image, width, height)
     }
 
-    /// Exports the decoded VA surface as DRM PRIME/DMA-BUF.
+    /// Возвращает true, когда decoded frame должен идти через VA separate-layer DMA-BUF export.
+    ///
+    /// P010 сейчас единственный формат, где separate-layer является baseline path. Intel i965
+    /// проверенно отдаёт VP9 Profile 2 P010 как отдельные `R16 + GR32` layers и отклоняет
+    /// composed P010 export. NV12 оставляем на composed-first path, чтобы не менять уже рабочий
+    /// SDR pipeline.
+    fn prefers_separate_dma_buf_export(&self) -> bool {
+        self.backing_frame.fourcc() == Fourcc::from(b"P010")
+    }
+
+    /// Экспортирует P010 через основной separate-layer VA-API path.
+    fn export_dma_buf_image_separate_first(
+        &self,
+    ) -> anyhow::Result<(libva::DrmPrimeSurfaceDescriptor, DecodedDmaBufExportLayout)> {
+        match self.surface().export_prime_separate_layers() {
+            Ok(separate_surface) => {
+                static LOGGED_SEPARATE_LAYER_BASELINE: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !LOGGED_SEPARATE_LAYER_BASELINE
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    let layer_formats = separate_surface
+                        .layers
+                        .iter()
+                        .map(|layer| layer.drm_format)
+                        .collect::<Vec<_>>();
+                    let plane_counts = separate_surface
+                        .layers
+                        .iter()
+                        .map(|layer| layer.num_planes)
+                        .collect::<Vec<_>>();
+                    log::info!(
+                        "VA P010 DRM PRIME export uses preferred separate-layer layout: \
+                         fourcc={:#x}, width={}, height={}, objects={}, layers={}, \
+                         layer_formats={:?}, plane_counts={:?}",
+                        separate_surface.fourcc,
+                        separate_surface.width,
+                        separate_surface.height,
+                        separate_surface.objects.len(),
+                        separate_surface.layers.len(),
+                        layer_formats,
+                        plane_counts
+                    );
+                }
+                Ok((separate_surface, DecodedDmaBufExportLayout::SeparateLayers))
+            }
+            Err(separate_error) => match self.surface().export_prime() {
+                Ok(composed_surface) => {
+                    static LOGGED_COMPOSED_COMPATIBILITY: std::sync::atomic::AtomicBool =
+                        std::sync::atomic::AtomicBool::new(false);
+                    if !LOGGED_COMPOSED_COMPATIBILITY
+                        .swap(true, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        log::warn!(
+                            "VA P010 separate-layer DRM PRIME export failed, using composed compatibility export: \
+                             separate_status={:#x}, separate_error={}, fourcc={:#x}, width={}, height={}, \
+                             objects={}, layers={}",
+                            separate_error.va_status(),
+                            separate_error,
+                            composed_surface.fourcc,
+                            composed_surface.width,
+                            composed_surface.height,
+                            composed_surface.objects.len(),
+                            composed_surface.layers.len()
+                        );
+                    }
+                    Ok((composed_surface, DecodedDmaBufExportLayout::ComposedLayers))
+                }
+                Err(composed_error) => Err(anyhow!(
+                    "while exporting decoded VA P010 surface as DRM PRIME: separate-layer export failed: {} \
+                     (status={:#x}); composed compatibility export failed: {} (status={:#x})",
+                    separate_error,
+                    separate_error.va_status(),
+                    composed_error,
+                    composed_error.va_status()
+                )),
+            },
+        }
+    }
+
+    /// Экспортирует не-P010 surfaces через прежний composed-first VA-API path.
+    fn export_dma_buf_image_composed_first(
+        &self,
+    ) -> anyhow::Result<(libva::DrmPrimeSurfaceDescriptor, DecodedDmaBufExportLayout)> {
+        match self.surface().export_prime() {
+            Ok(exported_surface) => Ok((exported_surface, DecodedDmaBufExportLayout::ComposedLayers)),
+            Err(composed_error) => match self.surface().export_prime_separate_layers() {
+                Ok(separate_surface) => {
+                    static LOGGED_SEPARATE_LAYER_COMPATIBILITY:
+                        std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    let layer_formats = separate_surface
+                        .layers
+                        .iter()
+                        .map(|layer| layer.drm_format)
+                        .collect::<Vec<_>>();
+                    let plane_counts = separate_surface
+                        .layers
+                        .iter()
+                        .map(|layer| layer.num_planes)
+                        .collect::<Vec<_>>();
+                    if !LOGGED_SEPARATE_LAYER_COMPATIBILITY
+                        .swap(true, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        log::warn!(
+                            "VA surface composed DRM PRIME export failed, using separate-layer compatibility export: \
+                             composed_status={:#x}, composed_error={}, fourcc={:#x}, width={}, height={}, \
+                             objects={}, layers={}, layer_formats={:?}, plane_counts={:?}",
+                            composed_error.va_status(),
+                            composed_error,
+                            separate_surface.fourcc,
+                            separate_surface.width,
+                            separate_surface.height,
+                            separate_surface.objects.len(),
+                            separate_surface.layers.len(),
+                            layer_formats,
+                            plane_counts
+                        );
+                    }
+                    Ok((separate_surface, DecodedDmaBufExportLayout::SeparateLayers))
+                }
+                Err(separate_error) => Err(anyhow!(
+                    "while exporting decoded VA surface as DRM PRIME: composed export failed: {} \
+                     (status={:#x}); separate-layer compatibility export failed: {} (status={:#x})",
+                    composed_error,
+                    composed_error.va_status(),
+                    separate_error,
+                    separate_error.va_status()
+                )),
+            },
+        }
+    }
+
+    /// Экспортирует decoded VA surface как DRM PRIME/DMA-BUF.
     fn export_dma_buf_image(&self) -> anyhow::Result<DecodedDmaBufImage> {
-        let exported_surface = self
-            .surface()
-            .export_prime()
-            .context("while exporting decoded VA surface as DRM PRIME")?;
+        let (exported_surface, export_layout) = if self.prefers_separate_dma_buf_export() {
+            self.export_dma_buf_image_separate_first()?
+        } else {
+            self.export_dma_buf_image_composed_first()?
+        };
 
         let objects = exported_surface
             .objects
@@ -462,6 +600,7 @@ impl<V: VideoFrame> VaapiDecodedHandle<V> {
         Ok(DecodedDmaBufImage {
             surface_id: u64::from(self.surface().id()),
             fourcc: exported_surface.fourcc,
+            export_layout,
             width: exported_surface.width,
             height: exported_surface.height,
             objects,

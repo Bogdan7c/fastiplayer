@@ -261,6 +261,13 @@ fn decoder_thread_loop(
                     }
                     Ok(None) => {}
                     Err(e) => {
+                        if crate::decoder::is_fatal_decoder_error(&e) {
+                            tracing::warn!(
+                                error = %e,
+                                "Decoder thread: fatal decode error, exiting"
+                            );
+                            break;
+                        }
                         tracing::warn!(error = %e, "Decoder thread: decode error");
                     }
                 }
