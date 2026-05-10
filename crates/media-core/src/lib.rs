@@ -12,4 +12,4 @@ mod track;
 
 pub use packet::Packet;
 pub use time::TimeBase;
-pub use track::{TrackId, TrackInfo, TrackKind};
+pub use track::{TrackId, TrackInfo, TrackKind, VideoTrackMetadata};

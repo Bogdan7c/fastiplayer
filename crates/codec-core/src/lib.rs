@@ -17,6 +17,8 @@ pub use model::{
 };
 pub use profile::{Av1Profile, H264Profile, H265Profile, VideoProfile, Vp8Profile, Vp9Profile};
 pub use vp9::{
-    Vp9DecodedFormatRequirement, Vp9RequirementCandidate, Vp9RequirementProbe,
-    Vp9RequirementRejection, Vp9RequirementUncertainty, probe_vp9_packet_requirement,
+    Vp9DecodedFormatRequirement, Vp9MetadataConflict, Vp9MetadataDiagnostic, Vp9MetadataField,
+    Vp9MetadataSource, Vp9RequirementCandidate, Vp9RequirementProbe, Vp9RequirementRejection,
+    Vp9RequirementUncertainty, Vp9ResolvedMetadata, Vp9StrictHdrValidationError,
+    probe_vp9_packet_requirement, resolve_vp9_metadata, validate_vp9_strict_hdr_core,
 };

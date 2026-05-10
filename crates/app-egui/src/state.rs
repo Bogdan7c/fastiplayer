@@ -510,8 +510,15 @@ impl AppState {
 
         for track in &player_snapshot.tracks {
             match track.kind {
-                TrackKind::Video => ui.monospace(format!("Video: {}", track.codec_id)),
-                TrackKind::Audio => ui.monospace(format!("Audio: {}", track.codec_id)),
+                TrackKind::Video => {
+                    ui.monospace(format!("Video: {}", track.codec_id));
+                    if let Some(color_summary) = &track.video_color_summary {
+                        ui.monospace(format!("  Color: {color_summary}"));
+                    }
+                }
+                TrackKind::Audio => {
+                    ui.monospace(format!("Audio: {}", track.codec_id));
+                }
             };
         }
 

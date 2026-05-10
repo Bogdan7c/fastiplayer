@@ -3,7 +3,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use capability_core::{SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection};
-use codec_core::{BitDepth, ChromaSubsampling, VideoCodec, VideoDecodeRequirement};
+use codec_core::{
+    BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction,
+    VideoCodec, VideoDecodeRequirement, Vp9MetadataSource, resolve_vp9_metadata,
+};
 use media_core::{TrackInfo, TrackKind};
 use tracing::{info, warn};
 use webm_demux::Demuxer;
@@ -686,6 +689,10 @@ impl PlayerSession {
                     self.pipeline.video_track_id = Some(track.id);
                     self.pipeline.active_video_requirement = Some(requirement);
                     self.snapshot.selected_tracks.video_track = Some(track.id);
+                    log_selected_video_track_metadata(
+                        track,
+                        self.pipeline.active_video_requirement.as_ref(),
+                    );
                     return Ok(());
                 }
                 Err(error) => {
@@ -731,6 +738,18 @@ impl PlayerSession {
             .iter()
             .find(|track| track.id == track_id && track.kind == TrackKind::Video)
             .and_then(|track| VideoCodec::from_container_codec_id(&track.codec_id))
+    }
+
+    /// Возвращает VP9 container metadata source для active track refinement.
+    pub(crate) fn vp9_container_metadata_source_for_track(
+        &self,
+        track_id: TrackId,
+    ) -> Option<Vp9MetadataSource> {
+        self.pipeline
+            .tracks
+            .iter()
+            .find(|track| track.id == track_id && track.kind == TrackKind::Video)
+            .and_then(vp9_metadata_source_from_track)
     }
 
     /// Инициализирует audio pipeline если есть Opus-compatible audio track.
@@ -835,6 +854,7 @@ impl PlayerSession {
                 codec_id: track.codec_id.clone(),
                 sample_rate: track.sample_rate,
                 channels: track.channels,
+                video_color_summary: video_color_summary(track),
             })
             .collect()
     }
@@ -903,7 +923,105 @@ impl PlayerSession {
 /// Строит минимальное decode requirement из container track metadata.
 fn video_requirement_from_track(track: &TrackInfo) -> Option<VideoDecodeRequirement> {
     let codec = VideoCodec::from_container_codec_id(&track.codec_id)?;
-    Some(VideoDecodeRequirement::new(codec))
+    if codec != VideoCodec::Vp9 {
+        return Some(VideoDecodeRequirement::new(codec));
+    }
+
+    let Some(container_source) = vp9_metadata_source_from_track(track) else {
+        return Some(VideoDecodeRequirement::new(codec));
+    };
+
+    Some(resolve_vp9_metadata(Some(container_source), None).requirement)
+}
+
+/// Собирает VP9 resolver source из typed video metadata track-а.
+fn vp9_metadata_source_from_track(track: &TrackInfo) -> Option<Vp9MetadataSource> {
+    let video = track.video.as_ref()?;
+    let mut source = Vp9MetadataSource::container();
+    source.profile = video.profile;
+    source.bit_depth = video.bit_depth;
+    source.chroma = video.chroma;
+    source.width = video.coded_width;
+    source.height = video.coded_height;
+    if let Some(color) = &video.color {
+        source = source.with_color(color.clone());
+    }
+    Some(source)
+}
+
+/// Пишет resolved VP9/container metadata в logs без codec logic в UI.
+fn log_selected_video_track_metadata(
+    track: &TrackInfo,
+    active_requirement: Option<&VideoDecodeRequirement>,
+) {
+    let Some(video_metadata) = track.video.as_ref() else {
+        return;
+    };
+
+    info!(
+        track_id = %track.id,
+        codec = %track.codec_id,
+        width = ?video_metadata.coded_width,
+        height = ?video_metadata.coded_height,
+        bit_depth = ?video_metadata.bit_depth,
+        chroma = ?video_metadata.chroma,
+        color = ?video_metadata.color,
+        requirement = ?active_requirement,
+        "Video track metadata resolved from container"
+    );
+}
+
+/// Формирует compact color summary для media info panel.
+fn video_color_summary(track: &TrackInfo) -> Option<String> {
+    let color = track.video.as_ref()?.color.as_ref()?;
+    Some(format!(
+        "{} {} {} {}",
+        display_primaries(color.primaries),
+        display_transfer(color.transfer),
+        display_matrix(color.matrix),
+        display_range(color.range)
+    ))
+}
+
+/// Возвращает stable label для primaries.
+fn display_primaries(primaries: ColorPrimaries) -> &'static str {
+    match primaries {
+        ColorPrimaries::Bt709 => "BT.709",
+        ColorPrimaries::Bt2020 => "BT.2020",
+        ColorPrimaries::Smpte170m => "SMPTE 170M",
+        ColorPrimaries::Bt470Bg => "BT.470BG",
+        ColorPrimaries::Unknown => "primaries unknown",
+    }
+}
+
+/// Возвращает stable label для transfer function.
+fn display_transfer(transfer: TransferFunction) -> &'static str {
+    match transfer {
+        TransferFunction::Bt709 => "BT.709",
+        TransferFunction::Srgb => "sRGB",
+        TransferFunction::Pq => "PQ",
+        TransferFunction::Hlg => "HLG",
+        TransferFunction::Unknown => "transfer unknown",
+    }
+}
+
+/// Возвращает stable label для matrix coefficients.
+fn display_matrix(matrix: MatrixCoefficients) -> &'static str {
+    match matrix {
+        MatrixCoefficients::Bt601 => "BT.601",
+        MatrixCoefficients::Bt709 => "BT.709 matrix",
+        MatrixCoefficients::Bt2020 => "BT.2020 matrix",
+        MatrixCoefficients::Unknown => "matrix unknown",
+    }
+}
+
+/// Возвращает stable label для range.
+fn display_range(range: ColorRange) -> &'static str {
+    match range {
+        ColorRange::Limited => "limited",
+        ColorRange::Full => "full",
+        ColorRange::Unknown => "range unknown",
+    }
 }
 
 /// Переводит structured capability error в player error model.

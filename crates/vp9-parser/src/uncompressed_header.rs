@@ -25,6 +25,10 @@ pub struct Vp9FrameInfo {
     pub subsampling_x: Option<bool>,
     /// VP9 chroma subsampling Y flag, если он известен из header.
     pub subsampling_y: Option<bool>,
+    /// VP9 color_space value, если header содержит color config.
+    pub color_space: Option<u8>,
+    /// VP9 color_range flag: `true` для full range, `false` для studio/limited range.
+    pub color_range_full: Option<bool>,
     /// Флаги обновления слотов DPB (Decoded Picture Buffer) после декодирования.
     /// Каждый бит соответствует одному из 8 слотов DPB.
     /// Бит=1 означает, что соответствующий слот нужно обновить этим кадром.
@@ -85,6 +89,8 @@ pub fn parse_uncompressed_header(data: &[u8]) -> Result<Vp9FrameInfo, ParseError
             bit_depth: None,
             subsampling_x: None,
             subsampling_y: None,
+            color_space: None,
+            color_range_full: None,
             refresh_frame_flags: 0,
             ref_frame_idx: [0; 3],
             ref_frame_sign_bias: [0; 4],
@@ -99,6 +105,8 @@ pub fn parse_uncompressed_header(data: &[u8]) -> Result<Vp9FrameInfo, ParseError
     let mut bit_depth = None;
     let mut subsampling_x = None;
     let mut subsampling_y = None;
+    let mut color_space = None;
+    let mut color_range_full = None;
     let refresh_frame_flags;
     let mut ref_frame_idx = [0u8; 3];
     let mut ref_frame_sign_bias = [0u8; 4];
@@ -113,6 +121,8 @@ pub fn parse_uncompressed_header(data: &[u8]) -> Result<Vp9FrameInfo, ParseError
         bit_depth = Some(color_config.bit_depth);
         subsampling_x = color_config.subsampling_x;
         subsampling_y = color_config.subsampling_y;
+        color_space = Some(color_config.color_space);
+        color_range_full = color_config.color_range_full;
         (width, height) = parse_frame_size(&mut br)?;
         (render_width, render_height) = parse_render_size(&mut br, width, height)?;
         refresh_frame_flags = 0xff;
@@ -138,6 +148,8 @@ pub fn parse_uncompressed_header(data: &[u8]) -> Result<Vp9FrameInfo, ParseError
                 bit_depth = Some(color_config.bit_depth);
                 subsampling_x = color_config.subsampling_x;
                 subsampling_y = color_config.subsampling_y;
+                color_space = Some(color_config.color_space);
+                color_range_full = color_config.color_range_full;
             }
             refresh_frame_flags = br.read_bits(8).ok_or(ParseError::BitstreamError)? as u8;
             (width, height) = parse_frame_size(&mut br)?;
@@ -164,6 +176,8 @@ pub fn parse_uncompressed_header(data: &[u8]) -> Result<Vp9FrameInfo, ParseError
         bit_depth,
         subsampling_x,
         subsampling_y,
+        color_space,
+        color_range_full,
         refresh_frame_flags,
         ref_frame_idx,
         ref_frame_sign_bias,
@@ -178,6 +192,10 @@ struct ColorConfig {
     subsampling_x: Option<bool>,
     /// Chroma subsampling Y flag, если format его задаёт.
     subsampling_y: Option<bool>,
+    /// VP9 color_space raw value из color config.
+    color_space: u8,
+    /// VP9 color_range flag, если color config задаёт YUV range.
+    color_range_full: Option<bool>,
 }
 
 /// Читает один бит как bool.
@@ -221,8 +239,9 @@ fn parse_color_config(br: &mut BitReader<'_>, profile: u8) -> Result<ColorConfig
     };
 
     let color_space = br.read_bits(3).ok_or(ParseError::BitstreamError)?;
+    let mut color_range_full = None;
     let (subsampling_x, subsampling_y) = if color_space != COLOR_SPACE_SRGB {
-        let _color_range = br.read_bit().ok_or(ParseError::BitstreamError)?;
+        color_range_full = Some(br.read_bit().ok_or(ParseError::BitstreamError)? != 0);
         if matches!(profile, 1 | 3) {
             let subsampling_x = read_bool(br)?;
             let subsampling_y = read_bool(br)?;
@@ -242,6 +261,8 @@ fn parse_color_config(br: &mut BitReader<'_>, profile: u8) -> Result<ColorConfig
         bit_depth,
         subsampling_x,
         subsampling_y,
+        color_space: color_space as u8,
+        color_range_full,
     })
 }
 
@@ -330,6 +351,8 @@ mod tests {
         assert_eq!(result.bit_depth, Some(8), "bit depth должен быть 8");
         assert_eq!(result.subsampling_x, Some(true));
         assert_eq!(result.subsampling_y, Some(true));
+        assert_eq!(result.color_space, Some(1));
+        assert_eq!(result.color_range_full, Some(false));
     }
 
     /// Тест парсинга интер-кадра (inter-frame).

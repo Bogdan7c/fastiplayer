@@ -1,6 +1,7 @@
 pub mod demuxer;
 pub mod dual_stream_demuxer;
 pub mod error;
+mod matroska_metadata;
 pub mod streaming_source;
 pub mod symphonia_demuxer;
 

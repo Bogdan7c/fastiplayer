@@ -8,8 +8,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use codec_core::{
-    VideoCodec, VideoDecodeRequirement, Vp9RequirementProbe, Vp9RequirementRejection,
-    probe_vp9_packet_requirement,
+    VideoCodec, VideoDecodeRequirement, Vp9MetadataSource, Vp9RequirementProbe,
+    Vp9RequirementRejection, probe_vp9_packet_requirement, resolve_vp9_metadata,
 };
 use media_core::{TrackId, TrackKind};
 use rustiplayer_config::AppConfig;
@@ -659,9 +659,12 @@ fn validate_pending_video_packet_before_decode(
 /// Читает VP9 profile из uncompressed header и строит уточнённое requirement.
 fn vp9_requirement_from_packet(
     packet_data: &[u8],
+    container_source: Option<Vp9MetadataSource>,
 ) -> Result<Option<VideoDecodeRequirement>, PlayerError> {
     match probe_vp9_packet_requirement(packet_data) {
-        Vp9RequirementProbe::Candidate(candidate) => Ok(Some(candidate.requirement)),
+        Vp9RequirementProbe::Candidate(candidate) => Ok(Some(
+            resolve_vp9_metadata(container_source, Some(candidate)).requirement,
+        )),
         Vp9RequirementProbe::Rejected(rejection) => Err(player_error_from_vp9_rejection(rejection)),
         Vp9RequirementProbe::Recoverable(uncertainty) => {
             trace!(?uncertainty, "VP9 requirement probe skipped before decode");
@@ -692,7 +695,10 @@ fn video_requirement_from_packet(
     };
 
     match codec {
-        VideoCodec::Vp9 => vp9_requirement_from_packet(&packet.data),
+        VideoCodec::Vp9 => vp9_requirement_from_packet(
+            &packet.data,
+            session.vp9_container_metadata_source_for_track(packet.track_id),
+        ),
         other_codec => Ok(Some(VideoDecodeRequirement::new(other_codec))),
     }
 }
@@ -1075,7 +1081,7 @@ mod tests {
             height: 72,
         });
 
-        let error = vp9_requirement_from_packet(&packet_bytes)
+        let error = vp9_requirement_from_packet(&packet_bytes, None)
             .expect_err("VP9 Profile 2 12-bit должен rejected до hardware matching");
 
         assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoBitDepth);
@@ -1093,7 +1099,7 @@ mod tests {
             height: 72,
         });
 
-        let error = vp9_requirement_from_packet(&packet_bytes)
+        let error = vp9_requirement_from_packet(&packet_bytes, None)
             .expect_err("VP9 Profile 1 4:2:2 должен rejected до hardware matching");
 
         assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoChroma);
@@ -1102,7 +1108,7 @@ mod tests {
 
     #[test]
     fn vp9_incomplete_packet_stays_recoverable_for_decoder() {
-        let requirement = vp9_requirement_from_packet(&[0x00])
+        let requirement = vp9_requirement_from_packet(&[0x00], None)
             .expect("неполный VP9 header не должен становиться fatal reject");
 
         assert!(requirement.is_none());

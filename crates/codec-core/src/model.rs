@@ -97,6 +97,17 @@ impl BitDepth {
             Self::Twelve => 12,
         }
     }
+
+    /// Нормализует числовой bit depth из container/bitstream metadata.
+    #[must_use]
+    pub const fn from_bits(bits_per_channel: u8) -> Option<Self> {
+        match bits_per_channel {
+            8 => Some(Self::Eight),
+            10 => Some(Self::Ten),
+            12 => Some(Self::Twelve),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for BitDepth {
@@ -118,6 +129,22 @@ pub enum ChromaSubsampling {
 
     /// 4:4:4.
     Yuv444,
+}
+
+impl ChromaSubsampling {
+    /// Нормализует Matroska ChromaSubsamplingHorz/Vert hints в общую chroma model.
+    #[must_use]
+    pub const fn from_matroska_subsampling(
+        horizontal_subsampling: u64,
+        vertical_subsampling: u64,
+    ) -> Option<Self> {
+        match (horizontal_subsampling, vertical_subsampling) {
+            (1, 1) => Some(Self::Yuv420),
+            (1, 0) => Some(Self::Yuv422),
+            (0, 0) => Some(Self::Yuv444),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for ChromaSubsampling {
@@ -146,6 +173,18 @@ pub enum ColorRange {
     Unknown,
 }
 
+impl ColorRange {
+    /// Нормализует Matroska `Range` value.
+    #[must_use]
+    pub const fn from_matroska_value(value: u64) -> Self {
+        match value {
+            1 => Self::Limited,
+            2 => Self::Full,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 /// YUV->RGB matrix coefficients из stream metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -161,6 +200,19 @@ pub enum MatrixCoefficients {
 
     /// Matrix coefficients не указаны или не поддержаны текущей typed model.
     Unknown,
+}
+
+impl MatrixCoefficients {
+    /// Нормализует H.273/Matroska matrix coefficients в текущую typed model.
+    #[must_use]
+    pub const fn from_h273_value(value: u64) -> Self {
+        match value {
+            1 => Self::Bt709,
+            5 | 6 => Self::Bt601,
+            9 | 10 => Self::Bt2020,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 /// Цветовые primaries из bitstream/container metadata.
@@ -183,6 +235,20 @@ pub enum ColorPrimaries {
     Unknown,
 }
 
+impl ColorPrimaries {
+    /// Нормализует H.273/Matroska colour primaries в текущую typed model.
+    #[must_use]
+    pub const fn from_h273_value(value: u64) -> Self {
+        match value {
+            1 => Self::Bt709,
+            5 => Self::Bt470Bg,
+            6 => Self::Smpte170m,
+            9 => Self::Bt2020,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 /// Transfer function входного stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -201,6 +267,26 @@ pub enum TransferFunction {
 
     /// Неизвестная transfer function.
     Unknown,
+}
+
+impl TransferFunction {
+    /// Нормализует H.273/Matroska transfer characteristics в текущую typed model.
+    #[must_use]
+    pub const fn from_h273_value(value: u64) -> Self {
+        match value {
+            1 | 14 | 15 => Self::Bt709,
+            13 => Self::Srgb,
+            16 => Self::Pq,
+            18 => Self::Hlg,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Возвращает `true`, если transfer является HDR EOTF/OETF из Phase 9 strict core.
+    #[must_use]
+    pub const fn is_hdr(self) -> bool {
+        matches!(self, Self::Pq | Self::Hlg)
+    }
 }
 
 /// HDR metadata, нужная renderer-у для tone mapping.
@@ -300,6 +386,45 @@ impl VideoColorMetadata {
             confidence: ColorMetadataConfidence::Fallback,
         }
     }
+
+    /// Создаёт container color metadata из уже нормализованных Matroska Colour полей.
+    #[must_use]
+    pub const fn container(
+        range: ColorRange,
+        matrix: MatrixCoefficients,
+        primaries: ColorPrimaries,
+        transfer: TransferFunction,
+        hdr_metadata: Option<HdrMetadata>,
+    ) -> Self {
+        Self {
+            range,
+            matrix,
+            primaries,
+            transfer,
+            hdr_metadata,
+            origin: ColorMetadataOrigin::Container,
+            confidence: ColorMetadataConfidence::Hint,
+        }
+    }
+
+    /// Создаёт confirmed bitstream color metadata.
+    #[must_use]
+    pub const fn bitstream(
+        range: ColorRange,
+        matrix: MatrixCoefficients,
+        primaries: ColorPrimaries,
+        transfer: TransferFunction,
+    ) -> Self {
+        Self {
+            range,
+            matrix,
+            primaries,
+            transfer,
+            hdr_metadata: None,
+            origin: ColorMetadataOrigin::Bitstream,
+            confidence: ColorMetadataConfidence::Confirmed,
+        }
+    }
 }
 
 /// Codec level без привязки к конкретному стандарту.
@@ -378,6 +503,9 @@ pub struct VideoDecodeRequirement {
 
     /// Требуется ли корректная обработка HDR input.
     pub hdr: bool,
+
+    /// Resolved color metadata, если она уже была собрана до capability selection.
+    pub color: Option<VideoColorMetadata>,
 }
 
 impl VideoDecodeRequirement {
@@ -393,6 +521,7 @@ impl VideoDecodeRequirement {
             height: None,
             fps: None,
             hdr: false,
+            color: None,
         }
     }
 
@@ -422,6 +551,14 @@ impl VideoDecodeRequirement {
     pub const fn with_resolution(mut self, width: u32, height: u32) -> Self {
         self.width = Some(width);
         self.height = Some(height);
+        self
+    }
+
+    /// Возвращает копию requirement с resolved color metadata.
+    #[must_use]
+    pub fn with_color(mut self, color: VideoColorMetadata) -> Self {
+        self.hdr = color.transfer.is_hdr();
+        self.color = Some(color);
         self
     }
 

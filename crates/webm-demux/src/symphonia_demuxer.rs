@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
-use media_core::{Packet as OurPacket, TimeBase as OurTimeBase, TrackId, TrackInfo, TrackKind};
+use media_core::{
+    Packet as OurPacket, TimeBase as OurTimeBase, TrackId, TrackInfo, TrackKind, VideoTrackMetadata,
+};
 use symphonia::core::codecs::{CODEC_TYPE_OPUS, CODEC_TYPE_VORBIS};
 use symphonia::core::formats::{FormatOptions, FormatReader, Packet, Track};
 use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
@@ -16,6 +18,7 @@ use tracing::{info, warn};
 
 use crate::demuxer::Demuxer;
 use crate::error::DemuxError;
+use crate::matroska_metadata::extract_video_track_metadata_from_file;
 
 /// Demuxer на базе symphonia для WebM/MKV файлов.
 pub struct SymphoniaDemuxer {
@@ -41,6 +44,18 @@ impl SymphoniaDemuxer {
             return Err(DemuxError::FileNotFound(path.to_path_buf()));
         }
 
+        let video_metadata_by_track = match extract_video_track_metadata_from_file(path) {
+            Ok(metadata_by_track) => metadata_by_track,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    path = %path.display(),
+                    "Matroska Colour metadata pre-scan failed"
+                );
+                HashMap::new()
+            }
+        };
+
         let file = File::open(path)?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
@@ -55,7 +70,11 @@ impl SymphoniaDemuxer {
             .format(&hint, mss, &fmt_opts, &MetadataOptions::default())
             .map_err(|e| DemuxError::UnsupportedFormat(format!("{}", e)))?;
 
-        Self::from_format_reader(probe_result.format, &path.display().to_string())
+        Self::from_format_reader(
+            probe_result.format,
+            &path.display().to_string(),
+            video_metadata_by_track,
+        )
     }
 
     /// Открывает WebM/MKV из потокового reader-а без seek.
@@ -83,11 +102,15 @@ impl SymphoniaDemuxer {
             )
             .map_err(|error| DemuxError::UnsupportedFormat(format!("{}", error)))?;
 
-        Self::from_format_reader(probe_result.format, label)
+        Self::from_format_reader(probe_result.format, label, HashMap::new())
     }
 
     /// Собирает metadata и track map из готового Symphonia format reader.
-    fn from_format_reader(format: Box<dyn FormatReader>, label: &str) -> Result<Self, DemuxError> {
+    fn from_format_reader(
+        format: Box<dyn FormatReader>,
+        label: &str,
+        video_metadata_by_track: HashMap<TrackId, VideoTrackMetadata>,
+    ) -> Result<Self, DemuxError> {
         let mut tracks = Vec::new();
         let mut track_map = HashMap::new();
 
@@ -118,6 +141,9 @@ impl SymphoniaDemuxer {
                 duration,
                 sample_rate: entry.sample_rate,
                 channels: entry.channels,
+                video: video_metadata_by_track
+                    .get(&TrackId::new(track.id))
+                    .cloned(),
             });
         }
 

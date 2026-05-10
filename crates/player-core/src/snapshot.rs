@@ -122,6 +122,9 @@ pub struct TrackSummarySnapshot {
 
     /// Количество audio-каналов, если оно известно.
     pub channels: Option<u32>,
+
+    /// Compact summary video color metadata для diagnostics panel.
+    pub video_color_summary: Option<String>,
 }
 
 /// Описание качества, которое UI может показать в списке.

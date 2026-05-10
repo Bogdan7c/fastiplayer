@@ -387,6 +387,8 @@ Manual tests:
 
 ### Сессия 2: VP9/WebM color metadata resolver
 
+Статус: реализовано
+
 Задачи:
 
 - добавить WebM/Matroska Colour extraction или adapter над существующими track metadata;
@@ -401,6 +403,14 @@ Unit tests:
 - missing transfer for HDR candidate -> typed missing metadata rejection;
 - bitstream profile conflict with container hint -> bitstream wins for profile;
 - container/bitstream color conflict -> conflict diagnostic recorded.
+
+Implementation notes:
+
+- `webm-demux` добавляет read-only Matroska/WebM pre-scan для `Tracks/TrackEntry/Video/Colour`, потому что Symphonia 0.5 публично не отдаёт эти video Colour fields через `CodecParameters`;
+- `media-core::TrackInfo` переносит typed `VideoTrackMetadata` до `player-core`;
+- `codec-core::resolve_vp9_metadata` объединяет container hints и VP9 bitstream candidate по полям;
+- `codec-core::validate_vp9_strict_hdr_core` проверяет VP9 Profile 2, 10-bit, YUV420, P010 и `BT.2020 PQ/HLG limited/full`;
+- `app-egui` только отображает готовый color summary из snapshot и не содержит codec/color selection logic.
 
 Manual tests:
 

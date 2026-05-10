@@ -2,6 +2,7 @@ use std::fmt;
 use std::time::Duration;
 
 use bytes::Bytes;
+use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoProfile};
 
 use crate::TimeBase;
 
@@ -55,7 +56,7 @@ pub enum TrackKind {
 }
 
 /// Информация о media-треке, которую demuxer отдаёт до чтения packets.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TrackInfo {
     /// Уникальный идентификатор трека внутри текущего media source.
     pub id: TrackId,
@@ -80,4 +81,57 @@ pub struct TrackInfo {
 
     /// Количество audio-каналов.
     pub channels: Option<u32>,
+
+    /// Container-level video metadata, если demuxer смог получить её до decode.
+    pub video: Option<VideoTrackMetadata>,
+}
+
+/// Container metadata видеотрека без backend-specific ресурсов.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoTrackMetadata {
+    /// Coded width из container track header.
+    pub coded_width: Option<u32>,
+
+    /// Coded height из container track header.
+    pub coded_height: Option<u32>,
+
+    /// Container или manifest hint по codec profile.
+    pub profile: Option<VideoProfile>,
+
+    /// Container hint по decoded bit depth.
+    pub bit_depth: Option<BitDepth>,
+
+    /// Container hint по chroma subsampling.
+    pub chroma: Option<ChromaSubsampling>,
+
+    /// Container Colour metadata после нормализации в общую color model.
+    pub color: Option<VideoColorMetadata>,
+}
+
+impl VideoTrackMetadata {
+    /// Создаёт пустой video metadata контейнер для постепенного заполнения extractor-ом.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            coded_width: None,
+            coded_height: None,
+            profile: None,
+            bit_depth: None,
+            chroma: None,
+            color: None,
+        }
+    }
+
+    /// Возвращает `None`, если extractor не нашёл ни одного полезного video поля.
+    #[must_use]
+    pub fn into_option(self) -> Option<Self> {
+        let has_metadata = self.coded_width.is_some()
+            || self.coded_height.is_some()
+            || self.profile.is_some()
+            || self.bit_depth.is_some()
+            || self.chroma.is_some()
+            || self.color.is_some();
+
+        has_metadata.then_some(self)
+    }
 }

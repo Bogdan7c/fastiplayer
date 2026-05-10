@@ -2170,6 +2170,7 @@ name = "media-core"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "codec-core",
 ]
 
 [[package]]
@@ -4878,6 +4879,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "codec-core",
  "media-core",
  "symphonia",
  "thiserror 2.0.18",
