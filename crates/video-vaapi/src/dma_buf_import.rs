@@ -265,7 +265,7 @@ fn close_unimported_fd(vulkan_fd: RawFd, import_context: &'static str) {
             error = %error,
             fd = vulkan_fd,
             import_context,
-            "Failed to close DMA-BUF fd after failed Vulkan import"
+            "Failed to close DMA-BUF fd during import cleanup"
         );
     }
 }
@@ -517,7 +517,7 @@ impl DmaBufImporter {
         let y_texture = match y_texture {
             Ok(texture) => texture,
             Err(error) => {
-                let _ = nix::unistd::close(fd_dup);
+                close_unimported_fd(fd_dup, "NV12 Y-plane import cleanup");
                 return Err(error);
             }
         };
@@ -527,7 +527,7 @@ impl DmaBufImporter {
             match nix::unistd::dup(fd_dup).with_context(|| "dup dma-buf fd for UV plane failed") {
                 Ok(duplicated_fd) => duplicated_fd,
                 Err(error) => {
-                    let _ = nix::unistd::close(fd_dup);
+                    close_unimported_fd(fd_dup, "NV12 UV-plane fd duplication cleanup");
                     return Err(error);
                 }
             };
@@ -547,16 +547,16 @@ impl DmaBufImporter {
         let uv_texture = match uv_texture {
             Ok(texture) => texture,
             Err(error) => {
-                let _ = nix::unistd::close(fd_dup);
-                let _ = nix::unistd::close(fd_dup2);
+                close_unimported_fd(fd_dup, "NV12 UV-plane import cleanup");
+                close_unimported_fd(fd_dup2, "NV12 UV-plane import cleanup");
                 return Err(error);
             }
         };
 
         // Закрываем только caller-owned dup fds. Внутренние fd, переданные
         // в `vkAllocateMemory`, закрывает Vulkan implementation после успешного import.
-        let _ = nix::unistd::close(fd_dup);
-        let _ = nix::unistd::close(fd_dup2);
+        close_unimported_fd(fd_dup, "NV12 imported Y-plane caller fd cleanup");
+        close_unimported_fd(fd_dup2, "NV12 imported UV-plane caller fd cleanup");
 
         Ok((y_texture, uv_texture))
     }

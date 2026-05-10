@@ -18,7 +18,6 @@
 /// - RedrawRequested — основной hook для рендеринга каждого кадра
 mod state;
 mod telemetry;
-mod youtube;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -563,10 +562,10 @@ fn resolve_initial_media_from_cli() -> (Option<InitialMedia>, Option<String>) {
     };
 
     // URL обрабатываем отдельно: текущий demuxer умеет только локальные файлы.
-    if youtube::is_probably_url(&argument) {
+    if service_youtube::is_probably_url(&argument) {
         info!(url = %argument, "CLI аргумент распознан как YouTube/web URL");
 
-        return match youtube::open_streaming_media(&argument) {
+        return match service_youtube::open_streaming_media(&argument) {
             Ok(streaming_media) => {
                 info!(
                     description = %streaming_media.description,
@@ -643,7 +642,7 @@ fn warn_ignored_phase8_5_hdr_config(app_config: &AppConfig) {
     warn!(
         hdr_to_sdr = app_config.render.hdr_to_sdr,
         tone_mapping = ?app_config.render.tone_mapping,
-        "HDR render config игнорируется до Phase 9; текущий renderer остаётся SDR-only"
+        "HDR render config игнорируется до Phase 10; текущий renderer остаётся SDR-only"
     );
 }
 

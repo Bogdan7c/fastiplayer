@@ -129,7 +129,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "audio",
- "bytes",
  "capability-core",
  "codec-core",
  "egui",
@@ -138,18 +137,15 @@ dependencies = [
  "player-core",
  "render-core",
  "render-wgpu",
- "reqwest",
  "rfd",
  "rustiplayer-config",
  "rustiplayer-storage",
- "serde",
- "serde_json",
+ "service-youtube",
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
  "video-core",
  "video-vaapi",
- "vp9-parser",
  "webm-demux",
  "wgpu",
  "winit",
@@ -3626,6 +3622,19 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "service-youtube"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tracing",
+ "webm-demux",
 ]
 
 [[package]]

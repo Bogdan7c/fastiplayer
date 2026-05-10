@@ -499,9 +499,10 @@ Manual tests:
 Unit tests:
 
 - VA RT format `YUV420_10` -> `P010` decoded contract;
-- P010 import requires `TEXTURE_FORMAT_P010`;
+- compatibility composed P010 import requires `TEXTURE_FORMAT_P010`;
+- baseline separate-layer P010 import requires `TEXTURE_FORMAT_16BIT_NORM`;
 - P010 boundary rejects missing zero-copy importer;
-- imported P010 views use plane 0/plane 1 and 16-bit plane formats.
+- imported separate-layer P010 views use `R16/Rg16` plane formats.
 
 Manual tests:
 
@@ -556,6 +557,8 @@ cargo run -p app-egui -- /path/to/vp9-profile2-10bit-hdr.webm
 
 ### Сессия 7: SDR regression, self-review and docs
 
+Статус: реализовано
+
 Задачи:
 
 - проверить текущий SDR VP9/NV12 path после всех VP9 changes;
@@ -563,6 +566,14 @@ cargo run -p app-egui -- /path/to/vp9-profile2-10bit-hdr.webm
 - проверить, что names не стали абстрактными вроде `data/temp/obj`;
 - проверить, что `app-egui` не содержит codec/color selection logic;
 - обновить docs, если реализация уточнила детали.
+
+Результат self-review:
+
+- внутренние pending/decode packet payload-и названы `encoded_bytes`, чтобы не путать codec payload с произвольными `data`;
+- P010 boundary ошибки остаются fatal для decoder thread, CPU fallback для P010 не добавлен;
+- cleanup/error notification paths не игнорируют `Result` молча: ошибки fd cleanup, streaming writer failure и decoder flush notification логируются;
+- временный YouTube/yt-dlp selector вынесен из `app-egui` в `service-youtube`;
+- `app-egui` показывает renderer-neutral diagnostics и не содержит VP9-specific stream selection policy.
 
 Verification:
 

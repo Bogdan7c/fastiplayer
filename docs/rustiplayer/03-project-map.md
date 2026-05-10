@@ -5,18 +5,25 @@
 Сейчас workspace уже разделен на несколько полезных crate'ов:
 
 ```text
-crates/app-egui       - окно, egui, render loop, часть player logic
-crates/audio          - Opus decode, CPAL output, audio clock
-crates/render-core    - контракты renderer capabilities и renderable frame
-crates/render-wgpu    - WGPU surface/egui composition и текущий NV12 renderer
-crates/video-core     - базовые video types и AvSync
-crates/video-vaapi    - VA-API VP9 decode thread и texture cache
-crates/video-vulkan   - reference Vulkan Video код
-crates/webm-demux     - Symphonia-based WebM/Matroska demux
-crates/vp9-parser     - VP9 parser
+crates/app-egui         - окно, egui, render loop, CLI/file/url shell boundary
+crates/player-core      - PlayerSession, commands/events/snapshot, A/V scheduler
+crates/media-core       - Track/Packet/media metadata types
+crates/codec-core       - typed codec/profile/color/capability metadata
+crates/capability-core  - capability report и stream selection reasons
+crates/service-youtube  - временный yt-dlp adapter и HTTP streaming boundary
+crates/audio            - Opus decode, CPAL output, audio clock
+crates/render-core      - контракты renderer capabilities и renderable frame
+crates/render-wgpu      - WGPU surface/egui composition и текущий NV12 renderer
+crates/video-core       - базовые video types и decoded frame contract
+crates/video-vaapi      - VA-API VP9 decode thread и texture cache
+crates/video-vulkan     - reference Vulkan Video код
+crates/webm-demux       - Symphonia-based WebM/Matroska demux
+crates/vp9-parser       - VP9 parser adapter
+crates/config           - TOML config schema/load/create
+crates/storage          - SQLite migrations/history/progress/cache
 ```
 
-Главный долг: `app-egui` сейчас содержит слишком много player logic. Это нужно выносить постепенно, без потери работающего MVP.
+Главный оставшийся долг: `app-egui` всё ещё является desktop shell с несколькими runtime wiring helpers, но codec/capability/player decisions уже вынесены из UI-слоя.
 
 ## Целевая карта crate'ов
 
@@ -173,10 +180,16 @@ Color metadata в `codec-core` описывает факты о потоке, а
 
 ### `service-youtube`
 
-Будущая Rust-замена `yt-dlp`.
+Service boundary для YouTube.
+
+Текущее состояние: временный `yt-dlp` adapter живёт здесь, а не в `app-egui`.
+Он выбирает текущий поддержанный SDR VP9/Opus WebM selector, получает direct
+media URLs/headers и отдаёт player shell-у готовый streaming demuxer. Полная
+Rust-замена extractor-а остаётся будущей задачей этого же crate-а.
 
 Отвечает за:
 
+- временную интеграцию `yt-dlp`;
 - YouTube extraction;
 - account/session/cookies;
 - manifest parsing;
@@ -298,14 +311,15 @@ Primary renderer.
 - Vulkan-first Linux path;
 - DX12 path later;
 - Metal path later;
-- NV12/P010/etc shaders;
+- NV12 production shader;
+- P010/HDR shader path в Phase 10;
 - mapping typed color metadata to GPU uniforms;
 - SDR color adjustments in shader uniforms;
-- HDR-to-SDR tone mapping;
+- HDR-to-SDR tone mapping в Phase 10;
 - distinction between P010 zero-copy boundary readiness and production P010 renderability;
 - egui composition.
 
-Текущий `app-egui/src/render.rs` и `render` crate должны постепенно переехать сюда.
+Текущее состояние: production NV12 path уже живёт в `render-wgpu`; P010 zero-copy boundary существует как diagnostic readiness, а production P010/HDR renderer остаётся задачей Phase 10.
 
 ### `render-gles`
 
@@ -389,6 +403,7 @@ Runtime metrics.
 ```text
 app-egui
   -> player-core
+  -> service-youtube
   -> render-core/render-wgpu
   -> desktop-integration
 

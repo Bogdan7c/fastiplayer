@@ -25,7 +25,7 @@ render-core
   common contracts
 
 render-wgpu
-  Vulkan-first, advanced UI, HDR-to-SDR, future DX12/Metal
+  Vulkan-first, advanced UI, Phase 10 HDR-to-SDR, future DX12/Metal
 
 render-gles
   future X11/GLES2 fallback, SDR 8-bit NV12 only
@@ -67,7 +67,7 @@ struct RenderCapabilities {
     backend: RenderBackendKind,
     supports_hdr_to_sdr: bool,
     supports_native_hdr_output: bool,
-    p010_readiness: P010RenderReadiness,
+    p010_render_readiness: P010RenderReadiness,
     supported_frame_formats: Vec<VideoFrameFormat>,
     max_texture_size: Option<u32>,
     advanced_ui: bool,
@@ -98,8 +98,9 @@ Config profile `vulkan` - основной режим.
 Ожидания:
 
 - advanced egui UI;
-- NV12/P010 shader path;
-- HDR-to-SDR tone mapping;
+- NV12 production shader path;
+- P010 zero-copy boundary diagnostics and Phase 10 P010/HDR shader path;
+- Phase 10 HDR-to-SDR tone mapping;
 - frame pacing diagnostics;
 - GPU resource telemetry;
 - future compute-assisted color pipeline, если потребуется.

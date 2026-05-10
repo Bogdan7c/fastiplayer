@@ -20,9 +20,7 @@ tracing-subscriber.workspace = true
 rustiplayer-config.workspace = true
 rustiplayer-storage.workspace = true
 capability-core.workspace = true
-serde.workspace = true
-serde_json = "1.0"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+service-youtube.workspace = true
 
 # Новые зависимости для Этапа 2a
 player-core.workspace = true
@@ -38,8 +36,6 @@ video-core = { path = "../video-core" }
 video-vaapi = { path = "../video-vaapi" }
 render-core.workspace = true
 render-wgpu.workspace = true
-vp9-parser = { path = "../vp9-parser" }
-bytes.workspace = true
 
 [dev-dependencies]
 codec-core.workspace = true

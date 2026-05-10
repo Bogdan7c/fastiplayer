@@ -91,7 +91,8 @@ render-core RenderableFrame
         |
         v
 render-wgpu
-  metadata/settings -> ColorPipelineUniforms -> NV12/P010 shader path
+  metadata/settings -> ColorPipelineUniforms -> NV12 shader path
+  P010/HDR shader path добавляется в Phase 10 поверх готовой zero-copy boundary
         |
         v
 swapchain output

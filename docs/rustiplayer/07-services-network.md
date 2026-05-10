@@ -19,7 +19,22 @@ future service-*
   другие сервисы
 ```
 
-`source-core` не должен знать специфику YouTube. `service-youtube` должен возвращать нормализованные media candidates, которые дальше проходят capability-based stream selection.
+`source-core` не должен знать специфику YouTube. В целевой архитектуре `service-youtube` возвращает нормализованные media candidates, которые дальше проходят capability-based stream selection. Текущая MVP-граница описана ниже отдельно.
+
+## Current MVP boundary
+
+Сейчас создан crate `service-youtube`, но это ещё не полноценный Rust extractor.
+Он содержит временный `yt-dlp` adapter, который:
+
+- применяет текущий SDR VP9/Opus WebM selector для MVP playback;
+- поддерживает env override `VIDEO_PLAYER_YOUTUBE_FORMAT_SELECTOR` для ручных проверок;
+- получает direct media URLs и HTTP headers через `yt-dlp --simulate --dump-single-json`;
+- запускает HTTP fetcher threads и отдаёт `webm-demux` streaming demuxer;
+- не содержит UI/render/player state logic.
+
+`app-egui` только распознаёт CLI URL и передаёт готовый demuxer в `PlayerSession`.
+Codec/color decisions остаются в `codec-core`, `capability-core`, `player-core`
+и renderer diagnostics.
 
 ## YouTube scope
 
@@ -150,4 +165,3 @@ enum ProtectionKind {
 ```
 
 Если stream protected, текущая реализация должна честно вернуть unsupported.
-

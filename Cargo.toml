@@ -15,6 +15,7 @@ members = [
     "crates/render-core",
     "crates/render-wgpu",
     "crates/video-vaapi",
+    "crates/service-youtube",
 ]
 resolver = "2"
 
@@ -60,3 +61,4 @@ render-core = { path = "crates/render-core" }
 render-wgpu = { path = "crates/render-wgpu" }
 player-core = { path = "crates/player-core" }
 media-core = { path = "crates/media-core" }
+service-youtube = { path = "crates/service-youtube" }

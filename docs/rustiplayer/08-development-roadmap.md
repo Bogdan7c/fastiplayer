@@ -14,7 +14,7 @@
 
 ## Phase 0: Architecture docs
 
-Статус: текущий этап.
+Статус: реализовано; документы продолжают поддерживаться как living architecture docs.
 
 Цель:
 
@@ -177,7 +177,7 @@ Acceptance:
 
 - создать `render-core`;
 - создать/переименовать `render-wgpu`;
-- вынести `app-egui/src/render.rs`;
+- завершить перенос прежнего app-level render layer в `render-wgpu`;
 - описать `RenderableFrame` и `RenderCapabilities`.
 
 Acceptance:
@@ -214,7 +214,7 @@ Acceptance:
 
 Подробный план: [09. Phase 9 Full VP9 Completion](09-phase-9-vp9-completion.md).
 
-Статус: в работе; сессии 1-5 реализованы, VP9 Profile 2 P010 zero-copy boundary проверен на реальном HDR sample.
+Статус: завершено; сессии 1-7 реализованы, SDR VP9/NV12 regression проверен, VP9 Profile 2 P010 zero-copy boundary подтверждён отдельным manual diagnostic mode, production HDR playback остаётся rejected до Phase 10.
 
 Цель:
 
@@ -239,7 +239,8 @@ Acceptance:
 - P010 path не имеет CPU upload/readback fallback;
 - metadata resolver покрыт conflict tests;
 - capability rejection reasons typed и codec-agnostic;
-- SDR VP9/NV12 regression покрыт unit/manual tests.
+- SDR VP9/NV12 regression покрыт unit/manual tests;
+- `app-egui` не владеет VP9-specific stream selector policy: временный YouTube selector вынесен в `service-youtube`.
 
 ## Phase 10: HDR-to-SDR baseline
 

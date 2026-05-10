@@ -225,10 +225,10 @@ impl AppState {
                         ui.heading("YouTube Player");
                         ui.separator();
 
-                        let backend_color = match backend_name.as_str() {
-                            "VA-API VP9" | "Vulkan VP9" => egui::Color32::GREEN,
-                            "Synthetic (test)" => egui::Color32::YELLOW,
-                            _ => egui::Color32::GRAY,
+                        let backend_color = if backend_name == "Synthetic (test)" {
+                            egui::Color32::YELLOW
+                        } else {
+                            egui::Color32::GREEN
                         };
                         ui.colored_label(backend_color, format!("Backend: {backend_name}"));
 

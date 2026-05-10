@@ -19,7 +19,7 @@ pub enum PlaybackState {
     /// Выполняется seek и пересборка очередей.
     Seeking,
 
-    /// EOF уже достигнут, но pipeline ещё дорендеривает buffered data.
+    /// EOF уже достигнут, но pipeline ещё дорендеривает buffered packets/frames.
     Draining,
 
     /// Media полностью закончился.

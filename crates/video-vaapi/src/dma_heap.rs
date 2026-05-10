@@ -56,7 +56,7 @@ const DMA_HEAP_PATH: &str = "/dev/dma_heap/system";
 ///
 /// # Безопасность
 /// Эта функция использует `unsafe` для:
-/// 1. Вызова ioctl — `data` корректно инициализирована, `heap` валидный fd.
+/// 1. Вызова ioctl — `allocation_request` корректно инициализирован, `heap` валидный fd.
 /// 2. `File::from_raw_fd` — ядро гарантирует что возвращённый fd валиден.
 pub fn allocate_dma_buffer(size: usize) -> anyhow::Result<File> {
     // Открываем устройство dma-heap на чтение и запись.
@@ -67,28 +67,28 @@ pub fn allocate_dma_buffer(size: usize) -> anyhow::Result<File> {
         .map_err(|e| anyhow::anyhow!("Failed to open {}: {}", DMA_HEAP_PATH, e))?;
 
     // Формируем запрос на выделение.
-    let mut data = DmaHeapAllocationData {
+    let mut allocation_request = DmaHeapAllocationData {
         len: size as u64,
         fd: 0,
         fd_flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32,
         heap_flags: 0,
     };
 
-    // SAFETY: `data` — корректно размещённая структура, `heap` — валидный fd.
+    // SAFETY: `allocation_request` — корректно размещённая структура, `heap` — валидный fd.
     unsafe {
-        dma_heap_ioctl_alloc(heap.as_raw_fd(), &mut data)
+        dma_heap_ioctl_alloc(heap.as_raw_fd(), &mut allocation_request)
             .map_err(|e| anyhow::anyhow!("DMA_HEAP_IOCTL_ALLOC failed: {}", e))?;
     }
 
     // Проверяем что ядро вернуло валидный fd.
-    if data.fd == 0 {
+    if allocation_request.fd == 0 {
         return Err(anyhow::anyhow!(
             "DMA_HEAP_IOCTL_ALLOC returned invalid fd (0)"
         ));
     }
 
     // SAFETY: ядро вернуло валидный fd, мы берём на него владение.
-    let file = unsafe { File::from_raw_fd(data.fd as i32) };
+    let file = unsafe { File::from_raw_fd(allocation_request.fd as i32) };
     Ok(file)
 }
 

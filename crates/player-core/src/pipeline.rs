@@ -20,15 +20,18 @@ pub struct PendingAudioPacket {
     /// Track ID нужен, чтобы не отправить packet неактивного audio track в decoder.
     pub track_id: TrackId,
 
-    /// Codec payload хранится отдельно от demuxer packet, потому что demuxer живёт независимо.
-    pub data: Vec<u8>,
+    /// Encoded audio bytes хранятся отдельно от demuxer packet, потому что demuxer живёт независимо.
+    pub encoded_bytes: Vec<u8>,
 }
 
 impl PendingAudioPacket {
     /// Создаёт ожидающий audio packet с явным track id и codec bytes.
     #[must_use]
-    pub fn new(track_id: TrackId, data: Vec<u8>) -> Self {
-        Self { track_id, data }
+    pub fn new(track_id: TrackId, encoded_bytes: Vec<u8>) -> Self {
+        Self {
+            track_id,
+            encoded_bytes,
+        }
     }
 }
 
@@ -40,8 +43,8 @@ pub struct PendingVideoPacket {
     /// Presentation timestamp определяет A/V sync и decode-ahead лимит.
     pub pts: Duration,
 
-    /// Codec payload копируется из demuxer packet для владения внутри session.
-    pub data: Vec<u8>,
+    /// Encoded video bytes копируются из demuxer packet для владения внутри session.
+    pub encoded_bytes: Vec<u8>,
 
     /// Keyframe flag пробрасывается в hardware decoder.
     pub keyframe: bool,
@@ -50,11 +53,11 @@ pub struct PendingVideoPacket {
 impl PendingVideoPacket {
     /// Создаёт ожидающий video packet без неименованных tuple-полей.
     #[must_use]
-    pub fn new(track_id: TrackId, pts: Duration, data: Vec<u8>, keyframe: bool) -> Self {
+    pub fn new(track_id: TrackId, pts: Duration, encoded_bytes: Vec<u8>, keyframe: bool) -> Self {
         Self {
             track_id,
             pts,
-            data,
+            encoded_bytes,
             keyframe,
         }
     }

@@ -134,7 +134,7 @@ impl SymphoniaDemuxer {
                     .codec_params
                     .extra_data
                     .as_ref()
-                    .map(|data| Bytes::copy_from_slice(data)),
+                    .map(|codec_private_bytes| Bytes::copy_from_slice(codec_private_bytes)),
                 time_base: entry
                     .time_base
                     .and_then(|time_base| OurTimeBase::new(time_base.numer, time_base.denom)),
@@ -342,24 +342,29 @@ fn build_track_entry(track: &Track) -> TrackEntry {
 /// 18:   channel mapping family
 ///
 /// Возвращает (sample_rate, channels) если OpusHead валиден.
-fn parse_opus_head(data: &[u8]) -> Option<(u32, u32)> {
+fn parse_opus_head(codec_private_bytes: &[u8]) -> Option<(u32, u32)> {
     // Минимальный размер OpusHead = 19 bytes
-    if data.len() < 19 {
+    if codec_private_bytes.len() < 19 {
         return None;
     }
 
     // Проверяем magic "OpusHead"
-    if &data[0..8] != b"OpusHead" {
+    if &codec_private_bytes[0..8] != b"OpusHead" {
         return None;
     }
 
-    let channel_count = data[9] as u32;
+    let channel_count = codec_private_bytes[9] as u32;
     if channel_count == 0 || channel_count > 255 {
         return None;
     }
 
     // Sample rate — u32 little-endian по смещению 12
-    let sample_rate = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
+    let sample_rate = u32::from_le_bytes([
+        codec_private_bytes[12],
+        codec_private_bytes[13],
+        codec_private_bytes[14],
+        codec_private_bytes[15],
+    ]);
     if sample_rate == 0 {
         return None;
     }

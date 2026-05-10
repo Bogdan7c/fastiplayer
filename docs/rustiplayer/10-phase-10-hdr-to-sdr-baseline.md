@@ -351,7 +351,7 @@ UI не считает transfer functions, matrices или tone mapping.
 - добавить `HdrToSdrSettings`;
 - добавить `HdrToneMappingOperator::Bt2446C`;
 - добавить `HdrOutputMode::SdrBt709Only`;
-- добавить `P010RenderReadiness::Renderable`;
+- использовать существующий `P010RenderReadiness::Renderable` как состояние production-ready P010 renderer;
 - обновить `RenderCapabilities`;
 - обновить `ActiveColorPath` diagnostics.
 
@@ -372,7 +372,7 @@ Manual tests:
 Задачи:
 
 - добавить `p010_renderer.rs`;
-- добавить `WgpuRenderableFrame::from_decoded_p010`;
+- использовать существующий `WgpuRenderableFrame::from_decoded_p010` boundary wrapper;
 - создать bind group layout для P010 planes + HDR uniforms;
 - выбрать P010 renderer только для `P010` frames;
 - поддержать baseline separate-layer P010 bindings и не завязать renderer на compatibility composed storage;

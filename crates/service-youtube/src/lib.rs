@@ -1,8 +1,8 @@
 //! Временный YouTube resolver на базе `yt-dlp`.
 //!
-//! Этот модуль намеренно находится на краю приложения, а не внутри video/audio core.
-//! Причина простая: `yt-dlp` нужен только чтобы получить первый рабочий 4K60 MVP,
-//! а декодер, demuxer и renderer должны оставаться независимыми от YouTube extraction.
+//! Этот crate является service boundary: он знает про YouTube/yt-dlp format
+//! selection и HTTP headers, но не знает про UI, renderer или внутренний state
+//! player-а. `app-egui` получает отсюда уже готовый streaming demuxer.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -24,7 +24,8 @@ const FORMAT_SELECTOR_ENV: &str = "VIDEO_PLAYER_YOUTUBE_FORMAT_SELECTOR";
 /// 4K60 -> 4K30 -> 1080p60 -> 1080p.
 ///
 /// Важно: `vcodec=vp9` выбран строго, без `vp9.2`.
-/// `vp9.2` обычно означает HDR/10-bit, а текущий MVP renderer рассчитан на NV12/8-bit.
+/// `vp9.2` обычно означает HDR/10-bit, а текущий production renderer Phase 9
+/// рассчитан на NV12/8-bit для обычного playback path.
 const DEFAULT_FORMAT_SELECTOR: &str = concat!(
     "bestvideo[ext=webm][vcodec=vp9][height=2160][fps>=60]+",
     "bestaudio[ext=webm][acodec=opus]/",
@@ -134,6 +135,7 @@ pub struct YoutubeStreamingMedia {
 }
 
 /// Проверяет, похож ли CLI-аргумент на URL, который должен обрабатывать YouTube resolver.
+#[must_use]
 pub fn is_probably_url(argument: &str) -> bool {
     // Явно поддерживаем только web URL, чтобы локальные пути с двоеточиями не ломали CLI.
     argument.starts_with("https://") || argument.starts_with("http://")
@@ -292,8 +294,14 @@ fn spawn_http_fetcher(
     thread::Builder::new()
         .name(thread_name.to_string())
         .spawn(move || {
-            if let Err(error) = fetch_stream_to_writer(&stream, &writer) {
-                let _ = writer.fail(format!("{thread_name}: {error}"));
+            if let Err(fetch_error) = fetch_stream_to_writer(&stream, &writer) {
+                let fail_message = format!("{thread_name}: {fetch_error}");
+                if let Err(writer_error) = writer.fail(fail_message) {
+                    tracing::warn!(
+                        error = %writer_error,
+                        "Не удалось передать ошибку HTTP fetcher-а в streaming reader"
+                    );
+                }
             }
         })
         .with_context(|| format!("Не удалось запустить HTTP fetcher thread: {thread_name}"))?;
@@ -379,7 +387,7 @@ fn youtube_format_selector() -> String {
 
 /// Преобразует неуспешный exit code `yt-dlp` в читаемую ошибку.
 fn ensure_yt_dlp_success(status: ExitStatus, stderr_bytes: &[u8]) -> Result<()> {
-    // Нулевой exit code означает, что `yt-dlp` считает скачивание успешным.
+    // Нулевой exit code означает, что `yt-dlp` считает selection успешным.
     if status.success() {
         return Ok(());
     }
@@ -388,7 +396,7 @@ fn ensure_yt_dlp_success(status: ExitStatus, stderr_bytes: &[u8]) -> Result<()> 
     let stderr_text = String::from_utf8_lossy(stderr_bytes);
 
     anyhow::bail!(
-        "yt-dlp не смог скачать поддерживаемый SDR VP9/Opus WebM поток (4K60, 4K30, 1080p60 или 1080p): {}",
+        "yt-dlp не смог выбрать поддерживаемый SDR VP9/Opus WebM поток (4K60, 4K30, 1080p60 или 1080p): {}",
         stderr_text.trim()
     );
 }
@@ -417,7 +425,7 @@ fn build_streaming_description(
     let acodec = metadata.acodec.as_deref().unwrap_or("unknown audio codec");
 
     format!(
-        "{title} [{video_id}] streaming {format_id} — {height} {fps}, {vcodec} + {acodec}; {}; {}",
+        "{title} [{video_id}] streaming {format_id} - {height} {fps}, {vcodec} + {acodec}; {}; {}",
         video_stream.description, audio_stream.description
     )
 }

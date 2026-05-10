@@ -35,10 +35,18 @@ pub enum ThreadMsg {
 
 /// Сырые данные видео-пакета для передачи в decoder thread.
 pub struct DecodePacket {
+    /// Track ID выбранного video stream.
     pub track_id: TrackId,
+
+    /// Presentation timestamp packet-а.
     pub pts: Duration,
-    pub data: Vec<u8>,
+
+    /// Encoded VP9 bytes, которые decoder thread передаёт hardware backend-у.
+    pub encoded_bytes: Vec<u8>,
+
+    /// Keyframe flag из container/demuxer.
     pub keyframe: bool,
+
     /// Resolved color metadata из player/capability layer для decoded frame contract.
     pub resolved_color: Option<VideoColorMetadata>,
 }
@@ -252,7 +260,7 @@ fn decoder_thread_loop(
                     pts: packet.pts,
                     dts: None,
                     keyframe: packet.keyframe,
-                    data: bytes::Bytes::copy_from_slice(&packet.data),
+                    data: bytes::Bytes::copy_from_slice(&packet.encoded_bytes),
                 };
 
                 match decoder.decode(&pkt) {
@@ -285,7 +293,9 @@ fn decoder_thread_loop(
                 if let Err(error) = decoder.flush() {
                     tracing::warn!(error = %error, "Decoder thread: flush failed");
                 }
-                let _ = done_tx.send(());
+                if done_tx.send(()).is_err() {
+                    tracing::warn!("Decoder thread: flush completed, but caller dropped receiver");
+                }
             }
         }
     }

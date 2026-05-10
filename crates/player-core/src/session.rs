@@ -201,6 +201,7 @@ impl PlayerSession {
                 if let Err(error) =
                     self.select_default_video_track(&tracks, "Поддерживаемый video track не найден")
                 {
+                    warn!(error = %error, "Video track rejected during local file load");
                     self.mark_fatal_error(error);
                     return;
                 }
@@ -254,6 +255,7 @@ impl PlayerSession {
             &tracks,
             "Поддерживаемый video track не найден в streaming demuxer",
         ) {
+            warn!(error = %error, "Video track rejected during streaming media load");
             self.mark_fatal_error(error);
             return;
         }
@@ -391,13 +393,13 @@ impl PlayerSession {
     }
 
     /// Обрабатывает audio packet: decode -> write to AudioOutput.
-    pub fn process_audio_packet(&mut self, track_id: TrackId, data: &[u8]) {
+    pub fn process_audio_packet(&mut self, track_id: TrackId, encoded_audio_bytes: &[u8]) {
         if self.pipeline.audio_track_id != Some(track_id) {
             return;
         }
 
         if let Some(ref mut decoder) = self.pipeline.audio_decoder {
-            match decoder.decode(data) {
+            match decoder.decode(encoded_audio_bytes) {
                 Ok(samples) if !samples.is_empty() => {
                     if let Some(ref mut output) = self.pipeline.audio_output {
                         output.write_samples(&samples);

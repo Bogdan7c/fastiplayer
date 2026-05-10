@@ -117,7 +117,7 @@ FFmpeg не используется ни для decode, ни для demux/probe
 - live streams;
 - историю, закладки, прогресс просмотра.
 
-`yt-dlp` является временной MVP-зависимостью и должен быть заменен своим Rust service/extractor layer.
+`yt-dlp` является временной MVP-зависимостью, сейчас изолированной в `service-youtube`, и должен быть заменен своим Rust service/extractor layer.
 
 ## Non-goals на ближайшие этапы
 

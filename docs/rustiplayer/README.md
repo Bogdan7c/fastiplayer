@@ -45,5 +45,5 @@
 | Config | TOML через `serde` |
 | Storage | SQLite через `rusqlite`, кроме пользовательских настроек |
 | Services | Модульные crate'ы, компилируются в один бинарь |
-| YouTube | Будущий полноценный клиент с account/session/cookies |
+| YouTube | Временный `yt-dlp` adapter живёт в `service-youtube`; полноценный клиент с account/session/cookies остаётся будущей задачей |
 | DRM | Дальняя архитектурная возможность, не текущий scope |

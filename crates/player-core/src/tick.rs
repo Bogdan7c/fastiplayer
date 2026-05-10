@@ -277,7 +277,7 @@ impl PlayerSession {
                 break;
             }
 
-            self.process_audio_packet(packet.track_id, &packet.data);
+            self.process_audio_packet(packet.track_id, &packet.encoded_bytes);
         }
     }
 
@@ -558,7 +558,7 @@ fn send_pending_video_packets_to_decoder(
         };
         let packet_track_id = packet.track_id;
         let packet_pts = packet.pts;
-        let packet_data = packet.data.clone();
+        let encoded_bytes = packet.encoded_bytes.clone();
 
         if session.pipeline.video_track_id != Some(packet_track_id) {
             session.pipeline.pending_video_packets.pop_front();
@@ -567,7 +567,7 @@ fn send_pending_video_packets_to_decoder(
 
         let packet_probe = PendingVideoPacketProbe {
             track_id: packet_track_id,
-            data: packet_data,
+            encoded_bytes,
         };
         if !validate_pending_video_packet_before_decode(session, &packet_probe) {
             break;
@@ -589,7 +589,7 @@ fn send_pending_video_packets_to_decoder(
 
         trace!(
             pts_ms = packet.pts.as_millis(),
-            data_len = packet.data.len(),
+            encoded_len = packet.encoded_bytes.len(),
             keyframe = packet.keyframe,
             "Sending video packet to decoder thread"
         );
@@ -602,7 +602,7 @@ fn send_pending_video_packets_to_decoder(
         let decode_packet = video_vaapi::DecodePacket {
             track_id: packet.track_id,
             pts: packet.pts,
-            data: packet.data,
+            encoded_bytes: packet.encoded_bytes,
             keyframe: packet.keyframe,
             resolved_color,
         };
@@ -629,7 +629,7 @@ struct PendingVideoPacketProbe {
     track_id: TrackId,
 
     /// Codec payload нужен VP9 parser-у для чтения profile из uncompressed header.
-    data: Vec<u8>,
+    encoded_bytes: Vec<u8>,
 }
 
 /// Проверяет profile/format до отправки packet-а в hardware decoder.
@@ -709,7 +709,7 @@ fn video_requirement_from_packet(
 
     match codec {
         VideoCodec::Vp9 => vp9_requirement_from_packet(
-            &packet.data,
+            &packet.encoded_bytes,
             session.vp9_container_metadata_source_for_track(packet.track_id),
         ),
         other_codec => Ok(Some(VideoDecodeRequirement::new(other_codec))),
