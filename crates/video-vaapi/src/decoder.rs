@@ -10,6 +10,7 @@ use cros_codecs::decoder::BlockingMode;
 use cros_codecs::decoder::DecodedHandle;
 use cros_codecs::decoder::DecoderEvent;
 use cros_codecs::decoder::DynDecodedHandle;
+use cros_codecs::decoder::stateless::DecodeError;
 use cros_codecs::decoder::stateless::StatelessVideoDecoder;
 use cros_codecs::libva::{
     VA_RT_FORMAT_YUV420, VA_RT_FORMAT_YUV420_10, VA_RT_FORMAT_YUV420_12, VA_RT_FORMAT_YUV422,
@@ -40,6 +41,13 @@ const FRAME_POOL_SIZE: usize = 16;
 /// очереди занять все zero-copy texture slots.
 const READY_QUEUE_LIMIT: usize = 3;
 
+/// Максимум повторных submit попыток после `DecodeError::CheckEvents`.
+///
+/// `cros-codecs` использует `CheckEvents` как backpressure-сигнал:
+/// вызывающий код должен обработать pending events и повторить тот же bitstream.
+/// Лимит защищает decoder thread от бесконечного цикла при поломанном backend state.
+const MAX_CHECK_EVENTS_RETRIES: usize = 4;
+
 /// Начальное разрешение для создания пула кадров.
 ///
 /// VA-API декодер требует выходные буферы до первого decode call.
@@ -47,6 +55,168 @@ const READY_QUEUE_LIMIT: usize = 3;
 /// пул будет пересоздан через `FormatChanged` event.
 const INITIAL_WIDTH: u32 = 1920;
 const INITIAL_HEIGHT: u32 = 1080;
+
+/// Итог обработки pending decoder events.
+///
+/// Отдельный report нужен, чтобы retry-loop мог видеть, был ли `FormatChanged`,
+/// и писать диагностический лог без знания деталей `FrameReady` upload path.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct DecoderDrainReport {
+    /// Количество событий, прочитанных через `next_event()`.
+    events_count: usize,
+
+    /// Был ли среди событий `FormatChanged`.
+    format_changed: bool,
+}
+
+/// Сводка одного вызова decode state machine.
+///
+/// `decode()` использует её только для логов и решения, был ли packet пропущен
+/// как recoverable parse error. Все готовые кадры по-прежнему лежат в `ready_queue`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct DecodeLoopReport {
+    /// Сколько раз packet был отправлен в `inner.decode()`.
+    attempts: usize,
+
+    /// Количество обработанных decoder events за весь вызов.
+    events_count: usize,
+
+    /// Был ли обработан `FormatChanged`.
+    format_changed: bool,
+
+    /// Сколько байт backend сообщил как обработанные.
+    processed_bytes: usize,
+
+    /// Был ли packet пропущен из-за recoverable parse error.
+    skipped_packet: bool,
+
+    /// Суммарное время внутри submit attempts.
+    submit_elapsed: Duration,
+
+    /// Суммарное время внутри drain events.
+    drain_elapsed: Duration,
+}
+
+impl DecodeLoopReport {
+    /// Добавляет результат одного drain прохода к общей сводке.
+    fn record_drain(&mut self, drain_report: DecoderDrainReport, drain_elapsed: Duration) {
+        self.events_count += drain_report.events_count;
+        self.format_changed |= drain_report.format_changed;
+        self.drain_elapsed += drain_elapsed;
+    }
+}
+
+/// Минимальный интерфейс, который нужен retry state machine.
+///
+/// Production implementation живёт на `VaapiVideoDecoder`, а unit test подставляет
+/// fake driver без VA-API/wgpu, чтобы проверить контракт `CheckEvents -> retry same packet`.
+trait DecoderRetryDriver {
+    /// Отправляет один packet в backend decoder.
+    fn submit_packet(
+        &mut self,
+        timestamp_us: u64,
+        packet_data: &[u8],
+    ) -> std::result::Result<usize, DecodeError>;
+
+    /// Обрабатывает все pending decoder events.
+    fn drain_events(&mut self) -> Result<DecoderDrainReport>;
+}
+
+/// Выполняет submit packet с bounded retry после `CheckEvents`.
+///
+/// Важно: `CheckEvents` не означает, что packet consumed. По контракту `cros-codecs`
+/// вызывающий код обязан обработать события и повторить `decode()` с теми же данными.
+fn run_decode_with_event_retry<D>(
+    driver: &mut D,
+    timestamp_us: u64,
+    packet_data: &[u8],
+    keyframe: bool,
+) -> Result<DecodeLoopReport>
+where
+    D: DecoderRetryDriver + ?Sized,
+{
+    let pts_ms = timestamp_us / 1000;
+    let mut report = DecodeLoopReport::default();
+
+    loop {
+        report.attempts += 1;
+        let attempt = report.attempts;
+        let submit_start = std::time::Instant::now();
+        let submit_result = driver.submit_packet(timestamp_us, packet_data);
+        report.submit_elapsed += submit_start.elapsed();
+
+        match submit_result {
+            Ok(processed_bytes) => {
+                report.processed_bytes = processed_bytes;
+                trace!(
+                    pts_ms = pts_ms,
+                    keyframe = keyframe,
+                    attempt = attempt,
+                    processed_bytes = processed_bytes,
+                    "decode() accepted bitstream"
+                );
+                let drain_start = std::time::Instant::now();
+                let drain_report = driver.drain_events()?;
+                report.record_drain(drain_report, drain_start.elapsed());
+                return Ok(report);
+            }
+            Err(DecodeError::CheckEvents) => {
+                let drain_start = std::time::Instant::now();
+                let drain_report = driver.drain_events()?;
+                let format_changed = drain_report.format_changed;
+                report.record_drain(drain_report, drain_start.elapsed());
+
+                if attempt > MAX_CHECK_EVENTS_RETRIES {
+                    return Err(anyhow::anyhow!(
+                        "Decoder repeatedly requested event drain after {attempt} attempts"
+                    ));
+                }
+
+                debug!(
+                    pts_ms = pts_ms,
+                    keyframe = keyframe,
+                    attempt = attempt,
+                    format_changed = format_changed,
+                    "retrying same VP9 packet after decoder event drain"
+                );
+            }
+            Err(DecodeError::NotEnoughOutputBuffers(needed)) => {
+                warn!(
+                    pts_ms = pts_ms,
+                    keyframe = keyframe,
+                    attempt = attempt,
+                    needed = needed,
+                    "Decoder out of output buffers"
+                );
+                let drain_start = std::time::Instant::now();
+                let drain_report = driver.drain_events()?;
+                report.record_drain(drain_report, drain_start.elapsed());
+                return Ok(report);
+            }
+            Err(DecodeError::ParseFrameError(message)) => {
+                report.skipped_packet = true;
+                warn!(
+                    pts_ms = pts_ms,
+                    keyframe = keyframe,
+                    attempt = attempt,
+                    %message,
+                    "VP9 parse error, skipping packet"
+                );
+                return Ok(report);
+            }
+            Err(error) => {
+                warn!(
+                    pts_ms = pts_ms,
+                    keyframe = keyframe,
+                    attempt = attempt,
+                    error = ?error,
+                    "Decode error"
+                );
+                return Err(anyhow::anyhow!("Decode error: {:?}", error));
+            }
+        }
+    }
+}
 
 /// Typed контракт decoded surface, который VA-API backend отдаёт renderer boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -691,93 +861,34 @@ impl VaapiVideoDecoder {
 
         Ok(())
     }
-}
 
-impl VideoDecoder for VaapiVideoDecoder {
-    /// Декодирует один VP9 packet.
+    /// Обрабатывает все pending events из `cros-codecs`.
     ///
-    /// Pipeline:
-    /// 1. Submit bitstream в cros-codecs decoder.
-    /// 2. Drain все pending events (FrameReady / FormatChanged).
-    /// 3. Вернуть самый старый готовый кадр из очереди.
-    fn decode(&mut self, packet: &Packet) -> Result<Option<DecodedFrame>> {
-        // Конвертируем PTS из Duration в микросекунды (u64).
-        // cros-codecs использует u64 timestamp для идентификации кадров.
-        let timestamp_us = packet.pts.as_micros() as u64;
-        let decode_start = std::time::Instant::now();
+    /// `FrameReady` превращается в `DecodedFrame` и кладётся в `ready_queue`.
+    /// `FormatChanged` инвалидирует старые textures и пересоздаёт frame pool
+    /// под новое coded resolution/decoded format.
+    fn drain_decoder_events(&mut self) -> Result<DecoderDrainReport> {
+        let mut report = DecoderDrainReport::default();
 
-        trace!(
-            timestamp_us = timestamp_us,
-            data_len = packet.data.len(),
-            "decode() called"
-        );
-
-        // Closure, предоставляющий свободный frame из пула декодеру.
-        // Декодер вызывает этот callback когда ему нужен новый выходной буфер.
-        //
-        // Используем `alloc_or_allocate` чтобы не останавливать decode
-        // если пул исчерпан (reference frames держатся decoder'ом).
-        let mut alloc_cb = || {
-            let frame = self.frame_pool.alloc_or_allocate();
-            if frame.is_none() {
-                warn!("Frame pool exhausted — decoder needs more output buffers");
-            }
-            frame
-        };
-
-        // Шаг 1: Отправляем bitstream в decoder.
-        let inner_decode_start = std::time::Instant::now();
-        match self.inner.decode(timestamp_us, &packet.data, &mut alloc_cb) {
-            Ok(_processed_bytes) => {
-                trace!("decode() accepted bitstream");
-            }
-            Err(cros_codecs::decoder::stateless::DecodeError::CheckEvents) => {
-                // Decoder требует drain events перед продолжением.
-                // Это нормально — мы всегда drain events после decode().
-                debug!("Decoder requested event drain");
-            }
-            Err(cros_codecs::decoder::stateless::DecodeError::NotEnoughOutputBuffers(n)) => {
-                // Пул исчерпан. Это не должно произойти при нормальной работе
-                // (приложение держит ~3 кадра, у нас 12 в пуле).
-                warn!(needed = n, "Decoder out of output buffers");
-            }
-            Err(cros_codecs::decoder::stateless::DecodeError::ParseFrameError(msg)) => {
-                // Ошибка парсинга VP9 — пропускаем пакет, продолжаем декодирование.
-                warn!(%msg, "VP9 parse error, skipping packet");
-                return Ok(None);
-            }
-            Err(e) => {
-                // Прочие ошибки (backend error и т.д.) — возвращаем upstream.
-                warn!(error = ?e, "Decode error");
-                return Err(anyhow::anyhow!("Decode error: {:?}", e));
-            }
-        }
-        let inner_decode_elapsed = inner_decode_start.elapsed().as_millis();
-
-        // Шаг 2: Drain все pending events.
-        //
-        // Обрабатываем:
-        // - FrameReady: sync + map + upload → ready_queue
-        // - FormatChanged: сбрасываем texture cache (старое разрешение больше не валидно)
-        let drain_start = std::time::Instant::now();
-        let mut events_count = 0;
         while let Some(event) = self.inner.next_event() {
-            events_count += 1;
+            report.events_count += 1;
             match event {
                 DecoderEvent::FrameReady(handle) => {
                     let pts_ms = handle.timestamp() / 1000;
                     trace!(pts_ms = pts_ms, "DecoderEvent::FrameReady");
-                    if let Err(e) = self.process_ready_frame(handle) {
-                        if is_fatal_decoder_error(&e) {
-                            return Err(e);
+                    if let Err(error) = self.process_ready_frame(handle) {
+                        if is_fatal_decoder_error(&error) {
+                            return Err(error);
                         }
-                        warn!(error = %e, "Failed to process ready frame");
+                        warn!(error = %error, "Failed to process ready frame");
                     }
                 }
                 DecoderEvent::FormatChanged => {
+                    report.format_changed = true;
                     info!("Format changed, invalidating texture cache and frame pool");
-                    // Очищаем ready_queue — кадры в ней имеют невалидные texture handles
-                    // после invalidate_all().
+
+                    // Очищаем ready_queue: после invalidate_all() старые texture handles
+                    // больше нельзя безопасно отдавать renderer-у.
                     let dropped = self.ready_queue.len();
                     if dropped > 0 {
                         info!(dropped, "Clearing ready_queue after FormatChanged");
@@ -785,10 +896,8 @@ impl VideoDecoder for VaapiVideoDecoder {
                     }
                     self.texture_cache.lock().unwrap().invalidate_all();
 
-                    // Пересоздаём frame pool под новое разрешение.
-                    // Decoder уже вызвал `flush()` и сбросил reference frames,
-                    // поэтому старые буферы можно безопасно дропать.
-                    // `stream_info()` уже обновлён через `new_sequence()` внутри decode().
+                    // Пересоздаём frame pool под новое разрешение/формат.
+                    // `stream_info()` уже обновлён внутри cros-codecs перед event-ом.
                     if let Some(stream_info) = self.inner.stream_info() {
                         let res = stream_info.coded_resolution;
                         let rt_format = match rt_format_for_decoded_format(stream_info.format) {
@@ -802,14 +911,14 @@ impl VideoDecoder for VaapiVideoDecoder {
                                 continue;
                             }
                         };
-                        if let Err(e) = self.frame_pool.resize_with_rt_format(
+                        if let Err(error) = self.frame_pool.resize_with_rt_format(
                             res.width,
                             res.height,
                             FRAME_POOL_SIZE,
                             rt_format,
                         ) {
                             warn!(
-                                error = %e,
+                                error = %error,
                                 width = res.width,
                                 height = res.height,
                                 rt_format,
@@ -831,31 +940,103 @@ impl VideoDecoder for VaapiVideoDecoder {
             }
         }
 
+        Ok(report)
+    }
+}
+
+impl DecoderRetryDriver for VaapiVideoDecoder {
+    /// Отправляет packet в реальный VA-API decoder.
+    fn submit_packet(
+        &mut self,
+        timestamp_us: u64,
+        packet_data: &[u8],
+    ) -> std::result::Result<usize, DecodeError> {
+        // Декодер вызывает callback, когда ему нужен новый выходной VA surface.
+        // `alloc_or_allocate` сохраняет forward progress, если reference frames
+        // временно удерживают больше surfaces, чем ожидалось.
+        let frame_pool = &mut self.frame_pool;
+        let mut alloc_cb = || {
+            let frame = frame_pool.alloc_or_allocate();
+            if frame.is_none() {
+                warn!("Frame pool exhausted — decoder needs more output buffers");
+            }
+            frame
+        };
+
+        self.inner.decode(timestamp_us, packet_data, &mut alloc_cb)
+    }
+
+    /// Обрабатывает pending events реального decoder-а.
+    fn drain_events(&mut self) -> Result<DecoderDrainReport> {
+        self.drain_decoder_events()
+    }
+}
+
+impl VideoDecoder for VaapiVideoDecoder {
+    /// Декодирует один VP9 packet.
+    ///
+    /// Pipeline:
+    /// 1. Submit bitstream в cros-codecs decoder.
+    /// 2. Drain все pending events (FrameReady / FormatChanged).
+    /// 3. Вернуть самый старый готовый кадр из очереди.
+    fn decode(&mut self, packet: &Packet) -> Result<Option<DecodedFrame>> {
+        // Конвертируем PTS из Duration в микросекунды (u64).
+        // cros-codecs использует u64 timestamp для идентификации кадров.
+        let timestamp_us = packet.pts.as_micros() as u64;
+        let decode_start = std::time::Instant::now();
+
+        trace!(
+            timestamp_us = timestamp_us,
+            pts_ms = packet.pts.as_millis(),
+            keyframe = packet.keyframe,
+            data_len = packet.data.len(),
+            "decode() called"
+        );
+
+        // Шаг 1-2: submit packet и drain pending events.
+        // При `CheckEvents` тот же packet отправляется повторно после drain,
+        // потому что нижний decoder ещё не обязан был consume-ить bitstream.
+        let loop_report =
+            run_decode_with_event_retry(self, timestamp_us, &packet.data, packet.keyframe)?;
+        if loop_report.skipped_packet {
+            return Ok(None);
+        }
+
         // Шаг 3: Возвращаем самый старый готовый кадр (FIFO).
         let result = self.ready_queue.pop_front();
         let decode_elapsed = decode_start.elapsed().as_millis();
-        let drain_elapsed = drain_start.elapsed().as_millis();
+        let submit_elapsed = loop_report.submit_elapsed.as_millis();
+        let drain_elapsed = loop_report.drain_elapsed.as_millis();
         if let Some(ref frame) = result {
             debug!(
                 pts_ms = frame.pts.as_millis(),
                 width = frame.width,
                 height = frame.height,
-                inner_decode_ms = inner_decode_elapsed,
+                decode_attempts = loop_report.attempts,
+                processed_bytes = loop_report.processed_bytes,
+                events = loop_report.events_count,
+                format_changed = loop_report.format_changed,
+                submit_ms = submit_elapsed,
                 drain_ms = drain_elapsed,
                 decode_ms = decode_elapsed,
                 "decode() returning frame"
             );
-        } else if events_count > 0 {
+        } else if loop_report.events_count > 0 {
             debug!(
-                inner_decode_ms = inner_decode_elapsed,
+                decode_attempts = loop_report.attempts,
+                processed_bytes = loop_report.processed_bytes,
+                events = loop_report.events_count,
+                format_changed = loop_report.format_changed,
+                submit_ms = submit_elapsed,
                 drain_ms = drain_elapsed,
                 decode_ms = decode_elapsed,
-                "decode() completed: no frame ready (events={})",
-                events_count
+                "decode() completed: no frame ready"
             );
         } else {
             trace!(
-                inner_decode_ms = inner_decode_elapsed,
+                decode_attempts = loop_report.attempts,
+                processed_bytes = loop_report.processed_bytes,
+                submit_ms = submit_elapsed,
                 drain_ms = drain_elapsed,
                 decode_ms = decode_elapsed,
                 "decode() completed: no events, no frame"
@@ -898,6 +1079,108 @@ impl VideoDecoder for VaapiVideoDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test-only event type для проверки retry state machine без реальной VA-API.
+    enum FakeDecoderEvent {
+        /// Имитирует `DecoderEvent::FormatChanged`.
+        FormatChanged,
+
+        /// Имитирует `DecoderEvent::FrameReady` с исходным PTS.
+        FrameReady { pts: Duration },
+    }
+
+    /// Минимальный fake-драйвер для `CheckEvents -> drain -> retry same packet`.
+    struct FakeRetryDriver {
+        /// Заранее заданные ответы fake `decode()`.
+        decode_results: VecDeque<std::result::Result<usize, DecodeError>>,
+
+        /// Пакеты событий, которые вернёт каждый fake drain.
+        drain_batches: VecDeque<Vec<FakeDecoderEvent>>,
+
+        /// История submit-ов: timestamp и копия bitstream-а.
+        submissions: Vec<(u64, Vec<u8>)>,
+
+        /// Очередь fake ready frames, по которой проверяем сохранение PTS.
+        ready_pts: VecDeque<Duration>,
+    }
+
+    impl FakeRetryDriver {
+        /// Создаёт fake-драйвер с управляемыми decode/drain шагами.
+        fn new(
+            decode_results: Vec<std::result::Result<usize, DecodeError>>,
+            drain_batches: Vec<Vec<FakeDecoderEvent>>,
+        ) -> Self {
+            Self {
+                decode_results: VecDeque::from(decode_results),
+                drain_batches: VecDeque::from(drain_batches),
+                submissions: Vec::new(),
+                ready_pts: VecDeque::new(),
+            }
+        }
+    }
+
+    impl DecoderRetryDriver for FakeRetryDriver {
+        /// Записывает submit и возвращает следующий заранее заданный результат.
+        fn submit_packet(
+            &mut self,
+            timestamp_us: u64,
+            packet_data: &[u8],
+        ) -> std::result::Result<usize, DecodeError> {
+            self.submissions.push((timestamp_us, packet_data.to_vec()));
+            self.decode_results
+                .pop_front()
+                .expect("fake decode result must be provided")
+        }
+
+        /// Обрабатывает один пакет fake events.
+        fn drain_events(&mut self) -> Result<DecoderDrainReport> {
+            let mut report = DecoderDrainReport::default();
+            let Some(events) = self.drain_batches.pop_front() else {
+                return Ok(report);
+            };
+
+            for event in events {
+                report.events_count += 1;
+                match event {
+                    FakeDecoderEvent::FormatChanged => {
+                        report.format_changed = true;
+                    }
+                    FakeDecoderEvent::FrameReady { pts } => {
+                        self.ready_pts.push_back(pts);
+                    }
+                }
+            }
+
+            Ok(report)
+        }
+    }
+
+    /// Проверяет, что `CheckEvents` не теряет стартовый packet после `FormatChanged`.
+    #[test]
+    fn check_events_format_change_retries_same_packet_and_preserves_pts() {
+        let packet_data = vec![0x82, 0x49, 0x83, 0x42];
+        let mut driver = FakeRetryDriver::new(
+            vec![Err(DecodeError::CheckEvents), Ok(packet_data.len())],
+            vec![
+                vec![FakeDecoderEvent::FormatChanged],
+                vec![FakeDecoderEvent::FrameReady {
+                    pts: Duration::ZERO,
+                }],
+            ],
+        );
+
+        let report = run_decode_with_event_retry(&mut driver, 0, &packet_data, true).unwrap();
+
+        assert_eq!(report.attempts, 2);
+        assert_eq!(report.events_count, 2);
+        assert!(report.format_changed);
+        assert!(!report.skipped_packet);
+        assert_eq!(
+            driver.submissions,
+            vec![(0, packet_data.clone()), (0, packet_data)]
+        );
+        assert_eq!(driver.ready_pts.pop_front(), Some(Duration::ZERO));
+    }
 
     /// Проверяет, что VA 10-bit 4:2:0 surface становится P010 boundary contract.
     #[test]
