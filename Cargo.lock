@@ -701,6 +701,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "vp9-parser",
 ]
 
 [[package]]

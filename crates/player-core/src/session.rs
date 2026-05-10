@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use capability_core::{SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection};
-use codec_core::{VideoCodec, VideoDecodeRequirement};
+use codec_core::{BitDepth, ChromaSubsampling, VideoCodec, VideoDecodeRequirement};
 use media_core::{TrackInfo, TrackKind};
 use tracing::{info, warn};
 use webm_demux::Demuxer;
@@ -914,6 +914,21 @@ fn player_error_from_unsupported_requirement(error: UnsupportedVideoRequirement)
         }
         Some(VideoCapabilityRejection::UnsupportedProfile { .. }) => {
             PlayerErrorKind::UnsupportedVideoProfile
+        }
+        Some(VideoCapabilityRejection::UnsupportedFormat { .. })
+        | Some(VideoCapabilityRejection::UnsupportedRenderFormat { .. })
+            if error.requirement.bit_depth == Some(BitDepth::Twelve) =>
+        {
+            PlayerErrorKind::UnsupportedVideoBitDepth
+        }
+        Some(VideoCapabilityRejection::UnsupportedFormat { .. })
+        | Some(VideoCapabilityRejection::UnsupportedRenderFormat { .. })
+            if matches!(
+                error.requirement.chroma,
+                Some(ChromaSubsampling::Yuv422 | ChromaSubsampling::Yuv444)
+            ) =>
+        {
+            PlayerErrorKind::UnsupportedVideoChroma
         }
         Some(VideoCapabilityRejection::UnsupportedFormat { .. }) if error.requirement.hdr => {
             PlayerErrorKind::UnsupportedHdrMode

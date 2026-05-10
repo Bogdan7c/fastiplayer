@@ -57,10 +57,17 @@ enum VideoFrameFormat {
     Rgba8,
 }
 
+enum P010RenderReadiness {
+    Unavailable,
+    ZeroCopyBoundaryVerified,
+    Renderable,
+}
+
 struct RenderCapabilities {
     backend: RenderBackendKind,
     supports_hdr_to_sdr: bool,
     supports_native_hdr_output: bool,
+    p010_readiness: P010RenderReadiness,
     supported_frame_formats: Vec<VideoFrameFormat>,
     max_texture_size: Option<u32>,
     advanced_ui: bool,
@@ -213,7 +220,7 @@ Phase 8.5 готовит renderer к HDR, но сам HDR не реализуе�
 
 - swapchain transfer описывается enum-ом; default - `PreserveCurrentUnorm`, чтобы не менять текущий SDR result;
 - реальные color metadata собираются layered-моделью с origin/confidence;
-- tone mapping presets добавляются в typed contract, но не становятся user config до Phase 9;
+- tone mapping presets остаются typed future contract; Phase 10 добавляет только фиксированный `bt2446_c` config без пользовательских preset controls;
 - SDR/RGB adjustments добавляются в settings/config с identity defaults;
 - BT.2020 SDR сейчас отображается как fallback path в SDR BT.709 diagnostics, настоящий gamut mapping добавляется позже.
 
@@ -240,4 +247,18 @@ BT.2020 SDR fallback не означает wide-gamut output support. Это т�
 
 ### Shader boundary
 
-`nv12_to_rgba.wgsl` остаётся NV12 SDR shader path. Он получает range normalization, YUV->RGB matrix, SDR adjustments и debug mode через uniforms. Shader не должен превращаться в универсальный HDR-комбайн; P010/HDR получает отдельный renderer path.
+`nv12_to_rgba.wgsl` остаётся NV12 SDR shader path. Он получает range normalization, YUV->RGB matrix, SDR adjustments и debug mode через uniforms. Shader не должен превращаться в универсальный HDR-комбайн; Phase 10 P010/HDR получает отдельный renderer path и отдельный shader.
+
+## Phase 9/10 P010 policy
+
+Phase 9 может проверить только P010 zero-copy render boundary. Это не то же самое, что production rendering path.
+
+```text
+Unavailable -> P010 path недоступен
+ZeroCopyBoundaryVerified -> P010 DMA-BUF импорт и plane views доказаны ручным dev-тестом
+Renderable -> renderer имеет production P010 shader path
+```
+
+Production HDR playback разрешается только при `Renderable` и `supports_hdr_to_sdr = true`.
+
+Phase 10 переводит P010/HDR path в `Renderable` через отдельный shader `p010_bt2446c_to_sdr.wgsl`, BT.2446 Method C и `ExplicitShaderOetf`.

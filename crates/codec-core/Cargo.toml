@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 serde.workspace = true
+vp9-parser.workspace = true
 
 [dev-dependencies]
 serde_json = "1.0"

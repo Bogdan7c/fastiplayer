@@ -131,6 +131,8 @@ Desktop shell.
 - `VideoColorMetadata`;
 - `ColorMetadataOrigin`;
 - `ColorMetadataConfidence`;
+- `VideoRequirementRejection`;
+- `ColorMetadataConflict`;
 - `SupportedDecodeFormat`;
 - normalization codec ids из контейнеров и сервисов.
 
@@ -236,6 +238,7 @@ Software audio pipeline.
 - color metadata;
 - decoded pixel format;
 - bit depth/chroma metadata;
+- decoded memory path, например `DmaBufZeroCopy` или `CpuUpload`;
 - video frame lifecycle contracts;
 - backend-independent decode traits.
 
@@ -299,6 +302,7 @@ Primary renderer.
 - mapping typed color metadata to GPU uniforms;
 - SDR color adjustments in shader uniforms;
 - HDR-to-SDR tone mapping;
+- distinction between P010 zero-copy boundary readiness and production P010 renderability;
 - egui composition.
 
 Текущий `app-egui/src/render.rs` и `render` crate должны постепенно переехать сюда.

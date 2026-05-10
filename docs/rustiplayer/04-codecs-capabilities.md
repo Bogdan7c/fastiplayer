@@ -243,13 +243,24 @@ trait VideoDecodeBackendProvider {
 - добавить active color path diagnostics;
 - не объявлять HDR support и не добавлять P010 renderer преждевременно.
 
+### Stage 0.5: Full VP9 completion before HDR
+
+Перед HDR-to-SDR renderer-ом нужно закрыть VP9 как первый реальный producer P010/HDR контракта:
+
+- распознавать VP9 Profile 0/1/2/3;
+- поддержать текущий Profile 0 SDR/NV12 production path;
+- распознавать и честно отклонять 12-bit, 4:2:2 и 4:4:4 VP9 variants;
+- добавить VP9/WebM layered color metadata resolver;
+- доказать `P010 + HDR metadata + zero-copy` render boundary для VP9 Profile 2 10-bit 4:2:0;
+- не показывать HDR до появления Phase 10 tone mapping.
+
 ### Stage 1: HDR input to SDR output
 
 Первая цель:
 
 - принять HDR stream;
-- сохранить color metadata;
-- декодировать аппаратно;
+- использовать color metadata и P010 boundary из VP9 completion;
+- декодировать аппаратно без software fallback;
 - сделать tone mapping в shader;
 - вывести SDR BT.709 на обычный монитор.
 

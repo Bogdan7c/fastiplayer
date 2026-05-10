@@ -97,7 +97,7 @@ render-wgpu
 swapchain output
 ```
 
-Phase 8.5 сохраняет текущий SDR VP9/NV12 путь и не добавляет HDR support. Цель этапа - сделать явными metadata, defaults и shader uniforms, чтобы Phase 9 мог добавить P010/HDR renderer без повторного рефакторинга `DecodedFrame` и `RenderableFrame`.
+Phase 8.5 сохраняет текущий SDR VP9/NV12 путь и не добавляет HDR support. Цель этапа - сделать явными metadata, defaults и shader uniforms, чтобы Phase 9 мог закрыть VP9/P010 readiness, а Phase 10 мог добавить P010/HDR renderer без повторного рефакторинга `DecodedFrame` и `RenderableFrame`.
 
 Color metadata выбирается layered-моделью: manifest/container metadata используется как ранний hint, codec bitstream parser уточняет colorimetry, decoder/backend подтверждает фактический decoded format, а fallback явно помечается как fallback. Текущий fallback для старого SDR пути - `BT.709 limited SDR`.
 

@@ -15,6 +15,8 @@
 - [07. Services and Network](07-services-network.md) - YouTube-клиент, будущие сервисы, cache, streaming.
 - [08. Development Roadmap](08-development-roadmap.md) - поэтапный план разработки в порядке приоритета.
 - [09. Phase 8.5 SDR Color Pipeline Prep](09-phase-8-5-sdr-color-pipeline-prep.md) - подготовка SDR color pipeline перед HDR.
+- [10. Phase 9 Full VP9 Completion](09-phase-9-vp9-completion.md) - полное VP9 capability/metadata/decode-readiness направление перед HDR.
+- [11. Phase 10 HDR-to-SDR Baseline](10-phase-10-hdr-to-sdr-baseline.md) - HDR-to-SDR baseline поверх готового VP9/P010 контракта.
 
 ## Ключевые решения
 
@@ -30,7 +32,9 @@
 | Renderer primary | `wgpu`/Vulkan |
 | Renderer legacy | Отдельный будущий OpenGL ES 2.0 crate для SDR 8-bit NV12 |
 | Color pipeline | Phase 8.5 вводит явный SDR color pipeline contract перед HDR |
-| Swapchain transfer | По умолчанию сохраняем текущий `Unorm` path через `PreserveCurrentUnorm`; `SrgbRenderTarget` и explicit shader OETF остаются future modes |
+| Phase 9 | Полная typed VP9 модель: Profile 0 SDR production path, Profile 2 10-bit P010 readiness, точные rejects для 12-bit и 4:2:2/4:4:4 |
+| Phase 10 | HDR-to-SDR baseline поверх Phase 9: P010 zero-copy only, BT.2446 Method C, PQ+HLG, SDR BT.709 output |
+| Swapchain transfer | SDR path сохраняет `PreserveCurrentUnorm`; Phase 10 HDR path использует `ExplicitShaderOetf` поверх `Unorm`; `SrgbRenderTarget` остаётся future mode |
 | Color metadata | Используем layered metadata с origin/confidence: manifest/container/bitstream/decoder/fallback |
 | SDR adjustments | В contract закладываются brightness/contrast/saturation/exposure и RGB gain/offset с identity defaults |
 | BT.2020 SDR | Сейчас показываем как fallback в SDR BT.709 diagnostics, позже добавляем настоящий gamut mapping |

@@ -99,7 +99,7 @@ language = "ru"
 
 ## Render color config policy
 
-Phase 8.5 добавляет пользовательские SDR/RGB adjustments в config, но не включает HDR tone mapping в активный renderer path до реализации Phase 9.
+Phase 8.5 добавляет пользовательские SDR/RGB adjustments в config, но не включает HDR tone mapping в активный renderer path до реализации Phase 10.
 
 В текущей схеме `render.hdr_to_sdr` и `render.tone_mapping` остаются compatibility placeholders:
 
@@ -117,7 +117,35 @@ Identity defaults обязательны:
 - `rgb_gain = [1.0, 1.0, 1.0]`;
 - `rgb_offset = [0.0, 0.0, 0.0]`.
 
-`swapchain_transfer` и `tone_mapping` сначала живут как typed renderer settings/defaults. Их можно вынести в user config позже, когда появятся tests и UI, которые объясняют разницу между `PreserveCurrentUnorm`, `SrgbRenderTarget`, explicit shader OETF и HDR tone mapping modes.
+`swapchain_transfer` и `tone_mapping` сначала живут как typed renderer settings/defaults. Phase 10 не добавляет свободный выбор tone mapping presets в UI: production HDR-to-SDR использует фиксированный `bt2446_c` operator.
+
+## Phase 10 HDR-to-SDR config policy
+
+Текущие scalar placeholders:
+
+```toml
+[render]
+hdr_to_sdr = false
+tone_mapping = "disabled"
+```
+
+нельзя одновременно хранить вместе с будущей таблицей:
+
+```toml
+[render.hdr_to_sdr]
+enabled = true
+operator = "bt2446_c"
+sdr_reference_white_nits = 100.0
+hdr_reference_peak_nits = 1000.0
+```
+
+Поэтому Phase 10 должна сделать явную schema migration:
+
+- старый scalar `render.hdr_to_sdr` читается только как compatibility input;
+- новый persisted format использует таблицу `[render.hdr_to_sdr]`;
+- `render.tone_mapping` остаётся legacy compatibility field или удаляется через schema migration;
+- `operator` в Phase 10 принимает только `bt2446_c`;
+- UI показывает diagnostics, но не даёт выбрать alternative tone mapping presets.
 
 ## Config layering
 

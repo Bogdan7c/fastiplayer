@@ -198,7 +198,7 @@ Acceptance:
 - добавить typed color metadata path от decoder boundary до renderer uniforms;
 - заложить SDR/RGB adjustments и active color path diagnostics;
 - сохранить zero-copy DMA-BUF import как целевой path;
-- подготовить Phase 9 P010/HDR без превращения `nv12_to_rgba.wgsl` в универсальный HDR shader.
+- подготовить Phase 9 VP9/P010 readiness и Phase 10 HDR renderer без превращения `nv12_to_rgba.wgsl` в универсальный HDR shader.
 
 Acceptance:
 
@@ -210,40 +210,57 @@ Acceptance:
 - shader/source tests проверяют, что NV12 UV order не сломан;
 - zero-copy decoded NV12 DMA-BUF import не заменён CPU color conversion path.
 
-## Phase 9: HDR-to-SDR baseline
+## Phase 9: Full VP9 completion
+
+Подробный план: [09. Phase 9 Full VP9 Completion](09-phase-9-vp9-completion.md).
 
 Цель:
 
-- использовать frame/color metadata path из Phase 8.5;
+- закрыть текущие ограничения VP9 до уровня полной typed capability/selection модели;
+- сохранить рабочий VP9 Profile 0 SDR/NV12 production path;
+- распознавать все VP9 profiles, bit depths и chroma variants;
+- поддержать VP9 Profile 2 10-bit 4:2:0 как P010/HDR readiness boundary, если hardware позволяет;
+- честно отклонять VP9 12-bit, 4:2:2 и 4:4:4 variants с typed reasons;
+- добавить layered VP9/WebM color metadata resolver;
+- доказать `P010 + HDR metadata + zero-copy render boundary` для Phase 10 без включения HDR playback.
+
+Acceptance:
+
+- VP9 Profile 0 SDR playback работает как до refactor;
+- VP9 Profile 0/1/2/3 распознаются;
+- VP9 Profile 1/3 rejected как unsupported chroma, а не generic hardware failure;
+- VP9 12-bit rejected как unsupported bit depth;
+- VP9 Profile 2 10-bit 4:2:0 на поддержанном hardware доходит до P010 zero-copy boundary;
+- production HDR playback всё ещё rejected до Phase 10 с понятной причиной;
+- P010 path не имеет CPU upload/readback fallback;
+- metadata resolver покрыт conflict tests;
+- capability rejection reasons typed и codec-agnostic;
+- SDR VP9/NV12 regression покрыт unit/manual tests.
+
+## Phase 10: HDR-to-SDR baseline
+
+Подробный план: [10. Phase 10 HDR-to-SDR Baseline](10-phase-10-hdr-to-sdr-baseline.md).
+
+Цель:
+
+- использовать готовый Phase 9 `P010 + HDR metadata + zero-copy` render boundary;
 - добавить отдельный P010/HDR shader path;
-- добавить HDR-to-SDR tone mapping implementation;
-- начать с PQ/HLG to SDR BT.709.
+- реализовать HDR-to-SDR conversion по ITU-R BT.2446 Method C;
+- поддержать PQ и HLG input;
+- вывести SDR BT.709 через explicit shader OETF;
+- сохранить SDR path из Phase 8.5/9 стабильным.
 
 Acceptance:
 
 - HDR input не отображается как washed-out SDR;
-- UI показывает active color path;
-- SDR path из Phase 8.5 остаётся стабильным;
-- SDR видео не ломается.
-
-## Phase 10: Full VP9 completion
-
-Цель:
-
-- закрыть текущие ограничения VP9;
-- добавить profile/bit-depth handling;
-- закрепить VP9 header probing как adapter с мягким поведением при ошибке;
-- добавить sanity-check bitstream metadata против container/service metadata, если она доступна;
-- обновить test matrix;
-- стабилизировать performance.
-
-Acceptance:
-
-- VP9 capability matrix accurate;
-- VP9 SDR/HDR samples покрыты тестами;
-- ошибки parser'а или невозможные размеры не дают ложный `HardwareDecoderUnavailable`;
-- strict reject происходит только для подтверждённо неподдерживаемого VP9 profile/format/resolution/HDR;
-- frame pacing metrics стабильны.
+- P010 используется только через zero-copy path;
+- `supports_hdr_to_sdr = true` появляется только после рабочей BT.2446-C реализации;
+- `supports_native_hdr_output = false`;
+- PQ и HLG покрыты tests;
+- UI показывает active HDR color path;
+- optional mastering/CLL/FALL defaults видны в diagnostics;
+- SDR VP9/NV12 path не ломается;
+- HDR renderer fail-closed, без SDR/CPU fallback.
 
 ## Phase 11: AV1 backend
 

@@ -12,6 +12,12 @@ pub enum PlayerErrorKind {
     /// Профиль video codec не поддерживается аппаратным backend.
     UnsupportedVideoProfile,
 
+    /// Bit depth video stream не поддерживается текущей production policy.
+    UnsupportedVideoBitDepth,
+
+    /// Chroma subsampling video stream не поддерживается текущей production policy.
+    UnsupportedVideoChroma,
+
     /// HDR-режим пока не может быть корректно отображён.
     UnsupportedHdrMode,
 

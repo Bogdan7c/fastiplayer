@@ -2,7 +2,7 @@
 
 ## Цель
 
-Phase 8.5 - небольшой подготовительный refactor перед Phase 9 HDR-to-SDR.
+Phase 8.5 - небольшой подготовительный refactor перед Phase 9 VP9 completion и Phase 10 HDR-to-SDR.
 
 Задача этапа - сохранить текущий рабочий SDR VP9/NV12 путь, но убрать hardcoded color assumptions из shader-а и renderer implementation. После этапа renderer должен получать явные metadata/settings и строить GPU uniforms для текущего SDR path.
 
@@ -330,7 +330,7 @@ Manual tests:
 - добавить `render.color_adjustment` config defaults;
 - пробросить settings до renderer без color math в UI;
 - показать active color path в telemetry/media panel;
-- не добавлять HDR controls до Phase 9.
+- не добавлять HDR controls до Phase 10.
 
 Unit tests:
 
@@ -376,16 +376,16 @@ Verification:
 - CPU readback/copy decoded frames не добавлен ради color pipeline.
 - `nv12_to_rgba.wgsl` остался NV12 SDR shader path.
 
-## Как это готовит Phase 9
+## Как это готовит Phase 9 и Phase 10
 
-После Phase 8.5 Phase 9 сможет добавить `P010HdrRenderer` как отдельный path:
+После Phase 8.5 Phase 9 сможет закрыть VP9 metadata/frame contract, а Phase 10 сможет добавить P010 renderer как отдельный path:
 
-- `DecodedFrame` уже несёт bit depth, pixel format и typed color metadata;
+- `DecodedFrame` уже подготовлен к bit depth, pixel format и typed color metadata;
 - `RenderableFrame` уже имеет renderer-neutral color boundary;
 - `ColorPipelineSettings` уже содержит tone mapping future contract;
 - `ActiveColorPath` уже умеет объяснять output path;
 - swapchain transfer behavior уже не скрыт в порядке выбора surface format;
-- SDR path уже защищён tests и не должен ломаться при добавлении P010/HDR.
+- SDR path уже защищён tests и не должен ломаться при Phase 9 VP9 completion или Phase 10 P010/HDR renderer.
 
 
 

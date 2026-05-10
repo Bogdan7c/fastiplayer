@@ -8,7 +8,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use codec_core::{
-    BitDepth, ChromaSubsampling, VideoCodec, VideoDecodeRequirement, VideoProfile, Vp9Profile,
+    VideoCodec, VideoDecodeRequirement, Vp9RequirementProbe, Vp9RequirementRejection,
+    probe_vp9_packet_requirement,
 };
 use media_core::{TrackId, TrackKind};
 use rustiplayer_config::AppConfig;
@@ -633,8 +634,15 @@ fn validate_pending_video_packet_before_decode(
         return true;
     }
 
-    let Some(requirement) = video_requirement_from_packet(session, packet) else {
-        return true;
+    let requirement = match video_requirement_from_packet(session, packet) {
+        Ok(Some(requirement)) => requirement,
+        Ok(None) => return true,
+        Err(error) => {
+            warn!(error = %error, "Video stream rejected by packet requirement probe");
+            session.mark_fatal_error(error);
+            session.pipeline.pending_video_packets.clear();
+            return false;
+        }
     };
 
     match session.refine_active_video_requirement(requirement) {
@@ -648,75 +656,44 @@ fn validate_pending_video_packet_before_decode(
     }
 }
 
-/// Извлекает codec-specific requirement из первого доступного packet-а.
+/// Читает VP9 profile из uncompressed header и строит уточнённое requirement.
+fn vp9_requirement_from_packet(
+    packet_data: &[u8],
+) -> Result<Option<VideoDecodeRequirement>, PlayerError> {
+    match probe_vp9_packet_requirement(packet_data) {
+        Vp9RequirementProbe::Candidate(candidate) => Ok(Some(candidate.requirement)),
+        Vp9RequirementProbe::Rejected(rejection) => Err(player_error_from_vp9_rejection(rejection)),
+        Vp9RequirementProbe::Recoverable(uncertainty) => {
+            trace!(?uncertainty, "VP9 requirement probe skipped before decode");
+            Ok(None)
+        }
+    }
+}
+
+/// Переводит VP9 parser-policy reject в player error без generic hardware wording.
+fn player_error_from_vp9_rejection(rejection: Vp9RequirementRejection) -> PlayerError {
+    let kind = match rejection {
+        Vp9RequirementRejection::UnsupportedBitDepth(_) => {
+            PlayerErrorKind::UnsupportedVideoBitDepth
+        }
+        Vp9RequirementRejection::UnsupportedChroma(_) => PlayerErrorKind::UnsupportedVideoChroma,
+    };
+
+    PlayerError::new(kind, rejection.user_message())
+}
+
+/// Возвращает codec-specific requirement probe для VP9 или generic codec requirement.
 fn video_requirement_from_packet(
     session: &PlayerSession,
     packet: &PendingVideoPacketProbe,
-) -> Option<VideoDecodeRequirement> {
-    match session.video_codec_for_track(packet.track_id)? {
+) -> Result<Option<VideoDecodeRequirement>, PlayerError> {
+    let Some(codec) = session.video_codec_for_track(packet.track_id) else {
+        return Ok(None);
+    };
+
+    match codec {
         VideoCodec::Vp9 => vp9_requirement_from_packet(&packet.data),
-        codec => Some(VideoDecodeRequirement::new(codec)),
-    }
-}
-
-/// Читает VP9 profile из uncompressed header и строит уточнённое requirement.
-fn vp9_requirement_from_packet(packet_data: &[u8]) -> Option<VideoDecodeRequirement> {
-    match vp9_parser::parse_uncompressed_header(packet_data) {
-        Ok(frame_info) => {
-            let profile = Vp9Profile::from_bitstream_value(frame_info.profile)?;
-            let mut requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
-                .with_profile(VideoProfile::Vp9(profile));
-
-            if let Some(bit_depth) = bit_depth_from_vp9_header(frame_info.bit_depth) {
-                requirement = requirement.with_bit_depth(bit_depth);
-            }
-
-            if let Some(chroma) =
-                chroma_from_vp9_header(frame_info.subsampling_x, frame_info.subsampling_y)
-            {
-                requirement = requirement.with_chroma(chroma);
-            }
-
-            if frame_info.width > 0 && frame_info.height > 0 {
-                requirement = requirement.with_resolution(frame_info.width, frame_info.height);
-            }
-
-            Some(requirement)
-        }
-        Err(vp9_parser::ParseError::UnsupportedProfile(profile)) => {
-            let profile = Vp9Profile::from_bitstream_value(profile)?;
-            Some(
-                VideoDecodeRequirement::new(VideoCodec::Vp9)
-                    .with_profile(VideoProfile::Vp9(profile)),
-            )
-        }
-        Err(error) => {
-            trace!(error = %error, "VP9 header probe skipped before decode");
-            None
-        }
-    }
-}
-
-/// Переводит VP9 parser bit depth в общую capability model.
-fn bit_depth_from_vp9_header(bit_depth: Option<u8>) -> Option<BitDepth> {
-    match bit_depth {
-        Some(8) => Some(BitDepth::Eight),
-        Some(10) => Some(BitDepth::Ten),
-        Some(12) => Some(BitDepth::Twelve),
-        _ => None,
-    }
-}
-
-/// Переводит VP9 subsampling flags в общую capability model.
-fn chroma_from_vp9_header(
-    subsampling_x: Option<bool>,
-    subsampling_y: Option<bool>,
-) -> Option<ChromaSubsampling> {
-    match (subsampling_x, subsampling_y) {
-        (Some(true), Some(true)) => Some(ChromaSubsampling::Yuv420),
-        (Some(true), Some(false)) => Some(ChromaSubsampling::Yuv422),
-        (Some(false), Some(false)) => Some(ChromaSubsampling::Yuv444),
-        _ => None,
+        other_codec => Ok(Some(VideoDecodeRequirement::new(other_codec))),
     }
 }
 
@@ -1085,5 +1062,109 @@ mod tests {
                 .map(|frame| frame.pts),
             Some(Duration::ZERO)
         );
+    }
+
+    #[test]
+    fn vp9_12bit_packet_returns_exact_player_diagnostic() {
+        let packet_bytes = build_vp9_keyframe(Vp9HeaderFixture {
+            profile: 2,
+            bit_depth: 12,
+            subsampling_x: true,
+            subsampling_y: true,
+            width: 128,
+            height: 72,
+        });
+
+        let error = vp9_requirement_from_packet(&packet_bytes)
+            .expect_err("VP9 Profile 2 12-bit должен rejected до hardware matching");
+
+        assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoBitDepth);
+        assert!(error.message.contains("12-bit"));
+    }
+
+    #[test]
+    fn vp9_unsupported_chroma_packet_returns_exact_player_diagnostic() {
+        let packet_bytes = build_vp9_keyframe(Vp9HeaderFixture {
+            profile: 1,
+            bit_depth: 8,
+            subsampling_x: true,
+            subsampling_y: false,
+            width: 128,
+            height: 72,
+        });
+
+        let error = vp9_requirement_from_packet(&packet_bytes)
+            .expect_err("VP9 Profile 1 4:2:2 должен rejected до hardware matching");
+
+        assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoChroma);
+        assert!(error.message.contains("4:2:2"));
+    }
+
+    #[test]
+    fn vp9_incomplete_packet_stays_recoverable_for_decoder() {
+        let requirement = vp9_requirement_from_packet(&[0x00])
+            .expect("неполный VP9 header не должен становиться fatal reject");
+
+        assert!(requirement.is_none());
+    }
+
+    struct Vp9HeaderFixture {
+        profile: u8,
+        bit_depth: u8,
+        subsampling_x: bool,
+        subsampling_y: bool,
+        width: u32,
+        height: u32,
+    }
+
+    fn build_vp9_keyframe(fixture: Vp9HeaderFixture) -> Vec<u8> {
+        let mut bits = Vec::new();
+        push_bits(&mut bits, 0b10, 2);
+        push_profile(&mut bits, fixture.profile);
+        bits.push(0);
+        bits.push(0);
+        bits.push(1);
+        bits.push(0);
+        push_bits(&mut bits, 0x498342, 24);
+        if matches!(fixture.profile, 2 | 3) {
+            bits.push(u8::from(fixture.bit_depth == 12));
+        }
+        push_bits(&mut bits, 1, 3);
+        bits.push(0);
+        if matches!(fixture.profile, 1 | 3) {
+            bits.push(u8::from(fixture.subsampling_x));
+            bits.push(u8::from(fixture.subsampling_y));
+            bits.push(0);
+        }
+        push_bits(&mut bits, fixture.width - 1, 16);
+        push_bits(&mut bits, fixture.height - 1, 16);
+        bits.push(0);
+        bits_to_bytes(&bits)
+    }
+
+    fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
+        bits.chunks(8)
+            .map(|chunk| {
+                let mut byte = 0u8;
+                for (index, bit) in chunk.iter().enumerate() {
+                    byte |= bit << (7 - index);
+                }
+                byte
+            })
+            .collect()
+    }
+
+    fn push_bits(bits: &mut Vec<u8>, value: u32, width: u8) {
+        for shift in (0..width).rev() {
+            bits.push(((value >> shift) & 1) as u8);
+        }
+    }
+
+    fn push_profile(bits: &mut Vec<u8>, profile: u8) {
+        bits.push(profile & 1);
+        bits.push((profile >> 1) & 1);
+        if profile == 3 {
+            bits.push(0);
+        }
     }
 }
