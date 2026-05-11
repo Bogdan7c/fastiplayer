@@ -177,6 +177,131 @@ impl fmt::Display for RenderOutputColorSpace {
     }
 }
 
+/// HDR tone mapping operator, который production renderer может явно поддержать.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HdrToneMappingOperator {
+    /// ITU-R BT.2446 Method C: единственный production baseline Phase 10.
+    Bt2446C,
+}
+
+impl HdrToneMappingOperator {
+    /// Возвращает стабильный id operator-а для config, логов и diagnostics.
+    #[must_use]
+    pub const fn stable_id(self) -> &'static str {
+        match self {
+            Self::Bt2446C => "bt2446-c",
+        }
+    }
+}
+
+impl Default for HdrToneMappingOperator {
+    /// Phase 10 по умолчанию использует утверждённый BT.2446 Method C baseline.
+    fn default() -> Self {
+        Self::Bt2446C
+    }
+}
+
+impl fmt::Display for HdrToneMappingOperator {
+    /// Печатает стабильный id operator-а без UI-специфичного форматирования.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.stable_id())
+    }
+}
+
+/// Output mode для HDR renderer-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HdrOutputMode {
+    /// Phase 10 выводит только SDR BT.709; native HDR output остаётся future scope.
+    SdrBt709Only,
+}
+
+impl HdrOutputMode {
+    /// Возвращает output color space, который соответствует этому HDR output mode.
+    #[must_use]
+    pub const fn output_color_space(self) -> RenderOutputColorSpace {
+        match self {
+            Self::SdrBt709Only => RenderOutputColorSpace::SdrBt709,
+        }
+    }
+
+    /// Возвращает стабильный id режима для config, логов и diagnostics.
+    #[must_use]
+    pub const fn stable_id(self) -> &'static str {
+        match self {
+            Self::SdrBt709Only => "sdr-bt709-only",
+        }
+    }
+}
+
+impl Default for HdrOutputMode {
+    /// Без platform HDR negotiation renderer обязан оставаться в SDR BT.709 output.
+    fn default() -> Self {
+        Self::SdrBt709Only
+    }
+}
+
+impl fmt::Display for HdrOutputMode {
+    /// Печатает стабильный id output mode.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.stable_id())
+    }
+}
+
+/// Typed settings для HDR-to-SDR path.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct HdrToSdrSettings {
+    /// Включает HDR-to-SDR path, если renderer capabilities тоже подтверждают support.
+    pub enabled: bool,
+
+    /// Tone mapping operator, выбранный для HDR-to-SDR conversion.
+    pub operator: HdrToneMappingOperator,
+
+    /// Единственный output mode Phase 10: SDR BT.709.
+    pub output_mode: HdrOutputMode,
+
+    /// SDR reference white в nits для BT.2446-C baseline.
+    pub sdr_reference_white_nits: f32,
+
+    /// HDR reference peak в nits для BT.2446-C baseline.
+    pub hdr_reference_peak_nits: f32,
+}
+
+impl HdrToSdrSettings {
+    /// Создаёт documented Phase 10 defaults из архитектурного плана.
+    #[must_use]
+    pub const fn bt2446_c_sdr_bt709() -> Self {
+        Self {
+            enabled: true,
+            operator: HdrToneMappingOperator::Bt2446C,
+            output_mode: HdrOutputMode::SdrBt709Only,
+            sdr_reference_white_nits: 100.0,
+            hdr_reference_peak_nits: 1_000.0,
+        }
+    }
+
+    /// Проверяет, что settings описывают единственный production HDR path Phase 10.
+    #[must_use]
+    pub fn is_phase10_bt2446_c_sdr_bt709(&self) -> bool {
+        self.enabled
+            && self.operator == HdrToneMappingOperator::Bt2446C
+            && self.output_mode == HdrOutputMode::SdrBt709Only
+            && self.sdr_reference_white_nits.is_finite()
+            && self.sdr_reference_white_nits > 0.0
+            && self.hdr_reference_peak_nits.is_finite()
+            && self.hdr_reference_peak_nits > self.sdr_reference_white_nits
+    }
+}
+
+impl Default for HdrToSdrSettings {
+    /// Делает HDR-to-SDR включённым в config contract, но gated renderer capabilities.
+    fn default() -> Self {
+        Self::bt2446_c_sdr_bt709()
+    }
+}
+
 /// Renderer-neutral diagnostics, которые UI может читать без GPU handles.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -403,6 +528,10 @@ pub struct ActiveColorPath {
     /// Tone mapping mode, выбранный settings.
     pub tone_mapping: ToneMappingMode,
 
+    /// HDR-to-SDR settings, если frame идёт через production HDR path.
+    #[serde(default)]
+    pub hdr_to_sdr: Option<HdrToSdrSettings>,
+
     /// Swapchain transfer mode, выбранный settings.
     pub swapchain_transfer: SwapchainTransferMode,
 
@@ -414,12 +543,23 @@ impl ActiveColorPath {
     /// Строит active color path из renderer-neutral frame metadata и settings.
     #[must_use]
     pub fn from_frame(frame: &RenderableFrame, settings: &ColorPipelineSettings) -> Self {
-        Self::from_parts(
+        Self::from_frame_with_hdr_to_sdr(frame, settings, None)
+    }
+
+    /// Строит active color path для renderer-а, который явно поддерживает HDR-to-SDR.
+    #[must_use]
+    pub fn from_frame_with_hdr_to_sdr(
+        frame: &RenderableFrame,
+        settings: &ColorPipelineSettings,
+        hdr_to_sdr: Option<HdrToSdrSettings>,
+    ) -> Self {
+        Self::from_parts_with_hdr_to_sdr(
             frame.format,
             frame.bit_depth,
             frame.chroma,
             frame.color.clone(),
             settings,
+            hdr_to_sdr,
         )
     }
 
@@ -432,15 +572,45 @@ impl ActiveColorPath {
         input_color: RenderColorMetadata,
         settings: &ColorPipelineSettings,
     ) -> Self {
-        let fallback = classify_color_path_fallback(&input_color);
+        Self::from_parts_with_hdr_to_sdr(
+            input_format,
+            input_bit_depth,
+            input_chroma,
+            input_color,
+            settings,
+            None,
+        )
+    }
+
+    /// Строит active color path с явным HDR-to-SDR contract для production P010 path.
+    #[must_use]
+    pub fn from_parts_with_hdr_to_sdr(
+        input_format: VideoFrameFormat,
+        input_bit_depth: BitDepth,
+        input_chroma: ChromaSubsampling,
+        input_color: RenderColorMetadata,
+        settings: &ColorPipelineSettings,
+        hdr_to_sdr: Option<HdrToSdrSettings>,
+    ) -> Self {
+        let fallback = classify_color_path_fallback(input_format, &input_color, hdr_to_sdr);
+        let active_hdr_to_sdr = hdr_to_sdr.filter(|settings| {
+            is_hdr_input(&input_color)
+                && input_format == VideoFrameFormat::P010
+                && is_phase10_hdr_transfer(&input_color)
+                && settings.is_phase10_bt2446_c_sdr_bt709()
+                && fallback.is_none()
+        });
 
         Self {
             input_format,
             input_bit_depth,
             input_chroma,
             input_color,
-            output_color_space: RenderOutputColorSpace::SdrBt709,
+            output_color_space: active_hdr_to_sdr
+                .map(|settings| settings.output_mode.output_color_space())
+                .unwrap_or(RenderOutputColorSpace::SdrBt709),
             tone_mapping: settings.tone_mapping,
+            hdr_to_sdr: active_hdr_to_sdr,
             swapchain_transfer: settings.swapchain_transfer,
             fallback,
         }
@@ -455,14 +625,22 @@ impl ActiveColorPath {
             ""
         };
 
+        let transfer_label = transfer_path_label(self.input_color.transfer);
+        let hdr_to_sdr_label = self
+            .hdr_to_sdr
+            .map(|settings| format!(" {}", settings.operator))
+            .unwrap_or_default();
+
         format!(
-            "{} {} {} {} -> {}{} {}",
+            "{} {} {}{} {} -> {}{}{} {}",
             self.input_format,
             self.input_bit_depth,
             matrix_label(self.input_color.matrix),
+            transfer_label,
             range_label(self.input_color.range),
             self.output_color_space,
             fallback_label,
+            hdr_to_sdr_label,
             self.swapchain_transfer,
         )
     }
@@ -470,14 +648,18 @@ impl ActiveColorPath {
 
 /// Определяет fallback marker без изменения текущего renderer support matrix.
 fn classify_color_path_fallback(
+    input_format: VideoFrameFormat,
     color_metadata: &RenderColorMetadata,
+    hdr_to_sdr: Option<HdrToSdrSettings>,
 ) -> Option<ActiveColorPathFallback> {
-    if color_metadata.hdr_metadata.is_some()
-        || matches!(
-            color_metadata.transfer,
-            TransferFunction::Pq | TransferFunction::Hlg
-        )
-    {
+    if is_hdr_input(color_metadata) {
+        if input_format == VideoFrameFormat::P010
+            && is_phase10_hdr_transfer(color_metadata)
+            && hdr_to_sdr.is_some_and(|settings| settings.is_phase10_bt2446_c_sdr_bt709())
+        {
+            return None;
+        }
+
         return Some(ActiveColorPathFallback::UnsupportedHdrInput);
     }
 
@@ -498,6 +680,23 @@ fn classify_color_path_fallback(
     None
 }
 
+/// Проверяет, требует ли metadata HDR transfer/tone-mapping path.
+fn is_hdr_input(color_metadata: &RenderColorMetadata) -> bool {
+    color_metadata.hdr_metadata.is_some()
+        || matches!(
+            color_metadata.transfer,
+            TransferFunction::Pq | TransferFunction::Hlg
+        )
+}
+
+/// Проверяет, что transfer входит в Phase 10 HDR-to-SDR production baseline.
+fn is_phase10_hdr_transfer(color_metadata: &RenderColorMetadata) -> bool {
+    matches!(
+        color_metadata.transfer,
+        TransferFunction::Pq | TransferFunction::Hlg
+    )
+}
+
 /// Возвращает короткую подпись matrix coefficients для active path diagnostics.
 fn matrix_label(matrix_coefficients: MatrixCoefficients) -> &'static str {
     match matrix_coefficients {
@@ -505,6 +704,16 @@ fn matrix_label(matrix_coefficients: MatrixCoefficients) -> &'static str {
         MatrixCoefficients::Bt709 => "BT.709",
         MatrixCoefficients::Bt2020 => "BT.2020",
         MatrixCoefficients::Unknown => "unknown-matrix",
+    }
+}
+
+/// Возвращает transfer label только там, где без него diagnostics теряет HDR смысл.
+fn transfer_path_label(transfer_function: TransferFunction) -> &'static str {
+    match transfer_function {
+        TransferFunction::Pq => " PQ",
+        TransferFunction::Hlg => " HLG",
+        TransferFunction::Srgb => " sRGB",
+        TransferFunction::Bt709 | TransferFunction::Unknown => "",
     }
 }
 
@@ -588,7 +797,18 @@ pub struct RenderCapabilities {
     #[serde(default)]
     pub p010_render_readiness: P010RenderReadiness,
 
-    /// Может ли backend выполнить HDR-to-SDR tone mapping.
+    /// HDR-to-SDR operators, которые backend реально реализует в production shader path.
+    #[serde(default)]
+    pub supported_hdr_to_sdr_operators: Vec<HdrToneMappingOperator>,
+
+    /// HDR output mode backend-а; Phase 10 разрешает только SDR BT.709.
+    #[serde(default)]
+    pub hdr_output_mode: HdrOutputMode,
+
+    /// Raw claim backend-а: может ли он выполнить HDR-to-SDR tone mapping.
+    ///
+    /// Production selection должна использовать `supports_hdr_to_sdr_with`, потому что
+    /// один этот flag не доказывает P010 renderer и конкретный operator.
     pub supports_hdr_to_sdr: bool,
 
     /// Может ли backend отдать native HDR output в swapchain/display.
@@ -616,7 +836,28 @@ impl RenderCapabilities {
             display_name: "WGPU NV12 renderer".to_string(),
             supported_frame_formats: vec![VideoFrameFormat::Nv12],
             p010_render_readiness: P010RenderReadiness::Unavailable,
+            supported_hdr_to_sdr_operators: Vec::new(),
+            hdr_output_mode: HdrOutputMode::SdrBt709Only,
             supports_hdr_to_sdr: false,
+            supports_native_hdr_output: false,
+            max_texture_size,
+            advanced_ui: true,
+            ui_composition_mode: UiCompositionMode::Overlay,
+            present_timing_metrics: true,
+        }
+    }
+
+    /// Создаёт capabilities для WGPU renderer-а с production P010 BT.2446-C path.
+    #[must_use]
+    pub fn wgpu_p010_bt2446c(max_texture_size: Option<u32>) -> Self {
+        Self {
+            backend: RenderBackendKind::Wgpu,
+            display_name: "WGPU P010 BT.2446-C renderer".to_string(),
+            supported_frame_formats: vec![VideoFrameFormat::Nv12, VideoFrameFormat::P010],
+            p010_render_readiness: P010RenderReadiness::Renderable,
+            supported_hdr_to_sdr_operators: vec![HdrToneMappingOperator::Bt2446C],
+            hdr_output_mode: HdrOutputMode::SdrBt709Only,
+            supports_hdr_to_sdr: true,
             supports_native_hdr_output: false,
             max_texture_size,
             advanced_ui: true,
@@ -638,10 +879,25 @@ impl RenderCapabilities {
             && self.supports_frame_format(VideoFrameFormat::P010)
     }
 
+    /// Проверяет production-ready HDR-to-SDR support для конкретных settings.
+    #[must_use]
+    pub fn supports_hdr_to_sdr_with(&self, settings: &HdrToSdrSettings) -> bool {
+        self.supports_hdr_to_sdr
+            && self.supports_p010_rendering()
+            && settings.is_phase10_bt2446_c_sdr_bt709()
+            && self.hdr_output_mode == settings.output_mode
+            && self
+                .supported_hdr_to_sdr_operators
+                .contains(&settings.operator)
+    }
+
     /// Проверяет, сможет ли renderer показать stream с указанными требованиями.
     #[must_use]
     pub fn supports_decode_requirement(&self, requirement: &VideoDecodeRequirement) -> bool {
-        if requirement.hdr && !(self.supports_hdr_to_sdr || self.supports_native_hdr_output) {
+        if requirement.hdr
+            && !(self.supports_hdr_to_sdr_with(&HdrToSdrSettings::default())
+                || self.supports_native_hdr_output)
+        {
             return false;
         }
 
@@ -682,7 +938,9 @@ impl RenderCapabilities {
             .collect::<Vec<_>>()
             .join(", ");
 
-        let hdr_support_label = if self.supports_hdr_to_sdr || self.supports_native_hdr_output {
+        let hdr_support_label = if self.supports_hdr_to_sdr_with(&HdrToSdrSettings::default())
+            || self.supports_native_hdr_output
+        {
             "HDR available"
         } else {
             "SDR only, HDR unavailable"
@@ -747,6 +1005,18 @@ mod tests {
     }
 
     #[test]
+    fn hdr_to_sdr_settings_default_to_bt2446c_sdr_bt709_contract() {
+        let settings = HdrToSdrSettings::default();
+
+        assert!(settings.enabled);
+        assert_eq!(settings.operator, HdrToneMappingOperator::Bt2446C);
+        assert_eq!(settings.output_mode, HdrOutputMode::SdrBt709Only);
+        assert_eq!(settings.sdr_reference_white_nits, 100.0);
+        assert_eq!(settings.hdr_reference_peak_nits, 1_000.0);
+        assert!(settings.is_phase10_bt2446_c_sdr_bt709());
+    }
+
+    #[test]
     fn active_color_path_describes_current_nv12_bt709_limited_sdr_path() {
         let frame = RenderableFrame {
             handle: 7,
@@ -808,6 +1078,110 @@ mod tests {
     }
 
     #[test]
+    fn active_color_path_describes_p010_hdr_to_sdr_bt2446c_path() {
+        let color = VideoColorMetadata {
+            range: ColorRange::Limited,
+            matrix: MatrixCoefficients::Bt2020,
+            primaries: ColorPrimaries::Bt2020,
+            transfer: TransferFunction::Pq,
+            hdr_metadata: None,
+            origin: codec_core::ColorMetadataOrigin::Bitstream,
+            confidence: codec_core::ColorMetadataConfidence::Confirmed,
+        };
+        let settings = ColorPipelineSettings {
+            swapchain_transfer: SwapchainTransferMode::ExplicitShaderOetf,
+            ..ColorPipelineSettings::default()
+        };
+
+        let active_path = ActiveColorPath::from_parts_with_hdr_to_sdr(
+            VideoFrameFormat::P010,
+            BitDepth::Ten,
+            ChromaSubsampling::Yuv420,
+            color,
+            &settings,
+            Some(HdrToSdrSettings::default()),
+        );
+
+        assert_eq!(active_path.fallback, None);
+        assert_eq!(
+            active_path.hdr_to_sdr.map(|settings| settings.operator),
+            Some(HdrToneMappingOperator::Bt2446C)
+        );
+        assert_eq!(
+            active_path.diagnostic_text(),
+            "P010 10-bit BT.2020 PQ limited -> SDR BT.709 bt2446-c explicit-shader-oetf"
+        );
+    }
+
+    #[test]
+    fn active_color_path_keeps_hdr_fallback_without_explicit_hdr_to_sdr_contract() {
+        let color = VideoColorMetadata {
+            range: ColorRange::Limited,
+            matrix: MatrixCoefficients::Bt2020,
+            primaries: ColorPrimaries::Bt2020,
+            transfer: TransferFunction::Pq,
+            hdr_metadata: None,
+            origin: codec_core::ColorMetadataOrigin::Bitstream,
+            confidence: codec_core::ColorMetadataConfidence::Confirmed,
+        };
+        let settings = ColorPipelineSettings::default();
+
+        let active_path = ActiveColorPath::from_parts(
+            VideoFrameFormat::P010,
+            BitDepth::Ten,
+            ChromaSubsampling::Yuv420,
+            color,
+            &settings,
+        );
+
+        assert_eq!(
+            active_path.fallback,
+            Some(ActiveColorPathFallback::UnsupportedHdrInput)
+        );
+        assert_eq!(active_path.hdr_to_sdr, None);
+    }
+
+    #[test]
+    fn active_color_path_does_not_tone_map_p010_sdr_even_with_side_hdr_metadata() {
+        let color = VideoColorMetadata {
+            range: ColorRange::Limited,
+            matrix: MatrixCoefficients::Bt2020,
+            primaries: ColorPrimaries::Bt2020,
+            transfer: TransferFunction::Bt709,
+            hdr_metadata: Some(codec_core::HdrMetadata {
+                color_primaries: ColorPrimaries::Bt2020,
+                transfer_function: TransferFunction::Bt709,
+                max_luminance_nits: Some(1_000.0),
+                min_luminance_nits: Some(0.01),
+                max_content_light_level_nits: Some(1_000),
+                max_frame_average_light_level_nits: Some(400),
+            }),
+            origin: codec_core::ColorMetadataOrigin::Container,
+            confidence: codec_core::ColorMetadataConfidence::Hint,
+        };
+        let settings = ColorPipelineSettings {
+            swapchain_transfer: SwapchainTransferMode::ExplicitShaderOetf,
+            ..ColorPipelineSettings::default()
+        };
+
+        let active_path = ActiveColorPath::from_parts_with_hdr_to_sdr(
+            VideoFrameFormat::P010,
+            BitDepth::Ten,
+            ChromaSubsampling::Yuv420,
+            color,
+            &settings,
+            Some(HdrToSdrSettings::default()),
+        );
+
+        assert_eq!(
+            active_path.fallback,
+            Some(ActiveColorPathFallback::UnsupportedHdrInput)
+        );
+        assert_eq!(active_path.hdr_to_sdr, None);
+        assert!(!active_path.diagnostic_text().contains("bt2446-c"));
+    }
+
+    #[test]
     fn render_diagnostics_exposes_active_color_path_without_gpu_handles() {
         let settings = ColorPipelineSettings::default();
         let active_path = ActiveColorPath::from_parts(
@@ -837,12 +1211,40 @@ mod tests {
             capabilities.p010_render_readiness,
             P010RenderReadiness::Unavailable
         );
+        assert!(capabilities.supported_hdr_to_sdr_operators.is_empty());
+        assert_eq!(capabilities.hdr_output_mode, HdrOutputMode::SdrBt709Only);
         assert!(!capabilities.supports_p010_rendering());
+        assert!(!capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
         assert!(!capabilities.supports_hdr_to_sdr);
         assert!(!capabilities.supports_native_hdr_output);
         assert!(capabilities.summary_text().contains("SDR only"));
         assert!(capabilities.summary_text().contains("P010 unavailable"));
         assert!(!capabilities.summary_text().contains("HDR supported"));
+    }
+
+    #[test]
+    fn hdr_to_sdr_capability_requires_p010_renderable_and_bt2446c_operator() {
+        let settings = HdrToSdrSettings::default();
+
+        let mut raw_hdr_without_p010 = RenderCapabilities::wgpu_nv12(Some(4096));
+        raw_hdr_without_p010.supports_hdr_to_sdr = true;
+        raw_hdr_without_p010
+            .supported_hdr_to_sdr_operators
+            .push(HdrToneMappingOperator::Bt2446C);
+
+        let mut p010_without_operator = RenderCapabilities::wgpu_nv12(Some(4096));
+        p010_without_operator
+            .supported_frame_formats
+            .push(VideoFrameFormat::P010);
+        p010_without_operator.p010_render_readiness = P010RenderReadiness::Renderable;
+        p010_without_operator.supports_hdr_to_sdr = true;
+
+        let production_capabilities = RenderCapabilities::wgpu_p010_bt2446c(Some(4096));
+
+        assert!(!raw_hdr_without_p010.supports_hdr_to_sdr_with(&settings));
+        assert!(!p010_without_operator.supports_hdr_to_sdr_with(&settings));
+        assert!(production_capabilities.supports_hdr_to_sdr_with(&settings));
+        assert!(!production_capabilities.supports_native_hdr_output);
     }
 
     #[test]
@@ -853,6 +1255,7 @@ mod tests {
             VideoDecodeRequirement::new(VideoCodec::Vp9).with_bit_depth(BitDepth::Ten);
 
         assert!(!capabilities.supports_p010_rendering());
+        assert!(!capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
         assert!(!capabilities.supports_decode_requirement(&requirement));
         assert!(
             capabilities
@@ -878,5 +1281,19 @@ mod tests {
         requirement.hdr = true;
 
         assert!(!capabilities.supports_decode_requirement(&requirement));
+    }
+
+    #[test]
+    fn p010_bt2446c_capabilities_accept_ten_bit_hdr_but_not_native_hdr_output() {
+        let capabilities = RenderCapabilities::wgpu_p010_bt2446c(Some(4096));
+        let mut requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_bit_depth(BitDepth::Ten)
+            .with_chroma(ChromaSubsampling::Yuv420);
+        requirement.hdr = true;
+
+        assert!(capabilities.supports_decode_requirement(&requirement));
+        assert!(capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
+        assert!(!capabilities.supports_native_hdr_output);
+        assert!(capabilities.summary_text().contains("HDR available"));
     }
 }

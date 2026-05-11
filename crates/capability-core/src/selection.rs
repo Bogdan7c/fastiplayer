@@ -532,7 +532,8 @@ impl SystemCapabilities {
 
         if requirement.hdr
             && !self.render_backends.iter().any(|capabilities| {
-                capabilities.supports_hdr_to_sdr || capabilities.supports_native_hdr_output
+                capabilities.supports_hdr_to_sdr_with(&render_core::HdrToSdrSettings::default())
+                    || capabilities.supports_native_hdr_output
             })
         {
             return Some(VideoCapabilityRejection::UnsupportedHdrRenderer {
@@ -1096,6 +1097,34 @@ mod tests {
                 readiness: P010RenderReadiness::ZeroCopyBoundaryVerified,
             })
         ));
+    }
+
+    #[test]
+    fn p010_renderable_bt2446c_renderer_makes_hdr_to_sdr_stream_playable() {
+        let capabilities = capabilities_with_formats(
+            vec![vp9_format(
+                Vp9Profile::Profile2,
+                BitDepth::Ten,
+                ChromaSubsampling::Yuv420,
+                true,
+            )],
+            vec![RenderCapabilities::wgpu_p010_bt2446c(Some(4096))],
+            vec![VideoExportPath::DmaBuf],
+        );
+        let requirement = vp9_requirement(
+            Vp9Profile::Profile2,
+            BitDepth::Ten,
+            ChromaSubsampling::Yuv420,
+        )
+        .with_color(bt2020_pq_limited());
+
+        let selected_format = capabilities
+            .check_video_requirement(&requirement)
+            .expect("P010 renderable + BT.2446-C must enable HDR-to-SDR playback");
+
+        assert_eq!(selected_format.bit_depth, BitDepth::Ten);
+        assert_eq!(selected_format.chroma, ChromaSubsampling::Yuv420);
+        assert!(selected_format.hdr_input);
     }
 
     #[test]
