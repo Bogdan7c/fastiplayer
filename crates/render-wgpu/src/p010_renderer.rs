@@ -49,8 +49,17 @@ const HDR_METADATA_MARKER_REFERENCE_DEFAULT: u32 = 2;
 /// Shader mode для 10-bit SDR BT.709 P010 path.
 const P010_SHADER_MODE_SDR_BT709: u32 = 0;
 
-/// Shader mode для будущего HDR-to-SDR BT.2446-C P010 path.
+/// Shader mode для HDR-to-SDR BT.2446-C P010 path.
 const P010_SHADER_MODE_HDR_BT2446C: u32 = 1;
+
+/// Transfer mode для P010 SDR BT.709 branch-а.
+const P010_TRANSFER_MODE_SDR_BT709: u32 = 0;
+
+/// Transfer mode для P010 HDR PQ branch-а.
+const P010_TRANSFER_MODE_PQ: u32 = 1;
+
+/// Transfer mode для P010 HDR HLG branch-а.
+const P010_TRANSFER_MODE_HLG: u32 = 2;
 
 /// Uniform buffer для P010/HDR color pipeline.
 ///
@@ -66,7 +75,7 @@ pub(crate) struct HdrColorPipelineUniforms {
     /// Смещение UV для letterbox.
     uv_offset: [f32; 2],
 
-    /// `x`: shader branch, `yzw`: reserved для стабильного layout.
+    /// `x`: shader branch, `y`: transfer mode, `z/w`: reserved для стабильного layout.
     shader_mode: [u32; 4],
 
     /// `x`: Y offset code, `y`: Y scale, `z/w`: допустимые Y code bounds.
@@ -91,7 +100,7 @@ pub(crate) enum P010RenderColorPath {
     /// P010 10-bit SDR BT.709 path без HDR tone mapping.
     SdrBt709,
 
-    /// P010 HDR path, зарезервированный под BT.2446-C shader implementation.
+    /// P010 HDR path через BT.2446-C shader implementation.
     HdrBt2446C,
 }
 
@@ -102,6 +111,17 @@ impl P010RenderColorPath {
             Self::SdrBt709 => P010_SHADER_MODE_SDR_BT709,
             Self::HdrBt2446C => P010_SHADER_MODE_HDR_BT2446C,
         }
+    }
+}
+
+/// Возвращает typed transfer selector для WGSL shader-а.
+fn p010_transfer_shader_mode(transfer: TransferFunction) -> u32 {
+    match transfer {
+        TransferFunction::Bt709 | TransferFunction::Srgb | TransferFunction::Unknown => {
+            P010_TRANSFER_MODE_SDR_BT709
+        }
+        TransferFunction::Pq => P010_TRANSFER_MODE_PQ,
+        TransferFunction::Hlg => P010_TRANSFER_MODE_HLG,
     }
 }
 
@@ -367,7 +387,12 @@ fn prepare_p010_render(
         uniforms: HdrColorPipelineUniforms {
             uv_scale,
             uv_offset,
-            shader_mode: [color_path.shader_mode(), 0, 0, 0],
+            shader_mode: [
+                color_path.shader_mode(),
+                p010_transfer_shader_mode(frame.color.transfer),
+                0,
+                0,
+            ],
             luma_range: range_normalization.luma_range,
             chroma_range: range_normalization.chroma_range,
             hdr_reference_nits: optional_metadata.hdr_reference_nits,
@@ -527,6 +552,7 @@ fn log_first_p010_render_dispatch(frame: &RenderableFrame, prepared_render: &Pre
         coded_height = frame.coded_height,
         active_color_path = %prepared_render.active_path.diagnostic_text(),
         shader_mode = prepared_render.uniforms.shader_mode[0],
+        transfer_mode = prepared_render.uniforms.shader_mode[1],
         transfer = ?frame.color.transfer,
         primaries = ?frame.color.primaries,
         matrix = ?frame.color.matrix,
@@ -755,6 +781,15 @@ mod tests {
         .expect("P010 SDR BT.709 uniforms accepted");
 
         assert_eq!(
+            prepared_render.uniforms.shader_mode,
+            [
+                P010_SHADER_MODE_SDR_BT709,
+                P010_TRANSFER_MODE_SDR_BT709,
+                0,
+                0,
+            ]
+        );
+        assert_eq!(
             prepared_render.uniforms.optional_metadata_markers,
             [HDR_METADATA_MARKER_NOT_APPLICABLE; 4]
         );
@@ -783,6 +818,19 @@ mod tests {
             Some(HdrToneMappingOperator::Bt2446C)
         );
         assert!(active_path.diagnostic_text().contains("bt2446-c"));
+
+        let prepared_render = prepare_p010_render(
+            &frame,
+            &color_settings,
+            HdrToSdrSettings::default(),
+            (1920, 1080),
+        )
+        .expect("P010 PQ HDR uniforms accepted");
+
+        assert_eq!(
+            prepared_render.uniforms.shader_mode,
+            [P010_SHADER_MODE_HDR_BT2446C, P010_TRANSFER_MODE_PQ, 0, 0]
+        );
     }
 
     #[test]
@@ -792,6 +840,19 @@ mod tests {
         let color_path = select_p010_color_path(&frame).expect("P010 HLG HDR accepted");
 
         assert_eq!(color_path, P010RenderColorPath::HdrBt2446C);
+
+        let prepared_render = prepare_p010_render(
+            &frame,
+            &ColorPipelineSettings::default(),
+            HdrToSdrSettings::default(),
+            (1920, 1080),
+        )
+        .expect("P010 HLG HDR uniforms accepted");
+
+        assert_eq!(
+            prepared_render.uniforms.shader_mode,
+            [P010_SHADER_MODE_HDR_BT2446C, P010_TRANSFER_MODE_HLG, 0, 0]
+        );
     }
 
     #[test]
@@ -957,6 +1018,113 @@ mod tests {
         assert!(P010_SHADER_SOURCE.contains("p010"));
     }
 
+    #[test]
+    fn p010_shader_source_parses_and_validates_as_wgsl() {
+        let shader_module =
+            naga::front::wgsl::parse_str(P010_SHADER_SOURCE).expect("P010 WGSL source must parse");
+
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&shader_module)
+        .expect("P010 WGSL source must validate");
+    }
+
+    #[test]
+    fn p010_shader_reads_y_from_plane0_and_uv_from_plane1() {
+        assert!(
+            P010_SHADER_SOURCE.contains("@group(0) @binding(2)\nvar p010_y_texture"),
+            "P010 plane 0 must be the Y texture binding"
+        );
+        assert!(
+            P010_SHADER_SOURCE.contains("@group(0) @binding(3)\nvar p010_uv_texture"),
+            "P010 plane 1 must be the interleaved UV texture binding"
+        );
+        assert!(
+            P010_SHADER_SOURCE.contains("textureSample(p010_y_texture, p010_sampler, scaled_uv).r"),
+            "P010 Y must be read from the luma plane"
+        );
+        assert!(
+            P010_SHADER_SOURCE
+                .contains("textureSample(p010_uv_texture, p010_sampler, scaled_uv).rg"),
+            "P010 UV must be read from the chroma plane"
+        );
+    }
+
+    #[test]
+    fn p010_shader_contains_pq_and_hlg_transfer_modes() {
+        assert_eq!(
+            shader_u32_const(P010_SHADER_SOURCE, "P010_TRANSFER_MODE_PQ"),
+            P010_TRANSFER_MODE_PQ
+        );
+        assert_eq!(
+            shader_u32_const(P010_SHADER_SOURCE, "P010_TRANSFER_MODE_HLG"),
+            P010_TRANSFER_MODE_HLG
+        );
+
+        let eotf_body = wgsl_function_body(P010_SHADER_SOURCE, "apply_hdr_eotf");
+
+        assert!(eotf_body.contains("uniforms.shader_mode.y == P010_TRANSFER_MODE_PQ"));
+        assert!(eotf_body.contains("uniforms.shader_mode.y == P010_TRANSFER_MODE_HLG"));
+        assert!(eotf_body.contains("pq_eotf_nits"));
+        assert!(eotf_body.contains("hlg_eotf_rgb_nits"));
+    }
+
+    #[test]
+    fn p010_sdr_shader_branch_does_not_call_bt2446c_functions() {
+        let sdr_body = wgsl_function_body(P010_SHADER_SOURCE, "p010_sdr_bt709_to_rgb");
+        let fragment_body = wgsl_function_body(P010_SHADER_SOURCE, "fs_main");
+        let sdr_return = fragment_body
+            .find("return vec4<f32>(p010_sdr_bt709_to_rgb(normalized_yuv), 1.0);")
+            .expect("fragment shader must return from SDR branch directly");
+        let hdr_call = fragment_body
+            .find("p010_hdr_bt2446c_to_sdr(normalized_yuv)")
+            .expect("fragment shader must call HDR BT.2446-C branch");
+
+        assert!(!sdr_body.contains("bt2446c"));
+        assert!(!sdr_body.contains("apply_hdr_eotf"));
+        assert!(
+            sdr_return < hdr_call,
+            "SDR branch must return before any HDR BT.2446-C call"
+        );
+    }
+
+    #[test]
+    fn p010_shader_does_not_call_nv12_sdr_helpers() {
+        for forbidden_helper in [
+            "normalize_yuv_sample(",
+            "convert_yuv_to_rgb(",
+            "apply_sdr_adjustments(",
+        ] {
+            assert!(
+                !P010_SHADER_SOURCE.contains(forbidden_helper),
+                "P010 shader must not call or mention NV12 SDR helper `{forbidden_helper}`"
+            );
+        }
+    }
+
+    #[test]
+    fn p010_shader_contains_bt2446c_method_c_stages() {
+        for required_stage in [
+            "bt2020_yuv_to_rgb",
+            "apply_hdr_eotf",
+            "apply_bt2446c_crosstalk",
+            "bt2020_linear_rgb_to_xyz",
+            "xyz_to_chromaticity",
+            "bt2446c_tone_map_luminance_nits",
+            "xyz_from_luminance_and_chromaticity",
+            "xyz_to_bt709_linear_rgb",
+            "apply_bt2446c_inverse_crosstalk",
+            "encode_sdr_bt709_output",
+        ] {
+            assert!(
+                P010_SHADER_SOURCE.contains(required_stage),
+                "P010 shader is missing BT.2446-C stage `{required_stage}`"
+            );
+        }
+    }
+
     fn p010_test_frame(color: VideoColorMetadata) -> RenderableFrame {
         RenderableFrame {
             handle: 42,
@@ -1028,5 +1196,52 @@ mod tests {
             origin: ColorMetadataOrigin::Bitstream,
             confidence: ColorMetadataConfidence::Confirmed,
         }
+    }
+
+    fn shader_u32_const(shader_source: &str, const_name: &str) -> u32 {
+        let prefix = format!("const {const_name}: u32 = ");
+        let line = shader_source
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("WGSL const `{const_name}` not found"));
+        let value = line
+            .trim_start_matches(&prefix)
+            .trim_end_matches(';')
+            .trim_end_matches('u');
+
+        value
+            .parse()
+            .unwrap_or_else(|error| panic!("WGSL const `{const_name}` is not u32: {error}"))
+    }
+
+    fn wgsl_function_body<'source>(
+        shader_source: &'source str,
+        function_name: &str,
+    ) -> &'source str {
+        let signature = format!("fn {function_name}(");
+        let signature_start = shader_source
+            .find(&signature)
+            .unwrap_or_else(|| panic!("WGSL function `{function_name}` not found"));
+        let body_start = shader_source[signature_start..]
+            .find('{')
+            .map(|offset| signature_start + offset)
+            .unwrap_or_else(|| panic!("WGSL function `{function_name}` has no body"));
+        let mut brace_depth = 0usize;
+
+        for (offset, character) in shader_source[body_start..].char_indices() {
+            match character {
+                '{' => brace_depth += 1,
+                '}' => {
+                    brace_depth -= 1;
+                    if brace_depth == 0 {
+                        return &shader_source[body_start..=body_start + offset];
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        panic!("WGSL function `{function_name}` body is not closed")
     }
 }

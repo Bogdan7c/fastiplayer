@@ -3257,6 +3257,7 @@ dependencies = [
  "codec-core",
  "egui",
  "egui-wgpu",
+ "naga",
  "pollster",
  "render-core",
  "tracing",

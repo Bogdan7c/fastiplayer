@@ -756,7 +756,7 @@ fn finite_non_negative_factor(value: f64, fallback: f64) -> f64 {
 fn target_media_time_for_present(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
-    audio_now: Duration,
+    presentation_now: Duration,
 ) -> Duration {
     let lead_frames = finite_non_negative_factor(
         tick_config.video_present_lead_frames,
@@ -767,7 +767,16 @@ fn target_media_time_for_present(
         .video_frame_duration_estimate
         .mul_f64(lead_frames);
 
-    saturating_duration_add(audio_now, present_lead)
+    saturating_duration_add(presentation_now, present_lead)
+}
+
+/// Возвращает clock, от которого scheduler выбирает следующий video frame.
+fn presentation_clock_now(session: &PlayerSession, audio_now: Duration) -> Duration {
+    if session.pipeline.audio_clock.is_some() {
+        audio_now
+    } else {
+        session.snapshot().current_position
+    }
 }
 
 /// Возвращает допустимое окно выбора кадра вокруг target media time.
@@ -935,7 +944,8 @@ fn process_pending_video_packets(
         return;
     }
 
-    let target_media_time = target_media_time_for_present(session, tick_config, audio_now);
+    let presentation_now = presentation_clock_now(session, audio_now);
+    let target_media_time = target_media_time_for_present(session, tick_config, presentation_now);
     let present_window = video_present_window(session, tick_config);
     let late_drop_grace = video_late_drop_grace(session, tick_config);
 
@@ -970,6 +980,7 @@ fn process_pending_video_packets(
     tracing::debug!(
         pts_ms = frame.pts.as_millis(),
         audio_ms = audio_now.as_millis(),
+        clock_ms = presentation_now.as_millis(),
         target_ms = target_media_time.as_millis(),
         diff_ms,
         window_ms = present_window.as_millis(),
@@ -1057,6 +1068,34 @@ mod tests {
         assert_eq!(tick_result.video_frames_presented, 0);
         assert!(session.pipeline.present_video_frame.is_none());
         assert_eq!(session.pipeline.video_frame_queue.len(), 1);
+    }
+
+    #[test]
+    fn scheduler_uses_fallback_position_when_audio_clock_is_absent() {
+        let mut session = PlayerSession::new();
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.update_current_position(Duration::from_millis(100));
+        session
+            .pipeline
+            .video_frame_queue
+            .push_back(decoded_frame(Duration::from_millis(100), 1));
+
+        let tick_config = PlayerTickConfig {
+            position_fallback_delta: Duration::ZERO,
+            ..PlayerTickConfig::default()
+        };
+        let tick_result = session.tick(PlayerTickContext::with_config(Instant::now(), tick_config));
+
+        assert_eq!(tick_result.video_frames_presented, 1);
+        assert_eq!(
+            session
+                .pipeline
+                .present_video_frame
+                .as_ref()
+                .map(|frame| frame.pts),
+            Some(Duration::from_millis(100))
+        );
+        assert!(session.pipeline.video_frame_queue.is_empty());
     }
 
     #[test]

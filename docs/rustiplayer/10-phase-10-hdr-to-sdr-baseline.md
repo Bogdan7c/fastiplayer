@@ -453,6 +453,8 @@ Manual tests:
 
 ### Сессия 5: WGSL BT.2446-C shader implementation
 
+Статус: реализовано
+
 Задачи:
 
 - реализовать `p010_bt2446c_to_sdr.wgsl`;

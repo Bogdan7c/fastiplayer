@@ -17,3 +17,6 @@ wgpu.workspace = true
 render-core = { path = "../render-core" }
 video-core = { path = "../video-core" }
 bytemuck = "1.25"
+
+[dev-dependencies]
+naga = { version = "29", features = ["wgsl-in"] }

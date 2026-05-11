@@ -680,6 +680,45 @@ mod tests {
     /// Practical tolerance for rounded standard matrices/constants.
     const MATRIX_TOLERANCE: f64 = 0.000_01;
 
+    /// WGSL shader source used to lock shader constants to this CPU reference.
+    const P010_SHADER_SOURCE: &str = include_str!("../shaders/p010_bt2446c_to_sdr.wgsl");
+
+    #[test]
+    fn shader_bt2446c_constants_match_cpu_reference_constants() {
+        assert_shader_const_matches("P010_10BIT_MAX_CODE_VALUE", P010_10BIT_MAX_CODE_VALUE);
+        assert_shader_const_matches("BT2020_KR", BT2020_KR);
+        assert_shader_const_matches("BT2020_KB", BT2020_KB);
+        assert_shader_const_matches("BT2020_KG", BT2020_KG);
+        assert_shader_const_matches("PQ_M1", PQ_M1);
+        assert_shader_const_matches("PQ_M2", PQ_M2);
+        assert_shader_const_matches("PQ_C1", PQ_C1);
+        assert_shader_const_matches("PQ_C2", PQ_C2);
+        assert_shader_const_matches("PQ_C3", PQ_C3);
+        assert_shader_const_matches("PQ_REFERENCE_PEAK_NITS", PQ_REFERENCE_PEAK_NITS);
+        assert_shader_const_matches("HLG_A", HLG_A);
+        assert_shader_const_matches("HLG_B", HLG_B);
+        assert_shader_const_matches("HLG_C", HLG_C);
+        assert_shader_const_matches("HLG_REFERENCE_SYSTEM_GAMMA", HLG_REFERENCE_SYSTEM_GAMMA);
+        assert_shader_const_matches(
+            "BT2446C_REFERENCE_CROSSTALK_ALPHA",
+            BT2446C_REFERENCE_CROSSTALK_ALPHA,
+        );
+        assert_shader_const_matches("BT2446C_K1", BT2446C_K1);
+        assert_shader_const_matches("BT2446C_K2", BT2446C_K2);
+        assert_shader_const_matches("BT2446C_K3", BT2446C_K3);
+        assert_shader_const_matches("BT2446C_K4", BT2446C_K4);
+        assert_shader_const_matches("BT2446C_SDR_INFLECTION_NITS", BT2446C_SDR_INFLECTION_NITS);
+        assert_shader_const_matches("BT1886_REFERENCE_GAMMA", BT1886_REFERENCE_GAMMA);
+        assert_shader_const_matches("D65_WHITE_X", D65_WHITE_X);
+        assert_shader_const_matches("D65_WHITE_Y", D65_WHITE_Y);
+        assert_shader_vec3_matches("BT2020_LINEAR_RGB_TO_XYZ_ROW0", BT2020_LINEAR_RGB_TO_XYZ[0]);
+        assert_shader_vec3_matches("BT2020_LINEAR_RGB_TO_XYZ_ROW1", BT2020_LINEAR_RGB_TO_XYZ[1]);
+        assert_shader_vec3_matches("BT2020_LINEAR_RGB_TO_XYZ_ROW2", BT2020_LINEAR_RGB_TO_XYZ[2]);
+        assert_shader_vec3_matches("XYZ_TO_BT709_LINEAR_RGB_ROW0", XYZ_TO_BT709_LINEAR_RGB[0]);
+        assert_shader_vec3_matches("XYZ_TO_BT709_LINEAR_RGB_ROW1", XYZ_TO_BT709_LINEAR_RGB[1]);
+        assert_shader_vec3_matches("XYZ_TO_BT709_LINEAR_RGB_ROW2", XYZ_TO_BT709_LINEAR_RGB[2]);
+    }
+
     #[test]
     fn pq_eotf_known_points_match_st2084_reference_values() {
         assert_close(pq_eotf_nits(0.0), 0.0, STRICT_TOLERANCE);
@@ -1042,5 +1081,71 @@ mod tests {
                 "RGB channel {channel_index} actual {actual_channel:.12} expected {expected_channel:.12}"
             );
         }
+    }
+
+    /// Compares one scalar WGSL constant against the CPU reference value.
+    fn assert_shader_const_matches(const_name: &str, expected: f64) {
+        assert_close(shader_f32_const(const_name), expected, MATRIX_TOLERANCE);
+    }
+
+    /// Compares one WGSL `vec3<f32>` constant against the CPU reference row.
+    fn assert_shader_vec3_matches(const_name: &str, expected: [f64; 3]) {
+        let actual = shader_vec3_const(const_name);
+
+        for (channel_index, (actual_channel, expected_channel)) in
+            actual.into_iter().zip(expected).enumerate()
+        {
+            assert!(
+                (actual_channel - expected_channel).abs() <= MATRIX_TOLERANCE,
+                "WGSL vec3 const `{const_name}` channel {channel_index} actual {actual_channel:.12} expected {expected_channel:.12}"
+            );
+        }
+    }
+
+    /// Reads a scalar `const name: f32 = value;` from the WGSL shader source.
+    fn shader_f32_const(const_name: &str) -> f64 {
+        let prefix = format!("const {const_name}: f32 = ");
+        let line = shader_const_line(&prefix, const_name);
+        let value = line
+            .trim_start_matches(&prefix)
+            .trim_end_matches(';')
+            .replace('_', "");
+
+        value
+            .parse()
+            .unwrap_or_else(|error| panic!("WGSL const `{const_name}` is not f32: {error}"))
+    }
+
+    /// Reads a `const name: vec3<f32> = vec3<f32>(...);` from the WGSL shader source.
+    fn shader_vec3_const(const_name: &str) -> [f64; 3] {
+        let prefix = format!("const {const_name}: vec3<f32> = vec3<f32>(");
+        let line = shader_const_line(&prefix, const_name);
+        let values = line
+            .trim_start_matches(&prefix)
+            .trim_end_matches(");")
+            .split(',')
+            .map(|value| {
+                value.trim().parse::<f64>().unwrap_or_else(|error| {
+                    panic!("WGSL vec3 const `{const_name}` is invalid: {error}")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            values.len(),
+            3,
+            "WGSL vec3 const `{const_name}` must contain three values"
+        );
+
+        [values[0], values[1], values[2]]
+    }
+
+    /// Finds a WGSL const declaration by exact prefix.
+    fn shader_const_line(prefix: &str, const_name: &str) -> &'static str {
+        P010_SHADER_SOURCE
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with(prefix))
+            .unwrap_or_else(|| panic!("WGSL const `{const_name}` not found"))
     }
 }
