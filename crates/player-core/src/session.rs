@@ -691,16 +691,20 @@ impl PlayerSession {
 
             match self.validate_video_decode_requirement(&requirement) {
                 Ok(()) => {
-                    self.pipeline.video_track_id = Some(track.id);
-                    self.pipeline.active_video_requirement = Some(requirement);
-                    self.snapshot.selected_tracks.video_track = Some(track.id);
-                    log_selected_video_track_metadata(
-                        track,
-                        self.pipeline.active_video_requirement.as_ref(),
-                    );
+                    self.activate_video_track(track, requirement);
                     return Ok(());
                 }
                 Err(error) => {
+                    if self.can_defer_vp9_packet_refinement(&requirement) {
+                        info!(
+                            track_id = %track.id,
+                            requirement = %requirement.describe(),
+                            "VP9 video track выбран до bitstream refinement; strict capability check будет повторён перед decode"
+                        );
+                        self.activate_video_track(track, requirement);
+                        return Ok(());
+                    }
+
                     last_rejection = Some(error);
                 }
             }
@@ -709,6 +713,31 @@ impl PlayerSession {
         Err(last_rejection.unwrap_or_else(|| {
             PlayerError::new(PlayerErrorKind::UnsupportedVideoCodec, missing_message)
         }))
+    }
+
+    /// Активирует video track после обычной проверки или разрешённого deferred refinement.
+    fn activate_video_track(&mut self, track: &TrackInfo, requirement: VideoDecodeRequirement) {
+        self.pipeline.video_track_id = Some(track.id);
+        self.pipeline.active_video_requirement = Some(requirement);
+        self.snapshot.selected_tracks.video_track = Some(track.id);
+        log_selected_video_track_metadata(track, self.pipeline.active_video_requirement.as_ref());
+    }
+
+    /// Разрешает отложить VP9 validation до первого packet header-а, если container неполный.
+    fn can_defer_vp9_packet_refinement(&self, requirement: &VideoDecodeRequirement) -> bool {
+        if !vp9_requirement_needs_packet_refinement(requirement) {
+            return false;
+        }
+
+        self.capabilities.as_ref().is_some_and(|capabilities| {
+            matches!(
+                capabilities.check_video_requirement(requirement),
+                Err(ref unsupported_requirement)
+                    if unsupported_requirement_can_be_refined_by_vp9_packet_probe(
+                        unsupported_requirement
+                    )
+            )
+        })
     }
 
     /// Проверяет video stream requirement по последнему capability report.
@@ -954,6 +983,31 @@ fn video_requirement_from_track(track: &TrackInfo) -> Option<VideoDecodeRequirem
     Some(resolve_vp9_metadata(Some(container_source), None).requirement)
 }
 
+/// Возвращает `true`, если VP9 requirement ещё нуждается в header-level уточнении.
+pub(crate) fn vp9_requirement_needs_packet_refinement(
+    requirement: &VideoDecodeRequirement,
+) -> bool {
+    requirement.codec == VideoCodec::Vp9
+        && (requirement.profile.is_none()
+            || requirement.bit_depth.is_none()
+            || requirement.chroma.is_none()
+            || requirement.color.is_none())
+}
+
+/// Проверяет, что отказ относится к metadata, которую VP9 packet probe может уточнить.
+fn unsupported_requirement_can_be_refined_by_vp9_packet_probe(
+    unsupported_requirement: &UnsupportedVideoRequirement,
+) -> bool {
+    unsupported_requirement.requirement.codec == VideoCodec::Vp9
+        && matches!(
+            unsupported_requirement.rejections.first(),
+            Some(VideoCapabilityRejection::InvalidHdrMetadata { .. })
+                | Some(VideoCapabilityRejection::InsufficientStreamMetadata {
+                    codec: VideoCodec::Vp9
+                })
+        )
+}
+
 /// Собирает VP9 resolver source из typed video metadata track-а.
 fn vp9_metadata_source_from_track(track: &TrackInfo) -> Option<Vp9MetadataSource> {
     let video = track.video.as_ref()?;
@@ -1062,11 +1116,15 @@ fn player_error_from_unsupported_requirement(error: UnsupportedVideoRequirement)
         Some(VideoCapabilityRejection::UnsupportedHdrRenderer { .. }) => {
             PlayerErrorKind::UnsupportedHdrMode
         }
+        Some(VideoCapabilityRejection::InvalidHdrMetadata { .. }) => {
+            PlayerErrorKind::UnsupportedHdrMode
+        }
         Some(VideoCapabilityRejection::P010NotRenderable { .. }) if error.requirement.hdr => {
             PlayerErrorKind::UnsupportedHdrMode
         }
         Some(VideoCapabilityRejection::NoAvailableRenderer)
         | Some(VideoCapabilityRejection::UnsupportedDeviceExportPath { .. })
+        | Some(VideoCapabilityRejection::UnsupportedP010StorageLayout { .. })
         | Some(VideoCapabilityRejection::UnsupportedRenderFrameFormat { .. })
         | Some(VideoCapabilityRejection::P010NotRenderable { .. }) => {
             PlayerErrorKind::UnsupportedRenderFormat
@@ -1121,7 +1179,8 @@ mod tests {
     use super::*;
     use crate::{MediaSource, PlayerCommand};
     use capability_core::{
-        BackendCapabilities, BackendDriverInfo, BackendProbeStatus, VideoExportPath,
+        BackendCapabilities, BackendDriverInfo, BackendProbeStatus, P010StorageLayout,
+        VideoExportPath,
     };
     use codec_core::{
         BitDepth, ChromaSubsampling, DecodeBackendId, SupportedVideoDecodeFormat, VideoProfile,
@@ -1154,10 +1213,53 @@ mod tests {
                 raw_rt_formats: Vec::new(),
                 quirks: Vec::new(),
                 export_paths: vec![VideoExportPath::DmaBuf],
+                p010_storage_layouts: Vec::new(),
                 diagnostics: Vec::new(),
             }],
             render_backends: vec![RenderCapabilities::wgpu_nv12(Some(4096))],
         }
+    }
+
+    fn capabilities_with_phase10_vp9_profile2_hdr() -> SystemCapabilities {
+        SystemCapabilities {
+            schema_version: capability_core::CURRENT_CAPABILITY_SCHEMA_VERSION,
+            probed_at_unix_seconds: 1,
+            video_backends: vec![BackendCapabilities {
+                backend_id: DecodeBackendId::vaapi(),
+                display_name: "VA-API".to_string(),
+                status: BackendProbeStatus::Available,
+                driver: BackendDriverInfo::default(),
+                supported_video_decode_formats: vec![SupportedVideoDecodeFormat {
+                    codec: VideoCodec::Vp9,
+                    profile: VideoProfile::Vp9(Vp9Profile::Profile2),
+                    bit_depth: BitDepth::Ten,
+                    chroma: ChromaSubsampling::Yuv420,
+                    max_width: Some(4096),
+                    max_height: Some(4096),
+                    max_fps: None,
+                    hdr_input: true,
+                    backend: DecodeBackendId::vaapi(),
+                }],
+                raw_profiles: Vec::new(),
+                raw_entrypoints: Vec::new(),
+                raw_rt_formats: Vec::new(),
+                quirks: Vec::new(),
+                export_paths: vec![VideoExportPath::DmaBuf],
+                p010_storage_layouts: vec![P010StorageLayout::BaselineSeparateLayer],
+                diagnostics: Vec::new(),
+            }],
+            render_backends: vec![RenderCapabilities::wgpu_p010_bt2446c(Some(4096))],
+        }
+    }
+
+    fn bt2020_pq_limited() -> codec_core::VideoColorMetadata {
+        codec_core::VideoColorMetadata::container(
+            ColorRange::Limited,
+            MatrixCoefficients::Bt2020,
+            ColorPrimaries::Bt2020,
+            TransferFunction::Pq,
+            None,
+        )
     }
 
     #[test]
@@ -1258,6 +1360,24 @@ mod tests {
 
         assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoProfile);
         assert!(error.message.contains("profile VP9 Profile 2"));
+        assert!(!session.can_defer_vp9_packet_refinement(&requirement));
+    }
+
+    #[test]
+    fn incomplete_vp9_hdr_container_metadata_waits_for_packet_refinement() {
+        let mut session = PlayerSession::new();
+        session.set_system_capabilities(capabilities_with_phase10_vp9_profile2_hdr());
+        let requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_resolution(3840, 2160)
+            .with_color(bt2020_pq_limited());
+
+        let error = session
+            .validate_video_decode_requirement(&requirement)
+            .expect_err("container-only VP9 HDR metadata is not strict enough yet");
+
+        assert_eq!(error.kind, PlayerErrorKind::UnsupportedHdrMode);
+        assert!(vp9_requirement_needs_packet_refinement(&requirement));
+        assert!(session.can_defer_vp9_packet_refinement(&requirement));
     }
 
     #[test]

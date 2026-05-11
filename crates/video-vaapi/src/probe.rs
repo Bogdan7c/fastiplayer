@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use capability_core::{
-    BackendCapabilities, BackendDriverInfo, BackendProbeStatus, DriverQuirk,
+    BackendCapabilities, BackendDriverInfo, BackendProbeStatus, DriverQuirk, P010StorageLayout,
     VideoCapabilityProvider, VideoExportPath,
 };
 use codec_core::{
@@ -168,6 +168,8 @@ pub fn probe_vaapi_capabilities() -> BackendCapabilities {
         "VA-API capability probe completed"
     );
 
+    let p010_storage_layouts = p010_storage_layouts_for_formats(&supported_formats);
+
     BackendCapabilities {
         backend_id,
         display_name: VAAPI_DISPLAY_NAME.to_string(),
@@ -179,7 +181,23 @@ pub fn probe_vaapi_capabilities() -> BackendCapabilities {
         raw_rt_formats: raw_rt_formats.into_iter().collect(),
         quirks,
         export_paths: vec![VideoExportPath::DmaBuf, VideoExportPath::CpuReadback],
+        p010_storage_layouts,
         diagnostics,
+    }
+}
+
+/// Возвращает P010 export layouts только если decode matrix реально содержит P010-кандидат.
+fn p010_storage_layouts_for_formats(
+    supported_formats: &[SupportedVideoDecodeFormat],
+) -> Vec<P010StorageLayout> {
+    let has_p010_format = supported_formats.iter().any(|format| {
+        format.bit_depth == BitDepth::Ten && format.chroma == ChromaSubsampling::Yuv420
+    });
+
+    if has_p010_format {
+        vec![P010StorageLayout::BaselineSeparateLayer]
+    } else {
+        Vec::new()
     }
 }
 
@@ -767,5 +785,23 @@ mod tests {
         assert_eq!(formats[0].profile, VideoProfile::Vp9(Vp9Profile::Profile0));
         assert_eq!(formats[0].bit_depth, BitDepth::Eight);
         assert_eq!(formats[0].chroma, ChromaSubsampling::Yuv420);
+        assert!(p010_storage_layouts_for_formats(&formats).is_empty());
+    }
+
+    #[test]
+    fn vp9_profile2_yuv420_10_reports_baseline_p010_layout() {
+        let formats = formats_for_va_profile(
+            libva::VAProfile::VAProfileVP9Profile2,
+            libva::VA_RT_FORMAT_YUV420_10,
+            MaxResolution {
+                width: Some(3840),
+                height: Some(2160),
+            },
+        );
+
+        assert_eq!(
+            p010_storage_layouts_for_formats(&formats),
+            vec![P010StorageLayout::BaselineSeparateLayer]
+        );
     }
 }

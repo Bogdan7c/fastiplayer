@@ -17,7 +17,7 @@ use tracing::{trace, warn};
 
 use crate::{
     PendingAudioPacket, PendingVideoPacket, PlaybackState, PlayerError, PlayerErrorKind,
-    PlayerSession,
+    PlayerSession, session::vp9_requirement_needs_packet_refinement,
 };
 
 /// Контекст одного playback tick.
@@ -641,8 +641,7 @@ fn validate_pending_video_packet_before_decode(
         .pipeline
         .active_video_requirement
         .as_ref()
-        .and_then(|requirement| requirement.profile)
-        .is_some()
+        .is_some_and(|requirement| !vp9_requirement_needs_packet_refinement(requirement))
     {
         return true;
     }

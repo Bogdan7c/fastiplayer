@@ -8,8 +8,8 @@
 
 use anyhow::{Result, bail, ensure};
 use render_core::{
-    ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics,
-    RenderableFrame, VideoFrameFormat,
+    ColorPipelineSettings, HdrToSdrSettings, P010StorageLayout, RenderCapabilities,
+    RenderDiagnostics, RenderableFrame, VideoFrameFormat,
 };
 use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath};
 
@@ -24,7 +24,9 @@ mod bt2446c_reference;
 use nv12_renderer::Nv12VideoRenderer;
 use p010_renderer::P010VideoRenderer;
 
-pub use shell::{GpuContext, RenderFrameDropReason, RenderFrameOutcome, Renderer};
+pub use shell::{
+    GpuContext, RenderFrameDropReason, RenderFrameFailure, RenderFrameOutcome, Renderer,
+};
 
 /// Backend-specific texture resources для одного кадра.
 pub enum WgpuFramePlanes<'frame> {
@@ -256,14 +258,23 @@ fn wgpu_capabilities_from_features(
     max_texture_size: Option<u32>,
     device_features: wgpu::Features,
 ) -> RenderCapabilities {
-    let p010_composed_supported = device_features.contains(wgpu::Features::TEXTURE_FORMAT_P010);
-    let p010_separate_layer_supported =
-        device_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM);
+    let mut supported_p010_storage_layouts = Vec::new();
 
-    if p010_composed_supported || p010_separate_layer_supported {
-        RenderCapabilities::wgpu_p010_bt2446c(max_texture_size)
-    } else {
+    if device_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
+        supported_p010_storage_layouts.push(P010StorageLayout::BaselineSeparateLayer);
+    }
+
+    if device_features.contains(wgpu::Features::TEXTURE_FORMAT_P010) {
+        supported_p010_storage_layouts.push(P010StorageLayout::CompatibilityComposed);
+    }
+
+    if supported_p010_storage_layouts.is_empty() {
         RenderCapabilities::wgpu_nv12(max_texture_size)
+    } else {
+        RenderCapabilities::wgpu_p010_bt2446c_with_storage_layouts(
+            max_texture_size,
+            supported_p010_storage_layouts,
+        )
     }
 }
 
@@ -378,9 +389,9 @@ mod tests {
     #[test]
     fn p010_storage_layouts_map_to_same_renderer_plane_kind() {
         let baseline_separate_layer_kind =
-            p010_storage_layout_renderer_plane_kind(P010StorageLayout::BaselineSeparateLayer);
+            p010_storage_layout_renderer_plane_kind(TestP010StorageLayout::BaselineSeparateLayer);
         let compatibility_composed_kind =
-            p010_storage_layout_renderer_plane_kind(P010StorageLayout::CompatibilityComposed);
+            p010_storage_layout_renderer_plane_kind(TestP010StorageLayout::CompatibilityComposed);
 
         assert_eq!(baseline_separate_layer_kind, WgpuFramePlaneKind::P010);
         assert_eq!(compatibility_composed_kind, WgpuFramePlaneKind::P010);
@@ -396,8 +407,24 @@ mod tests {
 
         assert!(separate_layer_capabilities.supports_p010_rendering());
         assert!(separate_layer_capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
+        assert!(
+            separate_layer_capabilities
+                .supports_p010_storage_layout(P010StorageLayout::BaselineSeparateLayer)
+        );
+        assert!(
+            !separate_layer_capabilities
+                .supports_p010_storage_layout(P010StorageLayout::CompatibilityComposed)
+        );
         assert!(composed_capabilities.supports_p010_rendering());
         assert!(composed_capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
+        assert!(
+            composed_capabilities
+                .supports_p010_storage_layout(P010StorageLayout::CompatibilityComposed)
+        );
+        assert!(
+            !composed_capabilities
+                .supports_p010_storage_layout(P010StorageLayout::BaselineSeparateLayer)
+        );
     }
 
     #[test]
@@ -411,7 +438,7 @@ mod tests {
 
     /// Тестовое описание P010 storage layout до renderer boundary.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum P010StorageLayout {
+    enum TestP010StorageLayout {
         /// Baseline Phase 10 path: отдельные `R16Unorm` и `Rg16Unorm` textures.
         BaselineSeparateLayer,
 
@@ -421,7 +448,7 @@ mod tests {
 
     /// Документирует, что renderer видит только P010 Y/UV pair, а не storage layout.
     const fn p010_storage_layout_renderer_plane_kind(
-        _storage_layout: P010StorageLayout,
+        _storage_layout: TestP010StorageLayout,
     ) -> WgpuFramePlaneKind {
         WgpuFramePlaneKind::P010
     }

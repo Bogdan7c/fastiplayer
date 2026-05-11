@@ -425,6 +425,21 @@ impl VideoColorMetadata {
             confidence: ColorMetadataConfidence::Confirmed,
         }
     }
+
+    /// Проверяет, требует ли stream HDR processing, а не просто содержит side metadata.
+    ///
+    /// Matroska/WebM может хранить MaxCLL/MaxFALL рядом с обычным BT.709 SDR
+    /// потоком. Поэтому сам факт `hdr_metadata` не переводит stream в HDR path:
+    /// решающим сигналом остаётся HDR transfer PQ/HLG в основной colorimetry или
+    /// в согласованной side metadata.
+    #[must_use]
+    pub fn requires_hdr_processing(&self) -> bool {
+        self.transfer.is_hdr()
+            || self
+                .hdr_metadata
+                .as_ref()
+                .is_some_and(|hdr_metadata| hdr_metadata.transfer_function.is_hdr())
+    }
 }
 
 /// Codec level без привязки к конкретному стандарту.
@@ -557,7 +572,7 @@ impl VideoDecodeRequirement {
     /// Возвращает копию requirement с resolved color metadata.
     #[must_use]
     pub fn with_color(mut self, color: VideoColorMetadata) -> Self {
-        self.hdr = color.transfer.is_hdr();
+        self.hdr = color.requires_hdr_processing();
         self.color = Some(color);
         self
     }
@@ -761,6 +776,50 @@ mod tests {
         assert_eq!(metadata.origin, ColorMetadataOrigin::FallbackDefault);
         assert_eq!(metadata.confidence, ColorMetadataConfidence::Fallback);
         assert!(metadata.hdr_metadata.is_none());
+    }
+
+    #[test]
+    fn bt709_content_light_side_metadata_does_not_require_hdr_processing() {
+        let color = VideoColorMetadata::container(
+            ColorRange::Limited,
+            MatrixCoefficients::Bt709,
+            ColorPrimaries::Bt709,
+            TransferFunction::Bt709,
+            Some(HdrMetadata {
+                color_primaries: ColorPrimaries::Bt709,
+                transfer_function: TransferFunction::Bt709,
+                max_luminance_nits: None,
+                min_luminance_nits: None,
+                max_content_light_level_nits: Some(1_100),
+                max_frame_average_light_level_nits: Some(180),
+            }),
+        );
+        let requirement = VideoDecodeRequirement::new(VideoCodec::Vp9).with_color(color.clone());
+
+        assert!(!color.requires_hdr_processing());
+        assert!(!requirement.hdr);
+    }
+
+    #[test]
+    fn pq_side_metadata_requires_hdr_processing_when_primary_transfer_is_missing() {
+        let color = VideoColorMetadata::container(
+            ColorRange::Limited,
+            MatrixCoefficients::Bt2020,
+            ColorPrimaries::Bt2020,
+            TransferFunction::Unknown,
+            Some(HdrMetadata {
+                color_primaries: ColorPrimaries::Bt2020,
+                transfer_function: TransferFunction::Pq,
+                max_luminance_nits: Some(1_000.0),
+                min_luminance_nits: Some(0.01),
+                max_content_light_level_nits: Some(1_000),
+                max_frame_average_light_level_nits: Some(400),
+            }),
+        );
+        let requirement = VideoDecodeRequirement::new(VideoCodec::Vp9).with_color(color.clone());
+
+        assert!(color.requires_hdr_processing());
+        assert!(requirement.hdr);
     }
 
     #[test]

@@ -508,6 +508,8 @@ Manual tests:
 
 ### Сессия 7: integration and manual VP9 HDR verification
 
+Статус: реализовано
+
 Задачи:
 
 - включить production capability intersection for HDR-to-SDR;

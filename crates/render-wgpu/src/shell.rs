@@ -23,7 +23,7 @@ use render_core::{ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, R
 use tracing::{debug, info, instrument};
 use winit::window::Window;
 
-use crate::{WgpuRenderableFrame, WgpuVideoRenderer, clear_to_black};
+use crate::{WgpuRenderableFrame, WgpuVideoRenderer};
 use video_vulkan::UnifiedVulkanInstance;
 
 /// Выбирает формат swapchain для SDR-видео.
@@ -211,13 +211,33 @@ impl GpuContext {
 }
 
 /// Итог одного render-frame вызова.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderFrameOutcome {
     /// Кадр был отправлен в swapchain и представлен.
     Presented,
 
     /// Кадр был пропущен из-за состояния surface/window.
     Dropped(RenderFrameDropReason),
+
+    /// Video render path failed; caller must treat this as fatal media error.
+    Failed(RenderFrameFailure),
+}
+
+/// Ошибка video render path, которую app/player layer не должен превращать в fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderFrameFailure {
+    /// Сообщение renderer-а для логов и UI.
+    pub message: String,
+}
+
+impl RenderFrameFailure {
+    /// Создаёт failure из renderer error.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
 }
 
 /// Причина пропуска кадра renderer backend-ом.
@@ -453,7 +473,7 @@ impl Renderer {
             Ok(_video_rendered) => {}
             Err(error) => {
                 tracing::error!(error = %error, "Video render failed");
-                clear_to_black(&surface_view, &mut encoder);
+                return RenderFrameOutcome::Failed(RenderFrameFailure::new(error.to_string()));
             }
         }
 

@@ -24,12 +24,14 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use capability_core::CapabilityScanner;
-use player_core::{PlayerTickContext, PlayerTickResult, PlayerVideoDropReason};
+use player_core::{
+    PlayerError, PlayerErrorKind, PlayerTickContext, PlayerTickResult, PlayerVideoDropReason,
+};
 use render_core::{
     ColorAdjustment, ColorPipelineSettings, HdrOutputMode, HdrToSdrSettings,
     HdrToneMappingOperator, RenderCapabilities, SwapchainTransferMode,
 };
-use render_wgpu::{RenderFrameOutcome, Renderer};
+use render_wgpu::{RenderFrameFailure, RenderFrameOutcome, Renderer};
 use rustiplayer_config::{AppConfig, HdrToSdrOperatorConfig};
 use rustiplayer_storage::StorageConnection;
 use tracing::{debug, info, instrument, trace, warn};
@@ -490,6 +492,12 @@ fn render_frame(
     ) {
         RenderFrameOutcome::Presented => telemetry.record_presented_frame(),
         RenderFrameOutcome::Dropped(_reason) => telemetry.record_dropped_frame(),
+        RenderFrameOutcome::Failed(failure) => {
+            telemetry.record_dropped_frame();
+            app_state
+                .player_session
+                .mark_fatal_error(player_error_from_render_failure(&failure));
+        }
     }
     app_state.set_render_diagnostics(renderer.diagnostics());
 
@@ -497,6 +505,14 @@ fn render_frame(
     let frame_duration = frame_start.elapsed();
     let frame_time_ms = frame_duration.as_secs_f64() * 1000.0;
     telemetry.update_fps(frame_time_ms);
+}
+
+/// Переводит renderer failure в fatal media/runtime error без SDR fallback.
+fn player_error_from_render_failure(failure: &RenderFrameFailure) -> PlayerError {
+    PlayerError::new(
+        PlayerErrorKind::RenderDeviceLost,
+        format!("Video render failed: {}", failure.message),
+    )
 }
 
 /// Точка входа приложения.
@@ -731,5 +747,20 @@ mod tests {
         let settings = hdr_to_sdr_settings_from_config(&AppConfig::default());
 
         assert_eq!(settings, HdrToSdrSettings::default());
+    }
+
+    /// Проверяет, что renderer error становится fatal media error, а не silent fallback.
+    #[test]
+    fn render_failure_maps_to_fatal_render_device_error() {
+        let failure = RenderFrameFailure::new("P010 HDR renderer rejected strict metadata");
+
+        let error = player_error_from_render_failure(&failure);
+
+        assert_eq!(error.kind, PlayerErrorKind::RenderDeviceLost);
+        assert!(
+            error
+                .message
+                .contains("P010 HDR renderer rejected strict metadata")
+        );
     }
 }

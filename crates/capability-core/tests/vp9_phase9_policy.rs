@@ -7,7 +7,7 @@ use codec_core::{
     SupportedVideoDecodeFormat, TransferFunction, VideoCodec, VideoColorMetadata,
     VideoDecodeRequirement, VideoProfile, Vp9Profile,
 };
-use render_core::{P010RenderReadiness, RenderCapabilities, VideoFrameFormat};
+use render_core::{P010RenderReadiness, P010StorageLayout, RenderCapabilities, VideoFrameFormat};
 
 #[test]
 fn production_hdr_remains_rejected_until_phase10_even_after_p010_boundary_verification() {
@@ -66,6 +66,7 @@ fn capabilities_with_profile2_p010_boundary() -> SystemCapabilities {
             raw_rt_formats: Vec::new(),
             quirks: Vec::new(),
             export_paths: vec![VideoExportPath::DmaBuf],
+            p010_storage_layouts: vec![P010StorageLayout::BaselineSeparateLayer],
             diagnostics: Vec::new(),
         }],
         render_backends: vec![render_capabilities],

@@ -1,8 +1,9 @@
 use codec_core::{
-    BitDepth, ChromaSubsampling, DecodeBackendId, SupportedVideoDecodeFormat, VideoCodec,
-    VideoDecodeRequirement, VideoProfile, Vp9Profile,
+    BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, DecodeBackendId, MatrixCoefficients,
+    SupportedVideoDecodeFormat, TransferFunction, VideoCodec, VideoDecodeRequirement, VideoProfile,
+    Vp9Profile,
 };
-use render_core::{P010RenderReadiness, RenderCapabilities, VideoFrameFormat};
+use render_core::{P010RenderReadiness, P010StorageLayout, RenderCapabilities, VideoFrameFormat};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -161,10 +162,28 @@ pub enum VideoCapabilityRejection {
         readiness: P010RenderReadiness,
     },
 
+    /// Renderer не включил feature, нужный для фактического P010 DMA-BUF layout-а.
+    UnsupportedP010StorageLayout {
+        /// Backend, который экспортирует P010 surface.
+        backend: DecodeBackendId,
+
+        /// Layout, который нужен для zero-copy import.
+        storage_layout: P010StorageLayout,
+
+        /// wgpu feature, без которого layout не считается production-ready.
+        required_wgpu_feature: String,
+    },
+
     /// Decode возможен, но HDR renderer/tone mapper отсутствует.
     UnsupportedHdrRenderer {
         /// Формат кадра, который пришёл бы на renderer boundary.
         frame_format: Option<VideoFrameFormat>,
+    },
+
+    /// HDR metadata не проходит strict core policy Phase 10.
+    InvalidHdrMetadata {
+        /// Конкретная причина отказа.
+        reason: String,
     },
 
     /// Требование слишком неполное для безопасного production selection.
@@ -207,6 +226,13 @@ impl VideoCapabilityRejection {
             Self::P010NotRenderable { readiness } => format!(
                 "P010 zero-copy boundary имеет состояние `{readiness}`, но production P010 renderer ещё недоступен"
             ),
+            Self::UnsupportedP010StorageLayout {
+                backend,
+                storage_layout,
+                required_wgpu_feature,
+            } => format!(
+                "backend {backend} экспортирует P010 как {storage_layout}, но renderer не подтвердил required import feature {required_wgpu_feature}"
+            ),
             Self::UnsupportedHdrRenderer { frame_format } => {
                 let frame_format = frame_format
                     .map(|format| format.to_string())
@@ -214,6 +240,9 @@ impl VideoCapabilityRejection {
                 format!(
                     "HDR stream нельзя выбрать: HDR-to-SDR renderer для {frame_format} пока недоступен"
                 )
+            }
+            Self::InvalidHdrMetadata { reason } => {
+                format!("HDR stream отклонён: {reason}")
             }
             Self::InsufficientStreamMetadata { codec } => format!(
                 "metadata stream-а для codec {codec} недостаточно точна для безопасного выбора"
@@ -290,7 +319,11 @@ impl SystemCapabilities {
             return Err(self.unsupported_requirement_with_rejections(requirement, vec![rejection]));
         }
 
-        if let Some(rejection) = self.render_rejection(requirement, frame_format) {
+        if let Some(rejection) = strict_hdr_metadata_rejection(requirement, frame_format) {
+            return Err(self.unsupported_requirement_with_rejections(requirement, vec![rejection]));
+        }
+
+        if let Some(rejection) = self.render_rejection(requirement, frame_format, backend) {
             return Err(self.unsupported_requirement_with_rejections(requirement, vec![rejection]));
         }
 
@@ -475,9 +508,15 @@ impl SystemCapabilities {
                     .and_then(|backend| device_boundary_rejection(frame_format, backend))
             });
             device_rejection
+                .or_else(|| strict_hdr_metadata_rejection(requirement, frame_format?))
                 .or_else(|| {
-                    frame_format
-                        .and_then(|frame_format| self.render_rejection(requirement, frame_format))
+                    frame_format.and_then(|frame_format| {
+                        self.find_supported_video_format(requirement)
+                            .and_then(|format| self.backend_for_decode_format(format))
+                            .and_then(|backend| {
+                                self.render_rejection(requirement, frame_format, backend)
+                            })
+                    })
                 })
                 .map(|rejection| vec![rejection])
                 .unwrap_or_else(|| {
@@ -521,16 +560,24 @@ impl SystemCapabilities {
         &self,
         requirement: &VideoDecodeRequirement,
         frame_format: VideoFrameFormat,
+        backend: &BackendCapabilities,
     ) -> Option<VideoCapabilityRejection> {
         if self.render_backends.is_empty() {
             return Some(VideoCapabilityRejection::NoAvailableRenderer);
         }
 
-        if self.find_supported_render_capability(requirement).is_some() {
+        if self.render_backends.iter().any(|capabilities| {
+            render_capability_supports_requirement_with_backend_layout(
+                capabilities,
+                requirement,
+                frame_format,
+                backend,
+            )
+        }) {
             return None;
         }
 
-        if requirement.hdr
+        if requirement_requires_hdr_processing(requirement)
             && !self.render_backends.iter().any(|capabilities| {
                 capabilities.supports_hdr_to_sdr_with(&render_core::HdrToSdrSettings::default())
                     || capabilities.supports_native_hdr_output
@@ -545,6 +592,10 @@ impl SystemCapabilities {
             let readiness = best_p010_render_readiness(&self.render_backends);
             if !readiness.is_renderable() {
                 return Some(VideoCapabilityRejection::P010NotRenderable { readiness });
+            }
+
+            if let Some(rejection) = p010_storage_layout_rejection(backend, &self.render_backends) {
+                return Some(rejection);
             }
         }
 
@@ -654,6 +705,148 @@ fn can_probe_p010_boundary_from_incomplete_hdr(requirement: &VideoDecodeRequirem
             .is_none_or(|chroma| chroma == ChromaSubsampling::Yuv420)
 }
 
+/// Проверяет, что requirement действительно требует HDR handling.
+fn requirement_requires_hdr_processing(requirement: &VideoDecodeRequirement) -> bool {
+    requirement.hdr
+        || requirement
+            .color
+            .as_ref()
+            .is_some_and(|color| color.requires_hdr_processing())
+}
+
+/// Проверяет strict HDR core metadata до выбора production renderer path.
+fn strict_hdr_metadata_rejection(
+    requirement: &VideoDecodeRequirement,
+    frame_format: VideoFrameFormat,
+) -> Option<VideoCapabilityRejection> {
+    if !requirement_requires_hdr_processing(requirement) {
+        return None;
+    }
+
+    if frame_format != VideoFrameFormat::P010 {
+        return Some(invalid_hdr_metadata(
+            "Phase 10 HDR-to-SDR принимает только P010 10-bit 4:2:0 input",
+        ));
+    }
+
+    if requirement.bit_depth != Some(BitDepth::Ten) {
+        return Some(invalid_hdr_metadata(
+            "strict HDR metadata должна явно указывать 10-bit input",
+        ));
+    }
+
+    if requirement.chroma != Some(ChromaSubsampling::Yuv420) {
+        return Some(invalid_hdr_metadata(
+            "strict HDR metadata должна явно указывать YUV 4:2:0 chroma",
+        ));
+    }
+
+    let Some(color) = requirement.color.as_ref() else {
+        return Some(invalid_hdr_metadata(
+            "отсутствует resolved color metadata для HDR stream-а",
+        ));
+    };
+
+    if !matches!(color.transfer, TransferFunction::Pq | TransferFunction::Hlg) {
+        return Some(invalid_hdr_metadata(format!(
+            "transfer должен быть PQ или HLG, получено {:?}",
+            color.transfer
+        )));
+    }
+
+    if color.primaries != ColorPrimaries::Bt2020 {
+        return Some(invalid_hdr_metadata(format!(
+            "primaries должны быть BT.2020, получено {:?}",
+            color.primaries
+        )));
+    }
+
+    if color.matrix != MatrixCoefficients::Bt2020 {
+        return Some(invalid_hdr_metadata(format!(
+            "matrix должна быть BT.2020, получено {:?}",
+            color.matrix
+        )));
+    }
+
+    if !matches!(color.range, ColorRange::Limited | ColorRange::Full) {
+        return Some(invalid_hdr_metadata(
+            "range должен быть explicit limited или full",
+        ));
+    }
+
+    if let Some(hdr_metadata) = &color.hdr_metadata {
+        if hdr_metadata.color_primaries != color.primaries {
+            return Some(invalid_hdr_metadata(format!(
+                "HDR side metadata primaries {:?} не совпадают с core primaries {:?}",
+                hdr_metadata.color_primaries, color.primaries
+            )));
+        }
+
+        if hdr_metadata.transfer_function != color.transfer {
+            return Some(invalid_hdr_metadata(format!(
+                "HDR side metadata transfer {:?} не совпадает с core transfer {:?}",
+                hdr_metadata.transfer_function, color.transfer
+            )));
+        }
+    }
+
+    None
+}
+
+/// Создаёт typed reject для strict HDR metadata policy.
+fn invalid_hdr_metadata(reason: impl Into<String>) -> VideoCapabilityRejection {
+    VideoCapabilityRejection::InvalidHdrMetadata {
+        reason: reason.into(),
+    }
+}
+
+/// Проверяет renderer capability с учётом фактического P010 export layout-а backend-а.
+fn render_capability_supports_requirement_with_backend_layout(
+    capabilities: &RenderCapabilities,
+    requirement: &VideoDecodeRequirement,
+    frame_format: VideoFrameFormat,
+    backend: &BackendCapabilities,
+) -> bool {
+    if !capabilities.supports_decode_requirement(requirement) {
+        return false;
+    }
+
+    if frame_format != VideoFrameFormat::P010 {
+        return true;
+    }
+
+    backend
+        .p010_storage_layouts
+        .iter()
+        .any(|layout| capabilities.supports_p010_storage_layout(*layout))
+}
+
+/// Возвращает typed reject, если renderer не поддерживает P010 layout backend-а.
+fn p010_storage_layout_rejection(
+    backend: &BackendCapabilities,
+    render_backends: &[RenderCapabilities],
+) -> Option<VideoCapabilityRejection> {
+    let storage_layout = backend
+        .p010_storage_layouts
+        .first()
+        .copied()
+        .unwrap_or(P010StorageLayout::BaselineSeparateLayer);
+
+    let layout_supported = render_backends
+        .iter()
+        .any(|capabilities| capabilities.supports_p010_storage_layout(storage_layout));
+
+    if layout_supported {
+        return None;
+    }
+
+    Some(VideoCapabilityRejection::UnsupportedP010StorageLayout {
+        backend: backend.backend_id.clone(),
+        storage_layout,
+        required_wgpu_feature: storage_layout.required_wgpu_feature_label().to_string(),
+    })
+}
+
 /// Проверяет device/export часть intersection для decoded frame format-а.
 fn device_boundary_rejection(
     frame_format: VideoFrameFormat,
@@ -686,7 +879,7 @@ fn best_p010_render_readiness(render_backends: &[RenderCapabilities]) -> P010Ren
 #[cfg(test)]
 mod tests {
     use codec_core::{
-        BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, DecodeBackendId,
+        BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, DecodeBackendId, HdrMetadata,
         MatrixCoefficients, SupportedVideoDecodeFormat, TransferFunction, VideoCodec,
         VideoColorMetadata, VideoDecodeRequirement, VideoProfile, Vp9Profile,
     };
@@ -714,6 +907,8 @@ mod tests {
         render_backends: Vec<RenderCapabilities>,
         export_paths: Vec<VideoExportPath>,
     ) -> SystemCapabilities {
+        let p010_storage_layouts = p010_storage_layouts_for_formats(&supported_formats);
+
         SystemCapabilities {
             schema_version: crate::CURRENT_CAPABILITY_SCHEMA_VERSION,
             probed_at_unix_seconds: 1,
@@ -728,9 +923,24 @@ mod tests {
                 raw_rt_formats: Vec::new(),
                 quirks: Vec::new(),
                 export_paths,
+                p010_storage_layouts,
                 diagnostics: Vec::new(),
             }],
             render_backends,
+        }
+    }
+
+    fn p010_storage_layouts_for_formats(
+        supported_formats: &[SupportedVideoDecodeFormat],
+    ) -> Vec<P010StorageLayout> {
+        let has_p010_format = supported_formats.iter().any(|format| {
+            format.bit_depth == BitDepth::Ten && format.chroma == ChromaSubsampling::Yuv420
+        });
+
+        if has_p010_format {
+            vec![P010StorageLayout::BaselineSeparateLayer]
+        } else {
+            Vec::new()
         }
     }
 
@@ -774,6 +984,23 @@ mod tests {
         )
     }
 
+    fn bt709_limited_with_content_light_metadata() -> VideoColorMetadata {
+        VideoColorMetadata::container(
+            ColorRange::Limited,
+            MatrixCoefficients::Bt709,
+            ColorPrimaries::Bt709,
+            TransferFunction::Bt709,
+            Some(HdrMetadata {
+                color_primaries: ColorPrimaries::Bt709,
+                transfer_function: TransferFunction::Bt709,
+                max_luminance_nits: None,
+                min_luminance_nits: None,
+                max_content_light_level_nits: Some(1_100),
+                max_frame_average_light_level_nits: Some(180),
+            }),
+        )
+    }
+
     #[test]
     fn selection_picks_supported_highest_quality_candidate() {
         let capabilities = capabilities_with_vp9_profile0();
@@ -797,6 +1024,30 @@ mod tests {
             .expect("supported stream should be selected");
 
         assert_eq!(selected.stream_id, "high");
+    }
+
+    #[test]
+    fn vp9_profile0_bt709_with_content_light_metadata_stays_on_sdr_nv12_path() {
+        let capabilities = capabilities_with_vp9_profile0();
+        let requirement = vp9_requirement(
+            Vp9Profile::Profile0,
+            BitDepth::Eight,
+            ChromaSubsampling::Yuv420,
+        )
+        .with_resolution(3840, 2160)
+        .with_color(bt709_limited_with_content_light_metadata());
+        let candidates = vec![VideoStreamCandidate {
+            stream_id: "sdr-vp9-profile0".to_string(),
+            requirement: requirement.clone(),
+            quality_score: 10,
+        }];
+
+        let selected = capabilities
+            .select_best_video_stream(&candidates)
+            .expect("BT.709 SDR with content-light side metadata must stay playable");
+
+        assert!(!requirement.hdr);
+        assert_eq!(selected.stream_id, "sdr-vp9-profile0");
     }
 
     #[test]
@@ -976,9 +1227,7 @@ mod tests {
             .expect_err("production selection must still reject HDR before Phase 10");
         assert!(matches!(
             production_error.rejections.first(),
-            Some(VideoCapabilityRejection::UnsupportedHdrRenderer {
-                frame_format: Some(VideoFrameFormat::Nv12),
-            })
+            Some(VideoCapabilityRejection::InvalidHdrMetadata { .. })
         ));
 
         let selected_format = capabilities
@@ -1125,6 +1374,214 @@ mod tests {
         assert_eq!(selected_format.bit_depth, BitDepth::Ten);
         assert_eq!(selected_format.chroma, ChromaSubsampling::Yuv420);
         assert!(selected_format.hdr_input);
+    }
+
+    #[test]
+    fn hdr_stream_is_selected_only_when_decode_p010_layout_and_hdr_to_sdr_pass() {
+        let capabilities = capabilities_with_formats(
+            vec![
+                vp9_format(
+                    Vp9Profile::Profile0,
+                    BitDepth::Eight,
+                    ChromaSubsampling::Yuv420,
+                    false,
+                ),
+                vp9_format(
+                    Vp9Profile::Profile2,
+                    BitDepth::Ten,
+                    ChromaSubsampling::Yuv420,
+                    true,
+                ),
+            ],
+            vec![RenderCapabilities::wgpu_p010_bt2446c_with_storage_layouts(
+                Some(4096),
+                vec![P010StorageLayout::BaselineSeparateLayer],
+            )],
+            vec![VideoExportPath::DmaBuf],
+        );
+        let candidates = vec![
+            VideoStreamCandidate {
+                stream_id: "sdr".to_string(),
+                requirement: vp9_requirement(
+                    Vp9Profile::Profile0,
+                    BitDepth::Eight,
+                    ChromaSubsampling::Yuv420,
+                ),
+                quality_score: 10,
+            },
+            VideoStreamCandidate {
+                stream_id: "hdr".to_string(),
+                requirement: vp9_requirement(
+                    Vp9Profile::Profile2,
+                    BitDepth::Ten,
+                    ChromaSubsampling::Yuv420,
+                )
+                .with_color(bt2020_pq_limited()),
+                quality_score: 100,
+            },
+        ];
+
+        let selected = capabilities
+            .select_best_video_stream(&candidates)
+            .expect("HDR stream should be selected when full Phase 10 intersection passes");
+
+        assert_eq!(selected.stream_id, "hdr");
+    }
+
+    #[test]
+    fn hdr_stream_is_skipped_when_p010_layout_feature_is_missing() {
+        let capabilities = capabilities_with_formats(
+            vec![
+                vp9_format(
+                    Vp9Profile::Profile0,
+                    BitDepth::Eight,
+                    ChromaSubsampling::Yuv420,
+                    false,
+                ),
+                vp9_format(
+                    Vp9Profile::Profile2,
+                    BitDepth::Ten,
+                    ChromaSubsampling::Yuv420,
+                    true,
+                ),
+            ],
+            vec![RenderCapabilities::wgpu_p010_bt2446c_with_storage_layouts(
+                Some(4096),
+                vec![P010StorageLayout::CompatibilityComposed],
+            )],
+            vec![VideoExportPath::DmaBuf],
+        );
+        let candidates = vec![
+            VideoStreamCandidate {
+                stream_id: "sdr".to_string(),
+                requirement: vp9_requirement(
+                    Vp9Profile::Profile0,
+                    BitDepth::Eight,
+                    ChromaSubsampling::Yuv420,
+                ),
+                quality_score: 10,
+            },
+            VideoStreamCandidate {
+                stream_id: "hdr".to_string(),
+                requirement: vp9_requirement(
+                    Vp9Profile::Profile2,
+                    BitDepth::Ten,
+                    ChromaSubsampling::Yuv420,
+                )
+                .with_color(bt2020_pq_limited()),
+                quality_score: 100,
+            },
+        ];
+
+        let selected = capabilities
+            .select_best_video_stream(&candidates)
+            .expect("SDR fallback candidate should be selected instead of unsupported HDR layout");
+
+        assert_eq!(selected.stream_id, "sdr");
+    }
+
+    #[test]
+    fn missing_separate_layer_p010_import_feature_rejects_hdr_stream() {
+        let capabilities = capabilities_with_formats(
+            vec![vp9_format(
+                Vp9Profile::Profile2,
+                BitDepth::Ten,
+                ChromaSubsampling::Yuv420,
+                true,
+            )],
+            vec![RenderCapabilities::wgpu_p010_bt2446c_with_storage_layouts(
+                Some(4096),
+                vec![P010StorageLayout::CompatibilityComposed],
+            )],
+            vec![VideoExportPath::DmaBuf],
+        );
+        let requirement = vp9_requirement(
+            Vp9Profile::Profile2,
+            BitDepth::Ten,
+            ChromaSubsampling::Yuv420,
+        )
+        .with_color(bt2020_pq_limited());
+
+        let error = capabilities
+            .check_video_requirement(&requirement)
+            .expect_err("baseline separate-layer P010 must require TEXTURE_FORMAT_16BIT_NORM");
+
+        assert!(matches!(
+            error.rejections.first(),
+            Some(VideoCapabilityRejection::UnsupportedP010StorageLayout {
+                storage_layout: P010StorageLayout::BaselineSeparateLayer,
+                required_wgpu_feature,
+                ..
+            }) if required_wgpu_feature == "TEXTURE_FORMAT_16BIT_NORM"
+        ));
+    }
+
+    #[test]
+    fn missing_composed_p010_import_feature_rejects_hdr_stream() {
+        let mut capabilities = capabilities_with_formats(
+            vec![vp9_format(
+                Vp9Profile::Profile2,
+                BitDepth::Ten,
+                ChromaSubsampling::Yuv420,
+                true,
+            )],
+            vec![RenderCapabilities::wgpu_p010_bt2446c_with_storage_layouts(
+                Some(4096),
+                vec![P010StorageLayout::BaselineSeparateLayer],
+            )],
+            vec![VideoExportPath::DmaBuf],
+        );
+        capabilities.video_backends[0].p010_storage_layouts =
+            vec![P010StorageLayout::CompatibilityComposed];
+        let requirement = vp9_requirement(
+            Vp9Profile::Profile2,
+            BitDepth::Ten,
+            ChromaSubsampling::Yuv420,
+        )
+        .with_color(bt2020_pq_limited());
+
+        let error = capabilities
+            .check_video_requirement(&requirement)
+            .expect_err("compatibility composed P010 must require TEXTURE_FORMAT_P010");
+
+        assert!(matches!(
+            error.rejections.first(),
+            Some(VideoCapabilityRejection::UnsupportedP010StorageLayout {
+                storage_layout: P010StorageLayout::CompatibilityComposed,
+                required_wgpu_feature,
+                ..
+            }) if required_wgpu_feature == "TEXTURE_FORMAT_P010"
+        ));
+    }
+
+    #[test]
+    fn missing_strict_hdr_metadata_rejects_stream_before_render() {
+        let capabilities = capabilities_with_formats(
+            vec![vp9_format(
+                Vp9Profile::Profile2,
+                BitDepth::Ten,
+                ChromaSubsampling::Yuv420,
+                true,
+            )],
+            vec![RenderCapabilities::wgpu_p010_bt2446c(Some(4096))],
+            vec![VideoExportPath::DmaBuf],
+        );
+        let mut requirement = vp9_requirement(
+            Vp9Profile::Profile2,
+            BitDepth::Ten,
+            ChromaSubsampling::Yuv420,
+        );
+        requirement.hdr = true;
+
+        let error = capabilities
+            .check_video_requirement(&requirement)
+            .expect_err("HDR stream without resolved strict metadata must be rejected");
+
+        assert!(matches!(
+            error.rejections.first(),
+            Some(VideoCapabilityRejection::InvalidHdrMetadata { reason })
+                if reason.contains("отсутствует resolved color metadata")
+        ));
     }
 
     #[test]

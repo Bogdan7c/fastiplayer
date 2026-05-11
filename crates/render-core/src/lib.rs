@@ -149,6 +149,44 @@ impl Default for P010RenderReadiness {
     }
 }
 
+/// Storage layout, через который P010 DMA-BUF попадает на renderer boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum P010StorageLayout {
+    /// Основной Phase 10 layout: VA отдаёт luma/chroma как R16 + Rg16 textures.
+    BaselineSeparateLayer,
+
+    /// Compatibility layout: VA отдаёт один composed `TextureFormat::P010`.
+    CompatibilityComposed,
+}
+
+impl P010StorageLayout {
+    /// Возвращает stable label layout-а для capability report и ошибок.
+    #[must_use]
+    pub const fn diagnostic_label(self) -> &'static str {
+        match self {
+            Self::BaselineSeparateLayer => "baseline separate-layer R16/Rg16",
+            Self::CompatibilityComposed => "compatibility composed P010",
+        }
+    }
+
+    /// Возвращает wgpu feature, без которого этот layout нельзя импортировать.
+    #[must_use]
+    pub const fn required_wgpu_feature_label(self) -> &'static str {
+        match self {
+            Self::BaselineSeparateLayer => "TEXTURE_FORMAT_16BIT_NORM",
+            Self::CompatibilityComposed => "TEXTURE_FORMAT_P010",
+        }
+    }
+}
+
+impl fmt::Display for P010StorageLayout {
+    /// Печатает stable layout label без backend-specific Debug-шума.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.diagnostic_label())
+    }
+}
+
 /// Нейтральная для renderer-а color metadata, проброшенная с decoder boundary.
 pub type RenderColorMetadata = VideoColorMetadata;
 
@@ -776,11 +814,7 @@ fn classify_color_path_fallback(
 
 /// Проверяет, требует ли metadata HDR transfer/tone-mapping path.
 fn is_hdr_input(color_metadata: &RenderColorMetadata) -> bool {
-    color_metadata.hdr_metadata.is_some()
-        || matches!(
-            color_metadata.transfer,
-            TransferFunction::Pq | TransferFunction::Hlg
-        )
+    color_metadata.requires_hdr_processing()
 }
 
 /// Проверяет, что transfer входит в Phase 10 HDR-to-SDR production baseline.
@@ -891,6 +925,10 @@ pub struct RenderCapabilities {
     #[serde(default)]
     pub p010_render_readiness: P010RenderReadiness,
 
+    /// P010 storage layouts, которые backend может импортировать без CPU fallback.
+    #[serde(default)]
+    pub supported_p010_storage_layouts: Vec<P010StorageLayout>,
+
     /// HDR-to-SDR operators, которые backend реально реализует в production shader path.
     #[serde(default)]
     pub supported_hdr_to_sdr_operators: Vec<HdrToneMappingOperator>,
@@ -930,6 +968,7 @@ impl RenderCapabilities {
             display_name: "WGPU NV12 renderer".to_string(),
             supported_frame_formats: vec![VideoFrameFormat::Nv12],
             p010_render_readiness: P010RenderReadiness::Unavailable,
+            supported_p010_storage_layouts: Vec::new(),
             supported_hdr_to_sdr_operators: Vec::new(),
             hdr_output_mode: HdrOutputMode::SdrBt709Only,
             supports_hdr_to_sdr: false,
@@ -944,11 +983,27 @@ impl RenderCapabilities {
     /// Создаёт capabilities для WGPU renderer-а с production P010 BT.2446-C path.
     #[must_use]
     pub fn wgpu_p010_bt2446c(max_texture_size: Option<u32>) -> Self {
+        Self::wgpu_p010_bt2446c_with_storage_layouts(
+            max_texture_size,
+            vec![
+                P010StorageLayout::BaselineSeparateLayer,
+                P010StorageLayout::CompatibilityComposed,
+            ],
+        )
+    }
+
+    /// Создаёт capabilities для WGPU P010 renderer-а с явными import layout-ами.
+    #[must_use]
+    pub fn wgpu_p010_bt2446c_with_storage_layouts(
+        max_texture_size: Option<u32>,
+        supported_p010_storage_layouts: Vec<P010StorageLayout>,
+    ) -> Self {
         Self {
             backend: RenderBackendKind::Wgpu,
             display_name: "WGPU P010 BT.2446-C renderer".to_string(),
             supported_frame_formats: vec![VideoFrameFormat::Nv12, VideoFrameFormat::P010],
             p010_render_readiness: P010RenderReadiness::Renderable,
+            supported_p010_storage_layouts,
             supported_hdr_to_sdr_operators: vec![HdrToneMappingOperator::Bt2446C],
             hdr_output_mode: HdrOutputMode::SdrBt709Only,
             supports_hdr_to_sdr: true,
@@ -971,6 +1026,13 @@ impl RenderCapabilities {
     pub fn supports_p010_rendering(&self) -> bool {
         self.p010_render_readiness.is_renderable()
             && self.supports_frame_format(VideoFrameFormat::P010)
+            && !self.supported_p010_storage_layouts.is_empty()
+    }
+
+    /// Проверяет, что renderer умеет импортировать конкретный P010 storage layout.
+    #[must_use]
+    pub fn supports_p010_storage_layout(&self, layout: P010StorageLayout) -> bool {
+        self.supports_p010_rendering() && self.supported_p010_storage_layouts.contains(&layout)
     }
 
     /// Проверяет production-ready HDR-to-SDR support для конкретных settings.
@@ -1031,6 +1093,15 @@ impl RenderCapabilities {
             .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
+        let p010_layouts = if self.supported_p010_storage_layouts.is_empty() {
+            "none".to_string()
+        } else {
+            self.supported_p010_storage_layouts
+                .iter()
+                .map(|layout| layout.diagnostic_label())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
 
         let hdr_support_label = if self.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()) {
             "HDR available via HDR-to-SDR"
@@ -1046,12 +1117,13 @@ impl RenderCapabilities {
         };
 
         format!(
-            "{}: {}, {}, {}, formats: {}, max texture: {}",
+            "{}: {}, {}, {}, formats: {}, P010 layouts: {}, max texture: {}",
             self.display_name,
             hdr_support_label,
             native_hdr_label,
             self.p010_render_readiness,
             frame_formats,
+            p010_layouts,
             self.max_texture_size
                 .map(|size| size.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
@@ -1242,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    fn active_color_path_does_not_tone_map_p010_sdr_even_with_side_hdr_metadata() {
+    fn active_color_path_treats_bt709_content_light_side_metadata_as_sdr() {
         let color = VideoColorMetadata {
             range: ColorRange::Limited,
             matrix: MatrixCoefficients::Bt2020,
@@ -1275,7 +1347,7 @@ mod tests {
 
         assert_eq!(
             active_path.fallback,
-            Some(ActiveColorPathFallback::UnsupportedHdrInput)
+            Some(ActiveColorPathFallback::WideGamutToSdrBt709)
         );
         assert_eq!(active_path.hdr_to_sdr, None);
         assert!(!active_path.diagnostic_text().contains("bt2446-c"));
@@ -1343,6 +1415,9 @@ mod tests {
             .supported_frame_formats
             .push(VideoFrameFormat::P010);
         p010_without_operator.p010_render_readiness = P010RenderReadiness::Renderable;
+        p010_without_operator
+            .supported_p010_storage_layouts
+            .push(P010StorageLayout::BaselineSeparateLayer);
         p010_without_operator.supports_hdr_to_sdr = true;
 
         let production_capabilities = RenderCapabilities::wgpu_p010_bt2446c(Some(4096));

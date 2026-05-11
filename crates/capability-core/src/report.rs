@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use codec_core::{DecodeBackendId, SupportedVideoDecodeFormat};
-use render_core::RenderCapabilities;
+use render_core::{P010StorageLayout, RenderCapabilities};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
@@ -206,6 +206,10 @@ pub struct BackendCapabilities {
     /// Export/upload paths, которые probe или runtime считает доступными.
     pub export_paths: Vec<VideoExportPath>,
 
+    /// P010 DMA-BUF layouts, которые backend ожидает на decoder/renderer boundary.
+    #[serde(default)]
+    pub p010_storage_layouts: Vec<P010StorageLayout>,
+
     /// Неструктурированные diagnostic notes, не влияющие на selection.
     pub diagnostics: Vec<String>,
 }
@@ -231,6 +235,7 @@ impl BackendCapabilities {
             raw_rt_formats: Vec::new(),
             quirks: Vec::new(),
             export_paths: Vec::new(),
+            p010_storage_layouts: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
