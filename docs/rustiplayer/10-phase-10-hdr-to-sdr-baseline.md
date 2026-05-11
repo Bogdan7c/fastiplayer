@@ -426,6 +426,8 @@ Manual tests:
 
 ### Сессия 4: BT.2446-C CPU reference implementation
 
+Статус: реализовано
+
 Задачи:
 
 - добавить isolated Rust reference implementation for tests;

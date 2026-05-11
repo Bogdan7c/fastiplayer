@@ -17,6 +17,9 @@ mod nv12_renderer;
 mod p010_renderer;
 mod shell;
 
+#[cfg(test)]
+mod bt2446c_reference;
+
 use nv12_renderer::Nv12VideoRenderer;
 use p010_renderer::P010VideoRenderer;
 
