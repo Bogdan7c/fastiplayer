@@ -7,7 +7,6 @@
 #![forbid(unsafe_code)]
 
 use anyhow::{Result, bail, ensure};
-use codec_core::{ColorPrimaries, MatrixCoefficients, TransferFunction};
 use render_core::{
     ColorPipelineSettings, RenderCapabilities, RenderDiagnostics, RenderableFrame, VideoFrameFormat,
 };
@@ -15,9 +14,11 @@ use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath};
 
 mod color_pipeline;
 mod nv12_renderer;
+mod p010_renderer;
 mod shell;
 
 use nv12_renderer::Nv12VideoRenderer;
+use p010_renderer::P010VideoRenderer;
 
 pub use shell::{GpuContext, RenderFrameDropReason, RenderFrameOutcome, Renderer};
 
@@ -78,23 +79,30 @@ impl<'frame> WgpuRenderableFrame<'frame> {
         y_view: &'frame wgpu::TextureView,
         uv_view: &'frame wgpu::TextureView,
     ) -> Result<Self> {
-        frame.validate_contract()?;
-        ensure!(
-            frame.format == DecodedPixelFormat::P010,
-            "from_decoded_p010 received {} frame",
-            frame.format
-        );
-        ensure!(
-            frame.memory_path == FrameMemoryPath::DmaBufZeroCopy,
-            "P010 WGPU boundary requires zero-copy memory path, got {}",
-            frame.memory_path
-        );
+        validate_decoded_p010_frame(frame)?;
 
         Ok(Self {
             metadata: renderable_metadata_from_decoded(frame, VideoFrameFormat::P010),
             planes: WgpuFramePlanes::P010 { y_view, uv_view },
         })
     }
+}
+
+/// Проверяет P010 decoded frame до привязки backend-specific texture views.
+fn validate_decoded_p010_frame(frame: &DecodedFrame) -> Result<()> {
+    frame.validate_contract()?;
+    ensure!(
+        frame.format == DecodedPixelFormat::P010,
+        "from_decoded_p010 received {} frame",
+        frame.format
+    );
+    ensure!(
+        frame.memory_path == FrameMemoryPath::DmaBufZeroCopy,
+        "P010 WGPU boundary requires zero-copy memory path, got {}",
+        frame.memory_path
+    );
+
+    Ok(())
 }
 
 /// Копирует renderer-neutral metadata из decoded frame без backend-specific handles.
@@ -121,14 +129,14 @@ pub struct WgpuVideoRenderer {
     /// Приватный renderer текущего MVP NV12 path.
     nv12_renderer: Nv12VideoRenderer,
 
+    /// Приватный renderer P010 path с отдельным shader module.
+    p010_renderer: P010VideoRenderer,
+
     /// Снимок возможностей backend-а для capability report и stream selection.
     capabilities: RenderCapabilities,
 
     /// Последняя renderer-neutral диагностика без GPU handles.
     diagnostics: RenderDiagnostics,
-
-    /// Уже логировали P010 boundary frame, который пока нельзя вывести на экран.
-    p010_render_unavailable_logged: bool,
 }
 
 impl WgpuVideoRenderer {
@@ -139,9 +147,9 @@ impl WgpuVideoRenderer {
 
         Self {
             nv12_renderer: Nv12VideoRenderer::new(device, surface_format),
+            p010_renderer: P010VideoRenderer::new(device, surface_format),
             capabilities: RenderCapabilities::wgpu_nv12(max_texture_size),
             diagnostics: RenderDiagnostics::default(),
-            p010_render_unavailable_logged: false,
         }
     }
 
@@ -160,11 +168,13 @@ impl WgpuVideoRenderer {
     /// Обновляет color pipeline settings для всех текущих video paths.
     pub fn set_color_pipeline_settings(&mut self, settings: ColorPipelineSettings) {
         self.nv12_renderer.set_color_pipeline_settings(settings);
+        self.p010_renderer.set_color_pipeline_settings(settings);
     }
 
     /// Обновляет размер swapchain для расчёта letterbox.
     pub fn resize(&mut self, width: u32, height: u32) {
         self.nv12_renderer.set_window_size(width, height);
+        self.p010_renderer.set_window_size(width, height);
     }
 
     /// Рендерит video frame или очищает target в чёрный цвет, если кадра нет.
@@ -193,8 +203,11 @@ impl WgpuVideoRenderer {
             );
         }
 
-        match (&frame.metadata.format, &frame.planes) {
-            (VideoFrameFormat::Nv12, WgpuFramePlanes::Nv12 { y_view, uv_view }) => {
+        match select_renderer_dispatch(frame.metadata.format, frame.planes.kind())? {
+            RendererDispatch::Nv12 => {
+                let WgpuFramePlanes::Nv12 { y_view, uv_view } = &frame.planes else {
+                    unreachable!("renderer dispatch was selected from plane kind");
+                };
                 let active_color_path = self.nv12_renderer.render_frame(
                     &frame.metadata,
                     y_view,
@@ -207,18 +220,65 @@ impl WgpuVideoRenderer {
                 self.diagnostics.active_color_path = Some(active_color_path);
                 Ok(true)
             }
-            (VideoFrameFormat::P010, WgpuFramePlanes::P010 { .. }) => {
-                if !self.p010_render_unavailable_logged {
-                    self.p010_render_unavailable_logged = true;
-                    tracing::warn!("{}", p010_boundary_manual_diagnostic_text(&frame.metadata));
-                }
-                clear_to_black(target, encoder);
-                Ok(false)
-            }
-            (format, _) => {
-                bail!("WGPU renderer frame metadata/plane mismatch for format: {format}");
+            RendererDispatch::P010 => {
+                let WgpuFramePlanes::P010 { y_view, uv_view } = &frame.planes else {
+                    unreachable!("renderer dispatch was selected from plane kind");
+                };
+                let active_color_path = self.p010_renderer.render_frame(
+                    &frame.metadata,
+                    y_view,
+                    uv_view,
+                    target,
+                    encoder,
+                    device,
+                    queue,
+                )?;
+                self.diagnostics.active_color_path = Some(active_color_path);
+                Ok(true)
             }
         }
+    }
+}
+
+/// Упрощённый kind plane set без lifetime/GPU handles для dispatch logic и unit tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WgpuFramePlaneKind {
+    /// Renderer-facing NV12 Y/UV plane pair.
+    Nv12,
+
+    /// Renderer-facing P010 Y/UV plane pair.
+    P010,
+}
+
+impl WgpuFramePlanes<'_> {
+    /// Возвращает kind plane set без раскрытия backend-specific handles.
+    pub(crate) const fn kind(&self) -> WgpuFramePlaneKind {
+        match self {
+            Self::Nv12 { .. } => WgpuFramePlaneKind::Nv12,
+            Self::P010 { .. } => WgpuFramePlaneKind::P010,
+        }
+    }
+}
+
+/// Конкретный renderer path, выбранный facade-ом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RendererDispatch {
+    /// Текущий SDR/NV12 renderer.
+    Nv12,
+
+    /// Отдельный P010 renderer.
+    P010,
+}
+
+/// Выбирает renderer path по renderer-neutral format и kind plane set.
+fn select_renderer_dispatch(
+    format: VideoFrameFormat,
+    plane_kind: WgpuFramePlaneKind,
+) -> Result<RendererDispatch> {
+    match (format, plane_kind) {
+        (VideoFrameFormat::Nv12, WgpuFramePlaneKind::Nv12) => Ok(RendererDispatch::Nv12),
+        (VideoFrameFormat::P010, WgpuFramePlaneKind::P010) => Ok(RendererDispatch::P010),
+        (format, _) => bail!("WGPU renderer frame metadata/plane mismatch for format: {format}"),
     }
 }
 
@@ -242,101 +302,94 @@ pub fn clear_to_black(target: &wgpu::TextureView, encoder: &mut wgpu::CommandEnc
     });
 }
 
-/// Формирует финальную строку ручной Phase 9 диагностики для P010 boundary.
-///
-/// Сейчас единственный P010 producer в проекте - VP9 Profile 2. Когда AV1/H.265
-/// начнут отдавать P010, этот текст нужно заменить codec-aware diagnostic-ом.
-fn p010_boundary_manual_diagnostic_text(frame: &RenderableFrame) -> String {
-    format!(
-        "P010 zero-copy boundary verified: VP9 Profile2 {} {} {} {}\nHDR-to-SDR renderer unavailable until Phase 10",
-        frame.bit_depth,
-        bt2020_boundary_label(frame),
-        hdr_transfer_contract_label(frame.color.transfer),
-        chroma_contract_label(frame.chroma),
-    )
-}
-
-/// Возвращает BT.2020 label только когда primaries и matrix совпали со strict core.
-fn bt2020_boundary_label(frame: &RenderableFrame) -> &'static str {
-    if frame.color.primaries == ColorPrimaries::Bt2020
-        && frame.color.matrix == MatrixCoefficients::Bt2020
-    {
-        "BT.2020"
-    } else {
-        "non-BT.2020"
-    }
-}
-
-/// Возвращает stable HDR transfer contract label для ручной Phase 9 проверки.
-fn hdr_transfer_contract_label(transfer: TransferFunction) -> &'static str {
-    match transfer {
-        TransferFunction::Pq | TransferFunction::Hlg => "PQ/HLG",
-        TransferFunction::Bt709 => "BT.709",
-        TransferFunction::Srgb => "sRGB",
-        TransferFunction::Unknown => "unknown-transfer",
-    }
-}
-
-/// Возвращает chroma label в форме, ожидаемой manual diagnostics.
-fn chroma_contract_label(chroma: codec_core::ChromaSubsampling) -> &'static str {
-    match chroma {
-        codec_core::ChromaSubsampling::Yuv420 => "YUV420",
-        codec_core::ChromaSubsampling::Yuv422 => "YUV422",
-        codec_core::ChromaSubsampling::Yuv444 => "YUV444",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::*;
-    use codec_core::{
-        BitDepth, ChromaSubsampling, ColorMetadataOrigin, ColorPrimaries, ColorRange,
-        MatrixCoefficients, TransferFunction, VideoColorMetadata,
-    };
+    use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
 
     #[test]
-    fn p010_boundary_manual_diagnostic_uses_phase9_contract_text_for_pq() {
-        let frame = p010_test_frame(TransferFunction::Pq);
+    fn p010_frame_dispatches_to_p010_renderer_path() {
+        let dispatch = select_renderer_dispatch(VideoFrameFormat::P010, WgpuFramePlaneKind::P010)
+            .expect("P010 frame dispatches");
 
-        assert_eq!(
-            p010_boundary_manual_diagnostic_text(&frame),
-            "P010 zero-copy boundary verified: VP9 Profile2 10-bit BT.2020 PQ/HLG YUV420\nHDR-to-SDR renderer unavailable until Phase 10"
+        assert_eq!(dispatch, RendererDispatch::P010);
+    }
+
+    #[test]
+    fn nv12_frame_dispatches_to_nv12_renderer_path() {
+        let dispatch = select_renderer_dispatch(VideoFrameFormat::Nv12, WgpuFramePlaneKind::Nv12)
+            .expect("NV12 frame dispatches");
+
+        assert_eq!(dispatch, RendererDispatch::Nv12);
+    }
+
+    #[test]
+    fn metadata_plane_mismatch_is_rejected_before_renderer_call() {
+        let error = select_renderer_dispatch(VideoFrameFormat::P010, WgpuFramePlaneKind::Nv12)
+            .expect_err("P010 metadata must not use NV12 planes");
+
+        assert!(
+            error.to_string().contains("metadata/plane mismatch"),
+            "unexpected error: {error}"
         );
     }
 
     #[test]
-    fn p010_boundary_manual_diagnostic_uses_same_contract_text_for_hlg() {
-        let frame = p010_test_frame(TransferFunction::Hlg);
+    fn p010_boundary_rejects_non_zero_copy_memory_path() {
+        let frame = decoded_p010_test_frame(FrameMemoryPath::CpuUpload);
 
-        assert_eq!(
-            p010_boundary_manual_diagnostic_text(&frame),
-            "P010 zero-copy boundary verified: VP9 Profile2 10-bit BT.2020 PQ/HLG YUV420\nHDR-to-SDR renderer unavailable until Phase 10"
+        let error = validate_decoded_p010_frame(&frame).expect_err("P010 CPU path rejected");
+
+        assert!(
+            error.to_string().contains("zero-copy"),
+            "unexpected error: {error}"
         );
     }
 
-    /// Создаёт renderer-neutral P010 frame без GPU resources.
-    fn p010_test_frame(transfer: TransferFunction) -> RenderableFrame {
-        RenderableFrame {
-            handle: 1,
+    #[test]
+    fn p010_storage_layouts_map_to_same_renderer_plane_kind() {
+        let baseline_separate_layer_kind =
+            p010_storage_layout_renderer_plane_kind(P010StorageLayout::BaselineSeparateLayer);
+        let compatibility_composed_kind =
+            p010_storage_layout_renderer_plane_kind(P010StorageLayout::CompatibilityComposed);
+
+        assert_eq!(baseline_separate_layer_kind, WgpuFramePlaneKind::P010);
+        assert_eq!(compatibility_composed_kind, WgpuFramePlaneKind::P010);
+        assert_eq!(baseline_separate_layer_kind, compatibility_composed_kind);
+    }
+
+    /// Тестовое описание P010 storage layout до renderer boundary.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum P010StorageLayout {
+        /// Baseline Phase 10 path: отдельные `R16Unorm` и `Rg16Unorm` textures.
+        BaselineSeparateLayer,
+
+        /// Compatibility path: plane views из composed `TextureFormat::P010`.
+        CompatibilityComposed,
+    }
+
+    /// Документирует, что renderer видит только P010 Y/UV pair, а не storage layout.
+    const fn p010_storage_layout_renderer_plane_kind(
+        _storage_layout: P010StorageLayout,
+    ) -> WgpuFramePlaneKind {
+        WgpuFramePlaneKind::P010
+    }
+
+    fn decoded_p010_test_frame(memory_path: FrameMemoryPath) -> DecodedFrame {
+        DecodedFrame {
             pts: Duration::ZERO,
-            format: VideoFrameFormat::P010,
+            format: DecodedPixelFormat::P010,
             bit_depth: BitDepth::Ten,
             chroma: ChromaSubsampling::Yuv420,
-            coded_width: 3840,
-            coded_height: 2160,
-            render_width: 3840,
-            render_height: 2160,
-            color: VideoColorMetadata {
-                range: ColorRange::Limited,
-                matrix: MatrixCoefficients::Bt2020,
-                primaries: ColorPrimaries::Bt2020,
-                transfer,
-                hdr_metadata: None,
-                origin: ColorMetadataOrigin::Container,
-                confidence: codec_core::ColorMetadataConfidence::Hint,
-            },
+            memory_path,
+            width: 1920,
+            height: 1080,
+            render_width: 1920,
+            render_height: 1080,
+            color: VideoColorMetadata::sdr_bt709_limited(),
+            texture_handle: video_core::FrameTextureHandle(7),
         }
     }
 }

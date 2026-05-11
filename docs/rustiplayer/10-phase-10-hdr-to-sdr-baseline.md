@@ -346,6 +346,8 @@ UI не считает transfer functions, matrices или tone mapping.
 
 ### Сессия 1: render-core HDR contracts/capabilities
 
+Статус: реализовано
+
 Задачи:
 
 - добавить `HdrToSdrSettings`;
@@ -368,6 +370,8 @@ Manual tests:
 - SDR capability summary не регрессировал.
 
 ### Сессия 2: P010 renderer skeleton and binding
+
+Статус: реализовано
 
 Задачи:
 
