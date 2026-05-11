@@ -576,6 +576,11 @@ impl AppState {
         {
             ui.monospace(format!("Color: {active_color_path_text}"));
         }
+        if let Some(reference_defaults_text) =
+            Self::hdr_reference_defaults_text_for_ui(render_diagnostics)
+        {
+            ui.monospace(format!("HDR metadata: {reference_defaults_text}"));
+        }
         ui.monospace(format!("Decoded: {}", telemetry.video_frames_decoded()));
         ui.monospace(format!(
             "Presented: {}",
@@ -625,6 +630,13 @@ impl AppState {
         render_diagnostics.active_color_path_text()
     }
 
+    /// Формирует UI-строку source markers optional HDR metadata.
+    fn hdr_reference_defaults_text_for_ui(
+        render_diagnostics: &RenderDiagnostics,
+    ) -> Option<String> {
+        render_diagnostics.hdr_reference_defaults_text()
+    }
+
     /// Рендерит центральный overlay состояния.
     fn render_center_overlay(ui: &mut egui::Ui, is_playing: bool, error_message: Option<&str>) {
         egui::CentralPanel::default()
@@ -657,7 +669,8 @@ impl AppState {
 mod tests {
     use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
     use render_core::{
-        ActiveColorPath, ColorPipelineSettings, RenderDiagnostics, VideoFrameFormat,
+        ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
+        HdrReferenceDefaultDiagnostics, RenderDiagnostics, VideoFrameFormat,
     };
 
     use super::AppState;
@@ -675,11 +688,23 @@ mod tests {
         );
         let render_diagnostics = RenderDiagnostics {
             active_color_path: Some(active_path),
+            hdr_reference_defaults: Some(HdrReferenceDefaultDiagnostics {
+                mastering_max_luminance: HdrMetadataDiagnosticMarker::Confirmed,
+                mastering_min_luminance: HdrMetadataDiagnosticMarker::Confirmed,
+                max_content_light_level: HdrMetadataDiagnosticMarker::ReferenceDefault,
+                max_frame_average_light_level: HdrMetadataDiagnosticMarker::ReferenceDefault,
+            }),
         };
 
         assert_eq!(
             AppState::active_color_path_text_for_ui(&render_diagnostics).as_deref(),
             Some("NV12 8-bit BT.709 limited -> SDR BT.709 preserve-current-unorm")
+        );
+        assert_eq!(
+            AppState::hdr_reference_defaults_text_for_ui(&render_diagnostics).as_deref(),
+            Some(
+                "mastering-max=confirmed, mastering-min=confirmed, maxcll=reference-default, maxfall=reference-default"
+            )
         );
     }
 }

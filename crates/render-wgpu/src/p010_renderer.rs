@@ -7,7 +7,9 @@ use codec_core::{
     VideoColorMetadata,
 };
 use render_core::{
-    ActiveColorPath, ColorPipelineSettings, HdrToSdrSettings, RenderableFrame, VideoFrameFormat,
+    ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
+    HdrReferenceDefaultDiagnostics, HdrToSdrSettings, RenderableFrame, SwapchainTransferMode,
+    VideoFrameFormat,
 };
 
 /// WGSL source dedicated to P010 rendering.
@@ -133,6 +135,18 @@ struct PreparedP010Render {
 
     /// Диагностический color path для UI/telemetry.
     active_path: ActiveColorPath,
+
+    /// Renderer-neutral markers optional HDR metadata.
+    hdr_reference_defaults: Option<HdrReferenceDefaultDiagnostics>,
+}
+
+/// Диагностика одного P010 draw call без GPU handles.
+pub(crate) struct P010RenderFrameDiagnostics {
+    /// Диагностический color path для UI/telemetry.
+    pub active_color_path: ActiveColorPath,
+
+    /// Source markers optional HDR metadata для HDR-to-SDR path.
+    pub hdr_reference_defaults: Option<HdrReferenceDefaultDiagnostics>,
 }
 
 /// Приватный renderer для P010 decoded frames.
@@ -288,6 +302,11 @@ impl P010VideoRenderer {
         self.color_settings = color_settings;
     }
 
+    /// Обновляет HDR-to-SDR settings, полученные из валидированного config.
+    pub fn set_hdr_to_sdr_settings(&mut self, hdr_to_sdr_settings: HdrToSdrSettings) {
+        self.hdr_to_sdr_settings = hdr_to_sdr_settings;
+    }
+
     /// Рендерит P010 frame через отдельный P010 shader module.
     pub fn render_frame(
         &mut self,
@@ -298,7 +317,7 @@ impl P010VideoRenderer {
         encoder: &mut wgpu::CommandEncoder,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-    ) -> Result<ActiveColorPath> {
+    ) -> Result<P010RenderFrameDiagnostics> {
         let prepared_p010_render = prepare_p010_render(
             frame,
             &self.color_settings,
@@ -359,7 +378,10 @@ impl P010VideoRenderer {
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
 
-        Ok(prepared_p010_render.active_path)
+        Ok(P010RenderFrameDiagnostics {
+            active_color_path: prepared_p010_render.active_path,
+            hdr_reference_defaults: prepared_p010_render.hdr_reference_defaults,
+        })
     }
 }
 
@@ -373,6 +395,7 @@ fn prepare_p010_render(
     validate_p010_renderable_frame(frame)?;
 
     let color_path = select_p010_color_path(frame)?;
+    validate_hdr_to_sdr_settings_for_p010(hdr_to_sdr_settings, color_path)?;
     let (uv_scale, uv_offset) = letterbox_scale_and_offset(frame, window_size);
     let active_path =
         active_color_path_for_p010(frame, color_settings, hdr_to_sdr_settings, color_path);
@@ -400,6 +423,7 @@ fn prepare_p010_render(
             optional_metadata_markers: optional_metadata.optional_metadata_markers,
         },
         active_path,
+        hdr_reference_defaults: optional_metadata.diagnostic_markers,
     })
 }
 
@@ -424,6 +448,26 @@ struct HdrOptionalMetadataUniforms {
 
     /// Per-field markers: confirmed stream metadata or reference defaults.
     optional_metadata_markers: [u32; 4],
+
+    /// Renderer-neutral source markers для UI diagnostics.
+    diagnostic_markers: Option<HdrReferenceDefaultDiagnostics>,
+}
+
+/// Проверяет HDR settings именно в той ветке, где renderer обязан tone-map-ить HDR.
+fn validate_hdr_to_sdr_settings_for_p010(
+    hdr_to_sdr_settings: HdrToSdrSettings,
+    color_path: P010RenderColorPath,
+) -> Result<()> {
+    if color_path == P010RenderColorPath::SdrBt709 {
+        return Ok(());
+    }
+
+    ensure!(
+        hdr_to_sdr_settings.is_phase10_bt2446_c_sdr_bt709(),
+        "P010 HDR renderer requires enabled BT.2446-C SDR BT.709 settings"
+    );
+
+    Ok(())
 }
 
 /// Возвращает P010 normalization в 10-bit code values, не в 8-bit и не в normalized 0..1.
@@ -477,6 +521,7 @@ fn hdr_optional_metadata_uniforms(
             ],
             content_light_levels: [0.0, 0.0, 0.0, 0.0],
             optional_metadata_markers: [HDR_METADATA_MARKER_NOT_APPLICABLE; 4],
+            diagnostic_markers: None,
         };
     }
 
@@ -519,6 +564,23 @@ fn hdr_optional_metadata_uniforms(
             max_content_light_level_marker,
             max_frame_average_light_level_marker,
         ],
+        diagnostic_markers: Some(HdrReferenceDefaultDiagnostics {
+            mastering_max_luminance: marker_from_uniform_value(mastering_max_marker),
+            mastering_min_luminance: marker_from_uniform_value(mastering_min_marker),
+            max_content_light_level: marker_from_uniform_value(max_content_light_level_marker),
+            max_frame_average_light_level: marker_from_uniform_value(
+                max_frame_average_light_level_marker,
+            ),
+        }),
+    }
+}
+
+/// Переводит shader-facing marker в renderer-neutral diagnostics enum.
+fn marker_from_uniform_value(marker: u32) -> HdrMetadataDiagnosticMarker {
+    match marker {
+        HDR_METADATA_MARKER_CONFIRMED => HdrMetadataDiagnosticMarker::Confirmed,
+        HDR_METADATA_MARKER_REFERENCE_DEFAULT => HdrMetadataDiagnosticMarker::ReferenceDefault,
+        _ => HdrMetadataDiagnosticMarker::NotApplicable,
     }
 }
 
@@ -558,6 +620,7 @@ fn log_first_p010_render_dispatch(frame: &RenderableFrame, prepared_render: &Pre
         matrix = ?frame.color.matrix,
         range = ?frame.color.range,
         optional_metadata_markers = ?prepared_render.uniforms.optional_metadata_markers,
+        hdr_reference_defaults = ?prepared_render.hdr_reference_defaults,
         "P010 renderer dispatch selected"
     );
 }
@@ -688,11 +751,18 @@ fn active_color_path_for_p010(
 ) -> ActiveColorPath {
     match color_path {
         P010RenderColorPath::SdrBt709 => ActiveColorPath::from_frame(frame, color_settings),
-        P010RenderColorPath::HdrBt2446C => ActiveColorPath::from_frame_with_hdr_to_sdr(
-            frame,
-            color_settings,
-            Some(hdr_to_sdr_settings),
-        ),
+        P010RenderColorPath::HdrBt2446C => {
+            let hdr_color_settings = ColorPipelineSettings {
+                swapchain_transfer: SwapchainTransferMode::ExplicitShaderOetf,
+                ..*color_settings
+            };
+
+            ActiveColorPath::from_frame_with_hdr_to_sdr(
+                frame,
+                &hdr_color_settings,
+                Some(hdr_to_sdr_settings),
+            )
+        }
     }
 }
 
@@ -722,7 +792,7 @@ mod tests {
     use codec_core::{
         ColorMetadataConfidence, ColorMetadataOrigin, ColorRange, HdrMetadata, MatrixCoefficients,
     };
-    use render_core::{HdrToneMappingOperator, SwapchainTransferMode};
+    use render_core::HdrToneMappingOperator;
 
     use super::*;
 
@@ -794,20 +864,17 @@ mod tests {
             [HDR_METADATA_MARKER_NOT_APPLICABLE; 4]
         );
         assert_eq!(prepared_render.uniforms.content_light_levels, [0.0; 4]);
+        assert_eq!(prepared_render.hdr_reference_defaults, None);
     }
 
     #[test]
     fn p010_hdr_pq_uses_hdr_color_branch() {
         let frame = p010_test_frame(p010_hdr_bt2020_color(TransferFunction::Pq));
-        let color_settings = ColorPipelineSettings {
-            swapchain_transfer: SwapchainTransferMode::ExplicitShaderOetf,
-            ..ColorPipelineSettings::default()
-        };
 
         let color_path = select_p010_color_path(&frame).expect("P010 HDR accepted");
         let active_path = active_color_path_for_p010(
             &frame,
-            &color_settings,
+            &ColorPipelineSettings::default(),
             HdrToSdrSettings::default(),
             color_path,
         );
@@ -818,10 +885,14 @@ mod tests {
             Some(HdrToneMappingOperator::Bt2446C)
         );
         assert!(active_path.diagnostic_text().contains("bt2446-c"));
+        assert_eq!(
+            active_path.diagnostic_text(),
+            "P010 10-bit BT.2020 PQ limited -> SDR BT.709 bt2446-c explicit-shader-oetf"
+        );
 
         let prepared_render = prepare_p010_render(
             &frame,
-            &color_settings,
+            &ColorPipelineSettings::default(),
             HdrToSdrSettings::default(),
             (1920, 1080),
         )
@@ -893,6 +964,15 @@ mod tests {
             prepared_render.uniforms.content_light_levels[1],
             HdrToSdrSettings::default().hdr_reference_peak_nits
         );
+        let hdr_reference_defaults = prepared_render
+            .hdr_reference_defaults
+            .expect("HDR reference markers exposed to diagnostics");
+        assert!(hdr_reference_defaults.has_reference_defaults());
+        assert!(
+            hdr_reference_defaults
+                .diagnostic_text()
+                .contains("reference-default")
+        );
         assert_eq!(
             frame
                 .color
@@ -900,6 +980,28 @@ mod tests {
                 .as_ref()
                 .and_then(|metadata| metadata.max_content_light_level_nits),
             None
+        );
+    }
+
+    #[test]
+    fn disabled_hdr_to_sdr_settings_reject_hdr_p010_render() {
+        let frame = p010_test_frame(p010_hdr_bt2020_color(TransferFunction::Pq));
+        let disabled_settings = HdrToSdrSettings {
+            enabled: false,
+            ..HdrToSdrSettings::default()
+        };
+
+        let error = prepare_p010_render(
+            &frame,
+            &ColorPipelineSettings::default(),
+            disabled_settings,
+            (1920, 1080),
+        )
+        .expect_err("disabled HDR-to-SDR settings reject HDR P010");
+
+        assert!(
+            error.to_string().contains("BT.2446-C SDR BT.709"),
+            "unexpected error: {error}"
         );
     }
 

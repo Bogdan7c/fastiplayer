@@ -137,7 +137,7 @@ fn parse_config_text(path: &Path, toml_text: &str) -> ConfigResult<AppConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ToneMappingMode;
+    use crate::{HdrToSdrOperatorConfig, ToneMappingMode};
 
     /// Проверяет, что default schema остаётся самосогласованной.
     #[test]
@@ -161,12 +161,18 @@ mod tests {
         assert_eq!(config.render.color_adjustment.rgb_offset, [0.0, 0.0, 0.0]);
     }
 
-    /// Проверяет, что default config не обещает HDR до Phase 9.
+    /// Проверяет documented HDR-to-SDR defaults для Phase 10.
     #[test]
-    fn render_hdr_placeholders_default_to_disabled_until_phase9() {
+    fn render_hdr_to_sdr_defaults_are_valid_phase10_baseline() {
         let config = AppConfig::default();
 
-        assert!(!config.render.hdr_to_sdr);
+        assert!(config.render.hdr_to_sdr.enabled);
+        assert_eq!(
+            config.render.hdr_to_sdr.operator,
+            HdrToSdrOperatorConfig::Bt2446C
+        );
+        assert_eq!(config.render.hdr_to_sdr.sdr_reference_white_nits, 100.0);
+        assert_eq!(config.render.hdr_to_sdr.hdr_reference_peak_nits, 1_000.0);
         assert_eq!(config.render.tone_mapping, ToneMappingMode::Disabled);
     }
 
@@ -183,6 +189,10 @@ mod tests {
         assert_eq!(loaded.config, AppConfig::default());
         assert!(loaded.path.exists());
         assert!(loaded.config.render.color_adjustment.is_identity());
+
+        let created_toml = fs::read_to_string(&loaded.path).expect("created config readable");
+        assert!(created_toml.contains("[render.hdr_to_sdr]"));
+        assert!(created_toml.contains("operator = \"bt2446_c\""));
     }
 
     /// Проверяет, что старый config без color_adjustment получает identity defaults.
@@ -204,6 +214,101 @@ profile = "vulkan"
         let loaded = load_from_path(&config_path).expect("legacy config accepted");
 
         assert!(loaded.config.render.color_adjustment.is_identity());
+        assert!(loaded.config.render.hdr_to_sdr.enabled);
+    }
+
+    /// Проверяет compatibility-путь для старого scalar placeholder `render.hdr_to_sdr`.
+    #[test]
+    fn legacy_scalar_hdr_to_sdr_defaults_to_phase10_table_config() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 1
+
+[render]
+profile = "vulkan"
+hdr_to_sdr = false
+"#,
+        )
+        .expect("legacy config written");
+
+        let loaded = load_from_path(&config_path).expect("legacy scalar accepted");
+
+        assert_eq!(loaded.config.render.hdr_to_sdr, Default::default());
+    }
+
+    /// Проверяет, что alternative tone mapping operator не проходит TOML-схему.
+    #[test]
+    fn invalid_hdr_to_sdr_operator_is_rejected() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 1
+
+[render.hdr_to_sdr]
+operator = "reinhard"
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid operator rejected");
+
+        assert!(error.to_string().contains("TOML-схеме"));
+    }
+
+    /// Проверяет validation для нулевого SDR reference white.
+    #[test]
+    fn invalid_hdr_to_sdr_sdr_white_nits_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 1
+
+[render.hdr_to_sdr]
+sdr_reference_white_nits = 0.0
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid SDR white rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("render.hdr_to_sdr.sdr_reference_white_nits")
+        );
+    }
+
+    /// Проверяет validation для HDR peak, который не выше SDR reference white.
+    #[test]
+    fn invalid_hdr_to_sdr_peak_nits_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 1
+
+[render.hdr_to_sdr]
+sdr_reference_white_nits = 100.0
+hdr_reference_peak_nits = 100.0
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid HDR peak rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("render.hdr_to_sdr.hdr_reference_peak_nits")
+        );
     }
 
     /// Проверяет понятную ошибку validation для некорректной громкости.

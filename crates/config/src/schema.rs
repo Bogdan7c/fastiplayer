@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{ConfigResult, validation};
 
@@ -177,8 +177,9 @@ pub struct RenderConfig {
     /// Активный render profile.
     pub profile: RenderProfile,
 
-    /// Compatibility placeholder для будущего HDR-to-SDR path; Phase 8.5 держит `false`.
-    pub hdr_to_sdr: bool,
+    /// Typed HDR-to-SDR baseline config для Phase 10.
+    #[serde(default, deserialize_with = "deserialize_hdr_to_sdr_config")]
+    pub hdr_to_sdr: HdrToSdrConfig,
 
     /// Compatibility placeholder для будущего HDR tone mapping; Phase 8.5 держит `Disabled`.
     pub tone_mapping: ToneMappingMode,
@@ -198,12 +199,80 @@ impl Default for RenderConfig {
     fn default() -> Self {
         Self {
             profile: RenderProfile::Vulkan,
-            hdr_to_sdr: false,
+            hdr_to_sdr: HdrToSdrConfig::default(),
             tone_mapping: ToneMappingMode::Disabled,
             color_adjustment: RenderColorAdjustmentConfig::default(),
             vulkan: VulkanConfig::default(),
             opengles: OpenGlesConfig::default(),
         }
+    }
+}
+
+/// Пользовательская секция `[render.hdr_to_sdr]`.
+///
+/// Схема намеренно не содержит alternative tone mapping presets и native HDR
+/// output mode: Phase 10 поддерживает только BT.2446-C в SDR BT.709 output.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HdrToSdrConfig {
+    /// Разрешает HDR-to-SDR path, если renderer capabilities тоже подтверждают support.
+    pub enabled: bool,
+
+    /// Единственный production operator Phase 10.
+    pub operator: HdrToSdrOperatorConfig,
+
+    /// SDR reference white в nits для BT.2446-C.
+    pub sdr_reference_white_nits: f32,
+
+    /// HDR reference peak в nits для BT.2446-C.
+    pub hdr_reference_peak_nits: f32,
+}
+
+impl Default for HdrToSdrConfig {
+    /// Возвращает documented Phase 10 defaults.
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            operator: HdrToSdrOperatorConfig::Bt2446C,
+            sdr_reference_white_nits: 100.0,
+            hdr_reference_peak_nits: 1_000.0,
+        }
+    }
+}
+
+/// HDR-to-SDR operator, разрешённый публичной TOML-схемой.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HdrToSdrOperatorConfig {
+    /// ITU-R BT.2446 Method C.
+    Bt2446C,
+}
+
+impl Default for HdrToSdrOperatorConfig {
+    /// Phase 10 не предлагает альтернативные tone mapping operators.
+    fn default() -> Self {
+        Self::Bt2446C
+    }
+}
+
+/// Читает новый table config и старый scalar placeholder `render.hdr_to_sdr`.
+fn deserialize_hdr_to_sdr_config<'de, D>(deserializer: D) -> Result<HdrToSdrConfig, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum HdrToSdrConfigCompatibility {
+        /// Новая Phase 10 TOML-таблица.
+        Table(HdrToSdrConfig),
+
+        /// Старый Phase 8.5 scalar был placeholder-ом и не нёс production-семантики.
+        LegacyScalar(bool),
+    }
+
+    match HdrToSdrConfigCompatibility::deserialize(deserializer)? {
+        HdrToSdrConfigCompatibility::Table(config) => Ok(config),
+        HdrToSdrConfigCompatibility::LegacyScalar(_legacy_enabled) => Ok(HdrToSdrConfig::default()),
     }
 }
 

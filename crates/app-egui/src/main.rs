@@ -26,10 +26,11 @@ use anyhow::{Context, Result, bail};
 use capability_core::CapabilityScanner;
 use player_core::{PlayerTickContext, PlayerTickResult, PlayerVideoDropReason};
 use render_core::{
-    ColorAdjustment, ColorPipelineSettings, RenderCapabilities, SwapchainTransferMode,
+    ColorAdjustment, ColorPipelineSettings, HdrOutputMode, HdrToSdrSettings,
+    HdrToneMappingOperator, RenderCapabilities, SwapchainTransferMode,
 };
 use render_wgpu::{RenderFrameOutcome, Renderer};
-use rustiplayer_config::AppConfig;
+use rustiplayer_config::{AppConfig, HdrToSdrOperatorConfig};
 use rustiplayer_storage::StorageConnection;
 use tracing::{debug, info, instrument, trace, warn};
 use video_core::DecodedPixelFormat;
@@ -139,8 +140,10 @@ impl App {
                 return;
             }
         };
-        warn_ignored_phase8_5_hdr_config(&self.app_config);
+        let hdr_to_sdr_settings = hdr_to_sdr_settings_from_config(&self.app_config);
+        warn_legacy_tone_mapping_config(&self.app_config);
         renderer.set_color_pipeline_settings(color_pipeline_settings);
+        renderer.set_hdr_to_sdr_settings(hdr_to_sdr_settings);
 
         if self.storage_connection.is_none() {
             trace!("Storage connection недоступен; долговременные записи отключены");
@@ -630,20 +633,41 @@ fn combine_startup_errors(errors: [Option<String>; 2]) -> Option<String> {
     }
 }
 
-/// Логирует HDR config placeholders, которые Phase 8.5 ещё не применяет.
-fn warn_ignored_phase8_5_hdr_config(app_config: &AppConfig) {
+/// Логирует legacy tone mapping placeholder, который Phase 10 не превращает в UI preset.
+fn warn_legacy_tone_mapping_config(app_config: &AppConfig) {
     let tone_mapping_is_disabled =
         app_config.render.tone_mapping == rustiplayer_config::ToneMappingMode::Disabled;
 
-    if !app_config.render.hdr_to_sdr && tone_mapping_is_disabled {
+    if tone_mapping_is_disabled {
         return;
     }
 
     warn!(
-        hdr_to_sdr = app_config.render.hdr_to_sdr,
         tone_mapping = ?app_config.render.tone_mapping,
-        "HDR render config игнорируется до Phase 10; текущий renderer остаётся SDR-only"
+        "Legacy tone_mapping config не применяется как alternative HDR control в Phase 10"
     );
+}
+
+/// Собирает HDR-to-SDR renderer settings из валидированного пользовательского config.
+fn hdr_to_sdr_settings_from_config(app_config: &AppConfig) -> HdrToSdrSettings {
+    let hdr_to_sdr = &app_config.render.hdr_to_sdr;
+
+    HdrToSdrSettings {
+        enabled: hdr_to_sdr.enabled,
+        operator: hdr_to_sdr_operator_from_config(hdr_to_sdr.operator),
+        output_mode: HdrOutputMode::SdrBt709Only,
+        sdr_reference_white_nits: hdr_to_sdr.sdr_reference_white_nits,
+        hdr_reference_peak_nits: hdr_to_sdr.hdr_reference_peak_nits,
+    }
+}
+
+/// Мапит TOML operator в renderer contract без добавления alternative controls.
+const fn hdr_to_sdr_operator_from_config(
+    operator: HdrToSdrOperatorConfig,
+) -> HdrToneMappingOperator {
+    match operator {
+        HdrToSdrOperatorConfig::Bt2446C => HdrToneMappingOperator::Bt2446C,
+    }
 }
 
 /// Собирает renderer color settings из валидированного пользовательского config.
@@ -699,5 +723,13 @@ mod tests {
             color_pipeline_settings_from_config(&AppConfig::default()).expect("settings mapped");
 
         assert_eq!(settings, ColorPipelineSettings::identity());
+    }
+
+    /// Проверяет, что `[render.hdr_to_sdr]` доезжает до renderer contract.
+    #[test]
+    fn default_config_maps_to_phase10_hdr_to_sdr_settings() {
+        let settings = hdr_to_sdr_settings_from_config(&AppConfig::default());
+
+        assert_eq!(settings, HdrToSdrSettings::default());
     }
 }

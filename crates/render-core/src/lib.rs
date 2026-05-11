@@ -302,12 +302,98 @@ impl Default for HdrToSdrSettings {
     }
 }
 
+/// Источник optional HDR metadata, который renderer использовал для diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HdrMetadataDiagnosticMarker {
+    /// Поле не применимо к текущему color path.
+    NotApplicable,
+
+    /// Значение пришло из container/bitstream/backend metadata.
+    Confirmed,
+
+    /// Значение заменено documented reference default-ом.
+    ReferenceDefault,
+}
+
+impl HdrMetadataDiagnosticMarker {
+    /// Возвращает стабильную подпись для telemetry panel.
+    #[must_use]
+    pub const fn diagnostic_label(self) -> &'static str {
+        match self {
+            Self::NotApplicable => "not-applicable",
+            Self::Confirmed => "confirmed",
+            Self::ReferenceDefault => "reference-default",
+        }
+    }
+}
+
+impl fmt::Display for HdrMetadataDiagnosticMarker {
+    /// Печатает marker без UI-специфичного форматирования.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.diagnostic_label())
+    }
+}
+
+/// Source markers для optional HDR metadata, использованной HDR-to-SDR path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct HdrReferenceDefaultDiagnostics {
+    /// Mastering display max luminance source.
+    pub mastering_max_luminance: HdrMetadataDiagnosticMarker,
+
+    /// Mastering display min luminance source.
+    pub mastering_min_luminance: HdrMetadataDiagnosticMarker,
+
+    /// MaxCLL source.
+    pub max_content_light_level: HdrMetadataDiagnosticMarker,
+
+    /// MaxFALL source.
+    pub max_frame_average_light_level: HdrMetadataDiagnosticMarker,
+}
+
+impl HdrReferenceDefaultDiagnostics {
+    /// Возвращает `true`, если хотя бы одно поле взято из reference defaults.
+    #[must_use]
+    pub const fn has_reference_defaults(&self) -> bool {
+        matches!(
+            self.mastering_max_luminance,
+            HdrMetadataDiagnosticMarker::ReferenceDefault
+        ) || matches!(
+            self.mastering_min_luminance,
+            HdrMetadataDiagnosticMarker::ReferenceDefault
+        ) || matches!(
+            self.max_content_light_level,
+            HdrMetadataDiagnosticMarker::ReferenceDefault
+        ) || matches!(
+            self.max_frame_average_light_level,
+            HdrMetadataDiagnosticMarker::ReferenceDefault
+        )
+    }
+
+    /// Формирует compact diagnostics string для UI.
+    #[must_use]
+    pub fn diagnostic_text(&self) -> String {
+        format!(
+            "mastering-max={}, mastering-min={}, maxcll={}, maxfall={}",
+            self.mastering_max_luminance,
+            self.mastering_min_luminance,
+            self.max_content_light_level,
+            self.max_frame_average_light_level
+        )
+    }
+}
+
 /// Renderer-neutral diagnostics, которые UI может читать без GPU handles.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct RenderDiagnostics {
     /// Последний color path, реально выбранный renderer-ом для video frame.
     pub active_color_path: Option<ActiveColorPath>,
+
+    /// Source markers optional HDR metadata для последнего HDR-to-SDR frame.
+    #[serde(default)]
+    pub hdr_reference_defaults: Option<HdrReferenceDefaultDiagnostics>,
 }
 
 impl RenderDiagnostics {
@@ -317,6 +403,14 @@ impl RenderDiagnostics {
         self.active_color_path
             .as_ref()
             .map(ActiveColorPath::diagnostic_text)
+    }
+
+    /// Возвращает source markers optional HDR metadata для telemetry panel.
+    #[must_use]
+    pub fn hdr_reference_defaults_text(&self) -> Option<String> {
+        self.hdr_reference_defaults
+            .as_ref()
+            .map(HdrReferenceDefaultDiagnostics::diagnostic_text)
     }
 }
 
@@ -938,18 +1032,24 @@ impl RenderCapabilities {
             .collect::<Vec<_>>()
             .join(", ");
 
-        let hdr_support_label = if self.supports_hdr_to_sdr_with(&HdrToSdrSettings::default())
-            || self.supports_native_hdr_output
-        {
-            "HDR available"
+        let hdr_support_label = if self.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()) {
+            "HDR available via HDR-to-SDR"
+        } else if self.supports_native_hdr_output {
+            "HDR available via native HDR output"
         } else {
             "SDR only, HDR unavailable"
         };
+        let native_hdr_label = if self.supports_native_hdr_output {
+            "native HDR supported"
+        } else {
+            "native HDR unsupported"
+        };
 
         format!(
-            "{}: {}, {}, formats: {}, max texture: {}",
+            "{}: {}, {}, {}, formats: {}, max texture: {}",
             self.display_name,
             hdr_support_label,
+            native_hdr_label,
             self.p010_render_readiness,
             frame_formats,
             self.max_texture_size
@@ -1193,6 +1293,7 @@ mod tests {
         );
         let diagnostics = RenderDiagnostics {
             active_color_path: Some(active_path),
+            hdr_reference_defaults: None,
         };
 
         assert_eq!(
@@ -1218,6 +1319,11 @@ mod tests {
         assert!(!capabilities.supports_hdr_to_sdr);
         assert!(!capabilities.supports_native_hdr_output);
         assert!(capabilities.summary_text().contains("SDR only"));
+        assert!(
+            capabilities
+                .summary_text()
+                .contains("native HDR unsupported")
+        );
         assert!(capabilities.summary_text().contains("P010 unavailable"));
         assert!(!capabilities.summary_text().contains("HDR supported"));
     }
@@ -1295,5 +1401,10 @@ mod tests {
         assert!(capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
         assert!(!capabilities.supports_native_hdr_output);
         assert!(capabilities.summary_text().contains("HDR available"));
+        assert!(
+            capabilities
+                .summary_text()
+                .contains("native HDR unsupported")
+        );
     }
 }

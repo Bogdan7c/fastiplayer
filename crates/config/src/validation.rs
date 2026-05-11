@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use crate::{
-    AppConfig, CURRENT_SCHEMA_VERSION, ConfigError, ConfigResult, RenderColorAdjustmentConfig,
-    VideoCodec,
+    AppConfig, CURRENT_SCHEMA_VERSION, ConfigError, ConfigResult, HdrToSdrConfig,
+    HdrToSdrOperatorConfig, RenderColorAdjustmentConfig, VideoCodec,
 };
 
 /// Минимальный decode-ahead: ноль ломает смысл backpressure окна.
@@ -28,6 +28,9 @@ const MAX_NETWORK_READ_AHEAD_MB: u64 = 4096;
 
 /// Верхний предел render latency, выше которого config почти наверняка ошибочен.
 const MAX_VULKAN_FRAME_LATENCY: u32 = 8;
+
+/// Верхний предел reference luminance для Phase 10 SDR/HDR nits fields.
+const MAX_HDR_TO_SDR_REFERENCE_NITS: f32 = 10_000.0;
 
 /// Количество каналов в пользовательских RGB triplet-полях.
 const RGB_CHANNEL_COUNT: usize = 3;
@@ -139,6 +142,7 @@ fn validate_network_section(config: &AppConfig) -> ConfigResult<()> {
 
 /// Проверяет render section.
 fn validate_render_section(config: &AppConfig) -> ConfigResult<()> {
+    validate_hdr_to_sdr_config(&config.render.hdr_to_sdr)?;
     validate_render_color_adjustment(&config.render.color_adjustment)?;
     validate_u32_range(
         "render.vulkan.max_frame_latency",
@@ -146,6 +150,48 @@ fn validate_render_section(config: &AppConfig) -> ConfigResult<()> {
         1,
         MAX_VULKAN_FRAME_LATENCY,
     )
+}
+
+/// Проверяет HDR-to-SDR config до передачи settings renderer-у.
+fn validate_hdr_to_sdr_config(hdr_to_sdr: &HdrToSdrConfig) -> ConfigResult<()> {
+    match hdr_to_sdr.operator {
+        HdrToSdrOperatorConfig::Bt2446C => {}
+    }
+
+    validate_positive_reference_nits(
+        "render.hdr_to_sdr.sdr_reference_white_nits",
+        hdr_to_sdr.sdr_reference_white_nits,
+    )?;
+    validate_positive_reference_nits(
+        "render.hdr_to_sdr.hdr_reference_peak_nits",
+        hdr_to_sdr.hdr_reference_peak_nits,
+    )?;
+
+    if hdr_to_sdr.hdr_reference_peak_nits <= hdr_to_sdr.sdr_reference_white_nits {
+        return Err(invalid_value(
+            "render.hdr_to_sdr.hdr_reference_peak_nits",
+            format!(
+                "HDR peak должен быть выше SDR reference white: peak={}, white={}",
+                hdr_to_sdr.hdr_reference_peak_nits, hdr_to_sdr.sdr_reference_white_nits
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Проверяет положительное конечное значение luminance в nits.
+fn validate_positive_reference_nits(field: &'static str, value: f32) -> ConfigResult<()> {
+    if value.is_finite() && value > 0.0 && value <= MAX_HDR_TO_SDR_REFERENCE_NITS {
+        return Ok(());
+    }
+
+    Err(invalid_value(
+        field,
+        format!(
+            "значение должно быть конечным числом в диапазоне (0, {MAX_HDR_TO_SDR_REFERENCE_NITS}], получено {value}"
+        ),
+    ))
 }
 
 /// Проверяет SDR/RGB корректировки до передачи значений renderer-у.

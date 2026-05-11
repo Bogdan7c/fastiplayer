@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use render_core::{ColorPipelineSettings, RenderCapabilities, RenderDiagnostics};
+use render_core::{ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics};
 use tracing::{debug, info, instrument};
 use winit::window::Window;
 
@@ -329,6 +329,11 @@ impl Renderer {
     /// Передаёт пользовательские SDR color settings во внутренний video renderer.
     pub fn set_color_pipeline_settings(&mut self, settings: ColorPipelineSettings) {
         self.video_renderer.set_color_pipeline_settings(settings);
+    }
+
+    /// Передаёт HDR-to-SDR settings во внутренний P010 renderer.
+    pub fn set_hdr_to_sdr_settings(&mut self, settings: HdrToSdrSettings) {
+        self.video_renderer.set_hdr_to_sdr_settings(settings);
     }
 
     /// Рендерит один полный кадр: видео + egui overlay.

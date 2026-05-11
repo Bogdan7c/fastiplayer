@@ -481,6 +481,8 @@ Manual tests:
 
 ### Сессия 6: config propagation and diagnostics UI
 
+Статус: реализовано
+
 Задачи:
 
 - добавить `[render.hdr_to_sdr]` config;

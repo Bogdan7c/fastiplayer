@@ -8,7 +8,8 @@
 
 use anyhow::{Result, bail, ensure};
 use render_core::{
-    ColorPipelineSettings, RenderCapabilities, RenderDiagnostics, RenderableFrame, VideoFrameFormat,
+    ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics,
+    RenderableFrame, VideoFrameFormat,
 };
 use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath};
 
@@ -147,11 +148,12 @@ impl WgpuVideoRenderer {
     #[must_use]
     pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
         let max_texture_size = Some(device.limits().max_texture_dimension_2d);
+        let capabilities = wgpu_capabilities_from_features(max_texture_size, device.features());
 
         Self {
             nv12_renderer: Nv12VideoRenderer::new(device, surface_format),
             p010_renderer: P010VideoRenderer::new(device, surface_format),
-            capabilities: RenderCapabilities::wgpu_nv12(max_texture_size),
+            capabilities,
             diagnostics: RenderDiagnostics::default(),
         }
     }
@@ -174,6 +176,11 @@ impl WgpuVideoRenderer {
         self.p010_renderer.set_color_pipeline_settings(settings);
     }
 
+    /// Обновляет HDR-to-SDR settings для P010 HDR renderer-а.
+    pub fn set_hdr_to_sdr_settings(&mut self, settings: HdrToSdrSettings) {
+        self.p010_renderer.set_hdr_to_sdr_settings(settings);
+    }
+
     /// Обновляет размер swapchain для расчёта letterbox.
     pub fn resize(&mut self, width: u32, height: u32) {
         self.nv12_renderer.set_window_size(width, height);
@@ -192,11 +199,11 @@ impl WgpuVideoRenderer {
         queue: &wgpu::Queue,
     ) -> Result<bool> {
         let Some(frame) = frame else {
-            self.diagnostics.active_color_path = None;
+            self.diagnostics = RenderDiagnostics::default();
             clear_to_black(target, encoder);
             return Ok(false);
         };
-        self.diagnostics.active_color_path = None;
+        self.diagnostics = RenderDiagnostics::default();
 
         if !frame.metadata.has_display_size() {
             bail!(
@@ -227,7 +234,7 @@ impl WgpuVideoRenderer {
                 let WgpuFramePlanes::P010 { y_view, uv_view } = &frame.planes else {
                     unreachable!("renderer dispatch was selected from plane kind");
                 };
-                let active_color_path = self.p010_renderer.render_frame(
+                let p010_diagnostics = self.p010_renderer.render_frame(
                     &frame.metadata,
                     y_view,
                     uv_view,
@@ -236,10 +243,27 @@ impl WgpuVideoRenderer {
                     device,
                     queue,
                 )?;
-                self.diagnostics.active_color_path = Some(active_color_path);
+                self.diagnostics.active_color_path = Some(p010_diagnostics.active_color_path);
+                self.diagnostics.hdr_reference_defaults = p010_diagnostics.hdr_reference_defaults;
                 Ok(true)
             }
         }
+    }
+}
+
+/// Строит public renderer capabilities из реально включённых wgpu device features.
+fn wgpu_capabilities_from_features(
+    max_texture_size: Option<u32>,
+    device_features: wgpu::Features,
+) -> RenderCapabilities {
+    let p010_composed_supported = device_features.contains(wgpu::Features::TEXTURE_FORMAT_P010);
+    let p010_separate_layer_supported =
+        device_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM);
+
+    if p010_composed_supported || p010_separate_layer_supported {
+        RenderCapabilities::wgpu_p010_bt2446c(max_texture_size)
+    } else {
+        RenderCapabilities::wgpu_nv12(max_texture_size)
     }
 }
 
@@ -361,6 +385,28 @@ mod tests {
         assert_eq!(baseline_separate_layer_kind, WgpuFramePlaneKind::P010);
         assert_eq!(compatibility_composed_kind, WgpuFramePlaneKind::P010);
         assert_eq!(baseline_separate_layer_kind, compatibility_composed_kind);
+    }
+
+    #[test]
+    fn renderer_capabilities_advertise_hdr_when_p010_import_feature_is_enabled() {
+        let separate_layer_capabilities =
+            wgpu_capabilities_from_features(Some(4096), wgpu::Features::TEXTURE_FORMAT_16BIT_NORM);
+        let composed_capabilities =
+            wgpu_capabilities_from_features(Some(4096), wgpu::Features::TEXTURE_FORMAT_P010);
+
+        assert!(separate_layer_capabilities.supports_p010_rendering());
+        assert!(separate_layer_capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
+        assert!(composed_capabilities.supports_p010_rendering());
+        assert!(composed_capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
+    }
+
+    #[test]
+    fn renderer_capabilities_stay_nv12_when_p010_import_features_are_missing() {
+        let capabilities = wgpu_capabilities_from_features(Some(4096), wgpu::Features::empty());
+
+        assert!(capabilities.supports_frame_format(VideoFrameFormat::Nv12));
+        assert!(!capabilities.supports_p010_rendering());
+        assert!(!capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
     }
 
     /// Тестовое описание P010 storage layout до renderer boundary.
