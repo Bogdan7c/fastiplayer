@@ -970,6 +970,61 @@ mod tests {
     }
 
     #[test]
+    fn missing_strict_hdr_core_color_fields_are_rejected() {
+        let cases = [
+            (
+                Vp9MetadataField::Transfer,
+                hdr_color_with_core_field(
+                    ColorRange::Limited,
+                    MatrixCoefficients::Bt2020,
+                    ColorPrimaries::Bt2020,
+                    TransferFunction::Unknown,
+                ),
+            ),
+            (
+                Vp9MetadataField::Primaries,
+                hdr_color_with_core_field(
+                    ColorRange::Limited,
+                    MatrixCoefficients::Bt2020,
+                    ColorPrimaries::Unknown,
+                    TransferFunction::Pq,
+                ),
+            ),
+            (
+                Vp9MetadataField::Matrix,
+                hdr_color_with_core_field(
+                    ColorRange::Limited,
+                    MatrixCoefficients::Unknown,
+                    ColorPrimaries::Bt2020,
+                    TransferFunction::Pq,
+                ),
+            ),
+            (
+                Vp9MetadataField::Range,
+                hdr_color_with_core_field(
+                    ColorRange::Unknown,
+                    MatrixCoefficients::Bt2020,
+                    ColorPrimaries::Bt2020,
+                    TransferFunction::Pq,
+                ),
+            ),
+        ];
+
+        for (missing_field, color) in cases {
+            let container = container_hdr_source_with_color(color);
+            let bitstream_candidate = profile2_10bit_candidate_without_color();
+            let resolved_metadata =
+                resolve_vp9_metadata(Some(container), Some(bitstream_candidate));
+
+            assert_eq!(
+                validate_vp9_strict_hdr_core(&resolved_metadata),
+                Err(Vp9StrictHdrValidationError::MissingField(missing_field)),
+                "expected {missing_field:?} to be rejected as missing"
+            );
+        }
+    }
+
+    #[test]
     fn bitstream_profile_conflict_with_container_hint_uses_bitstream_profile() {
         let container = Vp9MetadataSource::container()
             .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0))
@@ -1120,17 +1175,30 @@ mod tests {
     }
 
     fn container_hdr_source(transfer: TransferFunction) -> Vp9MetadataSource {
+        container_hdr_source_with_color(VideoColorMetadata::container(
+            ColorRange::Limited,
+            MatrixCoefficients::Bt2020,
+            ColorPrimaries::Bt2020,
+            transfer,
+            None,
+        ))
+    }
+
+    fn container_hdr_source_with_color(color: VideoColorMetadata) -> Vp9MetadataSource {
         Vp9MetadataSource::container()
             .with_profile(VideoProfile::Vp9(Vp9Profile::Profile2))
             .with_bit_depth(BitDepth::Ten)
             .with_chroma(ChromaSubsampling::Yuv420)
-            .with_color(VideoColorMetadata::container(
-                ColorRange::Limited,
-                MatrixCoefficients::Bt2020,
-                ColorPrimaries::Bt2020,
-                transfer,
-                None,
-            ))
+            .with_color(color)
+    }
+
+    fn hdr_color_with_core_field(
+        range: ColorRange,
+        matrix: MatrixCoefficients,
+        primaries: ColorPrimaries,
+        transfer: TransferFunction,
+    ) -> VideoColorMetadata {
+        VideoColorMetadata::container(range, matrix, primaries, transfer, None)
     }
 
     fn candidate_from_fixture(fixture: Vp9HeaderFixture) -> Vp9RequirementCandidate {

@@ -399,6 +399,8 @@ Manual tests:
 
 ### Сессия 3: HDR uniforms and metadata validation
 
+Статус: реализовано
+
 Задачи:
 
 - добавить `HdrColorPipelineUniforms`;

@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, bail, ensure};
 use codec_core::{
-    BitDepth, ChromaSubsampling, ColorPrimaries, MatrixCoefficients, TransferFunction,
+    BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction,
     VideoColorMetadata,
 };
 use render_core::{
@@ -13,8 +13,38 @@ use render_core::{
 /// WGSL source dedicated to P010 rendering.
 pub(crate) const P010_SHADER_SOURCE: &str = include_str!("../shaders/p010_bt2446c_to_sdr.wgsl");
 
-/// Размер P010 uniform buffer-а, который должен совпадать с WGSL layout.
-const P010_RENDERER_UNIFORM_SIZE: u64 = std::mem::size_of::<P010RendererUniforms>() as u64;
+/// Размер HDR/P010 uniform buffer-а, который должен совпадать с WGSL layout.
+const HDR_COLOR_PIPELINE_UNIFORM_SIZE: u64 = std::mem::size_of::<HdrColorPipelineUniforms>() as u64;
+
+/// Минимальный 10-bit code value.
+const P010_10BIT_MIN_CODE_VALUE: f32 = 0.0;
+
+/// Максимальный 10-bit code value.
+const P010_10BIT_MAX_CODE_VALUE: f32 = 1023.0;
+
+/// Limited-range luma black для 10-bit YUV.
+const P010_LIMITED_LUMA_BLACK_CODE_VALUE: f32 = 64.0;
+
+/// Limited-range luma white для 10-bit YUV.
+const P010_LIMITED_LUMA_WHITE_CODE_VALUE: f32 = 940.0;
+
+/// Limited/full chroma center для 10-bit YUV.
+const P010_CHROMA_CENTER_CODE_VALUE: f32 = 512.0;
+
+/// Limited-range chroma minimum для 10-bit YUV.
+const P010_LIMITED_CHROMA_MIN_CODE_VALUE: f32 = 64.0;
+
+/// Limited-range chroma maximum для 10-bit YUV.
+const P010_LIMITED_CHROMA_MAX_CODE_VALUE: f32 = 960.0;
+
+/// Marker для optional metadata, которая не применима к выбранному path.
+const HDR_METADATA_MARKER_NOT_APPLICABLE: u32 = 0;
+
+/// Marker для optional metadata, подтверждённой container/bitstream/backend-ом.
+const HDR_METADATA_MARKER_CONFIRMED: u32 = 1;
+
+/// Marker для documented reference default вместо stream metadata.
+const HDR_METADATA_MARKER_REFERENCE_DEFAULT: u32 = 2;
 
 /// Shader mode для 10-bit SDR BT.709 P010 path.
 const P010_SHADER_MODE_SDR_BT709: u32 = 0;
@@ -22,14 +52,14 @@ const P010_SHADER_MODE_SDR_BT709: u32 = 0;
 /// Shader mode для будущего HDR-to-SDR BT.2446-C P010 path.
 const P010_SHADER_MODE_HDR_BT2446C: u32 = 1;
 
-/// Uniform buffer для P010 renderer skeleton-а.
+/// Uniform buffer для P010/HDR color pipeline.
 ///
 /// Layout держит 16-byte alignment WGSL uniform rules:
 /// - две `vec2<f32>` в начале вместе занимают первые 16 байт;
-/// - mode и HDR reference values представлены как `vec4`.
+/// - все остальные поля представлены как `vec4`, чтобы Rust/WGSL offsets не расходились.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-struct P010RendererUniforms {
+pub(crate) struct HdrColorPipelineUniforms {
     /// Масштаб UV для letterbox.
     uv_scale: [f32; 2],
 
@@ -39,8 +69,20 @@ struct P010RendererUniforms {
     /// `x`: shader branch, `yzw`: reserved для стабильного layout.
     shader_mode: [u32; 4],
 
-    /// `x`: SDR white nits, `y`: HDR peak nits, `zw`: reserved.
+    /// `x`: Y offset code, `y`: Y scale, `z/w`: допустимые Y code bounds.
+    luma_range: [f32; 4],
+
+    /// `x/z`: U/V center code, `y/w`: U/V scale.
+    chroma_range: [f32; 4],
+
+    /// `x`: SDR white, `y`: HDR peak, `z/w`: mastering max/min luminance.
     hdr_reference_nits: [f32; 4],
+
+    /// `x`: MaxCLL, `y`: MaxFALL, `z/w`: reserved.
+    content_light_levels: [f32; 4],
+
+    /// `x/y`: mastering max/min markers, `z/w`: MaxCLL/MaxFALL markers.
+    optional_metadata_markers: [u32; 4],
 }
 
 /// Выбранный color branch внутри P010 renderer-а.
@@ -64,9 +106,10 @@ impl P010RenderColorPath {
 }
 
 /// CPU-side данные, подготовленные для одного P010 draw call.
+#[derive(Debug)]
 struct PreparedP010Render {
     /// Uniforms для текущего кадра.
-    uniforms: P010RendererUniforms,
+    uniforms: HdrColorPipelineUniforms,
 
     /// Диагностический color path для UI/telemetry.
     active_path: ActiveColorPath,
@@ -85,9 +128,9 @@ pub(crate) struct P010VideoRenderer {
 
 /// Возвращает non-zero binding size для P010 uniform buffer-а.
 fn p010_uniform_binding_size() -> NonZeroU64 {
-    // Инвариант защищён layout test-ом `p010_renderer_uniforms_match_wgsl_uniform_layout`.
-    NonZeroU64::new(P010_RENDERER_UNIFORM_SIZE)
-        .expect("размер P010 renderer uniform buffer должен быть non-zero")
+    // Инвариант защищён layout test-ом `hdr_color_pipeline_uniforms_match_wgsl_uniform_layout`.
+    NonZeroU64::new(HDR_COLOR_PIPELINE_UNIFORM_SIZE)
+        .expect("размер HDR color pipeline uniform buffer должен быть non-zero")
 }
 
 impl P010VideoRenderer {
@@ -100,7 +143,7 @@ impl P010VideoRenderer {
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("p010 uniform buffer"),
-            size: P010_RENDERER_UNIFORM_SIZE,
+            size: HDR_COLOR_PIPELINE_UNIFORM_SIZE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -313,24 +356,164 @@ fn prepare_p010_render(
     let (uv_scale, uv_offset) = letterbox_scale_and_offset(frame, window_size);
     let active_path =
         active_color_path_for_p010(frame, color_settings, hdr_to_sdr_settings, color_path);
+    let range_normalization = p010_range_normalization(frame.color.range)?;
+    let optional_metadata = hdr_optional_metadata_uniforms(
+        frame.color.hdr_metadata.as_ref(),
+        hdr_to_sdr_settings,
+        color_path,
+    );
 
     Ok(PreparedP010Render {
-        uniforms: P010RendererUniforms {
+        uniforms: HdrColorPipelineUniforms {
             uv_scale,
             uv_offset,
             shader_mode: [color_path.shader_mode(), 0, 0, 0],
+            luma_range: range_normalization.luma_range,
+            chroma_range: range_normalization.chroma_range,
+            hdr_reference_nits: optional_metadata.hdr_reference_nits,
+            content_light_levels: optional_metadata.content_light_levels,
+            optional_metadata_markers: optional_metadata.optional_metadata_markers,
+        },
+        active_path,
+    })
+}
+
+/// Range normalization values, already arranged for WGSL uniform fields.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct P010RangeNormalization {
+    /// Luma code offset, scale, and clamp bounds.
+    luma_range: [f32; 4],
+
+    /// Chroma center and scale for U/V channels.
+    chroma_range: [f32; 4],
+}
+
+/// Optional HDR metadata values plus source markers for shader diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HdrOptionalMetadataUniforms {
+    /// Reference white/peak and mastering display luminance values.
+    hdr_reference_nits: [f32; 4],
+
+    /// Content light level values.
+    content_light_levels: [f32; 4],
+
+    /// Per-field markers: confirmed stream metadata or reference defaults.
+    optional_metadata_markers: [u32; 4],
+}
+
+/// Возвращает P010 normalization в 10-bit code values, не в 8-bit и не в normalized 0..1.
+fn p010_range_normalization(range: ColorRange) -> Result<P010RangeNormalization> {
+    match range {
+        ColorRange::Limited => Ok(P010RangeNormalization {
+            luma_range: [
+                P010_LIMITED_LUMA_BLACK_CODE_VALUE,
+                1.0 / (P010_LIMITED_LUMA_WHITE_CODE_VALUE - P010_LIMITED_LUMA_BLACK_CODE_VALUE),
+                P010_LIMITED_LUMA_BLACK_CODE_VALUE,
+                P010_LIMITED_LUMA_WHITE_CODE_VALUE,
+            ],
+            chroma_range: [
+                P010_CHROMA_CENTER_CODE_VALUE,
+                1.0 / (P010_LIMITED_CHROMA_MAX_CODE_VALUE - P010_LIMITED_CHROMA_MIN_CODE_VALUE),
+                P010_CHROMA_CENTER_CODE_VALUE,
+                1.0 / (P010_LIMITED_CHROMA_MAX_CODE_VALUE - P010_LIMITED_CHROMA_MIN_CODE_VALUE),
+            ],
+        }),
+        ColorRange::Full => Ok(P010RangeNormalization {
+            luma_range: [
+                P010_10BIT_MIN_CODE_VALUE,
+                1.0 / (P010_10BIT_MAX_CODE_VALUE - P010_10BIT_MIN_CODE_VALUE),
+                P010_10BIT_MIN_CODE_VALUE,
+                P010_10BIT_MAX_CODE_VALUE,
+            ],
+            chroma_range: [
+                P010_CHROMA_CENTER_CODE_VALUE,
+                1.0 / (P010_10BIT_MAX_CODE_VALUE - P010_10BIT_MIN_CODE_VALUE),
+                P010_CHROMA_CENTER_CODE_VALUE,
+                1.0 / (P010_10BIT_MAX_CODE_VALUE - P010_10BIT_MIN_CODE_VALUE),
+            ],
+        }),
+        ColorRange::Unknown => bail!("P010 renderer requires explicit limited/full color range"),
+    }
+}
+
+/// Собирает optional HDR metadata, не превращая reference defaults в confirmed metadata.
+fn hdr_optional_metadata_uniforms(
+    hdr_metadata: Option<&codec_core::HdrMetadata>,
+    hdr_to_sdr_settings: HdrToSdrSettings,
+    color_path: P010RenderColorPath,
+) -> HdrOptionalMetadataUniforms {
+    if color_path == P010RenderColorPath::SdrBt709 {
+        return HdrOptionalMetadataUniforms {
             hdr_reference_nits: [
                 hdr_to_sdr_settings.sdr_reference_white_nits,
                 hdr_to_sdr_settings.hdr_reference_peak_nits,
                 0.0,
                 0.0,
             ],
-        },
-        active_path,
-    })
+            content_light_levels: [0.0, 0.0, 0.0, 0.0],
+            optional_metadata_markers: [HDR_METADATA_MARKER_NOT_APPLICABLE; 4],
+        };
+    }
+
+    let reference_peak_nits = hdr_to_sdr_settings.hdr_reference_peak_nits;
+    let (mastering_max_luminance, mastering_max_marker) = optional_f32_or_reference_default(
+        hdr_metadata.and_then(|metadata| metadata.max_luminance_nits),
+        reference_peak_nits,
+    );
+    let (mastering_min_luminance, mastering_min_marker) = optional_f32_or_reference_default(
+        hdr_metadata.and_then(|metadata| metadata.min_luminance_nits),
+        0.0,
+    );
+    let (max_content_light_level, max_content_light_level_marker) =
+        optional_u32_or_reference_default(
+            hdr_metadata.and_then(|metadata| metadata.max_content_light_level_nits),
+            reference_peak_nits,
+        );
+    let (max_frame_average_light_level, max_frame_average_light_level_marker) =
+        optional_u32_or_reference_default(
+            hdr_metadata.and_then(|metadata| metadata.max_frame_average_light_level_nits),
+            reference_peak_nits,
+        );
+
+    HdrOptionalMetadataUniforms {
+        hdr_reference_nits: [
+            hdr_to_sdr_settings.sdr_reference_white_nits,
+            hdr_to_sdr_settings.hdr_reference_peak_nits,
+            mastering_max_luminance,
+            mastering_min_luminance,
+        ],
+        content_light_levels: [
+            max_content_light_level,
+            max_frame_average_light_level,
+            0.0,
+            0.0,
+        ],
+        optional_metadata_markers: [
+            mastering_max_marker,
+            mastering_min_marker,
+            max_content_light_level_marker,
+            max_frame_average_light_level_marker,
+        ],
+    }
 }
 
-/// Логирует первый P010 renderer dispatch для ручной проверки Phase 10 Session 2.
+/// Возвращает confirmed f32 metadata или reference default с явным marker-ом.
+fn optional_f32_or_reference_default(value: Option<f32>, reference_default: f32) -> (f32, u32) {
+    match value {
+        Some(value) if value.is_finite() => (value, HDR_METADATA_MARKER_CONFIRMED),
+        _ => (reference_default, HDR_METADATA_MARKER_REFERENCE_DEFAULT),
+    }
+}
+
+/// Возвращает confirmed u32 metadata или reference default с явным marker-ом.
+fn optional_u32_or_reference_default(value: Option<u32>, reference_default: f32) -> (f32, u32) {
+    match value {
+        Some(value) => (value as f32, HDR_METADATA_MARKER_CONFIRMED),
+        None => (reference_default, HDR_METADATA_MARKER_REFERENCE_DEFAULT),
+    }
+}
+
+/// Логирует первый P010 renderer dispatch для ручной проверки Phase 10 Session 3.
 fn log_first_p010_render_dispatch(frame: &RenderableFrame, prepared_render: &PreparedP010Render) {
     static LOGGED_P010_RENDER_DISPATCH: AtomicBool = AtomicBool::new(false);
 
@@ -344,6 +527,11 @@ fn log_first_p010_render_dispatch(frame: &RenderableFrame, prepared_render: &Pre
         coded_height = frame.coded_height,
         active_color_path = %prepared_render.active_path.diagnostic_text(),
         shader_mode = prepared_render.uniforms.shader_mode[0],
+        transfer = ?frame.color.transfer,
+        primaries = ?frame.color.primaries,
+        matrix = ?frame.color.matrix,
+        range = ?frame.color.range,
+        optional_metadata_markers = ?prepared_render.uniforms.optional_metadata_markers,
         "P010 renderer dispatch selected"
     );
 }
@@ -380,10 +568,12 @@ pub(crate) fn select_p010_color_path(frame: &RenderableFrame) -> Result<P010Rend
     validate_p010_renderable_frame(frame)?;
 
     if is_sdr_bt709_p010(&frame.color) {
+        validate_p010_sdr_bt709_metadata(&frame.color)?;
         return Ok(P010RenderColorPath::SdrBt709);
     }
 
-    if is_phase10_hdr_p010(&frame.color) {
+    if is_hdr_p010_candidate(&frame.color) {
+        validate_phase10_hdr_core_metadata(&frame.color)?;
         return Ok(P010RenderColorPath::HdrBt2446C);
     }
 
@@ -404,11 +594,63 @@ fn is_sdr_bt709_p010(color: &VideoColorMetadata) -> bool {
         && color.transfer == TransferFunction::Bt709
 }
 
-/// Проверяет Phase 10 HDR candidate branch для будущего BT.2446-C shader-а.
-fn is_phase10_hdr_p010(color: &VideoColorMetadata) -> bool {
-    color.primaries == ColorPrimaries::Bt2020
-        && color.matrix == MatrixCoefficients::Bt2020
-        && matches!(color.transfer, TransferFunction::Pq | TransferFunction::Hlg)
+/// Проверяет, что SDR P010 имеет явный range и не нуждается в optional HDR defaults.
+fn validate_p010_sdr_bt709_metadata(color: &VideoColorMetadata) -> Result<()> {
+    ensure!(
+        matches!(color.range, ColorRange::Limited | ColorRange::Full),
+        "P010 SDR BT.709 requires explicit limited/full color range"
+    );
+    ensure!(
+        color.hdr_metadata.is_none(),
+        "P010 SDR BT.709 path must not carry HDR optional metadata"
+    );
+
+    Ok(())
+}
+
+/// Определяет HDR candidate без принятия неизвестных core полей.
+fn is_hdr_p010_candidate(color: &VideoColorMetadata) -> bool {
+    color.transfer.is_hdr() || color.hdr_metadata.is_some()
+}
+
+/// Проверяет strict Phase 10 HDR core metadata перед render pass.
+fn validate_phase10_hdr_core_metadata(color: &VideoColorMetadata) -> Result<()> {
+    ensure!(
+        matches!(color.transfer, TransferFunction::Pq | TransferFunction::Hlg),
+        "P010 HDR requires PQ or HLG transfer, got {:?}",
+        color.transfer
+    );
+    ensure!(
+        color.primaries == ColorPrimaries::Bt2020,
+        "P010 HDR requires BT.2020 primaries, got {:?}",
+        color.primaries
+    );
+    ensure!(
+        color.matrix == MatrixCoefficients::Bt2020,
+        "P010 HDR requires BT.2020 matrix, got {:?}",
+        color.matrix
+    );
+    ensure!(
+        matches!(color.range, ColorRange::Limited | ColorRange::Full),
+        "P010 HDR requires explicit limited/full color range"
+    );
+
+    if let Some(hdr_metadata) = &color.hdr_metadata {
+        ensure!(
+            hdr_metadata.color_primaries == color.primaries,
+            "P010 HDR mastering primaries {:?} do not match core primaries {:?}",
+            hdr_metadata.color_primaries,
+            color.primaries
+        );
+        ensure!(
+            hdr_metadata.transfer_function == color.transfer,
+            "P010 HDR mastering transfer {:?} does not match core transfer {:?}",
+            hdr_metadata.transfer_function,
+            color.transfer
+        );
+    }
+
+    Ok(())
 }
 
 /// Строит active path так, чтобы SDR BT.709 P010 не получал HDR-to-SDR marker.
@@ -450,6 +692,7 @@ mod tests {
     use std::mem::{align_of, offset_of, size_of};
     use std::time::Duration;
 
+    use bytemuck::Zeroable;
     use codec_core::{
         ColorMetadataConfidence, ColorMetadataOrigin, ColorRange, HdrMetadata, MatrixCoefficients,
     };
@@ -458,21 +701,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn p010_renderer_uniforms_match_wgsl_uniform_layout() {
-        assert_eq!(align_of::<P010RendererUniforms>(), 16);
+    fn hdr_color_pipeline_uniforms_match_wgsl_uniform_layout() {
+        let uniforms = HdrColorPipelineUniforms::zeroed();
+
+        assert_eq!(align_of::<HdrColorPipelineUniforms>(), 16);
         assert_eq!(
-            size_of::<P010RendererUniforms>(),
-            P010_RENDERER_UNIFORM_SIZE as usize
+            size_of::<HdrColorPipelineUniforms>(),
+            HDR_COLOR_PIPELINE_UNIFORM_SIZE as usize
         );
-        assert_eq!(offset_of!(P010RendererUniforms, uv_scale), 0);
-        assert_eq!(offset_of!(P010RendererUniforms, uv_offset), 8);
-        assert_eq!(offset_of!(P010RendererUniforms, shader_mode), 16);
-        assert_eq!(offset_of!(P010RendererUniforms, hdr_reference_nits), 32);
+        assert_eq!(size_of::<HdrColorPipelineUniforms>() % 16, 0);
+        assert_eq!(offset_of!(HdrColorPipelineUniforms, uv_scale), 0);
+        assert_eq!(offset_of!(HdrColorPipelineUniforms, uv_offset), 8);
+        assert_eq!(offset_of!(HdrColorPipelineUniforms, shader_mode), 16);
+        assert_eq!(offset_of!(HdrColorPipelineUniforms, luma_range), 32);
+        assert_eq!(offset_of!(HdrColorPipelineUniforms, chroma_range), 48);
+        assert_eq!(offset_of!(HdrColorPipelineUniforms, hdr_reference_nits), 64);
+        assert_eq!(
+            offset_of!(HdrColorPipelineUniforms, content_light_levels),
+            80
+        );
+        assert_eq!(
+            offset_of!(HdrColorPipelineUniforms, optional_metadata_markers),
+            96
+        );
+        assert_eq!(
+            bytemuck::bytes_of(&uniforms).len() as u64,
+            HDR_COLOR_PIPELINE_UNIFORM_SIZE
+        );
     }
 
     #[test]
-    fn p010_sdr_bt709_uses_non_hdr_color_branch() {
-        let frame = p010_test_frame(VideoColorMetadata::sdr_bt709_limited());
+    fn p010_sdr_bt709_uses_non_hdr_color_branch_without_hdr_optional_defaults() {
+        let frame = p010_test_frame(p010_sdr_bt709_limited_color());
 
         let color_path = select_p010_color_path(&frame).expect("P010 SDR BT.709 accepted");
         let active_path = active_color_path_for_p010(
@@ -485,6 +745,20 @@ mod tests {
         assert_eq!(color_path, P010RenderColorPath::SdrBt709);
         assert_eq!(active_path.hdr_to_sdr, None);
         assert!(!active_path.diagnostic_text().contains("bt2446-c"));
+
+        let prepared_render = prepare_p010_render(
+            &frame,
+            &ColorPipelineSettings::default(),
+            HdrToSdrSettings::default(),
+            (1920, 1080),
+        )
+        .expect("P010 SDR BT.709 uniforms accepted");
+
+        assert_eq!(
+            prepared_render.uniforms.optional_metadata_markers,
+            [HDR_METADATA_MARKER_NOT_APPLICABLE; 4]
+        );
+        assert_eq!(prepared_render.uniforms.content_light_levels, [0.0; 4]);
     }
 
     #[test]
@@ -509,6 +783,147 @@ mod tests {
             Some(HdrToneMappingOperator::Bt2446C)
         );
         assert!(active_path.diagnostic_text().contains("bt2446-c"));
+    }
+
+    #[test]
+    fn p010_hdr_hlg_uses_hdr_color_branch() {
+        let frame = p010_test_frame(p010_hdr_bt2020_color(TransferFunction::Hlg));
+
+        let color_path = select_p010_color_path(&frame).expect("P010 HLG HDR accepted");
+
+        assert_eq!(color_path, P010RenderColorPath::HdrBt2446C);
+    }
+
+    #[test]
+    fn missing_maxcll_maxfall_use_reference_default_markers() {
+        let mut color = p010_hdr_bt2020_color(TransferFunction::Pq);
+        color.hdr_metadata = Some(HdrMetadata {
+            color_primaries: ColorPrimaries::Bt2020,
+            transfer_function: TransferFunction::Pq,
+            max_luminance_nits: Some(1_000.0),
+            min_luminance_nits: Some(0.01),
+            max_content_light_level_nits: None,
+            max_frame_average_light_level_nits: None,
+        });
+        let frame = p010_test_frame(color);
+
+        let prepared_render = prepare_p010_render(
+            &frame,
+            &ColorPipelineSettings::default(),
+            HdrToSdrSettings::default(),
+            (1920, 1080),
+        )
+        .expect("P010 HDR uniforms accepted with reference optional defaults");
+
+        assert_eq!(
+            prepared_render.uniforms.optional_metadata_markers,
+            [
+                HDR_METADATA_MARKER_CONFIRMED,
+                HDR_METADATA_MARKER_CONFIRMED,
+                HDR_METADATA_MARKER_REFERENCE_DEFAULT,
+                HDR_METADATA_MARKER_REFERENCE_DEFAULT,
+            ]
+        );
+        assert_eq!(
+            prepared_render.uniforms.content_light_levels[0],
+            HdrToSdrSettings::default().hdr_reference_peak_nits
+        );
+        assert_eq!(
+            prepared_render.uniforms.content_light_levels[1],
+            HdrToSdrSettings::default().hdr_reference_peak_nits
+        );
+        assert_eq!(
+            frame
+                .color
+                .hdr_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.max_content_light_level_nits),
+            None
+        );
+    }
+
+    #[test]
+    fn p010_limited_range_normalization_uses_10bit_code_values() {
+        let normalization =
+            p010_range_normalization(ColorRange::Limited).expect("limited range accepted");
+
+        assert_eq!(
+            normalization.luma_range,
+            [
+                P010_LIMITED_LUMA_BLACK_CODE_VALUE,
+                1.0 / (P010_LIMITED_LUMA_WHITE_CODE_VALUE - P010_LIMITED_LUMA_BLACK_CODE_VALUE),
+                P010_LIMITED_LUMA_BLACK_CODE_VALUE,
+                P010_LIMITED_LUMA_WHITE_CODE_VALUE,
+            ]
+        );
+        assert_eq!(
+            normalization.chroma_range,
+            [
+                P010_CHROMA_CENTER_CODE_VALUE,
+                1.0 / (P010_LIMITED_CHROMA_MAX_CODE_VALUE - P010_LIMITED_CHROMA_MIN_CODE_VALUE),
+                P010_CHROMA_CENTER_CODE_VALUE,
+                1.0 / (P010_LIMITED_CHROMA_MAX_CODE_VALUE - P010_LIMITED_CHROMA_MIN_CODE_VALUE),
+            ]
+        );
+    }
+
+    #[test]
+    fn p010_hdr_missing_core_metadata_is_rejected_before_render() {
+        let cases = [
+            (
+                hdr_color_with_core_fields(
+                    ColorRange::Limited,
+                    MatrixCoefficients::Bt2020,
+                    ColorPrimaries::Bt2020,
+                    TransferFunction::Unknown,
+                ),
+                "requires PQ or HLG transfer",
+            ),
+            (
+                hdr_color_with_core_fields(
+                    ColorRange::Limited,
+                    MatrixCoefficients::Bt2020,
+                    ColorPrimaries::Unknown,
+                    TransferFunction::Pq,
+                ),
+                "requires BT.2020 primaries",
+            ),
+            (
+                hdr_color_with_core_fields(
+                    ColorRange::Limited,
+                    MatrixCoefficients::Unknown,
+                    ColorPrimaries::Bt2020,
+                    TransferFunction::Pq,
+                ),
+                "requires BT.2020 matrix",
+            ),
+            (
+                hdr_color_with_core_fields(
+                    ColorRange::Unknown,
+                    MatrixCoefficients::Bt2020,
+                    ColorPrimaries::Bt2020,
+                    TransferFunction::Pq,
+                ),
+                "requires explicit limited/full color range",
+            ),
+        ];
+
+        for (color, expected_error_fragment) in cases {
+            let frame = p010_test_frame(color);
+
+            let error = prepare_p010_render(
+                &frame,
+                &ColorPipelineSettings::default(),
+                HdrToSdrSettings::default(),
+                (1920, 1080),
+            )
+            .expect_err("P010 HDR with missing core metadata must be rejected before render");
+
+            assert!(
+                error.to_string().contains(expected_error_fragment),
+                "expected `{expected_error_fragment}` in error, got: {error}"
+            );
+        }
     }
 
     #[test]
@@ -557,19 +972,58 @@ mod tests {
         }
     }
 
-    fn p010_hdr_bt2020_color(transfer: TransferFunction) -> VideoColorMetadata {
+    fn p010_sdr_bt709_limited_color() -> VideoColorMetadata {
         VideoColorMetadata {
             range: ColorRange::Limited,
-            matrix: MatrixCoefficients::Bt2020,
-            primaries: ColorPrimaries::Bt2020,
+            matrix: MatrixCoefficients::Bt709,
+            primaries: ColorPrimaries::Bt709,
+            transfer: TransferFunction::Bt709,
+            hdr_metadata: None,
+            origin: ColorMetadataOrigin::Container,
+            confidence: ColorMetadataConfidence::Confirmed,
+        }
+    }
+
+    fn p010_hdr_bt2020_color(transfer: TransferFunction) -> VideoColorMetadata {
+        let mut color = hdr_color_with_core_fields(
+            ColorRange::Limited,
+            MatrixCoefficients::Bt2020,
+            ColorPrimaries::Bt2020,
+            transfer,
+        );
+        color.hdr_metadata = Some(HdrMetadata {
+            color_primaries: ColorPrimaries::Bt2020,
+            transfer_function: transfer,
+            max_luminance_nits: Some(1_000.0),
+            min_luminance_nits: Some(0.01),
+            max_content_light_level_nits: Some(1_000),
+            max_frame_average_light_level_nits: Some(400),
+        });
+        color
+    }
+
+    fn hdr_color_with_core_fields(
+        range: ColorRange,
+        matrix: MatrixCoefficients,
+        primaries: ColorPrimaries,
+        transfer: TransferFunction,
+    ) -> VideoColorMetadata {
+        VideoColorMetadata {
+            range,
+            matrix,
+            primaries,
             transfer,
             hdr_metadata: Some(HdrMetadata {
-                color_primaries: ColorPrimaries::Bt2020,
-                transfer_function: transfer,
-                max_luminance_nits: Some(1_000.0),
-                min_luminance_nits: Some(0.01),
-                max_content_light_level_nits: Some(1_000),
-                max_frame_average_light_level_nits: Some(400),
+                color_primaries: primaries,
+                transfer_function: if transfer == TransferFunction::Unknown {
+                    TransferFunction::Pq
+                } else {
+                    transfer
+                },
+                max_luminance_nits: None,
+                min_luminance_nits: None,
+                max_content_light_level_nits: None,
+                max_frame_average_light_level_nits: None,
             }),
             origin: ColorMetadataOrigin::Bitstream,
             confidence: ColorMetadataConfidence::Confirmed,
