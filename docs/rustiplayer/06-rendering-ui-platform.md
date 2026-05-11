@@ -63,14 +63,29 @@ enum P010RenderReadiness {
     Renderable,
 }
 
+enum P010StorageLayout {
+    BaselineSeparateLayer,
+    CompatibilityComposed,
+}
+
+enum HdrOutputMode {
+    SdrBt709Only,
+}
+
 struct RenderCapabilities {
     backend: RenderBackendKind,
+    display_name: String,
     supports_hdr_to_sdr: bool,
     supports_native_hdr_output: bool,
     p010_render_readiness: P010RenderReadiness,
+    supported_p010_storage_layouts: Vec<P010StorageLayout>,
+    supported_hdr_to_sdr_operators: Vec<HdrToneMappingOperator>,
+    hdr_output_mode: HdrOutputMode,
     supported_frame_formats: Vec<VideoFrameFormat>,
     max_texture_size: Option<u32>,
     advanced_ui: bool,
+    ui_composition_mode: UiCompositionMode,
+    present_timing_metrics: bool,
 }
 
 enum SwapchainTransferMode {
@@ -80,14 +95,26 @@ enum SwapchainTransferMode {
 }
 
 struct ColorPipelineSettings {
+    adjustment: ColorAdjustment,
+    tone_mapping: ToneMappingMode,
+    swapchain_transfer: SwapchainTransferMode,
+}
+
+struct ColorAdjustment {
     brightness: f32,
     contrast: f32,
     saturation: f32,
     exposure: f32,
     rgb_gain: [f32; 3],
     rgb_offset: [f32; 3],
-    tone_mapping: ToneMappingMode,
-    swapchain_transfer: SwapchainTransferMode,
+}
+
+struct HdrToSdrSettings {
+    enabled: bool,
+    operator: HdrToneMappingOperator,
+    output_mode: HdrOutputMode,
+    sdr_reference_white_nits: f32,
+    hdr_reference_peak_nits: f32,
 }
 ```
 
@@ -215,7 +242,7 @@ decoded frame metadata
 
 ## Phase 8.5 SDR color pipeline prep
 
-Phase 8.5 готовит renderer к HDR, но сам HDR не реализует.
+Phase 8.5 исторически подготовил renderer к HDR, но сам HDR не реализовал. Текущий статус после Phase 10: P010/HDR renderer реализован отдельно, а ниже перечисленные SDR решения остаются действующими ограничителями для `nv12_to_rgba.wgsl`.
 
 Принятые решения:
 
@@ -223,7 +250,7 @@ Phase 8.5 готовит renderer к HDR, но сам HDR не реализуе�
 - реальные color metadata собираются layered-моделью с origin/confidence;
 - tone mapping presets остаются typed future contract; Phase 10 добавляет только фиксированный `bt2446_c` config без пользовательских preset controls;
 - SDR/RGB adjustments добавляются в settings/config с identity defaults;
-- BT.2020 SDR сейчас отображается как fallback path в SDR BT.709 diagnostics, настоящий gamut mapping добавляется позже.
+- NV12 BT.2020 SDR сейчас отображается как fallback path в SDR BT.709 diagnostics, настоящий gamut mapping добавляется позже; P010 BT.2020 SDR rejected до отдельного wide-gamut SDR решения.
 
 ### Swapchain transfer
 
@@ -252,7 +279,7 @@ BT.2020 SDR fallback не означает wide-gamut output support. Это т�
 
 ## Phase 9/10 P010 policy
 
-Phase 9 может проверить только P010 zero-copy render boundary. Это не то же самое, что production rendering path.
+Phase 9 проверял только P010 zero-copy render boundary. Это не было production rendering path. Phase 10 перевёл поддержанный P010/HDR path в production `Renderable` состояние.
 
 ```text
 Unavailable -> P010 path недоступен
@@ -262,4 +289,4 @@ Renderable -> renderer имеет production P010 shader path
 
 Production HDR playback разрешается только при `Renderable` и `supports_hdr_to_sdr = true`.
 
-Phase 10 переводит P010/HDR path в `Renderable` через отдельный shader `p010_bt2446c_to_sdr.wgsl`, BT.2446 Method C и `ExplicitShaderOetf`.
+Phase 10 переводит P010/HDR path в `Renderable` через отдельный shader `p010_bt2446c_to_sdr.wgsl`, BT.2446 Method C и `ExplicitShaderOetf`. Это текущий WGPU production path при passing capability intersection; native HDR output остаётся `false`.

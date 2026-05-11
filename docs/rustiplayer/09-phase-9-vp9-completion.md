@@ -4,6 +4,8 @@
 
 Phase 9 закрывает VP9 как codec/capability направление перед HDR-to-SDR.
 
+Статус: исторически закрытая фаза. Документ описывает состояние до Phase 10; ограничение `production HDR rejected до Phase 10` больше не является текущим глобальным правилом. После Phase 10 HDR playback разрешён только для P010/HDR BT.2446-C path при passing capability intersection.
+
 Задача этапа - превратить текущий рабочий VP9 Profile 0 SDR MVP в полную typed VP9 модель:
 
 - распознавать все VP9 profiles;
@@ -12,7 +14,7 @@ Phase 9 закрывает VP9 как codec/capability направление п
 - сохранить текущий SDR VP9/NV12 playback без визуальной регрессии;
 - подготовить codec-agnostic `P010 + HDR metadata + zero-copy render boundary` для Phase 10.
 
-Phase 9 не реализует HDR tone mapping и не показывает HDR как washed-out SDR. HDR playback в production path остаётся rejected до Phase 10.
+В рамках Phase 9 HDR tone mapping ещё не реализуется и HDR не показывается как washed-out SDR. HDR playback в production path на тот момент остаётся rejected до Phase 10.
 
 ## Reference checks
 
@@ -253,7 +255,7 @@ app-egui
 | --- | --- | --- |
 | Profile 0, 8-bit, 4:2:0, SDR | Production playback via NV12 | Current MVP path, protected by regression tests |
 | Profile 0, unknown metadata | Soft SDR BT.709 fallback with diagnostics | Existing fallback policy from Phase 8.5 |
-| Profile 2, 10-bit, 4:2:0, HDR | Decode/P010 boundary readiness, production playback rejected до Phase 10 | HDR renderer ещё не реализован |
+| Profile 2, 10-bit, 4:2:0, HDR | На момент Phase 9: decode/P010 boundary readiness, production playback rejected до Phase 10 | HDR renderer ещё не реализован в Phase 9 |
 | Profile 2, 10-bit, 4:2:0, SDR | Decode/P010 boundary recognized, production playback только если renderer говорит `Renderable` | P010 не равен HDR |
 | Profile 2, 12-bit, 4:2:0 | Rejected | P012/12-bit path out of scope |
 | Profile 1, 8-bit, 4:2:2/4:4:4 | Rejected | Chroma unsupported |
@@ -451,14 +453,14 @@ Unit tests:
 
 - Profile 1/3 rejected as unsupported chroma;
 - 12-bit rejected as unsupported bit depth;
-- VP9 Profile 2 10-bit HDR rejected in production because HDR renderer unavailable;
+- на момент Phase 9 VP9 Profile 2 10-bit HDR rejected in production because HDR renderer unavailable;
 - P010 boundary verified state alone does not make stream playable;
 - reason formatter produces user-facing Russian explanation.
 
 Manual tests:
 
 - capability report shows VP9 Profile 2 decode if VA-API supports it;
-- production HDR stream selection explains missing HDR renderer until Phase 10.
+- на момент Phase 9 production HDR stream selection explains missing HDR renderer until Phase 10.
 
 ### Сессия 4: decoded frame and WGPU frame contract
 
@@ -553,7 +555,7 @@ Production control check:
 cargo run -p app-egui -- /path/to/vp9-profile2-10bit-hdr.webm
 ```
 
-Без `RUSTIPLAYER_DEV_VERIFY_P010_BOUNDARY=1` HDR stream должен остаться rejected до Phase 10 с причиной про недоступный HDR-to-SDR renderer.
+На момент Phase 9 без `RUSTIPLAYER_DEV_VERIFY_P010_BOUNDARY=1` HDR stream должен был остаться rejected до Phase 10 с причиной про недоступный HDR-to-SDR renderer.
 
 ### Сессия 7: SDR regression, self-review and docs
 
@@ -592,7 +594,7 @@ Verification:
 - VP9 12-bit распознаётся и rejected как unsupported bit depth.
 - VP9 4:2:2/4:4:4 распознаётся и rejected как unsupported chroma.
 - VP9 Profile 2 10-bit 4:2:0 может дойти до P010 zero-copy boundary на поддержанном hardware.
-- Production HDR playback всё ещё rejected до Phase 10.
+- На момент Phase 9 production HDR playback rejected до Phase 10; после Phase 10 этот пункт superseded правилом capability intersection для P010/HDR BT.2446-C.
 - P010 path не имеет CPU upload/readback fallback.
 - Layered metadata resolver покрыт conflict tests.
 - Strict HDR core metadata validation покрыта tests.

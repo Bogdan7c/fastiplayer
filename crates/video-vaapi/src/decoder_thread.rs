@@ -21,6 +21,38 @@ use video_core::{DecodedFrame, VideoDecoder};
 use crate::texture_cache::TexturePoolStats;
 use crate::upload_config::UploadConfig;
 
+/// Ошибка decoder thread, которую нужно показать player layer как fatal runtime state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodeThreadError {
+    /// Человекочитаемая причина остановки decoder thread.
+    message: String,
+}
+
+impl DecodeThreadError {
+    /// Создаёт ошибку decoder thread без привязки к backend-specific типам.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// Возвращает текст ошибки для player-core/UI.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for DecodeThreadError {
+    /// Печатает только полезный текст ошибки без Debug-шума.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DecodeThreadError {}
+
 /// Команда для decoder thread.
 pub enum ThreadMsg {
     /// Декодировать один VP9 packet.
@@ -57,6 +89,7 @@ pub struct DecodePacket {
 pub struct VideoDecodeThread {
     msg_tx: std::sync::mpsc::Sender<ThreadMsg>,
     frame_rx: std::sync::mpsc::Receiver<DecodedFrame>,
+    error_rx: std::sync::mpsc::Receiver<DecodeThreadError>,
     queue: Arc<wgpu::Queue>,
     texture_pool: Arc<Mutex<crate::texture_cache::WgpuTexturePool>>,
     backend_name: &'static str,
@@ -106,6 +139,8 @@ impl VideoDecodeThread {
 
         let (msg_tx, msg_rx) = std::sync::mpsc::channel::<ThreadMsg>();
         let (frame_tx, frame_rx) = std::sync::mpsc::channel::<DecodedFrame>();
+        let (error_tx, error_rx) = std::sync::mpsc::channel::<DecodeThreadError>();
+        let (init_tx, init_rx) = std::sync::mpsc::sync_channel::<anyhow::Result<()>>(1);
 
         std::thread::Builder::new()
             .name("video-decode".into())
@@ -117,21 +152,45 @@ impl VideoDecodeThread {
                     queue,
                     texture_pool_for_thread,
                 ) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        tracing::error!("Decoder thread: failed to create VA-API decoder: {}", e);
+                    Ok(decoder) => {
+                        if init_tx.send(Ok(())).is_err() {
+                            trace!("Decoder thread init receiver dropped — exiting");
+                            return;
+                        }
+                        decoder
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            error = %error,
+                            "Decoder thread failed to create VA-API decoder"
+                        );
+                        let _ = init_tx.send(Err(
+                            error.context("Decoder thread failed to create VA-API decoder")
+                        ));
                         return;
                     }
                 };
 
-                decoder_thread_loop(decoder, msg_rx, frame_tx);
+                decoder_thread_loop(decoder, msg_rx, frame_tx, error_tx);
                 info!("Decoder thread exiting");
             })
             .map_err(|e| anyhow::anyhow!("Failed to spawn decoder thread: {}", e))?;
 
+        match init_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(error),
+            Err(error) => {
+                return Err(anyhow::anyhow!(
+                    "Decoder thread exited before initialization completed: {}",
+                    error
+                ));
+            }
+        }
+
         Ok(Self {
             msg_tx,
             frame_rx,
+            error_rx,
             queue: queue_for_release_callbacks,
             texture_pool,
             backend_name: "VA-API VP9",
@@ -197,6 +256,11 @@ impl VideoDecodeThread {
         self.frame_rx.try_recv().ok()
     }
 
+    /// Забирает fatal error из decoder thread, если backend остановился fail-closed.
+    pub fn try_recv_error(&self) -> Option<DecodeThreadError> {
+        self.error_rx.try_recv().ok()
+    }
+
     /// Синхронно сбрасывает decoder thread и освобождает уже полученные кадры.
     pub fn flush(&self) -> anyhow::Result<()> {
         let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -250,6 +314,7 @@ fn decoder_thread_loop(
     mut decoder: crate::VaapiVideoDecoder,
     msg_rx: std::sync::mpsc::Receiver<ThreadMsg>,
     frame_tx: std::sync::mpsc::Sender<DecodedFrame>,
+    error_tx: std::sync::mpsc::Sender<DecodeThreadError>,
 ) {
     while let Ok(msg) = msg_rx.recv() {
         match msg {
@@ -276,10 +341,14 @@ fn decoder_thread_loop(
                     Ok(None) => {}
                     Err(e) => {
                         if crate::decoder::is_fatal_decoder_error(&e) {
+                            let message = format!("Video decoder stopped after fatal error: {e:#}");
                             tracing::warn!(
-                                error = %e,
+                                error = %message,
                                 "Decoder thread: fatal decode error, exiting"
                             );
+                            if error_tx.send(DecodeThreadError::new(message)).is_err() {
+                                trace!("Player thread dropped decoder error receiver");
+                            }
                             break;
                         }
                         tracing::warn!(error = %e, "Decoder thread: decode error");
@@ -298,5 +367,19 @@ fn decoder_thread_loop(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Проверяет, что public error contract сохраняет причину fatal остановки thread-а.
+    #[test]
+    fn decode_thread_error_exposes_message_for_player_layer() {
+        let error = DecodeThreadError::new("P010 DMA-BUF zero-copy import failed");
+
+        assert_eq!(error.message(), "P010 DMA-BUF zero-copy import failed");
+        assert_eq!(error.to_string(), "P010 DMA-BUF zero-copy import failed");
     }
 }

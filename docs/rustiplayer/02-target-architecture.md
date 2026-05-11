@@ -92,13 +92,13 @@ render-core RenderableFrame
         v
 render-wgpu
   metadata/settings -> ColorPipelineUniforms -> NV12 shader path
-  P010/HDR shader path добавляется в Phase 10 поверх готовой zero-copy boundary
+  metadata/HdrToSdrSettings -> HdrColorPipelineUniforms -> P010/HDR BT.2446-C shader path
         |
         v
 swapchain output
 ```
 
-Phase 8.5 сохраняет текущий SDR VP9/NV12 путь и не добавляет HDR support. Цель этапа - сделать явными metadata, defaults и shader uniforms, чтобы Phase 9 мог закрыть VP9/P010 readiness, а Phase 10 мог добавить P010/HDR renderer без повторного рефакторинга `DecodedFrame` и `RenderableFrame`.
+Текущий статус после Phase 10: Phase 8.5 сохранил SDR VP9/NV12 путь и сделал явными metadata/defaults/uniforms; Phase 9 закрыл VP9/P010 readiness; Phase 10 добавил отдельный P010/HDR BT.2446-C renderer без повторного рефакторинга `DecodedFrame` и `RenderableFrame`. Native HDR output не входит в текущий renderer path и остаётся future work.
 
 Color metadata выбирается layered-моделью: manifest/container metadata используется как ранний hint, codec bitstream parser уточняет colorimetry, decoder/backend подтверждает фактический decoded format, а fallback явно помечается как fallback. Текущий fallback для старого SDR пути - `BT.709 limited SDR`.
 

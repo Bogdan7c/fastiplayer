@@ -214,7 +214,7 @@ Acceptance:
 
 Подробный план: [09. Phase 9 Full VP9 Completion](09-phase-9-vp9-completion.md).
 
-Статус: завершено; сессии 1-7 реализованы, SDR VP9/NV12 regression проверен, VP9 Profile 2 P010 zero-copy boundary подтверждён отдельным manual diagnostic mode, production HDR playback остаётся rejected до Phase 10.
+Статус: завершено; сессии 1-7 реализованы, SDR VP9/NV12 regression проверен, VP9 Profile 2 P010 zero-copy boundary подтверждён отдельным manual diagnostic mode. На момент закрытия Phase 9 production HDR playback оставался rejected; после Phase 10 HDR playback разрешён только для P010/HDR BT.2446-C path при passing capability intersection.
 
 Цель:
 
@@ -233,9 +233,9 @@ Acceptance:
 - VP9 Profile 1/3 rejected как unsupported chroma, а не generic hardware failure;
 - VP9 12-bit rejected как unsupported bit depth;
 - VP9 Profile 2 10-bit 4:2:0 на поддержанном hardware доходит до P010 zero-copy boundary;
-- P010 zero-copy boundary использует separate-layer `R16 + Rg16` DMA-BUF layout как baseline;
+- P010 zero-copy boundary использует separate-layer `R16Unorm + Rg16Unorm` plane views как baseline;
 - composed P010 остаётся compatibility layout для драйверов, где он работает;
-- production HDR playback всё ещё rejected до Phase 10 с понятной причиной;
+- на момент Phase 9 production HDR playback rejected до Phase 10 с понятной причиной; после Phase 10 этот пункт superseded правилом capability intersection для P010/HDR BT.2446-C;
 - P010 path не имеет CPU upload/readback fallback;
 - metadata resolver покрыт conflict tests;
 - capability rejection reasons typed и codec-agnostic;
@@ -245,6 +245,9 @@ Acceptance:
 ## Phase 10: HDR-to-SDR baseline
 
 Подробный план: [10. Phase 10 HDR-to-SDR Baseline](10-phase-10-hdr-to-sdr-baseline.md).
+
+Статус: завершено; Session 8 закрыла self-review, fail-closed cleanup и
+документацию по decoder/render boundary errors.
 
 Цель:
 
@@ -260,7 +263,7 @@ Acceptance:
 
 - HDR input не отображается как washed-out SDR;
 - P010 используется только через zero-copy path;
-- P010 renderer строится вокруг Intel/i965 separate-layer `R16 + Rg16` baseline path;
+- P010 renderer строится вокруг Intel/i965 separate-layer `R16Unorm + Rg16Unorm` baseline path;
 - `supports_hdr_to_sdr = true` появляется только после рабочей BT.2446-C реализации;
 - `supports_native_hdr_output = false`;
 - PQ и HLG покрыты tests;

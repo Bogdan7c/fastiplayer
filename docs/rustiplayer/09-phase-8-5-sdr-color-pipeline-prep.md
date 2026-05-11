@@ -4,6 +4,8 @@
 
 Phase 8.5 - небольшой подготовительный refactor перед Phase 9 VP9 completion и Phase 10 HDR-to-SDR.
 
+Статус: исторически закрытая фаза. Документ описывает состояние и ограничения на момент Phase 8.5; текущий P010/HDR статус после Phase 10 описан в roadmap и [10. Phase 10 HDR-to-SDR Baseline](10-phase-10-hdr-to-sdr-baseline.md).
+
 Задача этапа - сохранить текущий рабочий SDR VP9/NV12 путь, но убрать hardcoded color assumptions из shader-а и renderer implementation. После этапа renderer должен получать явные metadata/settings и строить GPU uniforms для текущего SDR path.
 
 Это не HDR-реализация. Phase 8.5 не добавляет P010 playback, HDR tone mapping, native HDR output или wide-gamut output.

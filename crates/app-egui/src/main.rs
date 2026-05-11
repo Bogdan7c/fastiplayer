@@ -407,6 +407,8 @@ fn render_frame(
     let size = window.inner_size();
     let screen_size_in_pixels = [size.width.max(1), size.height.max(1)];
 
+    let mut video_render_boundary_error = None;
+
     // Получаем wgpu texture views для decoded frame если decoder thread доступен.
     let (video_y_view, video_uv_view): (Option<wgpu::TextureView>, Option<wgpu::TextureView>) = {
         if let Some(ref thread) = app_state.player_session.pipeline.video_decoder_thread {
@@ -424,10 +426,16 @@ fn render_frame(
                         (Some(y_view), Some(uv_view))
                     }
                     None => {
+                        let message = format!(
+                            "Texture views not found for present frame handle {}",
+                            frame.texture_handle.0
+                        );
                         tracing::error!(
                             handle_id = frame.texture_handle.0,
-                            "Texture views not found for handle"
+                            "Texture views not found for present frame"
                         );
+                        video_render_boundary_error =
+                            Some(player_error_from_render_boundary_failure(message));
                         (None, None)
                     }
                 }
@@ -467,18 +475,28 @@ fn render_frame(
             match boundary_frame {
                 Ok(boundary_frame) => Some(boundary_frame),
                 Err(error) => {
+                    let message = format!(
+                        "WGPU renderable frame rejected decoded {} frame: {}",
+                        frame.format, error
+                    );
                     tracing::error!(
                         error = %error,
                         format = %frame.format,
                         memory_path = %frame.memory_path,
                         "Failed to build WGPU renderable frame"
                     );
+                    video_render_boundary_error =
+                        Some(player_error_from_render_boundary_failure(message));
                     None
                 }
             }
         }
         _ => None,
     };
+
+    if let Some(error) = video_render_boundary_error {
+        app_state.player_session.mark_fatal_error(error);
+    }
 
     // Рендерим полный кадр (видео + egui overlay)
     match renderer.render_frame(
@@ -512,6 +530,14 @@ fn player_error_from_render_failure(failure: &RenderFrameFailure) -> PlayerError
     PlayerError::new(
         PlayerErrorKind::RenderDeviceLost,
         format!("Video render failed: {}", failure.message),
+    )
+}
+
+/// Переводит ошибку сборки renderer boundary в fatal media error без подмены на black frame.
+fn player_error_from_render_boundary_failure(message: impl Into<String>) -> PlayerError {
+    PlayerError::new(
+        PlayerErrorKind::UnsupportedRenderFormat,
+        format!("Video render boundary failed: {}", message.into()),
     )
 }
 
@@ -761,6 +787,21 @@ mod tests {
             error
                 .message
                 .contains("P010 HDR renderer rejected strict metadata")
+        );
+    }
+
+    /// Проверяет, что ошибка renderer boundary не превращается в silent empty frame.
+    #[test]
+    fn render_boundary_failure_maps_to_fatal_render_format_error() {
+        let error = player_error_from_render_boundary_failure(
+            "WGPU renderable frame rejected decoded P010 frame",
+        );
+
+        assert_eq!(error.kind, PlayerErrorKind::UnsupportedRenderFormat);
+        assert!(
+            error
+                .message
+                .contains("WGPU renderable frame rejected decoded P010 frame")
         );
     }
 }

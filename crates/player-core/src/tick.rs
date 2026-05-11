@@ -476,13 +476,44 @@ fn enqueue_decoded_video_frame(
     session.pipeline.video_frame_queue.push_back(frame);
 }
 
+/// Забирает fatal decoder-thread error и переводит его в состояние player session.
+fn drain_video_decoder_thread_error(session: &mut PlayerSession) -> bool {
+    let mut fatal_decoder_error = None;
+
+    if let Some(thread) = session.pipeline.video_decoder_thread.as_ref() {
+        while let Some(error) = thread.try_recv_error() {
+            fatal_decoder_error = Some(error);
+        }
+    }
+
+    let Some(error) = fatal_decoder_error else {
+        return false;
+    };
+
+    session.pipeline.pending_video_packets.clear();
+    session.mark_fatal_error(player_error_from_decode_thread_error(&error));
+    true
+}
+
+/// Мапит fail-closed ошибку decoder thread в player error model.
+fn player_error_from_decode_thread_error(error: &video_vaapi::DecodeThreadError) -> PlayerError {
+    PlayerError::new(
+        PlayerErrorKind::RuntimeError,
+        format!("Video decoder thread failed: {}", error.message()),
+    )
+}
+
 /// Забирает готовые кадры из decoder thread и кладёт их в presentation queue.
 fn drain_decoded_video_frames(
     session: &mut PlayerSession,
     tick_config: &PlayerTickConfig,
     tick_result: &mut PlayerTickResult,
 ) {
-    let Some(ref thread) = session.pipeline.video_decoder_thread else {
+    if drain_video_decoder_thread_error(session) {
+        return;
+    }
+
+    if session.pipeline.video_decoder_thread.is_none() {
         if !session.pipeline.pending_video_packets.is_empty() {
             tracing::warn!(
                 count = session.pipeline.pending_video_packets.len(),
@@ -491,7 +522,7 @@ fn drain_decoded_video_frames(
         }
         session.pipeline.pending_video_packets.clear();
         return;
-    };
+    }
 
     let playback_can_present = session.can_present_video();
     let receive_budget = if playback_can_present {
@@ -505,12 +536,25 @@ fn drain_decoded_video_frames(
         return;
     }
 
-    let mut decoded_frames = Vec::new();
-    for _ in 0..receive_budget {
-        let Some(frame) = thread.try_recv_frame() else {
-            break;
+    let decoded_frames = {
+        let Some(thread) = session.pipeline.video_decoder_thread.as_ref() else {
+            return;
         };
-        decoded_frames.push(frame);
+        let mut decoded_frames = Vec::new();
+        for _ in 0..receive_budget {
+            let Some(frame) = thread.try_recv_frame() else {
+                break;
+            };
+            decoded_frames.push(frame);
+        }
+        decoded_frames
+    };
+
+    if drain_video_decoder_thread_error(session) {
+        for frame in decoded_frames {
+            release_video_texture(session, frame.texture_handle);
+        }
+        return;
     }
 
     for frame in decoded_frames {
@@ -1170,6 +1214,21 @@ mod tests {
             Some(video_core::DecodedPixelFormat::P010)
         );
         assert!(session.pipeline.video_frame_queue.is_empty());
+    }
+
+    #[test]
+    fn decoder_thread_error_maps_to_runtime_player_error() {
+        let decode_thread_error =
+            video_vaapi::DecodeThreadError::new("P010 DMA-BUF zero-copy import failed");
+
+        let player_error = player_error_from_decode_thread_error(&decode_thread_error);
+
+        assert_eq!(player_error.kind, PlayerErrorKind::RuntimeError);
+        assert!(
+            player_error
+                .message
+                .contains("P010 DMA-BUF zero-copy import failed")
+        );
     }
 
     #[test]

@@ -21,7 +21,7 @@
 
 Audio decode может быть software. Это нормальный tradeoff: аудио не является основной нагрузкой, а аппаратные audio decode paths не дают такой же практической ценности, как аппаратный decode видео.
 
-## Основной пользовательский сценарий
+## Целевой пользовательский сценарий
 
 1. Пользователь открывает локальный файл или YouTube URL.
 2. Плеер определяет источник, контейнер, треки и доступные варианты качества.
@@ -29,7 +29,7 @@ Audio decode может быть software. Это нормальный tradeoff:
 4. Stream selection выбирает лучший поток, который реально может быть воспроизведен.
 5. Player core запускает demux, audio pipeline, video hardware decode, A/V sync и render.
 6. UI отображает воспроизведение, диагностику, настройки и ошибки.
-7. Desktop integration публикует MPRIS-состояние для KDE/media widgets.
+7. После реализации desktop integration плеер публикует MPRIS-состояние для KDE/media widgets.
 
 ## Поддерживаемые направления
 
@@ -96,13 +96,13 @@ FFmpeg не используется ни для decode, ни для demux/probe
 - 8/10/12-bit;
 - PQ и HLG.
 
-Перед HDR-to-SDR этапом нужен отдельный SDR-prep refactor. Он должен сохранить текущий VP9/NV12 SDR результат, но заменить неявное предположение `NV12 + BT.709 limited SDR` на явный renderer color pipeline contract. Этот contract должен включать typed metadata, active color path diagnostics, SDR adjustment settings и future hooks для tone mapping.
+Phase 8.5 уже закрыл SDR-prep refactor: VP9/NV12 SDR результат сохранён, а неявное предположение `NV12 + BT.709 limited SDR` заменено на явный renderer color pipeline contract. Этот contract включает typed metadata, active color path diagnostics, SDR adjustment settings и future hooks для tone mapping.
 
-После SDR-prep нужно закрыть VP9 completion как первый реальный producer `P010 + HDR metadata + zero-copy` контракта. HDR renderer не должен одновременно чинить codec probing/decode и реализовывать tone mapping.
+Phase 9 закрыл VP9 completion как первый реальный producer `P010 + HDR metadata + zero-copy` контракта. Phase 10 поверх этого добавил отдельный P010/HDR BT.2446-C renderer; HDR renderer не чинит codec probing/decode и не смешивается с NV12 SDR shader path.
 
 Для SDR output текущий `wgpu` path сохраняет поведение `Unorm` swapchain как default. Это фиксируется как `PreserveCurrentUnorm`, чтобы будущий переход на `SrgbRenderTarget` или explicit shader OETF был осознанным решением, а не побочным эффектом порядка выбора surface format.
 
-Первая практическая HDR-цель: смотреть HDR-видео на SDR-мониторе через корректный shader tone mapping.
+Текущая практическая HDR-цель после Phase 10: смотреть VP9/P010 HDR-видео на SDR-мониторе через корректный shader tone mapping. Native HDR output остаётся отдельной будущей задачей.
 
 ### YouTube and services
 
@@ -117,7 +117,7 @@ FFmpeg не используется ни для decode, ни для demux/probe
 - live streams;
 - историю, закладки, прогресс просмотра.
 
-`yt-dlp` является временной MVP-зависимостью, сейчас изолированной в `service-youtube`, и должен быть заменен своим Rust service/extractor layer.
+`yt-dlp` является временной MVP-зависимостью, сейчас изолированной в `service-youtube`, и должен быть заменен своим Rust service/extractor layer. Default YouTube selector остаётся SDR VP9/Opus WebM; HDR/VP9.2 YouTube проверки требуют explicit selector override до capability-aware service candidates.
 
 ## Non-goals на ближайшие этапы
 

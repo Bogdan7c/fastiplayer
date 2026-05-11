@@ -16,7 +16,7 @@ Phase 10 не чинит VP9 parser/decode. Если Phase 9 не доказал
 - VP9 Profile 2 10-bit 4:2:0 requirement detection;
 - strict HDR core metadata validation;
 - `DecodedFrame { format=P010, bit_depth=10, chroma=YUV420, color=BT.2020 PQ/HLG, memory_path=DmaBufZeroCopy }`;
-- P010 DMA-BUF zero-copy import boundary with separate-layer `R16 + Rg16` as the baseline storage;
+- P010 DMA-BUF zero-copy import boundary with separate-layer `R16Unorm + Rg16Unorm` plane views as the baseline storage;
 - composed P010 zero-copy import kept only as a compatibility storage layout;
 - typed capability/rejection reasons;
 - production HDR playback rejected until HDR renderer is implemented.
@@ -59,7 +59,7 @@ baseline separate-layer P010 export -> требует TEXTURE_FORMAT_16BIT_NORM 
 compat composed P010 export         -> требует TEXTURE_FORMAT_P010
 ```
 
-Если zero-copy import для фактически экспортированного layout недоступен, HDR stream не выбирается. Phase 10 должна считать separate-layer `R16 + GR32/Rg16` основным P010 storage layout, потому что именно этот path проверен на Intel i965. Composed `TextureFormat::P010` остаётся совместимостью для драйверов, где он реально работает.
+Если zero-copy import для фактически экспортированного layout недоступен, HDR stream не выбирается. Phase 10 считает separate-layer `R16Unorm + Rg16Unorm` plane views (DRM `R16`/`GR1616`) основным P010 storage layout, потому что именно этот path проверен на Intel i965. Composed `TextureFormat::P010` остаётся совместимостью для драйверов, где он реально работает.
 
 ### Tone mapping
 
@@ -171,6 +171,11 @@ P010 + BT.2020 SDR -> supported only after explicit gamut mapping decision, othe
 
 Все P010 кадры нельзя безусловно гонять через HDR tone mapping.
 
+Если P010 SDR BT.709 кадр несёт side metadata с non-HDR transfer, это не делает
+кадр HDR. Такой кадр остаётся в P010 SDR branch и не получает reference-default
+HDR diagnostics. HDR branch выбирается только когда основная colorimetry или
+согласованная side metadata реально требуют PQ/HLG processing.
+
 ### Config и UI
 
 Phase 10 добавляет typed HDR-to-SDR config, но не добавляет tone mapping presets в UI.
@@ -185,7 +190,7 @@ sdr_reference_white_nits = 100.0
 hdr_reference_peak_nits = 1000.0
 ```
 
-Важное правило migration: старый scalar placeholder `render.hdr_to_sdr = false` из Phase 8.5 нельзя хранить одновременно с таблицей `[render.hdr_to_sdr]`. Phase 10 должна явно мигрировать config schema и читать старые scalar fields только как compatibility input.
+Важное правило migration: старый scalar placeholder `render.hdr_to_sdr = false` из Phase 8.5 нельзя хранить одновременно с таблицей `[render.hdr_to_sdr]`. Phase 10 читает старые scalar fields только как compatibility input, а default/persisted format держит в таблице `[render.hdr_to_sdr]`.
 
 UI показывает diagnostics:
 
@@ -219,7 +224,9 @@ Phase 10 fail-closed.
 Правила:
 
 - если capability intersection не проходит, stream не выбирается;
-- если P010 frame пришёл, но renderer не может import/bind/render P010, это fatal media error;
+- если P010 frame пришёл, но decoder/importer не может экспортировать/import-ить P010 zero-copy, decoder thread отдаёт fatal error в `player-core`;
+- если shell не может получить texture views для present frame или `WgpuRenderableFrame` отвергает decoded contract, это fatal media error;
+- если renderer не может bind/render P010, это fatal media error;
 - если strict HDR metadata invalid, stream rejected до render;
 - device/surface lost обрабатывается текущей runtime recovery, но color path не деградирует silently;
 - SDR/CPU fallback для HDR запрещён.
@@ -341,6 +348,12 @@ UI не считает transfer functions, matrices или tone mapping.
    - формирует SDR BT.709 output values;
    - пишет в `Unorm` target.
 8. `ActiveColorPath` попадает в diagnostics.
+
+Если P010 export/import падает, `video-vaapi::VideoDecodeThread` передаёт
+typed `DecodeThreadError` в `player-core`. `PlayerSession` переводит его в
+fatal state и очищает pending video packets. Shell-side ошибки render boundary
+также становятся fatal player errors, а не тихой заменой кадра на empty/black
+video pass.
 
 ## Декомпозиция по сессиям
 
@@ -528,13 +541,15 @@ Manual tests:
 
 - VP9 SDR sample playback;
 - VP9 HDR PQ sample playback;
-- VP9 HDR HLG sample playback, если sample доступен;
+- VP9 HDR HLG sample playback; если файла нет локально, sample скачивается через `yt-dlp`, а не пропускается;
 - resize/letterbox works;
 - black bars remain black;
 - no CPU P010 upload/readback logs;
 - active color path visible in UI.
 
 ### Сессия 8: self-review, cleanup and docs
+
+Статус: реализовано
 
 Задачи:
 
@@ -553,6 +568,14 @@ Verification:
 - manual HDR VP9/P010 playback;
 - capability report review;
 - diagnostics review.
+
+Итоги self-review:
+
+- decoder-side P010 zero-copy failures теперь доходят до `PlayerSession` через `DecodeThreadError`;
+- shell-side missing texture views и rejected `WgpuRenderableFrame` теперь становятся fatal media errors;
+- P010 SDR BT.709 side metadata с non-HDR transfer больше не выбирает HDR branch автоматически;
+- `app-egui` по-прежнему только мапит config/diagnostics и не содержит PQ/HLG/BT.2446-C math;
+- `nv12_to_rgba.wgsl` остался SDR shader, HDR math остаётся в `p010_bt2446c_to_sdr.wgsl`.
 
 ## Acceptance checklist
 

@@ -234,29 +234,31 @@ trait VideoDecodeBackendProvider {
 
 ## HDR stages
 
+Текущий статус после Phase 10: Stage 0, Stage 0.5 и Stage 1 закрыты для VP9/P010 baseline. Production HDR-to-SDR доступен только через аппаратный P010 zero-copy path, strict HDR metadata и renderer capability intersection. Stage 2 advanced quality modes/LUT presets и Stage 3 native HDR output остаются future work.
+
 ### Stage 0: SDR color pipeline prep
 
-Перед HDR этапом нужно вынести текущие SDR assumptions из shader-а в явный renderer contract:
+Закрыто Phase 8.5: текущие SDR assumptions вынесены из shader-а в явный renderer contract:
 
 - сохранить `NV12 BT.709 limited -> SDR` визуально как раньше;
 - передавать range/matrix/adjustments через uniforms;
 - добавить active color path diagnostics;
-- не объявлять HDR support и не добавлять P010 renderer преждевременно.
+- на этапе Phase 8.5 не объявлять HDR support и не добавлять P010 renderer преждевременно.
 
 ### Stage 0.5: Full VP9 completion before HDR
 
-Перед HDR-to-SDR renderer-ом нужно закрыть VP9 как первый реальный producer P010/HDR контракта:
+Закрыто Phase 9: VP9 стал первым реальным producer P010/HDR контракта:
 
 - распознавать VP9 Profile 0/1/2/3;
 - поддержать текущий Profile 0 SDR/NV12 production path;
 - распознавать и честно отклонять 12-bit, 4:2:2 и 4:4:4 VP9 variants;
 - добавить VP9/WebM layered color metadata resolver;
 - доказать `P010 + HDR metadata + zero-copy` render boundary для VP9 Profile 2 10-bit 4:2:0;
-- не показывать HDR до появления Phase 10 tone mapping.
+- на этапе Phase 9 не показывать HDR до появления Phase 10 tone mapping.
 
 ### Stage 1: HDR input to SDR output
 
-Первая цель:
+Закрыто Phase 10 для VP9/P010 baseline:
 
 - принять HDR stream;
 - использовать color metadata и P010 boundary из VP9 completion;

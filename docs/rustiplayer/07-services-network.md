@@ -36,6 +36,11 @@ future service-*
 Codec/color decisions остаются в `codec-core`, `capability-core`, `player-core`
 и renderer diagnostics.
 
+Phase 10 local HDR/P010 renderer не меняет эту MVP-границу: default YouTube
+selector остаётся SDR, чтобы не выбирать HDR stream без service-level capability
+candidate model. HDR/VP9.2 YouTube samples для ручной проверки запускаются через
+explicit `VIDEO_PLAYER_YOUTUBE_FORMAT_SELECTOR` override.
+
 ## YouTube scope
 
 Будущий YouTube-клиент должен предусматривать:

@@ -13,13 +13,15 @@ crates/capability-core  - capability report и stream selection reasons
 crates/service-youtube  - временный yt-dlp adapter и HTTP streaming boundary
 crates/audio            - Opus decode, CPAL output, audio clock
 crates/render-core      - контракты renderer capabilities и renderable frame
-crates/render-wgpu      - WGPU surface/egui composition и текущий NV12 renderer
+crates/render-wgpu      - WGPU surface/egui composition, NV12 SDR renderer и Phase 10 P010/HDR BT.2446-C renderer
 crates/video-core       - базовые video types и decoded frame contract
 crates/video-vaapi      - VA-API VP9 decode thread и texture cache
 crates/video-vulkan     - reference Vulkan Video код
 crates/webm-demux       - Symphonia-based WebM/Matroska demux
 crates/vp9-parser       - VP9 parser adapter
 crates/config           - TOML config schema/load/create
+crates/cros-codecs-patch - локальный patched `cros-codecs` dependency для текущего VP9/VA-API path
+crates/cros-libva-patch - локальный patched `libva` wrapper dependency для DMA-BUF/VA-API interop
 crates/storage          - SQLite migrations/history/progress/cache
 ```
 
@@ -116,7 +118,7 @@ Desktop shell.
 - audio/video track metadata;
 - optional video coded/display width and height, если контейнер или manifest сообщает их до decode.
 
-Текущие типы из `webm-demux::packet` должны переехать сюда.
+Текущие media-типы уже живут в `media-core`; `webm-demux` использует их как общий contract, а не владеет player-facing packet model.
 
 ### `codec-core`
 
@@ -183,9 +185,7 @@ Color metadata в `codec-core` описывает факты о потоке, а
 Service boundary для YouTube.
 
 Текущее состояние: временный `yt-dlp` adapter живёт здесь, а не в `app-egui`.
-Он выбирает текущий поддержанный SDR VP9/Opus WebM selector, получает direct
-media URLs/headers и отдаёт player shell-у готовый streaming demuxer. Полная
-Rust-замена extractor-а остаётся будущей задачей этого же crate-а.
+Он по умолчанию выбирает текущий поддержанный SDR VP9/Opus WebM selector, получает direct media URLs/headers и отдаёт player shell-у готовый streaming demuxer. Phase 10 local HDR/P010 support не меняет default YouTube selector: HDR/VP9.2 проверки идут через `VIDEO_PLAYER_YOUTUBE_FORMAT_SELECTOR` до появления capability-aware service candidates. Полная Rust-замена extractor-а остаётся будущей задачей этого же crate-а.
 
 Отвечает за:
 
@@ -202,7 +202,7 @@ Rust-замена extractor-а остаётся будущей задачей э
 
 WebM/Matroska demuxer.
 
-Сейчас функциональность живет в `webm-demux`. Позже crate можно переименовать или оставить, но media-типы должны уйти в `media-core`.
+Сейчас функциональность живет в `webm-demux`. Позже crate можно переименовать или оставить, но player-facing media-типы уже вынесены в `media-core`.
 
 ### `demux-mp4`
 
@@ -312,14 +312,14 @@ Primary renderer.
 - DX12 path later;
 - Metal path later;
 - NV12 production shader;
-- P010/HDR shader path в Phase 10;
+- P010/HDR shader path из Phase 10;
 - mapping typed color metadata to GPU uniforms;
 - SDR color adjustments in shader uniforms;
-- HDR-to-SDR tone mapping в Phase 10;
+- HDR-to-SDR tone mapping из Phase 10;
 - distinction between P010 zero-copy boundary readiness and production P010 renderability;
 - egui composition.
 
-Текущее состояние: production NV12 path уже живёт в `render-wgpu`; P010 zero-copy boundary существует как diagnostic readiness, а production P010/HDR renderer остаётся задачей Phase 10.
+Текущее состояние: production NV12 path уже живёт в `render-wgpu`; Phase 10 добавил production P010/HDR renderer через отдельный `p010_bt2446c_to_sdr.wgsl` path. P010 renderability всё ещё зависит от фактических `wgpu` feature gates и DMA-BUF layout: Intel/i965 separate-layer `R16Unorm + Rg16Unorm` plane views являются baseline, composed `TextureFormat::P010` остаётся compatibility layout.
 
 ### `render-gles`
 

@@ -677,21 +677,21 @@ pub(crate) fn select_p010_color_path(frame: &RenderableFrame) -> Result<P010Rend
 
 /// Проверяет P010 SDR BT.709 path, который не должен идти через BT.2446-C.
 fn is_sdr_bt709_p010(color: &VideoColorMetadata) -> bool {
-    color.hdr_metadata.is_none()
+    !color.requires_hdr_processing()
         && color.primaries == ColorPrimaries::Bt709
         && color.matrix == MatrixCoefficients::Bt709
         && color.transfer == TransferFunction::Bt709
 }
 
-/// Проверяет, что SDR P010 имеет явный range и не нуждается в optional HDR defaults.
+/// Проверяет, что SDR P010 имеет явный range и не нуждается в HDR processing.
 fn validate_p010_sdr_bt709_metadata(color: &VideoColorMetadata) -> Result<()> {
     ensure!(
         matches!(color.range, ColorRange::Limited | ColorRange::Full),
         "P010 SDR BT.709 requires explicit limited/full color range"
     );
     ensure!(
-        color.hdr_metadata.is_none(),
-        "P010 SDR BT.709 path must not carry HDR optional metadata"
+        !color.requires_hdr_processing(),
+        "P010 SDR BT.709 path must not carry HDR transfer metadata"
     );
 
     Ok(())
@@ -699,7 +699,7 @@ fn validate_p010_sdr_bt709_metadata(color: &VideoColorMetadata) -> Result<()> {
 
 /// Определяет HDR candidate без принятия неизвестных core полей.
 fn is_hdr_p010_candidate(color: &VideoColorMetadata) -> bool {
-    color.transfer.is_hdr() || color.hdr_metadata.is_some()
+    color.requires_hdr_processing()
 }
 
 /// Проверяет strict Phase 10 HDR core metadata перед render pass.
@@ -864,6 +864,42 @@ mod tests {
             [HDR_METADATA_MARKER_NOT_APPLICABLE; 4]
         );
         assert_eq!(prepared_render.uniforms.content_light_levels, [0.0; 4]);
+        assert_eq!(prepared_render.hdr_reference_defaults, None);
+    }
+
+    #[test]
+    fn p010_sdr_bt709_with_non_hdr_side_metadata_stays_sdr() {
+        let mut color = p010_sdr_bt709_limited_color();
+        color.hdr_metadata = Some(HdrMetadata {
+            color_primaries: ColorPrimaries::Bt709,
+            transfer_function: TransferFunction::Bt709,
+            max_luminance_nits: None,
+            min_luminance_nits: None,
+            max_content_light_level_nits: Some(300),
+            max_frame_average_light_level_nits: Some(120),
+        });
+        let frame = p010_test_frame(color);
+
+        let color_path = select_p010_color_path(&frame)
+            .expect("P010 SDR BT.709 side metadata must not select HDR path");
+        let prepared_render = prepare_p010_render(
+            &frame,
+            &ColorPipelineSettings::default(),
+            HdrToSdrSettings::default(),
+            (1920, 1080),
+        )
+        .expect("P010 SDR BT.709 with non-HDR side metadata accepted");
+
+        assert_eq!(color_path, P010RenderColorPath::SdrBt709);
+        assert_eq!(
+            prepared_render.uniforms.shader_mode,
+            [
+                P010_SHADER_MODE_SDR_BT709,
+                P010_TRANSFER_MODE_SDR_BT709,
+                0,
+                0,
+            ]
+        );
         assert_eq!(prepared_render.hdr_reference_defaults, None);
     }
 

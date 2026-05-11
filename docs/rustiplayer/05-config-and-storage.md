@@ -51,8 +51,13 @@ present_queue_frames = 8
 
 [render]
 profile = "vulkan"
-hdr_to_sdr = false
 tone_mapping = "disabled"
+
+[render.hdr_to_sdr]
+enabled = true
+operator = "bt2446_c"
+sdr_reference_white_nits = 100.0
+hdr_reference_peak_nits = 1000.0
 
 [render.color_adjustment]
 brightness = 0.0
@@ -99,14 +104,15 @@ language = "ru"
 
 ## Render color config policy
 
-Phase 8.5 добавляет пользовательские SDR/RGB adjustments в config, но не включает HDR tone mapping в активный renderer path до реализации Phase 10.
+Phase 8.5 добавил пользовательские SDR/RGB adjustments в config. Phase 10 добавил активную `[render.hdr_to_sdr]` таблицу для production HDR-to-SDR path.
 
-В текущей схеме `render.hdr_to_sdr` и `render.tone_mapping` остаются compatibility placeholders:
+Текущая схема:
 
-- default значения: `hdr_to_sdr = false`, `tone_mapping = "disabled"`;
-- `app-egui` не пробрасывает эти поля в `ColorPipelineSettings`;
-- если пользовательский или старый config включает HDR placeholders, shell логирует warning и продолжает использовать SDR-only capabilities;
-- `RenderCapabilities::wgpu_nv12()` всё равно не объявляет HDR/P010 support.
+- `[render.hdr_to_sdr]` активна и по умолчанию включает `bt2446_c` с `100.0` SDR reference white и `1000.0` HDR reference peak;
+- `app-egui` пробрасывает HDR-to-SDR settings в renderer boundary через typed settings, но не содержит color math;
+- `render.tone_mapping = "disabled"` остаётся legacy/future field и не открывает пользовательские tone mapping presets;
+- renderer capabilities объявляют HDR-to-SDR только когда P010 renderable path и BT.2446-C реально доступны;
+- SDR/NV12 path не зависит от HDR shader и продолжает использовать identity SDR adjustments по умолчанию.
 
 Identity defaults обязательны:
 
@@ -117,11 +123,11 @@ Identity defaults обязательны:
 - `rgb_gain = [1.0, 1.0, 1.0]`;
 - `rgb_offset = [0.0, 0.0, 0.0]`.
 
-`swapchain_transfer` и `tone_mapping` сначала живут как typed renderer settings/defaults. Phase 10 не добавляет свободный выбор tone mapping presets в UI: production HDR-to-SDR использует фиксированный `bt2446_c` operator.
+`swapchain_transfer` и `tone_mapping` живут как typed renderer settings/defaults. Phase 10 не добавляет свободный выбор tone mapping presets в UI: production HDR-to-SDR использует фиксированный `bt2446_c` operator.
 
 ## Phase 10 HDR-to-SDR config policy
 
-Текущие scalar placeholders:
+Старый scalar placeholder из Phase 8.5:
 
 ```toml
 [render]
@@ -129,7 +135,7 @@ hdr_to_sdr = false
 tone_mapping = "disabled"
 ```
 
-нельзя одновременно хранить вместе с будущей таблицей:
+нельзя одновременно хранить вместе с текущей таблицей:
 
 ```toml
 [render.hdr_to_sdr]
@@ -139,11 +145,11 @@ sdr_reference_white_nits = 100.0
 hdr_reference_peak_nits = 1000.0
 ```
 
-Поэтому Phase 10 должна сделать явную schema migration:
+Phase 10 реализует совместимый read-path и новый persisted/default format:
 
 - старый scalar `render.hdr_to_sdr` читается только как compatibility input;
 - новый persisted format использует таблицу `[render.hdr_to_sdr]`;
-- `render.tone_mapping` остаётся legacy compatibility field или удаляется через schema migration;
+- `render.tone_mapping` остаётся legacy/future field, но не заменяет `operator`;
 - `operator` в Phase 10 принимает только `bt2446_c`;
 - UI показывает diagnostics, но не даёт выбрать alternative tone mapping presets.
 
