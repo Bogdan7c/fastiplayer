@@ -586,6 +586,8 @@ commands/snapshot. UI не должен менять player position напря�
 
 ## Сессия 8. Desktop Integration and MPRIS
 
+Статус: реализовано
+
 ### Контекст для копипаста
 
 Реализуй platform-neutral `desktop-integration` crate и Linux MPRIS backend. Он должен
