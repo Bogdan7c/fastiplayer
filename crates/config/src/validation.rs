@@ -29,6 +29,9 @@ const MAX_NETWORK_READ_AHEAD_MB: u64 = 4096;
 /// Верхний предел RAM cache, чтобы ошибочный config не занял всю память.
 const MAX_NETWORK_MEMORY_CACHE_MB: u64 = 4096;
 
+/// Верхний предел local index partial hash sample, чтобы open path не читал слишком много bytes.
+const MAX_NETWORK_INDEX_FINGERPRINT_SAMPLE_KB: u64 = 16 * 1024;
+
 /// Верхний предел render latency, выше которого config почти наверняка ошибочен.
 const MAX_VULKAN_FRAME_LATENCY: u32 = 8;
 
@@ -184,6 +187,12 @@ fn validate_network_section(config: &AppConfig) -> ConfigResult<()> {
     validate_positive_u64(
         "network.indexer_io_budget_mb_per_sec",
         config.network.indexer_io_budget_mb_per_sec,
+    )?;
+    validate_u64_range(
+        "network.index_fingerprint_sample_kb",
+        config.network.index_fingerprint_sample_kb,
+        1,
+        MAX_NETWORK_INDEX_FINGERPRINT_SAMPLE_KB,
     )?;
 
     Ok(())

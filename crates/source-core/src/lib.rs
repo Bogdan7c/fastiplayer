@@ -14,12 +14,14 @@ mod http;
 mod local;
 mod metadata;
 
-pub use cache::{CacheDiagnostics, CachedByteSource, RamByteRangeCache};
+pub use cache::{
+    CacheDiagnostics, CachedByteSource, RamByteRangeCache, RangeDiagnostics, SourceDiagnostics,
+};
 pub use cancellation::CancellationToken;
 pub use config::SourceRuntimeConfig;
 pub use error::{SourceError, SourceResult};
 pub use http::{HttpHeader, HttpRangeSource, HttpRangeSourceConfig};
-pub use local::LocalFileSource;
+pub use local::{LocalFileIndexIdentity, LocalFileSource, build_local_file_index_identity};
 pub use metadata::{
     ByteSource, NotSeekableReason, Seekability, SourceFingerprint, SourceValidators,
 };

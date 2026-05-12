@@ -55,6 +55,9 @@ enum InitialMedia {
 
         /// Demuxer, читающий из HTTP-backed потоков.
         demuxer: Box<dyn webm_demux::Demuxer + Send>,
+
+        /// Service descriptors с validators для persisted metadata index.
+        direct_streams: service_youtube::YoutubeDirectStreams,
     },
 }
 
@@ -155,6 +158,7 @@ impl App {
             self.telemetry.clone(),
             self.app_config.clone(),
             self.startup_error.clone(),
+            self.storage_connection.take(),
         ) {
             Ok(app_state) => app_state,
             Err(error) => {
@@ -179,9 +183,13 @@ impl App {
                     info!(path = %path.display(), "Автозагрузка файла из CLI");
                     app_state.load_file(&path);
                 }
-                InitialMedia::Streaming { label, demuxer } => {
+                InitialMedia::Streaming {
+                    label,
+                    demuxer,
+                    direct_streams,
+                } => {
                     info!(source = %label, "Автозагрузка streaming media из CLI");
-                    app_state.load_demuxer(label, demuxer);
+                    app_state.load_youtube_demuxer(label, demuxer, &direct_streams);
                 }
             }
         }
@@ -196,6 +204,10 @@ impl App {
 
     /// Освобождает runtime-ресурсы в порядке, безопасном для GPU/audio cleanup.
     fn drop_runtime(&mut self) {
+        if let Some(app_state) = &mut self.app_state {
+            self.storage_connection = app_state.take_storage_connection();
+        }
+
         if let Some(app_state) = &self.app_state
             && let Some(path) = app_state.current_local_file()
         {
@@ -386,6 +398,7 @@ fn record_worker_events(telemetry: &Telemetry, events: Vec<PlayerWorkerEvent>) {
             PlayerWorkerEvent::Tick(tick_result) => {
                 record_player_tick_result(telemetry, &tick_result);
             }
+            PlayerWorkerEvent::IndexUpdated(_) => {}
             PlayerWorkerEvent::RenderError(_) => {}
             PlayerWorkerEvent::Player(_) => {}
         }
@@ -617,6 +630,7 @@ fn resolve_initial_media_from_cli(
                     Some(InitialMedia::Streaming {
                         label: streaming_media.description,
                         demuxer: streaming_media.demuxer,
+                        direct_streams: streaming_media.direct_streams,
                     }),
                     None,
                 )

@@ -1049,6 +1049,7 @@ mod tests {
             connect_timeout_ms: 1_000,
             read_timeout_ms: 1_000,
             indexer_io_budget_mb_per_sec: 1,
+            index_fingerprint_sample_kb: 1,
         })
         .expect("source config")
     }

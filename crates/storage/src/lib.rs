@@ -10,6 +10,7 @@
 mod capability_cache;
 mod connection;
 mod error;
+mod media_index;
 mod migrations;
 mod paths;
 mod playback_history;
@@ -18,6 +19,10 @@ mod playback_progress;
 pub use capability_cache::CapabilityCacheEntry;
 pub use connection::{OpenedStorage, StorageConnection, open_or_create, open_or_create_at};
 pub use error::{StorageError, StorageResult};
+pub use media_index::{
+    MediaIndexEntry, MediaIndexRuntimeOnlyReason, MediaIndexSaveOutcome, MediaIndexSourceIdentity,
+    MediaIndexValidators, PersistedMediaIndex,
+};
 pub use migrations::{
     AppliedMigration, CURRENT_STORAGE_SCHEMA_VERSION, MigrationReport, current_schema_version,
 };

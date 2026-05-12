@@ -107,6 +107,7 @@ schema и документация. Нельзя переносить playback �
 - `network.connect_timeout_ms = 15000`
 - `network.read_timeout_ms = 15000`
 - `network.indexer_io_budget_mb_per_sec = 32`
+- `network.index_fingerprint_sample_kb = 256`
 - `ui.skin = "minimal"`
 
 ### Validation
@@ -650,6 +651,49 @@ commands/snapshot. UI не должен менять player position напря�
 - Проверить, что non-Linux builds have stubs or cfg gates.
 
 ## Сессия 9. Background Index and Cache Polish
+
+Статус: реализовано, 2026-05-12.
+
+Фактически реализовано:
+
+- `rustiplayer-storage` получил SQLite schema v2 для `media_index_sources` и
+  `media_index_entries`, включая transactional upsert, cascade delete и tests на
+  invalidation.
+- Persisted index разрешён только при совпадающей identity:
+  local `size + mtime + partial hash` или HTTP/service `service id + format id +
+  validators`.
+- HTTP/service source без validators возвращает runtime-only outcome и не пишет
+  index в SQLite.
+- `source-core` расширил runtime config byte-budget полями для read-ahead,
+  `indexer_io_budget_mb_per_sec` и `index_fingerprint_sample_kb`; local identity
+  строится из canonical path, size, mtime и deterministic partial head/tail hash.
+  HTTP Range source считает range requests, requested/read bytes и timeout
+  diagnostics.
+- `player-core` получил lightweight metadata indexer contract: entries содержат
+  `track id`, `time`, optional `byte offset`, `keyframe` и fingerprint link.
+- Local media load получает verified persisted seed из `app-egui`/storage, запускает
+  отдельный `background-index-scan` thread для demux-only scan и сохраняет complete
+  index обратно в SQLite.
+- YouTube VOD получает persisted seed, если service id, video format id и HTTP
+  validators доступны; без validators metadata остаётся runtime-only.
+- Indexer diagnostics включают progress, cache hit/miss placeholders, range
+  requests, seek latency, target vs actual, stale jobs, cancelled/superseded jobs
+  и timeouts.
+- Pause policy покрывает active scrub, low playback buffer, high decode/render
+  load и shutdown; scanner использует bounded update channel, cancellable send и
+  configured IO throttle, чтобы не starvation-ить playback reads.
+- `SeekMode::KeyframeBefore` использует накопленный keyframe index для demux seek
+  target, но commit target остаётся точным и проходит через существующий pre-roll
+  gate.
+- Telemetry panel показывает index/cache/seek diagnostics; minimal controls не
+  показывают эти metrics.
+
+Ограничение текущего шага:
+
+- Byte offsets остаются `NULL`, пока demuxer не отдаёт безопасный offset.
+- HTTP/service background scan пока использует observed playback packets и
+  persisted seed path; отдельный HTTP low-priority byte-source scanner остаётся
+  следующим расширением, чтобы не дублировать service refresh/cache ownership.
 
 ### Контекст для копипаста
 

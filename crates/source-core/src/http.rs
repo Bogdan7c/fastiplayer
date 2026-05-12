@@ -7,8 +7,8 @@ use reqwest::header::{
 };
 
 use crate::{
-    ByteSource, CancellationToken, NotSeekableReason, Seekability, SourceError, SourceFingerprint,
-    SourceResult, SourceRuntimeConfig, SourceValidators,
+    ByteSource, CancellationToken, NotSeekableReason, RangeDiagnostics, Seekability, SourceError,
+    SourceFingerprint, SourceResult, SourceRuntimeConfig, SourceValidators,
 };
 
 /// HTTP header, который внешний service layer передал как данные direct URL-а.
@@ -87,6 +87,9 @@ pub struct HttpRangeSource {
 
     /// Fingerprint source-а.
     fingerprint: SourceFingerprint,
+
+    /// Range diagnostics для telemetry panel.
+    diagnostics: RangeDiagnostics,
 }
 
 impl HttpRangeSource {
@@ -111,12 +114,19 @@ impl HttpRangeSource {
             validators: probe.validators,
             content_length: probe.content_length,
             fingerprint,
+            diagnostics: RangeDiagnostics::default(),
         })
+    }
+
+    /// Возвращает текущие HTTP Range counters.
+    #[must_use]
+    pub const fn range_diagnostics(&self) -> RangeDiagnostics {
+        self.diagnostics
     }
 
     /// Читает один bounded range с единственным retry при transport/body failure.
     fn read_range_with_retry(
-        &self,
+        &mut self,
         offset: u64,
         length: usize,
         cancellation: &CancellationToken,
@@ -128,6 +138,7 @@ impl HttpRangeSource {
             match result {
                 Ok(bytes) => return Ok(bytes),
                 Err(error) if attempts == 0 && error.is_retryable_range_failure() => {
+                    self.record_range_error(&error);
                     attempts = attempts.saturating_add(1);
                     tracing::warn!(
                         url = %self.url,
@@ -137,14 +148,17 @@ impl HttpRangeSource {
                         "HTTP Range read failed; retrying once"
                     );
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    self.record_range_error(&error);
+                    return Err(error);
+                }
             }
         }
     }
 
     /// Выполняет один HTTP Range request и полностью читает response body.
     fn read_range_once(
-        &self,
+        &mut self,
         offset: u64,
         length: usize,
         cancellation: &CancellationToken,
@@ -154,6 +168,11 @@ impl HttpRangeSource {
         }
 
         let range = ByteRange::new(offset, length);
+        self.diagnostics.range_requests = self.diagnostics.range_requests.saturating_add(1);
+        self.diagnostics.bytes_requested = self
+            .diagnostics
+            .bytes_requested
+            .saturating_add(length as u64);
         let response =
             send_range_request(&self.client, &self.url, &self.headers, &range, "range-read")?;
 
@@ -174,7 +193,19 @@ impl HttpRangeSource {
         }
 
         validate_content_range(&self.url, response.headers(), &range)?;
-        read_exact_response_body(&self.url, response, offset, length, cancellation)
+        let bytes = read_exact_response_body(&self.url, response, offset, length, cancellation)?;
+        self.diagnostics.bytes_read = self
+            .diagnostics
+            .bytes_read
+            .saturating_add(bytes.len() as u64);
+        Ok(bytes)
+    }
+
+    /// Учитывает ошибку range path в diagnostics.
+    fn record_range_error(&mut self, error: &SourceError) {
+        if matches!(error, SourceError::HttpTimeout { .. }) {
+            self.diagnostics.timeouts = self.diagnostics.timeouts.saturating_add(1);
+        }
     }
 }
 
@@ -747,6 +778,11 @@ mod tests {
             .filter_map(|request| request.headers.get("range").cloned())
             .collect::<Vec<_>>();
         assert_eq!(ranges, vec!["bytes=0-0", "bytes=0-3", "bytes=5-7"]);
+        let diagnostics = source.range_diagnostics();
+        assert_eq!(diagnostics.range_requests, 2);
+        assert_eq!(diagnostics.bytes_requested, 7);
+        assert_eq!(diagnostics.bytes_read, 7);
+        assert_eq!(diagnostics.timeouts, 0);
     }
 
     #[test]

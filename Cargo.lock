@@ -142,6 +142,7 @@ dependencies = [
  "rustiplayer-config",
  "rustiplayer-storage",
  "service-youtube",
+ "source-core",
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",

@@ -200,6 +200,7 @@ mod tests {
         assert_eq!(config.network.connect_timeout_ms, 15_000);
         assert_eq!(config.network.read_timeout_ms, 15_000);
         assert_eq!(config.network.indexer_io_budget_mb_per_sec, 32);
+        assert_eq!(config.network.index_fingerprint_sample_kb, 256);
         assert_eq!(config.ui.skin, "minimal");
     }
 
@@ -225,6 +226,7 @@ mod tests {
         assert!(created_toml.contains("# RAM cache budget"));
         assert!(created_toml.contains("memory_cache_mb = 128"));
         assert!(created_toml.contains("read_ahead_mb = 64"));
+        assert!(created_toml.contains("index_fingerprint_sample_kb = 256"));
         assert!(created_toml.contains("# UI skin id"));
         assert!(created_toml.contains("skin = \"minimal\""));
         assert!(created_toml.contains("[render.hdr_to_sdr]"));

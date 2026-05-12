@@ -19,6 +19,32 @@ pub struct CacheDiagnostics {
     pub bytes_cached: u64,
 }
 
+/// Счётчики HTTP Range source-а для telemetry/debug панели.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RangeDiagnostics {
+    /// Количество выполненных Range request-ов.
+    pub range_requests: u64,
+
+    /// Суммарное количество bytes, запрошенных через Range.
+    pub bytes_requested: u64,
+
+    /// Суммарное количество bytes, фактически прочитанных из HTTP body.
+    pub bytes_read: u64,
+
+    /// Количество timeout-ов на Range path.
+    pub timeouts: u64,
+}
+
+/// Общая source диагностика, которую UI может показывать только в telemetry panel.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourceDiagnostics {
+    /// Диагностика RAM cache.
+    pub cache: CacheDiagnostics,
+
+    /// Диагностика HTTP Range request-ов.
+    pub range: RangeDiagnostics,
+}
+
 /// In-memory cache byte ranges для одного media source.
 #[derive(Debug, Clone)]
 pub struct RamByteRangeCache {

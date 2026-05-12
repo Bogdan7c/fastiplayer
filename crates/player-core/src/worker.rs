@@ -1,6 +1,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -8,14 +9,17 @@ use capability_core::SystemCapabilities;
 use crossbeam_channel::{
     Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError, bounded, unbounded,
 };
-use media_core::MediaTime;
+use media_core::{MediaTime, TrackKind};
 use tracing::{debug, warn};
+use webm_demux::Demuxer;
 
 use crate::seek_controller::{PlaybackResumeIntent, SeekController};
 use crate::{
-    FrameCounters, MediaOpenRequest, MediaSource, PlayerCommand, PlayerError, PlayerErrorKind,
-    PlayerEvent, PlayerResult, PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext,
-    PlayerTickResult, ScrubCommitPolicy, SeekRequest,
+    BackgroundIndexEntry, BackgroundIndexExport, BackgroundIndexSeed, BackgroundIndexerConfig,
+    FrameCounters, IndexPressureSnapshot, MediaOpenRequest, MediaSource, PlaybackState,
+    PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSession,
+    PlayerSnapshot, PlayerTickConfig, PlayerTickContext, PlayerTickResult, ScrubCommitPolicy,
+    SeekRequest,
 };
 
 /// Интервал worker tick по умолчанию: 60 Hz без привязки к UI redraw.
@@ -36,6 +40,12 @@ const EVENT_CHANNEL_CAPACITY: usize = 512;
 /// Ёмкость render request stream; render threadу нужен только один inflight request.
 const RENDER_REQUEST_CHANNEL_CAPACITY: usize = 1;
 
+/// Ёмкость update-канала фонового index scan-а.
+const INDEX_SCAN_UPDATE_CHANNEL_CAPACITY: usize = 1024;
+
+/// Шаг ожидания управляющих флагов scanner-а: pause/shutdown не ждут долгий IO throttle.
+const INDEX_SCAN_CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 /// Максимальное ожидание render-frame ответа, чтобы UI не зависал за worker-ом.
 const RENDER_FRAME_REPLY_TIMEOUT: Duration = Duration::from_millis(2);
 
@@ -47,15 +57,29 @@ pub struct PlayerWorkerConfig {
 
     /// Scheduler/backpressure лимиты, передаваемые в `PlayerSession::tick`.
     pub tick_config: PlayerTickConfig,
+
+    /// Runtime budget фонового indexer-а.
+    pub indexer_config: BackgroundIndexerConfig,
 }
 
 impl PlayerWorkerConfig {
     /// Создаёт worker config из runtime tick config приложения.
     #[must_use]
-    pub const fn new(tick_config: PlayerTickConfig) -> Self {
+    pub fn new(tick_config: PlayerTickConfig) -> Self {
         Self {
             tick_interval: DEFAULT_WORKER_TICK_INTERVAL,
             tick_config,
+            indexer_config: BackgroundIndexerConfig::default(),
+        }
+    }
+
+    /// Создаёт worker config напрямую из validated app config.
+    #[must_use]
+    pub fn from_app_config(config: &rustiplayer_config::AppConfig) -> Self {
+        Self {
+            tick_interval: DEFAULT_WORKER_TICK_INTERVAL,
+            tick_config: PlayerTickConfig::from(config),
+            indexer_config: BackgroundIndexerConfig::from_network_config(&config.network),
         }
     }
 }
@@ -117,6 +141,9 @@ impl std::error::Error for PlayerWorkerJoinError {}
 pub enum PlayerWorkerEvent {
     /// Событие из `PlayerSession`.
     Player(PlayerEvent),
+
+    /// Готовый keyframe/time index snapshot для внешнего storage слоя.
+    IndexUpdated(BackgroundIndexExport),
 
     /// Ошибка render bridge, полученная от shell/render thread.
     RenderError(PlayerRenderError),
@@ -400,7 +427,11 @@ impl PlayerWorker {
             .name("player-worker".into())
             .spawn(move || {
                 let runtime = PlayerWorkerRuntime {
-                    session: PlayerSession::new(),
+                    session: {
+                        let mut session = PlayerSession::new();
+                        session.set_background_indexer_config(config.indexer_config);
+                        session
+                    },
                     seek_controller: SeekController::new(),
                     command_rx,
                     scrub_rx,
@@ -414,6 +445,8 @@ impl PlayerWorker {
                     render_release_rx,
                     shutdown_rx,
                     config,
+                    index_scan: None,
+                    last_published_complete_index_generation: None,
                     last_tick_at: Instant::now(),
                 };
                 runtime.run();
@@ -449,11 +482,24 @@ impl PlayerWorker {
 
     /// Загружает локальный файл на worker thread.
     pub fn load_file(&self, path: &Path, autoplay: bool) -> Result<(), PlayerWorkerSendError> {
+        self.load_file_with_index(path, autoplay, None, BackgroundIndexSeed::default())
+    }
+
+    /// Загружает локальный файл с уже проверенным persisted index seed-ом.
+    pub fn load_file_with_index(
+        &self,
+        path: &Path,
+        autoplay: bool,
+        index_source_key: Option<String>,
+        index_seed: BackgroundIndexSeed,
+    ) -> Result<(), PlayerWorkerSendError> {
         self.command_sender
             .command_tx
             .try_send(WorkerCommand::LoadFile {
                 path: path.to_path_buf(),
                 autoplay,
+                index_source_key,
+                index_seed,
             })
             .map_err(PlayerWorkerSendError::from)
     }
@@ -465,12 +511,32 @@ impl PlayerWorker {
         demuxer: Box<dyn webm_demux::Demuxer + Send>,
         autoplay: bool,
     ) -> Result<(), PlayerWorkerSendError> {
+        self.load_demuxer_with_index(
+            label,
+            demuxer,
+            autoplay,
+            None,
+            BackgroundIndexSeed::default(),
+        )
+    }
+
+    /// Передаёт streaming demuxer с уже проверенным persisted index seed-ом.
+    pub fn load_demuxer_with_index(
+        &self,
+        label: String,
+        demuxer: Box<dyn webm_demux::Demuxer + Send>,
+        autoplay: bool,
+        index_source_key: Option<String>,
+        index_seed: BackgroundIndexSeed,
+    ) -> Result<(), PlayerWorkerSendError> {
         self.command_sender
             .command_tx
             .try_send(WorkerCommand::LoadDemuxer {
                 label,
                 demuxer,
                 autoplay,
+                index_source_key,
+                index_seed,
             })
             .map_err(PlayerWorkerSendError::from)
     }
@@ -592,6 +658,12 @@ enum WorkerCommand {
 
         /// Нужно ли начать playback после успешного открытия.
         autoplay: bool,
+
+        /// Source key persisted index-а, если shell/storage слой его проверил.
+        index_source_key: Option<String>,
+
+        /// Проверенный seed keyframe/time index-а.
+        index_seed: BackgroundIndexSeed,
     },
 
     /// Подключить уже созданный demuxer к worker-owned session.
@@ -604,6 +676,12 @@ enum WorkerCommand {
 
         /// Нужно ли начать playback после успешного открытия.
         autoplay: bool,
+
+        /// Source key persisted index-а, если service/storage слой его проверил.
+        index_source_key: Option<String>,
+
+        /// Проверенный seed keyframe/time index-а.
+        index_seed: BackgroundIndexSeed,
     },
 
     /// Инициализация video backend с GPU handles shell-а.
@@ -635,6 +713,60 @@ enum WorkerCommand {
 struct RenderFrameRequest {
     /// Одноразовый reply channel.
     reply_tx: Sender<Option<PlayerPresentFrame>>,
+}
+
+/// Update от фонового demux scan-а.
+enum BackgroundIndexScanUpdate {
+    /// Scanner нашёл metadata entry.
+    Entry {
+        /// Поколение index job-а.
+        generation: u64,
+
+        /// Metadata entry без codec bytes.
+        entry: BackgroundIndexEntry,
+    },
+
+    /// Scanner дошёл до EOF.
+    Complete {
+        /// Поколение index job-а.
+        generation: u64,
+    },
+
+    /// Scanner остановился с ошибкой.
+    Failed {
+        /// Поколение index job-а.
+        generation: u64,
+
+        /// Diagnostic message для trace/debug.
+        message: String,
+    },
+}
+
+/// Управление отдельным low-priority index scan thread.
+struct BackgroundIndexScanHandle {
+    /// Флаг остановки thread-а.
+    cancel: Arc<AtomicBool>,
+
+    /// Флаг временной паузы под playback pressure.
+    paused: Arc<AtomicBool>,
+
+    /// Receiver metadata updates от scanner-а.
+    update_rx: Receiver<BackgroundIndexScanUpdate>,
+
+    /// Join handle scanner thread-а.
+    join_handle: Option<thread::JoinHandle<()>>,
+}
+
+impl BackgroundIndexScanHandle {
+    /// Просит scanner остановиться и ждёт завершения thread-а.
+    fn stop(mut self) {
+        self.cancel.store(true, Ordering::SeqCst);
+        if let Some(join_handle) = self.join_handle.take()
+            && join_handle.join().is_err()
+        {
+            debug!("Background index scan thread panicked during join");
+        }
+    }
 }
 
 /// Publisher latest snapshot поверх bounded channel.
@@ -705,6 +837,12 @@ struct PlayerWorkerRuntime {
     /// Runtime config worker-а.
     config: PlayerWorkerConfig,
 
+    /// Активный low-priority index scan thread.
+    index_scan: Option<BackgroundIndexScanHandle>,
+
+    /// Последнее поколение complete index-а, уже отправленное shell/storage слою.
+    last_published_complete_index_generation: Option<u64>,
+
     /// Момент последнего playback tick.
     last_tick_at: Instant,
 }
@@ -716,6 +854,7 @@ impl PlayerWorkerRuntime {
 
         loop {
             self.drain_render_releases();
+            self.drain_index_scan_updates();
 
             if self.shutdown_rx.try_recv().is_ok() {
                 self.handle_shutdown_request();
@@ -800,18 +939,38 @@ impl PlayerWorkerRuntime {
     fn handle_worker_command(&mut self, command: WorkerCommand) {
         match command {
             WorkerCommand::Player(player_command) => self.handle_player_command(player_command),
-            WorkerCommand::LoadFile { path, autoplay } => {
+            WorkerCommand::LoadFile {
+                path,
+                autoplay,
+                index_source_key,
+                index_seed,
+            } => {
                 self.interrupt_scrub_for_external_boundary();
-                self.session.load_file_with_autoplay(&path, autoplay);
+                self.stop_index_scan();
+                self.session.load_file_with_autoplay_and_index(
+                    &path,
+                    autoplay,
+                    index_source_key,
+                    index_seed,
+                );
+                self.start_local_index_scan_if_possible(path);
             }
             WorkerCommand::LoadDemuxer {
                 label,
                 demuxer,
                 autoplay,
+                index_source_key,
+                index_seed,
             } => {
                 self.interrupt_scrub_for_external_boundary();
-                self.session
-                    .load_demuxer_with_autoplay(label, demuxer, autoplay);
+                self.stop_index_scan();
+                self.session.load_demuxer_with_autoplay_and_index(
+                    label,
+                    demuxer,
+                    autoplay,
+                    index_source_key,
+                    index_seed,
+                );
             }
             WorkerCommand::InitVideoPipeline {
                 instance,
@@ -861,11 +1020,17 @@ impl PlayerWorkerRuntime {
     /// Открывает media request; local file грузится полностью внутри worker thread.
     fn handle_open_media_request(&mut self, request: MediaOpenRequest) {
         self.interrupt_scrub_for_external_boundary();
+        self.stop_index_scan();
 
         match request.source.clone() {
             MediaSource::LocalFile(path) => {
-                self.session
-                    .load_file_with_autoplay(&path, request.autoplay);
+                self.session.load_file_with_autoplay_and_index(
+                    &path,
+                    request.autoplay,
+                    None,
+                    BackgroundIndexSeed::default(),
+                );
+                self.start_local_index_scan_if_possible(path);
             }
             MediaSource::Url(_) | MediaSource::ExternalLabel(_) => {
                 self.dispatch_player_command(PlayerCommand::OpenMedia(request));
@@ -875,6 +1040,7 @@ impl PlayerWorkerRuntime {
 
     /// Stop во время scrub сначала просит pause + seek zero, затем сбрасывает media.
     fn handle_stop_command(&mut self) {
+        self.stop_index_scan();
         if self.seek_controller.is_scrubbing() {
             self.seek_controller.interrupt_scrub();
             self.dispatch_player_command(PlayerCommand::Pause);
@@ -889,6 +1055,7 @@ impl PlayerWorkerRuntime {
     /// Shutdown прерывает scrub и закрывает session.
     fn handle_shutdown_request(&mut self) {
         self.interrupt_scrub_for_external_boundary();
+        self.stop_index_scan();
         self.dispatch_player_command(PlayerCommand::Shutdown);
     }
 
@@ -1043,6 +1210,8 @@ impl PlayerWorkerRuntime {
 
     /// Публикует latest snapshot и накопленные session events.
     fn publish_session_outputs(&mut self) {
+        self.update_index_pressure();
+        self.publish_completed_index_if_needed();
         let snapshot = self
             .session
             .snapshot_with_frame_counters(FrameCounters::default());
@@ -1053,9 +1222,175 @@ impl PlayerWorkerRuntime {
         }
     }
 
+    /// Отдаёт complete index snapshot shell/storage слою ровно один раз на поколение.
+    fn publish_completed_index_if_needed(&mut self) {
+        let Some(index_export) = self.session.background_indexer.export_snapshot() else {
+            self.last_published_complete_index_generation = None;
+            return;
+        };
+
+        if !index_export.complete {
+            return;
+        }
+
+        if self.last_published_complete_index_generation == Some(index_export.generation) {
+            return;
+        }
+
+        self.last_published_complete_index_generation = Some(index_export.generation);
+        self.publish_worker_event(PlayerWorkerEvent::IndexUpdated(index_export));
+    }
+
+    /// Обновляет pause policy indexer-а из текущего playback pressure.
+    fn update_index_pressure(&mut self) {
+        let low_playback_buffer = matches!(
+            self.session.playback_state(),
+            PlaybackState::Playing | PlaybackState::Buffering | PlaybackState::Seeking
+        ) && self.session.pipeline.audio_track_id.is_some()
+            && self
+                .session
+                .audio_buffer_level_ms()
+                .is_some_and(|level_ms| {
+                    level_ms < self.config.tick_config.audio_demux_low_water_mark_ms
+                });
+
+        let high_decode_render_load = self.session.pipeline.pending_video_packets.len()
+            >= self.config.tick_config.max_pending_video_packets
+            || self.session.pipeline.video_frame_queue.len()
+                >= self.config.tick_config.max_video_present_queue
+            || self
+                .session
+                .pipeline
+                .video_decoder_thread
+                .as_ref()
+                .and_then(|thread| thread.texture_pool_stats())
+                .is_some_and(|stats| {
+                    stats.available_slots()
+                        <= self
+                            .config
+                            .tick_config
+                            .min_texture_slots_available_for_decode
+                });
+
+        let pressure = IndexPressureSnapshot {
+            active_scrub: self.seek_controller.is_scrubbing()
+                || self.session.snapshot().timeline.scrubbing,
+            low_playback_buffer,
+            high_decode_render_load,
+            shutdown_requested: self.session.is_shutdown_requested(),
+        };
+        self.session.apply_index_pressure(pressure);
+
+        if let Some(index_scan) = &self.index_scan {
+            index_scan
+                .paused
+                .store(pressure.pause_reason().is_some(), Ordering::SeqCst);
+        }
+    }
+
     /// Публикует tick telemetry без блокировки worker-а.
     fn publish_tick_result(&self, tick_result: PlayerTickResult) {
         self.publish_worker_event(PlayerWorkerEvent::Tick(tick_result));
+    }
+
+    /// Запускает отдельный demux-only index scan для локального файла.
+    fn start_local_index_scan_if_possible(&mut self, path: PathBuf) {
+        if !self.session.has_loaded_media_pipeline() {
+            return;
+        }
+
+        if self
+            .session
+            .background_indexer
+            .diagnostics()
+            .progress
+            .complete
+        {
+            return;
+        }
+
+        let Some(source_key) = self
+            .session
+            .background_indexer
+            .active_source_key()
+            .map(ToOwned::to_owned)
+        else {
+            return;
+        };
+        let generation = self.session.background_indexer.active_generation();
+        let io_budget_bytes_per_sec = self.config.indexer_config.io_budget_bytes_per_sec;
+        let (update_tx, update_rx) = bounded(INDEX_SCAN_UPDATE_CHANNEL_CAPACITY);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let paused = Arc::new(AtomicBool::new(false));
+        let cancel_for_thread = Arc::clone(&cancel);
+        let paused_for_thread = Arc::clone(&paused);
+
+        let join_handle = thread::Builder::new()
+            .name("background-index-scan".into())
+            .spawn(move || {
+                run_local_index_scan(
+                    path,
+                    source_key,
+                    generation,
+                    io_budget_bytes_per_sec,
+                    cancel_for_thread,
+                    paused_for_thread,
+                    update_tx,
+                );
+            });
+
+        match join_handle {
+            Ok(join_handle) => {
+                self.index_scan = Some(BackgroundIndexScanHandle {
+                    cancel,
+                    paused,
+                    update_rx,
+                    join_handle: Some(join_handle),
+                });
+            }
+            Err(error) => {
+                warn!(error = %error, "Не удалось запустить background index scan thread");
+            }
+        }
+    }
+
+    /// Останавливает активный scan thread.
+    fn stop_index_scan(&mut self) {
+        if let Some(index_scan) = self.index_scan.take() {
+            index_scan.stop();
+        }
+    }
+
+    /// Забирает updates фонового scanner-а без блокировки playback worker-а.
+    fn drain_index_scan_updates(&mut self) {
+        let mut should_stop_scan = false;
+
+        if let Some(index_scan) = &self.index_scan {
+            while let Ok(update) = index_scan.update_rx.try_recv() {
+                match update {
+                    BackgroundIndexScanUpdate::Entry { generation, entry } => {
+                        self.session
+                            .background_indexer
+                            .record_entry(generation, entry);
+                    }
+                    BackgroundIndexScanUpdate::Complete { generation } => {
+                        self.session.background_indexer.mark_complete(generation);
+                        should_stop_scan = true;
+                    }
+                    BackgroundIndexScanUpdate::Failed {
+                        generation,
+                        message,
+                    } => {
+                        debug!(generation, message, "Background index scan failed");
+                        should_stop_scan = true;
+                    }
+                }
+            }
+        }
+
+        if should_stop_scan {
+            self.stop_index_scan();
+        }
     }
 
     /// Публикует worker event, сбрасывая событие при переполнении receiver-а.
@@ -1074,6 +1409,147 @@ fn drain_receiver_without_blocking<T>(receiver: &Receiver<T>) {
     while receiver.try_recv().is_ok() {}
 }
 
+/// Выполняет локальный demux-only scan: no decoder, no audio, no render, no texture pool.
+fn run_local_index_scan(
+    path: PathBuf,
+    source_key: String,
+    generation: u64,
+    io_budget_bytes_per_sec: u64,
+    cancel: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+    update_tx: Sender<BackgroundIndexScanUpdate>,
+) {
+    let mut demuxer = match webm_demux::SymphoniaDemuxer::from_file(&path) {
+        Ok(demuxer) => demuxer,
+        Err(error) => {
+            send_index_scan_update(
+                &update_tx,
+                BackgroundIndexScanUpdate::Failed {
+                    generation,
+                    message: error.to_string(),
+                },
+                &cancel,
+            );
+            return;
+        }
+    };
+    let started_at = Instant::now();
+    let mut scanned_bytes = 0_u64;
+
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return;
+        }
+
+        wait_while_index_scan_paused(&paused, &cancel);
+        if cancel.load(Ordering::SeqCst) {
+            return;
+        }
+
+        match demuxer.next_packet() {
+            Ok(Some(packet)) => {
+                scanned_bytes = scanned_bytes.saturating_add(packet.data.len() as u64);
+                if packet.kind == TrackKind::Video {
+                    let entry = BackgroundIndexEntry {
+                        track_id: packet.track_id,
+                        time: MediaTime::from_duration(packet.pts),
+                        byte_offset: None,
+                        keyframe: packet.keyframe,
+                        fingerprint_link: source_key.clone(),
+                    };
+                    if !send_index_scan_update(
+                        &update_tx,
+                        BackgroundIndexScanUpdate::Entry { generation, entry },
+                        &cancel,
+                    ) {
+                        return;
+                    }
+                }
+                throttle_index_scan_io(started_at, scanned_bytes, io_budget_bytes_per_sec, &cancel);
+            }
+            Ok(None) => {
+                send_index_scan_update(
+                    &update_tx,
+                    BackgroundIndexScanUpdate::Complete { generation },
+                    &cancel,
+                );
+                return;
+            }
+            Err(error) => {
+                send_index_scan_update(
+                    &update_tx,
+                    BackgroundIndexScanUpdate::Failed {
+                        generation,
+                        message: error.to_string(),
+                    },
+                    &cancel,
+                );
+                return;
+            }
+        }
+    }
+}
+
+/// Отправляет scanner update без unbounded growth и без блокировки shutdown.
+fn send_index_scan_update(
+    update_tx: &Sender<BackgroundIndexScanUpdate>,
+    mut update: BackgroundIndexScanUpdate,
+    cancel: &AtomicBool,
+) -> bool {
+    while !cancel.load(Ordering::SeqCst) {
+        match update_tx.try_send(update) {
+            Ok(()) => return true,
+            Err(TrySendError::Full(returned_update)) => {
+                update = returned_update;
+                thread::sleep(INDEX_SCAN_CONTROL_POLL_INTERVAL);
+            }
+            Err(TrySendError::Disconnected(_)) => return false,
+        }
+    }
+
+    false
+}
+
+/// Ждёт снятия pressure pause без busy-spin.
+fn wait_while_index_scan_paused(paused: &AtomicBool, cancel: &AtomicBool) {
+    while paused.load(Ordering::SeqCst) && !cancel.load(Ordering::SeqCst) {
+        thread::sleep(INDEX_SCAN_CONTROL_POLL_INTERVAL);
+    }
+}
+
+/// Ограничивает скорость scan-а configured byte budget-ом.
+fn throttle_index_scan_io(
+    started_at: Instant,
+    scanned_bytes: u64,
+    io_budget_bytes_per_sec: u64,
+    cancel: &AtomicBool,
+) {
+    if io_budget_bytes_per_sec == 0 {
+        return;
+    }
+
+    let expected_elapsed =
+        Duration::from_secs_f64(scanned_bytes as f64 / io_budget_bytes_per_sec as f64);
+    let actual_elapsed = started_at.elapsed();
+    if expected_elapsed > actual_elapsed {
+        sleep_index_scan_controlled(expected_elapsed - actual_elapsed, cancel);
+    }
+}
+
+/// Спит короткими шагами, чтобы shutdown/cancel не блокировался долгим budget-sleep.
+fn sleep_index_scan_controlled(duration: Duration, cancel: &AtomicBool) {
+    let deadline = Instant::now() + duration;
+
+    while !cancel.load(Ordering::SeqCst) {
+        let remaining_duration = deadline.saturating_duration_since(Instant::now());
+        if remaining_duration.is_zero() {
+            return;
+        }
+
+        thread::sleep(remaining_duration.min(INDEX_SCAN_CONTROL_POLL_INTERVAL));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1090,6 +1566,7 @@ mod tests {
         PlayerWorkerConfig {
             tick_interval: Duration::from_millis(2),
             tick_config: PlayerTickConfig::default(),
+            indexer_config: BackgroundIndexerConfig::default(),
         }
     }
 
@@ -1153,6 +1630,8 @@ mod tests {
             render_release_rx,
             shutdown_rx,
             config: worker_config_for_tests(),
+            index_scan: None,
+            last_published_complete_index_generation: None,
             last_tick_at,
         }
     }
@@ -1231,6 +1710,7 @@ mod tests {
             .iter()
             .filter_map(|event| match event {
                 PlayerWorkerEvent::Player(event) => Some(event),
+                PlayerWorkerEvent::IndexUpdated(_) => None,
                 PlayerWorkerEvent::RenderError(_) => None,
                 PlayerWorkerEvent::Tick(_) => None,
             })

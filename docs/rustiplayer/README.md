@@ -62,8 +62,14 @@
 - Live seek/timeline Session 3 закрыла render frame lease acceptance pass:
   `PresentFrameLease` сохраняет zero-copy handle/metadata/generation/stale state,
   worker больше не создаёт `wgpu` views, render errors идут typed command/event в worker.
-- Реальный demux seek, точный seek transaction, полноценный timeline UI и MPRIS остаются
-  следующими сессиями из [12. Live Seek, Timeline and Desktop Controls Sessions](11-live-seek-timeline-sessions.md).
+- Live seek/timeline Sessions 4-8 закрыли real demux seek, precise seek transaction,
+  minimal timeline UI и desktop/MPRIS integration через worker command/snapshot boundary.
+- Live seek/timeline Session 9 добавила SQLite schema/API для persisted keyframe/time
+  index, local size/mtime/partial-hash invalidation, YouTube validator seed path,
+  source range/cache diagnostics и player-core lightweight metadata indexer
+  diagnostics. Local background scanner идёт отдельным demux-only thread-ом без
+  decoder/audio/render/texture resources; persisted offsets не используются без
+  matching identity.
 - Аудио-треск после worker/audio правок устранён через CPAL playback anchor smoothing и
   packet-boundary-safe resampler. На тяжёлых 4k60 asset-ах остаются late video drops;
   это отдельная будущая задача render/present cadence profiling, не блокер текущего этапа.

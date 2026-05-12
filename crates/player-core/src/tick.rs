@@ -472,6 +472,11 @@ fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet)
                 ));
         }
         TrackKind::Video => {
+            session.background_indexer.record_video_packet(
+                packet.track_id,
+                packet.pts,
+                packet.keyframe,
+            );
             session
                 .pipeline
                 .pending_video_packets

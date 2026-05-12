@@ -135,6 +135,11 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "index_fingerprint_sample_kb = 256",
+        "# Размер head/tail sample для partial hash локального media index.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "skin = \"minimal\"",
         "# UI skin id; unknown id является config error.",
     );
@@ -606,6 +611,9 @@ pub struct NetworkConfig {
 
     /// Бюджет фонового indexer/cache IO.
     pub indexer_io_budget_mb_per_sec: u64,
+
+    /// Размер head/tail sample для partial hash локального media index.
+    pub index_fingerprint_sample_kb: u64,
 }
 
 impl Default for NetworkConfig {
@@ -617,6 +625,7 @@ impl Default for NetworkConfig {
             connect_timeout_ms: 15_000,
             read_timeout_ms: 15_000,
             indexer_io_budget_mb_per_sec: 32,
+            index_fingerprint_sample_kb: 256,
         }
     }
 }

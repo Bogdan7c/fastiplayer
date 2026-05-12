@@ -6,8 +6,9 @@ use rusqlite::Connection;
 use tracing::info;
 
 use crate::{
-    CapabilityCacheEntry, MigrationReport, OpenedMediaRecord, PlaybackHistoryEntry,
-    PlaybackProgressEntry, StorageError, StoragePaths, StorageResult, migrations,
+    CapabilityCacheEntry, MediaIndexSaveOutcome, MediaIndexSourceIdentity, MigrationReport,
+    OpenedMediaRecord, PersistedMediaIndex, PlaybackHistoryEntry, PlaybackProgressEntry,
+    StorageError, StoragePaths, StorageResult, media_index, migrations,
 };
 
 /// Storage, открытый приложением на старте.
@@ -83,6 +84,27 @@ impl StorageConnection {
             &mut self.connection,
             current_unix_seconds,
         )
+    }
+
+    /// Записывает persisted keyframe/time index, если identity source-а достаточно сильная.
+    pub fn save_media_index(
+        &mut self,
+        media_index: &PersistedMediaIndex,
+    ) -> StorageResult<MediaIndexSaveOutcome> {
+        media_index::save_media_index(&mut self.connection, media_index)
+    }
+
+    /// Загружает media index только при полном совпадении fingerprint/validators.
+    pub fn load_media_index(
+        &self,
+        identity: &MediaIndexSourceIdentity,
+    ) -> StorageResult<Option<PersistedMediaIndex>> {
+        media_index::load_media_index(&self.connection, identity)
+    }
+
+    /// Удаляет persisted media index вместе с entries.
+    pub fn delete_media_index(&mut self, source_key: &str) -> StorageResult<usize> {
+        media_index::delete_media_index(&mut self.connection, source_key)
     }
 }
 

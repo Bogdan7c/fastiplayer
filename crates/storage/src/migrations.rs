@@ -3,7 +3,7 @@ use rusqlite::{Connection, Transaction};
 use crate::{StorageError, StorageResult};
 
 /// Текущая версия SQLite schema storage-слоя.
-pub const CURRENT_STORAGE_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_STORAGE_SCHEMA_VERSION: u32 = 2;
 
 /// Описание migration, уже применённой к базе.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,11 +41,18 @@ struct Migration {
 }
 
 /// Список migrations в порядке применения.
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: CURRENT_STORAGE_SCHEMA_VERSION,
-    description: "initial history/progress/capability cache schema",
-    apply: apply_initial_schema,
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        description: "initial history/progress/capability cache schema",
+        apply: apply_initial_schema,
+    },
+    Migration {
+        version: CURRENT_STORAGE_SCHEMA_VERSION,
+        description: "media keyframe/time index schema",
+        apply: apply_media_index_schema,
+    },
+];
 
 /// Возвращает текущую версию schema из `PRAGMA user_version`.
 pub fn current_schema_version(connection: &Connection) -> StorageResult<u32> {
@@ -210,11 +217,69 @@ fn apply_initial_schema(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
     )
 }
 
+/// Создаёт таблицы persisted keyframe/time index.
+fn apply_media_index_schema(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
+    transaction.execute_batch(
+        r#"
+        CREATE TABLE media_index_sources (
+            source_key TEXT PRIMARY KEY,
+            source_uri TEXT NOT NULL,
+            identity_kind TEXT NOT NULL CHECK (identity_kind IN ('local', 'http_service')),
+            local_size_bytes INTEGER CHECK (local_size_bytes IS NULL OR local_size_bytes >= 0),
+            local_mtime_unix_nanos INTEGER CHECK (local_mtime_unix_nanos IS NULL OR local_mtime_unix_nanos >= 0),
+            local_partial_hash_hex TEXT,
+            service_id TEXT,
+            format_id TEXT,
+            validator_etag TEXT,
+            validator_last_modified TEXT,
+            duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+            indexed_until_ms INTEGER NOT NULL DEFAULT 0 CHECK (indexed_until_ms >= 0),
+            complete INTEGER NOT NULL DEFAULT 0 CHECK (complete IN (0, 1)),
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            CHECK (
+                (identity_kind = 'local'
+                    AND local_size_bytes IS NOT NULL
+                    AND local_mtime_unix_nanos IS NOT NULL
+                    AND local_partial_hash_hex IS NOT NULL
+                    AND service_id IS NULL
+                    AND format_id IS NULL)
+                OR
+                (identity_kind = 'http_service'
+                    AND service_id IS NOT NULL
+                    AND format_id IS NOT NULL
+                    AND local_size_bytes IS NULL
+                    AND local_mtime_unix_nanos IS NULL
+                    AND local_partial_hash_hex IS NULL)
+            )
+        );
+
+        CREATE INDEX media_index_sources_updated_at_idx
+            ON media_index_sources(updated_at DESC);
+
+        CREATE TABLE media_index_entries (
+            source_key TEXT NOT NULL,
+            track_id INTEGER NOT NULL CHECK (track_id >= 0),
+            time_us INTEGER NOT NULL CHECK (time_us >= 0),
+            byte_offset INTEGER CHECK (byte_offset IS NULL OR byte_offset >= 0),
+            keyframe INTEGER NOT NULL CHECK (keyframe IN (0, 1)),
+            PRIMARY KEY (source_key, track_id, time_us, keyframe),
+            FOREIGN KEY (source_key)
+                REFERENCES media_index_sources(source_key)
+                ON DELETE CASCADE
+        );
+
+        CREATE INDEX media_index_entries_lookup_idx
+            ON media_index_entries(source_key, track_id, time_us);
+        "#,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Проверяет, что initial migration создаёт таблицы и выставляет user_version.
+    /// Проверяет, что полный migration batch создаёт таблицы и выставляет user_version.
     #[test]
     fn initial_migration_creates_phase_6_tables() {
         let mut connection = Connection::open_in_memory().expect("in-memory sqlite opened");
@@ -223,7 +288,7 @@ mod tests {
 
         assert_eq!(report.original_version, 0);
         assert_eq!(report.current_version, CURRENT_STORAGE_SCHEMA_VERSION);
-        assert_eq!(report.applied_migrations.len(), 1);
+        assert_eq!(report.applied_migrations.len(), 2);
         assert_eq!(
             current_schema_version(&connection).expect("schema version read"),
             CURRENT_STORAGE_SCHEMA_VERSION
@@ -231,6 +296,28 @@ mod tests {
         assert!(table_exists(&connection, "playback_history"));
         assert!(table_exists(&connection, "playback_progress"));
         assert!(table_exists(&connection, "capability_cache"));
+        assert!(table_exists(&connection, "media_index_sources"));
+        assert!(table_exists(&connection, "media_index_entries"));
+    }
+
+    /// Проверяет upgrade с schema v1 до schema v2 без пересоздания старых таблиц.
+    #[test]
+    fn migration_v2_adds_media_index_tables_to_existing_database() {
+        let mut connection = Connection::open_in_memory().expect("in-memory sqlite opened");
+        let v1_migrations = [Migration {
+            version: 1,
+            description: "initial history/progress/capability cache schema",
+            apply: apply_initial_schema,
+        }];
+        migrate_with_migrations(&mut connection, &v1_migrations).expect("v1 migration applied");
+
+        let report = migrate(&mut connection).expect("v2 migration applied");
+
+        assert_eq!(report.original_version, 1);
+        assert_eq!(report.current_version, CURRENT_STORAGE_SCHEMA_VERSION);
+        assert_eq!(report.applied_migrations.len(), 1);
+        assert!(table_exists(&connection, "media_index_sources"));
+        assert!(table_exists(&connection, "media_index_entries"));
     }
 
     /// Проверяет, что ошибка второй migration откатывает первую.
