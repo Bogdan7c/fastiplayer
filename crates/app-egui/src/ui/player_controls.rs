@@ -1,0 +1,155 @@
+//! Player controls поверх command/snapshot boundary.
+
+use egui::{Button, RichText, Ui};
+use player_core::{PlaybackState, PlayerSnapshot};
+
+use crate::ui::assets::IconId;
+use crate::ui::skin::{PlayerSkin, SkinId};
+use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
+
+/// Действие controls, которое shell должен применить после egui pass.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ControlAction {
+    /// Переключить play/pause.
+    TogglePlayback,
+
+    /// Открыть файл.
+    OpenFile,
+
+    /// Установить новую громкость.
+    SetVolume(f32),
+
+    /// Переключить fullscreen.
+    ToggleFullscreen,
+
+    /// Действие timeline.
+    Timeline(TimelineAction),
+}
+
+/// Рисует компактную верхнюю панель без diagnostics.
+pub fn render_top_bar(ui: &mut Ui, app_version: &str, skin: &impl PlayerSkin) {
+    let controls_style = skin.controls_style();
+    let panel_id = top_panel_id(skin.id());
+
+    egui::Panel::top(panel_id)
+        .frame(skin.top_panel_frame())
+        .show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(controls_style.text_color, "rustiplayer");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.monospace(format!("v{app_version}"));
+                });
+            });
+        });
+}
+
+/// Рисует нижнюю player controls панель и возвращает действия пользователя.
+#[must_use]
+pub fn render_bottom_controls(
+    ui: &mut Ui,
+    player_snapshot: &PlayerSnapshot,
+    timeline_state: &mut TimelineUiState,
+    skin: &impl PlayerSkin,
+) -> Vec<ControlAction> {
+    let mut actions = Vec::new();
+    let panel_id = bottom_panel_id(skin.id());
+
+    egui::Panel::bottom(panel_id)
+        .frame(skin.bottom_panel_frame())
+        .show_inside(ui, |ui| {
+            timeline::render_time_labels(ui, &player_snapshot.timeline, timeline_state);
+            let timeline_interaction =
+                timeline::render_timeline(ui, &player_snapshot.timeline, timeline_state, skin);
+            actions.extend(
+                timeline_interaction
+                    .actions
+                    .into_iter()
+                    .map(ControlAction::Timeline),
+            );
+
+            ui.add_space(4.0);
+            render_button_row(ui, player_snapshot, skin, &mut actions);
+        });
+
+    actions
+}
+
+/// Рисует строку кнопок и volume slider.
+fn render_button_row(
+    ui: &mut Ui,
+    player_snapshot: &PlayerSnapshot,
+    skin: &impl PlayerSkin,
+    actions: &mut Vec<ControlAction>,
+) {
+    let controls_style = skin.controls_style();
+    let is_playing = player_snapshot.playback_state == PlaybackState::Playing;
+    let play_icon = if is_playing {
+        IconId::Pause
+    } else {
+        IconId::Play
+    };
+    let mut volume_value = player_snapshot.volume;
+
+    ui.horizontal_wrapped(|ui| {
+        if icon_button(ui, play_icon, skin).clicked() {
+            actions.push(ControlAction::TogglePlayback);
+        }
+
+        if icon_button(ui, IconId::OpenFile, skin).clicked() {
+            actions.push(ControlAction::OpenFile);
+        }
+
+        ui.separator();
+        ui.colored_label(controls_style.text_color, skin.icon_text(IconId::Volume));
+        let volume_response = ui.add_sized(
+            [
+                controls_style.volume_slider_width,
+                controls_style.button_height,
+            ],
+            egui::Slider::new(&mut volume_value, 0.0..=1.0).show_value(false),
+        );
+        if volume_response.changed() {
+            actions.push(ControlAction::SetVolume(volume_value));
+        }
+        ui.monospace(format!("{:.0}%", volume_value * 100.0));
+
+        if icon_button(ui, IconId::Fullscreen, skin).clicked() {
+            actions.push(ControlAction::ToggleFullscreen);
+        }
+    });
+}
+
+/// Рисует кнопку для asset-backed иконки.
+fn icon_button(ui: &mut Ui, icon_id: IconId, skin: &impl PlayerSkin) -> egui::Response {
+    let asset_id = skin.icon_asset(icon_id);
+
+    ui.push_id(asset_id, |ui| {
+        fixed_button(ui, skin.icon_text(icon_id), skin)
+    })
+    .inner
+}
+
+/// Рисует кнопку фиксированного размера, чтобы layout не прыгал от текста.
+fn fixed_button(ui: &mut Ui, text: impl Into<RichText>, skin: &impl PlayerSkin) -> egui::Response {
+    let controls_style = skin.controls_style();
+    let button_text = text.into().color(controls_style.text_color);
+
+    ui.add_sized(
+        [controls_style.button_width, controls_style.button_height],
+        Button::new(button_text),
+    )
+}
+
+/// Возвращает panel id верхней панели для выбранного skin-а.
+fn top_panel_id(skin_id: SkinId) -> &'static str {
+    match skin_id {
+        SkinId::Minimal => "top_bar_minimal",
+    }
+}
+
+/// Возвращает panel id нижней панели для выбранного skin-а.
+fn bottom_panel_id(skin_id: SkinId) -> &'static str {
+    match skin_id {
+        SkinId::Minimal => "controls_minimal",
+    }
+}

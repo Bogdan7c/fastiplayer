@@ -18,6 +18,7 @@
 /// - RedrawRequested — основной hook для рендеринга каждого кадра
 mod state;
 mod telemetry;
+mod ui;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -269,6 +270,25 @@ impl ApplicationHandler for App {
 
         // Передаём событие в egui_winit для обработки ввода
         let egui_response = app_state.egui_winit_state.on_window_event(window, &event);
+
+        // Escape во время pointer scrub завершает scrub, а не закрывает окно.
+        let escape_pressed = matches!(
+            &event,
+            WindowEvent::KeyboardInput {
+                event: winit::event::KeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Code(
+                        winit::keyboard::KeyCode::Escape
+                    ),
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                },
+                ..
+            }
+        );
+        if escape_pressed && app_state.cancel_active_timeline_scrub() {
+            window.request_redraw();
+            return;
+        }
 
         // Если egui потребил событие (например, клик по кнопке), не обрабатываем дальше
         if egui_response.consumed {

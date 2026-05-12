@@ -3,10 +3,8 @@
 /// После worker-сессии этот модуль больше не владеет media pipeline. Demuxer,
 /// audio/video decoder state, очереди и playback errors находятся в playback worker.
 /// `AppState` оставляет у себя только egui/winit state и shell-данные.
-use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use capability_core::SystemCapabilities;
 use media_core::TrackKind;
@@ -21,6 +19,10 @@ use tracing::{instrument, warn};
 use winit::window::Window;
 
 use crate::telemetry::Telemetry;
+use crate::ui::animation::AnimationState;
+use crate::ui::player_controls::{self, ControlAction};
+use crate::ui::skin::{self, PlayerSkin};
+use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
 
 /// Состояние приложения без владения playback pipeline.
 pub struct AppState {
@@ -59,6 +61,9 @@ pub struct AppState {
 
     /// Последний локальный файл, открытый shell-ом, для восстановления после suspend.
     current_local_file: Option<PathBuf>,
+
+    /// Transient pointer state timeline; player position здесь не хранится.
+    timeline_ui_state: TimelineUiState,
 
     /// Версия приложения для отображения в UI.
     pub app_version: &'static str,
@@ -107,6 +112,7 @@ impl AppState {
             cached_present_frame: None,
             cached_present_source_label: None,
             current_local_file: None,
+            timeline_ui_state: TimelineUiState::default(),
             app_version: env!("CARGO_PKG_VERSION"),
         })
     }
@@ -276,12 +282,6 @@ impl AppState {
             self.next_frame();
         }
 
-        let mut volume_slider_value = player_snapshot.volume;
-        let position_seconds = player_snapshot.current_position.as_secs_f64();
-        let duration_seconds = player_snapshot
-            .duration
-            .map(|duration| duration.as_secs_f64())
-            .unwrap_or(0.0);
         let backend_name = player_snapshot
             .active_backend
             .name
@@ -292,13 +292,6 @@ impl AppState {
         let start_time = self.start_time;
         let frame_duration_estimate_ms =
             player_snapshot.video_frame_duration_estimate.as_secs_f64() * 1000.0;
-        let toggle_playback_clicked = Cell::new(false);
-        let open_file_clicked = Cell::new(false);
-        let volume_change_request = Cell::new(None::<f32>);
-        let begin_scrub_request = Cell::new(false);
-        let update_scrub_request = Cell::new(None::<f64>);
-        let end_scrub_request = Cell::new(false);
-        let seek_request = Cell::new(None::<f64>);
         let player_error_message = player_snapshot
             .last_error
             .as_ref()
@@ -307,112 +300,29 @@ impl AppState {
             .as_deref()
             .or(self.startup_error.as_deref());
         let render_diagnostics = self.render_diagnostics.clone();
+        let selected_skin =
+            skin::skin_from_config(&self.app_config.ui.skin).unwrap_or_else(|| {
+                warn!(
+                    skin = %self.app_config.ui.skin,
+                    "Config validation должна была отклонить неизвестный UI skin; используем minimal"
+                );
+                skin::MinimalSkin::default()
+            });
+        let animation_state = AnimationState::from_timeline(&player_snapshot.timeline);
+        let show_telemetry = self.app_config.ui.show_telemetry;
+        let mut control_actions = Vec::new();
+        let mut timeline_ui_state = std::mem::take(&mut self.timeline_ui_state);
 
         let full_output = self.egui_ctx.run_ui(egui_input, |ui| {
-            let top_frame =
-                egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180));
-            egui::Panel::top("top_bar")
-                .frame(top_frame)
-                .show_inside(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.heading("YouTube Player");
-                        ui.separator();
+            player_controls::render_top_bar(ui, app_version, &selected_skin);
+            control_actions = player_controls::render_bottom_controls(
+                ui,
+                &player_snapshot,
+                &mut timeline_ui_state,
+                &selected_skin,
+            );
 
-                        let backend_color = if backend_name == "Synthetic (test)" {
-                            egui::Color32::YELLOW
-                        } else {
-                            egui::Color32::GREEN
-                        };
-                        ui.colored_label(backend_color, format!("Backend: {backend_name}"));
-
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.monospace(format!("v{app_version}"));
-                        });
-                    });
-                });
-
-            let bottom_frame =
-                egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180));
-            egui::Panel::bottom("controls")
-                .frame(bottom_frame)
-                .show_inside(ui, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(4.0);
-
-                        if duration_seconds > 0.0 {
-                            let mut slider_position = position_seconds as f32;
-                            let timeline_response = ui.add(
-                                egui::Slider::new(
-                                    &mut slider_position,
-                                    0.0..=duration_seconds as f32,
-                                )
-                                .show_value(false)
-                                .trailing_fill(true)
-                                .custom_formatter(|secs, _| Self::format_time(secs as f64)),
-                            );
-                            if timeline_response.changed() {
-                                if timeline_response.drag_started() {
-                                    begin_scrub_request.set(true);
-                                }
-
-                                if timeline_response.dragged() {
-                                    update_scrub_request.set(Some(slider_position as f64));
-                                } else {
-                                    seek_request.set(Some(slider_position as f64));
-                                }
-                            }
-
-                            if timeline_response.drag_stopped() {
-                                end_scrub_request.set(true);
-                            }
-                        } else {
-                            ui.monospace(Self::format_time(position_seconds));
-                        }
-
-                        ui.horizontal(|ui| {
-                            let play_text = if is_playing { "Pause" } else { "Play" };
-                            if ui.button(play_text).clicked() {
-                                toggle_playback_clicked.set(true);
-                            }
-
-                            if ui.button("Open File").clicked() {
-                                open_file_clicked.set(true);
-                            }
-
-                            ui.separator();
-                            ui.label("Volume:");
-                            let volume_response = ui.add(
-                                egui::Slider::new(&mut volume_slider_value, 0.0..=1.0)
-                                    .show_value(false),
-                            );
-                            if volume_response.changed() {
-                                volume_change_request.set(Some(volume_slider_value));
-                            }
-                            ui.monospace(format!("{:.0}%", volume_slider_value * 100.0));
-
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("Fullscreen").clicked() {
-                                        let is_fullscreen = window.fullscreen().is_some();
-                                        if is_fullscreen {
-                                            window.set_fullscreen(None);
-                                        } else if let Some(monitor) = window.current_monitor() {
-                                            window.set_fullscreen(Some(
-                                                winit::window::Fullscreen::Borderless(Some(
-                                                    monitor,
-                                                )),
-                                            ));
-                                        }
-                                    }
-                                },
-                            );
-                        });
-                        ui.add_space(4.0);
-                    });
-                });
-
-            if self.app_config.ui.show_telemetry {
+            if show_telemetry {
                 Self::render_telemetry_panel(
                     ui,
                     &player_snapshot,
@@ -423,64 +333,83 @@ impl AppState {
                     frame_duration_estimate_ms,
                 );
             }
-            Self::render_center_overlay(ui, is_playing, error_message);
+            Self::render_center_overlay(
+                ui,
+                is_playing,
+                error_message,
+                &selected_skin,
+                animation_state,
+            );
         });
 
-        if toggle_playback_clicked.get() {
-            self.toggle_playback();
-        }
-
-        if open_file_clicked.get() {
-            self.open_file();
-        }
-
-        if let Some(requested_volume) = volume_change_request.get()
-            && let Err(error) = self
-                .player_worker
-                .try_send_command(PlayerCommand::SetVolume(requested_volume))
-        {
-            warn!(error = %error, "Некорректное значение громкости из UI");
-        }
-
-        if begin_scrub_request.get()
-            && let Err(error) = self
-                .player_worker
-                .try_send_command(PlayerCommand::BeginScrub)
-        {
-            warn!(error = %error, "Не удалось начать scrub");
-        }
-
-        if let Some(requested_position) = update_scrub_request.get() {
-            let request = SeekRequest::accurate(duration_from_seconds_lossy(requested_position));
-            if let Err(error) = self
-                .player_worker
-                .try_send_command(PlayerCommand::UpdateScrub(request))
-            {
-                warn!(error = %error, "Не удалось обновить scrub target");
-            }
-        }
-
-        if let Some(requested_position) = seek_request.get() {
-            let request = SeekRequest::accurate(duration_from_seconds_lossy(requested_position));
-            if let Err(error) = self
-                .player_worker
-                .try_send_command(PlayerCommand::Seek(request))
-            {
-                warn!(error = %error, "Не удалось отправить seek request");
-            }
-        }
-
-        if end_scrub_request.get()
-            && let Err(error) = self
-                .player_worker
-                .try_send_command(PlayerCommand::EndScrub {
-                    policy: ScrubCommitPolicy::CommitLatest,
-                })
-        {
-            warn!(error = %error, "Не удалось завершить scrub");
-        }
+        self.timeline_ui_state = timeline_ui_state;
+        self.handle_control_actions(window, control_actions);
 
         full_output
+    }
+
+    /// Завершает активный timeline scrub из shell event path.
+    pub fn cancel_active_timeline_scrub(&mut self) -> bool {
+        if !self.timeline_ui_state.has_active_drag() {
+            return false;
+        }
+
+        self.timeline_ui_state.clear_transient_drag();
+        self.send_timeline_action(TimelineAction::EndScrubCommitLatest);
+        true
+    }
+
+    /// Применяет действия controls после завершения egui pass.
+    fn handle_control_actions(&mut self, window: &Window, actions: Vec<ControlAction>) {
+        for action in actions {
+            match action {
+                ControlAction::TogglePlayback => self.toggle_playback(),
+                ControlAction::OpenFile => self.open_file(),
+                ControlAction::SetVolume(requested_volume) => {
+                    if let Err(error) = self
+                        .player_worker
+                        .try_send_command(PlayerCommand::SetVolume(requested_volume))
+                    {
+                        warn!(error = %error, "Некорректное значение громкости из UI");
+                    }
+                }
+                ControlAction::ToggleFullscreen => Self::toggle_fullscreen(window),
+                ControlAction::Timeline(timeline_action) => {
+                    self.send_timeline_action(timeline_action);
+                }
+            }
+        }
+    }
+
+    /// Конвертирует timeline action в typed player command.
+    fn send_timeline_action(&self, action: TimelineAction) {
+        let command = match action {
+            TimelineAction::Seek(position) => PlayerCommand::Seek(SeekRequest::absolute(position)),
+            TimelineAction::BeginScrub => PlayerCommand::BeginScrub,
+            TimelineAction::UpdateScrub(position) => {
+                PlayerCommand::UpdateScrub(SeekRequest::absolute(position))
+            }
+            TimelineAction::EndScrubCommitLatest => PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitLatest,
+            },
+        };
+
+        if let Err(error) = self.player_worker.try_send_command(command) {
+            warn!(error = %error, "Не удалось отправить timeline command");
+        }
+    }
+
+    /// Переключает fullscreen состояние окна.
+    fn toggle_fullscreen(window: &Window) {
+        let is_fullscreen = window.fullscreen().is_some();
+        if is_fullscreen {
+            window.set_fullscreen(None);
+            return;
+        }
+
+        if let Some(monitor) = window.current_monitor() {
+            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(monitor))));
+        }
     }
 
     /// Обрабатывает горячие клавиши shell и отправляет команды в playback worker.
@@ -500,13 +429,7 @@ impl AppState {
                 true
             }
             winit::keyboard::KeyCode::KeyF => {
-                let is_fullscreen = window.fullscreen().is_some();
-                if is_fullscreen {
-                    window.set_fullscreen(None);
-                } else if let Some(monitor) = window.current_monitor() {
-                    window
-                        .set_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(monitor))));
-                }
+                Self::toggle_fullscreen(window);
                 true
             }
             winit::keyboard::KeyCode::KeyM => {
@@ -648,7 +571,7 @@ impl AppState {
         if let Some(duration) = player_snapshot.duration {
             ui.monospace(format!(
                 "Duration: {}",
-                Self::format_time(duration.as_secs_f64())
+                timeline::format_seconds(Some(duration.as_secs_f64()))
             ));
         }
 
@@ -666,12 +589,15 @@ impl AppState {
 
         let pts_us = telemetry.last_pts_us();
         let pts_secs = pts_us as f64 / 1_000_000.0;
-        ui.monospace(format!("Last PTS: {}", Self::format_time(pts_secs)));
+        ui.monospace(format!(
+            "Last PTS: {}",
+            timeline::format_seconds(Some(pts_secs))
+        ));
 
         ui.separator();
         ui.monospace(format!(
             "Audio clock: {}",
-            Self::format_time(player_snapshot.current_position.as_secs_f64())
+            timeline::format_seconds(Some(player_snapshot.current_position.as_secs_f64()))
         ));
         if let Some(buffer_level) = player_snapshot.audio_buffer.level {
             let buffer_ms = buffer_level.as_secs_f64() * 1000.0;
@@ -761,10 +687,20 @@ impl AppState {
     }
 
     /// Рендерит центральный overlay состояния.
-    fn render_center_overlay(ui: &mut egui::Ui, is_playing: bool, error_message: Option<&str>) {
+    fn render_center_overlay(
+        ui: &mut egui::Ui,
+        is_playing: bool,
+        error_message: Option<&str>,
+        skin: &impl PlayerSkin,
+        animation_state: AnimationState,
+    ) {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
+                if let Some(dim_color) = skin.stale_frame_dim_color(animation_state) {
+                    ui.painter().rect_filled(ui.max_rect(), 0.0, dim_color);
+                }
+
                 if let Some(error) = error_message {
                     ui.vertical_centered(|ui| {
                         ui.add_space(40.0);
@@ -777,14 +713,6 @@ impl AppState {
                     });
                 }
             });
-    }
-
-    /// Форматирует время в строку MM:SS.
-    fn format_time(seconds: f64) -> String {
-        let total_secs = seconds.max(0.0) as u64;
-        let minutes = total_secs / 60;
-        let secs = total_secs % 60;
-        format!("{minutes:02}:{secs:02}")
     }
 }
 
@@ -839,9 +767,4 @@ mod tests {
         assert!(!include_str!("state.rs").contains(forbidden_member));
         assert!(!include_str!("main.rs").contains(forbidden_member));
     }
-}
-
-/// Безопасно создаёт `Duration` из UI seconds.
-fn duration_from_seconds_lossy(seconds: f64) -> Duration {
-    Duration::try_from_secs_f64(seconds).unwrap_or(Duration::ZERO)
 }

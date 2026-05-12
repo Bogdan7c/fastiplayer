@@ -517,6 +517,8 @@ YouTube-specific logic в `player-core`. Live streams остаются not seeka
 
 ## Сессия 7. Minimal Timeline UI and Skin Boundary
 
+Статус: реализовано
+
 ### Контекст для копипаста
 
 Реализуй минимальный player-style timeline UI. Поведение scrub уже должно идти через
