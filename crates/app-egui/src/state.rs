@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use capability_core::SystemCapabilities;
+use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
 use media_core::TrackKind;
 use player_core::{
     FrameCounters, PlaybackState, PlayerCommand, PlayerPresentFrame, PlayerRenderError,
@@ -15,7 +16,7 @@ use player_core::{
 };
 use render_core::RenderDiagnostics;
 use rustiplayer_config::AppConfig;
-use tracing::{instrument, warn};
+use tracing::{debug, instrument, warn};
 use winit::window::Window;
 
 use crate::telemetry::Telemetry;
@@ -31,6 +32,9 @@ pub struct AppState {
 
     /// Egui_winit state — обработка ввода от winit.
     pub egui_winit_state: egui_winit::State,
+
+    /// Desktop integration живёт отдельно от UI и говорит с player только через worker boundary.
+    desktop_integration: Option<DesktopIntegration>,
 
     /// Playback worker владеет `PlayerSession` и media pipeline на отдельном thread.
     pub player_worker: PlayerWorker,
@@ -93,6 +97,13 @@ impl AppState {
         let worker_config =
             PlayerWorkerConfig::new(player_core::PlayerTickConfig::from(&app_config));
         let player_worker = PlayerWorker::spawn(worker_config)?;
+        let desktop_integration = match DesktopIntegration::spawn(player_worker.command_sender()) {
+            Ok(desktop_integration) => Some(desktop_integration),
+            Err(error) => {
+                warn!(error = %error, "Не удалось запустить desktop integration");
+                None
+            }
+        };
         if let Err(error) =
             player_worker.try_send_command(PlayerCommand::SetVolume(app_config.audio.volume as f32))
         {
@@ -102,6 +113,7 @@ impl AppState {
         Ok(Self {
             egui_ctx,
             egui_winit_state,
+            desktop_integration,
             player_worker,
             frame_index: 0,
             start_time: std::time::Instant::now(),
@@ -147,8 +159,38 @@ impl AppState {
     /// Возвращает read-only snapshot из `player-core` для UI и renderer diagnostics.
     #[must_use]
     pub fn player_snapshot(&mut self) -> PlayerSnapshot {
-        self.player_worker
-            .latest_snapshot(self.frame_counters_snapshot())
+        let player_snapshot = self
+            .player_worker
+            .latest_snapshot(self.frame_counters_snapshot());
+        self.publish_desktop_snapshot(&player_snapshot);
+        player_snapshot
+    }
+
+    /// Публикует read-only snapshot в desktop integration boundary.
+    fn publish_desktop_snapshot(&self, player_snapshot: &PlayerSnapshot) {
+        let Some(desktop_integration) = &self.desktop_integration else {
+            return;
+        };
+
+        if let Err(error) = desktop_integration.publish_snapshot(player_snapshot) {
+            warn!(error = %error, "Не удалось обновить desktop integration snapshot");
+        }
+
+        Self::log_desktop_integration_events(desktop_integration.drain_events());
+    }
+
+    /// Логирует события desktop integration без переноса MPRIS logic в UI.
+    fn log_desktop_integration_events(events: Vec<DesktopIntegrationEvent>) {
+        for event in events {
+            match event {
+                DesktopIntegrationEvent::BackendError { backend, error } => {
+                    warn!(?backend, error = %error, "Desktop integration backend error");
+                }
+                other_event => {
+                    debug!(?other_event, "Desktop integration event");
+                }
+            }
+        }
     }
 
     /// Загружает локальный файл через playback worker.
@@ -300,14 +342,13 @@ impl AppState {
             .as_deref()
             .or(self.startup_error.as_deref());
         let render_diagnostics = self.render_diagnostics.clone();
-        let selected_skin =
-            skin::skin_from_config(&self.app_config.ui.skin).unwrap_or_else(|| {
-                warn!(
-                    skin = %self.app_config.ui.skin,
-                    "Config validation должна была отклонить неизвестный UI skin; используем minimal"
-                );
-                skin::MinimalSkin::default()
-            });
+        let selected_skin = skin::skin_from_config(&self.app_config.ui.skin).unwrap_or_else(|| {
+            warn!(
+                skin = %self.app_config.ui.skin,
+                "Config validation должна была отклонить неизвестный UI skin; используем minimal"
+            );
+            skin::MinimalSkin::default()
+        });
         let animation_state = AnimationState::from_timeline(&player_snapshot.timeline);
         let show_telemetry = self.app_config.ui.show_telemetry;
         let mut control_actions = Vec::new();

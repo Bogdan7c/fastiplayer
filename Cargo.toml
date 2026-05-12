@@ -4,6 +4,7 @@ members = [
     "crates/capability-core",
     "crates/codec-core",
     "crates/config",
+    "crates/desktop-integration",
     "crates/storage",
     "crates/source-core",
     "crates/player-core",
@@ -62,6 +63,7 @@ video-vaapi = { path = "crates/video-vaapi" }
 render-core = { path = "crates/render-core" }
 render-wgpu = { path = "crates/render-wgpu" }
 player-core = { path = "crates/player-core" }
+desktop-integration = { path = "crates/desktop-integration" }
 media-core = { path = "crates/media-core" }
 service-youtube = { path = "crates/service-youtube" }
 source-core = { path = "crates/source-core" }

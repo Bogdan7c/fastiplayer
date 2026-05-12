@@ -131,6 +131,7 @@ dependencies = [
  "audio",
  "capability-core",
  "codec-core",
+ "desktop-integration",
  "egui",
  "egui-winit",
  "media-core",
@@ -917,6 +918,18 @@ name = "dasp_sample"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
+
+[[package]]
+name = "desktop-integration"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "media-core",
+ "player-core",
+ "thiserror 2.0.18",
+ "tracing",
+ "zbus",
+]
 
 [[package]]
 name = "directories"

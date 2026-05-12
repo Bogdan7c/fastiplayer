@@ -21,6 +21,7 @@ rustiplayer-config.workspace = true
 rustiplayer-storage.workspace = true
 capability-core.workspace = true
 service-youtube.workspace = true
+desktop-integration.workspace = true
 
 # Новые зависимости для Этапа 2a
 player-core.workspace = true

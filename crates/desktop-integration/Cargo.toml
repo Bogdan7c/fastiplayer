@@ -1,0 +1,19 @@
+[package]
+name = "desktop-integration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "desktop_integration"
+path = "src/lib.rs"
+
+[dependencies]
+crossbeam-channel = { workspace = true }
+media-core = { workspace = true }
+player-core = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.15" }
