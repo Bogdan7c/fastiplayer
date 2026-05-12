@@ -17,6 +17,7 @@
 - [09. Phase 8.5 SDR Color Pipeline Prep](09-phase-8-5-sdr-color-pipeline-prep.md) - подготовка SDR color pipeline перед HDR.
 - [10. Phase 9 Full VP9 Completion](09-phase-9-vp9-completion.md) - полное VP9 capability/metadata/decode-readiness направление перед HDR.
 - [11. Phase 10 HDR-to-SDR Baseline](10-phase-10-hdr-to-sdr-baseline.md) - HDR-to-SDR baseline поверх готового VP9/P010 контракта.
+- [12. Live Seek, Timeline and Desktop Controls Sessions](11-live-seek-timeline-sessions.md) - декомпозиция live seek/timeline/MPRIS на самостоятельные рабочие сессии.
 
 ## Ключевые решения
 
