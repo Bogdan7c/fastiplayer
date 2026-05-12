@@ -6,9 +6,10 @@ use std::time::Duration;
 use anyhow::Result;
 use bytes::Bytes;
 use media_core::{
-    MediaTime, Packet as OurPacket, TimeBase as OurTimeBase, TrackId, TrackInfo, TrackKind,
-    TrackTimestamp, VideoTrackMetadata,
+    MediaTime, Packet as OurPacket, TimeBase as OurTimeBase, TimelineNotSeekableReason, TrackId,
+    TrackInfo, TrackKind, TrackTimestamp, VideoTrackMetadata,
 };
+use source_core::{ByteSource, Seekability as SourceSeekability};
 use symphonia::core::codecs::{CODEC_TYPE_OPUS, CODEC_TYPE_VORBIS};
 use symphonia::core::errors::{Error as SymphoniaError, SeekErrorKind};
 use symphonia::core::formats::{FormatOptions, FormatReader, Packet, SeekMode, SeekTo, Track};
@@ -18,7 +19,8 @@ use symphonia::core::probe::Hint;
 use symphonia::core::units::{Time, TimeBase};
 use tracing::{info, warn};
 
-use crate::demuxer::{DemuxSeekResult, Demuxer};
+use crate::byte_source::ByteSourceMediaSource;
+use crate::demuxer::{DemuxSeekResult, DemuxSeekability, Demuxer};
 use crate::error::DemuxError;
 use crate::matroska_metadata::extract_video_track_metadata_from_file;
 
@@ -28,6 +30,7 @@ pub struct SymphoniaDemuxer {
     tracks: Vec<TrackInfo>,
     duration: Option<Duration>,
     track_map: HashMap<u32, TrackEntry>,
+    seekability: DemuxSeekability,
 }
 
 /// Внутренняя структура для хранения данных о треке
@@ -76,6 +79,7 @@ impl SymphoniaDemuxer {
             probe_result.format,
             &path.display().to_string(),
             video_metadata_by_track,
+            DemuxSeekability::Seekable,
         )
     }
 
@@ -104,7 +108,51 @@ impl SymphoniaDemuxer {
             )
             .map_err(|error| DemuxError::UnsupportedFormat(format!("{}", error)))?;
 
-        Self::from_format_reader(probe_result.format, label, HashMap::new())
+        Self::from_format_reader(
+            probe_result.format,
+            label,
+            HashMap::new(),
+            DemuxSeekability::NotSeekable {
+                reason: TimelineNotSeekableReason::SourceNotSeekable,
+            },
+        )
+    }
+
+    /// Открывает WebM/MKV из нейтрального seekable byte source-а.
+    pub fn from_byte_source<S>(
+        source: S,
+        extension_hint: &str,
+        label: &str,
+    ) -> Result<Self, DemuxError>
+    where
+        S: ByteSource + 'static,
+    {
+        let source_seekability = source.seekability();
+        let demux_seekability = source_seekability_to_demux_seekability(source_seekability);
+        let media_source = ByteSourceMediaSource::new(Box::new(source));
+        let media_source_stream =
+            MediaSourceStream::new(Box::new(media_source), Default::default());
+
+        let mut hint = Hint::new();
+        hint.with_extension(extension_hint);
+
+        let format_options = FormatOptions::default();
+
+        let probe_result = symphonia::default::get_probe()
+            .format(
+                &hint,
+                media_source_stream,
+                &format_options,
+                &MetadataOptions::default(),
+            )
+            .map_err(|error| DemuxError::UnsupportedFormat(format!("{}", error)))?;
+
+        Self::from_format_reader(
+            probe_result.format,
+            label,
+            HashMap::new(),
+            demux_seekability,
+        )
     }
 
     /// Собирает metadata и track map из готового Symphonia format reader.
@@ -112,6 +160,7 @@ impl SymphoniaDemuxer {
         format: Box<dyn FormatReader>,
         label: &str,
         mut video_metadata_by_track: HashMap<TrackId, VideoTrackMetadata>,
+        seekability: DemuxSeekability,
     ) -> Result<Self, DemuxError> {
         let mut tracks = Vec::new();
         let mut track_map = HashMap::new();
@@ -165,6 +214,7 @@ impl SymphoniaDemuxer {
             tracks,
             duration: global_duration,
             track_map,
+            seekability,
         })
     }
 
@@ -282,6 +332,10 @@ impl Demuxer for SymphoniaDemuxer {
         self.duration
     }
 
+    fn seekability(&self) -> DemuxSeekability {
+        self.seekability
+    }
+
     fn next_packet(&mut self) -> Result<Option<OurPacket>> {
         loop {
             match self.format.next_packet() {
@@ -328,6 +382,23 @@ impl Demuxer for SymphoniaDemuxer {
             .map_err(symphonia_seek_error_to_demux_error)?;
 
         Ok(self.seeked_to_timeline_result(timestamp, seeked_to))
+    }
+}
+
+/// Конвертирует source seekability в neutral demux seekability.
+fn source_seekability_to_demux_seekability(seekability: SourceSeekability) -> DemuxSeekability {
+    match seekability {
+        SourceSeekability::Seekable => DemuxSeekability::Seekable,
+        SourceSeekability::NotSeekable { reason } => match reason {
+            source_core::NotSeekableReason::HttpRangeStatus { .. } => {
+                DemuxSeekability::NotSeekable {
+                    reason: TimelineNotSeekableReason::SourceNotSeekable,
+                }
+            }
+            source_core::NotSeekableReason::Unknown => DemuxSeekability::NotSeekable {
+                reason: TimelineNotSeekableReason::UnknownTimeline,
+            },
+        },
     }
 }
 

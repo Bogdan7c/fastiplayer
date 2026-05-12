@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::Result;
 use media_core::{Packet, TrackId, TrackInfo, TrackKind};
 
-use crate::demuxer::{DemuxSeekResult, Demuxer};
+use crate::demuxer::{DemuxSeekResult, DemuxSeekability, Demuxer};
 use crate::symphonia_demuxer::SymphoniaDemuxer;
 
 /// Track id для video после remap.
@@ -138,6 +138,21 @@ impl Demuxer for DualStreamDemuxer {
         self.duration
     }
 
+    fn seekability(&self) -> DemuxSeekability {
+        match (
+            self.video_demuxer.seekability(),
+            self.audio_demuxer.seekability(),
+        ) {
+            (DemuxSeekability::Seekable, DemuxSeekability::Seekable) => DemuxSeekability::Seekable,
+            (DemuxSeekability::NotSeekable { reason }, _) => {
+                DemuxSeekability::NotSeekable { reason }
+            }
+            (_, DemuxSeekability::NotSeekable { reason }) => {
+                DemuxSeekability::NotSeekable { reason }
+            }
+        }
+    }
+
     fn next_packet(&mut self) -> Result<Option<Packet>> {
         // Подготавливаем по одному packet с каждой стороны, чтобы выбрать ранний PTS.
         self.fill_pending_video_packet()?;
@@ -157,7 +172,71 @@ impl Demuxer for DualStreamDemuxer {
         }
     }
 
-    fn seek(&mut self, _timestamp: Duration) -> Result<DemuxSeekResult> {
-        anyhow::bail!("Streaming seek не реализован в MVP")
+    fn seek(&mut self, timestamp: Duration) -> Result<DemuxSeekResult> {
+        let video_seek = self.video_demuxer.seek(timestamp)?;
+        let _audio_seek = self.audio_demuxer.seek(timestamp)?;
+
+        self.pending_video_packet = None;
+        self.pending_audio_packet = None;
+        self.video_eof = false;
+        self.audio_eof = false;
+
+        Ok(video_seek)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use media_core::{Packet, TrackId, TrackKind};
+
+    use super::*;
+
+    fn test_webm_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/test.webm")
+    }
+
+    fn open_dual_demuxer_from_test_asset() -> DualStreamDemuxer {
+        let path = test_webm_path();
+        let video_demuxer = SymphoniaDemuxer::from_file(&path).expect("video demuxer opens");
+        let audio_demuxer = SymphoniaDemuxer::from_file(&path).expect("audio demuxer opens");
+
+        DualStreamDemuxer::new(video_demuxer, audio_demuxer).expect("dual demuxer opens")
+    }
+
+    fn marker_packet(kind: TrackKind) -> Packet {
+        Packet::new(
+            TrackId::new(99),
+            kind,
+            Duration::from_millis(1),
+            None,
+            kind == TrackKind::Video,
+            Bytes::from_static(b"marker"),
+        )
+    }
+
+    #[test]
+    fn seek_seeks_both_streams_and_clears_pending_state() {
+        let mut demuxer = open_dual_demuxer_from_test_asset();
+        demuxer.pending_video_packet = Some(marker_packet(TrackKind::Video));
+        demuxer.pending_audio_packet = Some(marker_packet(TrackKind::Audio));
+        demuxer.video_eof = true;
+        demuxer.audio_eof = true;
+
+        let result = demuxer
+            .seek(Duration::from_millis(500))
+            .expect("dual seek succeeds");
+
+        assert_eq!(
+            result.requested_position,
+            media_core::MediaTime::from_duration(Duration::from_millis(500))
+        );
+        assert!(demuxer.pending_video_packet.is_none());
+        assert!(demuxer.pending_audio_packet.is_none());
+        assert!(!demuxer.video_eof);
+        assert!(!demuxer.audio_eof);
     }
 }

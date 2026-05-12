@@ -7,9 +7,9 @@ use codec_core::{
     ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction, VideoCodec,
     VideoDecodeRequirement, Vp9MetadataSource, resolve_vp9_metadata,
 };
-use media_core::{MediaDuration, MediaTime, TrackInfo, TrackKind};
+use media_core::{MediaDuration, MediaTime, TimelineNotSeekableReason, TrackInfo, TrackKind};
 use tracing::{info, warn};
-use webm_demux::Demuxer;
+use webm_demux::{DemuxSeekability, Demuxer};
 
 use crate::pipeline::{
     DEFAULT_VIDEO_FRAME_DURATION, MAX_OBSERVED_VIDEO_FRAME_DURATION,
@@ -232,6 +232,7 @@ impl PlayerSession {
             Ok(demuxer) => {
                 let tracks = demuxer.tracks().to_vec();
                 let duration = demuxer.duration();
+                let seekability = demuxer.seekability();
                 info!(
                     path = %path.display(),
                     tracks = tracks.len(),
@@ -261,6 +262,7 @@ impl PlayerSession {
                 if let Err(error) = self.mark_media_opened(summary) {
                     self.record_recoverable_error(error);
                 }
+                self.apply_demux_seekability(seekability);
             }
             Err(error) => {
                 warn!(error = %error, "Не удалось открыть файл");
@@ -295,6 +297,7 @@ impl PlayerSession {
 
         let tracks = demuxer.tracks().to_vec();
         let duration = demuxer.duration();
+        let seekability = demuxer.seekability();
 
         info!(
             source = %label,
@@ -326,6 +329,7 @@ impl PlayerSession {
         if let Err(error) = self.mark_media_opened(summary) {
             self.record_recoverable_error(error);
         }
+        self.apply_demux_seekability(seekability);
     }
 
     /// Отмечает успешное открытие media внешним demux/source слоем.
@@ -955,6 +959,20 @@ impl PlayerSession {
 
     /// Выполняет синхронную часть seek transaction и оставляет commit gates на tick.
     fn start_seek_transaction(&mut self, target_position: MediaTime) -> PlayerResult<()> {
+        if !self.snapshot.timeline.seekable {
+            let reason = self
+                .snapshot
+                .timeline
+                .not_seekable_reason
+                .unwrap_or(TimelineNotSeekableReason::UnknownTimeline);
+            let error = PlayerError::new(
+                PlayerErrorKind::SeekUnavailable,
+                format!("Seek невозможен: timeline не seekable ({reason:?})"),
+            );
+            self.record_recoverable_error(error);
+            return Ok(());
+        }
+
         if self.pipeline.demuxer.is_none() {
             let error = PlayerError::new(
                 PlayerErrorKind::SeekUnavailable,
@@ -1203,6 +1221,18 @@ impl PlayerSession {
     fn set_snapshot_duration(&mut self, duration: Option<Duration>) {
         self.snapshot
             .set_timeline_duration(duration.map(MediaDuration::from_duration));
+    }
+
+    /// Применяет seekability demuxer/source stack-а к player timeline.
+    fn apply_demux_seekability(&mut self, seekability: DemuxSeekability) {
+        match seekability {
+            DemuxSeekability::Seekable => {}
+            DemuxSeekability::NotSeekable { reason } => {
+                self.snapshot.timeline.seekable = false;
+                self.snapshot.timeline.seekable_range = None;
+                self.snapshot.timeline.not_seekable_reason = Some(reason);
+            }
+        }
     }
 
     /// Сохраняет runtime error как user-facing ошибку.
@@ -1803,7 +1833,7 @@ mod tests {
         Vp9Profile,
     };
     use render_core::RenderCapabilities;
-    use webm_demux::{DemuxSeekResult, Demuxer};
+    use webm_demux::{DemuxSeekResult, DemuxSeekability, Demuxer};
 
     /// Fake demuxer для проверки player-core transaction без реального WebM/GPU.
     struct FakeDemuxer {
@@ -1811,6 +1841,7 @@ mod tests {
         duration: Option<Duration>,
         packets: VecDeque<media_core::Packet>,
         seek_log: Arc<Mutex<Vec<Duration>>>,
+        seekability: DemuxSeekability,
     }
 
     impl FakeDemuxer {
@@ -1825,7 +1856,14 @@ mod tests {
                 duration,
                 packets: VecDeque::new(),
                 seek_log,
+                seekability: DemuxSeekability::Seekable,
             }
+        }
+
+        /// Задаёт seekability для сценариев с playback-only source.
+        fn with_seekability(mut self, seekability: DemuxSeekability) -> Self {
+            self.seekability = seekability;
+            self
         }
     }
 
@@ -1836,6 +1874,10 @@ mod tests {
 
         fn duration(&self) -> Option<Duration> {
             self.duration
+        }
+
+        fn seekability(&self) -> DemuxSeekability {
+            self.seekability
         }
 
         fn next_packet(&mut self) -> anyhow::Result<Option<media_core::Packet>> {
@@ -1878,12 +1920,22 @@ mod tests {
         session: &mut PlayerSession,
         tracks: Vec<TrackInfo>,
     ) -> Arc<Mutex<Vec<Duration>>> {
+        install_fake_media_with_seekability(session, tracks, DemuxSeekability::Seekable)
+    }
+
+    /// Подключает fake demuxer с заданной seekability.
+    fn install_fake_media_with_seekability(
+        session: &mut PlayerSession,
+        tracks: Vec<TrackInfo>,
+        seekability: DemuxSeekability,
+    ) -> Arc<Mutex<Vec<Duration>>> {
         let seek_log = Arc::new(Mutex::new(Vec::new()));
         let demuxer = FakeDemuxer::new(
             tracks.clone(),
             Some(Duration::from_secs(30)),
             Arc::clone(&seek_log),
-        );
+        )
+        .with_seekability(seekability);
 
         session.pipeline.demuxer = Some(Box::new(demuxer));
         session.pipeline.tracks = tracks.clone();
@@ -1896,6 +1948,7 @@ mod tests {
             .find(|track| track.kind == TrackKind::Audio)
             .map(|track| track.id);
         session.set_snapshot_duration(Some(Duration::from_secs(30)));
+        session.apply_demux_seekability(seekability);
         session.set_playback_state(PlaybackState::Paused);
 
         seek_log
@@ -2084,6 +2137,39 @@ mod tests {
         session.finish_seek_commit_if_ready(Instant::now(), Duration::from_secs(10), 50.0);
 
         assert_eq!(session.snapshot().current_position, Duration::from_secs(7));
+    }
+
+    #[test]
+    fn not_seekable_demuxer_marks_timeline_and_blocks_seek() {
+        let mut session = PlayerSession::new();
+        let seek_log = install_fake_media_with_seekability(
+            &mut session,
+            vec![fake_track(1, TrackKind::Video)],
+            DemuxSeekability::NotSeekable {
+                reason: TimelineNotSeekableReason::SourceNotSeekable,
+            },
+        );
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(5),
+            )))
+            .unwrap();
+
+        assert!(!session.snapshot().timeline.seekable);
+        assert_eq!(
+            session.snapshot().timeline.not_seekable_reason,
+            Some(TimelineNotSeekableReason::SourceNotSeekable)
+        );
+        assert!(seek_log.lock().expect("seek log lock").is_empty());
+        assert_eq!(
+            session
+                .snapshot()
+                .last_error
+                .as_ref()
+                .map(|error| &error.kind),
+            Some(&PlayerErrorKind::SeekUnavailable)
+        );
     }
 
     #[test]

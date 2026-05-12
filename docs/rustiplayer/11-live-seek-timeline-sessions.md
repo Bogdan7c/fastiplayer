@@ -462,6 +462,8 @@ Symphonia seek через demux adapter. UI timeline можно пока ост�
 
 ## Сессия 6. YouTube VOD Range Seek
 
+Статус: реализовано
+
 ### Контекст для копипаста
 
 Подключи YouTube VOD seek через `source-core` HTTP Range source. Не добавляй

@@ -553,7 +553,8 @@ fn main() -> Result<()> {
     // Создаём и запускаем приложение
     let (storage_connection, storage_startup_error) = initialize_storage();
 
-    let (initial_media, cli_startup_error) = resolve_initial_media_from_cli();
+    let (initial_media, cli_startup_error) =
+        resolve_initial_media_from_cli(&loaded_config.config.network);
     if let Some(InitialMedia::File(path)) = &initial_media {
         info!(path = %path.display(), "CLI аргумент: файл для воспроизведения");
     }
@@ -574,7 +575,9 @@ fn main() -> Result<()> {
 ///
 /// Локальный путь возвращается как файл.
 /// HTTP URL открывается через streaming adapter.
-fn resolve_initial_media_from_cli() -> (Option<InitialMedia>, Option<String>) {
+fn resolve_initial_media_from_cli(
+    network_config: &rustiplayer_config::NetworkConfig,
+) -> (Option<InitialMedia>, Option<String>) {
     // Берём только первый пользовательский аргумент, чтобы не вводить неполный CLI parser.
     let Some(argument) = std::env::args().nth(1) else {
         return (None, None);
@@ -584,7 +587,7 @@ fn resolve_initial_media_from_cli() -> (Option<InitialMedia>, Option<String>) {
     if service_youtube::is_probably_url(&argument) {
         info!(url = %argument, "CLI аргумент распознан как YouTube/web URL");
 
-        return match service_youtube::open_streaming_media(&argument) {
+        return match service_youtube::open_streaming_media(&argument, network_config) {
             Ok(streaming_media) => {
                 info!(
                     description = %streaming_media.description,

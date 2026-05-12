@@ -3641,9 +3641,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "media-core",
  "reqwest",
+ "rustiplayer-config",
  "serde",
  "serde_json",
+ "source-core",
  "tracing",
  "webm-demux",
 ]
@@ -4913,6 +4916,7 @@ dependencies = [
  "bytes",
  "codec-core",
  "media-core",
+ "source-core",
  "symphonia",
  "thiserror 2.0.18",
  "tracing",
