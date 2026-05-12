@@ -331,6 +331,8 @@ pipeline internals и не копируя texture data.
 
 ## Сессия 4. source-core and HTTP Range Source
 
+Статус: реализовано
+
 ### Контекст для копипаста
 
 Реализуй `source-core` и HTTP Range source. Нельзя встраивать HTTP/cache logic в

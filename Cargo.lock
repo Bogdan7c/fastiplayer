@@ -3809,6 +3809,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "source-core"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "rustiplayer-config",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "spirv"
 version = "0.4.0+sdk-1.4.341.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
