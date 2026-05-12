@@ -11,5 +11,7 @@ pub mod texture_cache;
 pub mod upload_config;
 
 pub use decoder::VaapiVideoDecoder;
-pub use decoder_thread::{DecodePacket, DecodeThreadError, VideoDecodeThread};
+pub use decoder_thread::{
+    DecodePacket, DecodeThreadError, VideoDecodeThread, VideoTextureViewProvider, VideoTextureViews,
+};
 pub use probe::{VaapiCapabilityProvider, probe_vaapi_capabilities};

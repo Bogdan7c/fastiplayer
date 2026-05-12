@@ -11,8 +11,9 @@ use std::time::Duration;
 use capability_core::SystemCapabilities;
 use media_core::TrackKind;
 use player_core::{
-    FrameCounters, PlaybackState, PlayerCommand, PlayerPresentFrame, PlayerSnapshot, PlayerWorker,
-    PlayerWorkerConfig, PlayerWorkerEvent, ScrubCommitPolicy, SeekRequest,
+    FrameCounters, PlaybackState, PlayerCommand, PlayerPresentFrame, PlayerRenderError,
+    PlayerSnapshot, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, ScrubCommitPolicy,
+    SeekRequest,
 };
 use render_core::RenderDiagnostics;
 use rustiplayer_config::AppConfig;
@@ -193,13 +194,23 @@ impl AppState {
         let player_snapshot = self.player_snapshot();
         self.drop_stale_cached_present_frame(&player_snapshot);
 
-        if let Some(present_frame) = self.player_worker.try_acquire_present_frame() {
+        if let Some(mut present_frame) = self.player_worker.try_acquire_present_frame() {
+            present_frame.stale = present_frame
+                .stale_for_generation(player_snapshot.render_generation)
+                || player_snapshot.timeline.stale_frame;
             self.cached_present_source_label = player_snapshot.source_label.clone();
             self.cached_present_frame = Some(present_frame.clone());
             return Some(present_frame);
         }
 
-        self.cached_present_frame.clone()
+        self.cached_present_frame
+            .clone()
+            .map(|mut cached_present_frame| {
+                cached_present_frame.stale = cached_present_frame
+                    .stale_for_generation(player_snapshot.render_generation)
+                    || player_snapshot.timeline.stale_frame;
+                cached_present_frame
+            })
     }
 
     /// Сбрасывает cached frame, когда он уже не принадлежит текущему media/render поколению.
@@ -234,10 +245,10 @@ impl AppState {
         self.cached_present_source_label = None;
     }
 
-    /// Передаёт fatal render error в worker-owned player session.
-    pub fn mark_fatal_error(&self, error: player_core::PlayerError) {
-        if let Err(send_error) = self.player_worker.mark_fatal_error(error) {
-            warn!(error = %send_error, "Не удалось отправить render error в worker");
+    /// Передаёт typed render bridge error в worker-owned player session.
+    pub fn report_render_error(&self, error: PlayerRenderError) {
+        if let Err(send_error) = self.player_worker.report_render_error(error) {
+            warn!(error = %send_error, "Не удалось отправить typed render error в worker");
         }
     }
 
@@ -818,6 +829,15 @@ mod tests {
                 "mastering-max=confirmed, mastering-min=confirmed, maxcll=reference-default, maxfall=reference-default"
             )
         );
+    }
+
+    /// Проверяет, что app shell не читает внутренний present frame из player pipeline.
+    #[test]
+    fn app_egui_does_not_access_pipeline_present_video_frame_directly() {
+        let forbidden_member = concat!("pipeline", ".", "present_video_frame");
+
+        assert!(!include_str!("state.rs").contains(forbidden_member));
+        assert!(!include_str!("main.rs").contains(forbidden_member));
     }
 }
 

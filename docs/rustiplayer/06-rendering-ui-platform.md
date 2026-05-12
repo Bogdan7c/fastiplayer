@@ -181,12 +181,37 @@ timeline читает typed `PlayerSnapshot.timeline`, а действия от�
 `ui.skin = "minimal"` в schema v2 фиксирует первый production skin. Unknown skin
 id является config error, пока validation явно не вводит mapping на default.
 
-Фактическая runtime boundary после Session 2: `app-egui::AppState` владеет
+Фактическая runtime boundary после Session 3: `app-egui::AppState` владеет
 `PlayerWorker`, а не `PlayerSession`. Render/UI thread не вызывает
 `PlayerSession::tick()` и не читает pipeline internals; он отправляет команды,
 читает latest snapshot/events и получает текущий decoded frame через worker render
 lease request. Cached present frame в shell допустим только как transient render-side
 защита от missed lease reply и освобождается через RAII drop/ack.
+
+## Render frame lease
+
+Текущий render bridge сохраняет zero-copy и не раскрывает player internals:
+
+```text
+app-egui render loop
+  -> PlayerWorker::try_acquire_present_frame()
+  -> PresentFrameLease { frame metadata, handle, generation, stale }
+  -> PresentFrameLease::texture_views() on render thread
+  -> render-wgpu::WgpuRenderableFrame
+```
+
+Правила:
+
+- `PlayerWorker` выбирает latest present frame handle, но не создаёт
+  `wgpu::TextureView`;
+- `video-vaapi::VideoTextureViewProvider` создаёт Y/UV texture views на render
+  thread поверх уже импортированной/загруженной texture;
+- `PresentFrameLease` удерживает texture slot до drop последнего clone-а;
+- stale frame state идёт через snapshot/lease metadata и может использоваться UI
+  для dimming без инвалидирования inflight lease-а;
+- missing texture views, rejected frame contract и render failures отправляются
+  в worker как typed `PlayerRenderError`;
+- `app-egui` не читает `pipeline.present_video_frame` напрямую.
 
 ## UI modules
 

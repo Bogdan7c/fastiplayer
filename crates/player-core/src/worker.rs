@@ -118,8 +118,97 @@ pub enum PlayerWorkerEvent {
     /// Событие из `PlayerSession`.
     Player(PlayerEvent),
 
+    /// Ошибка render bridge, полученная от shell/render thread.
+    RenderError(PlayerRenderError),
+
     /// Итог одного фонового playback tick.
     Tick(PlayerTickResult),
+}
+
+/// Категория ошибки render bridge на границе shell -> worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerRenderErrorKind {
+    /// Render thread не смог получить texture views по handle lease-а.
+    MissingTextureViews,
+
+    /// Renderer отказал decoded frame metadata или plane contract.
+    UnsupportedFrameFormat,
+
+    /// WGPU device/surface не смог завершить render frame.
+    RenderDeviceLost,
+}
+
+/// Типизированная ошибка render bridge, которую shell отправляет в worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerRenderError {
+    /// Машиночитаемая категория render ошибки.
+    pub kind: PlayerRenderErrorKind,
+
+    /// Render generation кадра, если ошибка связана с конкретным lease.
+    pub render_generation: Option<u64>,
+
+    /// Opaque frame handle, если ошибка связана с конкретным decoded frame.
+    pub frame_handle: Option<u64>,
+
+    /// Сообщение для logs/UI без backend-specific Debug payload.
+    pub message: String,
+}
+
+impl PlayerRenderError {
+    /// Создаёт ошибку отсутствующих texture views для конкретного lease-а.
+    #[must_use]
+    pub fn missing_texture_views(lease: &PresentFrameLease) -> Self {
+        Self {
+            kind: PlayerRenderErrorKind::MissingTextureViews,
+            render_generation: Some(lease.render_generation),
+            frame_handle: Some(lease.texture_handle().0),
+            message: format!(
+                "Render texture views are missing for {} frame handle {} in generation {}",
+                lease.frame.format,
+                lease.texture_handle().0,
+                lease.render_generation
+            ),
+        }
+    }
+
+    /// Создаёт ошибку renderer boundary validation для конкретного lease-а.
+    #[must_use]
+    pub fn unsupported_frame_format(lease: &PresentFrameLease, message: impl Into<String>) -> Self {
+        Self {
+            kind: PlayerRenderErrorKind::UnsupportedFrameFormat,
+            render_generation: Some(lease.render_generation),
+            frame_handle: Some(lease.texture_handle().0),
+            message: message.into(),
+        }
+    }
+
+    /// Создаёт ошибку отказа render device/surface.
+    #[must_use]
+    pub fn render_device_lost(message: impl Into<String>) -> Self {
+        Self {
+            kind: PlayerRenderErrorKind::RenderDeviceLost,
+            render_generation: None,
+            frame_handle: None,
+            message: message.into(),
+        }
+    }
+
+    /// Конвертирует typed render error в существующий player error snapshot contract.
+    #[must_use]
+    pub fn to_player_error(&self) -> PlayerError {
+        let kind = match self.kind {
+            PlayerRenderErrorKind::MissingTextureViews
+            | PlayerRenderErrorKind::UnsupportedFrameFormat => {
+                PlayerErrorKind::UnsupportedRenderFormat
+            }
+            PlayerRenderErrorKind::RenderDeviceLost => PlayerErrorKind::RenderDeviceLost,
+        };
+
+        PlayerError::new(
+            kind,
+            format!("Video render bridge failed: {}", self.message),
+        )
+    }
 }
 
 /// Cloneable sender для команд player worker.
@@ -164,23 +253,61 @@ impl PlayerCommandSender {
     }
 }
 
-/// Кадр, который render thread может отдать `render-wgpu`.
+/// WGPU texture views, полученные render thread-ом по opaque frame handle.
+pub struct PresentFrameTextureViews {
+    /// Texture view с luma/Y plane.
+    pub y_view: wgpu::TextureView,
+
+    /// Texture view с chroma/UV plane.
+    pub uv_view: wgpu::TextureView,
+}
+
+/// Lease текущего кадра, который render thread может отдать `render-wgpu`.
 #[derive(Clone)]
-pub struct PlayerPresentFrame {
+pub struct PresentFrameLease {
     /// Поколение render resources, которому принадлежит texture handle.
     pub render_generation: u64,
 
     /// Metadata decoded frame без прямого доступа к `PlayerSession`.
     pub frame: video_core::DecodedFrame,
 
-    /// WGPU view Y-плоскости.
-    pub y_view: wgpu::TextureView,
+    /// Признак, что кадр является stale fallback для текущего timeline состояния.
+    pub stale: bool,
 
-    /// WGPU view UV/P010 chroma-плоскости.
-    pub uv_view: wgpu::TextureView,
+    /// Render-side provider для ленивого получения WGPU views по frame handle.
+    texture_provider: Option<video_vaapi::VideoTextureViewProvider>,
 
     /// Shared lease отправляет drop-ack, когда последний clone кадра освобождён.
-    _lease: Arc<PlayerPresentFrameLease>,
+    _drop_ack: Arc<PresentFrameDropAck>,
+}
+
+/// Backward-compatible имя public frame lease для текущего app shell.
+pub type PlayerPresentFrame = PresentFrameLease;
+
+impl PresentFrameLease {
+    /// Возвращает opaque texture handle кадра без доступа к player pipeline.
+    #[must_use]
+    pub const fn texture_handle(&self) -> video_core::FrameTextureHandle {
+        self.frame.texture_handle
+    }
+
+    /// Возвращает `true`, если lease устарел относительно актуального render generation.
+    #[must_use]
+    pub const fn stale_for_generation(&self, current_render_generation: u64) -> bool {
+        self.stale || self.render_generation != current_render_generation
+    }
+
+    /// Получает WGPU views на render thread через render-side provider.
+    #[must_use]
+    pub fn texture_views(&self) -> Option<PresentFrameTextureViews> {
+        self.texture_provider
+            .as_ref()
+            .and_then(|provider| provider.texture_views(self.texture_handle()))
+            .map(|views| PresentFrameTextureViews {
+                y_view: views.y_view,
+                uv_view: views.uv_view,
+            })
+    }
 }
 
 /// Drop-ack от render-side frame lease.
@@ -190,27 +317,40 @@ struct RenderLeaseRelease {
 
     /// Texture handle, который больше не удерживает render/UI side.
     texture_handle: video_core::FrameTextureHandle,
+
+    /// Provider исходного decoder texture pool для release после смены поколения.
+    texture_provider: Option<video_vaapi::VideoTextureViewProvider>,
 }
 
 /// Shared guard, который отправляет release ack ровно один раз на группу clone-ов.
-struct PlayerPresentFrameLease {
+struct PresentFrameDropAck {
     /// Поколение render resources, где lease был создан.
     render_generation: u64,
 
     /// Texture handle, защищённый от premature release.
     texture_handle: video_core::FrameTextureHandle,
 
+    /// Provider исходного frame-а; нужен, если ack пришёл после смены поколения.
+    texture_provider: Option<video_vaapi::VideoTextureViewProvider>,
+
     /// Канал drop-ack обратно в playback worker.
     release_tx: Sender<RenderLeaseRelease>,
 }
 
-impl Drop for PlayerPresentFrameLease {
+impl Drop for PresentFrameDropAck {
     /// Освобождает render lease без участия UI-кода.
     fn drop(&mut self) {
-        let _ = self.release_tx.try_send(RenderLeaseRelease {
+        let release = RenderLeaseRelease {
             render_generation: self.render_generation,
             texture_handle: self.texture_handle,
-        });
+            texture_provider: self.texture_provider.clone(),
+        };
+
+        if let Err(TrySendError::Disconnected(release)) = self.release_tx.try_send(release)
+            && let Some(texture_provider) = release.texture_provider
+        {
+            texture_provider.release_frame(release.texture_handle);
+        }
     }
 }
 
@@ -373,6 +513,17 @@ impl PlayerWorker {
             .map_err(PlayerWorkerSendError::from)
     }
 
+    /// Передаёт typed render bridge error в worker-owned player session.
+    pub fn report_render_error(
+        &self,
+        error: PlayerRenderError,
+    ) -> Result<(), PlayerWorkerSendError> {
+        self.command_sender
+            .command_tx
+            .try_send(WorkerCommand::RenderError(error))
+            .map_err(PlayerWorkerSendError::from)
+    }
+
     /// Возвращает последний snapshot, не блокируя UI.
     #[must_use]
     pub fn latest_snapshot(&mut self, frame_counters: FrameCounters) -> PlayerSnapshot {
@@ -475,6 +626,9 @@ enum WorkerCommand {
 
     /// Fatal render boundary error.
     MarkFatalError(PlayerError),
+
+    /// Typed render bridge error.
+    RenderError(PlayerRenderError),
 }
 
 /// Запрос текущего present frame от render thread.
@@ -617,9 +771,10 @@ impl PlayerWorkerRuntime {
             }
             recv(self.render_release_rx) -> release_result => {
                 if let Ok(release) = release_result {
-                    self.session.release_render_lease(
+                    self.session.release_render_lease_with_provider(
                         release.render_generation,
                         release.texture_handle,
+                        release.texture_provider.as_ref(),
                     );
                 }
                 false
@@ -673,7 +828,16 @@ impl PlayerWorkerRuntime {
             WorkerCommand::MarkFatalError(error) => {
                 self.session.mark_fatal_error(error);
             }
+            WorkerCommand::RenderError(error) => {
+                self.handle_render_error(error);
+            }
         }
+    }
+
+    /// Сохраняет typed render error в snapshot и публикует worker event.
+    fn handle_render_error(&mut self, error: PlayerRenderError) {
+        self.publish_worker_event(PlayerWorkerEvent::RenderError(error.clone()));
+        self.session.mark_fatal_error(error.to_player_error());
     }
 
     /// Применяет public command с worker-level seek/scrub priority policy.
@@ -826,9 +990,10 @@ impl PlayerWorkerRuntime {
     /// Собирает renderable frame без передачи `PlayerSession` наружу.
     fn build_present_frame(&mut self) -> Option<PlayerPresentFrame> {
         let decoder_thread = self.session.pipeline.video_decoder_thread.as_ref()?;
+        let texture_provider = decoder_thread.texture_view_provider();
         let frame = self.session.pipeline.present_video_frame.as_ref()?.clone();
-        let (y_view, uv_view) = decoder_thread.get_views(frame.texture_handle)?;
         let render_generation = self.session.pipeline.render_generation;
+        let stale = self.session.snapshot().timeline.stale_frame;
         if !self
             .session
             .register_render_lease(render_generation, frame.texture_handle)
@@ -839,11 +1004,12 @@ impl PlayerWorkerRuntime {
         Some(PlayerPresentFrame {
             render_generation,
             frame: frame.clone(),
-            y_view,
-            uv_view,
-            _lease: Arc::new(PlayerPresentFrameLease {
+            stale,
+            texture_provider: Some(texture_provider.clone()),
+            _drop_ack: Arc::new(PresentFrameDropAck {
                 render_generation,
                 texture_handle: frame.texture_handle,
+                texture_provider: Some(texture_provider),
                 release_tx: self.render_release_tx.clone(),
             }),
         })
@@ -852,8 +1018,11 @@ impl PlayerWorkerRuntime {
     /// Снимает все render leases, которые UI/render side уже dropped.
     fn drain_render_releases(&mut self) {
         while let Ok(release) = self.render_release_rx.try_recv() {
-            self.session
-                .release_render_lease(release.render_generation, release.texture_handle);
+            self.session.release_render_lease_with_provider(
+                release.render_generation,
+                release.texture_handle,
+                release.texture_provider.as_ref(),
+            );
         }
     }
 
@@ -907,7 +1076,12 @@ fn drain_receiver_without_blocking<T>(receiver: &Receiver<T>) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
+    use crossbeam_channel::unbounded;
+    use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
 
     use super::*;
     use crate::{MediaSource, PlaybackState, SeekTarget};
@@ -983,6 +1157,42 @@ mod tests {
         }
     }
 
+    fn decoded_frame_for_tests(texture_handle: FrameTextureHandle) -> DecodedFrame {
+        DecodedFrame {
+            pts: Duration::ZERO,
+            format: DecodedPixelFormat::Nv12,
+            bit_depth: BitDepth::Eight,
+            chroma: ChromaSubsampling::Yuv420,
+            memory_path: FrameMemoryPath::CpuUpload,
+            width: 640,
+            height: 360,
+            render_width: 640,
+            render_height: 360,
+            color: VideoColorMetadata::sdr_bt709_limited(),
+            texture_handle,
+        }
+    }
+
+    fn present_frame_lease_for_tests(
+        render_generation: u64,
+        texture_handle: FrameTextureHandle,
+        stale: bool,
+        release_tx: Sender<RenderLeaseRelease>,
+    ) -> PresentFrameLease {
+        PresentFrameLease {
+            render_generation,
+            frame: decoded_frame_for_tests(texture_handle),
+            stale,
+            texture_provider: None,
+            _drop_ack: Arc::new(PresentFrameDropAck {
+                render_generation,
+                texture_handle,
+                texture_provider: None,
+                release_tx,
+            }),
+        }
+    }
+
     #[test]
     fn worker_starts_accepts_commands_publishes_snapshot_and_shutdowns() {
         let mut worker = PlayerWorker::spawn(worker_config_for_tests()).unwrap();
@@ -1021,6 +1231,7 @@ mod tests {
             .iter()
             .filter_map(|event| match event {
                 PlayerWorkerEvent::Player(event) => Some(event),
+                PlayerWorkerEvent::RenderError(_) => None,
                 PlayerWorkerEvent::Tick(_) => None,
             })
             .collect::<Vec<_>>();
@@ -1171,6 +1382,7 @@ mod tests {
             .try_send(RenderLeaseRelease {
                 render_generation: 0,
                 texture_handle: video_core::FrameTextureHandle(7),
+                texture_provider: None,
             })
             .unwrap();
         let (reply_tx, reply_rx) = bounded(1);
@@ -1192,5 +1404,106 @@ mod tests {
         runtime.run_tick_if_due();
 
         assert!(runtime.last_tick_at > previous_tick_at);
+    }
+
+    #[test]
+    fn present_frame_lease_drop_releases_frame_exactly_once() {
+        let (release_tx, release_rx) = unbounded();
+        let lease =
+            present_frame_lease_for_tests(2, FrameTextureHandle(12), false, release_tx.clone());
+        let lease_clone = lease.clone();
+
+        drop(lease);
+        assert!(release_rx.try_recv().is_err());
+
+        drop(lease_clone);
+        let release = release_rx.try_recv().unwrap();
+
+        assert_eq!(release.render_generation, 2);
+        assert_eq!(release.texture_handle, FrameTextureHandle(12));
+        assert!(release_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn leased_frame_release_is_deferred_until_renderer_drops_lease() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let texture_handle = FrameTextureHandle(21);
+
+        assert!(runtime.session.register_render_lease(0, texture_handle));
+        runtime.session.release_video_texture(texture_handle);
+
+        assert!(
+            runtime
+                .session
+                .pipeline
+                .leased_video_textures
+                .contains_key(&(0, texture_handle.0))
+        );
+        assert!(
+            runtime
+                .session
+                .pipeline
+                .deferred_video_texture_releases
+                .contains(&(0, texture_handle.0))
+        );
+
+        runtime.session.release_render_lease(0, texture_handle);
+
+        assert!(runtime.session.pipeline.leased_video_textures.is_empty());
+        assert!(
+            runtime
+                .session
+                .pipeline
+                .deferred_video_texture_releases
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn new_generation_makes_old_lease_stale_without_dropping_it() {
+        let (release_tx, release_rx) = unbounded();
+        let lease = present_frame_lease_for_tests(4, FrameTextureHandle(31), false, release_tx);
+
+        assert!(lease.stale_for_generation(5));
+        assert!(release_rx.try_recv().is_err());
+
+        drop(lease);
+
+        let release = release_rx.try_recv().unwrap();
+        assert_eq!(release.render_generation, 4);
+        assert_eq!(release.texture_handle, FrameTextureHandle(31));
+    }
+
+    #[test]
+    fn render_error_command_updates_player_error_snapshot() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let render_error = PlayerRenderError {
+            kind: PlayerRenderErrorKind::MissingTextureViews,
+            render_generation: Some(6),
+            frame_handle: Some(42),
+            message: "missing Y/UV views for test frame".into(),
+        };
+
+        runtime.handle_worker_command(WorkerCommand::RenderError(render_error));
+
+        let snapshot_error = runtime.session.snapshot().last_error.as_ref().unwrap();
+        assert_eq!(
+            snapshot_error.kind,
+            PlayerErrorKind::UnsupportedRenderFormat
+        );
+        assert!(
+            snapshot_error
+                .message
+                .contains("missing Y/UV views for test frame")
+        );
+        assert_eq!(runtime.session.playback_state(), PlaybackState::Failed);
+        assert!(
+            runtime
+                .session
+                .take_events()
+                .iter()
+                .any(|event| matches!(event, PlayerEvent::FatalError(error)
+                    if error.kind == PlayerErrorKind::UnsupportedRenderFormat))
+        );
     }
 }

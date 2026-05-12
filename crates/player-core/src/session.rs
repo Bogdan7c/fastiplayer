@@ -464,10 +464,21 @@ impl PlayerSession {
     }
 
     /// Снимает render lease и применяет отложенный texture release, если он уже был запрошен.
+    #[cfg(test)]
     pub(crate) fn release_render_lease(
         &mut self,
         render_generation: u64,
         texture_handle: video_core::FrameTextureHandle,
+    ) {
+        self.release_render_lease_with_provider(render_generation, texture_handle, None);
+    }
+
+    /// Снимает render lease и релизит texture через provider поколения, создавшего кадр.
+    pub(crate) fn release_render_lease_with_provider(
+        &mut self,
+        render_generation: u64,
+        texture_handle: video_core::FrameTextureHandle,
+        texture_provider: Option<&video_vaapi::VideoTextureViewProvider>,
     ) {
         let lease_key = (render_generation, texture_handle.0);
 
@@ -481,12 +492,17 @@ impl PlayerSession {
         }
 
         self.pipeline.leased_video_textures.remove(&lease_key);
-        if self
+        let release_was_deferred = self
             .pipeline
             .deferred_video_texture_releases
-            .remove(&lease_key)
-            && render_generation == self.pipeline.render_generation
-        {
+            .remove(&lease_key);
+        if !release_was_deferred {
+            return;
+        }
+
+        if let Some(texture_provider) = texture_provider {
+            texture_provider.release_frame(texture_handle);
+        } else if render_generation == self.pipeline.render_generation {
             self.release_video_texture_now(texture_handle);
         }
     }

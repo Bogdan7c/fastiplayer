@@ -48,6 +48,7 @@
 | Storage | SQLite через `rusqlite`, кроме пользовательских настроек |
 | Timeline model | `media-core` владеет neutral `MediaTime`/`MediaDuration`/`TrackTimestamp`/`TimelineSnapshot`; первые concrete adapters - WebM/YouTube/VP9/VA-API/wgpu/MPRIS |
 | Playback ownership | Runtime `PlayerSession` и media pipeline живут в потоке `PlayerWorker`; `app-egui` отправляет команды, читает latest snapshot/events и не вызывает `PlayerSession::tick()` напрямую |
+| Render frame lease | `PlayerWorker::try_acquire_present_frame()` отдаёт `PresentFrameLease`/`PlayerPresentFrame` с handle, metadata, generation и stale flag; `wgpu::TextureView` создаются на render thread через render-side provider, а release идёт через RAII drop/ack |
 | Worker channels | `player-core` использует `crossbeam-channel`; high-rate `UpdateScrub` идёт через bounded latest channel с policy `Drain Latest` |
 | Services | Модульные crate'ы, компилируются в один бинарь |
 | YouTube | Временный `yt-dlp` adapter живёт в `service-youtube`; default selector остаётся SDR VP9/Opus WebM, а HDR/VP9.2 YouTube checks требуют explicit override до capability-aware service candidates |
@@ -58,6 +59,9 @@
 - Live seek/timeline Session 1 закрыла neutral timeline contracts и config schema v2.
 - Live seek/timeline Session 2 закрыла playback worker boundary, `SeekController` skeleton,
   latest snapshot/event streams, deterministic shutdown и command priority для scrub.
+- Live seek/timeline Session 3 закрыла render frame lease acceptance pass:
+  `PresentFrameLease` сохраняет zero-copy handle/metadata/generation/stale state,
+  worker больше не создаёт `wgpu` views, render errors идут typed command/event в worker.
 - Реальный demux seek, точный seek transaction, полноценный timeline UI и MPRIS остаются
   следующими сессиями из [12. Live Seek, Timeline and Desktop Controls Sessions](11-live-seek-timeline-sessions.md).
 - Аудио-треск после worker/audio правок устранён через CPAL playback anchor smoothing и

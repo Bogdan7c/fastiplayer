@@ -41,6 +41,7 @@ pub use tick::{
     PlayerVideoFrameDrop,
 };
 pub use worker::{
-    PlayerCommandSender, PlayerPresentFrame, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
-    PlayerWorkerJoinError, PlayerWorkerSendError,
+    PlayerCommandSender, PlayerPresentFrame, PlayerRenderError, PlayerRenderErrorKind,
+    PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PlayerWorkerJoinError,
+    PlayerWorkerSendError, PresentFrameLease, PresentFrameTextureViews,
 };

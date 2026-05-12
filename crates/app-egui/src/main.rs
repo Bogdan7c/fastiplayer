@@ -24,14 +24,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use capability_core::CapabilityScanner;
-use player_core::{
-    PlayerError, PlayerErrorKind, PlayerTickResult, PlayerVideoDropReason, PlayerWorkerEvent,
-};
+use player_core::{PlayerRenderError, PlayerTickResult, PlayerVideoDropReason, PlayerWorkerEvent};
 use render_core::{
     ColorAdjustment, ColorPipelineSettings, HdrOutputMode, HdrToSdrSettings,
     HdrToneMappingOperator, RenderCapabilities, SwapchainTransferMode,
 };
-use render_wgpu::{RenderFrameFailure, RenderFrameOutcome, Renderer};
+use render_wgpu::{RenderFrameOutcome, Renderer};
 use rustiplayer_config::{AppConfig, HdrToSdrOperatorConfig};
 use rustiplayer_storage::StorageConnection;
 use tracing::{debug, info, instrument, trace, warn};
@@ -368,6 +366,7 @@ fn record_worker_events(telemetry: &Telemetry, events: Vec<PlayerWorkerEvent>) {
             PlayerWorkerEvent::Tick(tick_result) => {
                 record_player_tick_result(telemetry, &tick_result);
             }
+            PlayerWorkerEvent::RenderError(_) => {}
             PlayerWorkerEvent::Player(_) => {}
         }
     }
@@ -418,33 +417,45 @@ fn render_frame(
     let size = window.inner_size();
     let screen_size_in_pixels = [size.width.max(1), size.height.max(1)];
 
-    let mut video_render_boundary_error = None;
+    let mut video_render_error = None;
 
     // Время оставлено в сигнатуре renderer-а для будущих diagnostics/animation hooks.
     let time = app_state.elapsed_seconds() as f32;
     let present_frame = app_state.try_acquire_present_frame();
 
-    // Собираем renderer boundary frame только если есть metadata и обе texture planes.
-    let video_frame = match present_frame.as_ref() {
-        Some(present_frame) => {
+    let present_frame_texture_views = match present_frame.as_ref() {
+        Some(present_frame) => match present_frame.texture_views() {
+            Some(texture_views) => Some(texture_views),
+            None => {
+                video_render_error = Some(PlayerRenderError::missing_texture_views(present_frame));
+                None
+            }
+        },
+        None => None,
+    };
+
+    // Собираем renderer boundary frame только если lease metadata и обе texture planes готовы.
+    let video_frame = match (present_frame.as_ref(), present_frame_texture_views.as_ref()) {
+        (Some(present_frame), Some(texture_views)) => {
             tracing::trace!(
                 handle_id = present_frame.frame.texture_handle.0,
                 pts_ms = present_frame.frame.pts.as_millis(),
                 format = %present_frame.frame.format,
                 memory_path = %present_frame.frame.memory_path,
+                stale = present_frame.stale,
                 "Present frame acquired from playback worker"
             );
 
             let boundary_frame = match present_frame.frame.format {
                 DecodedPixelFormat::Nv12 => render_wgpu::WgpuRenderableFrame::from_decoded_nv12(
                     &present_frame.frame,
-                    &present_frame.y_view,
-                    &present_frame.uv_view,
+                    &texture_views.y_view,
+                    &texture_views.uv_view,
                 ),
                 DecodedPixelFormat::P010 => render_wgpu::WgpuRenderableFrame::from_decoded_p010(
                     &present_frame.frame,
-                    &present_frame.y_view,
-                    &present_frame.uv_view,
+                    &texture_views.y_view,
+                    &texture_views.uv_view,
                 ),
             };
 
@@ -461,8 +472,10 @@ fn render_frame(
                         memory_path = %present_frame.frame.memory_path,
                         "Failed to build WGPU renderable frame"
                     );
-                    video_render_boundary_error =
-                        Some(player_error_from_render_boundary_failure(message));
+                    video_render_error = Some(PlayerRenderError::unsupported_frame_format(
+                        present_frame,
+                        message,
+                    ));
                     None
                 }
             }
@@ -470,8 +483,8 @@ fn render_frame(
         _ => None,
     };
 
-    if let Some(error) = video_render_boundary_error {
-        app_state.mark_fatal_error(error);
+    if let Some(error) = video_render_error {
+        app_state.report_render_error(error);
     }
 
     // Рендерим полный кадр (видео + egui overlay)
@@ -488,7 +501,10 @@ fn render_frame(
         RenderFrameOutcome::Dropped(_reason) => telemetry.record_dropped_frame(),
         RenderFrameOutcome::Failed(failure) => {
             telemetry.record_dropped_frame();
-            app_state.mark_fatal_error(player_error_from_render_failure(&failure));
+            app_state.report_render_error(PlayerRenderError::render_device_lost(format!(
+                "Video render failed: {}",
+                failure.message
+            )));
         }
     }
     app_state.set_render_diagnostics(renderer.diagnostics());
@@ -497,22 +513,6 @@ fn render_frame(
     let frame_duration = frame_start.elapsed();
     let frame_time_ms = frame_duration.as_secs_f64() * 1000.0;
     telemetry.update_fps(frame_time_ms);
-}
-
-/// Переводит renderer failure в fatal media/runtime error без SDR fallback.
-fn player_error_from_render_failure(failure: &RenderFrameFailure) -> PlayerError {
-    PlayerError::new(
-        PlayerErrorKind::RenderDeviceLost,
-        format!("Video render failed: {}", failure.message),
-    )
-}
-
-/// Переводит ошибку сборки renderer boundary в fatal media error без подмены на black frame.
-fn player_error_from_render_boundary_failure(message: impl Into<String>) -> PlayerError {
-    PlayerError::new(
-        PlayerErrorKind::UnsupportedRenderFormat,
-        format!("Video render boundary failed: {}", message.into()),
-    )
 }
 
 /// Точка входа приложения.
@@ -731,6 +731,7 @@ fn rgb_triplet_from_config(field: &'static str, values: &[f32]) -> Result<[f32; 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use render_wgpu::RenderFrameFailure;
 
     /// Проверяет, что identity config доезжает до renderer без изменения SDR картинки.
     #[test]
@@ -754,9 +755,13 @@ mod tests {
     fn render_failure_maps_to_fatal_render_device_error() {
         let failure = RenderFrameFailure::new("P010 HDR renderer rejected strict metadata");
 
-        let error = player_error_from_render_failure(&failure);
+        let error = PlayerRenderError::render_device_lost(format!(
+            "Video render failed: {}",
+            failure.message
+        ))
+        .to_player_error();
 
-        assert_eq!(error.kind, PlayerErrorKind::RenderDeviceLost);
+        assert_eq!(error.kind, player_core::PlayerErrorKind::RenderDeviceLost);
         assert!(
             error
                 .message
@@ -767,11 +772,18 @@ mod tests {
     /// Проверяет, что ошибка renderer boundary не превращается в silent empty frame.
     #[test]
     fn render_boundary_failure_maps_to_fatal_render_format_error() {
-        let error = player_error_from_render_boundary_failure(
-            "WGPU renderable frame rejected decoded P010 frame",
-        );
+        let error = PlayerRenderError {
+            kind: player_core::PlayerRenderErrorKind::UnsupportedFrameFormat,
+            render_generation: Some(4),
+            frame_handle: Some(9),
+            message: "WGPU renderable frame rejected decoded P010 frame".into(),
+        }
+        .to_player_error();
 
-        assert_eq!(error.kind, PlayerErrorKind::UnsupportedRenderFormat);
+        assert_eq!(
+            error.kind,
+            player_core::PlayerErrorKind::UnsupportedRenderFormat
+        );
         assert!(
             error
                 .message

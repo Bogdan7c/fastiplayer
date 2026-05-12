@@ -225,7 +225,10 @@ Phase 10 fail-closed.
 
 - если capability intersection не проходит, stream не выбирается;
 - если P010 frame пришёл, но decoder/importer не может экспортировать/import-ить P010 zero-copy, decoder thread отдаёт fatal error в `player-core`;
-- если shell не может получить texture views для present frame или `WgpuRenderableFrame` отвергает decoded contract, это fatal media error;
+- если shell не может получить texture views для present frame через render-side
+  provider или `WgpuRenderableFrame` отвергает decoded contract, `app-egui`
+  отправляет typed `PlayerRenderError` в worker, а worker обновляет fatal media
+  error snapshot;
 - если renderer не может bind/render P010, это fatal media error;
 - если strict HDR metadata invalid, stream rejected до render;
 - device/surface lost обрабатывается текущей runtime recovery, но color path не деградирует silently;
@@ -572,7 +575,9 @@ Verification:
 Итоги self-review:
 
 - decoder-side P010 zero-copy failures теперь доходят до `PlayerSession` через `DecodeThreadError`;
-- shell-side missing texture views и rejected `WgpuRenderableFrame` теперь становятся fatal media errors;
+- shell-side missing texture views и rejected `WgpuRenderableFrame` теперь идут
+  через typed `PlayerRenderError`/`PlayerWorkerEvent::RenderError` и становятся
+  fatal media errors в player snapshot;
 - P010 SDR BT.709 side metadata с non-HDR transfer больше не выбирает HDR branch автоматически;
 - `app-egui` по-прежнему только мапит config/diagnostics и не содержит PQ/HLG/BT.2446-C math;
 - `nv12_to_rgba.wgsl` остался SDR shader, HDR math остаётся в `p010_bt2446c_to_sdr.wgsl`.

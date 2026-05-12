@@ -248,13 +248,38 @@ UI loop в worker thread и сразу готовит tick под seek modes, н
 
 ## Сессия 3. Render Frame Lease
 
-Статус в текущем коде: частично реализовано опережением в Сессии 2.
-`PlayerWorker::try_acquire_present_frame()` возвращает `PlayerPresentFrame` без
-раскрытия `PlayerSession`, а shared RAII lease отправляет drop-ack worker-у при
-освобождении последнего clone-а. Есть unit test на drain release ack перед reply.
-Полная Сессия 3 всё ещё полезна как отдельный acceptance pass: проверить stale
-generation semantics, render error path, отсутствие leak-а на failure/shutdown и
-закрыть весь список тестов ниже.
+Статус в текущем коде: выполнено, 2026-05-12.
+
+Фактически реализовано:
+
+- `PlayerWorker::try_acquire_present_frame()` возвращает `PresentFrameLease`
+  через compatibility alias `PlayerPresentFrame`, не раскрывая `PlayerSession`.
+- Lease содержит decoded frame metadata, opaque texture handle, render generation
+  и stale flag. `app-egui` дополнительно пересчитывает stale state по latest
+  snapshot для cached lease-а.
+- Worker выбирает текущий frame handle из worker-owned pipeline, но больше не
+  создаёт `wgpu::TextureView` и не вызывает render-side `get_views`.
+- Texture views создаются на render thread вызовом `PresentFrameLease::texture_views()`
+  через `video-vaapi::VideoTextureViewProvider`; это view creation поверх уже
+  импортированной/загруженной texture, а не копирование texture data.
+- Shared RAII drop ack отправляется worker-у только при drop последнего clone-а.
+  Если worker уже завершился и release channel disconnected, lease fail-closed
+  освобождает texture через provider исходного кадра.
+- Old generation lease может дожить после смены render generation: новый snapshot
+  делает его stale, но inflight lease остаётся валидным до drop.
+- Render bridge errors типизированы как `PlayerRenderError`/`PlayerRenderErrorKind`
+  и попадают в worker через `WorkerCommand::RenderError`, публикуются как
+  `PlayerWorkerEvent::RenderError` и обновляют `PlayerSnapshot.last_error`.
+- `app-egui` не обращается напрямую к `pipeline.present_video_frame`; это закреплено
+  regression test-ом.
+
+Проверки после реализации:
+
+- `cargo test -p player-core -p render-core -p app-egui` проходит.
+- `cargo check` проходит.
+- `cargo fmt --check` и `git diff --check` проходят.
+- Ручной playback/missing-views smoke test остаётся manual verification пунктом,
+  потому что требует локального video asset и GPU/runtime окружения.
 
 ### Контекст для копипаста
 
@@ -274,7 +299,7 @@ pipeline internals и не копируя texture data.
   - frame metadata
   - generation
   - stale flag
-- Texture views получаютcя на render thread через render-side provider.
+- Texture views получаются на render thread через render-side provider.
 - Worker выбирает frame handle, но не создаёт wgpu views.
 - Release через RAII drop/ack.
 - Поддержать latest frame + one inflight lease.
@@ -291,7 +316,8 @@ pipeline internals и не копируя texture data.
 ### Ручная проверка
 
 - Run video playback and confirm video still renders.
-- Force or simulate missing texture views and confirm typed render error appears.
+- Force or simulate missing texture views and confirm typed `PlayerRenderError`
+  appears and updates player error snapshot.
 - Confirm pause/resume does not leak texture handles.
 - `cargo test -p player-core -p render-core -p app-egui`
 - `cargo check`

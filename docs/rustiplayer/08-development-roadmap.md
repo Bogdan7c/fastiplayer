@@ -117,9 +117,10 @@ Acceptance:
 - `main.rs` становится lifecycle/render shell;
 - scheduler unit tests появляются в `player-core`.
 
-Текущий статус после live seek/timeline Session 2: `PlayerSession::tick()` уже не
+Текущий статус после live seek/timeline Session 3: `PlayerSession::tick()` уже не
 вызывается из render/UI loop. Tick остаётся API `PlayerSession`, но runtime-вызов
-идёт из потока `PlayerWorker`.
+идёт из потока `PlayerWorker`; render/UI loop получает video frame только через
+render lease boundary.
 
 ## Phase 5: Config crate
 
@@ -280,10 +281,16 @@ Acceptance:
 
 Подробный план: [12. Live Seek, Timeline and Desktop Controls Sessions](11-live-seek-timeline-sessions.md).
 
-Статус: Session 1 и Session 2 реализованы. Закрыты neutral timeline contracts,
-config schema v2, playback worker boundary, latest snapshot/event streams,
-базовый render-frame lease request path, `SeekController` skeleton, command
-priority для scrub и `UpdateScrub` coalescing policy `Drain Latest`.
+Статус: Session 1, Session 2 и Session 3 реализованы. Закрыты neutral timeline
+contracts, config schema v2, playback worker boundary, latest snapshot/event
+streams, `SeekController` skeleton, command priority для scrub, `UpdateScrub`
+coalescing policy `Drain Latest` и полноценный render-frame lease acceptance pass.
+
+Текущий render bridge: `PlayerWorker` отдаёт `PresentFrameLease` с decoded frame
+metadata, handle, generation и stale flag; worker не создаёт `wgpu::TextureView`.
+Texture views создаются на render thread через render-side provider, release идёт
+через RAII drop/ack, а render bridge failures попадают в worker как typed
+`PlayerRenderError`.
 
 Остаётся в следующих сессиях:
 

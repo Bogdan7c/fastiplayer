@@ -65,6 +65,92 @@ pub enum ThreadMsg {
     Flush(std::sync::mpsc::Sender<()>),
 }
 
+/// Пара WGPU texture views для decoded YUV/P010 кадра.
+pub struct VideoTextureViews {
+    /// Texture view с luma/Y plane.
+    pub y_view: wgpu::TextureView,
+
+    /// Texture view с chroma/UV plane.
+    pub uv_view: wgpu::TextureView,
+}
+
+/// Узкий render-side provider для доступа к texture views по opaque frame handle.
+///
+/// Provider не раскрывает decoder internals и не копирует pixels: render thread
+/// получает views из уже импортированного или загруженного texture pool.
+#[derive(Clone)]
+pub struct VideoTextureViewProvider {
+    /// Канал decoder thread для release zero-copy VA handles после GPU fence.
+    msg_tx: std::sync::mpsc::Sender<ThreadMsg>,
+
+    /// WGPU queue нужен только для callback-а завершения уже отправленной GPU work.
+    queue: Arc<wgpu::Queue>,
+
+    /// Shared texture pool, из которого render thread создаёт WGPU views.
+    texture_pool: Arc<Mutex<crate::texture_cache::WgpuTexturePool>>,
+}
+
+impl VideoTextureViewProvider {
+    /// Получает Y/UV views для frame handle на render thread.
+    #[must_use]
+    pub fn texture_views(
+        &self,
+        handle: video_core::FrameTextureHandle,
+    ) -> Option<VideoTextureViews> {
+        match self.texture_pool.lock() {
+            Ok(texture_pool) => texture_pool
+                .get_views(handle)
+                .map(|(y_view, uv_view)| VideoTextureViews { y_view, uv_view }),
+            Err(error) => {
+                tracing::warn!(error = %error, "Texture pool mutex poisoned during get_views");
+                None
+            }
+        }
+    }
+
+    /// Освобождает texture slot через тот decoder/texture pool, который создал кадр.
+    pub fn release_frame(&self, handle: video_core::FrameTextureHandle) {
+        trace!(handle_id = handle.0, "Releasing texture slot directly");
+        let retired_slot = match self.texture_pool.lock() {
+            Ok(mut texture_pool) => {
+                let retired_slot = texture_pool.release_slot(handle);
+                if retired_slot.is_some() {
+                    trace!(
+                        handle_id = handle.0,
+                        "Zero-copy frame retired until submitted GPU work completes"
+                    );
+                }
+                retired_slot
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "Texture pool mutex poisoned during release");
+                None
+            }
+        };
+
+        let Some(retired_slot) = retired_slot else {
+            return;
+        };
+
+        let msg_tx = self.msg_tx.clone();
+        self.queue.on_submitted_work_done(move || {
+            let ready_handle = retired_slot.frame_handle;
+            drop(retired_slot);
+            trace!(
+                handle_id = ready_handle.0,
+                "Submitted GPU work completed; releasing zero-copy VA handle"
+            );
+            if let Err(error) = msg_tx.send(ThreadMsg::ReleaseZeroCopy(ready_handle)) {
+                tracing::warn!(
+                    error = %error,
+                    handle_id = ready_handle.0,
+                    "Failed to send zero-copy release to decoder thread"
+                );
+            }
+        });
+    }
+}
+
 /// Сырые данные видео-пакета для передачи в decoder thread.
 pub struct DecodePacket {
     /// Track ID выбранного video stream.
@@ -211,44 +297,7 @@ impl VideoDecodeThread {
     /// если релиз был бы async (через channel), decoder thread мог бы
     /// обработать новый Packet ДО Release, создав новый слот вместо reuse.
     pub fn release_frame(&self, handle: video_core::FrameTextureHandle) {
-        trace!(handle_id = handle.0, "Releasing texture slot directly");
-        let retired_slot = match self.texture_pool.lock() {
-            Ok(mut texture_pool) => {
-                let retired_slot = texture_pool.release_slot(handle);
-                if retired_slot.is_some() {
-                    trace!(
-                        handle_id = handle.0,
-                        "Zero-copy frame retired until submitted GPU work completes"
-                    );
-                }
-                retired_slot
-            }
-            Err(error) => {
-                tracing::warn!(error = %error, "Texture pool mutex poisoned during release");
-                None
-            }
-        };
-
-        let Some(retired_slot) = retired_slot else {
-            return;
-        };
-
-        let msg_tx = self.msg_tx.clone();
-        self.queue.on_submitted_work_done(move || {
-            let ready_handle = retired_slot.frame_handle;
-            drop(retired_slot);
-            trace!(
-                handle_id = ready_handle.0,
-                "Submitted GPU work completed; releasing zero-copy VA handle"
-            );
-            if let Err(error) = msg_tx.send(ThreadMsg::ReleaseZeroCopy(ready_handle)) {
-                tracing::warn!(
-                    error = %error,
-                    handle_id = ready_handle.0,
-                    "Failed to send zero-copy release to decoder thread"
-                );
-            }
-        });
+        self.texture_view_provider().release_frame(handle);
     }
 
     /// Забирает готовый decoded frame из очереди (неблокирующий).
@@ -283,12 +332,18 @@ impl VideoDecodeThread {
         &self,
         handle: video_core::FrameTextureHandle,
     ) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
-        match self.texture_pool.lock() {
-            Ok(texture_pool) => texture_pool.get_views(handle),
-            Err(error) => {
-                tracing::warn!(error = %error, "Texture pool mutex poisoned during get_views");
-                None
-            }
+        self.texture_view_provider()
+            .texture_views(handle)
+            .map(|views| (views.y_view, views.uv_view))
+    }
+
+    /// Возвращает cloneable provider, который render thread использует для texture views.
+    #[must_use]
+    pub fn texture_view_provider(&self) -> VideoTextureViewProvider {
+        VideoTextureViewProvider {
+            msg_tx: self.msg_tx.clone(),
+            queue: self.queue.clone(),
+            texture_pool: self.texture_pool.clone(),
         }
     }
 

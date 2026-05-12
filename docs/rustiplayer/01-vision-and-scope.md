@@ -27,8 +27,10 @@ Audio decode может быть software. Это нормальный tradeoff:
 2. Плеер определяет источник, контейнер, треки и доступные варианты качества.
 3. Capability layer опрашивает систему и строит матрицу поддерживаемых video decode formats.
 4. Stream selection выбирает лучший поток, который реально может быть воспроизведен.
-5. Player core запускает demux, audio pipeline, video hardware decode, A/V sync и render.
-6. UI отображает воспроизведение, диагностику, настройки и ошибки.
+5. Player core запускает demux, audio pipeline, video hardware decode и A/V sync
+   внутри `PlayerWorker`.
+6. UI/render shell получает decoded frame через render lease, создаёт texture views
+   на render thread и отображает воспроизведение, диагностику, настройки и ошибки.
 7. После реализации desktop integration плеер публикует MPRIS-состояние для KDE/media widgets.
 
 ## Поддерживаемые направления

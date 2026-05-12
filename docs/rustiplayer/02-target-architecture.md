@@ -47,7 +47,7 @@ PlayerCommand
         v
 PlayerWorker
   crossbeam-channel command queue, latest snapshot publisher, event stream,
-  render frame lease requests, shutdown/join path
+  render frame lease requests, typed render errors, shutdown/join path
         |
         v
 PlayerSession
@@ -71,7 +71,7 @@ PlayerSession
 PlayerSnapshot
         |
         +--> egui UI
-        +--> renderer present frame
+        +--> renderer present frame lease
         +--> MPRIS state
         +--> telemetry/storage
 ```
@@ -198,6 +198,33 @@ UI не должен напрямую дергать demuxer, audio output ил�
 В текущем runtime UI отправляет команды в `PlayerWorker`, а worker уже вызывает
 `PlayerSession::dispatch_command`/`tick` и публикует latest snapshot/events.
 
+## Render frame lease boundary
+
+Render thread получает кадр через lease, а не через прямой доступ к
+`PlayerSession` или `PlaybackPipeline`.
+
+Текущий контракт:
+
+- `PlayerWorker::try_acquire_present_frame()` возвращает `PresentFrameLease`
+  через compatibility alias `PlayerPresentFrame`;
+- lease содержит decoded frame metadata, opaque texture handle, render generation
+  и stale flag;
+- worker выбирает frame handle, но не создаёт `wgpu::TextureView`;
+- texture views создаются на render thread через render-side provider:
+  `PresentFrameLease::texture_views()`;
+- создание `TextureView` не является texture copy; CPU/GPU copy fallback ради
+  render bridge не добавляется;
+- release идёт через shared RAII drop/ack, когда освобождён последний clone lease-а;
+- если ack уже невозможно доставить из-за shutdown, lease fail-closed освобождает
+  texture через provider исходного кадра;
+- stale frame state приходит через snapshot/lease metadata и не инвалидирует
+  inflight lease.
+
+Render bridge errors не должны превращаться в silent black frame. Missing texture
+views, rejected `WgpuRenderableFrame` и render device/surface failures отправляются
+в worker как typed `PlayerRenderError`, публикуются как `PlayerWorkerEvent::RenderError`
+и обновляют `PlayerSnapshot.last_error`.
+
 ## Snapshot model
 
 `PlayerSnapshot` - read-only состояние для UI, renderer и desktop integration.
@@ -225,7 +252,7 @@ Snapshot не должен содержать mutable handles к decoder/demuxer
 
 ## Threading model
 
-Текущая базовая модель после live seek/timeline Session 2:
+Текущая базовая модель после live seek/timeline Session 3:
 
 - main thread: winit/egui/render command submission;
 - player worker thread: владеет `PlayerSession`, demux/audio/video pipeline,
@@ -238,7 +265,8 @@ Snapshot не должен содержать mutable handles к decoder/demuxer
 Важное правило: render loop не должен содержать бизнес-логику playback и не должен
 вызывать `PlayerSession::tick()` напрямую. Он отправляет `PlayerCommand`,
 забирает `PlayerSnapshot`/`PlayerWorkerEvent` из worker boundary и запрашивает
-present frame через render lease.
+present frame через render lease. `wgpu::TextureView` создаются на render thread,
+а не в worker.
 
 ## Backpressure model
 
@@ -278,11 +306,16 @@ enum PlayerErrorKind {
     DemuxError,
     NetworkError,
     AudioDeviceUnavailable,
+    UnsupportedRenderFormat,
     RenderDeviceLost,
     StorageError,
     ConfigError,
 }
 ```
+
+Render bridge использует отдельную typed оболочку `PlayerRenderError` с kind вроде
+`MissingTextureViews`, `UnsupportedFrameFormat` и `RenderDeviceLost`, а затем
+мапит её в существующий `PlayerError` snapshot contract.
 
 ## Почему так
 

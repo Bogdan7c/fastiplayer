@@ -25,7 +25,7 @@ crates/cros-libva-patch - локальный patched `libva` wrapper dependency 
 crates/storage          - SQLite migrations/history/progress/cache
 ```
 
-Главный оставшийся долг: `app-egui` всё ещё является desktop shell с несколькими runtime wiring helpers, но codec/capability/player decisions уже вынесены из UI-слоя. После live seek/timeline Session 2 `app-egui` больше не владеет media pipeline: `PlayerWorker` держит `PlayerSession`, выполняет tick на отдельном потоке и отдаёт shell-у latest snapshot/event stream.
+Главный оставшийся долг: `app-egui` всё ещё является desktop shell с несколькими runtime wiring helpers, но codec/capability/player decisions уже вынесены из UI-слоя. После live seek/timeline Session 3 `app-egui` больше не владеет media pipeline: `PlayerWorker` держит `PlayerSession`, выполняет tick на отдельном потоке, отдаёт shell-у latest snapshot/event stream и выдаёт decoded frame только через render lease. `app-egui` получает `wgpu` texture views на render thread через provider lease-а и не читает `pipeline.present_video_frame` напрямую.
 
 ## Целевая карта crate'ов
 
@@ -73,7 +73,9 @@ Desktop shell.
 - dispatch `PlayerCommand` через `PlayerWorker`;
 - отображение `PlayerSnapshot`;
 - вызов render backend;
-- запрос present frame через worker render lease boundary;
+- запрос `PresentFrameLease` через worker render lease boundary;
+- получение `wgpu::TextureView` на render thread через render-side provider lease-а;
+- отправка typed `PlayerRenderError` в worker при render bridge/render failure;
 - показ user-facing errors.
 
 Не отвечает за:
@@ -84,6 +86,7 @@ Desktop shell.
 - source extraction;
 - storage schema;
 - capability probing.
+- прямой доступ к `PlayerSession`, `PlaybackPipeline` или `pipeline.present_video_frame`.
 
 ### `player-core`
 
@@ -98,6 +101,8 @@ Desktop shell.
 - `PlayerEvent`;
 - `PlayerSnapshot`;
 - `PlayerWorkerEvent`;
+- `PresentFrameLease` / compatibility alias `PlayerPresentFrame`;
+- `PlayerRenderError`;
 - `SeekController`;
 - playback states;
 - play/pause/seek/scrub/stop/drain/EOF;
@@ -107,10 +112,17 @@ Desktop shell.
 
 `PlayerWorker` является текущей runtime boundary: он использует `crossbeam-channel`
 для bounded command queue, отдельного bounded latest scrub channel, latest snapshot
-publisher, event stream и shutdown signal. `UpdateScrub` coalescing реализован
-политикой `Drain Latest`, чтобы high-rate drag events не раздували общую очередь.
+publisher, event stream, render frame lease request channel, render release ack
+channel и shutdown signal. `UpdateScrub` coalescing реализован политикой
+`Drain Latest`, чтобы high-rate drag events не раздували общую очередь.
 `PlayerSession::tick()` остаётся внутренним API `player-core`, но вызывается
 worker-потоком, а не `app-egui`.
+
+Render bridge в `player-core` отдаёт shell-у `PresentFrameLease` с frame metadata,
+texture handle, render generation и stale flag. Worker выбирает handle из
+worker-owned pipeline, но не создаёт `wgpu::TextureView`. Release texture slot-а
+идёт через shared RAII drop/ack; typed render bridge failures попадают обратно в
+worker как `PlayerRenderError` и обновляют player error snapshot.
 
 `player-core` хранит seek/timeline state в `PlayerSnapshot` через typed
 `TimelineSnapshot`, а legacy `duration/current_position: Duration` остаются
@@ -304,6 +316,8 @@ Linux hardware decode backend.
 - hardware decode;
 - frame pool;
 - DMA-BUF/texture upload integration;
+- render-side `VideoTextureViewProvider` для получения Y/UV `wgpu::TextureView`
+  по opaque frame handle без доступа к player pipeline;
 - errors with driver/backend context.
 
 ### `video-backend-dx12`
@@ -351,6 +365,8 @@ Primary renderer.
 - SDR color adjustments in shader uniforms;
 - HDR-to-SDR tone mapping из Phase 10;
 - distinction between P010 zero-copy boundary readiness and production P010 renderability;
+- принятие `WgpuRenderableFrame`, собранного shell-ом из lease metadata и
+  render-thread texture views;
 - egui composition.
 
 Текущее состояние: production NV12 path уже живёт в `render-wgpu`; Phase 10 добавил production P010/HDR renderer через отдельный `p010_bt2446c_to_sdr.wgsl` path. P010 renderability всё ещё зависит от фактических `wgpu` feature gates и DMA-BUF layout: Intel/i965 separate-layer `R16Unorm + Rg16Unorm` plane views являются baseline, composed `TextureFormat::P010` остаётся compatibility layout.
