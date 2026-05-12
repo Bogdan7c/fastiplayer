@@ -28,7 +28,7 @@ impl TimelineUiState {
 
     /// Возвращает позицию, которую нужно показывать во время live scrub.
     #[must_use]
-    fn display_position(&self, timeline: &TimelineSnapshot) -> MediaTime {
+    pub fn display_position(&self, timeline: &TimelineSnapshot) -> MediaTime {
         self.transient_drag_position
             .or(timeline.target_position)
             .unwrap_or(timeline.current_position)
@@ -556,6 +556,24 @@ mod tests {
         assert!(state.has_active_drag());
         state.clear_transient_drag();
         assert_eq!(state, TimelineUiState::default());
+    }
+
+    /// Проверяет порядок выбора отображаемой позиции: drag -> target -> current.
+    #[test]
+    fn display_position_prefers_transient_drag_then_target_then_current() {
+        let mut timeline = seekable_timeline();
+        timeline.current_position = MediaTime::from_secs(5);
+        timeline.target_position = Some(MediaTime::from_secs(30));
+
+        let mut state = TimelineUiState::default();
+        assert_eq!(state.display_position(&timeline), MediaTime::from_secs(30));
+
+        state.transient_drag_position = Some(MediaTime::from_secs(70));
+        assert_eq!(state.display_position(&timeline), MediaTime::from_secs(70));
+
+        state.clear_transient_drag();
+        timeline.target_position = None;
+        assert_eq!(state.display_position(&timeline), MediaTime::from_secs(5));
     }
 
     /// Проверяет формат времени для пустого, короткого и длинного media.

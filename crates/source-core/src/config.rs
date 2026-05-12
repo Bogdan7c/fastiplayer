@@ -16,9 +16,6 @@ pub struct SourceRuntimeConfig {
     /// IO budget фонового indexer-а в bytes/sec.
     indexer_io_budget_bytes_per_sec: u64,
 
-    /// Размер head/tail sample для partial hash локального media index.
-    index_fingerprint_sample_bytes: u64,
-
     /// Timeout установления HTTP соединения.
     connect_timeout: Duration,
 
@@ -41,7 +38,7 @@ mod tests {
             connect_timeout_ms: 4,
             read_timeout_ms: 5,
             indexer_io_budget_mb_per_sec: 6,
-            index_fingerprint_sample_kb: 7,
+            legacy_index_fingerprint_sample_kb: 7,
         };
 
         let runtime = SourceRuntimeConfig::from_network_config(&config).expect("config valid");
@@ -49,7 +46,6 @@ mod tests {
         assert_eq!(runtime.memory_cache_bytes(), 2 * 1024 * 1024);
         assert_eq!(runtime.read_ahead_bytes(), 3 * 1024 * 1024);
         assert_eq!(runtime.indexer_io_budget_bytes_per_sec(), 6 * 1024 * 1024);
-        assert_eq!(runtime.index_fingerprint_sample_bytes(), 7 * 1024);
         assert_eq!(runtime.connect_timeout(), Duration::from_millis(4));
         assert_eq!(runtime.read_timeout(), Duration::from_millis(5));
     }
@@ -82,14 +78,6 @@ impl SourceRuntimeConfig {
                 field: "network.indexer_io_budget_mb_per_sec",
                 message: "значение не помещается в байтовый budget".to_string(),
             })?;
-        let index_fingerprint_sample_bytes = network_config
-            .index_fingerprint_sample_kb
-            .checked_mul(1024)
-            .ok_or(SourceError::InvalidConfig {
-                field: "network.index_fingerprint_sample_kb",
-                message: "значение не помещается в байтовый sample".to_string(),
-            })?;
-
         if network_config.connect_timeout_ms == 0 {
             return Err(SourceError::InvalidConfig {
                 field: "network.connect_timeout_ms",
@@ -108,7 +96,6 @@ impl SourceRuntimeConfig {
             memory_cache_bytes,
             read_ahead_bytes,
             indexer_io_budget_bytes_per_sec,
-            index_fingerprint_sample_bytes,
             connect_timeout: Duration::from_millis(network_config.connect_timeout_ms),
             read_timeout: Duration::from_millis(network_config.read_timeout_ms),
         })
@@ -130,12 +117,6 @@ impl SourceRuntimeConfig {
     #[must_use]
     pub const fn indexer_io_budget_bytes_per_sec(&self) -> u64 {
         self.indexer_io_budget_bytes_per_sec
-    }
-
-    /// Возвращает размер head/tail sample для partial hash локального media index.
-    #[must_use]
-    pub const fn index_fingerprint_sample_bytes(&self) -> u64 {
-        self.index_fingerprint_sample_bytes
     }
 
     /// Возвращает timeout подключения к HTTP source.
@@ -161,7 +142,6 @@ impl SourceRuntimeConfig {
             memory_cache_bytes,
             read_ahead_bytes: memory_cache_bytes,
             indexer_io_budget_bytes_per_sec: memory_cache_bytes,
-            index_fingerprint_sample_bytes: memory_cache_bytes,
             connect_timeout,
             read_timeout,
         }

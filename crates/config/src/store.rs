@@ -200,7 +200,6 @@ mod tests {
         assert_eq!(config.network.connect_timeout_ms, 15_000);
         assert_eq!(config.network.read_timeout_ms, 15_000);
         assert_eq!(config.network.indexer_io_budget_mb_per_sec, 32);
-        assert_eq!(config.network.index_fingerprint_sample_kb, 256);
         assert_eq!(config.ui.skin, "minimal");
     }
 
@@ -226,7 +225,7 @@ mod tests {
         assert!(created_toml.contains("# RAM cache budget"));
         assert!(created_toml.contains("memory_cache_mb = 128"));
         assert!(created_toml.contains("read_ahead_mb = 64"));
-        assert!(created_toml.contains("index_fingerprint_sample_kb = 256"));
+        assert!(!created_toml.contains("index_fingerprint_sample_kb"));
         assert!(created_toml.contains("# UI skin id"));
         assert!(created_toml.contains("skin = \"minimal\""));
         assert!(created_toml.contains("[render.hdr_to_sdr]"));
@@ -235,6 +234,32 @@ mod tests {
         let reparsed = toml::from_str::<AppConfig>(&created_toml)
             .expect("documented default config remains valid TOML");
         assert_eq!(reparsed, AppConfig::default());
+    }
+
+    /// Проверяет, что config со старым index fingerprint полем всё ещё читается.
+    #[test]
+    fn legacy_index_fingerprint_config_field_is_accepted_but_not_written() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[network]
+index_fingerprint_sample_kb = 512
+"#,
+        )
+        .expect("legacy config written");
+
+        let loaded = load_from_path(&config_path).expect("legacy config accepted");
+        let serialized = loaded.config.to_pretty_toml().expect("config serialized");
+
+        assert_eq!(
+            loaded.config.network.legacy_index_fingerprint_sample_kb,
+            512
+        );
+        assert!(!serialized.contains("index_fingerprint_sample_kb"));
     }
 
     /// Проверяет, что старый config без color_adjustment получает identity defaults.

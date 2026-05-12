@@ -32,8 +32,7 @@ use render_core::{
 };
 use render_wgpu::{RenderFrameOutcome, Renderer};
 use rustiplayer_config::{AppConfig, HdrToSdrOperatorConfig};
-use rustiplayer_storage::StorageConnection;
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{debug, info, instrument, warn};
 use video_core::DecodedPixelFormat;
 use winit::{
     application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
@@ -55,9 +54,6 @@ enum InitialMedia {
 
         /// Demuxer, читающий из HTTP-backed потоков.
         demuxer: Box<dyn webm_demux::Demuxer + Send>,
-
-        /// Service descriptors с validators для persisted metadata index.
-        direct_streams: service_youtube::YoutubeDirectStreams,
     },
 }
 
@@ -90,9 +86,6 @@ struct App {
 
     /// Валидированная пользовательская конфигурация.
     app_config: AppConfig,
-
-    /// SQLite storage connection, открытый на время жизни приложения.
-    storage_connection: Option<StorageConnection>,
 }
 
 impl App {
@@ -103,7 +96,6 @@ impl App {
         initial_media: Option<InitialMedia>,
         startup_error: Option<String>,
         app_config: AppConfig,
-        storage_connection: Option<StorageConnection>,
     ) -> Self {
         Self {
             window: None,
@@ -113,7 +105,6 @@ impl App {
             initial_media,
             startup_error,
             app_config,
-            storage_connection,
         }
     }
 
@@ -149,16 +140,11 @@ impl App {
         renderer.set_color_pipeline_settings(color_pipeline_settings);
         renderer.set_hdr_to_sdr_settings(hdr_to_sdr_settings);
 
-        if self.storage_connection.is_none() {
-            trace!("Storage connection недоступен; долговременные записи отключены");
-        }
-
         let mut app_state = match AppState::new(
             &window,
             self.telemetry.clone(),
             self.app_config.clone(),
             self.startup_error.clone(),
-            self.storage_connection.take(),
         ) {
             Ok(app_state) => app_state,
             Err(error) => {
@@ -183,13 +169,9 @@ impl App {
                     info!(path = %path.display(), "Автозагрузка файла из CLI");
                     app_state.load_file(&path);
                 }
-                InitialMedia::Streaming {
-                    label,
-                    demuxer,
-                    direct_streams,
-                } => {
+                InitialMedia::Streaming { label, demuxer } => {
                     info!(source = %label, "Автозагрузка streaming media из CLI");
-                    app_state.load_youtube_demuxer(label, demuxer, &direct_streams);
+                    app_state.load_youtube_demuxer(label, demuxer);
                 }
             }
         }
@@ -204,10 +186,6 @@ impl App {
 
     /// Освобождает runtime-ресурсы в порядке, безопасном для GPU/audio cleanup.
     fn drop_runtime(&mut self) {
-        if let Some(app_state) = &mut self.app_state {
-            self.storage_connection = app_state.take_storage_connection();
-        }
-
         if let Some(app_state) = &self.app_state
             && let Some(path) = app_state.current_local_file()
         {
@@ -398,7 +376,6 @@ fn record_worker_events(telemetry: &Telemetry, events: Vec<PlayerWorkerEvent>) {
             PlayerWorkerEvent::Tick(tick_result) => {
                 record_player_tick_result(telemetry, &tick_result);
             }
-            PlayerWorkerEvent::IndexUpdated(_) => {}
             PlayerWorkerEvent::RenderError(_) => {}
             PlayerWorkerEvent::Player(_) => {}
         }
@@ -583,21 +560,12 @@ fn main() -> Result<()> {
     // ControlFlow::Poll — непрерывный рендеринг (vsync контролируется present mode)
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
 
-    // Создаём и запускаем приложение
-    let (storage_connection, storage_startup_error) = initialize_storage();
-
     let (initial_media, cli_startup_error) =
         resolve_initial_media_from_cli(&loaded_config.config.network);
     if let Some(InitialMedia::File(path)) = &initial_media {
         info!(path = %path.display(), "CLI аргумент: файл для воспроизведения");
     }
-    let startup_error = combine_startup_errors([storage_startup_error, cli_startup_error]);
-    let mut app = App::new(
-        initial_media,
-        startup_error,
-        loaded_config.config,
-        storage_connection,
-    );
+    let mut app = App::new(initial_media, cli_startup_error, loaded_config.config);
     event_loop.run_app(&mut app)?;
 
     info!("Приложение завершено");
@@ -630,7 +598,6 @@ fn resolve_initial_media_from_cli(
                     Some(InitialMedia::Streaming {
                         label: streaming_media.description,
                         demuxer: streaming_media.demuxer,
-                        direct_streams: streaming_media.direct_streams,
                     }),
                     None,
                 )
@@ -646,25 +613,6 @@ fn resolve_initial_media_from_cli(
     (Some(InitialMedia::File(PathBuf::from(argument))), None)
 }
 
-/// Открывает SQLite storage и возвращает user-facing startup error при сбое.
-fn initialize_storage() -> (Option<StorageConnection>, Option<String>) {
-    match rustiplayer_storage::open_or_create() {
-        Ok(opened_storage) => {
-            info!(
-                path = %opened_storage.path.display(),
-                schema_version = opened_storage.migration_report.current_version,
-                applied_migrations = opened_storage.migration_report.applied_migrations.len(),
-                "Storage rustiplayer готов"
-            );
-            (Some(opened_storage.connection), None)
-        }
-        Err(error) => {
-            tracing::error!(error = %error, "Не удалось инициализировать storage rustiplayer");
-            (None, Some(format!("StorageError: {error}")))
-        }
-    }
-}
-
 /// Запускает compile-time зарегистрированные capability probes.
 fn probe_system_capabilities(
     render_capabilities: RenderCapabilities,
@@ -673,17 +621,6 @@ fn probe_system_capabilities(
     scanner.register_provider(Box::new(video_vaapi::VaapiCapabilityProvider::new()));
     scanner.register_render_capabilities(render_capabilities);
     scanner.scan()
-}
-
-/// Объединяет startup-ошибки shell-слоя в одно UI-сообщение.
-fn combine_startup_errors(errors: [Option<String>; 2]) -> Option<String> {
-    let messages = errors.into_iter().flatten().collect::<Vec<_>>();
-
-    if messages.is_empty() {
-        None
-    } else {
-        Some(messages.join("\n"))
-    }
 }
 
 /// Логирует legacy tone mapping placeholder, который Phase 10 не превращает в UI preset.

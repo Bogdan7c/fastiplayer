@@ -17,12 +17,11 @@ use crate::pipeline::{
 };
 use crate::seek_controller::PlaybackResumeIntent;
 use crate::{
-    AudioBufferSnapshot, BackendSnapshot, BackgroundIndexSeed, BackgroundIndexer,
-    BackgroundIndexerConfig, FrameCounters, IndexPressureSnapshot, MediaOpenRequest, MediaSource,
-    MediaSummary, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind,
-    PlayerEvent, PlayerResult, PlayerSnapshot, QualitySelection, QueueSnapshot, SeekMode,
-    SeekRequest, TexturePoolSnapshot, TrackId, TrackSelectionSnapshot, TrackSummarySnapshot,
-    VideoFrameSnapshot,
+    AudioBufferSnapshot, BackendSnapshot, BackgroundIndexer, BackgroundIndexerConfig,
+    FrameCounters, IndexPressureSnapshot, MediaOpenRequest, MediaSource, MediaSummary,
+    PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent,
+    PlayerResult, PlayerSnapshot, QualitySelection, QueueSnapshot, SeekMode, SeekRequest,
+    TexturePoolSnapshot, TrackId, TrackSelectionSnapshot, TrackSummarySnapshot, VideoFrameSnapshot,
 };
 
 /// Dev-only режим, который разрешает VP9 Profile 2 HDR дойти до P010 zero-copy boundary.
@@ -235,22 +234,6 @@ impl PlayerSession {
 
     /// Загружает локальный WebM/Matroska файл с явной autoplay-политикой.
     pub fn load_file_with_autoplay(&mut self, path: &Path, autoplay: bool) {
-        self.load_file_with_autoplay_and_index(
-            path,
-            autoplay,
-            None,
-            BackgroundIndexSeed::default(),
-        );
-    }
-
-    /// Загружает локальный файл с seed-ом persisted keyframe/time index-а.
-    pub fn load_file_with_autoplay_and_index(
-        &mut self,
-        path: &Path,
-        autoplay: bool,
-        index_source_key: Option<String>,
-        index_seed: BackgroundIndexSeed,
-    ) {
         self.reset_media_state();
 
         let open_request =
@@ -296,9 +279,8 @@ impl PlayerSession {
                 }
                 self.apply_demux_seekability(seekability);
                 self.start_background_index_job(
-                    index_source_key.unwrap_or_else(|| format!("local:{}", path.display())),
+                    format!("local:{}", path.display()),
                     duration.map(MediaDuration::from_duration),
-                    index_seed,
                 );
             }
             Err(error) => {
@@ -322,24 +304,6 @@ impl PlayerSession {
         label: String,
         demuxer: Box<dyn webm_demux::Demuxer + Send>,
         autoplay: bool,
-    ) {
-        self.load_demuxer_with_autoplay_and_index(
-            label,
-            demuxer,
-            autoplay,
-            None,
-            BackgroundIndexSeed::default(),
-        );
-    }
-
-    /// Загружает streaming demuxer с seed-ом persisted keyframe/time index-а.
-    pub fn load_demuxer_with_autoplay_and_index(
-        &mut self,
-        label: String,
-        demuxer: Box<dyn webm_demux::Demuxer + Send>,
-        autoplay: bool,
-        index_source_key: Option<String>,
-        index_seed: BackgroundIndexSeed,
     ) {
         self.reset_media_state();
 
@@ -376,7 +340,7 @@ impl PlayerSession {
         self.pipeline.source_label = Some(label.clone());
         self.clear_error();
 
-        let index_source_key = index_source_key.unwrap_or_else(|| format!("stream:{label}"));
+        let index_source_key = format!("stream:{label}");
         let summary = MediaSummary {
             title: Some(label.clone()),
             source_label: label,
@@ -389,7 +353,6 @@ impl PlayerSession {
         self.start_background_index_job(
             index_source_key,
             duration.map(MediaDuration::from_duration),
-            index_seed,
         );
     }
 
@@ -1320,14 +1283,9 @@ impl PlayerSession {
     }
 
     /// Стартует metadata index job для текущего media без decoder/audio/render ресурсов.
-    fn start_background_index_job(
-        &mut self,
-        source_key: String,
-        duration: Option<MediaDuration>,
-        index_seed: BackgroundIndexSeed,
-    ) {
+    fn start_background_index_job(&mut self, source_key: String, duration: Option<MediaDuration>) {
         self.background_indexer
-            .start_job_with_seed(source_key, duration, index_seed);
+            .start_job(source_key, duration, Vec::new());
     }
 
     /// Сохраняет runtime error как user-facing ошибку.
@@ -2035,7 +1993,6 @@ mod tests {
             time: MediaTime::from_secs(seconds),
             byte_offset: None,
             keyframe,
-            fingerprint_link: "fake-source".to_string(),
         }
     }
 

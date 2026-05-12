@@ -21,7 +21,7 @@ pub use cancellation::CancellationToken;
 pub use config::SourceRuntimeConfig;
 pub use error::{SourceError, SourceResult};
 pub use http::{HttpHeader, HttpRangeSource, HttpRangeSourceConfig};
-pub use local::{LocalFileIndexIdentity, LocalFileSource, build_local_file_index_identity};
+pub use local::LocalFileSource;
 pub use metadata::{
     ByteSource, NotSeekableReason, Seekability, SourceFingerprint, SourceValidators,
 };

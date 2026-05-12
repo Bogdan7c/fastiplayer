@@ -135,11 +135,6 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
-        "index_fingerprint_sample_kb = 256",
-        "# Размер head/tail sample для partial hash локального media index.",
-    );
-    insert_default_config_comment(
-        toml_text,
         "skin = \"minimal\"",
         "# UI skin id; unknown id является config error.",
     );
@@ -177,7 +172,7 @@ pub struct PlayerConfig {
     /// Открывать media в паузе.
     pub start_paused: bool,
 
-    /// В будущем восстанавливать позицию из storage.
+    /// Зарезервировано для будущего восстановления позиции.
     pub resume_last_position: bool,
 
     /// Настройки seek/scrub поведения.
@@ -612,8 +607,9 @@ pub struct NetworkConfig {
     /// Бюджет фонового indexer/cache IO.
     pub indexer_io_budget_mb_per_sec: u64,
 
-    /// Размер head/tail sample для partial hash локального media index.
-    pub index_fingerprint_sample_kb: u64,
+    /// Legacy no-op поле старых config-файлов; новые defaults его больше не записывают.
+    #[serde(rename = "index_fingerprint_sample_kb", skip_serializing)]
+    pub legacy_index_fingerprint_sample_kb: u64,
 }
 
 impl Default for NetworkConfig {
@@ -625,7 +621,7 @@ impl Default for NetworkConfig {
             connect_timeout_ms: 15_000,
             read_timeout_ms: 15_000,
             indexer_io_budget_mb_per_sec: 32,
-            index_fingerprint_sample_kb: 256,
+            legacy_index_fingerprint_sample_kb: 256,
         }
     }
 }
@@ -637,7 +633,7 @@ pub struct YoutubeConfig {
     /// Разрешает YouTube adapter.
     pub enabled: bool,
 
-    /// Предпочитать account/session cookies, когда storage layer появится.
+    /// Предпочитать account/session cookies, если service adapter их поддерживает.
     pub prefer_account_session: bool,
 }
 

@@ -66,7 +66,7 @@ explicit `VIDEO_PLAYER_YOUTUBE_FORMAT_SELECTOR` override.
 Архитектурно замена должна состоять из:
 
 - request/session layer;
-- cookie/session storage;
+- cookie/session boundary без проектной database persistence;
 - page/API metadata fetch;
 - signature/cipher handling;
 - manifest extraction;
@@ -107,7 +107,8 @@ Cache нужен для:
 - metadata/captions caching;
 - future offline-ish scenarios.
 
-Cache metadata хранится в SQLite. Bulk bytes живут в `~/.cache/rustiplayer/`.
+Cache/index metadata сейчас runtime-only. Bulk bytes cache остаётся будущим
+расширением и не должен попадать в seek/scrub hot path.
 
 Schema version 2 фиксирует public network knobs:
 
@@ -171,7 +172,7 @@ Account/session/cookies должны быть отделены от UI:
 ```text
 app-egui settings/account UI
   -> service-youtube commands
-  -> storage credential/session layer
+  -> optional OS credential/session provider
 ```
 
 Cookies не должны жить в config TOML.

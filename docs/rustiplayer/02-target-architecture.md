@@ -28,8 +28,8 @@ service-youtube   media-core        audio backend    video-backend-vaapi
 future services   tracks/packets    cpal/ringbuf     future dx12/vt
         |
         v
-storage/config/capabilities
-SQLite, TOML, system probing
+config/capabilities/runtime diagnostics
+TOML, system probing, in-memory metrics
         |
         v
 render-core -> render-wgpu
@@ -73,7 +73,7 @@ PlayerSnapshot
         +--> egui UI
         +--> renderer present frame lease
         +--> MPRIS state
-        +--> telemetry/storage
+        +--> telemetry
 ```
 
 ## Renderer color data flow
@@ -260,7 +260,8 @@ Snapshot не должен содержать mutable handles к decoder/demuxer
 - video decode thread: blocking hardware decode/upload;
 - HTTP fetch threads/tasks: source/network layer;
 - audio callback thread: CPAL-owned;
-- storage thread optional: SQLite writes can be batched later.
+- long-running persistence is not part of the current runtime: seek/index/cache
+  metadata stays in memory and must not block playback.
 
 Важное правило: render loop не должен содержать бизнес-логику playback и не должен
 вызывать `PlayerSession::tick()` напрямую. Он отправляет `PlayerCommand`,
@@ -308,7 +309,6 @@ enum PlayerErrorKind {
     AudioDeviceUnavailable,
     UnsupportedRenderFormat,
     RenderDeviceLost,
-    StorageError,
     ConfigError,
 }
 ```

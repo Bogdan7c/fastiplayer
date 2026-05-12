@@ -184,7 +184,7 @@ pub struct YoutubeDirectStreamDescriptor {
 }
 
 impl YoutubeDirectStreamDescriptor {
-    /// Возвращает `true`, если stream можно безопасно связать с persisted index.
+    /// Возвращает `true`, если stream имеет HTTP validators для стабильной byte identity.
     #[must_use]
     pub fn has_persistent_validators(&self) -> bool {
         self.validators.etag.is_some() || self.validators.last_modified.is_some()
@@ -1049,7 +1049,7 @@ mod tests {
             connect_timeout_ms: 1_000,
             read_timeout_ms: 1_000,
             indexer_io_budget_mb_per_sec: 1,
-            index_fingerprint_sample_kb: 1,
+            legacy_index_fingerprint_sample_kb: 1,
         })
         .expect("source config")
     }

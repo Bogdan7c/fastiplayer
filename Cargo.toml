@@ -5,7 +5,6 @@ members = [
     "crates/codec-core",
     "crates/config",
     "crates/desktop-integration",
-    "crates/storage",
     "crates/source-core",
     "crates/player-core",
     "crates/media-core",
@@ -43,7 +42,6 @@ pollster = "0.4"
 anyhow = "1.0"
 directories = "6.0"
 rustiplayer-config = { path = "crates/config" }
-rustiplayer-storage = { path = "crates/storage" }
 capability-core = { path = "crates/capability-core" }
 codec-core = { path = "crates/codec-core" }
 serde = { version = "1.0", features = ["derive"] }
@@ -51,7 +49,6 @@ thiserror = "2.0"
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-rusqlite = { version = "0.39", features = ["bundled"] }
 symphonia = "0.5"
 bytes = "1.0"
 crossbeam-channel = "0.5"

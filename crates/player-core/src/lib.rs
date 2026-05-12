@@ -18,9 +18,8 @@ mod tick;
 mod worker;
 
 pub use background_indexer::{
-    BackgroundIndexEntry, BackgroundIndexExport, BackgroundIndexSeed, BackgroundIndexer,
-    BackgroundIndexerConfig, IndexDiagnostics, IndexPauseReason, IndexPressureSnapshot,
-    IndexProgressSnapshot, SeekAccessDiagnostics,
+    BackgroundIndexEntry, BackgroundIndexer, BackgroundIndexerConfig, IndexDiagnostics,
+    IndexPauseReason, IndexPressureSnapshot, IndexProgressSnapshot, SeekAccessDiagnostics,
 };
 pub use command::{
     MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, ScrubCommitPolicy,

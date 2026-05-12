@@ -45,9 +45,6 @@ pub enum PlayerErrorKind {
     /// Render device потерян или не может принять кадр.
     RenderDeviceLost,
 
-    /// Ошибка storage/migration слоя.
-    StorageError,
-
     /// Ошибка чтения или валидации config.
     ConfigError,
 

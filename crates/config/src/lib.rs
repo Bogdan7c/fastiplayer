@@ -2,7 +2,7 @@
 //!
 //! Crate отвечает только за пользовательский config: схему, defaults,
 //! validation и чтение/создание файла на платформенном config-пути.
-//! Playback, UI и storage намеренно не живут здесь.
+//! Playback и UI намеренно не живут здесь.
 
 #![forbid(unsafe_code)]
 

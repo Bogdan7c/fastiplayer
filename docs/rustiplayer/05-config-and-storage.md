@@ -1,10 +1,12 @@
-# 05. Config and Storage
+# 05. Config and Runtime Data
 
 ## Разделение ответственности
 
 Настройки пользователя хранятся в TOML.
 
-Все долговременные данные, кроме настроек, хранятся в SQLite через `rusqlite`.
+Долговременный database слой удалён из текущей архитектуры. Seek/index/cache
+metadata живут только в runtime-памяти, чтобы database IO не попадал в playback,
+seek или scrub path.
 
 ## Paths
 
@@ -12,7 +14,6 @@ Linux paths:
 
 ```text
 ~/.config/rustiplayer/config.toml
-~/.local/share/rustiplayer/rustiplayer.sqlite
 ~/.cache/rustiplayer/
 ```
 
@@ -33,7 +34,7 @@ Rust crate: `toml` + `serde`.
 
 ## Config schema
 
-Актуальная persisted schema version: `2`.
+Актуальная config schema version: `2`.
 
 Минимальная структура:
 
@@ -219,70 +220,32 @@ defaults -> user config -> CLI override
 
 System-level config пока не нужен.
 
-## SQLite storage
+## Runtime-only data
 
-Rust crate: `rusqlite`.
+В текущем коде нет database crate и нет долговременного cache/index хранилища.
 
-Context7 подтвердил базовые практики:
+Runtime-only остаются:
 
-- использовать `Connection`;
-- использовать параметризованные queries через `params!`;
-- группировать связанные writes в transactions;
-- делать migrations через schema version/user_version.
-
-## Storage scope
-
-SQLite хранит:
-
-- history;
-- playback progress;
-- bookmarks;
-- playlists;
-- media metadata cache;
-- YouTube account/session/cookies;
-- service metadata;
-- subtitles/captions cache metadata;
-- network cache index;
-- capability cache;
-- crash/error reports;
-- telemetry summaries.
-
-## Storage schema modules
-
-Логические модули:
-
-```text
-storage/
-  migrations/
-  connection.rs
-  media_library.rs
-  playback_history.rs
-  bookmarks.rs
-  playlists.rs
-  service_accounts.rs
-  service_sessions.rs
-  network_cache.rs
-  capability_cache.rs
-  error_reports.rs
-```
-
-## Migration policy
-
-SQLite schema должна мигрировать вперед.
+- keyframe/time index в `player-core::BackgroundIndexer`;
+- source/cache diagnostics;
+- telemetry counters;
+- текущие `PlayerSnapshot`/`PlayerWorkerEvent`;
+- временные service descriptors, полученные при открытии media.
 
 Правила:
 
-- каждая миграция имеет номер;
-- migrations выполняются transactionally;
-- failed migration не должна оставлять частично обновленную схему;
-- app startup должен ясно сообщать о storage error;
-- downgrade не поддерживается на ранних этапах.
+- `app-egui` не открывает database connection;
+- `player-core` не экспортирует complete index snapshot для сохранения;
+- `source-core` не строит local partial hash для durable identity;
+- reopen media запускает новый runtime index job;
+- legacy config field `network.index_fingerprint_sample_kb` читается только для
+  совместимости старых config-файлов и не записывается в новые defaults.
 
 ## Security note
 
 Account/session/cookies чувствительны.
 
-Базовое решение: хранить в SQLite, как согласовано для всех данных кроме настроек.
+Текущее решение: не хранить account/session/cookies в проектном database слое.
 
 Будущий extension point: `CredentialStore`, который сможет использовать OS keyring без изменения `service-youtube` и `player-core`.
 
@@ -292,5 +255,3 @@ trait CredentialStore {
     fn save_service_session(&self, session: &ServiceSession) -> anyhow::Result<()>;
 }
 ```
-
-Первичная реализация может быть SQLite-backed.

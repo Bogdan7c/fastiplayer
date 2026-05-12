@@ -10,7 +10,7 @@
 - [02. Target Architecture](02-target-architecture.md) - слои системы и поток данных.
 - [03. Project Map](03-project-map.md) - целевая карта crate'ов и ответственность каждого модуля.
 - [04. Codecs and Capabilities](04-codecs-and-capabilities.md) - аппаратные декодеры, профили, HDR, матрица возможностей.
-- [05. Config and Storage](05-config-and-storage.md) - TOML-настройки и SQLite-хранилище.
+- [05. Config and Runtime Data](05-config-and-storage.md) - TOML-настройки и правило runtime-only данных.
 - [06. Rendering, UI and Platform](06-rendering-ui-platform.md) - wgpu/Vulkan, GLES fallback, egui, MPRIS, мультиплатформа.
 - [07. Services and Network](07-services-network.md) - YouTube-клиент, будущие сервисы, cache, streaming.
 - [08. Development Roadmap](08-development-roadmap.md) - поэтапный план разработки в порядке приоритета.
@@ -44,8 +44,8 @@
 | macOS | Later target |
 | FFmpeg | Полностью вне проекта |
 | Config | TOML через `serde` |
-| Config schema | Current persisted schema version `2`; live seek, network cache/read-ahead и `ui.skin` defaults живут в config |
-| Storage | SQLite через `rusqlite`, кроме пользовательских настроек |
+| Config schema | Current config schema version `2`; live seek, network cache/read-ahead и `ui.skin` defaults живут в config |
+| Persistent data | Отсутствует: SQLite/`rusqlite` слой удалён, seek/index/cache metadata живут только в runtime-памяти |
 | Timeline model | `media-core` владеет neutral `MediaTime`/`MediaDuration`/`TrackTimestamp`/`TimelineSnapshot`; первые concrete adapters - WebM/YouTube/VP9/VA-API/wgpu/MPRIS |
 | Playback ownership | Runtime `PlayerSession` и media pipeline живут в потоке `PlayerWorker`; `app-egui` отправляет команды, читает latest snapshot/events и не вызывает `PlayerSession::tick()` напрямую |
 | Render frame lease | `PlayerWorker::try_acquire_present_frame()` отдаёт `PresentFrameLease`/`PlayerPresentFrame` с handle, metadata, generation и stale flag; `wgpu::TextureView` создаются на render thread через render-side provider, а release идёт через RAII drop/ack |
@@ -64,12 +64,10 @@
   worker больше не создаёт `wgpu` views, render errors идут typed command/event в worker.
 - Live seek/timeline Sessions 4-8 закрыли real demux seek, precise seek transaction,
   minimal timeline UI и desktop/MPRIS integration через worker command/snapshot boundary.
-- Live seek/timeline Session 9 добавила SQLite schema/API для persisted keyframe/time
-  index, local size/mtime/partial-hash invalidation, YouTube validator seed path,
-  source range/cache diagnostics и player-core lightweight metadata indexer
-  diagnostics. Local background scanner идёт отдельным demux-only thread-ом без
-  decoder/audio/render/texture resources; persisted offsets не используются без
-  matching identity.
+- Live seek/timeline Session 9 оставила keyframe/time index runtime-only:
+  `player-core` ведёт lightweight metadata indexer diagnostics, local background
+  scanner идёт отдельным demux-only thread-ом без decoder/audio/render/texture
+  resources, а `app-egui` не загружает и не сохраняет index/cache metadata.
 - Аудио-треск после worker/audio правок устранён через CPAL playback anchor smoothing и
   packet-boundary-safe resampler. На тяжёлых 4k60 asset-ах остаются late video drops;
   это отдельная будущая задача render/present cadence profiling, не блокер текущего этапа.

@@ -91,7 +91,7 @@ schema и документация. Нельзя переносить playback �
 - Добавить config schema version 2.
 - Добавить `player.seek.*`, `network.*`, `ui.skin`.
 - Обновить docs: target architecture, project map, rendering/UI/platform, services/network,
-  config/storage.
+  config/runtime data.
 
 ### Config defaults
 
@@ -107,7 +107,6 @@ schema и документация. Нельзя переносить playback �
 - `network.connect_timeout_ms = 15000`
 - `network.read_timeout_ms = 15000`
 - `network.indexer_io_budget_mb_per_sec = 32`
-- `network.index_fingerprint_sample_kb = 256`
 - `ui.skin = "minimal"`
 
 ### Validation
@@ -497,7 +496,7 @@ YouTube-specific logic в `player-core`. Live streams остаются not seeka
 - `DualStreamDemuxer::seek` clears pending packet slots.
 - URL expiry refresh once.
 - Range unsupported disables seek, playback still possible.
-- Missing validators means runtime index only, no persisted index.
+- Missing validators do not change playback; index/cache metadata remain runtime-only.
 
 ### Ручная проверка
 
@@ -656,26 +655,19 @@ commands/snapshot. UI не должен менять player position напря�
 
 Фактически реализовано:
 
-- `rustiplayer-storage` получил SQLite schema v2 для `media_index_sources` и
-  `media_index_entries`, включая transactional upsert, cascade delete и tests на
-  invalidation.
-- Persisted index разрешён только при совпадающей identity:
-  local `size + mtime + partial hash` или HTTP/service `service id + format id +
-  validators`.
-- HTTP/service source без validators возвращает runtime-only outcome и не пишет
-  index в SQLite.
-- `source-core` расширил runtime config byte-budget полями для read-ahead,
-  `indexer_io_budget_mb_per_sec` и `index_fingerprint_sample_kb`; local identity
-  строится из canonical path, size, mtime и deterministic partial head/tail hash.
-  HTTP Range source считает range requests, requested/read bytes и timeout
-  diagnostics.
+- Database path удалён из этой сессии: `app-egui` не открывает database,
+  не строит durable identity, не загружает seed и не сохраняет index/cache
+  metadata между запусками.
+- `source-core` оставляет только runtime byte-budget поля для read-ahead и
+  `indexer_io_budget_mb_per_sec`; local partial hash/fingerprint sample для
+  durable index больше не строится.
 - `player-core` получил lightweight metadata indexer contract: entries содержат
-  `track id`, `time`, optional `byte offset`, `keyframe` и fingerprint link.
-- Local media load получает verified persisted seed из `app-egui`/storage, запускает
-  отдельный `background-index-scan` thread для demux-only scan и сохраняет complete
-  index обратно в SQLite.
-- YouTube VOD получает persisted seed, если service id, video format id и HTTP
-  validators доступны; без validators metadata остаётся runtime-only.
+  `track id`, `time`, optional `byte offset` и `keyframe`.
+- Local media load запускает отдельный `background-index-scan` thread для
+  demux-only scan. Накопленный index живёт только в `PlayerSession` runtime state
+  и сбрасывается при закрытии/переоткрытии media.
+- YouTube VOD не получает durable seed. HTTP validators остаются source-level
+  diagnostics/byte identity, но не включают долговременное сохранение index-а.
 - Indexer diagnostics включают progress, cache hit/miss placeholders, range
   requests, seek latency, target vs actual, stale jobs, cancelled/superseded jobs
   и timeouts.
@@ -690,10 +682,10 @@ commands/snapshot. UI не должен менять player position напря�
 
 Ограничение текущего шага:
 
-- Byte offsets остаются `NULL`, пока demuxer не отдаёт безопасный offset.
-- HTTP/service background scan пока использует observed playback packets и
-  persisted seed path; отдельный HTTP low-priority byte-source scanner остаётся
-  следующим расширением, чтобы не дублировать service refresh/cache ownership.
+- Byte offsets остаются empty/`None`, пока demuxer не отдаёт безопасный offset.
+- HTTP/service background scan пока использует observed playback packets;
+  отдельный HTTP low-priority byte-source scanner остаётся следующим расширением,
+  чтобы не дублировать service refresh/cache ownership.
 
 ### Контекст для копипаста
 
@@ -712,7 +704,7 @@ commands/snapshot. UI не должен менять player position напря�
   - time
   - byte offset if available
   - keyframe flag
-  - validator/fingerprint link
+- Index is runtime-only; no SQLite, no durable seed, no reuse between app runs.
 - Start with container cues.
 - Improve index in background.
 - Pause under:
@@ -720,7 +712,6 @@ commands/snapshot. UI не должен менять player position напря�
   - low playback buffer
   - high decode/render load
   - explicit shutdown
-- Persist in SQLite through storage crate.
 - Diagnostics:
   - index progress
   - cache hit/miss
@@ -734,28 +725,26 @@ commands/snapshot. UI не должен менять player position напря�
 
 ### Tests
 
-- Index persistence and invalidation:
-  - local size + mtime + partial hash
-  - HTTP service id + format id + validators
-  - missing validators => runtime only
+- Runtime index lifecycle:
+  - new media starts a fresh index job
+  - close/reopen does not reuse previous run metadata
+  - completed index is not exported to app shell
 - Indexer pauses under pressure.
 - Cache/index diagnostics counters.
-- SQLite migration tests.
 
 ### Ручная проверка
 
 - Open local long file, scrub before and after index progress.
-- Reopen same file, confirm persisted index is reused.
-- Modify local file and confirm index invalidates.
-- YouTube VOD with validators reuses eligible metadata where possible.
-- `cargo test -p rustiplayer-storage -p source-core -p player-core`
+- Reopen same file, confirm index rebuilds in runtime and no database file is used.
+- YouTube VOD playback keeps index/cache metrics runtime-only.
+- `cargo test -p source-core -p player-core`
 - `cargo check`
 
 ### Self-review
 
 - Проверить, что indexer does not decode video.
 - Проверить, что indexer cannot starve playback network/disk reads.
-- Проверить, что persisted offsets are never used without matching fingerprint/validators.
+- Проверить, что no database API находится на seek/index/cache path.
 - Проверить, что diagnostics are useful but not visible in minimal controls.
 - Проверить, что config controls all budgets and no magic IO constants remain.
 

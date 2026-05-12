@@ -22,7 +22,6 @@ crates/vp9-parser       - VP9 parser adapter
 crates/config           - TOML config schema/load/create
 crates/cros-codecs-patch - локальный patched `cros-codecs` dependency для текущего VP9/VA-API path
 crates/cros-libva-patch - локальный patched `libva` wrapper dependency для DMA-BUF/VA-API interop
-crates/storage          - SQLite migrations/history/progress/cache
 ```
 
 Главный оставшийся долг: `app-egui` всё ещё является desktop shell с несколькими runtime wiring helpers, но codec/capability/player decisions уже вынесены из UI-слоя. После live seek/timeline Session 3 `app-egui` больше не владеет media pipeline: `PlayerWorker` держит `PlayerSession`, выполняет tick на отдельном потоке, отдаёт shell-у latest snapshot/event stream и выдаёт decoded frame только через render lease. `app-egui` получает `wgpu` texture views на render thread через provider lease-а и не читает `pipeline.present_video_frame` напрямую.
@@ -50,7 +49,6 @@ crates/
   render-wgpu/
   render-gles/
   config/
-  storage/
   desktop-integration/
   telemetry/
   test-matrix/
@@ -84,7 +82,6 @@ Desktop shell.
 - decode;
 - A/V sync;
 - source extraction;
-- storage schema;
 - capability probing.
 - прямой доступ к `PlayerSession`, `PlaybackPipeline` или `pipeline.present_video_frame`.
 
@@ -397,25 +394,6 @@ TOML settings.
 - validation;
 - migration between config schema versions.
 
-### `storage`
-
-SQLite persistent storage.
-
-Отвечает за:
-
-- `~/.local/share/rustiplayer/rustiplayer.sqlite`;
-- migrations;
-- history;
-- bookmarks;
-- playlists;
-- media metadata cache;
-- service account/session/cookies;
-- playback progress;
-- capability cache;
-- crash/error reports.
-
-Используем `rusqlite`.
-
 ### `desktop-integration`
 
 Linux desktop integration.
@@ -464,7 +442,6 @@ player-core
   -> audio
   -> video-core
   -> capability-core
-  -> storage
 
 backend crates
   -> codec-core
@@ -479,4 +456,4 @@ backend crates
 - `media-core -> app-egui`;
 - `codec-core -> VA-API backend`;
 - `service-youtube -> app-egui`;
-- `storage -> app-egui`.
+- persistent database code -> seek/index/cache hot path.

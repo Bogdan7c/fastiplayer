@@ -5,23 +5,17 @@
 /// `AppState` оставляет у себя только egui/winit state и shell-данные.
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use capability_core::SystemCapabilities;
 use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
-use media_core::{MediaDuration, MediaTime, TrackId, TrackKind};
+use media_core::TrackKind;
 use player_core::{
-    BackgroundIndexEntry, BackgroundIndexExport, BackgroundIndexSeed, FrameCounters, PlaybackState,
-    PlayerCommand, PlayerPresentFrame, PlayerRenderError, PlayerSnapshot, PlayerWorker,
-    PlayerWorkerConfig, PlayerWorkerEvent, ScrubCommitPolicy, SeekRequest,
+    FrameCounters, PlaybackState, PlayerCommand, PlayerPresentFrame, PlayerRenderError,
+    PlayerSnapshot, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, ScrubCommitPolicy,
+    SeekRequest,
 };
 use render_core::RenderDiagnostics;
 use rustiplayer_config::AppConfig;
-use rustiplayer_storage::{
-    MediaIndexEntry, MediaIndexSaveOutcome, MediaIndexSourceIdentity, MediaIndexValidators,
-    PersistedMediaIndex, StorageConnection,
-};
-use source_core::{LocalFileIndexIdentity, SourceRuntimeConfig, build_local_file_index_identity};
 use tracing::{debug, instrument, warn};
 use winit::window::Window;
 
@@ -44,12 +38,6 @@ pub struct AppState {
 
     /// Playback worker владеет `PlayerSession` и media pipeline на отдельном thread.
     pub player_worker: PlayerWorker,
-
-    /// SQLite storage connection для persisted index/progress shell-операций.
-    storage_connection: Option<StorageConnection>,
-
-    /// Identity текущего media index-а, уже проверенная source/storage слоями.
-    active_media_index_identity: Option<MediaIndexSourceIdentity>,
 
     /// Счётчик кадров shell-анимации.
     pub frame_index: u64,
@@ -87,13 +75,12 @@ pub struct AppState {
 
 impl AppState {
     /// Создаёт новое состояние приложения и запускает playback worker.
-    #[instrument(skip(window, telemetry, app_config, startup_error, storage_connection))]
+    #[instrument(skip(window, telemetry, app_config, startup_error))]
     pub fn new(
         window: &Window,
         telemetry: Arc<Telemetry>,
         app_config: AppConfig,
         startup_error: Option<String>,
-        storage_connection: Option<StorageConnection>,
     ) -> anyhow::Result<Self> {
         let egui_ctx = egui::Context::default();
         egui_ctx.set_theme(egui::Theme::Dark);
@@ -127,8 +114,6 @@ impl AppState {
             egui_winit_state,
             desktop_integration,
             player_worker,
-            storage_connection,
-            active_media_index_identity: None,
             frame_index: 0,
             start_time: std::time::Instant::now(),
             telemetry,
@@ -141,11 +126,6 @@ impl AppState {
             timeline_ui_state: TimelineUiState::default(),
             app_version: env!("CARGO_PKG_VERSION"),
         })
-    }
-
-    /// Возвращает storage connection владельцу `App` перед teardown runtime-ресурсов.
-    pub fn take_storage_connection(&mut self) -> Option<StorageConnection> {
-        self.storage_connection.take()
     }
 
     /// Переключает состояние воспроизведения через playback worker.
@@ -215,155 +195,24 @@ impl AppState {
     /// Загружает локальный файл через playback worker.
     pub fn load_file(&mut self, path: &Path) {
         let autoplay = !self.app_config.player.start_paused;
-        let (index_source_key, index_seed, index_identity) = self.prepare_local_media_index(path);
         self.clear_cached_present_frame();
         self.current_local_file = Some(path.to_path_buf());
-        self.active_media_index_identity = index_identity;
-        if let Err(error) =
-            self.player_worker
-                .load_file_with_index(path, autoplay, index_source_key, index_seed)
-        {
+        if let Err(error) = self.player_worker.load_file(path, autoplay) {
             warn!(error = %error, "Не удалось отправить команду открытия файла в worker");
         }
     }
 
-    /// Загружает YouTube demuxer с validators-aware persisted index seed-ом, если он доступен.
+    /// Загружает YouTube demuxer без долговременного index/cache слоя.
     pub fn load_youtube_demuxer(
         &mut self,
         label: String,
         demuxer: Box<dyn webm_demux::Demuxer + Send>,
-        direct_streams: &service_youtube::YoutubeDirectStreams,
     ) {
         let autoplay = !self.app_config.player.start_paused;
-        let (index_source_key, index_seed, index_identity) =
-            self.prepare_youtube_media_index(direct_streams);
         self.clear_cached_present_frame();
         self.current_local_file = None;
-        self.active_media_index_identity = index_identity;
-        if let Err(error) = self.player_worker.load_demuxer_with_index(
-            label,
-            demuxer,
-            autoplay,
-            index_source_key,
-            index_seed,
-        ) {
+        if let Err(error) = self.player_worker.load_demuxer(label, demuxer, autoplay) {
             warn!(error = %error, "Не удалось отправить YouTube demuxer в worker");
-        }
-    }
-
-    /// Готовит local persisted index seed: source identity строится до открытия playback pipeline.
-    fn prepare_local_media_index(
-        &self,
-        path: &Path,
-    ) -> (
-        Option<String>,
-        BackgroundIndexSeed,
-        Option<MediaIndexSourceIdentity>,
-    ) {
-        let source_config = match SourceRuntimeConfig::from_network_config(&self.app_config.network)
-        {
-            Ok(source_config) => source_config,
-            Err(error) => {
-                warn!(error = %error, "Source config не подходит для local index identity");
-                return (None, BackgroundIndexSeed::default(), None);
-            }
-        };
-        let local_identity = match build_local_file_index_identity(path, &source_config) {
-            Ok(local_identity) => local_identity,
-            Err(error) => {
-                warn!(error = %error, "Не удалось построить fingerprint local media index");
-                return (None, BackgroundIndexSeed::default(), None);
-            }
-        };
-        let storage_identity = media_index_identity_from_local(local_identity);
-        let source_key = storage_identity.source_key().to_string();
-        let index_seed = self.load_media_index_seed(&storage_identity);
-
-        (Some(source_key), index_seed, Some(storage_identity))
-    }
-
-    /// Готовит YouTube persisted index seed только при наличии service id, format id и validators.
-    fn prepare_youtube_media_index(
-        &self,
-        direct_streams: &service_youtube::YoutubeDirectStreams,
-    ) -> (
-        Option<String>,
-        BackgroundIndexSeed,
-        Option<MediaIndexSourceIdentity>,
-    ) {
-        let Some(storage_identity) = media_index_identity_from_youtube(direct_streams) else {
-            return (None, BackgroundIndexSeed::default(), None);
-        };
-        let source_key = storage_identity.source_key().to_string();
-        let index_seed = self.load_media_index_seed(&storage_identity);
-
-        (Some(source_key), index_seed, Some(storage_identity))
-    }
-
-    /// Загружает persisted entries только через storage API, который проверяет full identity.
-    fn load_media_index_seed(&self, identity: &MediaIndexSourceIdentity) -> BackgroundIndexSeed {
-        let Some(storage_connection) = &self.storage_connection else {
-            return BackgroundIndexSeed::default();
-        };
-
-        match storage_connection.load_media_index(identity) {
-            Ok(Some(media_index)) => background_index_seed_from_storage(identity, media_index),
-            Ok(None) => BackgroundIndexSeed::default(),
-            Err(error) => {
-                warn!(error = %error, source_key = identity.source_key(), "Не удалось загрузить persisted media index");
-                BackgroundIndexSeed::default()
-            }
-        }
-    }
-
-    /// Сохраняет complete index snapshot, если он принадлежит текущей verified identity.
-    fn persist_background_index(&mut self, index_export: &BackgroundIndexExport) {
-        if !index_export.complete {
-            return;
-        }
-
-        let Some(identity) = self.active_media_index_identity.clone() else {
-            return;
-        };
-
-        if identity.source_key() != index_export.source_key.as_str() {
-            warn!(
-                active_source_key = identity.source_key(),
-                index_source_key = %index_export.source_key,
-                "Index export не совпал с активной media identity; сохранение пропущено"
-            );
-            return;
-        }
-
-        let Some(storage_connection) = &mut self.storage_connection else {
-            return;
-        };
-        let Some(media_index) = persisted_media_index_from_export(identity, index_export) else {
-            warn!(
-                source_key = %index_export.source_key,
-                "Index export содержит значения вне SQLite-compatible диапазона"
-            );
-            return;
-        };
-
-        match storage_connection.save_media_index(&media_index) {
-            Ok(MediaIndexSaveOutcome::Persisted { entries }) => {
-                debug!(
-                    source_key = %index_export.source_key,
-                    entries,
-                    "Persisted media index сохранён"
-                );
-            }
-            Ok(MediaIndexSaveOutcome::RuntimeOnly { reason }) => {
-                debug!(
-                    source_key = %index_export.source_key,
-                    ?reason,
-                    "Media index оставлен runtime-only"
-                );
-            }
-            Err(error) => {
-                warn!(error = %error, source_key = %index_export.source_key, "Не удалось сохранить media index");
-            }
         }
     }
 
@@ -457,15 +306,7 @@ impl AppState {
     /// Забирает worker events для shell telemetry.
     #[must_use]
     pub fn drain_worker_events(&mut self) -> Vec<PlayerWorkerEvent> {
-        let events = self.player_worker.drain_events();
-
-        for event in &events {
-            if let PlayerWorkerEvent::IndexUpdated(index_export) = event {
-                self.persist_background_index(index_export);
-            }
-        }
-
-        events
+        self.player_worker.drain_events()
     }
 
     /// Возвращает последний локальный файл, открытый shell-ом.
@@ -531,6 +372,7 @@ impl AppState {
                     &player_snapshot,
                     &telemetry,
                     &render_diagnostics,
+                    &timeline_ui_state,
                     &backend_name,
                     start_time,
                     frame_duration_estimate_ms,
@@ -682,6 +524,7 @@ impl AppState {
         player_snapshot: &PlayerSnapshot,
         telemetry: &Telemetry,
         render_diagnostics: &RenderDiagnostics,
+        timeline_ui_state: &TimelineUiState,
         backend_name: &str,
         start_time: std::time::Instant,
         frame_duration_estimate_ms: f64,
@@ -738,6 +581,7 @@ impl AppState {
                             player_snapshot,
                             telemetry,
                             render_diagnostics,
+                            timeline_ui_state,
                             frame_duration_estimate_ms,
                         );
                     });
@@ -750,6 +594,7 @@ impl AppState {
         player_snapshot: &PlayerSnapshot,
         telemetry: &Telemetry,
         render_diagnostics: &RenderDiagnostics,
+        timeline_ui_state: &TimelineUiState,
         frame_duration_estimate_ms: f64,
     ) {
         if player_snapshot.source_label.is_none() {
@@ -790,9 +635,8 @@ impl AppState {
         ui.monospace(format!("  Video: {video_packets}"));
         ui.monospace(format!("  Audio: {audio_packets}"));
 
-        let playback_position_secs = player_snapshot
-            .timeline
-            .current_position
+        let playback_position_secs = timeline_ui_state
+            .display_position(&player_snapshot.timeline)
             .as_duration()
             .as_secs_f64();
         ui.monospace(format!(
@@ -864,8 +708,8 @@ impl AppState {
 
         ui.separator();
         ui.monospace(format!(
-            "Audio clock: {}",
-            timeline::format_seconds(Some(player_snapshot.current_position.as_secs_f64()))
+            "Timeline: {}",
+            timeline::format_seconds(Some(playback_position_secs))
         ));
         if let Some(buffer_level) = player_snapshot.audio_buffer.level {
             let buffer_ms = buffer_level.as_secs_f64() * 1000.0;
@@ -982,170 +826,6 @@ impl AppState {
                 }
             });
     }
-}
-
-/// Конвертирует source-core local identity в storage identity без потери fingerprint fields.
-fn media_index_identity_from_local(
-    local_identity: LocalFileIndexIdentity,
-) -> MediaIndexSourceIdentity {
-    MediaIndexSourceIdentity::Local {
-        source_key: local_identity.source_key,
-        source_uri: local_identity.source_uri,
-        size_bytes: local_identity.size_bytes,
-        modified_unix_nanos: local_identity.modified_unix_nanos,
-        partial_hash_hex: local_identity.partial_hash_hex,
-    }
-}
-
-/// Строит storage identity для video stream YouTube VOD, если validators достаточно сильные.
-fn media_index_identity_from_youtube(
-    direct_streams: &service_youtube::YoutubeDirectStreams,
-) -> Option<MediaIndexSourceIdentity> {
-    let video_stream = &direct_streams.video;
-    if !video_stream.has_persistent_validators() {
-        return None;
-    }
-
-    let service_id = direct_streams
-        .service_media_id
-        .clone()
-        .or_else(|| video_stream.service_media_id.clone())?;
-    let format_id = video_stream
-        .format_id
-        .clone()
-        .or_else(|| direct_streams.format_id.clone())?;
-    let source_key = format!("youtube:{service_id}:video:{format_id}");
-    let source_uri = direct_streams
-        .title
-        .clone()
-        .unwrap_or_else(|| video_stream.description.clone());
-
-    Some(MediaIndexSourceIdentity::HttpService {
-        source_key,
-        source_uri,
-        service_id,
-        format_id,
-        validators: MediaIndexValidators {
-            etag: video_stream.validators.etag.clone(),
-            last_modified: video_stream.validators.last_modified.clone(),
-        },
-    })
-}
-
-/// Конвертирует persisted storage rows в player-core seed после проверки source_key.
-fn background_index_seed_from_storage(
-    identity: &MediaIndexSourceIdentity,
-    media_index: PersistedMediaIndex,
-) -> BackgroundIndexSeed {
-    let source_key = identity.source_key();
-    let mut entries = Vec::with_capacity(media_index.entries.len());
-
-    for storage_entry in media_index.entries {
-        let Some(entry) = background_index_entry_from_storage(source_key, storage_entry) else {
-            warn!(
-                source_key,
-                "Persisted media index entry имеет некорректный диапазон"
-            );
-            continue;
-        };
-        entries.push(entry);
-    }
-
-    BackgroundIndexSeed {
-        entries,
-        complete: media_index.complete,
-    }
-}
-
-/// Конвертирует одну storage entry в player-core entry.
-fn background_index_entry_from_storage(
-    source_key: &str,
-    storage_entry: MediaIndexEntry,
-) -> Option<BackgroundIndexEntry> {
-    let time_us = u64::try_from(storage_entry.time_us).ok()?;
-    let byte_offset = storage_entry
-        .byte_offset
-        .map(u64::try_from)
-        .transpose()
-        .ok()?;
-
-    Some(BackgroundIndexEntry {
-        track_id: TrackId::new(storage_entry.track_id),
-        time: MediaTime::from_duration(Duration::from_micros(time_us)),
-        byte_offset,
-        keyframe: storage_entry.keyframe,
-        fingerprint_link: source_key.to_string(),
-    })
-}
-
-/// Конвертирует player-core export в storage model с checked integer boundaries.
-fn persisted_media_index_from_export(
-    identity: MediaIndexSourceIdentity,
-    index_export: &BackgroundIndexExport,
-) -> Option<PersistedMediaIndex> {
-    let mut entries = Vec::with_capacity(index_export.entries.len());
-    for entry in &index_export.entries {
-        if entry.fingerprint_link != index_export.source_key {
-            warn!(
-                source_key = %index_export.source_key,
-                entry_fingerprint = %entry.fingerprint_link,
-                "Index entry принадлежит другому fingerprint; entry пропущена"
-            );
-            continue;
-        }
-
-        entries.push(media_index_entry_from_background(entry)?);
-    }
-
-    Some(PersistedMediaIndex {
-        identity,
-        duration_ms: index_export.duration.and_then(media_duration_to_i64_millis),
-        indexed_until_ms: index_export
-            .indexed_until
-            .and_then(media_time_to_i64_millis)
-            .unwrap_or_default(),
-        complete: index_export.complete,
-        updated_at_unix_seconds: current_unix_seconds_i64(),
-        entries,
-    })
-}
-
-/// Конвертирует одну player-core entry в SQLite-compatible storage entry.
-fn media_index_entry_from_background(entry: &BackgroundIndexEntry) -> Option<MediaIndexEntry> {
-    Some(MediaIndexEntry {
-        track_id: entry.track_id.get(),
-        time_us: duration_to_i64_micros(entry.time.as_duration())?,
-        byte_offset: entry.byte_offset.map(i64::try_from).transpose().ok()?,
-        keyframe: entry.keyframe,
-    })
-}
-
-/// Конвертирует media duration в milliseconds для storage schema.
-fn media_duration_to_i64_millis(duration: MediaDuration) -> Option<i64> {
-    duration_to_i64_millis(duration.as_duration())
-}
-
-/// Конвертирует media time в milliseconds для storage schema.
-fn media_time_to_i64_millis(time: MediaTime) -> Option<i64> {
-    duration_to_i64_millis(time.as_duration())
-}
-
-/// Конвертирует `Duration` в i64 milliseconds без переполнения.
-fn duration_to_i64_millis(duration: Duration) -> Option<i64> {
-    i64::try_from(duration.as_millis()).ok()
-}
-
-/// Конвертирует `Duration` в i64 microseconds без переполнения.
-fn duration_to_i64_micros(duration: Duration) -> Option<i64> {
-    i64::try_from(duration.as_micros()).ok()
-}
-
-/// Возвращает текущий Unix time для storage metadata с насыщением до i64.
-fn current_unix_seconds_i64() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

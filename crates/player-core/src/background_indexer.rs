@@ -96,41 +96,6 @@ pub struct BackgroundIndexEntry {
 
     /// Признак keyframe.
     pub keyframe: bool,
-
-    /// Link на fingerprint/validator identity source-а.
-    pub fingerprint_link: String,
-}
-
-/// Начальные persisted entries для нового index job-а.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BackgroundIndexSeed {
-    /// Entries, загруженные из проверенного persisted index-а.
-    pub entries: Vec<BackgroundIndexEntry>,
-
-    /// `true`, если persisted index уже был достроен до EOF.
-    pub complete: bool,
-}
-
-/// Export текущего metadata index-а для внешнего storage слоя.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackgroundIndexExport {
-    /// Поколение job-а, которому принадлежит snapshot.
-    pub generation: u64,
-
-    /// Source key, совпадающий с fingerprint/validator identity storage слоя.
-    pub source_key: String,
-
-    /// Длительность media, если она известна.
-    pub duration: Option<MediaDuration>,
-
-    /// Последняя просканированная media-позиция.
-    pub indexed_until: Option<MediaTime>,
-
-    /// `true`, если indexer дошёл до EOF/container end.
-    pub complete: bool,
-
-    /// Metadata entries без codec bytes.
-    pub entries: Vec<BackgroundIndexEntry>,
 }
 
 /// Прогресс построения index-а.
@@ -259,23 +224,6 @@ impl BackgroundIndexer {
         duration: Option<MediaDuration>,
         initial_entries: Vec<BackgroundIndexEntry>,
     ) {
-        self.start_job_with_seed(
-            source_key,
-            duration,
-            BackgroundIndexSeed {
-                entries: initial_entries,
-                complete: false,
-            },
-        );
-    }
-
-    /// Начинает новый index job с проверенным persisted seed-ом.
-    pub fn start_job_with_seed(
-        &mut self,
-        source_key: impl Into<String>,
-        duration: Option<MediaDuration>,
-        seed: BackgroundIndexSeed,
-    ) {
         if self.active_source_key.is_some() {
             self.diagnostics.cancelled_or_superseded_jobs = self
                 .diagnostics
@@ -285,12 +233,12 @@ impl BackgroundIndexer {
 
         self.active_generation = self.active_generation.saturating_add(1);
         self.active_source_key = Some(source_key.into());
-        self.entries = seed.entries;
+        self.entries = initial_entries;
         self.diagnostics.progress = IndexProgressSnapshot {
             indexed_until: self.entries.iter().map(|entry| entry.time).max(),
             duration,
             entries: self.entries.len() as u64,
-            complete: seed.complete,
+            complete: false,
         };
         self.diagnostics.paused = false;
         self.diagnostics.pause_reason = None;
@@ -347,16 +295,15 @@ impl BackgroundIndexer {
 
     /// Записывает metadata video packet-а без codec bytes.
     pub fn record_video_packet(&mut self, track_id: TrackId, pts: Duration, keyframe: bool) {
-        let Some(source_key) = self.active_source_key.clone() else {
+        if self.active_source_key.is_none() {
             return;
-        };
+        }
 
         let entry = BackgroundIndexEntry {
             track_id,
             time: MediaTime::from_duration(pts),
             byte_offset: None,
             keyframe,
-            fingerprint_link: source_key,
         };
         self.record_entry(self.active_generation, entry);
     }
@@ -369,21 +316,6 @@ impl BackgroundIndexer {
         }
 
         self.diagnostics.progress.complete = true;
-    }
-
-    /// Экспортирует текущий metadata index для сохранения вне playback pipeline.
-    #[must_use]
-    pub fn export_snapshot(&self) -> Option<BackgroundIndexExport> {
-        let source_key = self.active_source_key.clone()?;
-
-        Some(BackgroundIndexExport {
-            generation: self.active_generation,
-            source_key,
-            duration: self.diagnostics.progress.duration,
-            indexed_until: self.diagnostics.progress.indexed_until,
-            complete: self.diagnostics.progress.complete,
-            entries: self.entries.clone(),
-        })
     }
 
     /// Записывает cache diagnostics, пришедшие из source layer.
@@ -567,7 +499,6 @@ mod tests {
             time: MediaTime::from_secs(seconds),
             byte_offset: None,
             keyframe,
-            fingerprint_link: "source-a".to_string(),
         }
     }
 }

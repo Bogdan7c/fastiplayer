@@ -140,22 +140,21 @@ Acceptance:
 - invalid config дает понятную ошибку;
 - playback limits больше не hardcoded в app layer.
 
-## Phase 6: Storage crate
+## Phase 6: Durable Data Crate
 
-Статус: реализовано.
+Статус: отменено и удалено из текущего workspace.
 
 Цель:
 
-- создать `crates/storage`;
-- подключить `rusqlite`;
-- создать migration framework;
-- создать базовые таблицы history/progress/capability cache.
+- не держать SQLite/database IO на playback, seek, scrub, cache или index path;
+- оставить пользовательские настройки в TOML;
+- держать keyframe/time index и cache diagnostics runtime-only.
 
 Acceptance:
 
-- SQLite создается в `~/.local/share/rustiplayer/rustiplayer.sqlite`;
-- migrations transaction-safe;
-- storage errors видны в UI/log.
+- database crate отсутствует в workspace;
+- `rusqlite` отсутствует в workspace dependencies;
+- reopen media не использует durable index seed.
 
 ## Phase 7: Capability core and VA-API probing
 
@@ -356,7 +355,7 @@ Acceptance:
 
 - создать `service-youtube`;
 - отделить временный `yt-dlp` adapter;
-- ввести account/session/cookies storage contract;
+- ввести account/session/cookies boundary без проектной database persistence;
 - нормализовать stream candidates.
 
 Acceptance:
@@ -383,7 +382,7 @@ Acceptance:
 
 Цель:
 
-- реализовать SQLite-backed library features;
+- отложить library features до отдельного решения по persistence;
 - UI для истории/закладок;
 - resume last position.
 
@@ -398,7 +397,7 @@ Acceptance:
 Цель:
 
 - byte cache;
-- cache index in SQLite;
+- runtime cache/index diagnostics;
 - HTTP range resume;
 - cleanup policy.
 
