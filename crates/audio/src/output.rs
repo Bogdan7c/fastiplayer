@@ -12,7 +12,7 @@
 //! в 48kHz, поэтому мы делаем простой linear resample если device
 //! использует другой rate.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -31,6 +31,9 @@ pub struct AudioOutput {
     /// Producer half ring buffer.
     producer: HeapProd<f32>,
 
+    /// Consumer half ring buffer, shared with CPAL callback for explicit seek clears.
+    consumer: Arc<Mutex<HeapCons<f32>>>,
+
     /// Общий clock для A/V sync.
     clock: Arc<AudioClock>,
 
@@ -48,6 +51,9 @@ pub struct AudioOutput {
 
     /// Linear resampler для случая, когда decoder rate отличается от output rate.
     resampler: Option<LinearResampler>,
+
+    /// Последнее поколение seek, для которого audio buffer был очищен.
+    clear_ack_generation: u64,
 }
 
 /// Состояние linear resampling между decoded audio packets.
@@ -148,6 +154,12 @@ impl LinearResampler {
         self.previous_source_frame
             .extend_from_slice(&source_samples[last_frame_start..last_frame_end]);
     }
+
+    /// Сбрасывает carry state, чтобы после seek не смешивать старый и новый audio chunks.
+    fn reset(&mut self) {
+        self.next_source_frame_offset = 0.0;
+        self.previous_source_frame.clear();
+    }
 }
 
 impl AudioOutput {
@@ -202,6 +214,7 @@ impl AudioOutput {
         let buffer_capacity = (stream_rate * stream_channels as u32 * 2) as usize;
         let rb = HeapRb::<f32>::new(buffer_capacity);
         let (producer, consumer) = rb.split();
+        let consumer = Arc::new(Mutex::new(consumer));
 
         let clock = Arc::new(AudioClock::new(stream_rate, stream_channels as u32));
         let clock_for_callback = Arc::clone(&clock);
@@ -215,21 +228,21 @@ impl AudioOutput {
             cpal::SampleFormat::F32 => Self::build_stream_f32(
                 &device,
                 &stream_config,
-                consumer,
+                Arc::clone(&consumer),
                 clock_for_callback,
                 stream_channels,
             )?,
             cpal::SampleFormat::I16 => Self::build_stream_i16(
                 &device,
                 &stream_config,
-                consumer,
+                Arc::clone(&consumer),
                 clock_for_callback,
                 stream_channels,
             )?,
             cpal::SampleFormat::U16 => Self::build_stream_u16(
                 &device,
                 &stream_config,
-                consumer,
+                Arc::clone(&consumer),
                 clock_for_callback,
                 stream_channels,
             )?,
@@ -243,6 +256,7 @@ impl AudioOutput {
         Ok(Self {
             stream,
             producer,
+            consumer,
             clock,
             stream_channels,
             decoder_channels,
@@ -250,6 +264,7 @@ impl AudioOutput {
             is_playing: false,
             resampler: needs_resample
                 .then(|| LinearResampler::new(decoder_rate, stream_rate, stream_channels)),
+            clear_ack_generation: 0,
         })
     }
 
@@ -291,6 +306,32 @@ impl AudioOutput {
     /// Возвращает reference на audio clock.
     pub fn clock(&self) -> &Arc<AudioClock> {
         &self.clock
+    }
+
+    /// Очищает queued audio samples и подтверждает seek generation.
+    ///
+    /// Метод синхронный: player-core может продолжать seek commit только после
+    /// возврата ack, поэтому старый звук не остаётся в ring buffer.
+    pub fn clear_buffer_for_seek(&mut self, generation: u64) -> Result<u64> {
+        let cleared_samples = self
+            .consumer
+            .lock()
+            .map_err(|error| anyhow::anyhow!("Audio buffer mutex poisoned: {error}"))?
+            .clear();
+
+        if let Some(resampler) = self.resampler.as_mut() {
+            resampler.reset();
+        }
+        self.clock.reset();
+        self.clear_ack_generation = generation;
+        tracing::debug!(generation, cleared_samples, "Audio buffer cleared for seek");
+
+        Ok(self.clear_ack_generation)
+    }
+
+    /// Возвращает последнее подтверждённое поколение очистки audio buffer.
+    pub fn clear_ack_generation(&self) -> u64 {
+        self.clear_ack_generation
     }
 
     /// Запускает playback.
@@ -362,7 +403,7 @@ impl AudioOutput {
     fn build_stream_f32(
         device: &cpal::Device,
         config: &cpal::StreamConfig,
-        mut consumer: HeapCons<f32>,
+        consumer: Arc<Mutex<HeapCons<f32>>>,
         clock: Arc<AudioClock>,
         channels: usize,
     ) -> Result<cpal::Stream> {
@@ -375,7 +416,7 @@ impl AudioOutput {
             move |data: &mut [f32], callback_info: &cpal::OutputCallbackInfo| {
                 Self::fill_buffer_f32(
                     data,
-                    &mut consumer,
+                    &consumer,
                     &clock,
                     channels,
                     callback_info,
@@ -393,7 +434,7 @@ impl AudioOutput {
     fn build_stream_i16(
         device: &cpal::Device,
         config: &cpal::StreamConfig,
-        mut consumer: HeapCons<f32>,
+        consumer: Arc<Mutex<HeapCons<f32>>>,
         clock: Arc<AudioClock>,
         channels: usize,
     ) -> Result<cpal::Stream> {
@@ -406,7 +447,7 @@ impl AudioOutput {
             move |data: &mut [i16], callback_info: &cpal::OutputCallbackInfo| {
                 Self::fill_buffer_i16(
                     data,
-                    &mut consumer,
+                    &consumer,
                     &clock,
                     channels,
                     callback_info,
@@ -424,7 +465,7 @@ impl AudioOutput {
     fn build_stream_u16(
         device: &cpal::Device,
         config: &cpal::StreamConfig,
-        mut consumer: HeapCons<f32>,
+        consumer: Arc<Mutex<HeapCons<f32>>>,
         clock: Arc<AudioClock>,
         channels: usize,
     ) -> Result<cpal::Stream> {
@@ -437,7 +478,7 @@ impl AudioOutput {
             move |data: &mut [u16], callback_info: &cpal::OutputCallbackInfo| {
                 Self::fill_buffer_u16(
                     data,
-                    &mut consumer,
+                    &consumer,
                     &clock,
                     channels,
                     callback_info,
@@ -454,7 +495,7 @@ impl AudioOutput {
     /// Заполняет output buffer из ring buffer (f32).
     fn fill_buffer_f32(
         data: &mut [f32],
-        consumer: &mut HeapCons<f32>,
+        consumer: &Arc<Mutex<HeapCons<f32>>>,
         clock: &AudioClock,
         _channels: usize,
         callback_info: &cpal::OutputCallbackInfo,
@@ -463,16 +504,24 @@ impl AudioOutput {
         let mut filled = 0u64;
         let mut silence = 0u64;
 
-        for sample in data.iter_mut() {
-            match consumer.try_pop() {
-                Some(value) => {
-                    *sample = value;
-                    filled += 1;
+        match consumer.lock() {
+            Ok(mut consumer) => {
+                for sample in data.iter_mut() {
+                    match consumer.try_pop() {
+                        Some(value) => {
+                            *sample = value;
+                            filled += 1;
+                        }
+                        None => {
+                            *sample = 0.0;
+                            silence += 1;
+                        }
+                    }
                 }
-                None => {
-                    *sample = 0.0;
-                    silence += 1;
-                }
+            }
+            Err(_) => {
+                data.fill(0.0);
+                silence = data.len() as u64;
             }
         }
 
@@ -489,7 +538,7 @@ impl AudioOutput {
     /// Заполняет output buffer из ring buffer (i16).
     fn fill_buffer_i16(
         data: &mut [i16],
-        consumer: &mut HeapCons<f32>,
+        consumer: &Arc<Mutex<HeapCons<f32>>>,
         clock: &AudioClock,
         _channels: usize,
         callback_info: &cpal::OutputCallbackInfo,
@@ -498,17 +547,25 @@ impl AudioOutput {
         let mut filled = 0u64;
         let mut silence = 0u64;
 
-        for sample in data.iter_mut() {
-            match consumer.try_pop() {
-                Some(value) => {
-                    let value_f64: f64 = value as f64;
-                    *sample = (value_f64 * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                    filled += 1;
+        match consumer.lock() {
+            Ok(mut consumer) => {
+                for sample in data.iter_mut() {
+                    match consumer.try_pop() {
+                        Some(value) => {
+                            let value_f64: f64 = value as f64;
+                            *sample = (value_f64 * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                            filled += 1;
+                        }
+                        None => {
+                            *sample = 0;
+                            silence += 1;
+                        }
+                    }
                 }
-                None => {
-                    *sample = 0;
-                    silence += 1;
-                }
+            }
+            Err(_) => {
+                data.fill(0);
+                silence = data.len() as u64;
             }
         }
 
@@ -518,7 +575,7 @@ impl AudioOutput {
     /// Заполняет output buffer из ring buffer (u16).
     fn fill_buffer_u16(
         data: &mut [u16],
-        consumer: &mut HeapCons<f32>,
+        consumer: &Arc<Mutex<HeapCons<f32>>>,
         clock: &AudioClock,
         _channels: usize,
         callback_info: &cpal::OutputCallbackInfo,
@@ -527,17 +584,26 @@ impl AudioOutput {
         let mut filled = 0u64;
         let mut silence = 0u64;
 
-        for sample in data.iter_mut() {
-            match consumer.try_pop() {
-                Some(value) => {
-                    let value_f64: f64 = value as f64;
-                    *sample = ((value_f64 * 0.5 + 0.5) * 65535.0).clamp(0.0, 65535.0) as u16;
-                    filled += 1;
+        match consumer.lock() {
+            Ok(mut consumer) => {
+                for sample in data.iter_mut() {
+                    match consumer.try_pop() {
+                        Some(value) => {
+                            let value_f64: f64 = value as f64;
+                            *sample =
+                                ((value_f64 * 0.5 + 0.5) * 65535.0).clamp(0.0, 65535.0) as u16;
+                            filled += 1;
+                        }
+                        None => {
+                            *sample = 32768;
+                            silence += 1;
+                        }
+                    }
                 }
-                None => {
-                    *sample = 32768;
-                    silence += 1;
-                }
+            }
+            Err(_) => {
+                data.fill(32768);
+                silence = data.len() as u64;
             }
         }
 

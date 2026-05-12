@@ -106,6 +106,13 @@ impl OpusDecoder {
         }
     }
 
+    /// Сбрасывает внутреннее состояние Opus decoder после container seek.
+    pub fn reset(&mut self) -> Result<()> {
+        self.decoder
+            .reset_state()
+            .map_err(|error| anyhow::anyhow!("Opus reset error: {error}"))
+    }
+
     /// Возвращает sample rate.
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate

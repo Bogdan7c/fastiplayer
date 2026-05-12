@@ -20,6 +20,12 @@ pub struct PendingAudioPacket {
     /// Track ID нужен, чтобы не отправить packet неактивного audio track в decoder.
     pub track_id: TrackId,
 
+    /// Presentation timestamp packet-а на абсолютной media timeline.
+    pub pts: Duration,
+
+    /// Seek generation, в котором packet был прочитан из demuxer.
+    pub generation: u64,
+
     /// Encoded audio bytes хранятся отдельно от demuxer packet, потому что demuxer живёт независимо.
     pub encoded_bytes: Vec<u8>,
 }
@@ -27,9 +33,11 @@ pub struct PendingAudioPacket {
 impl PendingAudioPacket {
     /// Создаёт ожидающий audio packet с явным track id и codec bytes.
     #[must_use]
-    pub fn new(track_id: TrackId, encoded_bytes: Vec<u8>) -> Self {
+    pub fn new(track_id: TrackId, pts: Duration, generation: u64, encoded_bytes: Vec<u8>) -> Self {
         Self {
             track_id,
+            pts,
+            generation,
             encoded_bytes,
         }
     }
@@ -43,6 +51,9 @@ pub struct PendingVideoPacket {
     /// Presentation timestamp определяет A/V sync и decode-ahead лимит.
     pub pts: Duration,
 
+    /// Seek generation, в котором packet был прочитан из demuxer.
+    pub generation: u64,
+
     /// Encoded video bytes копируются из demuxer packet для владения внутри session.
     pub encoded_bytes: Vec<u8>,
 
@@ -53,10 +64,17 @@ pub struct PendingVideoPacket {
 impl PendingVideoPacket {
     /// Создаёт ожидающий video packet без неименованных tuple-полей.
     #[must_use]
-    pub fn new(track_id: TrackId, pts: Duration, encoded_bytes: Vec<u8>, keyframe: bool) -> Self {
+    pub fn new(
+        track_id: TrackId,
+        pts: Duration,
+        generation: u64,
+        encoded_bytes: Vec<u8>,
+        keyframe: bool,
+    ) -> Self {
         Self {
             track_id,
             pts,
+            generation,
             encoded_bytes,
             keyframe,
         }
@@ -125,6 +143,15 @@ pub struct PlaybackPipeline {
     /// Audio clock для A/V sync.
     pub audio_clock: Option<Arc<audio::clock::AudioClock>>,
 
+    /// Абсолютная media-позиция, соответствующая нулю текущего audio clock.
+    pub media_clock_base: Duration,
+
+    /// Поколение packets после последнего seek transaction.
+    pub seek_generation: u64,
+
+    /// Последнее поколение, для которого audio output подтвердил очистку buffer.
+    pub audio_buffer_clear_generation: u64,
+
     /// Последнее значение audio clock для обнаружения stalled audio.
     pub last_audio_clock: Duration,
 
@@ -169,6 +196,9 @@ impl Default for PlaybackPipeline {
             video_track_id: None,
             pending_video_packets: VecDeque::new(),
             audio_clock: None,
+            media_clock_base: Duration::ZERO,
+            seek_generation: 0,
+            audio_buffer_clear_generation: 0,
             last_audio_clock: Duration::ZERO,
             last_audio_clock_change_at: Instant::now(),
             video_backend: "Synthetic (test)",

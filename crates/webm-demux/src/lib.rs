@@ -5,7 +5,7 @@ mod matroska_metadata;
 pub mod streaming_source;
 pub mod symphonia_demuxer;
 
-pub use demuxer::Demuxer;
+pub use demuxer::{DemuxSeekResult, Demuxer};
 pub use dual_stream_demuxer::DualStreamDemuxer;
 pub use error::DemuxError;
 pub use media_core::{Packet, TimeBase, TrackId, TrackInfo, TrackKind};

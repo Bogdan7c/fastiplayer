@@ -6,17 +6,19 @@ use std::time::Duration;
 use anyhow::Result;
 use bytes::Bytes;
 use media_core::{
-    Packet as OurPacket, TimeBase as OurTimeBase, TrackId, TrackInfo, TrackKind, VideoTrackMetadata,
+    MediaTime, Packet as OurPacket, TimeBase as OurTimeBase, TrackId, TrackInfo, TrackKind,
+    TrackTimestamp, VideoTrackMetadata,
 };
 use symphonia::core::codecs::{CODEC_TYPE_OPUS, CODEC_TYPE_VORBIS};
-use symphonia::core::formats::{FormatOptions, FormatReader, Packet, Track};
+use symphonia::core::errors::{Error as SymphoniaError, SeekErrorKind};
+use symphonia::core::formats::{FormatOptions, FormatReader, Packet, SeekMode, SeekTo, Track};
 use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
-use symphonia::core::units::TimeBase;
+use symphonia::core::units::{Time, TimeBase};
 use tracing::{info, warn};
 
-use crate::demuxer::Demuxer;
+use crate::demuxer::{DemuxSeekResult, Demuxer};
 use crate::error::DemuxError;
 use crate::matroska_metadata::extract_video_track_metadata_from_file;
 
@@ -195,6 +197,46 @@ impl SymphoniaDemuxer {
             data: Bytes::copy_from_slice(packet.buf()),
         })
     }
+
+    /// Выбирает track для Symphonia seek: video предпочтительнее audio.
+    fn preferred_seek_track_id(&self) -> Option<TrackId> {
+        self.tracks
+            .iter()
+            .find(|track| track.kind == TrackKind::Video)
+            .or_else(|| {
+                self.tracks
+                    .iter()
+                    .find(|track| track.kind == TrackKind::Audio)
+            })
+            .map(|track| track.id)
+    }
+
+    /// Конвертирует `SeekedTo.actual_ts` в нейтральную timeline-позицию.
+    fn seeked_to_timeline_result(
+        &self,
+        requested_position: Duration,
+        seeked_to: symphonia::core::formats::SeekedTo,
+    ) -> DemuxSeekResult {
+        let actual_track_id = TrackId::new(seeked_to.track_id);
+        let actual_track_timestamp = self
+            .track_map
+            .get(&seeked_to.track_id)
+            .and_then(|entry| {
+                entry
+                    .time_base
+                    .and_then(|time_base| OurTimeBase::new(time_base.numer, time_base.denom))
+            })
+            .map(|time_base| TrackTimestamp::new(actual_track_id, seeked_to.actual_ts, time_base));
+        let actual_position = actual_track_timestamp
+            .map(TrackTimestamp::to_media_time)
+            .unwrap_or_else(|| MediaTime::from_duration(requested_position));
+
+        DemuxSeekResult {
+            requested_position: MediaTime::from_duration(requested_position),
+            actual_position,
+            actual_track_timestamp,
+        }
+    }
 }
 
 /// Достаёт Matroska video metadata для Symphonia track id.
@@ -271,8 +313,21 @@ impl Demuxer for SymphoniaDemuxer {
         }
     }
 
-    fn seek(&mut self, _timestamp: Duration) -> Result<()> {
-        anyhow::bail!("Seek not implemented yet")
+    fn seek(&mut self, timestamp: Duration) -> Result<DemuxSeekResult> {
+        let target_time = duration_to_symphonia_time(timestamp);
+        let seek_track_id = self.preferred_seek_track_id().map(TrackId::get);
+        let seeked_to = self
+            .format
+            .seek(
+                SeekMode::Accurate,
+                SeekTo::Time {
+                    time: target_time,
+                    track_id: seek_track_id,
+                },
+            )
+            .map_err(symphonia_seek_error_to_demux_error)?;
+
+        Ok(self.seeked_to_timeline_result(timestamp, seeked_to))
     }
 }
 
@@ -385,6 +440,26 @@ fn symphonia_timestamp_to_duration(time_base: TimeBase, timestamp_units: u64) ->
         .unwrap_or_default()
 }
 
+/// Конвертирует Rust `Duration` в Symphonia `Time` без потери целых секунд.
+fn duration_to_symphonia_time(duration: Duration) -> Time {
+    Time::new(
+        duration.as_secs(),
+        f64::from(duration.subsec_nanos()) / 1_000_000_000.0,
+    )
+}
+
+/// Мапит Symphonia seek failures в typed demux errors для player-core.
+fn symphonia_seek_error_to_demux_error(error: SymphoniaError) -> DemuxError {
+    match error {
+        SymphoniaError::SeekError(SeekErrorKind::Unseekable)
+        | SymphoniaError::SeekError(SeekErrorKind::ForwardOnly) => {
+            DemuxError::SeekUnavailable(error.to_string())
+        }
+        SymphoniaError::SeekError(_) => DemuxError::SeekFailed(error.to_string()),
+        other_error => DemuxError::Parse(other_error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -393,7 +468,10 @@ mod tests {
     use media_core::{TrackId, TrackKind, VideoTrackMetadata};
     use symphonia::core::units::TimeBase;
 
-    use super::{symphonia_timestamp_to_duration, take_video_metadata_for_track_id};
+    use super::{
+        duration_to_symphonia_time, symphonia_timestamp_to_duration,
+        take_video_metadata_for_track_id,
+    };
 
     #[test]
     fn converts_packet_timestamp_to_duration() {
@@ -402,6 +480,14 @@ mod tests {
         let duration = symphonia_timestamp_to_duration(time_base, 2_750);
 
         assert_eq!(duration, Duration::from_millis(2_750));
+    }
+
+    #[test]
+    fn converts_duration_to_symphonia_time() {
+        let time = duration_to_symphonia_time(Duration::new(12, 250_000_000));
+
+        assert_eq!(time.seconds, 12);
+        assert!((time.frac - 0.25).abs() < f64::EPSILON);
     }
 
     #[test]

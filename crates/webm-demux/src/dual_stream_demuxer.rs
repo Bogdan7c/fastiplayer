@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::Result;
 use media_core::{Packet, TrackId, TrackInfo, TrackKind};
 
-use crate::demuxer::Demuxer;
+use crate::demuxer::{DemuxSeekResult, Demuxer};
 use crate::symphonia_demuxer::SymphoniaDemuxer;
 
 /// Track id для video после remap.
@@ -157,7 +157,7 @@ impl Demuxer for DualStreamDemuxer {
         }
     }
 
-    fn seek(&mut self, _timestamp: Duration) -> Result<()> {
+    fn seek(&mut self, _timestamp: Duration) -> Result<DemuxSeekResult> {
         anyhow::bail!("Streaming seek не реализован в MVP")
     }
 }

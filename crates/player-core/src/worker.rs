@@ -1291,10 +1291,29 @@ mod tests {
             .unwrap();
 
         let snapshot = wait_for_snapshot(&mut worker, |snapshot| {
-            snapshot.current_position == Duration::from_millis(750)
+            matches!(
+                snapshot.last_error.as_ref().map(|error| &error.kind),
+                Some(PlayerErrorKind::SeekUnavailable)
+            )
+        });
+        let events = drain_events_until(&worker, |events| {
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    PlayerWorkerEvent::Player(PlayerEvent::SeekRequested(request))
+                        if request.target == SeekTarget::Absolute(MediaTime::from_millis(750))
+                )
+            })
         });
 
-        assert_eq!(snapshot.current_position, Duration::from_millis(750));
+        assert_eq!(snapshot.current_position, Duration::ZERO);
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                PlayerWorkerEvent::Player(PlayerEvent::SeekRequested(request))
+                    if request.target == SeekTarget::Absolute(MediaTime::from_millis(750))
+            )
+        }));
         worker.shutdown().unwrap();
     }
 
@@ -1316,10 +1335,36 @@ mod tests {
             .unwrap();
 
         let snapshot = wait_for_snapshot(&mut worker, |snapshot| {
-            snapshot.current_position == Duration::from_millis(500)
+            matches!(
+                snapshot.last_error.as_ref().map(|error| &error.kind),
+                Some(PlayerErrorKind::SeekUnavailable)
+            )
+        });
+        let events = drain_events_until(&worker, |events| {
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    PlayerWorkerEvent::Player(PlayerEvent::SeekRequested(request))
+                        if request.target == SeekTarget::Absolute(MediaTime::from_millis(500))
+                )
+            })
         });
 
-        assert_eq!(snapshot.current_position, Duration::from_millis(500));
+        assert_eq!(snapshot.current_position, Duration::ZERO);
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                PlayerWorkerEvent::Player(PlayerEvent::SeekRequested(request))
+                    if request.target == SeekTarget::Absolute(MediaTime::from_millis(500))
+            )
+        }));
+        assert!(!events.iter().any(|event| {
+            matches!(
+                event,
+                PlayerWorkerEvent::Player(PlayerEvent::SeekRequested(request))
+                    if request.target == SeekTarget::Absolute(MediaTime::from_millis(900))
+            )
+        }));
         worker.shutdown().unwrap();
     }
 

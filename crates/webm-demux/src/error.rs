@@ -20,4 +20,18 @@ pub enum DemuxError {
 
     #[error("Ошибка парсинга: {0}")]
     Parse(#[from] symphonia::core::errors::Error),
+
+    #[error("Seek недоступен: {0}")]
+    SeekUnavailable(String),
+
+    #[error("Ошибка seek: {0}")]
+    SeekFailed(String),
+}
+
+impl DemuxError {
+    /// Возвращает `true`, если ошибка означает отсутствие seek capability.
+    #[must_use]
+    pub fn is_seek_unavailable(&self) -> bool {
+        matches!(self, Self::SeekUnavailable(_))
+    }
 }

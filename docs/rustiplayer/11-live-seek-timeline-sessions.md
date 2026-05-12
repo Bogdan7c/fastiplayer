@@ -396,6 +396,8 @@ pipeline internals и не копируя texture data.
 
 ## Сессия 5. Local WebM/Matroska Seek Transaction
 
+Статус: реализовано
+
 ### Контекст для копипаста
 
 Реализуй настоящий seek transaction для локальных WebM/Matroska. Используй

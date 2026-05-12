@@ -83,6 +83,12 @@ pub struct PlayerTickConfig {
     /// Минимальный audio buffer перед переходом autoplay из `Buffering` в `Playing`.
     pub audio_preroll_target_ms: f64,
 
+    /// Максимальное время ожидания seek commit gates.
+    pub seek_commit_timeout: Duration,
+
+    /// Минимальный audio buffer перед resume после seek.
+    pub seek_resume_audio_min_buffer_ms: f64,
+
     /// Минимальная позиция audio clock, после которой stalled audio считается реальным.
     pub audio_stall_min_position: Duration,
 
@@ -117,6 +123,8 @@ impl Default for PlayerTickConfig {
             audio_buffer_high_water_mark_ms: 200.0,
             audio_demux_low_water_mark_ms: 100.0,
             audio_preroll_target_ms: 50.0,
+            seek_commit_timeout: Duration::from_millis(10_000),
+            seek_resume_audio_min_buffer_ms: 50.0,
             audio_stall_min_position: Duration::from_millis(100),
             audio_stall_timeout: Duration::from_millis(250),
             position_fallback_delta: Duration::from_micros(16_667),
@@ -143,6 +151,8 @@ impl From<&AppConfig> for PlayerTickConfig {
             audio_demux_low_water_mark_ms: (config.audio.buffer_target_ms as f64 * 0.5)
                 .max(config.player.seek.resume_audio_min_buffer_ms as f64),
             audio_preroll_target_ms: config.player.seek.resume_audio_min_buffer_ms as f64,
+            seek_commit_timeout: Duration::from_millis(config.player.seek.commit_timeout_ms),
+            seek_resume_audio_min_buffer_ms: config.player.seek.resume_audio_min_buffer_ms as f64,
             ..defaults
         }
     }
@@ -271,6 +281,11 @@ impl PlayerSession {
             &tick_context.config,
             &mut tick_result,
         );
+        self.finish_seek_commit_if_ready(
+            tick_context.now,
+            tick_context.config.seek_commit_timeout,
+            tick_context.config.seek_resume_audio_min_buffer_ms,
+        );
         if let Err(error) =
             self.finish_autoplay_preroll_if_ready(tick_context.config.audio_preroll_target_ms)
         {
@@ -297,7 +312,12 @@ impl PlayerSession {
                 break;
             }
 
-            self.process_audio_packet(packet.track_id, &packet.encoded_bytes);
+            self.process_audio_packet(
+                packet.track_id,
+                packet.pts,
+                packet.generation,
+                &packet.encoded_bytes,
+            );
         }
     }
 
@@ -309,7 +329,10 @@ impl PlayerSession {
 
         if let Some(audio_secs) = self.audio_clock_secs() {
             if let Ok(audio_position) = Duration::try_from_secs_f64(audio_secs) {
-                self.update_current_position(audio_position);
+                self.update_current_position(saturating_duration_add(
+                    self.pipeline.media_clock_base,
+                    audio_position,
+                ));
             }
         } else {
             self.advance_position(position_fallback_delta);
@@ -434,6 +457,8 @@ fn read_demux_packets(
 
 /// Перекладывает packet из demuxer в соответствующую pending queue.
 fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet) {
+    let generation = session.pipeline.seek_generation;
+
     match packet.kind {
         TrackKind::Audio => {
             session
@@ -441,6 +466,8 @@ fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet)
                 .pending_audio_packets
                 .push_back(PendingAudioPacket::new(
                     packet.track_id,
+                    packet.pts,
+                    generation,
                     packet.data.to_vec(),
                 ));
         }
@@ -451,6 +478,7 @@ fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet)
                 .push_back(PendingVideoPacket::new(
                     packet.track_id,
                     packet.pts,
+                    generation,
                     packet.data.to_vec(),
                     packet.keyframe,
                 ));
@@ -495,7 +523,8 @@ fn can_send_video_packet_to_decoder(
     }
 
     let audio_now = session.audio_clock_now();
-    let packet_lead = packet_pts.saturating_sub(audio_now);
+    let media_audio_now = saturating_duration_add(session.pipeline.media_clock_base, audio_now);
+    let packet_lead = packet_pts.saturating_sub(media_audio_now);
 
     packet_lead <= tick_config.max_video_decode_ahead
 }
@@ -658,6 +687,17 @@ fn drain_decoded_video_frames(
             "Video frame decoded"
         );
         tick_result.record_decoded_video_frame();
+
+        if session.should_drop_decoded_frame_for_seek(frame.pts) {
+            release_video_texture(session, frame.texture_handle);
+            tick_result.record_dropped_video_frame(frame.pts, PlayerVideoDropReason::Late);
+            tracing::debug!(
+                pts_ms = frame.pts.as_millis(),
+                "Dropping pre-roll video frame before seek target"
+            );
+            continue;
+        }
+
         session.observe_video_frame_pts(frame.pts);
 
         if playback_can_present {
@@ -692,7 +732,13 @@ fn send_pending_video_packets_to_decoder(
         };
         let packet_track_id = packet.track_id;
         let packet_pts = packet.pts;
+        let packet_generation = packet.generation;
         let encoded_bytes = packet.encoded_bytes.clone();
+
+        if packet_generation != session.pipeline.seek_generation {
+            session.pipeline.pending_video_packets.pop_front();
+            continue;
+        }
 
         if session.pipeline.video_track_id != Some(packet_track_id) {
             session.pipeline.pending_video_packets.pop_front();
@@ -906,7 +952,7 @@ fn target_media_time_for_present(
 /// Возвращает clock, от которого scheduler выбирает следующий video frame.
 fn presentation_clock_now(session: &PlayerSession, audio_now: Duration) -> Duration {
     if session.pipeline.audio_clock.is_some() {
-        audio_now
+        saturating_duration_add(session.pipeline.media_clock_base, audio_now)
     } else {
         session.snapshot().current_position
     }
@@ -1014,7 +1060,9 @@ fn present_front_queued_video_frame(
         pts_ms = frame.pts.as_millis(),
         "Presenting scheduled video frame"
     );
+    let frame_pts = frame.pts;
     session.pipeline.present_video_frame = Some(frame);
+    session.note_presented_frame_for_seek(frame_pts);
     tick_result.record_presented_video_frame();
     true
 }
@@ -1354,6 +1402,7 @@ mod tests {
                 .push_back(PendingVideoPacket::new(
                     TrackId::new(1),
                     Duration::from_millis(packet_index as u64),
+                    session.pipeline.seek_generation,
                     Vec::new(),
                     false,
                 ));
@@ -1379,6 +1428,7 @@ mod tests {
                 .push_back(PendingVideoPacket::new(
                     TrackId::new(1),
                     Duration::from_millis(packet_index as u64),
+                    session.pipeline.seek_generation,
                     Vec::new(),
                     false,
                 ));

@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use capability_core::{SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection};
 use codec_core::{
@@ -15,6 +15,7 @@ use crate::pipeline::{
     DEFAULT_VIDEO_FRAME_DURATION, MAX_OBSERVED_VIDEO_FRAME_DURATION,
     MIN_OBSERVED_VIDEO_FRAME_DURATION,
 };
+use crate::seek_controller::PlaybackResumeIntent;
 use crate::{
     AudioBufferSnapshot, BackendSnapshot, FrameCounters, MediaOpenRequest, MediaSource,
     MediaSummary, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind,
@@ -24,6 +25,25 @@ use crate::{
 
 /// Dev-only режим, который разрешает VP9 Profile 2 HDR дойти до P010 zero-copy boundary.
 const P010_BOUNDARY_DIAGNOSTIC_ENV_VAR: &str = "RUSTIPLAYER_DEV_VERIFY_P010_BOUNDARY";
+
+/// Runtime state одного commit seek-а внутри playback pipeline.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SeekCommitState {
+    /// Поколение packets/frames, валидное для этой операции.
+    pub generation: u64,
+
+    /// Цель commit-а на нормализованной media timeline.
+    pub target_position: MediaTime,
+
+    /// Фактическая позиция, на которую container переставил demuxer.
+    pub actual_position: MediaTime,
+
+    /// Момент старта операции для timeout policy.
+    pub started_at: Instant,
+
+    /// Playback-состояние, которое нужно применить после прохождения gates.
+    pub resume_intent: PlaybackResumeIntent,
+}
 
 /// Центральная session плеера: high-level state machine и владение playback pipeline.
 pub struct PlayerSession {
@@ -47,6 +67,9 @@ pub struct PlayerSession {
 
     /// Последний системный capability report, полученный от shell/backend layer.
     capabilities: Option<SystemCapabilities>,
+
+    /// Активная операция точного seek commit-а, если player ждёт pre-roll/gates.
+    seek_commit: Option<SeekCommitState>,
 }
 
 impl PlayerSession {
@@ -113,7 +136,7 @@ impl PlayerSession {
     pub const fn is_demuxing_active(&self) -> bool {
         matches!(
             self.snapshot.playback_state,
-            PlaybackState::Playing | PlaybackState::Buffering
+            PlaybackState::Playing | PlaybackState::Buffering | PlaybackState::Seeking
         )
     }
 
@@ -122,7 +145,7 @@ impl PlayerSession {
     pub const fn can_present_video(&self) -> bool {
         matches!(
             self.snapshot.playback_state,
-            PlaybackState::Playing | PlaybackState::Buffering
+            PlaybackState::Playing | PlaybackState::Buffering | PlaybackState::Seeking
         ) || self.draining_after_eof
     }
 
@@ -365,6 +388,9 @@ impl PlayerSession {
         self.pipeline.video_track_id = None;
         self.pipeline.pending_video_packets.clear();
         self.pipeline.audio_clock = None;
+        self.pipeline.media_clock_base = Duration::ZERO;
+        self.pipeline.seek_generation = 0;
+        self.pipeline.audio_buffer_clear_generation = 0;
         self.pipeline.video_frame_duration_estimate = DEFAULT_VIDEO_FRAME_DURATION;
         self.pipeline.last_decoded_video_pts = None;
         self.pipeline.last_audio_clock = Duration::ZERO;
@@ -372,6 +398,7 @@ impl PlayerSession {
         self.pipeline.active_video_requirement = None;
 
         self.pending_autoplay = false;
+        self.seek_commit = None;
         self.snapshot.source_label = None;
         self.snapshot.media_title = None;
         self.snapshot.clear_timeline();
@@ -528,16 +555,39 @@ impl PlayerSession {
     }
 
     /// Обрабатывает audio packet: decode -> write to AudioOutput.
-    pub fn process_audio_packet(&mut self, track_id: TrackId, encoded_audio_bytes: &[u8]) {
+    pub fn process_audio_packet(
+        &mut self,
+        track_id: TrackId,
+        packet_pts: Duration,
+        generation: u64,
+        encoded_audio_bytes: &[u8],
+    ) {
         if self.pipeline.audio_track_id != Some(track_id) {
+            return;
+        }
+
+        if generation != self.pipeline.seek_generation {
             return;
         }
 
         if let Some(ref mut decoder) = self.pipeline.audio_decoder {
             match decoder.decode(encoded_audio_bytes) {
                 Ok(samples) if !samples.is_empty() => {
+                    let sample_rate = decoder.sample_rate();
+                    let channels = decoder.channels();
+                    let samples = trim_decoded_audio_to_clock_base(
+                        &samples,
+                        packet_pts,
+                        self.pipeline.media_clock_base,
+                        sample_rate,
+                        channels,
+                    );
+                    if samples.is_empty() {
+                        return;
+                    }
+
                     if let Some(ref mut output) = self.pipeline.audio_output {
-                        output.write_samples(&samples);
+                        output.write_samples(samples);
                     }
                 }
                 Ok(_) => {}
@@ -584,6 +634,145 @@ impl PlayerSession {
             .unwrap_or(Duration::ZERO)
     }
 
+    /// Возвращает активный seek commit для scheduler/gate логики.
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) const fn seek_commit(&self) -> Option<SeekCommitState> {
+        self.seek_commit
+    }
+
+    /// Проверяет, относится ли decoded frame к pre-roll до seek target.
+    #[must_use]
+    pub(crate) fn should_drop_decoded_frame_for_seek(&self, frame_pts: Duration) -> bool {
+        self.seek_commit
+            .is_some_and(|seek_commit| frame_pts < seek_commit.target_position.as_duration())
+    }
+
+    /// Отмечает, что target video frame уже стал текущим кадром presentation.
+    pub(crate) fn note_presented_frame_for_seek(&mut self, frame_pts: Duration) {
+        let Some(seek_commit) = self.seek_commit else {
+            return;
+        };
+
+        if frame_pts >= seek_commit.target_position.as_duration() {
+            self.snapshot.timeline.stale_frame = false;
+        }
+    }
+
+    /// Завершает seek commit, когда video/audio gates готовы, или применяет timeout.
+    pub(crate) fn finish_seek_commit_if_ready(
+        &mut self,
+        now: Instant,
+        commit_timeout: Duration,
+        resume_audio_min_buffer_ms: f64,
+    ) {
+        let Some(seek_commit) = self.seek_commit else {
+            return;
+        };
+
+        if now.saturating_duration_since(seek_commit.started_at) >= commit_timeout {
+            self.fail_seek_commit_on_timeout(seek_commit);
+            return;
+        }
+
+        if !self.seek_commit_gates_ready(seek_commit, resume_audio_min_buffer_ms) {
+            return;
+        }
+
+        self.complete_seek_commit(seek_commit);
+    }
+
+    /// Проверяет video/audio gates для текущего seek commit-а.
+    fn seek_commit_gates_ready(
+        &self,
+        seek_commit: SeekCommitState,
+        resume_audio_min_buffer_ms: f64,
+    ) -> bool {
+        self.seek_video_gate_ready(seek_commit)
+            && self.seek_audio_gate_ready(seek_commit, resume_audio_min_buffer_ms)
+    }
+
+    /// Video gate готов, когда нет video track или текущий кадр уже не раньше target.
+    fn seek_video_gate_ready(&self, seek_commit: SeekCommitState) -> bool {
+        if self.pipeline.video_track_id.is_none() {
+            return true;
+        }
+
+        self.pipeline
+            .present_video_frame
+            .as_ref()
+            .is_some_and(|frame| frame.pts >= seek_commit.target_position.as_duration())
+            && !self.snapshot.timeline.stale_frame
+    }
+
+    /// Audio gate готов после подтверждённой очистки buffer и минимального preroll.
+    fn seek_audio_gate_ready(
+        &self,
+        seek_commit: SeekCommitState,
+        resume_audio_min_buffer_ms: f64,
+    ) -> bool {
+        if self.pipeline.audio_track_id.is_none() {
+            return true;
+        }
+
+        if self.pipeline.audio_buffer_clear_generation < seek_commit.generation {
+            return false;
+        }
+
+        self.audio_buffer_level_ms()
+            .map(|level_ms| level_ms >= resume_audio_min_buffer_ms.max(1.0))
+            .unwrap_or(true)
+    }
+
+    /// Успешно закрывает seek transaction и применяет сохранённый resume intent.
+    fn complete_seek_commit(&mut self, seek_commit: SeekCommitState) {
+        self.seek_commit = None;
+        self.snapshot.timeline.target_position = None;
+        self.snapshot.timeline.seeking = false;
+        self.snapshot.timeline.scrubbing = false;
+        self.snapshot.timeline.stale_frame = false;
+        self.publish_position_changed(seek_commit.target_position.as_duration());
+
+        match seek_commit.resume_intent {
+            PlaybackResumeIntent::Pause => {
+                self.pause_audio_output_for_seek();
+                self.set_playback_state(PlaybackState::Paused);
+            }
+            PlaybackResumeIntent::Play => {
+                if let Some(ref mut output) = self.pipeline.audio_output
+                    && let Err(error) = output.play()
+                {
+                    warn!(error = %error, "Не удалось запустить audio после seek");
+                    self.set_runtime_error(format!("Audio play after seek error: {error}"));
+                }
+                self.pipeline.last_audio_clock = self.audio_clock_now();
+                self.pipeline.last_audio_clock_change_at = Instant::now();
+                self.set_playback_state(PlaybackState::Playing);
+            }
+        }
+    }
+
+    /// Прерывает seek transaction по timeout как recoverable error и оставляет media paused.
+    fn fail_seek_commit_on_timeout(&mut self, seek_commit: SeekCommitState) {
+        self.seek_commit = None;
+        self.snapshot.timeline.target_position = None;
+        self.snapshot.timeline.seeking = false;
+        self.snapshot.timeline.scrubbing = false;
+        self.snapshot.timeline.stale_frame = false;
+        self.pause_audio_output_for_seek();
+        self.set_playback_state(PlaybackState::Paused);
+
+        let error = PlayerError::new(
+            PlayerErrorKind::SeekTimeout,
+            format!(
+                "Seek commit timeout after target={} ms, actual demux={} ms",
+                seek_commit.target_position.as_duration().as_millis(),
+                seek_commit.actual_position.as_duration().as_millis()
+            ),
+        );
+        self.record_recoverable_error(error);
+    }
+
     /// Инициализирует video pipeline через VA-API decoder thread.
     pub fn init_video_pipeline(
         &mut self,
@@ -628,6 +817,12 @@ impl PlayerSession {
     /// Переводит playback в `Playing` и запускает audio output.
     fn play(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        if let Some(seek_commit) = self.seek_commit.as_mut() {
+            seek_commit.resume_intent = PlaybackResumeIntent::Play;
+            self.set_playback_state(PlaybackState::Seeking);
+            return Ok(());
+        }
+
         self.set_playback_state(PlaybackState::Playing);
 
         if let Some(ref mut output) = self.pipeline.audio_output {
@@ -684,6 +879,13 @@ impl PlayerSession {
     /// Переводит playback в `Paused` и останавливает audio output.
     fn pause(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        if let Some(seek_commit) = self.seek_commit.as_mut() {
+            seek_commit.resume_intent = PlaybackResumeIntent::Pause;
+            self.pause_audio_output_for_seek();
+            self.set_playback_state(PlaybackState::Seeking);
+            return Ok(());
+        }
+
         self.set_playback_state(PlaybackState::Paused);
         self.clear_queued_video_frames();
 
@@ -697,18 +899,23 @@ impl PlayerSession {
         Ok(())
     }
 
-    /// Фиксирует seek request в snapshot до переноса реального scheduler.
+    /// Запускает настоящий seek transaction через текущий demuxer.
     fn seek(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         let target_position = self.resolve_seek_target(request);
-        self.snapshot.timeline.target_position = Some(target_position);
-        self.publish_position_changed(target_position.as_duration());
-        self.snapshot.timeline.target_position = None;
-        self.snapshot.timeline.seeking = false;
-        self.snapshot.timeline.stale_frame = false;
         self.pending_events
             .push(PlayerEvent::SeekRequested(request));
-        Ok(())
+
+        if self.pipeline.demuxer.is_none() {
+            let error = PlayerError::new(
+                PlayerErrorKind::SeekUnavailable,
+                "Seek невозможен: media pipeline ещё не открыт",
+            );
+            self.record_recoverable_error(error);
+            return Ok(());
+        }
+
+        self.start_seek_transaction(target_position)
     }
 
     /// Начинает interactive scrub на уровне контракта без запуска demux seek.
@@ -738,15 +945,123 @@ impl PlayerSession {
         match policy {
             crate::ScrubCommitPolicy::CommitLatest => {
                 if let Some(target_position) = self.snapshot.timeline.target_position {
-                    self.publish_position_changed(target_position.as_duration());
+                    self.start_seek_transaction(target_position)?;
                 }
             }
         }
-        self.snapshot.timeline.target_position = None;
-        self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.scrubbing = false;
-        self.snapshot.timeline.stale_frame = false;
         Ok(())
+    }
+
+    /// Выполняет синхронную часть seek transaction и оставляет commit gates на tick.
+    fn start_seek_transaction(&mut self, target_position: MediaTime) -> PlayerResult<()> {
+        if self.pipeline.demuxer.is_none() {
+            let error = PlayerError::new(
+                PlayerErrorKind::SeekUnavailable,
+                "Seek невозможен: media pipeline ещё не открыт",
+            );
+            self.record_recoverable_error(error);
+            return Ok(());
+        }
+
+        let resume_intent = PlaybackResumeIntent::from_playback_state(self.playback_state());
+        let target_duration = target_position.as_duration();
+
+        self.set_playback_state(PlaybackState::Seeking);
+        self.pause_audio_output_for_seek();
+        self.pipeline.seek_generation = self.pipeline.seek_generation.saturating_add(1);
+        let generation = self.pipeline.seek_generation;
+
+        if let Some(ref thread) = self.pipeline.video_decoder_thread
+            && let Err(error) = thread.flush()
+        {
+            let player_error = PlayerError::new(
+                PlayerErrorKind::RuntimeError,
+                format!("Video decoder flush failed during seek: {error}"),
+            );
+            self.record_recoverable_error(player_error);
+        }
+
+        self.pipeline.pending_audio_packets.clear();
+        self.pipeline.pending_video_packets.clear();
+        self.clear_queued_video_frames();
+        self.pipeline.last_decoded_video_pts = None;
+        self.pipeline.media_clock_base = target_duration;
+        self.pipeline.last_audio_clock = Duration::ZERO;
+        self.pipeline.last_audio_clock_change_at = Instant::now();
+        self.snapshot.timeline.target_position = Some(target_position);
+        self.snapshot.timeline.seeking = true;
+        self.snapshot.timeline.stale_frame = self.pipeline.present_video_frame.is_some();
+
+        if let Some(ref mut decoder) = self.pipeline.audio_decoder
+            && let Err(error) = decoder.reset()
+        {
+            let player_error = PlayerError::new(
+                PlayerErrorKind::RuntimeError,
+                format!("Opus decoder reset failed during seek: {error}"),
+            );
+            self.record_recoverable_error(player_error);
+        }
+
+        if let Some(ref mut output) = self.pipeline.audio_output {
+            match output.clear_buffer_for_seek(generation) {
+                Ok(ack_generation) => {
+                    self.pipeline.audio_buffer_clear_generation = ack_generation;
+                }
+                Err(error) => {
+                    let player_error = PlayerError::new(
+                        PlayerErrorKind::AudioDeviceUnavailable,
+                        format!("Audio buffer clear failed during seek: {error}"),
+                    );
+                    self.record_recoverable_error(player_error);
+                }
+            }
+        } else {
+            self.pipeline.audio_buffer_clear_generation = generation;
+            if let Some(ref clock) = self.pipeline.audio_clock {
+                clock.reset();
+            }
+        }
+
+        let seek_result = {
+            let Some(demuxer) = self.pipeline.demuxer.as_mut() else {
+                return Ok(());
+            };
+            demuxer.seek(target_duration)
+        };
+
+        match seek_result {
+            Ok(result) => {
+                self.seek_commit = Some(SeekCommitState {
+                    generation,
+                    target_position,
+                    actual_position: result.actual_position,
+                    started_at: Instant::now(),
+                    resume_intent,
+                });
+                Ok(())
+            }
+            Err(error) => {
+                self.seek_commit = None;
+                self.snapshot.timeline.target_position = None;
+                self.snapshot.timeline.seeking = false;
+                self.snapshot.timeline.stale_frame = false;
+                self.set_playback_state(PlaybackState::Paused);
+                let player_error = player_error_from_demux_seek_error(error);
+                self.record_recoverable_error(player_error);
+                Ok(())
+            }
+        }
+    }
+
+    /// Останавливает audio stream для seek, не меняя high-level playback state.
+    fn pause_audio_output_for_seek(&mut self) {
+        if let Some(ref mut output) = self.pipeline.audio_output
+            && let Err(error) = output.pause()
+        {
+            warn!(error = %error, "Не удалось остановить audio перед seek");
+            self.set_runtime_error(format!("Audio pause before seek error: {error}"));
+        }
     }
 
     /// Останавливает текущий media и сбрасывает timeline без завершения session.
@@ -873,9 +1188,15 @@ impl PlayerSession {
 
     /// Разрешает seek target в абсолютную media-позицию без изменения runtime seek policy.
     fn resolve_seek_target(&self, request: SeekRequest) -> MediaTime {
-        request
+        let target_position = request
             .target
-            .resolve(self.snapshot.timeline.current_position)
+            .resolve(self.snapshot.timeline.current_position);
+
+        self.snapshot
+            .timeline
+            .seekable_range
+            .map(|range| target_position.clamp_to(range))
+            .unwrap_or(target_position)
     }
 
     /// Синхронно обновляет legacy `Duration` и typed timeline duration.
@@ -1387,6 +1708,7 @@ impl Default for PlayerSession {
             shutdown_requested: false,
             draining_after_eof: false,
             capabilities: None,
+            seek_commit: None,
         }
     }
 }
@@ -1394,6 +1716,56 @@ impl Default for PlayerSession {
 /// Безопасно создаёт `Duration` только из finite и неотрицательных секунд.
 fn optional_duration_from_seconds(seconds: f64) -> Option<Duration> {
     Duration::try_from_secs_f64(seconds).ok()
+}
+
+/// Возвращает срез audio samples, который начинается не раньше текущей media clock base.
+fn trim_decoded_audio_to_clock_base(
+    samples: &[f32],
+    packet_pts: Duration,
+    media_clock_base: Duration,
+    sample_rate: u32,
+    channels: u32,
+) -> &[f32] {
+    if packet_pts >= media_clock_base || sample_rate == 0 || channels == 0 {
+        return samples;
+    }
+
+    let channel_count = channels as usize;
+    let frame_count = samples.len() / channel_count;
+    if frame_count == 0 {
+        return &[];
+    }
+
+    let trim_duration = media_clock_base.saturating_sub(packet_pts);
+    let trim_frames = duration_to_audio_frames(trim_duration, sample_rate);
+    if trim_frames >= frame_count {
+        return &[];
+    }
+
+    let trim_samples = trim_frames.saturating_mul(channel_count);
+    &samples[trim_samples..]
+}
+
+/// Конвертирует duration в количество audio frames с округлением вниз.
+fn duration_to_audio_frames(duration: Duration, sample_rate: u32) -> usize {
+    let frames = duration.as_nanos().saturating_mul(u128::from(sample_rate)) / 1_000_000_000u128;
+
+    frames.min(usize::MAX as u128) as usize
+}
+
+/// Мапит ошибку demux seek в player error без смешивания unavailable/timeout/demux.
+fn player_error_from_demux_seek_error(error: anyhow::Error) -> PlayerError {
+    if error
+        .downcast_ref::<webm_demux::DemuxError>()
+        .is_some_and(webm_demux::DemuxError::is_seek_unavailable)
+    {
+        return PlayerError::new(
+            PlayerErrorKind::SeekUnavailable,
+            format!("Seek failed: {error}"),
+        );
+    }
+
+    PlayerError::new(PlayerErrorKind::DemuxError, format!("Seek failed: {error}"))
 }
 
 /// Возвращает `true`, если ручной Phase 9 P010 boundary diagnostic mode включён.
@@ -1414,8 +1786,14 @@ fn is_enabled_env_value(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
     use super::*;
-    use crate::{MediaSource, PlayerCommand, ScrubCommitPolicy, SeekTarget};
+    use crate::{
+        MediaSource, PendingAudioPacket, PendingVideoPacket, PlayerCommand, ScrubCommitPolicy,
+        SeekTarget,
+    };
     use capability_core::{
         BackendCapabilities, BackendDriverInfo, BackendProbeStatus, P010StorageLayout,
         VideoExportPath,
@@ -1425,6 +1803,120 @@ mod tests {
         Vp9Profile,
     };
     use render_core::RenderCapabilities;
+    use webm_demux::{DemuxSeekResult, Demuxer};
+
+    /// Fake demuxer для проверки player-core transaction без реального WebM/GPU.
+    struct FakeDemuxer {
+        tracks: Vec<TrackInfo>,
+        duration: Option<Duration>,
+        packets: VecDeque<media_core::Packet>,
+        seek_log: Arc<Mutex<Vec<Duration>>>,
+    }
+
+    impl FakeDemuxer {
+        /// Создаёт fake demuxer с явными tracks и shared seek log.
+        fn new(
+            tracks: Vec<TrackInfo>,
+            duration: Option<Duration>,
+            seek_log: Arc<Mutex<Vec<Duration>>>,
+        ) -> Self {
+            Self {
+                tracks,
+                duration,
+                packets: VecDeque::new(),
+                seek_log,
+            }
+        }
+    }
+
+    impl Demuxer for FakeDemuxer {
+        fn tracks(&self) -> &[TrackInfo] {
+            &self.tracks
+        }
+
+        fn duration(&self) -> Option<Duration> {
+            self.duration
+        }
+
+        fn next_packet(&mut self) -> anyhow::Result<Option<media_core::Packet>> {
+            Ok(self.packets.pop_front())
+        }
+
+        fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+            self.seek_log
+                .lock()
+                .expect("seek log mutex should not be poisoned")
+                .push(timestamp);
+            Ok(DemuxSeekResult {
+                requested_position: MediaTime::from_duration(timestamp),
+                actual_position: MediaTime::from_duration(timestamp),
+                actual_track_timestamp: None,
+            })
+        }
+    }
+
+    /// Создаёт минимальный track summary для fake media.
+    fn fake_track(track_id: u32, kind: TrackKind) -> TrackInfo {
+        TrackInfo {
+            id: TrackId::new(track_id),
+            kind,
+            codec_id: match kind {
+                TrackKind::Video => "V_VP9".to_string(),
+                TrackKind::Audio => "A_OPUS".to_string(),
+            },
+            codec_private: None,
+            time_base: media_core::TimeBase::new(1, 1_000),
+            duration: Some(Duration::from_secs(30)),
+            sample_rate: (kind == TrackKind::Audio).then_some(48_000),
+            channels: (kind == TrackKind::Audio).then_some(2),
+            video: None,
+        }
+    }
+
+    /// Подключает fake demuxer без инициализации CPAL/VA-API ресурсов.
+    fn install_fake_media(
+        session: &mut PlayerSession,
+        tracks: Vec<TrackInfo>,
+    ) -> Arc<Mutex<Vec<Duration>>> {
+        let seek_log = Arc::new(Mutex::new(Vec::new()));
+        let demuxer = FakeDemuxer::new(
+            tracks.clone(),
+            Some(Duration::from_secs(30)),
+            Arc::clone(&seek_log),
+        );
+
+        session.pipeline.demuxer = Some(Box::new(demuxer));
+        session.pipeline.tracks = tracks.clone();
+        session.pipeline.video_track_id = tracks
+            .iter()
+            .find(|track| track.kind == TrackKind::Video)
+            .map(|track| track.id);
+        session.pipeline.audio_track_id = tracks
+            .iter()
+            .find(|track| track.kind == TrackKind::Audio)
+            .map(|track| track.id);
+        session.set_snapshot_duration(Some(Duration::from_secs(30)));
+        session.set_playback_state(PlaybackState::Paused);
+
+        seek_log
+    }
+
+    /// Создаёт decoded frame без реальных GPU resources.
+    fn decoded_frame_for_tests(pts: Duration, handle: u64) -> video_core::DecodedFrame {
+        video_core::DecodedFrame {
+            pts,
+            format: video_core::DecodedPixelFormat::Nv12,
+            bit_depth: BitDepth::Eight,
+            chroma: ChromaSubsampling::Yuv420,
+            memory_path: video_core::FrameMemoryPath::CpuUpload,
+            width: 640,
+            height: 360,
+            render_width: 640,
+            render_height: 360,
+            color: codec_core::VideoColorMetadata::sdr_bt709_limited(),
+            texture_handle: video_core::FrameTextureHandle(handle),
+        }
+    }
 
     fn capabilities_with_vp9_profile0() -> SystemCapabilities {
         SystemCapabilities {
@@ -1513,13 +2005,23 @@ mod tests {
     }
 
     #[test]
-    fn seek_command_updates_legacy_and_typed_timeline_position() {
+    fn seek_command_sets_target_and_commits_position_after_gates() {
         let mut session = PlayerSession::new();
+        install_fake_media(&mut session, Vec::new());
         let request = SeekRequest::absolute(MediaTime::from_millis(1_500));
 
         session
             .dispatch_command(PlayerCommand::Seek(request))
             .unwrap();
+
+        assert_eq!(session.snapshot().current_position, Duration::ZERO);
+        assert_eq!(
+            session.snapshot().timeline.target_position,
+            Some(MediaTime::from_millis(1_500))
+        );
+        assert!(session.snapshot().timeline.seeking);
+
+        session.finish_seek_commit_if_ready(Instant::now(), Duration::from_secs(10), 50.0);
 
         assert_eq!(
             session.snapshot().current_position,
@@ -1537,6 +2039,7 @@ mod tests {
     #[test]
     fn relative_seek_target_resolves_from_current_timeline_position() {
         let mut session = PlayerSession::new();
+        install_fake_media(&mut session, Vec::new());
         session.update_current_position(Duration::from_secs(10));
         let request = SeekRequest {
             target: SeekTarget::Relative(Duration::from_secs(5)),
@@ -1546,6 +2049,7 @@ mod tests {
         session
             .dispatch_command(PlayerCommand::Seek(request))
             .unwrap();
+        session.finish_seek_commit_if_ready(Instant::now(), Duration::from_secs(10), 50.0);
 
         assert_eq!(session.snapshot().current_position, Duration::from_secs(15));
     }
@@ -1553,6 +2057,7 @@ mod tests {
     #[test]
     fn scrub_commands_track_latest_target_and_commit_it() {
         let mut session = PlayerSession::new();
+        install_fake_media(&mut session, Vec::new());
         let request = SeekRequest::absolute(MediaTime::from_secs(7));
 
         session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
@@ -1574,7 +2079,170 @@ mod tests {
             .unwrap();
 
         assert!(!session.snapshot().timeline.scrubbing);
+        assert_eq!(session.snapshot().current_position, Duration::ZERO);
+
+        session.finish_seek_commit_if_ready(Instant::now(), Duration::from_secs(10), 50.0);
+
         assert_eq!(session.snapshot().current_position, Duration::from_secs(7));
+    }
+
+    #[test]
+    fn seek_transaction_clears_pending_packets_and_calls_demux_seek() {
+        let mut session = PlayerSession::new();
+        let seek_log = install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+        session
+            .pipeline
+            .pending_audio_packets
+            .push_back(PendingAudioPacket::new(
+                TrackId::new(2),
+                Duration::ZERO,
+                session.pipeline.seek_generation,
+                vec![1, 2, 3],
+            ));
+        session
+            .pipeline
+            .pending_video_packets
+            .push_back(PendingVideoPacket::new(
+                TrackId::new(1),
+                Duration::ZERO,
+                session.pipeline.seek_generation,
+                vec![4, 5, 6],
+                true,
+            ));
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(5),
+            )))
+            .unwrap();
+
+        assert!(session.pipeline.pending_audio_packets.is_empty());
+        assert!(session.pipeline.pending_video_packets.is_empty());
+        assert_eq!(
+            *seek_log
+                .lock()
+                .expect("seek log mutex should not be poisoned"),
+            vec![Duration::from_secs(5)]
+        );
+        assert_eq!(session.pipeline.seek_generation, 1);
+        assert!(session.seek_commit().is_some());
+    }
+
+    #[test]
+    fn commit_timeout_pauses_and_reports_recoverable_seek_error() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(5),
+            )))
+            .unwrap();
+        let timeout_now = Instant::now() + Duration::from_secs(11);
+
+        session.finish_seek_commit_if_ready(timeout_now, Duration::from_secs(10), 50.0);
+
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
+        assert!(matches!(
+            session
+                .snapshot()
+                .last_error
+                .as_ref()
+                .map(|error| &error.kind),
+            Some(PlayerErrorKind::SeekTimeout)
+        ));
+    }
+
+    #[test]
+    fn paused_before_scrub_stays_paused_after_commit() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, Vec::new());
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitLatest,
+            })
+            .unwrap();
+
+        session.finish_seek_commit_if_ready(Instant::now(), Duration::from_secs(10), 50.0);
+
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
+        assert!(!session.snapshot().timeline.seeking);
+    }
+
+    #[test]
+    fn playing_before_scrub_resumes_after_gates() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, Vec::new());
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session.dispatch_command(PlayerCommand::Pause).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitLatest,
+            })
+            .unwrap();
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+
+        session.finish_seek_commit_if_ready(Instant::now(), Duration::from_secs(10), 50.0);
+
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert!(!session.snapshot().timeline.seeking);
+    }
+
+    #[test]
+    fn no_audio_media_seek_resumes_after_target_video_frame() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        let target_frame = decoded_frame_for_tests(Duration::from_secs(6), 42);
+        session.pipeline.present_video_frame = Some(target_frame);
+        session.note_presented_frame_for_seek(Duration::from_secs(6));
+
+        session.finish_seek_commit_if_ready(Instant::now(), Duration::from_secs(10), 50.0);
+
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert!(!session.snapshot().timeline.seeking);
+    }
+
+    #[test]
+    fn seek_generation_drops_pre_roll_frames_before_target() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+
+        assert!(session.should_drop_decoded_frame_for_seek(Duration::from_millis(5_999)));
+        assert!(!session.should_drop_decoded_frame_for_seek(Duration::from_secs(6)));
     }
 
     #[test]

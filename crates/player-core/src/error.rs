@@ -30,6 +30,12 @@ pub enum PlayerErrorKind {
     /// Ошибка чтения контейнера или packets.
     DemuxError,
 
+    /// Текущий media/source не поддерживает seek.
+    SeekUnavailable,
+
+    /// Seek transaction не дождался commit gates за отведённое время.
+    SeekTimeout,
+
     /// Ошибка сетевого источника или streaming manifest.
     NetworkError,
 
