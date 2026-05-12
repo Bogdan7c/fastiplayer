@@ -12,7 +12,9 @@ use media_core::{
 use source_core::{ByteSource, Seekability as SourceSeekability};
 use symphonia::core::codecs::{CODEC_TYPE_OPUS, CODEC_TYPE_VORBIS};
 use symphonia::core::errors::{Error as SymphoniaError, SeekErrorKind};
-use symphonia::core::formats::{FormatOptions, FormatReader, Packet, SeekMode, SeekTo, Track};
+use symphonia::core::formats::{
+    FormatOptions, FormatReader, Packet, SeekHint, SeekMode as SymphoniaSeekMode, SeekTo, Track,
+};
 use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
@@ -20,7 +22,7 @@ use symphonia::core::units::{Time, TimeBase};
 use tracing::{info, warn};
 
 use crate::byte_source::ByteSourceMediaSource;
-use crate::demuxer::{DemuxSeekResult, DemuxSeekability, Demuxer};
+use crate::demuxer::{DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer};
 use crate::error::DemuxError;
 use crate::matroska_metadata::extract_video_track_metadata_from_file;
 
@@ -226,7 +228,9 @@ impl SymphoniaDemuxer {
             .map(|time_base| symphonia_timestamp_to_duration(time_base, packet.ts()))
             .unwrap_or_default();
 
-        let keyframe = if entry.kind == TrackKind::Video && entry.codec_id == "V_VP9" {
+        let keyframe = if let Some(container_keyframe) = packet.keyframe {
+            container_keyframe
+        } else if entry.kind == TrackKind::Video && entry.codec_id == "V_VP9" {
             match vp9_parser::parse_uncompressed_header(packet.buf()) {
                 Ok(info) => info.keyframe,
                 Err(e) => {
@@ -243,6 +247,7 @@ impl SymphoniaDemuxer {
             kind: entry.kind,
             pts,
             dts: None,
+            byte_offset: packet.source_byte_offset,
             keyframe,
             data: Bytes::copy_from_slice(packet.buf()),
         })
@@ -368,16 +373,30 @@ impl Demuxer for SymphoniaDemuxer {
     }
 
     fn seek(&mut self, timestamp: Duration) -> Result<DemuxSeekResult> {
+        self.seek_with_request(DemuxSeekRequest::accurate(timestamp))
+    }
+
+    fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
+        let timestamp = request.timestamp;
         let target_time = duration_to_symphonia_time(timestamp);
         let seek_track_id = self.preferred_seek_track_id().map(TrackId::get);
+        let seek_mode = match request.mode {
+            DemuxSeekMode::Accurate => SymphoniaSeekMode::Accurate,
+            DemuxSeekMode::Preview => SymphoniaSeekMode::Coarse,
+        };
+        let seek_hint = request
+            .byte_offset_hint
+            .map(SeekHint::byte_offset)
+            .unwrap_or_else(SeekHint::none);
         let seeked_to = self
             .format
-            .seek(
-                SeekMode::Accurate,
+            .seek_with_hint(
+                seek_mode,
                 SeekTo::Time {
                     time: target_time,
                     track_id: seek_track_id,
                 },
+                seek_hint,
             )
             .map_err(symphonia_seek_error_to_demux_error)?;
 
@@ -534,15 +553,34 @@ fn symphonia_seek_error_to_demux_error(error: SymphoniaError) -> DemuxError {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::time::Duration;
 
-    use media_core::{TrackId, TrackKind, VideoTrackMetadata};
+    use media_core::{MediaTime, TrackId, TrackKind, VideoTrackMetadata};
     use symphonia::core::units::TimeBase;
 
     use super::{
-        duration_to_symphonia_time, symphonia_timestamp_to_duration,
+        SymphoniaDemuxer, duration_to_symphonia_time, symphonia_timestamp_to_duration,
         take_video_metadata_for_track_id,
     };
+    use crate::demuxer::{DemuxSeekRequest, Demuxer};
+
+    fn test_webm_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/test.webm")
+    }
+
+    fn next_video_packet(demuxer: &mut SymphoniaDemuxer) -> media_core::Packet {
+        loop {
+            let packet = demuxer
+                .next_packet()
+                .expect("packet read должен завершиться без ошибки")
+                .expect("test asset должен содержать video packet");
+
+            if packet.kind == TrackKind::Video {
+                return packet;
+            }
+        }
+    }
 
     #[test]
     fn converts_packet_timestamp_to_duration() {
@@ -626,5 +664,39 @@ mod tests {
 
         assert!(metadata.is_none());
         assert_eq!(metadata_by_track.len(), 2);
+    }
+
+    #[test]
+    fn matroska_packets_expose_source_byte_offset_for_runtime_index() {
+        let mut demuxer =
+            SymphoniaDemuxer::from_file(&test_webm_path()).expect("test webm должен открыться");
+
+        let packet = next_video_packet(&mut demuxer);
+
+        assert!(
+            packet.byte_offset.is_some(),
+            "video packet должен нести container byte offset для seek index"
+        );
+    }
+
+    #[test]
+    fn seek_request_accepts_byte_offset_hint_without_codec_coupling() {
+        let mut demuxer =
+            SymphoniaDemuxer::from_file(&test_webm_path()).expect("test webm должен открыться");
+        let packet = next_video_packet(&mut demuxer);
+        let byte_offset = packet
+            .byte_offset
+            .expect("video packet должен иметь byte offset");
+
+        let seek_result = demuxer
+            .seek_with_request(
+                DemuxSeekRequest::preview(packet.pts).with_byte_offset_hint(byte_offset),
+            )
+            .expect("byte-offset preview seek должен пройти через generic demux API");
+
+        assert_eq!(
+            seek_result.requested_position,
+            MediaTime::from_duration(packet.pts)
+        );
     }
 }

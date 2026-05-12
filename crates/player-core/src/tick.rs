@@ -86,6 +86,9 @@ pub struct PlayerTickConfig {
     /// Максимальное время ожидания seek commit gates.
     pub seek_commit_timeout: Duration,
 
+    /// Максимальное время ожидания live preview seek gates.
+    pub seek_preview_timeout: Duration,
+
     /// Минимальный audio buffer перед resume после seek.
     pub seek_resume_audio_min_buffer_ms: f64,
 
@@ -124,6 +127,7 @@ impl Default for PlayerTickConfig {
             audio_demux_low_water_mark_ms: 100.0,
             audio_preroll_target_ms: 50.0,
             seek_commit_timeout: Duration::from_millis(10_000),
+            seek_preview_timeout: Duration::from_millis(100),
             seek_resume_audio_min_buffer_ms: 50.0,
             audio_stall_min_position: Duration::from_millis(100),
             audio_stall_timeout: Duration::from_millis(250),
@@ -152,6 +156,7 @@ impl From<&AppConfig> for PlayerTickConfig {
                 .max(config.player.seek.resume_audio_min_buffer_ms as f64),
             audio_preroll_target_ms: config.player.seek.resume_audio_min_buffer_ms as f64,
             seek_commit_timeout: Duration::from_millis(config.player.seek.commit_timeout_ms),
+            seek_preview_timeout: Duration::from_millis(config.player.seek.live_preview_budget_ms),
             seek_resume_audio_min_buffer_ms: config.player.seek.resume_audio_min_buffer_ms as f64,
             ..defaults
         }
@@ -188,6 +193,7 @@ impl PlayerTickResult {
             kind: packet.kind,
             pts: packet.pts,
             size: packet.data.len(),
+            byte_offset: packet.byte_offset,
             keyframe: packet.keyframe,
         });
     }
@@ -228,6 +234,9 @@ pub struct PlayerTickPacket {
 
     /// Размер codec payload в bytes.
     pub size: usize,
+
+    /// Safe source byte offset для demux seek, если container adapter его сообщил.
+    pub byte_offset: Option<u64>,
 
     /// Признак keyframe для video packets.
     pub keyframe: bool,
@@ -284,6 +293,7 @@ impl PlayerSession {
         self.finish_seek_commit_if_ready(
             tick_context.now,
             tick_context.config.seek_commit_timeout,
+            tick_context.config.seek_preview_timeout,
             tick_context.config.seek_resume_audio_min_buffer_ms,
         );
         if let Err(error) =
@@ -475,6 +485,7 @@ fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet)
             session.background_indexer.record_video_packet(
                 packet.track_id,
                 packet.pts,
+                packet.byte_offset,
                 packet.keyframe,
             );
             session

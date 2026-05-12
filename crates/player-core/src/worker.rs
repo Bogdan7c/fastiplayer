@@ -48,6 +48,9 @@ const INDEX_SCAN_CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Максимальное ожидание render-frame ответа, чтобы UI не зависал за worker-ом.
 const RENDER_FRAME_REPLY_TIMEOUT: Duration = Duration::from_millis(2);
 
+/// Default throttle live preview seek-а, если worker создан без app config.
+const DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL: Duration = Duration::from_millis(100);
+
 /// Конфигурация playback worker.
 #[derive(Debug, Clone, Copy)]
 pub struct PlayerWorkerConfig {
@@ -59,6 +62,9 @@ pub struct PlayerWorkerConfig {
 
     /// Runtime budget фонового indexer-а.
     pub indexer_config: BackgroundIndexerConfig,
+
+    /// Минимальный интервал между live preview seek-ами во время scrub.
+    pub live_scrub_preview_interval: Duration,
 }
 
 impl PlayerWorkerConfig {
@@ -69,6 +75,7 @@ impl PlayerWorkerConfig {
             tick_interval: DEFAULT_WORKER_TICK_INTERVAL,
             tick_config,
             indexer_config: BackgroundIndexerConfig::default(),
+            live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
         }
     }
 
@@ -79,6 +86,7 @@ impl PlayerWorkerConfig {
             tick_interval: DEFAULT_WORKER_TICK_INTERVAL,
             tick_config: PlayerTickConfig::from(config),
             indexer_config: BackgroundIndexerConfig::from_network_config(&config.network),
+            live_scrub_preview_interval: Duration::from_millis(config.player.seek.live_interval_ms),
         }
     }
 }
@@ -441,6 +449,9 @@ impl PlayerWorker {
                     render_release_rx,
                     shutdown_rx,
                     config,
+                    last_preview_scrub_seek_at: None,
+                    last_preview_scrub_target: None,
+                    deferred_preview_scrub_target: None,
                     index_scan: None,
                     last_tick_at: Instant::now(),
                 };
@@ -787,6 +798,15 @@ struct PlayerWorkerRuntime {
     /// Runtime config worker-а.
     config: PlayerWorkerConfig,
 
+    /// Последний момент, когда worker запускал live preview seek.
+    last_preview_scrub_seek_at: Option<Instant>,
+
+    /// Последняя scrub-цель, для которой preview seek уже был отправлен.
+    last_preview_scrub_target: Option<SeekRequest>,
+
+    /// Latest scrub-цель, ожидающая preview throttle window.
+    deferred_preview_scrub_target: Option<SeekRequest>,
+
     /// Активный low-priority index scan thread.
     index_scan: Option<BackgroundIndexScanHandle>,
 
@@ -819,6 +839,7 @@ impl PlayerWorkerRuntime {
 
             self.handle_pending_render_requests();
             self.apply_latest_scrub_update();
+            self.dispatch_due_preview_scrub_seek();
             self.run_tick_if_due();
 
             if self.session.is_shutdown_requested() {
@@ -941,6 +962,9 @@ impl PlayerWorkerRuntime {
             PlayerCommand::Shutdown => self.handle_shutdown_request(),
             PlayerCommand::BeginScrub => self.handle_begin_scrub_command(),
             PlayerCommand::UpdateScrub(request) => self.apply_scrub_update(request),
+            PlayerCommand::PreviewScrub(request) => {
+                self.dispatch_player_command(PlayerCommand::PreviewScrub(request));
+            }
             PlayerCommand::EndScrub { policy } => self.handle_end_scrub_command(policy),
             PlayerCommand::Seek(request) => self.handle_seek_command(request),
             other_command => self.dispatch_player_command(other_command),
@@ -987,6 +1011,7 @@ impl PlayerWorkerRuntime {
 
     /// BeginScrub сохраняет resume intent и временно ставит playback на паузу.
     fn handle_begin_scrub_command(&mut self) {
+        self.reset_preview_scrub_state();
         self.seek_controller
             .begin_scrub(self.session.playback_state());
         self.dispatch_player_command(PlayerCommand::BeginScrub);
@@ -996,9 +1021,11 @@ impl PlayerWorkerRuntime {
     /// EndScrub коммитит latest target и применяет сохранённый resume intent.
     fn handle_end_scrub_command(&mut self, policy: ScrubCommitPolicy) {
         self.apply_latest_scrub_update();
+        self.deferred_preview_scrub_target = None;
         self.dispatch_player_command(PlayerCommand::EndScrub { policy });
 
         if !self.seek_controller.is_scrubbing() {
+            self.reset_preview_scrub_state();
             return;
         }
 
@@ -1006,6 +1033,7 @@ impl PlayerWorkerRuntime {
             PlaybackResumeIntent::Pause => self.dispatch_player_command(PlayerCommand::Pause),
             PlaybackResumeIntent::Play => self.dispatch_player_command(PlayerCommand::Play),
         }
+        self.reset_preview_scrub_state();
     }
 
     /// Внешний Seek игнорируется, пока активен scrub.
@@ -1025,6 +1053,8 @@ impl PlayerWorkerRuntime {
         }
 
         self.dispatch_player_command(PlayerCommand::UpdateScrub(request));
+        self.queue_preview_scrub_seek(request);
+        self.dispatch_due_preview_scrub_seek();
     }
 
     /// Забирает latest scrub update из bounded канала и применяет только последнюю цель.
@@ -1045,6 +1075,56 @@ impl PlayerWorkerRuntime {
     fn interrupt_scrub_for_external_boundary(&mut self) {
         if self.seek_controller.is_scrubbing() {
             self.seek_controller.interrupt_scrub();
+        }
+        self.reset_preview_scrub_state();
+    }
+
+    /// Сбрасывает worker-only состояние preview seek-а для новой scrub операции.
+    fn reset_preview_scrub_state(&mut self) {
+        self.last_preview_scrub_seek_at = None;
+        self.last_preview_scrub_target = None;
+        self.deferred_preview_scrub_target = None;
+    }
+
+    /// Запоминает latest target, для которого нужен live preview seek.
+    fn queue_preview_scrub_seek(&mut self, request: SeekRequest) {
+        if self.last_preview_scrub_target == Some(request) {
+            return;
+        }
+
+        self.deferred_preview_scrub_target = Some(request);
+    }
+
+    /// Отправляет preview seek, когда прошёл throttle interval live scrub-а.
+    fn dispatch_due_preview_scrub_seek(&mut self) {
+        if !self.seek_controller.is_scrubbing() {
+            self.deferred_preview_scrub_target = None;
+            return;
+        }
+
+        let Some(request) = self.deferred_preview_scrub_target else {
+            return;
+        };
+
+        let now = Instant::now();
+        if !self.preview_scrub_interval_elapsed(now) {
+            return;
+        }
+
+        self.deferred_preview_scrub_target = None;
+        self.last_preview_scrub_target = Some(request);
+        self.last_preview_scrub_seek_at = Some(now);
+        self.dispatch_player_command(PlayerCommand::PreviewScrub(request));
+    }
+
+    /// Проверяет throttle window для live preview seek-а.
+    fn preview_scrub_interval_elapsed(&self, now: Instant) -> bool {
+        match self.last_preview_scrub_seek_at {
+            Some(last_seek_at) => {
+                now.saturating_duration_since(last_seek_at)
+                    >= self.config.live_scrub_preview_interval
+            }
+            None => true,
         }
     }
 
@@ -1357,7 +1437,7 @@ fn run_local_index_scan(
                     let entry = BackgroundIndexEntry {
                         track_id: packet.track_id,
                         time: MediaTime::from_duration(packet.pts),
-                        byte_offset: None,
+                        byte_offset: packet.byte_offset,
                         keyframe: packet.keyframe,
                     };
                     if !send_index_scan_update(
@@ -1470,6 +1550,7 @@ mod tests {
             tick_interval: Duration::from_millis(2),
             tick_config: PlayerTickConfig::default(),
             indexer_config: BackgroundIndexerConfig::default(),
+            live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
         }
     }
 
@@ -1533,6 +1614,9 @@ mod tests {
             render_release_rx,
             shutdown_rx,
             config: worker_config_for_tests(),
+            last_preview_scrub_seek_at: None,
+            last_preview_scrub_target: None,
+            deferred_preview_scrub_target: None,
             index_scan: None,
             last_tick_at,
         }

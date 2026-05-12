@@ -380,6 +380,7 @@ fn decoder_thread_loop(
                     pts: packet.pts,
                     dts: None,
                     keyframe: packet.keyframe,
+                    byte_offset: None,
                     data: bytes::Bytes::copy_from_slice(&packet.encoded_bytes),
                 };
 

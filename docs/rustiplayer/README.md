@@ -47,6 +47,7 @@
 | Config schema | Current config schema version `2`; live seek, network cache/read-ahead и `ui.skin` defaults живут в config |
 | Persistent data | Отсутствует: SQLite/`rusqlite` слой удалён, seek/index/cache metadata живут только в runtime-памяти |
 | Timeline model | `media-core` владеет neutral `MediaTime`/`MediaDuration`/`TrackTimestamp`/`TimelineSnapshot`; первые concrete adapters - WebM/YouTube/VP9/VA-API/wgpu/MPRIS |
+| Seek backend | Runtime index path codec-neutral: `DemuxSeekRequest` может нести optional byte-offset hint; patched Symphonia 0.5.5 crates отдают packet offsets и принимают `SeekHint` там, где это безопасно |
 | Playback ownership | Runtime `PlayerSession` и media pipeline живут в потоке `PlayerWorker`; `app-egui` отправляет команды, читает latest snapshot/events и не вызывает `PlayerSession::tick()` напрямую |
 | Render frame lease | `PlayerWorker::try_acquire_present_frame()` отдаёт `PresentFrameLease`/`PlayerPresentFrame` с handle, metadata, generation и stale flag; `wgpu::TextureView` создаются на render thread через render-side provider, а release идёт через RAII drop/ack |
 | Worker channels | `player-core` использует `crossbeam-channel`; high-rate `UpdateScrub` идёт через bounded latest channel с policy `Drain Latest` |
@@ -68,6 +69,13 @@
   `player-core` ведёт lightweight metadata indexer diagnostics, local background
   scanner идёт отдельным demux-only thread-ом без decoder/audio/render/texture
   resources, а `app-egui` не загружает и не сохраняет index/cache metadata.
+- Live seek/timeline Session 10 закрыла нормальный preview seek: первый scrub target
+  отправляется сразу на drag start, worker throttles live preview seek-и, а
+  `PlayerSession` различает preview/final seek transaction. Byte-offset seek
+  path реализован через generic patched Symphonia `SeekHint`: WebM/Matroska,
+  Ogg и FLAC используют hint как быстрый старт скана; WAV/RIFF остаётся прямым
+  O(1) seek, MP3/MPA отдаёт offsets в index, но не делает unsafe byte-only seek
+  из-за bit reservoir.
 - Аудио-треск после worker/audio правок устранён через CPAL playback anchor smoothing и
   packet-boundary-safe resampler. На тяжёлых 4k60 asset-ах остаются late video drops;
   это отдельная будущая задача render/present cadence profiling, не блокер текущего этапа.

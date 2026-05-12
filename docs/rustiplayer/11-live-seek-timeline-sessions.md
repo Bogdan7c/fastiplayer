@@ -26,8 +26,10 @@
 
 Context7 basis, который нужно учитывать при реализации:
 
-- Symphonia seek: `FormatReader::seek(SeekMode, SeekTo::Time { time, track_id })`;
-  после seek decoder state должен быть сброшен.
+- Upstream Symphonia seek: `FormatReader::seek(SeekMode, SeekTo::Time { time, track_id })`;
+  после seek decoder state должен быть сброшен. Byte-offset hint в upstream API
+  отсутствует, поэтому runtime index path реализован локальным patch-слоем
+  `SeekHint`/`seek_with_hint` поверх Symphonia 0.5.5.
 - egui interaction: `Slider`/`Response` дают `changed`, `drag_started`,
   `drag_stopped`; UI должен отправлять команды, а не менять player state напрямую.
 - reqwest Range: HTTP Range делается через headers; seekable HTTP source подтверждается
@@ -680,9 +682,13 @@ commands/snapshot. UI не должен менять player position напря�
 - Telemetry panel показывает index/cache/seek diagnostics; minimal controls не
   показывают эти metrics.
 
-Ограничение текущего шага:
+Текущий runtime-only offset статус после Session 10:
 
-- Byte offsets остаются empty/`None`, пока demuxer не отдаёт безопасный offset.
+- Byte offsets заполняются demuxer-ом, когда backend может указать безопасную
+  container/page/frame boundary. В текущей сборке это WebM/Matroska, Ogg, FLAC,
+  WAV/RIFF и MP3/MPA packet offsets.
+- `BackgroundIndexEntry.byte_offset` остаётся optional: отсутствие offset не ломает
+  seek, а только отключает fast byte-offset hint для конкретного packet-а.
 - HTTP/service background scan пока использует observed playback packets;
   отдельный HTTP low-priority byte-source scanner остаётся следующим расширением,
   чтобы не дублировать service refresh/cache ownership.
@@ -747,6 +753,67 @@ commands/snapshot. UI не должен менять player position напря�
 - Проверить, что no database API находится на seek/index/cache path.
 - Проверить, что diagnostics are useful but not visible in minimal controls.
 - Проверить, что config controls all budgets and no magic IO constants remain.
+
+## Сессия 10. Preview Seek and Byte-Offset Index Path
+
+Статус: реализовано, 2026-05-13.
+
+Фактически реализовано:
+
+- Timeline UI отправляет `UpdateScrub` уже на `drag_started`, поэтому первый
+  target появляется сразу, без ожидания следующего pointer move.
+- `PlayerWorker` получил live preview scheduler: high-frequency scrub updates
+  остаются в latest/coalescing канале, а preview seek запускается не чаще
+  `player.seek.live_interval_ms`.
+- `PlayerSession` различает `Final` и `Preview` seek transaction:
+  - preview показывает target frame через single playback pipeline;
+  - preview не публикует новую committed playback position;
+  - preview timeout не закрывает active scrub;
+  - final `EndScrub` всё ещё коммитит latest target и применяет сохранённый
+    play/pause intent.
+- `player.seek.live_preview_budget_ms` подключён как timeout preview gates.
+- `webm-demux` получил neutral `DemuxSeekRequest`/`DemuxSeekMode`; preview
+  мапится в Symphonia `SeekMode::Coarse`, final seek остаётся `Accurate`.
+- Symphonia 0.5.5 подключена через локальные patched crates в `third_party/` и
+  `[replace]`: `symphonia-core`, `symphonia-format-mkv`,
+  `symphonia-format-ogg`, `symphonia-format-riff`, `symphonia-bundle-flac`,
+  `symphonia-bundle-mp3`.
+- `symphonia-core::FormatReader` получил generic advisory API
+  `seek_with_hint(mode, to, SeekHint)`. Default implementation честно падает
+  назад на обычный `seek`, поэтому future formats могут подключаться без изменения
+  `webm-demux`/`player-core`.
+- `symphonia-core::Packet` получил optional `source_byte_offset` и optional
+  `keyframe`. Это container-level metadata, не VP9-specific metadata.
+- `media-core::Packet`, `DemuxSeekRequest`, `PlayerTickPacket` и runtime
+  background index протаскивают optional byte offset до seek transaction.
+- `PlayerSession` выбирает `resolve_demux_seek_target_with_hint`: если runtime
+  keyframe index знает byte offset, demux seek получает тот же target time плюс
+  `byte_offset_hint`.
+- Реальный byte-offset seek hint backend path есть для WebM/Matroska, Ogg и FLAC:
+  backend jumps to безопасную container/page/frame boundary и дальше сканирует
+  вперёд до нужного timestamp.
+- WAV/RIFF отдаёт packet byte offsets в index, но seek остаётся прямым O(1) по
+  формуле block offset/time; byte hint там не нужен для latency.
+- MP3/MPA отдаёт packet byte offsets в index, но не принудительно использует
+  byte-only random seek hint: MP3 bit reservoir требует reference frames, поэтому
+  production-safe path оставлен на native Symphonia seek.
+- Keyframe detection в `webm-demux` больше не привязана к VP9: сначала используется
+  container-level `Packet::keyframe`, VP9 parser остаётся fallback только если
+  backend не дал container keyframe flag.
+
+### Контекст для копипаста
+
+Продолжи Session 10 только если нужно расширять backend support дальше. Preview
+seek и generic byte-offset index path уже реализованы. Новые форматы должны
+подключаться через `SeekHint`/`Packet::source_byte_offset`, без codec-specific
+веток в `player-core`.
+
+### Tests
+
+- `cargo test -p player-core`
+- `cargo test -p webm-demux`
+- `cargo test -p app-egui drag_maps_to_begin_update_and_end -- --nocapture`
+- `cargo check -p player-core -p webm-demux -p app-egui`
 
 ## Финальная интеграционная проверка
 

@@ -19,6 +19,9 @@ pub struct Packet {
     /// Decode timestamp, если контейнер сообщает DTS отдельно от PTS.
     pub dts: Option<Duration>,
 
+    /// Безопасная container/source byte-позиция для повторного demux seek-а.
+    pub byte_offset: Option<u64>,
+
     /// Признак ключевого кадра для video packets.
     pub keyframe: bool,
 
@@ -42,9 +45,17 @@ impl Packet {
             kind,
             pts,
             dts,
+            byte_offset: None,
             keyframe,
             data,
         }
+    }
+
+    /// Создаёт копию packet-а с безопасной byte-позицией контейнера.
+    #[must_use]
+    pub const fn with_byte_offset(mut self, byte_offset: u64) -> Self {
+        self.byte_offset = Some(byte_offset);
+        self
     }
 }
 
@@ -68,6 +79,7 @@ mod tests {
         );
 
         assert_eq!(packet.track_id, TrackId::new(7));
+        assert_eq!(packet.byte_offset, None);
         assert_eq!(packet.pts, Duration::from_millis(42));
         assert!(packet.keyframe);
         assert_eq!(&packet.data[..], b"vp9");

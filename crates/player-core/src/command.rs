@@ -185,6 +185,9 @@ pub enum PlayerCommand {
     /// Обновить цель interactive scrub.
     UpdateScrub(SeekRequest),
 
+    /// Запустить preview seek для активного interactive scrub без финального commit-а позиции.
+    PreviewScrub(SeekRequest),
+
     /// Завершить interactive scrub выбранной commit-политикой.
     EndScrub { policy: ScrubCommitPolicy },
 

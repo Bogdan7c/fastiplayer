@@ -159,6 +159,7 @@ pub fn map_timeline_interaction(
         actions.push(TimelineAction::BeginScrub);
         if let Some(position) = pointer_position {
             state.transient_drag_position = Some(position);
+            actions.push(TimelineAction::UpdateScrub(position));
         }
     }
 
@@ -477,7 +478,13 @@ mod tests {
             },
         );
 
-        assert_eq!(start.actions, vec![TimelineAction::BeginScrub]);
+        assert_eq!(
+            start.actions,
+            vec![
+                TimelineAction::BeginScrub,
+                TimelineAction::UpdateScrub(MediaTime::from_secs(20))
+            ]
+        );
         assert_eq!(
             update.actions,
             vec![TimelineAction::UpdateScrub(MediaTime::from_secs(70))]

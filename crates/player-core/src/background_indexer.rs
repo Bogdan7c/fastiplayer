@@ -98,6 +98,16 @@ pub struct BackgroundIndexEntry {
     pub keyframe: bool,
 }
 
+/// Результат выбора demux seek target-а по runtime index-у.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedDemuxSeekTarget {
+    /// Позиция, с которой demuxer должен начать pre-roll.
+    pub position: MediaTime,
+
+    /// Safe source byte offset для backend-а, если index его знает.
+    pub byte_offset: Option<u64>,
+}
+
 /// Прогресс построения index-а.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexProgressSnapshot {
@@ -290,11 +300,22 @@ impl BackgroundIndexer {
             return;
         }
 
-        self.record_video_packet(packet.track_id, packet.pts, packet.keyframe);
+        self.record_video_packet(
+            packet.track_id,
+            packet.pts,
+            packet.byte_offset,
+            packet.keyframe,
+        );
     }
 
     /// Записывает metadata video packet-а без codec bytes.
-    pub fn record_video_packet(&mut self, track_id: TrackId, pts: Duration, keyframe: bool) {
+    pub fn record_video_packet(
+        &mut self,
+        track_id: TrackId,
+        pts: Duration,
+        byte_offset: Option<u64>,
+        keyframe: bool,
+    ) {
         if self.active_source_key.is_none() {
             return;
         }
@@ -302,7 +323,7 @@ impl BackgroundIndexer {
         let entry = BackgroundIndexEntry {
             track_id,
             time: MediaTime::from_duration(pts),
-            byte_offset: None,
+            byte_offset,
             keyframe,
         };
         self.record_entry(self.active_generation, entry);
@@ -351,11 +372,21 @@ impl BackgroundIndexer {
         track_id: TrackId,
         target: MediaTime,
     ) -> Option<MediaTime> {
+        self.nearest_keyframe_entry_before(track_id, target)
+            .map(|entry| entry.time)
+    }
+
+    /// Возвращает ближайшую keyframe entry не позже target для выбранного track-а.
+    #[must_use]
+    pub fn nearest_keyframe_entry_before(
+        &self,
+        track_id: TrackId,
+        target: MediaTime,
+    ) -> Option<&BackgroundIndexEntry> {
         self.entries
             .iter()
             .filter(|entry| entry.track_id == track_id && entry.keyframe && entry.time <= target)
-            .map(|entry| entry.time)
-            .max()
+            .max_by_key(|entry| entry.time)
     }
 
     /// Выбирает demux seek target с учётом накопленного keyframe index-а.
@@ -373,6 +404,33 @@ impl BackgroundIndexer {
         track_id
             .and_then(|track_id| self.nearest_keyframe_before(track_id, target))
             .unwrap_or(target)
+    }
+
+    /// Выбирает demux seek target и optional byte-offset hint.
+    #[must_use]
+    pub fn resolve_demux_seek_target_with_hint(
+        &self,
+        mode: SeekMode,
+        track_id: Option<TrackId>,
+        target: MediaTime,
+    ) -> ResolvedDemuxSeekTarget {
+        if mode != SeekMode::KeyframeBefore {
+            return ResolvedDemuxSeekTarget {
+                position: target,
+                byte_offset: None,
+            };
+        }
+
+        track_id
+            .and_then(|track_id| self.nearest_keyframe_entry_before(track_id, target))
+            .map(|entry| ResolvedDemuxSeekTarget {
+                position: entry.time,
+                byte_offset: entry.byte_offset,
+            })
+            .unwrap_or(ResolvedDemuxSeekTarget {
+                position: target,
+                byte_offset: None,
+            })
     }
 }
 
@@ -459,6 +517,35 @@ mod tests {
         assert_eq!(keyframe, Some(MediaTime::from_secs(5)));
     }
 
+    /// Проверяет, что keyframe/time index отдаёт byte-offset вместе с demux target.
+    #[test]
+    fn resolve_demux_seek_target_preserves_byte_offset_hint() {
+        let mut indexer = BackgroundIndexer::default();
+        indexer.start_job(
+            "source-a",
+            Some(MediaDuration::from_secs(20)),
+            vec![
+                test_entry(1, 0, true),
+                test_entry_with_offset(1, 5, true, 4096),
+                test_entry_with_offset(1, 12, true, 8192),
+            ],
+        );
+
+        let target = indexer.resolve_demux_seek_target_with_hint(
+            SeekMode::KeyframeBefore,
+            Some(TrackId::new(1)),
+            MediaTime::from_secs(9),
+        );
+
+        assert_eq!(
+            target,
+            ResolvedDemuxSeekTarget {
+                position: MediaTime::from_secs(5),
+                byte_offset: Some(4096),
+            }
+        );
+    }
+
     /// Проверяет cache/range/seek diagnostics counters.
     #[test]
     fn diagnostics_record_cache_range_seek_and_timeout_counters() {
@@ -499,6 +586,19 @@ mod tests {
             time: MediaTime::from_secs(seconds),
             byte_offset: None,
             keyframe,
+        }
+    }
+
+    /// Создаёт test entry с byte offset.
+    fn test_entry_with_offset(
+        track_id: u32,
+        seconds: u64,
+        keyframe: bool,
+        byte_offset: u64,
+    ) -> BackgroundIndexEntry {
+        BackgroundIndexEntry {
+            byte_offset: Some(byte_offset),
+            ..test_entry(track_id, seconds, keyframe)
         }
     }
 }
