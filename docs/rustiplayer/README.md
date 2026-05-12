@@ -47,6 +47,19 @@
 | Config schema | Current persisted schema version `2`; live seek, network cache/read-ahead и `ui.skin` defaults живут в config |
 | Storage | SQLite через `rusqlite`, кроме пользовательских настроек |
 | Timeline model | `media-core` владеет neutral `MediaTime`/`MediaDuration`/`TrackTimestamp`/`TimelineSnapshot`; первые concrete adapters - WebM/YouTube/VP9/VA-API/wgpu/MPRIS |
+| Playback ownership | Runtime `PlayerSession` и media pipeline живут в потоке `PlayerWorker`; `app-egui` отправляет команды, читает latest snapshot/events и не вызывает `PlayerSession::tick()` напрямую |
+| Worker channels | `player-core` использует `crossbeam-channel`; high-rate `UpdateScrub` идёт через bounded latest channel с policy `Drain Latest` |
 | Services | Модульные crate'ы, компилируются в один бинарь |
 | YouTube | Временный `yt-dlp` adapter живёт в `service-youtube`; default selector остаётся SDR VP9/Opus WebM, а HDR/VP9.2 YouTube checks требуют explicit override до capability-aware service candidates |
 | DRM | Дальняя архитектурная возможность, не текущий scope |
+
+## Текущий runtime status
+
+- Live seek/timeline Session 1 закрыла neutral timeline contracts и config schema v2.
+- Live seek/timeline Session 2 закрыла playback worker boundary, `SeekController` skeleton,
+  latest snapshot/event streams, deterministic shutdown и command priority для scrub.
+- Реальный demux seek, точный seek transaction, полноценный timeline UI и MPRIS остаются
+  следующими сессиями из [12. Live Seek, Timeline and Desktop Controls Sessions](11-live-seek-timeline-sessions.md).
+- Аудио-треск после worker/audio правок устранён через CPAL playback anchor smoothing и
+  packet-boundary-safe resampler. На тяжёлых 4k60 asset-ах остаются late video drops;
+  это отдельная будущая задача render/present cadence profiling, не блокер текущего этапа.

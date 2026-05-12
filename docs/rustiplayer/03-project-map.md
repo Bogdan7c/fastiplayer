@@ -6,7 +6,7 @@
 
 ```text
 crates/app-egui         - окно, egui, render loop, CLI/file/url shell boundary
-crates/player-core      - PlayerSession, commands/events/snapshot, A/V scheduler
+crates/player-core      - PlayerWorker, PlayerSession, commands/events/snapshot, A/V scheduler
 crates/media-core       - Track/Packet/media metadata types
 crates/codec-core       - typed codec/profile/color/capability metadata
 crates/capability-core  - capability report и stream selection reasons
@@ -25,7 +25,7 @@ crates/cros-libva-patch - локальный patched `libva` wrapper dependency 
 crates/storage          - SQLite migrations/history/progress/cache
 ```
 
-Главный оставшийся долг: `app-egui` всё ещё является desktop shell с несколькими runtime wiring helpers, но codec/capability/player decisions уже вынесены из UI-слоя.
+Главный оставшийся долг: `app-egui` всё ещё является desktop shell с несколькими runtime wiring helpers, но codec/capability/player decisions уже вынесены из UI-слоя. После live seek/timeline Session 2 `app-egui` больше не владеет media pipeline: `PlayerWorker` держит `PlayerSession`, выполняет tick на отдельном потоке и отдаёт shell-у latest snapshot/event stream.
 
 ## Целевая карта crate'ов
 
@@ -70,9 +70,10 @@ Desktop shell.
 - создание окна;
 - egui input/output;
 - UI layout;
-- dispatch `PlayerCommand`;
+- dispatch `PlayerCommand` через `PlayerWorker`;
 - отображение `PlayerSnapshot`;
 - вызов render backend;
+- запрос present frame через worker render lease boundary;
 - показ user-facing errors.
 
 Не отвечает за:
@@ -90,15 +91,26 @@ Desktop shell.
 
 Отвечает за:
 
+- `PlayerWorker`;
+- `PlayerCommandSender`;
 - `PlayerSession`;
 - `PlayerCommand`;
 - `PlayerEvent`;
 - `PlayerSnapshot`;
+- `PlayerWorkerEvent`;
+- `SeekController`;
 - playback states;
 - play/pause/seek/scrub/stop/drain/EOF;
 - orchestration source -> demux -> audio/video -> scheduler;
 - queue/backpressure policy;
 - error policy.
+
+`PlayerWorker` является текущей runtime boundary: он использует `crossbeam-channel`
+для bounded command queue, отдельного bounded latest scrub channel, latest snapshot
+publisher, event stream и shutdown signal. `UpdateScrub` coalescing реализован
+политикой `Drain Latest`, чтобы high-rate drag events не раздували общую очередь.
+`PlayerSession::tick()` остаётся внутренним API `player-core`, но вызывается
+worker-потоком, а не `app-egui`.
 
 `player-core` хранит seek/timeline state в `PlayerSnapshot` через typed
 `TimelineSnapshot`, а legacy `duration/current_position: Duration` остаются
@@ -253,6 +265,12 @@ Software audio pipeline.
 - audio buffer;
 - CPAL output;
 - audio clock.
+
+Текущее состояние после worker/audio стабилизации: `AudioClock` использует CPAL
+playback/callback timestamps как playback anchors, хранит previous/latest anchor
+и интерполирует media sample index между output callbacks. Linear resampler хранит
+carry frame между packet boundaries, чтобы не создавать слышимые разрывы при
+ресемплинге.
 
 Со временем crate может быть разделен на `audio-core`, `audio-codecs`, `audio-output-cpal`, если станет слишком большим.
 

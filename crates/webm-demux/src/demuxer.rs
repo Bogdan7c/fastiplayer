@@ -6,7 +6,7 @@ use media_core::{Packet, TrackInfo};
 ///
 /// Позволяет заменить реализацию (symphonia → matroska → streaming)
 /// без изменения consumer code (audio/video pipeline).
-pub trait Demuxer {
+pub trait Demuxer: Send {
     /// Информация о всех треках (доступна после open()).
     fn tracks(&self) -> &[TrackInfo];
 

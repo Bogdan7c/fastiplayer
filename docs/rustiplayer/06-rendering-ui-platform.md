@@ -159,7 +159,7 @@ UI остается на egui.
 Целевой принцип:
 
 ```text
-egui input -> PlayerCommand -> PlayerSession -> PlayerSnapshot -> egui view
+egui input -> PlayerCommand -> PlayerWorker -> PlayerSession -> PlayerSnapshot -> egui view
 ```
 
 UI не должен хранить player business state. Он может хранить только UI-local state:
@@ -180,6 +180,13 @@ timeline читает typed `PlayerSnapshot.timeline`, а действия от�
 
 `ui.skin = "minimal"` в schema v2 фиксирует первый production skin. Unknown skin
 id является config error, пока validation явно не вводит mapping на default.
+
+Фактическая runtime boundary после Session 2: `app-egui::AppState` владеет
+`PlayerWorker`, а не `PlayerSession`. Render/UI thread не вызывает
+`PlayerSession::tick()` и не читает pipeline internals; он отправляет команды,
+читает latest snapshot/events и получает текущий decoded frame через worker render
+lease request. Cached present frame в shell допустим только как transient render-side
+защита от missed lease reply и освобождается через RAII drop/ack.
 
 ## UI modules
 

@@ -14,7 +14,7 @@ app-egui
         |
         v
 player-core
-  state machine, commands, events, snapshots, playback tick, seek, EOF, errors
+  PlayerWorker boundary, state machine, commands, events, snapshots, playback tick, seek, EOF, errors
         |
         +----------------+----------------+----------------+
         |                |                |                |
@@ -43,6 +43,11 @@ User input / CLI / media URL
         |
         v
 PlayerCommand
+        |
+        v
+PlayerWorker
+  crossbeam-channel command queue, latest snapshot publisher, event stream,
+  render frame lease requests, shutdown/join path
         |
         v
 PlayerSession
@@ -146,6 +151,13 @@ enum PlayerCommand {
 
 В schema v2 единственная commit policy - `CommitLatest`.
 
+Session 2 добавила worker-level `SeekController` skeleton. Он хранит generation id,
+current mode, latest scrub target, in-flight target, resume intent и diagnostics
+счётчики stale/cancelled операций. Реальный demux seek остаётся следующей
+транзакционной сессией, но command priority уже действует на worker boundary:
+Stop/Open/Shutdown прерывают scrub, внешний `Seek` во время scrub игнорируется,
+Play/Pause меняют resume intent, Volume/Mute применяются сразу.
+
 Seek contract использует typed timeline values:
 
 ```rust
@@ -183,6 +195,8 @@ enum PlayerEvent {
 ```
 
 UI не должен напрямую дергать demuxer, audio output или VA-API. UI отправляет команды и рисует `PlayerSnapshot`.
+В текущем runtime UI отправляет команды в `PlayerWorker`, а worker уже вызывает
+`PlayerSession::dispatch_command`/`tick` и публикует latest snapshot/events.
 
 ## Snapshot model
 
@@ -211,16 +225,20 @@ Snapshot не должен содержать mutable handles к decoder/demuxer
 
 ## Threading model
 
-Базовая модель:
+Текущая базовая модель после live seek/timeline Session 2:
 
 - main thread: winit/egui/render command submission;
-- player tick: пока может жить на main thread, но как отдельный объект;
+- player worker thread: владеет `PlayerSession`, demux/audio/video pipeline,
+  выполняет playback tick с фиксированным интервалом и публикует latest snapshot;
 - video decode thread: blocking hardware decode/upload;
 - HTTP fetch threads/tasks: source/network layer;
 - audio callback thread: CPAL-owned;
 - storage thread optional: SQLite writes can be batched later.
 
-Важное правило: render loop не должен содержать бизнес-логику playback. Он вызывает `player.tick()` и передает результат в renderer.
+Важное правило: render loop не должен содержать бизнес-логику playback и не должен
+вызывать `PlayerSession::tick()` напрямую. Он отправляет `PlayerCommand`,
+забирает `PlayerSnapshot`/`PlayerWorkerEvent` из worker boundary и запрашивает
+present frame через render lease.
 
 ## Backpressure model
 

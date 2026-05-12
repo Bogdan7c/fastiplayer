@@ -73,6 +73,8 @@ impl PlayerSession {
         snapshot.tracks = self.track_summary_snapshot();
         snapshot.active_backend = self.backend_snapshot();
         snapshot.current_video_frame = self.current_video_frame_snapshot();
+        snapshot.render_generation = self.pipeline.render_generation;
+        snapshot.video_frame_duration_estimate = self.pipeline.video_frame_duration_estimate;
         snapshot.audio_buffer = self.audio_buffer_snapshot();
         snapshot.queues = self.queue_snapshot();
         snapshot.frame_counters = frame_counters;
@@ -109,13 +111,19 @@ impl PlayerSession {
     /// Возвращает `true`, если demux loop должен читать новые packets.
     #[must_use]
     pub const fn is_demuxing_active(&self) -> bool {
-        matches!(self.snapshot.playback_state, PlaybackState::Playing)
+        matches!(
+            self.snapshot.playback_state,
+            PlaybackState::Playing | PlaybackState::Buffering
+        )
     }
 
     /// Возвращает `true`, если scheduler может менять present frame.
     #[must_use]
     pub const fn can_present_video(&self) -> bool {
-        matches!(self.snapshot.playback_state, PlaybackState::Playing) || self.draining_after_eof
+        matches!(
+            self.snapshot.playback_state,
+            PlaybackState::Playing | PlaybackState::Buffering
+        ) || self.draining_after_eof
     }
 
     /// Возвращает `true`, если текущая session владеет открытым demuxer-ом.
@@ -183,9 +191,15 @@ impl PlayerSession {
 
     /// Загружает локальный WebM/Matroska файл и передаёт demuxer во владение session.
     pub fn load_file(&mut self, path: &Path) {
+        self.load_file_with_autoplay(path, false);
+    }
+
+    /// Загружает локальный WebM/Matroska файл с явной autoplay-политикой.
+    pub fn load_file_with_autoplay(&mut self, path: &Path, autoplay: bool) {
         self.reset_media_state();
 
-        let open_request = MediaOpenRequest::new(MediaSource::LocalFile(path.to_path_buf()), false);
+        let open_request =
+            MediaOpenRequest::new(MediaSource::LocalFile(path.to_path_buf()), autoplay);
         if let Err(error) = self.dispatch_command(PlayerCommand::OpenMedia(open_request)) {
             self.record_recoverable_error(error);
             return;
@@ -236,10 +250,21 @@ impl PlayerSession {
     }
 
     /// Загружает уже открытый demuxer для streaming source.
-    pub fn load_demuxer(&mut self, label: String, demuxer: Box<dyn webm_demux::Demuxer>) {
+    pub fn load_demuxer(&mut self, label: String, demuxer: Box<dyn webm_demux::Demuxer + Send>) {
+        self.load_demuxer_with_autoplay(label, demuxer, false);
+    }
+
+    /// Загружает уже открытый demuxer для streaming source с явной autoplay-политикой.
+    pub fn load_demuxer_with_autoplay(
+        &mut self,
+        label: String,
+        demuxer: Box<dyn webm_demux::Demuxer + Send>,
+        autoplay: bool,
+    ) {
         self.reset_media_state();
 
-        let open_request = MediaOpenRequest::new(MediaSource::ExternalLabel(label.clone()), false);
+        let open_request =
+            MediaOpenRequest::new(MediaSource::ExternalLabel(label.clone()), autoplay);
         if let Err(error) = self.dispatch_command(PlayerCommand::OpenMedia(open_request)) {
             self.record_recoverable_error(error);
             return;
@@ -290,7 +315,7 @@ impl PlayerSession {
         self.pending_events.push(PlayerEvent::MediaOpened(summary));
 
         if self.pending_autoplay {
-            self.play()?;
+            self.begin_autoplay_preroll()?;
         } else {
             self.pause()?;
         }
@@ -321,6 +346,7 @@ impl PlayerSession {
     pub fn reset_media_state(&mut self) {
         self.set_playback_state(PlaybackState::Paused);
         self.clear_video_frames();
+        self.advance_render_generation();
 
         if let Some(ref thread) = self.pipeline.video_decoder_thread
             && let Err(error) = thread.flush()
@@ -354,6 +380,11 @@ impl PlayerSession {
         self.clear_error();
     }
 
+    /// Переводит renderer resource ids в новое поколение после полного reset media pipeline.
+    fn advance_render_generation(&mut self) {
+        self.pipeline.render_generation = self.pipeline.render_generation.wrapping_add(1);
+    }
+
     /// Обновляет оценку длительности video frame по очередному decoded PTS.
     pub fn observe_video_frame_pts(&mut self, pts: Duration) {
         if let Some(previous_pts) = self.pipeline.last_decoded_video_pts {
@@ -374,26 +405,110 @@ impl PlayerSession {
 
     /// Очищает video frame queue и present frame, освобождая texture slots.
     pub fn clear_video_frames(&mut self) {
-        if let Some(ref thread) = self.pipeline.video_decoder_thread {
-            for frame in self.pipeline.video_frame_queue.drain(..) {
-                thread.release_frame(frame.texture_handle);
-            }
-            if let Some(ref frame) = self.pipeline.present_video_frame {
-                thread.release_frame(frame.texture_handle);
-            }
+        let queued_texture_handles = self
+            .pipeline
+            .video_frame_queue
+            .drain(..)
+            .map(|frame| frame.texture_handle)
+            .collect::<Vec<_>>();
+        let present_texture_handle = self
+            .pipeline
+            .present_video_frame
+            .take()
+            .map(|frame| frame.texture_handle);
+
+        for texture_handle in queued_texture_handles {
+            self.release_video_texture(texture_handle);
         }
+        if let Some(texture_handle) = present_texture_handle {
+            self.release_video_texture(texture_handle);
+        }
+
         self.pipeline.video_frame_queue.clear();
-        self.pipeline.present_video_frame = None;
     }
 
     /// Очищает только очередь будущих video frames, сохраняя текущий кадр на экране.
     pub fn clear_queued_video_frames(&mut self) {
-        if let Some(ref thread) = self.pipeline.video_decoder_thread {
-            for frame in self.pipeline.video_frame_queue.drain(..) {
-                thread.release_frame(frame.texture_handle);
-            }
+        let queued_texture_handles = self
+            .pipeline
+            .video_frame_queue
+            .drain(..)
+            .map(|frame| frame.texture_handle)
+            .collect::<Vec<_>>();
+
+        for texture_handle in queued_texture_handles {
+            self.release_video_texture(texture_handle);
         }
+
         self.pipeline.video_frame_queue.clear();
+    }
+
+    /// Регистрирует render lease для texture handle текущего поколения.
+    pub(crate) fn register_render_lease(
+        &mut self,
+        render_generation: u64,
+        texture_handle: video_core::FrameTextureHandle,
+    ) -> bool {
+        if render_generation != self.pipeline.render_generation {
+            return false;
+        }
+
+        let lease_key = (render_generation, texture_handle.0);
+        let lease_count = self
+            .pipeline
+            .leased_video_textures
+            .entry(lease_key)
+            .or_insert(0);
+        *lease_count = lease_count.saturating_add(1);
+        true
+    }
+
+    /// Снимает render lease и применяет отложенный texture release, если он уже был запрошен.
+    pub(crate) fn release_render_lease(
+        &mut self,
+        render_generation: u64,
+        texture_handle: video_core::FrameTextureHandle,
+    ) {
+        let lease_key = (render_generation, texture_handle.0);
+
+        let Some(lease_count) = self.pipeline.leased_video_textures.get_mut(&lease_key) else {
+            return;
+        };
+
+        if *lease_count > 1 {
+            *lease_count -= 1;
+            return;
+        }
+
+        self.pipeline.leased_video_textures.remove(&lease_key);
+        if self
+            .pipeline
+            .deferred_video_texture_releases
+            .remove(&lease_key)
+            && render_generation == self.pipeline.render_generation
+        {
+            self.release_video_texture_now(texture_handle);
+        }
+    }
+
+    /// Освобождает texture handle сразу или откладывает release до завершения render lease.
+    pub(crate) fn release_video_texture(&mut self, texture_handle: video_core::FrameTextureHandle) {
+        let lease_key = (self.pipeline.render_generation, texture_handle.0);
+        if self.pipeline.leased_video_textures.contains_key(&lease_key) {
+            self.pipeline
+                .deferred_video_texture_releases
+                .insert(lease_key);
+            return;
+        }
+
+        self.release_video_texture_now(texture_handle);
+    }
+
+    /// Непосредственно отдаёт texture slot обратно decoder thread.
+    fn release_video_texture_now(&mut self, texture_handle: video_core::FrameTextureHandle) {
+        if let Some(ref thread) = self.pipeline.video_decoder_thread {
+            thread.release_frame(texture_handle);
+        }
     }
 
     /// Обрабатывает audio packet: decode -> write to AudioOutput.
@@ -509,6 +624,45 @@ impl PlayerSession {
         }
 
         Ok(())
+    }
+
+    /// Запускает preroll перед autoplay, не включая audio stream раньше заполнения buffer.
+    fn begin_autoplay_preroll(&mut self) -> PlayerResult<()> {
+        self.ensure_not_shutdown()?;
+        self.pending_autoplay = false;
+        self.set_playback_state(PlaybackState::Buffering);
+        self.pipeline.last_audio_clock = self.audio_clock_now();
+        self.pipeline.last_audio_clock_change_at = std::time::Instant::now();
+        Ok(())
+    }
+
+    /// Завершает autoplay preroll, когда audio/video уже готовы к слышимому старту.
+    pub(crate) fn finish_autoplay_preroll_if_ready(
+        &mut self,
+        audio_preroll_target_ms: f64,
+    ) -> PlayerResult<bool> {
+        if self.snapshot.playback_state != PlaybackState::Buffering {
+            return Ok(false);
+        }
+
+        if !self.autoplay_preroll_ready(audio_preroll_target_ms) {
+            return Ok(false);
+        }
+
+        self.play()?;
+        Ok(true)
+    }
+
+    /// Проверяет минимальный readiness для перехода из `Buffering` в `Playing`.
+    fn autoplay_preroll_ready(&self, audio_preroll_target_ms: f64) -> bool {
+        let audio_ready = self
+            .audio_buffer_level_ms()
+            .map(|level_ms| level_ms >= audio_preroll_target_ms.max(1.0))
+            .unwrap_or(true);
+        let video_ready =
+            self.pipeline.video_track_id.is_none() || self.pipeline.present_video_frame.is_some();
+
+        audio_ready && video_ready
     }
 
     /// Переводит playback в `Paused` и останавливает audio output.
@@ -1002,6 +1156,7 @@ impl PlayerSession {
             .present_video_frame
             .as_ref()
             .map(|present_frame| VideoFrameSnapshot {
+                render_generation: self.pipeline.render_generation,
                 handle: present_frame.texture_handle.0,
                 pts: present_frame.pts,
                 width: present_frame.width,
@@ -1437,7 +1592,7 @@ mod tests {
     }
 
     #[test]
-    fn open_media_waits_for_external_media_open_confirmation() {
+    fn autoplay_open_media_enters_buffering_before_play() {
         let mut session = PlayerSession::new();
         let request = MediaOpenRequest::new(MediaSource::ExternalLabel("sample".into()), true);
 
@@ -1454,8 +1609,34 @@ mod tests {
             })
             .unwrap();
 
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Buffering);
+        assert!(session.is_demuxing_active());
+        assert!(session.can_present_video());
+        assert!(
+            session
+                .finish_autoplay_preroll_if_ready(50.0)
+                .expect("preroll finish should not fail")
+        );
         assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
         assert_eq!(session.snapshot().duration, Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn old_generation_render_release_does_not_touch_current_generation() {
+        let mut session = PlayerSession::new();
+        let old_generation = session.pipeline.render_generation;
+        let old_handle = video_core::FrameTextureHandle(5);
+
+        assert!(session.register_render_lease(old_generation, old_handle));
+        session.release_video_texture(old_handle);
+        session.reset_media_state();
+        let new_generation = session.pipeline.render_generation;
+
+        session.release_render_lease(old_generation, old_handle);
+
+        assert!(new_generation > old_generation);
+        assert!(session.pipeline.leased_video_textures.is_empty());
+        assert!(session.pipeline.deferred_video_texture_releases.is_empty());
     }
 
     #[test]

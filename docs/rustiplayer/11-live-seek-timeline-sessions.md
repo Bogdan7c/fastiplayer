@@ -50,8 +50,9 @@ Context7 basis, который нужно учитывать при реализ
 
 Статус в текущем коде: реализованы neutral timeline-типы в `media-core`,
 расширены command/snapshot contracts `player-core`, добавлена config schema v2 и
-обновлены архитектурные документы. Playback worker, real demux seek и изменение
-runtime seek behavior остаются scope следующих сессий.
+обновлены архитектурные документы. На момент закрытия этой сессии playback worker
+оставался следующим этапом; актуальный статус: worker реализован в Сессии 2, а
+real demux seek и точное seek transaction behavior остаются scope следующих сессий.
 
 ### Контекст для копипаста
 
@@ -142,6 +143,49 @@ schema и документация. Нельзя переносить playback �
 
 ## Сессия 2. Playback Worker and Seek State Machine Skeleton
 
+Статус в текущем коде: выполнено, 2026-05-12.
+
+Фактически реализовано:
+
+- `player-core::PlayerWorker` владеет `PlayerSession` и media pipeline на отдельном
+  потоке.
+- `app-egui::AppState` владеет `PlayerWorker`, а не `PlayerSession`; UI/render loop
+  больше не вызывает `player_session.tick()` напрямую.
+- Worker boundary использует `crossbeam-channel`: bounded command queue,
+  отдельный bounded latest channel для `UpdateScrub`, latest snapshot publisher,
+  event stream, render-frame request/reply channel и shutdown signal.
+- `PlayerCommandSender` применяет `Drain Latest` coalescing для `UpdateScrub`, чтобы
+  drag events не накапливались без ограничения в общей очереди.
+- `SeekController` skeleton содержит generation id, current mode, latest scrub
+  target, in-flight target, resume intent и diagnostics counters для stale/ignored
+  и cancelled операций.
+- Command priority реализован на worker boundary: Stop/Open/Shutdown прерывают
+  scrub, внешний `Seek` во время active scrub игнорируется, Play/Pause/Toggle
+  обновляют resume intent, Volume/Mute идут как обычные immediate commands.
+- Stop во время scrub отправляет pause + seek zero перед финальным Stop, что
+  зафиксировано unit test-ом.
+
+Проверки после реализации:
+
+- `cargo test -p player-core -p app-egui` проходил после worker/refactor правок.
+- `cargo test -p audio` проходил после audio clock/resampler стабилизации.
+- `cargo check`, `cargo fmt --check` и `git diff --check` проходили после серии
+  worker/audio исправлений.
+
+Дополнительные заметки после ручной проверки:
+
+- Первичная worker-миграция уменьшила UI/video flicker, но выявила audio crackle на
+  тяжёлых 4k60 assets.
+- Audio crackle был устранён не изменением worker architecture, а исправлением
+  причины в audio path: CPAL playback timestamp теперь используется как
+  previous/latest playback anchor, а interpolation умеет корректно работать до
+  future anchor start; linear resampler сохраняет carry frame между packet
+  boundaries.
+- После audio fix основной остаточный симптом на тяжёлых 4k60 assets - late video
+  drops. Текущая диагностика указывает на render/present cadence и late-drop
+  scheduler policy под высокой нагрузкой. Эта проблема намеренно отложена в
+  отдельный follow-up и не закрывается в Session 2.
+
 ### Контекст для копипаста
 
 Реализуй playback worker. Эта сессия переносит владение `PlayerSession`/pipeline из
@@ -203,6 +247,14 @@ UI loop в worker thread и сразу готовит tick под seek modes, н
 - Проверить, что temporary dev flag не становится permanent public behavior.
 
 ## Сессия 3. Render Frame Lease
+
+Статус в текущем коде: частично реализовано опережением в Сессии 2.
+`PlayerWorker::try_acquire_present_frame()` возвращает `PlayerPresentFrame` без
+раскрытия `PlayerSession`, а shared RAII lease отправляет drop-ack worker-у при
+освобождении последнего clone-а. Есть unit test на drain release ack перед reply.
+Полная Сессия 3 всё ещё полезна как отдельный acceptance pass: проверить stale
+generation semantics, render error path, отсутствие leak-а на failure/shutdown и
+закрыть весь список тестов ниже.
 
 ### Контекст для копипаста
 

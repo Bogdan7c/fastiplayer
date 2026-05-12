@@ -25,7 +25,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use capability_core::CapabilityScanner;
 use player_core::{
-    PlayerError, PlayerErrorKind, PlayerTickContext, PlayerTickResult, PlayerVideoDropReason,
+    PlayerError, PlayerErrorKind, PlayerTickResult, PlayerVideoDropReason, PlayerWorkerEvent,
 };
 use render_core::{
     ColorAdjustment, ColorPipelineSettings, HdrOutputMode, HdrToSdrSettings,
@@ -55,7 +55,7 @@ enum InitialMedia {
         label: String,
 
         /// Demuxer, читающий из HTTP-backed потоков.
-        demuxer: Box<dyn webm_demux::Demuxer>,
+        demuxer: Box<dyn webm_demux::Demuxer + Send>,
     },
 }
 
@@ -151,12 +151,19 @@ impl App {
             trace!("Storage connection недоступен; долговременные записи отключены");
         }
 
-        let mut app_state = AppState::new(
+        let mut app_state = match AppState::new(
             &window,
             self.telemetry.clone(),
             self.app_config.clone(),
             self.startup_error.clone(),
-        );
+        ) {
+            Ok(app_state) => app_state,
+            Err(error) => {
+                tracing::error!(error = %error, "Не удалось запустить app state");
+                event_loop.exit();
+                return;
+            }
+        };
         let system_capabilities = probe_system_capabilities(renderer.render_capabilities());
         info!("{}", system_capabilities.summary_text());
         app_state.set_system_capabilities(system_capabilities);
@@ -191,7 +198,7 @@ impl App {
     /// Освобождает runtime-ресурсы в порядке, безопасном для GPU/audio cleanup.
     fn drop_runtime(&mut self) {
         if let Some(app_state) = &self.app_state
-            && let Some(path) = app_state.player_session.current_file_path()
+            && let Some(path) = app_state.current_local_file()
         {
             self.initial_media = Some(InitialMedia::File(path.to_path_buf()));
         }
@@ -320,7 +327,7 @@ impl ApplicationHandler for App {
     }
 }
 
-/// Переносит результат `PlayerSession::tick` в shell telemetry.
+/// Переносит результат playback worker tick в shell telemetry.
 fn record_player_tick_result(telemetry: &Telemetry, tick_result: &PlayerTickResult) {
     for packet in &tick_result.demuxed_packets {
         telemetry.record_packet(packet.kind, packet.pts);
@@ -354,6 +361,18 @@ fn record_player_tick_result(telemetry: &Telemetry, tick_result: &PlayerTickResu
     }
 }
 
+/// Переносит worker event stream в shell telemetry.
+fn record_worker_events(telemetry: &Telemetry, events: Vec<PlayerWorkerEvent>) {
+    for event in events {
+        match event {
+            PlayerWorkerEvent::Tick(tick_result) => {
+                record_player_tick_result(telemetry, &tick_result);
+            }
+            PlayerWorkerEvent::Player(_) => {}
+        }
+    }
+}
+
 /// Конвертирует core-причину drop в app telemetry enum.
 fn map_video_drop_reason(reason: PlayerVideoDropReason) -> VideoDropReason {
     match reason {
@@ -379,15 +398,7 @@ fn render_frame(
     // Получаем ввод от egui_winit
     let egui_input = app_state.egui_winit_state.take_egui_input(window);
     app_state.set_render_diagnostics(renderer.diagnostics());
-
-    // Player tick продвигает demux/audio/video/scheduler, а shell только пишет telemetry.
-    let tick_result = app_state
-        .player_session
-        .tick(PlayerTickContext::with_config(
-            frame_start,
-            app_state.tick_config(),
-        ));
-    record_player_tick_result(telemetry, &tick_result);
+    record_worker_events(telemetry, app_state.drain_worker_events());
 
     // Рендерим egui UI — получаем paint jobs и texture updates
     let egui_full_output = app_state.render_ui(window, egui_input);
@@ -409,67 +420,32 @@ fn render_frame(
 
     let mut video_render_boundary_error = None;
 
-    // Получаем wgpu texture views для decoded frame если decoder thread доступен.
-    let (video_y_view, video_uv_view): (Option<wgpu::TextureView>, Option<wgpu::TextureView>) = {
-        if let Some(ref thread) = app_state.player_session.pipeline.video_decoder_thread {
-            if let Some(ref frame) = app_state.player_session.pipeline.present_video_frame {
-                tracing::trace!(
-                    handle_id = frame.texture_handle.0,
-                    pts_ms = frame.pts.as_millis(),
-                    format = %frame.format,
-                    memory_path = %frame.memory_path,
-                    "Getting texture views for present frame"
-                );
-                match thread.get_views(frame.texture_handle) {
-                    Some((y_view, uv_view)) => {
-                        trace!(format = %frame.format, "Texture views acquired for video frame");
-                        (Some(y_view), Some(uv_view))
-                    }
-                    None => {
-                        let message = format!(
-                            "Texture views not found for present frame handle {}",
-                            frame.texture_handle.0
-                        );
-                        tracing::error!(
-                            handle_id = frame.texture_handle.0,
-                            "Texture views not found for present frame"
-                        );
-                        video_render_boundary_error =
-                            Some(player_error_from_render_boundary_failure(message));
-                        (None, None)
-                    }
-                }
-            } else {
-                trace!("No present_video_frame — nothing to render yet");
-                (None, None)
-            }
-        } else {
-            trace!("No video decoder thread — nothing to render yet");
-            (None, None)
-        }
-    };
-
     // Время оставлено в сигнатуре renderer-а для будущих diagnostics/animation hooks.
     let time = app_state.elapsed_seconds() as f32;
+    let present_frame = app_state.try_acquire_present_frame();
 
     // Собираем renderer boundary frame только если есть metadata и обе texture planes.
-    let video_frame = match (
-        app_state
-            .player_session
-            .pipeline
-            .present_video_frame
-            .as_ref(),
-        video_y_view.as_ref(),
-        video_uv_view.as_ref(),
-    ) {
-        (Some(frame), Some(y_view), Some(uv_view)) => {
-            let boundary_frame = match frame.format {
-                DecodedPixelFormat::Nv12 => {
-                    render_wgpu::WgpuRenderableFrame::from_decoded_nv12(frame, y_view, uv_view)
-                }
-                DecodedPixelFormat::P010 => {
-                    render_wgpu::WgpuRenderableFrame::from_decoded_p010(frame, y_view, uv_view)
-                }
+    let video_frame = match present_frame.as_ref() {
+        Some(present_frame) => {
+            tracing::trace!(
+                handle_id = present_frame.frame.texture_handle.0,
+                pts_ms = present_frame.frame.pts.as_millis(),
+                format = %present_frame.frame.format,
+                memory_path = %present_frame.frame.memory_path,
+                "Present frame acquired from playback worker"
+            );
+
+            let boundary_frame = match present_frame.frame.format {
+                DecodedPixelFormat::Nv12 => render_wgpu::WgpuRenderableFrame::from_decoded_nv12(
+                    &present_frame.frame,
+                    &present_frame.y_view,
+                    &present_frame.uv_view,
+                ),
+                DecodedPixelFormat::P010 => render_wgpu::WgpuRenderableFrame::from_decoded_p010(
+                    &present_frame.frame,
+                    &present_frame.y_view,
+                    &present_frame.uv_view,
+                ),
             };
 
             match boundary_frame {
@@ -477,12 +453,12 @@ fn render_frame(
                 Err(error) => {
                     let message = format!(
                         "WGPU renderable frame rejected decoded {} frame: {}",
-                        frame.format, error
+                        present_frame.frame.format, error
                     );
                     tracing::error!(
                         error = %error,
-                        format = %frame.format,
-                        memory_path = %frame.memory_path,
+                        format = %present_frame.frame.format,
+                        memory_path = %present_frame.frame.memory_path,
                         "Failed to build WGPU renderable frame"
                     );
                     video_render_boundary_error =
@@ -495,7 +471,7 @@ fn render_frame(
     };
 
     if let Some(error) = video_render_boundary_error {
-        app_state.player_session.mark_fatal_error(error);
+        app_state.mark_fatal_error(error);
     }
 
     // Рендерим полный кадр (видео + egui overlay)
@@ -512,9 +488,7 @@ fn render_frame(
         RenderFrameOutcome::Dropped(_reason) => telemetry.record_dropped_frame(),
         RenderFrameOutcome::Failed(failure) => {
             telemetry.record_dropped_frame();
-            app_state
-                .player_session
-                .mark_fatal_error(player_error_from_render_failure(&failure));
+            app_state.mark_fatal_error(player_error_from_render_failure(&failure));
         }
     }
     app_state.set_render_diagnostics(renderer.diagnostics());

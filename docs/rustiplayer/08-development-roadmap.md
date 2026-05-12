@@ -117,6 +117,10 @@ Acceptance:
 - `main.rs` становится lifecycle/render shell;
 - scheduler unit tests появляются в `player-core`.
 
+Текущий статус после live seek/timeline Session 2: `PlayerSession::tick()` уже не
+вызывается из render/UI loop. Tick остаётся API `PlayerSession`, но runtime-вызов
+идёт из потока `PlayerWorker`.
+
 ## Phase 5: Config crate
 
 Статус: реализовано.
@@ -271,6 +275,29 @@ Acceptance:
 - optional mastering/CLL/FALL defaults видны в diagnostics;
 - SDR VP9/NV12 path не ломается;
 - HDR renderer fail-closed, без SDR/CPU fallback.
+
+## Post-Phase 10: Live seek/timeline worker foundation
+
+Подробный план: [12. Live Seek, Timeline and Desktop Controls Sessions](11-live-seek-timeline-sessions.md).
+
+Статус: Session 1 и Session 2 реализованы. Закрыты neutral timeline contracts,
+config schema v2, playback worker boundary, latest snapshot/event streams,
+базовый render-frame lease request path, `SeekController` skeleton, command
+priority для scrub и `UpdateScrub` coalescing policy `Drain Latest`.
+
+Остаётся в следующих сессиях:
+
+- настоящий demux seek transaction для local WebM/Matroska;
+- HTTP Range/source-cache слой;
+- YouTube VOD range seek;
+- minimal timeline UI/skin boundary;
+- MPRIS/desktop integration;
+- background index/cache polish.
+
+Отложенный performance follow-up: на тяжёлых 4k60 asset-ах после audio clock fix
+ещё бывают `Late` video drops. Диагностика указывает на render/present cadence и
+scheduler/drop policy под высокой нагрузкой, а не на прежний скачущий audio clock.
+Эта задача намеренно вынесена отдельно и не блокирует worker/session milestone.
 
 ## Phase 11: AV1 backend
 

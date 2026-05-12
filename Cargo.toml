@@ -52,6 +52,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 symphonia = "0.5"
 bytes = "1.0"
+crossbeam-channel = "0.5"
 ringbuf = "0.4"
 vp9-parser = { path = "crates/vp9-parser" }
 video-core = { path = "crates/video-core" }

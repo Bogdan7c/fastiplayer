@@ -48,6 +48,12 @@ pub struct PlayerSnapshot {
     /// Кадр, который renderer может показать сейчас.
     pub current_video_frame: Option<VideoFrameSnapshot>,
 
+    /// Поколение render resources; меняется при полной смене media pipeline.
+    pub render_generation: u64,
+
+    /// Текущая оценка длительности video frame для diagnostics UI.
+    pub video_frame_duration_estimate: Duration,
+
     /// Состояние audio buffer.
     pub audio_buffer: AudioBufferSnapshot,
 
@@ -120,6 +126,8 @@ impl Default for PlayerSnapshot {
             available_qualities: Vec::new(),
             active_backend: BackendSnapshot::default(),
             current_video_frame: None,
+            render_generation: 0,
+            video_frame_duration_estimate: Duration::ZERO,
             audio_buffer: AudioBufferSnapshot::default(),
             queues: QueueSnapshot::default(),
             frame_counters: FrameCounters::default(),
@@ -211,6 +219,9 @@ impl TexturePoolSnapshot {
 /// Opaque snapshot кадра для renderer boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoFrameSnapshot {
+    /// Поколение render resources, которому принадлежит handle кадра.
+    pub render_generation: u64,
+
     /// Opaque handle текущего frame resource.
     pub handle: u64,
 

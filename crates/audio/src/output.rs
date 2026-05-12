@@ -40,21 +40,114 @@ pub struct AudioOutput {
     /// Количество каналов decoded audio.
     decoder_channels: usize,
 
-    /// Sample rate декодированного audio (например 48000 для Opus).
-    decoder_rate: u32,
-
-    /// Sample rate output stream (может отличаться от decoder_rate).
-    stream_rate: u32,
-
     /// Громкость playback. 0.0 = silence, 1.0 = исходная амплитуда.
     volume: f32,
 
     /// Флаг: stream запущен или нет.
     is_playing: bool,
 
-    /// Состояние ресемплера: fractional carry-over index (0.0 .. ratio).
-    /// Сохраняется между вызовами write_samples для continuity.
-    resample_frac: f64,
+    /// Linear resampler для случая, когда decoder rate отличается от output rate.
+    resampler: Option<LinearResampler>,
+}
+
+/// Состояние linear resampling между decoded audio packets.
+///
+/// Opus отдаёт audio chunks пакетами, а output device может работать не на 48 kHz.
+/// Чтобы на границе packets не было слышимого скачка, ресемплер хранит последний
+/// source frame предыдущего packet-а и продолжает fractional позицию на следующем.
+struct LinearResampler {
+    /// Sample rate декодированного audio.
+    source_rate: u32,
+
+    /// Sample rate output stream.
+    output_rate: u32,
+
+    /// Количество interleaved каналов в stream layout.
+    channel_count: usize,
+
+    /// Следующая source-позиция относительно начала нового input chunk.
+    next_source_frame_offset: f64,
+
+    /// Последний frame предыдущего input chunk для интерполяции через boundary.
+    previous_source_frame: Vec<f32>,
+}
+
+impl LinearResampler {
+    /// Создаёт linear resampler с явным соотношением частот.
+    fn new(source_rate: u32, output_rate: u32, channel_count: usize) -> Self {
+        Self {
+            source_rate,
+            output_rate,
+            channel_count: channel_count.max(1),
+            next_source_frame_offset: 0.0,
+            previous_source_frame: Vec::new(),
+        }
+    }
+
+    /// Возвращает шаг source frames на один output frame.
+    fn source_frames_per_output_frame(&self) -> f64 {
+        self.source_rate as f64 / self.output_rate as f64
+    }
+
+    /// Делает linear resample interleaved samples без смешивания каналов.
+    fn resample_interleaved(&mut self, source_samples: &[f32]) -> Vec<f32> {
+        if self.source_rate == 0 || self.output_rate == 0 {
+            return Vec::new();
+        }
+
+        let source_frame_count = source_samples.len() / self.channel_count;
+        if source_frame_count == 0 {
+            return Vec::new();
+        }
+
+        let source_samples = &source_samples[..source_frame_count * self.channel_count];
+        let carry_frame_count = usize::from(!self.previous_source_frame.is_empty());
+        let combined_frame_count = source_frame_count + carry_frame_count;
+        let mut combined_samples = Vec::with_capacity(combined_frame_count * self.channel_count);
+
+        combined_samples.extend_from_slice(&self.previous_source_frame);
+        combined_samples.extend_from_slice(source_samples);
+
+        let mut source_frame_index =
+            (self.next_source_frame_offset + carry_frame_count as f64).max(0.0);
+        let source_frame_step = self.source_frames_per_output_frame();
+        let mut resampled_samples = Vec::new();
+
+        while source_frame_index.is_finite()
+            && (source_frame_index as usize) + 1 < combined_frame_count
+        {
+            let frame_index = source_frame_index as usize;
+            let frame_fraction = source_frame_index - frame_index as f64;
+
+            for channel_index in 0..self.channel_count {
+                let current_sample =
+                    combined_samples[frame_index * self.channel_count + channel_index] as f64;
+                let next_sample =
+                    combined_samples[(frame_index + 1) * self.channel_count + channel_index] as f64;
+                let interpolated_sample =
+                    current_sample + frame_fraction * (next_sample - current_sample);
+                resampled_samples.push(interpolated_sample as f32);
+            }
+
+            source_frame_index += source_frame_step;
+        }
+
+        self.next_source_frame_offset =
+            source_frame_index - carry_frame_count as f64 - source_frame_count as f64;
+        self.remember_last_source_frame(source_samples, source_frame_count);
+
+        resampled_samples
+    }
+
+    /// Запоминает последний complete frame текущего chunk для следующего boundary.
+    fn remember_last_source_frame(&mut self, source_samples: &[f32], source_frame_count: usize) {
+        let last_frame_start = (source_frame_count - 1) * self.channel_count;
+        let last_frame_end = last_frame_start + self.channel_count;
+
+        self.previous_source_frame.clear();
+        self.previous_source_frame
+            .extend_from_slice(&source_samples[last_frame_start..last_frame_end]);
+    }
 }
 
 impl AudioOutput {
@@ -153,11 +246,10 @@ impl AudioOutput {
             clock,
             stream_channels,
             decoder_channels,
-            decoder_rate,
-            stream_rate,
             volume: 1.0,
             is_playing: false,
-            resample_frac: 0.0,
+            resampler: needs_resample
+                .then(|| LinearResampler::new(decoder_rate, stream_rate, stream_channels)),
         })
     }
 
@@ -171,10 +263,9 @@ impl AudioOutput {
         }
 
         let stream_layout_samples = self.convert_decoder_samples_to_stream_layout(samples);
-        let samples_for_output = if self.decoder_rate == self.stream_rate {
-            stream_layout_samples
-        } else {
-            self.resample_stream_layout_samples(&stream_layout_samples)
+        let samples_for_output = match self.resampler.as_mut() {
+            Some(resampler) => resampler.resample_interleaved(&stream_layout_samples),
+            None => stream_layout_samples,
         };
 
         let mut written = 0u64;
@@ -265,38 +356,6 @@ impl AudioOutput {
         }
 
         stream_samples
-    }
-
-    /// Делает linear resample по frames, не смешивая соседние каналы между собой.
-    fn resample_stream_layout_samples(&mut self, stream_samples: &[f32]) -> Vec<f32> {
-        if stream_samples.len() < self.stream_channels * 2 {
-            return Vec::new();
-        }
-
-        let ratio = self.decoder_rate as f64 / self.stream_rate as f64;
-        let input_frame_count = stream_samples.len() / self.stream_channels;
-        let mut source_frame_index = self.resample_frac;
-        let mut resampled_samples = Vec::new();
-
-        while (source_frame_index as usize) + 1 < input_frame_count {
-            let frame_index = source_frame_index as usize;
-            let frame_fraction = source_frame_index - frame_index as f64;
-
-            for channel_index in 0..self.stream_channels {
-                let current_sample =
-                    stream_samples[frame_index * self.stream_channels + channel_index] as f64;
-                let next_sample =
-                    stream_samples[(frame_index + 1) * self.stream_channels + channel_index] as f64;
-                let interpolated_sample =
-                    current_sample + frame_fraction * (next_sample - current_sample);
-                resampled_samples.push(interpolated_sample as f32);
-            }
-
-            source_frame_index += ratio;
-        }
-
-        self.resample_frac = source_frame_index - (source_frame_index as usize) as f64;
-        resampled_samples
     }
 
     /// Создаёт CPAL stream для f32 sample format.
@@ -493,5 +552,48 @@ impl Drop for AudioOutput {
             warn!("AudioOutput::drop — не удалось остановить stream: {}", e);
         }
         info!("AudioOutput остановлен (drop)");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LinearResampler;
+
+    /// Проверяет floating-point samples с небольшим допуском.
+    fn assert_samples_close(actual_samples: &[f32], expected_samples: &[f32]) {
+        assert_eq!(actual_samples.len(), expected_samples.len());
+
+        for (actual_sample, expected_sample) in actual_samples.iter().zip(expected_samples) {
+            let delta = (actual_sample - expected_sample).abs();
+            assert!(
+                delta < 0.000_01,
+                "sample mismatch: actual={actual_sample}, expected={expected_sample}"
+            );
+        }
+    }
+
+    #[test]
+    fn resampler_interpolates_across_packet_boundary() {
+        let mut resampler = LinearResampler::new(3, 4, 1);
+
+        let first_output = resampler.resample_interleaved(&[0.0, 1.0]);
+        let second_output = resampler.resample_interleaved(&[2.0, 3.0, 4.0]);
+
+        assert_samples_close(&first_output, &[0.0, 0.75]);
+        assert_samples_close(&second_output, &[1.5, 2.25, 3.0, 3.75]);
+    }
+
+    #[test]
+    fn resampler_keeps_channels_separate_across_packet_boundary() {
+        let mut resampler = LinearResampler::new(3, 4, 2);
+
+        let first_output = resampler.resample_interleaved(&[0.0, 10.0, 1.0, 11.0]);
+        let second_output = resampler.resample_interleaved(&[2.0, 12.0, 3.0, 13.0, 4.0, 14.0]);
+
+        assert_samples_close(&first_output, &[0.0, 10.0, 0.75, 10.75]);
+        assert_samples_close(
+            &second_output,
+            &[1.5, 11.5, 2.25, 12.25, 3.0, 13.0, 3.75, 13.75],
+        );
     }
 }

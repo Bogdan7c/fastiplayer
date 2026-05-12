@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -69,7 +69,7 @@ impl PendingVideoPacket {
 /// потому что renderer ещё забирает текущий кадр и backend-specific texture views напрямую.
 pub struct PlaybackPipeline {
     /// Demuxer текущего WebM/Matroska media.
-    pub demuxer: Option<Box<dyn webm_demux::Demuxer>>,
+    pub demuxer: Option<Box<dyn webm_demux::Demuxer + Send>>,
 
     /// Локальный путь, если media был открыт из файловой системы.
     pub file_path: Option<PathBuf>,
@@ -106,6 +106,15 @@ pub struct PlaybackPipeline {
 
     /// Текущий кадр для отображения, выбранный scheduler.
     pub present_video_frame: Option<video_core::DecodedFrame>,
+
+    /// Поколение render resources текущего media pipeline.
+    pub render_generation: u64,
+
+    /// Texture handles, которые сейчас удерживает render/UI thread.
+    pub leased_video_textures: HashMap<(u64, u64), usize>,
+
+    /// Texture handles, release которых отложен до drop-ack от render/UI thread.
+    pub deferred_video_texture_releases: HashSet<(u64, u64)>,
 
     /// Track ID выбранного video трека.
     pub video_track_id: Option<TrackId>,
@@ -154,6 +163,9 @@ impl Default for PlaybackPipeline {
             video_frame_duration_estimate: DEFAULT_VIDEO_FRAME_DURATION,
             last_decoded_video_pts: None,
             present_video_frame: None,
+            render_generation: 0,
+            leased_video_textures: HashMap::new(),
+            deferred_video_texture_releases: HashSet::new(),
             video_track_id: None,
             pending_video_packets: VecDeque::new(),
             audio_clock: None,

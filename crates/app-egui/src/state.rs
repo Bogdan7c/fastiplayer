@@ -1,17 +1,18 @@
 /// UI-состояние приложения.
 ///
-/// После Phase 3 этот модуль больше не владеет media pipeline. Demuxer, audio/video
-/// decoder state, очереди и playback errors находятся в `player_core::PlayerSession`.
+/// После worker-сессии этот модуль больше не владеет media pipeline. Demuxer,
+/// audio/video decoder state, очереди и playback errors находятся в playback worker.
 /// `AppState` оставляет у себя только egui/winit state и shell-данные.
 use std::cell::Cell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use capability_core::SystemCapabilities;
 use media_core::TrackKind;
 use player_core::{
-    FrameCounters, PlaybackState, PlayerCommand, PlayerSession, PlayerSnapshot, PlayerTickConfig,
+    FrameCounters, PlaybackState, PlayerCommand, PlayerPresentFrame, PlayerSnapshot, PlayerWorker,
+    PlayerWorkerConfig, PlayerWorkerEvent, ScrubCommitPolicy, SeekRequest,
 };
 use render_core::RenderDiagnostics;
 use rustiplayer_config::AppConfig;
@@ -28,8 +29,8 @@ pub struct AppState {
     /// Egui_winit state — обработка ввода от winit.
     pub egui_winit_state: egui_winit::State,
 
-    /// Player session владеет состоянием воспроизведения и media pipeline.
-    pub player_session: PlayerSession,
+    /// Playback worker владеет `PlayerSession` и media pipeline на отдельном thread.
+    pub player_worker: PlayerWorker,
 
     /// Счётчик кадров shell-анимации.
     pub frame_index: u64,
@@ -46,25 +47,31 @@ pub struct AppState {
     /// Startup-ошибка shell-слоя, которую нужно показать без перевода player в Failed.
     pub startup_error: Option<String>,
 
-    /// Runtime-лимиты playback tick, собранные из config.
-    tick_config: PlayerTickConfig,
-
     /// Последняя renderer-neutral диагностика без GPU handles.
     render_diagnostics: RenderDiagnostics,
+
+    /// Последний валидный кадр, который можно повторить при transient miss render boundary.
+    cached_present_frame: Option<PlayerPresentFrame>,
+
+    /// Source label, которому принадлежит cached present frame.
+    cached_present_source_label: Option<String>,
+
+    /// Последний локальный файл, открытый shell-ом, для восстановления после suspend.
+    current_local_file: Option<PathBuf>,
 
     /// Версия приложения для отображения в UI.
     pub app_version: &'static str,
 }
 
 impl AppState {
-    /// Создаёт новое состояние приложения и пустую player session.
+    /// Создаёт новое состояние приложения и запускает playback worker.
     #[instrument(skip(window, telemetry, app_config, startup_error))]
     pub fn new(
         window: &Window,
         telemetry: Arc<Telemetry>,
         app_config: AppConfig,
         startup_error: Option<String>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let egui_ctx = egui::Context::default();
         egui_ctx.set_theme(egui::Theme::Dark);
 
@@ -77,34 +84,37 @@ impl AppState {
             Some(winit::window::Theme::Dark),
             None,
         );
-        let tick_config = PlayerTickConfig::from(&app_config);
-        let mut player_session = PlayerSession::new();
-        if let Err(error) = player_session
-            .dispatch_command(PlayerCommand::SetVolume(app_config.audio.volume as f32))
+        let worker_config =
+            PlayerWorkerConfig::new(player_core::PlayerTickConfig::from(&app_config));
+        let player_worker = PlayerWorker::spawn(worker_config)?;
+        if let Err(error) =
+            player_worker.try_send_command(PlayerCommand::SetVolume(app_config.audio.volume as f32))
         {
             warn!(error = %error, "Не удалось применить начальную громкость из config");
         }
 
-        Self {
+        Ok(Self {
             egui_ctx,
             egui_winit_state,
-            player_session,
+            player_worker,
             frame_index: 0,
             start_time: std::time::Instant::now(),
             telemetry,
             app_config,
             startup_error,
-            tick_config,
             render_diagnostics: RenderDiagnostics::default(),
+            cached_present_frame: None,
+            cached_present_source_label: None,
+            current_local_file: None,
             app_version: env!("CARGO_PKG_VERSION"),
-        }
+        })
     }
 
-    /// Переключает состояние воспроизведения через player session.
+    /// Переключает состояние воспроизведения через playback worker.
     pub fn toggle_playback(&mut self) {
         if let Err(error) = self
-            .player_session
-            .dispatch_command(PlayerCommand::TogglePlayback)
+            .player_worker
+            .try_send_command(PlayerCommand::TogglePlayback)
         {
             warn!(error = %error, "Не удалось переключить playback");
         }
@@ -122,12 +132,6 @@ impl AppState {
         self.start_time.elapsed().as_secs_f64()
     }
 
-    /// Возвращает runtime config для одного playback tick.
-    #[must_use]
-    pub const fn tick_config(&self) -> PlayerTickConfig {
-        self.tick_config
-    }
-
     /// Обновляет renderer diagnostics, которые UI покажет в telemetry panel.
     pub fn set_render_diagnostics(&mut self, render_diagnostics: RenderDiagnostics) {
         self.render_diagnostics = render_diagnostics;
@@ -135,24 +139,32 @@ impl AppState {
 
     /// Возвращает read-only snapshot из `player-core` для UI и renderer diagnostics.
     #[must_use]
-    pub fn player_snapshot(&self) -> PlayerSnapshot {
-        self.player_session
-            .snapshot_with_frame_counters(self.frame_counters_snapshot())
+    pub fn player_snapshot(&mut self) -> PlayerSnapshot {
+        self.player_worker
+            .latest_snapshot(self.frame_counters_snapshot())
     }
 
-    /// Загружает локальный файл через player session.
+    /// Загружает локальный файл через playback worker.
     pub fn load_file(&mut self, path: &Path) {
-        self.player_session.load_file(path);
-        self.apply_opened_media_playback_policy();
+        let autoplay = !self.app_config.player.start_paused;
+        self.clear_cached_present_frame();
+        self.current_local_file = Some(path.to_path_buf());
+        if let Err(error) = self.player_worker.load_file(path, autoplay) {
+            warn!(error = %error, "Не удалось отправить команду открытия файла в worker");
+        }
     }
 
-    /// Загружает уже открытый demuxer через player session.
-    pub fn load_demuxer(&mut self, label: String, demuxer: Box<dyn webm_demux::Demuxer>) {
-        self.player_session.load_demuxer(label, demuxer);
-        self.apply_opened_media_playback_policy();
+    /// Загружает уже открытый demuxer через playback worker.
+    pub fn load_demuxer(&mut self, label: String, demuxer: Box<dyn webm_demux::Demuxer + Send>) {
+        let autoplay = !self.app_config.player.start_paused;
+        self.clear_cached_present_frame();
+        self.current_local_file = None;
+        if let Err(error) = self.player_worker.load_demuxer(label, demuxer, autoplay) {
+            warn!(error = %error, "Не удалось отправить streaming demuxer в worker");
+        }
     }
 
-    /// Инициализирует video pipeline в player session.
+    /// Инициализирует video pipeline в playback worker.
     pub fn init_video_pipeline(
         &mut self,
         instance: &wgpu::Instance,
@@ -160,28 +172,99 @@ impl AppState {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
-        self.player_session
-            .init_video_pipeline(instance, adapter, device, queue);
+        if let Err(error) = self
+            .player_worker
+            .init_video_pipeline(instance, adapter, device, queue)
+        {
+            warn!(error = %error, "Не удалось отправить init video pipeline в worker");
+        }
     }
 
-    /// Передаёт capability report из shell/backend layer в player-core.
+    /// Передаёт capability report из shell/backend layer в playback worker.
     pub fn set_system_capabilities(&mut self, capabilities: SystemCapabilities) {
-        self.player_session.set_system_capabilities(capabilities);
+        if let Err(error) = self.player_worker.set_system_capabilities(capabilities) {
+            warn!(error = %error, "Не удалось отправить capability report в worker");
+        }
+    }
+
+    /// Пытается получить текущий video frame для renderer-а.
+    #[must_use]
+    pub fn try_acquire_present_frame(&mut self) -> Option<PlayerPresentFrame> {
+        let player_snapshot = self.player_snapshot();
+        self.drop_stale_cached_present_frame(&player_snapshot);
+
+        if let Some(present_frame) = self.player_worker.try_acquire_present_frame() {
+            self.cached_present_source_label = player_snapshot.source_label.clone();
+            self.cached_present_frame = Some(present_frame.clone());
+            return Some(present_frame);
+        }
+
+        self.cached_present_frame.clone()
+    }
+
+    /// Сбрасывает cached frame, когда он уже не принадлежит текущему media/render поколению.
+    fn drop_stale_cached_present_frame(&mut self, player_snapshot: &PlayerSnapshot) {
+        if self.cached_present_frame.is_none() {
+            return;
+        }
+
+        if player_snapshot.current_video_frame.is_none() {
+            self.cached_present_frame = None;
+            self.cached_present_source_label = None;
+            return;
+        }
+
+        if self.cached_present_source_label != player_snapshot.source_label {
+            self.cached_present_frame = None;
+            self.cached_present_source_label = None;
+            return;
+        }
+
+        let Some(cached_present_frame) = &self.cached_present_frame else {
+            return;
+        };
+        if cached_present_frame.render_generation != player_snapshot.render_generation {
+            self.clear_cached_present_frame();
+        }
+    }
+
+    /// Освобождает cached present frame и отправляет drop-ack worker-у через lease guard.
+    fn clear_cached_present_frame(&mut self) {
+        self.cached_present_frame = None;
+        self.cached_present_source_label = None;
+    }
+
+    /// Передаёт fatal render error в worker-owned player session.
+    pub fn mark_fatal_error(&self, error: player_core::PlayerError) {
+        if let Err(send_error) = self.player_worker.mark_fatal_error(error) {
+            warn!(error = %send_error, "Не удалось отправить render error в worker");
+        }
+    }
+
+    /// Забирает worker events для shell telemetry.
+    #[must_use]
+    pub fn drain_worker_events(&self) -> Vec<PlayerWorkerEvent> {
+        self.player_worker.drain_events()
+    }
+
+    /// Возвращает последний локальный файл, открытый shell-ом.
+    #[must_use]
+    pub fn current_local_file(&self) -> Option<&Path> {
+        self.current_local_file.as_deref()
     }
 
     /// Рендерит egui UI поверх видео.
     ///
-    /// UI читает только `PlayerSnapshot`, а действия после egui closure применяются
-    /// командами к `PlayerSession`.
+    /// UI читает только `PlayerSnapshot`, а действия после egui closure отправляет worker-у.
     #[instrument(skip(self, window))]
     pub fn render_ui(&mut self, window: &Window, egui_input: egui::RawInput) -> egui::FullOutput {
-        let is_playing = self.player_session.playback_state() == PlaybackState::Playing;
+        let player_snapshot = self.player_snapshot();
+        let is_playing = player_snapshot.playback_state == PlaybackState::Playing;
 
         if is_playing {
             self.next_frame();
         }
 
-        let player_snapshot = self.player_snapshot();
         let mut volume_slider_value = player_snapshot.volume;
         let position_seconds = player_snapshot.current_position.as_secs_f64();
         let duration_seconds = player_snapshot
@@ -196,16 +279,15 @@ impl AppState {
         let app_version = self.app_version;
         let telemetry = Arc::clone(&self.telemetry);
         let start_time = self.start_time;
-        let frame_duration_estimate_ms = self
-            .player_session
-            .pipeline
-            .video_frame_duration_estimate
-            .as_secs_f64()
-            * 1000.0;
+        let frame_duration_estimate_ms =
+            player_snapshot.video_frame_duration_estimate.as_secs_f64() * 1000.0;
         let toggle_playback_clicked = Cell::new(false);
         let open_file_clicked = Cell::new(false);
         let volume_change_request = Cell::new(None::<f32>);
-        let position_change_request = Cell::new(None::<f64>);
+        let begin_scrub_request = Cell::new(false);
+        let update_scrub_request = Cell::new(None::<f64>);
+        let end_scrub_request = Cell::new(false);
+        let seek_request = Cell::new(None::<f64>);
         let player_error_message = player_snapshot
             .last_error
             .as_ref()
@@ -258,7 +340,19 @@ impl AppState {
                                 .custom_formatter(|secs, _| Self::format_time(secs as f64)),
                             );
                             if timeline_response.changed() {
-                                position_change_request.set(Some(slider_position as f64));
+                                if timeline_response.drag_started() {
+                                    begin_scrub_request.set(true);
+                                }
+
+                                if timeline_response.dragged() {
+                                    update_scrub_request.set(Some(slider_position as f64));
+                                } else {
+                                    seek_request.set(Some(slider_position as f64));
+                                }
+                            }
+
+                            if timeline_response.drag_stopped() {
+                                end_scrub_request.set(true);
                             }
                         } else {
                             ui.monospace(Self::format_time(position_seconds));
@@ -331,21 +425,54 @@ impl AppState {
 
         if let Some(requested_volume) = volume_change_request.get()
             && let Err(error) = self
-                .player_session
-                .dispatch_command(PlayerCommand::SetVolume(requested_volume))
+                .player_worker
+                .try_send_command(PlayerCommand::SetVolume(requested_volume))
         {
             warn!(error = %error, "Некорректное значение громкости из UI");
         }
 
-        if let Some(requested_position) = position_change_request.get() {
-            self.player_session
-                .update_current_position(duration_from_seconds_lossy(requested_position));
+        if begin_scrub_request.get()
+            && let Err(error) = self
+                .player_worker
+                .try_send_command(PlayerCommand::BeginScrub)
+        {
+            warn!(error = %error, "Не удалось начать scrub");
+        }
+
+        if let Some(requested_position) = update_scrub_request.get() {
+            let request = SeekRequest::accurate(duration_from_seconds_lossy(requested_position));
+            if let Err(error) = self
+                .player_worker
+                .try_send_command(PlayerCommand::UpdateScrub(request))
+            {
+                warn!(error = %error, "Не удалось обновить scrub target");
+            }
+        }
+
+        if let Some(requested_position) = seek_request.get() {
+            let request = SeekRequest::accurate(duration_from_seconds_lossy(requested_position));
+            if let Err(error) = self
+                .player_worker
+                .try_send_command(PlayerCommand::Seek(request))
+            {
+                warn!(error = %error, "Не удалось отправить seek request");
+            }
+        }
+
+        if end_scrub_request.get()
+            && let Err(error) = self
+                .player_worker
+                .try_send_command(PlayerCommand::EndScrub {
+                    policy: ScrubCommitPolicy::CommitLatest,
+                })
+        {
+            warn!(error = %error, "Не удалось завершить scrub");
         }
 
         full_output
     }
 
-    /// Обрабатывает горячие клавиши shell и отправляет команды в session.
+    /// Обрабатывает горячие клавиши shell и отправляет команды в playback worker.
     pub fn handle_hotkeys(
         &mut self,
         window: &Window,
@@ -379,8 +506,8 @@ impl AppState {
                     self.app_config.audio.volume as f32
                 };
                 if let Err(error) = self
-                    .player_session
-                    .dispatch_command(PlayerCommand::SetVolume(next_volume))
+                    .player_worker
+                    .try_send_command(PlayerCommand::SetVolume(next_volume))
                 {
                     warn!(error = %error, "Не удалось переключить mute");
                 }
@@ -400,21 +527,6 @@ impl AppState {
 
         if let Some(path) = file {
             self.load_file(&path);
-        }
-    }
-
-    /// Применяет config-политику автозапуска после успешного открытия media.
-    fn apply_opened_media_playback_policy(&mut self) {
-        if self.app_config.player.start_paused {
-            return;
-        }
-
-        if !self.player_session.has_loaded_media_pipeline() {
-            return;
-        }
-
-        if let Err(error) = self.player_session.dispatch_command(PlayerCommand::Play) {
-            warn!(error = %error, "Не удалось запустить playback после открытия media");
         }
     }
 

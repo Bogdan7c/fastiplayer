@@ -62,6 +62,9 @@ pub struct PlayerTickConfig {
     /// Максимум сырых video packets между demuxer и decoder thread.
     pub max_pending_video_packets: usize,
 
+    /// Временный bounded лимит video packets, пока audio buffer догоняет low-watermark.
+    pub max_pending_video_packets_during_audio_catchup: usize,
+
     /// Максимум video packets, отправляемых decoder thread за один tick.
     pub max_video_packets_sent_per_tick: usize,
 
@@ -73,6 +76,12 @@ pub struct PlayerTickConfig {
 
     /// Уровень audio buffer, выше которого audio packets временно не декодируются.
     pub audio_buffer_high_water_mark_ms: f64,
+
+    /// Уровень audio buffer, ниже которого demux может читать сквозь video backpressure.
+    pub audio_demux_low_water_mark_ms: f64,
+
+    /// Минимальный audio buffer перед переходом autoplay из `Buffering` в `Playing`.
+    pub audio_preroll_target_ms: f64,
 
     /// Минимальная позиция audio clock, после которой stalled audio считается реальным.
     pub audio_stall_min_position: Duration,
@@ -101,10 +110,13 @@ impl Default for PlayerTickConfig {
             max_video_present_queue: 8,
             min_texture_slots_available_for_decode: 2,
             max_pending_video_packets: 8,
-            max_video_packets_sent_per_tick: 1,
-            max_decoded_video_frames_drained_per_tick: 1,
+            max_pending_video_packets_during_audio_catchup: 240,
+            max_video_packets_sent_per_tick: 2,
+            max_decoded_video_frames_drained_per_tick: 2,
             max_video_decode_ahead: Duration::from_millis(500),
             audio_buffer_high_water_mark_ms: 200.0,
+            audio_demux_low_water_mark_ms: 100.0,
+            audio_preroll_target_ms: 50.0,
             audio_stall_min_position: Duration::from_millis(100),
             audio_stall_timeout: Duration::from_millis(250),
             position_fallback_delta: Duration::from_micros(16_667),
@@ -128,13 +140,16 @@ impl From<&AppConfig> for PlayerTickConfig {
             max_video_present_queue: config.video.present_queue_frames,
             max_video_decode_ahead: Duration::from_millis(config.video.max_decode_ahead_ms),
             audio_buffer_high_water_mark_ms: config.audio.buffer_target_ms as f64,
+            audio_demux_low_water_mark_ms: (config.audio.buffer_target_ms as f64 * 0.5)
+                .max(config.player.seek.resume_audio_min_buffer_ms as f64),
+            audio_preroll_target_ms: config.player.seek.resume_audio_min_buffer_ms as f64,
             ..defaults
         }
     }
 }
 
 /// Итог работы одного playback tick для shell-телеметрии.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlayerTickResult {
     /// Packets, прочитанные из demuxer за tick.
     pub demuxed_packets: Vec<PlayerTickPacket>,
@@ -256,6 +271,11 @@ impl PlayerSession {
             &tick_context.config,
             &mut tick_result,
         );
+        if let Err(error) =
+            self.finish_autoplay_preroll_if_ready(tick_context.config.audio_preroll_target_ms)
+        {
+            self.mark_fatal_error(error);
+        }
 
         tick_result
     }
@@ -306,6 +326,49 @@ fn sanitize_audio_high_water_mark(high_water_mark_ms: f64) -> f64 {
     }
 }
 
+/// Нормализует low-water mark для audio catch-up demux.
+fn sanitize_audio_demux_low_water_mark(low_water_mark_ms: f64) -> f64 {
+    if low_water_mark_ms.is_finite() && low_water_mark_ms > 0.0 {
+        low_water_mark_ms
+    } else {
+        PlayerTickConfig::default().audio_demux_low_water_mark_ms
+    }
+}
+
+/// Возвращает bounded лимит video packets для audio catch-up режима.
+fn audio_catchup_pending_video_limit(tick_config: &PlayerTickConfig) -> usize {
+    tick_config
+        .max_pending_video_packets_during_audio_catchup
+        .max(tick_config.max_pending_video_packets)
+}
+
+/// Проверяет, нужно ли временно приоритизировать demux ради заполнения audio buffer.
+fn audio_demux_catchup_needed(session: &PlayerSession, tick_config: &PlayerTickConfig) -> bool {
+    audio_demux_catchup_needed_for_level(
+        session.pipeline.audio_track_id.is_some(),
+        session.audio_buffer_level_ms(),
+        tick_config.audio_demux_low_water_mark_ms,
+    )
+}
+
+/// Чистая часть audio catch-up policy для unit-тестов без CPAL device.
+fn audio_demux_catchup_needed_for_level(
+    audio_track_selected: bool,
+    audio_buffer_level_ms: Option<f64>,
+    low_water_mark_ms: f64,
+) -> bool {
+    if !audio_track_selected {
+        return false;
+    }
+
+    let Some(audio_buffer_level_ms) = audio_buffer_level_ms else {
+        return false;
+    };
+
+    audio_buffer_level_ms.is_finite()
+        && audio_buffer_level_ms < sanitize_audio_demux_low_water_mark(low_water_mark_ms)
+}
+
 /// Читает новые packets из demuxer в пределах бюджета текущего tick.
 fn read_demux_packets(
     session: &mut PlayerSession,
@@ -313,7 +376,25 @@ fn read_demux_packets(
     tick_result: &mut PlayerTickResult,
 ) {
     for _ in 0..tick_config.max_demux_packets_per_tick {
-        if !can_read_next_demux_packet(session, tick_config) {
+        let prioritize_audio_catchup = audio_demux_catchup_needed(session, tick_config);
+        if prioritize_audio_catchup
+            && session.pipeline.pending_video_packets.len() >= tick_config.max_pending_video_packets
+        {
+            trace!(
+                pending_video_packets = session.pipeline.pending_video_packets.len(),
+                catchup_video_packet_limit = audio_catchup_pending_video_limit(tick_config),
+                audio_buffer_ms = session.audio_buffer_level_ms().unwrap_or(0.0),
+                low_water_mark_ms =
+                    sanitize_audio_demux_low_water_mark(tick_config.audio_demux_low_water_mark_ms),
+                "Demux audio catch-up: reading through video pressure"
+            );
+        }
+
+        if !can_read_next_demux_packet_with_audio_priority(
+            session,
+            tick_config,
+            prioritize_audio_catchup,
+        ) {
             tick_result.demux_backpressured = true;
             trace!(
                 pending_video_packets = session.pipeline.pending_video_packets.len(),
@@ -377,8 +458,17 @@ fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet)
     }
 }
 
-/// Проверяет, можно ли читать следующий packet из demuxer.
-fn can_read_next_demux_packet(session: &PlayerSession, tick_config: &PlayerTickConfig) -> bool {
+/// Проверяет demux admission с явно переданным audio-priority флагом.
+fn can_read_next_demux_packet_with_audio_priority(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+    prioritize_audio_catchup: bool,
+) -> bool {
+    if prioritize_audio_catchup {
+        return session.pipeline.pending_video_packets.len()
+            < audio_catchup_pending_video_limit(tick_config);
+    }
+
     if !has_texture_capacity_for_decode(session, tick_config) {
         return false;
     }
@@ -879,10 +969,11 @@ fn should_wait_for_front_frame(
 }
 
 /// Освобождает texture handle через decoder thread, если он ещё существует.
-fn release_video_texture(session: &PlayerSession, texture_handle: video_core::FrameTextureHandle) {
-    if let Some(ref thread) = session.pipeline.video_decoder_thread {
-        thread.release_frame(texture_handle);
-    }
+fn release_video_texture(
+    session: &mut PlayerSession,
+    texture_handle: video_core::FrameTextureHandle,
+) {
+    session.release_video_texture(texture_handle);
 }
 
 /// Удаляет первый queued frame и записывает причину drop.
@@ -1229,6 +1320,75 @@ mod tests {
                 .message
                 .contains("P010 DMA-BUF zero-copy import failed")
         );
+    }
+
+    #[test]
+    fn audio_demux_catchup_requires_selected_audio_and_low_buffer() {
+        assert!(audio_demux_catchup_needed_for_level(true, Some(40.0), 50.0));
+        assert!(!audio_demux_catchup_needed_for_level(
+            true,
+            Some(60.0),
+            50.0
+        ));
+        assert!(!audio_demux_catchup_needed_for_level(
+            false,
+            Some(40.0),
+            50.0
+        ));
+        assert!(!audio_demux_catchup_needed_for_level(true, None, 50.0));
+    }
+
+    #[test]
+    fn audio_demux_catchup_uses_bounded_video_packet_limit() {
+        let mut session = PlayerSession::new();
+        let tick_config = PlayerTickConfig {
+            max_pending_video_packets: 2,
+            max_pending_video_packets_during_audio_catchup: 4,
+            ..PlayerTickConfig::default()
+        };
+
+        for packet_index in 0..tick_config.max_pending_video_packets {
+            session
+                .pipeline
+                .pending_video_packets
+                .push_back(PendingVideoPacket::new(
+                    TrackId::new(1),
+                    Duration::from_millis(packet_index as u64),
+                    Vec::new(),
+                    false,
+                ));
+        }
+
+        assert!(!can_read_next_demux_packet_with_audio_priority(
+            &session,
+            &tick_config,
+            false
+        ));
+        assert!(can_read_next_demux_packet_with_audio_priority(
+            &session,
+            &tick_config,
+            true
+        ));
+
+        for packet_index in tick_config.max_pending_video_packets
+            ..tick_config.max_pending_video_packets_during_audio_catchup
+        {
+            session
+                .pipeline
+                .pending_video_packets
+                .push_back(PendingVideoPacket::new(
+                    TrackId::new(1),
+                    Duration::from_millis(packet_index as u64),
+                    Vec::new(),
+                    false,
+                ));
+        }
+
+        assert!(!can_read_next_demux_packet_with_audio_priority(
+            &session,
+            &tick_config,
+            true
+        ));
     }
 
     #[test]

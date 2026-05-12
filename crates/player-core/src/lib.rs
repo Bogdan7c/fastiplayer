@@ -9,10 +9,12 @@ mod command;
 mod error;
 mod event;
 mod pipeline;
+mod seek_controller;
 mod session;
 mod snapshot;
 mod state;
 mod tick;
+mod worker;
 
 pub use command::{
     MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, ScrubCommitPolicy,
@@ -24,6 +26,9 @@ pub use event::{
 };
 pub use media_core::TrackId;
 pub use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
+pub use seek_controller::{
+    PlaybackResumeIntent, SeekController, SeekControllerDiagnostics, SeekControllerMode,
+};
 pub use session::PlayerSession;
 pub use snapshot::{
     AudioBufferSnapshot, BackendSnapshot, FrameCounters, PlayerSnapshot, QualitySummary,
@@ -34,4 +39,8 @@ pub use state::PlaybackState;
 pub use tick::{
     PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult, PlayerVideoDropReason,
     PlayerVideoFrameDrop,
+};
+pub use worker::{
+    PlayerCommandSender, PlayerPresentFrame, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
+    PlayerWorkerJoinError, PlayerWorkerSendError,
 };

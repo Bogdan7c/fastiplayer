@@ -128,7 +128,7 @@ struct DirectMediaStream {
 /// Результат подготовки YouTube ролика к streaming playback.
 pub struct YoutubeStreamingMedia {
     /// Demuxer, который уже читает из HTTP-backed streaming sources.
-    pub demuxer: Box<dyn webm_demux::Demuxer>,
+    pub demuxer: Box<dyn webm_demux::Demuxer + Send>,
 
     /// Человекочитаемое описание выбранного YouTube формата.
     pub description: String,

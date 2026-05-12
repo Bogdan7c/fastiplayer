@@ -32,7 +32,9 @@ future service-*
 - запускает HTTP fetcher threads и отдаёт `webm-demux` streaming demuxer;
 - не содержит UI/render/player state logic.
 
-`app-egui` только распознаёт CLI URL и передаёт готовый demuxer в `PlayerSession`.
+`app-egui` только распознаёт CLI URL и передаёт готовый demuxer в playback
+worker; `PlayerWorker` забирает demuxer во владение и подключает его к
+worker-owned `PlayerSession`.
 Codec/color decisions остаются в `codec-core`, `capability-core`, `player-core`
 и renderer diagnostics.
 
