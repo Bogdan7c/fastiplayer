@@ -454,6 +454,7 @@ impl PlayerSession {
         self.pipeline.pending_audio_packets.clear();
         self.pipeline.video_track_id = None;
         self.pipeline.pending_video_packets.clear();
+        self.pipeline.video_decoder_needs_keyframe = true;
         self.pipeline.audio_clock = None;
         self.pipeline.media_clock_base = Duration::ZERO;
         self.pipeline.seek_generation = 0;
@@ -1058,8 +1059,10 @@ impl PlayerSession {
 
         let resume_intent = PlaybackResumeIntent::from_playback_state(self.playback_state());
         let target_duration = target_position.as_duration();
+        let demux_seek_mode =
+            seek_mode_for_decoder_bootstrap(seek_mode, self.pipeline.video_track_id);
         let demux_seek_position = self.background_indexer.resolve_demux_seek_target(
-            seek_mode,
+            demux_seek_mode,
             self.pipeline.video_track_id,
             target_position,
         );
@@ -1082,6 +1085,7 @@ impl PlayerSession {
 
         self.pipeline.pending_audio_packets.clear();
         self.pipeline.pending_video_packets.clear();
+        self.pipeline.video_decoder_needs_keyframe = self.pipeline.video_track_id.is_some();
         self.clear_queued_video_frames();
         self.pipeline.last_decoded_video_pts = None;
         self.pipeline.media_clock_base = target_duration;
@@ -1818,6 +1822,23 @@ fn player_error_from_unsupported_requirement(error: UnsupportedVideoRequirement)
     PlayerError::new(kind, error.user_message())
 }
 
+/// Выбирает container seek mode для безопасного запуска video decoder-а после flush.
+///
+/// Пользовательский `Accurate` остаётся точным на уровне commit target: player всё
+/// равно делает pre-roll/drop до исходной цели. Для demux bootstrap с video track
+/// нужен keyframe-before, иначе decoder после flush может начать с inter-frame без
+/// reference state.
+fn seek_mode_for_decoder_bootstrap(
+    requested_mode: SeekMode,
+    video_track_id: Option<TrackId>,
+) -> SeekMode {
+    if requested_mode == SeekMode::Accurate && video_track_id.is_some() {
+        SeekMode::KeyframeBefore
+    } else {
+        requested_mode
+    }
+}
+
 impl Default for PlayerSession {
     /// Создаёт пустую session с default snapshot.
     fn default() -> Self {
@@ -2276,6 +2297,38 @@ mod tests {
     }
 
     #[test]
+    fn accurate_video_seek_uses_keyframe_before_bootstrap_when_index_is_known() {
+        let mut session = PlayerSession::new();
+        let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+        session.background_indexer.start_job(
+            "fake-source",
+            Some(MediaDuration::from_secs(30)),
+            vec![
+                background_index_entry(1, 0, true),
+                background_index_entry(1, 5, true),
+                background_index_entry(1, 8, false),
+            ],
+        );
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(8),
+            )))
+            .unwrap();
+
+        assert_eq!(
+            seek_log.lock().expect("seek log lock").as_slice(),
+            &[Duration::from_secs(5)]
+        );
+        assert_eq!(
+            session
+                .seek_commit()
+                .map(|seek_commit| seek_commit.target_position),
+            Some(MediaTime::from_secs(8))
+        );
+    }
+
+    #[test]
     fn not_seekable_demuxer_marks_timeline_and_blocks_seek() {
         let mut session = PlayerSession::new();
         let seek_log = install_fake_media_with_seekability(
@@ -2337,6 +2390,7 @@ mod tests {
                 vec![4, 5, 6],
                 true,
             ));
+        session.pipeline.video_decoder_needs_keyframe = false;
 
         session
             .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
@@ -2353,6 +2407,7 @@ mod tests {
             vec![Duration::from_secs(5)]
         );
         assert_eq!(session.pipeline.seek_generation, 1);
+        assert!(session.pipeline.video_decoder_needs_keyframe);
         assert!(session.seek_commit().is_some());
     }
 

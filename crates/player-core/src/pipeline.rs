@@ -113,6 +113,14 @@ pub struct PlaybackPipeline {
     /// Video decoder thread: VA-API VP9 decode в отдельном потоке.
     pub video_decoder_thread: Option<video_vaapi::VideoDecodeThread>,
 
+    /// Требует ли decoder следующий video packet быть keyframe-ом.
+    ///
+    /// VA-API/stateless VP9 после flush теряет reference frames. Если сразу
+    /// отправить inter-frame, decoder может показать зелёные артефакты до
+    /// следующего keyframe. Флаг держит этот codec contract рядом с очередью
+    /// packets, а не в UI/render слое.
+    pub video_decoder_needs_keyframe: bool,
+
     /// Очередь декодированных видеокадров перед presentation.
     pub video_frame_queue: VecDeque<video_core::DecodedFrame>,
 
@@ -186,6 +194,7 @@ impl Default for PlaybackPipeline {
             audio_track_id: None,
             pending_audio_packets: VecDeque::new(),
             video_decoder_thread: None,
+            video_decoder_needs_keyframe: true,
             video_frame_queue: VecDeque::new(),
             video_frame_duration_estimate: DEFAULT_VIDEO_FRAME_DURATION,
             last_decoded_video_pts: None,

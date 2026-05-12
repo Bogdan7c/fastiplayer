@@ -738,6 +738,7 @@ fn send_pending_video_packets_to_decoder(
         let packet_track_id = packet.track_id;
         let packet_pts = packet.pts;
         let packet_generation = packet.generation;
+        let packet_keyframe = packet.keyframe;
         let encoded_bytes = packet.encoded_bytes.clone();
 
         if packet_generation != session.pipeline.seek_generation {
@@ -746,6 +747,11 @@ fn send_pending_video_packets_to_decoder(
         }
 
         if session.pipeline.video_track_id != Some(packet_track_id) {
+            session.pipeline.pending_video_packets.pop_front();
+            continue;
+        }
+
+        if !accept_video_packet_for_decoder_bootstrap(session, packet_keyframe, packet_pts) {
             session.pipeline.pending_video_packets.pop_front();
             continue;
         }
@@ -806,6 +812,28 @@ fn send_pending_video_packets_to_decoder(
 
         sent_packets += 1;
     }
+}
+
+/// Пропускает inter-frames, пока decoder после flush ждёт новый keyframe.
+fn accept_video_packet_for_decoder_bootstrap(
+    session: &mut PlayerSession,
+    packet_keyframe: bool,
+    packet_pts: Duration,
+) -> bool {
+    if !session.pipeline.video_decoder_needs_keyframe {
+        return true;
+    }
+
+    if !packet_keyframe {
+        trace!(
+            pts_ms = packet_pts.as_millis(),
+            "Dropping video packet until decoder receives post-flush keyframe"
+        );
+        return false;
+    }
+
+    session.pipeline.video_decoder_needs_keyframe = false;
+    true
 }
 
 /// Минимальный view pending packet-а для bitstream capability validation.
@@ -1443,6 +1471,32 @@ mod tests {
             &session,
             &tick_config,
             true
+        ));
+    }
+
+    #[test]
+    fn decoder_bootstrap_drops_interframes_until_keyframe() {
+        let mut session = PlayerSession::new();
+        session.pipeline.video_decoder_needs_keyframe = true;
+
+        assert!(!accept_video_packet_for_decoder_bootstrap(
+            &mut session,
+            false,
+            Duration::from_millis(10)
+        ));
+        assert!(session.pipeline.video_decoder_needs_keyframe);
+
+        assert!(accept_video_packet_for_decoder_bootstrap(
+            &mut session,
+            true,
+            Duration::from_millis(20)
+        ));
+        assert!(!session.pipeline.video_decoder_needs_keyframe);
+
+        assert!(accept_video_packet_for_decoder_bootstrap(
+            &mut session,
+            false,
+            Duration::from_millis(30)
         ));
     }
 

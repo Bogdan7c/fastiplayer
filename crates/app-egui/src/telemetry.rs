@@ -14,7 +14,7 @@
 /// - AtomicU64 не блокирует, не может вызвать deadlock
 /// - точность не критична — допустимы редкие lost updates
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use media_core::TrackKind;
 
@@ -59,9 +59,6 @@ pub struct Telemetry {
 
     /// Количество audio packets.
     audio_packets: AtomicU64,
-
-    /// Последний PTS в микросекундах.
-    last_pts_us: AtomicU64,
 
     /// Количество декодированных видеокадров.
     video_frames_decoded: AtomicU64,
@@ -111,7 +108,6 @@ impl Telemetry {
             packets_read: AtomicU64::new(0),
             video_packets: AtomicU64::new(0),
             audio_packets: AtomicU64::new(0),
-            last_pts_us: AtomicU64::new(0),
             video_frames_decoded: AtomicU64::new(0),
             video_frames_presented: AtomicU64::new(0),
             video_frames_dropped: AtomicU64::new(0),
@@ -203,14 +199,12 @@ impl Telemetry {
 
     /// Записывает информацию о прочитанном packet.
     #[inline]
-    pub fn record_packet(&self, kind: TrackKind, pts: Duration) {
+    pub fn record_packet(&self, kind: TrackKind) {
         self.packets_read.fetch_add(1, Ordering::Relaxed);
         match kind {
             TrackKind::Video => self.video_packets.fetch_add(1, Ordering::Relaxed),
             TrackKind::Audio => self.audio_packets.fetch_add(1, Ordering::Relaxed),
         };
-        self.last_pts_us
-            .store(pts.as_micros() as u64, Ordering::Relaxed);
     }
 
     #[inline]
@@ -226,11 +220,6 @@ impl Telemetry {
     #[inline]
     pub fn audio_packets(&self) -> u64 {
         self.audio_packets.load(Ordering::Relaxed)
-    }
-
-    #[inline]
-    pub fn last_pts_us(&self) -> u64 {
-        self.last_pts_us.load(Ordering::Relaxed)
     }
 
     #[inline]

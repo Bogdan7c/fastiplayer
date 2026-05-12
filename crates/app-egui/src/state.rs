@@ -790,11 +790,14 @@ impl AppState {
         ui.monospace(format!("  Video: {video_packets}"));
         ui.monospace(format!("  Audio: {audio_packets}"));
 
-        let pts_us = telemetry.last_pts_us();
-        let pts_secs = pts_us as f64 / 1_000_000.0;
+        let playback_position_secs = player_snapshot
+            .timeline
+            .current_position
+            .as_duration()
+            .as_secs_f64();
         ui.monospace(format!(
-            "Last PTS: {}",
-            timeline::format_seconds(Some(pts_secs))
+            "Playback PTS: {}",
+            timeline::format_seconds(Some(playback_position_secs))
         ));
 
         ui.separator();

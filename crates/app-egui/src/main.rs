@@ -360,7 +360,7 @@ impl ApplicationHandler for App {
 /// Переносит результат playback worker tick в shell telemetry.
 fn record_player_tick_result(telemetry: &Telemetry, tick_result: &PlayerTickResult) {
     for packet in &tick_result.demuxed_packets {
-        telemetry.record_packet(packet.kind, packet.pts);
+        telemetry.record_packet(packet.kind);
 
         if telemetry.packets_read() <= 50 {
             tracing::debug!(
