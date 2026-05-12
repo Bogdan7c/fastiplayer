@@ -107,6 +107,18 @@ Cache нужен для:
 
 Cache metadata хранится в SQLite. Bulk bytes живут в `~/.cache/rustiplayer/`.
 
+Schema version 2 фиксирует public network knobs:
+
+- `network.memory_cache_mb = 128` - RAM byte-range cache budget;
+- `network.memory_cache_mb = 0` - RAM cache явно отключён;
+- `network.read_ahead_mb = 64` - read-ahead budget для streaming source;
+- `network.connect_timeout_ms = 15000` - timeout подключения;
+- `network.read_timeout_ms = 15000` - timeout чтения;
+- `network.indexer_io_budget_mb_per_sec = 32` - IO budget cache/indexer.
+
+`source-core` должен читать эти значения из validated config. Нельзя хардкодить
+cache/read-ahead/timeouts в `service-youtube`, `webm-demux` или `player-core`.
+
 ## Resume download
 
 Source layer должен поддерживать:
@@ -128,6 +140,12 @@ Live streams требуют отдельного состояния:
 - discontinuity handling.
 
 Не делаем сразу, но source/player model не должен предполагать, что duration всегда известна.
+
+Live/VOD timeline описывается neutral `TimelineSnapshot`. Для VOD первый adapter
+заполняет known duration и seekable range из container/service metadata. Для live
+будущий adapter будет заполнять moving seekable window без требования fixed
+duration. Core-типы не знают, что первый production path - WebM/Matroska или
+YouTube VOD WebM.
 
 ## Subtitles and captions
 

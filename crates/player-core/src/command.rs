@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use media_core::TrackId;
+use media_core::{MediaTime, TrackId};
 
 /// Идентификатор качества или варианта потока.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -84,25 +84,71 @@ impl Default for SeekMode {
     }
 }
 
+/// Цель seek-запроса без привязки к UI control или container timestamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeekTarget {
+    /// Абсолютная позиция на нормализованной media timeline.
+    Absolute(MediaTime),
+
+    /// Относительный шаг от текущей позиции playback.
+    Relative(Duration),
+}
+
+impl SeekTarget {
+    /// Разрешает цель в абсолютную позицию для текущей timeline-позиции.
+    #[must_use]
+    pub fn resolve(self, current_position: MediaTime) -> MediaTime {
+        match self {
+            Self::Absolute(position) => position,
+            Self::Relative(delta) => current_position.saturating_add(delta.into()),
+        }
+    }
+}
+
 /// Запрос перемотки внутри текущего media.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SeekRequest {
-    /// Целевая media-позиция от начала файла.
-    pub position: Duration,
+    /// Целевая позиция: абсолютная media time или относительный шаг.
+    pub target: SeekTarget,
 
     /// Политика точности перемотки.
     pub mode: SeekMode,
 }
 
 impl SeekRequest {
-    /// Создаёт seek-запрос с точной перемоткой.
+    /// Создаёт seek-запрос с точной перемоткой из legacy `Duration` позиции.
     #[must_use]
     pub const fn accurate(position: Duration) -> Self {
         Self {
-            position,
+            target: SeekTarget::Absolute(MediaTime::from_duration(position)),
             mode: SeekMode::Accurate,
         }
     }
+
+    /// Создаёт seek-запрос к абсолютной media-позиции.
+    #[must_use]
+    pub const fn absolute(position: MediaTime) -> Self {
+        Self {
+            target: SeekTarget::Absolute(position),
+            mode: SeekMode::Accurate,
+        }
+    }
+
+    /// Создаёт seek-запрос как положительный шаг от текущей позиции.
+    #[must_use]
+    pub const fn relative(delta: Duration) -> Self {
+        Self {
+            target: SeekTarget::Relative(delta),
+            mode: SeekMode::Accurate,
+        }
+    }
+}
+
+/// Политика завершения interactive scrub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrubCommitPolicy {
+    /// Зафиксировать последнюю цель, полученную через `UpdateScrub`.
+    CommitLatest,
 }
 
 /// Выбор качества потока для локального файла или сетевого сервиса.
@@ -132,6 +178,18 @@ pub enum PlayerCommand {
 
     /// Перемотать текущий media.
     Seek(SeekRequest),
+
+    /// Начать interactive scrub без немедленного commit-а playback позиции.
+    BeginScrub,
+
+    /// Обновить цель interactive scrub.
+    UpdateScrub(SeekRequest),
+
+    /// Завершить interactive scrub выбранной commit-политикой.
+    EndScrub { policy: ScrubCommitPolicy },
+
+    /// Остановить текущий media без завершения всей session.
+    Stop,
 
     /// Установить громкость в диапазоне `0.0..=1.0`.
     SetVolume(f32),

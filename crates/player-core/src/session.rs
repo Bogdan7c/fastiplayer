@@ -7,7 +7,7 @@ use codec_core::{
     ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction, VideoCodec,
     VideoDecodeRequirement, Vp9MetadataSource, resolve_vp9_metadata,
 };
-use media_core::{TrackInfo, TrackKind};
+use media_core::{MediaDuration, MediaTime, TrackInfo, TrackKind};
 use tracing::{info, warn};
 use webm_demux::Demuxer;
 
@@ -138,6 +138,10 @@ impl PlayerSession {
             PlayerCommand::Pause => self.pause(),
             PlayerCommand::TogglePlayback => self.toggle_playback(),
             PlayerCommand::Seek(request) => self.seek(request),
+            PlayerCommand::BeginScrub => self.begin_scrub(),
+            PlayerCommand::UpdateScrub(request) => self.update_scrub(request),
+            PlayerCommand::EndScrub { policy } => self.end_scrub(policy),
+            PlayerCommand::Stop => self.stop(),
             PlayerCommand::SetVolume(volume) => self.set_volume(volume),
             PlayerCommand::SelectVideoTrack(track_id) => self.select_video_track(track_id),
             PlayerCommand::SelectAudioTrack(track_id) => self.select_audio_track(track_id),
@@ -163,7 +167,8 @@ impl PlayerSession {
             return;
         }
 
-        self.snapshot.current_position = position;
+        self.snapshot
+            .set_timeline_position(MediaTime::from_duration(position));
     }
 
     /// Добавляет delta к текущей позиции без panic при переполнении.
@@ -279,7 +284,7 @@ impl PlayerSession {
     pub fn mark_media_opened(&mut self, summary: MediaSummary) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         self.snapshot.media_title = summary.title.clone();
-        self.snapshot.duration = summary.duration;
+        self.set_snapshot_duration(summary.duration);
         self.snapshot.source_label = Some(summary.source_label.clone());
         self.clear_error();
         self.pending_events.push(PlayerEvent::MediaOpened(summary));
@@ -343,8 +348,7 @@ impl PlayerSession {
         self.pending_autoplay = false;
         self.snapshot.source_label = None;
         self.snapshot.media_title = None;
-        self.snapshot.duration = None;
-        self.snapshot.current_position = Duration::ZERO;
+        self.snapshot.clear_timeline();
         self.snapshot.selected_tracks = TrackSelectionSnapshot::default();
         self.snapshot.tracks.clear();
         self.clear_error();
@@ -482,8 +486,7 @@ impl PlayerSession {
         self.pending_autoplay = request.autoplay;
         self.snapshot.source_label = Some(request.source.label());
         self.snapshot.media_title = None;
-        self.snapshot.duration = None;
-        self.snapshot.current_position = Duration::ZERO;
+        self.snapshot.clear_timeline();
         self.clear_error();
         self.pending_events
             .push(PlayerEvent::MediaOpenRequested(request));
@@ -527,9 +530,60 @@ impl PlayerSession {
     /// Фиксирует seek request в snapshot до переноса реального scheduler.
     fn seek(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        self.publish_position_changed(request.position);
+        let target_position = self.resolve_seek_target(request);
+        self.snapshot.timeline.target_position = Some(target_position);
+        self.publish_position_changed(target_position.as_duration());
+        self.snapshot.timeline.target_position = None;
+        self.snapshot.timeline.seeking = false;
+        self.snapshot.timeline.stale_frame = false;
         self.pending_events
             .push(PlayerEvent::SeekRequested(request));
+        Ok(())
+    }
+
+    /// Начинает interactive scrub на уровне контракта без запуска demux seek.
+    fn begin_scrub(&mut self) -> PlayerResult<()> {
+        self.ensure_not_shutdown()?;
+        self.snapshot.timeline.scrubbing = true;
+        self.snapshot.timeline.stale_frame = true;
+        self.snapshot.timeline.target_position = Some(self.snapshot.timeline.current_position);
+        Ok(())
+    }
+
+    /// Запоминает последнюю цель scrub без изменения текущей playback позиции.
+    fn update_scrub(&mut self, request: SeekRequest) -> PlayerResult<()> {
+        self.ensure_not_shutdown()?;
+        let target_position = self.resolve_seek_target(request);
+        self.snapshot.timeline.scrubbing = true;
+        self.snapshot.timeline.stale_frame = true;
+        self.snapshot.timeline.target_position = Some(target_position);
+        self.pending_events
+            .push(PlayerEvent::SeekRequested(request));
+        Ok(())
+    }
+
+    /// Завершает scrub и применяет последнюю цель согласно выбранной политике.
+    fn end_scrub(&mut self, policy: crate::ScrubCommitPolicy) -> PlayerResult<()> {
+        self.ensure_not_shutdown()?;
+        match policy {
+            crate::ScrubCommitPolicy::CommitLatest => {
+                if let Some(target_position) = self.snapshot.timeline.target_position {
+                    self.publish_position_changed(target_position.as_duration());
+                }
+            }
+        }
+        self.snapshot.timeline.target_position = None;
+        self.snapshot.timeline.seeking = false;
+        self.snapshot.timeline.scrubbing = false;
+        self.snapshot.timeline.stale_frame = false;
+        Ok(())
+    }
+
+    /// Останавливает текущий media и сбрасывает timeline без завершения session.
+    fn stop(&mut self) -> PlayerResult<()> {
+        self.ensure_not_shutdown()?;
+        self.reset_media_state();
+        self.set_playback_state(PlaybackState::Stopped);
         Ok(())
     }
 
@@ -645,6 +699,19 @@ impl PlayerSession {
         self.update_current_position(position);
         self.pending_events
             .push(PlayerEvent::PositionChanged(position));
+    }
+
+    /// Разрешает seek target в абсолютную media-позицию без изменения runtime seek policy.
+    fn resolve_seek_target(&self, request: SeekRequest) -> MediaTime {
+        request
+            .target
+            .resolve(self.snapshot.timeline.current_position)
+    }
+
+    /// Синхронно обновляет legacy `Duration` и typed timeline duration.
+    fn set_snapshot_duration(&mut self, duration: Option<Duration>) {
+        self.snapshot
+            .set_timeline_duration(duration.map(MediaDuration::from_duration));
     }
 
     /// Сохраняет runtime error как user-facing ошибку.
@@ -1177,7 +1244,7 @@ fn is_enabled_env_value(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MediaSource, PlayerCommand};
+    use crate::{MediaSource, PlayerCommand, ScrubCommitPolicy, SeekTarget};
     use capability_core::{
         BackendCapabilities, BackendDriverInfo, BackendProbeStatus, P010StorageLayout,
         VideoExportPath,
@@ -1268,6 +1335,75 @@ mod tests {
 
         assert_eq!(session.snapshot().playback_state, PlaybackState::Idle);
         assert_eq!(session.snapshot().current_position, Duration::ZERO);
+        assert_eq!(
+            session.snapshot().timeline.current_position,
+            MediaTime::ZERO
+        );
+    }
+
+    #[test]
+    fn seek_command_updates_legacy_and_typed_timeline_position() {
+        let mut session = PlayerSession::new();
+        let request = SeekRequest::absolute(MediaTime::from_millis(1_500));
+
+        session
+            .dispatch_command(PlayerCommand::Seek(request))
+            .unwrap();
+
+        assert_eq!(
+            session.snapshot().current_position,
+            Duration::from_millis(1_500)
+        );
+        assert_eq!(
+            session.snapshot().timeline.current_position,
+            MediaTime::from_millis(1_500)
+        );
+        assert!(session.take_events().iter().any(
+            |event| matches!(event, PlayerEvent::SeekRequested(accepted) if *accepted == request)
+        ));
+    }
+
+    #[test]
+    fn relative_seek_target_resolves_from_current_timeline_position() {
+        let mut session = PlayerSession::new();
+        session.update_current_position(Duration::from_secs(10));
+        let request = SeekRequest {
+            target: SeekTarget::Relative(Duration::from_secs(5)),
+            mode: crate::SeekMode::Accurate,
+        };
+
+        session
+            .dispatch_command(PlayerCommand::Seek(request))
+            .unwrap();
+
+        assert_eq!(session.snapshot().current_position, Duration::from_secs(15));
+    }
+
+    #[test]
+    fn scrub_commands_track_latest_target_and_commit_it() {
+        let mut session = PlayerSession::new();
+        let request = SeekRequest::absolute(MediaTime::from_secs(7));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+
+        assert!(session.snapshot().timeline.scrubbing);
+        assert!(session.snapshot().timeline.stale_frame);
+        assert_eq!(
+            session.snapshot().timeline.target_position,
+            Some(MediaTime::from_secs(7))
+        );
+
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitLatest,
+            })
+            .unwrap();
+
+        assert!(!session.snapshot().timeline.scrubbing);
+        assert_eq!(session.snapshot().current_position, Duration::from_secs(7));
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::{
     AppConfig, CURRENT_SCHEMA_VERSION, ConfigError, ConfigResult, HdrToSdrConfig,
-    HdrToSdrOperatorConfig, RenderColorAdjustmentConfig, VideoCodec,
+    HdrToSdrOperatorConfig, PlayerSeekConfig, RenderColorAdjustmentConfig, VideoCodec,
 };
 
 /// Минимальный decode-ahead: ноль ломает смысл backpressure окна.
@@ -26,8 +26,14 @@ const MAX_AUDIO_BUFFER_TARGET_MS: u64 = 10_000;
 /// Верхний предел network read-ahead на раннем этапе без полноценного cache manager.
 const MAX_NETWORK_READ_AHEAD_MB: u64 = 4096;
 
+/// Верхний предел RAM cache, чтобы ошибочный config не занял всю память.
+const MAX_NETWORK_MEMORY_CACHE_MB: u64 = 4096;
+
 /// Верхний предел render latency, выше которого config почти наверняка ошибочен.
 const MAX_VULKAN_FRAME_LATENCY: u32 = 8;
+
+/// Единственный skin, для которого текущий UI гарантирует layout contract.
+const DEFAULT_UI_SKIN: &str = "minimal";
 
 /// Верхний предел reference luminance для Phase 10 SDR/HDR nits fields.
 const MAX_HDR_TO_SDR_REFERENCE_NITS: f32 = 10_000.0;
@@ -79,6 +85,32 @@ fn validate_player_section(config: &AppConfig) -> ConfigResult<()> {
             ));
         }
     }
+
+    validate_player_seek_config(&config.player.seek)?;
+
+    Ok(())
+}
+
+/// Проверяет seek/scrub параметры до использования scheduler-ом.
+fn validate_player_seek_config(seek: &PlayerSeekConfig) -> ConfigResult<()> {
+    validate_positive_u64("player.seek.live_interval_ms", seek.live_interval_ms)?;
+    validate_positive_u64(
+        "player.seek.live_preview_budget_ms",
+        seek.live_preview_budget_ms,
+    )?;
+    validate_positive_u64("player.seek.commit_timeout_ms", seek.commit_timeout_ms)?;
+    validate_positive_u64(
+        "player.seek.resume_audio_min_buffer_ms",
+        seek.resume_audio_min_buffer_ms,
+    )?;
+    validate_positive_u64(
+        "player.seek.hotkey_small_step_secs",
+        seek.hotkey_small_step_secs,
+    )?;
+    validate_positive_u64(
+        "player.seek.hotkey_large_step_secs",
+        seek.hotkey_large_step_secs,
+    )?;
 
     Ok(())
 }
@@ -133,11 +165,28 @@ fn validate_audio_section(config: &AppConfig) -> ConfigResult<()> {
 /// Проверяет network section.
 fn validate_network_section(config: &AppConfig) -> ConfigResult<()> {
     validate_u64_range(
-        "network.max_read_ahead_mb",
-        config.network.max_read_ahead_mb,
+        "network.memory_cache_mb",
+        config.network.memory_cache_mb,
+        0,
+        MAX_NETWORK_MEMORY_CACHE_MB,
+    )?;
+    validate_u64_range(
+        "network.read_ahead_mb",
+        config.network.read_ahead_mb,
         1,
         MAX_NETWORK_READ_AHEAD_MB,
-    )
+    )?;
+    validate_positive_u64(
+        "network.connect_timeout_ms",
+        config.network.connect_timeout_ms,
+    )?;
+    validate_positive_u64("network.read_timeout_ms", config.network.read_timeout_ms)?;
+    validate_positive_u64(
+        "network.indexer_io_budget_mb_per_sec",
+        config.network.indexer_io_budget_mb_per_sec,
+    )?;
+
+    Ok(())
 }
 
 /// Проверяет render section.
@@ -243,7 +292,29 @@ fn validate_ui_section(config: &AppConfig) -> ConfigResult<()> {
         ));
     }
 
+    if config.ui.skin.trim() != DEFAULT_UI_SKIN {
+        return Err(invalid_value(
+            "ui.skin",
+            format!(
+                "неизвестный skin `{}`; поддерживается только `{DEFAULT_UI_SKIN}`",
+                config.ui.skin
+            ),
+        ));
+    }
+
     Ok(())
+}
+
+/// Проверяет, что `u64` значение положительное.
+fn validate_positive_u64(field: &'static str, value: u64) -> ConfigResult<()> {
+    if value > 0 {
+        return Ok(());
+    }
+
+    Err(invalid_value(
+        field,
+        format!("значение должно быть положительным, получено {value}"),
+    ))
 }
 
 /// Проверяет `u64` диапазон с единым сообщением.

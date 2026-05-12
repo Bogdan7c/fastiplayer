@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use media_core::TrackKind;
+use media_core::{
+    MediaDuration, MediaTime, TimelineNotSeekableReason, TimelineSnapshot, TrackKind,
+};
 
 use crate::{PlaybackState, PlayerError, QualityId, TrackId};
 
@@ -21,6 +23,9 @@ pub struct PlayerSnapshot {
 
     /// Текущая media-позиция.
     pub current_position: Duration,
+
+    /// Typed timeline/seek состояние для UI, renderer и desktop integration.
+    pub timeline: TimelineSnapshot,
 
     /// Текущая громкость в диапазоне `0.0..=1.0`.
     pub volume: f32,
@@ -65,6 +70,37 @@ impl PlayerSnapshot {
     pub fn empty() -> Self {
         Self::default()
     }
+
+    /// Обновляет typed и legacy-представление текущей позиции одновременно.
+    pub fn set_timeline_position(&mut self, position: MediaTime) {
+        self.current_position = position.as_duration();
+        self.timeline.current_position = position;
+    }
+
+    /// Обновляет typed и legacy-представление длительности одновременно.
+    pub fn set_timeline_duration(&mut self, duration: Option<MediaDuration>) {
+        self.duration = duration.map(MediaDuration::as_duration);
+        let current_position = self.timeline.current_position;
+        self.timeline = match duration {
+            Some(duration) => {
+                let mut timeline = TimelineSnapshot::seekable_vod(duration);
+                timeline.current_position = current_position;
+                timeline
+            }
+            None => TimelineSnapshot {
+                current_position,
+                not_seekable_reason: Some(TimelineNotSeekableReason::UnknownTimeline),
+                ..TimelineSnapshot::default()
+            },
+        };
+    }
+
+    /// Сбрасывает timeline в состояние без открытого media.
+    pub fn clear_timeline(&mut self) {
+        self.duration = None;
+        self.current_position = Duration::ZERO;
+        self.timeline = TimelineSnapshot::default();
+    }
 }
 
 impl Default for PlayerSnapshot {
@@ -76,6 +112,7 @@ impl Default for PlayerSnapshot {
             media_title: None,
             duration: None,
             current_position: Duration::ZERO,
+            timeline: TimelineSnapshot::default(),
             volume: 1.0,
             muted: false,
             selected_tracks: TrackSelectionSnapshot::default(),
@@ -114,7 +151,7 @@ pub struct TrackSummarySnapshot {
     /// Тип трека: video или audio.
     pub kind: TrackKind,
 
-    /// Container codec id, например `V_VP9` или `A_OPUS`.
+    /// Container codec id без привязки к конкретному codec backend.
     pub codec_id: String,
 
     /// Sample rate audio-трека, если он известен.
@@ -143,7 +180,7 @@ pub struct QualitySummary {
 /// Snapshot активного backend без backend-specific handles.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BackendSnapshot {
-    /// Имя backend, например `VA-API VP9`.
+    /// Имя активного backend для diagnostics.
     pub name: Option<String>,
 
     /// Состояние texture pool, если backend его предоставляет.

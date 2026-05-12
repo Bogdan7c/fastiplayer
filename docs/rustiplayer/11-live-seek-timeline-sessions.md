@@ -48,6 +48,11 @@ Context7 basis, который нужно учитывать при реализ
 
 ## Сессия 1. Contracts, Config and Architecture Docs
 
+Статус в текущем коде: реализованы neutral timeline-типы в `media-core`,
+расширены command/snapshot contracts `player-core`, добавлена config schema v2 и
+обновлены архитектурные документы. Playback worker, real demux seek и изменение
+runtime seek behavior остаются scope следующих сессий.
+
 ### Контекст для копипаста
 
 Реализуй первую сессию live seek/timeline плана. Нужны только контракты, config

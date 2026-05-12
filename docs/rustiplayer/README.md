@@ -44,7 +44,9 @@
 | macOS | Later target |
 | FFmpeg | Полностью вне проекта |
 | Config | TOML через `serde` |
+| Config schema | Current persisted schema version `2`; live seek, network cache/read-ahead и `ui.skin` defaults живут в config |
 | Storage | SQLite через `rusqlite`, кроме пользовательских настроек |
+| Timeline model | `media-core` владеет neutral `MediaTime`/`MediaDuration`/`TrackTimestamp`/`TimelineSnapshot`; первые concrete adapters - WebM/YouTube/VP9/VA-API/wgpu/MPRIS |
 | Services | Модульные crate'ы, компилируются в один бинарь |
 | YouTube | Временный `yt-dlp` adapter живёт в `service-youtube`; default selector остаётся SDR VP9/Opus WebM, а HDR/VP9.2 YouTube checks требуют explicit override до capability-aware service candidates |
 | DRM | Дальняя архитектурная возможность, не текущий scope |

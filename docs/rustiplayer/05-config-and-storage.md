@@ -33,15 +33,26 @@ Rust crate: `toml` + `serde`.
 
 ## Config schema
 
+Актуальная persisted schema version: `2`.
+
 Минимальная структура:
 
 ```toml
-schema_version = 1
+schema_version = 2
 
 [player]
 start_paused = true
 resume_last_position = true
 preferred_video_codec_order = ["vp9", "av1", "h264", "h265", "vp8"]
+
+[player.seek]
+live_interval_ms = 100
+live_preview_budget_ms = 100
+commit_timeout_ms = 10000
+resume_audio_min_buffer_ms = 50
+paused_commit_behavior = "stay_paused"
+hotkey_small_step_secs = 5
+hotkey_large_step_secs = 30
 
 [video]
 hardware_decode_only = true
@@ -81,8 +92,11 @@ output_device = "default"
 buffer_target_ms = 200
 
 [network]
-cache_enabled = true
-max_read_ahead_mb = 256
+memory_cache_mb = 128
+read_ahead_mb = 64
+connect_timeout_ms = 15000
+read_timeout_ms = 15000
+indexer_io_budget_mb_per_sec = 32
 
 [youtube]
 enabled = true
@@ -91,6 +105,7 @@ prefer_account_session = true
 [ui]
 show_telemetry = true
 language = "ru"
+skin = "minimal"
 ```
 
 ## Config rules
@@ -98,9 +113,44 @@ language = "ru"
 - Config имеет `schema_version`.
 - Defaults живут в коде.
 - Отсутствующий config создается из defaults.
-- Неизвестные поля на ранних этапах можно логировать как warning.
+- Неизвестные поля являются ошибкой TOML-схемы.
 - Значения проходят validation после deserialization.
 - Config не содержит историю, cookies, cache metadata и bookmarks.
+
+## Schema version 2 seek/network/UI policy
+
+Schema version 2 фиксирует публичные knobs для будущих live seek/scrub,
+source-cache/indexer слоя и selectable UI skin. Эти поля не должны превращаться в
+магические константы в `player-core`, `source-core` или `app-egui`.
+
+`player.seek.*`:
+
+- `live_interval_ms = 100` - минимальный интервал live scrub update-ов;
+- `live_preview_budget_ms = 100` - budget preview work на один update;
+- `commit_timeout_ms = 10000` - typed timeout финального commit-а;
+- `resume_audio_min_buffer_ms = 50` - минимальный audio buffer перед resume;
+- `paused_commit_behavior = "stay_paused"` - seek из паузы остаётся на паузе;
+- `hotkey_small_step_secs = 5` - малый relative seek step;
+- `hotkey_large_step_secs = 30` - большой relative seek step.
+
+`network.*`:
+
+- `memory_cache_mb = 128` - RAM cache budget; `0` явно отключает RAM cache;
+- `read_ahead_mb = 64` - сетевой read-ahead budget;
+- `connect_timeout_ms = 15000` - timeout подключения;
+- `read_timeout_ms = 15000` - timeout чтения;
+- `indexer_io_budget_mb_per_sec = 32` - IO budget фонового cache/indexer.
+
+`ui.skin = "minimal"` - единственный skin, который текущая validation принимает
+без mapping. Неизвестный skin id является config error; silent fallback запрещён,
+пока validation явно не описывает такой mapping.
+
+Validation rules:
+
+- `network.memory_cache_mb <= 4096`; ноль валиден и отключает RAM cache;
+- network timeouts положительные;
+- seek intervals, budgets, timeout и hotkey steps положительные;
+- unknown `ui.skin` rejected как config error.
 
 ## Render color config policy
 

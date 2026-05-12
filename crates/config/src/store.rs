@@ -137,7 +137,9 @@ fn parse_config_text(path: &Path, toml_text: &str) -> ConfigResult<AppConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HdrToSdrOperatorConfig, ToneMappingMode};
+    use crate::{
+        CURRENT_SCHEMA_VERSION, HdrToSdrOperatorConfig, PausedCommitBehavior, ToneMappingMode,
+    };
 
     /// Проверяет, что default schema остаётся самосогласованной.
     #[test]
@@ -176,6 +178,31 @@ mod tests {
         assert_eq!(config.render.tone_mapping, ToneMappingMode::Disabled);
     }
 
+    /// Проверяет defaults новой schema version 2.
+    #[test]
+    fn schema_version_2_defaults_include_seek_network_and_ui_skin() {
+        let config = AppConfig::default();
+
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 2);
+        assert_eq!(config.player.seek.live_interval_ms, 100);
+        assert_eq!(config.player.seek.live_preview_budget_ms, 100);
+        assert_eq!(config.player.seek.commit_timeout_ms, 10_000);
+        assert_eq!(config.player.seek.resume_audio_min_buffer_ms, 50);
+        assert_eq!(
+            config.player.seek.paused_commit_behavior,
+            PausedCommitBehavior::StayPaused
+        );
+        assert_eq!(config.player.seek.hotkey_small_step_secs, 5);
+        assert_eq!(config.player.seek.hotkey_large_step_secs, 30);
+        assert_eq!(config.network.memory_cache_mb, 128);
+        assert_eq!(config.network.read_ahead_mb, 64);
+        assert_eq!(config.network.connect_timeout_ms, 15_000);
+        assert_eq!(config.network.read_timeout_ms, 15_000);
+        assert_eq!(config.network.indexer_io_budget_mb_per_sec, 32);
+        assert_eq!(config.ui.skin, "minimal");
+    }
+
     /// Проверяет первый запуск без существующего config-файла.
     #[test]
     fn missing_config_is_created_with_defaults() {
@@ -191,8 +218,21 @@ mod tests {
         assert!(loaded.config.render.color_adjustment.is_identity());
 
         let created_toml = fs::read_to_string(&loaded.path).expect("created config readable");
+        assert!(created_toml.contains("schema_version = 2"));
+        assert!(created_toml.contains("[player.seek]"));
+        assert!(created_toml.contains("# Настройки live seek"));
+        assert!(created_toml.contains("live_interval_ms = 100"));
+        assert!(created_toml.contains("# RAM cache budget"));
+        assert!(created_toml.contains("memory_cache_mb = 128"));
+        assert!(created_toml.contains("read_ahead_mb = 64"));
+        assert!(created_toml.contains("# UI skin id"));
+        assert!(created_toml.contains("skin = \"minimal\""));
         assert!(created_toml.contains("[render.hdr_to_sdr]"));
         assert!(created_toml.contains("operator = \"bt2446_c\""));
+
+        let reparsed = toml::from_str::<AppConfig>(&created_toml)
+            .expect("documented default config remains valid TOML");
+        assert_eq!(reparsed, AppConfig::default());
     }
 
     /// Проверяет, что старый config без color_adjustment получает identity defaults.
@@ -203,7 +243,7 @@ mod tests {
         fs::write(
             &config_path,
             r#"
-schema_version = 1
+schema_version = 2
 
 [render]
 profile = "vulkan"
@@ -225,7 +265,7 @@ profile = "vulkan"
         fs::write(
             &config_path,
             r#"
-schema_version = 1
+schema_version = 2
 
 [render]
 profile = "vulkan"
@@ -247,7 +287,7 @@ hdr_to_sdr = false
         fs::write(
             &config_path,
             r#"
-schema_version = 1
+schema_version = 2
 
 [render.hdr_to_sdr]
 operator = "reinhard"
@@ -268,7 +308,7 @@ operator = "reinhard"
         fs::write(
             &config_path,
             r#"
-schema_version = 1
+schema_version = 2
 
 [render.hdr_to_sdr]
 sdr_reference_white_nits = 0.0
@@ -293,7 +333,7 @@ sdr_reference_white_nits = 0.0
         fs::write(
             &config_path,
             r#"
-schema_version = 1
+schema_version = 2
 
 [render.hdr_to_sdr]
 sdr_reference_white_nits = 100.0
@@ -319,7 +359,7 @@ hdr_reference_peak_nits = 100.0
         fs::write(
             &config_path,
             r#"
-schema_version = 1
+schema_version = 2
 
 [audio]
 volume = 1.5
@@ -332,6 +372,147 @@ volume = 1.5
         assert!(error.to_string().contains("audio.volume"));
     }
 
+    /// Проверяет, что RAM cache можно явно отключить нулём.
+    #[test]
+    fn network_memory_cache_zero_is_valid() {
+        let mut config = AppConfig::default();
+        config.network.memory_cache_mb = 0;
+
+        config
+            .validate()
+            .expect("zero memory cache disables RAM cache");
+    }
+
+    /// Проверяет верхнюю границу RAM cache.
+    #[test]
+    fn invalid_network_memory_cache_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[network]
+memory_cache_mb = 4097
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid memory cache rejected");
+
+        assert!(error.to_string().contains("network.memory_cache_mb"));
+    }
+
+    /// Проверяет положительность network timeout-ов.
+    #[test]
+    fn invalid_network_timeout_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[network]
+connect_timeout_ms = 0
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid timeout rejected");
+
+        assert!(error.to_string().contains("network.connect_timeout_ms"));
+    }
+
+    /// Проверяет положительность seek interval/budget.
+    #[test]
+    fn invalid_seek_interval_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[player.seek]
+live_interval_ms = 0
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid seek interval rejected");
+
+        assert!(error.to_string().contains("player.seek.live_interval_ms"));
+    }
+
+    /// Проверяет положительность seek commit timeout-а.
+    #[test]
+    fn invalid_seek_commit_timeout_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[player.seek]
+commit_timeout_ms = 0
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid seek timeout rejected");
+
+        assert!(error.to_string().contains("player.seek.commit_timeout_ms"));
+    }
+
+    /// Проверяет положительность hotkey step-ов.
+    #[test]
+    fn invalid_seek_hotkey_step_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[player.seek]
+hotkey_small_step_secs = 0
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid hotkey step rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("player.seek.hotkey_small_step_secs")
+        );
+    }
+
+    /// Проверяет, что неизвестный skin не мапится молча на default.
+    #[test]
+    fn invalid_ui_skin_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[ui]
+skin = "dense"
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid skin rejected");
+
+        assert!(error.to_string().contains("ui.skin"));
+    }
+
     /// Проверяет validation error для RGB-массива неверной длины.
     #[test]
     fn invalid_rgb_gain_array_fails_validation() {
@@ -340,7 +521,7 @@ volume = 1.5
         fs::write(
             &config_path,
             r#"
-schema_version = 1
+schema_version = 2
 
 [render.color_adjustment]
 rgb_gain = [1.0, 1.0]
@@ -365,7 +546,7 @@ rgb_gain = [1.0, 1.0]
         fs::write(
             &config_path,
             r#"
-schema_version = 1
+schema_version = 2
 
 [render.color_adjustment]
 rgb_offset = [0.0, 0.0, 0.0, 0.0]
@@ -402,7 +583,7 @@ rgb_offset = [0.0, 0.0, 0.0, 0.0]
         fs::write(
             &config_path,
             r#"
-schema_version = 1
+schema_version = 2
 unexpected = true
 "#,
         )

@@ -95,10 +95,17 @@ Desktop shell.
 - `PlayerEvent`;
 - `PlayerSnapshot`;
 - playback states;
-- play/pause/seek/drain/EOF;
+- play/pause/seek/scrub/stop/drain/EOF;
 - orchestration source -> demux -> audio/video -> scheduler;
 - queue/backpressure policy;
 - error policy.
+
+`player-core` хранит seek/timeline state в `PlayerSnapshot` через typed
+`TimelineSnapshot`, а legacy `duration/current_position: Duration` остаются
+compatibility-полями для текущего UI до отдельной UI-сессии. Контракты
+`SeekTarget::Absolute(MediaTime)`, `SeekTarget::Relative(Duration)`,
+`BeginScrub`, `UpdateScrub`, `EndScrub { CommitLatest }` и `Stop` не должны
+содержать backend/container/platform-specific details.
 
 ### `media-core`
 
@@ -110,6 +117,10 @@ Desktop shell.
 - `TrackInfo`;
 - `Packet`;
 - `MediaTime`;
+- `MediaDuration`;
+- `TrackTimestamp`;
+- `TimelineRange`;
+- `TimelineSnapshot`;
 - `TimeBase`;
 - `MediaInfo`;
 - `ContainerKind`;
@@ -119,6 +130,11 @@ Desktop shell.
 - optional video coded/display width and height, если контейнер или manifest сообщает их до decode.
 
 Текущие media-типы уже живут в `media-core`; `webm-demux` использует их как общий contract, а не владеет player-facing packet model.
+
+Timeline-типы в `media-core` являются core-neutral. Они описывают media time,
+duration, track timestamp conversion и seekable window, но не знают о WebM,
+Matroska, DASH, YouTube, VP9, VA-API, wgpu, MPRIS или конкретном HTTP cache.
+Конкретные первые adapters только заполняют эти типы из своих metadata.
 
 ### `codec-core`
 

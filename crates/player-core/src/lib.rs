@@ -15,8 +15,8 @@ mod state;
 mod tick;
 
 pub use command::{
-    MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, SeekMode,
-    SeekRequest,
+    MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, ScrubCommitPolicy,
+    SeekMode, SeekRequest, SeekTarget,
 };
 pub use error::{PlayerError, PlayerErrorKind, PlayerResult};
 pub use event::{

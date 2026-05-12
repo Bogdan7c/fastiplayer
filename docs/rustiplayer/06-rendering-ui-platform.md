@@ -170,6 +170,17 @@ UI не должен хранить player business state. Он может хр�
 - layout preferences;
 - search text.
 
+Timeline/seek UI не должен напрямую мутировать позицию playback. Ползунок
+timeline читает typed `PlayerSnapshot.timeline`, а действия отправляет как
+`BeginScrub`, `UpdateScrub(SeekRequest)` и `EndScrub { CommitLatest }`.
+Обычные hotkeys используют `SeekTarget::Relative(Duration)` с шагами из
+`player.seek.hotkey_small_step_secs` и `player.seek.hotkey_large_step_secs`.
+Если `timeline.seekable == false`, UI показывает disabled state и diagnostics из
+`timeline.not_seekable_reason`, но не изобретает собственную business-причину.
+
+`ui.skin = "minimal"` в schema v2 фиксирует первый production skin. Unknown skin
+id является config error, пока validation явно не вводит mapping на default.
+
 ## UI modules
 
 В `app-egui` нужно постепенно выделить:
@@ -203,6 +214,10 @@ Linux priority:
 - optional notifications.
 
 `desktop-integration` должен работать через `PlayerCommand` и `PlayerSnapshot`, а не напрямую через player internals.
+
+MPRIS seek/progress должен использовать те же neutral timeline contracts:
+`MediaTime`, `MediaDuration`, `SeekTarget` и `TimelineSnapshot`. Linux MPRIS -
+первый concrete adapter, а не часть core timeline model.
 
 ## Windowing
 

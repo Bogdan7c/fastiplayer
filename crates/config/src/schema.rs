@@ -3,7 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{ConfigResult, validation};
 
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// Полная пользовательская конфигурация приложения.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -55,9 +55,98 @@ impl AppConfig {
         if !toml_text.ends_with('\n') {
             toml_text.push('\n');
         }
+        document_schema_version_2_defaults(&mut toml_text);
 
         Ok(toml_text)
     }
+}
+
+/// Добавляет русские комментарии к новым полям schema version 2 в default TOML.
+fn document_schema_version_2_defaults(toml_text: &mut String) {
+    insert_default_config_comment(
+        toml_text,
+        "[player.seek]",
+        "# Настройки live seek и interactive scrub.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "live_interval_ms = 100",
+        "# Минимальный интервал между live scrub update-командами.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "live_preview_budget_ms = 100",
+        "# Budget preview work на один live scrub update.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "commit_timeout_ms = 10000",
+        "# Timeout финального seek/scrub commit-а.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "resume_audio_min_buffer_ms = 50",
+        "# Минимальный audio buffer перед resume после commit-а.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "paused_commit_behavior = \"stay_paused\"",
+        "# Поведение seek commit-а, начатого из paused состояния.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "hotkey_small_step_secs = 5",
+        "# Малый шаг seek hotkey в секундах.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "hotkey_large_step_secs = 30",
+        "# Большой шаг seek hotkey в секундах.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "[network]",
+        "# Настройки будущего source/network cache слоя.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "memory_cache_mb = 128",
+        "# RAM cache budget; 0 явно отключает RAM cache.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "read_ahead_mb = 64",
+        "# Network read-ahead budget.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "connect_timeout_ms = 15000",
+        "# Timeout подключения к сетевому источнику.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "read_timeout_ms = 15000",
+        "# Timeout чтения из сетевого источника.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "indexer_io_budget_mb_per_sec = 32",
+        "# IO budget фонового cache/indexer.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "skin = \"minimal\"",
+        "# UI skin id; unknown id является config error.",
+    );
+}
+
+/// Вставляет комментарий перед ожидаемой строкой default TOML, не дублируя его.
+fn insert_default_config_comment(toml_text: &mut String, needle: &str, comment: &str) {
+    if toml_text.contains(comment) {
+        return;
+    }
+
+    *toml_text = toml_text.replacen(needle, &format!("{comment}\n{needle}"), 1);
 }
 
 impl Default for AppConfig {
@@ -86,6 +175,9 @@ pub struct PlayerConfig {
     /// В будущем восстанавливать позицию из storage.
     pub resume_last_position: bool,
 
+    /// Настройки seek/scrub поведения.
+    pub seek: PlayerSeekConfig,
+
     /// Приоритет codec candidates при выборе video stream.
     pub preferred_video_codec_order: Vec<VideoCodec>,
 }
@@ -96,6 +188,7 @@ impl Default for PlayerConfig {
         Self {
             start_paused: true,
             resume_last_position: true,
+            seek: PlayerSeekConfig::default(),
             preferred_video_codec_order: vec![
                 VideoCodec::Vp9,
                 VideoCodec::Av1,
@@ -104,6 +197,62 @@ impl Default for PlayerConfig {
                 VideoCodec::Vp8,
             ],
         }
+    }
+}
+
+/// Настройки live seek и interactive scrub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PlayerSeekConfig {
+    /// Интервал live scrub update-команд.
+    pub live_interval_ms: u64,
+
+    /// Бюджет preview work на один live scrub update.
+    pub live_preview_budget_ms: u64,
+
+    /// Timeout финального commit-а seek/scrub.
+    pub commit_timeout_ms: u64,
+
+    /// Минимальный audio buffer перед resume после commit-а.
+    pub resume_audio_min_buffer_ms: u64,
+
+    /// Поведение commit-а, если playback был на паузе.
+    pub paused_commit_behavior: PausedCommitBehavior,
+
+    /// Малый шаг горячих клавиш seek.
+    pub hotkey_small_step_secs: u64,
+
+    /// Большой шаг горячих клавиш seek.
+    pub hotkey_large_step_secs: u64,
+}
+
+impl Default for PlayerSeekConfig {
+    /// Возвращает documented defaults live seek плана.
+    fn default() -> Self {
+        Self {
+            live_interval_ms: 100,
+            live_preview_budget_ms: 100,
+            commit_timeout_ms: 10_000,
+            resume_audio_min_buffer_ms: 50,
+            paused_commit_behavior: PausedCommitBehavior::StayPaused,
+            hotkey_small_step_secs: 5,
+            hotkey_large_step_secs: 30,
+        }
+    }
+}
+
+/// Политика playback state после seek commit, начатого из paused состояния.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PausedCommitBehavior {
+    /// Оставаться на паузе после commit-а.
+    StayPaused,
+}
+
+impl Default for PausedCommitBehavior {
+    /// По умолчанию seek из паузы не запускает playback.
+    fn default() -> Self {
+        Self::StayPaused
     }
 }
 
@@ -443,19 +592,31 @@ impl Default for AudioConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NetworkConfig {
-    /// Включает будущий cache layer.
-    pub cache_enabled: bool,
+    /// Размер RAM cache; `0` явно отключает RAM cache.
+    pub memory_cache_mb: u64,
 
     /// Максимальный read-ahead для сетевых источников.
-    pub max_read_ahead_mb: u64,
+    pub read_ahead_mb: u64,
+
+    /// Timeout подключения к сетевому источнику.
+    pub connect_timeout_ms: u64,
+
+    /// Timeout чтения из сетевого источника.
+    pub read_timeout_ms: u64,
+
+    /// Бюджет фонового indexer/cache IO.
+    pub indexer_io_budget_mb_per_sec: u64,
 }
 
 impl Default for NetworkConfig {
     /// Возвращает conservative cache defaults.
     fn default() -> Self {
         Self {
-            cache_enabled: true,
-            max_read_ahead_mb: 256,
+            memory_cache_mb: 128,
+            read_ahead_mb: 64,
+            connect_timeout_ms: 15_000,
+            read_timeout_ms: 15_000,
+            indexer_io_budget_mb_per_sec: 32,
         }
     }
 }
@@ -490,6 +651,9 @@ pub struct UiConfig {
 
     /// Язык UI.
     pub language: String,
+
+    /// Идентификатор skin-а UI.
+    pub skin: String,
 }
 
 impl Default for UiConfig {
@@ -498,6 +662,7 @@ impl Default for UiConfig {
         Self {
             show_telemetry: true,
             language: "ru".to_string(),
+            skin: "minimal".to_string(),
         }
     }
 }

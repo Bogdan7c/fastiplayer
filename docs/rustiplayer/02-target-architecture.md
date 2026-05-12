@@ -130,6 +130,10 @@ enum PlayerCommand {
     Pause,
     TogglePlayback,
     Seek(SeekRequest),
+    BeginScrub,
+    UpdateScrub(SeekRequest),
+    EndScrub { policy: ScrubCommitPolicy },
+    Stop,
     SetVolume(f32),
     SelectVideoTrack(TrackId),
     SelectAudioTrack(TrackId),
@@ -139,6 +143,29 @@ enum PlayerCommand {
     Shutdown,
 }
 ```
+
+В schema v2 единственная commit policy - `CommitLatest`.
+
+Seek contract использует typed timeline values:
+
+```rust
+enum SeekTarget {
+    Absolute(MediaTime),
+    Relative(Duration),
+}
+
+struct SeekRequest {
+    target: SeekTarget,
+    mode: SeekMode,
+}
+```
+
+`MediaTime`, `MediaDuration`, `TrackTimestamp`, `TimelineRange` и
+`TimelineSnapshot` живут в `media-core`, потому что это нейтральная media model.
+Они не знают о WebM, VP9, VA-API, wgpu, MPRIS, YouTube или конкретном network
+source. Первые production adapters будут конкретными: WebM/Matroska и YouTube
+VOD WebM для source/demux, VP9/Opus для codec/audio, VA-API для video backend,
+wgpu для render и Linux MPRIS для desktop controls.
 
 Примеры событий:
 
@@ -165,7 +192,10 @@ Snapshot должен содержать:
 
 - playback state;
 - media title/source;
-- duration/current position;
+- legacy duration/current position для совместимости текущего UI;
+- typed `TimelineSnapshot`: current position, target position during seek/scrub,
+  duration, seekable flag/range, not-seekable reason, seeking/scrubbing flags,
+  stale frame flag;
 - selected tracks;
 - available qualities;
 - active backend;
