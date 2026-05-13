@@ -660,6 +660,55 @@ impl VaapiVideoDecoder {
         self.ready_queue.push_back(frame);
     }
 
+    /// Очищает кадры, которыми всё ещё владеет decoder thread.
+    ///
+    /// Важно не трогать `zero_copy_guards` целиком: часть guards относится к
+    /// кадрам, уже отданным player/render thread. Такие кадры освобождаются
+    /// только через обычный release от session, иначе VA surface может быть
+    /// переиспользован, пока renderer ещё семплит старый кадр.
+    fn release_decoder_owned_ready_frames(&mut self, reason: &'static str) {
+        let decoder_owned_texture_handles = self
+            .ready_queue
+            .drain(..)
+            .map(|frame| frame.texture_handle)
+            .collect::<Vec<_>>();
+
+        if decoder_owned_texture_handles.is_empty() {
+            return;
+        }
+
+        let released_frame_count = decoder_owned_texture_handles.len();
+        for texture_handle in decoder_owned_texture_handles {
+            self.release_frame(texture_handle);
+        }
+
+        debug!(
+            released_frame_count,
+            reason, "Released decoder-owned ready frames"
+        );
+    }
+
+    /// Сбрасывает texture cache после смены формата только если нет live кадров.
+    ///
+    /// Render/player могут всё ещё держать старый кадр как stale frame во время
+    /// seek или dynamic format change. Полный `invalidate_all()` в такой момент
+    /// удалит handle mapping раньше обычного release и оставит zero-copy guard
+    /// без пути возврата VA surface в pool.
+    fn invalidate_idle_texture_cache_after_format_change(&mut self) {
+        let mut texture_cache = self.texture_cache.lock().unwrap();
+        let live_texture_count = texture_cache.num_in_use();
+
+        if live_texture_count == 0 {
+            texture_cache.invalidate_all();
+            return;
+        }
+
+        debug!(
+            live_texture_count,
+            "Keeping texture cache entries because render-owned frames are still live"
+        );
+    }
+
     /// Обрабатывает готовый кадр от decoder: синхронизация, upload в wgpu, возврат буфера в пул.
     ///
     /// # Аргументы
@@ -887,14 +936,11 @@ impl VaapiVideoDecoder {
                     report.format_changed = true;
                     info!("Format changed, invalidating texture cache and frame pool");
 
-                    // Очищаем ready_queue: после invalidate_all() старые texture handles
-                    // больше нельзя безопасно отдавать renderer-у.
-                    let dropped = self.ready_queue.len();
-                    if dropped > 0 {
-                        info!(dropped, "Clearing ready_queue after FormatChanged");
-                        self.ready_queue.clear();
-                    }
-                    self.texture_cache.lock().unwrap().invalidate_all();
+                    // Сначала освобождаем decoder-owned кадры из `ready_queue`.
+                    // Иначе `invalidate_all()` удалит mappings, а VA handles,
+                    // удерживаемые этими кадрами, останутся без release path.
+                    self.release_decoder_owned_ready_frames("format_changed");
+                    self.invalidate_idle_texture_cache_after_format_change();
 
                     // Пересоздаём frame pool под новое разрешение/формат.
                     // `stream_info()` уже обновлён внутри cros-codecs перед event-ом.
@@ -1052,11 +1098,7 @@ impl VideoDecoder for VaapiVideoDecoder {
         self.inner
             .flush()
             .map_err(|e| anyhow::anyhow!("Flush error: {:?}", e))?;
-        self.ready_queue.clear();
-        let guards = std::mem::take(&mut self.zero_copy_guards);
-        for (_, handle) in guards {
-            self.return_frame_from_handle(handle);
-        }
+        self.release_decoder_owned_ready_frames("flush");
         Ok(())
     }
 
