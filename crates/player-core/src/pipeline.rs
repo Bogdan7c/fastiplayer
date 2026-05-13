@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use codec_core::VideoDecodeRequirement;
 use media_core::{TrackId, TrackInfo};
 
@@ -26,14 +27,14 @@ pub struct PendingAudioPacket {
     /// Seek generation, в котором packet был прочитан из demuxer.
     pub generation: u64,
 
-    /// Encoded audio bytes хранятся отдельно от demuxer packet, потому что demuxer живёт независимо.
-    pub encoded_bytes: Vec<u8>,
+    /// Encoded audio bytes владеют shared payload-ом без копии между demuxer и player queue.
+    pub encoded_bytes: Bytes,
 }
 
 impl PendingAudioPacket {
     /// Создаёт ожидающий audio packet с явным track id и codec bytes.
     #[must_use]
-    pub fn new(track_id: TrackId, pts: Duration, generation: u64, encoded_bytes: Vec<u8>) -> Self {
+    pub fn new(track_id: TrackId, pts: Duration, generation: u64, encoded_bytes: Bytes) -> Self {
         Self {
             track_id,
             pts,
@@ -54,8 +55,8 @@ pub struct PendingVideoPacket {
     /// Seek generation, в котором packet был прочитан из demuxer.
     pub generation: u64,
 
-    /// Encoded video bytes копируются из demuxer packet для владения внутри session.
-    pub encoded_bytes: Vec<u8>,
+    /// Encoded video bytes владеют shared payload-ом без копии до decoder thread.
+    pub encoded_bytes: Bytes,
 
     /// Keyframe flag пробрасывается в hardware decoder.
     pub keyframe: bool,
@@ -68,7 +69,7 @@ impl PendingVideoPacket {
         track_id: TrackId,
         pts: Duration,
         generation: u64,
-        encoded_bytes: Vec<u8>,
+        encoded_bytes: Bytes,
         keyframe: bool,
     ) -> Self {
         Self {

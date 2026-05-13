@@ -13,6 +13,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bytes::Bytes;
 use codec_core::VideoColorMetadata;
 use media_core::{Packet, TrackId, TrackKind};
 use tracing::{info, trace};
@@ -159,8 +160,8 @@ pub struct DecodePacket {
     /// Presentation timestamp packet-а.
     pub pts: Duration,
 
-    /// Encoded VP9 bytes, которые decoder thread передаёт hardware backend-у.
-    pub encoded_bytes: Vec<u8>,
+    /// Encoded VP9 bytes, которые decoder thread передаёт hardware backend-у без повторной копии.
+    pub encoded_bytes: Bytes,
 
     /// Keyframe flag из container/demuxer.
     pub keyframe: bool,
@@ -374,19 +375,27 @@ fn decoder_thread_loop(
     while let Ok(msg) = msg_rx.recv() {
         match msg {
             ThreadMsg::Packet(packet) => {
+                let DecodePacket {
+                    track_id,
+                    pts,
+                    encoded_bytes,
+                    keyframe,
+                    resolved_color,
+                } = packet;
+
                 let pkt = Packet {
-                    track_id: packet.track_id,
+                    track_id,
                     kind: TrackKind::Video,
-                    pts: packet.pts,
+                    pts,
                     dts: None,
-                    keyframe: packet.keyframe,
+                    keyframe,
                     byte_offset: None,
-                    data: bytes::Bytes::copy_from_slice(&packet.encoded_bytes),
+                    data: encoded_bytes,
                 };
 
                 match decoder.decode(&pkt) {
                     Ok(Some(mut frame)) => {
-                        if let Some(resolved_color) = &packet.resolved_color {
+                        if let Some(resolved_color) = &resolved_color {
                             frame.color = resolved_color.clone();
                         }
                         if frame_tx.send(frame).is_err() {

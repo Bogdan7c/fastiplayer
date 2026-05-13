@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use codec_core::{
     VideoCodec, VideoDecodeRequirement, Vp9MetadataSource, Vp9RequirementProbe,
     Vp9RequirementRejection, probe_vp9_packet_requirement, resolve_vp9_metadata,
@@ -484,7 +485,7 @@ fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet)
                     packet.track_id,
                     packet.pts,
                     generation,
-                    packet.data.to_vec(),
+                    packet.data,
                 ));
         }
         TrackKind::Video => {
@@ -495,7 +496,7 @@ fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet)
                     packet.track_id,
                     packet.pts,
                     generation,
-                    packet.data.to_vec(),
+                    packet.data,
                     packet.keyframe,
                 ));
         }
@@ -861,7 +862,7 @@ struct PendingVideoPacketProbe {
     track_id: TrackId,
 
     /// Codec payload нужен VP9 parser-у для чтения profile из uncompressed header.
-    encoded_bytes: Vec<u8>,
+    encoded_bytes: Bytes,
 }
 
 /// Проверяет profile/format до отправки packet-а в hardware decoder.
@@ -1469,7 +1470,7 @@ mod tests {
                     TrackId::new(1),
                     Duration::from_millis(packet_index as u64),
                     session.pipeline.seek_generation,
-                    Vec::new(),
+                    Bytes::new(),
                     false,
                 ));
         }
@@ -1495,7 +1496,7 @@ mod tests {
                     TrackId::new(1),
                     Duration::from_millis(packet_index as u64),
                     session.pipeline.seek_generation,
-                    Vec::new(),
+                    Bytes::new(),
                     false,
                 ));
         }
@@ -1505,6 +1506,65 @@ mod tests {
             &tick_config,
             true
         ));
+    }
+
+    #[test]
+    fn route_demuxed_audio_packet_preserves_shared_payload_and_metadata() {
+        let mut session = PlayerSession::new();
+        let payload = Bytes::from(vec![0x4f, 0x70, 0x75, 0x73]);
+        let payload_ptr = payload.as_ptr();
+        let packet = media_core::Packet::new(
+            TrackId::new(2),
+            TrackKind::Audio,
+            Duration::from_millis(42),
+            None,
+            false,
+            payload.clone(),
+        );
+
+        route_demuxed_packet(&mut session, packet);
+
+        let pending_packet = session
+            .pipeline
+            .pending_audio_packets
+            .front()
+            .expect("audio packet должен попасть в pending audio queue");
+
+        assert_eq!(pending_packet.track_id, TrackId::new(2));
+        assert_eq!(pending_packet.pts, Duration::from_millis(42));
+        assert_eq!(pending_packet.generation, session.pipeline.seek_generation);
+        assert_eq!(pending_packet.encoded_bytes.as_ptr(), payload_ptr);
+        assert_eq!(&pending_packet.encoded_bytes[..], b"Opus");
+    }
+
+    #[test]
+    fn route_demuxed_video_packet_preserves_shared_payload_keyframe_and_pts() {
+        let mut session = PlayerSession::new();
+        let payload = Bytes::from(vec![0x82, 0x49, 0x83, 0x42]);
+        let payload_ptr = payload.as_ptr();
+        let packet = media_core::Packet::new(
+            TrackId::new(1),
+            TrackKind::Video,
+            Duration::from_millis(120),
+            None,
+            true,
+            payload.clone(),
+        );
+
+        route_demuxed_packet(&mut session, packet);
+
+        let pending_packet = session
+            .pipeline
+            .pending_video_packets
+            .front()
+            .expect("video packet должен попасть в pending video queue");
+
+        assert_eq!(pending_packet.track_id, TrackId::new(1));
+        assert_eq!(pending_packet.pts, Duration::from_millis(120));
+        assert_eq!(pending_packet.generation, session.pipeline.seek_generation);
+        assert!(pending_packet.keyframe);
+        assert_eq!(pending_packet.encoded_bytes.as_ptr(), payload_ptr);
+        assert_eq!(&pending_packet.encoded_bytes[..], &[0x82, 0x49, 0x83, 0x42]);
     }
 
     #[test]

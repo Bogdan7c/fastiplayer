@@ -11,6 +11,7 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = { workspace = true }
 audio = { path = "../audio" }
+bytes = { workspace = true }
 capability-core = { workspace = true }
 codec-core = { workspace = true }
 crossbeam-channel = { workspace = true }

@@ -2199,6 +2199,7 @@ mod tests {
         MediaSource, PendingAudioPacket, PendingVideoPacket, PlayerCommand, ScrubCommitPolicy,
         SeekMode, SeekTarget,
     };
+    use bytes::Bytes;
     use capability_core::{
         BackendCapabilities, BackendDriverInfo, BackendProbeStatus, P010StorageLayout,
         VideoExportPath,
@@ -2975,7 +2976,7 @@ mod tests {
                 TrackId::new(2),
                 Duration::ZERO,
                 session.pipeline.seek_generation,
-                vec![1, 2, 3],
+                Bytes::from_static(&[1, 2, 3]),
             ));
         session
             .pipeline
@@ -2984,7 +2985,7 @@ mod tests {
                 TrackId::new(1),
                 Duration::ZERO,
                 session.pipeline.seek_generation,
-                vec![4, 5, 6],
+                Bytes::from_static(&[4, 5, 6]),
                 true,
             ));
         session.pipeline.video_decoder_needs_keyframe = false;

@@ -2884,6 +2884,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "audio",
+ "bytes",
  "capability-core",
  "codec-core",
  "crossbeam-channel",

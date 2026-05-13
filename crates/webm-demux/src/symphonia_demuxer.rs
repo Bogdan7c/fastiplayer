@@ -220,7 +220,7 @@ impl SymphoniaDemuxer {
         })
     }
 
-    fn convert_packet(&self, packet: &Packet) -> Option<OurPacket> {
+    fn convert_packet(&self, packet: Packet) -> Option<OurPacket> {
         let entry = self.track_map.get(&packet.track_id())?;
 
         let pts = entry
@@ -249,7 +249,7 @@ impl SymphoniaDemuxer {
             dts: None,
             byte_offset: packet.source_byte_offset,
             keyframe,
-            data: Bytes::copy_from_slice(packet.buf()),
+            data: Bytes::from(packet.data),
         })
     }
 
@@ -345,7 +345,7 @@ impl Demuxer for SymphoniaDemuxer {
         loop {
             match self.format.next_packet() {
                 Ok(packet) => {
-                    if let Some(our_packet) = self.convert_packet(&packet) {
+                    if let Some(our_packet) = self.convert_packet(packet) {
                         return Ok(Some(our_packet));
                     }
                     continue;
