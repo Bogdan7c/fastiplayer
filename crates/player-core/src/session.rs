@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use capability_core::{SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection};
@@ -9,54 +8,22 @@ use codec_core::{
 };
 use media_core::{MediaDuration, MediaTime, TimelineNotSeekableReason, TrackInfo, TrackKind};
 use tracing::{debug, info, warn};
-use webm_demux::{DemuxSeekRequest, DemuxSeekability, Demuxer};
+use webm_demux::DemuxSeekability;
 
-use crate::pipeline::{
-    DEFAULT_VIDEO_FRAME_DURATION, MAX_OBSERVED_VIDEO_FRAME_DURATION,
-    MIN_OBSERVED_VIDEO_FRAME_DURATION,
-};
+use crate::media_opening::OpenedMedia;
+use crate::pipeline::{MAX_OBSERVED_VIDEO_FRAME_DURATION, MIN_OBSERVED_VIDEO_FRAME_DURATION};
 use crate::seek_controller::PlaybackResumeIntent;
+use crate::seek_state::{SeekCommitKind, SeekCommitState, demux_seek_request_for_transaction};
 use crate::{
     AudioBufferSnapshot, BackendSnapshot, FrameCounters, MediaOpenRequest, MediaSource,
     MediaSummary, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind,
     PlayerEvent, PlayerResult, PlayerSnapshot, QualitySelection, QueueSnapshot, SeekRequest,
-    TexturePoolSnapshot, TrackId, TrackSelectionSnapshot, TrackSummarySnapshot, VideoFrameSnapshot,
+    TexturePoolSnapshot, TrackId, TrackSelectionSnapshot, TrackSummarySnapshot,
+    VideoBackendFactory, VideoFrameSnapshot,
 };
 
 /// Dev-only режим, который разрешает VP9 Profile 2 HDR дойти до P010 zero-copy boundary.
 const P010_BOUNDARY_DIAGNOSTIC_ENV_VAR: &str = "RUSTIPLAYER_DEV_VERIFY_P010_BOUNDARY";
-
-/// Тип seek transaction-а: финальный commit меняет playback position, preview только показывает кадр.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SeekCommitKind {
-    /// Обычный seek или завершение scrub-а с фиксацией позиции.
-    Final,
-
-    /// Live preview во время активного scrub-а без закрытия scrub state.
-    Preview,
-}
-
-/// Runtime state одного commit seek-а внутри playback pipeline.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SeekCommitState {
-    /// Поколение packets/frames, валидное для этой операции.
-    pub generation: u64,
-
-    /// Цель commit-а на нормализованной media timeline.
-    pub target_position: MediaTime,
-
-    /// Фактическая позиция, на которую container переставил demuxer.
-    pub actual_position: MediaTime,
-
-    /// Момент старта операции для timeout policy.
-    pub started_at: Instant,
-
-    /// Playback-состояние, которое нужно применить после прохождения gates.
-    pub resume_intent: PlaybackResumeIntent,
-
-    /// Поведение завершения commit-а.
-    pub kind: SeekCommitKind,
-}
 
 /// Центральная session плеера: high-level state machine и владение playback pipeline.
 pub struct PlayerSession {
@@ -64,7 +31,7 @@ pub struct PlayerSession {
     snapshot: PlayerSnapshot,
 
     /// Media pipeline, перенесённый из `AppState` в Phase 3.
-    pub pipeline: PlaybackPipeline,
+    pub(crate) pipeline: PlaybackPipeline,
 
     /// События, накопленные после последнего drain.
     pending_events: Vec<PlayerEvent>,
@@ -86,6 +53,21 @@ pub struct PlayerSession {
 
     /// Последний свежий preview-кадр, реально показанный во время текущего scrub.
     last_visible_preview_position: Option<MediaTime>,
+}
+
+/// Данные present frame, которые worker превращает в render lease без доступа к pipeline.
+pub(crate) struct LeasedPresentFrame {
+    /// Поколение render resources, в котором был создан frame/texture handle.
+    pub render_generation: u64,
+
+    /// Декодированный кадр, выбранный scheduler-ом для presentation.
+    pub frame: video_core::DecodedFrame,
+
+    /// `true`, если кадр ещё относится к старой позиции во время seek/scrub.
+    pub stale: bool,
+
+    /// Provider texture views из backend-а, создавшего кадр.
+    pub texture_provider: video_vaapi::VideoTextureViewProvider,
 }
 
 impl PlayerSession {
@@ -177,6 +159,52 @@ impl PlayerSession {
         self.pipeline.file_path.as_deref()
     }
 
+    /// Резервирует текущий present frame для render thread без раскрытия `PlaybackPipeline`.
+    #[must_use]
+    pub(crate) fn lease_present_video_frame(&mut self) -> Option<LeasedPresentFrame> {
+        let decoder_thread = self.pipeline.video_decoder_thread.as_ref()?;
+        let texture_provider = decoder_thread.texture_view_provider();
+        let frame = self.pipeline.present_video_frame.as_ref()?.clone();
+        let render_generation = self.pipeline.render_generation;
+        let stale = self.snapshot.timeline.stale_frame;
+
+        if !self.register_render_lease(render_generation, frame.texture_handle) {
+            return None;
+        }
+
+        Some(LeasedPresentFrame {
+            render_generation,
+            frame,
+            stale,
+            texture_provider,
+        })
+    }
+
+    /// Возвращает количество активных render leases без доступа тестов к pipeline fields.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn render_lease_count(&self) -> usize {
+        self.pipeline.render_lease_count()
+    }
+
+    /// Проверяет, что release texture handle отложен до drop render lease.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn has_deferred_video_texture_release(
+        &self,
+        texture_handle: video_core::FrameTextureHandle,
+    ) -> bool {
+        self.pipeline
+            .has_deferred_video_texture_release(texture_handle)
+    }
+
+    /// Возвращает количество отложенных texture releases без раскрытия HashSet.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn deferred_video_texture_release_count(&self) -> usize {
+        self.pipeline.deferred_video_texture_release_count()
+    }
+
     /// Применяет команду к state machine.
     pub fn dispatch_command(&mut self, command: PlayerCommand) -> PlayerResult<()> {
         match command {
@@ -236,51 +264,12 @@ impl PlayerSession {
 
     /// Загружает локальный WebM/Matroska файл с явной autoplay-политикой.
     pub fn load_file_with_autoplay(&mut self, path: &Path, autoplay: bool) {
-        self.reset_media_state();
-
-        let open_request =
-            MediaOpenRequest::new(MediaSource::LocalFile(path.to_path_buf()), autoplay);
-        if let Err(error) = self.dispatch_command(PlayerCommand::OpenMedia(open_request)) {
-            self.record_recoverable_error(error);
+        if !self.begin_media_open(MediaSource::LocalFile(path.to_path_buf()), autoplay) {
             return;
         }
 
-        match webm_demux::SymphoniaDemuxer::from_file(path) {
-            Ok(demuxer) => {
-                let tracks = demuxer.tracks().to_vec();
-                let duration = demuxer.duration();
-                let seekability = demuxer.seekability();
-                info!(
-                    path = %path.display(),
-                    tracks = tracks.len(),
-                    duration = ?duration,
-                    "Файл загружен"
-                );
-
-                self.init_audio_pipeline(&tracks);
-                if let Err(error) =
-                    self.select_default_video_track(&tracks, "Поддерживаемый video track не найден")
-                {
-                    warn!(error = %error, "Video track rejected during local file load");
-                    self.mark_fatal_error(error);
-                    return;
-                }
-                self.pipeline.demuxer = Some(Box::new(demuxer));
-                self.pipeline.file_path = Some(path.to_path_buf());
-                self.pipeline.tracks = tracks;
-                self.pipeline.source_label = None;
-                self.clear_error();
-
-                let summary = MediaSummary {
-                    title: self.media_title(),
-                    source_label: path.display().to_string(),
-                    duration,
-                };
-                if let Err(error) = self.mark_media_opened(summary) {
-                    self.record_recoverable_error(error);
-                }
-                self.apply_demux_seekability(seekability);
-            }
+        match OpenedMedia::open_local_file(path) {
+            Ok(opened_media) => self.install_opened_media(opened_media),
             Err(error) => {
                 warn!(error = %error, "Не удалось открыть файл");
                 self.mark_fatal_error(PlayerError::new(
@@ -303,46 +292,63 @@ impl PlayerSession {
         demuxer: Box<dyn webm_demux::Demuxer + Send>,
         autoplay: bool,
     ) {
-        self.reset_media_state();
-
-        let open_request =
-            MediaOpenRequest::new(MediaSource::ExternalLabel(label.clone()), autoplay);
-        if let Err(error) = self.dispatch_command(PlayerCommand::OpenMedia(open_request)) {
-            self.record_recoverable_error(error);
+        if !self.begin_media_open(MediaSource::ExternalLabel(label.clone()), autoplay) {
             return;
         }
 
-        let tracks = demuxer.tracks().to_vec();
-        let duration = demuxer.duration();
-        let seekability = demuxer.seekability();
+        let opened_media = OpenedMedia::from_external_demuxer(label, demuxer);
+        self.install_opened_media(opened_media);
+    }
 
+    /// Переводит state machine в `Opening` перед blocking/opened source phase.
+    fn begin_media_open(&mut self, media_source: MediaSource, autoplay: bool) -> bool {
+        self.reset_media_state();
+
+        let open_request = MediaOpenRequest::new(media_source, autoplay);
+        if let Err(error) = self.dispatch_command(PlayerCommand::OpenMedia(open_request)) {
+            self.record_recoverable_error(error);
+            return false;
+        }
+
+        true
+    }
+
+    /// Подключает уже открытый media к pipeline и публикует успешный open transition.
+    fn install_opened_media(&mut self, opened_media: OpenedMedia) {
         info!(
-            source = %label,
-            tracks = tracks.len(),
-            duration = ?duration,
-            "Streaming demuxer загружен"
+            source = %opened_media.source.display_label(),
+            tracks = opened_media.tracks.len(),
+            duration = ?opened_media.duration,
+            "Media demuxer загружен"
         );
 
-        self.init_audio_pipeline(&tracks);
+        self.init_audio_pipeline(&opened_media.tracks);
         if let Err(error) = self.select_default_video_track(
-            &tracks,
-            "Поддерживаемый video track не найден в streaming demuxer",
+            &opened_media.tracks,
+            opened_media.source.missing_video_track_message(),
         ) {
-            warn!(error = %error, "Video track rejected during streaming media load");
+            warn!(error = %error, "Video track rejected during media load");
             self.mark_fatal_error(error);
             return;
         }
-        self.pipeline.demuxer = Some(demuxer);
-        self.pipeline.file_path = None;
-        self.pipeline.tracks = tracks;
-        self.pipeline.source_label = Some(label.clone());
-        self.clear_error();
 
         let summary = MediaSummary {
-            title: Some(label.clone()),
-            source_label: label,
-            duration,
+            title: opened_media.source.media_title(),
+            source_label: opened_media.source.display_label(),
+            duration: opened_media.duration,
         };
+        let seekability = opened_media.seekability;
+        let file_path = opened_media.source.pipeline_file_path();
+        let source_label = opened_media.source.pipeline_source_label();
+
+        self.pipeline.install_opened_media(
+            opened_media.demuxer,
+            file_path,
+            source_label,
+            opened_media.tracks,
+        );
+        self.clear_error();
+
         if let Err(error) = self.mark_media_opened(summary) {
             self.record_recoverable_error(error);
         }
@@ -398,26 +404,7 @@ impl PlayerSession {
             warn!(error = %error, "Не удалось сбросить video decoder thread");
         }
 
-        self.pipeline.demuxer = None;
-        self.pipeline.file_path = None;
-        self.pipeline.tracks.clear();
-        self.pipeline.source_label = None;
-        self.pipeline.audio_decoder = None;
-        self.pipeline.audio_output = None;
-        self.pipeline.audio_track_id = None;
-        self.pipeline.pending_audio_packets.clear();
-        self.pipeline.video_track_id = None;
-        self.pipeline.pending_video_packets.clear();
-        self.pipeline.video_decoder_needs_keyframe = true;
-        self.pipeline.audio_clock = None;
-        self.pipeline.media_clock_base = Duration::ZERO;
-        self.pipeline.seek_generation = 0;
-        self.pipeline.audio_buffer_clear_generation = 0;
-        self.pipeline.video_frame_duration_estimate = DEFAULT_VIDEO_FRAME_DURATION;
-        self.pipeline.last_decoded_video_pts = None;
-        self.pipeline.last_audio_clock = Duration::ZERO;
-        self.pipeline.last_audio_clock_change_at = std::time::Instant::now();
-        self.pipeline.active_video_requirement = None;
+        self.pipeline.reset_media_slots();
 
         self.pending_autoplay = false;
         self.seek_commit = None;
@@ -432,7 +419,7 @@ impl PlayerSession {
 
     /// Переводит renderer resource ids в новое поколение после полного reset media pipeline.
     fn advance_render_generation(&mut self) {
-        self.pipeline.render_generation = self.pipeline.render_generation.wrapping_add(1);
+        self.pipeline.advance_render_generation();
     }
 
     /// Обновляет оценку длительности video frame по очередному decoded PTS.
@@ -956,29 +943,19 @@ impl PlayerSession {
         );
     }
 
-    /// Инициализирует video pipeline через VA-API decoder thread.
-    pub fn init_video_pipeline(
-        &mut self,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) {
-        let device = Arc::new(device.clone());
-        let queue = Arc::new(queue.clone());
-
-        match video_vaapi::VideoDecodeThread::new(device, queue, instance.clone(), adapter.clone())
-        {
-            Ok(thread) => {
-                self.pipeline.video_backend = thread.backend_name();
-                self.pipeline.video_decoder_thread = Some(thread);
+    /// Инициализирует video pipeline через backend factory boundary.
+    pub fn init_video_pipeline(&mut self, backend_factory: &impl VideoBackendFactory) {
+        match backend_factory.start_video_backend() {
+            Ok(started_backend) => {
+                self.pipeline
+                    .set_video_decoder_thread(started_backend.decoder_thread);
                 info!(
                     backend = self.pipeline.video_backend,
-                    "Video decoder thread started"
+                    "Video backend started"
                 );
             }
             Err(error) => {
-                warn!(error = %error, "VA-API decoder thread unavailable, no hardware decode");
+                warn!(error = %error, "Video backend unavailable, no hardware decode");
             }
         }
     }
@@ -2078,27 +2055,6 @@ fn player_error_from_unsupported_requirement(error: UnsupportedVideoRequirement)
     };
 
     PlayerError::new(kind, error.user_message())
-}
-
-/// Выбирает demux seek mode для текущего seek transaction-а.
-///
-/// При video track после decoder flush нельзя начинать decode с inter-frame.
-/// Поэтому demuxer должен поставить чтение на decode-safe точку до target, а
-/// точность commit-а остаётся в player-core: pre-roll/drop доводит кадры до
-/// исходной пользовательской позиции.
-fn demux_seek_request_for_transaction(
-    commit_kind: SeekCommitKind,
-    has_video_track: bool,
-    target_duration: Duration,
-) -> DemuxSeekRequest {
-    if has_video_track {
-        return DemuxSeekRequest::decode_point_before(target_duration);
-    }
-
-    match commit_kind {
-        SeekCommitKind::Final => DemuxSeekRequest::accurate(target_duration),
-        SeekCommitKind::Preview => DemuxSeekRequest::preview(target_duration),
-    }
 }
 
 impl Default for PlayerSession {

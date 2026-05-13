@@ -15,7 +15,7 @@ use crate::seek_controller::{PlaybackResumeIntent, SeekController};
 use crate::{
     FrameCounters, MediaOpenRequest, MediaSource, PlayerCommand, PlayerError, PlayerErrorKind,
     PlayerEvent, PlayerResult, PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext,
-    PlayerTickResult, ScrubCommitPolicy, SeekRequest,
+    PlayerTickResult, ScrubCommitPolicy, SeekRequest, WgpuVideoBackendFactory,
 };
 
 /// Интервал worker tick по умолчанию: 60 Hz без привязки к UI redraw.
@@ -849,8 +849,9 @@ impl PlayerWorkerRuntime {
                 device,
                 queue,
             } => {
-                self.session
-                    .init_video_pipeline(&instance, &adapter, &device, &queue);
+                let backend_factory =
+                    WgpuVideoBackendFactory::new(&instance, &adapter, &device, &queue);
+                self.session.init_video_pipeline(&backend_factory);
             }
             WorkerCommand::SetSystemCapabilities(capabilities) => {
                 self.session.set_system_capabilities(capabilities);
@@ -1092,27 +1093,17 @@ impl PlayerWorkerRuntime {
 
     /// Собирает renderable frame без передачи `PlayerSession` наружу.
     fn build_present_frame(&mut self) -> Option<PlayerPresentFrame> {
-        let decoder_thread = self.session.pipeline.video_decoder_thread.as_ref()?;
-        let texture_provider = decoder_thread.texture_view_provider();
-        let frame = self.session.pipeline.present_video_frame.as_ref()?.clone();
-        let render_generation = self.session.pipeline.render_generation;
-        let stale = self.session.snapshot().timeline.stale_frame;
-        if !self
-            .session
-            .register_render_lease(render_generation, frame.texture_handle)
-        {
-            return None;
-        }
+        let leased_frame = self.session.lease_present_video_frame()?;
 
         Some(PlayerPresentFrame {
-            render_generation,
-            frame: frame.clone(),
-            stale,
-            texture_provider: Some(texture_provider.clone()),
+            render_generation: leased_frame.render_generation,
+            frame: leased_frame.frame.clone(),
+            stale: leased_frame.stale,
+            texture_provider: Some(leased_frame.texture_provider.clone()),
             _drop_ack: Arc::new(PresentFrameDropAck {
-                render_generation,
-                texture_handle: frame.texture_handle,
-                texture_provider: Some(texture_provider),
+                render_generation: leased_frame.render_generation,
+                texture_handle: leased_frame.frame.texture_handle,
+                texture_provider: Some(leased_frame.texture_provider),
                 release_tx: self.render_release_tx.clone(),
             }),
         })
@@ -1541,7 +1532,7 @@ mod tests {
 
         runtime.handle_render_request(RenderFrameRequest { reply_tx });
 
-        assert!(runtime.session.pipeline.leased_video_textures.is_empty());
+        assert_eq!(runtime.session.render_lease_count(), 0);
         assert!(reply_rx.try_recv().unwrap().is_none());
     }
 
@@ -1584,31 +1575,17 @@ mod tests {
         assert!(runtime.session.register_render_lease(0, texture_handle));
         runtime.session.release_video_texture(texture_handle);
 
+        assert_eq!(runtime.session.render_lease_count(), 1);
         assert!(
             runtime
                 .session
-                .pipeline
-                .leased_video_textures
-                .contains_key(&(0, texture_handle.0))
-        );
-        assert!(
-            runtime
-                .session
-                .pipeline
-                .deferred_video_texture_releases
-                .contains(&(0, texture_handle.0))
+                .has_deferred_video_texture_release(texture_handle)
         );
 
         runtime.session.release_render_lease(0, texture_handle);
 
-        assert!(runtime.session.pipeline.leased_video_textures.is_empty());
-        assert!(
-            runtime
-                .session
-                .pipeline
-                .deferred_video_texture_releases
-                .is_empty()
-        );
+        assert_eq!(runtime.session.render_lease_count(), 0);
+        assert_eq!(runtime.session.deferred_video_texture_release_count(), 0);
     }
 
     #[test]

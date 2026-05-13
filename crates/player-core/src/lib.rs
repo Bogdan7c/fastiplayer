@@ -8,12 +8,15 @@
 mod command;
 mod error;
 mod event;
+mod media_opening;
 mod pipeline;
 mod seek_controller;
+mod seek_state;
 mod session;
 mod snapshot;
 mod state;
 mod tick;
+mod video_backend;
 mod worker;
 
 pub use command::{
@@ -25,7 +28,7 @@ pub use event::{
     BufferingState, CapabilitySummary, FramePresentationInfo, MediaSummary, PlayerEvent,
 };
 pub use media_core::TrackId;
-pub use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
+pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
 pub use seek_controller::{
     PlaybackResumeIntent, SeekController, SeekControllerDiagnostics, SeekControllerMode,
 };
@@ -40,6 +43,7 @@ pub use tick::{
     PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult, PlayerVideoDropReason,
     PlayerVideoFrameDrop,
 };
+pub use video_backend::{StartedVideoBackend, VideoBackendFactory, WgpuVideoBackendFactory};
 pub use worker::{
     PlayerCommandSender, PlayerPresentFrame, PlayerRenderError, PlayerRenderErrorKind,
     PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PlayerWorkerJoinError,
