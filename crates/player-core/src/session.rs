@@ -660,11 +660,17 @@ impl PlayerSession {
         self.seek_commit
     }
 
-    /// Проверяет, относится ли decoded frame к pre-roll до seek target.
+    /// Проверяет, нужно ли выбросить decoded frame как pre-roll до seek target.
+    ///
+    /// Final seek остаётся точным: кадры до пользовательской позиции не попадают
+    /// в presentation queue. Preview seek, наоборот, может показывать такие
+    /// кадры как live feedback во время scrub, пока decoder догоняет target.
     #[must_use]
     pub(crate) fn should_drop_decoded_frame_for_seek(&self, frame_pts: Duration) -> bool {
-        self.seek_commit
-            .is_some_and(|seek_commit| frame_pts < seek_commit.target_position.as_duration())
+        self.seek_commit.is_some_and(|seek_commit| {
+            seek_commit.kind == SeekCommitKind::Final
+                && frame_pts < seek_commit.target_position.as_duration()
+        })
     }
 
     /// Отмечает, что target video frame уже стал текущим кадром presentation.
@@ -781,6 +787,11 @@ impl PlayerSession {
         resume_video_min_ready_frames: usize,
     ) -> usize {
         match (seek_commit.kind, seek_commit.resume_intent) {
+            (SeekCommitKind::Final, PlaybackResumeIntent::Play)
+                if self.pipeline.audio_track_id.is_some() =>
+            {
+                1
+            }
             (SeekCommitKind::Final, PlaybackResumeIntent::Play) => {
                 resume_video_min_ready_frames.max(1)
             }
@@ -807,7 +818,11 @@ impl PlayerSession {
         usize::from(current_frame_ready) + queued_ready_frames
     }
 
-    /// Audio gate готов после подтверждённой очистки buffer и минимального preroll.
+    /// Audio gate готов после очистки buffer; video seek не ждёт audio preroll.
+    ///
+    /// Для видео пользователь должен сразу увидеть и запустить target frame, а
+    /// audio догоняет через обычный demux/decode path. Audio-only media сохраняет
+    /// старую защиту: перед resume нужен минимальный buffer.
     fn seek_audio_gate_ready(
         &self,
         seek_commit: SeekCommitState,
@@ -822,6 +837,14 @@ impl PlayerSession {
         }
 
         if seek_commit.kind == SeekCommitKind::Preview {
+            return true;
+        }
+
+        if seek_commit.resume_intent == PlaybackResumeIntent::Pause {
+            return true;
+        }
+
+        if self.pipeline.video_track_id.is_some() {
             return true;
         }
 
@@ -1101,12 +1124,100 @@ impl PlayerSession {
         match policy {
             crate::ScrubCommitPolicy::CommitLatest => {
                 if let Some(target_position) = self.snapshot.timeline.target_position {
-                    self.start_seek_transaction(target_position, SeekCommitKind::Final)?;
+                    if !self.promote_preview_seek_to_final(target_position) {
+                        self.start_seek_transaction(target_position, SeekCommitKind::Final)?;
+                    }
                 }
             }
         }
         self.snapshot.timeline.scrubbing = false;
         Ok(())
+    }
+
+    /// Пытается превратить уже выполненную preview-работу в final commit без повторного seek.
+    fn promote_preview_seek_to_final(&mut self, target_position: MediaTime) -> bool {
+        if self.promote_active_preview_seek_to_final(target_position) {
+            return true;
+        }
+
+        self.complete_ready_preview_seek_as_final(target_position)
+    }
+
+    /// Активный preview с тем же target становится final transaction-ом.
+    fn promote_active_preview_seek_to_final(&mut self, target_position: MediaTime) -> bool {
+        let Some(seek_commit) = self.seek_commit.as_mut() else {
+            return false;
+        };
+
+        if seek_commit.kind != SeekCommitKind::Preview
+            || seek_commit.target_position != target_position
+        {
+            return false;
+        }
+
+        seek_commit.kind = SeekCommitKind::Final;
+        seek_commit.resume_intent = PlaybackResumeIntent::Pause;
+        seek_commit.started_at = Instant::now();
+        self.snapshot.timeline.scrubbing = false;
+        self.snapshot.timeline.seeking = true;
+        self.snapshot.timeline.target_position = Some(target_position);
+        self.drop_queued_video_frames_before_target(target_position.as_duration());
+        true
+    }
+
+    /// Завершённый preview с уже показанным target frame коммитится сразу.
+    fn complete_ready_preview_seek_as_final(&mut self, target_position: MediaTime) -> bool {
+        if !self.completed_preview_can_commit_as_final(target_position) {
+            return false;
+        }
+
+        let promoted_seek_commit = SeekCommitState {
+            generation: self.pipeline.seek_generation,
+            target_position,
+            actual_position: target_position,
+            started_at: Instant::now(),
+            resume_intent: PlaybackResumeIntent::Pause,
+            kind: SeekCommitKind::Final,
+        };
+        self.complete_final_seek_commit(promoted_seek_commit);
+        true
+    }
+
+    /// Проверяет, что preview действительно дошёл до target frame и не является stale UI state.
+    fn completed_preview_can_commit_as_final(&self, target_position: MediaTime) -> bool {
+        self.seek_commit.is_none()
+            && self.snapshot.timeline.scrubbing
+            && self.snapshot.timeline.target_position == Some(target_position)
+            && !self.snapshot.timeline.seeking
+            && !self.snapshot.timeline.stale_frame
+            && self.present_frame_covers_target(target_position.as_duration())
+    }
+
+    /// Проверяет, что текущий video frame уже соответствует target; audio-only media проходит.
+    fn present_frame_covers_target(&self, target_position: Duration) -> bool {
+        if self.pipeline.video_track_id.is_none() {
+            return true;
+        }
+
+        self.pipeline
+            .present_video_frame
+            .as_ref()
+            .is_some_and(|frame| frame.pts >= target_position)
+    }
+
+    /// Убирает pre-target кадры из future queue при переходе preview -> final.
+    fn drop_queued_video_frames_before_target(&mut self, target_position: Duration) {
+        let mut retained_frames = std::collections::VecDeque::new();
+
+        while let Some(frame) = self.pipeline.video_frame_queue.pop_front() {
+            if frame.pts < target_position {
+                self.release_video_texture(frame.texture_handle);
+            } else {
+                retained_frames.push_back(frame);
+            }
+        }
+
+        self.pipeline.video_frame_queue = retained_frames;
     }
 
     /// Выполняет синхронную часть seek transaction и оставляет commit gates на tick.
@@ -2472,6 +2583,113 @@ mod tests {
     }
 
     #[test]
+    fn preview_seek_keeps_pre_target_frames_for_live_feedback() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+        let request = SeekRequest::absolute(MediaTime::from_secs(8));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(request))
+            .unwrap();
+
+        assert!(!session.should_drop_decoded_frame_for_seek(Duration::from_millis(7_900)));
+
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitLatest,
+            })
+            .unwrap();
+
+        assert!(session.should_drop_decoded_frame_for_seek(Duration::from_millis(7_900)));
+    }
+
+    #[test]
+    fn end_scrub_promotes_active_preview_without_second_demux_seek() {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(1, TrackKind::Video)],
+        );
+        let request = SeekRequest::absolute(MediaTime::from_secs(8));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(request))
+            .unwrap();
+        session
+            .pipeline
+            .video_frame_queue
+            .push_back(decoded_frame_for_tests(Duration::from_millis(7_900), 41));
+
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitLatest,
+            })
+            .unwrap();
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].mode,
+            webm_demux::DemuxSeekMode::DecodePointBefore
+        );
+        assert_eq!(
+            session.seek_commit().map(|seek_commit| seek_commit.kind),
+            Some(SeekCommitKind::Final)
+        );
+        assert!(!session.snapshot().timeline.scrubbing);
+        assert!(session.pipeline.video_frame_queue.is_empty());
+    }
+
+    #[test]
+    fn end_scrub_commits_ready_preview_without_second_demux_seek() {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(1, TrackKind::Video)],
+        );
+        let request = SeekRequest::absolute(MediaTime::from_secs(8));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(request))
+            .unwrap();
+        session.pipeline.present_video_frame =
+            Some(decoded_frame_for_tests(Duration::from_secs(8), 42));
+        session.note_presented_frame_for_seek(Duration::from_secs(8));
+        session.finish_seek_commit_if_ready(
+            Instant::now(),
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            1,
+        );
+
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitLatest,
+            })
+            .unwrap();
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(session.snapshot().current_position, Duration::from_secs(8));
+        assert!(!session.snapshot().timeline.scrubbing);
+        assert!(!session.snapshot().timeline.seeking);
+        assert!(session.seek_commit().is_none());
+    }
+
+    #[test]
     fn keyframe_before_seek_keeps_demuxer_target_on_requested_position() {
         let mut session = PlayerSession::new();
         let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
@@ -2817,6 +3035,39 @@ mod tests {
             .pipeline
             .video_frame_queue
             .push_back(decoded_frame_for_tests(Duration::from_millis(6_033), 44));
+
+        session.finish_seek_commit_if_ready(
+            Instant::now(),
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            3,
+        );
+
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert!(!session.snapshot().timeline.seeking);
+    }
+
+    #[test]
+    fn playing_video_seek_with_audio_resumes_after_target_frame_without_audio_preroll() {
+        let mut session = PlayerSession::new();
+        install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        session.pipeline.present_video_frame =
+            Some(decoded_frame_for_tests(Duration::from_secs(6), 42));
+        session.note_presented_frame_for_seek(Duration::from_secs(6));
 
         session.finish_seek_commit_if_ready(
             Instant::now(),
