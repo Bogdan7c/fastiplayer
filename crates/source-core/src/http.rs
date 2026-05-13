@@ -128,15 +128,16 @@ impl HttpRangeSource {
     fn read_range_with_retry(
         &mut self,
         offset: u64,
-        length: usize,
+        output: &mut [u8],
         cancellation: &CancellationToken,
-    ) -> SourceResult<Vec<u8>> {
+    ) -> SourceResult<usize> {
         let mut attempts = 0_u8;
+        let length = output.len();
 
         loop {
-            let result = self.read_range_once(offset, length, cancellation);
+            let result = self.read_range_once(offset, output, cancellation);
             match result {
-                Ok(bytes) => return Ok(bytes),
+                Ok(bytes_read) => return Ok(bytes_read),
                 Err(error) if attempts == 0 && error.is_retryable_range_failure() => {
                     self.record_range_error(&error);
                     attempts = attempts.saturating_add(1);
@@ -160,13 +161,14 @@ impl HttpRangeSource {
     fn read_range_once(
         &mut self,
         offset: u64,
-        length: usize,
+        output: &mut [u8],
         cancellation: &CancellationToken,
-    ) -> SourceResult<Vec<u8>> {
+    ) -> SourceResult<usize> {
         if cancellation.is_cancelled() {
             return Err(SourceError::Cancelled);
         }
 
+        let length = output.len();
         let range = ByteRange::new(offset, length);
         self.diagnostics.range_requests = self.diagnostics.range_requests.saturating_add(1);
         self.diagnostics.bytes_requested = self
@@ -193,12 +195,13 @@ impl HttpRangeSource {
         }
 
         validate_content_range(&self.url, response.headers(), &range)?;
-        let bytes = read_exact_response_body(&self.url, response, offset, length, cancellation)?;
+        let bytes_read =
+            read_response_body_into(&self.url, response, offset, output, cancellation)?;
         self.diagnostics.bytes_read = self
             .diagnostics
             .bytes_read
-            .saturating_add(bytes.len() as u64);
-        Ok(bytes)
+            .saturating_add(bytes_read as u64);
+        Ok(bytes_read)
     }
 
     /// Учитывает ошибку range path в diagnostics.
@@ -227,10 +230,13 @@ impl ByteSource for HttpRangeSource {
             return Ok(0);
         }
 
-        let bytes = self.read_range_with_retry(self.position, requested_length, cancellation)?;
-        output[..bytes.len()].copy_from_slice(&bytes);
-        self.position = self.position.saturating_add(bytes.len() as u64);
-        Ok(bytes.len())
+        let bytes_read = self.read_range_with_retry(
+            self.position,
+            &mut output[..requested_length],
+            cancellation,
+        )?;
+        self.position = self.position.saturating_add(bytes_read as u64);
+        Ok(bytes_read)
     }
 
     fn seek(&mut self, offset: u64) -> SourceResult<()> {
@@ -395,15 +401,15 @@ fn validate_content_range(url: &str, headers: &HeaderMap, range: &ByteRange) -> 
     Ok(())
 }
 
-/// Читает ровно ожидаемое количество bytes из response body.
-fn read_exact_response_body(
+/// Читает ровно ожидаемое количество bytes из response body в caller buffer.
+fn read_response_body_into(
     url: &str,
     mut response: reqwest::blocking::Response,
     offset: u64,
-    expected_length: usize,
+    output: &mut [u8],
     cancellation: &CancellationToken,
-) -> SourceResult<Vec<u8>> {
-    let mut body = vec![0_u8; expected_length];
+) -> SourceResult<usize> {
+    let expected_length = output.len();
     let mut total_read = 0_usize;
 
     while total_read < expected_length {
@@ -411,7 +417,7 @@ fn read_exact_response_body(
             return Err(SourceError::Cancelled);
         }
 
-        match response.read(&mut body[total_read..]) {
+        match response.read(&mut output[total_read..]) {
             Ok(0) => break,
             Ok(bytes_read) => {
                 total_read = total_read.saturating_add(bytes_read);
@@ -440,7 +446,7 @@ fn read_exact_response_body(
         });
     }
 
-    Ok(body)
+    Ok(total_read)
 }
 
 /// Строит reqwest HeaderMap из внешних headers.
@@ -786,6 +792,40 @@ mod tests {
     }
 
     #[test]
+    fn http_source_returns_partial_tail_read_at_content_length() {
+        let media = Arc::new(b"0123456789".to_vec());
+        let media_for_server = Arc::clone(&media);
+        let server = TestHttpServer::spawn(move |_index, request, stream| {
+            respond_with_range(stream, &request, &media_for_server);
+        });
+
+        let mut source = HttpRangeSource::open(server.config(Vec::new())).expect("source opens");
+        let token = CancellationToken::never_cancelled();
+        let mut output = *b"XXXXXXXX";
+
+        source.seek(7).expect("seek to tail works");
+        let bytes_read = source
+            .read(&mut output, &token)
+            .expect("tail range read works");
+
+        assert_eq!(bytes_read, 3);
+        assert_eq!(&output, b"789XXXXX");
+        assert_eq!(source.position(), 10);
+
+        let ranges = server
+            .requests()
+            .into_iter()
+            .filter_map(|request| request.headers.get("range").cloned())
+            .collect::<Vec<_>>();
+        assert_eq!(ranges, vec!["bytes=0-0", "bytes=7-9"]);
+
+        let diagnostics = source.range_diagnostics();
+        assert_eq!(diagnostics.range_requests, 1);
+        assert_eq!(diagnostics.bytes_requested, 3);
+        assert_eq!(diagnostics.bytes_read, 3);
+    }
+
+    #[test]
     fn http_source_reports_not_seekable_when_range_returns_200() {
         let media = b"plain-body".to_vec();
         let media_for_server = media.clone();
@@ -833,6 +873,36 @@ mod tests {
 
         let error = HttpRangeSource::open(config).expect_err("probe times out");
         assert!(matches!(error, SourceError::HttpTimeout { .. }));
+    }
+
+    #[test]
+    fn cancelled_range_read_returns_cancelled_without_advancing_position() {
+        let media = Arc::new(b"abcdefghij".to_vec());
+        let media_for_server = Arc::clone(&media);
+        let cancellation = CancellationToken::new();
+        let cancellation_for_server = cancellation.clone();
+        let server = TestHttpServer::spawn(move |index, request, stream| {
+            if index == 1 {
+                cancellation_for_server.cancel();
+            }
+
+            respond_with_range(stream, &request, &media_for_server);
+        });
+
+        let mut source = HttpRangeSource::open(server.config(Vec::new())).expect("source opens");
+        let mut output = [0_u8; 5];
+        let error = source
+            .read(&mut output, &cancellation)
+            .expect_err("range read observes cancellation");
+
+        assert!(matches!(error, SourceError::Cancelled));
+        assert_eq!(source.position(), 0);
+        assert_eq!(server.requests().len(), 2);
+
+        let diagnostics = source.range_diagnostics();
+        assert_eq!(diagnostics.range_requests, 1);
+        assert_eq!(diagnostics.bytes_requested, 5);
+        assert_eq!(diagnostics.bytes_read, 0);
     }
 
     #[test]

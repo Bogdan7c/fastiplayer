@@ -119,6 +119,12 @@ impl RamByteRangeCache {
         self.budget_bytes > 0
     }
 
+    /// Проверяет, имеет ли смысл владеть range-ом в RAM cache.
+    #[must_use]
+    pub fn can_store(&self, length: usize) -> bool {
+        self.is_enabled() && length > 0 && length as u64 <= self.budget_bytes
+    }
+
     /// Возвращает текущие cache counters.
     #[must_use]
     pub fn diagnostics(&self) -> CacheDiagnostics {
@@ -155,17 +161,27 @@ impl RamByteRangeCache {
 
     /// Добавляет range в cache и применяет eviction относительно focus offset.
     pub fn insert(&mut self, offset: u64, bytes: &[u8], focus_offset: u64) {
-        if !self.is_enabled() || bytes.is_empty() || bytes.len() as u64 > self.budget_bytes {
+        if !self.can_store(bytes.len()) {
             return;
         }
 
+        self.insert_owned(offset, bytes.to_vec(), focus_offset);
+    }
+
+    /// Добавляет уже owned range в cache без дополнительной копии payload.
+    pub fn insert_owned(&mut self, offset: u64, bytes: Vec<u8>, focus_offset: u64) {
+        if !self.can_store(bytes.len()) {
+            return;
+        }
+
+        let bytes_len = bytes.len() as u64;
         let access_id = self.allocate_access_id();
         self.entries.push(CacheEntry {
             start: offset,
-            bytes: bytes.to_vec(),
+            bytes,
             last_access_id: access_id,
         });
-        self.bytes_cached = self.bytes_cached.saturating_add(bytes.len() as u64);
+        self.bytes_cached = self.bytes_cached.saturating_add(bytes_len);
         self.evict_until_within_budget(focus_offset);
     }
 
@@ -259,8 +275,10 @@ where
 
         self.inner.seek(self.position)?;
         let bytes_read = self.inner.read(output, cancellation)?;
-        self.cache
-            .insert(self.position, &output[..bytes_read], self.position);
+        if self.cache.can_store(bytes_read) {
+            self.cache
+                .insert_owned(self.position, output[..bytes_read].to_vec(), self.position);
+        }
         self.position = self.position.saturating_add(bytes_read as u64);
         Ok(bytes_read)
     }
@@ -387,7 +405,42 @@ mod tests {
         let diagnostics = source.cache_diagnostics();
         assert_eq!(diagnostics.misses, 1);
         assert_eq!(diagnostics.hits, 1);
+        assert_eq!(diagnostics.bytes_cached, 3);
         assert_eq!(source.inner().read_count, 1);
+    }
+
+    #[test]
+    fn cache_insert_owned_stores_range_for_hit() {
+        let config =
+            SourceRuntimeConfig::for_tests(8, Duration::from_millis(10), Duration::from_millis(10));
+        let mut cache = RamByteRangeCache::from_source_config(&config);
+        let mut output = [0_u8; 4];
+
+        cache.insert_owned(4, b"wxyz".to_vec(), 4);
+
+        assert!(cache.get(4, &mut output));
+        assert_eq!(&output, b"wxyz");
+        assert_eq!(cache.diagnostics().hits, 1);
+        assert_eq!(cache.diagnostics().bytes_cached, 4);
+    }
+
+    #[test]
+    fn cache_does_not_store_ranges_larger_than_budget() {
+        let config =
+            SourceRuntimeConfig::for_tests(2, Duration::from_millis(10), Duration::from_millis(10));
+        let mut source = CachedByteSource::new(FakeByteSource::new(b"abcdef"), &config);
+        let token = CancellationToken::never_cancelled();
+        let mut output = [0_u8; 3];
+
+        source.read(&mut output, &token).expect("first read works");
+        source.seek(0).expect("seek works");
+        source.read(&mut output, &token).expect("second read works");
+
+        let diagnostics = source.cache_diagnostics();
+        assert_eq!(diagnostics.hits, 0);
+        assert_eq!(diagnostics.misses, 2);
+        assert_eq!(diagnostics.bytes_cached, 0);
+        assert_eq!(source.inner().read_count, 2);
     }
 
     #[test]
