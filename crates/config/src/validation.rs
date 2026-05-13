@@ -23,6 +23,9 @@ const MIN_AUDIO_BUFFER_TARGET_MS: u64 = 1;
 /// Верхний предел audio buffer target для интерактивного player-а.
 const MAX_AUDIO_BUFFER_TARGET_MS: u64 = 10_000;
 
+/// Верхний предел video preroll перед seek resume, чтобы config не удерживал лишние GPU frames.
+const MAX_SEEK_RESUME_VIDEO_READY_FRAMES: usize = MAX_PRESENT_QUEUE_FRAMES + 1;
+
 /// Верхний предел network read-ahead на раннем этапе без полноценного cache manager.
 const MAX_NETWORK_READ_AHEAD_MB: u64 = 4096;
 
@@ -104,6 +107,12 @@ fn validate_player_seek_config(seek: &PlayerSeekConfig) -> ConfigResult<()> {
     validate_positive_u64(
         "player.seek.resume_audio_min_buffer_ms",
         seek.resume_audio_min_buffer_ms,
+    )?;
+    validate_usize_range(
+        "player.seek.resume_video_min_ready_frames",
+        seek.resume_video_min_ready_frames,
+        1,
+        MAX_SEEK_RESUME_VIDEO_READY_FRAMES,
     )?;
     validate_positive_u64(
         "player.seek.hotkey_small_step_secs",

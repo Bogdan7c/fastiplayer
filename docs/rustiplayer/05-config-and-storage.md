@@ -51,6 +51,7 @@ live_interval_ms = 100
 live_preview_budget_ms = 100
 commit_timeout_ms = 10000
 resume_audio_min_buffer_ms = 50
+resume_video_min_ready_frames = 3
 paused_commit_behavior = "stay_paused"
 hotkey_small_step_secs = 5
 hotkey_large_step_secs = 30
@@ -129,6 +130,7 @@ source-cache слоя и selectable UI skin. Эти поля не должны �
 - `live_preview_budget_ms = 100` - budget preview work на один update;
 - `commit_timeout_ms = 10000` - typed timeout финального commit-а;
 - `resume_audio_min_buffer_ms = 50` - минимальный audio buffer перед resume;
+- `resume_video_min_ready_frames = 3` - минимальный запас готовых video frames перед resume;
 - `paused_commit_behavior = "stay_paused"` - seek из паузы остаётся на паузе;
 - `hotkey_small_step_secs = 5` - малый relative seek step;
 - `hotkey_large_step_secs = 30` - большой relative seek step.
@@ -148,7 +150,7 @@ Validation rules:
 
 - `network.memory_cache_mb <= 4096`; ноль валиден и отключает RAM cache;
 - network timeouts положительные;
-- seek intervals, budgets, timeout и hotkey steps положительные;
+- seek intervals, budgets, timeout, resume video preroll и hotkey steps положительные;
 - unknown `ui.skin` rejected как config error.
 
 ## Render color config policy

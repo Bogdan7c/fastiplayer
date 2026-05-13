@@ -102,6 +102,7 @@ schema и документация. Нельзя переносить playback �
 - `player.seek.live_preview_budget_ms = 100`
 - `player.seek.commit_timeout_ms = 10000`
 - `player.seek.resume_audio_min_buffer_ms = 50`
+- `player.seek.resume_video_min_ready_frames = 3`
 - `player.seek.paused_commit_behavior = "stay_paused"`
 - `player.seek.hotkey_small_step_secs = 5`
 - `player.seek.hotkey_large_step_secs = 30`

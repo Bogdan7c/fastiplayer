@@ -90,6 +90,11 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "resume_video_min_ready_frames = 3",
+        "# Минимальный запас готовых video frames перед resume после commit-а.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "paused_commit_behavior = \"stay_paused\"",
         "# Поведение seek commit-а, начатого из paused состояния.",
     );
@@ -211,6 +216,9 @@ pub struct PlayerSeekConfig {
     /// Минимальный audio buffer перед resume после commit-а.
     pub resume_audio_min_buffer_ms: u64,
 
+    /// Минимальный запас готовых video frames перед resume после commit-а.
+    pub resume_video_min_ready_frames: usize,
+
     /// Поведение commit-а, если playback был на паузе.
     pub paused_commit_behavior: PausedCommitBehavior,
 
@@ -229,6 +237,7 @@ impl Default for PlayerSeekConfig {
             live_preview_budget_ms: 100,
             commit_timeout_ms: 10_000,
             resume_audio_min_buffer_ms: 50,
+            resume_video_min_ready_frames: 3,
             paused_commit_behavior: PausedCommitBehavior::StayPaused,
             hotkey_small_step_secs: 5,
             hotkey_large_step_secs: 30,

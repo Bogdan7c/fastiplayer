@@ -685,6 +685,7 @@ impl PlayerSession {
         commit_timeout: Duration,
         preview_timeout: Duration,
         resume_audio_min_buffer_ms: f64,
+        resume_video_min_ready_frames: usize,
     ) {
         let Some(seek_commit) = self.seek_commit else {
             return;
@@ -700,7 +701,11 @@ impl PlayerSession {
             return;
         }
 
-        if !self.seek_commit_gates_ready(seek_commit, resume_audio_min_buffer_ms) {
+        if !self.seek_commit_gates_ready(
+            seek_commit,
+            resume_audio_min_buffer_ms,
+            resume_video_min_ready_frames,
+        ) {
             return;
         }
 
@@ -735,22 +740,71 @@ impl PlayerSession {
         &self,
         seek_commit: SeekCommitState,
         resume_audio_min_buffer_ms: f64,
+        resume_video_min_ready_frames: usize,
     ) -> bool {
-        self.seek_video_gate_ready(seek_commit)
+        self.seek_video_gate_ready(seek_commit, resume_video_min_ready_frames)
             && self.seek_audio_gate_ready(seek_commit, resume_audio_min_buffer_ms)
     }
 
-    /// Video gate готов, когда нет video track или текущий кадр уже не раньше target.
-    fn seek_video_gate_ready(&self, seek_commit: SeekCommitState) -> bool {
+    /// Video gate готов, когда target frame показан и перед resume есть небольшой запас кадров.
+    fn seek_video_gate_ready(
+        &self,
+        seek_commit: SeekCommitState,
+        resume_video_min_ready_frames: usize,
+    ) -> bool {
         if self.pipeline.video_track_id.is_none() {
             return true;
         }
 
-        self.pipeline
+        let target_position = seek_commit.target_position.as_duration();
+        let target_frame_presented = self
+            .pipeline
             .present_video_frame
             .as_ref()
-            .is_some_and(|frame| frame.pts >= seek_commit.target_position.as_duration())
-            && !self.snapshot.timeline.stale_frame
+            .is_some_and(|frame| frame.pts >= target_position)
+            && !self.snapshot.timeline.stale_frame;
+
+        if !target_frame_presented {
+            return false;
+        }
+
+        let required_ready_frames = self
+            .required_seek_resume_video_ready_frames(seek_commit, resume_video_min_ready_frames);
+
+        self.seek_ready_video_frame_count(target_position) >= required_ready_frames
+    }
+
+    /// Возвращает требуемый video preroll для конкретного seek transaction-а.
+    fn required_seek_resume_video_ready_frames(
+        &self,
+        seek_commit: SeekCommitState,
+        resume_video_min_ready_frames: usize,
+    ) -> usize {
+        match (seek_commit.kind, seek_commit.resume_intent) {
+            (SeekCommitKind::Final, PlaybackResumeIntent::Play) => {
+                resume_video_min_ready_frames.max(1)
+            }
+            _ => 1,
+        }
+    }
+
+    /// Считает target/current frame и уже декодированные future frames для seek resume.
+    fn seek_ready_video_frame_count(&self, target_position: Duration) -> usize {
+        let current_frame_ready = self
+            .pipeline
+            .present_video_frame
+            .as_ref()
+            .is_some_and(|frame| {
+                frame.pts >= target_position && !self.snapshot.timeline.stale_frame
+            });
+        let queued_ready_frames = self
+            .pipeline
+            .video_frame_queue
+            .iter()
+            .filter(|frame| frame.pts >= target_position)
+            .count();
+
+        usize::from(current_frame_ready) + queued_ready_frames
     }
 
     /// Audio gate готов после подтверждённой очистки buffer и минимального preroll.
@@ -2269,6 +2323,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            1,
         );
 
         assert_eq!(
@@ -2302,6 +2357,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            1,
         );
 
         assert_eq!(session.snapshot().current_position, Duration::from_secs(15));
@@ -2339,6 +2395,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            1,
         );
 
         assert_eq!(session.snapshot().current_position, Duration::from_secs(7));
@@ -2372,6 +2429,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            1,
         );
 
         assert!(session.snapshot().timeline.scrubbing);
@@ -2584,6 +2642,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            1,
         );
 
         assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
@@ -2619,6 +2678,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            1,
         );
 
         assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
@@ -2650,6 +2710,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            1,
         );
 
         assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
@@ -2688,6 +2749,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            1,
         );
 
         assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
@@ -2714,6 +2776,54 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            1,
+        );
+
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert!(!session.snapshot().timeline.seeking);
+    }
+
+    #[test]
+    fn playing_seek_waits_for_configured_video_preroll_before_resume() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        session.pipeline.present_video_frame =
+            Some(decoded_frame_for_tests(Duration::from_secs(6), 42));
+        session.note_presented_frame_for_seek(Duration::from_secs(6));
+
+        session.finish_seek_commit_if_ready(
+            Instant::now(),
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            3,
+        );
+
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Seeking);
+        assert!(session.snapshot().timeline.seeking);
+
+        session
+            .pipeline
+            .video_frame_queue
+            .push_back(decoded_frame_for_tests(Duration::from_millis(6_016), 43));
+        session
+            .pipeline
+            .video_frame_queue
+            .push_back(decoded_frame_for_tests(Duration::from_millis(6_033), 44));
+
+        session.finish_seek_commit_if_ready(
+            Instant::now(),
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            3,
         );
 
         assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
