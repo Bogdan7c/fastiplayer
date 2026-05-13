@@ -83,6 +83,9 @@ pub struct PlayerSession {
 
     /// Активная операция точного seek commit-а, если player ждёт pre-roll/gates.
     seek_commit: Option<SeekCommitState>,
+
+    /// Последний свежий preview-кадр, реально показанный во время текущего scrub.
+    last_visible_preview_position: Option<MediaTime>,
 }
 
 impl PlayerSession {
@@ -418,6 +421,7 @@ impl PlayerSession {
 
         self.pending_autoplay = false;
         self.seek_commit = None;
+        self.last_visible_preview_position = None;
         self.snapshot.source_label = None;
         self.snapshot.media_title = None;
         self.snapshot.clear_timeline();
@@ -679,8 +683,15 @@ impl PlayerSession {
             return;
         };
 
-        if frame_pts >= seek_commit.target_position.as_duration() {
-            self.snapshot.timeline.stale_frame = false;
+        match seek_commit.kind {
+            SeekCommitKind::Preview => {
+                self.last_visible_preview_position = Some(MediaTime::from_duration(frame_pts));
+                self.snapshot.timeline.stale_frame = false;
+            }
+            SeekCommitKind::Final if frame_pts >= seek_commit.target_position.as_duration() => {
+                self.snapshot.timeline.stale_frame = false;
+            }
+            SeekCommitKind::Final => {}
         }
     }
 
@@ -864,6 +875,8 @@ impl PlayerSession {
     /// Закрывает финальный seek и публикует новую playback позицию.
     fn complete_final_seek_commit(&mut self, seek_commit: SeekCommitState) {
         self.seek_commit = None;
+        self.last_visible_preview_position = None;
+        self.pipeline.media_clock_base = seek_commit.target_position.as_duration();
         self.snapshot.timeline.target_position = None;
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.scrubbing = false;
@@ -910,6 +923,7 @@ impl PlayerSession {
     /// Прерывает финальный seek transaction по timeout как recoverable error.
     fn fail_final_seek_commit_on_timeout(&mut self, seek_commit: SeekCommitState) {
         self.seek_commit = None;
+        self.last_visible_preview_position = None;
         self.snapshot.timeline.target_position = None;
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.scrubbing = false;
@@ -1093,6 +1107,7 @@ impl PlayerSession {
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = true;
         self.snapshot.timeline.target_position = Some(self.snapshot.timeline.current_position);
+        self.last_visible_preview_position = None;
         Ok(())
     }
 
@@ -1136,11 +1151,56 @@ impl PlayerSession {
 
     /// Пытается превратить уже выполненную preview-работу в final commit без повторного seek.
     fn promote_preview_seek_to_final(&mut self, target_position: MediaTime) -> bool {
+        if self.complete_visible_preview_seek_as_final() {
+            return true;
+        }
+
         if self.promote_active_preview_seek_to_final(target_position) {
             return true;
         }
 
         self.complete_ready_preview_seek_as_final(target_position)
+    }
+
+    /// Scrub с уже показанным preview-кадром коммитится от видимой позиции без ожидания target.
+    fn complete_visible_preview_seek_as_final(&mut self) -> bool {
+        if !self.snapshot.timeline.scrubbing {
+            return false;
+        }
+
+        if self
+            .seek_commit
+            .is_some_and(|seek_commit| seek_commit.kind != SeekCommitKind::Preview)
+        {
+            return false;
+        }
+
+        let Some(visible_position) = self.last_visible_preview_position else {
+            return false;
+        };
+
+        if !self.present_frame_matches_position(visible_position.as_duration()) {
+            return false;
+        }
+
+        let generation = self
+            .seek_commit
+            .map(|seek_commit| seek_commit.generation)
+            .unwrap_or(self.pipeline.seek_generation);
+        let actual_position = self
+            .seek_commit
+            .map(|seek_commit| seek_commit.actual_position)
+            .unwrap_or(visible_position);
+        let promoted_seek_commit = SeekCommitState {
+            generation,
+            target_position: visible_position,
+            actual_position,
+            started_at: Instant::now(),
+            resume_intent: PlaybackResumeIntent::Pause,
+            kind: SeekCommitKind::Final,
+        };
+        self.complete_final_seek_commit(promoted_seek_commit);
+        true
     }
 
     /// Активный preview с тем же target становится final transaction-ом.
@@ -1205,6 +1265,16 @@ impl PlayerSession {
             .is_some_and(|frame| frame.pts >= target_position)
     }
 
+    /// Проверяет, что текущий present frame ровно тот preview-кадр, который хотим зафиксировать.
+    fn present_frame_matches_position(&self, position: Duration) -> bool {
+        self.pipeline.video_track_id.is_some()
+            && self
+                .pipeline
+                .present_video_frame
+                .as_ref()
+                .is_some_and(|frame| frame.pts == position)
+    }
+
     /// Убирает pre-target кадры из future queue при переходе preview -> final.
     fn drop_queued_video_frames_before_target(&mut self, target_position: Duration) {
         let mut retained_frames = std::collections::VecDeque::new();
@@ -1251,6 +1321,7 @@ impl PlayerSession {
 
         let resume_intent = match commit_kind {
             SeekCommitKind::Final => {
+                self.last_visible_preview_position = None;
                 PlaybackResumeIntent::from_playback_state(self.playback_state())
             }
             SeekCommitKind::Preview => PlaybackResumeIntent::Pause,
@@ -2042,6 +2113,7 @@ impl Default for PlayerSession {
             draining_after_eof: false,
             capabilities: None,
             seek_commit: None,
+            last_visible_preview_position: None,
         }
     }
 }
@@ -2646,6 +2718,100 @@ mod tests {
         );
         assert!(!session.snapshot().timeline.scrubbing);
         assert!(session.pipeline.video_frame_queue.is_empty());
+    }
+
+    #[test]
+    fn end_scrub_commits_visible_preview_frame_without_waiting_for_exact_target() {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(1, TrackKind::Video)],
+        );
+        let request = SeekRequest::absolute(MediaTime::from_secs(8));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(request))
+            .unwrap();
+        session.pipeline.present_video_frame =
+            Some(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
+        session.note_presented_frame_for_seek(Duration::from_millis(7_900));
+
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitLatest,
+            })
+            .unwrap();
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(requests.len(), 1);
+        assert!(session.seek_commit().is_none());
+        assert_eq!(
+            session.snapshot().current_position,
+            Duration::from_millis(7_900)
+        );
+        assert_eq!(
+            session.pipeline.media_clock_base,
+            Duration::from_millis(7_900)
+        );
+        assert!(!session.snapshot().timeline.scrubbing);
+        assert!(!session.snapshot().timeline.seeking);
+        assert!(!session.should_drop_decoded_frame_for_seek(Duration::from_millis(7_916)));
+    }
+
+    #[test]
+    fn end_scrub_keeps_last_visible_preview_when_latest_target_was_not_previewed() {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(1, TrackKind::Video)],
+        );
+        let visible_request = SeekRequest::absolute(MediaTime::from_secs(8));
+        let unpresented_request = SeekRequest::absolute(MediaTime::from_secs(9));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(visible_request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(visible_request))
+            .unwrap();
+        session.pipeline.present_video_frame =
+            Some(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
+        session.note_presented_frame_for_seek(Duration::from_millis(7_900));
+
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(unpresented_request))
+            .unwrap();
+        assert_eq!(
+            session
+                .seek_commit()
+                .map(|seek_commit| seek_commit.target_position),
+            Some(MediaTime::from_secs(8))
+        );
+        assert_eq!(
+            session.snapshot().timeline.target_position,
+            Some(MediaTime::from_secs(9))
+        );
+
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitLatest,
+            })
+            .unwrap();
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(requests.len(), 1);
+        assert!(session.seek_commit().is_none());
+        assert_eq!(
+            session.snapshot().current_position,
+            Duration::from_millis(7_900)
+        );
+        assert!(!session.snapshot().timeline.scrubbing);
+        assert!(!session.snapshot().timeline.seeking);
     }
 
     #[test]
