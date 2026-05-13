@@ -4,241 +4,42 @@
 //! selection и HTTP headers, но не знает про UI, renderer или внутренний state
 //! player-а. `app-egui` получает отсюда уже готовый streaming demuxer.
 
-use std::collections::BTreeMap;
 use std::io::Read;
-use std::process::{Command, ExitStatus};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use reqwest::StatusCode;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use rustiplayer_config::NetworkConfig;
-use serde::Deserialize;
-use source_core::{
-    ByteSource, CachedByteSource, CancellationToken, HttpHeader, HttpRangeSource,
-    HttpRangeSourceConfig, Seekability, SourceError, SourceFingerprint, SourceResult,
-    SourceRuntimeConfig, SourceValidators,
-};
-
-/// Имя env-переменной для полного переопределения selector-а `yt-dlp`.
-const FORMAT_SELECTOR_ENV: &str = "VIDEO_PLAYER_YOUTUBE_FORMAT_SELECTOR";
-
-/// Selector `yt-dlp` по умолчанию для поддерживаемых тестовых потоков.
-///
-/// Приоритет намеренно идёт от самого тяжёлого SDR-теста к более лёгким:
-/// 4K60 -> 4K30 -> 1080p60 -> 1080p.
-///
-/// Важно: `vcodec=vp9` выбран строго, без `vp9.2`.
-/// `vp9.2` обычно означает HDR/10-bit, а текущий production renderer Phase 9
-/// рассчитан на NV12/8-bit для обычного playback path.
-const DEFAULT_FORMAT_SELECTOR: &str = concat!(
-    "bestvideo[ext=webm][vcodec=vp9][height=2160][fps>=60]+",
-    "bestaudio[ext=webm][acodec=opus]/",
-    "bestvideo[ext=webm][vcodec=vp9][height=2160]+",
-    "bestaudio[ext=webm][acodec=opus]/",
-    "bestvideo[ext=webm][vcodec=vp9][height=1080][fps>=60]+",
-    "bestaudio[ext=webm][acodec=opus]/",
-    "bestvideo[ext=webm][vcodec=vp9][height=1080]+",
-    "bestaudio[ext=webm][acodec=opus]"
-);
+use rustiplayer_config::{NetworkConfig, YoutubeConfig};
+use source_core::{ByteSource, CachedByteSource, HttpHeader, SourceRuntimeConfig};
 
 /// Размер HTTP chunk, который fetcher передаёт demuxer-у.
 const HTTP_READ_CHUNK_SIZE: usize = 64 * 1024;
 
-/// Минимальная metadata по выбранному YouTube формату.
-#[derive(Debug, Deserialize)]
-struct YtDlpMetadata {
-    /// Заголовок ролика для логов.
-    title: Option<String>,
+mod dto;
+mod http_refresh;
+mod process;
+mod resolver;
 
-    /// YouTube id для логов.
-    id: Option<String>,
+pub use dto::{
+    YoutubeDirectStreamDescriptor, YoutubeDirectStreams, YoutubeStreamKind, YoutubeStreamingMedia,
+};
+pub use resolver::resolve_youtube_direct_streams;
 
-    /// Итоговый выбранный combined format.
-    format_id: Option<String>,
+use http_refresh::{RefreshContext, YoutubeRefreshingRangeSource};
+use resolver::{
+    YoutubeDirectStreamResolver, YtDlpDirectStreamResolver, build_streaming_description,
+};
 
-    /// Высота выбранного video stream.
-    height: Option<u32>,
-
-    /// FPS выбранного video stream.
-    fps: Option<f64>,
-
-    /// Video codec выбранного stream.
-    vcodec: Option<String>,
-
-    /// Audio codec выбранного stream.
-    acodec: Option<String>,
-
-    /// Длительность VOD в секундах, если extractor её знает.
-    duration: Option<f64>,
-
-    /// Флаг live-трансляции от extractor-а.
-    is_live: Option<bool>,
-
-    /// Текстовый live status от yt-dlp для новых extractor-ов.
-    live_status: Option<String>,
-
-    /// Подробности выбранных adaptive streams после format selection.
-    requested_downloads: Option<Vec<YtDlpRequestedDownload>>,
-
-    /// Fallback-поле: некоторые версии yt-dlp кладут выбранные streams сюда.
-    requested_formats: Option<Vec<YtDlpFormat>>,
-}
-
-/// Один download candidate из `requested_downloads`.
-#[derive(Debug, Deserialize)]
-struct YtDlpRequestedDownload {
-    /// Составные adaptive streams: обычно video-only + audio-only.
-    requested_formats: Option<Vec<YtDlpFormat>>,
-}
-
-/// Один конкретный media stream от `yt-dlp`.
-#[derive(Debug, Clone, Deserialize)]
-struct YtDlpFormat {
-    /// Прямой media URL.
-    url: String,
-
-    /// Идентификатор формата, например `315` или `251`.
-    format_id: Option<String>,
-
-    /// Расширение/container.
-    ext: Option<String>,
-
-    /// Video codec или `none`.
-    vcodec: Option<String>,
-
-    /// Audio codec или `none`.
-    acodec: Option<String>,
-
-    /// Высота video stream.
-    height: Option<u32>,
-
-    /// FPS video stream.
-    fps: Option<f64>,
-
-    /// Размер stream, если известен.
-    filesize: Option<u64>,
-
-    /// Приблизительный размер stream, если точный неизвестен.
-    filesize_approx: Option<u64>,
-
-    /// Длительность конкретного adaptive stream, если yt-dlp её сообщает.
-    duration: Option<f64>,
-
-    /// HTTP headers, которые YouTube ожидает для этого URL.
-    http_headers: Option<BTreeMap<String, String>>,
-}
-
-/// Вид adaptive stream-а внутри YouTube media.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum YoutubeStreamKind {
-    /// Video-only WebM stream.
-    Video,
-
-    /// Audio-only WebM stream.
-    Audio,
-}
-
-impl YoutubeStreamKind {
-    /// Возвращает стабильную строку для логов и тестовых diagnostics.
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Video => "video",
-            Self::Audio => "audio",
-        }
-    }
-}
-
-/// Нормализованный direct stream descriptor без yt-dlp-specific структуры.
-#[derive(Debug, Clone)]
-pub struct YoutubeDirectStreamDescriptor {
-    /// Тип adaptive stream-а.
-    pub kind: YoutubeStreamKind,
-
-    /// Прямой media URL.
-    pub url: String,
-
-    /// HTTP headers, которые service layer получил от yt-dlp.
-    pub headers: Vec<HttpHeader>,
-
-    /// YouTube/yt-dlp format id, например `315` или `251`.
-    pub format_id: Option<String>,
-
-    /// Opaque id media в сервисе.
-    pub service_media_id: Option<String>,
-
-    /// HTTP validators, если их уже удалось получить через Range probe.
-    pub validators: SourceValidators,
-
-    /// Длительность stream/media, если extractor её знает.
-    pub duration: Option<Duration>,
-
-    /// Явный live-флаг: live не должен становиться seekable.
-    pub live: bool,
-
-    /// Описание stream для логов.
-    pub description: String,
-}
-
-impl YoutubeDirectStreamDescriptor {
-    /// Возвращает `true`, если stream имеет HTTP validators для стабильной byte identity.
-    #[must_use]
-    pub fn has_persistent_validators(&self) -> bool {
-        self.validators.etag.is_some() || self.validators.last_modified.is_some()
-    }
-}
-
-/// Нормализованная пара adaptive video/audio streams для одного YouTube media.
-#[derive(Debug, Clone)]
-pub struct YoutubeDirectStreams {
-    /// Заголовок media, если extractor его сообщил.
-    pub title: Option<String>,
-
-    /// Opaque id media в сервисе.
-    pub service_media_id: Option<String>,
-
-    /// Итоговый format id выбранной adaptive пары.
-    pub format_id: Option<String>,
-
-    /// Высота выбранного video stream.
-    pub height: Option<u32>,
-
-    /// FPS выбранного video stream.
-    pub fps: Option<f64>,
-
-    /// Video codec выбранной пары.
-    pub vcodec: Option<String>,
-
-    /// Audio codec выбранной пары.
-    pub acodec: Option<String>,
-
-    /// Общая длительность VOD, если известна.
-    pub duration: Option<Duration>,
-
-    /// Общий live-флаг media.
-    pub live: bool,
-
-    /// Video-only stream descriptor.
-    pub video: YoutubeDirectStreamDescriptor,
-
-    /// Audio-only stream descriptor.
-    pub audio: YoutubeDirectStreamDescriptor,
-}
-
-/// Результат подготовки YouTube ролика к streaming playback.
-pub struct YoutubeStreamingMedia {
-    /// Demuxer, который уже читает из HTTP-backed streaming sources.
-    pub demuxer: Box<dyn webm_demux::Demuxer + Send>,
-
-    /// Человекочитаемое описание выбранного YouTube формата.
-    pub description: String,
-
-    /// Нормализованные direct stream descriptors, выбранные service layer-ом.
-    pub direct_streams: YoutubeDirectStreams,
-}
+#[cfg(test)]
+use dto::{YtDlpFormat, YtDlpMetadata, YtDlpRequestedDownload};
+#[cfg(test)]
+use resolver::select_direct_media_streams;
+#[cfg(test)]
+use source_core::{CancellationToken, SourceValidators};
+#[cfg(test)]
+use std::time::Duration;
 
 /// Проверяет, похож ли CLI-аргумент на URL, который должен обрабатывать YouTube resolver.
 #[must_use]
@@ -252,9 +53,20 @@ pub fn open_streaming_media(
     video_url: &str,
     network_config: &NetworkConfig,
 ) -> Result<YoutubeStreamingMedia> {
+    open_streaming_media_with_config(video_url, network_config, &YoutubeConfig::default())
+}
+
+/// Открывает YouTube URL с явной service policy из пользовательского config.
+pub fn open_streaming_media_with_config(
+    video_url: &str,
+    network_config: &NetworkConfig,
+    youtube_config: &YoutubeConfig,
+) -> Result<YoutubeStreamingMedia> {
     let source_config = SourceRuntimeConfig::from_network_config(network_config)
         .context("Network config нельзя использовать для YouTube source")?;
-    let resolver: Arc<dyn YoutubeDirectStreamResolver> = Arc::new(YtDlpDirectStreamResolver);
+    let resolver: Arc<dyn YoutubeDirectStreamResolver> = Arc::new(
+        YtDlpDirectStreamResolver::from_youtube_config(youtube_config)?,
+    );
     let mut direct_streams = resolver.resolve_direct_streams(video_url)?;
     let description = build_streaming_description(&direct_streams);
     let demuxer = build_demuxer_from_direct_streams(
@@ -269,28 +81,6 @@ pub fn open_streaming_media(
         description,
         direct_streams,
     })
-}
-
-/// Resolver direct stream descriptors для production и тестового refresh path.
-trait YoutubeDirectStreamResolver: Send + Sync {
-    /// Возвращает свежую пару direct stream descriptors для исходного YouTube URL.
-    fn resolve_direct_streams(&self, video_url: &str) -> Result<YoutubeDirectStreams>;
-}
-
-/// Production resolver на базе `yt-dlp`.
-struct YtDlpDirectStreamResolver;
-
-impl YoutubeDirectStreamResolver for YtDlpDirectStreamResolver {
-    fn resolve_direct_streams(&self, video_url: &str) -> Result<YoutubeDirectStreams> {
-        resolve_youtube_direct_streams(video_url)
-    }
-}
-
-/// Получает normalized descriptors через `yt-dlp`, не открывая media bytes.
-pub fn resolve_youtube_direct_streams(video_url: &str) -> Result<YoutubeDirectStreams> {
-    let metadata = resolve_youtube_metadata(video_url)?;
-
-    select_direct_media_streams(&metadata)
 }
 
 /// Строит seekable Range demuxer для VOD или unseekable streaming fallback.
@@ -354,9 +144,9 @@ fn open_range_backed_demuxer(
         }
     };
 
-    direct_streams.video = video_source.descriptor.clone();
+    direct_streams.video = video_source.descriptor().clone();
     direct_streams.video.validators = video_source.validators();
-    direct_streams.audio = audio_source.descriptor.clone();
+    direct_streams.audio = audio_source.descriptor().clone();
     direct_streams.audio.validators = audio_source.validators();
 
     if !video_source.seekability().is_seekable() || !audio_source.seekability().is_seekable() {
@@ -414,353 +204,6 @@ fn open_unseekable_streaming_demuxer(
         .context("Не удалось объединить streaming video/audio demuxer-ы")?;
 
     Ok(Box::new(demuxer))
-}
-
-/// Получает metadata и выбранные direct URLs через `yt-dlp`.
-fn resolve_youtube_metadata(video_url: &str) -> Result<YtDlpMetadata> {
-    // Выбираем selector из env или используем тестовую policy по умолчанию.
-    let format_selector = youtube_format_selector();
-
-    // `--simulate --dump-single-json` не скачивает media, но применяет format selection.
-    let command_output = Command::new("yt-dlp")
-        .arg("--quiet")
-        .arg("--no-warnings")
-        .arg("--simulate")
-        .arg("--dump-single-json")
-        .arg("--no-playlist")
-        .arg("--format")
-        .arg(&format_selector)
-        .arg(video_url)
-        .output()
-        .context("Не удалось запустить yt-dlp для получения streaming metadata")?;
-
-    // Любая ошибка selection/access должна стать понятной ошибкой UI.
-    ensure_yt_dlp_success(command_output.status, &command_output.stderr)?;
-
-    // JSON должен быть валидным UTF-8.
-    let stdout_text = String::from_utf8(command_output.stdout)
-        .context("yt-dlp вернул metadata stdout не в UTF-8")?;
-
-    // Парсим typed JSON, чтобы не ходить по magic string paths руками.
-    serde_json::from_str(&stdout_text).context("Не удалось разобрать JSON metadata от yt-dlp")
-}
-
-/// Выбирает прямые video/audio descriptors из metadata.
-fn select_direct_media_streams(metadata: &YtDlpMetadata) -> Result<YoutubeDirectStreams> {
-    let requested_formats = metadata
-        .requested_downloads
-        .as_ref()
-        .and_then(|downloads| downloads.first())
-        .and_then(|download| download.requested_formats.as_ref())
-        .or(metadata.requested_formats.as_ref())
-        .context("yt-dlp metadata не содержит requested_formats для streaming")?;
-
-    // Video stream имеет настоящий vcodec и не имеет audio codec.
-    let video_format = requested_formats
-        .iter()
-        .find(|format| {
-            format
-                .vcodec
-                .as_deref()
-                .is_some_and(|codec| codec != "none")
-                && format.acodec.as_deref().unwrap_or("none") == "none"
-        })
-        .cloned()
-        .context("yt-dlp не вернул video-only stream URL")?;
-
-    // Audio stream имеет настоящий acodec и не имеет video codec.
-    let audio_format = requested_formats
-        .iter()
-        .find(|format| {
-            format
-                .acodec
-                .as_deref()
-                .is_some_and(|codec| codec != "none")
-                && format.vcodec.as_deref().unwrap_or("none") == "none"
-        })
-        .cloned()
-        .context("yt-dlp не вернул audio-only stream URL")?;
-
-    let service_media_id = metadata.id.clone();
-    let duration = duration_from_seconds(metadata.duration);
-    let live = metadata_is_live(metadata);
-
-    Ok(YoutubeDirectStreams {
-        title: metadata.title.clone(),
-        service_media_id: service_media_id.clone(),
-        format_id: metadata.format_id.clone(),
-        height: metadata.height,
-        fps: metadata.fps,
-        vcodec: metadata.vcodec.clone(),
-        acodec: metadata.acodec.clone(),
-        duration,
-        live,
-        video: direct_stream_from_format(
-            YoutubeStreamKind::Video,
-            video_format,
-            service_media_id.clone(),
-            duration,
-            live,
-        ),
-        audio: direct_stream_from_format(
-            YoutubeStreamKind::Audio,
-            audio_format,
-            service_media_id,
-            duration,
-            live,
-        ),
-    })
-}
-
-/// Преобразует JSON format в runtime stream descriptor.
-fn direct_stream_from_format(
-    kind: YoutubeStreamKind,
-    format: YtDlpFormat,
-    service_media_id: Option<String>,
-    media_duration: Option<Duration>,
-    live: bool,
-) -> YoutubeDirectStreamDescriptor {
-    let size = format
-        .filesize
-        .or(format.filesize_approx)
-        .map(|bytes| format!("{:.1} MiB", bytes as f64 / 1024.0 / 1024.0))
-        .unwrap_or_else(|| "unknown size".to_string());
-
-    let description = format!(
-        "{} format={} ext={} vcodec={} acodec={} height={} fps={} size={}",
-        kind.as_str(),
-        format.format_id.as_deref().unwrap_or("unknown"),
-        format.ext.as_deref().unwrap_or("unknown"),
-        format.vcodec.as_deref().unwrap_or("unknown"),
-        format.acodec.as_deref().unwrap_or("unknown"),
-        format
-            .height
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "none".to_string()),
-        format
-            .fps
-            .map(|value| format!("{value:.0}"))
-            .unwrap_or_else(|| "none".to_string()),
-        size,
-    );
-    let duration = duration_from_seconds(format.duration).or(media_duration);
-    let headers = format
-        .http_headers
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(name, value)| HttpHeader::new(name, value))
-        .collect();
-
-    YoutubeDirectStreamDescriptor {
-        kind,
-        url: format.url,
-        headers,
-        format_id: format.format_id,
-        service_media_id,
-        validators: SourceValidators::default(),
-        duration,
-        live,
-        description,
-    }
-}
-
-/// Контекст refresh-а direct URL, ограниченный одним stream-ом.
-#[derive(Clone)]
-struct RefreshContext {
-    /// Исходный URL страницы/ролика, который понимает yt-dlp.
-    original_video_url: String,
-
-    /// Какой stream нужно достать из свежей пары descriptors.
-    stream_kind: YoutubeStreamKind,
-
-    /// Resolver, который умеет заново получить direct URLs.
-    resolver: Arc<dyn YoutubeDirectStreamResolver>,
-}
-
-/// HTTP Range source с одноразовым refresh-ом direct URL через service layer.
-struct YoutubeRefreshingRangeSource {
-    /// Текущий direct stream descriptor.
-    descriptor: YoutubeDirectStreamDescriptor,
-
-    /// Настройки HTTP/cache layer из пользовательского config.
-    source_config: SourceRuntimeConfig,
-
-    /// Активный neutral HTTP Range source.
-    inner: HttpRangeSource,
-
-    /// Контекст, через который можно один раз получить свежий direct URL.
-    refresh_context: RefreshContext,
-
-    /// Гарантия bounded retry: refresh выполняется максимум один раз.
-    refresh_attempted: bool,
-}
-
-impl YoutubeRefreshingRangeSource {
-    /// Открывает Range source; если initial direct URL уже истёк, refresh выполняется один раз.
-    fn open(
-        descriptor: YoutubeDirectStreamDescriptor,
-        source_config: SourceRuntimeConfig,
-        refresh_context: RefreshContext,
-    ) -> Result<Self> {
-        match open_http_range_source(&descriptor, source_config.clone()) {
-            Ok(inner) => Ok(Self {
-                descriptor,
-                source_config,
-                inner,
-                refresh_context,
-                refresh_attempted: false,
-            }),
-            Err(error) if direct_url_may_be_expired(&error) => {
-                let refreshed_descriptor = refresh_descriptor(&refresh_context)
-                    .context("Не удалось обновить истёкший YouTube direct URL")?;
-                let inner = open_http_range_source(&refreshed_descriptor, source_config.clone())
-                    .context("Не удалось открыть обновлённый YouTube HTTP Range source")?;
-                Ok(Self {
-                    descriptor: refreshed_descriptor,
-                    source_config,
-                    inner,
-                    refresh_context,
-                    refresh_attempted: true,
-                })
-            }
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    /// Повторяет текущую read-позицию после успешного refresh-а direct URL.
-    fn refresh_once_at_position(&mut self, position: u64) -> bool {
-        if self.refresh_attempted {
-            return false;
-        }
-
-        self.refresh_attempted = true;
-        let refreshed_descriptor = match refresh_descriptor(&self.refresh_context) {
-            Ok(descriptor) => descriptor,
-            Err(error) => {
-                tracing::warn!(error = %error, "YouTube direct URL refresh failed");
-                return false;
-            }
-        };
-        let mut refreshed_source =
-            match open_http_range_source(&refreshed_descriptor, self.source_config.clone()) {
-                Ok(source) => source,
-                Err(error) => {
-                    tracing::warn!(error = %error, "Updated YouTube HTTP Range source open failed");
-                    return false;
-                }
-            };
-
-        if let Err(error) = refreshed_source.seek(position) {
-            tracing::warn!(error = %error, position, "Updated YouTube source seek failed");
-            return false;
-        }
-
-        self.descriptor = refreshed_descriptor;
-        self.inner = refreshed_source;
-        true
-    }
-}
-
-impl ByteSource for YoutubeRefreshingRangeSource {
-    fn read(&mut self, output: &mut [u8], cancellation: &CancellationToken) -> SourceResult<usize> {
-        let retry_position = self.inner.position();
-        match self.inner.read(output, cancellation) {
-            Ok(bytes_read) => Ok(bytes_read),
-            Err(error) if direct_url_may_be_expired(&error) => {
-                if self.refresh_once_at_position(retry_position) {
-                    self.inner.read(output, cancellation)
-                } else {
-                    Err(error)
-                }
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    fn seek(&mut self, offset: u64) -> SourceResult<()> {
-        self.inner.seek(offset)
-    }
-
-    fn position(&self) -> u64 {
-        self.inner.position()
-    }
-
-    fn seekability(&self) -> Seekability {
-        if self.descriptor.live {
-            return Seekability::NotSeekable {
-                reason: source_core::NotSeekableReason::Unknown,
-            };
-        }
-
-        self.inner.seekability()
-    }
-
-    fn validators(&self) -> SourceValidators {
-        self.inner.validators()
-    }
-
-    fn content_length(&self) -> Option<u64> {
-        self.inner.content_length()
-    }
-
-    fn fingerprint(&self) -> SourceFingerprint {
-        self.inner.fingerprint()
-    }
-}
-
-/// Открывает нейтральный HTTP Range source из service descriptor-а.
-fn open_http_range_source(
-    descriptor: &YoutubeDirectStreamDescriptor,
-    source_config: SourceRuntimeConfig,
-) -> SourceResult<HttpRangeSource> {
-    HttpRangeSource::open(HttpRangeSourceConfig::new(
-        descriptor.url.clone(),
-        descriptor.headers.clone(),
-        source_config,
-    ))
-}
-
-/// Возвращает свежий descriptor нужного stream kind-а.
-fn refresh_descriptor(refresh_context: &RefreshContext) -> Result<YoutubeDirectStreamDescriptor> {
-    let refreshed_streams = refresh_context
-        .resolver
-        .resolve_direct_streams(&refresh_context.original_video_url)?;
-
-    Ok(match refresh_context.stream_kind {
-        YoutubeStreamKind::Video => refreshed_streams.video,
-        YoutubeStreamKind::Audio => refreshed_streams.audio,
-    })
-}
-
-/// Определяет HTTP failure, похожий на истёкший direct URL.
-fn direct_url_may_be_expired(error: &SourceError) -> bool {
-    match error {
-        SourceError::HttpStatus { status, .. } => matches!(
-            *status,
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND
-        ),
-        SourceError::HttpRequest { .. } => true,
-        _ => false,
-    }
-}
-
-/// Конвертирует секунды yt-dlp в `Duration`, отбрасывая некорректные значения.
-fn duration_from_seconds(seconds: Option<f64>) -> Option<Duration> {
-    let seconds = seconds?;
-    if !seconds.is_finite() || seconds < 0.0 {
-        return None;
-    }
-
-    Some(Duration::from_secs_f64(seconds))
-}
-
-/// Определяет live media без превращения бывших live VOD в live.
-fn metadata_is_live(metadata: &YtDlpMetadata) -> bool {
-    metadata.is_live.unwrap_or(false)
-        || matches!(
-            metadata.live_status.as_deref(),
-            Some("is_live" | "is_upcoming")
-        )
 }
 
 /// Запускает потоковую загрузку одного direct media URL.
@@ -851,75 +294,6 @@ fn build_header_map(headers: &[HttpHeader]) -> Result<HeaderMap> {
     }
 
     Ok(header_map)
-}
-
-/// Возвращает selector `yt-dlp` для выбора тестового YouTube формата.
-fn youtube_format_selector() -> String {
-    // Env override нужен для ручных тестов новых кодеков/разрешений без перекомпиляции.
-    if let Ok(configured_selector) = std::env::var(FORMAT_SELECTOR_ENV) {
-        // Пустая строка почти всегда ошибка конфигурации, поэтому не используем её.
-        if !configured_selector.trim().is_empty() {
-            return configured_selector;
-        }
-    }
-
-    // По умолчанию используем ограниченный VP9/Opus WebM selector для текущего pipeline.
-    DEFAULT_FORMAT_SELECTOR.to_string()
-}
-
-/// Преобразует неуспешный exit code `yt-dlp` в читаемую ошибку.
-fn ensure_yt_dlp_success(status: ExitStatus, stderr_bytes: &[u8]) -> Result<()> {
-    // Нулевой exit code означает, что `yt-dlp` считает selection успешным.
-    if status.success() {
-        return Ok(());
-    }
-
-    // stderr сохраняем максимально информативным, но не паникуем на битом UTF-8.
-    let stderr_text = String::from_utf8_lossy(stderr_bytes);
-
-    anyhow::bail!(
-        "yt-dlp не смог выбрать поддерживаемый SDR VP9/Opus WebM поток (4K60, 4K30, 1080p60 или 1080p): {}",
-        stderr_text.trim()
-    );
-}
-
-/// Формирует описание выбранного streaming формата.
-fn build_streaming_description(direct_streams: &YoutubeDirectStreams) -> String {
-    let title = direct_streams.title.as_deref().unwrap_or("YouTube video");
-    let video_id = direct_streams
-        .service_media_id
-        .as_deref()
-        .unwrap_or("unknown id");
-    let format_id = direct_streams
-        .format_id
-        .as_deref()
-        .unwrap_or("unknown format");
-    let height = direct_streams
-        .height
-        .map(|value| format!("{value}p"))
-        .unwrap_or_else(|| "unknown height".to_string());
-    let fps = direct_streams
-        .fps
-        .map(|value| format!("{value:.0}fps"))
-        .unwrap_or_else(|| "unknown fps".to_string());
-    let vcodec = direct_streams
-        .vcodec
-        .as_deref()
-        .unwrap_or("unknown video codec");
-    let acodec = direct_streams
-        .acodec
-        .as_deref()
-        .unwrap_or("unknown audio codec");
-    let duration = direct_streams
-        .duration
-        .map(|value| format!("{}s", value.as_secs()))
-        .unwrap_or_else(|| "unknown duration".to_string());
-    let playback_kind = if direct_streams.live { "live" } else { "vod" };
-
-    format!(
-        "{title} [{video_id}] {playback_kind} {format_id} - {height} {fps}, {vcodec} + {acodec}, {duration}; {}; {}",
-        direct_streams.video.description, direct_streams.audio.description
-    )
 }
 
 #[cfg(test)]

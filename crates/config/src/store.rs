@@ -200,6 +200,7 @@ mod tests {
         assert_eq!(config.network.read_ahead_mb, 64);
         assert_eq!(config.network.connect_timeout_ms, 15_000);
         assert_eq!(config.network.read_timeout_ms, 15_000);
+        assert_eq!(config.youtube.resolve_timeout_ms, 30_000);
         assert_eq!(config.ui.skin, "minimal");
     }
 
@@ -226,6 +227,8 @@ mod tests {
         assert!(created_toml.contains("# RAM cache budget"));
         assert!(created_toml.contains("memory_cache_mb = 128"));
         assert!(created_toml.contains("read_ahead_mb = 64"));
+        assert!(created_toml.contains("# Timeout подготовки YouTube metadata"));
+        assert!(created_toml.contains("resolve_timeout_ms = 30000"));
         assert!(!created_toml.contains("index_fingerprint_sample_kb"));
         assert!(created_toml.contains("# UI skin id"));
         assert!(created_toml.contains("skin = \"minimal\""));
@@ -457,6 +460,27 @@ connect_timeout_ms = 0
         let error = load_from_path(&config_path).expect_err("invalid timeout rejected");
 
         assert!(error.to_string().contains("network.connect_timeout_ms"));
+    }
+
+    /// Проверяет положительность timeout-а подготовки YouTube metadata.
+    #[test]
+    fn invalid_youtube_resolve_timeout_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[youtube]
+resolve_timeout_ms = 0
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid timeout rejected");
+
+        assert!(error.to_string().contains("youtube.resolve_timeout_ms"));
     }
 
     /// Проверяет положительность seek interval/budget.

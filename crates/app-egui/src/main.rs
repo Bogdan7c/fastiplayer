@@ -21,7 +21,11 @@ mod telemetry;
 mod ui;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    mpsc::{self, Receiver, TryRecvError},
+};
+use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result, bail};
 use capability_core::CapabilityScanner;
@@ -47,14 +51,84 @@ enum InitialMedia {
     /// Локальный файл.
     File(PathBuf),
 
-    /// Уже открытый streaming demuxer.
-    Streaming {
-        /// Описание stream для логов/UI.
-        label: String,
+    /// YouTube/web URL, который нужно подготовить после старта UI.
+    YouTubeUrl { url: String },
+}
 
-        /// Demuxer, читающий из HTTP-backed потоков.
-        demuxer: Box<dyn webm_demux::Demuxer + Send>,
-    },
+/// Результат фоновой подготовки CLI YouTube URL.
+type YoutubeStartupResult = std::result::Result<service_youtube::YoutubeStreamingMedia, String>;
+
+/// Фоновый job, который не блокирует создание окна и UI.
+struct YoutubeStartupJob {
+    /// URL страницы/ролика, который был передан через CLI.
+    source_url: String,
+
+    /// Текст pending-состояния для центрального overlay.
+    pending_message: String,
+
+    /// Receiver одноразового результата background resolver-а.
+    result_rx: Receiver<YoutubeStartupResult>,
+
+    /// JoinHandle нужен для cleanup после получения результата.
+    join_handle: Option<JoinHandle<()>>,
+}
+
+impl YoutubeStartupJob {
+    /// Запускает подготовку YouTube media на отдельном thread-е.
+    fn spawn(source_url: String, app_config: AppConfig) -> std::result::Result<Self, String> {
+        let (result_tx, result_rx) = mpsc::channel();
+        let thread_url = source_url.clone();
+        let network_config = app_config.network.clone();
+        let youtube_config = app_config.youtube.clone();
+        let join_handle = thread::Builder::new()
+            .name("youtube-startup-resolver".to_string())
+            .spawn(move || {
+                let resolve_result = service_youtube::open_streaming_media_with_config(
+                    &thread_url,
+                    &network_config,
+                    &youtube_config,
+                )
+                .map_err(|error| format!("{error:#}"));
+
+                if result_tx.send(resolve_result).is_err() {
+                    debug!("UI больше не ждёт результат YouTube startup resolver-а");
+                }
+            })
+            .map_err(|error| format!("Не удалось запустить YouTube startup resolver: {error}"))?;
+
+        Ok(Self {
+            source_url,
+            pending_message: "Подготовка YouTube stream...".to_string(),
+            result_rx,
+            join_handle: Some(join_handle),
+        })
+    }
+
+    /// Возвращает pending-текст без доступа к внутреннему channel state.
+    fn pending_message(&self) -> &str {
+        &self.pending_message
+    }
+
+    /// Неблокирующе забирает результат resolver-а, если он уже готов.
+    fn try_take_result(&mut self) -> Option<YoutubeStartupResult> {
+        let result = match self.result_rx.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) => {
+                Err("YouTube startup resolver завершился без результата".to_string())
+            }
+        };
+
+        if let Some(join_handle) = self.join_handle.take()
+            && join_handle.join().is_err()
+        {
+            return Some(Err(
+                "YouTube startup resolver завершился panic после результата".to_string(),
+            ));
+        }
+
+        Some(result)
+    }
 }
 
 /// Главное приложение — реализует ApplicationHandler для winit.
@@ -81,6 +155,9 @@ struct App {
     /// Media, переданное через CLI, для автозагрузки при старте.
     initial_media: Option<InitialMedia>,
 
+    /// Фоновая подготовка CLI YouTube URL, если она уже запущена.
+    youtube_startup_job: Option<YoutubeStartupJob>,
+
     /// Startup-ошибка shell-слоя, которую нужно показать после создания UI.
     startup_error: Option<String>,
 
@@ -103,6 +180,7 @@ impl App {
             app_state: None,
             telemetry: Arc::new(Telemetry::new()),
             initial_media,
+            youtube_startup_job: None,
             startup_error,
             app_config,
         }
@@ -163,18 +241,27 @@ impl App {
             renderer.queue(),
         );
 
+        if let Some(job) = &self.youtube_startup_job {
+            app_state.set_startup_pending(job.pending_message().to_string());
+        }
+
         if let Some(initial_media) = self.initial_media.take() {
             match initial_media {
                 InitialMedia::File(path) => {
                     info!(path = %path.display(), "Автозагрузка файла из CLI");
                     app_state.load_file(&path);
                 }
-                InitialMedia::Streaming { label, demuxer } => {
-                    info!(source = %label, "Автозагрузка streaming media из CLI");
-                    app_state.load_youtube_demuxer(label, demuxer);
+                InitialMedia::YouTubeUrl { url } => {
+                    info!(source = %url, "Автозагрузка YouTube URL из CLI");
+                    self.start_youtube_startup_job(url, &mut app_state);
                 }
             }
         }
+        poll_youtube_startup_job(
+            &mut self.youtube_startup_job,
+            &mut app_state,
+            &mut self.startup_error,
+        );
 
         // Shell получает read-only snapshot без доступа к mutable playback internals.
         let _player_snapshot = app_state.player_snapshot();
@@ -190,9 +277,61 @@ impl App {
             && let Some(path) = app_state.current_local_file()
         {
             self.initial_media = Some(InitialMedia::File(path.to_path_buf()));
+            self.startup_error = None;
         }
         self.app_state = None;
         self.renderer = None;
+    }
+
+    /// Запускает background resolve для CLI YouTube URL и сразу обновляет UI state.
+    fn start_youtube_startup_job(&mut self, source_url: String, app_state: &mut AppState) {
+        app_state.set_startup_pending("Подготовка YouTube stream...".to_string());
+        match YoutubeStartupJob::spawn(source_url, self.app_config.clone()) {
+            Ok(job) => {
+                self.startup_error = None;
+                self.youtube_startup_job = Some(job);
+            }
+            Err(error) => {
+                warn!(error = %error, "Не удалось запустить YouTube startup resolver");
+                let startup_error = format!("NetworkError: YouTube error: {error}");
+                self.startup_error = Some(startup_error.clone());
+                app_state.set_startup_error(startup_error);
+            }
+        }
+    }
+}
+
+/// Забирает готовый результат фоновой подготовки YouTube и доставляет его в UI/player.
+fn poll_youtube_startup_job(
+    job_slot: &mut Option<YoutubeStartupJob>,
+    app_state: &mut AppState,
+    startup_error_slot: &mut Option<String>,
+) {
+    let Some(job) = job_slot.as_mut() else {
+        return;
+    };
+    let Some(resolve_result) = job.try_take_result() else {
+        return;
+    };
+    let source_url = job.source_url.clone();
+    *job_slot = None;
+
+    match resolve_result {
+        Ok(streaming_media) => {
+            *startup_error_slot = None;
+            info!(
+                source = %source_url,
+                description = %streaming_media.description,
+                "YouTube media подготовлен для streaming playback"
+            );
+            app_state.load_youtube_demuxer(streaming_media.description, streaming_media.demuxer);
+        }
+        Err(error) => {
+            warn!(source = %source_url, error = %error, "Не удалось подготовить YouTube URL");
+            let startup_error = format!("NetworkError: YouTube error: {error}");
+            *startup_error_slot = Some(startup_error.clone());
+            app_state.set_startup_error(startup_error);
+        }
     }
 }
 
@@ -322,6 +461,11 @@ impl ApplicationHandler for App {
             },
 
             WindowEvent::RedrawRequested => {
+                poll_youtube_startup_job(
+                    &mut self.youtube_startup_job,
+                    app_state,
+                    &mut self.startup_error,
+                );
                 render_frame(&self.telemetry, window, renderer, app_state);
             }
 
@@ -560,8 +704,7 @@ fn main() -> Result<()> {
     // ControlFlow::Poll — непрерывный рендеринг (vsync контролируется present mode)
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
 
-    let (initial_media, cli_startup_error) =
-        resolve_initial_media_from_cli(&loaded_config.config.network);
+    let (initial_media, cli_startup_error) = resolve_initial_media_from_cli(&loaded_config.config);
     if let Some(InitialMedia::File(path)) = &initial_media {
         info!(path = %path.display(), "CLI аргумент: файл для воспроизведения");
     }
@@ -577,7 +720,7 @@ fn main() -> Result<()> {
 /// Локальный путь возвращается как файл.
 /// HTTP URL открывается через streaming adapter.
 fn resolve_initial_media_from_cli(
-    network_config: &rustiplayer_config::NetworkConfig,
+    app_config: &AppConfig,
 ) -> (Option<InitialMedia>, Option<String>) {
     // Берём только первый пользовательский аргумент, чтобы не вводить неполный CLI parser.
     let Some(argument) = std::env::args().nth(1) else {
@@ -587,26 +730,14 @@ fn resolve_initial_media_from_cli(
     // URL обрабатываем отдельно: текущий demuxer умеет только локальные файлы.
     if service_youtube::is_probably_url(&argument) {
         info!(url = %argument, "CLI аргумент распознан как YouTube/web URL");
+        if !app_config.youtube.enabled {
+            return (
+                None,
+                Some("NetworkError: YouTube adapter отключён в config".to_string()),
+            );
+        }
 
-        return match service_youtube::open_streaming_media(&argument, network_config) {
-            Ok(streaming_media) => {
-                info!(
-                    description = %streaming_media.description,
-                    "YouTube media подготовлен для streaming playback"
-                );
-                (
-                    Some(InitialMedia::Streaming {
-                        label: streaming_media.description,
-                        demuxer: streaming_media.demuxer,
-                    }),
-                    None,
-                )
-            }
-            Err(error) => {
-                warn!(error = %error, "Не удалось подготовить YouTube URL");
-                (None, Some(format!("NetworkError: YouTube error: {error}")))
-            }
-        };
+        return (Some(InitialMedia::YouTubeUrl { url: argument }), None);
     }
 
     // Всё остальное считаем локальным путём, как работало раньше.

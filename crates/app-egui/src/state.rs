@@ -54,6 +54,9 @@ pub struct AppState {
     /// Startup-ошибка shell-слоя, которую нужно показать без перевода player в Failed.
     pub startup_error: Option<String>,
 
+    /// Pending-состояние shell-слоя для операций, которые ещё не дошли до player.
+    pub startup_pending: Option<String>,
+
     /// Последняя renderer-neutral диагностика без GPU handles.
     render_diagnostics: RenderDiagnostics,
 
@@ -119,6 +122,7 @@ impl AppState {
             telemetry,
             app_config,
             startup_error,
+            startup_pending: None,
             render_diagnostics: RenderDiagnostics::default(),
             cached_present_frame: None,
             cached_present_source_label: None,
@@ -153,6 +157,24 @@ impl AppState {
     /// Обновляет renderer diagnostics, которые UI покажет в telemetry panel.
     pub fn set_render_diagnostics(&mut self, render_diagnostics: RenderDiagnostics) {
         self.render_diagnostics = render_diagnostics;
+    }
+
+    /// Показывает shell-level pending state, пока media ещё не передано в player.
+    pub fn set_startup_pending(&mut self, message: String) {
+        self.startup_error = None;
+        self.startup_pending = Some(message);
+    }
+
+    /// Показывает shell-level ошибку, которая возникла до открытия media в player.
+    pub fn set_startup_error(&mut self, message: String) {
+        self.startup_pending = None;
+        self.startup_error = Some(message);
+    }
+
+    /// Сбрасывает shell-level startup overlay после успешного открытия media.
+    fn clear_startup_status(&mut self) {
+        self.startup_pending = None;
+        self.startup_error = None;
     }
 
     /// Возвращает read-only snapshot из `player-core` для UI и renderer diagnostics.
@@ -196,6 +218,7 @@ impl AppState {
     pub fn load_file(&mut self, path: &Path) {
         let autoplay = !self.app_config.player.start_paused;
         self.clear_cached_present_frame();
+        self.clear_startup_status();
         self.current_local_file = Some(path.to_path_buf());
         if let Err(error) = self.player_worker.load_file(path, autoplay) {
             warn!(error = %error, "Не удалось отправить команду открытия файла в worker");
@@ -210,6 +233,7 @@ impl AppState {
     ) {
         let autoplay = !self.app_config.player.start_paused;
         self.clear_cached_present_frame();
+        self.clear_startup_status();
         self.current_local_file = None;
         if let Err(error) = self.player_worker.load_demuxer(label, demuxer, autoplay) {
             warn!(error = %error, "Не удалось отправить YouTube demuxer в worker");
@@ -344,6 +368,11 @@ impl AppState {
         let error_message = player_error_message
             .as_deref()
             .or(self.startup_error.as_deref());
+        let pending_message = if error_message.is_none() {
+            self.startup_pending.as_deref()
+        } else {
+            None
+        };
         let render_diagnostics = self.render_diagnostics.clone();
         let selected_skin = skin::skin_from_config(&self.app_config.ui.skin).unwrap_or_else(|| {
             warn!(
@@ -382,6 +411,7 @@ impl AppState {
                 ui,
                 is_playing,
                 error_message,
+                pending_message,
                 &selected_skin,
                 animation_state,
             );
@@ -740,6 +770,7 @@ impl AppState {
         ui: &mut egui::Ui,
         is_playing: bool,
         error_message: Option<&str>,
+        pending_message: Option<&str>,
         skin: &impl PlayerSkin,
         animation_state: AnimationState,
     ) {
@@ -754,6 +785,11 @@ impl AppState {
                     ui.vertical_centered(|ui| {
                         ui.add_space(40.0);
                         ui.colored_label(egui::Color32::RED, error);
+                    });
+                } else if let Some(message) = pending_message {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(40.0);
+                        ui.colored_label(egui::Color32::LIGHT_BLUE, message);
                     });
                 } else if !is_playing {
                     ui.vertical_centered(|ui| {

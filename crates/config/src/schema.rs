@@ -135,6 +135,16 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "[youtube]",
+        "# Настройки YouTube/service adapter-а.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "resolve_timeout_ms = 30000",
+        "# Timeout подготовки YouTube metadata через yt-dlp.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "skin = \"minimal\"",
         "# UI skin id; unknown id является config error.",
     );
@@ -630,6 +640,9 @@ pub struct YoutubeConfig {
 
     /// Предпочитать account/session cookies, если service adapter их поддерживает.
     pub prefer_account_session: bool,
+
+    /// Максимальное время подготовки direct stream metadata через `yt-dlp`.
+    pub resolve_timeout_ms: u64,
 }
 
 impl Default for YoutubeConfig {
@@ -638,6 +651,7 @@ impl Default for YoutubeConfig {
         Self {
             enabled: true,
             prefer_account_session: true,
+            resolve_timeout_ms: 30_000,
         }
     }
 }
