@@ -9,7 +9,9 @@ use crossbeam_channel::{
     Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError, bounded, unbounded,
 };
 use media_core::MediaTime;
+use rustiplayer_config::PlayerDemuxConfig;
 use tracing::{debug, warn};
+use webm_demux::DemuxerOptions;
 
 use crate::seek_controller::{PlaybackResumeIntent, SeekController};
 use crate::{
@@ -53,6 +55,9 @@ pub struct PlayerWorkerConfig {
 
     /// Минимальный интервал между live preview seek-ами во время scrub.
     pub live_scrub_preview_interval: Duration,
+
+    /// Fail-safe настройки demuxer-а для media, которые worker открывает сам.
+    pub demuxer_options: DemuxerOptions,
 }
 
 impl PlayerWorkerConfig {
@@ -63,6 +68,7 @@ impl PlayerWorkerConfig {
             tick_interval: DEFAULT_WORKER_TICK_INTERVAL,
             tick_config,
             live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
+            demuxer_options: DemuxerOptions::default(),
         }
     }
 
@@ -73,6 +79,7 @@ impl PlayerWorkerConfig {
             tick_interval: DEFAULT_WORKER_TICK_INTERVAL,
             tick_config: PlayerTickConfig::from(config),
             live_scrub_preview_interval: Duration::from_millis(config.player.seek.live_interval_ms),
+            demuxer_options: demuxer_options_from_config(&config.player.demux),
         }
     }
 }
@@ -82,6 +89,12 @@ impl Default for PlayerWorkerConfig {
     fn default() -> Self {
         Self::new(PlayerTickConfig::default())
     }
+}
+
+/// Конвертирует validated TOML config в runtime options demuxer-а.
+fn demuxer_options_from_config(config: &PlayerDemuxConfig) -> DemuxerOptions {
+    DemuxerOptions::from_max_consecutive_corrupted_packets(config.max_consecutive_corrupted_packets)
+        .expect("validated AppConfig must provide positive demux corrupted packet limit")
 }
 
 /// Ошибка неблокирующей отправки команды в worker.
@@ -417,7 +430,7 @@ impl PlayerWorker {
             .name("player-worker".into())
             .spawn(move || {
                 let runtime = PlayerWorkerRuntime {
-                    session: PlayerSession::new(),
+                    session: PlayerSession::with_demuxer_options(config.demuxer_options),
                     seek_controller: SeekController::new(),
                     command_rx,
                     scrub_rx,
@@ -1235,9 +1248,10 @@ mod tests {
         let (_render_request_tx, render_request_rx) = bounded(RENDER_REQUEST_CHANNEL_CAPACITY);
         let (render_release_tx, render_release_rx) = unbounded();
         let (_shutdown_tx, shutdown_rx) = bounded(1);
+        let config = worker_config_for_tests();
 
         PlayerWorkerRuntime {
-            session: PlayerSession::new(),
+            session: PlayerSession::with_demuxer_options(config.demuxer_options),
             seek_controller: SeekController::new(),
             command_rx,
             scrub_rx,
@@ -1247,7 +1261,7 @@ mod tests {
             render_release_tx,
             render_release_rx,
             shutdown_rx,
-            config: worker_config_for_tests(),
+            config,
             last_preview_scrub_seek_at: None,
             last_preview_scrub_target: None,
             deferred_preview_scrub_target: None,

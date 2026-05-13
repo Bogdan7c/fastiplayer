@@ -8,7 +8,7 @@ use codec_core::{
 };
 use media_core::{MediaDuration, MediaTime, TimelineNotSeekableReason, TrackInfo, TrackKind};
 use tracing::{debug, info, warn};
-use webm_demux::DemuxSeekability;
+use webm_demux::{DemuxSeekability, DemuxerOptions};
 
 use crate::media_opening::OpenedMedia;
 use crate::pipeline::{MAX_OBSERVED_VIDEO_FRAME_DURATION, MIN_OBSERVED_VIDEO_FRAME_DURATION};
@@ -53,6 +53,9 @@ pub struct PlayerSession {
 
     /// Последний свежий preview-кадр, реально показанный во время текущего scrub.
     last_visible_preview_position: Option<MediaTime>,
+
+    /// Fail-safe настройки demuxer-а для новых локальных media.
+    demuxer_options: DemuxerOptions,
 }
 
 /// Данные present frame, которые worker превращает в render lease без доступа к pipeline.
@@ -75,6 +78,15 @@ impl PlayerSession {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Создаёт пустую player session с явной demux fail-safe политикой.
+    #[must_use]
+    pub fn with_demuxer_options(demuxer_options: DemuxerOptions) -> Self {
+        Self {
+            demuxer_options,
+            ..Self::default()
+        }
     }
 
     /// Возвращает последний базовый immutable snapshot.
@@ -268,7 +280,7 @@ impl PlayerSession {
             return;
         }
 
-        match OpenedMedia::open_local_file(path) {
+        match OpenedMedia::open_local_file(path, self.demuxer_options) {
             Ok(opened_media) => self.install_opened_media(opened_media),
             Err(error) => {
                 warn!(error = %error, "Не удалось открыть файл");
@@ -2070,6 +2082,7 @@ impl Default for PlayerSession {
             capabilities: None,
             seek_commit: None,
             last_visible_preview_position: None,
+            demuxer_options: DemuxerOptions::default(),
         }
     }
 }

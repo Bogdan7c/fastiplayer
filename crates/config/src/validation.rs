@@ -2,7 +2,8 @@ use std::collections::HashSet;
 
 use crate::{
     AppConfig, CURRENT_SCHEMA_VERSION, ConfigError, ConfigResult, HdrToSdrConfig,
-    HdrToSdrOperatorConfig, PlayerSeekConfig, RenderColorAdjustmentConfig, VideoCodec,
+    HdrToSdrOperatorConfig, PlayerDemuxConfig, PlayerSeekConfig, RenderColorAdjustmentConfig,
+    VideoCodec,
 };
 
 /// Минимальный decode-ahead: ноль ломает смысл backpressure окна.
@@ -25,6 +26,9 @@ const MAX_AUDIO_BUFFER_TARGET_MS: u64 = 10_000;
 
 /// Верхний предел video preroll перед seek resume, чтобы config не удерживал лишние GPU frames.
 const MAX_SEEK_RESUME_VIDEO_READY_FRAMES: usize = MAX_PRESENT_QUEUE_FRAMES + 1;
+
+/// Верхний предел demux skip-window, чтобы повреждённый stream не держал worker слишком долго.
+const MAX_CONSECUTIVE_CORRUPTED_PACKETS: usize = 4096;
 
 /// Верхний предел network read-ahead на раннем этапе без полноценного cache manager.
 const MAX_NETWORK_READ_AHEAD_MB: u64 = 4096;
@@ -96,6 +100,7 @@ fn validate_player_section(config: &AppConfig) -> ConfigResult<()> {
     }
 
     validate_player_seek_config(&config.player.seek)?;
+    validate_player_demux_config(&config.player.demux)?;
 
     Ok(())
 }
@@ -128,6 +133,16 @@ fn validate_player_seek_config(seek: &PlayerSeekConfig) -> ConfigResult<()> {
     )?;
 
     Ok(())
+}
+
+/// Проверяет demux fail-safe параметры до открытия media.
+fn validate_player_demux_config(demux: &PlayerDemuxConfig) -> ConfigResult<()> {
+    validate_usize_range(
+        "player.demux.max_consecutive_corrupted_packets",
+        demux.max_consecutive_corrupted_packets,
+        1,
+        MAX_CONSECUTIVE_CORRUPTED_PACKETS,
+    )
 }
 
 /// Проверяет video section.

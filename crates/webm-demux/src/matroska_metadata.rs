@@ -40,32 +40,65 @@ const ID_MASTERING_METADATA: u64 = 0x55D0;
 const ID_LUMINANCE_MAX: u64 = 0x55D9;
 const ID_LUMINANCE_MIN: u64 = 0x55DA;
 
-/// Читает начало файла и возвращает metadata видеотреков по Matroska TrackNumber.
-pub(crate) fn extract_video_track_metadata_from_file(
+/// Matroska/WebM metadata одного video track-а, доступная до основного demux loop.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MatroskaVideoTrack {
+    /// Container `CodecID`, например `V_VP9`; нужен, когда Symphonia отдаёт `CODEC_TYPE_NULL`.
+    pub codec_id: Option<String>,
+
+    /// Нормализованная video metadata, если в TrackEntry были полезные поля.
+    pub metadata: Option<VideoTrackMetadata>,
+}
+
+/// Результат prefix scan-а: video tracks плюс факт, что дерево `Tracks` уже найдено.
+pub(crate) struct MatroskaVideoTrackScan {
+    /// Video tracks, извлечённые из Matroska/WebM `Tracks`.
+    pub video_tracks: HashMap<TrackId, MatroskaVideoTrack>,
+
+    /// `true`, если prefix уже содержит `Tracks`, даже когда video tracks там нет.
+    pub tracks_found: bool,
+}
+
+/// Читает начало файла и возвращает video tracks по Matroska TrackNumber.
+pub(crate) fn extract_video_tracks_from_file(
     path: &Path,
-) -> io::Result<HashMap<TrackId, VideoTrackMetadata>> {
+) -> io::Result<HashMap<TrackId, MatroskaVideoTrack>> {
     let mut file = File::open(path)?;
     let mut metadata_prefix = Vec::new();
     file.by_ref()
         .take(MATROSKA_METADATA_SCAN_LIMIT_BYTES)
         .read_to_end(&mut metadata_prefix)?;
 
-    Ok(extract_video_track_metadata_from_bytes(&metadata_prefix))
+    Ok(extract_video_tracks_from_bytes(&metadata_prefix))
 }
 
-/// Извлекает video track metadata из уже прочитанного EBML prefix-а.
-fn extract_video_track_metadata_from_bytes(bytes: &[u8]) -> HashMap<TrackId, VideoTrackMetadata> {
+/// Извлекает video tracks из уже прочитанного EBML prefix-а.
+pub(crate) fn extract_video_tracks_from_bytes(
+    bytes: &[u8],
+) -> HashMap<TrackId, MatroskaVideoTrack> {
+    scan_video_tracks_from_bytes(bytes).video_tracks
+}
+
+/// Сканирует EBML prefix и сообщает, найдено ли дерево `Tracks`.
+pub(crate) fn scan_video_tracks_from_bytes(bytes: &[u8]) -> MatroskaVideoTrackScan {
     let mut video_tracks = HashMap::new();
+    let mut tracks_found = false;
     let mut position = 0;
 
     while let Some(header) = read_element_header(bytes, position, bytes.len()) {
-        if header.id == ID_SEGMENT {
-            parse_segment(bytes, header.data_start, header.data_end, &mut video_tracks);
+        if header.id == ID_SEGMENT
+            && parse_segment(bytes, header.data_start, header.data_end, &mut video_tracks)
+        {
+            tracks_found = true;
+            break;
         }
         position = header.next_position;
     }
 
-    video_tracks
+    MatroskaVideoTrackScan {
+        video_tracks,
+        tracks_found,
+    }
 }
 
 /// Ищет `Tracks` внутри Segment и прекращает scan после первого найденного дерева tracks.
@@ -73,17 +106,19 @@ fn parse_segment(
     bytes: &[u8],
     start: usize,
     end: usize,
-    video_tracks: &mut HashMap<TrackId, VideoTrackMetadata>,
-) {
+    video_tracks: &mut HashMap<TrackId, MatroskaVideoTrack>,
+) -> bool {
     let mut position = start;
 
     while let Some(header) = read_element_header(bytes, position, end) {
         if header.id == ID_TRACKS {
             parse_tracks(bytes, header.data_start, header.data_end, video_tracks);
-            return;
+            return true;
         }
         position = header.next_position;
     }
+
+    false
 }
 
 /// Читает все TrackEntry children внутри Matroska `Tracks`.
@@ -91,7 +126,7 @@ fn parse_tracks(
     bytes: &[u8],
     start: usize,
     end: usize,
-    video_tracks: &mut HashMap<TrackId, VideoTrackMetadata>,
+    video_tracks: &mut HashMap<TrackId, MatroskaVideoTrack>,
 ) {
     let mut position = start;
 
@@ -111,11 +146,12 @@ fn parse_track_entry(
     bytes: &[u8],
     start: usize,
     end: usize,
-) -> Option<(TrackId, VideoTrackMetadata)> {
+) -> Option<(TrackId, MatroskaVideoTrack)> {
     let mut track_number = None;
     let mut track_type = None;
     let mut codec_id = None;
     let mut video_metadata = VideoTrackMetadata::empty();
+    let mut has_video_element = false;
     let mut position = start;
 
     while let Some(header) = read_element_header(bytes, position, end) {
@@ -124,6 +160,7 @@ fn parse_track_entry(
             ID_TRACK_TYPE => track_type = read_unsigned(bytes, &header),
             ID_CODEC_ID => codec_id = read_ascii(bytes, &header),
             ID_VIDEO => {
+                has_video_element = true;
                 video_metadata = parse_video(bytes, header.data_start, header.data_end);
             }
             _ => {}
@@ -132,7 +169,7 @@ fn parse_track_entry(
     }
 
     let track_number = track_number.and_then(|number| u32::try_from(number).ok())?;
-    let is_video_track = track_type == Some(1) || video_metadata.clone().into_option().is_some();
+    let is_video_track = track_type == Some(1) || has_video_element;
     if !is_video_track {
         return None;
     }
@@ -148,9 +185,13 @@ fn parse_track_entry(
         );
     }
 
-    video_metadata
-        .into_option()
-        .map(|metadata| (TrackId::new(track_number), metadata))
+    Some((
+        TrackId::new(track_number),
+        MatroskaVideoTrack {
+            codec_id,
+            metadata: video_metadata.into_option(),
+        },
+    ))
 }
 
 /// Читает Matroska `Video` metadata, включая nested `Colour`.
@@ -502,15 +543,20 @@ mod tests {
         );
         let bytes = master(ID_SEGMENT, vec![master(ID_TRACKS, vec![track_entry])]);
 
-        let metadata_by_track = extract_video_track_metadata_from_bytes(&bytes);
-        let metadata = metadata_by_track
+        let video_tracks_by_track = extract_video_tracks_from_bytes(&bytes);
+        let video_track = video_tracks_by_track
             .get(&TrackId::new(1))
+            .expect("video track должен быть извлечён");
+        let metadata = video_track
+            .metadata
+            .as_ref()
             .expect("video metadata должен быть извлечён");
         let color = metadata
             .color
             .as_ref()
             .expect("Colour metadata должна быть");
 
+        assert_eq!(video_track.codec_id.as_deref(), Some("V_VP9"));
         assert_eq!(metadata.coded_width, Some(3840));
         assert_eq!(metadata.coded_height, Some(2160));
         assert_eq!(metadata.bit_depth, Some(BitDepth::Ten));
@@ -552,9 +598,13 @@ mod tests {
         let declared_segment_size = tracks.len() + 4096;
         let bytes = element_with_declared_size(ID_SEGMENT, declared_segment_size, &tracks);
 
-        let metadata_by_track = extract_video_track_metadata_from_bytes(&bytes);
-        let metadata = metadata_by_track
+        let video_tracks_by_track = extract_video_tracks_from_bytes(&bytes);
+        let video_track = video_tracks_by_track
             .get(&TrackId::new(1))
+            .expect("video track должен читаться из prefix-а большого Segment");
+        let metadata = video_track
+            .metadata
+            .as_ref()
             .expect("video metadata должна читаться из prefix-а большого Segment");
         let color = metadata
             .color
@@ -565,6 +615,47 @@ mod tests {
         assert_eq!(metadata.bit_depth, Some(BitDepth::Ten));
         assert_eq!(color.transfer, TransferFunction::Pq);
         assert_eq!(color.primaries, ColorPrimaries::Bt2020);
+    }
+
+    #[test]
+    fn extracts_codec_id_even_without_optional_video_metadata() {
+        let video = master(ID_VIDEO, vec![]);
+        let track_entry = master(
+            ID_TRACK_ENTRY,
+            vec![
+                unsigned(ID_TRACK_NUMBER, 2),
+                unsigned(ID_TRACK_TYPE, 1),
+                ascii(ID_CODEC_ID, "V_VP9"),
+                video,
+            ],
+        );
+        let bytes = master(ID_SEGMENT, vec![master(ID_TRACKS, vec![track_entry])]);
+
+        let video_tracks_by_track = extract_video_tracks_from_bytes(&bytes);
+        let video_track = video_tracks_by_track
+            .get(&TrackId::new(2))
+            .expect("video track должен быть извлечён по TrackType");
+
+        assert_eq!(video_track.codec_id.as_deref(), Some("V_VP9"));
+        assert!(video_track.metadata.is_none());
+    }
+
+    #[test]
+    fn scan_reports_tracks_found_for_audio_only_tracks() {
+        let track_entry = master(
+            ID_TRACK_ENTRY,
+            vec![
+                unsigned(ID_TRACK_NUMBER, 3),
+                unsigned(ID_TRACK_TYPE, 2),
+                ascii(ID_CODEC_ID, "A_OPUS"),
+            ],
+        );
+        let bytes = master(ID_SEGMENT, vec![master(ID_TRACKS, vec![track_entry])]);
+
+        let scan = scan_video_tracks_from_bytes(&bytes);
+
+        assert!(scan.tracks_found);
+        assert!(scan.video_tracks.is_empty());
     }
 
     fn master(id: u64, children: Vec<Vec<u8>>) -> Vec<u8> {

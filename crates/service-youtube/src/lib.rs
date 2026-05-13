@@ -11,8 +11,9 @@ use std::thread;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use rustiplayer_config::{NetworkConfig, YoutubeConfig};
+use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
 use source_core::{ByteSource, CachedByteSource, HttpHeader, SourceRuntimeConfig};
+use webm_demux::DemuxerOptions;
 
 /// Размер HTTP chunk, который fetcher передаёт demuxer-у.
 const HTTP_READ_CHUNK_SIZE: usize = 64 * 1024;
@@ -62,8 +63,24 @@ pub fn open_streaming_media_with_config(
     network_config: &NetworkConfig,
     youtube_config: &YoutubeConfig,
 ) -> Result<YoutubeStreamingMedia> {
+    open_streaming_media_with_demux_config(
+        video_url,
+        network_config,
+        youtube_config,
+        &PlayerDemuxConfig::default(),
+    )
+}
+
+/// Открывает YouTube URL с явной service и demux fail-safe политикой.
+pub fn open_streaming_media_with_demux_config(
+    video_url: &str,
+    network_config: &NetworkConfig,
+    youtube_config: &YoutubeConfig,
+    demux_config: &PlayerDemuxConfig,
+) -> Result<YoutubeStreamingMedia> {
     let source_config = SourceRuntimeConfig::from_network_config(network_config)
         .context("Network config нельзя использовать для YouTube source")?;
+    let demuxer_options = demuxer_options_from_config(demux_config);
     let resolver: Arc<dyn YoutubeDirectStreamResolver> = Arc::new(
         YtDlpDirectStreamResolver::from_youtube_config(youtube_config)?,
     );
@@ -74,6 +91,7 @@ pub fn open_streaming_media_with_config(
         &mut direct_streams,
         source_config,
         Arc::clone(&resolver),
+        demuxer_options,
     )?;
 
     Ok(YoutubeStreamingMedia {
@@ -89,10 +107,11 @@ fn build_demuxer_from_direct_streams(
     direct_streams: &mut YoutubeDirectStreams,
     source_config: SourceRuntimeConfig,
     resolver: Arc<dyn YoutubeDirectStreamResolver>,
+    demuxer_options: DemuxerOptions,
 ) -> Result<Box<dyn webm_demux::Demuxer + Send>> {
     if direct_streams.live {
         tracing::info!("YouTube live stream открыт как not seekable streaming source");
-        return open_unseekable_streaming_demuxer(direct_streams, &source_config);
+        return open_unseekable_streaming_demuxer(direct_streams, &source_config, demuxer_options);
     }
 
     match open_range_backed_demuxer(
@@ -100,9 +119,10 @@ fn build_demuxer_from_direct_streams(
         direct_streams,
         source_config.clone(),
         resolver,
+        demuxer_options,
     )? {
         Some(demuxer) => Ok(demuxer),
-        None => open_unseekable_streaming_demuxer(direct_streams, &source_config),
+        None => open_unseekable_streaming_demuxer(direct_streams, &source_config, demuxer_options),
     }
 }
 
@@ -112,6 +132,7 @@ fn open_range_backed_demuxer(
     direct_streams: &mut YoutubeDirectStreams,
     source_config: SourceRuntimeConfig,
     resolver: Arc<dyn YoutubeDirectStreamResolver>,
+    demuxer_options: DemuxerOptions,
 ) -> Result<Option<Box<dyn webm_demux::Demuxer + Send>>> {
     let video_source = match YoutubeRefreshingRangeSource::open(
         direct_streams.video.clone(),
@@ -160,12 +181,20 @@ fn open_range_backed_demuxer(
 
     let video_source = CachedByteSource::new(video_source, &source_config);
     let audio_source = CachedByteSource::new(audio_source, &source_config);
-    let video_demuxer =
-        webm_demux::SymphoniaDemuxer::from_byte_source(video_source, "webm", "youtube-video")
-            .context("Не удалось открыть Range-backed video WebM")?;
-    let audio_demuxer =
-        webm_demux::SymphoniaDemuxer::from_byte_source(audio_source, "webm", "youtube-audio")
-            .context("Не удалось открыть Range-backed audio WebM")?;
+    let video_demuxer = webm_demux::SymphoniaDemuxer::from_byte_source_with_options(
+        video_source,
+        "webm",
+        "youtube-video",
+        demuxer_options,
+    )
+    .context("Не удалось открыть Range-backed video WebM")?;
+    let audio_demuxer = webm_demux::SymphoniaDemuxer::from_byte_source_with_options(
+        audio_source,
+        "webm",
+        "youtube-audio",
+        demuxer_options,
+    )
+    .context("Не удалось открыть Range-backed audio WebM")?;
     let demuxer = webm_demux::DualStreamDemuxer::new(video_demuxer, audio_demuxer)
         .context("Не удалось объединить Range-backed video/audio demuxer-ы")?;
 
@@ -176,6 +205,7 @@ fn open_range_backed_demuxer(
 fn open_unseekable_streaming_demuxer(
     direct_streams: &YoutubeDirectStreams,
     source_config: &SourceRuntimeConfig,
+    demuxer_options: DemuxerOptions,
 ) -> Result<Box<dyn webm_demux::Demuxer + Send>> {
     let (video_writer, video_reader) = webm_demux::StreamingByteReader::channel();
     let (audio_writer, audio_reader) = webm_demux::StreamingByteReader::channel();
@@ -193,17 +223,31 @@ fn open_unseekable_streaming_demuxer(
         audio_writer,
     )?;
 
-    let video_demuxer =
-        webm_demux::SymphoniaDemuxer::from_stream(video_reader, "webm", "youtube-video")
-            .context("Не удалось открыть streaming video WebM")?;
-    let audio_demuxer =
-        webm_demux::SymphoniaDemuxer::from_stream(audio_reader, "webm", "youtube-audio")
-            .context("Не удалось открыть streaming audio WebM")?;
+    let video_demuxer = webm_demux::SymphoniaDemuxer::from_stream_with_options(
+        video_reader,
+        "webm",
+        "youtube-video",
+        demuxer_options,
+    )
+    .context("Не удалось открыть streaming video WebM")?;
+    let audio_demuxer = webm_demux::SymphoniaDemuxer::from_stream_with_options(
+        audio_reader,
+        "webm",
+        "youtube-audio",
+        demuxer_options,
+    )
+    .context("Не удалось открыть streaming audio WebM")?;
 
     let demuxer = webm_demux::DualStreamDemuxer::new(video_demuxer, audio_demuxer)
         .context("Не удалось объединить streaming video/audio demuxer-ы")?;
 
     Ok(Box::new(demuxer))
+}
+
+/// Конвертирует validated TOML config в runtime options demuxer-а.
+fn demuxer_options_from_config(config: &PlayerDemuxConfig) -> DemuxerOptions {
+    DemuxerOptions::from_max_consecutive_corrupted_packets(config.max_consecutive_corrupted_packets)
+        .expect("validated AppConfig must provide positive demux corrupted packet limit")
 }
 
 /// Запускает потоковую загрузку одного direct media URL.

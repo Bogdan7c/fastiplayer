@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use media_core::TrackInfo;
-use webm_demux::{DemuxSeekability, Demuxer};
+use webm_demux::{DemuxSeekability, Demuxer, DemuxerOptions};
 
 /// Подготовленный media source, который уже открыт, но ещё не применён к state machine.
 pub(crate) struct OpenedMedia {
@@ -27,8 +27,11 @@ impl OpenedMedia {
     ///
     /// State transition (`Opening`, `Failed`, autoplay) остаётся в `PlayerSession`,
     /// чтобы IO/opening слой не менял playback state напрямую.
-    pub(crate) fn open_local_file(path: &Path) -> anyhow::Result<Self> {
-        let demuxer = webm_demux::SymphoniaDemuxer::from_file(path)?;
+    pub(crate) fn open_local_file(
+        path: &Path,
+        demuxer_options: DemuxerOptions,
+    ) -> anyhow::Result<Self> {
+        let demuxer = webm_demux::SymphoniaDemuxer::from_file_with_options(path, demuxer_options)?;
         Ok(Self::from_open_demuxer(
             OpenedMediaSource::LocalFile(path.to_path_buf()),
             Box::new(demuxer),

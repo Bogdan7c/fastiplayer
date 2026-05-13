@@ -80,13 +80,15 @@ impl YoutubeStartupJob {
         let thread_url = source_url.clone();
         let network_config = app_config.network.clone();
         let youtube_config = app_config.youtube.clone();
+        let demux_config = app_config.player.demux;
         let join_handle = thread::Builder::new()
             .name("youtube-startup-resolver".to_string())
             .spawn(move || {
-                let resolve_result = service_youtube::open_streaming_media_with_config(
+                let resolve_result = service_youtube::open_streaming_media_with_demux_config(
                     &thread_url,
                     &network_config,
                     &youtube_config,
+                    &demux_config,
                 )
                 .map_err(|error| format!("{error:#}"));
 

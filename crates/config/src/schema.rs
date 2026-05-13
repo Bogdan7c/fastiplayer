@@ -110,6 +110,16 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "[player.demux]",
+        "# Fail-safe настройки demuxer-а.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "max_consecutive_corrupted_packets = 64",
+        "# Сколько corrupted packets подряд можно пропустить до fatal ошибки.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "[network]",
         "# Настройки будущего source/network cache слоя.",
     );
@@ -188,6 +198,9 @@ pub struct PlayerConfig {
     /// Настройки seek/scrub поведения.
     pub seek: PlayerSeekConfig,
 
+    /// Настройки demuxer fail-safe поведения.
+    pub demux: PlayerDemuxConfig,
+
     /// Приоритет codec candidates при выборе video stream.
     pub preferred_video_codec_order: Vec<VideoCodec>,
 }
@@ -199,6 +212,7 @@ impl Default for PlayerConfig {
             start_paused: true,
             resume_last_position: true,
             seek: PlayerSeekConfig::default(),
+            demux: PlayerDemuxConfig::default(),
             preferred_video_codec_order: vec![
                 VideoCodec::Vp9,
                 VideoCodec::Av1,
@@ -206,6 +220,23 @@ impl Default for PlayerConfig {
                 VideoCodec::H265,
                 VideoCodec::Vp8,
             ],
+        }
+    }
+}
+
+/// Настройки fail-safe поведения demuxer-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PlayerDemuxConfig {
+    /// Сколько corrupted packets подряд demuxer может пропустить до fatal ошибки.
+    pub max_consecutive_corrupted_packets: usize,
+}
+
+impl Default for PlayerDemuxConfig {
+    /// Возвращает осторожный default, который переживает короткие повреждённые участки.
+    fn default() -> Self {
+        Self {
+            max_consecutive_corrupted_packets: 64,
         }
     }
 }

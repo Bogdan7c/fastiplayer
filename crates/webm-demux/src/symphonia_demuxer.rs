@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs::File;
+use std::io::{self, Read};
 use std::path::Path;
 use std::time::Duration;
 
@@ -7,10 +8,12 @@ use anyhow::Result;
 use bytes::Bytes;
 use media_core::{
     MediaTime, Packet as OurPacket, TimeBase as OurTimeBase, TimelineNotSeekableReason, TrackId,
-    TrackInfo, TrackKind, TrackTimestamp, VideoTrackMetadata,
+    TrackInfo, TrackKind, TrackTimestamp,
 };
-use source_core::{ByteSource, Seekability as SourceSeekability};
-use symphonia::core::codecs::{CODEC_TYPE_OPUS, CODEC_TYPE_VORBIS};
+use source_core::{
+    ByteSource, CancellationToken, Seekability as SourceSeekability, SourceError, SourceResult,
+};
+use symphonia::core::codecs::{CODEC_TYPE_NULL, CODEC_TYPE_OPUS, CODEC_TYPE_VORBIS, CodecType};
 use symphonia::core::errors::{Error as SymphoniaError, SeekErrorKind};
 use symphonia::core::formats::{
     FormatOptions, FormatReader, Packet, SeekMode as SymphoniaSeekMode, SeekTo, Track,
@@ -24,7 +27,22 @@ use tracing::{info, warn};
 use crate::byte_source::ByteSourceMediaSource;
 use crate::demuxer::{DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer};
 use crate::error::DemuxError;
-use crate::matroska_metadata::extract_video_track_metadata_from_file;
+use crate::matroska_metadata::{
+    MatroskaVideoTrack, extract_video_tracks_from_file, scan_video_tracks_from_bytes,
+};
+use crate::options::DemuxerOptions;
+
+/// Верхняя граница prefix scan-а для seekable byte source-ов.
+const MATROSKA_BYTE_SOURCE_SCAN_LIMIT_BYTES: usize = 4 * 1024 * 1024;
+
+/// Более короткая граница для unseekable stream, чтобы open не ждал большой network prefix.
+const MATROSKA_STREAM_SCAN_LIMIT_BYTES: usize = 256 * 1024;
+
+/// Codec id для video track-а, когда контейнер не дал доказательства конкретного codec-а.
+const UNKNOWN_VIDEO_CODEC_ID: &str = "unknown_video";
+
+/// Codec id для audio track-а, когда контейнер не дал доказательства конкретного codec-а.
+const UNKNOWN_AUDIO_CODEC_ID: &str = "unknown_audio";
 
 /// Demuxer на базе symphonia для WebM/MKV файлов.
 pub struct SymphoniaDemuxer {
@@ -33,6 +51,8 @@ pub struct SymphoniaDemuxer {
     duration: Option<Duration>,
     track_map: HashMap<u32, TrackEntry>,
     seekability: DemuxSeekability,
+    options: DemuxerOptions,
+    consecutive_corrupted_packets: usize,
 }
 
 /// Внутренняя структура для хранения данных о треке
@@ -45,19 +65,45 @@ struct TrackEntry {
     channels: Option<u32>,
 }
 
+/// Результат packet-level validation до отдачи packet-а в player pipeline.
+#[derive(Debug)]
+enum PacketConvertError {
+    /// Container отдал packet для track-а, которого не было в metadata.
+    UnknownTrack {
+        /// Сырой Symphonia/container track id.
+        track_id: u32,
+    },
+
+    /// Packet можно пропустить, если fail-safe лимит ещё не исчерпан.
+    CorruptedPacket {
+        /// Track, к которому относится повреждённый packet.
+        track_id: TrackId,
+
+        /// Человекочитаемая причина для logs/fatal error.
+        reason: String,
+    },
+}
+
 impl SymphoniaDemuxer {
     pub fn from_file(path: &Path) -> Result<Self, DemuxError> {
+        Self::from_file_with_options(path, DemuxerOptions::default())
+    }
+
+    pub fn from_file_with_options(
+        path: &Path,
+        options: DemuxerOptions,
+    ) -> Result<Self, DemuxError> {
         if !path.exists() {
             return Err(DemuxError::FileNotFound(path.to_path_buf()));
         }
 
-        let video_metadata_by_track = match extract_video_track_metadata_from_file(path) {
-            Ok(metadata_by_track) => metadata_by_track,
+        let video_tracks_by_track = match extract_video_tracks_from_file(path) {
+            Ok(video_tracks_by_track) => video_tracks_by_track,
             Err(error) => {
                 warn!(
                     error = %error,
                     path = %path.display(),
-                    "Matroska Colour metadata pre-scan failed"
+                    "Matroska video track pre-scan failed"
                 );
                 HashMap::new()
             }
@@ -80,16 +126,34 @@ impl SymphoniaDemuxer {
         Self::from_format_reader(
             probe_result.format,
             &path.display().to_string(),
-            video_metadata_by_track,
+            video_tracks_by_track,
             DemuxSeekability::Seekable,
+            options,
         )
     }
 
     /// Открывает WebM/MKV из потокового reader-а без seek.
     pub fn from_stream<R>(reader: R, extension_hint: &str, label: &str) -> Result<Self, DemuxError>
     where
-        R: std::io::Read + Send + Sync + 'static,
+        R: Read + Send + Sync + 'static,
     {
+        Self::from_stream_with_options(reader, extension_hint, label, DemuxerOptions::default())
+    }
+
+    /// Открывает WebM/MKV из потокового reader-а без seek с явной fail-safe политикой.
+    pub fn from_stream_with_options<R>(
+        reader: R,
+        extension_hint: &str,
+        label: &str,
+        options: DemuxerOptions,
+    ) -> Result<Self, DemuxError>
+    where
+        R: Read + Send + Sync + 'static,
+    {
+        let mut reader = reader;
+        let (stream_prefix, video_tracks_by_track) = read_stream_prefix(&mut reader)?;
+        let reader = io::Cursor::new(stream_prefix).chain(reader);
+
         // ReadOnlySource объявляет источник как unseekable для Symphonia.
         let media_source = ReadOnlySource::new(reader);
         let media_source_stream =
@@ -113,10 +177,11 @@ impl SymphoniaDemuxer {
         Self::from_format_reader(
             probe_result.format,
             label,
-            HashMap::new(),
+            video_tracks_by_track,
             DemuxSeekability::NotSeekable {
                 reason: TimelineNotSeekableReason::SourceNotSeekable,
             },
+            options,
         )
     }
 
@@ -129,8 +194,27 @@ impl SymphoniaDemuxer {
     where
         S: ByteSource + 'static,
     {
+        Self::from_byte_source_with_options(
+            source,
+            extension_hint,
+            label,
+            DemuxerOptions::default(),
+        )
+    }
+
+    /// Открывает WebM/MKV из нейтрального byte source-а с явной fail-safe политикой.
+    pub fn from_byte_source_with_options<S>(
+        mut source: S,
+        extension_hint: &str,
+        label: &str,
+        options: DemuxerOptions,
+    ) -> Result<Self, DemuxError>
+    where
+        S: ByteSource + 'static,
+    {
         let source_seekability = source.seekability();
         let demux_seekability = source_seekability_to_demux_seekability(source_seekability);
+        let video_tracks_by_track = extract_video_tracks_from_byte_source(&mut source, label)?;
         let media_source = ByteSourceMediaSource::new(Box::new(source));
         let media_source_stream =
             MediaSourceStream::new(Box::new(media_source), Default::default());
@@ -152,8 +236,9 @@ impl SymphoniaDemuxer {
         Self::from_format_reader(
             probe_result.format,
             label,
-            HashMap::new(),
+            video_tracks_by_track,
             demux_seekability,
+            options,
         )
     }
 
@@ -161,14 +246,21 @@ impl SymphoniaDemuxer {
     fn from_format_reader(
         format: Box<dyn FormatReader>,
         label: &str,
-        mut video_metadata_by_track: HashMap<TrackId, VideoTrackMetadata>,
+        mut video_tracks_by_track: HashMap<TrackId, MatroskaVideoTrack>,
         seekability: DemuxSeekability,
+        options: DemuxerOptions,
     ) -> Result<Self, DemuxError> {
         let mut tracks = Vec::new();
         let mut track_map = HashMap::new();
 
         for track in format.tracks() {
-            let entry = build_track_entry(track);
+            let provisional_kind = infer_track_kind(track);
+            let matroska_video_track = take_matroska_video_track_for_track_id(
+                TrackId::new(track.id),
+                provisional_kind,
+                &mut video_tracks_by_track,
+            );
+            let entry = build_track_entry(track, matroska_video_track.as_ref());
             track_map.insert(track.id, entry.clone());
 
             let duration =
@@ -194,11 +286,7 @@ impl SymphoniaDemuxer {
                 duration,
                 sample_rate: entry.sample_rate,
                 channels: entry.channels,
-                video: take_video_metadata_for_track_id(
-                    TrackId::new(track.id),
-                    entry.kind,
-                    &mut video_metadata_by_track,
-                ),
+                video: matroska_video_track.and_then(|video_track| video_track.metadata),
             });
         }
 
@@ -217,11 +305,19 @@ impl SymphoniaDemuxer {
             duration: global_duration,
             track_map,
             seekability,
+            options,
+            consecutive_corrupted_packets: 0,
         })
     }
 
-    fn convert_packet(&self, packet: Packet) -> Option<OurPacket> {
-        let entry = self.track_map.get(&packet.track_id())?;
+    fn convert_packet(&self, packet: Packet) -> std::result::Result<OurPacket, PacketConvertError> {
+        let packet_track_id = packet.track_id();
+        let entry =
+            self.track_map
+                .get(&packet_track_id)
+                .ok_or(PacketConvertError::UnknownTrack {
+                    track_id: packet_track_id,
+                })?;
 
         let pts = entry
             .time_base
@@ -234,16 +330,18 @@ impl SymphoniaDemuxer {
             match vp9_parser::parse_uncompressed_header(packet.buf()) {
                 Ok(info) => info.keyframe,
                 Err(e) => {
-                    tracing::warn!(error = %e, "VP9 packet header parse failed, skipping packet");
-                    return None;
+                    return Err(PacketConvertError::CorruptedPacket {
+                        track_id: TrackId::new(packet_track_id),
+                        reason: format!("VP9 packet header parse failed: {e}"),
+                    });
                 }
             }
         } else {
             false
         };
 
-        Some(OurPacket {
-            track_id: TrackId::new(packet.track_id()),
+        Ok(OurPacket {
+            track_id: TrackId::new(packet_track_id),
             kind: entry.kind,
             pts,
             dts: None,
@@ -251,6 +349,42 @@ impl SymphoniaDemuxer {
             keyframe,
             data: Bytes::from(packet.data),
         })
+    }
+
+    /// Сбрасывает счётчик corrupted packets после доказанного нормального продвижения.
+    fn record_successful_packet(&mut self) {
+        self.consecutive_corrupted_packets = 0;
+    }
+
+    /// Учитывает recoverable corrupted packet и возвращает fatal после configured лимита.
+    fn record_corrupted_packet(
+        &mut self,
+        track_id: Option<TrackId>,
+        reason: impl Into<String>,
+    ) -> Result<()> {
+        let reason = reason.into();
+        self.consecutive_corrupted_packets = self.consecutive_corrupted_packets.saturating_add(1);
+        let skipped = self.consecutive_corrupted_packets;
+        let limit = self.options.max_consecutive_corrupted_packets();
+
+        warn!(
+            ?track_id,
+            skipped,
+            limit,
+            reason = %reason,
+            "Corrupted packet skipped"
+        );
+
+        if skipped <= limit {
+            return Ok(());
+        }
+
+        Err(DemuxError::TooManyCorruptedPackets {
+            limit,
+            skipped,
+            last_error: reason,
+        }
+        .into())
     }
 
     /// Выбирает track для Symphonia seek: video предпочтительнее audio.
@@ -294,38 +428,38 @@ impl SymphoniaDemuxer {
     }
 }
 
-/// Достаёт Matroska video metadata для Symphonia track id.
+/// Достаёт Matroska video track metadata для Symphonia track id.
 ///
 /// Symphonia может использовать внутренний `track.id`, который не равен Matroska
 /// `TrackNumber`. Если pre-scan нашёл ровно один video entry, fallback безопасен:
 /// двусмысленности между несколькими видеотреками нет, а HDR metadata не теряется.
-fn take_video_metadata_for_track_id(
+fn take_matroska_video_track_for_track_id(
     symphonia_track_id: TrackId,
     track_kind: TrackKind,
-    metadata_by_track: &mut HashMap<TrackId, VideoTrackMetadata>,
-) -> Option<VideoTrackMetadata> {
+    video_tracks_by_track: &mut HashMap<TrackId, MatroskaVideoTrack>,
+) -> Option<MatroskaVideoTrack> {
     if track_kind != TrackKind::Video {
         return None;
     }
 
-    if let Some(metadata) = metadata_by_track.remove(&symphonia_track_id) {
-        return Some(metadata);
+    if let Some(video_track) = video_tracks_by_track.remove(&symphonia_track_id) {
+        return Some(video_track);
     }
 
-    if metadata_by_track.len() != 1 {
+    if video_tracks_by_track.len() != 1 {
         return None;
     }
 
-    let matroska_track_id = metadata_by_track.keys().next().copied()?;
-    let metadata = metadata_by_track.remove(&matroska_track_id);
-    if metadata.is_some() {
+    let matroska_track_id = video_tracks_by_track.keys().next().copied()?;
+    let video_track = video_tracks_by_track.remove(&matroska_track_id);
+    if video_track.is_some() {
         warn!(
             symphonia_track_id = %symphonia_track_id,
             matroska_track_id = %matroska_track_id,
-            "Matroska video metadata сопоставлена по единственному video track fallback"
+            "Matroska video track metadata сопоставлена по единственному video track fallback"
         );
     }
-    metadata
+    video_track
 }
 
 impl Demuxer for SymphoniaDemuxer {
@@ -344,29 +478,36 @@ impl Demuxer for SymphoniaDemuxer {
     fn next_packet(&mut self) -> Result<Option<OurPacket>> {
         loop {
             match self.format.next_packet() {
-                Ok(packet) => {
-                    if let Some(our_packet) = self.convert_packet(packet) {
+                Ok(packet) => match self.convert_packet(packet) {
+                    Ok(our_packet) => {
+                        self.record_successful_packet();
                         return Ok(Some(our_packet));
                     }
-                    continue;
-                }
+                    Err(PacketConvertError::UnknownTrack { track_id }) => {
+                        return Err(DemuxError::UnknownPacketTrack { track_id }.into());
+                    }
+                    Err(PacketConvertError::CorruptedPacket { track_id, reason }) => {
+                        self.record_corrupted_packet(Some(track_id), reason)?;
+                        continue;
+                    }
+                },
                 Err(symphonia::core::errors::Error::IoError(ref e))
                     if e.kind() == std::io::ErrorKind::UnexpectedEof =>
                 {
                     return Ok(None);
                 }
-                Err(symphonia::core::errors::Error::DecodeError(_))
-                | Err(symphonia::core::errors::Error::IoError(_)) => {
-                    warn!("Corrupted packet, skipping");
+                Err(symphonia::core::errors::Error::DecodeError(reason)) => {
+                    self.record_corrupted_packet(None, reason)?;
                     continue;
                 }
+                Err(symphonia::core::errors::Error::IoError(error)) => {
+                    return Err(DemuxError::Io(error).into());
+                }
                 Err(symphonia::core::errors::Error::ResetRequired) => {
-                    return Err(anyhow::anyhow!(
-                        "Demux reset required: dynamic track changes are not supported yet"
-                    ));
+                    return Err(DemuxError::ResetRequired.into());
                 }
                 Err(e) => {
-                    return Err(anyhow::anyhow!("Demux error: {}", e));
+                    return Err(DemuxError::Parse(e).into());
                 }
             }
         }
@@ -396,6 +537,8 @@ impl Demuxer for SymphoniaDemuxer {
             )
             .map_err(symphonia_seek_error_to_demux_error)?;
 
+        self.consecutive_corrupted_packets = 0;
+
         Ok(self.seeked_to_timeline_result(timestamp, seeked_to))
     }
 }
@@ -417,50 +560,136 @@ fn source_seekability_to_demux_seekability(seekability: SourceSeekability) -> De
     }
 }
 
-/// Определяет тип трека и codec_id из CodecParameters.
-fn build_track_entry(track: &Track) -> TrackEntry {
-    let params = &track.codec_params;
+/// Читает Matroska prefix из seekable byte source-а и возвращает source cursor назад.
+fn extract_video_tracks_from_byte_source<S>(
+    source: &mut S,
+    label: &str,
+) -> Result<HashMap<TrackId, MatroskaVideoTrack>, DemuxError>
+where
+    S: ByteSource,
+{
+    if !source.seekability().is_seekable() {
+        return Ok(HashMap::new());
+    }
 
-    // Пытаемся извлечь sample_rate/channels из codec params
-    let mut sample_rate = params.sample_rate;
-    let mut channels = params.channels.map(|c| c.count() as u32);
+    let original_position = source.position();
+    let scan_result = read_byte_source_video_tracks(source);
+    let reset_result = source.seek(original_position);
 
-    // Для Opus в WebM symphonia 0.5 не заполняет params — парсим OpusHead вручную
-    if sample_rate.is_none() || channels.is_none() {
-        if let Some(ref codec_private) = params.extra_data {
-            if let Some((sr, ch)) = parse_opus_head(codec_private) {
-                if sample_rate.is_none() {
-                    sample_rate = Some(sr);
-                }
-                if channels.is_none() {
-                    channels = Some(ch);
-                }
-            }
+    if let Err(error) = reset_result {
+        return Err(source_error_to_demux_error(error));
+    }
+
+    match scan_result {
+        Ok(video_tracks_by_track) => Ok(video_tracks_by_track),
+        Err(error) => {
+            warn!(
+                error = %error,
+                source = %label,
+                "Matroska video track byte-source pre-scan failed"
+            );
+            Ok(HashMap::new())
+        }
+    }
+}
+
+/// Читает короткий prefix unseekable stream-а и потом replay-ит его перед основным reader-ом.
+fn read_stream_prefix<R>(
+    reader: &mut R,
+) -> io::Result<(Vec<u8>, HashMap<TrackId, MatroskaVideoTrack>)>
+where
+    R: Read,
+{
+    let mut metadata_prefix = Vec::new();
+    let mut read_buffer = [0_u8; 64 * 1024];
+
+    while metadata_prefix.len() < MATROSKA_STREAM_SCAN_LIMIT_BYTES {
+        let remaining_bytes = MATROSKA_STREAM_SCAN_LIMIT_BYTES - metadata_prefix.len();
+        let read_size = remaining_bytes.min(read_buffer.len());
+        let bytes_read = reader.read(&mut read_buffer[..read_size])?;
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        metadata_prefix.extend_from_slice(&read_buffer[..bytes_read]);
+
+        let scan = scan_video_tracks_from_bytes(&metadata_prefix);
+        if scan.tracks_found {
+            return Ok((metadata_prefix, scan.video_tracks));
         }
     }
 
-    // Определяем kind по наличию audio params или codec_id
+    let scan = scan_video_tracks_from_bytes(&metadata_prefix);
+    Ok((metadata_prefix, scan.video_tracks))
+}
+
+/// Читает prefix seekable byte source-а только до первого найденного Matroska `Tracks`.
+fn read_byte_source_video_tracks<S>(
+    source: &mut S,
+) -> SourceResult<HashMap<TrackId, MatroskaVideoTrack>>
+where
+    S: ByteSource,
+{
+    let cancellation = CancellationToken::never_cancelled();
+    let mut metadata_prefix = Vec::new();
+    let mut read_buffer = [0_u8; 64 * 1024];
+
+    while metadata_prefix.len() < MATROSKA_BYTE_SOURCE_SCAN_LIMIT_BYTES {
+        let remaining_bytes = MATROSKA_BYTE_SOURCE_SCAN_LIMIT_BYTES - metadata_prefix.len();
+        let read_size = remaining_bytes.min(read_buffer.len());
+        let bytes_read = source.read(&mut read_buffer[..read_size], &cancellation)?;
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        metadata_prefix.extend_from_slice(&read_buffer[..bytes_read]);
+
+        let scan = scan_video_tracks_from_bytes(&metadata_prefix);
+        if scan.tracks_found {
+            return Ok(scan.video_tracks);
+        }
+    }
+
+    Ok(scan_video_tracks_from_bytes(&metadata_prefix).video_tracks)
+}
+
+/// Конвертирует source-layer ошибку pre-scan-а в demux-level IO ошибку.
+fn source_error_to_demux_error(error: SourceError) -> DemuxError {
+    DemuxError::Io(io::Error::other(error))
+}
+
+/// Определяет тип трека по audio признакам; всё не-audio остаётся video для текущего MVP.
+fn infer_track_kind(track: &Track) -> TrackKind {
+    let (sample_rate, channels) = audio_properties_from_codec_params(track);
+
+    if sample_rate.is_some() || channels.is_some() {
+        TrackKind::Audio
+    } else {
+        TrackKind::Video
+    }
+}
+
+/// Определяет тип трека и codec_id из CodecParameters и Matroska CodecID.
+fn build_track_entry(
+    track: &Track,
+    matroska_video_track: Option<&MatroskaVideoTrack>,
+) -> TrackEntry {
+    let params = &track.codec_params;
+    let (sample_rate, channels) = audio_properties_from_codec_params(track);
     let kind = if sample_rate.is_some() || channels.is_some() {
         TrackKind::Audio
     } else {
         TrackKind::Video
     };
-
-    // Определяем codec_id
-    let codec_id = match params.codec {
-        CODEC_TYPE_OPUS => "A_OPUS".to_string(),
-        CODEC_TYPE_VORBIS => "A_VORBIS".to_string(),
-        c if c == symphonia::core::codecs::CODEC_TYPE_NULL => {
-            // Для video треков codec может быть NULL в symphonia
-            // Определяем по наличию video-specific полей
-            if kind == TrackKind::Video {
-                "V_VP9".to_string() // Предполагаем VP9 для WebM
-            } else {
-                "unknown".to_string()
-            }
-        }
-        c => format!("codec_{:?}", c),
-    };
+    let matroska_codec_id = matroska_video_track.and_then(|video_track| {
+        video_track
+            .codec_id
+            .as_deref()
+            .and_then(normalize_matroska_codec_id)
+    });
+    let codec_id = resolve_track_codec_id(params.codec, kind, matroska_codec_id);
 
     TrackEntry {
         kind,
@@ -468,6 +697,71 @@ fn build_track_entry(track: &Track) -> TrackEntry {
         time_base: params.time_base,
         sample_rate,
         channels,
+    }
+}
+
+/// Достаёт audio sample rate/channels, включая ручной OpusHead fallback для WebM.
+fn audio_properties_from_codec_params(track: &Track) -> (Option<u32>, Option<u32>) {
+    let params = &track.codec_params;
+    let mut sample_rate = params.sample_rate;
+    let mut channels = params.channels.map(|channels| channels.count() as u32);
+
+    if (sample_rate.is_none() || channels.is_none())
+        && let Some(ref codec_private) = params.extra_data
+        && let Some((opus_sample_rate, opus_channels)) = parse_opus_head(codec_private)
+    {
+        sample_rate = sample_rate.or(Some(opus_sample_rate));
+        channels = channels.or(Some(opus_channels));
+    }
+
+    (sample_rate, channels)
+}
+
+/// Нормализует Matroska CodecID без предположений о том, поддерживаем ли codec.
+fn normalize_matroska_codec_id(codec_id: &str) -> Option<String> {
+    let trimmed_codec_id = codec_id.trim();
+    if trimmed_codec_id.is_empty() {
+        None
+    } else {
+        Some(trimmed_codec_id.to_ascii_uppercase())
+    }
+}
+
+/// Возвращает container codec id с приоритетом явного Matroska CodecID.
+fn resolve_track_codec_id(
+    symphonia_codec: CodecType,
+    kind: TrackKind,
+    matroska_codec_id: Option<String>,
+) -> String {
+    if let Some(codec_id) = matroska_codec_id {
+        return codec_id;
+    }
+
+    if let Some(codec_id) = codec_id_from_symphonia_codec(symphonia_codec) {
+        return codec_id.to_string();
+    }
+
+    if symphonia_codec == CODEC_TYPE_NULL {
+        return unknown_codec_id_for_kind(kind).to_string();
+    }
+
+    format!("codec_{symphonia_codec}")
+}
+
+/// Таблица Symphonia codec id, которую можно расширять без переписывания demux policy.
+fn codec_id_from_symphonia_codec(codec: CodecType) -> Option<&'static str> {
+    match codec {
+        CODEC_TYPE_OPUS => Some("A_OPUS"),
+        CODEC_TYPE_VORBIS => Some("A_VORBIS"),
+        _ => None,
+    }
+}
+
+/// Возвращает стабильный unknown codec id для diagnostics и capability layer.
+fn unknown_codec_id_for_kind(kind: TrackKind) -> &'static str {
+    match kind {
+        TrackKind::Video => UNKNOWN_VIDEO_CODEC_ID,
+        TrackKind::Audio => UNKNOWN_AUDIO_CODEC_ID,
     }
 }
 
@@ -548,21 +842,151 @@ fn symphonia_seek_error_to_demux_error(error: SymphoniaError) -> DemuxError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
+    use std::io;
     use std::path::PathBuf;
     use std::time::Duration;
 
     use media_core::{TrackId, TrackKind, VideoTrackMetadata};
+    use symphonia::core::codecs::CodecParameters;
+    use symphonia::core::errors::Error as SymphoniaError;
+    use symphonia::core::formats::{
+        Cue, FormatOptions, FormatReader, Packet, SeekMode, SeekTo, SeekedTo, Track,
+    };
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::{Metadata, MetadataLog};
     use symphonia::core::units::TimeBase;
 
     use super::{
-        SymphoniaDemuxer, duration_to_symphonia_time, symphonia_timestamp_to_duration,
-        take_video_metadata_for_track_id,
+        SymphoniaDemuxer, build_track_entry, duration_to_symphonia_time,
+        symphonia_timestamp_to_duration, take_matroska_video_track_for_track_id,
     };
     use crate::demuxer::{DemuxSeekRequest, Demuxer};
+    use crate::error::DemuxError;
+    use crate::matroska_metadata::MatroskaVideoTrack;
+    use crate::options::DemuxerOptions;
+
+    struct FakeFormatReader {
+        tracks: Vec<Track>,
+        cues: Vec<Cue>,
+        metadata: MetadataLog,
+        packets: VecDeque<std::result::Result<Packet, SymphoniaError>>,
+    }
+
+    impl FakeFormatReader {
+        fn new(
+            tracks: Vec<Track>,
+            packets: Vec<std::result::Result<Packet, SymphoniaError>>,
+        ) -> Self {
+            Self {
+                tracks,
+                cues: Vec::new(),
+                metadata: MetadataLog::default(),
+                packets: VecDeque::from(packets),
+            }
+        }
+    }
+
+    impl FormatReader for FakeFormatReader {
+        fn try_new(
+            _source: MediaSourceStream,
+            _options: &FormatOptions,
+        ) -> symphonia::core::errors::Result<Self>
+        where
+            Self: Sized,
+        {
+            unreachable!("tests создают FakeFormatReader напрямую");
+        }
+
+        fn cues(&self) -> &[Cue] {
+            &self.cues
+        }
+
+        fn metadata(&mut self) -> Metadata<'_> {
+            self.metadata.metadata()
+        }
+
+        fn seek(
+            &mut self,
+            _mode: SeekMode,
+            _to: SeekTo,
+        ) -> symphonia::core::errors::Result<SeekedTo> {
+            let track_id = self
+                .tracks
+                .first()
+                .map(|track| track.id)
+                .unwrap_or_default();
+            Ok(SeekedTo {
+                track_id,
+                required_ts: 0,
+                actual_ts: 0,
+            })
+        }
+
+        fn tracks(&self) -> &[Track] {
+            &self.tracks
+        }
+
+        fn next_packet(&mut self) -> symphonia::core::errors::Result<Packet> {
+            self.packets.pop_front().unwrap_or_else(|| {
+                Err(SymphoniaError::IoError(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "fake eof",
+                )))
+            })
+        }
+
+        fn into_inner(self: Box<Self>) -> MediaSourceStream {
+            unreachable!("tests не возвращают MediaSourceStream из FakeFormatReader");
+        }
+    }
 
     fn test_webm_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/test.webm")
+    }
+
+    fn null_video_track(track_id: u32) -> Track {
+        let mut codec_params = CodecParameters::new();
+        codec_params.time_base = Some(TimeBase::new(1, 1_000));
+        Track::new(track_id, codec_params)
+    }
+
+    fn keyframe_packet(track_id: u32, timestamp: u64) -> Packet {
+        Packet::new_from_slice(track_id, timestamp, 1, b"\x00").with_keyframe(true)
+    }
+
+    fn fake_demuxer_with_options(
+        packets: Vec<std::result::Result<Packet, SymphoniaError>>,
+        matroska_tracks: HashMap<TrackId, MatroskaVideoTrack>,
+        options: DemuxerOptions,
+    ) -> SymphoniaDemuxer {
+        let reader = FakeFormatReader::new(vec![null_video_track(1)], packets);
+        SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "fake",
+            matroska_tracks,
+            crate::demuxer::DemuxSeekability::Seekable,
+            options,
+        )
+        .expect("fake demuxer должен открыться")
+    }
+
+    fn video_track_metadata(width: u32, height: Option<u32>) -> VideoTrackMetadata {
+        VideoTrackMetadata {
+            coded_width: Some(width),
+            coded_height: height,
+            profile: None,
+            bit_depth: None,
+            chroma: None,
+            color: None,
+        }
+    }
+
+    fn matroska_video_track(metadata: VideoTrackMetadata) -> MatroskaVideoTrack {
+        MatroskaVideoTrack {
+            codec_id: Some("V_VP9".to_string()),
+            metadata: Some(metadata),
+        }
     }
 
     fn next_video_packet(demuxer: &mut SymphoniaDemuxer) -> media_core::Packet {
@@ -599,22 +1023,16 @@ mod tests {
     fn video_metadata_exact_track_id_match_is_used_first() {
         let mut metadata_by_track = HashMap::from([(
             TrackId::new(7),
-            VideoTrackMetadata {
-                coded_width: Some(3840),
-                coded_height: None,
-                profile: None,
-                bit_depth: None,
-                chroma: None,
-                color: None,
-            },
+            matroska_video_track(video_track_metadata(3840, None)),
         )]);
 
-        let metadata = take_video_metadata_for_track_id(
+        let video_track = take_matroska_video_track_for_track_id(
             TrackId::new(7),
             TrackKind::Video,
             &mut metadata_by_track,
         )
-        .expect("exact metadata должна быть найдена");
+        .expect("exact video track metadata должна быть найдена");
+        let metadata = video_track.metadata.expect("video metadata должна быть");
 
         assert_eq!(metadata.coded_width, Some(3840));
         assert!(metadata_by_track.is_empty());
@@ -624,22 +1042,16 @@ mod tests {
     fn single_matroska_video_metadata_entry_can_fallback_to_symphonia_track_id() {
         let mut metadata_by_track = HashMap::from([(
             TrackId::new(1),
-            VideoTrackMetadata {
-                coded_width: Some(3840),
-                coded_height: Some(2160),
-                profile: None,
-                bit_depth: None,
-                chroma: None,
-                color: None,
-            },
+            matroska_video_track(video_track_metadata(3840, Some(2160))),
         )]);
 
-        let metadata = take_video_metadata_for_track_id(
+        let video_track = take_matroska_video_track_for_track_id(
             TrackId::new(0),
             TrackKind::Video,
             &mut metadata_by_track,
         )
-        .expect("single video metadata fallback должен сработать");
+        .expect("single video track metadata fallback должен сработать");
+        let metadata = video_track.metadata.expect("video metadata должна быть");
 
         assert_eq!(metadata.coded_height, Some(2160));
         assert!(metadata_by_track.is_empty());
@@ -648,11 +1060,17 @@ mod tests {
     #[test]
     fn multiple_unmatched_video_metadata_entries_do_not_fallback() {
         let mut metadata_by_track = HashMap::from([
-            (TrackId::new(1), VideoTrackMetadata::empty()),
-            (TrackId::new(2), VideoTrackMetadata::empty()),
+            (
+                TrackId::new(1),
+                matroska_video_track(VideoTrackMetadata::empty()),
+            ),
+            (
+                TrackId::new(2),
+                matroska_video_track(VideoTrackMetadata::empty()),
+            ),
         ]);
 
-        let metadata = take_video_metadata_for_track_id(
+        let metadata = take_matroska_video_track_for_track_id(
             TrackId::new(0),
             TrackKind::Video,
             &mut metadata_by_track,
@@ -660,6 +1078,153 @@ mod tests {
 
         assert!(metadata.is_none());
         assert_eq!(metadata_by_track.len(), 2);
+    }
+
+    #[test]
+    fn unknown_video_codec_is_not_assumed_to_be_vp9() {
+        let track = null_video_track(1);
+
+        let entry = build_track_entry(&track, None);
+
+        assert_eq!(entry.kind, TrackKind::Video);
+        assert_eq!(entry.codec_id, "unknown_video");
+    }
+
+    #[test]
+    fn explicit_matroska_video_codec_id_wins_over_symphonia_null_codec() {
+        let track = null_video_track(1);
+        let matroska_video_track = MatroskaVideoTrack {
+            codec_id: Some("v_vp9".to_string()),
+            metadata: None,
+        };
+
+        let entry = build_track_entry(&track, Some(&matroska_video_track));
+
+        assert_eq!(entry.codec_id, "V_VP9");
+    }
+
+    #[test]
+    fn unsupported_matroska_video_codec_stays_visible_to_capability_layer() {
+        let track = null_video_track(1);
+        let matroska_video_track = MatroskaVideoTrack {
+            codec_id: Some("V_AV1".to_string()),
+            metadata: None,
+        };
+
+        let entry = build_track_entry(&track, Some(&matroska_video_track));
+
+        assert_eq!(entry.codec_id, "V_AV1");
+    }
+
+    #[test]
+    fn demuxer_stops_after_configured_corrupted_packet_limit() {
+        let options = DemuxerOptions::from_max_consecutive_corrupted_packets(2)
+            .expect("test limit ненулевой");
+        let mut demuxer = fake_demuxer_with_options(
+            vec![
+                Err(SymphoniaError::DecodeError("bad packet 1")),
+                Err(SymphoniaError::DecodeError("bad packet 2")),
+                Err(SymphoniaError::DecodeError("bad packet 3")),
+            ],
+            HashMap::new(),
+            options,
+        );
+
+        let error = demuxer
+            .next_packet()
+            .expect_err("третья corrupted ошибка должна стать fatal");
+        let demux_error = error
+            .downcast_ref::<DemuxError>()
+            .expect("fatal должен быть typed DemuxError");
+
+        assert!(matches!(
+            demux_error,
+            DemuxError::TooManyCorruptedPackets {
+                limit: 2,
+                skipped: 3,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn successful_packet_resets_corrupted_packet_counter() {
+        let options = DemuxerOptions::from_max_consecutive_corrupted_packets(2)
+            .expect("test limit ненулевой");
+        let mut demuxer = fake_demuxer_with_options(
+            vec![
+                Err(SymphoniaError::DecodeError("bad packet 1")),
+                Err(SymphoniaError::DecodeError("bad packet 2")),
+                Ok(keyframe_packet(1, 10)),
+                Err(SymphoniaError::DecodeError("bad packet 3")),
+                Err(SymphoniaError::DecodeError("bad packet 4")),
+                Ok(keyframe_packet(1, 20)),
+            ],
+            HashMap::new(),
+            options,
+        );
+
+        let first_packet = demuxer
+            .next_packet()
+            .expect("первое чтение должно пережить две corrupted ошибки")
+            .expect("успешный packet должен быть возвращён");
+        let second_packet = demuxer
+            .next_packet()
+            .expect("счётчик должен сброситься после первого packet")
+            .expect("второй успешный packet должен быть возвращён");
+
+        assert_eq!(first_packet.pts, Duration::from_millis(10));
+        assert_eq!(second_packet.pts, Duration::from_millis(20));
+    }
+
+    #[test]
+    fn packet_for_unknown_track_is_fatal() {
+        let mut demuxer = fake_demuxer_with_options(
+            vec![Ok(keyframe_packet(99, 0))],
+            HashMap::new(),
+            DemuxerOptions::default(),
+        );
+
+        let error = demuxer
+            .next_packet()
+            .expect_err("unknown track должен быть fatal");
+        let demux_error = error
+            .downcast_ref::<DemuxError>()
+            .expect("fatal должен быть typed DemuxError");
+
+        assert!(matches!(
+            demux_error,
+            DemuxError::UnknownPacketTrack { track_id: 99 }
+        ));
+    }
+
+    #[test]
+    fn invalid_vp9_header_is_counted_as_corrupted_packet() {
+        let options = DemuxerOptions::from_max_consecutive_corrupted_packets(1)
+            .expect("test limit ненулевой");
+        let matroska_tracks = HashMap::from([(
+            TrackId::new(1),
+            MatroskaVideoTrack {
+                codec_id: Some("V_VP9".to_string()),
+                metadata: None,
+            },
+        )]);
+        let mut demuxer = fake_demuxer_with_options(
+            vec![
+                Ok(Packet::new_from_slice(1, 0, 1, b"\x00")),
+                Ok(keyframe_packet(1, 10)),
+            ],
+            matroska_tracks,
+            options,
+        );
+
+        let packet = demuxer
+            .next_packet()
+            .expect("один битый VP9 packet можно пропустить")
+            .expect("следующий packet должен быть возвращён");
+
+        assert_eq!(packet.pts, Duration::from_millis(10));
+        assert!(packet.keyframe);
     }
 
     #[test]

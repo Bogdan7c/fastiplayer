@@ -21,6 +21,29 @@ pub enum DemuxError {
     #[error("Ошибка парсинга: {0}")]
     Parse(#[from] symphonia::core::errors::Error),
 
+    #[error(
+        "Слишком много corrupted packets подряд: пропущено {skipped}, лимит {limit}; последняя ошибка: {last_error}"
+    )]
+    TooManyCorruptedPackets {
+        /// Настроенный лимит последовательных corrupted packets.
+        limit: usize,
+
+        /// Сколько corrupted packets встретилось подряд фактически.
+        skipped: usize,
+
+        /// Последняя причина, которую demuxer посчитал corrupted packet.
+        last_error: String,
+    },
+
+    #[error("Packet ссылается на неизвестный track id {track_id}")]
+    UnknownPacketTrack {
+        /// Track id из container packet-а.
+        track_id: u32,
+    },
+
+    #[error("Demux reset required: dynamic track changes are not supported yet")]
+    ResetRequired,
+
     #[error("Seek недоступен: {0}")]
     SeekUnavailable(String),
 

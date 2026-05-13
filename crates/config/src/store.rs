@@ -196,12 +196,30 @@ mod tests {
         );
         assert_eq!(config.player.seek.hotkey_small_step_secs, 5);
         assert_eq!(config.player.seek.hotkey_large_step_secs, 30);
+        assert_eq!(config.player.demux.max_consecutive_corrupted_packets, 64);
         assert_eq!(config.network.memory_cache_mb, 128);
         assert_eq!(config.network.read_ahead_mb, 64);
         assert_eq!(config.network.connect_timeout_ms, 15_000);
         assert_eq!(config.network.read_timeout_ms, 15_000);
         assert_eq!(config.youtube.resolve_timeout_ms, 30_000);
         assert_eq!(config.ui.skin, "minimal");
+    }
+
+    /// Проверяет, что demux skip-window не может быть нулевым.
+    #[test]
+    fn invalid_demux_corrupted_packet_limit_fails_validation() {
+        let mut config = AppConfig::default();
+        config.player.demux.max_consecutive_corrupted_packets = 0;
+
+        let error = config
+            .validate()
+            .expect_err("zero demux corrupted packet limit rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("player.demux.max_consecutive_corrupted_packets")
+        );
     }
 
     /// Проверяет первый запуск без существующего config-файла.
@@ -224,6 +242,9 @@ mod tests {
         assert!(created_toml.contains("# Настройки live seek"));
         assert!(created_toml.contains("live_interval_ms = 100"));
         assert!(created_toml.contains("resume_video_min_ready_frames = 3"));
+        assert!(created_toml.contains("[player.demux]"));
+        assert!(created_toml.contains("# Fail-safe настройки demuxer-а."));
+        assert!(created_toml.contains("max_consecutive_corrupted_packets = 64"));
         assert!(created_toml.contains("# RAM cache budget"));
         assert!(created_toml.contains("memory_cache_mb = 128"));
         assert!(created_toml.contains("read_ahead_mb = 64"));
