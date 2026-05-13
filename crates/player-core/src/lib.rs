@@ -5,7 +5,6 @@
 
 #![forbid(unsafe_code)]
 
-mod background_indexer;
 mod command;
 mod error;
 mod event;
@@ -17,10 +16,6 @@ mod state;
 mod tick;
 mod worker;
 
-pub use background_indexer::{
-    BackgroundIndexEntry, BackgroundIndexer, BackgroundIndexerConfig, IndexDiagnostics,
-    IndexPauseReason, IndexPressureSnapshot, IndexProgressSnapshot, SeekAccessDiagnostics,
-};
 pub use command::{
     MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, ScrubCommitPolicy,
     SeekMode, SeekRequest, SeekTarget,

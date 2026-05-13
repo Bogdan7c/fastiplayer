@@ -4,7 +4,7 @@ use media_core::{
     MediaDuration, MediaTime, TimelineNotSeekableReason, TimelineSnapshot, TrackKind,
 };
 
-use crate::{IndexDiagnostics, PlaybackState, PlayerError, QualityId, TrackId};
+use crate::{PlaybackState, PlayerError, QualityId, TrackId};
 
 /// Read-only snapshot player state для UI, renderer и desktop integration.
 #[derive(Debug, Clone, PartialEq)]
@@ -62,9 +62,6 @@ pub struct PlayerSnapshot {
 
     /// Счётчики frame pacing.
     pub frame_counters: FrameCounters,
-
-    /// Диагностика cache/index/seek path-а; UI показывает её только в telemetry panel.
-    pub index_diagnostics: IndexDiagnostics,
 
     /// Последняя user-facing ошибка.
     pub last_error: Option<PlayerError>,
@@ -134,7 +131,6 @@ impl Default for PlayerSnapshot {
             audio_buffer: AudioBufferSnapshot::default(),
             queues: QueueSnapshot::default(),
             frame_counters: FrameCounters::default(),
-            index_diagnostics: IndexDiagnostics::default(),
             last_error: None,
             capability_summary: None,
         }

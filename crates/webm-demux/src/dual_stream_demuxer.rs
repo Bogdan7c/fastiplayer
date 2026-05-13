@@ -182,6 +182,9 @@ impl Demuxer for DualStreamDemuxer {
             crate::demuxer::DemuxSeekMode::Accurate => {
                 DemuxSeekRequest::accurate(request.timestamp)
             }
+            crate::demuxer::DemuxSeekMode::DecodePointBefore => {
+                DemuxSeekRequest::accurate(request.timestamp)
+            }
             crate::demuxer::DemuxSeekMode::Preview => DemuxSeekRequest::preview(request.timestamp),
         };
         let _audio_seek = self.audio_demuxer.seek_with_request(audio_request)?;

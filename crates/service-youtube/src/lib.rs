@@ -1048,8 +1048,6 @@ mod tests {
             read_ahead_mb: 1,
             connect_timeout_ms: 1_000,
             read_timeout_ms: 1_000,
-            indexer_io_budget_mb_per_sec: 1,
-            legacy_index_fingerprint_sample_kb: 1,
         })
         .expect("source config")
     }

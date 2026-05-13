@@ -13,9 +13,6 @@ pub struct SourceRuntimeConfig {
     /// Read-ahead budget для future cache manager.
     read_ahead_bytes: u64,
 
-    /// IO budget фонового indexer-а в bytes/sec.
-    indexer_io_budget_bytes_per_sec: u64,
-
     /// Timeout установления HTTP соединения.
     connect_timeout: Duration,
 
@@ -31,21 +28,18 @@ mod tests {
 
     /// Проверяет конвертацию всех network budgets в bytes/runtime durations.
     #[test]
-    fn source_runtime_config_keeps_cache_readahead_and_indexer_budgets() {
+    fn source_runtime_config_keeps_cache_readahead_and_timeouts() {
         let config = NetworkConfig {
             memory_cache_mb: 2,
             read_ahead_mb: 3,
             connect_timeout_ms: 4,
             read_timeout_ms: 5,
-            indexer_io_budget_mb_per_sec: 6,
-            legacy_index_fingerprint_sample_kb: 7,
         };
 
         let runtime = SourceRuntimeConfig::from_network_config(&config).expect("config valid");
 
         assert_eq!(runtime.memory_cache_bytes(), 2 * 1024 * 1024);
         assert_eq!(runtime.read_ahead_bytes(), 3 * 1024 * 1024);
-        assert_eq!(runtime.indexer_io_budget_bytes_per_sec(), 6 * 1024 * 1024);
         assert_eq!(runtime.connect_timeout(), Duration::from_millis(4));
         assert_eq!(runtime.read_timeout(), Duration::from_millis(5));
     }
@@ -70,14 +64,6 @@ impl SourceRuntimeConfig {
                 field: "network.read_ahead_mb",
                 message: "значение не помещается в байтовый budget".to_string(),
             })?;
-        let indexer_io_budget_bytes_per_sec = network_config
-            .indexer_io_budget_mb_per_sec
-            .checked_mul(1024)
-            .and_then(|megabytes| megabytes.checked_mul(1024))
-            .ok_or(SourceError::InvalidConfig {
-                field: "network.indexer_io_budget_mb_per_sec",
-                message: "значение не помещается в байтовый budget".to_string(),
-            })?;
         if network_config.connect_timeout_ms == 0 {
             return Err(SourceError::InvalidConfig {
                 field: "network.connect_timeout_ms",
@@ -95,7 +81,6 @@ impl SourceRuntimeConfig {
         Ok(Self {
             memory_cache_bytes,
             read_ahead_bytes,
-            indexer_io_budget_bytes_per_sec,
             connect_timeout: Duration::from_millis(network_config.connect_timeout_ms),
             read_timeout: Duration::from_millis(network_config.read_timeout_ms),
         })
@@ -111,12 +96,6 @@ impl SourceRuntimeConfig {
     #[must_use]
     pub const fn read_ahead_bytes(&self) -> u64 {
         self.read_ahead_bytes
-    }
-
-    /// Возвращает IO budget фонового indexer-а.
-    #[must_use]
-    pub const fn indexer_io_budget_bytes_per_sec(&self) -> u64 {
-        self.indexer_io_budget_bytes_per_sec
     }
 
     /// Возвращает timeout подключения к HTTP source.
@@ -141,7 +120,6 @@ impl SourceRuntimeConfig {
         Self {
             memory_cache_bytes,
             read_ahead_bytes: memory_cache_bytes,
-            indexer_io_budget_bytes_per_sec: memory_cache_bytes,
             connect_timeout,
             read_timeout,
         }

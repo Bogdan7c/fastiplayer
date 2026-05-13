@@ -107,8 +107,8 @@ Cache нужен для:
 - metadata/captions caching;
 - future offline-ish scenarios.
 
-Cache/index metadata сейчас runtime-only. Bulk bytes cache остаётся будущим
-расширением и не должен попадать в seek/scrub hot path.
+Cache metadata сейчас runtime-only. Bulk bytes cache остаётся будущим расширением
+и не должен попадать в seek/scrub hot path.
 
 Schema version 2 фиксирует public network knobs:
 
@@ -116,8 +116,7 @@ Schema version 2 фиксирует public network knobs:
 - `network.memory_cache_mb = 0` - RAM cache явно отключён;
 - `network.read_ahead_mb = 64` - read-ahead budget для streaming source;
 - `network.connect_timeout_ms = 15000` - timeout подключения;
-- `network.read_timeout_ms = 15000` - timeout чтения;
-- `network.indexer_io_budget_mb_per_sec = 32` - IO budget cache/indexer.
+- `network.read_timeout_ms = 15000` - timeout чтения.
 
 `source-core` должен читать эти значения из validated config. Нельзя хардкодить
 cache/read-ahead/timeouts в `service-youtube`, `webm-demux` или `player-core`.

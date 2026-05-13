@@ -1,6 +1,6 @@
 use crate::{CancellationToken, SourceResult};
 
-/// Стабильный opaque fingerprint source-а для cache/index ownership.
+/// Стабильный opaque fingerprint source-а для source/cache ownership.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceFingerprint(String);
 
@@ -93,6 +93,6 @@ pub trait ByteSource: Send {
     /// Возвращает длину source-а в bytes, если она известна.
     fn content_length(&self) -> Option<u64>;
 
-    /// Возвращает fingerprint source-а для cache/index ownership.
+    /// Возвращает fingerprint source-а для source/cache ownership.
     fn fingerprint(&self) -> SourceFingerprint;
 }

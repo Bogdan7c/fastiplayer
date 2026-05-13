@@ -146,15 +146,15 @@ Acceptance:
 
 Цель:
 
-- не держать SQLite/database IO на playback, seek, scrub, cache или index path;
+- не держать SQLite/database IO на playback, seek, scrub или source-cache path;
 - оставить пользовательские настройки в TOML;
-- держать keyframe/time index и cache diagnostics runtime-only.
+- не хранить durable seek/cache metadata; runtime keyframe/time index слой удалён.
 
 Acceptance:
 
 - database crate отсутствует в workspace;
 - `rusqlite` отсутствует в workspace dependencies;
-- reopen media не использует durable index seed.
+- reopen media не загружает durable seek seed.
 
 ## Phase 7: Capability core and VA-API probing
 
@@ -280,10 +280,12 @@ Acceptance:
 
 Подробный план: [12. Live Seek, Timeline and Desktop Controls Sessions](11-live-seek-timeline-sessions.md).
 
-Статус: Session 1, Session 2 и Session 3 реализованы. Закрыты neutral timeline
-contracts, config schema v2, playback worker boundary, latest snapshot/event
-streams, `SeekController` skeleton, command priority для scrub, `UpdateScrub`
-coalescing policy `Drain Latest` и полноценный render-frame lease acceptance pass.
+Статус: Sessions 1-11 реализованы. Закрыты neutral timeline contracts, config
+schema v2, playback worker boundary, latest snapshot/event streams,
+`SeekController`, command priority для scrub, `UpdateScrub` coalescing policy
+`Drain Latest`, render-frame lease, real demux seek transactions, YouTube VOD
+range seek, minimal timeline UI, MPRIS/desktop integration, runtime index removal
+native preview seek и video decode bootstrap repair.
 
 Текущий render bridge: `PlayerWorker` отдаёт `PresentFrameLease` с decoded frame
 metadata, handle, generation и stale flag; worker не создаёт `wgpu::TextureView`.
@@ -291,14 +293,16 @@ Texture views создаются на render thread через render-side provi
 через RAII drop/ack, а render bridge failures попадают в worker как typed
 `PlayerRenderError`.
 
-Остаётся в следующих сессиях:
+Текущий seek status: runtime keyframe/time index удалён; app-level byte-offset
+hints отсутствуют. WebM/MKV video seek стартует с decode-safe point before target
+через native Symphonia/Matroska path, затем `PlayerSession` делает pre-roll/drop
+и commit gates до пользовательской позиции.
 
-- настоящий demux seek transaction для local WebM/Matroska;
-- HTTP Range/source-cache слой;
-- YouTube VOD range seek;
-- minimal timeline UI/skin boundary;
-- MPRIS/desktop integration;
-- background index/cache polish.
+Остаётся как future polish, а не как блокер live seek milestone:
+
+- source-cache/resume polish из Phase 17;
+- дополнительные seek diagnostics, если они понадобятся отдельно от cache/index;
+- расширение native demux seek policy на будущие MP4/MOV/fMP4 форматы.
 
 Отложенный performance follow-up: на тяжёлых 4k60 asset-ах после audio clock fix
 ещё бывают `Late` video drops. Диагностика указывает на render/present cadence и
@@ -397,7 +401,7 @@ Acceptance:
 Цель:
 
 - byte cache;
-- runtime cache/index diagnostics;
+- source-cache diagnostics и, если понадобится, отдельные seek diagnostics;
 - HTTP range resume;
 - cleanup policy.
 

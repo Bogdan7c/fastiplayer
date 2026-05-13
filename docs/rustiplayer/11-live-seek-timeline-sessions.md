@@ -1,6 +1,6 @@
 # 12. Live Seek, Timeline and Desktop Controls Sessions
 
-Этот документ разбивает реализацию live seek, timeline, cache/index и desktop controls
+Этот документ разбивает реализацию live seek, timeline, source-cache и desktop controls
 на отдельные рабочие сессии. Каждую сессию можно копировать в новый чат как
 самостоятельное задание: внутри есть контекст, границы, тесты, ручные проверки и
 обязательный self-review.
@@ -21,15 +21,15 @@
 - During scrub audio временно muted/paused; `EndScrub` коммитит последнюю позицию.
 - Final commit точный в рамках stream granularity: seek before target, pre-roll/drop
   до первого video frame `>= target`, audio trim/reset до target или typed timeout/error.
-- Network/cache/index настройки не хардкодятся, а идут через TOML config schema.
+- Network/cache настройки не хардкодятся, а идут через TOML config schema.
 - Все публичные типы, контракты и сложные блоки документируются на русском.
 
 Context7 basis, который нужно учитывать при реализации:
 
 - Upstream Symphonia seek: `FormatReader::seek(SeekMode, SeekTo::Time { time, track_id })`;
-  после seek decoder state должен быть сброшен. Byte-offset hint в upstream API
-  отсутствует, поэтому runtime index path реализован локальным patch-слоем
-  `SeekHint`/`seek_with_hint` поверх Symphonia 0.5.5.
+  после seek decoder state должен быть сброшен. Player-level runtime index и
+  byte-offset hints удалены; WebM/MKV быстрый seek опирается на native
+  Matroska `SeekHead`/`Cues` внутри demuxer-а.
 - egui interaction: `Slider`/`Response` дают `changed`, `drag_started`,
   `drag_stopped`; UI должен отправлять команды, а не менять player state напрямую.
 - reqwest Range: HTTP Range делается через headers; seekable HTTP source подтверждается
@@ -53,8 +53,9 @@ Context7 basis, который нужно учитывать при реализ
 Статус в текущем коде: реализованы neutral timeline-типы в `media-core`,
 расширены command/snapshot contracts `player-core`, добавлена config schema v2 и
 обновлены архитектурные документы. На момент закрытия этой сессии playback worker
-оставался следующим этапом; актуальный статус: worker реализован в Сессии 2, а
-real demux seek и точное seek transaction behavior остаются scope следующих сессий.
+оставался следующим этапом; актуальный статус: Sessions 2-11 закрыли worker,
+render lease, real demux seek, YouTube VOD range seek, timeline UI, MPRIS,
+runtime index removal, native preview seek и video decode bootstrap repair.
 
 ### Контекст для копипаста
 
@@ -108,7 +109,6 @@ schema и документация. Нельзя переносить playback �
 - `network.read_ahead_mb = 64`
 - `network.connect_timeout_ms = 15000`
 - `network.read_timeout_ms = 15000`
-- `network.indexer_io_budget_mb_per_sec = 32`
 - `ui.skin = "minimal"`
 
 ### Validation
@@ -398,7 +398,10 @@ pipeline internals и не копируя texture data.
 
 ## Сессия 5. Local WebM/Matroska Seek Transaction
 
-Статус: реализовано
+Статус: реализовано. После последующего ремонта video bootstrap фактический
+WebM/MKV video seek стартует с decode-safe point before target: decoder после
+flush получает keyframe, а точность позиции обеспечивает player-level
+pre-roll/drop.
 
 ### Контекст для копипаста
 
@@ -498,7 +501,7 @@ YouTube-specific logic в `player-core`. Live streams остаются not seeka
 - `DualStreamDemuxer::seek` clears pending packet slots.
 - URL expiry refresh once.
 - Range unsupported disables seek, playback still possible.
-- Missing validators do not change playback; index/cache metadata remain runtime-only.
+- Missing validators do not change playback; durable cache metadata is not written.
 
 ### Ручная проверка
 
@@ -651,110 +654,74 @@ commands/snapshot. UI не должен менять player position напря�
 - Проверить, что MPRIS position updates are not spammed.
 - Проверить, что non-Linux builds have stubs or cfg gates.
 
-## Сессия 9. Background Index and Cache Polish
+## Сессия 9. Runtime Background Index Removal
 
-Статус: реализовано, 2026-05-12.
+Статус: runtime index удалён после промежуточной реализации.
 
-Фактически реализовано:
+Текущий статус после удаления runtime index-а:
 
-- Database path удалён из этой сессии: `app-egui` не открывает database,
-  не строит durable identity, не загружает seed и не сохраняет index/cache
-  metadata между запусками.
+- Database path остаётся удалённым: `app-egui` не открывает database, не строит
+  durable identity, не загружает seed и не сохраняет seek/cache metadata между
+  запусками.
 - `source-core` оставляет только runtime byte-budget поля для read-ahead и
-  `indexer_io_budget_mb_per_sec`; local partial hash/fingerprint sample для
-  durable index больше не строится.
-- `player-core` получил lightweight metadata indexer contract: entries содержат
-  `track id`, `time`, optional `byte offset` и `keyframe`.
-- Local media load запускает отдельный `background-index-scan` thread для
-  demux-only scan. Накопленный index живёт только в `PlayerSession` runtime state
-  и сбрасывается при закрытии/переоткрытии media.
-- YouTube VOD не получает durable seed. HTTP validators остаются source-level
-  diagnostics/byte identity, но не включают долговременное сохранение index-а.
-- Indexer diagnostics включают progress, cache hit/miss placeholders, range
-  requests, seek latency, target vs actual, stale jobs, cancelled/superseded jobs
-  и timeouts.
-- Pause policy покрывает active scrub, low playback buffer, high decode/render
-  load и shutdown; scanner использует bounded update channel, cancellable send и
-  configured IO throttle, чтобы не starvation-ить playback reads.
-- `SeekMode::KeyframeBefore` использует накопленный keyframe index для demux seek
-  target, но commit target остаётся точным и проходит через существующий pre-roll
-  gate.
-- Telemetry panel показывает index/cache/seek diagnostics; minimal controls не
-  показывают эти metrics.
-
-Текущий runtime-only offset статус после Session 10:
-
-- Byte offsets заполняются demuxer-ом, когда backend может указать безопасную
-  container/page/frame boundary. В текущей сборке это WebM/Matroska, Ogg, FLAC,
-  WAV/RIFF и MP3/MPA packet offsets.
-- `BackgroundIndexEntry.byte_offset` остаётся optional: отсутствие offset не ломает
-  seek, а только отключает fast byte-offset hint для конкретного packet-а.
-- HTTP/service background scan пока использует observed playback packets;
-  отдельный HTTP low-priority byte-source scanner остаётся следующим расширением,
-  чтобы не дублировать service refresh/cache ownership.
+  сетевые timeouts; indexer IO budget и fingerprint config удалены из schema.
+- `player-core` больше не содержит `BackgroundIndexer`, runtime keyframe/time
+  index, index diagnostics и `background-index-scan` thread.
+- Seek transaction передаёт demuxer-у исходный target time; точный commit
+  остаётся responsibility player layer через decoder reset, pre-roll/drop и
+  commit gates.
+- WebM/MKV seek ускоряется только container-native механизмами demuxer-а:
+  Matroska `SeekHead`/`Cues` и обычный `FormatReader::seek`.
+- Telemetry panel больше не показывает удалённый index telemetry block. Если
+  понадобится отдельная seek latency telemetry, она должна добавляться отдельным
+  `SeekDiagnostics`, не привязанным к cache или index.
 
 ### Контекст для копипаста
 
-Реализуй фоновый keyframe/time index и polished diagnostics. Indexer не является
-вторым playback pipeline: no decoder, no audio, no render, no texture pool.
+Не реализуй фоновый keyframe/time index в `player-core`. Runtime
+`BackgroundIndexer`, `background-index-scan`, index telemetry и app-level
+byte-offset hints уже удалены; seek должен оставаться на native demuxer path.
 
 ### Цель
 
-Улучшить random access/live scrub responsiveness без увеличения video decode resource usage.
+Сохранить чистый seek path без runtime index слоя и без cache telemetry смешения. Улучшения
+отклика scrub-а делаются через worker scheduling, preview seek и native demuxer
+capabilities, а не через накопленный packet index.
 
 ### Scope
 
-- Background indexer uses low-priority byte source/demux scan.
-- Build metadata index:
-  - track id
-  - time
-  - byte offset if available
-  - keyframe flag
-- Index is runtime-only; no SQLite, no durable seed, no reuse between app runs.
-- Start with container cues.
-- Improve index in background.
-- Pause under:
-  - active scrub
-  - low playback buffer
-  - high decode/render load
-  - explicit shutdown
-- Diagnostics:
-  - index progress
-  - cache hit/miss
-  - range requests
-  - seek latency
-  - target vs actual
-  - stale jobs
-  - cancelled/superseded jobs
-  - timeouts
-- Metrics shown only in telemetry panel.
+- `PlayerSession` не владеет `BackgroundIndexer`.
+- `PlayerWorker` не запускает `background-index-scan` thread.
+- `DemuxSeekRequest` содержит только target time и режим seek-а.
+- `webm-demux` использует обычный container seek; для WebM/MKV это
+  Symphonia/Matroska `SeekHead`/`Cues` и `FormatReader::seek`.
+- Telemetry panel не показывает удалённый index telemetry block.
+- Config schema не содержит `network.indexer_io_budget_mb_per_sec` и
+  `network.index_fingerprint_sample_kb`; старые поля являются unknown fields.
 
 ### Tests
 
-- Runtime index lifecycle:
-  - new media starts a fresh index job
-  - close/reopen does not reuse previous run metadata
-  - completed index is not exported to app shell
-- Indexer pauses under pressure.
-- Cache/index diagnostics counters.
+- `cargo test -p player-core`
+- `cargo test -p webm-demux`
+- `cargo test -p app-egui`
+- `cargo test -p rustiplayer-config -p source-core -p service-youtube`
+- `cargo check`
 
 ### Ручная проверка
 
-- Open local long file, scrub before and after index progress.
-- Reopen same file, confirm index rebuilds in runtime and no database file is used.
-- YouTube VOD playback keeps index/cache metrics runtime-only.
-- `cargo test -p source-core -p player-core`
-- `cargo check`
+- Open local WebM/MKV and seek forward/backward.
+- Drag scrub near start/end.
+- Confirm no `background-index-scan` thread starts.
+- Confirm telemetry has no removed index telemetry block.
 
 ### Self-review
 
-- Проверить, что indexer does not decode video.
-- Проверить, что indexer cannot starve playback network/disk reads.
-- Проверить, что no database API находится на seek/index/cache path.
-- Проверить, что diagnostics are useful but not visible in minimal controls.
-- Проверить, что config controls all budgets and no magic IO constants remain.
+- Проверить, что код не экспортирует `BackgroundIndexer`/`IndexDiagnostics`.
+- Проверить, что seek transaction не использует byte-offset hints.
+- Проверить, что config с index-only полями падает как unknown field.
+- Проверить, что документация не описывает runtime index как текущий механизм.
 
-## Сессия 10. Preview Seek and Byte-Offset Index Path
+## Сессия 10. Preview Seek on Native Demux Path
 
 Статус: реализовано, 2026-05-13.
 
@@ -772,41 +739,61 @@ commands/snapshot. UI не должен менять player position напря�
   - final `EndScrub` всё ещё коммитит latest target и применяет сохранённый
     play/pause intent.
 - `player.seek.live_preview_budget_ms` подключён как timeout preview gates.
-- `webm-demux` получил neutral `DemuxSeekRequest`/`DemuxSeekMode`; preview
-  мапится в Symphonia `SeekMode::Coarse`, final seek остаётся `Accurate`.
+- `webm-demux` получил neutral `DemuxSeekRequest`/`DemuxSeekMode`: preview
+  мапится в Symphonia `SeekMode::Coarse`; video final seek использует
+  `DecodePointBefore` и тоже стартует с decode-safe точки не позже target;
+  audio-only final seek остаётся `Accurate`.
 - Symphonia 0.5.5 подключена через локальные patched crates в `third_party/` и
   `[replace]`: `symphonia-core`, `symphonia-format-mkv`,
   `symphonia-format-ogg`, `symphonia-format-riff`, `symphonia-bundle-flac`,
   `symphonia-bundle-mp3`.
-- `symphonia-core::FormatReader` получил generic advisory API
-  `seek_with_hint(mode, to, SeekHint)`. Default implementation честно падает
-  назад на обычный `seek`, поэтому future formats могут подключаться без изменения
-  `webm-demux`/`player-core`.
-- `symphonia-core::Packet` получил optional `source_byte_offset` и optional
-  `keyframe`. Это container-level metadata, не VP9-specific metadata.
-- `media-core::Packet`, `DemuxSeekRequest`, `PlayerTickPacket` и runtime
-  background index протаскивают optional byte offset до seek transaction.
-- `PlayerSession` выбирает `resolve_demux_seek_target_with_hint`: если runtime
-  keyframe index знает byte offset, demux seek получает тот же target time плюс
-  `byte_offset_hint`.
-- Реальный byte-offset seek hint backend path есть для WebM/Matroska, Ogg и FLAC:
-  backend jumps to безопасную container/page/frame boundary и дальше сканирует
-  вперёд до нужного timestamp.
-- WAV/RIFF отдаёт packet byte offsets в index, но seek остаётся прямым O(1) по
-  формуле block offset/time; byte hint там не нужен для latency.
-- MP3/MPA отдаёт packet byte offsets в index, но не принудительно использует
-  byte-only random seek hint: MP3 bit reservoir требует reference frames, поэтому
-  production-safe path оставлен на native Symphonia seek.
+- `DemuxSeekRequest` остаётся neutral API с target time и seek mode; app-level
+  byte-offset hint API удалён.
+- `PlayerSession` передаёт demuxer-у только target time. Runtime keyframe index
+  больше не выбирает demux target и не добавляет byte-offset hint.
+- WebM/MKV seek опирается на native Matroska `SeekHead`/`Cues` внутри demuxer-а.
+- WAV/RIFF seek остаётся прямым O(1) по формуле block offset/time.
+- MP3/MPA остаётся на native Symphonia seek: MP3 bit reservoir требует reference
+  frames, поэтому unsafe byte-only seek не используется.
 - Keyframe detection в `webm-demux` больше не привязана к VP9: сначала используется
   container-level `Packet::keyframe`, VP9 parser остаётся fallback только если
   backend не дал container keyframe flag.
 
+## Сессия 11. Seek Resume and Decode Bootstrap Repair
+
+Статус: реализовано, 2026-05-13.
+
+Фактически исправлено:
+
+- `EndScrub` применяет сохранённый worker resume intent к уже созданному final
+  seek transaction-у, поэтому временная pause-команда scrub-а больше не затирает
+  желание пользователя продолжить playback.
+- `player-core` для media с video track отправляет demuxer-у
+  `DemuxSeekRequest::decode_point_before(target)`, а не container-accurate seek
+  прямо в пользовательскую позицию.
+- Patched Matroska demuxer учитывает `SeekMode::Coarse` как decode-safe seek:
+  ищет keyframe block не позже target, а для Cue-only entries начинает с начала
+  cue cluster-а.
+- Cue candidates фильтруются по `CueTrack`, чтобы audio/video cues не смешивались
+  при выборе bootstrap-позиции.
+- Regression test в `webm-demux` проверяет, что первый video packet после
+  `DecodePointBefore` является keyframe и расположен не позже target.
+
+Проверки после ремонта:
+
+- `cargo fmt --check`
+- `cargo test -p webm-demux`
+- `cargo test -p player-core`
+- `cargo test -p app-egui`
+- `cargo check`
+- `git diff --check`
+
 ### Контекст для копипаста
 
 Продолжи Session 10 только если нужно расширять backend support дальше. Preview
-seek и generic byte-offset index path уже реализованы. Новые форматы должны
-подключаться через `SeekHint`/`Packet::source_byte_offset`, без codec-specific
-веток в `player-core`.
+seek уже реализован поверх single playback pipeline. Новые форматы должны
+подключаться через native demuxer seek, без codec-specific веток и без runtime
+keyframe index-а в `player-core`.
 
 ### Tests
 
@@ -842,7 +829,7 @@ seek и generic byte-offset index path уже реализованы. Новые
 - UI:
   - minimal controls do not overlap
   - stale frame dim works
-  - telemetry contains seek/cache/index metrics
+  - telemetry contains timeline/audio/video metrics and no removed index telemetry block
 
 ## Финальный self-review
 

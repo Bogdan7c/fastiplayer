@@ -125,8 +125,8 @@ worker как `PlayerRenderError` и обновляют player error snapshot.
 `TimelineSnapshot`, а legacy `duration/current_position: Duration` остаются
 compatibility-полями для текущего UI до отдельной UI-сессии. Контракты
 `SeekTarget::Absolute(MediaTime)`, `SeekTarget::Relative(Duration)`,
-`BeginScrub`, `UpdateScrub`, `EndScrub { CommitLatest }` и `Stop` не должны
-содержать backend/container/platform-specific details.
+`BeginScrub`, `UpdateScrub`, `PreviewScrub`, `EndScrub { CommitLatest }` и
+`Stop` не должны содержать backend/container/platform-specific details.
 
 ### `media-core`
 
@@ -240,6 +240,11 @@ Service boundary для YouTube.
 WebM/Matroska demuxer.
 
 Сейчас функциональность живет в `webm-demux`. Позже crate можно переименовать или оставить, но player-facing media-типы уже вынесены в `media-core`.
+
+Текущий seek contract: `DemuxSeekRequest` содержит target time и режим. Для video
+`player-core` использует `DecodePointBefore`, а `webm-demux` мапит его на
+Symphonia/Matroska coarse seek к decode-safe точке не позже target. Точный commit
+остаётся в `PlayerSession` через decoder reset, pre-roll/drop и commit gates.
 
 ### `demux-mp4`
 
@@ -456,4 +461,4 @@ backend crates
 - `media-core -> app-egui`;
 - `codec-core -> VA-API backend`;
 - `service-youtube -> app-egui`;
-- persistent database code -> seek/index/cache hot path.
+- persistent database code -> playback/seek/scrub/source-cache hot path.

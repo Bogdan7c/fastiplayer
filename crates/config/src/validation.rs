@@ -183,10 +183,6 @@ fn validate_network_section(config: &AppConfig) -> ConfigResult<()> {
         config.network.connect_timeout_ms,
     )?;
     validate_positive_u64("network.read_timeout_ms", config.network.read_timeout_ms)?;
-    validate_positive_u64(
-        "network.indexer_io_budget_mb_per_sec",
-        config.network.indexer_io_budget_mb_per_sec,
-    )?;
     Ok(())
 }
 

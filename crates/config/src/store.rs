@@ -199,7 +199,6 @@ mod tests {
         assert_eq!(config.network.read_ahead_mb, 64);
         assert_eq!(config.network.connect_timeout_ms, 15_000);
         assert_eq!(config.network.read_timeout_ms, 15_000);
-        assert_eq!(config.network.indexer_io_budget_mb_per_sec, 32);
         assert_eq!(config.ui.skin, "minimal");
     }
 
@@ -236,30 +235,36 @@ mod tests {
         assert_eq!(reparsed, AppConfig::default());
     }
 
-    /// Проверяет, что config со старым index fingerprint полем всё ещё читается.
+    /// Проверяет, что старые index-only network поля больше не принимаются.
     #[test]
-    fn legacy_index_fingerprint_config_field_is_accepted_but_not_written() {
-        let temp_dir = tempfile::tempdir().expect("temp dir created");
-        let config_path = temp_dir.path().join("config.toml");
-        fs::write(
-            &config_path,
-            r#"
+    fn legacy_index_only_network_config_fields_are_rejected() {
+        for legacy_field in [
+            "index_fingerprint_sample_kb = 512",
+            "indexer_io_budget_mb_per_sec = 32",
+        ] {
+            let temp_dir = tempfile::tempdir().expect("temp dir created");
+            let config_path = temp_dir.path().join("config.toml");
+            fs::write(
+                &config_path,
+                format!(
+                    r#"
 schema_version = 2
 
 [network]
-index_fingerprint_sample_kb = 512
-"#,
-        )
-        .expect("legacy config written");
+{legacy_field}
+"#
+                ),
+            )
+            .expect("legacy config written");
 
-        let loaded = load_from_path(&config_path).expect("legacy config accepted");
-        let serialized = loaded.config.to_pretty_toml().expect("config serialized");
+            let error = load_from_path(&config_path).expect_err("legacy config rejected");
+            let field_name = legacy_field
+                .split_once(" = ")
+                .expect("test legacy field format")
+                .0;
 
-        assert_eq!(
-            loaded.config.network.legacy_index_fingerprint_sample_kb,
-            512
-        );
-        assert!(!serialized.contains("index_fingerprint_sample_kb"));
+            assert!(error.to_string().contains(field_name));
+        }
     }
 
     /// Проверяет, что старый config без color_adjustment получает identity defaults.

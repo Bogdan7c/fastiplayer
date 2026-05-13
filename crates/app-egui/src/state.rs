@@ -202,7 +202,7 @@ impl AppState {
         }
     }
 
-    /// Загружает YouTube demuxer без долговременного index/cache слоя.
+    /// Загружает YouTube demuxer без долговременного database/cache слоя.
     pub fn load_youtube_demuxer(
         &mut self,
         label: String,
@@ -643,68 +643,6 @@ impl AppState {
             "Playback PTS: {}",
             timeline::format_seconds(Some(playback_position_secs))
         ));
-
-        ui.separator();
-        ui.heading("Index / Cache");
-        let index_diagnostics = player_snapshot.index_diagnostics;
-        let progress = index_diagnostics.progress;
-        if let Some(indexed_until) = progress.indexed_until {
-            ui.monospace(format!(
-                "Indexed: {}",
-                timeline::format_seconds(Some(indexed_until.as_duration().as_secs_f64()))
-            ));
-        } else {
-            ui.monospace("Indexed: --:--");
-        }
-        if let Some(duration) = progress.duration {
-            let duration_seconds = duration.as_duration().as_secs_f64();
-            let indexed_seconds = progress
-                .indexed_until
-                .map(|position| position.as_duration().as_secs_f64())
-                .unwrap_or_default();
-            let percent = if duration_seconds > 0.0 {
-                (indexed_seconds / duration_seconds * 100.0).clamp(0.0, 100.0)
-            } else {
-                0.0
-            };
-            ui.monospace(format!("Index progress: {percent:.1}%"));
-        }
-        ui.monospace(format!("Index entries: {}", progress.entries));
-        ui.monospace(format!("Index complete: {}", progress.complete));
-        if index_diagnostics.paused {
-            ui.monospace(format!(
-                "Index paused: {:?}",
-                index_diagnostics.pause_reason
-            ));
-        }
-        ui.monospace(format!("Cache hits: {}", index_diagnostics.cache_hits));
-        ui.monospace(format!("Cache misses: {}", index_diagnostics.cache_misses));
-        ui.monospace(format!(
-            "Range requests: {}",
-            index_diagnostics.range_requests
-        ));
-        ui.monospace(format!("Timeouts: {}", index_diagnostics.timeouts));
-        ui.monospace(format!("Stale jobs: {}", index_diagnostics.stale_jobs));
-        ui.monospace(format!(
-            "Cancelled jobs: {}",
-            index_diagnostics.cancelled_or_superseded_jobs
-        ));
-        if let Some(latency) = index_diagnostics.seek.last_seek_latency {
-            ui.monospace(format!(
-                "Seek latency: {:.1}ms",
-                latency.as_secs_f64() * 1000.0
-            ));
-        }
-        if let (Some(target), Some(actual)) = (
-            index_diagnostics.seek.last_seek_target,
-            index_diagnostics.seek.last_seek_actual,
-        ) {
-            ui.monospace(format!(
-                "Seek target/actual: {} / {}",
-                timeline::format_seconds(Some(target.as_duration().as_secs_f64())),
-                timeline::format_seconds(Some(actual.as_duration().as_secs_f64()))
-            ));
-        }
 
         ui.separator();
         ui.monospace(format!(

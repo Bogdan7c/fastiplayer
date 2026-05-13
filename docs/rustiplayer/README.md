@@ -9,7 +9,7 @@
 - [01. Vision and Scope](01-vision-and-scope.md) - продуктовая цель, ограничения и функциональный scope.
 - [02. Target Architecture](02-target-architecture.md) - слои системы и поток данных.
 - [03. Project Map](03-project-map.md) - целевая карта crate'ов и ответственность каждого модуля.
-- [04. Codecs and Capabilities](04-codecs-and-capabilities.md) - аппаратные декодеры, профили, HDR, матрица возможностей.
+- [04. Codecs and Capabilities](04-codecs-capabilities.md) - аппаратные декодеры, профили, HDR, матрица возможностей.
 - [05. Config and Runtime Data](05-config-and-storage.md) - TOML-настройки и правило runtime-only данных.
 - [06. Rendering, UI and Platform](06-rendering-ui-platform.md) - wgpu/Vulkan, GLES fallback, egui, MPRIS, мультиплатформа.
 - [07. Services and Network](07-services-network.md) - YouTube-клиент, будущие сервисы, cache, streaming.
@@ -45,9 +45,9 @@
 | FFmpeg | Полностью вне проекта |
 | Config | TOML через `serde` |
 | Config schema | Current config schema version `2`; live seek, network cache/read-ahead и `ui.skin` defaults живут в config |
-| Persistent data | Отсутствует: SQLite/`rusqlite` слой удалён, seek/index/cache metadata живут только в runtime-памяти |
+| Persistent data | Отсутствует: SQLite/`rusqlite` слой удалён; durable seek/cache metadata и runtime index слой отсутствуют |
 | Timeline model | `media-core` владеет neutral `MediaTime`/`MediaDuration`/`TrackTimestamp`/`TimelineSnapshot`; первые concrete adapters - WebM/YouTube/VP9/VA-API/wgpu/MPRIS |
-| Seek backend | Runtime index path codec-neutral: `DemuxSeekRequest` может нести optional byte-offset hint; patched Symphonia 0.5.5 crates отдают packet offsets и принимают `SeekHint` там, где это безопасно |
+| Seek backend | Native demuxer path: `DemuxSeekRequest` несёт только target time и режим; WebM/MKV video seek использует decode-safe point before target через Symphonia/Matroska `SeekHead`/`Cues`, без app-level byte-offset hints |
 | Playback ownership | Runtime `PlayerSession` и media pipeline живут в потоке `PlayerWorker`; `app-egui` отправляет команды, читает latest snapshot/events и не вызывает `PlayerSession::tick()` напрямую |
 | Render frame lease | `PlayerWorker::try_acquire_present_frame()` отдаёт `PresentFrameLease`/`PlayerPresentFrame` с handle, metadata, generation и stale flag; `wgpu::TextureView` создаются на render thread через render-side provider, а release идёт через RAII drop/ack |
 | Worker channels | `player-core` использует `crossbeam-channel`; high-rate `UpdateScrub` идёт через bounded latest channel с policy `Drain Latest` |
@@ -65,17 +65,17 @@
   worker больше не создаёт `wgpu` views, render errors идут typed command/event в worker.
 - Live seek/timeline Sessions 4-8 закрыли real demux seek, precise seek transaction,
   minimal timeline UI и desktop/MPRIS integration через worker command/snapshot boundary.
-- Live seek/timeline Session 9 оставила keyframe/time index runtime-only:
-  `player-core` ведёт lightweight metadata indexer diagnostics, local background
-  scanner идёт отдельным demux-only thread-ом без decoder/audio/render/texture
-  resources, а `app-egui` не загружает и не сохраняет index/cache metadata.
+- Runtime `BackgroundIndexer`, `background-index-scan` thread, index diagnostics
+  и app-level byte-offset hints удалены. Seek снова проходит через native demuxer
+  path, а точность commit-а обеспечивает `PlayerSession` через decoder reset,
+  pre-roll/drop и commit gates.
 - Live seek/timeline Session 10 закрыла нормальный preview seek: первый scrub target
   отправляется сразу на drag start, worker throttles live preview seek-и, а
-  `PlayerSession` различает preview/final seek transaction. Byte-offset seek
-  path реализован через generic patched Symphonia `SeekHint`: WebM/Matroska,
-  Ogg и FLAC используют hint как быстрый старт скана; WAV/RIFF остаётся прямым
-  O(1) seek, MP3/MPA отдаёт offsets в index, но не делает unsafe byte-only seek
-  из-за bit reservoir.
+  `PlayerSession` различает preview/final seek transaction поверх одного
+  playback pipeline.
+- После ремонта seek bootstrap video final seek тоже стартует с decode-safe точки
+  не позже target: decoder reset получает keyframe, а точность пользовательской
+  позиции остаётся за pre-roll/drop и commit gates в `PlayerSession`.
 - Аудио-треск после worker/audio правок устранён через CPAL playback anchor smoothing и
   packet-boundary-safe resampler. На тяжёлых 4k60 asset-ах остаются late video drops;
   это отдельная будущая задача render/present cadence profiling, не блокер текущего этапа.

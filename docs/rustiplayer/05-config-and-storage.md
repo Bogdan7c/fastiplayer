@@ -4,9 +4,9 @@
 
 Настройки пользователя хранятся в TOML.
 
-Долговременный database слой удалён из текущей архитектуры. Seek/index/cache
-metadata живут только в runtime-памяти, чтобы database IO не попадал в playback,
-seek или scrub path.
+Долговременный database слой удалён из текущей архитектуры. Durable seek/cache
+metadata не сохраняются, а runtime keyframe/time index слоя больше нет, чтобы
+дополнительный IO не попадал в playback, seek или scrub path.
 
 ## Paths
 
@@ -97,7 +97,6 @@ memory_cache_mb = 128
 read_ahead_mb = 64
 connect_timeout_ms = 15000
 read_timeout_ms = 15000
-indexer_io_budget_mb_per_sec = 32
 
 [youtube]
 enabled = true
@@ -120,8 +119,8 @@ skin = "minimal"
 
 ## Schema version 2 seek/network/UI policy
 
-Schema version 2 фиксирует публичные knobs для будущих live seek/scrub,
-source-cache/indexer слоя и selectable UI skin. Эти поля не должны превращаться в
+Schema version 2 фиксирует публичные knobs для live seek/scrub,
+source-cache слоя и selectable UI skin. Эти поля не должны превращаться в
 магические константы в `player-core`, `source-core` или `app-egui`.
 
 `player.seek.*`:
@@ -140,7 +139,6 @@ source-cache/indexer слоя и selectable UI skin. Эти поля не дол
 - `read_ahead_mb = 64` - сетевой read-ahead budget;
 - `connect_timeout_ms = 15000` - timeout подключения;
 - `read_timeout_ms = 15000` - timeout чтения;
-- `indexer_io_budget_mb_per_sec = 32` - IO budget фонового cache/indexer.
 
 `ui.skin = "minimal"` - единственный skin, который текущая validation принимает
 без mapping. Неизвестный skin id является config error; silent fallback запрещён,
@@ -222,12 +220,11 @@ System-level config пока не нужен.
 
 ## Runtime-only data
 
-В текущем коде нет database crate и нет долговременного cache/index хранилища.
+В текущем коде нет database crate, долговременного cache хранилища и runtime
+`BackgroundIndexer`.
 
 Runtime-only остаются:
 
-- keyframe/time index в `player-core::BackgroundIndexer`;
-- source/cache diagnostics;
 - telemetry counters;
 - текущие `PlayerSnapshot`/`PlayerWorkerEvent`;
 - временные service descriptors, полученные при открытии media.
@@ -235,11 +232,11 @@ Runtime-only остаются:
 Правила:
 
 - `app-egui` не открывает database connection;
-- `player-core` не экспортирует complete index snapshot для сохранения;
+- `player-core` не строит runtime keyframe/time index;
 - `source-core` не строит local partial hash для durable identity;
-- reopen media запускает новый runtime index job;
-- legacy config field `network.index_fingerprint_sample_kb` читается только для
-  совместимости старых config-файлов и не записывается в новые defaults.
+- legacy index-only поля `network.index_fingerprint_sample_kb` и
+  `network.indexer_io_budget_mb_per_sec` считаются unknown fields и не
+  принимаются schema validation.
 
 ## Security note
 

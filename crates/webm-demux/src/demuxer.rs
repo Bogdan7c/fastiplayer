@@ -21,6 +21,9 @@ pub enum DemuxSeekMode {
     /// Финальный seek: демультиплексор должен выбрать максимально точную позицию до target.
     Accurate,
 
+    /// Seek к безопасной decode-точке не позже target для decoder-а после flush.
+    DecodePointBefore,
+
     /// Preview seek: допустим более грубый, но быстрый прыжок к пригодной decode-точке.
     Preview,
 }
@@ -33,9 +36,6 @@ pub struct DemuxSeekRequest {
 
     /// Требуемый режим скорости/точности.
     pub mode: DemuxSeekMode,
-
-    /// Safe source byte offset, если runtime index знает container boundary до target.
-    pub byte_offset_hint: Option<u64>,
 }
 
 impl DemuxSeekRequest {
@@ -45,7 +45,15 @@ impl DemuxSeekRequest {
         Self {
             timestamp,
             mode: DemuxSeekMode::Accurate,
-            byte_offset_hint: None,
+        }
+    }
+
+    /// Создаёт seek-запрос к decode-safe точке до целевой позиции.
+    #[must_use]
+    pub const fn decode_point_before(timestamp: Duration) -> Self {
+        Self {
+            timestamp,
+            mode: DemuxSeekMode::DecodePointBefore,
         }
     }
 
@@ -55,15 +63,7 @@ impl DemuxSeekRequest {
         Self {
             timestamp,
             mode: DemuxSeekMode::Preview,
-            byte_offset_hint: None,
         }
-    }
-
-    /// Возвращает request с безопасным source byte offset hint.
-    #[must_use]
-    pub const fn with_byte_offset_hint(mut self, byte_offset: u64) -> Self {
-        self.byte_offset_hint = Some(byte_offset);
-        self
     }
 }
 

@@ -68,7 +68,7 @@ struct ClusterState {
     end: Option<u64>,
 }
 
-fn simple_block_is_keyframe(block: &[u8]) -> bool {
+pub(crate) fn simple_block_is_keyframe(block: &[u8]) -> bool {
     let Some(first_byte) = block.first().copied() else {
         return false;
     };
@@ -77,6 +77,14 @@ fn simple_block_is_keyframe(block: &[u8]) -> bool {
     block
         .get(flags_position)
         .is_some_and(|flags| flags & 0b1000_0000 != 0)
+}
+
+/// Проверяет, подходит ли Cue/Cluster для track-а, по которому выполняется seek.
+fn cluster_matches_track(cue_track: Option<u64>, track_id: u32) -> bool {
+    match cue_track.and_then(|cue_track| u32::try_from(cue_track).ok()) {
+        Some(cue_track) => cue_track == track_id,
+        None => true,
+    }
 }
 
 fn vorbis_extra_data_from_codec_private(extra: &[u8]) -> Result<Box<[u8]>> {
@@ -178,6 +186,9 @@ impl MkvReader {
         } else {
             let mut target_cluster = None;
             for cluster in &self.clusters {
+                if !cluster_matches_track(cluster.cue_track, track_id) {
+                    continue;
+                }
                 if cluster.timestamp > ts {
                     break;
                 }
@@ -212,6 +223,83 @@ impl MkvReader {
             // Seek to a specified block inside the cluster.
             self.seek_track_by_ts_forward(track_id, ts)
         }
+    }
+
+    fn seek_track_by_decode_point_before_ts(&mut self, track_id: u32, ts: u64) -> Result<SeekedTo> {
+        if self.clusters.is_empty() {
+            return self.seek_track_by_ts(track_id, ts);
+        }
+
+        struct DecodePoint {
+            cluster_pos: u64,
+            cluster_timestamp: u64,
+            cluster_end: Option<u64>,
+            seek_pos: u64,
+            actual_ts: u64,
+        }
+
+        let mut target = None;
+        for cluster in self.clusters.iter().rev() {
+            if !cluster_matches_track(cluster.cue_track, track_id) {
+                continue;
+            }
+            if cluster.timestamp > ts {
+                continue;
+            }
+
+            // Записи из Cues знают только позицию cluster-а. Для WebM это
+            // ближайшая decode-safe точка до target, поэтому начинаем чтение
+            // с начала cluster-а и отдаём player-core pre-roll до user target.
+            if cluster.blocks.is_empty() {
+                target = Some(DecodePoint {
+                    cluster_pos: cluster.pos,
+                    cluster_timestamp: cluster.timestamp,
+                    cluster_end: cluster.end,
+                    seek_pos: cluster.pos,
+                    actual_ts: cluster.timestamp,
+                });
+                break;
+            }
+
+            for block in cluster.blocks.iter().rev() {
+                if block.track as u32 != track_id || block.timestamp > ts {
+                    continue;
+                }
+
+                if block.keyframe.unwrap_or(false) {
+                    target = Some(DecodePoint {
+                        cluster_pos: cluster.pos,
+                        cluster_timestamp: cluster.timestamp,
+                        cluster_end: cluster.end,
+                        seek_pos: block.pos,
+                        actual_ts: block.timestamp,
+                    });
+                    break;
+                }
+            }
+
+            if target.is_some() {
+                break;
+            }
+        }
+
+        let Some(target) = target else {
+            return self.seek_track_by_ts(track_id, ts);
+        };
+
+        self.iter.seek(target.seek_pos)?;
+        self.frames.clear();
+        self.current_cluster = Some(ClusterState {
+            pos: target.cluster_pos,
+            timestamp: Some(target.cluster_timestamp),
+            end: target.cluster_end,
+        });
+
+        Ok(SeekedTo {
+            track_id,
+            required_ts: ts,
+            actual_ts: target.actual_ts,
+        })
     }
 
     fn seek_target_to_track_timestamp(&self, to: SeekTo) -> Result<(u32, u64)> {
@@ -435,6 +523,7 @@ impl FormatReader for MkvReader {
                             timestamp: cue.time,
                             pos: segment_pos + cue.positions.cluster_position,
                             end: None,
+                            cue_track: Some(cue.positions.track),
                             blocks: Box::new([]),
                         });
                     }
@@ -490,6 +579,7 @@ impl FormatReader for MkvReader {
                                 timestamp: cue.time,
                                 pos: segment_pos + cue.positions.cluster_position,
                                 end: None,
+                                cue_track: Some(cue.positions.track),
                                 blocks: Box::new([]),
                             });
                         }
@@ -616,9 +706,12 @@ impl FormatReader for MkvReader {
         self.metadata.metadata()
     }
 
-    fn seek(&mut self, _mode: SeekMode, to: SeekTo) -> Result<SeekedTo> {
+    fn seek(&mut self, mode: SeekMode, to: SeekTo) -> Result<SeekedTo> {
         let (track_id, ts) = self.seek_target_to_track_timestamp(to)?;
-        self.seek_track_by_ts(track_id, ts)
+        match mode {
+            SeekMode::Coarse => self.seek_track_by_decode_point_before_ts(track_id, ts),
+            SeekMode::Accurate => self.seek_track_by_ts(track_id, ts),
+        }
     }
 
     fn seek_with_hint(&mut self, mode: SeekMode, to: SeekTo, hint: SeekHint) -> Result<SeekedTo> {
@@ -633,8 +726,10 @@ impl FormatReader for MkvReader {
             }
         }
 
-        let _ = mode;
-        self.seek_track_by_ts(track_id, ts)
+        match mode {
+            SeekMode::Coarse => self.seek_track_by_decode_point_before_ts(track_id, ts),
+            SeekMode::Accurate => self.seek_track_by_ts(track_id, ts),
+        }
     }
 
     fn tracks(&self) -> &[Track] {

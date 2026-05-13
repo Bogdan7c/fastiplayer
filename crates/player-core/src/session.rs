@@ -17,10 +17,9 @@ use crate::pipeline::{
 };
 use crate::seek_controller::PlaybackResumeIntent;
 use crate::{
-    AudioBufferSnapshot, BackendSnapshot, BackgroundIndexer, BackgroundIndexerConfig,
-    FrameCounters, IndexPressureSnapshot, MediaOpenRequest, MediaSource, MediaSummary,
-    PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent,
-    PlayerResult, PlayerSnapshot, QualitySelection, QueueSnapshot, SeekMode, SeekRequest,
+    AudioBufferSnapshot, BackendSnapshot, FrameCounters, MediaOpenRequest, MediaSource,
+    MediaSummary, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind,
+    PlayerEvent, PlayerResult, PlayerSnapshot, QualitySelection, QueueSnapshot, SeekRequest,
     TexturePoolSnapshot, TrackId, TrackSelectionSnapshot, TrackSummarySnapshot, VideoFrameSnapshot,
 };
 
@@ -84,9 +83,6 @@ pub struct PlayerSession {
 
     /// Активная операция точного seek commit-а, если player ждёт pre-roll/gates.
     seek_commit: Option<SeekCommitState>,
-
-    /// Metadata indexer без decoder/audio/render ресурсов.
-    pub(crate) background_indexer: BackgroundIndexer,
 }
 
 impl PlayerSession {
@@ -118,18 +114,7 @@ impl PlayerSession {
         snapshot.audio_buffer = self.audio_buffer_snapshot();
         snapshot.queues = self.queue_snapshot();
         snapshot.frame_counters = frame_counters;
-        snapshot.index_diagnostics = self.background_indexer.diagnostics();
         snapshot
-    }
-
-    /// Обновляет pressure policy фонового indexer-а из worker boundary.
-    pub fn apply_index_pressure(&mut self, pressure: IndexPressureSnapshot) {
-        self.background_indexer.apply_pressure(pressure);
-    }
-
-    /// Обновляет runtime-настройки indexer-а из worker config.
-    pub fn set_background_indexer_config(&mut self, config: BackgroundIndexerConfig) {
-        self.background_indexer = BackgroundIndexer::new(config);
     }
 
     /// Сообщает, что session уже получила shutdown-запрос.
@@ -292,10 +277,6 @@ impl PlayerSession {
                     self.record_recoverable_error(error);
                 }
                 self.apply_demux_seekability(seekability);
-                self.start_background_index_job(
-                    format!("local:{}", path.display()),
-                    duration.map(MediaDuration::from_duration),
-                );
             }
             Err(error) => {
                 warn!(error = %error, "Не удалось открыть файл");
@@ -354,7 +335,6 @@ impl PlayerSession {
         self.pipeline.source_label = Some(label.clone());
         self.clear_error();
 
-        let index_source_key = format!("stream:{label}");
         let summary = MediaSummary {
             title: Some(label.clone()),
             source_label: label,
@@ -364,10 +344,6 @@ impl PlayerSession {
             self.record_recoverable_error(error);
         }
         self.apply_demux_seekability(seekability);
-        self.start_background_index_job(
-            index_source_key,
-            duration.map(MediaDuration::from_duration),
-        );
     }
 
     /// Отмечает успешное открытие media внешним demux/source слоем.
@@ -397,8 +373,6 @@ impl PlayerSession {
 
     /// Переводит session в EOF-drain и освобождает demuxer.
     pub fn enter_eof_drain(&mut self) {
-        let index_generation = self.background_indexer.active_generation();
-        self.background_indexer.mark_complete(index_generation);
         self.pipeline.demuxer = None;
         self.set_playback_state(PlaybackState::Draining);
     }
@@ -444,7 +418,6 @@ impl PlayerSession {
 
         self.pending_autoplay = false;
         self.seek_commit = None;
-        self.background_indexer.cancel_active_job();
         self.snapshot.source_label = None;
         self.snapshot.media_title = None;
         self.snapshot.clear_timeline();
@@ -734,6 +707,29 @@ impl PlayerSession {
         self.complete_seek_commit(seek_commit);
     }
 
+    /// Переопределяет resume intent у уже запущенного seek transaction-а.
+    ///
+    /// Worker использует это после `EndScrub`: сама session видит временную
+    /// pause-команду, которой scrub заглушил audio, а исходное желание
+    /// пользователя продолжить playback хранится выше, в `SeekController`.
+    pub(crate) fn override_active_seek_resume_intent(
+        &mut self,
+        resume_intent: PlaybackResumeIntent,
+    ) -> bool {
+        let Some(seek_commit) = self.seek_commit.as_mut() else {
+            return false;
+        };
+
+        seek_commit.resume_intent = resume_intent;
+        self.set_playback_state(PlaybackState::Seeking);
+
+        if resume_intent == PlaybackResumeIntent::Pause {
+            self.pause_audio_output_for_seek();
+        }
+
+        true
+    }
+
     /// Проверяет video/audio gates для текущего seek commit-а.
     fn seek_commit_gates_ready(
         &self,
@@ -795,11 +791,6 @@ impl PlayerSession {
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.scrubbing = false;
         self.snapshot.timeline.stale_frame = false;
-        self.background_indexer.note_seek_completed(
-            seek_commit.started_at.elapsed(),
-            seek_commit.target_position,
-            seek_commit.actual_position,
-        );
         self.publish_position_changed(seek_commit.target_position.as_duration());
 
         match seek_commit.resume_intent {
@@ -827,11 +818,6 @@ impl PlayerSession {
         self.snapshot.timeline.target_position = Some(seek_commit.target_position);
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.stale_frame = false;
-        self.background_indexer.note_seek_completed(
-            seek_commit.started_at.elapsed(),
-            seek_commit.target_position,
-            seek_commit.actual_position,
-        );
         self.pause_audio_output_for_seek();
         self.set_playback_state(PlaybackState::Paused);
     }
@@ -851,7 +837,6 @@ impl PlayerSession {
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.scrubbing = false;
         self.snapshot.timeline.stale_frame = false;
-        self.background_indexer.note_timeout();
         self.pause_audio_output_for_seek();
         self.set_playback_state(PlaybackState::Paused);
 
@@ -872,7 +857,6 @@ impl PlayerSession {
         self.snapshot.timeline.target_position = Some(seek_commit.target_position);
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.stale_frame = false;
-        self.background_indexer.note_timeout();
         self.pause_audio_output_for_seek();
         self.set_playback_state(PlaybackState::Paused);
         debug!(
@@ -1023,7 +1007,7 @@ impl PlayerSession {
             return Ok(());
         }
 
-        self.start_seek_transaction(target_position, request.mode, SeekCommitKind::Final)
+        self.start_seek_transaction(target_position, SeekCommitKind::Final)
     }
 
     /// Начинает interactive scrub на уровне контракта без запуска demux seek.
@@ -1054,11 +1038,7 @@ impl PlayerSession {
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = true;
         self.snapshot.timeline.target_position = Some(target_position);
-        self.start_seek_transaction(
-            target_position,
-            SeekMode::KeyframeBefore,
-            SeekCommitKind::Preview,
-        )
+        self.start_seek_transaction(target_position, SeekCommitKind::Preview)
     }
 
     /// Завершает scrub и применяет последнюю цель согласно выбранной политике.
@@ -1067,11 +1047,7 @@ impl PlayerSession {
         match policy {
             crate::ScrubCommitPolicy::CommitLatest => {
                 if let Some(target_position) = self.snapshot.timeline.target_position {
-                    self.start_seek_transaction(
-                        target_position,
-                        SeekMode::Accurate,
-                        SeekCommitKind::Final,
-                    )?;
+                    self.start_seek_transaction(target_position, SeekCommitKind::Final)?;
                 }
             }
         }
@@ -1083,7 +1059,6 @@ impl PlayerSession {
     fn start_seek_transaction(
         &mut self,
         target_position: MediaTime,
-        seek_mode: SeekMode,
         commit_kind: SeekCommitKind,
     ) -> PlayerResult<()> {
         if !self.snapshot.timeline.seekable {
@@ -1116,14 +1091,6 @@ impl PlayerSession {
             SeekCommitKind::Preview => PlaybackResumeIntent::Pause,
         };
         let target_duration = target_position.as_duration();
-        let demux_seek_mode =
-            seek_mode_for_decoder_bootstrap(seek_mode, self.pipeline.video_track_id);
-        let demux_seek_target = self.background_indexer.resolve_demux_seek_target_with_hint(
-            demux_seek_mode,
-            self.pipeline.video_track_id,
-            target_position,
-        );
-        let demux_seek_duration = demux_seek_target.position.as_duration();
 
         self.set_playback_state(PlaybackState::Seeking);
         self.pause_audio_output_for_seek();
@@ -1186,14 +1153,11 @@ impl PlayerSession {
             let Some(demuxer) = self.pipeline.demuxer.as_mut() else {
                 return Ok(());
             };
-            let demux_seek_request = match commit_kind {
-                SeekCommitKind::Final => DemuxSeekRequest::accurate(demux_seek_duration),
-                SeekCommitKind::Preview => DemuxSeekRequest::preview(demux_seek_duration),
-            };
-            let demux_seek_request = demux_seek_target
-                .byte_offset
-                .map(|byte_offset| demux_seek_request.with_byte_offset_hint(byte_offset))
-                .unwrap_or(demux_seek_request);
+            let demux_seek_request = demux_seek_request_for_transaction(
+                commit_kind,
+                self.pipeline.video_track_id.is_some(),
+                target_duration,
+            );
             demuxer.seek_with_request(demux_seek_request)
         };
 
@@ -1386,12 +1350,6 @@ impl PlayerSession {
                 self.snapshot.timeline.not_seekable_reason = Some(reason);
             }
         }
-    }
-
-    /// Стартует metadata index job для текущего media без decoder/audio/render ресурсов.
-    fn start_background_index_job(&mut self, source_key: String, duration: Option<MediaDuration>) {
-        self.background_indexer
-            .start_job(source_key, duration, Vec::new());
     }
 
     /// Сохраняет runtime error как user-facing ошибку.
@@ -1886,20 +1844,24 @@ fn player_error_from_unsupported_requirement(error: UnsupportedVideoRequirement)
     PlayerError::new(kind, error.user_message())
 }
 
-/// Выбирает container seek mode для безопасного запуска video decoder-а после flush.
+/// Выбирает demux seek mode для текущего seek transaction-а.
 ///
-/// Пользовательский `Accurate` остаётся точным на уровне commit target: player всё
-/// равно делает pre-roll/drop до исходной цели. Для demux bootstrap с video track
-/// нужен keyframe-before, иначе decoder после flush может начать с inter-frame без
-/// reference state.
-fn seek_mode_for_decoder_bootstrap(
-    requested_mode: SeekMode,
-    video_track_id: Option<TrackId>,
-) -> SeekMode {
-    if requested_mode == SeekMode::Accurate && video_track_id.is_some() {
-        SeekMode::KeyframeBefore
-    } else {
-        requested_mode
+/// При video track после decoder flush нельзя начинать decode с inter-frame.
+/// Поэтому demuxer должен поставить чтение на decode-safe точку до target, а
+/// точность commit-а остаётся в player-core: pre-roll/drop доводит кадры до
+/// исходной пользовательской позиции.
+fn demux_seek_request_for_transaction(
+    commit_kind: SeekCommitKind,
+    has_video_track: bool,
+    target_duration: Duration,
+) -> DemuxSeekRequest {
+    if has_video_track {
+        return DemuxSeekRequest::decode_point_before(target_duration);
+    }
+
+    match commit_kind {
+        SeekCommitKind::Final => DemuxSeekRequest::accurate(target_duration),
+        SeekCommitKind::Preview => DemuxSeekRequest::preview(target_duration),
     }
 }
 
@@ -1915,7 +1877,6 @@ impl Default for PlayerSession {
             draining_after_eof: false,
             capabilities: None,
             seek_commit: None,
-            background_indexer: BackgroundIndexer::default(),
         }
     }
 }
@@ -1998,8 +1959,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        BackgroundIndexEntry, MediaSource, PendingAudioPacket, PendingVideoPacket, PlayerCommand,
-        ScrubCommitPolicy, SeekTarget,
+        MediaSource, PendingAudioPacket, PendingVideoPacket, PlayerCommand, ScrubCommitPolicy,
+        SeekMode, SeekTarget,
     };
     use capability_core::{
         BackendCapabilities, BackendDriverInfo, BackendProbeStatus, P010StorageLayout,
@@ -2114,29 +2075,6 @@ mod tests {
             sample_rate: (kind == TrackKind::Audio).then_some(48_000),
             channels: (kind == TrackKind::Audio).then_some(2),
             video: None,
-        }
-    }
-
-    /// Создаёт metadata entry для runtime index tests.
-    fn background_index_entry(track_id: u32, seconds: u64, keyframe: bool) -> BackgroundIndexEntry {
-        BackgroundIndexEntry {
-            track_id: TrackId::new(track_id),
-            time: MediaTime::from_secs(seconds),
-            byte_offset: None,
-            keyframe,
-        }
-    }
-
-    /// Создаёт metadata entry с byte offset для seek hint tests.
-    fn background_index_entry_with_offset(
-        track_id: u32,
-        seconds: u64,
-        keyframe: bool,
-        byte_offset: u64,
-    ) -> BackgroundIndexEntry {
-        BackgroundIndexEntry {
-            byte_offset: Some(byte_offset),
-            ..background_index_entry(track_id, seconds, keyframe)
         }
     }
 
@@ -2446,18 +2384,9 @@ mod tests {
     }
 
     #[test]
-    fn preview_scrub_seek_uses_keyframe_before_index() {
+    fn preview_scrub_seek_passes_target_to_demuxer() {
         let mut session = PlayerSession::new();
         let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
-        session.background_indexer.start_job(
-            "fake-source",
-            Some(MediaDuration::from_secs(30)),
-            vec![
-                background_index_entry(1, 0, true),
-                background_index_entry(1, 5, true),
-                background_index_entry(1, 8, false),
-            ],
-        );
         let request = SeekRequest::absolute(MediaTime::from_secs(8));
 
         session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
@@ -2470,7 +2399,7 @@ mod tests {
 
         assert_eq!(
             seek_log.lock().expect("seek log lock").as_slice(),
-            &[Duration::from_secs(5)]
+            &[Duration::from_secs(8)]
         );
         assert_eq!(
             session
@@ -2485,18 +2414,9 @@ mod tests {
     }
 
     #[test]
-    fn keyframe_before_seek_uses_index_without_changing_commit_target() {
+    fn keyframe_before_seek_keeps_demuxer_target_on_requested_position() {
         let mut session = PlayerSession::new();
         let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
-        session.background_indexer.start_job(
-            "fake-source",
-            Some(MediaDuration::from_secs(30)),
-            vec![
-                background_index_entry(1, 0, true),
-                background_index_entry(1, 5, true),
-                background_index_entry(1, 8, false),
-            ],
-        );
 
         session
             .dispatch_command(PlayerCommand::Seek(SeekRequest {
@@ -2507,7 +2427,7 @@ mod tests {
 
         assert_eq!(
             seek_log.lock().expect("seek log lock").as_slice(),
-            &[Duration::from_secs(5)]
+            &[Duration::from_secs(8)]
         );
         assert_eq!(
             session
@@ -2518,18 +2438,9 @@ mod tests {
     }
 
     #[test]
-    fn accurate_video_seek_uses_keyframe_before_bootstrap_when_index_is_known() {
+    fn accurate_video_seek_passes_requested_target_to_demuxer() {
         let mut session = PlayerSession::new();
         let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
-        session.background_indexer.start_job(
-            "fake-source",
-            Some(MediaDuration::from_secs(30)),
-            vec![
-                background_index_entry(1, 0, true),
-                background_index_entry(1, 5, true),
-                background_index_entry(1, 8, false),
-            ],
-        );
 
         session
             .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
@@ -2539,7 +2450,7 @@ mod tests {
 
         assert_eq!(
             seek_log.lock().expect("seek log lock").as_slice(),
-            &[Duration::from_secs(5)]
+            &[Duration::from_secs(8)]
         );
         assert_eq!(
             session
@@ -2550,20 +2461,11 @@ mod tests {
     }
 
     #[test]
-    fn seek_transaction_passes_byte_offset_hint_from_runtime_index() {
+    fn seek_transaction_passes_demux_request_without_runtime_index_hint() {
         let mut session = PlayerSession::new();
         let seek_request_log = install_fake_media_with_seek_request_log(
             &mut session,
             vec![fake_track(1, TrackKind::Video)],
-        );
-        session.background_indexer.start_job(
-            "fake-source",
-            Some(MediaDuration::from_secs(30)),
-            vec![
-                background_index_entry(1, 0, true),
-                background_index_entry_with_offset(1, 5, true, 4096),
-                background_index_entry(1, 8, false),
-            ],
         );
 
         session
@@ -2574,8 +2476,11 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].timestamp, Duration::from_secs(5));
-        assert_eq!(requests[0].byte_offset_hint, Some(4096));
+        assert_eq!(requests[0].timestamp, Duration::from_secs(8));
+        assert_eq!(
+            requests[0].mode,
+            webm_demux::DemuxSeekMode::DecodePointBefore
+        );
     }
 
     #[test]
@@ -2739,6 +2644,44 @@ mod tests {
             })
             .unwrap();
         session.dispatch_command(PlayerCommand::Play).unwrap();
+
+        session.finish_seek_commit_if_ready(
+            Instant::now(),
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+        );
+
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert!(!session.snapshot().timeline.seeking);
+    }
+
+    #[test]
+    fn explicit_scrub_resume_intent_survives_temporary_pause() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, Vec::new());
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session.dispatch_command(PlayerCommand::Pause).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitLatest,
+            })
+            .unwrap();
+
+        assert_eq!(
+            session
+                .seek_commit()
+                .map(|seek_commit| seek_commit.resume_intent),
+            Some(PlaybackResumeIntent::Pause)
+        );
+        assert!(session.override_active_seek_resume_intent(PlaybackResumeIntent::Play));
 
         session.finish_seek_commit_if_ready(
             Instant::now(),

@@ -130,11 +130,6 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
-        "indexer_io_budget_mb_per_sec = 32",
-        "# IO budget фонового cache/indexer.",
-    );
-    insert_default_config_comment(
-        toml_text,
         "skin = \"minimal\"",
         "# UI skin id; unknown id является config error.",
     );
@@ -603,13 +598,6 @@ pub struct NetworkConfig {
 
     /// Timeout чтения из сетевого источника.
     pub read_timeout_ms: u64,
-
-    /// Бюджет фонового indexer/cache IO.
-    pub indexer_io_budget_mb_per_sec: u64,
-
-    /// Legacy no-op поле старых config-файлов; новые defaults его больше не записывают.
-    #[serde(rename = "index_fingerprint_sample_kb", skip_serializing)]
-    pub legacy_index_fingerprint_sample_kb: u64,
 }
 
 impl Default for NetworkConfig {
@@ -620,8 +608,6 @@ impl Default for NetworkConfig {
             read_ahead_mb: 64,
             connect_timeout_ms: 15_000,
             read_timeout_ms: 15_000,
-            indexer_io_budget_mb_per_sec: 32,
-            legacy_index_fingerprint_sample_kb: 256,
         }
     }
 }

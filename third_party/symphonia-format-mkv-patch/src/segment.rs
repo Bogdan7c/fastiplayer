@@ -466,6 +466,7 @@ pub(crate) struct BlockElement {
     pub(crate) track: u64,
     pub(crate) timestamp: u64,
     pub(crate) pos: u64,
+    pub(crate) keyframe: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -473,6 +474,7 @@ pub(crate) struct ClusterElement {
     pub(crate) timestamp: u64,
     pub(crate) pos: u64,
     pub(crate) end: Option<u64>,
+    pub(crate) cue_track: Option<u64>,
     pub(crate) blocks: Box<[BlockElement]>,
 }
 
@@ -485,7 +487,12 @@ impl Element for ClusterElement {
         let mut blocks = Vec::new();
         let has_size = header.end().is_some();
 
-        fn read_block(data: &[u8], timestamp: u64, offset: u64) -> Result<BlockElement> {
+        fn read_block(
+            data: &[u8],
+            timestamp: u64,
+            offset: u64,
+            keyframe: Option<bool>,
+        ) -> Result<BlockElement> {
             let mut reader = BufReader::new(data);
             let track = read_unsigned_vint(&mut reader)?;
             let rel_ts = reader.read_be_u16()? as i16;
@@ -494,6 +501,7 @@ impl Element for ClusterElement {
                 track,
                 timestamp,
                 pos: offset,
+                keyframe,
             })
         }
 
@@ -513,11 +521,17 @@ impl Element for ClusterElement {
                         &group.data,
                         get_timestamp(timestamp)?,
                         header.pos,
+                        Some(!group.has_reference_block),
                     )?);
                 }
                 ElementType::SimpleBlock => {
                     let data = it.read_boxed_slice()?;
-                    blocks.push(read_block(&data, get_timestamp(timestamp)?, header.pos)?);
+                    blocks.push(read_block(
+                        &data,
+                        get_timestamp(timestamp)?,
+                        header.pos,
+                        Some(crate::demuxer::simple_block_is_keyframe(&data)),
+                    )?);
                 }
                 _ if header.etype.is_top_level() && !has_size => break,
                 other => {
@@ -531,6 +545,7 @@ impl Element for ClusterElement {
             blocks: blocks.into_boxed_slice(),
             pos,
             end: header.end(),
+            cue_track: None,
         })
     }
 }

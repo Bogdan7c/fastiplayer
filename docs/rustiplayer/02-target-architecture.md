@@ -137,6 +137,7 @@ enum PlayerCommand {
     Seek(SeekRequest),
     BeginScrub,
     UpdateScrub(SeekRequest),
+    PreviewScrub(SeekRequest),
     EndScrub { policy: ScrubCommitPolicy },
     Stop,
     SetVolume(f32),
@@ -151,12 +152,14 @@ enum PlayerCommand {
 
 В schema v2 единственная commit policy - `CommitLatest`.
 
-Session 2 добавила worker-level `SeekController` skeleton. Он хранит generation id,
-current mode, latest scrub target, in-flight target, resume intent и diagnostics
-счётчики stale/cancelled операций. Реальный demux seek остаётся следующей
-транзакционной сессией, но command priority уже действует на worker boundary:
-Stop/Open/Shutdown прерывают scrub, внешний `Seek` во время scrub игнорируется,
-Play/Pause меняют resume intent, Volume/Mute применяются сразу.
+Worker-level `SeekController` хранит generation id, current mode, latest scrub
+target, in-flight target, resume intent и diagnostics counters для stale/ignored
+и cancelled операций. Реальный demux seek transaction уже живёт в
+`PlayerSession`: video seek запрашивает decode-safe point before target, затем
+player-core делает decoder reset, pre-roll/drop и commit gates до пользовательской
+позиции. Command priority действует на worker boundary: Stop/Open/Shutdown
+прерывают scrub, внешний `Seek` во время scrub игнорируется, Play/Pause меняют
+resume intent, Volume/Mute применяются сразу.
 
 Seek contract использует typed timeline values:
 
@@ -260,8 +263,8 @@ Snapshot не должен содержать mutable handles к decoder/demuxer
 - video decode thread: blocking hardware decode/upload;
 - HTTP fetch threads/tasks: source/network layer;
 - audio callback thread: CPAL-owned;
-- long-running persistence is not part of the current runtime: seek/index/cache
-  metadata stays in memory and must not block playback.
+- long-running persistence is not part of the current runtime: durable seek/cache
+  metadata and runtime index jobs are absent and must not block playback.
 
 Важное правило: render loop не должен содержать бизнес-логику playback и не должен
 вызывать `PlayerSession::tick()` напрямую. Он отправляет `PlayerCommand`,
