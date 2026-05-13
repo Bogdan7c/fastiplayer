@@ -38,9 +38,6 @@ impl TimelineUiState {
 /// Действие timeline, которое `AppState` конвертирует в `PlayerCommand`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimelineAction {
-    /// Немедленный seek по клику.
-    Seek(MediaTime),
-
     /// Начало interactive scrub.
     BeginScrub,
 
@@ -56,6 +53,9 @@ pub enum TimelineAction {
 pub struct TimelinePointerInput {
     /// Click был завершён на timeline.
     pub clicked: bool,
+
+    /// Pointer удерживается на timeline; это срабатывает раньше, чем egui подтвердит drag.
+    pub pointer_down_on_timeline: bool,
 
     /// Drag начался на timeline.
     pub drag_started: bool,
@@ -155,31 +155,32 @@ pub fn map_timeline_interaction(
         .pointer_fraction
         .map(|fraction| bounds.position_from_fraction(fraction));
 
-    if input.drag_started {
+    let wants_scrub_position = input.pointer_down_on_timeline
+        || input.drag_started
+        || input.dragged
+        || input.drag_stopped
+        || input.clicked;
+    let can_begin_scrub = input.pointer_down_on_timeline || input.drag_started || input.clicked;
+    let should_begin_scrub =
+        !state.has_active_drag() && can_begin_scrub && pointer_position.is_some();
+
+    if should_begin_scrub {
         actions.push(TimelineAction::BeginScrub);
-        if let Some(position) = pointer_position {
-            state.transient_drag_position = Some(position);
+    }
+
+    if wants_scrub_position
+        && (should_begin_scrub || state.has_active_drag())
+        && let Some(position) = pointer_position
+    {
+        let previous_position = state.transient_drag_position;
+        state.transient_drag_position = Some(position);
+        if should_begin_scrub || previous_position != Some(position) {
             actions.push(TimelineAction::UpdateScrub(position));
         }
     }
 
-    if input.dragged
-        && let Some(position) = pointer_position
-    {
-        state.transient_drag_position = Some(position);
-        actions.push(TimelineAction::UpdateScrub(position));
-    }
-
-    if input.clicked
-        && !input.drag_started
-        && !input.dragged
-        && let Some(position) = pointer_position
-    {
-        actions.push(TimelineAction::Seek(position));
-    }
-
-    let should_finish_scrub =
-        state.has_active_drag() && (input.drag_stopped || input.lost_focus || input.escape_pressed);
+    let should_finish_scrub = state.has_active_drag()
+        && (input.clicked || input.drag_stopped || input.lost_focus || input.escape_pressed);
     if should_finish_scrub {
         actions.push(TimelineAction::EndScrubCommitLatest);
         state.clear_transient_drag();
@@ -298,6 +299,7 @@ fn pointer_input_from_response(
 
     TimelinePointerInput {
         clicked: response.clicked(),
+        pointer_down_on_timeline: response.is_pointer_button_down_on(),
         drag_started: response.drag_started(),
         dragged: response.dragged(),
         drag_stopped: response.drag_stopped(),
@@ -417,9 +419,62 @@ mod tests {
         .expect("test timeline is seekable")
     }
 
-    /// Проверяет, что click создаёт immediate seek без scrub-команд.
+    /// Проверяет, что pointer down сразу запускает preview scrub, а click только коммитит цель.
     #[test]
-    fn click_emits_immediate_seek() {
+    fn pointer_down_starts_scrub_and_click_commits_latest_target() {
+        let timeline = seekable_timeline();
+        let mut state = TimelineUiState::default();
+
+        let pointer_down = map_timeline_interaction(
+            &timeline,
+            &mut state,
+            Some(seekable_bounds()),
+            TimelinePointerInput {
+                pointer_down_on_timeline: true,
+                pointer_fraction: Some(0.25),
+                ..TimelinePointerInput::default()
+            },
+        );
+        assert_eq!(
+            pointer_down.actions,
+            vec![
+                TimelineAction::BeginScrub,
+                TimelineAction::UpdateScrub(MediaTime::from_secs(25))
+            ]
+        );
+        assert!(state.has_active_drag());
+
+        let repeated_pointer_down = map_timeline_interaction(
+            &timeline,
+            &mut state,
+            Some(seekable_bounds()),
+            TimelinePointerInput {
+                pointer_down_on_timeline: true,
+                pointer_fraction: Some(0.25),
+                ..TimelinePointerInput::default()
+            },
+        );
+        assert!(repeated_pointer_down.actions.is_empty());
+        assert!(state.has_active_drag());
+
+        let click = map_timeline_interaction(
+            &timeline,
+            &mut state,
+            Some(seekable_bounds()),
+            TimelinePointerInput {
+                clicked: true,
+                pointer_fraction: Some(0.25),
+                ..TimelinePointerInput::default()
+            },
+        );
+
+        assert_eq!(click.actions, vec![TimelineAction::EndScrubCommitLatest]);
+        assert!(!state.has_active_drag());
+    }
+
+    /// Проверяет fallback для очень быстрого клика, где down/up попали в один UI frame.
+    #[test]
+    fn click_without_prior_pointer_down_uses_scrub_commit_sequence() {
         let timeline = seekable_timeline();
         let mut state = TimelineUiState::default();
 
@@ -436,7 +491,11 @@ mod tests {
 
         assert_eq!(
             interaction.actions,
-            vec![TimelineAction::Seek(MediaTime::from_secs(25))]
+            vec![
+                TimelineAction::BeginScrub,
+                TimelineAction::UpdateScrub(MediaTime::from_secs(25)),
+                TimelineAction::EndScrubCommitLatest
+            ]
         );
         assert!(!state.has_active_drag());
     }

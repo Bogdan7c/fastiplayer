@@ -429,7 +429,6 @@ impl AppState {
     /// Конвертирует timeline action в typed player command.
     fn send_timeline_action(&self, action: TimelineAction) {
         let command = match action {
-            TimelineAction::Seek(position) => PlayerCommand::Seek(SeekRequest::absolute(position)),
             TimelineAction::BeginScrub => PlayerCommand::BeginScrub,
             TimelineAction::UpdateScrub(position) => {
                 PlayerCommand::UpdateScrub(SeekRequest::absolute(position))
