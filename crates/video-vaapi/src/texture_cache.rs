@@ -548,8 +548,8 @@ pub struct WgpuTexturePool {
     device: Arc<wgpu::Device>,
     /// Импортёр DMA-BUF для zero-copy path (None если не Vulkan).
     dma_buf_importer: Option<crate::dma_buf_import::DmaBufImporter>,
-    /// Слоты с текстурами. Индекс в векторе — внутренний slot_index.
-    slots: Vec<TextureSlot>,
+    /// Stable slots с текстурами. `None` — дырка после release imported slot.
+    slots: Vec<Option<TextureSlot>>,
     /// Persistent zero-copy imports keyed by backend surface id.
     imported_dma_buf_cache: HashMap<u64, CachedImportedDmaBufTexture>,
     /// Отображение handle id -> индекс слота в `slots`.
@@ -557,6 +557,8 @@ pub struct WgpuTexturePool {
     /// Позволяет за O(1) находить слот по [`FrameTextureHandle`].
     handle_to_slot: HashMap<u64, usize>,
     /// Монотонно возрастающий счётчик для генерации уникальных handle id.
+    ///
+    /// Не сбрасывается при invalidate, чтобы stale handle не смог попасть в новый кадр.
     next_handle: u64,
 }
 
@@ -580,6 +582,105 @@ impl WgpuTexturePool {
         }
     }
 
+    /// Возвращает immutable slot по стабильному индексу.
+    fn slot(&self, slot_index: usize) -> Option<&TextureSlot> {
+        self.slots.get(slot_index).and_then(Option::as_ref)
+    }
+
+    /// Возвращает mutable slot по стабильному индексу.
+    fn slot_mut(&mut self, slot_index: usize) -> Option<&mut TextureSlot> {
+        self.slots.get_mut(slot_index).and_then(Option::as_mut)
+    }
+
+    /// Выделяет новый monotonic frame handle.
+    fn allocate_handle(&mut self) -> anyhow::Result<FrameTextureHandle> {
+        let handle_id = self.next_handle;
+        self.next_handle = self
+            .next_handle
+            .checked_add(1)
+            .context("texture handle counter exhausted")?;
+        Ok(FrameTextureHandle(handle_id))
+    }
+
+    /// Привязывает свежий handle к существующему stable slot.
+    fn bind_handle_to_slot(
+        &mut self,
+        handle: FrameTextureHandle,
+        slot_index: usize,
+    ) -> anyhow::Result<()> {
+        ensure!(
+            self.slot(slot_index).is_some(),
+            "cannot bind texture handle {} to missing slot {}",
+            handle.0,
+            slot_index
+        );
+        ensure!(
+            !self.handle_to_slot.contains_key(&handle.0),
+            "texture handle collision for id {}",
+            handle.0
+        );
+
+        self.handle_to_slot.insert(handle.0, slot_index);
+        Ok(())
+    }
+
+    /// Активирует уже существующий slot и возвращает новый handle.
+    fn activate_existing_slot(
+        &mut self,
+        slot_index: usize,
+        is_imported: bool,
+    ) -> anyhow::Result<FrameTextureHandle> {
+        let handle = self.allocate_handle()?;
+        {
+            let slot = self.slot_mut(slot_index).ok_or_else(|| {
+                anyhow::anyhow!("cannot activate missing texture slot {}", slot_index)
+            })?;
+            slot.in_use = true;
+            slot.is_imported = is_imported;
+        }
+        self.bind_handle_to_slot(handle, slot_index)?;
+        Ok(handle)
+    }
+
+    /// Вставляет новый slot, переиспользуя дыру от ранее released imported slot.
+    fn insert_slot(&mut self, slot: TextureSlot) -> anyhow::Result<usize> {
+        if let Some(slot_index) = self.slots.iter().position(Option::is_none) {
+            self.slots[slot_index] = Some(slot);
+            return Ok(slot_index);
+        }
+
+        ensure!(
+            self.slots.len() < MAX_TEXTURE_SLOTS,
+            "Texture pool exhausted (max {} slots, active_slots={})",
+            MAX_TEXTURE_SLOTS,
+            self.active_slot_count()
+        );
+
+        let slot_index = self.slots.len();
+        self.slots.push(Some(slot));
+        Ok(slot_index)
+    }
+
+    /// Вставляет новый уже занятый slot и сразу публикует handle mapping.
+    fn insert_active_slot(&mut self, slot: TextureSlot) -> anyhow::Result<FrameTextureHandle> {
+        let handle = self.allocate_handle()?;
+        let slot_index = self.insert_slot(slot)?;
+        self.bind_handle_to_slot(handle, slot_index)?;
+        Ok(handle)
+    }
+
+    /// Удаляет только хвостовые vacant entries, не меняя индексы живых slots.
+    fn trim_vacant_tail(&mut self) {
+        while self.slots.last().is_some_and(Option::is_none) {
+            self.slots.pop();
+        }
+    }
+
+    /// Считает физически существующие slots, игнорируя vacant entries.
+    fn active_slot_count(&self) -> usize {
+        self.slots.iter().filter(|slot| slot.is_some()).count()
+    }
+
     /// Возвращает `true`, если пул может попробовать zero-copy DMA-BUF import.
     pub fn can_import_dma_buf(&self) -> bool {
         self.dma_buf_importer.is_some()
@@ -589,7 +690,7 @@ impl WgpuTexturePool {
     pub fn is_imported_handle(&self, handle: FrameTextureHandle) -> bool {
         self.handle_to_slot
             .get(&handle.0)
-            .and_then(|slot_index| self.slots.get(*slot_index))
+            .and_then(|slot_index| self.slot(*slot_index))
             .map(|slot| slot.is_imported)
             .unwrap_or(false)
     }
@@ -652,7 +753,12 @@ impl WgpuTexturePool {
 
             let slot_start = std::time::Instant::now();
             let slot_index = self.find_or_create_slot(image.width, image.height)?;
-            let slot = &self.slots[slot_index];
+            let slot = self.slot(slot_index).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "texture slot {} disappeared before VA image upload",
+                    slot_index
+                )
+            })?;
             let (y_texture, uv_texture) = slot.storage.separate_textures()?;
             let slot_elapsed = slot_start.elapsed().as_millis();
 
@@ -700,14 +806,10 @@ impl WgpuTexturePool {
             );
             let write_uv_elapsed = write_uv_start.elapsed().as_millis();
 
-            self.slots[slot_index].in_use = true;
-            self.slots[slot_index].is_imported = false;
-            let handle_id = self.next_handle;
-            self.next_handle += 1;
-            self.handle_to_slot.insert(handle_id, slot_index);
+            let texture_handle = self.activate_existing_slot(slot_index, false)?;
 
             tracing::debug!(
-                handle_id,
+                handle_id = texture_handle.0,
                 map_ms = map_elapsed,
                 slot_ms = slot_elapsed,
                 write_y_ms = write_y_elapsed,
@@ -716,7 +818,7 @@ impl WgpuTexturePool {
                 "upload_frame timing breakdown"
             );
 
-            return Ok(FrameTextureHandle(handle_id));
+            return Ok(texture_handle);
         }
 
         // Шаг 1: Получаем видео-фрейм из handle.
@@ -754,7 +856,9 @@ impl WgpuTexturePool {
         // Шаг 3: Находим или создаём свободный слот подходящего разрешения.
         let slot_start = std::time::Instant::now();
         let slot_index = self.find_or_create_slot(width, height)?;
-        let slot = &self.slots[slot_index];
+        let slot = self.slot(slot_index).ok_or_else(|| {
+            anyhow::anyhow!("texture slot {} disappeared before CPU upload", slot_index)
+        })?;
         let (y_texture, uv_texture) = slot.storage.separate_textures()?;
         let slot_elapsed = slot_start.elapsed().as_millis();
 
@@ -805,15 +909,11 @@ impl WgpuTexturePool {
         let write_uv_elapsed = write_uv_start.elapsed().as_millis();
 
         // Шаг 6: Помечаем слот как занятый и генерируем уникальный handle.
-        self.slots[slot_index].in_use = true;
-        self.slots[slot_index].is_imported = false;
-        let handle_id = self.next_handle;
-        self.next_handle += 1;
-        self.handle_to_slot.insert(handle_id, slot_index);
+        let texture_handle = self.activate_existing_slot(slot_index, false)?;
 
         let total_elapsed = total_start.elapsed().as_millis();
         tracing::debug!(
-            handle_id,
+            handle_id = texture_handle.0,
             map_ms = map_elapsed,
             slot_ms = slot_elapsed,
             write_y_ms = write_y_elapsed,
@@ -822,7 +922,7 @@ impl WgpuTexturePool {
             "upload_frame timing breakdown"
         );
 
-        Ok(FrameTextureHandle(handle_id))
+        Ok(texture_handle)
     }
 
     /// Возвращает texture views для заданного frame handle.
@@ -842,7 +942,7 @@ impl WgpuTexturePool {
     ) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
         // O(1) lookup по handle id.
         let &slot_index = self.handle_to_slot.get(&handle.0)?;
-        let slot = self.slots.get(slot_index)?;
+        let slot = self.slot(slot_index)?;
         if !slot.in_use {
             return None;
         }
@@ -863,10 +963,11 @@ impl WgpuTexturePool {
         &mut self,
         handle: &dyn DecodedHandle<Frame = GenericDmaVideoFrame>,
     ) -> anyhow::Result<FrameTextureHandle> {
+        let active_slots = self.active_slot_count();
         ensure!(
-            self.slots.len() < MAX_TEXTURE_SLOTS,
+            active_slots < MAX_TEXTURE_SLOTS,
             "zero-copy texture slot limit reached before importing GenericDmaVideoFrame: active_slots={}, max_slots={}",
-            self.slots.len(),
+            active_slots,
             MAX_TEXTURE_SLOTS
         );
 
@@ -880,8 +981,7 @@ impl WgpuTexturePool {
         let y_view = y_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let uv_view = uv_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let slot_index = self.slots.len();
-        self.slots.push(TextureSlot {
+        let texture_handle = self.insert_active_slot(TextureSlot {
             storage: TextureSlotStorage::SeparatePlanes {
                 y_texture,
                 uv_texture,
@@ -892,13 +992,9 @@ impl WgpuTexturePool {
             height: frame.resolution().height,
             in_use: true,
             is_imported: true,
-        });
+        })?;
 
-        let handle_id = self.next_handle;
-        self.next_handle += 1;
-        self.handle_to_slot.insert(handle_id, slot_index);
-
-        Ok(FrameTextureHandle(handle_id))
+        Ok(texture_handle)
     }
 
     /// Импортирует DMA-BUF descriptor, экспортированный из decoded VA surface.
@@ -906,10 +1002,11 @@ impl WgpuTexturePool {
         &mut self,
         image: &DecodedDmaBufImage,
     ) -> anyhow::Result<FrameTextureHandle> {
+        let active_slots = self.active_slot_count();
         ensure!(
-            self.slots.len() < MAX_TEXTURE_SLOTS,
+            active_slots < MAX_TEXTURE_SLOTS,
             "zero-copy texture slot limit reached before importing VA surface: active_slots={}, max_slots={}, surface_id={}",
-            self.slots.len(),
+            active_slots,
             MAX_TEXTURE_SLOTS,
             image.surface_id
         );
@@ -923,8 +1020,7 @@ impl WgpuTexturePool {
                 .import_exported_dma_buf_image(image)?
         };
 
-        let slot_index = self.slots.len();
-        self.slots.push(TextureSlot {
+        let texture_handle = self.insert_active_slot(TextureSlot {
             storage: TextureSlotStorage::ImportedDmaBuf {
                 _storage: imported_texture.storage,
                 _frame_format: imported_texture.frame_format,
@@ -935,13 +1031,9 @@ impl WgpuTexturePool {
             height: image.height,
             in_use: true,
             is_imported: true,
-        });
+        })?;
 
-        let handle_id = self.next_handle;
-        self.next_handle += 1;
-        self.handle_to_slot.insert(handle_id, slot_index);
-
-        Ok(FrameTextureHandle(handle_id))
+        Ok(texture_handle)
     }
 
     /// Импортирует DMA-BUF descriptor с экспериментальным кешем по VA surface id.
@@ -1045,46 +1137,45 @@ impl WgpuTexturePool {
             in_use = self.num_in_use(),
             "release_slot called"
         );
-        if let Some(&slot_index) = self.handle_to_slot.get(&handle.0) {
-            let is_imported = self
-                .slots
-                .get(slot_index)
-                .map(|s| s.is_imported)
-                .unwrap_or(false);
+        if let Some(slot_index) = self.handle_to_slot.remove(&handle.0) {
+            let Some(is_imported) = self.slot(slot_index).map(|slot| slot.is_imported) else {
+                tracing::warn!(
+                    handle_id = handle.0,
+                    slot_index,
+                    "release_slot: handle pointed to a vacant texture slot"
+                );
+                return None;
+            };
 
             if is_imported {
-                // Удаляем imported slot из пула — textures привязаны к fd.
-                // Используем Vec::remove вместо swap_remove чтобы не портить индексы
-                // других слотов в handle_to_slot.
+                // Забираем imported slot без сдвига соседних индексов.
                 tracing::debug!(
                     slot_index,
                     pool_len = self.slots.len(),
                     "Retiring imported slot until GPU completion"
                 );
-                let slot = self.slots.remove(slot_index);
+                let Some(slot) = self.slots.get_mut(slot_index).and_then(Option::take) else {
+                    tracing::warn!(
+                        handle_id = handle.0,
+                        slot_index,
+                        "release_slot: imported slot disappeared before retirement"
+                    );
+                    return None;
+                };
                 let retired_slot = RetiredImportedSlot {
                     frame_handle: handle,
                     _slot: slot,
                 };
 
-                // Обновляем handle_to_slot: все индексы > slot_index уменьшаем на 1
-                // (элементы сдвинулись влево после remove).
-                for idx in self.handle_to_slot.values_mut() {
-                    if *idx > slot_index {
-                        *idx -= 1;
-                    }
-                }
-                self.handle_to_slot.remove(&handle.0);
+                self.trim_vacant_tail();
                 return Some(retired_slot);
             } else {
                 // Обычный slot: помечаем как свободный для reuse.
-                if let Some(slot) = self.slots.get_mut(slot_index) {
+                if let Some(slot) = self.slot_mut(slot_index) {
                     slot.in_use = false;
                     tracing::debug!(slot_index, "Slot marked as free");
                 }
             }
-
-            self.handle_to_slot.remove(&handle.0);
         } else {
             tracing::warn!(
                 handle_id = handle.0,
@@ -1104,17 +1195,20 @@ impl WgpuTexturePool {
         self.slots.clear();
         self.imported_dma_buf_cache.clear();
         self.handle_to_slot.clear();
-        self.next_handle = 0;
     }
 
     /// Возвращает общее количество слотов в пуле.
     pub fn num_slots(&self) -> usize {
-        self.slots.len()
+        self.active_slot_count()
     }
 
     /// Возвращает количество занятых (in_use) слотов.
     pub fn num_in_use(&self) -> usize {
-        self.slots.iter().filter(|s| s.in_use).count()
+        self.slots
+            .iter()
+            .filter_map(Option::as_ref)
+            .filter(|slot| slot.in_use)
+            .count()
     }
 
     /// Возвращает компактную статистику pool для backpressure и UI.
@@ -1141,16 +1235,16 @@ impl WgpuTexturePool {
     /// Возвращает ошибку если пул исчерпан.
     fn find_or_create_slot(&mut self, width: u32, height: u32) -> anyhow::Result<usize> {
         // Шаг 1: Поиск существующего свободного слота с совпадающим разрешением.
-        if let Some(idx) = self
-            .slots
-            .iter()
-            .position(|s| !s.in_use && s.width == width && s.height == height)
-        {
+        if let Some(idx) = self.slots.iter().position(|slot| {
+            slot.as_ref()
+                .map(|slot| !slot.in_use && slot.width == width && slot.height == height)
+                .unwrap_or(false)
+        }) {
             return Ok(idx);
         }
 
         // Шаг 2: Проверяем лимит пула.
-        if self.slots.len() >= MAX_TEXTURE_SLOTS {
+        if self.active_slot_count() >= MAX_TEXTURE_SLOTS {
             return Err(anyhow::anyhow!(
                 "Texture pool exhausted (max {} slots, all in use or different resolution)",
                 MAX_TEXTURE_SLOTS
@@ -1194,8 +1288,7 @@ impl WgpuTexturePool {
         let uv_view = uv_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Шаг 6: Добавляем слот в пул.
-        let slot_index = self.slots.len();
-        self.slots.push(TextureSlot {
+        let slot_index = self.insert_slot(TextureSlot {
             storage: TextureSlotStorage::SeparatePlanes {
                 y_texture,
                 uv_texture,
@@ -1206,7 +1299,7 @@ impl WgpuTexturePool {
             height,
             in_use: false,
             is_imported: false,
-        });
+        })?;
 
         Ok(slot_index)
     }

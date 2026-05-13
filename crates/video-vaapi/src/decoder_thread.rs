@@ -10,6 +10,7 @@
 /// - Texture pool (Arc<Mutex<WgpuTexturePool>>) shared между потоками:
 ///   decoder thread делает upload (write),
 ///   render thread делает get_views / release (read/write).
+use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,6 +22,9 @@ use video_core::{DecodedFrame, VideoDecoder};
 
 use crate::texture_cache::TexturePoolStats;
 use crate::upload_config::UploadConfig;
+
+/// Результат, которым decoder thread подтверждает завершение flush.
+type FlushAck = std::result::Result<(), String>;
 
 /// Ошибка decoder thread, которую нужно показать player layer как fatal runtime state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,8 +58,137 @@ impl std::fmt::Display for DecodeThreadError {
 
 impl std::error::Error for DecodeThreadError {}
 
+/// Runtime-policy для decoder thread.
+#[derive(Debug, Clone, Copy)]
+struct DecodeThreadConfig {
+    /// Максимальное время ожидания подтверждения flush от decoder thread.
+    flush_timeout: Duration,
+}
+
+impl DecodeThreadConfig {
+    /// Env-переменная для настройки timeout-а без перекомпиляции приложения.
+    const FLUSH_TIMEOUT_ENV_VAR: &'static str = "VIDEOPLAYER_DECODER_FLUSH_TIMEOUT_MS";
+
+    /// Production default: достаточно длинный для нормального VA flush, но не вечный.
+    const DEFAULT_FLUSH_TIMEOUT_MS: u64 = 2_000;
+
+    /// Загружает policy из окружения и явно логирует некорректный конфиг.
+    fn from_env() -> Self {
+        let flush_timeout = match std::env::var(Self::FLUSH_TIMEOUT_ENV_VAR) {
+            Ok(raw_value) => match Self::parse_flush_timeout(&raw_value) {
+                Ok(timeout) => timeout,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        env_var = Self::FLUSH_TIMEOUT_ENV_VAR,
+                        default_timeout_ms = Self::DEFAULT_FLUSH_TIMEOUT_MS,
+                        "Invalid decoder flush timeout config; using default"
+                    );
+                    Self::default_flush_timeout()
+                }
+            },
+            Err(std::env::VarError::NotPresent) => Self::default_flush_timeout(),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    env_var = Self::FLUSH_TIMEOUT_ENV_VAR,
+                    default_timeout_ms = Self::DEFAULT_FLUSH_TIMEOUT_MS,
+                    "Cannot read decoder flush timeout config; using default"
+                );
+                Self::default_flush_timeout()
+            }
+        };
+
+        Self { flush_timeout }
+    }
+
+    /// Возвращает default timeout как `Duration`.
+    fn default_flush_timeout() -> Duration {
+        Duration::from_millis(Self::DEFAULT_FLUSH_TIMEOUT_MS)
+    }
+
+    /// Парсит значение env-переменной в миллисекундах.
+    fn parse_flush_timeout(raw_value: &str) -> anyhow::Result<Duration> {
+        let timeout_ms = raw_value.trim().parse::<u64>().map_err(|error| {
+            anyhow::anyhow!(
+                "expected positive integer milliseconds, got {:?}: {}",
+                raw_value,
+                error
+            )
+        })?;
+        if timeout_ms == 0 {
+            anyhow::bail!("decoder flush timeout must be greater than 0 ms");
+        }
+        Ok(Duration::from_millis(timeout_ms))
+    }
+}
+
+/// Shared fail-closed состояние decoder thread.
+#[derive(Clone, Debug)]
+struct DecoderThreadState {
+    /// Mutex защищает sticky fatal error и флаг одноразовой доставки в player layer.
+    inner: Arc<Mutex<DecoderThreadStateInner>>,
+}
+
+#[derive(Debug, Default)]
+struct DecoderThreadStateInner {
+    /// Первая fatal ошибка: последующие причины не перетирают root cause.
+    fatal_error: Option<DecodeThreadError>,
+    /// Нужно ли ещё отдать fatal error через public `try_recv_error()`.
+    pending_notification: bool,
+}
+
+impl DecoderThreadState {
+    /// Создаёт чистое состояние без fatal ошибки.
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(DecoderThreadStateInner::default())),
+        }
+    }
+
+    /// Сохраняет первую fatal ошибку и возвращает именно сохранённый root cause.
+    fn mark_fatal(&self, error: DecodeThreadError) -> DecodeThreadError {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if let Some(existing_error) = &inner.fatal_error {
+            return existing_error.clone();
+        }
+
+        inner.fatal_error = Some(error.clone());
+        inner.pending_notification = true;
+        error
+    }
+
+    /// Возвращает текущую fatal ошибку, если decoder thread уже fail-closed.
+    fn current_error(&self) -> Option<DecodeThreadError> {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        inner.fatal_error.clone()
+    }
+
+    /// Отдаёт fatal ошибку в player layer ровно один раз.
+    fn take_pending_error(&self) -> Option<DecodeThreadError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if !inner.pending_notification {
+            return None;
+        }
+
+        inner.pending_notification = false;
+        inner.fatal_error.clone()
+    }
+}
+
 /// Команда для decoder thread.
-pub enum ThreadMsg {
+enum ThreadMsg {
     /// Декодировать один VP9 packet.
     Packet(DecodePacket),
 
@@ -63,7 +196,7 @@ pub enum ThreadMsg {
     ReleaseZeroCopy(video_core::FrameTextureHandle),
 
     /// Сбросить decoder state и подтвердить завершение операции.
-    Flush(std::sync::mpsc::Sender<()>),
+    Flush(mpsc::Sender<FlushAck>),
 }
 
 /// Пара WGPU texture views для decoded YUV/P010 кадра.
@@ -89,6 +222,9 @@ pub struct VideoTextureViewProvider {
 
     /// Shared texture pool, из которого render thread создаёт WGPU views.
     texture_pool: Arc<Mutex<crate::texture_cache::WgpuTexturePool>>,
+
+    /// Shared fatal state, чтобы release callback мог сообщить о disconnect-е.
+    thread_state: DecoderThreadState,
 }
 
 impl VideoTextureViewProvider {
@@ -134,6 +270,7 @@ impl VideoTextureViewProvider {
         };
 
         let msg_tx = self.msg_tx.clone();
+        let thread_state = self.thread_state.clone();
         self.queue.on_submitted_work_done(move || {
             let ready_handle = retired_slot.frame_handle;
             drop(retired_slot);
@@ -142,8 +279,12 @@ impl VideoTextureViewProvider {
                 "Submitted GPU work completed; releasing zero-copy VA handle"
             );
             if let Err(error) = msg_tx.send(ThreadMsg::ReleaseZeroCopy(ready_handle)) {
+                let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(
+                    "Decoder thread disconnected before zero-copy release",
+                ));
                 tracing::warn!(
                     error = %error,
+                    fatal = %fatal_error,
                     handle_id = ready_handle.0,
                     "Failed to send zero-copy release to decoder thread"
                 );
@@ -179,6 +320,8 @@ pub struct VideoDecodeThread {
     error_rx: std::sync::mpsc::Receiver<DecodeThreadError>,
     queue: Arc<wgpu::Queue>,
     texture_pool: Arc<Mutex<crate::texture_cache::WgpuTexturePool>>,
+    thread_state: DecoderThreadState,
+    config: DecodeThreadConfig,
     backend_name: &'static str,
 }
 
@@ -199,6 +342,7 @@ impl VideoDecodeThread {
         instance: wgpu::Instance,
         adapter: wgpu::Adapter,
     ) -> anyhow::Result<Self> {
+        let config = DecodeThreadConfig::from_env();
         let upload_config = UploadConfig::from_env();
         let dma_buf_importer = if upload_config.enable_dma_buf_zero_copy {
             info!(
@@ -228,6 +372,7 @@ impl VideoDecodeThread {
         let (frame_tx, frame_rx) = std::sync::mpsc::channel::<DecodedFrame>();
         let (error_tx, error_rx) = std::sync::mpsc::channel::<DecodeThreadError>();
         let (init_tx, init_rx) = std::sync::mpsc::sync_channel::<anyhow::Result<()>>(1);
+        let thread_state = DecoderThreadState::new();
 
         std::thread::Builder::new()
             .name("video-decode".into())
@@ -280,15 +425,21 @@ impl VideoDecodeThread {
             error_rx,
             queue: queue_for_release_callbacks,
             texture_pool,
+            thread_state,
+            config,
             backend_name: "VA-API VP9",
         })
     }
 
     /// Отправляет video packet в decoder thread.
     pub fn send_packet(&self, packet: DecodePacket) -> anyhow::Result<()> {
-        self.msg_tx
-            .send(ThreadMsg::Packet(packet))
-            .map_err(|_| anyhow::anyhow!("Decoder thread disconnected"))
+        self.ensure_thread_usable()?;
+        self.msg_tx.send(ThreadMsg::Packet(packet)).map_err(|_| {
+            let fatal_error = self
+                .thread_state
+                .mark_fatal(DecodeThreadError::new("Decoder thread disconnected"));
+            anyhow::anyhow!("{}", fatal_error)
+        })
     }
 
     /// Освобождает texture slot (вызывается из render thread).
@@ -308,24 +459,30 @@ impl VideoDecodeThread {
 
     /// Забирает fatal error из decoder thread, если backend остановился fail-closed.
     pub fn try_recv_error(&self) -> Option<DecodeThreadError> {
-        self.error_rx.try_recv().ok()
+        self.absorb_decoder_thread_errors();
+        self.thread_state.take_pending_error()
     }
 
     /// Синхронно сбрасывает decoder thread и освобождает уже полученные кадры.
     pub fn flush(&self) -> anyhow::Result<()> {
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        self.msg_tx
-            .send(ThreadMsg::Flush(done_tx))
-            .map_err(|_| anyhow::anyhow!("Decoder thread disconnected"))?;
-        done_rx
-            .recv()
-            .map_err(|_| anyhow::anyhow!("Decoder thread did not confirm flush"))?;
-
-        while let Ok(frame) = self.frame_rx.try_recv() {
-            self.release_frame(frame.texture_handle);
+        if let Err(error) = self.ensure_thread_usable() {
+            self.release_received_frames();
+            return Err(error);
         }
 
-        Ok(())
+        let (done_tx, done_rx) = mpsc::channel();
+        if self.msg_tx.send(ThreadMsg::Flush(done_tx)).is_err() {
+            let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(
+                "Decoder thread disconnected before flush",
+            ));
+            self.release_received_frames();
+            return Err(anyhow::anyhow!("{}", fatal_error));
+        }
+
+        let flush_result =
+            wait_for_flush_ack(done_rx, self.config.flush_timeout, &self.thread_state);
+        self.release_received_frames();
+        flush_result
     }
 
     /// Возвращает Y/UV texture views для frame handle (вызывается из render thread).
@@ -345,6 +502,7 @@ impl VideoDecodeThread {
             msg_tx: self.msg_tx.clone(),
             queue: self.queue.clone(),
             texture_pool: self.texture_pool.clone(),
+            thread_state: self.thread_state.clone(),
         }
     }
 
@@ -362,6 +520,65 @@ impl VideoDecodeThread {
     /// Имя бэкенда для UI.
     pub fn backend_name(&self) -> &'static str {
         self.backend_name
+    }
+
+    /// Переносит fatal ошибки из decoder thread channel в sticky state.
+    fn absorb_decoder_thread_errors(&self) {
+        loop {
+            match self.error_rx.try_recv() {
+                Ok(error) => {
+                    self.thread_state.mark_fatal(error);
+                }
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => return,
+            }
+        }
+    }
+
+    /// Проверяет, что decoder thread ещё можно использовать для новых команд.
+    fn ensure_thread_usable(&self) -> anyhow::Result<()> {
+        self.absorb_decoder_thread_errors();
+        if let Some(error) = self.thread_state.current_error() {
+            return Err(anyhow::anyhow!("{}", error));
+        }
+        Ok(())
+    }
+
+    /// Освобождает кадры, которые уже пришли через frame channel до/во время flush.
+    fn release_received_frames(&self) {
+        while let Ok(frame) = self.frame_rx.try_recv() {
+            self.release_frame(frame.texture_handle);
+        }
+    }
+}
+
+/// Ждёт flush ACK ограниченное время и переводит thread state в fatal при срыве.
+fn wait_for_flush_ack(
+    done_rx: mpsc::Receiver<FlushAck>,
+    timeout: Duration,
+    thread_state: &DecoderThreadState,
+) -> anyhow::Result<()> {
+    match done_rx.recv_timeout(timeout) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(message)) => {
+            let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(format!(
+                "Decoder thread flush failed: {message}"
+            )));
+            Err(anyhow::anyhow!("{}", fatal_error))
+        }
+        Err(RecvTimeoutError::Timeout) => {
+            let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(format!(
+                "Decoder thread did not confirm flush within {} ms",
+                timeout.as_millis()
+            )));
+            Err(anyhow::anyhow!("{}", fatal_error))
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(
+                "Decoder thread did not confirm flush",
+            ));
+            Err(anyhow::anyhow!("{}", fatal_error))
+        }
     }
 }
 
@@ -424,11 +641,27 @@ fn decoder_thread_loop(
                 decoder.release_zero_copy_frame(handle);
             }
             ThreadMsg::Flush(done_tx) => {
-                if let Err(error) = decoder.flush() {
-                    tracing::warn!(error = %error, "Decoder thread: flush failed");
+                let flush_result = decoder.flush().map_err(|error| format!("{error:#}"));
+                match &flush_result {
+                    Ok(()) => {}
+                    Err(error) => {
+                        let message = format!("Video decoder stopped after flush error: {error}");
+                        tracing::warn!(
+                            error = %message,
+                            "Decoder thread: fatal flush error, exiting"
+                        );
+                        if error_tx.send(DecodeThreadError::new(message)).is_err() {
+                            trace!("Player thread dropped decoder error receiver");
+                        }
+                    }
                 }
-                if done_tx.send(()).is_err() {
+
+                let flush_failed = flush_result.is_err();
+                if done_tx.send(flush_result).is_err() {
                     tracing::warn!("Decoder thread: flush completed, but caller dropped receiver");
+                }
+                if flush_failed {
+                    break;
                 }
             }
         }
@@ -446,5 +679,35 @@ mod tests {
 
         assert_eq!(error.message(), "P010 DMA-BUF zero-copy import failed");
         assert_eq!(error.to_string(), "P010 DMA-BUF zero-copy import failed");
+    }
+
+    /// Проверяет parsing policy без изменения process env в параллельных тестах.
+    #[test]
+    fn flush_timeout_config_rejects_zero_and_non_numeric_values() {
+        assert!(DecodeThreadConfig::parse_flush_timeout("0").is_err());
+        assert!(DecodeThreadConfig::parse_flush_timeout("abc").is_err());
+        assert_eq!(
+            DecodeThreadConfig::parse_flush_timeout("25").unwrap(),
+            Duration::from_millis(25)
+        );
+    }
+
+    /// Проверяет, что timeout не блокируется бесконечно и становится fatal state.
+    #[test]
+    fn flush_ack_timeout_marks_thread_fatal_once() {
+        let (_done_tx, done_rx) = mpsc::channel();
+        let thread_state = DecoderThreadState::new();
+
+        let error = wait_for_flush_ack(done_rx, Duration::from_millis(1), &thread_state)
+            .expect_err("empty ACK channel must timeout");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Decoder thread did not confirm flush within")
+        );
+        assert!(thread_state.current_error().is_some());
+        assert!(thread_state.take_pending_error().is_some());
+        assert!(thread_state.take_pending_error().is_none());
     }
 }
