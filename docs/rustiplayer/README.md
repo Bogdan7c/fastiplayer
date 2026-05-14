@@ -18,6 +18,7 @@
 - [10. Phase 9 Full VP9 Completion](09-phase-9-vp9-completion.md) - полное VP9 capability/metadata/decode-readiness направление перед HDR.
 - [11. Phase 10 HDR-to-SDR Baseline](10-phase-10-hdr-to-sdr-baseline.md) - HDR-to-SDR baseline поверх готового VP9/P010 контракта.
 - [12. Live Seek, Timeline and Desktop Controls Sessions](11-live-seek-timeline-sessions.md) - декомпозиция live seek/timeline/MPRIS на самостоятельные рабочие сессии.
+- [13. Smooth Playback and Zero-Copy Sessions](12-smooth-playback-zero-copy-sessions.md) - декомпозиция работ по идеально плавному 4k60+ воспроизведению, hard zero-copy invariant и future codec readiness.
 
 ## Ключевые решения
 
@@ -27,6 +28,7 @@
 | Основная платформа | Linux-first |
 | Оконная система | Wayland primary, X11 fallback |
 | Видео decode | Только аппаратное ускорение, software fallback для видео отсутствует |
+| Video memory path | `zero_copy_video_only = true`: production path требует DMA-BUF export/import, CPU upload/readback не конфигурируется |
 | Audio decode | Software decode допустим |
 | Linux video backend | VA-API primary, с поддержкой i965 и iHD |
 | Bitstream probing | Только через проверенные parser'ы/адаптеры, без новых ad-hoc bit parser'ов в `player-core` |
@@ -79,3 +81,6 @@
 - Аудио-треск после worker/audio правок устранён через CPAL playback anchor smoothing и
   packet-boundary-safe resampler. На тяжёлых 4k60 asset-ах остаются late video drops;
   это отдельная будущая задача render/present cadence profiling, не блокер текущего этапа.
+- План устранения late video drops, запрета CPU fallback и подготовки smooth playback
+  для будущих codec-ов описан в
+  [Smooth Playback and Zero-Copy Sessions](12-smooth-playback-zero-copy-sessions.md).

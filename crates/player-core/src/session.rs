@@ -2358,7 +2358,7 @@ mod tests {
             format: video_core::DecodedPixelFormat::Nv12,
             bit_depth: BitDepth::Eight,
             chroma: ChromaSubsampling::Yuv420,
-            memory_path: video_core::FrameMemoryPath::CpuUpload,
+            memory_path: video_core::FrameMemoryPath::DmaBufZeroCopy,
             width: 640,
             height: 360,
             render_width: 640,

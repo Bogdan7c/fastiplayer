@@ -1,14 +1,13 @@
 /// Dedicated decoder thread для VA-API VP9 decode.
 ///
-/// Изолирует blocking decode + DMA map + texture upload от render thread,
-/// чтобы UI не зависал на 300–500 мс на кадр.
+/// Изолирует blocking hardware decode и DMA-BUF export/import от render thread.
 ///
 /// Архитектура:
 /// - Render thread отправляет video packets через `send_packet()`.
-/// - Decoder thread вызывает `decode()`, обрабатывает `FrameReady`, upload'ит текстуры.
+/// - Decoder thread вызывает `decode()` и обрабатывает `FrameReady` только через zero-copy import.
 /// - Готовые `DecodedFrame` возвращаются через `try_recv_frame()`.
 /// - Texture pool (Arc<Mutex<WgpuTexturePool>>) shared между потоками:
-///   decoder thread делает upload (write),
+///   decoder thread публикует imported DMA-BUF slots,
 ///   render thread делает get_views / release (read/write).
 use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -21,7 +20,6 @@ use tracing::{info, trace};
 use video_core::{DecodedFrame, VideoDecoder};
 
 use crate::texture_cache::TexturePoolStats;
-use crate::upload_config::UploadConfig;
 
 /// Результат, которым decoder thread подтверждает завершение flush.
 type FlushAck = std::result::Result<(), String>;
@@ -343,26 +341,13 @@ impl VideoDecodeThread {
         adapter: wgpu::Adapter,
     ) -> anyhow::Result<Self> {
         let config = DecodeThreadConfig::from_env();
-        let upload_config = UploadConfig::from_env();
-        let dma_buf_importer = if upload_config.enable_dma_buf_zero_copy {
-            info!(
-                env_var = UploadConfig::ZERO_COPY_ENV_VAR,
-                "DMA-BUF zero-copy upload enabled by default"
-            );
-            Some(crate::dma_buf_import::DmaBufImporter::new(
-                (*device).clone(),
-                instance,
-                adapter,
-            ))
-        } else {
-            info!(
-                env_var = UploadConfig::ZERO_COPY_ENV_VAR,
-                "Using CPU texture upload because DMA-BUF zero-copy was explicitly disabled"
-            );
-            None
-        };
+        let dma_buf_importer = Some(crate::dma_buf_import::DmaBufImporter::new(
+            (*device).clone(),
+            instance,
+            adapter,
+        ));
+        info!("DMA-BUF zero-copy import is required by production video policy");
         let texture_pool = Arc::new(Mutex::new(crate::texture_cache::WgpuTexturePool::new(
-            device.clone(),
             dma_buf_importer,
         )));
         let texture_pool_for_thread = texture_pool.clone();

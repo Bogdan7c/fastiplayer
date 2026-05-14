@@ -334,7 +334,7 @@ impl SystemCapabilities {
     ///
     /// Production `check_video_requirement()` обязан учитывать renderer и HDR-to-SDR
     /// readiness. Этот метод намеренно проверяет только то, что нужно до renderer-а:
-    /// hardware decode format и обязательный DMA-BUF export path для P010.
+    /// hardware decode format и обязательный DMA-BUF export path.
     pub fn check_video_requirement_for_p010_boundary_diagnostic(
         &self,
         requirement: &VideoDecodeRequirement,
@@ -853,10 +853,6 @@ fn device_boundary_rejection(
     frame_format: VideoFrameFormat,
     backend: &BackendCapabilities,
 ) -> Option<VideoCapabilityRejection> {
-    if frame_format != VideoFrameFormat::P010 {
-        return None;
-    }
-
     if backend.export_paths.contains(&VideoExportPath::DmaBuf) {
         return None;
     }
@@ -1311,6 +1307,38 @@ mod tests {
             error.rejections.first(),
             Some(VideoCapabilityRejection::UnsupportedDeviceExportPath {
                 frame_format: VideoFrameFormat::P010,
+                required_export_path: VideoExportPath::DmaBuf,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn nv12_requirement_requires_dma_buf_export_path() {
+        let capabilities = capabilities_with_formats(
+            vec![vp9_format(
+                Vp9Profile::Profile0,
+                BitDepth::Eight,
+                ChromaSubsampling::Yuv420,
+                false,
+            )],
+            vec![RenderCapabilities::wgpu_nv12(Some(4096))],
+            Vec::new(),
+        );
+        let requirement = vp9_requirement(
+            Vp9Profile::Profile0,
+            BitDepth::Eight,
+            ChromaSubsampling::Yuv420,
+        );
+
+        let error = capabilities
+            .check_video_requirement(&requirement)
+            .expect_err("NV12 production path must require DMA-BUF export");
+
+        assert!(matches!(
+            error.rejections.first(),
+            Some(VideoCapabilityRejection::UnsupportedDeviceExportPath {
+                frame_format: VideoFrameFormat::Nv12,
                 required_export_path: VideoExportPath::DmaBuf,
                 ..
             })

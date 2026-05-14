@@ -118,6 +118,17 @@ skin = "minimal"
 - Значения проходят validation после deserialization.
 - Config не содержит историю, cookies, cache metadata и bookmarks.
 
+## Video zero-copy policy
+
+`zero_copy_video_only = true` является архитектурным инвариантом, а не
+пользовательской настройкой TOML. Production video path принимает только
+hardware decode + DMA-BUF zero-copy export/import; CPU upload, CPU readback и
+software video fallback не имеют runtime-переключателя.
+
+Если для regression tests понадобится CPU-visible helper, он должен быть
+отдельным compile-time test-only path. Такой helper нельзя подключать через env,
+config, diagnostic mode или UI.
+
 ## Schema version 2 seek/network/UI policy
 
 Schema version 2 фиксирует публичные knobs для live seek/scrub,

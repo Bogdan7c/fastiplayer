@@ -88,7 +88,7 @@ codec-core VideoColorMetadata
         |
         v
 video-core DecodedFrame
-  pixel format, bit depth, chroma, color metadata, texture handle
+  pixel format, bit depth, chroma, color metadata, zero-copy memory path, texture handle
         |
         v
 render-core RenderableFrame
@@ -260,7 +260,7 @@ Snapshot не должен содержать mutable handles к decoder/demuxer
 - main thread: winit/egui/render command submission;
 - player worker thread: владеет `PlayerSession`, demux/audio/video pipeline,
   выполняет playback tick с фиксированным интервалом и публикует latest snapshot;
-- video decode thread: blocking hardware decode/upload;
+- video decode thread: blocking hardware decode + DMA-BUF zero-copy export/import;
 - HTTP fetch threads/tasks: source/network layer;
 - audio callback thread: CPAL-owned;
 - long-running persistence is not part of the current runtime: durable seek/cache

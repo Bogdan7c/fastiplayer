@@ -1238,7 +1238,7 @@ mod tests {
         let (bit_depth, memory_path) = match format {
             video_core::DecodedPixelFormat::Nv12 => (
                 codec_core::BitDepth::Eight,
-                video_core::FrameMemoryPath::CpuUpload,
+                video_core::FrameMemoryPath::DmaBufZeroCopy,
             ),
             video_core::DecodedPixelFormat::P010 => (
                 codec_core::BitDepth::Ten,

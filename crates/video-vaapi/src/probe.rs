@@ -180,7 +180,7 @@ pub fn probe_vaapi_capabilities() -> BackendCapabilities {
         raw_entrypoints: raw_entrypoints.into_iter().collect(),
         raw_rt_formats: raw_rt_formats.into_iter().collect(),
         quirks,
-        export_paths: vec![VideoExportPath::DmaBuf, VideoExportPath::CpuReadback],
+        export_paths: vec![VideoExportPath::DmaBuf],
         p010_storage_layouts,
         diagnostics,
     }

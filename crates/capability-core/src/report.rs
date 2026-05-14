@@ -243,11 +243,18 @@ impl BackendCapabilities {
     /// Формирует одну строку report для backend-а.
     #[must_use]
     pub fn summary_text(&self) -> String {
+        let zero_copy_export_label = if self.export_paths.contains(&VideoExportPath::DmaBuf) {
+            "DMA-BUF zero-copy"
+        } else {
+            "zero-copy export unavailable"
+        };
+
         match &self.status {
             BackendProbeStatus::Available => format!(
-                "{}: доступен, {} decode formats{}",
+                "{}: доступен, {} decode formats, export: {}{}",
                 self.display_name,
                 self.supported_video_decode_formats.len(),
+                zero_copy_export_label,
                 self.driver
                     .vendor
                     .as_ref()
@@ -314,9 +321,6 @@ pub struct DriverQuirk {
 pub enum VideoExportPath {
     /// DMA-BUF export/import path.
     DmaBuf,
-
-    /// CPU readback/upload fallback path.
-    CpuReadback,
 }
 
 impl std::fmt::Display for VideoExportPath {
@@ -324,7 +328,6 @@ impl std::fmt::Display for VideoExportPath {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self {
             Self::DmaBuf => "DMA-BUF",
-            Self::CpuReadback => "CPU readback",
         };
         formatter.write_str(label)
     }

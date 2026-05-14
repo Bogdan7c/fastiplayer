@@ -77,7 +77,7 @@ impl VideoFrame for InternalVaapiFrame {
     }
 
     fn map<'a>(&'a self) -> Result<Box<dyn ReadMapping<'a> + 'a>, String> {
-        Err("Internal VA surfaces must be read through DecodedHandle::nv12_image()".to_string())
+        Err("Internal VA surfaces are zero-copy only; export through DMA-BUF".to_string())
     }
 
     fn map_mut<'a>(&'a mut self) -> Result<Box<dyn WriteMapping<'a> + 'a>, String> {

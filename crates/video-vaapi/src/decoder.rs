@@ -7,7 +7,6 @@ use anyhow::Result;
 use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
 use cros_codecs::DecodedFormat;
 use cros_codecs::decoder::BlockingMode;
-use cros_codecs::decoder::DecodedHandle;
 use cros_codecs::decoder::DecoderEvent;
 use cros_codecs::decoder::DynDecodedHandle;
 use cros_codecs::decoder::stateless::DecodeError;
@@ -59,7 +58,7 @@ const INITIAL_HEIGHT: u32 = 1080;
 /// Итог обработки pending decoder events.
 ///
 /// Отдельный report нужен, чтобы retry-loop мог видеть, был ли `FormatChanged`,
-/// и писать диагностический лог без знания деталей `FrameReady` upload path.
+/// и писать диагностический лог без знания деталей `FrameReady` import path.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct DecoderDrainReport {
     /// Количество событий, прочитанных через `next_event()`.
@@ -231,20 +230,19 @@ struct DecodedSurfaceContract {
     chroma: ChromaSubsampling,
 }
 
-/// Фатальное нарушение P010 boundary contract.
+/// Фатальное нарушение zero-copy video boundary contract.
 ///
-/// P010 кадр нельзя безопасно отправлять в CPU fallback: так мы потеряем
-/// 10-bit surface contract и замаскируем отсутствие zero-copy path. Поэтому
-/// такие ошибки должны останавливать decoder thread, а не повторяться на
-/// каждом следующем кадре.
+/// Любой decoded video frame нельзя безопасно отправлять в CPU fallback: так
+/// pipeline скрывает отсутствие production DMA-BUF export/import и ломает
+/// диагностику плавности. Поэтому такие ошибки останавливают decoder thread.
 #[derive(Debug)]
-struct P010BoundaryViolation {
+struct ZeroCopyContractViolation {
     /// Человекочитаемое объяснение конкретной причины отказа.
     detail: String,
 }
 
-impl P010BoundaryViolation {
-    /// Создаёт ошибку P010 boundary с понятной причиной для лога/UI.
+impl ZeroCopyContractViolation {
+    /// Создаёт ошибку zero-copy boundary с понятной причиной для лога/UI.
     fn new(detail: impl Into<String>) -> Self {
         Self {
             detail: detail.into(),
@@ -252,22 +250,22 @@ impl P010BoundaryViolation {
     }
 }
 
-impl std::fmt::Display for P010BoundaryViolation {
+impl std::fmt::Display for ZeroCopyContractViolation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.detail)
     }
 }
 
-impl std::error::Error for P010BoundaryViolation {}
+impl std::error::Error for ZeroCopyContractViolation {}
 
 /// Проверяет, что decode error требует остановить decoder thread.
 pub(crate) fn is_fatal_decoder_error(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<P010BoundaryViolation>().is_some()
+    error.downcast_ref::<ZeroCopyContractViolation>().is_some()
 }
 
-/// Создаёт typed anyhow error для фатальной P010 boundary ошибки.
-fn p010_boundary_violation(detail: impl Into<String>) -> anyhow::Error {
-    P010BoundaryViolation::new(detail).into()
+/// Создаёт typed anyhow error для фатальной zero-copy boundary ошибки.
+fn zero_copy_contract_violation(detail: impl Into<String>) -> anyhow::Error {
+    ZeroCopyContractViolation::new(detail).into()
 }
 
 impl DecodedSurfaceContract {
@@ -320,14 +318,37 @@ fn decoded_contract_for_rt_format(rt_format: u32) -> Result<DecodedSurfaceContra
     }
 }
 
-/// Проверяет zero-copy boundary requirement до CPU fallback.
+/// Проверяет zero-copy boundary requirement до обработки decoded кадра.
 fn ensure_zero_copy_importer_for_contract(
     decoded_contract: DecodedSurfaceContract,
     can_import_dma_buf: bool,
 ) -> Result<()> {
-    if decoded_contract.format == DecodedPixelFormat::P010 && !can_import_dma_buf {
-        return Err(p010_boundary_violation(
-            "P010 decoded frame requires DMA-BUF zero-copy importer, but importer is unavailable",
+    if !can_import_dma_buf {
+        return Err(zero_copy_contract_violation(format!(
+            "{} decoded frame requires DMA-BUF zero-copy importer, but importer is unavailable",
+            decoded_contract.format
+        )));
+    }
+
+    Ok(())
+}
+
+/// Проверяет production texture pool до создания decoder thread state.
+fn ensure_texture_pool_has_zero_copy_importer(
+    texture_cache: &Arc<Mutex<WgpuTexturePool>>,
+) -> Result<()> {
+    let can_import_dma_buf = texture_cache
+        .lock()
+        .map_err(|error| {
+            zero_copy_contract_violation(format!(
+                "Zero-copy texture pool mutex is poisoned before decoder start: {error}"
+            ))
+        })?
+        .can_import_dma_buf();
+
+    if !can_import_dma_buf {
+        return Err(zero_copy_contract_violation(
+            "VA-API decoder requires DMA-BUF zero-copy importer at startup",
         ));
     }
 
@@ -353,40 +374,6 @@ fn rt_format_for_decoded_format(decoded_format: DecodedFormat) -> Result<u32> {
     }
 }
 
-/// Загружает кадр стабильным CPU-путём: `map()` DMA-BUF и `Queue::write_texture()`.
-fn upload_frame_with_cpu_fallback(
-    texture_cache: &mut WgpuTexturePool,
-    decoded_handle: &dyn DecodedHandle<Frame = InternalVaapiFrame>,
-    queue: &wgpu::Queue,
-    sync_elapsed: u128,
-    upload_start: std::time::Instant,
-) -> Result<FrameTextureHandle> {
-    match texture_cache.upload_frame(decoded_handle, queue) {
-        Ok(texture_handle) => {
-            let elapsed = upload_start.elapsed().as_millis();
-            debug!(
-                handle_id = texture_handle.0,
-                sync_ms = sync_elapsed,
-                upload_ms = elapsed,
-                "CPU texture upload successful"
-            );
-            Ok(texture_handle)
-        }
-        Err(upload_error) => {
-            warn!(error = %upload_error, "Texture upload failed — dropping frame");
-            Err(anyhow::anyhow!("Texture upload failed: {}", upload_error))
-        }
-    }
-}
-
-/// Готовый кадр вместе с причиной, по которой он помещается в очередь.
-enum ReadyFrameSource {
-    /// Кадр пришёл через zero-copy DMA-BUF import.
-    ZeroCopy,
-    /// Кадр пришёл через стабильный CPU upload path.
-    CpuUpload,
-}
-
 /// VA-API VP9 hardware decoder, реализующий трейт [`VideoDecoder`].
 ///
 /// Оборачивает `cros-codecs::StatelessDecoder<Vp9, VaapiBackend<InternalVaapiFrame>>`
@@ -404,7 +391,7 @@ pub struct VaapiVideoDecoder {
 
     /// Пул wgpu-текстур для загруженных кадров.
     ///
-    /// Arc<Mutex<>> потому что пул используется из decoder thread (upload)
+    /// Arc<Mutex<>> потому что пул используется из decoder thread (DMA-BUF import)
     /// и из render thread (get_views / release).
     texture_cache: Arc<Mutex<WgpuTexturePool>>,
 
@@ -420,9 +407,6 @@ pub struct VaapiVideoDecoder {
     /// и decoder не может перезаписать память, которую семплит renderer.
     zero_copy_guards: HashMap<u64, DynDecodedHandle<InternalVaapiFrame>>,
 
-    /// Был ли уже залогирован fallback с zero-copy на CPU upload.
-    zero_copy_failure_logged: bool,
-
     /// Был ли уже залогирован первый успешный zero-copy кадр.
     zero_copy_success_logged: bool,
 
@@ -436,9 +420,6 @@ pub struct VaapiVideoDecoder {
     #[allow(dead_code)]
     device: Arc<wgpu::Device>,
 
-    /// wgpu queue — нужен для `write_texture()` при загрузке декодированных кадров.
-    queue: Arc<wgpu::Queue>,
-
     /// Имя бэкенда для отображения в UI.
     backend_name: &'static str,
 }
@@ -448,7 +429,7 @@ impl VaapiVideoDecoder {
     ///
     /// # Аргументы
     /// * `device` — [`Arc<wgpu::Device>`] для создания wgpu-текстур.
-    /// * `queue` — [`Arc<wgpu::Queue>`] для загрузки данных в текстуры.
+    /// * `_queue` — сохранён в сигнатуре для совместимости; CPU upload policy отключена.
     ///
     /// # Ошибки
     /// Возвращает ошибку если:
@@ -456,16 +437,17 @@ impl VaapiVideoDecoder {
     /// - не удалось создать stateless decoder,
     /// - не удалось создать GBM frame pool.
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Result<Self> {
-        let texture_cache = Arc::new(Mutex::new(WgpuTexturePool::new(device.clone(), None)));
+        let texture_cache = Arc::new(Mutex::new(WgpuTexturePool::new(None)));
         Self::new_with_pool(device, queue, texture_cache)
     }
 
     pub fn new_with_pool(
         device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
+        _queue: Arc<wgpu::Queue>,
         texture_cache: Arc<Mutex<WgpuTexturePool>>,
     ) -> Result<Self> {
         info!("Opening VA-API display");
+        ensure_texture_pool_has_zero_copy_importer(&texture_cache)?;
 
         // Открываем VA-API display. `Display::open()` возвращает `Option<Rc<Display>>`.
         // Если None — значит VA-API недоступна (нет драйвера, нет устройства).
@@ -505,11 +487,9 @@ impl VaapiVideoDecoder {
             texture_cache,
             ready_queue: VecDeque::new(),
             zero_copy_guards: HashMap::new(),
-            zero_copy_failure_logged: false,
             zero_copy_success_logged: false,
             p010_boundary_verified_logged: false,
             device,
-            queue,
             backend_name: "VA-API VP9",
         })
     }
@@ -600,13 +580,13 @@ impl VaapiVideoDecoder {
         }
     }
 
-    /// Добавляет готовый кадр в decoder ready queue, сбрасывая самый старый backlog.
+    /// Добавляет zero-copy кадр в decoder ready queue, сбрасывая самый старый backlog.
     ///
     /// UI получает кадры через отдельный канал, поэтому decoder может временно
     /// накопить уже импортированные textures внутри `ready_queue`. Для видео важнее
     /// держать низкую задержку и не исчерпывать GPU slots, чем сохранить каждый
     /// промежуточный кадр при backlog.
-    fn push_ready_frame(&mut self, frame: DecodedFrame, source: ReadyFrameSource) {
+    fn push_ready_frame(&mut self, frame: DecodedFrame) -> Result<()> {
         if let Err(error) = frame.validate_contract() {
             let invalid_texture_handle = frame.texture_handle;
             warn!(
@@ -616,7 +596,9 @@ impl VaapiVideoDecoder {
                 "Decoded frame contract validation failed before ready queue"
             );
             self.release_frame(invalid_texture_handle);
-            return;
+            return Err(zero_copy_contract_violation(format!(
+                "Decoded frame contract validation failed before ready queue: {error}"
+            )));
         }
 
         while self.ready_queue.len() >= READY_QUEUE_LIMIT {
@@ -632,32 +614,20 @@ impl VaapiVideoDecoder {
             );
         }
 
-        match source {
-            ReadyFrameSource::ZeroCopy => trace!(
-                pts_ms = frame.pts.as_millis(),
-                handle_id = frame.texture_handle.0,
-                format = %frame.format,
-                bit_depth = %frame.bit_depth,
-                chroma = %frame.chroma,
-                color_origin = ?frame.color.origin,
-                color_confidence = ?frame.color.confidence,
-                queue_len = self.ready_queue.len() + 1,
-                "Zero-copy frame queued for presentation"
-            ),
-            ReadyFrameSource::CpuUpload => trace!(
-                pts_ms = frame.pts.as_millis(),
-                handle_id = frame.texture_handle.0,
-                format = %frame.format,
-                bit_depth = %frame.bit_depth,
-                chroma = %frame.chroma,
-                color_origin = ?frame.color.origin,
-                color_confidence = ?frame.color.confidence,
-                queue_len = self.ready_queue.len() + 1,
-                "CPU-upload frame queued for presentation"
-            ),
-        }
+        trace!(
+            pts_ms = frame.pts.as_millis(),
+            handle_id = frame.texture_handle.0,
+            format = %frame.format,
+            bit_depth = %frame.bit_depth,
+            chroma = %frame.chroma,
+            color_origin = ?frame.color.origin,
+            color_confidence = ?frame.color.confidence,
+            queue_len = self.ready_queue.len() + 1,
+            "Zero-copy frame queued for presentation"
+        );
 
         self.ready_queue.push_back(frame);
+        Ok(())
     }
 
     /// Очищает кадры, которыми всё ещё владеет decoder thread.
@@ -709,13 +679,13 @@ impl VaapiVideoDecoder {
         );
     }
 
-    /// Обрабатывает готовый кадр от decoder: синхронизация, upload в wgpu, возврат буфера в пул.
+    /// Обрабатывает готовый кадр от decoder: sync, DMA-BUF export и zero-copy import.
     ///
     /// # Аргументы
     /// * `handle` — handle декодированного кадра от cros-codecs.
     ///
     /// # Ошибки
-    /// Возвращает ошибку если sync или texture upload не удался.
+    /// Возвращает ошибку если sync, DMA-BUF export или zero-copy import не удался.
     fn process_ready_frame(&mut self, handle: DynDecodedHandle<InternalVaapiFrame>) -> Result<()> {
         // Получаем разрешения кадра ДО sync (sync может потребовать mutable borrow).
         let resolution = handle.coded_resolution();
@@ -738,175 +708,109 @@ impl VaapiVideoDecoder {
             warn!(error = %e, "GPU decode sync failed — dropping frame");
             return Err(anyhow::anyhow!("GPU decode sync failed: {}", e));
         }
-        let sync_elapsed = sync_start.elapsed().as_millis();
         let decoded_contract = self.current_decoded_contract(&handle)?;
 
-        // Шаг 2: Если включён zero-copy importer, пробуем экспортировать VA surface
-        // как DMA-BUF и импортировать её в Vulkan/wgpu texture без CPU readback.
-        let can_import_dma_buf = self.texture_cache.lock().unwrap().can_import_dma_buf();
-        if can_import_dma_buf {
-            match handle.dma_buf_image() {
-                Ok(Some(dma_buf_image)) => {
-                    let import_result = self
-                        .texture_cache
-                        .lock()
-                        .unwrap()
-                        .import_dma_buf_image(&dma_buf_image);
+        // Шаг 2: Проверяем, что importer есть до попытки export-а.
+        let can_import_dma_buf = self
+            .texture_cache
+            .lock()
+            .map_err(|error| {
+                zero_copy_contract_violation(format!(
+                    "Zero-copy texture pool mutex is poisoned before DMA-BUF import: {error}"
+                ))
+            })?
+            .can_import_dma_buf();
+        ensure_zero_copy_importer_for_contract(decoded_contract, can_import_dma_buf)?;
 
-                    match import_result {
-                        Ok(texture_handle) => {
-                            if !self.zero_copy_success_logged {
-                                self.zero_copy_success_logged = true;
-                                info!(
-                                    handle_id = texture_handle.0,
-                                    format = %decoded_contract.format,
-                                    "Zero-copy DMA-BUF import succeeded"
-                                );
-                            }
-                            if decoded_contract.format == DecodedPixelFormat::P010
-                                && !self.p010_boundary_verified_logged
-                            {
-                                self.p010_boundary_verified_logged = true;
-                                info!(
-                                    handle_id = texture_handle.0,
-                                    width = resolution.width,
-                                    height = resolution.height,
-                                    bit_depth = %decoded_contract.bit_depth,
-                                    chroma = %decoded_contract.chroma,
-                                    "P010 zero-copy boundary verified"
-                                );
-                            }
-                            self.zero_copy_guards.insert(texture_handle.0, handle);
-                            self.push_ready_frame(
-                                DecodedFrame {
-                                    pts: Duration::from_micros(timestamp),
-                                    format: decoded_contract.format,
-                                    bit_depth: decoded_contract.bit_depth,
-                                    chroma: decoded_contract.chroma,
-                                    memory_path: FrameMemoryPath::DmaBufZeroCopy,
-                                    width: resolution.width,
-                                    height: resolution.height,
-                                    render_width: display_resolution.width,
-                                    render_height: display_resolution.height,
-                                    color: VideoColorMetadata::sdr_bt709_limited(),
-                                    texture_handle,
-                                },
-                                ReadyFrameSource::ZeroCopy,
-                            );
-                            return Ok(());
-                        }
-                        Err(import_error) => {
-                            if decoded_contract.format == DecodedPixelFormat::P010 {
-                                let import_error_chain = format!("{:#}", import_error);
-                                warn!(
-                                    error = %import_error_chain,
-                                    "P010 DMA-BUF zero-copy import failed; CPU fallback is disabled for P010"
-                                );
-                                return Err(p010_boundary_violation(format!(
-                                    "P010 DMA-BUF zero-copy import failed: {}",
-                                    import_error_chain
-                                )));
-                            }
-                            if self.zero_copy_failure_logged {
-                                debug!(
-                                    error = %import_error,
-                                    "Zero-copy DMA-BUF import failed — falling back to VA image readback"
-                                );
-                            } else {
-                                self.zero_copy_failure_logged = true;
-                                warn!(
-                                    error = %import_error,
-                                    "Zero-copy DMA-BUF import failed — falling back to VA image readback"
-                                );
-                            }
-                        }
-                    }
-                }
-                Ok(None) => {
-                    if decoded_contract.format == DecodedPixelFormat::P010 {
-                        warn!(
-                            "P010 decoded handle does not expose DMA-BUF export; CPU fallback is disabled for P010"
-                        );
-                        return Err(p010_boundary_violation(
-                            "P010 decoded handle does not expose DMA-BUF export",
-                        ));
-                    }
-                    debug!("Decoded handle does not expose DMA-BUF export");
-                }
-                Err(export_error) => {
-                    if decoded_contract.format == DecodedPixelFormat::P010 {
-                        let export_error_chain = format!("{:#}", export_error);
-                        warn!(
-                            error = %export_error_chain,
-                            "P010 VA surface DMA-BUF export failed; CPU fallback is disabled for P010"
-                        );
-                        return Err(p010_boundary_violation(format!(
-                            "P010 VA surface DMA-BUF export failed: {}",
-                            export_error_chain
-                        )));
-                    }
-                    if self.zero_copy_failure_logged {
-                        debug!(
-                            error = %export_error,
-                            "VA surface DMA-BUF export failed — falling back to VA image readback"
-                        );
-                    } else {
-                        self.zero_copy_failure_logged = true;
-                        warn!(
-                            error = %export_error,
-                            "VA surface DMA-BUF export failed — falling back to VA image readback"
-                        );
-                    }
-                }
+        // Шаг 3: Экспортируем VA surface как DMA-BUF. Отсутствие export-а — fatal contract error.
+        let dma_buf_image = match handle.dma_buf_image() {
+            Ok(Some(dma_buf_image)) => dma_buf_image,
+            Ok(None) => {
+                return Err(zero_copy_contract_violation(format!(
+                    "{} decoded handle does not expose DMA-BUF export",
+                    decoded_contract.format
+                )));
             }
-        } else if let Err(error) =
-            ensure_zero_copy_importer_for_contract(decoded_contract, can_import_dma_buf)
-        {
-            warn!(
-                "P010 decoded frame requires DMA-BUF zero-copy importer; CPU fallback is disabled for P010"
+            Err(export_error) => {
+                let export_error_chain = format!("{:#}", export_error);
+                warn!(
+                    error = %export_error_chain,
+                    format = %decoded_contract.format,
+                    "VA surface DMA-BUF export failed; CPU fallback is disabled"
+                );
+                return Err(zero_copy_contract_violation(format!(
+                    "{} VA surface DMA-BUF export failed: {}",
+                    decoded_contract.format, export_error_chain
+                )));
+            }
+        };
+
+        // Шаг 4: Импортируем DMA-BUF в renderer-visible wgpu textures.
+        let import_start = std::time::Instant::now();
+        let texture_handle = self
+            .texture_cache
+            .lock()
+            .map_err(|error| {
+                zero_copy_contract_violation(format!(
+                    "Zero-copy texture pool mutex is poisoned during DMA-BUF import: {error}"
+                ))
+            })?
+            .import_dma_buf_image(&dma_buf_image)
+            .map_err(|import_error| {
+                let import_error_chain = format!("{:#}", import_error);
+                warn!(
+                    error = %import_error_chain,
+                    format = %decoded_contract.format,
+                    "DMA-BUF zero-copy import failed; CPU fallback is disabled"
+                );
+                zero_copy_contract_violation(format!(
+                    "{} DMA-BUF zero-copy import failed: {}",
+                    decoded_contract.format, import_error_chain
+                ))
+            })?;
+        let import_elapsed = import_start.elapsed().as_millis();
+
+        if !self.zero_copy_success_logged {
+            self.zero_copy_success_logged = true;
+            info!(
+                handle_id = texture_handle.0,
+                format = %decoded_contract.format,
+                sync_ms = sync_start.elapsed().as_millis(),
+                import_ms = import_elapsed,
+                "Zero-copy DMA-BUF import succeeded"
             );
-            return Err(error);
+        }
+        if decoded_contract.format == DecodedPixelFormat::P010
+            && !self.p010_boundary_verified_logged
+        {
+            self.p010_boundary_verified_logged = true;
+            info!(
+                handle_id = texture_handle.0,
+                width = resolution.width,
+                height = resolution.height,
+                bit_depth = %decoded_contract.bit_depth,
+                chroma = %decoded_contract.chroma,
+                "P010 zero-copy boundary verified"
+            );
         }
 
-        // Шаг 3: Загружаем кадр через стабильный VA image readback.
-        let upload_start = std::time::Instant::now();
-        let mut cache = self.texture_cache.lock().unwrap();
-        let texture_handle = upload_frame_with_cpu_fallback(
-            &mut cache,
-            &*handle,
-            &self.queue,
-            sync_elapsed,
-            upload_start,
-        )?;
-        drop(cache);
+        // Шаг 5: Удерживаем VA handle, пока renderer не подтвердит release после GPU work.
+        self.zero_copy_guards.insert(texture_handle.0, handle);
 
-        // Шаг 4: Возвращаем backing frame в пул для повторного использования.
-        //
-        // `handle.video_frame()` возвращает `Arc<InternalVaapiFrame>` (clone).
-        // Чтобы `Arc::try_unwrap` сработал, нужно убедиться что refcount == 1.
-        // Handle внутри держит `backing_frame: Arc<InternalVaapiFrame>`,
-        // так что после clone refcount >= 2. Drop handle уменьшает refcount.
-        // Если decoder не держит этот кадр как reference frame, refcount станет 1
-        // и `Arc::try_unwrap` вернёт Ok — frame возвращается в пул.
-        self.return_frame_from_handle(handle);
-
-        // Шаг 5: Добавляем кадр в очередь готовых к отображению.
-        self.push_ready_frame(
-            DecodedFrame {
-                pts: Duration::from_micros(timestamp),
-                format: decoded_contract.format,
-                bit_depth: decoded_contract.bit_depth,
-                chroma: decoded_contract.chroma,
-                memory_path: FrameMemoryPath::CpuUpload,
-                width: resolution.width,
-                height: resolution.height,
-                render_width: display_resolution.width,
-                render_height: display_resolution.height,
-                color: VideoColorMetadata::sdr_bt709_limited(),
-                texture_handle,
-            },
-            ReadyFrameSource::CpuUpload,
-        );
+        // Шаг 6: Публикуем только zero-copy frame metadata.
+        self.push_ready_frame(DecodedFrame {
+            pts: Duration::from_micros(timestamp),
+            format: decoded_contract.format,
+            bit_depth: decoded_contract.bit_depth,
+            chroma: decoded_contract.chroma,
+            memory_path: FrameMemoryPath::DmaBufZeroCopy,
+            width: resolution.width,
+            height: resolution.height,
+            render_width: display_resolution.width,
+            render_height: display_resolution.height,
+            color: VideoColorMetadata::sdr_bt709_limited(),
+            texture_handle,
+        })?;
 
         Ok(())
     }
@@ -1278,9 +1182,34 @@ mod tests {
         assert!(is_fatal_decoder_error(&error));
     }
 
-    /// Проверяет, что NV12 не требует zero-copy importer-а и может остаться на CPU upload path.
+    /// Проверяет, что NV12 защищён тем же zero-copy contract, что и P010.
     #[test]
-    fn nv12_boundary_allows_missing_zero_copy_importer() {
-        ensure_zero_copy_importer_for_contract(DecodedSurfaceContract::nv12(), false).unwrap();
+    fn nv12_boundary_rejects_missing_zero_copy_importer() {
+        let error = ensure_zero_copy_importer_for_contract(DecodedSurfaceContract::nv12(), false)
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("NV12 decoded frame requires DMA-BUF zero-copy importer"),
+            "unexpected error: {error}"
+        );
+        assert!(is_fatal_decoder_error(&error));
+    }
+
+    /// Проверяет fail-fast startup, если pool создан без importer-а.
+    #[test]
+    fn decoder_start_rejects_texture_pool_without_zero_copy_importer() {
+        let texture_pool = Arc::new(Mutex::new(WgpuTexturePool::new(None)));
+
+        let error = ensure_texture_pool_has_zero_copy_importer(&texture_pool).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires DMA-BUF zero-copy importer at startup"),
+            "unexpected error: {error}"
+        );
+        assert!(is_fatal_decoder_error(&error));
     }
 }

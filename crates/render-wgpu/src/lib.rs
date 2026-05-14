@@ -84,12 +84,7 @@ impl<'frame> WgpuRenderableFrame<'frame> {
         y_view: &'frame wgpu::TextureView,
         uv_view: &'frame wgpu::TextureView,
     ) -> Result<Self> {
-        frame.validate_contract()?;
-        ensure!(
-            frame.format == DecodedPixelFormat::Nv12,
-            "from_decoded_nv12 received {} frame",
-            frame.format
-        );
+        validate_decoded_nv12_frame(frame)?;
 
         Ok(Self {
             metadata: renderable_metadata_from_decoded(frame, VideoFrameFormat::Nv12),
@@ -110,6 +105,23 @@ impl<'frame> WgpuRenderableFrame<'frame> {
             planes: WgpuFramePlanes::P010 { y_view, uv_view },
         })
     }
+}
+
+/// Проверяет NV12 decoded frame до привязки backend-specific texture views.
+fn validate_decoded_nv12_frame(frame: &DecodedFrame) -> Result<()> {
+    frame.validate_contract()?;
+    ensure!(
+        frame.format == DecodedPixelFormat::Nv12,
+        "from_decoded_nv12 received {} frame",
+        frame.format
+    );
+    ensure!(
+        frame.memory_path == FrameMemoryPath::DmaBufZeroCopy,
+        "NV12 WGPU boundary requires zero-copy memory path, got {}",
+        frame.memory_path
+    );
+
+    Ok(())
 }
 
 /// Проверяет P010 decoded frame до привязки backend-specific texture views.
@@ -405,6 +417,18 @@ mod tests {
     }
 
     #[test]
+    fn nv12_boundary_rejects_non_zero_copy_memory_path() {
+        let frame = decoded_nv12_test_frame(FrameMemoryPath::CpuUpload);
+
+        let error = validate_decoded_nv12_frame(&frame).expect_err("NV12 CPU path rejected");
+
+        assert!(
+            error.to_string().contains("zero-copy"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn p010_storage_layouts_map_to_same_renderer_plane_kind() {
         let baseline_separate_layer_kind =
             p010_storage_layout_renderer_plane_kind(TestP010StorageLayout::BaselineSeparateLayer);
@@ -469,6 +493,22 @@ mod tests {
         _storage_layout: TestP010StorageLayout,
     ) -> WgpuFramePlaneKind {
         WgpuFramePlaneKind::P010
+    }
+
+    fn decoded_nv12_test_frame(memory_path: FrameMemoryPath) -> DecodedFrame {
+        DecodedFrame {
+            pts: Duration::ZERO,
+            format: DecodedPixelFormat::Nv12,
+            bit_depth: BitDepth::Eight,
+            chroma: ChromaSubsampling::Yuv420,
+            memory_path,
+            width: 640,
+            height: 360,
+            render_width: 640,
+            render_height: 360,
+            color: VideoColorMetadata::sdr_bt709_limited(),
+            texture_handle: video_core::FrameTextureHandle(1),
+        }
     }
 
     fn decoded_p010_test_frame(memory_path: FrameMemoryPath) -> DecodedFrame {

@@ -1473,7 +1473,7 @@ mod tests {
             format: DecodedPixelFormat::Nv12,
             bit_depth: BitDepth::Eight,
             chroma: ChromaSubsampling::Yuv420,
-            memory_path: FrameMemoryPath::CpuUpload,
+            memory_path: FrameMemoryPath::DmaBufZeroCopy,
             width: 640,
             height: 360,
             render_width: 640,

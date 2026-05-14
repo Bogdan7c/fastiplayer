@@ -36,7 +36,7 @@ pub enum FrameMemoryPath {
     /// Decoder-owned DMA-BUF импортирован в renderer без CPU readback/upload.
     DmaBufZeroCopy,
 
-    /// Frame скопирован в renderer texture через CPU-visible путь.
+    /// Test-only/legacy marker для явного negative coverage CPU-visible пути.
     CpuUpload,
 }
 
@@ -81,6 +81,12 @@ impl DecodedFrame {
             self.render_width,
             self.render_height
         );
+        ensure!(
+            self.memory_path == FrameMemoryPath::DmaBufZeroCopy,
+            "{} decoded frame requires zero-copy memory path, got {}",
+            self.format,
+            self.memory_path
+        );
 
         match self.format {
             DecodedPixelFormat::Nv12 => {
@@ -105,11 +111,6 @@ impl DecodedFrame {
                     self.chroma == ChromaSubsampling::Yuv420,
                     "P010 decoded frame must be 4:2:0, got {}",
                     self.chroma
-                );
-                ensure!(
-                    self.memory_path == FrameMemoryPath::DmaBufZeroCopy,
-                    "P010 decoded frame requires zero-copy memory path, got {}",
-                    self.memory_path
                 );
             }
         }
@@ -140,7 +141,7 @@ mod tests {
             format: DecodedPixelFormat::Nv12,
             bit_depth: BitDepth::Eight,
             chroma: ChromaSubsampling::Yuv420,
-            memory_path: FrameMemoryPath::CpuUpload,
+            memory_path: FrameMemoryPath::DmaBufZeroCopy,
             width: 640,
             height: 360,
             render_width: 640,
@@ -167,7 +168,7 @@ mod tests {
         assert_eq!(frame.format, DecodedPixelFormat::Nv12);
         assert_eq!(frame.bit_depth, BitDepth::Eight);
         assert_eq!(frame.chroma, ChromaSubsampling::Yuv420);
-        assert_eq!(frame.memory_path, FrameMemoryPath::CpuUpload);
+        assert_eq!(frame.memory_path, FrameMemoryPath::DmaBufZeroCopy);
     }
 
     #[test]
@@ -193,6 +194,32 @@ mod tests {
     }
 
     #[test]
+    fn nv12_cpu_upload_is_rejected_by_contract_validation() {
+        let frame = DecodedFrame {
+            pts: Duration::ZERO,
+            format: DecodedPixelFormat::Nv12,
+            bit_depth: BitDepth::Eight,
+            chroma: ChromaSubsampling::Yuv420,
+            memory_path: FrameMemoryPath::CpuUpload,
+            width: 640,
+            height: 360,
+            render_width: 640,
+            render_height: 360,
+            color: VideoColorMetadata::sdr_bt709_limited(),
+            texture_handle: FrameTextureHandle(3),
+        };
+
+        let error = frame.validate_contract().unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("NV12 decoded frame requires zero-copy"),
+            "unexpected validation error: {error}"
+        );
+    }
+
+    #[test]
     fn p010_cpu_upload_is_rejected_by_contract_validation() {
         let frame = DecodedFrame {
             pts: Duration::ZERO,
@@ -205,7 +232,7 @@ mod tests {
             render_width: 640,
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
-            texture_handle: FrameTextureHandle(3),
+            texture_handle: FrameTextureHandle(4),
         };
 
         let error = frame.validate_contract().unwrap_err();
