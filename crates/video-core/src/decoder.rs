@@ -6,6 +6,8 @@ use anyhow::ensure;
 use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
 use media_core::Packet;
 
+use crate::VideoFrameDiagnostics;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameTextureHandle(pub u64);
 
@@ -64,6 +66,7 @@ pub struct DecodedFrame {
     pub render_height: u32,
     pub color: VideoColorMetadata,
     pub texture_handle: FrameTextureHandle,
+    pub diagnostics: VideoFrameDiagnostics,
 }
 
 impl DecodedFrame {
@@ -148,6 +151,7 @@ mod tests {
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
             texture_handle: FrameTextureHandle(1),
+            diagnostics: VideoFrameDiagnostics::default(),
         }
     }
 
@@ -185,6 +189,7 @@ mod tests {
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
             texture_handle: FrameTextureHandle(2),
+            diagnostics: VideoFrameDiagnostics::default(),
         };
 
         frame.validate_contract().unwrap();
@@ -207,6 +212,7 @@ mod tests {
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
             texture_handle: FrameTextureHandle(3),
+            diagnostics: VideoFrameDiagnostics::default(),
         };
 
         let error = frame.validate_contract().unwrap_err();
@@ -233,6 +239,7 @@ mod tests {
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
             texture_handle: FrameTextureHandle(4),
+            diagnostics: VideoFrameDiagnostics::default(),
         };
 
         let error = frame.validate_contract().unwrap_err();

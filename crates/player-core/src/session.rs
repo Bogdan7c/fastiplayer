@@ -16,10 +16,12 @@ use crate::seek_controller::PlaybackResumeIntent;
 use crate::seek_state::{SeekCommitKind, SeekCommitState, demux_seek_request_for_transaction};
 use crate::{
     AudioBufferSnapshot, BackendSnapshot, FrameCounters, MediaOpenRequest, MediaSource,
-    MediaSummary, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind,
-    PlayerEvent, PlayerResult, PlayerSnapshot, QualitySelection, QueueSnapshot, SeekRequest,
-    TexturePoolSnapshot, TrackId, TrackSelectionSnapshot, TrackSummarySnapshot,
-    VideoBackendFactory, VideoFrameSnapshot,
+    MediaSummary, PipelineLatencyStage, PipelinePauseReason, PipelineQueueDepthSnapshot,
+    PlaybackDiagnostics, PlaybackDiagnosticsLogSummary, PlaybackPipeline, PlaybackState,
+    PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot,
+    QualitySelection, QueueSnapshot, SeekRequest, TexturePoolSnapshot, TextureSlotPressureSnapshot,
+    TrackId, TrackSelectionSnapshot, TrackSummarySnapshot, VideoBackendFactory, VideoDropReason,
+    VideoFrameSnapshot,
 };
 
 /// Dev-only режим, который разрешает VP9 Profile 2 HDR дойти до P010 zero-copy boundary.
@@ -32,6 +34,9 @@ pub struct PlayerSession {
 
     /// Media pipeline, перенесённый из `AppState` в Phase 3.
     pub(crate) pipeline: PlaybackPipeline,
+
+    /// Codec/render-neutral diagnostics aggregator для текущего media pipeline.
+    pub(crate) diagnostics: PlaybackDiagnostics,
 
     /// События, накопленные после последнего drain.
     pending_events: Vec<PlayerEvent>,
@@ -111,6 +116,9 @@ impl PlayerSession {
         snapshot.audio_buffer = self.audio_buffer_snapshot();
         snapshot.queues = self.queue_snapshot();
         snapshot.frame_counters = frame_counters;
+        snapshot.diagnostics = self
+            .diagnostics
+            .snapshot_with_queues(self.diagnostic_queue_depths());
         snapshot
     }
 
@@ -417,6 +425,7 @@ impl PlayerSession {
         }
 
         self.pipeline.reset_media_slots();
+        self.diagnostics.reset();
 
         self.pending_autoplay = false;
         self.seek_commit = None;
@@ -554,6 +563,78 @@ impl PlayerSession {
         } else if render_generation == self.pipeline.render_generation {
             self.release_video_texture_now(texture_handle);
         }
+    }
+
+    /// Записывает latency sample с актуальными queue depths.
+    pub(crate) fn record_pipeline_latency(
+        &mut self,
+        stage: PipelineLatencyStage,
+        duration: Duration,
+        pts: Option<Duration>,
+        memory_path: Option<video_core::FrameMemoryPath>,
+    ) {
+        let queues = self.diagnostic_queue_depths();
+        self.diagnostics
+            .record_latency(stage, duration, pts, memory_path, queues);
+    }
+
+    /// Записывает decoded frame diagnostics из backend-neutral frame contract.
+    pub(crate) fn record_decoded_frame_diagnostics(&mut self, frame: &video_core::DecodedFrame) {
+        let mut queues = self.diagnostic_queue_depths();
+        queues.decoder_ready_queue_depth = frame.diagnostics.decoder_ready_queue_depth;
+        queues.texture_slots =
+            frame
+                .diagnostics
+                .texture_pool
+                .map(|texture_pool| TextureSlotPressureSnapshot {
+                    capacity: texture_pool.capacity,
+                    slots: texture_pool.slots,
+                    in_use: texture_pool.in_use,
+                });
+        self.diagnostics.observe_decoded_frame(frame, queues);
+    }
+
+    /// Записывает typed video drop reason с текущими queue depths.
+    pub(crate) fn record_video_drop(&mut self, pts: Option<Duration>, reason: VideoDropReason) {
+        let queues = self.diagnostic_queue_depths();
+        self.diagnostics.record_drop(pts, reason, queues);
+    }
+
+    /// Записывает typed pipeline pause с текущими queue depths.
+    pub(crate) fn record_pipeline_pause(&mut self, reason: PipelinePauseReason) {
+        let queues = self.diagnostic_queue_depths();
+        self.diagnostics.record_pause(reason, queues);
+    }
+
+    /// Записывает результат render acquire.
+    pub(crate) fn record_render_acquire_wait(&mut self, wait: Duration) {
+        self.record_pipeline_latency(PipelineLatencyStage::RenderAcquire, wait, None, None);
+    }
+
+    /// Записывает render acquire timeout как drop и pause attribution.
+    pub(crate) fn record_render_acquire_timeout(&mut self, wait: Duration) {
+        self.record_pipeline_latency(PipelineLatencyStage::RenderAcquire, wait, None, None);
+        if self.pipeline.video_track_id.is_none() {
+            return;
+        }
+        self.record_video_drop(None, VideoDropReason::RenderAcquisitionTimeout);
+        self.record_pipeline_pause(PipelinePauseReason::RenderAcquireTimeout);
+    }
+
+    /// Записывает latency release ack от render side до worker.
+    pub(crate) fn record_release_ack_latency(&mut self, latency: Duration) {
+        self.record_pipeline_latency(
+            PipelineLatencyStage::ReleaseAcknowledgement,
+            latency,
+            None,
+            None,
+        );
+    }
+
+    /// Возвращает компактную diagnostics summary для throttled debug logs.
+    #[must_use]
+    pub(crate) fn diagnostics_log_summary(&self) -> PlaybackDiagnosticsLogSummary {
+        self.diagnostics.log_summary(self.diagnostic_queue_depths())
     }
 
     /// Освобождает texture handle сразу или откладывает release до завершения render lease.
@@ -1872,6 +1953,8 @@ impl PlayerSession {
                 height: present_frame.height,
                 render_width: present_frame.render_width,
                 render_height: present_frame.render_height,
+                format: present_frame.format,
+                memory_path: present_frame.memory_path,
             })
     }
 
@@ -1896,6 +1979,26 @@ impl PlayerSession {
             pending_audio_packets: self.pipeline.pending_audio_packets.len(),
             pending_video_packets: self.pipeline.pending_video_packets.len(),
             decoded_video_frames: self.pipeline.video_frame_queue.len(),
+        }
+    }
+
+    /// Собирает codec/render-neutral queue depths для diagnostics aggregator.
+    fn diagnostic_queue_depths(&self) -> PipelineQueueDepthSnapshot {
+        PipelineQueueDepthSnapshot {
+            pending_audio_packets: self.pipeline.pending_audio_packets.len(),
+            pending_video_packets: self.pipeline.pending_video_packets.len(),
+            present_queue_depth: self.pipeline.video_frame_queue.len(),
+            decoder_send_queue_depth: self.pipeline.pending_video_packets.len(),
+            decoder_ready_queue_depth: None,
+            active_render_leases: self.pipeline.leased_video_textures.len(),
+            deferred_render_releases: self.pipeline.deferred_video_texture_releases.len(),
+            texture_slots: self.texture_pool_snapshot().map(|texture_pool| {
+                TextureSlotPressureSnapshot {
+                    capacity: texture_pool.capacity,
+                    slots: texture_pool.slots,
+                    in_use: texture_pool.in_use,
+                }
+            }),
         }
     }
 }
@@ -2075,6 +2178,7 @@ impl Default for PlayerSession {
         Self {
             snapshot: PlayerSnapshot::default(),
             pipeline: PlaybackPipeline::default(),
+            diagnostics: PlaybackDiagnostics::default(),
             pending_events: Vec::new(),
             pending_autoplay: false,
             shutdown_requested: false,
@@ -2365,6 +2469,7 @@ mod tests {
             render_height: 360,
             color: codec_core::VideoColorMetadata::sdr_bt709_limited(),
             texture_handle: video_core::FrameTextureHandle(handle),
+            diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
     }
 

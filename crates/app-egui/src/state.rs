@@ -805,6 +805,26 @@ impl AppState {
             telemetry.video_frames_pause_dropped()
         ));
         ui.monospace(format!(
+            "  Other: {}",
+            telemetry.video_frames_other_dropped()
+        ));
+        ui.monospace(format!(
+            "  Seek/pre-roll: {}",
+            player_snapshot.diagnostics.drops.seek_preroll
+        ));
+        ui.monospace(format!(
+            "  Stale gen: {}",
+            player_snapshot.diagnostics.drops.stale_generation
+        ));
+        ui.monospace(format!(
+            "  Acquire timeout: {}",
+            player_snapshot.diagnostics.drops.render_acquisition_timeout
+        ));
+        ui.monospace(format!(
+            "  Decoder starvation: {}",
+            player_snapshot.diagnostics.drops.decoder_starvation
+        ));
+        ui.monospace(format!(
             "Repeated: {}",
             player_snapshot.frame_counters.repeated
         ));
@@ -820,6 +840,31 @@ impl AppState {
             ));
             ui.monospace(format!("Texture slots: {}", texture_pool.slots));
         }
+        if let Some(memory_path) = player_snapshot.diagnostics.zero_copy_memory_path {
+            ui.monospace(format!("Memory path: {memory_path}"));
+        }
+        let worst_import = player_snapshot
+            .diagnostics
+            .worst_latencies
+            .dma_buf_import
+            .worst
+            .map(|sample| sample.duration.as_secs_f64() * 1000.0);
+        if let Some(worst_import_ms) = worst_import {
+            ui.monospace(format!("Worst import: {worst_import_ms:.2}ms"));
+        }
+        let worst_sync = player_snapshot
+            .diagnostics
+            .worst_latencies
+            .hardware_sync
+            .worst
+            .map(|sample| sample.duration.as_secs_f64() * 1000.0);
+        if let Some(worst_sync_ms) = worst_sync {
+            ui.monospace(format!("Worst sync: {worst_sync_ms:.2}ms"));
+        }
+        ui.monospace(format!(
+            "Pipeline pauses: {}",
+            player_snapshot.diagnostics.pauses.total
+        ));
 
         if let Some(capability_summary) = &player_snapshot.capability_summary {
             ui.separator();

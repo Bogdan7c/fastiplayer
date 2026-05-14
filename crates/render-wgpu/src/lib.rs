@@ -508,6 +508,7 @@ mod tests {
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
             texture_handle: video_core::FrameTextureHandle(1),
+            diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
     }
 
@@ -524,6 +525,7 @@ mod tests {
             render_height: 1080,
             color: VideoColorMetadata::sdr_bt709_limited(),
             texture_handle: video_core::FrameTextureHandle(7),
+            diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
     }
 }

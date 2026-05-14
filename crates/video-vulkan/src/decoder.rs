@@ -253,6 +253,7 @@ impl VideoDecoder for VulkanVideoDecoder {
                 render_height: completed.render_height,
                 color: VideoColorMetadata::sdr_bt709_limited(),
                 texture_handle: FrameTextureHandle(completed.slot_index as u64),
+                diagnostics: video_core::VideoFrameDiagnostics::default(),
             }));
         }
 
@@ -281,6 +282,7 @@ impl VideoDecoder for VulkanVideoDecoder {
                         render_height: slot.height,
                         color: VideoColorMetadata::sdr_bt709_limited(),
                         texture_handle: FrameTextureHandle(slot.slot_index as u64),
+                        diagnostics: video_core::VideoFrameDiagnostics::default(),
                     }));
                 }
             }

@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod command;
+mod diagnostics;
 mod error;
 mod event;
 mod media_opening;
@@ -22,6 +23,14 @@ mod worker;
 pub use command::{
     MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, ScrubCommitPolicy,
     SeekMode, SeekRequest, SeekTarget,
+};
+pub(crate) use diagnostics::PlaybackDiagnostics;
+pub use diagnostics::{
+    LatencyCounterSnapshot, PipelineLatencyCountersSnapshot, PipelineLatencySampleSnapshot,
+    PipelineLatencyStage, PipelinePauseCountersSnapshot, PipelinePauseReason,
+    PipelinePauseSnapshot, PipelineQueueDepthSnapshot, PlaybackDiagnosticsLogSummary,
+    PlaybackDiagnosticsSnapshot, TextureSlotPressureSnapshot, VideoDropAttributionSnapshot,
+    VideoDropCountersSnapshot, VideoDropReason,
 };
 pub use error::{PlayerError, PlayerErrorKind, PlayerResult};
 pub use event::{
@@ -40,8 +49,8 @@ pub use snapshot::{
 };
 pub use state::PlaybackState;
 pub use tick::{
-    PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult, PlayerVideoDropReason,
-    PlayerVideoFrameDrop,
+    PlayerPipelinePause, PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult,
+    PlayerVideoDropReason, PlayerVideoFrameDrop,
 };
 pub use video_backend::{StartedVideoBackend, VideoBackendFactory, WgpuVideoBackendFactory};
 pub use worker::{

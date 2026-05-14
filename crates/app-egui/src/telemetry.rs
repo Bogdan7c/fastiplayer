@@ -29,6 +29,9 @@ pub enum VideoDropReason {
 
     /// Кадр пришёл после пользовательской паузы и не должен менять картинку.
     Paused,
+
+    /// Остальные typed причины доступны подробно в `PlayerSnapshot::diagnostics`.
+    Other,
 }
 
 /// Глобальные счётчики телеметрии.
@@ -78,6 +81,9 @@ pub struct Telemetry {
     /// Количество видеокадров, отброшенных во время pause.
     video_frames_pause_dropped: AtomicU64,
 
+    /// Количество видеокадров с typed причинами, которые UI не раскладывает отдельно.
+    video_frames_other_dropped: AtomicU64,
+
     /// Количество render ticks, где был повторно показан предыдущий video frame.
     video_frames_repeated: AtomicU64,
 }
@@ -114,6 +120,7 @@ impl Telemetry {
             video_frames_late_dropped: AtomicU64::new(0),
             video_frames_queue_dropped: AtomicU64::new(0),
             video_frames_pause_dropped: AtomicU64::new(0),
+            video_frames_other_dropped: AtomicU64::new(0),
             video_frames_repeated: AtomicU64::new(0),
         }
     }
@@ -245,6 +252,9 @@ impl Telemetry {
             VideoDropReason::Paused => self
                 .video_frames_pause_dropped
                 .fetch_add(1, Ordering::Relaxed),
+            VideoDropReason::Other => self
+                .video_frames_other_dropped
+                .fetch_add(1, Ordering::Relaxed),
         };
     }
 
@@ -281,6 +291,11 @@ impl Telemetry {
     #[inline]
     pub fn video_frames_pause_dropped(&self) -> u64 {
         self.video_frames_pause_dropped.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn video_frames_other_dropped(&self) -> u64 {
+        self.video_frames_other_dropped.load(Ordering::Relaxed)
     }
 
     #[inline]

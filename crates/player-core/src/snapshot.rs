@@ -3,8 +3,9 @@ use std::time::Duration;
 use media_core::{
     MediaDuration, MediaTime, TimelineNotSeekableReason, TimelineSnapshot, TrackKind,
 };
+use video_core::{DecodedPixelFormat, FrameMemoryPath};
 
-use crate::{PlaybackState, PlayerError, QualityId, TrackId};
+use crate::{PlaybackDiagnosticsSnapshot, PlaybackState, PlayerError, QualityId, TrackId};
 
 /// Read-only snapshot player state для UI, renderer и desktop integration.
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +63,9 @@ pub struct PlayerSnapshot {
 
     /// Счётчики frame pacing.
     pub frame_counters: FrameCounters,
+
+    /// Typed playback diagnostics без UI/render handles.
+    pub diagnostics: PlaybackDiagnosticsSnapshot,
 
     /// Последняя user-facing ошибка.
     pub last_error: Option<PlayerError>,
@@ -131,6 +135,7 @@ impl Default for PlayerSnapshot {
             audio_buffer: AudioBufferSnapshot::default(),
             queues: QueueSnapshot::default(),
             frame_counters: FrameCounters::default(),
+            diagnostics: PlaybackDiagnosticsSnapshot::default(),
             last_error: None,
             capability_summary: None,
         }
@@ -239,6 +244,12 @@ pub struct VideoFrameSnapshot {
 
     /// Высота отображения после crop/aspect обработки.
     pub render_height: u32,
+
+    /// Фактический decoded pixel format renderer boundary.
+    pub format: DecodedPixelFormat,
+
+    /// Путь памяти кадра на renderer boundary.
+    pub memory_path: FrameMemoryPath,
 }
 
 /// Snapshot audio buffer для UI и scheduler diagnostics.

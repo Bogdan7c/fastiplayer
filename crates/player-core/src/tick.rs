@@ -17,8 +17,9 @@ use rustiplayer_config::AppConfig;
 use tracing::{trace, warn};
 
 use crate::{
-    PendingAudioPacket, PendingVideoPacket, PlaybackState, PlayerError, PlayerErrorKind,
-    PlayerSession, session::vp9_requirement_needs_packet_refinement,
+    PendingAudioPacket, PendingVideoPacket, PipelineLatencyStage, PipelinePauseReason,
+    PlaybackState, PlayerError, PlayerErrorKind, PlayerSession,
+    session::vp9_requirement_needs_packet_refinement,
 };
 
 /// Контекст одного playback tick.
@@ -187,6 +188,9 @@ pub struct PlayerTickResult {
     /// Список кадров, удалённых scheduler/backpressure логикой.
     pub dropped_video_frames: Vec<PlayerVideoFrameDrop>,
 
+    /// Список typed pipeline pauses за tick.
+    pub pipeline_pauses: Vec<PlayerPipelinePause>,
+
     /// `true`, если demux чтение остановилось из-за backpressure.
     pub demux_backpressured: bool,
 }
@@ -224,6 +228,11 @@ impl PlayerTickResult {
         self.dropped_video_frames
             .push(PlayerVideoFrameDrop { pts, reason });
     }
+
+    /// Учитывает typed pipeline pause.
+    fn record_pipeline_pause(&mut self, reason: PipelinePauseReason) {
+        self.pipeline_pauses.push(PlayerPipelinePause { reason });
+    }
 }
 
 /// Packet summary для shell-телеметрии.
@@ -248,18 +257,8 @@ pub struct PlayerTickPacket {
     pub keyframe: bool,
 }
 
-/// Причина удаления video frame внутри scheduler-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlayerVideoDropReason {
-    /// Кадр устарел относительно audio-master media time.
-    Late,
-
-    /// Кадр вытеснен из-за переполнения presentation queue.
-    QueueOverflow,
-
-    /// Кадр пришёл после пользовательской паузы.
-    Paused,
-}
+/// Public compatibility имя причины удаления video frame.
+pub use crate::VideoDropReason as PlayerVideoDropReason;
 
 /// Summary удалённого video frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,6 +268,13 @@ pub struct PlayerVideoFrameDrop {
 
     /// Причина удаления кадра.
     pub reason: PlayerVideoDropReason,
+}
+
+/// Summary pipeline pause-а внутри tick telemetry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerPipelinePause {
+    /// Typed причина pause.
+    pub reason: PipelinePauseReason,
 }
 
 impl PlayerSession {
@@ -436,6 +442,7 @@ fn read_demux_packets(
             prioritize_audio_catchup,
         ) {
             tick_result.demux_backpressured = true;
+            record_pipeline_pause(session, tick_result, PipelinePauseReason::DemuxBackpressure);
             trace!(
                 pending_video_packets = session.pipeline.pending_video_packets.len(),
                 queued_video_frames = session.pipeline.video_frame_queue.len(),
@@ -444,12 +451,19 @@ fn read_demux_packets(
             break;
         }
 
+        let demux_read_started_at = Instant::now();
         let packet_result = {
             let Some(demuxer) = session.pipeline.demuxer.as_mut() else {
                 break;
             };
             demuxer.next_packet()
         };
+        session.record_pipeline_latency(
+            PipelineLatencyStage::DemuxRead,
+            demux_read_started_at.elapsed(),
+            None,
+            None,
+        );
 
         match packet_result {
             Ok(Some(packet)) => {
@@ -608,8 +622,12 @@ fn enqueue_decoded_video_frame(
         };
 
         release_video_texture(session, stale_frame.texture_handle);
-        tick_result
-            .record_dropped_video_frame(stale_frame.pts, PlayerVideoDropReason::QueueOverflow);
+        record_video_drop(
+            session,
+            tick_result,
+            stale_frame.pts,
+            PlayerVideoDropReason::QueueOverflow,
+        );
         tracing::debug!(
             pts_ms = stale_frame.pts.as_millis(),
             queue_limit,
@@ -639,6 +657,33 @@ fn drain_video_decoder_thread_error(session: &mut PlayerSession) -> bool {
     true
 }
 
+/// Забирает typed diagnostics events от decoder/backend boundary.
+fn drain_video_decoder_thread_diagnostics(
+    session: &mut PlayerSession,
+    tick_result: &mut PlayerTickResult,
+) {
+    loop {
+        let diagnostic_event = session
+            .pipeline
+            .video_decoder_thread
+            .as_ref()
+            .and_then(|thread| thread.try_recv_diagnostic_event());
+        let Some(event) = diagnostic_event else {
+            break;
+        };
+        match event {
+            video_core::VideoDecoderDiagnosticEvent::FrameDropped { pts, reason } => {
+                let drop_reason = match reason {
+                    video_core::VideoDecoderDropReason::ReadyQueueOverflow => {
+                        PlayerVideoDropReason::QueueOverflow
+                    }
+                };
+                record_video_drop(session, tick_result, pts, drop_reason);
+            }
+        }
+    }
+}
+
 /// Мапит fail-closed ошибку decoder thread в player error model.
 fn player_error_from_decode_thread_error(error: &video_vaapi::DecodeThreadError) -> PlayerError {
     PlayerError::new(
@@ -653,6 +698,8 @@ fn drain_decoded_video_frames(
     tick_config: &PlayerTickConfig,
     tick_result: &mut PlayerTickResult,
 ) {
+    drain_video_decoder_thread_diagnostics(session, tick_result);
+
     if drain_video_decoder_thread_error(session) {
         return;
     }
@@ -664,7 +711,14 @@ fn drain_decoded_video_frames(
                 "No video decoder thread — dropping video packets"
             );
         }
-        session.pipeline.pending_video_packets.clear();
+        while let Some(packet) = session.pipeline.pending_video_packets.pop_front() {
+            record_video_drop(
+                session,
+                tick_result,
+                packet.pts,
+                PlayerVideoDropReason::DecoderStarvation,
+            );
+        }
         return;
     }
 
@@ -700,6 +754,7 @@ fn drain_decoded_video_frames(
         }
         return;
     }
+    drain_video_decoder_thread_diagnostics(session, tick_result);
 
     for frame in decoded_frames {
         tracing::debug!(
@@ -712,10 +767,16 @@ fn drain_decoded_video_frames(
             "Video frame decoded"
         );
         tick_result.record_decoded_video_frame();
+        session.record_decoded_frame_diagnostics(&frame);
 
         if session.should_drop_decoded_frame_for_seek(frame.pts) {
             release_video_texture(session, frame.texture_handle);
-            tick_result.record_dropped_video_frame(frame.pts, PlayerVideoDropReason::Late);
+            record_video_drop(
+                session,
+                tick_result,
+                frame.pts,
+                PlayerVideoDropReason::SeekPreroll,
+            );
             tracing::debug!(
                 pts_ms = frame.pts.as_millis(),
                 "Dropping pre-roll video frame before seek target"
@@ -729,7 +790,12 @@ fn drain_decoded_video_frames(
             enqueue_decoded_video_frame(session, tick_config, tick_result, frame);
         } else {
             release_video_texture(session, frame.texture_handle);
-            tick_result.record_dropped_video_frame(frame.pts, PlayerVideoDropReason::Paused);
+            record_video_drop(
+                session,
+                tick_result,
+                frame.pts,
+                PlayerVideoDropReason::Paused,
+            );
             tracing::debug!("Dropping decoded frame received while playback is paused");
         }
     }
@@ -739,6 +805,7 @@ fn drain_decoded_video_frames(
 fn send_pending_video_packets_to_decoder(
     session: &mut PlayerSession,
     tick_config: &PlayerTickConfig,
+    tick_result: &mut PlayerTickResult,
 ) {
     if session.pipeline.video_decoder_thread.is_none() {
         return;
@@ -763,6 +830,12 @@ fn send_pending_video_packets_to_decoder(
 
         if packet_generation != session.pipeline.seek_generation {
             session.pipeline.pending_video_packets.pop_front();
+            record_video_drop(
+                session,
+                tick_result,
+                packet_pts,
+                PlayerVideoDropReason::StaleGeneration,
+            );
             continue;
         }
 
@@ -773,6 +846,12 @@ fn send_pending_video_packets_to_decoder(
 
         if !accept_video_packet_for_decoder_bootstrap(session, packet_keyframe, packet_pts) {
             session.pipeline.pending_video_packets.pop_front();
+            record_video_drop(
+                session,
+                tick_result,
+                packet_pts,
+                PlayerVideoDropReason::SeekPreroll,
+            );
             continue;
         }
 
@@ -962,7 +1041,12 @@ fn trim_video_present_queue(
         };
 
         release_video_texture(session, frame.texture_handle);
-        tick_result.record_dropped_video_frame(frame.pts, PlayerVideoDropReason::QueueOverflow);
+        record_video_drop(
+            session,
+            tick_result,
+            frame.pts,
+            PlayerVideoDropReason::QueueOverflow,
+        );
         tracing::debug!(
             pts_ms = frame.pts.as_millis(),
             "Dropping frame: queue overflow protection"
@@ -1087,7 +1171,7 @@ fn drop_front_queued_video_frame(
 
     let frame_pts = frame.pts;
     release_video_texture(session, frame.texture_handle);
-    tick_result.record_dropped_video_frame(frame_pts, reason);
+    record_video_drop(session, tick_result, frame_pts, reason);
     tracing::debug!(
         pts_ms = frame_pts.as_millis(),
         ?reason,
@@ -1121,9 +1205,19 @@ fn present_front_queued_video_frame(
 }
 
 /// Повторно показывает текущий кадр и учитывает это в telemetry result.
-fn repeat_present_video_frame(session: &PlayerSession, tick_result: &mut PlayerTickResult) {
+fn repeat_present_video_frame(
+    session: &mut PlayerSession,
+    tick_result: &mut PlayerTickResult,
+    pause_reason: Option<PipelinePauseReason>,
+) {
     if session.pipeline.present_video_frame.is_some() {
         tick_result.record_repeated_video_frame();
+    }
+    if session.pipeline.video_track_id.is_some()
+        && session.playback_state() == PlaybackState::Playing
+        && let Some(pause_reason) = pause_reason
+    {
+        record_pipeline_pause(session, tick_result, pause_reason);
     }
 }
 
@@ -1142,10 +1236,11 @@ fn process_pending_video_packets(
     }
 
     if session.is_demuxing_active() {
-        send_pending_video_packets_to_decoder(session, tick_config);
+        send_pending_video_packets_to_decoder(session, tick_config, tick_result);
     }
 
     trim_video_present_queue(session, tick_config, tick_result);
+    let scheduler_started_at = Instant::now();
 
     if !session.pipeline.video_frame_queue.is_empty() {
         tracing::debug!(
@@ -1174,8 +1269,18 @@ fn process_pending_video_packets(
         );
 
         if !present_front_queued_video_frame(session, tick_result) {
-            repeat_present_video_frame(session, tick_result);
+            repeat_present_video_frame(
+                session,
+                tick_result,
+                Some(PipelinePauseReason::DecoderStarvation),
+            );
         }
+        session.record_pipeline_latency(
+            PipelineLatencyStage::WorkerScheduler,
+            scheduler_started_at.elapsed(),
+            None,
+            None,
+        );
         return;
     }
 
@@ -1195,7 +1300,17 @@ fn process_pending_video_packets(
     }
 
     let Some(frame) = session.pipeline.video_frame_queue.front() else {
-        repeat_present_video_frame(session, tick_result);
+        repeat_present_video_frame(
+            session,
+            tick_result,
+            Some(PipelinePauseReason::DecoderStarvation),
+        );
+        session.record_pipeline_latency(
+            PipelineLatencyStage::WorkerScheduler,
+            scheduler_started_at.elapsed(),
+            None,
+            None,
+        );
         return;
     };
 
@@ -1208,7 +1323,14 @@ fn process_pending_video_packets(
             window_ms = present_window.as_millis(),
             "A/V scheduler: waiting for target media time"
         );
-        repeat_present_video_frame(session, tick_result);
+        record_pipeline_pause(session, tick_result, PipelinePauseReason::SyncWaiting);
+        repeat_present_video_frame(session, tick_result, None);
+        session.record_pipeline_latency(
+            PipelineLatencyStage::WorkerScheduler,
+            scheduler_started_at.elapsed(),
+            None,
+            None,
+        );
         return;
     }
 
@@ -1222,6 +1344,33 @@ fn process_pending_video_packets(
         "A/V scheduler: frame selected"
     );
     present_front_queued_video_frame(session, tick_result);
+    session.record_pipeline_latency(
+        PipelineLatencyStage::WorkerScheduler,
+        scheduler_started_at.elapsed(),
+        None,
+        None,
+    );
+}
+
+/// Записывает drop одновременно в tick telemetry и session diagnostics.
+fn record_video_drop(
+    session: &mut PlayerSession,
+    tick_result: &mut PlayerTickResult,
+    pts: Duration,
+    reason: PlayerVideoDropReason,
+) {
+    session.record_video_drop(Some(pts), reason);
+    tick_result.record_dropped_video_frame(pts, reason);
+}
+
+/// Записывает pipeline pause одновременно в tick telemetry и session diagnostics.
+fn record_pipeline_pause(
+    session: &mut PlayerSession,
+    tick_result: &mut PlayerTickResult,
+    reason: PipelinePauseReason,
+) {
+    session.record_pipeline_pause(reason);
+    tick_result.record_pipeline_pause(reason);
 }
 
 #[cfg(test)]
@@ -1258,6 +1407,7 @@ mod tests {
             render_height: 360,
             color: codec_core::VideoColorMetadata::sdr_bt709_limited(),
             texture_handle: video_core::FrameTextureHandle(handle),
+            diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
     }
 

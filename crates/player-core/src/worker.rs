@@ -45,6 +45,9 @@ const RENDER_FRAME_REPLY_TIMEOUT: Duration = Duration::from_millis(2);
 /// Короткий backpressure budget для Drop path render lease-а.
 const RENDER_RELEASE_SEND_TIMEOUT: Duration = Duration::from_millis(2);
 
+/// Интервал throttled diagnostics summary в debug logs.
+const DIAGNOSTICS_SUMMARY_INTERVAL: Duration = Duration::from_secs(2);
+
 /// Default throttle live preview seek-а, если worker создан без app config.
 const DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -388,6 +391,9 @@ struct RenderLeaseRelease {
 
     /// Provider исходного decoder texture pool для release после смены поколения.
     texture_provider: Option<video_vaapi::VideoTextureViewProvider>,
+
+    /// Монотонный момент drop-а render lease на render/UI side.
+    released_at: Instant,
 }
 
 /// Shared guard, который отправляет release ack ровно один раз на группу clone-ов.
@@ -412,6 +418,7 @@ impl Drop for PresentFrameDropAck {
             render_generation: self.render_generation,
             texture_handle: self.texture_handle,
             texture_provider: self.texture_provider.clone(),
+            released_at: Instant::now(),
         };
 
         self.send_release_ack(release);
@@ -510,6 +517,7 @@ impl PlayerWorker {
         };
         let snapshot_rx_for_worker = snapshot_rx.clone();
 
+        let worker_started_at = Instant::now();
         let join_handle = thread::Builder::new()
             .name("player-worker".into())
             .spawn(move || {
@@ -532,7 +540,8 @@ impl PlayerWorker {
                     last_preview_scrub_seek_at: None,
                     last_preview_scrub_target: None,
                     deferred_preview_scrub_target: None,
-                    last_tick_at: Instant::now(),
+                    last_tick_at: worker_started_at,
+                    last_diagnostics_summary_at: worker_started_at,
                 };
                 runtime.run();
             })
@@ -664,15 +673,32 @@ impl PlayerWorker {
     #[must_use]
     pub fn try_acquire_present_frame(&self) -> Option<PlayerPresentFrame> {
         let (reply_tx, reply_rx) = bounded(1);
-        let request = RenderFrameRequest { reply_tx };
+        let requested_at = Instant::now();
+        let request = RenderFrameRequest {
+            reply_tx,
+            requested_at,
+        };
 
         if self.render_request_tx.try_send(request).is_err() {
+            self.report_render_acquire_timeout(requested_at.elapsed());
             return None;
         }
 
-        reply_rx
-            .recv_timeout(RENDER_FRAME_REPLY_TIMEOUT)
-            .unwrap_or_default()
+        match reply_rx.recv_timeout(RENDER_FRAME_REPLY_TIMEOUT) {
+            Ok(frame) => frame,
+            Err(_) => {
+                self.report_render_acquire_timeout(requested_at.elapsed());
+                None
+            }
+        }
+    }
+
+    /// Сообщает worker-у о render acquire timeout без блокировки render thread.
+    fn report_render_acquire_timeout(&self, wait: Duration) {
+        let _ = self
+            .command_sender
+            .command_tx
+            .try_send(WorkerCommand::RenderAcquireTimeout { wait });
     }
 
     /// Запрашивает shutdown и ждёт завершения worker thread.
@@ -746,12 +772,21 @@ enum WorkerCommand {
 
     /// Typed render bridge error.
     RenderError(PlayerRenderError),
+
+    /// Diagnostic event: render thread не получил present frame в bounded budget.
+    RenderAcquireTimeout {
+        /// Сколько render thread ждал reply.
+        wait: Duration,
+    },
 }
 
 /// Запрос текущего present frame от render thread.
 struct RenderFrameRequest {
     /// Одноразовый reply channel.
     reply_tx: Sender<Option<PlayerPresentFrame>>,
+
+    /// Монотонный момент создания render request.
+    requested_at: Instant,
 }
 
 /// Publisher latest snapshot поверх bounded channel.
@@ -836,6 +871,9 @@ struct PlayerWorkerRuntime {
 
     /// Момент последнего playback tick.
     last_tick_at: Instant,
+
+    /// Последний debug diagnostics summary.
+    last_diagnostics_summary_at: Instant,
 }
 
 impl PlayerWorkerRuntime {
@@ -1007,6 +1045,8 @@ impl PlayerWorkerRuntime {
         release_result: Result<RenderLeaseRelease, crossbeam_channel::RecvError>,
     ) -> bool {
         if let Ok(release) = release_result {
+            self.session
+                .record_release_ack_latency(release.released_at.elapsed());
             self.session.release_render_lease_with_provider(
                 release.render_generation,
                 release.texture_handle,
@@ -1073,6 +1113,9 @@ impl PlayerWorkerRuntime {
             }
             WorkerCommand::RenderError(error) => {
                 self.handle_render_error(error);
+            }
+            WorkerCommand::RenderAcquireTimeout { wait } => {
+                self.session.record_render_acquire_timeout(wait);
             }
         }
     }
@@ -1285,6 +1328,8 @@ impl PlayerWorkerRuntime {
     /// Возвращает текущий present frame и ставит минимальный lease до Drop на UI side.
     fn handle_render_request(&mut self, request: RenderFrameRequest) {
         self.drain_render_releases();
+        self.session
+            .record_render_acquire_wait(request.requested_at.elapsed());
 
         let Some(present_frame) = self.build_present_frame() else {
             let _ = request.reply_tx.try_send(None);
@@ -1320,6 +1365,8 @@ impl PlayerWorkerRuntime {
     /// Снимает все render leases, которые UI/render side уже dropped.
     fn drain_render_releases(&mut self) {
         while let Ok(release) = self.render_release_rx.try_recv() {
+            self.session
+                .record_release_ack_latency(release.released_at.elapsed());
             self.session.release_render_lease_with_provider(
                 release.render_generation,
                 release.texture_handle,
@@ -1340,7 +1387,47 @@ impl PlayerWorkerRuntime {
             .tick(PlayerTickContext::with_config(now, self.config.tick_config));
         self.last_tick_at = now;
         self.publish_tick_result(tick_result);
+        self.log_diagnostics_summary_if_due(now);
         self.publish_session_outputs();
+    }
+
+    /// Пишет короткую diagnostics summary только при включённом debug tracing.
+    fn log_diagnostics_summary_if_due(&mut self, now: Instant) {
+        if !tracing::enabled!(tracing::Level::DEBUG) {
+            return;
+        }
+
+        if now.saturating_duration_since(self.last_diagnostics_summary_at)
+            < DIAGNOSTICS_SUMMARY_INTERVAL
+        {
+            return;
+        }
+
+        let summary = self.session.diagnostics_log_summary();
+        if !summary.has_activity() {
+            return;
+        }
+
+        self.last_diagnostics_summary_at = now;
+        let worst_stage = summary
+            .worst_stage
+            .map(|stage| stage.metric_name())
+            .unwrap_or("none");
+        let worst_latency_ms = summary
+            .worst_latency
+            .map(|latency| latency.as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        debug!(
+            drops = summary.drops_total,
+            pauses = summary.pauses_total,
+            memory_path = ?summary.zero_copy_memory_path,
+            worst_stage,
+            worst_latency_ms,
+            pending_video_packets = summary.queues.pending_video_packets,
+            present_queue_depth = summary.queues.present_queue_depth,
+            active_render_leases = summary.queues.active_render_leases,
+            "Playback diagnostics summary"
+        );
     }
 
     /// Публикует latest snapshot и накопленные session events.
@@ -1464,6 +1551,7 @@ mod tests {
             last_preview_scrub_target: None,
             deferred_preview_scrub_target: None,
             last_tick_at,
+            last_diagnostics_summary_at: last_tick_at,
         }
     }
 
@@ -1480,6 +1568,7 @@ mod tests {
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
             texture_handle,
+            diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
     }
 
@@ -1780,11 +1869,16 @@ mod tests {
                 render_generation: 0,
                 texture_handle: video_core::FrameTextureHandle(7),
                 texture_provider: None,
+                released_at: Instant::now(),
             })
             .unwrap();
         let (reply_tx, reply_rx) = bounded(1);
+        let requested_at = Instant::now();
 
-        runtime.handle_render_request(RenderFrameRequest { reply_tx });
+        runtime.handle_render_request(RenderFrameRequest {
+            reply_tx,
+            requested_at,
+        });
 
         assert_eq!(runtime.session.render_lease_count(), 0);
         assert!(reply_rx.try_recv().unwrap().is_none());
@@ -1829,6 +1923,7 @@ mod tests {
                 render_generation: 1,
                 texture_handle: FrameTextureHandle(1),
                 texture_provider: None,
+                released_at: Instant::now(),
             })
             .unwrap();
         let lease = present_frame_lease_for_tests(2, FrameTextureHandle(12), false, release_tx);

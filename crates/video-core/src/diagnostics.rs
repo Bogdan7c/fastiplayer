@@ -1,0 +1,74 @@
+use std::time::Duration;
+
+/// Codec-neutral timings одного decoded video frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VideoFrameTimingDiagnostics {
+    /// Время submit-а bitstream packet-а в hardware decoder.
+    pub decoder_submit_latency: Option<Duration>,
+
+    /// Время обработки decoder events после submit-а.
+    pub decoder_event_drain_latency: Option<Duration>,
+
+    /// Время ожидания готовности hardware-decoded surface.
+    pub hardware_sync_latency: Option<Duration>,
+
+    /// Время экспорта decoded surface в external memory descriptor.
+    pub dma_buf_export_latency: Option<Duration>,
+
+    /// Время импорта external memory в renderer-visible GPU texture.
+    pub dma_buf_import_latency: Option<Duration>,
+}
+
+/// Codec-neutral pressure texture/surface pool-а рядом с кадром.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VideoTexturePoolDiagnostics {
+    /// Максимальное количество слотов, разрешённое backend pool-ом.
+    pub capacity: usize,
+
+    /// Количество физически созданных slots.
+    pub slots: usize,
+
+    /// Количество slots, удерживаемых live кадрами.
+    pub in_use: usize,
+}
+
+impl VideoTexturePoolDiagnostics {
+    /// Возвращает доступный запас slots без underflow.
+    #[must_use]
+    pub const fn available_slots(self) -> usize {
+        self.capacity.saturating_sub(self.in_use)
+    }
+}
+
+/// Diagnostics payload, который backend может прикрепить к decoded frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VideoFrameDiagnostics {
+    /// Timings стадий decode/export/import для этого кадра.
+    pub timings: VideoFrameTimingDiagnostics,
+
+    /// Глубина backend ready queue после enqueue этого кадра.
+    pub decoder_ready_queue_depth: Option<usize>,
+
+    /// Texture/surface pressure после zero-copy import этого кадра.
+    pub texture_pool: Option<VideoTexturePoolDiagnostics>,
+}
+
+/// Причина frame drop-а внутри decoder/backend boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoDecoderDropReason {
+    /// Backend ready queue вытеснила старый decoded frame.
+    ReadyQueueOverflow,
+}
+
+/// Typed diagnostics event от video backend-а в player-core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoDecoderDiagnosticEvent {
+    /// Decoder/backend удалил frame до передачи в player scheduler.
+    FrameDropped {
+        /// Presentation timestamp удалённого кадра.
+        pts: Duration,
+
+        /// Backend-local typed причина удаления.
+        reason: VideoDecoderDropReason,
+    },
+}

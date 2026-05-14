@@ -20,6 +20,8 @@ use media_core::Packet;
 use tracing::{debug, info, trace, warn};
 use video_core::{
     DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle, VideoDecoder,
+    VideoDecoderDiagnosticEvent, VideoDecoderDropReason, VideoFrameDiagnostics,
+    VideoFrameTimingDiagnostics, VideoTexturePoolDiagnostics,
 };
 
 use crate::frame_pool::DmaFramePool;
@@ -410,6 +412,9 @@ pub struct VaapiVideoDecoder {
     /// Был ли уже залогирован первый успешный zero-copy кадр.
     zero_copy_success_logged: bool,
 
+    /// Diagnostics events для player-core без зависимости от player-core.
+    diagnostic_tx: Option<std::sync::mpsc::SyncSender<VideoDecoderDiagnosticEvent>>,
+
     /// Была ли уже залогирована проверенная P010 zero-copy boundary.
     p010_boundary_verified_logged: bool,
 
@@ -438,13 +443,14 @@ impl VaapiVideoDecoder {
     /// - не удалось создать GBM frame pool.
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Result<Self> {
         let texture_cache = Arc::new(Mutex::new(WgpuTexturePool::new(None)));
-        Self::new_with_pool(device, queue, texture_cache)
+        Self::new_with_pool(device, queue, texture_cache, None)
     }
 
     pub fn new_with_pool(
         device: Arc<wgpu::Device>,
         _queue: Arc<wgpu::Queue>,
         texture_cache: Arc<Mutex<WgpuTexturePool>>,
+        diagnostic_tx: Option<std::sync::mpsc::SyncSender<VideoDecoderDiagnosticEvent>>,
     ) -> Result<Self> {
         info!("Opening VA-API display");
         ensure_texture_pool_has_zero_copy_importer(&texture_cache)?;
@@ -488,6 +494,7 @@ impl VaapiVideoDecoder {
             ready_queue: VecDeque::new(),
             zero_copy_guards: HashMap::new(),
             zero_copy_success_logged: false,
+            diagnostic_tx,
             p010_boundary_verified_logged: false,
             device,
             backend_name: "VA-API VP9",
@@ -586,7 +593,7 @@ impl VaapiVideoDecoder {
     /// накопить уже импортированные textures внутри `ready_queue`. Для видео важнее
     /// держать низкую задержку и не исчерпывать GPU slots, чем сохранить каждый
     /// промежуточный кадр при backlog.
-    fn push_ready_frame(&mut self, frame: DecodedFrame) -> Result<()> {
+    fn push_ready_frame(&mut self, mut frame: DecodedFrame) -> Result<()> {
         if let Err(error) = frame.validate_contract() {
             let invalid_texture_handle = frame.texture_handle;
             warn!(
@@ -607,12 +614,18 @@ impl VaapiVideoDecoder {
             };
             let stale_pts_ms = stale_frame.pts.as_millis();
             self.release_frame(stale_frame.texture_handle);
+            self.send_diagnostic_event(VideoDecoderDiagnosticEvent::FrameDropped {
+                pts: stale_frame.pts,
+                reason: VideoDecoderDropReason::ReadyQueueOverflow,
+            });
             debug!(
                 stale_pts_ms,
                 ready_queue_limit = READY_QUEUE_LIMIT,
                 "Dropping stale decoded frame from internal ready queue"
             );
         }
+
+        frame.diagnostics.decoder_ready_queue_depth = Some(self.ready_queue.len() + 1);
 
         trace!(
             pts_ms = frame.pts.as_millis(),
@@ -628,6 +641,13 @@ impl VaapiVideoDecoder {
 
         self.ready_queue.push_back(frame);
         Ok(())
+    }
+
+    /// Отправляет diagnostics event, не влияя на decode hot path при dropped receiver.
+    fn send_diagnostic_event(&self, event: VideoDecoderDiagnosticEvent) {
+        if let Some(diagnostic_tx) = &self.diagnostic_tx {
+            let _ = diagnostic_tx.try_send(event);
+        }
     }
 
     /// Очищает кадры, которыми всё ещё владеет decoder thread.
@@ -708,6 +728,7 @@ impl VaapiVideoDecoder {
             warn!(error = %e, "GPU decode sync failed — dropping frame");
             return Err(anyhow::anyhow!("GPU decode sync failed: {}", e));
         }
+        let hardware_sync_latency = sync_start.elapsed();
         let decoded_contract = self.current_decoded_contract(&handle)?;
 
         // Шаг 2: Проверяем, что importer есть до попытки export-а.
@@ -723,6 +744,7 @@ impl VaapiVideoDecoder {
         ensure_zero_copy_importer_for_contract(decoded_contract, can_import_dma_buf)?;
 
         // Шаг 3: Экспортируем VA surface как DMA-BUF. Отсутствие export-а — fatal contract error.
+        let export_start = std::time::Instant::now();
         let dma_buf_image = match handle.dma_buf_image() {
             Ok(Some(dma_buf_image)) => dma_buf_image,
             Ok(None) => {
@@ -744,38 +766,50 @@ impl VaapiVideoDecoder {
                 )));
             }
         };
+        let dma_buf_export_latency = export_start.elapsed();
 
         // Шаг 4: Импортируем DMA-BUF в renderer-visible wgpu textures.
         let import_start = std::time::Instant::now();
-        let texture_handle = self
-            .texture_cache
-            .lock()
-            .map_err(|error| {
+        let (texture_handle, texture_pool_diagnostics) = {
+            let mut texture_cache = self.texture_cache.lock().map_err(|error| {
                 zero_copy_contract_violation(format!(
                     "Zero-copy texture pool mutex is poisoned during DMA-BUF import: {error}"
                 ))
-            })?
-            .import_dma_buf_image(&dma_buf_image)
-            .map_err(|import_error| {
-                let import_error_chain = format!("{:#}", import_error);
-                warn!(
-                    error = %import_error_chain,
-                    format = %decoded_contract.format,
-                    "DMA-BUF zero-copy import failed; CPU fallback is disabled"
-                );
-                zero_copy_contract_violation(format!(
-                    "{} DMA-BUF zero-copy import failed: {}",
-                    decoded_contract.format, import_error_chain
-                ))
             })?;
-        let import_elapsed = import_start.elapsed().as_millis();
+            let texture_handle =
+                texture_cache
+                    .import_dma_buf_image(&dma_buf_image)
+                    .map_err(|import_error| {
+                        let import_error_chain = format!("{:#}", import_error);
+                        warn!(
+                            error = %import_error_chain,
+                            format = %decoded_contract.format,
+                            "DMA-BUF zero-copy import failed; CPU fallback is disabled"
+                        );
+                        zero_copy_contract_violation(format!(
+                            "{} DMA-BUF zero-copy import failed: {}",
+                            decoded_contract.format, import_error_chain
+                        ))
+                    })?;
+            let texture_stats = texture_cache.stats();
+            (
+                texture_handle,
+                VideoTexturePoolDiagnostics {
+                    capacity: texture_stats.capacity,
+                    slots: texture_stats.slots,
+                    in_use: texture_stats.in_use,
+                },
+            )
+        };
+        let dma_buf_import_latency = import_start.elapsed();
+        let import_elapsed = dma_buf_import_latency.as_millis();
 
         if !self.zero_copy_success_logged {
             self.zero_copy_success_logged = true;
             info!(
                 handle_id = texture_handle.0,
                 format = %decoded_contract.format,
-                sync_ms = sync_start.elapsed().as_millis(),
+                sync_ms = hardware_sync_latency.as_millis(),
                 import_ms = import_elapsed,
                 "Zero-copy DMA-BUF import succeeded"
             );
@@ -810,6 +844,16 @@ impl VaapiVideoDecoder {
             render_height: display_resolution.height,
             color: VideoColorMetadata::sdr_bt709_limited(),
             texture_handle,
+            diagnostics: VideoFrameDiagnostics {
+                timings: VideoFrameTimingDiagnostics {
+                    hardware_sync_latency: Some(hardware_sync_latency),
+                    dma_buf_export_latency: Some(dma_buf_export_latency),
+                    dma_buf_import_latency: Some(dma_buf_import_latency),
+                    ..VideoFrameTimingDiagnostics::default()
+                },
+                decoder_ready_queue_depth: None,
+                texture_pool: Some(texture_pool_diagnostics),
+            },
         })?;
 
         Ok(())
@@ -953,10 +997,14 @@ impl VideoDecoder for VaapiVideoDecoder {
         }
 
         // Шаг 3: Возвращаем самый старый готовый кадр (FIFO).
-        let result = self.ready_queue.pop_front();
+        let mut result = self.ready_queue.pop_front();
         let decode_elapsed = decode_start.elapsed().as_millis();
         let submit_elapsed = loop_report.submit_elapsed.as_millis();
         let drain_elapsed = loop_report.drain_elapsed.as_millis();
+        if let Some(frame) = result.as_mut() {
+            frame.diagnostics.timings.decoder_submit_latency = Some(loop_report.submit_elapsed);
+            frame.diagnostics.timings.decoder_event_drain_latency = Some(loop_report.drain_elapsed);
+        }
         if let Some(ref frame) = result {
             debug!(
                 pts_ms = frame.pts.as_millis(),

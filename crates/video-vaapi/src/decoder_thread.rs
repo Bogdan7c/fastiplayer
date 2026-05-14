@@ -17,12 +17,15 @@ use bytes::Bytes;
 use codec_core::VideoColorMetadata;
 use media_core::{Packet, TrackId, TrackKind};
 use tracing::{info, trace};
-use video_core::{DecodedFrame, VideoDecoder};
+use video_core::{DecodedFrame, VideoDecoder, VideoDecoderDiagnosticEvent};
 
 use crate::texture_cache::TexturePoolStats;
 
 /// Результат, которым decoder thread подтверждает завершение flush.
 type FlushAck = std::result::Result<(), String>;
+
+/// Bounded capacity diagnostics events от decoder thread.
+const DECODER_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
 
 /// Ошибка decoder thread, которую нужно показать player layer как fatal runtime state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,6 +319,7 @@ pub struct VideoDecodeThread {
     msg_tx: std::sync::mpsc::Sender<ThreadMsg>,
     frame_rx: std::sync::mpsc::Receiver<DecodedFrame>,
     error_rx: std::sync::mpsc::Receiver<DecodeThreadError>,
+    diagnostic_rx: std::sync::mpsc::Receiver<VideoDecoderDiagnosticEvent>,
     queue: Arc<wgpu::Queue>,
     texture_pool: Arc<Mutex<crate::texture_cache::WgpuTexturePool>>,
     thread_state: DecoderThreadState,
@@ -356,6 +360,9 @@ impl VideoDecodeThread {
         let (msg_tx, msg_rx) = std::sync::mpsc::channel::<ThreadMsg>();
         let (frame_tx, frame_rx) = std::sync::mpsc::channel::<DecodedFrame>();
         let (error_tx, error_rx) = std::sync::mpsc::channel::<DecodeThreadError>();
+        let (diagnostic_tx, diagnostic_rx) = std::sync::mpsc::sync_channel::<
+            VideoDecoderDiagnosticEvent,
+        >(DECODER_DIAGNOSTIC_CHANNEL_CAPACITY);
         let (init_tx, init_rx) = std::sync::mpsc::sync_channel::<anyhow::Result<()>>(1);
         let thread_state = DecoderThreadState::new();
 
@@ -368,6 +375,7 @@ impl VideoDecodeThread {
                     device,
                     queue,
                     texture_pool_for_thread,
+                    Some(diagnostic_tx),
                 ) {
                     Ok(decoder) => {
                         if init_tx.send(Ok(())).is_err() {
@@ -408,6 +416,7 @@ impl VideoDecodeThread {
             msg_tx,
             frame_rx,
             error_rx,
+            diagnostic_rx,
             queue: queue_for_release_callbacks,
             texture_pool,
             thread_state,
@@ -440,6 +449,11 @@ impl VideoDecodeThread {
     /// Забирает готовый decoded frame из очереди (неблокирующий).
     pub fn try_recv_frame(&self) -> Option<DecodedFrame> {
         self.frame_rx.try_recv().ok()
+    }
+
+    /// Забирает backend diagnostics event без блокировки.
+    pub fn try_recv_diagnostic_event(&self) -> Option<VideoDecoderDiagnosticEvent> {
+        self.diagnostic_rx.try_recv().ok()
     }
 
     /// Забирает fatal error из decoder thread, если backend остановился fail-closed.

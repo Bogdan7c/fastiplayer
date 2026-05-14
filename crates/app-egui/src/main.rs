@@ -660,6 +660,10 @@ fn map_video_drop_reason(reason: PlayerVideoDropReason) -> VideoDropReason {
         PlayerVideoDropReason::Late => VideoDropReason::Late,
         PlayerVideoDropReason::QueueOverflow => VideoDropReason::QueueOverflow,
         PlayerVideoDropReason::Paused => VideoDropReason::Paused,
+        PlayerVideoDropReason::StaleGeneration
+        | PlayerVideoDropReason::SeekPreroll
+        | PlayerVideoDropReason::RenderAcquisitionTimeout
+        | PlayerVideoDropReason::DecoderStarvation => VideoDropReason::Other,
     }
 }
 
