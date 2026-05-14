@@ -3,6 +3,9 @@ use std::time::Duration;
 /// Codec-neutral timings одного decoded video frame.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VideoFrameTimingDiagnostics {
+    /// Время ожидания packet-а в bounded decoder packet channel.
+    pub decoder_packet_receive_latency: Option<Duration>,
+
     /// Время submit-а bitstream packet-а в hardware decoder.
     pub decoder_submit_latency: Option<Duration>,
 
@@ -17,6 +20,9 @@ pub struct VideoFrameTimingDiagnostics {
 
     /// Время импорта external memory в renderer-visible GPU texture.
     pub dma_buf_import_latency: Option<Duration>,
+
+    /// Время публикации decoded frame через bounded frame channel.
+    pub decoded_frame_publish_latency: Option<Duration>,
 }
 
 /// Codec-neutral pressure texture/surface pool-а рядом с кадром.

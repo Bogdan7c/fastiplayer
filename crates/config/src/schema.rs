@@ -145,6 +145,31 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "decoder_packet_channel_frames = 32",
+        "# Bounded очередь packets между worker и decoder thread.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "decoder_frame_channel_frames = 8",
+        "# Bounded очередь decoded frames между decoder thread и worker.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "decoder_ready_queue_frames = 8",
+        "# Backend-local ready queue для burst FrameReady events.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "decoder_surface_pool_frames = 24",
+        "# VA output surface descriptors для hardware decoder-а.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "zero_copy_surface_pool_slots = 24",
+        "# Zero-copy external import slots; CPU fallback всё равно запрещён.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "[youtube]",
         "# Настройки YouTube/service adapter-а.",
     );
@@ -336,6 +361,21 @@ pub struct VideoConfig {
 
     /// Максимум decoded frames в presentation queue.
     pub present_queue_frames: usize,
+
+    /// Bounded packet channel между worker и decoder thread.
+    pub decoder_packet_channel_frames: usize,
+
+    /// Bounded decoded frame channel между decoder thread и worker.
+    pub decoder_frame_channel_frames: usize,
+
+    /// Backend-local ready queue для burst `FrameReady` events.
+    pub decoder_ready_queue_frames: usize,
+
+    /// Количество VA output surface descriptors для hardware decoder-а.
+    pub decoder_surface_pool_frames: usize,
+
+    /// Количество zero-copy external import slots.
+    pub zero_copy_surface_pool_slots: usize,
 }
 
 impl Default for VideoConfig {
@@ -346,6 +386,11 @@ impl Default for VideoConfig {
             preferred_backend: VideoBackendPreference::Auto,
             max_decode_ahead_ms: 500,
             present_queue_frames: 8,
+            decoder_packet_channel_frames: 32,
+            decoder_frame_channel_frames: 8,
+            decoder_ready_queue_frames: 8,
+            decoder_surface_pool_frames: 24,
+            zero_copy_surface_pool_slots: 24,
         }
     }
 }

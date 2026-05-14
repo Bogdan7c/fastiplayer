@@ -120,13 +120,13 @@ impl Default for PlayerTickConfig {
     /// Возвращает текущие MVP-лимиты, перенесённые из app layer в player-core.
     fn default() -> Self {
         Self {
-            max_demux_packets_per_tick: 6,
+            max_demux_packets_per_tick: 12,
             max_video_present_queue: 8,
             min_texture_slots_available_for_decode: 2,
-            max_pending_video_packets: 8,
+            max_pending_video_packets: 32,
             max_pending_video_packets_during_audio_catchup: 240,
-            max_video_packets_sent_per_tick: 2,
-            max_decoded_video_frames_drained_per_tick: 2,
+            max_video_packets_sent_per_tick: 8,
+            max_decoded_video_frames_drained_per_tick: 8,
             max_video_decode_ahead: Duration::from_millis(500),
             audio_buffer_high_water_mark_ms: 200.0,
             audio_demux_low_water_mark_ms: 100.0,
@@ -156,6 +156,13 @@ impl From<&AppConfig> for PlayerTickConfig {
 
         Self {
             max_video_present_queue: config.video.present_queue_frames,
+            max_pending_video_packets: config.video.decoder_packet_channel_frames,
+            max_video_packets_sent_per_tick: config
+                .video
+                .decoder_packet_channel_frames
+                .min(defaults.max_video_packets_sent_per_tick)
+                .max(1),
+            max_decoded_video_frames_drained_per_tick: config.video.decoder_frame_channel_frames,
             max_video_decode_ahead: Duration::from_millis(config.video.max_decode_ahead_ms),
             audio_buffer_high_water_mark_ms: config.audio.buffer_target_ms as f64,
             audio_demux_low_water_mark_ms: (config.audio.buffer_target_ms as f64 * 0.5)
@@ -442,7 +449,10 @@ fn read_demux_packets(
             prioritize_audio_catchup,
         ) {
             tick_result.demux_backpressured = true;
-            record_pipeline_pause(session, tick_result, PipelinePauseReason::DemuxBackpressure);
+            let pause_reason =
+                demux_backpressure_reason(session, tick_config, prioritize_audio_catchup)
+                    .unwrap_or(PipelinePauseReason::DemuxBackpressure);
+            record_pipeline_pause(session, tick_result, pause_reason);
             trace!(
                 pending_video_packets = session.pipeline.pending_video_packets.len(),
                 queued_video_frames = session.pipeline.video_frame_queue.len(),
@@ -539,6 +549,30 @@ fn can_read_next_demux_packet_with_audio_priority(
     available_video_present_slots(session, tick_config) > 0
 }
 
+/// Возвращает typed причину demux backpressure вместо generic "нет места".
+fn demux_backpressure_reason(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+    prioritize_audio_catchup: bool,
+) -> Option<PipelinePauseReason> {
+    if prioritize_audio_catchup {
+        return (session.pipeline.pending_video_packets.len()
+            >= audio_catchup_pending_video_limit(tick_config))
+        .then_some(PipelinePauseReason::WaitingForDemuxAudioPriority);
+    }
+
+    if let Some(reason) = texture_capacity_backpressure_reason(session, tick_config) {
+        return Some(reason);
+    }
+
+    if session.pipeline.pending_video_packets.len() >= tick_config.max_pending_video_packets {
+        return Some(PipelinePauseReason::DemuxBackpressure);
+    }
+
+    (available_video_present_slots(session, tick_config) == 0)
+        .then_some(PipelinePauseReason::WaitingForPresentQueue)
+}
+
 /// Проверяет, можно ли отправить video packet в decoder thread без чрезмерного decode-ahead.
 fn can_send_video_packet_to_decoder(
     session: &PlayerSession,
@@ -565,28 +599,43 @@ fn has_texture_capacity_for_decode(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> bool {
+    texture_capacity_backpressure_reason(session, tick_config).is_none()
+}
+
+/// Диагностирует, почему texture/surface pool не даёт отправить новый packet.
+fn texture_capacity_backpressure_reason(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+) -> Option<PipelinePauseReason> {
     let Some(ref thread) = session.pipeline.video_decoder_thread else {
-        return true;
+        return None;
     };
 
     let Some(stats) = thread.texture_pool_stats() else {
-        return true;
+        return None;
     };
 
     let available_slots = stats.available_slots();
-    if available_slots <= tick_config.min_texture_slots_available_for_decode {
-        trace!(
-            texture_slots = stats.slots,
-            texture_in_use = stats.in_use,
-            texture_capacity = stats.capacity,
-            available_slots,
-            reserve = tick_config.min_texture_slots_available_for_decode,
-            "Video backpressure: waiting for texture slots"
-        );
-        return false;
+    if available_slots > tick_config.min_texture_slots_available_for_decode {
+        return None;
     }
 
-    true
+    trace!(
+        texture_slots = stats.slots,
+        texture_in_use = stats.in_use,
+        texture_capacity = stats.capacity,
+        available_slots,
+        reserve = tick_config.min_texture_slots_available_for_decode,
+        waiting_gpu_completion = stats.waiting_gpu_completion,
+        waiting_decoder_reuse = stats.waiting_decoder_reuse,
+        "Video backpressure: waiting for texture slots"
+    );
+
+    if stats.waiting_gpu_completion > 0 || stats.waiting_decoder_reuse > 0 {
+        Some(PipelinePauseReason::WaitingForGpuRelease)
+    } else {
+        Some(PipelinePauseReason::WaitingForFreeSurface)
+    }
 }
 
 /// Возвращает количество свободных мест в presentation queue.
@@ -815,7 +864,15 @@ fn send_pending_video_packets_to_decoder(
 
     while sent_packets < tick_config.max_video_packets_sent_per_tick {
         let available_slots = available_video_present_slots(session, tick_config);
-        if available_slots == 0 || sent_packets >= available_slots {
+        if available_slots == 0 {
+            record_pipeline_pause(
+                session,
+                tick_result,
+                PipelinePauseReason::WaitingForPresentQueue,
+            );
+            break;
+        }
+        if sent_packets >= available_slots {
             break;
         }
 
@@ -863,6 +920,11 @@ fn send_pending_video_packets_to_decoder(
             break;
         }
 
+        if let Some(reason) = texture_capacity_backpressure_reason(session, tick_config) {
+            record_pipeline_pause(session, tick_result, reason);
+            break;
+        }
+
         if !can_send_video_packet_to_decoder(session, tick_config, packet_pts) {
             trace!(
                 pts_ms = packet_pts.as_millis(),
@@ -873,14 +935,10 @@ fn send_pending_video_packets_to_decoder(
             break;
         }
 
-        let Some(packet) = session.pipeline.pending_video_packets.pop_front() else {
-            break;
-        };
-
         trace!(
-            pts_ms = packet.pts.as_millis(),
-            encoded_len = packet.encoded_bytes.len(),
-            keyframe = packet.keyframe,
+            pts_ms = packet_pts.as_millis(),
+            encoded_len = packet_probe.encoded_bytes.len(),
+            keyframe = packet_keyframe,
             "Sending video packet to decoder thread"
         );
 
@@ -890,23 +948,37 @@ fn send_pending_video_packets_to_decoder(
             .as_ref()
             .and_then(|requirement| requirement.color.clone());
         let decode_packet = video_vaapi::DecodePacket {
-            track_id: packet.track_id,
-            pts: packet.pts,
-            encoded_bytes: packet.encoded_bytes,
-            keyframe: packet.keyframe,
+            track_id: packet_track_id,
+            pts: packet_pts,
+            encoded_bytes: packet_probe.encoded_bytes,
+            keyframe: packet_keyframe,
             resolved_color,
         };
 
         let Some(ref thread) = session.pipeline.video_decoder_thread else {
             break;
         };
-        if let Err(error) = thread.send_packet(decode_packet) {
-            tracing::warn!(error = %error, "Failed to send packet to decoder thread");
-            session.mark_fatal_error(PlayerError::new(
-                PlayerErrorKind::RuntimeError,
-                format!("Video decoder thread stopped before accepting packet: {error}"),
-            ));
-            break;
+        match thread.send_packet(decode_packet) {
+            Ok(()) => {
+                session.pipeline.pending_video_packets.pop_front();
+            }
+            Err(video_vaapi::DecodeThreadSendError::Backpressure(reason)) => {
+                tracing::debug!(reason = %reason, "Decoder packet channel backpressure");
+                record_pipeline_pause(
+                    session,
+                    tick_result,
+                    PipelinePauseReason::DecoderPacketQueueFull,
+                );
+                break;
+            }
+            Err(video_vaapi::DecodeThreadSendError::Fatal(error)) => {
+                tracing::warn!(error = %error, "Failed to send packet to decoder thread");
+                session.mark_fatal_error(PlayerError::new(
+                    PlayerErrorKind::RuntimeError,
+                    format!("Video decoder thread stopped before accepting packet: {error}"),
+                ));
+                break;
+            }
         }
 
         sent_packets += 1;
@@ -1656,6 +1728,53 @@ mod tests {
             &tick_config,
             true
         ));
+    }
+
+    #[test]
+    fn demux_backpressure_reports_present_queue_reason() {
+        let mut session = PlayerSession::new();
+        let tick_config = PlayerTickConfig {
+            max_video_present_queue: 1,
+            ..PlayerTickConfig::default()
+        };
+        session
+            .pipeline
+            .video_frame_queue
+            .push_back(decoded_frame(Duration::ZERO, 1));
+
+        let reason = demux_backpressure_reason(&session, &tick_config, false);
+
+        assert_eq!(reason, Some(PipelinePauseReason::WaitingForPresentQueue));
+    }
+
+    #[test]
+    fn demux_backpressure_reports_audio_priority_reason() {
+        let mut session = PlayerSession::new();
+        let tick_config = PlayerTickConfig {
+            max_pending_video_packets: 2,
+            max_pending_video_packets_during_audio_catchup: 4,
+            ..PlayerTickConfig::default()
+        };
+
+        for packet_index in 0..audio_catchup_pending_video_limit(&tick_config) {
+            session
+                .pipeline
+                .pending_video_packets
+                .push_back(PendingVideoPacket::new(
+                    TrackId::new(1),
+                    Duration::from_millis(packet_index as u64),
+                    session.pipeline.seek_generation,
+                    Bytes::new(),
+                    false,
+                ));
+        }
+
+        let reason = demux_backpressure_reason(&session, &tick_config, true);
+
+        assert_eq!(
+            reason,
+            Some(PipelinePauseReason::WaitingForDemuxAudioPriority)
+        );
     }
 
     #[test]

@@ -7,11 +7,12 @@ use crate::zero_copy_surface_pool::{
     ZeroCopySurfaceDescriptor, ZeroCopySurfacePool, ZeroCopySurfacePoolError,
 };
 
-/// Максимальное количество persistent zero-copy imports.
+/// Production default количества persistent zero-copy imports.
 ///
-/// 16 slots покрывают decoder references, небольшую presentation queue и один
-/// render lease без unbounded внешних GPU resources.
-const MAX_TEXTURE_SLOTS: usize = 16;
+/// 24 slots покрывают decoder references, bounded decoded frame channel,
+/// presentation queue и один-два render leases без unbounded внешних GPU
+/// resources. Значение можно сузить/расширить через `VideoDecodeThreadConfig`.
+pub const DEFAULT_ZERO_COPY_SURFACE_POOL_SLOTS: usize = 24;
 
 /// Снимок заполнения zero-copy surface/import pool для backpressure и UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,13 +116,21 @@ pub struct WgpuTexturePool {
 impl WgpuTexturePool {
     /// Создаёт новый пустой zero-copy texture/import pool.
     pub fn new(dma_buf_importer: Option<crate::dma_buf_import::DmaBufImporter>) -> Self {
+        Self::new_with_capacity(dma_buf_importer, DEFAULT_ZERO_COPY_SURFACE_POOL_SLOTS)
+    }
+
+    /// Создаёт новый zero-copy texture/import pool с явным bounded capacity.
+    pub fn new_with_capacity(
+        dma_buf_importer: Option<crate::dma_buf_import::DmaBufImporter>,
+        surface_pool_capacity: usize,
+    ) -> Self {
         Self {
             dma_buf_importer,
             surface_pool: ZeroCopySurfacePool::new(
-                MAX_TEXTURE_SLOTS,
+                surface_pool_capacity,
                 ZeroCopyImportReuseContract::vaapi_vulkan_wgpu(),
             ),
-            slots: Vec::with_capacity(MAX_TEXTURE_SLOTS),
+            slots: Vec::with_capacity(surface_pool_capacity),
             next_handle: 0,
         }
     }
@@ -240,7 +249,7 @@ impl WgpuTexturePool {
                 let old_slot = std::mem::replace(&mut self.slots[slot_index], replacement_slot);
                 drop(old_slot);
 
-                tracing::warn!(
+                tracing::debug!(
                     surface_id = descriptor.surface_id(),
                     handle_id = texture_handle.0,
                     slot_index,

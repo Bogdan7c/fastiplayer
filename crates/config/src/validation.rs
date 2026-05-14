@@ -18,6 +18,18 @@ const MIN_PRESENT_QUEUE_FRAMES: usize = 1;
 /// Верхний предел, чтобы ошибочный config не удерживал слишком много GPU textures.
 const MAX_PRESENT_QUEUE_FRAMES: usize = 64;
 
+/// Минимум bounded decoder queue/pool capacity.
+const MIN_DECODER_QUEUE_FRAMES: usize = 1;
+
+/// Верхний предел decoder packet/frame queues, чтобы config не стал memory cache.
+const MAX_DECODER_QUEUE_FRAMES: usize = 128;
+
+/// Верхний предел VA output surface descriptors.
+const MAX_DECODER_SURFACE_POOL_FRAMES: usize = 64;
+
+/// Верхний предел zero-copy import slots.
+const MAX_ZERO_COPY_SURFACE_POOL_SLOTS: usize = 64;
+
 /// Минимальный audio high-water mark.
 const MIN_AUDIO_BUFFER_TARGET_MS: u64 = 1;
 
@@ -156,6 +168,36 @@ fn validate_video_section(config: &AppConfig) -> ConfigResult<()> {
         config.video.present_queue_frames,
         MIN_PRESENT_QUEUE_FRAMES,
         MAX_PRESENT_QUEUE_FRAMES,
+    )?;
+    validate_usize_range(
+        "video.decoder_packet_channel_frames",
+        config.video.decoder_packet_channel_frames,
+        MIN_DECODER_QUEUE_FRAMES,
+        MAX_DECODER_QUEUE_FRAMES,
+    )?;
+    validate_usize_range(
+        "video.decoder_frame_channel_frames",
+        config.video.decoder_frame_channel_frames,
+        MIN_DECODER_QUEUE_FRAMES,
+        MAX_DECODER_QUEUE_FRAMES,
+    )?;
+    validate_usize_range(
+        "video.decoder_ready_queue_frames",
+        config.video.decoder_ready_queue_frames,
+        MIN_DECODER_QUEUE_FRAMES,
+        MAX_DECODER_QUEUE_FRAMES,
+    )?;
+    validate_usize_range(
+        "video.decoder_surface_pool_frames",
+        config.video.decoder_surface_pool_frames,
+        MIN_DECODER_QUEUE_FRAMES,
+        MAX_DECODER_SURFACE_POOL_FRAMES,
+    )?;
+    validate_usize_range(
+        "video.zero_copy_surface_pool_slots",
+        config.video.zero_copy_surface_pool_slots,
+        MIN_DECODER_QUEUE_FRAMES,
+        MAX_ZERO_COPY_SURFACE_POOL_SLOTS,
     )?;
 
     Ok(())

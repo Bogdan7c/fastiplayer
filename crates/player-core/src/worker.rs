@@ -65,6 +65,9 @@ pub struct PlayerWorkerConfig {
 
     /// Fail-safe настройки demuxer-а для media, которые worker открывает сам.
     pub demuxer_options: DemuxerOptions,
+
+    /// Bounded queue/runtime limits decoder thread-а.
+    pub decoder_thread_config: video_vaapi::VideoDecodeThreadConfig,
 }
 
 impl PlayerWorkerConfig {
@@ -76,6 +79,7 @@ impl PlayerWorkerConfig {
             tick_config,
             live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
             demuxer_options: DemuxerOptions::default(),
+            decoder_thread_config: video_vaapi::VideoDecodeThreadConfig::default(),
         }
     }
 
@@ -87,6 +91,7 @@ impl PlayerWorkerConfig {
             tick_config: PlayerTickConfig::from(config),
             live_scrub_preview_interval: Duration::from_millis(config.player.seek.live_interval_ms),
             demuxer_options: demuxer_options_from_config(&config.player.demux),
+            decoder_thread_config: decoder_thread_config_from_app_config(config),
         }
     }
 }
@@ -102,6 +107,21 @@ impl Default for PlayerWorkerConfig {
 fn demuxer_options_from_config(config: &PlayerDemuxConfig) -> DemuxerOptions {
     DemuxerOptions::from_max_consecutive_corrupted_packets(config.max_consecutive_corrupted_packets)
         .expect("validated AppConfig must provide positive demux corrupted packet limit")
+}
+
+/// Конвертирует validated TOML config в bounded decoder thread limits.
+fn decoder_thread_config_from_app_config(
+    config: &rustiplayer_config::AppConfig,
+) -> video_vaapi::VideoDecodeThreadConfig {
+    video_vaapi::VideoDecodeThreadConfig {
+        packet_channel_frames: config.video.decoder_packet_channel_frames,
+        frame_channel_frames: config.video.decoder_frame_channel_frames,
+        decoder_ready_queue_frames: config.video.decoder_ready_queue_frames,
+        decoder_surface_pool_frames: config.video.decoder_surface_pool_frames,
+        zero_copy_surface_pool_slots: config.video.zero_copy_surface_pool_slots,
+        ..video_vaapi::VideoDecodeThreadConfig::from_env()
+    }
+    .normalized()
 }
 
 /// Ошибка неблокирующей отправки команды в worker.
@@ -1101,8 +1121,13 @@ impl PlayerWorkerRuntime {
                 device,
                 queue,
             } => {
-                let backend_factory =
-                    WgpuVideoBackendFactory::new(&instance, &adapter, &device, &queue);
+                let backend_factory = WgpuVideoBackendFactory::new_with_decoder_config(
+                    &instance,
+                    &adapter,
+                    &device,
+                    &queue,
+                    self.config.decoder_thread_config,
+                );
                 self.session.init_video_pipeline(&backend_factory);
             }
             WorkerCommand::SetSystemCapabilities(capabilities) => {
@@ -1481,6 +1506,7 @@ mod tests {
             tick_config: PlayerTickConfig::default(),
             live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
             demuxer_options: DemuxerOptions::default(),
+            decoder_thread_config: video_vaapi::VideoDecodeThreadConfig::default(),
         }
     }
 

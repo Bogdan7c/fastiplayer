@@ -28,19 +28,49 @@ use crate::frame_pool::DmaFramePool;
 use crate::internal_vaapi_frame::InternalVaapiFrame;
 use crate::texture_cache::WgpuTexturePool;
 
-/// Количество кадров в DMA-пуле.
+/// Production default количества кадров в VA DMA-пуле.
 ///
-/// VP9 decoder может держать до 8 reference frames.
-/// 16 буферов даёт 8 свободных для decode pipeline,
-/// что предотвращает исчерпание пула при быстром decode.
-const FRAME_POOL_SIZE: usize = 16;
+/// VP9 decoder может держать до 8 reference frames. 24 descriptors дают запас
+/// для 4k60 burst-ов, но остаются bounded через `VaapiDecoderRuntimeConfig`.
+pub const DEFAULT_DECODER_SURFACE_POOL_FRAMES: usize = 24;
 
-/// Максимум кадров, которые decoder держит уже импортированными, но ещё не отданными UI.
+/// Production default кадров, которые decoder держит импортированными до publish boundary.
 ///
-/// Presentation queue живёт в app-egui, но cros-codecs может вернуть несколько
-/// `FrameReady` events за один decode call. Этот лимит не даёт скрытой decoder
-/// очереди занять все zero-copy texture slots.
-const READY_QUEUE_LIMIT: usize = 3;
+/// cros-codecs может вернуть несколько `FrameReady` events за один decode call.
+/// 8 кадров принимают burst без немедленного overflow, но не скрывают memory
+/// growth: лимит явно прокидывается из config и виден в diagnostics.
+pub const DEFAULT_DECODER_READY_QUEUE_FRAMES: usize = 8;
+
+/// Runtime-limits VA-API decoder-а, которые относятся к backend-local очередям.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VaapiDecoderRuntimeConfig {
+    /// Количество output surface descriptors, доступных hardware decoder-у.
+    pub surface_pool_frames: usize,
+
+    /// Максимум готовых frames внутри backend ready queue до publish boundary.
+    pub ready_queue_frames: usize,
+}
+
+impl Default for VaapiDecoderRuntimeConfig {
+    /// Возвращает production defaults без unbounded backend-local очередей.
+    fn default() -> Self {
+        Self {
+            surface_pool_frames: DEFAULT_DECODER_SURFACE_POOL_FRAMES,
+            ready_queue_frames: DEFAULT_DECODER_READY_QUEUE_FRAMES,
+        }
+    }
+}
+
+impl VaapiDecoderRuntimeConfig {
+    /// Нормализует public config, чтобы прямой вызов backend API не создал нулевые очереди.
+    #[must_use]
+    fn normalized(self) -> Self {
+        Self {
+            surface_pool_frames: self.surface_pool_frames.max(1),
+            ready_queue_frames: self.ready_queue_frames.max(1),
+        }
+    }
+}
 
 /// Максимум повторных submit попыток после `DecodeError::CheckEvents`.
 ///
@@ -403,6 +433,9 @@ pub struct VaapiVideoDecoder {
     /// из `decode()` в порядке FIFO.
     ready_queue: VecDeque<DecodedFrame>,
 
+    /// Bounded backend-local лимиты очередей и surface pool-а.
+    runtime_config: VaapiDecoderRuntimeConfig,
+
     /// Handles кадров, которые сейчас удерживают decoded VA surface.
     ///
     /// Пока handle находится в этой map, VA surface не возвращается в frame pool
@@ -443,7 +476,13 @@ impl VaapiVideoDecoder {
     /// - не удалось создать GBM frame pool.
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Result<Self> {
         let texture_cache = Arc::new(Mutex::new(WgpuTexturePool::new(None)));
-        Self::new_with_pool(device, queue, texture_cache, None)
+        Self::new_with_pool(
+            device,
+            queue,
+            texture_cache,
+            None,
+            VaapiDecoderRuntimeConfig::default(),
+        )
     }
 
     pub fn new_with_pool(
@@ -451,7 +490,9 @@ impl VaapiVideoDecoder {
         _queue: Arc<wgpu::Queue>,
         texture_cache: Arc<Mutex<WgpuTexturePool>>,
         diagnostic_tx: Option<std::sync::mpsc::SyncSender<VideoDecoderDiagnosticEvent>>,
+        runtime_config: VaapiDecoderRuntimeConfig,
     ) -> Result<Self> {
+        let runtime_config = runtime_config.normalized();
         info!("Opening VA-API display");
         ensure_texture_pool_has_zero_copy_importer(&texture_cache)?;
         if let Ok(texture_pool) = texture_cache.lock() {
@@ -494,8 +535,12 @@ impl VaapiVideoDecoder {
         info!("Creating internal VA frame pool");
 
         // Создаём пул выходных буферов. Декодер требует буферы до первого вызова decode().
-        let frame_pool = DmaFramePool::new(INITIAL_WIDTH, INITIAL_HEIGHT, FRAME_POOL_SIZE)
-            .map_err(|e| anyhow::anyhow!("Failed to create frame pool: {}", e))?;
+        let frame_pool = DmaFramePool::new(
+            INITIAL_WIDTH,
+            INITIAL_HEIGHT,
+            runtime_config.surface_pool_frames,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create frame pool: {}", e))?;
 
         info!("VA-API VP9 decoder initialized successfully");
 
@@ -504,6 +549,7 @@ impl VaapiVideoDecoder {
             frame_pool,
             texture_cache,
             ready_queue: VecDeque::new(),
+            runtime_config,
             zero_copy_guards: HashMap::new(),
             zero_copy_success_logged: false,
             diagnostic_tx,
@@ -560,6 +606,14 @@ impl VaapiVideoDecoder {
     pub fn texture_pool_stats(&self) -> (usize, usize) {
         let cache = self.texture_cache.lock().unwrap();
         (cache.num_slots(), cache.num_in_use())
+    }
+
+    /// Забирает следующий backend-ready frame без submit-а нового packet-а.
+    ///
+    /// Decoder thread использует это после одного `decode()` call, чтобы
+    /// опубликовать burst кадров, которые cros-codecs уже вернул через events.
+    pub(crate) fn take_ready_frame(&mut self) -> Option<DecodedFrame> {
+        self.ready_queue.pop_front()
     }
 
     /// Определяет decoded surface contract для текущего ready handle.
@@ -639,7 +693,7 @@ impl VaapiVideoDecoder {
             )));
         }
 
-        while self.ready_queue.len() >= READY_QUEUE_LIMIT {
+        while self.ready_queue.len() >= self.runtime_config.ready_queue_frames {
             let Some(stale_frame) = self.ready_queue.pop_front() else {
                 break;
             };
@@ -651,7 +705,7 @@ impl VaapiVideoDecoder {
             });
             debug!(
                 stale_pts_ms,
-                ready_queue_limit = READY_QUEUE_LIMIT,
+                ready_queue_limit = self.runtime_config.ready_queue_frames,
                 "Dropping stale decoded frame from internal ready queue"
             );
         }
@@ -952,7 +1006,7 @@ impl VaapiVideoDecoder {
                         if let Err(error) = self.frame_pool.resize_with_rt_format(
                             res.width,
                             res.height,
-                            FRAME_POOL_SIZE,
+                            self.runtime_config.surface_pool_frames,
                             rt_format,
                         ) {
                             warn!(

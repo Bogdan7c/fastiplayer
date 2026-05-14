@@ -40,6 +40,9 @@ pub struct WgpuVideoBackendFactory<'a> {
 
     /// WGPU queue для texture upload/release callbacks.
     queue: &'a wgpu::Queue,
+
+    /// Bounded queue/runtime limits decoder thread-а.
+    decoder_thread_config: video_vaapi::VideoDecodeThreadConfig,
 }
 
 impl<'a> WgpuVideoBackendFactory<'a> {
@@ -51,11 +54,30 @@ impl<'a> WgpuVideoBackendFactory<'a> {
         device: &'a wgpu::Device,
         queue: &'a wgpu::Queue,
     ) -> Self {
+        Self::new_with_decoder_config(
+            instance,
+            adapter,
+            device,
+            queue,
+            video_vaapi::VideoDecodeThreadConfig::default(),
+        )
+    }
+
+    /// Создаёт factory с явным decoder-thread config из validated app config.
+    #[must_use]
+    pub fn new_with_decoder_config(
+        instance: &'a wgpu::Instance,
+        adapter: &'a wgpu::Adapter,
+        device: &'a wgpu::Device,
+        queue: &'a wgpu::Queue,
+        decoder_thread_config: video_vaapi::VideoDecodeThreadConfig,
+    ) -> Self {
         Self {
             instance,
             adapter,
             device,
             queue,
+            decoder_thread_config,
         }
     }
 }
@@ -67,11 +89,12 @@ impl VideoBackendFactory for WgpuVideoBackendFactory<'_> {
     fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend> {
         let device = Arc::new(self.device.clone());
         let queue = Arc::new(self.queue.clone());
-        let decoder_thread = video_vaapi::VideoDecodeThread::new(
+        let decoder_thread = video_vaapi::VideoDecodeThread::new_with_config(
             device,
             queue,
             self.instance.clone(),
             self.adapter.clone(),
+            self.decoder_thread_config,
         )?;
 
         Ok(StartedVideoBackend::from_decoder_thread(decoder_thread))

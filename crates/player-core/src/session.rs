@@ -1998,11 +1998,18 @@ impl PlayerSession {
 
     /// Собирает codec/render-neutral queue depths для diagnostics aggregator.
     fn diagnostic_queue_depths(&self) -> PipelineQueueDepthSnapshot {
+        let decoder_send_queue_depth = self
+            .pipeline
+            .video_decoder_thread
+            .as_ref()
+            .map(|decoder_thread| decoder_thread.packet_queue_depth())
+            .unwrap_or(self.pipeline.pending_video_packets.len());
+
         PipelineQueueDepthSnapshot {
             pending_audio_packets: self.pipeline.pending_audio_packets.len(),
             pending_video_packets: self.pipeline.pending_video_packets.len(),
             present_queue_depth: self.pipeline.video_frame_queue.len(),
-            decoder_send_queue_depth: self.pipeline.pending_video_packets.len(),
+            decoder_send_queue_depth,
             decoder_ready_queue_depth: None,
             active_render_leases: self.pipeline.leased_video_textures.len(),
             deferred_render_releases: self.pipeline.deferred_video_texture_releases.len(),

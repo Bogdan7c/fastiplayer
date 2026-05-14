@@ -16,6 +16,7 @@ pub mod linear_gbm_frame;
 
 pub use decoder::VaapiVideoDecoder;
 pub use decoder_thread::{
-    DecodePacket, DecodeThreadError, VideoDecodeThread, VideoTextureViewProvider, VideoTextureViews,
+    DecodePacket, DecodeThreadBackpressureReason, DecodeThreadError, DecodeThreadSendError,
+    VideoDecodeThread, VideoDecodeThreadConfig, VideoTextureViewProvider, VideoTextureViews,
 };
 pub use probe::{VaapiCapabilityProvider, probe_vaapi_capabilities};

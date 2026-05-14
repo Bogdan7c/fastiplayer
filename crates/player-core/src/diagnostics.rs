@@ -12,6 +12,9 @@ pub enum PipelineLatencyStage {
     /// Чтение packet-а из source/demuxer.
     DemuxRead,
 
+    /// Ожидание packet-а в bounded decoder packet channel.
+    DecoderPacketReceive,
+
     /// Submit encoded packet-а в decoder backend.
     DecoderSubmit,
 
@@ -26,6 +29,9 @@ pub enum PipelineLatencyStage {
 
     /// Импорт external memory в renderer-visible GPU resource.
     DmaBufImport,
+
+    /// Публикация decoded frame через bounded decoder->worker channel.
+    DecodedFramePublish,
 
     /// Решение worker scheduler-а по queued/present frame.
     WorkerScheduler,
@@ -46,11 +52,13 @@ impl PipelineLatencyStage {
     pub const fn metric_name(self) -> &'static str {
         match self {
             Self::DemuxRead => "demux.read",
+            Self::DecoderPacketReceive => "decoder.packet_receive",
             Self::DecoderSubmit => "decoder.submit",
             Self::DecoderEventDrain => "decoder.event_drain",
             Self::HardwareSync => "decoder.hardware_sync",
             Self::DmaBufExport => "zero_copy.export",
             Self::DmaBufImport => "zero_copy.import",
+            Self::DecodedFramePublish => "decoder.frame_publish",
             Self::WorkerScheduler => "worker.scheduler",
             Self::RenderAcquire => "render.acquire",
             Self::GpuSubmitPresent => "gpu.submit_present",
@@ -105,6 +113,21 @@ impl VideoDropReason {
 pub enum PipelinePauseReason {
     /// Demux не читает дальше из-за downstream backpressure.
     DemuxBackpressure,
+
+    /// Decode остановлен до освобождения surface/import slot-а.
+    WaitingForFreeSurface,
+
+    /// Decode/demux ждёт свободное место в presentation queue.
+    WaitingForPresentQueue,
+
+    /// Surface ждёт renderer GPU completion/release path.
+    WaitingForGpuRelease,
+
+    /// Video временно уступает demux/audio catch-up policy.
+    WaitingForDemuxAudioPriority,
+
+    /// Bounded packet channel decoder thread-а заполнен.
+    DecoderPacketQueueFull,
 
     /// Decoder/presentation queue не дала кадр к текущему render request.
     DecoderStarvation,
@@ -224,6 +247,9 @@ pub struct PipelineLatencyCountersSnapshot {
     /// Source/demux read latency.
     pub demux_read: LatencyCounterSnapshot,
 
+    /// Decoder packet channel receive latency.
+    pub decoder_packet_receive: LatencyCounterSnapshot,
+
     /// Decoder submit latency.
     pub decoder_submit: LatencyCounterSnapshot,
 
@@ -238,6 +264,9 @@ pub struct PipelineLatencyCountersSnapshot {
 
     /// DMA-BUF/import latency.
     pub dma_buf_import: LatencyCounterSnapshot,
+
+    /// Decoder frame publish latency.
+    pub decoded_frame_publish: LatencyCounterSnapshot,
 
     /// Worker scheduler latency.
     pub worker_scheduler: LatencyCounterSnapshot,
@@ -304,6 +333,21 @@ pub struct PipelinePauseCountersSnapshot {
 
     /// Demux backpressure pauses.
     pub demux_backpressure: u64,
+
+    /// Waiting for free surface/import slot pauses.
+    pub waiting_for_free_surface: u64,
+
+    /// Waiting for presentation queue capacity pauses.
+    pub waiting_for_present_queue: u64,
+
+    /// Waiting for renderer GPU release pauses.
+    pub waiting_for_gpu_release: u64,
+
+    /// Waiting while demux/audio catch-up has priority.
+    pub waiting_for_demux_audio_priority: u64,
+
+    /// Decoder packet channel full pauses.
+    pub decoder_packet_queue_full: u64,
 
     /// Decoder starvation pauses.
     pub decoder_starvation: u64,
@@ -441,6 +485,13 @@ impl PlaybackDiagnostics {
         self.snapshot.queues = queues;
 
         self.record_optional_latency(
+            PipelineLatencyStage::DecoderPacketReceive,
+            frame.diagnostics.timings.decoder_packet_receive_latency,
+            Some(frame.pts),
+            Some(frame.memory_path),
+            queues,
+        );
+        self.record_optional_latency(
             PipelineLatencyStage::DecoderSubmit,
             frame.diagnostics.timings.decoder_submit_latency,
             Some(frame.pts),
@@ -471,6 +522,13 @@ impl PlaybackDiagnostics {
         self.record_optional_latency(
             PipelineLatencyStage::DmaBufImport,
             frame.diagnostics.timings.dma_buf_import_latency,
+            Some(frame.pts),
+            Some(frame.memory_path),
+            queues,
+        );
+        self.record_optional_latency(
+            PipelineLatencyStage::DecodedFramePublish,
+            frame.diagnostics.timings.decoded_frame_publish_latency,
             Some(frame.pts),
             Some(frame.memory_path),
             queues,
@@ -562,6 +620,41 @@ impl PlaybackDiagnostics {
                 self.snapshot.pauses.demux_backpressure =
                     self.snapshot.pauses.demux_backpressure.saturating_add(1);
             }
+            PipelinePauseReason::WaitingForFreeSurface => {
+                self.snapshot.pauses.waiting_for_free_surface = self
+                    .snapshot
+                    .pauses
+                    .waiting_for_free_surface
+                    .saturating_add(1);
+            }
+            PipelinePauseReason::WaitingForPresentQueue => {
+                self.snapshot.pauses.waiting_for_present_queue = self
+                    .snapshot
+                    .pauses
+                    .waiting_for_present_queue
+                    .saturating_add(1);
+            }
+            PipelinePauseReason::WaitingForGpuRelease => {
+                self.snapshot.pauses.waiting_for_gpu_release = self
+                    .snapshot
+                    .pauses
+                    .waiting_for_gpu_release
+                    .saturating_add(1);
+            }
+            PipelinePauseReason::WaitingForDemuxAudioPriority => {
+                self.snapshot.pauses.waiting_for_demux_audio_priority = self
+                    .snapshot
+                    .pauses
+                    .waiting_for_demux_audio_priority
+                    .saturating_add(1);
+            }
+            PipelinePauseReason::DecoderPacketQueueFull => {
+                self.snapshot.pauses.decoder_packet_queue_full = self
+                    .snapshot
+                    .pauses
+                    .decoder_packet_queue_full
+                    .saturating_add(1);
+            }
             PipelinePauseReason::DecoderStarvation => {
                 self.snapshot.pauses.decoder_starvation =
                     self.snapshot.pauses.decoder_starvation.saturating_add(1);
@@ -647,6 +740,9 @@ struct PipelineLatencyCounters {
     /// Source/demux read.
     demux_read: LatencyCounter,
 
+    /// Decoder packet receive.
+    decoder_packet_receive: LatencyCounter,
+
     /// Decoder submit.
     decoder_submit: LatencyCounter,
 
@@ -661,6 +757,9 @@ struct PipelineLatencyCounters {
 
     /// DMA-BUF import.
     dma_buf_import: LatencyCounter,
+
+    /// Decoded frame publish.
+    decoded_frame_publish: LatencyCounter,
 
     /// Worker scheduler.
     worker_scheduler: LatencyCounter,
@@ -685,11 +784,13 @@ impl PipelineLatencyCounters {
     fn snapshot(&self) -> PipelineLatencyCountersSnapshot {
         PipelineLatencyCountersSnapshot {
             demux_read: self.demux_read.snapshot(),
+            decoder_packet_receive: self.decoder_packet_receive.snapshot(),
             decoder_submit: self.decoder_submit.snapshot(),
             decoder_event_drain: self.decoder_event_drain.snapshot(),
             hardware_sync: self.hardware_sync.snapshot(),
             dma_buf_export: self.dma_buf_export.snapshot(),
             dma_buf_import: self.dma_buf_import.snapshot(),
+            decoded_frame_publish: self.decoded_frame_publish.snapshot(),
             worker_scheduler: self.worker_scheduler.snapshot(),
             render_acquire: self.render_acquire.snapshot(),
             gpu_submit_present: self.gpu_submit_present.snapshot(),
@@ -719,11 +820,13 @@ impl PipelineLatencyCounters {
     fn counter_mut(&mut self, stage: PipelineLatencyStage) -> &mut LatencyCounter {
         match stage {
             PipelineLatencyStage::DemuxRead => &mut self.demux_read,
+            PipelineLatencyStage::DecoderPacketReceive => &mut self.decoder_packet_receive,
             PipelineLatencyStage::DecoderSubmit => &mut self.decoder_submit,
             PipelineLatencyStage::DecoderEventDrain => &mut self.decoder_event_drain,
             PipelineLatencyStage::HardwareSync => &mut self.hardware_sync,
             PipelineLatencyStage::DmaBufExport => &mut self.dma_buf_export,
             PipelineLatencyStage::DmaBufImport => &mut self.dma_buf_import,
+            PipelineLatencyStage::DecodedFramePublish => &mut self.decoded_frame_publish,
             PipelineLatencyStage::WorkerScheduler => &mut self.worker_scheduler,
             PipelineLatencyStage::RenderAcquire => &mut self.render_acquire,
             PipelineLatencyStage::GpuSubmitPresent => &mut self.gpu_submit_present,
@@ -732,9 +835,13 @@ impl PipelineLatencyCounters {
     }
 
     /// Возвращает fixed list stage counters для summary.
-    fn stage_counters(&self) -> [(PipelineLatencyStage, &LatencyCounter); 10] {
+    fn stage_counters(&self) -> [(PipelineLatencyStage, &LatencyCounter); 12] {
         [
             (PipelineLatencyStage::DemuxRead, &self.demux_read),
+            (
+                PipelineLatencyStage::DecoderPacketReceive,
+                &self.decoder_packet_receive,
+            ),
             (PipelineLatencyStage::DecoderSubmit, &self.decoder_submit),
             (
                 PipelineLatencyStage::DecoderEventDrain,
@@ -743,6 +850,10 @@ impl PipelineLatencyCounters {
             (PipelineLatencyStage::HardwareSync, &self.hardware_sync),
             (PipelineLatencyStage::DmaBufExport, &self.dma_buf_export),
             (PipelineLatencyStage::DmaBufImport, &self.dma_buf_import),
+            (
+                PipelineLatencyStage::DecodedFramePublish,
+                &self.decoded_frame_publish,
+            ),
             (
                 PipelineLatencyStage::WorkerScheduler,
                 &self.worker_scheduler,

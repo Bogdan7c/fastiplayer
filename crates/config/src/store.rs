@@ -197,6 +197,11 @@ mod tests {
         assert_eq!(config.player.seek.hotkey_small_step_secs, 5);
         assert_eq!(config.player.seek.hotkey_large_step_secs, 30);
         assert_eq!(config.player.demux.max_consecutive_corrupted_packets, 64);
+        assert_eq!(config.video.decoder_packet_channel_frames, 32);
+        assert_eq!(config.video.decoder_frame_channel_frames, 8);
+        assert_eq!(config.video.decoder_ready_queue_frames, 8);
+        assert_eq!(config.video.decoder_surface_pool_frames, 24);
+        assert_eq!(config.video.zero_copy_surface_pool_slots, 24);
         assert_eq!(config.network.memory_cache_mb, 128);
         assert_eq!(config.network.read_ahead_mb, 64);
         assert_eq!(config.network.connect_timeout_ms, 15_000);
@@ -219,6 +224,23 @@ mod tests {
             error
                 .to_string()
                 .contains("player.demux.max_consecutive_corrupted_packets")
+        );
+    }
+
+    /// Проверяет, что decoder queues остаются bounded и не могут быть нулевыми.
+    #[test]
+    fn invalid_decoder_queue_limit_fails_validation() {
+        let mut config = AppConfig::default();
+        config.video.decoder_packet_channel_frames = 0;
+
+        let error = config
+            .validate()
+            .expect_err("zero decoder packet channel rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("video.decoder_packet_channel_frames")
         );
     }
 
@@ -245,6 +267,8 @@ mod tests {
         assert!(created_toml.contains("[player.demux]"));
         assert!(created_toml.contains("# Fail-safe настройки demuxer-а."));
         assert!(created_toml.contains("max_consecutive_corrupted_packets = 64"));
+        assert!(created_toml.contains("decoder_packet_channel_frames = 32"));
+        assert!(created_toml.contains("# Bounded очередь packets"));
         assert!(created_toml.contains("# RAM cache budget"));
         assert!(created_toml.contains("memory_cache_mb = 128"));
         assert!(created_toml.contains("read_ahead_mb = 64"));
