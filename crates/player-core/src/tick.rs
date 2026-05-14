@@ -1310,6 +1310,8 @@ fn target_media_time_for_present(
 fn presentation_clock_now(session: &PlayerSession, audio_now: Duration) -> Duration {
     if session.pipeline.audio_clock.is_some() {
         saturating_duration_add(session.pipeline.media_clock_base, audio_now)
+    } else if let Some(seek_target_position) = session.seek_presentation_clock_override() {
+        seek_target_position
     } else {
         session.snapshot().current_position
     }

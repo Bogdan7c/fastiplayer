@@ -754,6 +754,20 @@ impl PlayerSession {
         self.seek_commit
     }
 
+    /// Возвращает seek target как временный clock для scheduler-а, пока audio clock недоступен.
+    ///
+    /// Без этого video-only seek сравнивает decoded target frames со старой
+    /// `current_position` и может бесконечно ждать, считая кадр "слишком ранним".
+    #[must_use]
+    pub(crate) fn seek_presentation_clock_override(&self) -> Option<Duration> {
+        if self.pipeline.audio_clock.is_some() {
+            return None;
+        }
+
+        self.seek_commit
+            .map(|seek_commit| seek_commit.target_position.as_duration())
+    }
+
     /// Проверяет, нужно ли выбросить decoded frame как pre-roll до seek target.
     ///
     /// Final seek остаётся точным: кадры до пользовательской позиции не попадают
@@ -2288,8 +2302,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        MediaSource, PendingAudioPacket, PendingVideoPacket, PlayerCommand, ScrubCommitPolicy,
-        SeekMode, SeekTarget,
+        MediaSource, PendingAudioPacket, PendingVideoPacket, PlayerCommand, PlayerTickConfig,
+        PlayerTickContext, ScrubCommitPolicy, SeekMode, SeekTarget,
     };
     use bytes::Bytes;
     use capability_core::{
@@ -3258,6 +3272,51 @@ mod tests {
         );
 
         assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert!(!session.snapshot().timeline.seeking);
+    }
+
+    #[test]
+    fn no_audio_seek_scheduler_uses_target_before_position_commit() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+        session.update_current_position(Duration::from_secs(5));
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(24),
+            )))
+            .unwrap();
+
+        assert_eq!(session.snapshot().current_position, Duration::from_secs(5));
+        assert_eq!(
+            session.seek_presentation_clock_override(),
+            Some(Duration::from_secs(24))
+        );
+
+        session
+            .pipeline
+            .video_frame_queue
+            .push_back(decoded_frame_for_tests(Duration::from_secs(24), 42));
+
+        let tick_config = PlayerTickConfig {
+            position_fallback_delta: Duration::ZERO,
+            seek_resume_video_min_ready_frames: 1,
+            ..PlayerTickConfig::default()
+        };
+        let tick_result = session.tick(PlayerTickContext::with_config(Instant::now(), tick_config));
+
+        assert_eq!(tick_result.video_frames_presented, 1);
+        assert_eq!(
+            session
+                .pipeline
+                .present_video_frame
+                .as_ref()
+                .map(|frame| frame.pts),
+            Some(Duration::from_secs(24))
+        );
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert_eq!(session.snapshot().current_position, Duration::from_secs(24));
         assert!(!session.snapshot().timeline.seeking);
     }
 
