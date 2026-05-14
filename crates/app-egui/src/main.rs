@@ -706,7 +706,12 @@ fn render_frame(
 
     let mut video_render_error = None;
 
-    let present_frame = app_state.try_acquire_present_frame();
+    let present_frame_acquisition = app_state.acquire_present_frame_for_render();
+    let present_frame_acquisition_state = present_frame_acquisition.metric_name();
+    if present_frame_acquisition.reused_previous_frame() {
+        telemetry.record_video_frame_repeated();
+    }
+    let present_frame = present_frame_acquisition.into_present_frame();
 
     let present_frame_texture_views = match present_frame.as_ref() {
         Some(present_frame) => match present_frame.texture_views() {
@@ -728,6 +733,7 @@ fn render_frame(
                 format = %present_frame.frame.format,
                 memory_path = %present_frame.frame.memory_path,
                 stale = present_frame.stale,
+                acquisition = present_frame_acquisition_state,
                 "Present frame acquired from playback worker"
             );
 
@@ -770,6 +776,10 @@ fn render_frame(
 
     if let Some(error) = video_render_error {
         app_state.report_render_error(error);
+        tracing::debug!(
+            acquisition = "render_error_reported",
+            "Present frame acquisition ended with render boundary error"
+        );
     }
 
     // Рендерим полный кадр (видео + egui overlay)

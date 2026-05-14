@@ -82,7 +82,7 @@ pub enum VideoDropReason {
     /// Packet/frame отброшен как seek pre-roll до target кадра.
     SeekPreroll,
 
-    /// Render thread не смог вовремя получить present frame.
+    /// Legacy: старый synchronous render request не получил reply в bounded budget.
     RenderAcquisitionTimeout,
 
     /// Pipeline не получил decoded frame, когда renderer ожидал новый кадр.
@@ -135,7 +135,7 @@ pub enum PipelinePauseReason {
     /// Scheduler ждёт media time для слишком раннего кадра.
     SyncWaiting,
 
-    /// Render request не получил reply в bounded budget.
+    /// Legacy: synchronous render request не получил reply в bounded budget.
     RenderAcquireTimeout,
 }
 
@@ -299,7 +299,7 @@ pub struct VideoDropCountersSnapshot {
     /// Seek/pre-roll drops.
     pub seek_preroll: u64,
 
-    /// Render acquisition timeout drops.
+    /// Legacy render acquisition timeout drops; non-blocking handoff не должен увеличивать счётчик.
     pub render_acquisition_timeout: u64,
 
     /// Decoder starvation drops.
@@ -355,7 +355,7 @@ pub struct PipelinePauseCountersSnapshot {
     /// Scheduler ждёт media sync.
     pub sync_waiting: u64,
 
-    /// Render acquire timeout pauses.
+    /// Legacy render acquire timeout pauses; non-blocking handoff пишет latency без drop-а.
     pub render_acquire_timeout: u64,
 
     /// Последняя typed pause.

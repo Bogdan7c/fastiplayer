@@ -619,6 +619,7 @@ impl PlayerSession {
     }
 
     /// Записывает render acquire timeout как drop и pause attribution.
+    #[allow(dead_code)]
     pub(crate) fn record_render_acquire_timeout(&mut self, wait: Duration) {
         self.record_pipeline_latency(PipelineLatencyStage::RenderAcquire, wait, None, None);
         if self.pipeline.video_track_id.is_none() {

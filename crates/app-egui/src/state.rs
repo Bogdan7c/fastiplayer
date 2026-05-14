@@ -49,6 +49,51 @@ struct TelemetryPanelState<'panel> {
     frame_duration_estimate_ms: f64,
 }
 
+/// Явный результат получения frame lease-а для render boundary.
+pub enum PresentFrameAcquisition {
+    /// Worker ещё не публиковал zero-copy frame для текущей media session.
+    NoFrameYet,
+
+    /// Renderer повторяет последний безопасно удерживаемый lease.
+    ReusedPreviousFrame(PlayerPresentFrame),
+
+    /// Renderer получил новый lease с другим generation/texture handle.
+    NewFrameAcquired(PlayerPresentFrame),
+
+    /// Кандидат был отвергнут, потому что принадлежит старому render generation.
+    StaleFrameRejected,
+}
+
+impl PresentFrameAcquisition {
+    /// Возвращает frame lease, если acquisition state разрешает rendering video.
+    #[must_use]
+    pub fn into_present_frame(self) -> Option<PlayerPresentFrame> {
+        match self {
+            Self::ReusedPreviousFrame(present_frame) | Self::NewFrameAcquired(present_frame) => {
+                Some(present_frame)
+            }
+            Self::NoFrameYet | Self::StaleFrameRejected => None,
+        }
+    }
+
+    /// Возвращает `true`, если render tick повторно использует предыдущий frame.
+    #[must_use]
+    pub const fn reused_previous_frame(&self) -> bool {
+        matches!(self, Self::ReusedPreviousFrame(_))
+    }
+
+    /// Стабильное имя state для trace diagnostics.
+    #[must_use]
+    pub const fn metric_name(&self) -> &'static str {
+        match self {
+            Self::NoFrameYet => "no_frame_yet",
+            Self::ReusedPreviousFrame(_) => "reused_previous_frame",
+            Self::NewFrameAcquired(_) => "new_frame_acquired",
+            Self::StaleFrameRejected => "stale_frame_rejected",
+        }
+    }
+}
+
 /// Состояние приложения без владения playback pipeline.
 pub struct AppState {
     /// Egui context — корневой объект egui для создания UI.
@@ -330,53 +375,87 @@ impl AppState {
 
     /// Пытается получить текущий video frame для renderer-а.
     #[must_use]
-    pub fn try_acquire_present_frame(&mut self) -> Option<PlayerPresentFrame> {
+    pub fn acquire_present_frame_for_render(&mut self) -> PresentFrameAcquisition {
         let player_snapshot = self.player_snapshot();
-        self.drop_stale_cached_present_frame(&player_snapshot);
+        let rejected_stale_cached_frame = self.drop_stale_cached_present_frame(&player_snapshot);
 
         if let Some(mut present_frame) = self.player_worker.try_acquire_present_frame() {
-            present_frame.stale = present_frame
-                .stale_for_generation(player_snapshot.render_generation)
-                || player_snapshot.timeline.stale_frame;
+            if present_frame.render_generation != player_snapshot.render_generation {
+                self.clear_cached_present_frame();
+                return PresentFrameAcquisition::StaleFrameRejected;
+            }
+
+            present_frame.stale = present_frame.stale || player_snapshot.timeline.stale_frame;
+            let cached_frame_identity = self
+                .cached_present_frame
+                .as_ref()
+                .map(Self::present_frame_identity);
+            let acquired_frame_identity = Self::present_frame_identity(&present_frame);
+
+            if cached_frame_identity == Some(acquired_frame_identity) {
+                return self
+                    .cached_present_frame
+                    .clone()
+                    .map(|mut cached_present_frame| {
+                        cached_present_frame.stale = present_frame.stale;
+                        PresentFrameAcquisition::ReusedPreviousFrame(cached_present_frame)
+                    })
+                    .unwrap_or(PresentFrameAcquisition::NoFrameYet);
+            }
+
             self.cached_present_source_label = player_snapshot.source_label.clone();
             self.cached_present_frame = Some(present_frame.clone());
-            return Some(present_frame);
+            return PresentFrameAcquisition::NewFrameAcquired(present_frame);
         }
 
-        self.cached_present_frame
-            .clone()
-            .map(|mut cached_present_frame| {
-                cached_present_frame.stale = cached_present_frame
-                    .stale_for_generation(player_snapshot.render_generation)
-                    || player_snapshot.timeline.stale_frame;
-                cached_present_frame
-            })
+        if let Some(mut cached_present_frame) = self.cached_present_frame.clone() {
+            cached_present_frame.stale =
+                cached_present_frame.stale || player_snapshot.timeline.stale_frame;
+            return PresentFrameAcquisition::ReusedPreviousFrame(cached_present_frame);
+        }
+
+        if rejected_stale_cached_frame {
+            PresentFrameAcquisition::StaleFrameRejected
+        } else {
+            PresentFrameAcquisition::NoFrameYet
+        }
     }
 
     /// Сбрасывает cached frame, когда он уже не принадлежит текущему media/render поколению.
-    fn drop_stale_cached_present_frame(&mut self, player_snapshot: &PlayerSnapshot) {
+    fn drop_stale_cached_present_frame(&mut self, player_snapshot: &PlayerSnapshot) -> bool {
         if self.cached_present_frame.is_none() {
-            return;
+            return false;
         }
 
         if player_snapshot.current_video_frame.is_none() {
             self.cached_present_frame = None;
             self.cached_present_source_label = None;
-            return;
+            return false;
         }
 
         if self.cached_present_source_label != player_snapshot.source_label {
             self.cached_present_frame = None;
             self.cached_present_source_label = None;
-            return;
+            return false;
         }
 
         let Some(cached_present_frame) = &self.cached_present_frame else {
-            return;
+            return false;
         };
         if cached_present_frame.render_generation != player_snapshot.render_generation {
             self.clear_cached_present_frame();
+            return true;
         }
+
+        false
+    }
+
+    /// Возвращает identity frame-а, достаточную для отличия нового lease-а от reuse.
+    fn present_frame_identity(present_frame: &PlayerPresentFrame) -> (u64, u64) {
+        (
+            present_frame.render_generation,
+            present_frame.frame.texture_handle.0,
+        )
     }
 
     /// Освобождает cached present frame и отправляет drop-ack worker-у через lease guard.
@@ -817,7 +896,7 @@ impl AppState {
             player_snapshot.diagnostics.drops.stale_generation
         ));
         ui.monospace(format!(
-            "  Acquire timeout: {}",
+            "  Acquire timeout (legacy): {}",
             player_snapshot.diagnostics.drops.render_acquisition_timeout
         ));
         ui.monospace(format!(
@@ -825,7 +904,7 @@ impl AppState {
             player_snapshot.diagnostics.drops.decoder_starvation
         ));
         ui.monospace(format!(
-            "Repeated: {}",
+            "Repeated/reused: {}",
             player_snapshot.frame_counters.repeated
         ));
         ui.monospace(format!("Frame dur: {:.2}ms", frame_duration_estimate_ms));
@@ -872,6 +951,15 @@ impl AppState {
             .map(|sample| sample.duration.as_secs_f64() * 1000.0);
         if let Some(worst_sync_ms) = worst_sync {
             ui.monospace(format!("Worst sync: {worst_sync_ms:.2}ms"));
+        }
+        let worst_render_acquire = player_snapshot
+            .diagnostics
+            .worst_latencies
+            .render_acquire
+            .worst
+            .map(|sample| sample.duration.as_secs_f64() * 1000.0);
+        if let Some(worst_render_acquire_ms) = worst_render_acquire {
+            ui.monospace(format!("Worst acquire: {worst_render_acquire_ms:.3}ms"));
         }
         ui.monospace(format!(
             "Pipeline pauses: {}",
