@@ -105,7 +105,6 @@ pub trait PlayerSkin: AssetProvider {
     fn controls_style(&self) -> ControlsStyle;
 
     /// Возвращает frame верхней панели.
-    #[must_use]
     fn top_panel_frame(&self) -> Frame {
         Frame::NONE
             .fill(self.controls_style().top_panel_fill)
@@ -113,7 +112,6 @@ pub trait PlayerSkin: AssetProvider {
     }
 
     /// Возвращает frame нижней панели.
-    #[must_use]
     fn bottom_panel_frame(&self) -> Frame {
         Frame::NONE
             .fill(self.controls_style().bottom_panel_fill)
@@ -129,7 +127,7 @@ pub trait PlayerSkin: AssetProvider {
 #[must_use]
 pub fn skin_from_config(raw_skin_id: &str) -> Option<MinimalSkin> {
     SkinId::parse(raw_skin_id).map(|skin_id| match skin_id {
-        SkinId::Minimal => MinimalSkin::default(),
+        SkinId::Minimal => MinimalSkin,
     })
 }
 

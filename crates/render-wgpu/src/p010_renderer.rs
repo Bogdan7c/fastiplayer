@@ -12,6 +12,8 @@ use render_core::{
     VideoFrameFormat,
 };
 
+use crate::VideoRenderPassContext;
+
 /// WGSL source dedicated to P010 rendering.
 pub(crate) const P010_SHADER_SOURCE: &str = include_str!("../shaders/p010_bt2446c_to_sdr.wgsl");
 
@@ -313,10 +315,7 @@ impl P010VideoRenderer {
         frame: &RenderableFrame,
         y_view: &wgpu::TextureView,
         uv_view: &wgpu::TextureView,
-        target: &wgpu::TextureView,
-        encoder: &mut wgpu::CommandEncoder,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        pass_context: &mut VideoRenderPassContext<'_>,
     ) -> Result<P010RenderFrameDiagnostics> {
         let prepared_p010_render = prepare_p010_render(
             frame,
@@ -326,7 +325,7 @@ impl P010VideoRenderer {
         )?;
         log_first_p010_render_dispatch(frame, &prepared_p010_render);
 
-        queue.write_buffer(
+        pass_context.queue.write_buffer(
             &self.uniform_buffer,
             0,
             bytemuck::bytes_of(&prepared_p010_render.uniforms),
@@ -334,45 +333,49 @@ impl P010VideoRenderer {
 
         // Bind group создаётся на кадр, потому что plane views приходят из decoder pool.
         // Renderer получает только пару views и не знает, какой storage layout был импортирован.
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("p010 bind group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(y_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(uv_view),
-                },
-            ],
-        });
+        let bind_group = pass_context
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("p010 bind group"),
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(y_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(uv_view),
+                    },
+                ],
+            });
 
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("p010 video pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = pass_context
+            .encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("p010 video pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: pass_context.target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
 
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);

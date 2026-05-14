@@ -223,6 +223,36 @@ pub enum RenderFrameOutcome {
     Failed(RenderFrameFailure),
 }
 
+/// Размер target-а и UI scale без раскрытия egui-wgpu типа наружу.
+pub struct RenderScreenDescriptor {
+    /// Размер swapchain target-а в пикселях.
+    pub size_in_pixels: [u32; 2],
+
+    /// UI scale, полученный от egui context.
+    pub pixels_per_point: f32,
+}
+
+/// Входные данные одного полного кадра shell renderer-а.
+///
+/// App layer отвечает за egui tessellation и сбор video frame lease, а shell layer
+/// получает уже готовый пакет данных для записи swapchain кадра.
+pub struct RenderFrameInput<'frame> {
+    /// Окно, для которого выполняется present notification.
+    pub window: &'frame Window,
+
+    /// Video frame boundary; `None` означает, что target нужно очистить в чёрный.
+    pub video_frame: Option<&'frame WgpuRenderableFrame<'frame>>,
+
+    /// Уже tessellated egui primitives.
+    pub egui_paint_jobs: Vec<egui::epaint::ClippedPrimitive>,
+
+    /// Изменения egui textures для текущего кадра.
+    pub egui_textures_delta: egui::TexturesDelta,
+
+    /// Размер target-а и UI scale для egui-wgpu.
+    pub screen: RenderScreenDescriptor,
+}
+
 /// Ошибка video render path, которую app/player layer не должен превращать в fallback.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderFrameFailure {
@@ -364,19 +394,17 @@ impl Renderer {
     /// 3. Рендерим video frame через backend facade или очищаем target
     /// 4. Рендерим egui поверх видео
     /// 5. Submit и present
-    pub fn render_frame(
-        &mut self,
-        window: &Window,
-        _time: f32,
-        video_frame: Option<&WgpuRenderableFrame<'_>>,
-        egui_paint_jobs: Vec<egui::epaint::ClippedPrimitive>,
-        egui_textures_delta: egui::TexturesDelta,
-        screen_size_in_pixels: [u32; 2],
-        pixels_per_point: f32,
-    ) -> RenderFrameOutcome {
+    pub fn render_frame(&mut self, input: RenderFrameInput<'_>) -> RenderFrameOutcome {
+        let RenderFrameInput {
+            window,
+            video_frame,
+            egui_paint_jobs,
+            egui_textures_delta,
+            screen,
+        } = input;
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: screen_size_in_pixels,
-            pixels_per_point,
+            size_in_pixels: screen.size_in_pixels,
+            pixels_per_point: screen.pixels_per_point,
         };
 
         // Обновляем egui текстуры (новые и удалённые)

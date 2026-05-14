@@ -58,8 +58,11 @@ impl DecodedPictureBuffer {
     /// * `height` — высота кадра.
     /// * `slot_count` — количество слотов (для VP9 обычно 8).
     ///
-    /// # Безопасность
-    /// Функция unsafe, т.к. выполняет вызовы Vulkan и модифицирует аллокатор.
+    /// # Safety
+    /// `device` и `allocator` должны принадлежать одному Vulkan logical device.
+    /// Caller обязан гарантировать, что allocator живёт дольше DPB и что `format`
+    /// поддерживает `VIDEO_DECODE_DPB_KHR | VIDEO_DECODE_DST_KHR | SAMPLED` usage
+    /// для выбранного physical device.
     pub unsafe fn new(
         device: &ash::Device,
         allocator: &mut Allocator,

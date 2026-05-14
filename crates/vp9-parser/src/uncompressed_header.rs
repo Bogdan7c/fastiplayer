@@ -268,8 +268,8 @@ fn parse_color_config(br: &mut BitReader<'_>, profile: u8) -> Result<ColorConfig
 
 /// Читает coded frame size.
 fn parse_frame_size(br: &mut BitReader<'_>) -> Result<(u32, u32), ParseError> {
-    let width = br.read_literal(16).ok_or(ParseError::BitstreamError)? as u32 + 1;
-    let height = br.read_literal(16).ok_or(ParseError::BitstreamError)? as u32 + 1;
+    let width = br.read_literal(16).ok_or(ParseError::BitstreamError)? + 1;
+    let height = br.read_literal(16).ok_or(ParseError::BitstreamError)? + 1;
 
     Ok((width, height))
 }
@@ -282,8 +282,8 @@ fn parse_render_size(
 ) -> Result<(u32, u32), ParseError> {
     let render_and_frame_size_different = read_bool(br)?;
     if render_and_frame_size_different {
-        let rw = br.read_literal(16).ok_or(ParseError::BitstreamError)? as u32 + 1;
-        let rh = br.read_literal(16).ok_or(ParseError::BitstreamError)? as u32 + 1;
+        let rw = br.read_literal(16).ok_or(ParseError::BitstreamError)? + 1;
+        let rh = br.read_literal(16).ok_or(ParseError::BitstreamError)? + 1;
         Ok((rw, rh))
     } else {
         Ok((width, height))

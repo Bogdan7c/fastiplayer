@@ -679,6 +679,7 @@ mod tests {
             &mut streams,
             test_source_config(),
             resolver,
+            DemuxerOptions::default(),
         )
         .expect("range demuxer attempt succeeds")
         .expect("range demuxer is seekable");
@@ -758,6 +759,7 @@ mod tests {
             &mut streams,
             test_source_config(),
             resolver,
+            DemuxerOptions::default(),
         )
         .expect("fallback demuxer opens");
 
@@ -809,6 +811,7 @@ mod tests {
             &mut streams,
             test_source_config(),
             resolver,
+            DemuxerOptions::default(),
         )
         .expect("live demuxer opens");
 

@@ -5,9 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
-use crossbeam_channel::{
-    Receiver, RecvTimeoutError, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded,
-};
+use crossbeam_channel::{Receiver, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded};
 use media_core::MediaTime;
 use rustiplayer_config::PlayerDemuxConfig;
 use tracing::{debug, warn};
@@ -672,10 +670,9 @@ impl PlayerWorker {
             return None;
         }
 
-        match reply_rx.recv_timeout(RENDER_FRAME_REPLY_TIMEOUT) {
-            Ok(frame) => frame,
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => None,
-        }
+        reply_rx
+            .recv_timeout(RENDER_FRAME_REPLY_TIMEOUT)
+            .unwrap_or_default()
     }
 
     /// Запрашивает shutdown и ждёт завершения worker thread.

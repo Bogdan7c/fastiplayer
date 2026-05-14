@@ -20,31 +20,6 @@ pub struct SourceRuntimeConfig {
     read_timeout: Duration,
 }
 
-#[cfg(test)]
-mod tests {
-    use rustiplayer_config::NetworkConfig;
-
-    use super::*;
-
-    /// Проверяет конвертацию всех network budgets в bytes/runtime durations.
-    #[test]
-    fn source_runtime_config_keeps_cache_readahead_and_timeouts() {
-        let config = NetworkConfig {
-            memory_cache_mb: 2,
-            read_ahead_mb: 3,
-            connect_timeout_ms: 4,
-            read_timeout_ms: 5,
-        };
-
-        let runtime = SourceRuntimeConfig::from_network_config(&config).expect("config valid");
-
-        assert_eq!(runtime.memory_cache_bytes(), 2 * 1024 * 1024);
-        assert_eq!(runtime.read_ahead_bytes(), 3 * 1024 * 1024);
-        assert_eq!(runtime.connect_timeout(), Duration::from_millis(4));
-        assert_eq!(runtime.read_timeout(), Duration::from_millis(5));
-    }
-}
-
 impl SourceRuntimeConfig {
     /// Конвертирует validated `NetworkConfig` в runtime-настройки source слоя.
     pub fn from_network_config(network_config: &NetworkConfig) -> SourceResult<Self> {
@@ -123,5 +98,30 @@ impl SourceRuntimeConfig {
             connect_timeout,
             read_timeout,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rustiplayer_config::NetworkConfig;
+
+    use super::*;
+
+    /// Проверяет конвертацию всех network budgets в bytes/runtime durations.
+    #[test]
+    fn source_runtime_config_keeps_cache_readahead_and_timeouts() {
+        let config = NetworkConfig {
+            memory_cache_mb: 2,
+            read_ahead_mb: 3,
+            connect_timeout_ms: 4,
+            read_timeout_ms: 5,
+        };
+
+        let runtime = SourceRuntimeConfig::from_network_config(&config).expect("config valid");
+
+        assert_eq!(runtime.memory_cache_bytes(), 2 * 1024 * 1024);
+        assert_eq!(runtime.read_ahead_bytes(), 3 * 1024 * 1024);
+        assert_eq!(runtime.connect_timeout(), Duration::from_millis(4));
+        assert_eq!(runtime.read_timeout(), Duration::from_millis(5));
     }
 }

@@ -32,6 +32,11 @@ impl VulkanVideoDevice {
     ///
     /// Требует `UnifiedVulkanInstance` для доступа к `ash::Instance` (query queue families
     /// и extensions).
+    ///
+    /// # Safety
+    /// `wgpu_device` должен быть создан Vulkan backend-ом из того же adapter/instance,
+    /// который описывает `unified`. Возвращённые raw handles нельзя использовать после
+    /// уничтожения исходного wgpu device.
     pub unsafe fn from_wgpu_device(
         unified: &UnifiedVulkanInstance,
         wgpu_device: &wgpu::Device,

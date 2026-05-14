@@ -50,6 +50,11 @@ impl FrameTextureCache {
     /// Get or create wgpu texture views for a DPB slot.
     ///
     /// Performs one-copy from DPB VkImage to wgpu-compatible VkImage if not cached.
+    ///
+    /// # Safety
+    /// `dpb_image` должен быть валидным NV12 Vulkan image из того же device, что и
+    /// cache, и decode fence для `slot_index` уже должен быть signaled. Caller обязан
+    /// не перезаписывать DPB slot, пока созданные texture views используются renderer-ом.
     pub unsafe fn get_or_create(
         &mut self,
         slot_index: usize,

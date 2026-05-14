@@ -8,7 +8,7 @@ use video_core::{
     DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle, VideoDecoder,
 };
 
-use crate::decode::{CompletedFrame, DecodeEngine};
+use crate::decode::{CompletedFrame, DecodeEngine, DecodeSubmission};
 use crate::device::VulkanVideoDevice;
 use crate::dpb::DecodedPictureBuffer;
 use crate::instance::UnifiedVulkanInstance;
@@ -62,6 +62,11 @@ impl VulkanVideoDecoder {
     /// Создаёт decoder с реальной инициализацией Vulkan video device.
     ///
     /// `unified` нужен для доступа к ash::Instance.
+    ///
+    /// # Safety
+    /// Caller должен передать `wgpu_device`, созданный из того же Vulkan instance,
+    /// который хранит `unified`. Device должен жить дольше decoder-а, потому что
+    /// decoder извлекает и использует raw Vulkan handles через wgpu HAL.
     pub unsafe fn new(
         unified: &UnifiedVulkanInstance,
         wgpu_device: &wgpu::Device,
@@ -373,18 +378,20 @@ impl VideoDecoder for VulkanVideoDecoder {
 
         // Submit async decode.
         unsafe {
-            engine.submit_decode(
+            engine.submit_decode(DecodeSubmission {
                 session,
-                &packet.data,
-                &decode_info,
-                &vp9_data.vp9_picture_info,
-                packet.pts,
-                dst_slot_idx,
-                frame_info.width,
-                frame_info.height,
-                frame_info.render_width,
-                frame_info.render_height,
-            )?;
+                packet_data: &packet.data,
+                decode_info: &decode_info,
+                vp9_picture_info: &vp9_data.vp9_picture_info,
+                completed_frame: CompletedFrame {
+                    pts: packet.pts,
+                    slot_index: dst_slot_idx,
+                    width: frame_info.width,
+                    height: frame_info.height,
+                    render_width: frame_info.render_width,
+                    render_height: frame_info.render_height,
+                },
+            })?;
         }
 
         // Обновляем DPB state.

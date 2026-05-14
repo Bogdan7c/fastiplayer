@@ -54,9 +54,11 @@ pub fn build_vp9_picture_info(
     // 2. Отображаем опорные кадры VP9 в слоты DPB.
     let mut ref_name_slot_indices = [-1i8; 8];
     if !frame_info.keyframe {
-        for i in 0..3 {
-            if let Some(slot_idx) = dpb.map_reference(frame_info.ref_frame_idx[i]) {
-                ref_name_slot_indices[i] = slot_idx as i8;
+        for (reference_index, ref_frame_idx) in
+            frame_info.ref_frame_idx.iter().copied().enumerate().take(3)
+        {
+            if let Some(slot_idx) = dpb.map_reference(ref_frame_idx) {
+                ref_name_slot_indices[reference_index] = slot_idx as i8;
             }
         }
     }

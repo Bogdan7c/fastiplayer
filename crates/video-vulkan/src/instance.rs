@@ -168,7 +168,7 @@ impl UnifiedVulkanInstance {
                 let needed = [
                     ash::khr::video_queue::NAME,
                     ash::khr::video_decode_queue::NAME,
-                    std::ffi::CStr::from_bytes_with_nul(b"VK_KHR_video_decode_vp9\0").unwrap(),
+                    c"VK_KHR_video_decode_vp9",
                 ];
                 needed.iter().all(|needed_name| {
                     exts.iter().any(|ext| {
@@ -234,10 +234,7 @@ impl UnifiedVulkanInstance {
                         move |args: wgpu_hal::vulkan::CreateDeviceCallbackArgs| {
                             args.extensions.push(ash::khr::video_queue::NAME);
                             args.extensions.push(ash::khr::video_decode_queue::NAME);
-                            let vp9_name =
-                                std::ffi::CStr::from_bytes_with_nul(b"VK_KHR_video_decode_vp9\0")
-                                    .unwrap();
-                            args.extensions.push(vp9_name);
+                            args.extensions.push(c"VK_KHR_video_decode_vp9");
 
                             if let Some(family) = video_decode_family {
                                 let video_queue_info = ash::vk::DeviceQueueCreateInfo::default()

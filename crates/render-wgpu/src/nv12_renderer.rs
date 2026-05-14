@@ -3,6 +3,7 @@ use std::num::NonZeroU64;
 
 use render_core::{ActiveColorPath, ColorPipelineSettings, RenderableFrame};
 
+use crate::VideoRenderPassContext;
 use crate::color_pipeline::{COLOR_PIPELINE_UNIFORM_SIZE, prepare_nv12_color_pipeline};
 
 /// Приватный renderer для NV12 decoded frames с YUV->RGB conversion.
@@ -169,10 +170,7 @@ impl Nv12VideoRenderer {
         frame: &RenderableFrame,
         y_view: &wgpu::TextureView,
         uv_view: &wgpu::TextureView,
-        target: &wgpu::TextureView,
-        encoder: &mut wgpu::CommandEncoder,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        pass_context: &mut VideoRenderPassContext<'_>,
     ) -> Result<ActiveColorPath> {
         // Считаем отношение сторон видео и текущего окна.
         let video_aspect = frame.render_width as f32 / frame.render_height.max(1) as f32;
@@ -195,7 +193,7 @@ impl Nv12VideoRenderer {
             [offset_x, offset_y],
         );
 
-        queue.write_buffer(
+        pass_context.queue.write_buffer(
             &self.uniform_buffer,
             0,
             bytemuck::bytes_of(&prepared_color_pipeline.uniforms),
@@ -203,49 +201,53 @@ impl Nv12VideoRenderer {
 
         // Bind group создаётся на кадр, потому что texture views приходят из decoder pool.
         // Позже это место можно заменить на pool/cache без изменения public facade.
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nv12 bind group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(y_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(uv_view),
-                },
-            ],
-        });
+        let bind_group = pass_context
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("nv12 bind group"),
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(y_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(uv_view),
+                    },
+                ],
+            });
 
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("nv12 video pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = pass_context
+            .encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("nv12 video pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: pass_context.target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
 
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);

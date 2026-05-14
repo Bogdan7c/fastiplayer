@@ -702,8 +702,6 @@ fn render_frame(
 
     let mut video_render_error = None;
 
-    // Время оставлено в сигнатуре renderer-а для будущих diagnostics/animation hooks.
-    let time = app_state.elapsed_seconds() as f32;
     let present_frame = app_state.try_acquire_present_frame();
 
     let present_frame_texture_views = match present_frame.as_ref() {
@@ -771,15 +769,16 @@ fn render_frame(
     }
 
     // Рендерим полный кадр (видео + egui overlay)
-    match renderer.render_frame(
+    match renderer.render_frame(render_wgpu::RenderFrameInput {
         window,
-        time,
-        video_frame.as_ref(),
-        paint_jobs,
-        egui_full_output.textures_delta,
-        screen_size_in_pixels,
-        pixels_per_point,
-    ) {
+        video_frame: video_frame.as_ref(),
+        egui_paint_jobs: paint_jobs,
+        egui_textures_delta: egui_full_output.textures_delta,
+        screen: render_wgpu::RenderScreenDescriptor {
+            size_in_pixels: screen_size_in_pixels,
+            pixels_per_point,
+        },
+    }) {
         RenderFrameOutcome::Presented => telemetry.record_presented_frame(),
         RenderFrameOutcome::Dropped(_reason) => telemetry.record_dropped_frame(),
         RenderFrameOutcome::Failed(failure) => {

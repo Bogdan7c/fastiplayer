@@ -97,7 +97,7 @@ pub struct LinearGbmVideoFrame {
 impl LinearGbmVideoFrame {
     /// Создаёт linear NV12 BO с флагами, совместимыми с Intel VA-API decode.
     fn new(device: Arc<LinearGbmDevice>, resolution: Resolution) -> anyhow::Result<Self> {
-        let usage = gbm_bo_flags::GBM_BO_USE_LINEAR as u32 | GBM_BO_USE_HW_VIDEO_DECODER;
+        let usage = gbm_bo_flags::GBM_BO_USE_LINEAR | GBM_BO_USE_HW_VIDEO_DECODER;
         let fourcc = Fourcc::from(b"NV12");
 
         let bo = allocate_linear_decode_bo(&device, resolution, fourcc, usage)?;

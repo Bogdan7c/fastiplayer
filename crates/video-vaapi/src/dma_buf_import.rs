@@ -450,6 +450,30 @@ pub(crate) struct ImportedDmaBufTexture {
     pub(crate) uv_view: wgpu::TextureView,
 }
 
+/// Описание одной DMA-BUF plane для импорта в отдельную Vulkan/wgpu texture.
+struct DmaBufPlaneImport {
+    /// DMA-BUF fd; helper сам dup-ает fd перед передачей Vulkan.
+    fd: RawFd,
+
+    /// Offset plane внутри DMA-BUF object.
+    offset: u64,
+
+    /// Ширина plane texture.
+    width: u32,
+
+    /// Высота plane texture.
+    height: u32,
+
+    /// Row pitch plane в байтах.
+    pitch: u32,
+
+    /// DRM format modifier plane/object.
+    modifier: u64,
+
+    /// WGPU texture format для этой plane.
+    format: wgpu::TextureFormat,
+}
+
 impl DmaBufImporter {
     /// Создаёт импортёр.
     pub fn new(device: wgpu::Device, instance: wgpu::Instance, adapter: wgpu::Adapter) -> Self {
@@ -488,8 +512,8 @@ impl DmaBufImporter {
 
         let y_offset = desc.layers[0].offset[0] as u64;
         let uv_offset = desc.layers[0].offset[1] as u64;
-        let y_pitch = desc.layers[0].pitch[0] as u32;
-        let uv_pitch = desc.layers[0].pitch[1] as u32;
+        let y_pitch = desc.layers[0].pitch[0];
+        let uv_pitch = desc.layers[0].pitch[1];
         let modifier = desc.objects[0].drm_format_modifier;
         tracing::debug!(
             width,
@@ -504,15 +528,15 @@ impl DmaBufImporter {
 
         // Импортируем Y-плоскость.
         let y_texture = self
-            .import_plane(
-                fd_dup,
-                y_offset,
+            .import_plane(DmaBufPlaneImport {
+                fd: fd_dup,
+                offset: y_offset,
                 width,
                 height,
-                y_pitch,
+                pitch: y_pitch,
                 modifier,
-                wgpu::TextureFormat::R8Unorm,
-            )
+                format: wgpu::TextureFormat::R8Unorm,
+            })
             .with_context(|| "Y-plane DMA-BUF import failed");
         let y_texture = match y_texture {
             Ok(texture) => texture,
@@ -534,15 +558,15 @@ impl DmaBufImporter {
 
         // Импортируем UV-плоскость.
         let uv_texture = self
-            .import_plane(
-                fd_dup2,
-                uv_offset,
-                width / 2,
-                height / 2,
-                uv_pitch,
+            .import_plane(DmaBufPlaneImport {
+                fd: fd_dup2,
+                offset: uv_offset,
+                width: width / 2,
+                height: height / 2,
+                pitch: uv_pitch,
                 modifier,
-                wgpu::TextureFormat::Rg8Unorm,
-            )
+                format: wgpu::TextureFormat::Rg8Unorm,
+            })
             .with_context(|| "UV-plane DMA-BUF import failed");
         let uv_texture = match uv_texture {
             Ok(texture) => texture,
@@ -740,7 +764,7 @@ impl DmaBufImporter {
                     frame_format.diagnostic_label()
                 )
             }) {
-            Ok(memory_type_index) => memory_type_index as u32,
+            Ok(memory_type_index) => memory_type_index,
             Err(error) => {
                 unsafe { raw_device.destroy_image(vk_image, None) };
                 return Err(error);
@@ -882,27 +906,27 @@ impl DmaBufImporter {
         );
 
         let y_texture = self
-            .import_plane(
-                y_object.fd.as_raw_fd(),
-                u64::from(y_layer.offset[0]),
-                image.width,
-                image.height,
-                y_layer.pitch[0],
-                y_object.drm_format_modifier,
-                view_contract.y_plane.format,
-            )
+            .import_plane(DmaBufPlaneImport {
+                fd: y_object.fd.as_raw_fd(),
+                offset: u64::from(y_layer.offset[0]),
+                width: image.width,
+                height: image.height,
+                pitch: y_layer.pitch[0],
+                modifier: y_object.drm_format_modifier,
+                format: view_contract.y_plane.format,
+            })
             .context("separate-layer luma DMA-BUF import failed")?;
 
         let uv_texture = self
-            .import_plane(
-                uv_object.fd.as_raw_fd(),
-                u64::from(uv_layer.offset[0]),
-                image.width / 2,
-                image.height / 2,
-                uv_layer.pitch[0],
-                uv_object.drm_format_modifier,
-                view_contract.uv_plane.format,
-            )
+            .import_plane(DmaBufPlaneImport {
+                fd: uv_object.fd.as_raw_fd(),
+                offset: u64::from(uv_layer.offset[0]),
+                width: image.width / 2,
+                height: image.height / 2,
+                pitch: uv_layer.pitch[0],
+                modifier: uv_object.drm_format_modifier,
+                format: view_contract.uv_plane.format,
+            })
             .context("separate-layer chroma DMA-BUF import failed")?;
 
         let y_view = y_texture.create_view(&wgpu::TextureViewDescriptor {
@@ -928,24 +952,7 @@ impl DmaBufImporter {
     }
 
     /// Импортирует одну плоскость (fd + offset) в wgpu texture.
-    ///
-    /// # Аргументы
-    /// * `fd` — dup'd dma-buf fd.
-    /// * `offset` — offset внутри dma-buf (должен быть aligned к memory requirements).
-    /// * `width`, `height` — размеры плоскости.
-    /// * `pitch` — row pitch плоскости в байтах.
-    /// * `modifier` — DRM format modifier из dma-buf descriptor.
-    /// * `format` — plane texture format (`R8/Rg8` или `R16/Rg16`).
-    fn import_plane(
-        &self,
-        fd: RawFd,
-        offset: u64,
-        width: u32,
-        height: u32,
-        pitch: u32,
-        modifier: u64,
-        format: wgpu::TextureFormat,
-    ) -> anyhow::Result<wgpu::Texture> {
+    fn import_plane(&self, plane: DmaBufPlaneImport) -> anyhow::Result<wgpu::Texture> {
         // Получаем HAL-level Vulkan handles через wgpu's `as_hal()` API.
         let hal_device = unsafe { self.device.as_hal::<wgpu::hal::vulkan::Api>() }
             .context("Zero-copy import requires Vulkan backend")?;
@@ -963,22 +970,22 @@ impl DmaBufImporter {
         let mut external_memory_info = vk::ExternalMemoryImageCreateInfo::default()
             .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
 
-        let vk_format = match format {
+        let vk_format = match plane.format {
             wgpu::TextureFormat::R8Unorm => vk::Format::R8_UNORM,
             wgpu::TextureFormat::Rg8Unorm => vk::Format::R8G8_UNORM,
             wgpu::TextureFormat::R16Unorm => vk::Format::R16_UNORM,
             wgpu::TextureFormat::Rg16Unorm => vk::Format::R16G16_UNORM,
-            _ => anyhow::bail!("Unsupported format for DMA-BUF import: {:?}", format),
+            _ => anyhow::bail!("Unsupported format for DMA-BUF import: {:?}", plane.format),
         };
 
         // Определяем tiling в зависимости от modifier.
         // Если modifier != 0 (не linear), ОБЯЗАТЕЛЬНО используем VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT
         // и передаём модификатор через VkImageDrmFormatModifierExplicitCreateInfoEXT.
         // Иначе драйвер прочитает tiled memory как linear — результат: зелёный экран.
-        let use_drm_modifier = modifier != DRM_FORMAT_MOD_LINEAR;
+        let use_drm_modifier = plane.modifier != DRM_FORMAT_MOD_LINEAR;
         let tiling = if use_drm_modifier {
             tracing::debug!(
-                modifier,
+                modifier = plane.modifier,
                 "Using VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT for DMA-BUF import"
             );
             vk::ImageTiling::from_raw(VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT)
@@ -990,8 +997,8 @@ impl DmaBufImporter {
         // Подготавливаем plane layout для DRM modifier.
         // size=0 требуется спецификацией (драйвер вычисляет сам).
         let plane_layout = vk::SubresourceLayout::default()
-            .offset(offset)
-            .row_pitch(pitch as u64)
+            .offset(plane.offset)
+            .row_pitch(u64::from(plane.pitch))
             .size(0)
             .array_pitch(0)
             .depth_pitch(0);
@@ -1001,7 +1008,7 @@ impl DmaBufImporter {
         let mut drm_modifier_info = if use_drm_modifier {
             Some(
                 vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
-                    .drm_format_modifier(modifier)
+                    .drm_format_modifier(plane.modifier)
                     .plane_layouts(std::slice::from_ref(&plane_layout)),
             )
         } else {
@@ -1012,8 +1019,8 @@ impl DmaBufImporter {
             .image_type(vk::ImageType::TYPE_2D)
             .format(vk_format)
             .extent(vk::Extent3D {
-                width,
-                height,
+                width: plane.width,
+                height: plane.height,
                 depth: 1,
             })
             .mip_levels(1)
@@ -1038,12 +1045,12 @@ impl DmaBufImporter {
         // 2. Получаем memory requirements для image.
         let mem_requirements = unsafe { raw_device.get_image_memory_requirements(image) };
         tracing::trace!(
-            width,
-            height,
-            ?format,
+            width = plane.width,
+            height = plane.height,
+            format = ?plane.format,
             size = mem_requirements.size,
             alignment = mem_requirements.alignment,
-            offset,
+            offset = plane.offset,
             "Vulkan memory requirements"
         );
 
@@ -1061,7 +1068,7 @@ impl DmaBufImporter {
             })
             .context("No suitable Vulkan memory type for DMA-BUF import")
         {
-            Ok(memory_type_index) => memory_type_index as u32,
+            Ok(memory_type_index) => memory_type_index,
             Err(error) => {
                 unsafe { raw_device.destroy_image(image, None) };
                 return Err(error);
@@ -1076,7 +1083,7 @@ impl DmaBufImporter {
             image,
             mem_requirements,
             memory_type_index,
-            fd,
+            plane.fd,
             "single-plane DMA-BUF import",
         ) {
             Ok(memory) => memory,
@@ -1092,7 +1099,7 @@ impl DmaBufImporter {
         // Повторять тот же offset в vkBindImageMemory нельзя: это сдвинет image
         // второй раз относительно DMA-BUF payload. Для linear fallback offset
         // остаётся единственным способом выбрать нужную плоскость.
-        let memory_bind_offset = if use_drm_modifier { 0 } else { offset };
+        let memory_bind_offset = if use_drm_modifier { 0 } else { plane.offset };
         bind_imported_memory_to_image(
             raw_device,
             image,
@@ -1114,14 +1121,14 @@ impl DmaBufImporter {
         let hal_desc = wgpu::hal::TextureDescriptor {
             label: Some("dma-buf-imported"),
             size: wgpu::Extent3d {
-                width,
-                height,
+                width: plane.width,
+                height: plane.height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format,
+            format: plane.format,
             usage: wgpu_types::TextureUses::RESOURCE,
             memory_flags: wgpu::hal::MemoryFlags::empty(),
             view_formats: vec![],
@@ -1140,14 +1147,14 @@ impl DmaBufImporter {
         let wgpu_desc = wgpu::TextureDescriptor {
             label: Some("dma-buf-imported"),
             size: wgpu::Extent3d {
-                width,
-                height,
+                width: plane.width,
+                height: plane.height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format,
+            format: plane.format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         };

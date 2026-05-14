@@ -36,8 +36,6 @@ const MAX_NETWORK_READ_AHEAD_MB: u64 = 4096;
 /// Верхний предел RAM cache, чтобы ошибочный config не занял всю память.
 const MAX_NETWORK_MEMORY_CACHE_MB: u64 = 4096;
 
-/// Верхний предел local index partial hash sample, чтобы open path не читал слишком много bytes.
-
 /// Верхний предел ожидания `yt-dlp`, чтобы зависший resolver не жил бесконечно.
 const MAX_YOUTUBE_RESOLVE_TIMEOUT_MS: u64 = 300_000;
 

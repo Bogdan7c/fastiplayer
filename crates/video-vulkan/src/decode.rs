@@ -31,6 +31,28 @@ pub struct CompletedFrame {
     pub render_height: u32,
 }
 
+/// Все данные, необходимые для одного submit-а Vulkan Video decode.
+///
+/// Структура отделяет описание GPU-команды от ring-buffer state `DecodeEngine`:
+/// вызывающий код собирает временные Vulkan structs в одном lifetime scope, а engine
+/// только записывает command buffer и запоминает metadata завершённого кадра.
+pub struct DecodeSubmission<'submission> {
+    /// Активная Vulkan Video session, совместимая с `decode_info`.
+    pub session: &'submission VideoSession,
+
+    /// Закодированный packet, который копируется в bitstream buffer перед submit-ом.
+    pub packet_data: &'submission [u8],
+
+    /// Базовая Vulkan decode command info без VP9-specific `pNext`.
+    pub decode_info: &'submission vk::VideoDecodeInfoKHR<'submission>,
+
+    /// VP9-specific picture info, живущий дольше записи command buffer.
+    pub vp9_picture_info: &'submission crate::raw_video::VideoDecodeVP9PictureInfoKHR,
+
+    /// Metadata кадра, который вернётся после signal-а fence.
+    pub completed_frame: CompletedFrame,
+}
+
 /// Движок асинхронного декодирования видео с ring buffer.
 ///
 /// Использует 4 command buffers + fences для пипелининга.
@@ -98,6 +120,12 @@ impl DecodeEngine {
     /// * `video_queue` — очередь видео-декодирования.
     /// * `video_queue_family` — индекс семейства очередей видео.
     /// * `bitstream_capacity` — размер битстрим-буфера в байтах.
+    ///
+    /// # Safety
+    /// Caller обязан передать `device`, `physical_device` и `video_queue` от одного
+    /// Vulkan logical/physical device. `video_queue_family` должен соответствовать
+    /// очереди, поддерживающей Vulkan Video decode commands, а `instance` должен
+    /// оставаться живым минимум до завершения создания engine.
     pub unsafe fn new(
         instance: &ash::Instance,
         physical_device: vk::PhysicalDevice,
@@ -191,19 +219,13 @@ impl DecodeEngine {
     /// Асинхронно submit'ит VP9 decode команду.
     ///
     /// Возвращает немедленно. Кадр будет доступен позже через `collect_completed_frames()`.
-    pub unsafe fn submit_decode(
-        &mut self,
-        session: &VideoSession,
-        packet_data: &[u8],
-        decode_info: &vk::VideoDecodeInfoKHR,
-        vp9_picture_info: &crate::raw_video::VideoDecodeVP9PictureInfoKHR,
-        pts: Duration,
-        slot_index: usize,
-        width: u32,
-        height: u32,
-        render_width: u32,
-        render_height: u32,
-    ) -> Result<()> {
+    ///
+    /// # Safety
+    /// `submission.decode_info` должен ссылаться только на Vulkan structs, которые
+    /// живы до завершения записи command buffer внутри этого вызова. `submission.session`
+    /// должен принадлежать тому же device, что и engine, а DPB/image resources внутри
+    /// `decode_info` должны быть валидны до signal-а соответствующего fence.
+    pub unsafe fn submit_decode(&mut self, submission: DecodeSubmission<'_>) -> Result<()> {
         let ring_idx = self.ring_index % self.ring_size;
 
         // Ждём, если текущий ring slot ещё используется GPU.
@@ -229,13 +251,13 @@ impl DecodeEngine {
             let data_ptr = self.device.map_memory(
                 self.bitstream_memory,
                 0,
-                packet_data.len() as u64,
+                submission.packet_data.len() as u64,
                 vk::MemoryMapFlags::empty(),
             )?;
             std::ptr::copy_nonoverlapping(
-                packet_data.as_ptr(),
+                submission.packet_data.as_ptr(),
                 data_ptr as *mut u8,
-                packet_data.len(),
+                submission.packet_data.len(),
             );
             self.device.unmap_memory(self.bitstream_memory);
         }
@@ -250,15 +272,16 @@ impl DecodeEngine {
 
         // Начинаем video coding scope.
         let begin_coding = vk::VideoBeginCodingInfoKHR::default()
-            .video_session(session.session)
-            .video_session_parameters(session.parameters);
+            .video_session(submission.session.session)
+            .video_session_parameters(submission.session.parameters);
         unsafe {
             (self.cmd_begin_video_coding_fn)(cmd, &begin_coding);
         }
 
         // Декодируем видео (VP9 picture info в pNext).
-        let mut decode_info_with_next = decode_info.clone();
-        decode_info_with_next.p_next = vp9_picture_info as *const _ as *const std::ffi::c_void;
+        let mut decode_info_with_next = *submission.decode_info;
+        decode_info_with_next.p_next =
+            submission.vp9_picture_info as *const _ as *const std::ffi::c_void;
         unsafe {
             (self.cmd_decode_video_fn)(cmd, &decode_info_with_next);
         }
@@ -286,14 +309,7 @@ impl DecodeEngine {
         self.ring_index += 1;
 
         // Сохраняем информацию о кадре (будет возвращена при завершении).
-        self.completed_frames.push_back(CompletedFrame {
-            pts,
-            slot_index,
-            width,
-            height,
-            render_width,
-            render_height,
-        });
+        self.completed_frames.push_back(submission.completed_frame);
 
         trace!("Submitted VP9 decode to ring slot {}", ring_idx);
         Ok(())
@@ -323,6 +339,10 @@ impl DecodeEngine {
     }
 
     /// Блокирует выполнение до завершения всех pending decode операций.
+    ///
+    /// # Safety
+    /// Caller должен гарантировать, что device и queue engine-а ещё валидны, а вызов
+    /// не выполняется параллельно с другим submit/wait на тех же command buffers.
     pub unsafe fn wait_all(&mut self) -> Result<()> {
         let active_fences: Vec<_> = (0..self.ring_size)
             .filter(|&i| self.fence_in_flight[i])

@@ -25,8 +25,27 @@ use nv12_renderer::Nv12VideoRenderer;
 use p010_renderer::P010VideoRenderer;
 
 pub use shell::{
-    GpuContext, RenderFrameDropReason, RenderFrameFailure, RenderFrameOutcome, Renderer,
+    GpuContext, RenderFrameDropReason, RenderFrameFailure, RenderFrameInput, RenderFrameOutcome,
+    RenderScreenDescriptor, Renderer,
 };
+
+/// GPU context одного video render pass-а.
+///
+/// Facade собирает эти ссылки один раз, а конкретные renderer paths получают уже
+/// сгруппированную границу вместо длинного списка device/queue/target/encoder.
+pub(crate) struct VideoRenderPassContext<'pass> {
+    /// Swapchain texture view, в который renderer пишет video pass.
+    pub(crate) target: &'pass wgpu::TextureView,
+
+    /// Command encoder текущего кадра.
+    pub(crate) encoder: &'pass mut wgpu::CommandEncoder,
+
+    /// WGPU device для создания per-frame bind groups.
+    pub(crate) device: &'pass wgpu::Device,
+
+    /// WGPU queue для обновления uniform buffers.
+    pub(crate) queue: &'pass wgpu::Queue,
+}
 
 /// Backend-specific texture resources для одного кадра.
 pub enum WgpuFramePlanes<'frame> {
@@ -60,7 +79,6 @@ pub struct WgpuRenderableFrame<'frame> {
 
 impl<'frame> WgpuRenderableFrame<'frame> {
     /// Собирает WGPU frame wrapper из decoded NV12 frame и texture views.
-    #[must_use]
     pub fn from_decoded_nv12(
         frame: &DecodedFrame,
         y_view: &'frame wgpu::TextureView,
@@ -206,6 +224,12 @@ impl WgpuVideoRenderer {
             return Ok(false);
         };
         self.diagnostics = RenderDiagnostics::default();
+        let mut pass_context = VideoRenderPassContext {
+            target,
+            encoder,
+            device,
+            queue,
+        };
 
         if !frame.metadata.has_display_size() {
             bail!(
@@ -224,10 +248,7 @@ impl WgpuVideoRenderer {
                     &frame.metadata,
                     y_view,
                     uv_view,
-                    target,
-                    encoder,
-                    device,
-                    queue,
+                    &mut pass_context,
                 )?;
                 self.diagnostics.active_color_path = Some(active_color_path);
                 Ok(true)
@@ -240,10 +261,7 @@ impl WgpuVideoRenderer {
                     &frame.metadata,
                     y_view,
                     uv_view,
-                    target,
-                    encoder,
-                    device,
-                    queue,
+                    &mut pass_context,
                 )?;
                 self.diagnostics.active_color_path = Some(p010_diagnostics.active_color_path);
                 self.diagnostics.hdr_reference_defaults = p010_diagnostics.hdr_reference_defaults;

@@ -46,8 +46,10 @@ impl VideoSession {
     /// * `coded_height` — высота закодированного кадра.
     /// * `vp9_profile` — профиль VP9 (0..3).
     ///
-    /// # Безопасность
-    /// Функция unsafe, т.к. выполняет вызовы Vulkan драйвера.
+    /// # Safety
+    /// `instance` должен соответствовать physical device внутри `video_device`.
+    /// `video_device` обязан иметь валидный logical device с включёнными Vulkan Video
+    /// extensions, а выбранные размеры/profile должны поддерживаться драйвером.
     pub unsafe fn new(
         instance: &ash::Instance,
         video_device: &VulkanVideoDevice,

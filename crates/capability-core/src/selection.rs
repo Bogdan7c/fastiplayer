@@ -55,13 +55,13 @@ pub enum StreamSelectionError {
 #[serde(rename_all = "snake_case")]
 pub struct UnsupportedVideoRequirement {
     /// Требования проблемного stream-а.
-    pub requirement: VideoDecodeRequirement,
+    pub requirement: Box<VideoDecodeRequirement>,
 
     /// Причины отказа в порядке полезности для UI.
     pub rejections: Vec<VideoCapabilityRejection>,
 
     /// Краткая сводка поддерживаемых форматов.
-    pub supported_formats_summary: String,
+    pub supported_formats_summary: Box<str>,
 }
 
 impl UnsupportedVideoRequirement {
@@ -546,12 +546,13 @@ impl SystemCapabilities {
         let supported_formats = self.supported_video_formats().collect::<Vec<_>>();
 
         UnsupportedVideoRequirement {
-            requirement: requirement.clone(),
+            requirement: Box::new(requirement.clone()),
             rejections,
             supported_formats_summary: summarize_system_support(
                 &supported_formats,
                 &self.render_backends,
-            ),
+            )
+            .into_boxed_str(),
         }
     }
 

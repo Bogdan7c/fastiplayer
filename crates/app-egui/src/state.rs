@@ -25,6 +25,30 @@ use crate::ui::player_controls::{self, ControlAction};
 use crate::ui::skin::{self, PlayerSkin};
 use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
 
+/// Данные правой diagnostic panel, сгруппированные отдельно от UI output.
+struct TelemetryPanelState<'panel> {
+    /// Snapshot player-а на начало egui frame.
+    player_snapshot: &'panel PlayerSnapshot,
+
+    /// Shared telemetry counters.
+    telemetry: &'panel Telemetry,
+
+    /// Последняя renderer-neutral диагностика.
+    render_diagnostics: &'panel RenderDiagnostics,
+
+    /// Transient состояние timeline UI.
+    timeline_ui_state: &'panel TimelineUiState,
+
+    /// Имя активного backend-а для diagnostics.
+    backend_name: &'panel str,
+
+    /// Время запуска приложения.
+    start_time: std::time::Instant,
+
+    /// Оценка длительности video frame в миллисекундах.
+    frame_duration_estimate_ms: f64,
+}
+
 /// Состояние приложения без владения playback pipeline.
 pub struct AppState {
     /// Egui context — корневой объект egui для создания UI.
@@ -157,12 +181,6 @@ impl AppState {
     #[inline]
     pub fn next_frame(&mut self) {
         self.frame_index = self.frame_index.saturating_add(1);
-    }
-
-    /// Возвращает elapsed time в секундах с момента запуска.
-    #[inline]
-    pub fn elapsed_seconds(&self) -> f64 {
-        self.start_time.elapsed().as_secs_f64()
     }
 
     /// Обновляет renderer diagnostics, которые UI покажет в telemetry panel.
@@ -429,7 +447,7 @@ impl AppState {
                 skin = %self.app_config.ui.skin,
                 "Config validation должна была отклонить неизвестный UI skin; используем minimal"
             );
-            skin::MinimalSkin::default()
+            skin::MinimalSkin
         });
         let animation_state = AnimationState::from_timeline(&player_snapshot.timeline);
         let show_telemetry = self.app_config.ui.show_telemetry;
@@ -448,13 +466,15 @@ impl AppState {
             if show_telemetry {
                 Self::render_telemetry_panel(
                     ui,
-                    &player_snapshot,
-                    &telemetry,
-                    &render_diagnostics,
-                    &timeline_ui_state,
-                    &backend_name,
-                    start_time,
-                    frame_duration_estimate_ms,
+                    TelemetryPanelState {
+                        player_snapshot: &player_snapshot,
+                        telemetry: &telemetry,
+                        render_diagnostics: &render_diagnostics,
+                        timeline_ui_state: &timeline_ui_state,
+                        backend_name: &backend_name,
+                        start_time,
+                        frame_duration_estimate_ms,
+                    },
                 );
             }
             Self::render_center_overlay(
@@ -605,16 +625,16 @@ impl AppState {
     }
 
     /// Рендерит правую диагностическую панель на основе snapshot.
-    fn render_telemetry_panel(
-        ui: &mut egui::Ui,
-        player_snapshot: &PlayerSnapshot,
-        telemetry: &Telemetry,
-        render_diagnostics: &RenderDiagnostics,
-        timeline_ui_state: &TimelineUiState,
-        backend_name: &str,
-        start_time: std::time::Instant,
-        frame_duration_estimate_ms: f64,
-    ) {
+    fn render_telemetry_panel(ui: &mut egui::Ui, panel_state: TelemetryPanelState<'_>) {
+        let TelemetryPanelState {
+            player_snapshot,
+            telemetry,
+            render_diagnostics,
+            timeline_ui_state,
+            backend_name,
+            start_time,
+            frame_duration_estimate_ms,
+        } = panel_state;
         let telemetry_frame =
             egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160));
         egui::Panel::right("telemetry")
