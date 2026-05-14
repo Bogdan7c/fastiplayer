@@ -6,6 +6,7 @@ pub mod frame_pool;
 pub mod internal_vaapi_frame;
 pub mod probe;
 pub mod texture_cache;
+pub mod zero_copy_surface_pool;
 
 #[cfg(test)]
 pub mod gbm_allocator;

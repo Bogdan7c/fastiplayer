@@ -7,8 +7,8 @@
 /// - Decoder thread вызывает `decode()` и обрабатывает `FrameReady` только через zero-copy import.
 /// - Готовые `DecodedFrame` возвращаются через `try_recv_frame()`.
 /// - Texture pool (Arc<Mutex<WgpuTexturePool>>) shared между потоками:
-///   decoder thread публикует imported DMA-BUF slots,
-///   render thread делает get_views / release (read/write).
+///   decoder thread публикует или переиспользует persistent DMA-BUF imports,
+///   render thread делает get_views и отдаёт release через GPU completion ack.
 use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -246,38 +246,75 @@ impl VideoTextureViewProvider {
         }
     }
 
-    /// Освобождает texture slot через тот decoder/texture pool, который создал кадр.
+    /// Освобождает renderer-owned frame после submitted GPU work.
     pub fn release_frame(&self, handle: video_core::FrameTextureHandle) {
-        trace!(handle_id = handle.0, "Releasing texture slot directly");
-        let retired_slot = match self.texture_pool.lock() {
-            Ok(mut texture_pool) => {
-                let retired_slot = texture_pool.release_slot(handle);
-                if retired_slot.is_some() {
-                    trace!(
+        trace!(handle_id = handle.0, "Releasing rendered zero-copy frame");
+        let gpu_completion_lease = match self.texture_pool.lock() {
+            Ok(mut texture_pool) => match texture_pool.release_after_gpu_submission(handle) {
+                Ok(gpu_completion_lease) => gpu_completion_lease,
+                Err(error) => {
+                    let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(
+                        format!("Zero-copy surface release lifecycle violation: {error}"),
+                    ));
+                    tracing::warn!(
+                        error = %error,
+                        fatal = %fatal_error,
                         handle_id = handle.0,
-                        "Zero-copy frame retired until submitted GPU work completes"
+                        "Failed to move zero-copy surface into GPU wait state"
                     );
+                    return;
                 }
-                retired_slot
-            }
+            },
             Err(error) => {
-                tracing::warn!(error = %error, "Texture pool mutex poisoned during release");
-                None
+                let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(format!(
+                    "Zero-copy texture pool mutex poisoned during rendered release: {error}"
+                )));
+                tracing::warn!(
+                    error = %error,
+                    fatal = %fatal_error,
+                    handle_id = handle.0,
+                    "Texture pool mutex poisoned during rendered release"
+                );
+                return;
             }
-        };
-
-        let Some(retired_slot) = retired_slot else {
-            return;
         };
 
         let msg_tx = self.msg_tx.clone();
         let thread_state = self.thread_state.clone();
+        let texture_pool = self.texture_pool.clone();
         self.queue.on_submitted_work_done(move || {
-            let ready_handle = retired_slot.frame_handle;
-            drop(retired_slot);
+            let ready_handle = gpu_completion_lease.frame_handle();
+            match texture_pool.lock() {
+                Ok(mut texture_pool) => {
+                    if let Err(error) = texture_pool.acknowledge_gpu_completion(ready_handle) {
+                        let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(format!(
+                            "Zero-copy GPU completion lifecycle violation: {error}"
+                        )));
+                        tracing::warn!(
+                            error = %error,
+                            fatal = %fatal_error,
+                            handle_id = ready_handle.0,
+                            "Failed to acknowledge zero-copy GPU completion"
+                        );
+                        return;
+                    }
+                }
+                Err(error) => {
+                    let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(format!(
+                        "Zero-copy texture pool mutex poisoned during GPU completion: {error}"
+                    )));
+                    tracing::warn!(
+                        error = %error,
+                        fatal = %fatal_error,
+                        handle_id = ready_handle.0,
+                        "Texture pool mutex poisoned during GPU completion"
+                    );
+                    return;
+                }
+            }
             trace!(
                 handle_id = ready_handle.0,
-                "Submitted GPU work completed; releasing zero-copy VA handle"
+                "Submitted GPU work completed; releasing decoded surface to decoder"
             );
             if let Err(error) = msg_tx.send(ThreadMsg::ReleaseZeroCopy(ready_handle)) {
                 let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(
@@ -436,14 +473,51 @@ impl VideoDecodeThread {
         })
     }
 
-    /// Освобождает texture slot (вызывается из render thread).
+    /// Освобождает frame, который не находится в renderer GPU work.
     ///
-    /// Релиз выполняется синхронно через shared `Arc<Mutex<WgpuTexturePool>>`,
-    /// без отправки сообщения в decoder thread. Это критично для reuse слотов:
-    /// если релиз был бы async (через channel), decoder thread мог бы
-    /// обработать новый Packet ДО Release, создав новый слот вместо reuse.
+    /// Используется для queued/present frames без active render lease. Такой frame
+    /// можно вернуть decoder-у сразу: GPU completion уже не требуется.
     pub fn release_frame(&self, handle: video_core::FrameTextureHandle) {
-        self.texture_view_provider().release_frame(handle);
+        match self.texture_pool.lock() {
+            Ok(mut texture_pool) => {
+                if let Err(error) = texture_pool.release_without_gpu_submission(handle) {
+                    let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(
+                        format!("Zero-copy immediate release lifecycle violation: {error}"),
+                    ));
+                    tracing::warn!(
+                        error = %error,
+                        fatal = %fatal_error,
+                        handle_id = handle.0,
+                        "Failed to move zero-copy surface into decoder reuse state"
+                    );
+                    return;
+                }
+            }
+            Err(error) => {
+                let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(format!(
+                    "Zero-copy texture pool mutex poisoned during immediate release: {error}"
+                )));
+                tracing::warn!(
+                    error = %error,
+                    fatal = %fatal_error,
+                    handle_id = handle.0,
+                    "Texture pool mutex poisoned during immediate release"
+                );
+                return;
+            }
+        }
+
+        if let Err(error) = self.msg_tx.send(ThreadMsg::ReleaseZeroCopy(handle)) {
+            let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(
+                "Decoder thread disconnected before zero-copy immediate release",
+            ));
+            tracing::warn!(
+                error = %error,
+                fatal = %fatal_error,
+                handle_id = handle.0,
+                "Failed to send immediate zero-copy release to decoder thread"
+            );
+        }
     }
 
     /// Забирает готовый decoded frame из очереди (неблокирующий).
@@ -637,7 +711,18 @@ fn decoder_thread_loop(
                 }
             }
             ThreadMsg::ReleaseZeroCopy(handle) => {
-                decoder.release_zero_copy_frame(handle);
+                if let Err(error) = decoder.release_zero_copy_frame(handle) {
+                    let message = format!("Video decoder zero-copy release failed: {error:#}");
+                    tracing::warn!(
+                        error = %message,
+                        handle_id = handle.0,
+                        "Decoder thread: fatal zero-copy release error"
+                    );
+                    if error_tx.send(DecodeThreadError::new(message)).is_err() {
+                        trace!("Player thread dropped decoder error receiver");
+                    }
+                    break;
+                }
             }
             ThreadMsg::Flush(done_tx) => {
                 let flush_result = decoder.flush().map_err(|error| format!("{error:#}"));

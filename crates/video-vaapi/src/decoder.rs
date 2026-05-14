@@ -391,7 +391,7 @@ pub struct VaapiVideoDecoder {
     /// Пул lightweight frame descriptors для выходных VA surfaces.
     frame_pool: DmaFramePool,
 
-    /// Пул wgpu-текстур для загруженных кадров.
+    /// Пул persistent zero-copy imports для decoded surfaces.
     ///
     /// Arc<Mutex<>> потому что пул используется из decoder thread (DMA-BUF import)
     /// и из render thread (get_views / release).
@@ -403,10 +403,10 @@ pub struct VaapiVideoDecoder {
     /// из `decode()` в порядке FIFO.
     ready_queue: VecDeque<DecodedFrame>,
 
-    /// Handles кадров, которые сейчас отображаются через zero-copy DMA-BUF.
+    /// Handles кадров, которые сейчас удерживают decoded VA surface.
     ///
     /// Пока handle находится в этой map, VA surface не возвращается в frame pool
-    /// и decoder не может перезаписать память, которую семплит renderer.
+    /// и decoder не может перезаписать memory, которую может семплить renderer.
     zero_copy_guards: HashMap<u64, DynDecodedHandle<InternalVaapiFrame>>,
 
     /// Был ли уже залогирован первый успешный zero-copy кадр.
@@ -454,6 +454,18 @@ impl VaapiVideoDecoder {
     ) -> Result<Self> {
         info!("Opening VA-API display");
         ensure_texture_pool_has_zero_copy_importer(&texture_cache)?;
+        if let Ok(texture_pool) = texture_cache.lock() {
+            let reuse_contract = texture_pool.reuse_contract();
+            info!(
+                backend_contract = reuse_contract.backend_name,
+                sample_only = reuse_contract.renderer_is_sample_only,
+                waits_gpu_completion = reuse_contract.decoder_reuse_waits_for_gpu_completion,
+                identity_is_surface_id = reuse_contract.import_identity_is_surface_id,
+                dma_buf_identity_checked = reuse_contract.dma_buf_object_identity_checked,
+                explicit_reuse_sync = reuse_contract.explicit_external_memory_reuse_sync,
+                "Zero-copy import lifecycle contract configured"
+            );
+        }
 
         // Открываем VA-API display. `Display::open()` возвращает `Option<Rc<Display>>`.
         // Если None — значит VA-API недоступна (нет драйвера, нет устройства).
@@ -520,7 +532,7 @@ impl VaapiVideoDecoder {
         self.texture_cache.lock().unwrap().get_views(frame_handle)
     }
 
-    /// Освобождает texture slot, связанный с данным frame handle.
+    /// Освобождает decoder-owned frame, который не был отправлен renderer GPU work-у.
     ///
     /// Должен вызываться когда кадр больше не нужен (drop по A/V sync,
     /// замена present frame, очистка очереди и т.д.).
@@ -528,18 +540,20 @@ impl VaapiVideoDecoder {
     /// Освобождает texture slot.
     ///
     /// Thread-safe: вызывается из decoder thread (через channel) или render thread.
-    pub fn release_frame(&mut self, texture_handle: FrameTextureHandle) {
-        trace!(handle_id = texture_handle.0, "Releasing texture slot");
-        let retired_slot = self
-            .texture_cache
+    pub fn release_frame(&mut self, texture_handle: FrameTextureHandle) -> Result<()> {
+        trace!(
+            handle_id = texture_handle.0,
+            "Releasing decoder-owned zero-copy frame"
+        );
+        self.texture_cache
             .lock()
-            .unwrap()
-            .release_slot(texture_handle);
-        if let Some(retired_slot) = retired_slot {
-            let ready_handle = retired_slot.frame_handle;
-            drop(retired_slot);
-            self.release_zero_copy_frame(ready_handle);
-        }
+            .map_err(|error| {
+                anyhow::anyhow!("zero-copy texture pool mutex poisoned during release: {error}")
+            })?
+            .release_without_gpu_submission(texture_handle)
+            .map_err(anyhow::Error::from)?;
+
+        self.release_zero_copy_frame(texture_handle)
     }
 
     /// Возвращает статистику texture pool для отладки.
@@ -562,16 +576,29 @@ impl VaapiVideoDecoder {
     }
 
     /// Освобождает VA handle, удерживаемый zero-copy кадром.
-    pub fn release_zero_copy_frame(&mut self, texture_handle: FrameTextureHandle) {
+    pub fn release_zero_copy_frame(&mut self, texture_handle: FrameTextureHandle) -> Result<()> {
         let Some(handle) = self.zero_copy_guards.remove(&texture_handle.0) else {
-            trace!(
+            warn!(
                 handle_id = texture_handle.0,
                 "No zero-copy guard found for released frame"
             );
-            return;
+            return Err(anyhow::anyhow!(
+                "zero-copy guard missing for released handle {}",
+                texture_handle.0
+            ));
         };
 
         self.return_frame_from_handle(handle);
+        self.texture_cache
+            .lock()
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "zero-copy texture pool mutex poisoned during decoder reuse ack: {error}"
+                )
+            })?
+            .acknowledge_decoder_reuse(texture_handle)
+            .map_err(anyhow::Error::from)?;
+        Ok(())
     }
 
     /// Возвращает backing frame в pool после того, как decoded handle больше не нужен.
@@ -602,7 +629,11 @@ impl VaapiVideoDecoder {
                 memory_path = %frame.memory_path,
                 "Decoded frame contract validation failed before ready queue"
             );
-            self.release_frame(invalid_texture_handle);
+            if let Err(release_error) = self.release_frame(invalid_texture_handle) {
+                return Err(zero_copy_contract_violation(format!(
+                    "Decoded frame contract validation failed before ready queue: {error}; release also failed: {release_error:#}"
+                )));
+            }
             return Err(zero_copy_contract_violation(format!(
                 "Decoded frame contract validation failed before ready queue: {error}"
             )));
@@ -613,7 +644,7 @@ impl VaapiVideoDecoder {
                 break;
             };
             let stale_pts_ms = stale_frame.pts.as_millis();
-            self.release_frame(stale_frame.texture_handle);
+            self.release_frame(stale_frame.texture_handle)?;
             self.send_diagnostic_event(VideoDecoderDiagnosticEvent::FrameDropped {
                 pts: stale_frame.pts,
                 reason: VideoDecoderDropReason::ReadyQueueOverflow,
@@ -656,7 +687,7 @@ impl VaapiVideoDecoder {
     /// кадрам, уже отданным player/render thread. Такие кадры освобождаются
     /// только через обычный release от session, иначе VA surface может быть
     /// переиспользован, пока renderer ещё семплит старый кадр.
-    fn release_decoder_owned_ready_frames(&mut self, reason: &'static str) {
+    fn release_decoder_owned_ready_frames(&mut self, reason: &'static str) -> Result<()> {
         let decoder_owned_texture_handles = self
             .ready_queue
             .drain(..)
@@ -664,18 +695,19 @@ impl VaapiVideoDecoder {
             .collect::<Vec<_>>();
 
         if decoder_owned_texture_handles.is_empty() {
-            return;
+            return Ok(());
         }
 
         let released_frame_count = decoder_owned_texture_handles.len();
         for texture_handle in decoder_owned_texture_handles {
-            self.release_frame(texture_handle);
+            self.release_frame(texture_handle)?;
         }
 
         debug!(
             released_frame_count,
             reason, "Released decoder-owned ready frames"
         );
+        Ok(())
     }
 
     /// Сбрасывает texture cache после смены формата только если нет live кадров.
@@ -689,7 +721,12 @@ impl VaapiVideoDecoder {
         let live_texture_count = texture_cache.num_in_use();
 
         if live_texture_count == 0 {
-            texture_cache.invalidate_all();
+            if let Err(error) = texture_cache.invalidate_all() {
+                warn!(
+                    error = %error,
+                    "Failed to invalidate idle zero-copy texture cache after format change"
+                );
+            }
             return;
         }
 
@@ -798,6 +835,13 @@ impl VaapiVideoDecoder {
                     capacity: texture_stats.capacity,
                     slots: texture_stats.slots,
                     in_use: texture_stats.in_use,
+                    free_surfaces: texture_stats.free_surfaces,
+                    waiting_gpu_completion: texture_stats.waiting_gpu_completion,
+                    waiting_decoder_reuse: texture_stats.waiting_decoder_reuse,
+                    import_failures: texture_stats.import_failures,
+                    imports_created: texture_stats.imports_created,
+                    imports_reused: texture_stats.imports_reused,
+                    imports_replaced: texture_stats.imports_replaced,
                 },
             )
         };
@@ -887,7 +931,7 @@ impl VaapiVideoDecoder {
                     // Сначала освобождаем decoder-owned кадры из `ready_queue`.
                     // Иначе `invalidate_all()` удалит mappings, а VA handles,
                     // удерживаемые этими кадрами, останутся без release path.
-                    self.release_decoder_owned_ready_frames("format_changed");
+                    self.release_decoder_owned_ready_frames("format_changed")?;
                     self.invalidate_idle_texture_cache_after_format_change();
 
                     // Пересоздаём frame pool под новое разрешение/формат.
@@ -1050,7 +1094,7 @@ impl VideoDecoder for VaapiVideoDecoder {
         self.inner
             .flush()
             .map_err(|e| anyhow::anyhow!("Flush error: {:?}", e))?;
-        self.release_decoder_owned_ready_frames("flush");
+        self.release_decoder_owned_ready_frames("flush")?;
         Ok(())
     }
 

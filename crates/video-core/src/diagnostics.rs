@@ -30,6 +30,27 @@ pub struct VideoTexturePoolDiagnostics {
 
     /// Количество slots, удерживаемых live кадрами.
     pub in_use: usize,
+
+    /// Количество persistent imports, доступных для reuse.
+    pub free_surfaces: usize,
+
+    /// Количество releases, ожидающих GPU completion.
+    pub waiting_gpu_completion: usize,
+
+    /// Количество releases, ожидающих возврата decoded surface decoder-у.
+    pub waiting_decoder_reuse: usize,
+
+    /// Количество failed external imports.
+    pub import_failures: u64,
+
+    /// Количество созданных external imports.
+    pub imports_created: u64,
+
+    /// Количество reuse hits без нового external import-а.
+    pub imports_reused: u64,
+
+    /// Количество replacements free import-а после смены descriptor/object identity.
+    pub imports_replaced: u64,
 }
 
 impl VideoTexturePoolDiagnostics {

@@ -839,6 +839,18 @@ impl AppState {
                 texture_pool.in_use, texture_pool.capacity
             ));
             ui.monospace(format!("Texture slots: {}", texture_pool.slots));
+            ui.monospace(format!("Texture free: {}", texture_pool.free_surfaces));
+            ui.monospace(format!(
+                "Texture wait: gpu={} decoder={}",
+                texture_pool.waiting_gpu_completion, texture_pool.waiting_decoder_reuse
+            ));
+            ui.monospace(format!(
+                "Imports: create={} reuse={} replace={} fail={}",
+                texture_pool.imports_created,
+                texture_pool.imports_reused,
+                texture_pool.imports_replaced,
+                texture_pool.import_failures
+            ));
         }
         if let Some(memory_path) = player_snapshot.diagnostics.zero_copy_memory_path {
             ui.monospace(format!("Memory path: {memory_path}"));

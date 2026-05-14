@@ -127,6 +127,27 @@ pub struct TextureSlotPressureSnapshot {
 
     /// Количество slots, удерживаемых live кадрами.
     pub in_use: usize,
+
+    /// Количество persistent imports, доступных для reuse.
+    pub free_surfaces: usize,
+
+    /// Количество releases, ожидающих GPU completion.
+    pub waiting_gpu_completion: usize,
+
+    /// Количество releases, ожидающих decoder reuse ack.
+    pub waiting_decoder_reuse: usize,
+
+    /// Количество failed external imports.
+    pub import_failures: u64,
+
+    /// Количество созданных external imports.
+    pub imports_created: u64,
+
+    /// Количество reuse hits без нового external import-а.
+    pub imports_reused: u64,
+
+    /// Количество replacements free import-а после смены descriptor/object identity.
+    pub imports_replaced: u64,
 }
 
 impl TextureSlotPressureSnapshot {
@@ -804,6 +825,13 @@ mod tests {
                 capacity: 16,
                 slots: 4,
                 in_use: 3,
+                free_surfaces: 1,
+                waiting_gpu_completion: 1,
+                waiting_decoder_reuse: 0,
+                import_failures: 0,
+                imports_created: 4,
+                imports_reused: 8,
+                imports_replaced: 0,
             }),
             ..PipelineQueueDepthSnapshot::default()
         }

@@ -590,6 +590,13 @@ impl PlayerSession {
                     capacity: texture_pool.capacity,
                     slots: texture_pool.slots,
                     in_use: texture_pool.in_use,
+                    free_surfaces: texture_pool.free_surfaces,
+                    waiting_gpu_completion: texture_pool.waiting_gpu_completion,
+                    waiting_decoder_reuse: texture_pool.waiting_decoder_reuse,
+                    import_failures: texture_pool.import_failures,
+                    imports_created: texture_pool.imports_created,
+                    imports_reused: texture_pool.imports_reused,
+                    imports_replaced: texture_pool.imports_replaced,
                 });
         self.diagnostics.observe_decoded_frame(frame, queues);
     }
@@ -1937,6 +1944,13 @@ impl PlayerSession {
                 capacity: texture_stats.capacity,
                 slots: texture_stats.slots,
                 in_use: texture_stats.in_use,
+                free_surfaces: texture_stats.free_surfaces,
+                waiting_gpu_completion: texture_stats.waiting_gpu_completion,
+                waiting_decoder_reuse: texture_stats.waiting_decoder_reuse,
+                import_failures: texture_stats.import_failures,
+                imports_created: texture_stats.imports_created,
+                imports_reused: texture_stats.imports_reused,
+                imports_replaced: texture_stats.imports_replaced,
             })
     }
 
@@ -1997,6 +2011,13 @@ impl PlayerSession {
                     capacity: texture_pool.capacity,
                     slots: texture_pool.slots,
                     in_use: texture_pool.in_use,
+                    free_surfaces: texture_pool.free_surfaces,
+                    waiting_gpu_completion: texture_pool.waiting_gpu_completion,
+                    waiting_decoder_reuse: texture_pool.waiting_decoder_reuse,
+                    import_failures: texture_pool.import_failures,
+                    imports_created: texture_pool.imports_created,
+                    imports_reused: texture_pool.imports_reused,
+                    imports_replaced: texture_pool.imports_replaced,
                 }
             }),
         }

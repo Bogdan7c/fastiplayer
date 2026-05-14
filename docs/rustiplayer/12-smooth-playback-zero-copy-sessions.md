@@ -235,23 +235,59 @@ diagnostics из Session 2 и сохрани codec-neutral design. В конце
 - Переиспользовать imports, где backend guarantees позволяют это делать.
 - Если persistent import требует explicit layout/ownership transitions, оформить
   это как явный backend contract, а не env experiment.
+- Разделить два уровня результата:
+  - обязательный уровень Session 3: bounded lifecycle pool, generation-safe lease
+    и replace/import только после GPU completion;
+  - optional backend-specific уровень: persistent `Reuse` без нового import-а
+    только при доказанном explicit external-memory synchronization contract.
 - Сделать pool bounded и observable:
   - active surfaces;
   - free surfaces;
   - waiting for GPU completion;
   - waiting for decoder reuse;
-  - import failures.
+  - import failures;
+  - imports created;
+  - imports reused;
+  - imports replaced.
 - Добавить typed errors для нарушений lifecycle.
 - Добавить tests на lease/release ordering и generation safety.
 
+### Уточнение после Session 3
+
+Текущий VA-API/Vulkan/wgpu path считается корректно завершенным для Session 3 как
+safe surface/import lifecycle pool, но не как полный persistent import reuse.
+Для этого backend-а `explicit_external_memory_reuse_sync = false`, потому что
+пока нет отдельного дизайна явных VA writer -> Vulkan sampler ownership/layout/cache
+transitions.
+
+Нормальный текущий hot path для VA-API/wgpu:
+
+- surface/import slot bounded и observable;
+- decoded surface возвращается decoder-у только после renderer release и GPU
+  completion;
+- same surface может идти через `Replace`, даже если `surface_id` совпал;
+- `imports_reused = 0` не является ошибкой для текущего backend-а;
+- `imports_replaced > 0` является ожидаемой диагностикой безопасного replace path;
+- CPU fallback при import failure остается запрещенным.
+
+Persistent `Reuse` можно включать только для backend-а, который явно выставляет
+contract уровня `explicit_external_memory_reuse_sync = true` и покрыт тестами или
+manual verification на отсутствие stale/cyclic frames. Следующие сессии не должны
+форсировать reuse ради latency, если этот contract не доказан.
+
 ### Acceptance
 
-- Hot path не создает новый external import на каждый frame без необходимости.
+- Hot path не создает новый external import на каждый frame без необходимости,
+  где "без необходимости" определяется backend reuse contract-ом. Для backend-а
+  без explicit external-memory sync безопасный `Replace` после GPU completion
+  считается корректным результатом Session 3.
 - Surface/import reuse не ломает generation safety.
 - Release после GPU completion возвращает ресурс в правильный pool.
 - Texture/resource cleanup больше не зависит от forced per-frame cleanup как
   основного механизма выживания.
-- Diagnostics показывают снижение import churn и стабильную latency.
+- Diagnostics показывают bounded lifecycle, `created/reused/replaced/failures` и
+  стабильную ownership картину. Снижение import churn ожидается только там, где
+  backend contract разрешает persistent `Reuse`.
 - `cargo check` и релевантные tests проходят.
 
 ### Self-review
@@ -286,6 +322,10 @@ drop thresholds без понимания причины. В конце сдел
 ### План реализации
 
 - Использовать diagnostics Session 2 для определения реального bottleneck.
+- Использовать Session 3 counters `imports_created`, `imports_reused`,
+  `imports_replaced`, `waiting_gpu_completion`, `waiting_decoder_reuse` как
+  входные данные backpressure. Не считать `imports_reused = 0` багом для
+  VA-API/wgpu, пока `explicit_external_memory_reuse_sync = false`.
 - Разделить стадии decoder thread:
   - packet receive;
   - hardware submit;
@@ -309,6 +349,10 @@ drop thresholds без понимания причины. В конце сдел
   - waiting for present queue;
   - waiting for GPU release;
   - waiting for demux/audio priority.
+- Не пытаться лечить import latency принудительным persistent reuse. Если
+  replacements дают слишком большой latency, зафиксировать это как отдельную
+  backend-specific synchronization/design задачу, а не как scheduler/backpressure
+  workaround.
 - Добавить tests на bounded behavior и shutdown/flush без deadlock.
 
 ### Acceptance
@@ -634,4 +678,3 @@ self-review из этой сессии.
 - Если remaining stutter находится ниже уровня приложения, например driver,
   compositor, kernel, display mode или hardware decoder firmware.
 - Если требуется принять продуктовый threshold для "идеально плавно".
-

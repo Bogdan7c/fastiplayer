@@ -534,12 +534,11 @@ impl Renderer {
         // Отправляем команды на GPU
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
 
-        // Форсируем cleanup pending GPU resources (destroyed textures, buffers).
-        // Критично для zero-copy DMA-BUF import: каждый кадр создаёт и уничтожает
-        // wgpu textures, и без poll wgpu откладывает destruction до неопределённого момента,
-        // что приводит к Out of Memory через несколько десятков секунд 4K playback.
+        // Продвигаем wgpu callbacks для submitted work.
+        // Zero-copy imports теперь живут в bounded persistent pool, поэтому poll
+        // больше не является основным механизмом выживания resource cleanup-а.
         if let Err(error) = self.gpu.device.poll(wgpu::PollType::Poll) {
-            tracing::warn!(error = %error, "wgpu device poll завершился ошибкой во время GPU cleanup");
+            tracing::warn!(error = %error, "wgpu device poll завершился ошибкой во время GPU callback polling");
         }
 
         // Сообщаем winit, что сейчас будет present: это помогает backend/compositor timing.
