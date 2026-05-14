@@ -30,6 +30,9 @@ pub struct PlayerTickContext {
 
     /// Настройки scheduler/backpressure для текущего tick.
     pub config: PlayerTickConfig,
+
+    /// Насколько worker опоздал относительно своего регулярного tick interval.
+    pub tick_late_by: Duration,
 }
 
 impl PlayerTickContext {
@@ -39,13 +42,32 @@ impl PlayerTickContext {
         Self {
             now,
             config: PlayerTickConfig::default(),
+            tick_late_by: Duration::ZERO,
         }
     }
 
     /// Создаёт tick context с явно переданным конфигом.
     #[must_use]
     pub const fn with_config(now: Instant, config: PlayerTickConfig) -> Self {
-        Self { now, config }
+        Self {
+            now,
+            config,
+            tick_late_by: Duration::ZERO,
+        }
+    }
+
+    /// Создаёт tick context с worker timing diagnostics для adaptive catch-up.
+    #[must_use]
+    pub const fn with_timing(
+        now: Instant,
+        config: PlayerTickConfig,
+        tick_late_by: Duration,
+    ) -> Self {
+        Self {
+            now,
+            config,
+            tick_late_by,
+        }
     }
 }
 
@@ -58,8 +80,17 @@ pub struct PlayerTickConfig {
     /// Максимум decoded video frames в очереди presentation.
     pub max_video_present_queue: usize,
 
+    /// Минимальный запас decoded frames, ниже которого считаем pipeline starvation-prone.
+    pub min_video_present_queue: usize,
+
+    /// Целевой запас decoded frames в очереди presentation.
+    pub target_video_present_queue: usize,
+
     /// Минимальный запас свободных texture slots перед отправкой новых packets в decoder.
     pub min_texture_slots_available_for_decode: usize,
+
+    /// Целевой запас свободных texture/surface slots для adaptive catch-up.
+    pub target_texture_slots_available_for_decode: usize,
 
     /// Максимум сырых video packets между demuxer и decoder thread.
     pub max_pending_video_packets: usize,
@@ -75,6 +106,12 @@ pub struct PlayerTickConfig {
 
     /// Максимальный decode-ahead относительно audio clock.
     pub max_video_decode_ahead: Duration,
+
+    /// Целевой steady-state decode-ahead относительно audio clock.
+    pub target_video_decode_ahead: Duration,
+
+    /// Дополнительное bounded окно catch-up work после базового tick.
+    pub adaptive_catch_up_time_budget: Duration,
 
     /// Уровень audio buffer, выше которого audio packets временно не декодируются.
     pub audio_buffer_high_water_mark_ms: f64,
@@ -122,12 +159,17 @@ impl Default for PlayerTickConfig {
         Self {
             max_demux_packets_per_tick: 12,
             max_video_present_queue: 8,
+            min_video_present_queue: 2,
+            target_video_present_queue: 4,
             min_texture_slots_available_for_decode: 2,
+            target_texture_slots_available_for_decode: 4,
             max_pending_video_packets: 32,
             max_pending_video_packets_during_audio_catchup: 240,
             max_video_packets_sent_per_tick: 8,
             max_decoded_video_frames_drained_per_tick: 8,
             max_video_decode_ahead: Duration::from_millis(500),
+            target_video_decode_ahead: Duration::from_millis(250),
+            adaptive_catch_up_time_budget: Duration::from_millis(4),
             audio_buffer_high_water_mark_ms: 200.0,
             audio_demux_low_water_mark_ms: 100.0,
             audio_preroll_target_ms: 50.0,
@@ -148,22 +190,35 @@ impl Default for PlayerTickConfig {
 impl From<&AppConfig> for PlayerTickConfig {
     /// Собирает runtime-лимиты playback из пользовательского TOML-config.
     ///
-    /// Низкоуровневые scheduler knobs, которых ещё нет в публичной TOML-схеме,
-    /// остаются на production defaults `player-core`. Пользовательские поля из
-    /// `config` перекрывают те лимиты, которые уже зафиксированы в Phase 5.
+    /// Scheduler knobs читаются из `[video.scheduler]`; старые top-level video
+    /// поля остаются max-границами для present queue, decode-ahead и bounded
+    /// decoder queues.
     fn from(config: &AppConfig) -> Self {
         let defaults = Self::default();
 
         Self {
+            max_demux_packets_per_tick: config.video.scheduler.demux_packets_per_tick,
             max_video_present_queue: config.video.present_queue_frames,
-            max_pending_video_packets: config.video.decoder_packet_channel_frames,
-            max_video_packets_sent_per_tick: config
+            min_video_present_queue: config.video.scheduler.present_queue_min_frames,
+            target_video_present_queue: config.video.scheduler.present_queue_target_frames,
+            min_texture_slots_available_for_decode: config.video.scheduler.surface_free_slots_min,
+            target_texture_slots_available_for_decode: config
                 .video
-                .decoder_packet_channel_frames
-                .min(defaults.max_video_packets_sent_per_tick)
-                .max(1),
-            max_decoded_video_frames_drained_per_tick: config.video.decoder_frame_channel_frames,
+                .scheduler
+                .surface_free_slots_target,
+            max_pending_video_packets: config.video.decoder_packet_channel_frames,
+            max_video_packets_sent_per_tick: config.video.scheduler.video_packets_per_tick,
+            max_decoded_video_frames_drained_per_tick: config
+                .video
+                .scheduler
+                .decoded_frames_per_tick,
             max_video_decode_ahead: Duration::from_millis(config.video.max_decode_ahead_ms),
+            target_video_decode_ahead: Duration::from_millis(
+                config.video.scheduler.decode_ahead_target_ms,
+            ),
+            adaptive_catch_up_time_budget: Duration::from_millis(
+                config.video.scheduler.catch_up_budget_ms,
+            ),
             audio_buffer_high_water_mark_ms: config.audio.buffer_target_ms as f64,
             audio_demux_low_water_mark_ms: (config.audio.buffer_target_ms as f64 * 0.5)
                 .max(config.player.seek.resume_audio_min_buffer_ms as f64),
@@ -297,18 +352,19 @@ impl PlayerSession {
         self.update_position_for_tick(tick_context.config.position_fallback_delta);
 
         if self.is_demuxing_active() && self.pipeline.demuxer.is_some() {
-            read_demux_packets(self, &tick_context.config, &mut tick_result);
+            read_demux_packets(
+                self,
+                &tick_context.config,
+                &mut tick_result,
+                tick_context.config.max_demux_packets_per_tick,
+                None,
+            );
             self.process_pending_audio_packets_with_buffer_limit(
                 tick_context.config.audio_buffer_high_water_mark_ms,
             );
         }
 
-        process_pending_video_packets(
-            self,
-            tick_context.now,
-            &tick_context.config,
-            &mut tick_result,
-        );
+        process_pending_video_packets(self, tick_context, &mut tick_result);
         self.finish_seek_commit_if_ready(
             tick_context.now,
             tick_context.config.seek_commit_timeout,
@@ -422,13 +478,26 @@ fn audio_demux_catchup_needed_for_level(
         && audio_buffer_level_ms < sanitize_audio_demux_low_water_mark(low_water_mark_ms)
 }
 
+/// Проверяет, исчерпано ли bounded окно adaptive catch-up.
+fn catch_up_deadline_reached(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|deadline| Instant::now() >= deadline)
+}
+
 /// Читает новые packets из demuxer в пределах бюджета текущего tick.
 fn read_demux_packets(
     session: &mut PlayerSession,
     tick_config: &PlayerTickConfig,
     tick_result: &mut PlayerTickResult,
-) {
-    for _ in 0..tick_config.max_demux_packets_per_tick {
+    packet_budget: usize,
+    catch_up_deadline: Option<Instant>,
+) -> usize {
+    let mut packets_read = 0usize;
+
+    for _ in 0..packet_budget {
+        if catch_up_deadline_reached(catch_up_deadline) {
+            break;
+        }
+
         let prioritize_audio_catchup = audio_demux_catchup_needed(session, tick_config);
         if prioritize_audio_catchup
             && session.pipeline.pending_video_packets.len() >= tick_config.max_pending_video_packets
@@ -479,6 +548,7 @@ fn read_demux_packets(
             Ok(Some(packet)) => {
                 tick_result.record_demuxed_packet(&packet);
                 route_demuxed_packet(session, packet);
+                packets_read += 1;
             }
             Ok(None) => {
                 session.enter_eof_drain();
@@ -494,6 +564,8 @@ fn read_demux_packets(
             }
         }
     }
+
+    packets_read
 }
 
 /// Перекладывает packet из demuxer в соответствующую pending queue.
@@ -578,6 +650,7 @@ fn can_send_video_packet_to_decoder(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
     packet_pts: Duration,
+    decode_ahead_limit: Duration,
 ) -> bool {
     if !has_texture_capacity_for_decode(session, tick_config) {
         return false;
@@ -591,7 +664,7 @@ fn can_send_video_packet_to_decoder(
     let media_audio_now = saturating_duration_add(session.pipeline.media_clock_base, audio_now);
     let packet_lead = packet_pts.saturating_sub(media_audio_now);
 
-    packet_lead <= tick_config.max_video_decode_ahead
+    packet_lead <= decode_ahead_limit.min(video_decode_ahead_limit(tick_config))
 }
 
 /// Проверяет запас texture slots для ещё одного decoded frame.
@@ -616,7 +689,7 @@ fn texture_capacity_backpressure_reason(
     };
 
     let available_slots = stats.available_slots();
-    if available_slots > tick_config.min_texture_slots_available_for_decode {
+    if available_slots > texture_slot_min_watermark(tick_config) {
         return None;
     }
 
@@ -625,7 +698,7 @@ fn texture_capacity_backpressure_reason(
         texture_in_use = stats.in_use,
         texture_capacity = stats.capacity,
         available_slots,
-        reserve = tick_config.min_texture_slots_available_for_decode,
+        reserve = texture_slot_min_watermark(tick_config),
         waiting_gpu_completion = stats.waiting_gpu_completion,
         waiting_decoder_reuse = stats.waiting_decoder_reuse,
         "Video backpressure: waiting for texture slots"
@@ -646,6 +719,49 @@ fn available_video_present_slots(session: &PlayerSession, tick_config: &PlayerTi
 /// Возвращает безопасный лимит presentation queue.
 fn video_present_queue_limit(tick_config: &PlayerTickConfig) -> usize {
     tick_config.max_video_present_queue.max(1)
+}
+
+/// Возвращает безопасный минимум presentation queue.
+fn video_present_queue_min(tick_config: &PlayerTickConfig) -> usize {
+    tick_config
+        .min_video_present_queue
+        .max(1)
+        .min(video_present_queue_limit(tick_config))
+}
+
+/// Возвращает codec-neutral target presentation queue для steady-state playback.
+fn video_present_queue_target(tick_config: &PlayerTickConfig) -> usize {
+    tick_config
+        .target_video_present_queue
+        .max(video_present_queue_min(tick_config))
+        .min(video_present_queue_limit(tick_config))
+}
+
+/// Возвращает безопасный максимум decode-ahead относительно audio clock.
+fn video_decode_ahead_limit(tick_config: &PlayerTickConfig) -> Duration {
+    tick_config
+        .max_video_decode_ahead
+        .max(Duration::from_millis(1))
+}
+
+/// Возвращает steady-state target decode-ahead относительно audio clock.
+fn video_decode_ahead_target(tick_config: &PlayerTickConfig) -> Duration {
+    tick_config
+        .target_video_decode_ahead
+        .max(Duration::from_millis(1))
+        .min(video_decode_ahead_limit(tick_config))
+}
+
+/// Возвращает безопасный минимальный reserve surface/import slots.
+fn texture_slot_min_watermark(tick_config: &PlayerTickConfig) -> usize {
+    tick_config.min_texture_slots_available_for_decode
+}
+
+/// Возвращает безопасный target reserve surface/import slots.
+fn texture_slot_target_watermark(tick_config: &PlayerTickConfig) -> usize {
+    tick_config
+        .target_texture_slots_available_for_decode
+        .max(texture_slot_min_watermark(tick_config))
 }
 
 /// Возвращает достижимый video preroll для seek resume с учётом размера presentation queue.
@@ -746,11 +862,13 @@ fn drain_decoded_video_frames(
     session: &mut PlayerSession,
     tick_config: &PlayerTickConfig,
     tick_result: &mut PlayerTickResult,
-) {
+    max_frames_to_drain: usize,
+    catch_up_deadline: Option<Instant>,
+) -> usize {
     drain_video_decoder_thread_diagnostics(session, tick_result);
 
     if drain_video_decoder_thread_error(session) {
-        return;
+        return 0;
     }
 
     if session.pipeline.video_decoder_thread.is_none() {
@@ -768,27 +886,29 @@ fn drain_decoded_video_frames(
                 PlayerVideoDropReason::DecoderStarvation,
             );
         }
-        return;
+        return 0;
     }
 
     let playback_can_present = session.can_present_video();
     let receive_budget = if playback_can_present {
-        available_video_present_slots(session, tick_config)
-            .min(tick_config.max_decoded_video_frames_drained_per_tick)
+        available_video_present_slots(session, tick_config).min(max_frames_to_drain)
     } else {
-        usize::MAX
+        max_frames_to_drain
     };
 
     if receive_budget == 0 {
-        return;
+        return 0;
     }
 
     let decoded_frames = {
         let Some(thread) = session.pipeline.video_decoder_thread.as_ref() else {
-            return;
+            return 0;
         };
         let mut decoded_frames = Vec::new();
         for _ in 0..receive_budget {
+            if catch_up_deadline_reached(catch_up_deadline) {
+                break;
+            }
             let Some(frame) = thread.try_recv_frame() else {
                 break;
             };
@@ -801,10 +921,11 @@ fn drain_decoded_video_frames(
         for frame in decoded_frames {
             release_video_texture(session, frame.texture_handle);
         }
-        return;
+        return 0;
     }
     drain_video_decoder_thread_diagnostics(session, tick_result);
 
+    let drained_frame_count = decoded_frames.len();
     for frame in decoded_frames {
         tracing::debug!(
             pts_ms = frame.pts.as_millis(),
@@ -848,6 +969,8 @@ fn drain_decoded_video_frames(
             tracing::debug!("Dropping decoded frame received while playback is paused");
         }
     }
+
+    drained_frame_count
 }
 
 /// Отправляет ограниченное число pending video packets в decoder thread.
@@ -855,14 +978,21 @@ fn send_pending_video_packets_to_decoder(
     session: &mut PlayerSession,
     tick_config: &PlayerTickConfig,
     tick_result: &mut PlayerTickResult,
-) {
+    max_packets_to_send: usize,
+    decode_ahead_limit: Duration,
+    catch_up_deadline: Option<Instant>,
+) -> usize {
     if session.pipeline.video_decoder_thread.is_none() {
-        return;
+        return 0;
     }
 
     let mut sent_packets = 0usize;
 
-    while sent_packets < tick_config.max_video_packets_sent_per_tick {
+    while sent_packets < max_packets_to_send {
+        if catch_up_deadline_reached(catch_up_deadline) {
+            break;
+        }
+
         let available_slots = available_video_present_slots(session, tick_config);
         if available_slots == 0 {
             record_pipeline_pause(
@@ -885,14 +1015,12 @@ fn send_pending_video_packets_to_decoder(
         let packet_keyframe = packet.keyframe;
         let encoded_bytes = packet.encoded_bytes.clone();
 
-        if packet_generation != session.pipeline.seek_generation {
+        if let Some(drop_reason) = pending_video_packet_generation_drop_reason(
+            session.pipeline.seek_generation,
+            packet_generation,
+        ) {
             session.pipeline.pending_video_packets.pop_front();
-            record_video_drop(
-                session,
-                tick_result,
-                packet_pts,
-                PlayerVideoDropReason::StaleGeneration,
-            );
+            record_video_drop(session, tick_result, packet_pts, drop_reason);
             continue;
         }
 
@@ -925,11 +1053,12 @@ fn send_pending_video_packets_to_decoder(
             break;
         }
 
-        if !can_send_video_packet_to_decoder(session, tick_config, packet_pts) {
+        if !can_send_video_packet_to_decoder(session, tick_config, packet_pts, decode_ahead_limit) {
             trace!(
                 pts_ms = packet_pts.as_millis(),
                 audio_ms = session.audio_clock_now().as_millis(),
-                max_ahead_ms = tick_config.max_video_decode_ahead.as_millis(),
+                decode_ahead_limit_ms = decode_ahead_limit.as_millis(),
+                max_ahead_ms = video_decode_ahead_limit(tick_config).as_millis(),
                 "A/V sync: holding video packet to limit decode-ahead"
             );
             break;
@@ -983,6 +1112,8 @@ fn send_pending_video_packets_to_decoder(
 
         sent_packets += 1;
     }
+
+    sent_packets
 }
 
 /// Пропускает inter-frames, пока decoder после flush ждёт новый keyframe.
@@ -1005,6 +1136,14 @@ fn accept_video_packet_for_decoder_bootstrap(
 
     session.pipeline.video_decoder_needs_keyframe = false;
     true
+}
+
+/// Отделяет stale seek generation от late-drop policy.
+fn pending_video_packet_generation_drop_reason(
+    current_generation: u64,
+    packet_generation: u64,
+) -> Option<PlayerVideoDropReason> {
+    (packet_generation != current_generation).then_some(PlayerVideoDropReason::StaleGeneration)
 }
 
 /// Минимальный view pending packet-а для bitstream capability validation.
@@ -1203,6 +1342,7 @@ fn should_drop_front_frame_as_late(
         return false;
     };
     let Some(next_frame) = video_frame_queue.get(1) else {
+        // Без кадра-замены причина опоздания: starvation, а не настоящий late drop.
         return false;
     };
 
@@ -1293,14 +1433,249 @@ fn repeat_present_video_frame(
     }
 }
 
+/// Остаток bounded adaptive work внутри одного tick.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct AdaptiveCatchUpBudget {
+    /// Сколько дополнительных demux packets ещё можно прочитать.
+    demux_packets: usize,
+
+    /// Сколько дополнительных video packets ещё можно отправить decoder thread-у.
+    video_packets: usize,
+
+    /// Сколько дополнительных decoded frames ещё можно принять из decoder thread-а.
+    decoded_frames: usize,
+}
+
+impl AdaptiveCatchUpBudget {
+    /// Проверяет, остался ли хоть один вид catch-up work.
+    #[must_use]
+    const fn has_work(self) -> bool {
+        self.demux_packets > 0 || self.video_packets > 0 || self.decoded_frames > 0
+    }
+}
+
+/// Возвращает deadline дополнительного catch-up окна.
+fn adaptive_catch_up_deadline(now: Instant, tick_config: &PlayerTickConfig) -> Option<Instant> {
+    if tick_config.adaptive_catch_up_time_budget.is_zero() {
+        return None;
+    }
+
+    now.checked_add(tick_config.adaptive_catch_up_time_budget)
+}
+
+/// Считает, сколько frame intervals worker потерял из-за задержки tick-а.
+fn delayed_frame_count(session: &PlayerSession, tick_late_by: Duration) -> usize {
+    if tick_late_by.is_zero() {
+        return 0;
+    }
+
+    let frame_nanos = session
+        .pipeline
+        .video_frame_duration_estimate
+        .as_nanos()
+        .max(1);
+    let late_nanos = tick_late_by.as_nanos();
+    let delayed_frames = late_nanos.saturating_add(frame_nanos.saturating_sub(1)) / frame_nanos;
+
+    delayed_frames.min(usize::MAX as u128) as usize
+}
+
+/// Считает frame deficit, который adaptive catch-up должен попытаться закрыть.
+fn adaptive_catch_up_frame_need(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+    tick_late_by: Duration,
+) -> usize {
+    let queue_depth = session.pipeline.video_frame_queue.len();
+    let target_queue_depth = video_present_queue_target(tick_config);
+    let target_deficit = target_queue_depth.saturating_sub(queue_depth);
+    let min_deficit = video_present_queue_min(tick_config).saturating_sub(queue_depth);
+    let delayed_frames = delayed_frame_count(session, tick_late_by);
+    let delayed_target_deficit = target_queue_depth
+        .saturating_add(delayed_frames)
+        .min(video_present_queue_limit(tick_config))
+        .saturating_sub(queue_depth);
+
+    target_deficit.max(min_deficit).max(delayed_target_deficit)
+}
+
+/// Проверяет, нужен ли adaptive catch-up и есть ли куда складывать decoded frames.
+fn adaptive_catch_up_needed(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+    tick_late_by: Duration,
+) -> bool {
+    if !session.can_present_video() {
+        return false;
+    }
+
+    if available_video_present_slots(session, tick_config) == 0 {
+        return false;
+    }
+
+    adaptive_catch_up_frame_need(session, tick_config, tick_late_by) > 0
+}
+
+/// Формирует operation budgets для catch-up из user-configured базовых budgets.
+fn adaptive_catch_up_budget(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+    tick_late_by: Duration,
+) -> AdaptiveCatchUpBudget {
+    let frame_need = adaptive_catch_up_frame_need(session, tick_config, tick_late_by)
+        .min(available_video_present_slots(session, tick_config));
+
+    AdaptiveCatchUpBudget {
+        demux_packets: tick_config
+            .max_demux_packets_per_tick
+            .saturating_add(frame_need),
+        video_packets: tick_config
+            .max_video_packets_sent_per_tick
+            .saturating_add(frame_need)
+            .min(available_video_present_slots(session, tick_config)),
+        decoded_frames: tick_config
+            .max_decoded_video_frames_drained_per_tick
+            .saturating_add(frame_need)
+            .min(available_video_present_slots(session, tick_config)),
+    }
+}
+
+/// Проверяет, есть ли запас surface/import slots для дополнительного decode work.
+fn has_texture_capacity_for_catch_up(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+) -> bool {
+    let Some(ref thread) = session.pipeline.video_decoder_thread else {
+        return false;
+    };
+
+    let Some(stats) = thread.texture_pool_stats() else {
+        return true;
+    };
+
+    stats.available_slots() > texture_slot_target_watermark(tick_config)
+}
+
+/// Делает один проход adaptive catch-up без смешивания scheduling и rendering.
+fn run_adaptive_catch_up_pass(
+    session: &mut PlayerSession,
+    tick_config: &PlayerTickConfig,
+    tick_result: &mut PlayerTickResult,
+    budget: &mut AdaptiveCatchUpBudget,
+    deadline: Instant,
+) -> bool {
+    let mut made_progress = false;
+
+    if budget.decoded_frames > 0
+        && session.pipeline.video_decoder_thread.is_some()
+        && available_video_present_slots(session, tick_config) > 0
+    {
+        let drain_budget = budget
+            .decoded_frames
+            .min(tick_config.max_decoded_video_frames_drained_per_tick);
+        let drained_frames = drain_decoded_video_frames(
+            session,
+            tick_config,
+            tick_result,
+            drain_budget,
+            Some(deadline),
+        );
+        budget.decoded_frames = budget.decoded_frames.saturating_sub(drained_frames);
+        made_progress |= drained_frames > 0;
+    }
+
+    if budget.video_packets > 0
+        && session.is_demuxing_active()
+        && has_texture_capacity_for_catch_up(session, tick_config)
+    {
+        let send_budget = budget
+            .video_packets
+            .min(tick_config.max_video_packets_sent_per_tick);
+        let sent_packets = send_pending_video_packets_to_decoder(
+            session,
+            tick_config,
+            tick_result,
+            send_budget,
+            video_decode_ahead_limit(tick_config),
+            Some(deadline),
+        );
+        budget.video_packets = budget.video_packets.saturating_sub(sent_packets);
+        made_progress |= sent_packets > 0;
+    }
+
+    if budget.demux_packets > 0 && session.is_demuxing_active() {
+        let demux_budget = budget
+            .demux_packets
+            .min(tick_config.max_demux_packets_per_tick);
+        let demuxed_packets = read_demux_packets(
+            session,
+            tick_config,
+            tick_result,
+            demux_budget,
+            Some(deadline),
+        );
+        budget.demux_packets = budget.demux_packets.saturating_sub(demuxed_packets);
+        made_progress |= demuxed_packets > 0;
+
+        if demuxed_packets > 0 {
+            session.process_pending_audio_packets_with_buffer_limit(
+                tick_config.audio_buffer_high_water_mark_ms,
+            );
+        }
+    }
+
+    made_progress
+}
+
+/// Догоняет pipeline после короткого latency spike, но только в bounded окне.
+fn run_adaptive_catch_up(
+    session: &mut PlayerSession,
+    tick_context: PlayerTickContext,
+    tick_result: &mut PlayerTickResult,
+) {
+    if !adaptive_catch_up_needed(session, &tick_context.config, tick_context.tick_late_by) {
+        return;
+    }
+
+    let Some(deadline) = adaptive_catch_up_deadline(tick_context.now, &tick_context.config) else {
+        return;
+    };
+
+    let mut budget =
+        adaptive_catch_up_budget(session, &tick_context.config, tick_context.tick_late_by);
+
+    while budget.has_work()
+        && !catch_up_deadline_reached(Some(deadline))
+        && adaptive_catch_up_needed(session, &tick_context.config, tick_context.tick_late_by)
+    {
+        let made_progress = run_adaptive_catch_up_pass(
+            session,
+            &tick_context.config,
+            tick_result,
+            &mut budget,
+            deadline,
+        );
+
+        if !made_progress {
+            break;
+        }
+    }
+}
+
 /// Обрабатывает pending video packets: приём кадров, backpressure и A/V sync.
 fn process_pending_video_packets(
     session: &mut PlayerSession,
-    now: Instant,
-    tick_config: &PlayerTickConfig,
+    tick_context: PlayerTickContext,
     tick_result: &mut PlayerTickResult,
 ) {
-    drain_decoded_video_frames(session, tick_config, tick_result);
+    let tick_config = &tick_context.config;
+
+    let base_drain_budget = if session.can_present_video() {
+        tick_config.max_decoded_video_frames_drained_per_tick
+    } else {
+        usize::MAX
+    };
+    drain_decoded_video_frames(session, tick_config, tick_result, base_drain_budget, None);
 
     let playback_can_present = session.can_present_video();
     if !playback_can_present {
@@ -1308,9 +1683,17 @@ fn process_pending_video_packets(
     }
 
     if session.is_demuxing_active() {
-        send_pending_video_packets_to_decoder(session, tick_config, tick_result);
+        send_pending_video_packets_to_decoder(
+            session,
+            tick_config,
+            tick_result,
+            tick_config.max_video_packets_sent_per_tick,
+            video_decode_ahead_target(tick_config),
+            None,
+        );
     }
 
+    run_adaptive_catch_up(session, tick_context, tick_result);
     trim_video_present_queue(session, tick_config, tick_result);
     let scheduler_started_at = Instant::now();
 
@@ -1324,11 +1707,12 @@ fn process_pending_video_packets(
     let audio_now = session.audio_clock_now();
     if audio_now != session.pipeline.last_audio_clock {
         session.pipeline.last_audio_clock = audio_now;
-        session.pipeline.last_audio_clock_change_at = now;
+        session.pipeline.last_audio_clock_change_at = tick_context.now;
     }
 
-    let audio_stall_elapsed =
-        now.saturating_duration_since(session.pipeline.last_audio_clock_change_at);
+    let audio_stall_elapsed = tick_context
+        .now
+        .saturating_duration_since(session.pipeline.last_audio_clock_change_at);
     let audio_stalled = audio_now >= tick_config.audio_stall_min_position
         && audio_stall_elapsed >= tick_config.audio_stall_timeout;
 
@@ -1422,6 +1806,8 @@ fn process_pending_video_packets(
         None,
         None,
     );
+
+    run_adaptive_catch_up(session, tick_context, tick_result);
 }
 
 /// Записывает drop одновременно в tick telemetry и session diagnostics.
@@ -1659,6 +2045,113 @@ mod tests {
             50.0
         ));
         assert!(!audio_demux_catchup_needed_for_level(true, None, 50.0));
+    }
+
+    #[test]
+    fn scheduler_requests_catch_up_after_one_delayed_tick() {
+        let mut session = PlayerSession::new();
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        let tick_config = PlayerTickConfig::default();
+        let frame_duration = session.pipeline.video_frame_duration_estimate;
+
+        for frame_index in 0..video_present_queue_target(&tick_config) {
+            session.pipeline.video_frame_queue.push_back(decoded_frame(
+                frame_duration.mul_f64(frame_index as f64),
+                frame_index as u64,
+            ));
+        }
+
+        assert_eq!(
+            adaptive_catch_up_frame_need(&session, &tick_config, frame_duration),
+            1
+        );
+        assert!(adaptive_catch_up_needed(
+            &session,
+            &tick_config,
+            frame_duration
+        ));
+    }
+
+    #[test]
+    fn scheduler_allows_decoder_burst_after_delay() {
+        let mut session = PlayerSession::new();
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        let tick_config = PlayerTickConfig {
+            max_decoded_video_frames_drained_per_tick: 2,
+            max_video_present_queue: 8,
+            min_video_present_queue: 2,
+            target_video_present_queue: 4,
+            ..PlayerTickConfig::default()
+        };
+
+        let budget = adaptive_catch_up_budget(
+            &session,
+            &tick_config,
+            session.pipeline.video_frame_duration_estimate,
+        );
+
+        assert!(budget.decoded_frames > tick_config.max_decoded_video_frames_drained_per_tick);
+        assert_eq!(budget.decoded_frames, 7);
+    }
+
+    #[test]
+    fn scheduler_requests_catch_up_when_present_queue_is_near_empty() {
+        let mut session = PlayerSession::new();
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        let tick_config = PlayerTickConfig {
+            min_video_present_queue: 2,
+            target_video_present_queue: 4,
+            max_video_present_queue: 8,
+            ..PlayerTickConfig::default()
+        };
+        session
+            .pipeline
+            .video_frame_queue
+            .push_back(decoded_frame(Duration::ZERO, 1));
+
+        assert_eq!(
+            adaptive_catch_up_frame_need(&session, &tick_config, Duration::ZERO),
+            3
+        );
+        assert!(adaptive_catch_up_needed(
+            &session,
+            &tick_config,
+            Duration::ZERO
+        ));
+    }
+
+    #[test]
+    fn scheduler_does_not_catch_up_when_present_queue_is_full() {
+        let mut session = PlayerSession::new();
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        let tick_config = PlayerTickConfig {
+            max_video_present_queue: 4,
+            min_video_present_queue: 2,
+            target_video_present_queue: 3,
+            ..PlayerTickConfig::default()
+        };
+
+        for frame_index in 0..video_present_queue_limit(&tick_config) {
+            session.pipeline.video_frame_queue.push_back(decoded_frame(
+                Duration::from_millis(frame_index as u64),
+                frame_index as u64,
+            ));
+        }
+
+        assert!(!adaptive_catch_up_needed(
+            &session,
+            &tick_config,
+            session.pipeline.video_frame_duration_estimate
+        ));
+    }
+
+    #[test]
+    fn seek_generation_transition_is_not_counted_as_late_drop() {
+        assert_eq!(
+            pending_video_packet_generation_drop_reason(2, 1),
+            Some(PlayerVideoDropReason::StaleGeneration)
+        );
+        assert_eq!(pending_video_packet_generation_drop_reason(2, 2), None);
     }
 
     #[test]

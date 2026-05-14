@@ -1403,13 +1403,17 @@ impl PlayerWorkerRuntime {
     /// Выполняет playback tick, если пришло время.
     fn run_tick_if_due(&mut self) {
         let now = Instant::now();
-        if now.duration_since(self.last_tick_at) < self.config.tick_interval {
+        let elapsed_since_last_tick = now.saturating_duration_since(self.last_tick_at);
+        if elapsed_since_last_tick < self.config.tick_interval {
             return;
         }
 
-        let tick_result = self
-            .session
-            .tick(PlayerTickContext::with_config(now, self.config.tick_config));
+        let tick_late_by = elapsed_since_last_tick.saturating_sub(self.config.tick_interval);
+        let tick_result = self.session.tick(PlayerTickContext::with_timing(
+            now,
+            self.config.tick_config,
+            tick_late_by,
+        ));
         self.last_tick_at = now;
         self.publish_tick_result(tick_result);
         self.log_diagnostics_summary_if_due(now);

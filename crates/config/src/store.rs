@@ -202,6 +202,15 @@ mod tests {
         assert_eq!(config.video.decoder_ready_queue_frames, 8);
         assert_eq!(config.video.decoder_surface_pool_frames, 24);
         assert_eq!(config.video.zero_copy_surface_pool_slots, 24);
+        assert_eq!(config.video.scheduler.demux_packets_per_tick, 12);
+        assert_eq!(config.video.scheduler.video_packets_per_tick, 8);
+        assert_eq!(config.video.scheduler.decoded_frames_per_tick, 8);
+        assert_eq!(config.video.scheduler.catch_up_budget_ms, 4);
+        assert_eq!(config.video.scheduler.present_queue_min_frames, 2);
+        assert_eq!(config.video.scheduler.present_queue_target_frames, 4);
+        assert_eq!(config.video.scheduler.decode_ahead_target_ms, 250);
+        assert_eq!(config.video.scheduler.surface_free_slots_min, 2);
+        assert_eq!(config.video.scheduler.surface_free_slots_target, 4);
         assert_eq!(config.network.memory_cache_mb, 128);
         assert_eq!(config.network.read_ahead_mb, 64);
         assert_eq!(config.network.connect_timeout_ms, 15_000);
@@ -244,6 +253,60 @@ mod tests {
         );
     }
 
+    /// Проверяет, что scheduler budget не может быть нулевым.
+    #[test]
+    fn invalid_scheduler_budget_fails_validation() {
+        let mut config = AppConfig::default();
+        config.video.scheduler.demux_packets_per_tick = 0;
+
+        let error = config
+            .validate()
+            .expect_err("zero scheduler demux budget rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("video.scheduler.demux_packets_per_tick")
+        );
+    }
+
+    /// Проверяет cross-field min/target/max для presentation queue.
+    #[test]
+    fn invalid_scheduler_present_queue_target_fails_validation() {
+        let mut config = AppConfig::default();
+        config.video.present_queue_frames = 4;
+        config.video.scheduler.present_queue_min_frames = 3;
+        config.video.scheduler.present_queue_target_frames = 5;
+
+        let error = config
+            .validate()
+            .expect_err("present queue target above max rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("video.scheduler.present_queue_target_frames")
+        );
+    }
+
+    /// Проверяет, что decode-ahead target не может превышать max.
+    #[test]
+    fn invalid_scheduler_decode_ahead_target_fails_validation() {
+        let mut config = AppConfig::default();
+        config.video.max_decode_ahead_ms = 100;
+        config.video.scheduler.decode_ahead_target_ms = 200;
+
+        let error = config
+            .validate()
+            .expect_err("decode ahead target above max rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("video.scheduler.decode_ahead_target_ms")
+        );
+    }
+
     /// Проверяет первый запуск без существующего config-файла.
     #[test]
     fn missing_config_is_created_with_defaults() {
@@ -269,6 +332,12 @@ mod tests {
         assert!(created_toml.contains("max_consecutive_corrupted_packets = 64"));
         assert!(created_toml.contains("decoder_packet_channel_frames = 32"));
         assert!(created_toml.contains("# Bounded очередь packets"));
+        assert!(created_toml.contains("[video.scheduler]"));
+        assert!(created_toml.contains("# Настройки worker scheduler-а"));
+        assert!(created_toml.contains("demux_packets_per_tick = 12"));
+        assert!(created_toml.contains("present_queue_target_frames = 4"));
+        assert!(created_toml.contains("decode_ahead_target_ms = 250"));
+        assert!(created_toml.contains("surface_free_slots_target = 4"));
         assert!(created_toml.contains("# RAM cache budget"));
         assert!(created_toml.contains("memory_cache_mb = 128"));
         assert!(created_toml.contains("read_ahead_mb = 64"));

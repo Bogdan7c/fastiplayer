@@ -170,6 +170,56 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "[video.scheduler]",
+        "# Настройки worker scheduler-а для bounded catch-up после latency spike.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "demux_packets_per_tick = 12",
+        "# Базовый budget чтения container packets за один worker tick.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "video_packets_per_tick = 8",
+        "# Базовый budget отправки video packets в decoder thread за tick.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "decoded_frames_per_tick = 8",
+        "# Базовый budget приёма decoded frames из decoder thread за tick.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "catch_up_budget_ms = 4",
+        "# Дополнительное bounded окно catch-up work после обычного tick.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "present_queue_min_frames = 2",
+        "# Минимальный запас ready frames, ниже которого diagnostics считает starvation.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "present_queue_target_frames = 4",
+        "# Целевой запас ready frames; максимум задаёт video.present_queue_frames.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "decode_ahead_target_ms = 250",
+        "# Целевой video decode-ahead; максимум задаёт video.max_decode_ahead_ms.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "surface_free_slots_min = 2",
+        "# Минимальный резерв свободных zero-copy surface/import slots перед decode.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "surface_free_slots_target = 4",
+        "# Целевой резерв surface/import slots для adaptive catch-up.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "[youtube]",
         "# Настройки YouTube/service adapter-а.",
     );
@@ -376,6 +426,9 @@ pub struct VideoConfig {
 
     /// Количество zero-copy external import slots.
     pub zero_copy_surface_pool_slots: usize,
+
+    /// Настройки worker scheduler-а и bounded catch-up policy.
+    pub scheduler: VideoSchedulerConfig,
 }
 
 impl Default for VideoConfig {
@@ -391,6 +444,56 @@ impl Default for VideoConfig {
             decoder_ready_queue_frames: 8,
             decoder_surface_pool_frames: 24,
             zero_copy_surface_pool_slots: 24,
+            scheduler: VideoSchedulerConfig::default(),
+        }
+    }
+}
+
+/// Scheduler-настройки video pipeline без codec/backend-specific имён.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct VideoSchedulerConfig {
+    /// Базовый budget чтения container packets за один worker tick.
+    pub demux_packets_per_tick: usize,
+
+    /// Базовый budget отправки video packets в decoder thread за tick.
+    pub video_packets_per_tick: usize,
+
+    /// Базовый budget приёма decoded frames из decoder thread за tick.
+    pub decoded_frames_per_tick: usize,
+
+    /// Дополнительное bounded окно catch-up work после обычного tick.
+    pub catch_up_budget_ms: u64,
+
+    /// Минимальный запас ready frames, ниже которого pipeline считается starvation-prone.
+    pub present_queue_min_frames: usize,
+
+    /// Целевой запас ready frames; max задаётся `VideoConfig::present_queue_frames`.
+    pub present_queue_target_frames: usize,
+
+    /// Целевой decode-ahead; max задаётся `VideoConfig::max_decode_ahead_ms`.
+    pub decode_ahead_target_ms: u64,
+
+    /// Минимальный резерв свободных zero-copy surface/import slots перед decode.
+    pub surface_free_slots_min: usize,
+
+    /// Целевой резерв свободных zero-copy surface/import slots для catch-up.
+    pub surface_free_slots_target: usize,
+}
+
+impl Default for VideoSchedulerConfig {
+    /// Возвращает 60 Hz defaults с запасом для короткого catch-up, но без unbounded work.
+    fn default() -> Self {
+        Self {
+            demux_packets_per_tick: 12,
+            video_packets_per_tick: 8,
+            decoded_frames_per_tick: 8,
+            catch_up_budget_ms: 4,
+            present_queue_min_frames: 2,
+            present_queue_target_frames: 4,
+            decode_ahead_target_ms: 250,
+            surface_free_slots_min: 2,
+            surface_free_slots_target: 4,
         }
     }
 }

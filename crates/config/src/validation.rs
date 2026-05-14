@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crate::{
     AppConfig, CURRENT_SCHEMA_VERSION, ConfigError, ConfigResult, HdrToSdrConfig,
     HdrToSdrOperatorConfig, PlayerDemuxConfig, PlayerSeekConfig, RenderColorAdjustmentConfig,
-    VideoCodec,
+    VideoCodec, VideoSchedulerConfig,
 };
 
 /// Минимальный decode-ahead: ноль ломает смысл backpressure окна.
@@ -29,6 +29,18 @@ const MAX_DECODER_SURFACE_POOL_FRAMES: usize = 64;
 
 /// Верхний предел zero-copy import slots.
 const MAX_ZERO_COPY_SURFACE_POOL_SLOTS: usize = 64;
+
+/// Верхний предел demux work за tick, чтобы ошибочный config не блокировал worker.
+const MAX_SCHEDULER_DEMUX_PACKETS_PER_TICK: usize = 512;
+
+/// Верхний предел packet submit work за tick.
+const MAX_SCHEDULER_VIDEO_PACKETS_PER_TICK: usize = MAX_DECODER_QUEUE_FRAMES;
+
+/// Верхний предел drain work за tick.
+const MAX_SCHEDULER_DECODED_FRAMES_PER_TICK: usize = MAX_DECODER_QUEUE_FRAMES;
+
+/// Верхний предел catch-up окна; worker не должен занимать весь frame interval.
+const MAX_SCHEDULER_CATCH_UP_BUDGET_MS: u64 = 16;
 
 /// Минимальный audio high-water mark.
 const MIN_AUDIO_BUFFER_TARGET_MS: u64 = 1;
@@ -199,8 +211,95 @@ fn validate_video_section(config: &AppConfig) -> ConfigResult<()> {
         MIN_DECODER_QUEUE_FRAMES,
         MAX_ZERO_COPY_SURFACE_POOL_SLOTS,
     )?;
+    validate_video_scheduler_config(config)?;
 
     Ok(())
+}
+
+/// Проверяет scheduler budgets и cross-field watermarks video pipeline-а.
+fn validate_video_scheduler_config(config: &AppConfig) -> ConfigResult<()> {
+    let scheduler = &config.video.scheduler;
+
+    validate_usize_range(
+        "video.scheduler.demux_packets_per_tick",
+        scheduler.demux_packets_per_tick,
+        1,
+        MAX_SCHEDULER_DEMUX_PACKETS_PER_TICK,
+    )?;
+    validate_usize_range(
+        "video.scheduler.video_packets_per_tick",
+        scheduler.video_packets_per_tick,
+        1,
+        MAX_SCHEDULER_VIDEO_PACKETS_PER_TICK,
+    )?;
+    validate_usize_range(
+        "video.scheduler.decoded_frames_per_tick",
+        scheduler.decoded_frames_per_tick,
+        1,
+        MAX_SCHEDULER_DECODED_FRAMES_PER_TICK,
+    )?;
+    validate_u64_range(
+        "video.scheduler.catch_up_budget_ms",
+        scheduler.catch_up_budget_ms,
+        1,
+        MAX_SCHEDULER_CATCH_UP_BUDGET_MS,
+    )?;
+    validate_scheduler_present_queue_watermarks(scheduler, config.video.present_queue_frames)?;
+    validate_scheduler_decode_ahead_watermarks(scheduler, config.video.max_decode_ahead_ms)?;
+    validate_scheduler_surface_watermarks(scheduler, config.video.zero_copy_surface_pool_slots)?;
+
+    Ok(())
+}
+
+/// Проверяет min/target/max для presentation queue.
+fn validate_scheduler_present_queue_watermarks(
+    scheduler: &VideoSchedulerConfig,
+    present_queue_max_frames: usize,
+) -> ConfigResult<()> {
+    validate_usize_range(
+        "video.scheduler.present_queue_min_frames",
+        scheduler.present_queue_min_frames,
+        1,
+        present_queue_max_frames,
+    )?;
+    validate_usize_range(
+        "video.scheduler.present_queue_target_frames",
+        scheduler.present_queue_target_frames,
+        scheduler.present_queue_min_frames,
+        present_queue_max_frames,
+    )
+}
+
+/// Проверяет target/max для decode-ahead относительно audio clock.
+fn validate_scheduler_decode_ahead_watermarks(
+    scheduler: &VideoSchedulerConfig,
+    decode_ahead_max_ms: u64,
+) -> ConfigResult<()> {
+    validate_u64_range(
+        "video.scheduler.decode_ahead_target_ms",
+        scheduler.decode_ahead_target_ms,
+        MIN_DECODE_AHEAD_MS,
+        decode_ahead_max_ms,
+    )
+}
+
+/// Проверяет watermarks свободных zero-copy surface/import slots.
+fn validate_scheduler_surface_watermarks(
+    scheduler: &VideoSchedulerConfig,
+    zero_copy_surface_pool_slots: usize,
+) -> ConfigResult<()> {
+    validate_usize_range(
+        "video.scheduler.surface_free_slots_min",
+        scheduler.surface_free_slots_min,
+        0,
+        zero_copy_surface_pool_slots,
+    )?;
+    validate_usize_range(
+        "video.scheduler.surface_free_slots_target",
+        scheduler.surface_free_slots_target,
+        scheduler.surface_free_slots_min,
+        zero_copy_surface_pool_slots,
+    )
 }
 
 /// Проверяет audio section.

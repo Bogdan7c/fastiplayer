@@ -61,6 +61,22 @@ hardware_decode_only = true
 preferred_backend = "auto"
 max_decode_ahead_ms = 500
 present_queue_frames = 8
+decoder_packet_channel_frames = 32
+decoder_frame_channel_frames = 8
+decoder_ready_queue_frames = 8
+decoder_surface_pool_frames = 24
+zero_copy_surface_pool_slots = 24
+
+[video.scheduler]
+demux_packets_per_tick = 12
+video_packets_per_tick = 8
+decoded_frames_per_tick = 8
+catch_up_budget_ms = 4
+present_queue_min_frames = 2
+present_queue_target_frames = 4
+decode_ahead_target_ms = 250
+surface_free_slots_min = 2
+surface_free_slots_target = 4
 
 [render]
 profile = "vulkan"

@@ -18,7 +18,7 @@ pub use schema::{
     AppConfig, AudioConfig, CURRENT_SCHEMA_VERSION, HdrToSdrConfig, HdrToSdrOperatorConfig,
     NetworkConfig, OpenGlesConfig, PausedCommitBehavior, PlayerConfig, PlayerDemuxConfig,
     PlayerSeekConfig, RenderColorAdjustmentConfig, RenderConfig, RenderProfile, ToneMappingMode,
-    UiConfig, VideoBackendPreference, VideoCodec, VideoConfig, VulkanConfig, VulkanPresentMode,
-    YoutubeConfig,
+    UiConfig, VideoBackendPreference, VideoCodec, VideoConfig, VideoSchedulerConfig, VulkanConfig,
+    VulkanPresentMode, YoutubeConfig,
 };
 pub use store::{LoadedConfig, load_from_path, load_or_create, load_or_create_at};
