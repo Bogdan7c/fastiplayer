@@ -26,6 +26,7 @@ use std::sync::{
     mpsc::{self, Receiver, TryRecvError},
 };
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use capability_core::CapabilityScanner;
@@ -39,12 +40,35 @@ use rustiplayer_config::{AppConfig, HdrToSdrOperatorConfig};
 use tracing::{debug, info, instrument, warn};
 use video_core::DecodedPixelFormat;
 use winit::{
-    application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
-    event_loop::ActiveEventLoop, window::Window,
+    application::ApplicationHandler,
+    dpi::PhysicalSize,
+    event::WindowEvent,
+    event_loop::{ActiveEventLoop, ControlFlow},
+    window::Window,
 };
 
 use crate::state::AppState;
 use crate::telemetry::{Telemetry, VideoDropReason};
+
+/// Интервал polling-а фоновой подготовки YouTube, когда playback ещё не активен.
+const YOUTUBE_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Решение render pass-а о том, нужен ли следующий redraw без внешнего window event-а.
+#[derive(Debug, Clone, Copy)]
+struct RedrawPacing {
+    /// Playback/seek/opening state требует непрерывного render loop-а.
+    continuous: bool,
+
+    /// Worker command или egui попросили ещё один redraw для доставки нового состояния.
+    follow_up: bool,
+}
+
+impl RedrawPacing {
+    /// Возвращает `true`, если следующий redraw надо запросить сразу.
+    const fn wants_immediate_redraw(self) -> bool {
+        self.continuous || self.follow_up
+    }
+}
 
 /// Media, которое нужно автоматически открыть после создания окна.
 enum InitialMedia {
@@ -165,6 +189,9 @@ struct App {
 
     /// Валидированная пользовательская конфигурация.
     app_config: AppConfig,
+
+    /// Ближайшее время, когда нужно снова проверить background YouTube job.
+    next_youtube_startup_poll_at: Option<Instant>,
 }
 
 impl App {
@@ -185,6 +212,7 @@ impl App {
             youtube_startup_job: None,
             startup_error,
             app_config,
+            next_youtube_startup_poll_at: None,
         }
     }
 
@@ -264,6 +292,7 @@ impl App {
             &mut app_state,
             &mut self.startup_error,
         );
+        self.refresh_youtube_startup_poll_deadline();
 
         // Shell получает read-only snapshot без доступа к mutable playback internals.
         let _player_snapshot = app_state.player_snapshot();
@@ -288,6 +317,7 @@ impl App {
     /// Запускает background resolve для CLI YouTube URL и сразу обновляет UI state.
     fn start_youtube_startup_job(&mut self, source_url: String, app_state: &mut AppState) {
         app_state.set_startup_pending("Подготовка YouTube stream...".to_string());
+        self.next_youtube_startup_poll_at = None;
         match YoutubeStartupJob::spawn(source_url, self.app_config.clone()) {
             Ok(job) => {
                 self.startup_error = None;
@@ -298,8 +328,60 @@ impl App {
                 let startup_error = format!("NetworkError: YouTube error: {error}");
                 self.startup_error = Some(startup_error.clone());
                 app_state.set_startup_error(startup_error);
+                self.next_youtube_startup_poll_at = None;
             }
         }
+    }
+
+    /// Сбрасывает deadline polling-а, когда background startup job уже завершён.
+    fn refresh_youtube_startup_poll_deadline(&mut self) {
+        if self.youtube_startup_job.is_none() {
+            self.next_youtube_startup_poll_at = None;
+        }
+    }
+
+    /// Применяет pacing после render pass-а.
+    fn apply_redraw_pacing(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: &Window,
+        pacing: RedrawPacing,
+    ) {
+        if pacing.continuous {
+            event_loop.set_control_flow(ControlFlow::Poll);
+            window.request_redraw();
+            return;
+        }
+
+        if pacing.wants_immediate_redraw() {
+            event_loop.set_control_flow(ControlFlow::Wait);
+            window.request_redraw();
+            return;
+        }
+
+        self.configure_idle_control_flow(event_loop);
+    }
+
+    /// Настраивает idle ожидание: обычный Wait или timed wakeup для background startup.
+    fn configure_idle_control_flow(&mut self, event_loop: &ActiveEventLoop) {
+        if self.youtube_startup_job.is_none() {
+            self.next_youtube_startup_poll_at = None;
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
+
+        let deadline = self
+            .next_youtube_startup_poll_at
+            .unwrap_or_else(|| Instant::now() + YOUTUBE_STARTUP_POLL_INTERVAL);
+        self.next_youtube_startup_poll_at = Some(deadline);
+        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+    }
+
+    /// Возвращает `true`, если shell уже держит continuous redraw из-за playback.
+    fn has_continuous_redraw(&self) -> bool {
+        self.app_state
+            .as_ref()
+            .is_some_and(AppState::wants_continuous_redraw)
     }
 }
 
@@ -393,14 +475,16 @@ impl ApplicationHandler for App {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        let (Some(window), Some(renderer), Some(app_state)) =
-            (&self.window, &mut self.renderer, &mut self.app_state)
-        else {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let (Some(renderer), Some(app_state)) = (&mut self.renderer, &mut self.app_state) else {
             return;
         };
 
         // Передаём событие в egui_winit для обработки ввода
-        let egui_response = app_state.egui_winit_state.on_window_event(window, &event);
+        let egui_response = app_state.egui_winit_state.on_window_event(&window, &event);
+        let redraw_after_event = should_request_redraw_after_window_event(&event);
 
         // Escape во время pointer scrub завершает scrub, а не закрывает окно.
         let escape_pressed = matches!(
@@ -423,6 +507,9 @@ impl ApplicationHandler for App {
 
         // Если egui потребил событие (например, клик по кнопке), не обрабатываем дальше
         if egui_response.consumed {
+            if redraw_after_event {
+                window.request_redraw();
+            }
             return;
         }
 
@@ -431,6 +518,7 @@ impl ApplicationHandler for App {
                 info!("Закрытие окна по запросу пользователя");
                 self.drop_runtime();
                 event_loop.exit();
+                return;
             }
 
             WindowEvent::Resized(PhysicalSize { width, height }) => {
@@ -456,9 +544,10 @@ impl ApplicationHandler for App {
                     info!("Выход по Escape");
                     self.drop_runtime();
                     event_loop.exit();
+                    return;
                 }
                 other => {
-                    app_state.handle_hotkeys(window, other, egui_response.consumed);
+                    app_state.handle_hotkeys(&window, other, egui_response.consumed);
                 }
             },
 
@@ -468,17 +557,54 @@ impl ApplicationHandler for App {
                     app_state,
                     &mut self.startup_error,
                 );
-                render_frame(&self.telemetry, window, renderer, app_state);
+                let pacing = render_frame(&self.telemetry, &window, renderer, app_state);
+                self.refresh_youtube_startup_poll_deadline();
+                self.apply_redraw_pacing(event_loop, &window, pacing);
+                return;
             }
 
             _ => {}
         }
 
-        // Запрашиваем следующий кадр для непрерывного рендеринга
-        if let Some(window) = &self.window {
+        if redraw_after_event {
             window.request_redraw();
         }
     }
+
+    /// Перед idle wait будит shell только для timed background job polling-а.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.has_continuous_redraw() {
+            event_loop.set_control_flow(ControlFlow::Poll);
+            return;
+        }
+
+        if self.youtube_startup_job.is_none() {
+            self.next_youtube_startup_poll_at = None;
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
+
+        let now = Instant::now();
+        let deadline = self.next_youtube_startup_poll_at.unwrap_or(now);
+        if now >= deadline {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+            self.next_youtube_startup_poll_at = Some(now + YOUTUBE_STARTUP_POLL_INTERVAL);
+        }
+
+        if let Some(next_deadline) = self.next_youtube_startup_poll_at {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next_deadline));
+        }
+    }
+}
+
+/// Возвращает `true`, если window/input событие должно дать один redraw в Wait mode.
+fn should_request_redraw_after_window_event(event: &WindowEvent) -> bool {
+    !matches!(
+        event,
+        WindowEvent::RedrawRequested | WindowEvent::CloseRequested
+    )
 }
 
 /// Переносит результат playback worker tick в shell telemetry.
@@ -547,8 +673,8 @@ fn render_frame(
     window: &Window,
     renderer: &mut Renderer,
     app_state: &mut AppState,
-) {
-    let frame_start = std::time::Instant::now();
+) -> RedrawPacing {
+    let frame_start = Instant::now();
 
     // Получаем ввод от egui_winit
     let egui_input = app_state.egui_winit_state.take_egui_input(window);
@@ -557,6 +683,7 @@ fn render_frame(
 
     // Рендерим egui UI — получаем paint jobs и texture updates
     let egui_full_output = app_state.render_ui(window, egui_input);
+    let egui_requested_repaint = app_state.egui_ctx.has_requested_repaint();
 
     // Обработка platform output (курсор, буфер обмена и т.д.)
     app_state
@@ -669,6 +796,11 @@ fn render_frame(
     let frame_duration = frame_start.elapsed();
     let frame_time_ms = frame_duration.as_secs_f64() * 1000.0;
     telemetry.update_fps(frame_time_ms);
+
+    RedrawPacing {
+        continuous: app_state.wants_continuous_redraw(),
+        follow_up: app_state.take_pending_worker_redraw() || egui_requested_repaint,
+    }
 }
 
 /// Точка входа приложения.
@@ -703,8 +835,8 @@ fn main() -> Result<()> {
         .build()
         .context("Не удалось создать event loop")?;
 
-    // ControlFlow::Poll — непрерывный рендеринг (vsync контролируется present mode)
-    event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+    // Idle default — Wait; playback включает Poll только на активном render loop-е.
+    event_loop.set_control_flow(ControlFlow::Wait);
 
     let (initial_media, cli_startup_error) = resolve_initial_media_from_cli(&loaded_config.config);
     if let Some(InitialMedia::File(path)) = &initial_media {

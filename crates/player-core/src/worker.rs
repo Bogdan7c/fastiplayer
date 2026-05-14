@@ -1,12 +1,12 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
 use crossbeam_channel::{
-    Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError, bounded, unbounded,
+    Receiver, RecvTimeoutError, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded,
 };
 use media_core::MediaTime;
 use rustiplayer_config::PlayerDemuxConfig;
@@ -26,8 +26,8 @@ const DEFAULT_WORKER_TICK_INTERVAL: Duration = Duration::from_micros(16_667);
 /// Ёмкость основной очереди команд без high-frequency scrub updates.
 const COMMAND_CHANNEL_CAPACITY: usize = 128;
 
-/// Ёмкость latest-очереди scrub updates; sender заменяет старое значение новым.
-const SCRUB_CHANNEL_CAPACITY: usize = 1;
+/// Ёмкость wake-очереди scrub updates; сами координаты лежат в latest-slot.
+const SCRUB_WAKE_CHANNEL_CAPACITY: usize = 1;
 
 /// Ёмкость latest snapshot stream; worker публикует только актуальное состояние.
 const SNAPSHOT_CHANNEL_CAPACITY: usize = 1;
@@ -38,8 +38,14 @@ const EVENT_CHANNEL_CAPACITY: usize = 512;
 /// Ёмкость render request stream; render threadу нужен только один inflight request.
 const RENDER_REQUEST_CHANNEL_CAPACITY: usize = 1;
 
+/// Ёмкость release ack stream; защищает worker от бесконечного роста drop-ack очереди.
+const RENDER_RELEASE_CHANNEL_CAPACITY: usize = 512;
+
 /// Максимальное ожидание render-frame ответа, чтобы UI не зависал за worker-ом.
 const RENDER_FRAME_REPLY_TIMEOUT: Duration = Duration::from_millis(2);
+
+/// Короткий backpressure budget для Drop path render lease-а.
+const RENDER_RELEASE_SEND_TIMEOUT: Duration = Duration::from_millis(2);
 
 /// Default throttle live preview seek-а, если worker создан без app config.
 const DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL: Duration = Duration::from_millis(100);
@@ -247,11 +253,8 @@ pub struct PlayerCommandSender {
     /// Основная очередь low-frequency команд.
     command_tx: Sender<WorkerCommand>,
 
-    /// Latest-очередь high-frequency scrub updates.
-    scrub_tx: Sender<SeekRequest>,
-
-    /// Receiver clone нужен sender-у, чтобы заменять старый scrub target новым.
-    scrub_rx_for_drain_latest: Receiver<SeekRequest>,
+    /// Явный latest-slot для high-frequency scrub updates.
+    scrub_coalescer: Arc<ScrubUpdateCoalescer>,
 }
 
 impl PlayerCommandSender {
@@ -266,19 +269,56 @@ impl PlayerCommandSender {
         }
     }
 
-    /// Отправляет latest scrub target с coalescing policy `Drain Latest`.
+    /// Отправляет latest scrub target без доступа sender-а к receiver side.
     fn try_send_scrub_update(&self, request: SeekRequest) -> Result<(), PlayerWorkerSendError> {
-        drain_receiver_without_blocking(&self.scrub_rx_for_drain_latest);
+        self.scrub_coalescer.submit_latest(request)
+    }
+}
 
-        match self.scrub_tx.try_send(request) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(request)) => {
-                drain_receiver_without_blocking(&self.scrub_rx_for_drain_latest);
-                self.scrub_tx
-                    .try_send(request)
-                    .map_err(PlayerWorkerSendError::from)
+/// Явная latest-wins прослойка для частых scrub updates.
+struct ScrubUpdateCoalescer {
+    /// Последняя цель scrub-а; sender только заменяет значение, worker только забирает.
+    latest_request: Mutex<Option<SeekRequest>>,
+
+    /// Bounded wake-token: один pending token уже означает "latest_request надо проверить".
+    wake_tx: Sender<()>,
+}
+
+impl ScrubUpdateCoalescer {
+    /// Создаёт coalescer вокруг wake channel sender-а.
+    fn new(wake_tx: Sender<()>) -> Self {
+        Self {
+            latest_request: Mutex::new(None),
+            wake_tx,
+        }
+    }
+
+    /// Записывает новую latest scrub-цель и будит worker одним bounded token-ом.
+    fn submit_latest(&self, request: SeekRequest) -> Result<(), PlayerWorkerSendError> {
+        *self.latest_request_guard() = Some(request);
+
+        match self.wake_tx.try_send(()) {
+            Ok(()) | Err(TrySendError::Full(())) => Ok(()),
+            Err(TrySendError::Disconnected(())) => {
+                *self.latest_request_guard() = None;
+                Err(PlayerWorkerSendError::Disconnected)
             }
-            Err(error @ TrySendError::Disconnected(_)) => Err(PlayerWorkerSendError::from(error)),
+        }
+    }
+
+    /// Забирает последнюю scrub-цель; все промежуточные цели намеренно coalesced.
+    fn take_latest(&self) -> Option<SeekRequest> {
+        self.latest_request_guard().take()
+    }
+
+    /// Возвращает guard latest-slot-а и восстанавливается после poison без потери command path.
+    fn latest_request_guard(&self) -> MutexGuard<'_, Option<SeekRequest>> {
+        match self.latest_request.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                warn!("Scrub coalescer mutex was poisoned; recovering latest request slot");
+                poisoned.into_inner()
+            }
         }
     }
 }
@@ -376,11 +416,57 @@ impl Drop for PresentFrameDropAck {
             texture_provider: self.texture_provider.clone(),
         };
 
-        if let Err(TrySendError::Disconnected(release)) = self.release_tx.try_send(release)
-            && let Some(texture_provider) = release.texture_provider
-        {
-            texture_provider.release_frame(release.texture_handle);
+        self.send_release_ack(release);
+    }
+}
+
+impl PresentFrameDropAck {
+    /// Отправляет release ack через bounded queue с коротким backpressure budget.
+    fn send_release_ack(&self, release: RenderLeaseRelease) {
+        match self.release_tx.try_send(release) {
+            Ok(()) => {}
+            Err(TrySendError::Full(release)) => {
+                self.send_release_ack_with_timeout(release);
+            }
+            Err(TrySendError::Disconnected(release)) => {
+                Self::release_without_worker(release);
+            }
         }
+    }
+
+    /// Даёт worker-у короткое окно на drain, но не блокирует render/UI thread навсегда.
+    fn send_release_ack_with_timeout(&self, release: RenderLeaseRelease) {
+        match self
+            .release_tx
+            .send_timeout(release, RENDER_RELEASE_SEND_TIMEOUT)
+        {
+            Ok(()) => {}
+            Err(SendTimeoutError::Timeout(release)) => {
+                warn!(
+                    generation = release.render_generation,
+                    texture_handle = release.texture_handle.0,
+                    "Render release queue is full; releasing texture outside worker bookkeeping"
+                );
+                Self::release_without_worker(release);
+            }
+            Err(SendTimeoutError::Disconnected(release)) => {
+                Self::release_without_worker(release);
+            }
+        }
+    }
+
+    /// Последний шанс освободить backend resource, когда worker уже недоступен или перегружен.
+    fn release_without_worker(release: RenderLeaseRelease) {
+        let Some(texture_provider) = release.texture_provider else {
+            warn!(
+                generation = release.render_generation,
+                texture_handle = release.texture_handle.0,
+                "Render release ack could not reach worker and has no texture provider fallback"
+            );
+            return;
+        };
+
+        texture_provider.release_frame(release.texture_handle);
     }
 }
 
@@ -412,17 +498,17 @@ impl PlayerWorker {
     /// Запускает worker thread и сразу публикует empty snapshot.
     pub fn spawn(config: PlayerWorkerConfig) -> PlayerResult<Self> {
         let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
-        let (scrub_tx, scrub_rx) = bounded(SCRUB_CHANNEL_CAPACITY);
+        let (scrub_wake_tx, scrub_wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
         let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
         let (event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
         let (render_request_tx, render_request_rx) = bounded(RENDER_REQUEST_CHANNEL_CAPACITY);
-        let (render_release_tx, render_release_rx) = unbounded();
+        let (render_release_tx, render_release_rx) = bounded(RENDER_RELEASE_CHANNEL_CAPACITY);
         let (shutdown_tx, shutdown_rx) = bounded(1);
+        let scrub_coalescer = Arc::new(ScrubUpdateCoalescer::new(scrub_wake_tx));
 
         let command_sender = PlayerCommandSender {
             command_tx,
-            scrub_tx,
-            scrub_rx_for_drain_latest: scrub_rx.clone(),
+            scrub_coalescer: Arc::clone(&scrub_coalescer),
         };
         let snapshot_rx_for_worker = snapshot_rx.clone();
 
@@ -433,7 +519,8 @@ impl PlayerWorker {
                     session: PlayerSession::with_demuxer_options(config.demuxer_options),
                     seek_controller: SeekController::new(),
                     command_rx,
-                    scrub_rx,
+                    scrub_wake_rx,
+                    scrub_coalescer,
                     snapshot_publisher: LatestSnapshotPublisher::new(
                         snapshot_tx,
                         snapshot_rx_for_worker,
@@ -714,8 +801,11 @@ struct PlayerWorkerRuntime {
     /// Receiver основной очереди команд.
     command_rx: Receiver<WorkerCommand>,
 
-    /// Receiver latest scrub updates.
-    scrub_rx: Receiver<SeekRequest>,
+    /// Receiver bounded wake-token-ов для latest scrub slot-а.
+    scrub_wake_rx: Receiver<()>,
+
+    /// Shared latest-slot, в котором sender явно заменяет scrub target.
+    scrub_coalescer: Arc<ScrubUpdateCoalescer>,
 
     /// Latest snapshot publisher.
     snapshot_publisher: LatestSnapshotPublisher,
@@ -790,44 +880,156 @@ impl PlayerWorkerRuntime {
         self.publish_session_outputs();
     }
 
-    /// Ждёт ближайший command/render/shutdown wakeup вместо сна только на command queue.
+    /// Ждёт ближайший command/render/shutdown wakeup вместо fixed idle polling.
     fn wait_for_worker_wakeup(&mut self) -> bool {
+        match self.next_worker_wakeup_timeout() {
+            Some(timeout) => self.wait_for_worker_wakeup_with_timeout(timeout),
+            None => self.wait_for_worker_wakeup_until_event(),
+        }
+    }
+
+    /// Блокируется до события или ближайшего tick/preview deadline-а.
+    fn wait_for_worker_wakeup_with_timeout(&mut self, timeout: Duration) -> bool {
         crossbeam_channel::select! {
             recv(self.command_rx) -> command_result => {
-                match command_result {
-                    Ok(command) => {
-                        self.handle_worker_command(command);
-                        self.publish_session_outputs();
-                        self.session.is_shutdown_requested()
-                    }
-                    Err(_) => {
-                        self.handle_shutdown_request();
-                        true
-                    }
-                }
+                self.handle_command_wakeup(command_result)
             }
             recv(self.render_request_rx) -> request_result => {
-                if let Ok(request) = request_result {
-                    self.handle_render_request(request);
-                }
-                false
+                self.handle_render_request_wakeup(request_result)
             }
             recv(self.render_release_rx) -> release_result => {
-                if let Ok(release) = release_result {
-                    self.session.release_render_lease_with_provider(
-                        release.render_generation,
-                        release.texture_handle,
-                        release.texture_provider.as_ref(),
-                    );
-                }
-                false
+                self.handle_render_release_wakeup(release_result)
+            }
+            recv(self.scrub_wake_rx) -> wake_result => {
+                self.handle_scrub_wakeup(wake_result)
             }
             recv(self.shutdown_rx) -> _ => {
                 self.handle_shutdown_request();
                 true
             }
-            default(Duration::from_millis(1)) => false,
+            default(timeout) => false,
         }
+    }
+
+    /// Блокируется без timeout, когда playback idle и нет preview deadline-а.
+    fn wait_for_worker_wakeup_until_event(&mut self) -> bool {
+        crossbeam_channel::select! {
+            recv(self.command_rx) -> command_result => {
+                self.handle_command_wakeup(command_result)
+            }
+            recv(self.render_request_rx) -> request_result => {
+                self.handle_render_request_wakeup(request_result)
+            }
+            recv(self.render_release_rx) -> release_result => {
+                self.handle_render_release_wakeup(release_result)
+            }
+            recv(self.scrub_wake_rx) -> wake_result => {
+                self.handle_scrub_wakeup(wake_result)
+            }
+            recv(self.shutdown_rx) -> _ => {
+                self.handle_shutdown_request();
+                true
+            }
+        }
+    }
+
+    /// Вычисляет ближайший deadline, который требует самостоятельного wakeup-а worker-а.
+    fn next_worker_wakeup_timeout(&self) -> Option<Duration> {
+        let now = Instant::now();
+        let mut next_timeout = self.next_tick_timeout(now);
+
+        if let Some(preview_timeout) = self.next_preview_scrub_timeout(now) {
+            next_timeout = Some(match next_timeout {
+                Some(tick_timeout) => tick_timeout.min(preview_timeout),
+                None => preview_timeout,
+            });
+        }
+
+        next_timeout
+    }
+
+    /// Возвращает время до следующего playback tick-а только для активной state machine.
+    fn next_tick_timeout(&self, now: Instant) -> Option<Duration> {
+        if !self.session.playback_state().is_playback_active() {
+            return None;
+        }
+
+        let elapsed_since_tick = now.saturating_duration_since(self.last_tick_at);
+        Some(self.config.tick_interval.saturating_sub(elapsed_since_tick))
+    }
+
+    /// Возвращает время до throttled preview seek-а во время interactive scrub.
+    fn next_preview_scrub_timeout(&self, now: Instant) -> Option<Duration> {
+        if !self.seek_controller.is_scrubbing() || self.deferred_preview_scrub_target.is_none() {
+            return None;
+        }
+
+        let Some(last_seek_at) = self.last_preview_scrub_seek_at else {
+            return Some(Duration::ZERO);
+        };
+        let elapsed_since_preview = now.saturating_duration_since(last_seek_at);
+        Some(
+            self.config
+                .live_scrub_preview_interval
+                .saturating_sub(elapsed_since_preview),
+        )
+    }
+
+    /// Обрабатывает wakeup от основной очереди команд.
+    fn handle_command_wakeup(
+        &mut self,
+        command_result: Result<WorkerCommand, crossbeam_channel::RecvError>,
+    ) -> bool {
+        match command_result {
+            Ok(command) => {
+                self.handle_worker_command(command);
+                self.publish_session_outputs();
+                self.session.is_shutdown_requested()
+            }
+            Err(_) => {
+                self.handle_shutdown_request();
+                true
+            }
+        }
+    }
+
+    /// Обрабатывает wakeup от render request queue.
+    fn handle_render_request_wakeup(
+        &mut self,
+        request_result: Result<RenderFrameRequest, crossbeam_channel::RecvError>,
+    ) -> bool {
+        if let Ok(request) = request_result {
+            self.handle_render_request(request);
+        }
+        false
+    }
+
+    /// Обрабатывает wakeup от bounded release ack queue.
+    fn handle_render_release_wakeup(
+        &mut self,
+        release_result: Result<RenderLeaseRelease, crossbeam_channel::RecvError>,
+    ) -> bool {
+        if let Ok(release) = release_result {
+            self.session.release_render_lease_with_provider(
+                release.render_generation,
+                release.texture_handle,
+                release.texture_provider.as_ref(),
+            );
+        }
+        false
+    }
+
+    /// Обрабатывает wake-token scrub coalescer-а.
+    fn handle_scrub_wakeup(
+        &mut self,
+        wake_result: Result<(), crossbeam_channel::RecvError>,
+    ) -> bool {
+        if wake_result.is_ok() {
+            self.apply_latest_scrub_update();
+            self.publish_session_outputs();
+        }
+
+        self.session.is_shutdown_requested()
     }
 
     /// Забирает команду без блокировки, чтобы render/scrub/tick не starvation-ились.
@@ -1003,13 +1205,9 @@ impl PlayerWorkerRuntime {
 
     /// Забирает latest scrub update из bounded канала и применяет только последнюю цель.
     fn apply_latest_scrub_update(&mut self) {
-        let mut latest_request = None;
+        drain_receiver_without_blocking(&self.scrub_wake_rx);
 
-        while let Ok(request) = self.scrub_rx.try_recv() {
-            latest_request = Some(request);
-        }
-
-        if let Some(request) = latest_request {
+        if let Some(request) = self.scrub_coalescer.take_latest() {
             self.apply_scrub_update(request);
             self.publish_session_outputs();
         }
@@ -1198,6 +1396,7 @@ mod tests {
             tick_interval: Duration::from_millis(2),
             tick_config: PlayerTickConfig::default(),
             live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
+            demuxer_options: DemuxerOptions::default(),
         }
     }
 
@@ -1242,19 +1441,21 @@ mod tests {
 
     fn runtime_for_tests(last_tick_at: Instant) -> PlayerWorkerRuntime {
         let (_command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
-        let (_scrub_tx, scrub_rx) = bounded(SCRUB_CHANNEL_CAPACITY);
+        let (scrub_wake_tx, scrub_wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
         let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
         let (event_tx, _event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
         let (_render_request_tx, render_request_rx) = bounded(RENDER_REQUEST_CHANNEL_CAPACITY);
-        let (render_release_tx, render_release_rx) = unbounded();
+        let (render_release_tx, render_release_rx) = bounded(RENDER_RELEASE_CHANNEL_CAPACITY);
         let (_shutdown_tx, shutdown_rx) = bounded(1);
         let config = worker_config_for_tests();
+        let scrub_coalescer = Arc::new(ScrubUpdateCoalescer::new(scrub_wake_tx));
 
         PlayerWorkerRuntime {
             session: PlayerSession::with_demuxer_options(config.demuxer_options),
             seek_controller: SeekController::new(),
             command_rx,
-            scrub_rx,
+            scrub_wake_rx,
+            scrub_coalescer,
             snapshot_publisher: LatestSnapshotPublisher::new(snapshot_tx, snapshot_rx),
             event_tx,
             render_request_rx,
@@ -1529,6 +1730,48 @@ mod tests {
     }
 
     #[test]
+    fn scrub_coalescer_keeps_latest_target_without_sender_receiver_drain() {
+        let (wake_tx, wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
+        let coalescer = ScrubUpdateCoalescer::new(wake_tx);
+
+        coalescer.submit_latest(seek_to_millis(100)).unwrap();
+        coalescer.submit_latest(seek_to_millis(250)).unwrap();
+        coalescer.submit_latest(seek_to_millis(900)).unwrap();
+
+        assert_eq!(wake_rx.len(), 1);
+        assert_eq!(coalescer.take_latest(), Some(seek_to_millis(900)));
+        assert_eq!(coalescer.take_latest(), None);
+    }
+
+    #[test]
+    fn scrub_coalescer_reports_disconnected_without_keeping_stale_target() {
+        let (wake_tx, wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
+        let coalescer = ScrubUpdateCoalescer::new(wake_tx);
+        drop(wake_rx);
+
+        let send_result = coalescer.submit_latest(seek_to_millis(100));
+
+        assert_eq!(send_result, Err(PlayerWorkerSendError::Disconnected));
+        assert_eq!(coalescer.take_latest(), None);
+    }
+
+    #[test]
+    fn idle_worker_has_no_periodic_wakeup_timeout() {
+        let runtime = runtime_for_tests(Instant::now());
+
+        assert_eq!(runtime.next_worker_wakeup_timeout(), None);
+    }
+
+    #[test]
+    fn active_worker_uses_tick_interval_as_wakeup_timeout() {
+        let mut runtime = runtime_for_tests(Instant::now());
+
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
+
+        assert!(runtime.next_worker_wakeup_timeout().is_some());
+    }
+
+    #[test]
     fn render_release_ack_is_drained_before_reply() {
         let mut runtime = runtime_for_tests(Instant::now());
         runtime
@@ -1579,6 +1822,28 @@ mod tests {
         assert_eq!(release.render_generation, 2);
         assert_eq!(release.texture_handle, FrameTextureHandle(12));
         assert!(release_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn present_frame_lease_drop_times_out_when_release_queue_stays_full() {
+        let (release_tx, release_rx) = bounded(1);
+        release_tx
+            .try_send(RenderLeaseRelease {
+                render_generation: 1,
+                texture_handle: FrameTextureHandle(1),
+                texture_provider: None,
+            })
+            .unwrap();
+        let lease = present_frame_lease_for_tests(2, FrameTextureHandle(12), false, release_tx);
+        let drop_started_at = Instant::now();
+
+        drop(lease);
+
+        assert!(drop_started_at.elapsed() < Duration::from_secs(1));
+        assert_eq!(release_rx.len(), 1);
+        let queued_release = release_rx.try_recv().unwrap();
+        assert_eq!(queued_release.render_generation, 1);
+        assert_eq!(queued_release.texture_handle, FrameTextureHandle(1));
     }
 
     #[test]

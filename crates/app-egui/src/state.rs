@@ -60,6 +60,12 @@ pub struct AppState {
     /// Последняя renderer-neutral диагностика без GPU handles.
     render_diagnostics: RenderDiagnostics,
 
+    /// Последний snapshot, уже доставленный UI; используется shell redraw pacing-ом.
+    last_player_snapshot: PlayerSnapshot,
+
+    /// Нужен один follow-up redraw после команды, которая уйдёт в worker асинхронно.
+    pending_redraw_after_worker_command: bool,
+
     /// Последний валидный кадр, который можно повторить при transient miss render boundary.
     cached_present_frame: Option<PlayerPresentFrame>,
 
@@ -124,6 +130,8 @@ impl AppState {
             startup_error,
             startup_pending: None,
             render_diagnostics: RenderDiagnostics::default(),
+            last_player_snapshot: PlayerSnapshot::empty(),
+            pending_redraw_after_worker_command: false,
             cached_present_frame: None,
             cached_present_source_label: None,
             current_local_file: None,
@@ -139,7 +147,10 @@ impl AppState {
             .try_send_command(PlayerCommand::TogglePlayback)
         {
             warn!(error = %error, "Не удалось переключить playback");
+            return;
         }
+
+        self.mark_pending_worker_redraw();
     }
 
     /// Инкрементирует счётчик кадров shell.
@@ -163,18 +174,21 @@ impl AppState {
     pub fn set_startup_pending(&mut self, message: String) {
         self.startup_error = None;
         self.startup_pending = Some(message);
+        self.mark_pending_worker_redraw();
     }
 
     /// Показывает shell-level ошибку, которая возникла до открытия media в player.
     pub fn set_startup_error(&mut self, message: String) {
         self.startup_pending = None;
         self.startup_error = Some(message);
+        self.mark_pending_worker_redraw();
     }
 
     /// Сбрасывает shell-level startup overlay после успешного открытия media.
     fn clear_startup_status(&mut self) {
         self.startup_pending = None;
         self.startup_error = None;
+        self.mark_pending_worker_redraw();
     }
 
     /// Возвращает read-only snapshot из `player-core` для UI и renderer diagnostics.
@@ -183,8 +197,29 @@ impl AppState {
         let player_snapshot = self
             .player_worker
             .latest_snapshot(self.frame_counters_snapshot());
+        self.last_player_snapshot = player_snapshot.clone();
         self.publish_desktop_snapshot(&player_snapshot);
         player_snapshot
+    }
+
+    /// Возвращает `true`, пока shell должен поддерживать непрерывные redraw-и.
+    #[must_use]
+    pub fn wants_continuous_redraw(&self) -> bool {
+        self.last_player_snapshot
+            .playback_state
+            .is_playback_active()
+            || self.last_player_snapshot.playback_state == PlaybackState::Opening
+            || self.last_player_snapshot.timeline.scrubbing
+    }
+
+    /// Забирает одноразовый follow-up redraw после асинхронной worker command.
+    pub fn take_pending_worker_redraw(&mut self) -> bool {
+        std::mem::take(&mut self.pending_redraw_after_worker_command)
+    }
+
+    /// Помечает, что после текущего frame-а нужен ещё один redraw для worker response.
+    fn mark_pending_worker_redraw(&mut self) {
+        self.pending_redraw_after_worker_command = true;
     }
 
     /// Публикует read-only snapshot в desktop integration boundary.
@@ -222,7 +257,10 @@ impl AppState {
         self.current_local_file = Some(path.to_path_buf());
         if let Err(error) = self.player_worker.load_file(path, autoplay) {
             warn!(error = %error, "Не удалось отправить команду открытия файла в worker");
+            return;
         }
+
+        self.mark_pending_worker_redraw();
     }
 
     /// Загружает YouTube demuxer без долговременного database/cache слоя.
@@ -237,7 +275,10 @@ impl AppState {
         self.current_local_file = None;
         if let Err(error) = self.player_worker.load_demuxer(label, demuxer, autoplay) {
             warn!(error = %error, "Не удалось отправить YouTube demuxer в worker");
+            return;
         }
+
+        self.mark_pending_worker_redraw();
     }
 
     /// Инициализирует video pipeline в playback worker.
@@ -253,14 +294,20 @@ impl AppState {
             .init_video_pipeline(instance, adapter, device, queue)
         {
             warn!(error = %error, "Не удалось отправить init video pipeline в worker");
+            return;
         }
+
+        self.mark_pending_worker_redraw();
     }
 
     /// Передаёт capability report из shell/backend layer в playback worker.
     pub fn set_system_capabilities(&mut self, capabilities: SystemCapabilities) {
         if let Err(error) = self.player_worker.set_system_capabilities(capabilities) {
             warn!(error = %error, "Не удалось отправить capability report в worker");
+            return;
         }
+
+        self.mark_pending_worker_redraw();
     }
 
     /// Пытается получить текущий video frame для renderer-а.
@@ -321,10 +368,13 @@ impl AppState {
     }
 
     /// Передаёт typed render bridge error в worker-owned player session.
-    pub fn report_render_error(&self, error: PlayerRenderError) {
+    pub fn report_render_error(&mut self, error: PlayerRenderError) {
         if let Err(send_error) = self.player_worker.report_render_error(error) {
             warn!(error = %send_error, "Не удалось отправить typed render error в worker");
+            return;
         }
+
+        self.mark_pending_worker_redraw();
     }
 
     /// Забирает worker events для shell telemetry.
@@ -446,6 +496,8 @@ impl AppState {
                         .try_send_command(PlayerCommand::SetVolume(requested_volume))
                     {
                         warn!(error = %error, "Некорректное значение громкости из UI");
+                    } else {
+                        self.mark_pending_worker_redraw();
                     }
                 }
                 ControlAction::ToggleFullscreen => Self::toggle_fullscreen(window),
@@ -457,7 +509,7 @@ impl AppState {
     }
 
     /// Конвертирует timeline action в typed player command.
-    fn send_timeline_action(&self, action: TimelineAction) {
+    fn send_timeline_action(&mut self, action: TimelineAction) {
         let command = match action {
             TimelineAction::BeginScrub => PlayerCommand::BeginScrub,
             TimelineAction::UpdateScrub(position) => {
@@ -470,7 +522,10 @@ impl AppState {
 
         if let Err(error) = self.player_worker.try_send_command(command) {
             warn!(error = %error, "Не удалось отправить timeline command");
+            return;
         }
+
+        self.mark_pending_worker_redraw();
     }
 
     /// Переключает fullscreen состояние окна.
@@ -518,6 +573,8 @@ impl AppState {
                     .try_send_command(PlayerCommand::SetVolume(next_volume))
                 {
                     warn!(error = %error, "Не удалось переключить mute");
+                } else {
+                    self.mark_pending_worker_redraw();
                 }
                 true
             }
