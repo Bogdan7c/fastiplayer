@@ -51,7 +51,8 @@ enum RenderBackendKind {
     OpenGles,
 }
 
-enum VideoFrameFormat {
+// Compatibility name в render-core; canonical type живёт в codec-core как VideoSurfaceFormat.
+enum VideoSurfaceFormat {
     Nv12,
     P010,
     Rgba8,
@@ -81,7 +82,7 @@ struct RenderCapabilities {
     supported_p010_storage_layouts: Vec<P010StorageLayout>,
     supported_hdr_to_sdr_operators: Vec<HdrToneMappingOperator>,
     hdr_output_mode: HdrOutputMode,
-    supported_frame_formats: Vec<VideoFrameFormat>,
+    supported_frame_formats: Vec<VideoSurfaceFormat>,
     max_texture_size: Option<u32>,
     advanced_ui: bool,
     ui_composition_mode: UiCompositionMode,

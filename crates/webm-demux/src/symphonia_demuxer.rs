@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
+use codec_core::{VideoCodec, VideoPacketKeyframeProbe, probe_video_packet_keyframe};
 use media_core::{
     MediaTime, Packet as OurPacket, TimeBase as OurTimeBase, TimelineNotSeekableReason, TrackId,
     TrackInfo, TrackKind, TrackTimestamp,
@@ -326,15 +327,18 @@ impl SymphoniaDemuxer {
 
         let keyframe = if let Some(container_keyframe) = packet.keyframe {
             container_keyframe
-        } else if entry.kind == TrackKind::Video && entry.codec_id == "V_VP9" {
-            match vp9_parser::parse_uncompressed_header(packet.buf()) {
-                Ok(info) => info.keyframe,
-                Err(e) => {
+        } else if entry.kind == TrackKind::Video {
+            match VideoCodec::from_container_codec_id(&entry.codec_id)
+                .map(|codec| probe_video_packet_keyframe(codec, packet.buf()))
+            {
+                Some(VideoPacketKeyframeProbe::Keyframe(keyframe)) => keyframe,
+                Some(VideoPacketKeyframeProbe::Uncertain(uncertainty)) => {
                     return Err(PacketConvertError::CorruptedPacket {
                         track_id: TrackId::new(packet_track_id),
-                        reason: format!("VP9 packet header parse failed: {e}"),
+                        reason: format!("video packet keyframe probe failed: {uncertainty:?}"),
                     });
                 }
+                Some(VideoPacketKeyframeProbe::AdapterUnavailable { .. }) | None => false,
             }
         } else {
             false

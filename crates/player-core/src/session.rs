@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 use capability_core::{SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection};
 use codec_core::{
     ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction, VideoCodec,
-    VideoDecodeRequirement, Vp9MetadataSource, resolve_vp9_metadata,
+    VideoDecodeRequirement, VideoMetadataSource, resolve_video_metadata,
+    unsupported_requirement_can_be_refined_by_packet_probe as codec_requirement_can_be_refined_by_packet_probe,
+    video_requirement_needs_packet_refinement,
 };
 use media_core::{MediaDuration, MediaTime, TimelineNotSeekableReason, TrackInfo, TrackKind};
 use tracing::{debug, info, warn};
@@ -24,7 +26,7 @@ use crate::{
     VideoFrameSnapshot,
 };
 
-/// Dev-only режим, который разрешает VP9 Profile 2 HDR дойти до P010 zero-copy boundary.
+/// Dev-only режим, который разрешает HDR/P010 stream дойти до zero-copy boundary.
 const P010_BOUNDARY_DIAGNOSTIC_ENV_VAR: &str = "RUSTIPLAYER_DEV_VERIFY_P010_BOUNDARY";
 
 /// Центральная session плеера: high-level state machine и владение playback pipeline.
@@ -1714,11 +1716,11 @@ impl PlayerSession {
                     return Ok(());
                 }
                 Err(error) => {
-                    if self.can_defer_vp9_packet_refinement(&requirement) {
+                    if self.can_defer_packet_refinement(&requirement) {
                         info!(
                             track_id = %track.id,
                             requirement = %requirement.describe(),
-                            "VP9 video track выбран до bitstream refinement; strict capability check будет повторён перед decode"
+                            "Video track выбран до bitstream refinement; strict capability check будет повторён перед decode"
                         );
                         self.activate_video_track(track, requirement);
                         return Ok(());
@@ -1742,9 +1744,9 @@ impl PlayerSession {
         log_selected_video_track_metadata(track, self.pipeline.active_video_requirement.as_ref());
     }
 
-    /// Разрешает отложить VP9 validation до первого packet header-а, если container неполный.
-    fn can_defer_vp9_packet_refinement(&self, requirement: &VideoDecodeRequirement) -> bool {
-        if !vp9_requirement_needs_packet_refinement(requirement) {
+    /// Разрешает отложить codec validation до первого packet header-а, если container неполный.
+    fn can_defer_packet_refinement(&self, requirement: &VideoDecodeRequirement) -> bool {
+        if !video_requirement_needs_packet_refinement(requirement) {
             return false;
         }
 
@@ -1752,7 +1754,7 @@ impl PlayerSession {
             matches!(
                 capabilities.check_video_requirement(requirement),
                 Err(ref unsupported_requirement)
-                    if unsupported_requirement_can_be_refined_by_vp9_packet_probe(
+                    if unsupported_requirement_can_be_refined_by_packet_probe(
                         unsupported_requirement
                     )
             )
@@ -1808,16 +1810,16 @@ impl PlayerSession {
             .and_then(|track| VideoCodec::from_container_codec_id(&track.codec_id))
     }
 
-    /// Возвращает VP9 container metadata source для active track refinement.
-    pub(crate) fn vp9_container_metadata_source_for_track(
+    /// Возвращает container metadata source для active track refinement.
+    pub(crate) fn video_metadata_source_for_track(
         &self,
         track_id: TrackId,
-    ) -> Option<Vp9MetadataSource> {
+    ) -> Option<VideoMetadataSource> {
         self.pipeline
             .tracks
             .iter()
             .find(|track| track.id == track_id && track.kind == TrackKind::Video)
-            .and_then(vp9_metadata_source_from_track)
+            .and_then(video_metadata_source_from_track)
     }
 
     /// Инициализирует audio pipeline если есть Opus-compatible audio track.
@@ -2035,46 +2037,34 @@ impl PlayerSession {
 /// Строит минимальное decode requirement из container track metadata.
 fn video_requirement_from_track(track: &TrackInfo) -> Option<VideoDecodeRequirement> {
     let codec = VideoCodec::from_container_codec_id(&track.codec_id)?;
-    if codec != VideoCodec::Vp9 {
-        return Some(VideoDecodeRequirement::new(codec));
-    }
-
-    let Some(container_source) = vp9_metadata_source_from_track(track) else {
+    let Some(container_source) = video_metadata_source_from_track(track) else {
         return Some(VideoDecodeRequirement::new(codec));
     };
 
-    Some(resolve_vp9_metadata(Some(container_source), None).requirement)
+    Some(resolve_video_metadata(codec, Some(container_source), None).requirement)
 }
 
-/// Возвращает `true`, если VP9 requirement ещё нуждается в header-level уточнении.
-pub(crate) fn vp9_requirement_needs_packet_refinement(
-    requirement: &VideoDecodeRequirement,
-) -> bool {
-    requirement.codec == VideoCodec::Vp9
-        && (requirement.profile.is_none()
-            || requirement.bit_depth.is_none()
-            || requirement.chroma.is_none()
-            || requirement.color.is_none())
-}
-
-/// Проверяет, что отказ относится к metadata, которую VP9 packet probe может уточнить.
-fn unsupported_requirement_can_be_refined_by_vp9_packet_probe(
+/// Проверяет, что отказ относится к metadata, которую codec packet probe может уточнить.
+fn unsupported_requirement_can_be_refined_by_packet_probe(
     unsupported_requirement: &UnsupportedVideoRequirement,
 ) -> bool {
-    unsupported_requirement.requirement.codec == VideoCodec::Vp9
-        && matches!(
-            unsupported_requirement.rejections.first(),
-            Some(VideoCapabilityRejection::InvalidHdrMetadata { .. })
-                | Some(VideoCapabilityRejection::InsufficientStreamMetadata {
-                    codec: VideoCodec::Vp9
-                })
-        )
+    let is_metadata_rejection = matches!(
+        unsupported_requirement.rejections.first(),
+        Some(VideoCapabilityRejection::InvalidHdrMetadata { .. })
+            | Some(VideoCapabilityRejection::InsufficientStreamMetadata { .. })
+    );
+
+    codec_requirement_can_be_refined_by_packet_probe(
+        &unsupported_requirement.requirement,
+        is_metadata_rejection,
+    )
 }
 
-/// Собирает VP9 resolver source из typed video metadata track-а.
-fn vp9_metadata_source_from_track(track: &TrackInfo) -> Option<Vp9MetadataSource> {
+/// Собирает codec-neutral resolver source из typed video metadata track-а.
+fn video_metadata_source_from_track(track: &TrackInfo) -> Option<VideoMetadataSource> {
+    let codec = VideoCodec::from_container_codec_id(&track.codec_id)?;
     let video = track.video.as_ref()?;
-    let mut source = Vp9MetadataSource::container();
+    let mut source = VideoMetadataSource::container(codec);
     source.profile = video.profile;
     source.bit_depth = video.bit_depth;
     source.chroma = video.chroma;
@@ -2086,7 +2076,7 @@ fn vp9_metadata_source_from_track(track: &TrackInfo) -> Option<Vp9MetadataSource
     Some(source)
 }
 
-/// Пишет resolved VP9/container metadata в logs без codec logic в UI.
+/// Пишет resolved video/container metadata в logs без codec logic в UI.
 fn log_selected_video_track_metadata(
     track: &TrackInfo,
     active_requirement: Option<&VideoDecodeRequirement>,
@@ -3482,7 +3472,7 @@ mod tests {
 
         assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoProfile);
         assert!(error.message.contains("profile VP9 Profile 2"));
-        assert!(!session.can_defer_vp9_packet_refinement(&requirement));
+        assert!(!session.can_defer_packet_refinement(&requirement));
     }
 
     #[test]
@@ -3498,8 +3488,8 @@ mod tests {
             .expect_err("container-only VP9 HDR metadata is not strict enough yet");
 
         assert_eq!(error.kind, PlayerErrorKind::UnsupportedHdrMode);
-        assert!(vp9_requirement_needs_packet_refinement(&requirement));
-        assert!(session.can_defer_vp9_packet_refinement(&requirement));
+        assert!(video_requirement_needs_packet_refinement(&requirement));
+        assert!(session.can_defer_packet_refinement(&requirement));
     }
 
     #[test]

@@ -2894,7 +2894,6 @@ dependencies = [
  "tracing",
  "video-core",
  "video-vaapi",
- "vp9-parser",
  "webm-demux",
  "wgpu",
 ]
@@ -4879,7 +4878,6 @@ dependencies = [
  "symphonia",
  "thiserror 2.0.18",
  "tracing",
- "vp9-parser",
 ]
 
 [[package]]

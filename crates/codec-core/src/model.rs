@@ -491,6 +491,203 @@ impl fmt::Display for DecodeBackendId {
     }
 }
 
+/// Codec-neutral decoded surface format на границе decoder -> renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoSurfaceFormat {
+    /// 8-bit 4:2:0 semi-planar surface.
+    Nv12,
+
+    /// 10-bit 4:2:0 semi-planar surface in 16-bit storage words.
+    P010,
+
+    /// Packed 8-bit RGBA surface для будущих non-YUV producers, не для CPU fallback.
+    Rgba8,
+}
+
+impl VideoSurfaceFormat {
+    /// Выводит surface format из уже нормализованных bit depth/chroma полей.
+    #[must_use]
+    pub const fn from_bit_depth_and_chroma(
+        bit_depth: BitDepth,
+        chroma: ChromaSubsampling,
+    ) -> Option<Self> {
+        match (bit_depth, chroma) {
+            (BitDepth::Eight, ChromaSubsampling::Yuv420) => Some(Self::Nv12),
+            (BitDepth::Ten, ChromaSubsampling::Yuv420) => Some(Self::P010),
+            _ => None,
+        }
+    }
+
+    /// Выводит surface format, только если stream metadata уже достаточно точна.
+    #[must_use]
+    pub const fn from_optional_fields(
+        bit_depth: Option<BitDepth>,
+        chroma: Option<ChromaSubsampling>,
+    ) -> Option<Self> {
+        match (bit_depth, chroma) {
+            (Some(bit_depth), Some(chroma)) => Self::from_bit_depth_and_chroma(bit_depth, chroma),
+            _ => None,
+        }
+    }
+
+    /// Выводит минимальный renderer input surface из stream requirement.
+    ///
+    /// Если codec adapter уже зафиксировал `surface_format`, именно это поле
+    /// становится контрактом. Иначе используется текущая legacy эвристика:
+    /// неизвестная bit depth остаётся SDR/NV12 до packet-level refinement.
+    #[must_use]
+    pub fn from_decode_requirement(requirement: &VideoDecodeRequirement) -> Option<Self> {
+        if let Some(surface_format) = requirement.surface_format {
+            return Some(surface_format);
+        }
+
+        if let Some(chroma) = requirement.chroma
+            && chroma != ChromaSubsampling::Yuv420
+        {
+            return None;
+        }
+
+        match requirement.bit_depth {
+            Some(BitDepth::Ten) => Some(Self::P010),
+            Some(BitDepth::Twelve) => None,
+            Some(BitDepth::Eight) | None => Some(Self::Nv12),
+        }
+    }
+
+    /// Возвращает стабильное имя surface format для diagnostics.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Nv12 => "NV12",
+            Self::P010 => "P010",
+            Self::Rgba8 => "RGBA8",
+        }
+    }
+}
+
+impl fmt::Display for VideoSurfaceFormat {
+    /// Печатает format в привычной video-терминологии.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.display_name())
+    }
+}
+
+/// Обязательный zero-copy export/import механизм для production video path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZeroCopyExportRequirement {
+    /// DMA-BUF fd export из decoder backend и import renderer-ом.
+    DmaBuf,
+}
+
+impl fmt::Display for ZeroCopyExportRequirement {
+    /// Печатает export requirement в стабильной diagnostic форме.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::DmaBuf => "DMA-BUF",
+        };
+        formatter.write_str(label)
+    }
+}
+
+/// Контракт памяти decoded frame-а, общий для codec adapters, decoder backend-а и renderer-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoMemoryContract {
+    /// Production video кадры обязаны идти только через hardware zero-copy path.
+    HardwareZeroCopy {
+        /// Какой external-memory export должен подтвердить decode backend.
+        export: ZeroCopyExportRequirement,
+    },
+}
+
+impl VideoMemoryContract {
+    /// Возвращает production baseline: hardware decode + DMA-BUF zero-copy.
+    #[must_use]
+    pub const fn dma_buf_zero_copy() -> Self {
+        Self::HardwareZeroCopy {
+            export: ZeroCopyExportRequirement::DmaBuf,
+        }
+    }
+
+    /// Возвращает export requirement, нужный для удовлетворения контракта.
+    #[must_use]
+    pub const fn required_export(self) -> ZeroCopyExportRequirement {
+        match self {
+            Self::HardwareZeroCopy { export } => export,
+        }
+    }
+}
+
+impl Default for VideoMemoryContract {
+    /// По умолчанию любое video requirement остаётся zero-copy-only.
+    fn default() -> Self {
+        Self::dma_buf_zero_copy()
+    }
+}
+
+/// Требования к color path, отделённые от codec-specific metadata parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ColorPipelineRequirement {
+    /// Требуется ли HDR processing/tone mapping для корректного вывода.
+    pub requires_hdr_processing: bool,
+
+    /// Источник color metadata, если он уже известен.
+    pub metadata_origin: Option<ColorMetadataOrigin>,
+
+    /// Уровень доверия к color metadata, если metadata уже известна.
+    pub metadata_confidence: Option<ColorMetadataConfidence>,
+}
+
+impl ColorPipelineRequirement {
+    /// Создаёт neutral SDR requirement без ложного metadata source.
+    #[must_use]
+    pub const fn unspecified_sdr() -> Self {
+        Self {
+            requires_hdr_processing: false,
+            metadata_origin: None,
+            metadata_confidence: None,
+        }
+    }
+
+    /// Создаёт color pipeline requirement из resolved stream metadata.
+    #[must_use]
+    pub fn from_color_metadata(color: &VideoColorMetadata) -> Self {
+        Self {
+            requires_hdr_processing: color.requires_hdr_processing(),
+            metadata_origin: Some(color.origin),
+            metadata_confidence: Some(color.confidence),
+        }
+    }
+}
+
+impl Default for ColorPipelineRequirement {
+    /// Без metadata renderer выбирает SDR-safe path и ждёт refinement.
+    fn default() -> Self {
+        Self::unspecified_sdr()
+    }
+}
+
+/// Timing contract decoded frames для scheduler/capability matching без codec знаний.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct FrameTimingContract {
+    /// Номинальная frame rate, если container/service сообщил её до decode.
+    pub nominal_frame_rate: Option<f64>,
+}
+
+impl FrameTimingContract {
+    /// Создаёт timing contract с known nominal frame rate.
+    #[must_use]
+    pub const fn from_frame_rate(nominal_frame_rate: f64) -> Self {
+        Self {
+            nominal_frame_rate: Some(nominal_frame_rate),
+        }
+    }
+}
+
 /// Требования конкретного video stream к аппаратному decoder-у.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -516,6 +713,22 @@ pub struct VideoDecodeRequirement {
     /// FPS, если он известен.
     pub fps: Option<f64>,
 
+    /// Codec-neutral surface format, если adapter уже вывел точный decoded boundary.
+    #[serde(default)]
+    pub surface_format: Option<VideoSurfaceFormat>,
+
+    /// Общий memory contract; production default запрещает CPU fallback.
+    #[serde(default)]
+    pub memory_contract: VideoMemoryContract,
+
+    /// Общий color pipeline requirement с origin/confidence metadata.
+    #[serde(default)]
+    pub color_pipeline: ColorPipelineRequirement,
+
+    /// Общий timing contract для scheduler/capability layers.
+    #[serde(default)]
+    pub timing_contract: FrameTimingContract,
+
     /// Требуется ли корректная обработка HDR input.
     pub hdr: bool,
 
@@ -535,6 +748,12 @@ impl VideoDecodeRequirement {
             width: None,
             height: None,
             fps: None,
+            surface_format: None,
+            memory_contract: VideoMemoryContract::dma_buf_zero_copy(),
+            color_pipeline: ColorPipelineRequirement::unspecified_sdr(),
+            timing_contract: FrameTimingContract {
+                nominal_frame_rate: None,
+            },
             hdr: false,
             color: None,
         }
@@ -551,6 +770,7 @@ impl VideoDecodeRequirement {
     #[must_use]
     pub const fn with_bit_depth(mut self, bit_depth: BitDepth) -> Self {
         self.bit_depth = Some(bit_depth);
+        self.surface_format = VideoSurfaceFormat::from_optional_fields(self.bit_depth, self.chroma);
         self
     }
 
@@ -558,6 +778,7 @@ impl VideoDecodeRequirement {
     #[must_use]
     pub const fn with_chroma(mut self, chroma: ChromaSubsampling) -> Self {
         self.chroma = Some(chroma);
+        self.surface_format = VideoSurfaceFormat::from_optional_fields(self.bit_depth, self.chroma);
         self
     }
 
@@ -569,10 +790,26 @@ impl VideoDecodeRequirement {
         self
     }
 
+    /// Возвращает копию requirement с явно заданным decoded surface contract.
+    #[must_use]
+    pub const fn with_surface_format(mut self, surface_format: VideoSurfaceFormat) -> Self {
+        self.surface_format = Some(surface_format);
+        self
+    }
+
+    /// Возвращает копию requirement с nominal frame rate.
+    #[must_use]
+    pub fn with_frame_rate(mut self, nominal_frame_rate: f64) -> Self {
+        self.fps = Some(nominal_frame_rate);
+        self.timing_contract = FrameTimingContract::from_frame_rate(nominal_frame_rate);
+        self
+    }
+
     /// Возвращает копию requirement с resolved color metadata.
     #[must_use]
     pub fn with_color(mut self, color: VideoColorMetadata) -> Self {
         self.hdr = color.requires_hdr_processing();
+        self.color_pipeline = ColorPipelineRequirement::from_color_metadata(&color);
         self.color = Some(color);
         self
     }
@@ -598,8 +835,12 @@ impl VideoDecodeRequirement {
             parts.push(format!("{width}x{height}"));
         }
 
-        if let Some(fps) = self.fps {
+        if let Some(fps) = self.timing_contract.nominal_frame_rate.or(self.fps) {
             parts.push(format!("{fps:.2} fps"));
+        }
+
+        if let Some(surface_format) = self.surface_format {
+            parts.push(format!("surface {surface_format}"));
         }
 
         if self.hdr {
@@ -680,13 +921,30 @@ impl SupportedVideoDecodeFormat {
             return false;
         }
 
-        if let (Some(fps), Some(max_fps)) = (requirement.fps, self.max_fps)
+        let required_frame_rate = requirement
+            .timing_contract
+            .nominal_frame_rate
+            .or(requirement.fps);
+
+        if let (Some(fps), Some(max_fps)) = (required_frame_rate, self.max_fps)
             && fps > max_fps
         {
             return false;
         }
 
+        if let Some(required_surface_format) = requirement.surface_format
+            && self.surface_format() != Some(required_surface_format)
+        {
+            return false;
+        }
+
         !requirement.hdr || self.hdr_input
+    }
+
+    /// Возвращает decoded surface format, который backend format может произвести.
+    #[must_use]
+    pub const fn surface_format(&self) -> Option<VideoSurfaceFormat> {
+        VideoSurfaceFormat::from_bit_depth_and_chroma(self.bit_depth, self.chroma)
     }
 
     /// Формирует компактное описание формата для report/UI.

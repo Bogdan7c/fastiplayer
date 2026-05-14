@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use codec_core::{DecodeBackendId, SupportedVideoDecodeFormat};
+use codec_core::{DecodeBackendId, SupportedVideoDecodeFormat, ZeroCopyExportRequirement};
 use render_core::{P010StorageLayout, RenderCapabilities};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -315,20 +315,5 @@ pub struct DriverQuirk {
     pub description: String,
 }
 
-/// Способ передать decoded frame из decoder backend в renderer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VideoExportPath {
-    /// DMA-BUF export/import path.
-    DmaBuf,
-}
-
-impl std::fmt::Display for VideoExportPath {
-    /// Печатает export path в стабильной diagnostic форме.
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let label = match self {
-            Self::DmaBuf => "DMA-BUF",
-        };
-        formatter.write_str(label)
-    }
-}
+/// Compatibility alias: capability layer использует общий zero-copy export contract.
+pub type VideoExportPath = ZeroCopyExportRequirement;

@@ -748,6 +748,9 @@ fn render_frame(
                     &texture_views.y_view,
                     &texture_views.uv_view,
                 ),
+                DecodedPixelFormat::Rgba8 => Err(anyhow::anyhow!(
+                    "RGBA8 decoded video surface is not a production zero-copy render path"
+                )),
             };
 
             match boundary_frame {

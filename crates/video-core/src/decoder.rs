@@ -3,7 +3,7 @@ use std::fmt;
 use std::time::Duration;
 
 use anyhow::ensure;
-use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
+use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoSurfaceFormat};
 use media_core::Packet;
 
 use crate::VideoFrameDiagnostics;
@@ -11,26 +11,8 @@ use crate::VideoFrameDiagnostics;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameTextureHandle(pub u64);
 
-/// Фактический pixel format, который decoder отдал на renderer boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DecodedPixelFormat {
-    /// 8-bit 4:2:0 NV12: Y plane и interleaved UV plane.
-    Nv12,
-
-    /// 10-bit 4:2:0 P010: Y plane и interleaved UV plane в 16-bit контейнере.
-    P010,
-}
-
-impl fmt::Display for DecodedPixelFormat {
-    /// Печатает формат в привычной video-терминологии.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            Self::Nv12 => "NV12",
-            Self::P010 => "P010",
-        };
-        formatter.write_str(label)
-    }
-}
+/// Compatibility alias: decoded frame использует общий surface contract.
+pub type DecodedPixelFormat = VideoSurfaceFormat;
 
 /// Путь памяти, по которому decoded frame дошёл до renderer boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +96,12 @@ impl DecodedFrame {
                     self.chroma == ChromaSubsampling::Yuv420,
                     "P010 decoded frame must be 4:2:0, got {}",
                     self.chroma
+                );
+            }
+            DecodedPixelFormat::Rgba8 => {
+                ensure!(
+                    false,
+                    "RGBA8 decoded frame is not a production zero-copy video surface"
                 );
             }
         }

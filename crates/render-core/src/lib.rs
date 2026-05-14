@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use codec_core::{
     BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction,
-    VideoColorMetadata, VideoDecodeRequirement,
+    VideoColorMetadata, VideoDecodeRequirement, VideoSurfaceFormat,
 };
 use serde::{Deserialize, Serialize};
 
@@ -53,53 +53,8 @@ impl fmt::Display for RenderBackendKind {
     }
 }
 
-/// Формат decoded frame, который renderer может принять на вход.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VideoFrameFormat {
-    /// 8-bit 4:2:0 NV12: отдельная Y plane и interleaved UV plane.
-    Nv12,
-
-    /// 10-bit 4:2:0 P010: будущий путь для HDR и 10-bit SDR.
-    P010,
-
-    /// 8-bit RGBA texture: software/upload fallback или готовый RGB path.
-    Rgba8,
-}
-
-impl VideoFrameFormat {
-    /// Выводит минимально ожидаемый renderer input format из stream requirement.
-    ///
-    /// Unknown bit depth трактуется как текущий MVP SDR/NV12 path. Если bitstream
-    /// позже уточнит profile/bit depth до P010, повторная проверка capability layer
-    /// отвергнет поток до отправки packet-а в hardware decoder.
-    #[must_use]
-    pub fn from_decode_requirement(requirement: &VideoDecodeRequirement) -> Option<Self> {
-        if let Some(chroma) = requirement.chroma
-            && chroma != ChromaSubsampling::Yuv420
-        {
-            return None;
-        }
-
-        match requirement.bit_depth {
-            Some(BitDepth::Ten) => Some(Self::P010),
-            Some(BitDepth::Twelve) => None,
-            Some(BitDepth::Eight) | None => Some(Self::Nv12),
-        }
-    }
-}
-
-impl fmt::Display for VideoFrameFormat {
-    /// Печатает формат кадра в привычной video-терминологии.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            Self::Nv12 => "NV12",
-            Self::P010 => "P010",
-            Self::Rgba8 => "RGBA8",
-        };
-        formatter.write_str(label)
-    }
-}
+/// Compatibility alias: renderer использует общий codec-neutral surface contract.
+pub type VideoFrameFormat = VideoSurfaceFormat;
 
 /// Состояние P010 на границе decoder/renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

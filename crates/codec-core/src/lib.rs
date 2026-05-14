@@ -5,15 +5,24 @@
 
 #![forbid(unsafe_code)]
 
+mod adapter;
 mod model;
 mod profile;
 mod vp9;
 
+pub use adapter::{
+    VideoMetadataSource, VideoPacketKeyframeProbe, VideoRequirementCandidate,
+    VideoRequirementProbe, VideoRequirementRejection, VideoRequirementUncertainty,
+    VideoResolvedMetadata, probe_video_packet_keyframe, probe_video_packet_requirement,
+    resolve_video_metadata, unsupported_requirement_can_be_refined_by_packet_probe,
+    video_requirement_needs_packet_refinement, vp9_profile_from_video_profile,
+};
 pub use model::{
     AudioCodec, BitDepth, ChromaSubsampling, CodecLevel, ColorMetadataConfidence,
-    ColorMetadataOrigin, ColorPrimaries, ColorRange, DecodeBackendId, HdrMetadata,
-    MatrixCoefficients, SupportedVideoDecodeFormat, TransferFunction, VideoCodec,
-    VideoColorMetadata, VideoDecodeRequirement,
+    ColorMetadataOrigin, ColorPipelineRequirement, ColorPrimaries, ColorRange, DecodeBackendId,
+    FrameTimingContract, HdrMetadata, MatrixCoefficients, SupportedVideoDecodeFormat,
+    TransferFunction, VideoCodec, VideoColorMetadata, VideoDecodeRequirement, VideoMemoryContract,
+    VideoSurfaceFormat, ZeroCopyExportRequirement,
 };
 pub use profile::{Av1Profile, H264Profile, H265Profile, VideoProfile, Vp8Profile, Vp9Profile};
 pub use vp9::{

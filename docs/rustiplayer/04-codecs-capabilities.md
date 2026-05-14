@@ -145,6 +145,48 @@ struct VideoColorMetadata {
     confidence: ColorMetadataConfidence,
 }
 
+enum VideoSurfaceFormat {
+    Nv12,
+    P010,
+    Rgba8,
+}
+
+enum ZeroCopyExportRequirement {
+    DmaBuf,
+}
+
+enum VideoMemoryContract {
+    HardwareZeroCopy {
+        export: ZeroCopyExportRequirement,
+    },
+}
+
+struct ColorPipelineRequirement {
+    requires_hdr_processing: bool,
+    metadata_origin: Option<ColorMetadataOrigin>,
+    metadata_confidence: Option<ColorMetadataConfidence>,
+}
+
+struct FrameTimingContract {
+    nominal_frame_rate: Option<f64>,
+}
+
+struct VideoDecodeRequirement {
+    codec: VideoCodec,
+    profile: Option<VideoProfile>,
+    bit_depth: Option<BitDepth>,
+    chroma: Option<ChromaSubsampling>,
+    width: Option<u32>,
+    height: Option<u32>,
+    fps: Option<f64>,
+    surface_format: Option<VideoSurfaceFormat>,
+    memory_contract: VideoMemoryContract,
+    color_pipeline: ColorPipelineRequirement,
+    timing_contract: FrameTimingContract,
+    hdr: bool,
+    color: Option<VideoColorMetadata>,
+}
+
 struct SupportedVideoDecodeFormat {
     codec: VideoCodec,
     profile: VideoProfile,
@@ -159,6 +201,10 @@ struct SupportedVideoDecodeFormat {
 ```
 
 `VideoColorMetadata::sdr_bt709_limited()` является явным fallback default для текущего VP9/NV12 SDR path. Этот helper не должен маскировать источник metadata: diagnostics должны отличать fallback от metadata, прочитанной из manifest/container/bitstream/decoder.
+
+`VideoDecodeRequirement` является codec-neutral контрактом. Codec adapters отвечают за profile/level/bit-depth/chroma validation, codec private/header parsing, surface format selection и confidence/origin color metadata. Capability layer дальше делает intersection только по общим полям: decoder backend capabilities, renderer import/render capabilities, color pipeline capabilities, platform restrictions и mandatory zero-copy memory contract.
+
+Новый codec добавляется через adapter, который возвращает `VideoRequirementProbe::{Candidate, Rejected, Recoverable}`. `Rejected` используется только для валидного header-а с подтверждённо неподдерживаемым variant-ом; `Recoverable` не должен запускать ложный hardware failure. `player-core` не должен импортировать codec-specific parser crate или делать profile branching.
 
 ## Color metadata resolution
 

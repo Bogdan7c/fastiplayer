@@ -8,14 +8,14 @@
 crates/app-egui         - окно, egui, render loop, CLI/file/url shell boundary
 crates/player-core      - PlayerWorker, PlayerSession, commands/events/snapshot, A/V scheduler
 crates/media-core       - Track/Packet/media metadata types
-crates/codec-core       - typed codec/profile/color/capability metadata
+crates/codec-core       - typed codec/profile/color/frame contracts и codec adapter registry
 crates/capability-core  - capability report и stream selection reasons
 crates/service-youtube  - временный yt-dlp adapter и HTTP streaming boundary
 crates/audio            - Opus decode, CPAL output, audio clock
 crates/render-core      - контракты renderer capabilities и renderable frame
 crates/render-wgpu      - WGPU surface/egui composition, NV12 SDR renderer и Phase 10 P010/HDR BT.2446-C renderer
 crates/video-core       - базовые video types и decoded frame contract
-crates/video-vaapi      - VA-API VP9 decode thread и texture cache
+crates/video-vaapi      - VA-API hardware decode thread, capability probe и texture cache
 crates/video-vulkan     - reference Vulkan Video код
 crates/webm-demux       - Symphonia-based WebM/Matroska demux
 crates/vp9-parser       - VP9 parser adapter
@@ -159,7 +159,7 @@ Matroska, DASH, YouTube, VP9, VA-API, wgpu, MPRIS или конкретном HT
 
 ### `codec-core`
 
-Типизированная модель codec/profile/capability.
+Типизированная модель codec/profile/capability и codec adapter boundary.
 
 Отвечает за:
 
@@ -169,6 +169,11 @@ Matroska, DASH, YouTube, VP9, VA-API, wgpu, MPRIS или конкретном HT
 - `CodecLevel`;
 - `BitDepth`;
 - `ChromaSubsampling`;
+- `VideoSurfaceFormat`;
+- `VideoMemoryContract`;
+- `ZeroCopyExportRequirement`;
+- `ColorPipelineRequirement`;
+- `FrameTimingContract`;
 - `HdrMetadata`;
 - `ColorRange`;
 - `MatrixCoefficients`;
@@ -180,15 +185,20 @@ Matroska, DASH, YouTube, VP9, VA-API, wgpu, MPRIS или конкретном HT
 - `VideoRequirementRejection`;
 - `ColorMetadataConflict`;
 - `SupportedDecodeFormat`;
-- normalization codec ids из контейнеров и сервисов.
+- normalization codec ids из контейнеров и сервисов;
+- generic `VideoMetadataSource` -> `VideoDecodeRequirement` resolution;
+- codec adapter registry для packet/header probing;
+- текущий VP9 adapter как первый concrete adapter над `vp9-parser`.
 
 Не отвечает за:
 
 - прямое чтение VA-API;
 - запуск decode backend;
-- ad-hoc bitstream parsing в обход codec backend parser'ов.
+- ad-hoc bitstream parsing в `player-core`, demuxer-е, renderer-е или UI.
 
-Если capability selection требует profile/bit-depth/chroma/resolution из bitstream, `codec-core` должен хранить typed модель и conversion helpers, а сам parser должен жить рядом с codec/backend integration или быть адаптером над уже используемым parser'ом.
+Если capability selection требует profile/bit-depth/chroma/resolution из bitstream, `codec-core` хранит typed модель и adapter API. Сам parser должен быть codec adapter-ом над уже используемым parser'ом: VP9 сейчас использует `vp9-parser`, будущие AV1/H.264/H.265 должны использовать parser из decode backend или тонкий adapter над ним. `player-core` только вызывает generic adapter functions и получает typed `VideoDecodeRequirement`/reject/recoverable uncertainty.
+
+Zero-copy выражается не именем backend-а, а `VideoMemoryContract::HardwareZeroCopy { export: ZeroCopyExportRequirement::DmaBuf }`. Новый codec не может включить CPU fallback через отдельный branch: capability intersection обязана удовлетворить общий memory contract, surface format и renderer import capability.
 
 Color metadata в `codec-core` описывает факты о потоке, а не пользовательские настройки изображения. Defaults вроде `sdr_bt709_limited()` должны быть явными helper-ами, чтобы fallback не выглядел как metadata, полученная из bitstream.
 
@@ -297,9 +307,9 @@ carry frame между packet boundaries, чтобы не создавать с�
 - decoded frame descriptor;
 - frame handles;
 - color metadata;
-- decoded pixel format;
+- decoded surface format через compatibility alias на `codec-core::VideoSurfaceFormat`;
 - bit depth/chroma metadata;
-- decoded memory path, например `DmaBufZeroCopy` или `CpuUpload`;
+- decoded memory path; production path допускает только `DmaBufZeroCopy`, `CpuUpload` остаётся test-only negative coverage marker;
 - video frame lifecycle contracts;
 - backend-independent decode traits.
 
@@ -314,7 +324,7 @@ Linux hardware decode backend.
 - VA-API display open;
 - i965/iHD probing;
 - codec/profile capability scan;
-- adapter'ы над codec parser'ами, если decode path уже содержит проверенный parser;
+- backend-specific capability mapping в общие `SupportedVideoDecodeFormat`/surface/memory contracts;
 - hardware decode;
 - frame pool;
 - DMA-BUF/texture upload integration;

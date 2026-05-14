@@ -117,12 +117,12 @@ pub(crate) struct PlaybackPipeline {
     /// Очередь сырых audio packets для throttle.
     pub(crate) pending_audio_packets: VecDeque<PendingAudioPacket>,
 
-    /// Video decoder thread: VA-API VP9 decode в отдельном потоке.
+    /// Video decoder thread: текущий VA-API backend decode в отдельном потоке.
     pub(crate) video_decoder_thread: Option<video_vaapi::VideoDecodeThread>,
 
     /// Требует ли decoder следующий video packet быть keyframe-ом.
     ///
-    /// VA-API/stateless VP9 после flush теряет reference frames. Если сразу
+    /// Stateless hardware decode после flush теряет reference frames. Если сразу
     /// отправить inter-frame, decoder может показать зелёные артефакты до
     /// следующего keyframe. Флаг держит этот codec contract рядом с очередью
     /// packets, а не в UI/render слое.

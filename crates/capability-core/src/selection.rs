@@ -1,7 +1,6 @@
 use codec_core::{
     BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, DecodeBackendId, MatrixCoefficients,
     SupportedVideoDecodeFormat, TransferFunction, VideoCodec, VideoDecodeRequirement, VideoProfile,
-    Vp9Profile,
 };
 use render_core::{P010RenderReadiness, P010StorageLayout, RenderCapabilities, VideoFrameFormat};
 use serde::{Deserialize, Serialize};
@@ -315,7 +314,7 @@ impl SystemCapabilities {
             ));
         };
 
-        if let Some(rejection) = device_boundary_rejection(frame_format, backend) {
+        if let Some(rejection) = device_boundary_rejection(requirement, frame_format, backend) {
             return Err(self.unsupported_requirement_with_rejections(requirement, vec![rejection]));
         }
 
@@ -366,7 +365,9 @@ impl SystemCapabilities {
                 ));
             };
 
-            if let Some(rejection) = device_boundary_rejection(VideoFrameFormat::P010, backend) {
+            if let Some(rejection) =
+                device_boundary_rejection(requirement, VideoFrameFormat::P010, backend)
+            {
                 return Err(
                     self.unsupported_requirement_with_rejections(requirement, vec![rejection])
                 );
@@ -388,14 +389,14 @@ impl SystemCapabilities {
             ));
         };
 
-        if let Some(rejection) = device_boundary_rejection(frame_format, backend) {
+        if let Some(rejection) = device_boundary_rejection(requirement, frame_format, backend) {
             return Err(self.unsupported_requirement_with_rejections(requirement, vec![rejection]));
         }
 
         Ok(format)
     }
 
-    /// Ищет hardware format, который может довести неполный VP9 HDR requirement до P010 probe.
+    /// Ищет hardware format, который может довести неполный HDR requirement до P010 probe.
     fn find_p010_boundary_diagnostic_format(
         &self,
         requirement: &VideoDecodeRequirement,
@@ -404,7 +405,6 @@ impl SystemCapabilities {
             format.satisfies(requirement)
                 && format.bit_depth == BitDepth::Ten
                 && format.chroma == ChromaSubsampling::Yuv420
-                && matches!(format.profile, VideoProfile::Vp9(Vp9Profile::Profile2))
         })
     }
 
@@ -505,7 +505,9 @@ impl SystemCapabilities {
             let device_rejection = frame_format.and_then(|frame_format| {
                 self.find_supported_video_format(requirement)
                     .and_then(|format| self.backend_for_decode_format(format))
-                    .and_then(|backend| device_boundary_rejection(frame_format, backend))
+                    .and_then(|backend| {
+                        device_boundary_rejection(requirement, frame_format, backend)
+                    })
             });
             device_rejection
                 .or_else(|| strict_hdr_metadata_rejection(requirement, frame_format?))
@@ -691,13 +693,15 @@ fn frame_format_for_requirement(
     )
 }
 
-/// Разрешает Phase 9 dev-mode попробовать VP9 bitstream probe до production renderer gate.
+/// Разрешает dev-mode попробовать P010 boundary probe до production renderer gate.
 fn can_probe_p010_boundary_from_incomplete_hdr(requirement: &VideoDecodeRequirement) -> bool {
-    requirement.codec == VideoCodec::Vp9
-        && requirement.hdr
+    requirement.hdr
+        && requirement
+            .surface_format
+            .is_none_or(|surface_format| surface_format == VideoFrameFormat::P010)
         && requirement
             .profile
-            .is_none_or(|profile| matches!(profile, VideoProfile::Vp9(Vp9Profile::Profile2)))
+            .is_none_or(|profile| profile.codec() == requirement.codec)
         && requirement
             .bit_depth
             .is_none_or(|bit_depth| bit_depth == BitDepth::Ten)
@@ -850,17 +854,20 @@ fn p010_storage_layout_rejection(
 
 /// Проверяет device/export часть intersection для decoded frame format-а.
 fn device_boundary_rejection(
+    requirement: &VideoDecodeRequirement,
     frame_format: VideoFrameFormat,
     backend: &BackendCapabilities,
 ) -> Option<VideoCapabilityRejection> {
-    if backend.export_paths.contains(&VideoExportPath::DmaBuf) {
+    let required_export_path = requirement.memory_contract.required_export();
+
+    if backend.export_paths.contains(&required_export_path) {
         return None;
     }
 
     Some(VideoCapabilityRejection::UnsupportedDeviceExportPath {
         backend: backend.backend_id.clone(),
         frame_format,
-        required_export_path: VideoExportPath::DmaBuf,
+        required_export_path,
     })
 }
 
@@ -876,8 +883,8 @@ fn best_p010_render_readiness(render_backends: &[RenderCapabilities]) -> P010Ren
 #[cfg(test)]
 mod tests {
     use codec_core::{
-        BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, DecodeBackendId, HdrMetadata,
-        MatrixCoefficients, SupportedVideoDecodeFormat, TransferFunction, VideoCodec,
+        Av1Profile, BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, DecodeBackendId,
+        HdrMetadata, MatrixCoefficients, SupportedVideoDecodeFormat, TransferFunction, VideoCodec,
         VideoColorMetadata, VideoDecodeRequirement, VideoProfile, Vp9Profile,
     };
     use render_core::{P010RenderReadiness, RenderCapabilities};
@@ -950,6 +957,25 @@ mod tests {
         SupportedVideoDecodeFormat {
             codec: VideoCodec::Vp9,
             profile: VideoProfile::Vp9(profile),
+            bit_depth,
+            chroma,
+            max_width: Some(4096),
+            max_height: Some(2304),
+            max_fps: None,
+            hdr_input,
+            backend: DecodeBackendId::vaapi(),
+        }
+    }
+
+    fn av1_format(
+        profile: Av1Profile,
+        bit_depth: BitDepth,
+        chroma: ChromaSubsampling,
+        hdr_input: bool,
+    ) -> SupportedVideoDecodeFormat {
+        SupportedVideoDecodeFormat {
+            codec: VideoCodec::Av1,
+            profile: VideoProfile::Av1(profile),
             bit_depth,
             chroma,
             max_width: Some(4096),
@@ -1610,6 +1636,68 @@ mod tests {
             error.rejections.first(),
             Some(VideoCapabilityRejection::InvalidHdrMetadata { reason })
                 if reason.contains("отсутствует resolved color metadata")
+        ));
+    }
+
+    #[test]
+    fn unsupported_av1_profile_is_reported_before_decode_start() {
+        let capabilities = capabilities_with_formats(
+            vec![av1_format(
+                Av1Profile::Main,
+                BitDepth::Eight,
+                ChromaSubsampling::Yuv420,
+                false,
+            )],
+            vec![RenderCapabilities::wgpu_nv12(Some(4096))],
+            vec![VideoExportPath::DmaBuf],
+        );
+        let requirement = VideoDecodeRequirement::new(VideoCodec::Av1)
+            .with_profile(VideoProfile::Av1(Av1Profile::High))
+            .with_bit_depth(BitDepth::Eight)
+            .with_chroma(ChromaSubsampling::Yuv420);
+
+        let error = capabilities
+            .check_video_requirement(&requirement)
+            .expect_err("AV1 High must be rejected by AV1 Main-only capabilities");
+
+        assert!(matches!(
+            error.rejections.first(),
+            Some(VideoCapabilityRejection::UnsupportedProfile {
+                codec: VideoCodec::Av1,
+                profile: VideoProfile::Av1(Av1Profile::High),
+            })
+        ));
+    }
+
+    #[test]
+    fn codec_neutral_p010_surface_without_renderer_support_is_rejected_before_decode_start() {
+        let capabilities = capabilities_with_formats(
+            vec![av1_format(
+                Av1Profile::Main,
+                BitDepth::Ten,
+                ChromaSubsampling::Yuv420,
+                true,
+            )],
+            vec![RenderCapabilities::wgpu_nv12(Some(4096))],
+            vec![VideoExportPath::DmaBuf],
+        );
+        let requirement = VideoDecodeRequirement::new(VideoCodec::Av1)
+            .with_profile(VideoProfile::Av1(Av1Profile::Main))
+            .with_bit_depth(BitDepth::Ten)
+            .with_chroma(ChromaSubsampling::Yuv420)
+            .with_surface_format(VideoFrameFormat::P010);
+
+        let error = capabilities
+            .check_video_requirement(&requirement)
+            .expect_err(
+                "P010 surface must be rejected before hardware decode if renderer cannot import it",
+            );
+
+        assert!(matches!(
+            error.rejections.first(),
+            Some(VideoCapabilityRejection::P010NotRenderable {
+                readiness: P010RenderReadiness::Unavailable,
+            })
         ));
     }
 
