@@ -44,8 +44,8 @@ pub enum TimelineAction {
     /// Обновление целевой позиции interactive scrub.
     UpdateScrub(MediaTime),
 
-    /// Завершение scrub с commit latest policy.
-    EndScrubCommitLatest,
+    /// Завершение scrub с default commit policy timeline-а.
+    EndScrubCommitDefault,
 }
 
 /// Нормализованный input mapper-а без зависимости от `egui::Response` в тестах.
@@ -182,7 +182,7 @@ pub fn map_timeline_interaction(
 
     let should_finish_scrub = state.has_active_drag() && (input.clicked || input.drag_stopped);
     if should_finish_scrub {
-        actions.push(TimelineAction::EndScrubCommitLatest);
+        actions.push(TimelineAction::EndScrubCommitDefault);
         state.clear_transient_drag();
     }
 
@@ -466,7 +466,7 @@ mod tests {
             },
         );
 
-        assert_eq!(click.actions, vec![TimelineAction::EndScrubCommitLatest]);
+        assert_eq!(click.actions, vec![TimelineAction::EndScrubCommitDefault]);
         assert!(!state.has_active_drag());
     }
 
@@ -492,7 +492,7 @@ mod tests {
             vec![
                 TimelineAction::BeginScrub,
                 TimelineAction::UpdateScrub(MediaTime::from_secs(25)),
-                TimelineAction::EndScrubCommitLatest
+                TimelineAction::EndScrubCommitDefault
             ]
         );
         assert!(!state.has_active_drag());
@@ -546,7 +546,7 @@ mod tests {
             update.actions,
             vec![TimelineAction::UpdateScrub(MediaTime::from_secs(70))]
         );
-        assert_eq!(end.actions, vec![TimelineAction::EndScrubCommitLatest]);
+        assert_eq!(end.actions, vec![TimelineAction::EndScrubCommitDefault]);
         assert!(!state.has_active_drag());
     }
 

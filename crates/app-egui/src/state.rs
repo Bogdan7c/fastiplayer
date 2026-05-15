@@ -605,13 +605,14 @@ impl AppState {
 
     /// Конвертирует timeline action в typed player command.
     fn send_timeline_action(&mut self, action: TimelineAction) {
+        debug!(action = ?action, "Timeline action отправлен в player worker");
         let command = match action {
             TimelineAction::BeginScrub => PlayerCommand::BeginScrub,
             TimelineAction::UpdateScrub(position) => {
                 PlayerCommand::UpdateScrub(SeekRequest::absolute(position))
             }
-            TimelineAction::EndScrubCommitLatest => PlayerCommand::EndScrub {
-                policy: ScrubCommitPolicy::CommitLatest,
+            TimelineAction::EndScrubCommitDefault => PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
             },
         };
 

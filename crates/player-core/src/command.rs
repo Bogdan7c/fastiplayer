@@ -165,8 +165,20 @@ impl SeekRequest {
 /// Политика завершения interactive scrub.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrubCommitPolicy {
-    /// Зафиксировать последнюю цель, полученную через `UpdateScrub`.
-    CommitLatest,
+    /// Всегда выполнить final seek в последнюю цель, полученную через `UpdateScrub`.
+    CommitLatestTarget,
+
+    /// Зафиксировать последний preview-кадр, который реально был показан пользователю.
+    CommitVisiblePreview,
+
+    /// Сохранить visible preview как stale feedback, но финально доехать до latest target.
+    CommitLatestTargetWithVisiblePreviewFallback,
+}
+
+impl ScrubCommitPolicy {
+    /// UX policy по умолчанию для отпускания pointer-а на timeline: release не ждёт exact seek,
+    /// если пользователь уже видел preview frame.
+    pub const DEFAULT_TIMELINE_RELEASE: Self = Self::CommitVisiblePreview;
 }
 
 /// Tagged update/preview scrub intent после worker-side generation routing.

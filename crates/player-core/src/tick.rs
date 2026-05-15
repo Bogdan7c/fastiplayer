@@ -1544,6 +1544,10 @@ fn front_frame_ready_for_scheduler(
         return false;
     };
 
+    if active_final_seek_frame_ready(session, front_frame.pts) {
+        return true;
+    }
+
     let presentation_now = session.presentation_clock_position_at(now);
     let target_media_time = target_media_time_for_present(session, tick_config, presentation_now);
     let present_window = video_present_window(session, tick_config);
@@ -1554,6 +1558,13 @@ fn front_frame_ready_for_scheduler(
         target_media_time,
         late_drop_grace,
     ) || !should_wait_for_front_frame(front_frame.pts, target_media_time, present_window)
+}
+
+/// Проверяет, что первый queued frame уже может закрыть active final seek.
+fn active_final_seek_frame_ready(session: &PlayerSession, frame_pts: Duration) -> bool {
+    session
+        .active_final_seek_target()
+        .is_some_and(|target_position| frame_pts >= target_position)
 }
 
 /// Возвращает задержку до момента, когда scheduler должен подготовить первый queued frame.
@@ -2273,7 +2284,10 @@ fn process_pending_video_packets(
     };
 
     let diff_ms = frame.pts.as_secs_f64() * 1000.0 - target_media_time.as_secs_f64() * 1000.0;
-    if should_wait_for_front_frame(frame.pts, target_media_time, present_window) {
+    let force_present_for_final_seek = active_final_seek_frame_ready(session, frame.pts);
+    if !force_present_for_final_seek
+        && should_wait_for_front_frame(frame.pts, target_media_time, present_window)
+    {
         trace!(
             pts_ms = frame.pts.as_millis(),
             target_ms = target_media_time.as_millis(),
@@ -2299,6 +2313,7 @@ fn process_pending_video_packets(
         target_ms = target_media_time.as_millis(),
         diff_ms,
         window_ms = present_window.as_millis(),
+        force_present_for_final_seek,
         "A/V scheduler: frame selected"
     );
     present_front_queued_video_frame(session, tick_result);

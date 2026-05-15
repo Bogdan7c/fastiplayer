@@ -1185,6 +1185,16 @@ enum WorkerWakeupDeadline {
     PreviewScrub,
 }
 
+/// Нужно ли запускать live preview seek после принятого scrub update-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScrubPreviewDispatch {
+    /// Обычный drag/update path: latest target должен получить live preview.
+    Allow,
+
+    /// Release path: latest target нужен только final commit-у, без нового preview.
+    SuppressForCommit,
+}
+
 impl PlayerWorkerRuntime {
     /// Главный цикл worker thread.
     fn run(mut self) {
@@ -1552,6 +1562,11 @@ impl PlayerWorkerRuntime {
 
     /// BeginScrub сохраняет resume intent и временно ставит playback на паузу.
     fn handle_begin_scrub_command(&mut self, generation: ScrubGeneration) {
+        debug!(
+            generation = generation.as_u64(),
+            playback_state = ?self.session.playback_state(),
+            "Worker принял BeginScrub"
+        );
         self.reset_preview_scrub_state();
         self.seek_controller
             .begin_scrub_with_generation(generation, self.session.playback_state());
@@ -1559,9 +1574,16 @@ impl PlayerWorkerRuntime {
         self.dispatch_player_command(PlayerCommand::Pause);
     }
 
-    /// EndScrub коммитит latest target и применяет сохранённый resume intent.
+    /// EndScrub применяет выбранную commit policy и сохранённый resume intent.
     fn handle_end_scrub_command(&mut self, intent: ScrubCommitIntent) {
-        self.apply_latest_scrub_update();
+        debug!(
+            generation = intent.generation.as_u64(),
+            policy = ?intent.policy,
+            latest_target = ?self.seek_controller.latest_scrub_target(),
+            in_flight_target = ?self.seek_controller.in_flight_target(),
+            "Worker принял EndScrub"
+        );
+        self.apply_latest_scrub_update_for_commit();
 
         let Some(resume_intent) = self.seek_controller.finish_scrub(intent) else {
             debug!(
@@ -1573,6 +1595,13 @@ impl PlayerWorkerRuntime {
 
         self.deferred_preview_scrub_target = None;
         self.dispatch_scrub_command(SessionScrubCommand::End(intent));
+        debug!(
+            generation = intent.generation.as_u64(),
+            resume_intent = ?resume_intent,
+            has_active_seek_commit = self.session.has_active_seek_commit(),
+            timeline = ?self.session.snapshot().timeline,
+            "Worker применил EndScrub к session"
+        );
         self.apply_end_scrub_resume_intent(resume_intent);
         self.reset_preview_scrub_state();
     }
@@ -1582,11 +1611,17 @@ impl PlayerWorkerRuntime {
         if !self.seek_controller.mark_preview_seek_dispatched(intent) {
             debug!(
                 generation = intent.generation.as_u64(),
+                request = ?intent.request,
                 "Stale PreviewScrub ignored before PlayerSession"
             );
             return false;
         }
 
+        debug!(
+            generation = intent.generation.as_u64(),
+            request = ?intent.request,
+            "Worker dispatches PreviewScrub"
+        );
         self.last_preview_scrub_target = Some(intent);
         self.dispatch_scrub_command(SessionScrubCommand::Preview(intent));
         true
@@ -1619,17 +1654,61 @@ impl PlayerWorkerRuntime {
 
     /// Применяет один scrub update после coalescing.
     fn apply_scrub_update(&mut self, intent: ScrubUpdateIntent) {
+        self.apply_scrub_update_with_preview_dispatch(intent, ScrubPreviewDispatch::Allow);
+    }
+
+    /// Применяет scrub update и явно выбирает, можно ли вслед за ним отправлять preview.
+    fn apply_scrub_update_with_preview_dispatch(
+        &mut self,
+        intent: ScrubUpdateIntent,
+        preview_dispatch: ScrubPreviewDispatch,
+    ) {
         if !self.seek_controller.accept_scrub_update(intent) {
+            debug!(
+                generation = intent.generation.as_u64(),
+                request = ?intent.request,
+                preview_dispatch = ?preview_dispatch,
+                "Worker отбросил stale scrub update"
+            );
             return;
         }
 
+        debug!(
+            generation = intent.generation.as_u64(),
+            request = ?intent.request,
+            preview_dispatch = ?preview_dispatch,
+            "Worker применяет scrub update"
+        );
         self.dispatch_scrub_command(SessionScrubCommand::Update(intent));
-        self.queue_preview_scrub_seek(intent);
-        self.dispatch_due_preview_scrub_seek();
+
+        match preview_dispatch {
+            ScrubPreviewDispatch::Allow => {
+                self.queue_preview_scrub_seek(intent);
+                self.dispatch_due_preview_scrub_seek();
+            }
+            ScrubPreviewDispatch::SuppressForCommit => {
+                self.clear_deferred_preview_scrub_target(intent);
+            }
+        }
     }
 
     /// Забирает latest scrub update из bounded канала и применяет только последнюю цель.
     fn apply_latest_scrub_update(&mut self) {
+        self.apply_latest_scrub_update_with_preview_dispatch(ScrubPreviewDispatch::Allow);
+    }
+
+    /// Забирает latest scrub update перед EndScrub, не создавая новый preview transaction.
+    fn apply_latest_scrub_update_for_commit(&mut self) {
+        self.apply_latest_scrub_update_with_preview_dispatch(
+            ScrubPreviewDispatch::SuppressForCommit,
+        );
+    }
+
+    /// Общий latest-wins drain для обычного scrub-а и release commit-а.
+    fn apply_latest_scrub_update_with_preview_dispatch(
+        &mut self,
+        preview_dispatch: ScrubPreviewDispatch,
+    ) {
         drain_receiver_without_blocking(&self.scrub_wake_rx);
 
         if let Some(intent) = self.scrub_coalescer.take_latest() {
@@ -1638,7 +1717,7 @@ impl PlayerWorkerRuntime {
                 return;
             }
 
-            self.apply_scrub_update(intent);
+            self.apply_scrub_update_with_preview_dispatch(intent, preview_dispatch);
             self.publish_session_outputs();
         }
     }
@@ -1665,6 +1744,13 @@ impl PlayerWorkerRuntime {
         }
 
         self.deferred_preview_scrub_target = Some(intent);
+    }
+
+    /// Снимает отложенный preview, если release уже коммитит ту же цель final seek-ом.
+    fn clear_deferred_preview_scrub_target(&mut self, intent: ScrubUpdateIntent) {
+        if self.deferred_preview_scrub_target == Some(intent) {
+            self.deferred_preview_scrub_target = None;
+        }
     }
 
     /// Отправляет preview seek, когда прошёл throttle interval live scrub-а.
@@ -1952,12 +2038,13 @@ fn worst_latency_millis(counter: LatencyCounterSnapshot) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
     use crossbeam_channel::unbounded;
     use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
+    use webm_demux::{DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer};
 
     use super::*;
     use crate::{MediaSource, PlaybackState, SeekTarget};
@@ -1979,6 +2066,75 @@ mod tests {
 
     fn scrub_update_intent(generation: ScrubGeneration, milliseconds: u64) -> ScrubUpdateIntent {
         ScrubUpdateIntent::new(generation, seek_to_millis(milliseconds))
+    }
+
+    /// Fake demuxer для worker-level scrub tests без реального файла и backend resources.
+    struct WorkerFakeDemuxer {
+        /// Media tracks, которые session увидит после load boundary.
+        tracks: Vec<media_core::TrackInfo>,
+
+        /// Длительность нужна timeline-у, чтобы source был seekable.
+        duration: Option<Duration>,
+
+        /// Полный log seek request-ов, дошедших до demux boundary.
+        seek_request_log: Arc<Mutex<Vec<DemuxSeekRequest>>>,
+    }
+
+    impl WorkerFakeDemuxer {
+        /// Создаёт seekable fake media без tracks, чтобы тестировать только command flow.
+        fn empty_seekable(seek_request_log: Arc<Mutex<Vec<DemuxSeekRequest>>>) -> Self {
+            Self {
+                tracks: Vec::new(),
+                duration: Some(Duration::from_secs(30)),
+                seek_request_log,
+            }
+        }
+
+        /// Записывает seek request и возвращает нейтральный successful seek result.
+        fn record_seek_request(
+            &mut self,
+            request: DemuxSeekRequest,
+        ) -> anyhow::Result<DemuxSeekResult> {
+            self.seek_request_log
+                .lock()
+                .expect("worker fake seek request log lock")
+                .push(request);
+
+            Ok(DemuxSeekResult {
+                requested_position: MediaTime::from_duration(request.timestamp),
+                actual_position: MediaTime::from_duration(request.timestamp),
+                actual_track_timestamp: None,
+            })
+        }
+    }
+
+    impl Demuxer for WorkerFakeDemuxer {
+        fn tracks(&self) -> &[media_core::TrackInfo] {
+            &self.tracks
+        }
+
+        fn duration(&self) -> Option<Duration> {
+            self.duration
+        }
+
+        fn seekability(&self) -> DemuxSeekability {
+            DemuxSeekability::Seekable
+        }
+
+        fn next_packet(&mut self) -> anyhow::Result<Option<media_core::Packet>> {
+            Ok(None)
+        }
+
+        fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+            self.record_seek_request(DemuxSeekRequest::accurate(timestamp))
+        }
+
+        fn seek_with_request(
+            &mut self,
+            request: DemuxSeekRequest,
+        ) -> anyhow::Result<DemuxSeekResult> {
+            self.record_seek_request(request)
+        }
     }
 
     fn wait_for_snapshot(
@@ -2222,7 +2378,7 @@ mod tests {
         }
         worker
             .try_send_command(PlayerCommand::EndScrub {
-                policy: ScrubCommitPolicy::CommitLatest,
+                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
             })
             .unwrap();
 
@@ -2266,7 +2422,7 @@ mod tests {
             .unwrap();
         worker
             .try_send_command(PlayerCommand::EndScrub {
-                policy: ScrubCommitPolicy::CommitLatest,
+                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
             })
             .unwrap();
 
@@ -2347,7 +2503,7 @@ mod tests {
         runtime.apply_scrub_update(scrub_update_intent(second_generation, 250));
         runtime.handle_end_scrub_command(ScrubCommitIntent::new(
             first_generation,
-            ScrubCommitPolicy::CommitLatest,
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
         ));
 
         assert_eq!(
@@ -2382,7 +2538,7 @@ mod tests {
 
         runtime.handle_end_scrub_command(ScrubCommitIntent::new(
             first_generation,
-            ScrubCommitPolicy::CommitLatest,
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
         ));
         runtime.handle_begin_scrub_command(second_generation);
         runtime.last_preview_scrub_seek_at = Some(Instant::now());
@@ -2393,6 +2549,69 @@ mod tests {
             Some(MediaTime::from_millis(250))
         );
         assert!(runtime.session.snapshot().timeline.scrubbing);
+    }
+
+    #[test]
+    fn latest_scrub_update_dispatches_preview_before_release() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
+        let demuxer = WorkerFakeDemuxer::empty_seekable(Arc::clone(&seek_request_log));
+        let generation = ScrubGeneration::default().next();
+
+        runtime.session.load_demuxer_with_autoplay(
+            "worker-fake".to_string(),
+            Box::new(demuxer),
+            false,
+        );
+        runtime.handle_begin_scrub_command(generation);
+        runtime
+            .scrub_coalescer
+            .submit_latest(scrub_update_intent(generation, 900))
+            .unwrap();
+
+        runtime.apply_latest_scrub_update();
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(
+            requests.as_slice(),
+            &[DemuxSeekRequest::preview(Duration::from_millis(900))]
+        );
+    }
+
+    #[test]
+    fn end_scrub_applies_coalesced_update_without_starting_release_preview_seek() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
+        let demuxer = WorkerFakeDemuxer::empty_seekable(Arc::clone(&seek_request_log));
+        let generation = ScrubGeneration::default().next();
+
+        runtime.session.load_demuxer_with_autoplay(
+            "worker-fake".to_string(),
+            Box::new(demuxer),
+            false,
+        );
+        runtime.handle_begin_scrub_command(generation);
+        runtime
+            .scrub_coalescer
+            .submit_latest(scrub_update_intent(generation, 900))
+            .unwrap();
+
+        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
+            generation,
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        ));
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(
+            requests.as_slice(),
+            &[DemuxSeekRequest::accurate(Duration::from_millis(900))]
+        );
+        assert_eq!(
+            runtime.session.snapshot().timeline.target_position,
+            Some(MediaTime::from_millis(900))
+        );
+        assert!(runtime.session.has_active_seek_commit());
+        assert!(!runtime.session.snapshot().timeline.scrubbing);
     }
 
     #[test]
