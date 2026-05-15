@@ -849,6 +849,7 @@ mod tests {
     use std::collections::{HashMap, VecDeque};
     use std::io;
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use media_core::{TrackId, TrackKind, VideoTrackMetadata};
@@ -875,6 +876,7 @@ mod tests {
         cues: Vec<Cue>,
         metadata: MetadataLog,
         packets: VecDeque<std::result::Result<Packet, SymphoniaError>>,
+        seek_mode_log: Option<Arc<Mutex<Vec<SeekMode>>>>,
     }
 
     impl FakeFormatReader {
@@ -887,7 +889,13 @@ mod tests {
                 cues: Vec::new(),
                 metadata: MetadataLog::default(),
                 packets: VecDeque::from(packets),
+                seek_mode_log: None,
             }
+        }
+
+        fn with_seek_mode_log(mut self, seek_mode_log: Arc<Mutex<Vec<SeekMode>>>) -> Self {
+            self.seek_mode_log = Some(seek_mode_log);
+            self
         }
     }
 
@@ -912,9 +920,16 @@ mod tests {
 
         fn seek(
             &mut self,
-            _mode: SeekMode,
+            mode: SeekMode,
             _to: SeekTo,
         ) -> symphonia::core::errors::Result<SeekedTo> {
+            if let Some(ref seek_mode_log) = self.seek_mode_log {
+                seek_mode_log
+                    .lock()
+                    .expect("seek mode log mutex should not be poisoned")
+                    .push(mode);
+            }
+
             let track_id = self
                 .tracks
                 .first()
@@ -975,6 +990,38 @@ mod tests {
         .expect("fake demuxer должен открыться")
     }
 
+    fn fake_demuxer_with_seek_mode_log() -> (SymphoniaDemuxer, Arc<Mutex<Vec<SeekMode>>>) {
+        let seek_mode_log = Arc::new(Mutex::new(Vec::new()));
+        let reader = FakeFormatReader::new(vec![null_video_track(1)], Vec::new())
+            .with_seek_mode_log(Arc::clone(&seek_mode_log));
+        let demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "fake",
+            HashMap::new(),
+            crate::demuxer::DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+
+        (demuxer, seek_mode_log)
+    }
+
+    fn assert_symphonia_seek_mode(request: DemuxSeekRequest, expected_mode: SeekMode) {
+        let (mut demuxer, seek_mode_log) = fake_demuxer_with_seek_mode_log();
+
+        demuxer
+            .seek_with_request(request)
+            .expect("fake seek должен завершиться без ошибки");
+
+        assert_eq!(
+            seek_mode_log
+                .lock()
+                .expect("seek mode log mutex should not be poisoned")
+                .as_slice(),
+            &[expected_mode]
+        );
+    }
+
     fn video_track_metadata(width: u32, height: Option<u32>) -> VideoTrackMetadata {
         VideoTrackMetadata {
             coded_width: Some(width),
@@ -1021,6 +1068,30 @@ mod tests {
 
         assert_eq!(time.seconds, 12);
         assert!((time.frac - 0.25).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn accurate_demux_seek_uses_symphonia_accurate_mode() {
+        assert_symphonia_seek_mode(
+            DemuxSeekRequest::accurate(Duration::from_millis(500)),
+            SeekMode::Accurate,
+        );
+    }
+
+    #[test]
+    fn decode_point_before_demux_seek_uses_symphonia_coarse_mode() {
+        assert_symphonia_seek_mode(
+            DemuxSeekRequest::decode_point_before(Duration::from_millis(500)),
+            SeekMode::Coarse,
+        );
+    }
+
+    #[test]
+    fn preview_demux_seek_uses_symphonia_coarse_mode() {
+        assert_symphonia_seek_mode(
+            DemuxSeekRequest::preview(Duration::from_millis(500)),
+            SeekMode::Coarse,
+        );
     }
 
     #[test]

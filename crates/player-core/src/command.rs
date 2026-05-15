@@ -67,13 +67,13 @@ impl MediaOpenRequest {
 /// Точность seek-операции, которую должен выбрать будущий scheduler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeekMode {
-    /// Точный seek, если контейнер и codec pipeline это позволяют.
+    /// Точный seek на уровне player-core: video может стартовать с pre-roll до target.
     Accurate,
 
     /// Seek к ближайшему ключевому кадру до указанной позиции.
     KeyframeBefore,
 
-    /// Seek к ближайшему ключевому кадру после указанной позиции.
+    /// Seek к ближайшему ключевому кадру после target; пока отклоняется typed ошибкой.
     KeyframeAfter,
 }
 

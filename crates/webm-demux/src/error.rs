@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::demuxer::DemuxSeekMode;
+
 /// Ошибки demuxer.
 #[derive(Debug, thiserror::Error)]
 pub enum DemuxError {
@@ -47,6 +49,12 @@ pub enum DemuxError {
     #[error("Seek недоступен: {0}")]
     SeekUnavailable(String),
 
+    #[error("Seek mode {mode:?} не поддерживается этой реализацией demuxer-а")]
+    UnsupportedSeekMode {
+        /// Container-level режим, который demuxer не умеет честно выполнить.
+        mode: DemuxSeekMode,
+    },
+
     #[error("Ошибка seek: {0}")]
     SeekFailed(String),
 }
@@ -55,6 +63,9 @@ impl DemuxError {
     /// Возвращает `true`, если ошибка означает отсутствие seek capability.
     #[must_use]
     pub fn is_seek_unavailable(&self) -> bool {
-        matches!(self, Self::SeekUnavailable(_))
+        matches!(
+            self,
+            Self::SeekUnavailable(_) | Self::UnsupportedSeekMode { .. }
+        )
     }
 }

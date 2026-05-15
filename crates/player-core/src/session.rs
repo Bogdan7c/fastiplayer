@@ -17,7 +17,9 @@ use crate::pipeline::{
     MAX_OBSERVED_VIDEO_FRAME_DURATION, MIN_OBSERVED_VIDEO_FRAME_DURATION, MonotonicMediaClockAnchor,
 };
 use crate::seek_controller::PlaybackResumeIntent;
-use crate::seek_state::{SeekCommitKind, SeekCommitState, demux_seek_request_for_transaction};
+use crate::seek_state::{
+    SeekCommitKind, SeekCommitState, SeekDemuxRequestError, demux_seek_request_for_transaction,
+};
 use crate::{
     AudioBufferSnapshot, BackendSnapshot, FrameCounters, MediaOpenRequest, MediaSource,
     MediaSummary, PipelineLatencyStage, PipelinePauseReason, PipelineQueueDepthSnapshot,
@@ -59,6 +61,9 @@ pub struct PlayerSession {
 
     /// Последний свежий preview-кадр, реально показанный во время текущего scrub.
     last_visible_preview_position: Option<MediaTime>,
+
+    /// Последний scrub request целиком, чтобы final commit не терял `SeekMode`.
+    latest_scrub_request: Option<SeekRequest>,
 
     /// Final seek near EOF завершился свежим frame-ом до requested target.
     seek_eof_fallback_video_position: Option<MediaTime>,
@@ -498,6 +503,7 @@ impl PlayerSession {
         self.pending_autoplay = false;
         self.seek_commit = None;
         self.last_visible_preview_position = None;
+        self.latest_scrub_request = None;
         self.seek_eof_fallback_video_position = None;
         self.snapshot.source_label = None;
         self.snapshot.media_title = None;
@@ -1151,6 +1157,7 @@ impl PlayerSession {
     fn complete_final_seek_commit(&mut self, seek_commit: SeekCommitState) {
         self.seek_commit = None;
         self.last_visible_preview_position = None;
+        self.latest_scrub_request = None;
         self.seek_eof_fallback_video_position = None;
         self.clear_seek_preroll_fallback_frame();
         self.pipeline.media_clock_base = seek_commit.target_position.as_duration();
@@ -1205,6 +1212,7 @@ impl PlayerSession {
     fn fail_final_seek_commit_on_timeout(&mut self, seek_commit: SeekCommitState) {
         self.seek_commit = None;
         self.last_visible_preview_position = None;
+        self.latest_scrub_request = None;
         self.seek_eof_fallback_video_position = None;
         self.clear_seek_preroll_fallback_frame();
         self.snapshot.timeline.target_position = None;
@@ -1325,7 +1333,11 @@ impl PlayerSession {
             return Ok(());
         }
 
-        self.start_seek_transaction(MediaTime::ZERO, SeekCommitKind::Final)
+        self.start_seek_transaction(
+            MediaTime::ZERO,
+            crate::SeekMode::Accurate,
+            SeekCommitKind::Final,
+        )
     }
 
     /// Запускает preroll перед autoplay, не включая audio stream раньше заполнения buffer.
@@ -1407,7 +1419,7 @@ impl PlayerSession {
             return Ok(());
         }
 
-        self.start_seek_transaction(target_position, SeekCommitKind::Final)
+        self.start_seek_transaction(target_position, request.mode, SeekCommitKind::Final)
     }
 
     /// Начинает interactive scrub на уровне контракта без запуска demux seek.
@@ -1417,6 +1429,7 @@ impl PlayerSession {
         self.snapshot.timeline.stale_frame = true;
         self.snapshot.timeline.target_position = Some(self.snapshot.timeline.current_position);
         self.last_visible_preview_position = None;
+        self.latest_scrub_request = None;
         Ok(())
     }
 
@@ -1427,6 +1440,7 @@ impl PlayerSession {
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = true;
         self.snapshot.timeline.target_position = Some(target_position);
+        self.latest_scrub_request = Some(request);
         self.pending_events
             .push(PlayerEvent::SeekRequested(request));
         Ok(())
@@ -1439,7 +1453,8 @@ impl PlayerSession {
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = true;
         self.snapshot.timeline.target_position = Some(target_position);
-        self.start_seek_transaction(target_position, SeekCommitKind::Preview)
+        self.latest_scrub_request = Some(request);
+        self.start_seek_transaction(target_position, request.mode, SeekCommitKind::Preview)
     }
 
     /// Завершает scrub и применяет последнюю цель согласно выбранной политике.
@@ -1448,13 +1463,22 @@ impl PlayerSession {
         match policy {
             crate::ScrubCommitPolicy::CommitLatest => {
                 if let Some(target_position) = self.snapshot.timeline.target_position {
+                    let seek_mode = self
+                        .latest_scrub_request
+                        .map(|request| request.mode)
+                        .unwrap_or_default();
                     if !self.promote_preview_seek_to_final(target_position) {
-                        self.start_seek_transaction(target_position, SeekCommitKind::Final)?;
+                        self.start_seek_transaction(
+                            target_position,
+                            seek_mode,
+                            SeekCommitKind::Final,
+                        )?;
                     }
                 }
             }
         }
         self.snapshot.timeline.scrubbing = false;
+        self.latest_scrub_request = None;
         Ok(())
     }
 
@@ -1628,6 +1652,7 @@ impl PlayerSession {
         };
         if commit_kind == SeekCommitKind::Final {
             self.last_visible_preview_position = None;
+            self.latest_scrub_request = None;
             self.snapshot.timeline.scrubbing = false;
         }
         self.set_playback_state(PlaybackState::Paused);
@@ -1638,6 +1663,7 @@ impl PlayerSession {
     fn start_seek_transaction(
         &mut self,
         target_position: MediaTime,
+        seek_mode: crate::SeekMode,
         commit_kind: SeekCommitKind,
     ) -> PlayerResult<()> {
         if !self.snapshot.timeline.seekable {
@@ -1663,6 +1689,20 @@ impl PlayerSession {
             return Ok(());
         }
 
+        let target_duration = target_position.as_duration();
+        let demux_seek_request = match demux_seek_request_for_transaction(
+            commit_kind,
+            self.pipeline.video_track_id.is_some(),
+            target_duration,
+            seek_mode,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.record_recoverable_error(player_error_from_seek_demux_request_error(error));
+                return Ok(());
+            }
+        };
+
         let resume_intent = match commit_kind {
             SeekCommitKind::Final => {
                 self.last_visible_preview_position = None;
@@ -1670,7 +1710,6 @@ impl PlayerSession {
             }
             SeekCommitKind::Preview => PlaybackResumeIntent::Pause,
         };
-        let target_duration = target_position.as_duration();
 
         self.pause_audio_output_for_seek();
         if let Err(error) = self.reset_video_decoder_for_seek() {
@@ -1732,11 +1771,6 @@ impl PlayerSession {
             let Some(demuxer) = self.pipeline.demuxer.as_mut() else {
                 return Ok(());
             };
-            let demux_seek_request = demux_seek_request_for_transaction(
-                commit_kind,
-                self.pipeline.video_track_id.is_some(),
-                target_duration,
-            );
             demuxer.seek_with_request(demux_seek_request)
         };
 
@@ -2454,6 +2488,7 @@ impl Default for PlayerSession {
             capabilities: None,
             seek_commit: None,
             last_visible_preview_position: None,
+            latest_scrub_request: None,
             seek_eof_fallback_video_position: None,
             demuxer_options: DemuxerOptions::default(),
         }
@@ -2513,6 +2548,16 @@ fn player_error_from_demux_seek_error(error: anyhow::Error) -> PlayerError {
     }
 
     PlayerError::new(PlayerErrorKind::DemuxError, format!("Seek failed: {error}"))
+}
+
+/// Мапит ошибку выбора seek policy до mutating-части transaction-а.
+fn player_error_from_seek_demux_request_error(error: SeekDemuxRequestError) -> PlayerError {
+    match error {
+        SeekDemuxRequestError::UnsupportedSeekMode { mode } => PlayerError::new(
+            PlayerErrorKind::SeekUnavailable,
+            format!("Seek mode {mode:?} пока не поддерживается текущим demux contract"),
+        ),
+    }
 }
 
 /// Мапит failed decoder flush в typed player error без продолжения seek transaction.
@@ -3111,10 +3156,7 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
-        assert_eq!(
-            requests[0].mode,
-            webm_demux::DemuxSeekMode::DecodePointBefore
-        );
+        assert_eq!(requests[0].mode, webm_demux::DemuxSeekMode::Preview);
         assert_eq!(
             session.seek_commit().map(|seek_commit| seek_commit.kind),
             Some(SeekCommitKind::Final)
@@ -3322,6 +3364,109 @@ mod tests {
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].timestamp, Duration::from_secs(8));
+        assert_eq!(
+            requests[0].mode,
+            webm_demux::DemuxSeekMode::DecodePointBefore
+        );
+    }
+
+    #[test]
+    fn audio_only_accurate_final_seek_uses_demux_accurate_mode() {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(2, TrackKind::Audio)],
+        );
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(8),
+            )))
+            .unwrap();
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].mode, webm_demux::DemuxSeekMode::Accurate);
+    }
+
+    #[test]
+    fn keyframe_before_video_seek_uses_decode_point_before_mode() {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(1, TrackKind::Video)],
+        );
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest {
+                target: SeekTarget::Absolute(MediaTime::from_secs(8)),
+                mode: SeekMode::KeyframeBefore,
+            }))
+            .unwrap();
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].mode,
+            webm_demux::DemuxSeekMode::DecodePointBefore
+        );
+    }
+
+    #[test]
+    fn keyframe_after_seek_is_rejected_before_demux_seek() {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(1, TrackKind::Video)],
+        );
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest {
+                target: SeekTarget::Absolute(MediaTime::from_secs(8)),
+                mode: SeekMode::KeyframeAfter,
+            }))
+            .unwrap();
+
+        assert!(
+            seek_request_log
+                .lock()
+                .expect("seek request log lock")
+                .is_empty()
+        );
+        assert!(!session.snapshot().timeline.seeking);
+        assert_eq!(
+            session
+                .snapshot()
+                .last_error
+                .as_ref()
+                .map(|error| &error.kind),
+            Some(&PlayerErrorKind::SeekUnavailable)
+        );
+    }
+
+    #[test]
+    fn end_scrub_preserves_latest_request_seek_mode() {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(2, TrackKind::Audio)],
+        );
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest {
+                target: SeekTarget::Absolute(MediaTime::from_secs(8)),
+                mode: SeekMode::KeyframeBefore,
+            }))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitLatest,
+            })
+            .unwrap();
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(requests.len(), 1);
         assert_eq!(
             requests[0].mode,
             webm_demux::DemuxSeekMode::DecodePointBefore
