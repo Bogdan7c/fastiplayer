@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use codec_core::VideoColorMetadata;
 use crossbeam_channel::{
-    Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError, bounded, select,
+    Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError, bounded, select, unbounded,
 };
 use media_core::{Packet, TrackId, TrackKind};
 use tracing::{info, trace};
@@ -26,6 +26,9 @@ use crate::texture_cache::{DEFAULT_ZERO_COPY_SURFACE_POOL_SLOTS, TexturePoolStat
 
 /// Результат, которым decoder thread подтверждает завершение flush.
 type FlushAck = std::result::Result<(), String>;
+
+/// Подтверждение, что decoder thread уже обработал один packet из input channel.
+type DecodePacketAck = ();
 
 /// Bounded capacity diagnostics events от decoder thread.
 const DECODER_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
@@ -494,6 +497,7 @@ pub struct VideoDecodeThread {
     packet_tx: Sender<QueuedDecodePacket>,
     control_tx: Sender<ThreadControlMsg>,
     frame_rx: Receiver<DecodedFrame>,
+    packet_ack_rx: Receiver<DecodePacketAck>,
     error_rx: Receiver<DecodeThreadError>,
     diagnostic_rx: std::sync::mpsc::Receiver<VideoDecoderDiagnosticEvent>,
     queue: Arc<wgpu::Queue>,
@@ -556,6 +560,7 @@ impl VideoDecodeThread {
         let (packet_tx, packet_rx) = bounded::<QueuedDecodePacket>(config.packet_channel_frames);
         let (control_tx, control_rx) = bounded::<ThreadControlMsg>(config.control_channel_frames);
         let (frame_tx, frame_rx) = bounded::<DecodedFrame>(config.frame_channel_frames);
+        let (packet_ack_tx, packet_ack_rx) = unbounded::<DecodePacketAck>();
         let (error_tx, error_rx) = bounded::<DecodeThreadError>(1);
         let (diagnostic_tx, diagnostic_rx) = std::sync::mpsc::sync_channel::<
             VideoDecoderDiagnosticEvent,
@@ -595,7 +600,14 @@ impl VideoDecodeThread {
                     }
                 };
 
-                decoder_thread_loop(decoder, packet_rx, control_rx, frame_tx, error_tx);
+                decoder_thread_loop(
+                    decoder,
+                    packet_rx,
+                    control_rx,
+                    frame_tx,
+                    packet_ack_tx,
+                    error_tx,
+                );
                 info!("Decoder thread exiting");
             })
             .map_err(|e| anyhow::anyhow!("Failed to spawn decoder thread: {}", e))?;
@@ -615,6 +627,7 @@ impl VideoDecodeThread {
             packet_tx,
             control_tx,
             frame_rx,
+            packet_ack_rx,
             error_rx,
             diagnostic_rx,
             queue: queue_for_release_callbacks,
@@ -737,6 +750,7 @@ impl VideoDecodeThread {
         let flush_result =
             wait_for_flush_ack(done_rx, self.config.flush_timeout, &self.thread_state);
         self.release_received_frames();
+        self.drain_completed_packet_acks();
         flush_result
     }
 
@@ -778,6 +792,12 @@ impl VideoDecodeThread {
         self.packet_tx.len()
     }
 
+    /// Забирает количество packets, которые decoder thread уже обработал.
+    #[must_use]
+    pub fn drain_completed_packet_count(&self) -> usize {
+        self.drain_completed_packet_acks()
+    }
+
     /// Имя бэкенда для UI.
     pub fn backend_name(&self) -> &'static str {
         self.backend_name
@@ -810,6 +830,15 @@ impl VideoDecodeThread {
         while let Ok(frame) = self.frame_rx.try_recv() {
             self.release_frame(frame.texture_handle);
         }
+    }
+
+    /// Очищает packet-ack channel и возвращает число подтверждений.
+    fn drain_completed_packet_acks(&self) -> usize {
+        let mut completed_packet_count = 0usize;
+        while self.packet_ack_rx.try_recv().is_ok() {
+            completed_packet_count = completed_packet_count.saturating_add(1);
+        }
+        completed_packet_count
     }
 }
 
@@ -878,6 +907,7 @@ fn decoder_thread_loop(
     packet_rx: Receiver<QueuedDecodePacket>,
     control_rx: Receiver<ThreadControlMsg>,
     frame_tx: Sender<DecodedFrame>,
+    packet_ack_tx: Sender<DecodePacketAck>,
     error_tx: Sender<DecodeThreadError>,
 ) {
     let mut pending_publish: Option<PendingFramePublish> = None;
@@ -949,6 +979,7 @@ fn decoder_thread_loop(
                             &mut decoder,
                             queued_packet,
                             &frame_tx,
+                            &packet_ack_tx,
                             &error_tx,
                             &mut pending_publish,
                             &mut latest_color_metadata,
@@ -1068,6 +1099,7 @@ fn decode_queued_packet(
     decoder: &mut crate::VaapiVideoDecoder,
     queued_packet: QueuedDecodePacket,
     frame_tx: &Sender<DecodedFrame>,
+    packet_ack_tx: &Sender<DecodePacketAck>,
     error_tx: &Sender<DecodeThreadError>,
     pending_publish: &mut Option<PendingFramePublish>,
     latest_color_metadata: &mut Option<VideoColorMetadata>,
@@ -1092,7 +1124,10 @@ fn decode_queued_packet(
         data: encoded_bytes,
     };
 
-    match decoder.decode(&packet) {
+    let decode_result = decoder.decode(&packet);
+    let _ = packet_ack_tx.try_send(());
+
+    match decode_result {
         Ok(Some(mut frame)) => {
             if let Some(color_metadata) = &resolved_color {
                 frame.color = color_metadata.clone();

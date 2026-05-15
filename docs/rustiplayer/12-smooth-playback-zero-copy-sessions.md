@@ -641,6 +641,37 @@ codec-specific probing и requirements должны жить в adapters, а о�
 
   ### Реализация
 
+  #### Зафиксированный результат на 2026-05-15
+
+  - Линейное воспроизведение без seek/scrub выведено в стабильное состояние:
+    полный manual-прогон 4k60 SDR VP9/Opus от начала до конца проходит без
+    media drops.
+  - Основная причина прежних steady-state late drops была не в битом asset и не
+    в 59.94fps cadence, а в том, что worker использовал fixed 60Hz tick как
+    фактический источник playback cadence.
+  - После перехода на PTS/audio-clock scheduler 59.94fps, 60fps, 30fps, 24fps и
+    будущий VFR проходят через одну модель: deadline считается от media time и
+    `front_frame.pts`, а не от предположения, что следующий кадр обязан прийти
+    через `16_667us`.
+  - Дополнительная найденная причина пачечных проблем после первого варианта
+    фикса: `PipelineWorkReady` был слишком широким и мог будить worker с `0ms`,
+    даже когда present queue уже была здоровой/полной, а первый queued frame ещё
+    находился в future относительно media clock. Это создавало tight loop,
+    нагружало worker и могло проявляться пачкой проблем после нескольких секунд
+    нормального playback.
+  - Этот busy-spin устранён: pending decode/demux work больше не превращается в
+    immediate wakeup, если present queue уже достигла target или в ней нет
+    свободных present slots. В таком состоянии worker ждёт ближайший
+    PTS-deadline либо внешний command/render event.
+  - `Condvar::wait_timeout`/worker timeout трактуется только как best-effort
+    ожидание до ближайшего meaningful deadline. После любого wakeup состояние
+    pipeline пересчитывается заново, потому что timeout не является точным
+    frame clock и может проснуться из-за event, scheduler delay, platform
+    latency или spurious wakeup.
+  - Repeated/reused frames считаются отдельно от dropped media frames. Refresh
+    mismatch, например 59.94fps video на 60Hz display, может давать редкие
+    repeats, но не должен сам по себе превращаться в steady-state `Late` drops.
+
   - Worker больше не использует `16_667us` как cadence playback. `PlayerWorker`
     получает read-only план от `PlayerSession::worker_wakeup_plan(...)` и ждёт:
     - command/render/scrub/shutdown event без timeout, когда pipeline idle;
@@ -667,10 +698,31 @@ codec-specific probing и requirements должны жить в adapters, а о�
     - `worker_wakeup.frame_timing.front_frame_delta_from_target_us`;
     - `repeated_video_frames` отдельно от `drops`.
 
+  ### Known issue после 7.5: seek/scrub
+
+  - Scope 7.5 считается закрытым для обычного линейного playback: steady-state
+    playback без seek не даёт пропусков на исходном 4k60 SDR VP9/Opus asset.
+  - После ручного протягивания seek/scrub может стать нестабильным: playback
+    иногда залипает после drag, а повторное протягивание может вывести pipeline
+    из этого состояния.
+  - Этот seek issue не нужно чинить откатом PTS scheduler-а и не нужно
+    маскировать через отключение late drops. Следующая сессия должна отдельно
+    проверить seek generation, flush/preroll, render lease release/acquire,
+    decoder readiness и wakeup reason после scrub.
+  - Для будущего расследования важно различать:
+    - steady-state media cadence, который теперь PTS/audio-clock based и
+      подтверждён manual-прогоном;
+    - transition-state после seek/scrub, где возможна отдельная проблема с
+      generation handoff, stale frames, drained queues или отсутствующим wakeup
+      после preroll.
+
   ### Manual protocol
 
   - Запустить SDR VP9/NV12 asset:
     `cargo run -p app-egui -- test-assets/4k60fps_sdr/LXb3EKWsInQ_2160p60_sdr_vp9_opus.webm`.
+  - Для проверки именно Session 7.5 не трогать seek/scrub: этот protocol
+    валидирует steady-state PTS/audio-clock playback, а не transition-state
+    после ручного протягивания.
   - В telemetry/diagnostics проверить:
     - `Memory path` остаётся zero-copy (`DmaBufZeroCopy`);
     - CPU fallback не появляется;

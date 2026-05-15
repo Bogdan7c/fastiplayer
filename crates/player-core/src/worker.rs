@@ -1615,6 +1615,7 @@ impl PlayerWorkerRuntime {
             worst_latency_ms,
             pending_video_packets = summary.queues.pending_video_packets,
             present_queue_depth = summary.queues.present_queue_depth,
+            decoder_in_flight_packets = summary.queues.decoder_in_flight_packets,
             active_render_leases = summary.queues.active_render_leases,
             "Playback diagnostics summary"
         );

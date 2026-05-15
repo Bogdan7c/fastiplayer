@@ -196,6 +196,9 @@ pub struct PipelineQueueDepthSnapshot {
     /// Decoder send queue depth около отправки packet-а.
     pub decoder_send_queue_depth: usize,
 
+    /// Packets, которые decoder thread уже забрал из channel, но ещё не вернул frame.
+    pub decoder_in_flight_packets: usize,
+
     /// Backend ready queue depth, если decoder сообщил его с frame-ом.
     pub decoder_ready_queue_depth: Option<usize>,
 

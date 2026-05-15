@@ -157,8 +157,22 @@ pub(crate) struct PlaybackPipeline {
     /// packets, а не в UI/render слое.
     pub(crate) video_decoder_needs_keyframe: bool,
 
+    /// Сколько video packets уже ушло в decoder thread и ещё не получило packet ack.
+    ///
+    /// `VideoDecodeThread::packet_queue_depth()` не видит packet, который decoder
+    /// уже забрал из channel и прямо сейчас обрабатывает. Decoder ack приходит
+    /// по отдельному channel независимо от того, дал packet output frame или нет.
+    pub(crate) video_decode_in_flight_packets: usize,
+
     /// Очередь декодированных видеокадров перед presentation.
     pub(crate) video_frame_queue: VecDeque<video_core::DecodedFrame>,
+
+    /// Последний свежедекодированный frame до final seek target для EOF fallback.
+    ///
+    /// При seek в самый конец файла requested target может оказаться позже
+    /// последнего реального video PTS. Такой frame нельзя показывать сразу как
+    /// точный target, но его нужно сохранить до EOF, чтобы не зависнуть в seek.
+    pub(crate) seek_preroll_fallback_video_frame: Option<video_core::DecodedFrame>,
 
     /// Текущая оценка длительности одного video frame.
     pub(crate) video_frame_duration_estimate: Duration,
@@ -231,6 +245,8 @@ impl PlaybackPipeline {
         self.video_track_id = None;
         self.pending_video_packets.clear();
         self.video_decoder_needs_keyframe = true;
+        self.reset_video_decode_in_flight();
+        self.seek_preroll_fallback_video_frame = None;
         self.audio_clock = None;
         self.media_clock_base = Duration::ZERO;
         self.monotonic_media_clock_anchor = None;
@@ -264,6 +280,30 @@ impl PlaybackPipeline {
     ) {
         self.video_backend = decoder_thread.backend_name();
         self.video_decoder_thread = Some(decoder_thread);
+        self.reset_video_decode_in_flight();
+    }
+
+    /// Сбрасывает счётчик packets, которые могли остаться внутри decoder после flush/seek.
+    pub(crate) fn reset_video_decode_in_flight(&mut self) {
+        self.video_decode_in_flight_packets = 0;
+    }
+
+    /// Отмечает packet, успешно переданный через worker -> decoder boundary.
+    pub(crate) fn note_video_packet_sent_to_decoder(&mut self) {
+        self.video_decode_in_flight_packets = self.video_decode_in_flight_packets.saturating_add(1);
+    }
+
+    /// Отмечает packets, которые decoder thread обработал без привязки к числу output frames.
+    pub(crate) fn note_video_packets_completed_by_decoder(&mut self, packet_count: usize) {
+        self.video_decode_in_flight_packets = self
+            .video_decode_in_flight_packets
+            .saturating_sub(packet_count);
+    }
+
+    /// Возвращает приблизительное число packets, которые decoder уже забрал, но ещё не ack-нул.
+    #[must_use]
+    pub(crate) const fn video_decode_in_flight_packets(&self) -> usize {
+        self.video_decode_in_flight_packets
     }
 
     /// Возвращает количество активных render leases для тестов lease/release контракта.
@@ -306,7 +346,9 @@ impl Default for PlaybackPipeline {
             pending_audio_packets: VecDeque::new(),
             video_decoder_thread: None,
             video_decoder_needs_keyframe: true,
+            video_decode_in_flight_packets: 0,
             video_frame_queue: VecDeque::new(),
+            seek_preroll_fallback_video_frame: None,
             video_frame_duration_estimate: DEFAULT_VIDEO_FRAME_DURATION,
             last_decoded_video_pts: None,
             present_video_frame: None,

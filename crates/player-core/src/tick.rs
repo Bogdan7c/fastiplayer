@@ -446,6 +446,14 @@ impl PlayerSession {
             );
         }
 
+        if seek_transition_needs_progress(self) {
+            return PlayerWorkerWakeupPlan::after(
+                coarse_progress_interval,
+                WorkerWakeupReason::SeekOrPreroll,
+                frame_timing,
+            );
+        }
+
         if active_pipeline_needs_coarse_progress(self) {
             return PlayerWorkerWakeupPlan::after(
                 coarse_progress_interval,
@@ -928,6 +936,7 @@ fn drain_video_decoder_thread_error(session: &mut PlayerSession) -> bool {
     };
 
     session.pipeline.pending_video_packets.clear();
+    session.pipeline.reset_video_decode_in_flight();
     session.mark_fatal_error(player_error_from_decode_thread_error(&error));
     true
 }
@@ -975,6 +984,7 @@ fn drain_decoded_video_frames(
     max_frames_to_drain: usize,
     catch_up_deadline: Option<Instant>,
 ) -> usize {
+    drain_completed_video_decode_packets(session);
     drain_video_decoder_thread_diagnostics(session, tick_result);
 
     if drain_video_decoder_thread_error(session) {
@@ -996,6 +1006,7 @@ fn drain_decoded_video_frames(
                 PlayerVideoDropReason::DecoderStarvation,
             );
         }
+        session.pipeline.reset_video_decode_in_flight();
         return 0;
     }
 
@@ -1049,21 +1060,27 @@ fn drain_decoded_video_frames(
         tick_result.record_decoded_video_frame();
         session.record_decoded_frame_diagnostics(&frame);
 
-        if session.should_drop_decoded_frame_for_seek(frame.pts) {
-            release_video_texture(session, frame.texture_handle);
-            record_video_drop(
-                session,
-                tick_result,
-                frame.pts,
-                PlayerVideoDropReason::SeekPreroll,
-            );
+        let frame_pts = frame.pts;
+        if session.should_drop_decoded_frame_for_seek(frame_pts) {
+            if session.can_keep_seek_preroll_fallback(frame_pts) {
+                replace_seek_preroll_fallback_frame(session, tick_result, frame);
+            } else {
+                release_video_texture(session, frame.texture_handle);
+                record_video_drop(
+                    session,
+                    tick_result,
+                    frame_pts,
+                    PlayerVideoDropReason::SeekPreroll,
+                );
+            }
             tracing::debug!(
-                pts_ms = frame.pts.as_millis(),
-                "Dropping pre-roll video frame before seek target"
+                pts_ms = frame_pts.as_millis(),
+                "Retaining or dropping pre-roll video frame before seek target"
             );
             continue;
         }
 
+        drop_seek_preroll_fallback_frame(session, tick_result);
         session.observe_video_frame_pts(frame.pts);
 
         if playback_can_present {
@@ -1081,6 +1098,20 @@ fn drain_decoded_video_frames(
     }
 
     drained_frame_count
+}
+
+/// Синхронизирует player-side in-flight счётчик с packet ack-ами decoder thread-а.
+fn drain_completed_video_decode_packets(session: &mut PlayerSession) {
+    let completed_packet_count = session
+        .pipeline
+        .video_decoder_thread
+        .as_ref()
+        .map(video_vaapi::VideoDecodeThread::drain_completed_packet_count)
+        .unwrap_or(0);
+
+    session
+        .pipeline
+        .note_video_packets_completed_by_decoder(completed_packet_count);
 }
 
 /// Отправляет ограниченное число pending video packets в decoder thread.
@@ -1200,6 +1231,7 @@ fn send_pending_video_packets_to_decoder(
         match thread.send_packet(decode_packet) {
             Ok(()) => {
                 session.pipeline.pending_video_packets.pop_front();
+                session.pipeline.note_video_packet_sent_to_decoder();
             }
             Err(video_vaapi::DecodeThreadSendError::Backpressure(reason)) => {
                 tracing::debug!(reason = %reason, "Decoder packet channel backpressure");
@@ -1578,19 +1610,48 @@ fn decoder_readiness_poll_needed(session: &PlayerSession, tick_config: &PlayerTi
         return false;
     };
 
-    let decoder_has_queued_packets = decoder_thread.packet_queue_depth() > 0;
-    let worker_has_decode_inputs = !session.pipeline.pending_video_packets.is_empty()
-        || session.pipeline.demuxer.is_some()
-        || decoder_has_queued_packets;
+    decoder_readiness_poll_needed_for_state(
+        session.pipeline.video_track_id.is_some(),
+        session.pipeline.video_frame_queue.len(),
+        video_present_queue_target(tick_config),
+        !session.pipeline.pending_video_packets.is_empty(),
+        session.pipeline.demuxer.is_some(),
+        decoder_thread.packet_queue_depth() > 0,
+        session.pipeline.video_decode_in_flight_packets() > 0,
+        session.has_active_seek_commit(),
+    )
+}
+
+/// Чистая часть decoder readiness policy без реального GPU decoder thread.
+fn decoder_readiness_poll_needed_for_state(
+    video_track_selected: bool,
+    video_frame_queue_len: usize,
+    video_present_queue_target: usize,
+    worker_has_pending_video_packets: bool,
+    worker_has_demuxer: bool,
+    decoder_has_queued_packets: bool,
+    decoder_has_in_flight_packets: bool,
+    seek_commit_active: bool,
+) -> bool {
+    let decoder_has_seek_in_flight_packets = seek_commit_active && decoder_has_in_flight_packets;
+    let worker_has_decode_inputs = worker_has_pending_video_packets
+        || worker_has_demuxer
+        || decoder_has_queued_packets
+        || decoder_has_seek_in_flight_packets;
     if !worker_has_decode_inputs {
         return false;
     }
 
-    if session.pipeline.video_frame_queue.len() < video_present_queue_target(tick_config) {
-        return session.pipeline.video_track_id.is_some();
+    if video_frame_queue_len < video_present_queue_target {
+        return video_track_selected;
     }
 
-    !session.pipeline.pending_video_packets.is_empty()
+    worker_has_pending_video_packets
+}
+
+/// Проверяет, должен ли активный seek получить bounded wakeup хотя бы для timeout/gates.
+fn seek_transition_needs_progress(session: &PlayerSession) -> bool {
+    session.has_active_seek_commit()
 }
 
 /// Проверяет, нужен ли редкий progress wakeup без точного PTS deadline-а.
@@ -1687,6 +1748,39 @@ fn drop_front_queued_video_frame(
     true
 }
 
+/// Сохраняет самый поздний pre-target frame для final seek near EOF.
+fn replace_seek_preroll_fallback_frame(
+    session: &mut PlayerSession,
+    tick_result: &mut PlayerTickResult,
+    frame: video_core::DecodedFrame,
+) {
+    if let Some(replaced_frame) = session.replace_seek_preroll_fallback_frame(frame) {
+        release_video_texture(session, replaced_frame.texture_handle);
+        record_video_drop(
+            session,
+            tick_result,
+            replaced_frame.pts,
+            PlayerVideoDropReason::SeekPreroll,
+        );
+    }
+}
+
+/// Удаляет EOF fallback, когда точный target frame уже найден.
+fn drop_seek_preroll_fallback_frame(
+    session: &mut PlayerSession,
+    tick_result: &mut PlayerTickResult,
+) {
+    if let Some(frame) = session.take_seek_preroll_fallback_frame() {
+        release_video_texture(session, frame.texture_handle);
+        record_video_drop(
+            session,
+            tick_result,
+            frame.pts,
+            PlayerVideoDropReason::SeekPreroll,
+        );
+    }
+}
+
 /// Делает первый queued frame текущим present frame.
 fn present_front_queued_video_frame(
     session: &mut PlayerSession,
@@ -1709,6 +1803,60 @@ fn present_front_queued_video_frame(
     session.note_presented_frame_for_seek(frame_pts);
     tick_result.record_presented_video_frame();
     true
+}
+
+/// Показывает свежий pre-target frame, если final seek дошёл до EOF без target frame-а.
+fn present_seek_preroll_fallback_after_eof(
+    session: &mut PlayerSession,
+    tick_result: &mut PlayerTickResult,
+) -> bool {
+    if !seek_preroll_fallback_ready_after_eof(session) {
+        return false;
+    }
+
+    let Some(frame) = session.take_seek_preroll_fallback_frame() else {
+        return false;
+    };
+
+    if let Some(old_frame) = session.pipeline.present_video_frame.take() {
+        release_video_texture(session, old_frame.texture_handle);
+    }
+
+    let frame_pts = frame.pts;
+    tracing::debug!(
+        pts_ms = frame_pts.as_millis(),
+        "Presenting final seek EOF fallback frame"
+    );
+    session.pipeline.present_video_frame = Some(frame);
+    session.note_presented_seek_eof_fallback_frame(frame_pts);
+    tick_result.record_presented_video_frame();
+    true
+}
+
+/// Проверяет, что после EOF больше нет decoder work, способного дать точный target frame.
+fn seek_preroll_fallback_ready_after_eof(session: &PlayerSession) -> bool {
+    if session.active_final_seek_target().is_none() || !session.draining_after_eof {
+        return false;
+    }
+
+    if session.pipeline.seek_preroll_fallback_video_frame.is_none() {
+        return false;
+    }
+
+    if !session.pipeline.video_frame_queue.is_empty()
+        || !session.pipeline.pending_video_packets.is_empty()
+        || session.pipeline.video_decode_in_flight_packets() > 0
+    {
+        return false;
+    }
+
+    session
+        .pipeline
+        .video_decoder_thread
+        .as_ref()
+        .map_or(true, |decoder_thread| {
+            decoder_thread.packet_queue_depth() == 0
+        })
 }
 
 /// Повторно показывает текущий кадр и учитывает это в telemetry result.
@@ -1992,6 +2140,16 @@ fn process_pending_video_packets(
     run_adaptive_catch_up(session, tick_context, tick_result);
     trim_video_present_queue(session, tick_config, tick_result);
     let scheduler_started_at = Instant::now();
+
+    if present_seek_preroll_fallback_after_eof(session, tick_result) {
+        session.record_pipeline_latency(
+            PipelineLatencyStage::WorkerScheduler,
+            scheduler_started_at.elapsed(),
+            None,
+            None,
+        );
+        return;
+    }
 
     if !session.pipeline.video_frame_queue.is_empty() {
         tracing::debug!(
@@ -2380,6 +2538,38 @@ mod tests {
             timing.front_frame_pts == Duration::from_millis(30)
                 && timing.front_frame_delta_from_target_us > 0
         }));
+    }
+
+    #[test]
+    fn decoder_readiness_poll_keeps_seek_decoder_inflight_from_idling() {
+        let poll_needed = decoder_readiness_poll_needed_for_state(
+            true,
+            0,
+            video_present_queue_target(&PlayerTickConfig::default()),
+            false,
+            false,
+            false,
+            true,
+            true,
+        );
+
+        assert!(poll_needed);
+    }
+
+    #[test]
+    fn decoder_readiness_poll_ignores_decoder_inflight_outside_seek() {
+        let poll_needed = decoder_readiness_poll_needed_for_state(
+            true,
+            0,
+            video_present_queue_target(&PlayerTickConfig::default()),
+            false,
+            false,
+            false,
+            true,
+            false,
+        );
+
+        assert!(!poll_needed);
     }
 
     #[test]
