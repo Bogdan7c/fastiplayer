@@ -48,7 +48,7 @@ use winit::{
 };
 
 use crate::state::AppState;
-use crate::telemetry::{Telemetry, VideoDropReason};
+use crate::telemetry::{Telemetry, VideoDropReason, VideoFrameTelemetryEvent};
 
 /// Интервал polling-а фоновой подготовки YouTube, когда playback ещё не активен.
 const YOUTUBE_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -637,7 +637,14 @@ fn record_player_tick_result(telemetry: &Telemetry, tick_result: &PlayerTickResu
     }
 
     for dropped_frame in &tick_result.dropped_video_frames {
-        telemetry.record_video_frame_dropped(map_video_drop_reason(dropped_frame.reason));
+        match map_video_frame_telemetry_event(dropped_frame.reason) {
+            VideoFrameTelemetryEvent::PlaybackDrop(reason) => {
+                telemetry.record_video_frame_dropped(reason);
+            }
+            VideoFrameTelemetryEvent::SeekDiscard => {
+                telemetry.record_seek_discarded_frame();
+            }
+        }
     }
 }
 
@@ -654,16 +661,25 @@ fn record_worker_events(telemetry: &Telemetry, events: Vec<PlayerWorkerEvent>) {
     }
 }
 
-/// Конвертирует core-причину drop в app telemetry enum.
-fn map_video_drop_reason(reason: PlayerVideoDropReason) -> VideoDropReason {
+/// Классифицирует core-причину удаления кадра для пользовательской telemetry.
+fn map_video_frame_telemetry_event(reason: PlayerVideoDropReason) -> VideoFrameTelemetryEvent {
     match reason {
-        PlayerVideoDropReason::Late => VideoDropReason::Late,
-        PlayerVideoDropReason::QueueOverflow => VideoDropReason::QueueOverflow,
-        PlayerVideoDropReason::Paused => VideoDropReason::Paused,
-        PlayerVideoDropReason::StaleGeneration
-        | PlayerVideoDropReason::SeekPreroll
-        | PlayerVideoDropReason::RenderAcquisitionTimeout
-        | PlayerVideoDropReason::DecoderStarvation => VideoDropReason::Other,
+        PlayerVideoDropReason::Late => {
+            VideoFrameTelemetryEvent::PlaybackDrop(VideoDropReason::Late)
+        }
+        PlayerVideoDropReason::QueueOverflow => {
+            VideoFrameTelemetryEvent::PlaybackDrop(VideoDropReason::QueueOverflow)
+        }
+        PlayerVideoDropReason::Paused => {
+            VideoFrameTelemetryEvent::PlaybackDrop(VideoDropReason::Paused)
+        }
+        PlayerVideoDropReason::StaleGeneration | PlayerVideoDropReason::SeekPreroll => {
+            VideoFrameTelemetryEvent::SeekDiscard
+        }
+        PlayerVideoDropReason::RenderAcquisitionTimeout
+        | PlayerVideoDropReason::DecoderStarvation => {
+            VideoFrameTelemetryEvent::PlaybackDrop(VideoDropReason::Other)
+        }
     }
 }
 
@@ -989,6 +1005,7 @@ fn rgb_triplet_from_config(field: &'static str, values: &[f32]) -> Result<[f32; 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use player_core::PlayerVideoFrameDrop;
     use render_wgpu::RenderFrameFailure;
 
     /// Проверяет, что identity config доезжает до renderer без изменения SDR картинки.
@@ -1047,5 +1064,35 @@ mod tests {
                 .message
                 .contains("WGPU renderable frame rejected decoded P010 frame")
         );
+    }
+
+    /// Проверяет, что seek-discard причины не попадают в пользовательский счётчик drops.
+    #[test]
+    fn seek_reasons_map_to_seek_discarded_frames() {
+        let telemetry = Telemetry::new();
+        let tick_result = PlayerTickResult {
+            dropped_video_frames: vec![
+                PlayerVideoFrameDrop {
+                    pts: Duration::from_millis(120),
+                    reason: PlayerVideoDropReason::SeekPreroll,
+                },
+                PlayerVideoFrameDrop {
+                    pts: Duration::from_millis(140),
+                    reason: PlayerVideoDropReason::StaleGeneration,
+                },
+                PlayerVideoFrameDrop {
+                    pts: Duration::from_millis(160),
+                    reason: PlayerVideoDropReason::Late,
+                },
+            ],
+            ..PlayerTickResult::default()
+        };
+
+        record_player_tick_result(&telemetry, &tick_result);
+
+        assert_eq!(telemetry.video_frames_dropped(), 1);
+        assert_eq!(telemetry.video_frames_late_dropped(), 1);
+        assert_eq!(telemetry.video_frames_other_dropped(), 0);
+        assert_eq!(telemetry.seek_discarded_frames(), 2);
     }
 }

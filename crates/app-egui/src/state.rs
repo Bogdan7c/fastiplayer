@@ -895,6 +895,10 @@ impl AppState {
             telemetry.video_frames_other_dropped()
         ));
         ui.monospace(format!(
+            "Seek discarded: {}",
+            telemetry.seek_discarded_frames()
+        ));
+        ui.monospace(format!(
             "  Seek/pre-roll: {}",
             player_snapshot.diagnostics.drops.seek_preroll
         ));

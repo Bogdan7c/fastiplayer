@@ -34,6 +34,16 @@ pub enum VideoDropReason {
     Other,
 }
 
+/// Класс события удаления video frame для пользовательской телеметрии.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoFrameTelemetryEvent {
+    /// Настоящий playback/render drop, который влияет на пользовательский счётчик.
+    PlaybackDrop(VideoDropReason),
+
+    /// Ожидаемый discard вокруг seek, который не является проблемой smooth playback.
+    SeekDiscard,
+}
+
 /// Глобальные счётчики телеметрии.
 ///
 /// Синглтон через OnceLock для ленивой инициализации.
@@ -84,6 +94,9 @@ pub struct Telemetry {
     /// Количество видеокадров с typed причинами, которые UI не раскладывает отдельно.
     video_frames_other_dropped: AtomicU64,
 
+    /// Количество кадров/packet-ов, ожидаемо отброшенных вокруг seek.
+    seek_discarded_frames: AtomicU64,
+
     /// Количество render ticks, где был повторно показан предыдущий video frame.
     video_frames_repeated: AtomicU64,
 }
@@ -121,6 +134,7 @@ impl Telemetry {
             video_frames_queue_dropped: AtomicU64::new(0),
             video_frames_pause_dropped: AtomicU64::new(0),
             video_frames_other_dropped: AtomicU64::new(0),
+            seek_discarded_frames: AtomicU64::new(0),
             video_frames_repeated: AtomicU64::new(0),
         }
     }
@@ -258,6 +272,12 @@ impl Telemetry {
         };
     }
 
+    /// Учитывает ожидаемый discard video frame/packet-а во время seek.
+    #[inline]
+    pub fn record_seek_discarded_frame(&self) {
+        self.seek_discarded_frames.fetch_add(1, Ordering::Relaxed);
+    }
+
     #[inline]
     pub fn record_video_frame_repeated(&self) {
         self.video_frames_repeated.fetch_add(1, Ordering::Relaxed);
@@ -296,6 +316,11 @@ impl Telemetry {
     #[inline]
     pub fn video_frames_other_dropped(&self) -> u64 {
         self.video_frames_other_dropped.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn seek_discarded_frames(&self) -> u64 {
+        self.seek_discarded_frames.load(Ordering::Relaxed)
     }
 
     #[inline]
