@@ -36,6 +36,9 @@ pub enum PlayerErrorKind {
     /// Seek transaction не дождался commit gates за отведённое время.
     SeekTimeout,
 
+    /// Decoder thread не смог сбросить старое state перед seek transaction.
+    DecoderFlushFailed,
+
     /// Ошибка сетевого источника или streaming manifest.
     NetworkError,
 

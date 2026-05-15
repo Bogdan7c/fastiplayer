@@ -1599,6 +1599,41 @@ impl PlayerSession {
         self.pipeline.video_frame_queue = retained_frames;
     }
 
+    /// Сбрасывает video decoder перед seek и делает flush явной fail-fast границей.
+    fn reset_video_decoder_for_seek(&self) -> Result<(), PlayerError> {
+        let Some(ref thread) = self.pipeline.video_decoder_thread else {
+            return Ok(());
+        };
+
+        thread
+            .flush()
+            .map_err(player_error_from_decoder_flush_error)
+    }
+
+    /// Завершает seek transaction до demux seek, если decoder не подтвердил flush.
+    fn fail_seek_transaction_on_decoder_flush(
+        &mut self,
+        target_position: MediaTime,
+        commit_kind: SeekCommitKind,
+        error: PlayerError,
+    ) {
+        self.seek_commit = None;
+        self.seek_eof_fallback_video_position = None;
+        self.clear_seek_preroll_fallback_frame();
+        self.snapshot.timeline.seeking = false;
+        self.snapshot.timeline.stale_frame = true;
+        self.snapshot.timeline.target_position = match commit_kind {
+            SeekCommitKind::Final => None,
+            SeekCommitKind::Preview => Some(target_position),
+        };
+        if commit_kind == SeekCommitKind::Final {
+            self.last_visible_preview_position = None;
+            self.snapshot.timeline.scrubbing = false;
+        }
+        self.set_playback_state(PlaybackState::Paused);
+        self.record_recoverable_error(error);
+    }
+
     /// Выполняет синхронную часть seek transaction и оставляет commit gates на tick.
     fn start_seek_transaction(
         &mut self,
@@ -1637,20 +1672,15 @@ impl PlayerSession {
         };
         let target_duration = target_position.as_duration();
 
-        self.set_playback_state(PlaybackState::Seeking);
         self.pause_audio_output_for_seek();
+        if let Err(error) = self.reset_video_decoder_for_seek() {
+            self.fail_seek_transaction_on_decoder_flush(target_position, commit_kind, error);
+            return Ok(());
+        }
+
+        self.set_playback_state(PlaybackState::Seeking);
         self.pipeline.seek_generation = self.pipeline.seek_generation.saturating_add(1);
         let generation = self.pipeline.seek_generation;
-
-        if let Some(ref thread) = self.pipeline.video_decoder_thread
-            && let Err(error) = thread.flush()
-        {
-            let player_error = PlayerError::new(
-                PlayerErrorKind::RuntimeError,
-                format!("Video decoder flush failed during seek: {error}"),
-            );
-            self.record_recoverable_error(player_error);
-        }
 
         self.pipeline.pending_audio_packets.clear();
         self.pipeline.pending_video_packets.clear();
@@ -2485,6 +2515,14 @@ fn player_error_from_demux_seek_error(error: anyhow::Error) -> PlayerError {
     PlayerError::new(PlayerErrorKind::DemuxError, format!("Seek failed: {error}"))
 }
 
+/// Мапит failed decoder flush в typed player error без продолжения seek transaction.
+fn player_error_from_decoder_flush_error(error: anyhow::Error) -> PlayerError {
+    PlayerError::new(
+        PlayerErrorKind::DecoderFlushFailed,
+        format!("Video decoder flush failed before seek: {error}"),
+    )
+}
+
 /// Добавляет media duration без panic при переполнении.
 fn saturating_duration_add(timestamp: Duration, offset: Duration) -> Duration {
     timestamp.checked_add(offset).unwrap_or(Duration::MAX)
@@ -2596,6 +2634,68 @@ mod tests {
             }
 
             self.seek(request.timestamp)
+        }
+    }
+
+    /// Fake decoder thread, который нужен только для проверки failed flush boundary.
+    struct FailingFlushVideoDecoderThread {
+        /// Текст ошибки, возвращаемый из session-level decoder reset.
+        error_message: &'static str,
+    }
+
+    impl FailingFlushVideoDecoderThread {
+        /// Создаёт fake decoder thread с предсказуемой flush ошибкой.
+        const fn new(error_message: &'static str) -> Self {
+            Self { error_message }
+        }
+    }
+
+    impl crate::pipeline::VideoDecoderThreadHandle for FailingFlushVideoDecoderThread {
+        fn backend_name(&self) -> &'static str {
+            "Fake failing decoder"
+        }
+
+        fn send_packet(
+            &self,
+            _packet: video_vaapi::DecodePacket,
+        ) -> Result<(), video_vaapi::DecodeThreadSendError> {
+            Err(video_vaapi::DecodeThreadSendError::Fatal(
+                video_vaapi::DecodeThreadError::new("fake decoder cannot accept packets"),
+            ))
+        }
+
+        fn release_frame(&self, _handle: video_core::FrameTextureHandle) {}
+
+        fn try_recv_frame(&self) -> Option<video_core::DecodedFrame> {
+            None
+        }
+
+        fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent> {
+            None
+        }
+
+        fn try_recv_error(&self) -> Option<video_vaapi::DecodeThreadError> {
+            None
+        }
+
+        fn flush(&self) -> anyhow::Result<()> {
+            Err(anyhow::anyhow!("{}", self.error_message))
+        }
+
+        fn texture_view_provider(&self) -> video_vaapi::VideoTextureViewProvider {
+            panic!("fake failing decoder does not provide renderer texture views")
+        }
+
+        fn texture_pool_stats(&self) -> Option<video_vaapi::texture_cache::TexturePoolStats> {
+            None
+        }
+
+        fn packet_queue_depth(&self) -> usize {
+            0
+        }
+
+        fn drain_completed_packet_count(&self) -> usize {
+            0
         }
     }
 
@@ -3312,6 +3412,89 @@ mod tests {
         assert!(session.pipeline.video_decoder_needs_keyframe);
         assert_eq!(session.pipeline.video_decode_in_flight_packets(), 0);
         assert!(session.seek_commit().is_some());
+    }
+
+    #[test]
+    fn seek_flush_failure_does_not_call_demux_seek_or_advance_generation() {
+        let mut session = PlayerSession::new();
+        let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+        session
+            .pipeline
+            .set_video_decoder_thread(FailingFlushVideoDecoderThread::new("flush failed"));
+        let initial_generation = session.pipeline.seek_generation;
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(5),
+            )))
+            .unwrap();
+
+        assert!(
+            seek_log
+                .lock()
+                .expect("seek log mutex should not be poisoned")
+                .is_empty()
+        );
+        assert_eq!(session.pipeline.seek_generation, initial_generation);
+        assert!(session.seek_commit().is_none());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
+        assert!(!session.snapshot().timeline.seeking);
+        assert!(session.snapshot().timeline.stale_frame);
+        assert_eq!(session.snapshot().timeline.target_position, None);
+        assert!(matches!(
+            session
+                .snapshot()
+                .last_error
+                .as_ref()
+                .map(|error| &error.kind),
+            Some(PlayerErrorKind::DecoderFlushFailed)
+        ));
+    }
+
+    #[test]
+    fn seek_flush_failure_clears_existing_seek_commit() {
+        let mut session = PlayerSession::new();
+        let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(3),
+            )))
+            .unwrap();
+        let generation_after_first_seek = session.pipeline.seek_generation;
+        assert!(session.seek_commit().is_some());
+
+        session
+            .pipeline
+            .set_video_decoder_thread(FailingFlushVideoDecoderThread::new("flush failed"));
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(8),
+            )))
+            .unwrap();
+
+        assert_eq!(
+            *seek_log
+                .lock()
+                .expect("seek log mutex should not be poisoned"),
+            vec![Duration::from_secs(3)]
+        );
+        assert_eq!(
+            session.pipeline.seek_generation,
+            generation_after_first_seek
+        );
+        assert!(session.seek_commit().is_none());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
+        assert!(!session.snapshot().timeline.seeking);
+        assert!(session.snapshot().timeline.stale_frame);
+        assert!(matches!(
+            session
+                .snapshot()
+                .last_error
+                .as_ref()
+                .map(|error| &error.kind),
+            Some(PlayerErrorKind::DecoderFlushFailed)
+        ));
     }
 
     #[test]

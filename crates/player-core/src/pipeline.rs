@@ -8,6 +8,97 @@ use codec_core::VideoDecodeRequirement;
 use media_core::{TrackId, TrackInfo};
 use webm_demux::Demuxer;
 
+/// Минимальный session-level контракт decoder thread-а, который нужен player-core.
+///
+/// Production backend остаётся `video_vaapi::VideoDecodeThread`, но session tests
+/// могут подставить fake handle и проверить boundary без WGPU/VA-API ресурсов.
+pub(crate) trait VideoDecoderThreadHandle: Send {
+    /// Возвращает человекочитаемое имя backend-а для snapshot/diagnostics.
+    fn backend_name(&self) -> &'static str;
+
+    /// Отправляет encoded packet в decoder thread.
+    fn send_packet(
+        &self,
+        packet: video_vaapi::DecodePacket,
+    ) -> Result<(), video_vaapi::DecodeThreadSendError>;
+
+    /// Освобождает texture/surface handle после presentation/drop.
+    fn release_frame(&self, handle: video_core::FrameTextureHandle);
+
+    /// Забирает следующий decoded frame без блокировки worker-а.
+    fn try_recv_frame(&self) -> Option<video_core::DecodedFrame>;
+
+    /// Забирает backend diagnostics event без блокировки worker-а.
+    fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent>;
+
+    /// Забирает fatal decoder-thread error, если backend остановился.
+    fn try_recv_error(&self) -> Option<video_vaapi::DecodeThreadError>;
+
+    /// Сбрасывает decoder state перед seek transaction.
+    fn flush(&self) -> anyhow::Result<()>;
+
+    /// Возвращает provider для renderer-side texture views/release path.
+    fn texture_view_provider(&self) -> video_vaapi::VideoTextureViewProvider;
+
+    /// Возвращает snapshot texture pool-а для UI/backpressure diagnostics.
+    fn texture_pool_stats(&self) -> Option<video_vaapi::texture_cache::TexturePoolStats>;
+
+    /// Возвращает глубину packet channel-а внутри decoder thread.
+    fn packet_queue_depth(&self) -> usize;
+
+    /// Забирает количество packets, обработанных decoder thread-ом.
+    fn drain_completed_packet_count(&self) -> usize;
+}
+
+impl VideoDecoderThreadHandle for video_vaapi::VideoDecodeThread {
+    fn backend_name(&self) -> &'static str {
+        video_vaapi::VideoDecodeThread::backend_name(self)
+    }
+
+    fn send_packet(
+        &self,
+        packet: video_vaapi::DecodePacket,
+    ) -> Result<(), video_vaapi::DecodeThreadSendError> {
+        video_vaapi::VideoDecodeThread::send_packet(self, packet)
+    }
+
+    fn release_frame(&self, handle: video_core::FrameTextureHandle) {
+        video_vaapi::VideoDecodeThread::release_frame(self, handle);
+    }
+
+    fn try_recv_frame(&self) -> Option<video_core::DecodedFrame> {
+        video_vaapi::VideoDecodeThread::try_recv_frame(self)
+    }
+
+    fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent> {
+        video_vaapi::VideoDecodeThread::try_recv_diagnostic_event(self)
+    }
+
+    fn try_recv_error(&self) -> Option<video_vaapi::DecodeThreadError> {
+        video_vaapi::VideoDecodeThread::try_recv_error(self)
+    }
+
+    fn flush(&self) -> anyhow::Result<()> {
+        video_vaapi::VideoDecodeThread::flush(self)
+    }
+
+    fn texture_view_provider(&self) -> video_vaapi::VideoTextureViewProvider {
+        video_vaapi::VideoDecodeThread::texture_view_provider(self)
+    }
+
+    fn texture_pool_stats(&self) -> Option<video_vaapi::texture_cache::TexturePoolStats> {
+        video_vaapi::VideoDecodeThread::texture_pool_stats(self)
+    }
+
+    fn packet_queue_depth(&self) -> usize {
+        video_vaapi::VideoDecodeThread::packet_queue_depth(self)
+    }
+
+    fn drain_completed_packet_count(&self) -> usize {
+        video_vaapi::VideoDecodeThread::drain_completed_packet_count(self)
+    }
+}
+
 /// Bootstrap-оценка длительности frame до первых PTS observations; не worker cadence.
 pub(crate) const DEFAULT_VIDEO_FRAME_DURATION: Duration = Duration::from_micros(16_667);
 
@@ -146,8 +237,8 @@ pub(crate) struct PlaybackPipeline {
     /// Очередь сырых audio packets для throttle.
     pub(crate) pending_audio_packets: VecDeque<PendingAudioPacket>,
 
-    /// Video decoder thread: текущий VA-API backend decode в отдельном потоке.
-    pub(crate) video_decoder_thread: Option<video_vaapi::VideoDecodeThread>,
+    /// Video decoder thread: backend decode в отдельном потоке за узким session contract.
+    pub(crate) video_decoder_thread: Option<Box<dyn VideoDecoderThreadHandle>>,
 
     /// Требует ли decoder следующий video packet быть keyframe-ом.
     ///
@@ -276,10 +367,10 @@ impl PlaybackPipeline {
     /// Сохраняет запущенный video backend без раскрытия backend-specific init в session.
     pub(crate) fn set_video_decoder_thread(
         &mut self,
-        decoder_thread: video_vaapi::VideoDecodeThread,
+        decoder_thread: impl VideoDecoderThreadHandle + 'static,
     ) {
         self.video_backend = decoder_thread.backend_name();
-        self.video_decoder_thread = Some(decoder_thread);
+        self.video_decoder_thread = Some(Box::new(decoder_thread));
         self.reset_video_decode_in_flight();
     }
 

@@ -1106,7 +1106,7 @@ fn drain_completed_video_decode_packets(session: &mut PlayerSession) {
         .pipeline
         .video_decoder_thread
         .as_ref()
-        .map(video_vaapi::VideoDecodeThread::drain_completed_packet_count)
+        .map(|decoder_thread| decoder_thread.drain_completed_packet_count())
         .unwrap_or(0);
 
     session
