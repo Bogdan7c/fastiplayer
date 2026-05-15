@@ -471,9 +471,8 @@ impl PlayerSession {
         self.pending_events.push(PlayerEvent::FatalError(error));
     }
 
-    /// Переводит session в EOF-drain и освобождает demuxer.
+    /// Переводит session в EOF-drain, сохраняя demuxer открытым для replay/seek.
     pub fn enter_eof_drain(&mut self) {
-        self.pipeline.demuxer = None;
         self.set_playback_state(PlaybackState::Draining);
     }
 
@@ -1280,6 +1279,10 @@ impl PlayerSession {
             return Ok(());
         }
 
+        if self.draining_after_eof {
+            return self.restart_playback_after_eof();
+        }
+
         self.set_playback_state(PlaybackState::Playing);
 
         if let Some(ref mut output) = self.pipeline.audio_output {
@@ -1293,6 +1296,34 @@ impl PlayerSession {
         self.anchor_monotonic_media_clock_if_needed(Instant::now());
 
         Ok(())
+    }
+
+    /// Запускает повторное воспроизведение после штатного EOF через обычный seek pipeline.
+    fn restart_playback_after_eof(&mut self) -> PlayerResult<()> {
+        if self.pipeline.demuxer.is_none() {
+            let error = PlayerError::new(
+                PlayerErrorKind::SeekUnavailable,
+                "Replay невозможен: media pipeline уже закрыт",
+            );
+            self.record_recoverable_error(error);
+            return Ok(());
+        }
+
+        if !self.snapshot.timeline.seekable {
+            let reason = self
+                .snapshot
+                .timeline
+                .not_seekable_reason
+                .unwrap_or(TimelineNotSeekableReason::UnknownTimeline);
+            let error = PlayerError::new(
+                PlayerErrorKind::SeekUnavailable,
+                format!("Replay невозможен: timeline не seekable ({reason:?})"),
+            );
+            self.record_recoverable_error(error);
+            return Ok(());
+        }
+
+        self.start_seek_transaction(MediaTime::ZERO, SeekCommitKind::Final)
     }
 
     /// Запускает preroll перед autoplay, не включая audio stream раньше заполнения buffer.
@@ -3751,6 +3782,65 @@ mod tests {
 
         assert_eq!(session.playback_state(), PlaybackState::Draining);
         assert!(session.can_present_video());
+    }
+
+    #[test]
+    fn eof_drain_keeps_demuxer_open_for_seek() {
+        let mut session = PlayerSession::new();
+        let seek_log = install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+
+        session.enter_eof_drain();
+
+        assert!(session.pipeline.demuxer.is_some());
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(5),
+            )))
+            .unwrap();
+
+        assert_eq!(
+            seek_log.lock().expect("seek log lock").as_slice(),
+            &[Duration::from_secs(5)]
+        );
+        assert_eq!(session.playback_state(), PlaybackState::Seeking);
+        assert!(!session.draining_after_eof);
+        assert!(session.snapshot().last_error.is_none());
+    }
+
+    #[test]
+    fn play_from_eof_drain_rewinds_to_start_and_resumes_playback() {
+        let mut session = PlayerSession::new();
+        let seek_log = install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+
+        session.update_current_position(Duration::from_secs(30));
+        session.enter_eof_drain();
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+
+        let seek_commit = session
+            .seek_commit()
+            .expect("play after EOF should start a seek transaction");
+        assert_eq!(
+            seek_log.lock().expect("seek log lock").as_slice(),
+            &[Duration::ZERO]
+        );
+        assert_eq!(seek_commit.target_position, MediaTime::ZERO);
+        assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
+        assert_eq!(session.playback_state(), PlaybackState::Seeking);
+        assert!(!session.draining_after_eof);
+        assert!(session.snapshot().last_error.is_none());
     }
 
     #[test]
