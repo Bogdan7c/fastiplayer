@@ -8,7 +8,9 @@ use codec_core::{
     unsupported_requirement_can_be_refined_by_packet_probe as codec_requirement_can_be_refined_by_packet_probe,
     video_requirement_needs_packet_refinement,
 };
-use media_core::{MediaDuration, MediaTime, TimelineNotSeekableReason, TrackInfo, TrackKind};
+use media_core::{
+    MediaDuration, MediaTime, TimelineNotSeekableReason, TimelinePreviewState, TrackInfo, TrackKind,
+};
 use tracing::{debug, info, warn};
 use webm_demux::{DemuxSeekability, DemuxerOptions};
 
@@ -1011,6 +1013,12 @@ impl PlayerSession {
                         position: MediaTime::from_duration(frame_pts),
                     });
                 }
+                self.snapshot.timeline.preview_state =
+                    if frame_pts >= seek_commit.target_position.as_duration() {
+                        TimelinePreviewState::Ready
+                    } else {
+                        TimelinePreviewState::Visible
+                    };
                 self.snapshot.timeline.stale_frame = false;
             }
             SeekCommitKind::Final if frame_pts >= seek_commit.target_position.as_duration() => {
@@ -1243,6 +1251,7 @@ impl PlayerSession {
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.scrubbing = false;
         self.snapshot.timeline.stale_frame = false;
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
         self.publish_position_changed(seek_commit.target_position.as_duration());
 
         match seek_commit.resume_intent {
@@ -1274,6 +1283,7 @@ impl PlayerSession {
         self.snapshot.timeline.target_position = Some(seek_commit.target_position);
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.stale_frame = false;
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Ready;
         self.pause_audio_output_for_seek();
         self.set_playback_state(PlaybackState::Paused);
     }
@@ -1299,6 +1309,7 @@ impl PlayerSession {
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.scrubbing = false;
         self.snapshot.timeline.stale_frame = false;
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
         self.pause_audio_output_for_seek();
         self.set_playback_state(PlaybackState::Paused);
 
@@ -1321,7 +1332,9 @@ impl PlayerSession {
         self.clear_seek_preroll_fallback_frame();
         self.snapshot.timeline.target_position = Some(seek_commit.target_position);
         self.snapshot.timeline.seeking = false;
-        self.snapshot.timeline.stale_frame = false;
+        self.snapshot.timeline.stale_frame = self.pipeline.present_video_frame.is_some()
+            && !self.present_frame_covers_target(seek_commit.target_position.as_duration());
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Expired;
         self.pause_audio_output_for_seek();
         self.set_playback_state(PlaybackState::Paused);
         debug!(
@@ -1511,6 +1524,7 @@ impl PlayerSession {
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = true;
         self.snapshot.timeline.target_position = Some(self.snapshot.timeline.current_position);
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
         self.last_visible_preview = None;
         self.latest_scrub_request = None;
         self.completed_preview_generation = None;
@@ -1529,6 +1543,7 @@ impl PlayerSession {
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = true;
         self.snapshot.timeline.target_position = Some(target_position);
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Pending;
         self.latest_scrub_request = Some(intent);
         self.pending_events
             .push(PlayerEvent::SeekRequested(request));
@@ -1547,6 +1562,7 @@ impl PlayerSession {
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = true;
         self.snapshot.timeline.target_position = Some(target_position);
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Pending;
         self.latest_scrub_request = Some(intent);
         self.completed_preview_generation = None;
         self.start_seek_transaction(
@@ -1674,6 +1690,7 @@ impl PlayerSession {
         self.snapshot.timeline.scrubbing = false;
         self.snapshot.timeline.seeking = true;
         self.snapshot.timeline.target_position = Some(target_position);
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
         self.drop_queued_video_frames_before_target(target_position.as_duration());
         true
     }
@@ -1713,6 +1730,7 @@ impl PlayerSession {
             && self.completed_preview_generation == Some(generation)
             && !self.snapshot.timeline.seeking
             && !self.snapshot.timeline.stale_frame
+            && self.snapshot.timeline.preview_state == TimelinePreviewState::Ready
             && self.present_frame_covers_target(target_position.as_duration())
     }
 
@@ -1780,6 +1798,10 @@ impl PlayerSession {
             SeekCommitKind::Final => None,
             SeekCommitKind::Preview => Some(target_position),
         };
+        self.snapshot.timeline.preview_state = match commit_kind {
+            SeekCommitKind::Final => TimelinePreviewState::Inactive,
+            SeekCommitKind::Preview => TimelinePreviewState::Failed,
+        };
         if commit_kind == SeekCommitKind::Final {
             self.last_visible_preview = None;
             self.latest_scrub_request = None;
@@ -1831,6 +1853,12 @@ impl PlayerSession {
         ) {
             Ok(request) => request,
             Err(error) => {
+                if commit_kind == SeekCommitKind::Preview {
+                    self.snapshot.timeline.target_position = Some(target_position);
+                    self.snapshot.timeline.preview_state = TimelinePreviewState::Failed;
+                    self.snapshot.timeline.stale_frame =
+                        self.pipeline.present_video_frame.is_some();
+                }
                 self.record_recoverable_error(player_error_from_seek_demux_request_error(error));
                 return Ok(());
             }
@@ -1840,10 +1868,12 @@ impl PlayerSession {
             SeekCommitKind::Final => {
                 self.last_visible_preview = None;
                 self.completed_preview_generation = None;
+                self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
                 PlaybackResumeIntent::from_playback_state(self.playback_state())
             }
             SeekCommitKind::Preview => {
                 self.completed_preview_generation = None;
+                self.snapshot.timeline.preview_state = TimelinePreviewState::Pending;
                 PlaybackResumeIntent::Pause
             }
         };
@@ -1873,6 +1903,10 @@ impl PlayerSession {
         self.snapshot.timeline.target_position = Some(target_position);
         self.snapshot.timeline.seeking = true;
         self.snapshot.timeline.stale_frame = self.pipeline.present_video_frame.is_some();
+        self.snapshot.timeline.preview_state = match commit_kind {
+            SeekCommitKind::Final => TimelinePreviewState::Inactive,
+            SeekCommitKind::Preview => TimelinePreviewState::Pending,
+        };
 
         if let Some(ref mut decoder) = self.pipeline.audio_decoder
             && let Err(error) = decoder.reset()
@@ -1927,11 +1961,18 @@ impl PlayerSession {
             Err(error) => {
                 self.seek_commit = None;
                 self.snapshot.timeline.seeking = false;
-                self.snapshot.timeline.stale_frame = false;
+                self.snapshot.timeline.stale_frame = match commit_kind {
+                    SeekCommitKind::Final => false,
+                    SeekCommitKind::Preview => self.pipeline.present_video_frame.is_some(),
+                };
                 self.set_playback_state(PlaybackState::Paused);
                 self.snapshot.timeline.target_position = match commit_kind {
                     SeekCommitKind::Final => None,
                     SeekCommitKind::Preview => Some(target_position),
+                };
+                self.snapshot.timeline.preview_state = match commit_kind {
+                    SeekCommitKind::Final => TimelinePreviewState::Inactive,
+                    SeekCommitKind::Preview => TimelinePreviewState::Failed,
                 };
                 let player_error = player_error_from_demux_seek_error(error);
                 self.record_recoverable_error(player_error);
@@ -3214,6 +3255,50 @@ mod tests {
     }
 
     #[test]
+    fn preview_timeout_without_target_frame_marks_preview_expired() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+        session.pipeline.present_video_frame =
+            Some(decoded_frame_for_tests(Duration::from_secs(1), 40));
+        let request = SeekRequest::absolute(MediaTime::from_secs(8));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(request))
+            .unwrap();
+        let timeout_now = session
+            .seek_commit()
+            .expect("preview seek должен быть активен")
+            .started_at
+            + Duration::from_millis(101);
+
+        session.finish_seek_commit_if_ready(
+            timeout_now,
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            1,
+        );
+
+        assert!(session.seek_commit().is_none());
+        assert!(session.snapshot().timeline.scrubbing);
+        assert!(!session.snapshot().timeline.seeking);
+        assert!(session.snapshot().timeline.stale_frame);
+        assert_eq!(
+            session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Expired
+        );
+        assert_eq!(
+            session.snapshot().timeline.target_position,
+            Some(MediaTime::from_secs(8))
+        );
+        assert_eq!(session.snapshot().current_position, Duration::ZERO);
+    }
+
+    #[test]
     fn preview_scrub_seek_passes_target_to_demuxer() {
         let mut session = PlayerSession::new();
         let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
@@ -3450,6 +3535,10 @@ mod tests {
             Duration::from_millis(100),
             50.0,
             1,
+        );
+        assert_eq!(
+            session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Ready
         );
 
         session

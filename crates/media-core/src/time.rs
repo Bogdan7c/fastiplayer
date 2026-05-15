@@ -299,6 +299,35 @@ pub enum TimelineNotSeekableReason {
     IndexUnavailable,
 }
 
+/// Состояние live preview внутри interactive scrub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TimelinePreviewState {
+    /// Preview seek сейчас не активен и не ожидает результата.
+    Inactive,
+
+    /// Для текущей scrub-цели ещё нет показанного preview frame-а.
+    Pending,
+
+    /// Показан frame текущего preview, но целевой frame ещё не подтверждён.
+    Visible,
+
+    /// Целевой preview frame был показан и может считаться готовым.
+    Ready,
+
+    /// Preview seek не успел дойти до целевого frame-а за отведённый бюджет.
+    Expired,
+
+    /// Preview seek был прерван ошибкой до готового preview frame-а.
+    Failed,
+}
+
+impl Default for TimelinePreviewState {
+    /// По умолчанию preview transaction отсутствует.
+    fn default() -> Self {
+        Self::Inactive
+    }
+}
+
 /// Полный snapshot timeline-состояния без ссылок на player/backend internals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TimelineSnapshot {
@@ -328,6 +357,9 @@ pub struct TimelineSnapshot {
 
     /// Показываемый кадр относится к старой позиции во время seek/scrub.
     pub stale_frame: bool,
+
+    /// Явный статус live preview, независимый от визуального stale-флага.
+    pub preview_state: TimelinePreviewState,
 }
 
 impl TimelineSnapshot {
@@ -345,6 +377,7 @@ impl TimelineSnapshot {
             seeking: false,
             scrubbing: false,
             stale_frame: false,
+            preview_state: TimelinePreviewState::Inactive,
         }
     }
 }
@@ -362,6 +395,7 @@ impl Default for TimelineSnapshot {
             seeking: false,
             scrubbing: false,
             stale_frame: false,
+            preview_state: TimelinePreviewState::Inactive,
         }
     }
 }

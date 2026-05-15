@@ -579,17 +579,6 @@ impl AppState {
         full_output
     }
 
-    /// Завершает активный timeline scrub из shell event path.
-    pub fn cancel_active_timeline_scrub(&mut self) -> bool {
-        if !self.timeline_ui_state.has_active_drag() {
-            return false;
-        }
-
-        self.timeline_ui_state.clear_transient_drag();
-        self.send_timeline_action(TimelineAction::EndScrubCommitLatest);
-        true
-    }
-
     /// Применяет действия controls после завершения egui pass.
     fn handle_control_actions(&mut self, window: &Window, actions: Vec<ControlAction>) {
         for action in actions {

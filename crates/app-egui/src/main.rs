@@ -486,25 +486,6 @@ impl ApplicationHandler for App {
         let egui_response = app_state.egui_winit_state.on_window_event(&window, &event);
         let redraw_after_event = should_request_redraw_after_window_event(&event);
 
-        // Escape во время pointer scrub завершает scrub, а не закрывает окно.
-        let escape_pressed = matches!(
-            &event,
-            WindowEvent::KeyboardInput {
-                event: winit::event::KeyEvent {
-                    physical_key: winit::keyboard::PhysicalKey::Code(
-                        winit::keyboard::KeyCode::Escape
-                    ),
-                    state: winit::event::ElementState::Pressed,
-                    ..
-                },
-                ..
-            }
-        );
-        if escape_pressed && app_state.cancel_active_timeline_scrub() {
-            window.request_redraw();
-            return;
-        }
-
         // Если egui потребил событие (например, клик по кнопке), не обрабатываем дальше
         if egui_response.consumed {
             if redraw_after_event {

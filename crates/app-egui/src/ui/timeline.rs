@@ -69,9 +69,6 @@ pub struct TimelinePointerInput {
     /// Widget потерял focus во время scrub.
     pub lost_focus: bool,
 
-    /// Пользователь нажал Escape во время scrub.
-    pub escape_pressed: bool,
-
     /// Позиция pointer как доля seekable-диапазона `0.0..=1.0`.
     pub pointer_fraction: Option<f64>,
 }
@@ -104,7 +101,7 @@ pub fn render_timeline(
     };
     let desired_size = Vec2::new(ui.available_width(), style.hit_height);
     let (response, painter) = ui.allocate_painter(desired_size, sense);
-    let pointer_input = pointer_input_from_response(ui, &response, bounds, style);
+    let pointer_input = pointer_input_from_response(&response, bounds, style);
     let interaction = map_timeline_interaction(timeline, state, bounds, pointer_input);
 
     paint_timeline(
@@ -179,8 +176,11 @@ pub fn map_timeline_interaction(
         }
     }
 
-    let should_finish_scrub = state.has_active_drag()
-        && (input.clicked || input.drag_stopped || input.lost_focus || input.escape_pressed);
+    if input.lost_focus && state.has_active_drag() {
+        state.clear_transient_drag();
+    }
+
+    let should_finish_scrub = state.has_active_drag() && (input.clicked || input.drag_stopped);
     if should_finish_scrub {
         actions.push(TimelineAction::EndScrubCommitLatest);
         state.clear_transient_drag();
@@ -285,7 +285,6 @@ fn timeline_bounds(timeline: &TimelineSnapshot) -> Option<TimelineBounds> {
 
 /// Конвертирует `egui::Response` в тестируемый pointer input.
 fn pointer_input_from_response(
-    ui: &Ui,
     response: &Response,
     bounds: Option<TimelineBounds>,
     style: TimelineStyle,
@@ -304,7 +303,6 @@ fn pointer_input_from_response(
         dragged: response.dragged(),
         drag_stopped: response.drag_stopped(),
         lost_focus: response.lost_focus(),
-        escape_pressed: ui.input(|input| input.key_pressed(egui::Key::Escape)),
         pointer_fraction,
     }
 }
@@ -577,39 +575,26 @@ mod tests {
         assert!(!state.has_active_drag());
     }
 
-    /// Проверяет завершение scrub при focus loss и Escape.
+    /// Проверяет, что focus loss очищает только локальный drag state без скрытого commit-а.
     #[test]
-    fn focus_loss_or_escape_ends_active_scrub() {
+    fn focus_loss_clears_transient_drag_without_commit() {
         let timeline = seekable_timeline();
-        let mut focus_state = TimelineUiState {
+        let mut state = TimelineUiState {
             transient_drag_position: Some(MediaTime::from_secs(40)),
         };
-        let mut escape_state = focus_state.clone();
 
-        let focus_loss = map_timeline_interaction(
+        let interaction = map_timeline_interaction(
             &timeline,
-            &mut focus_state,
+            &mut state,
             Some(seekable_bounds()),
             TimelinePointerInput {
                 lost_focus: true,
                 ..TimelinePointerInput::default()
             },
         );
-        let escape = map_timeline_interaction(
-            &timeline,
-            &mut escape_state,
-            Some(seekable_bounds()),
-            TimelinePointerInput {
-                escape_pressed: true,
-                ..TimelinePointerInput::default()
-            },
-        );
 
-        assert_eq!(
-            focus_loss.actions,
-            vec![TimelineAction::EndScrubCommitLatest]
-        );
-        assert_eq!(escape.actions, vec![TimelineAction::EndScrubCommitLatest]);
+        assert!(interaction.actions.is_empty());
+        assert!(!state.has_active_drag());
     }
 
     /// Проверяет, что UI state хранит только transient pointer drag value.

@@ -12,7 +12,7 @@ mod track;
 
 pub use packet::Packet;
 pub use time::{
-    MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason, TimelineRange, TimelineSnapshot,
-    TrackTimestamp,
+    MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason, TimelinePreviewState,
+    TimelineRange, TimelineSnapshot, TrackTimestamp,
 };
 pub use track::{TrackId, TrackInfo, TrackKind, VideoTrackMetadata};
