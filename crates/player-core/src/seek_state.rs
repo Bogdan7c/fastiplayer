@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use media_core::MediaTime;
 use webm_demux::DemuxSeekRequest;
 
-use crate::SeekMode;
 use crate::seek_controller::PlaybackResumeIntent;
+use crate::{ScrubGeneration, SeekMode};
 
 /// Тип seek transaction-а: финальный commit меняет playback position, preview только показывает кадр.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +21,9 @@ pub(crate) enum SeekCommitKind {
 pub(crate) struct SeekCommitState {
     /// Поколение packets/frames, валидное для этой операции.
     pub generation: u64,
+
+    /// Пользовательский scrub intent, если transaction родился из interactive scrub.
+    pub scrub_generation: Option<ScrubGeneration>,
 
     /// Цель commit-а на нормализованной media timeline.
     pub target_position: MediaTime,

@@ -22,8 +22,9 @@ mod worker;
 
 pub use command::{
     MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, ScrubCommitPolicy,
-    SeekMode, SeekRequest, SeekTarget,
+    ScrubGeneration, SeekMode, SeekRequest, SeekTarget,
 };
+pub(crate) use command::{ScrubCommitIntent, ScrubUpdateIntent, SessionScrubCommand};
 pub(crate) use diagnostics::PlaybackDiagnostics;
 pub use diagnostics::{
     LatencyCounterSnapshot, PipelineLatencyCountersSnapshot, PipelineLatencySampleSnapshot,

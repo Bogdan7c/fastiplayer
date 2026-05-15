@@ -1,4 +1,7 @@
-use crate::{PlaybackState, PlayerCommand, SeekRequest};
+use crate::{
+    PlaybackState, PlayerCommand, ScrubCommitIntent, ScrubGeneration, ScrubUpdateIntent,
+    SeekRequest,
+};
 
 /// Режим seek/scrub state machine внутри playback worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +72,7 @@ pub struct SeekControllerDiagnostics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeekController {
     /// Поколение seek/scrub операции; увеличивается при новом scrub или cancel.
-    generation_id: u64,
+    generation_id: ScrubGeneration,
 
     /// Текущий режим controller-а.
     current_mode: SeekControllerMode,
@@ -96,7 +99,7 @@ impl SeekController {
 
     /// Возвращает id текущего поколения операции.
     #[must_use]
-    pub const fn generation_id(&self) -> u64 {
+    pub const fn generation_id(&self) -> ScrubGeneration {
         self.generation_id
     }
 
@@ -137,24 +140,46 @@ impl SeekController {
     }
 
     /// Начинает новый scrub и запоминает playback intent для commit-а.
-    pub fn begin_scrub(&mut self, playback_state: PlaybackState) {
-        self.generation_id = self.generation_id.saturating_add(1);
+    pub fn begin_scrub(&mut self, playback_state: PlaybackState) -> ScrubGeneration {
+        let generation = self.generation_id.next();
+        self.begin_scrub_with_generation(generation, playback_state);
+        generation
+    }
+
+    /// Начинает scrub с generation, который уже выдал worker command boundary.
+    pub(crate) fn begin_scrub_with_generation(
+        &mut self,
+        generation: ScrubGeneration,
+        playback_state: PlaybackState,
+    ) {
+        self.generation_id = generation;
         self.current_mode = SeekControllerMode::Scrubbing;
         self.latest_scrub_target = None;
         self.in_flight_target = None;
         self.resume_intent = PlaybackResumeIntent::from_playback_state(playback_state);
     }
 
-    /// Запоминает latest scrub target и отмечает её как переданную в skeleton pipeline.
-    pub fn accept_scrub_update(&mut self, request: SeekRequest) -> bool {
-        if !self.is_scrubbing() {
-            self.diagnostics.stale_or_ignored_commands =
-                self.diagnostics.stale_or_ignored_commands.saturating_add(1);
+    /// Запоминает latest scrub target без объявления seek transaction-а in-flight.
+    pub(crate) fn accept_scrub_update(&mut self, intent: ScrubUpdateIntent) -> bool {
+        if !self.intent_matches_active_scrub(intent.generation) {
+            self.count_stale_or_ignored_command();
             return false;
         }
 
-        self.latest_scrub_target = Some(request);
-        self.in_flight_target = Some(request);
+        self.latest_scrub_target = Some(intent.request);
+        true
+    }
+
+    /// Помечает preview seek как реально отправленный за worker/session boundary.
+    pub(crate) fn mark_preview_seek_dispatched(&mut self, intent: ScrubUpdateIntent) -> bool {
+        if !self.intent_matches_active_scrub(intent.generation)
+            || self.latest_scrub_target != Some(intent.request)
+        {
+            self.count_stale_or_ignored_command();
+            return false;
+        }
+
+        self.in_flight_target = Some(intent.request);
         true
     }
 
@@ -187,18 +212,25 @@ impl SeekController {
             return false;
         }
 
-        self.diagnostics.stale_or_ignored_commands =
-            self.diagnostics.stale_or_ignored_commands.saturating_add(1);
+        self.count_stale_or_ignored_command();
         true
     }
 
     /// Завершает scrub и возвращает сохранённый resume intent.
-    pub fn finish_scrub(&mut self) -> PlaybackResumeIntent {
+    pub(crate) fn finish_scrub(
+        &mut self,
+        intent: ScrubCommitIntent,
+    ) -> Option<PlaybackResumeIntent> {
+        if !self.intent_matches_active_scrub(intent.generation) {
+            self.count_stale_or_ignored_command();
+            return None;
+        }
+
         let resume_intent = self.resume_intent;
+        self.in_flight_target = self.latest_scrub_target;
         self.current_mode = SeekControllerMode::Idle;
         self.latest_scrub_target = None;
-        self.in_flight_target = None;
-        resume_intent
+        Some(resume_intent)
     }
 
     /// Прерывает scrub из-за Stop/Open/Shutdown и очищает pending цели.
@@ -208,11 +240,22 @@ impl SeekController {
                 self.diagnostics.cancelled_operations.saturating_add(1);
         }
 
-        self.generation_id = self.generation_id.saturating_add(1);
+        self.generation_id = self.generation_id.next();
         self.current_mode = SeekControllerMode::Idle;
         self.latest_scrub_target = None;
         self.in_flight_target = None;
         self.resume_intent = PlaybackResumeIntent::Pause;
+    }
+
+    /// Проверяет, что command относится к текущему live scrub.
+    fn intent_matches_active_scrub(&self, generation: ScrubGeneration) -> bool {
+        self.is_scrubbing() && self.generation_id == generation
+    }
+
+    /// Единая точка инкремента diagnostics для stale scrub intent-ов.
+    fn count_stale_or_ignored_command(&mut self) {
+        self.diagnostics.stale_or_ignored_commands =
+            self.diagnostics.stale_or_ignored_commands.saturating_add(1);
     }
 }
 
@@ -220,7 +263,7 @@ impl Default for SeekController {
     /// Возвращает начальный controller state без hidden runtime side effects.
     fn default() -> Self {
         Self {
-            generation_id: 0,
+            generation_id: ScrubGeneration::default(),
             current_mode: SeekControllerMode::Idle,
             latest_scrub_target: None,
             in_flight_target: None,
@@ -252,7 +295,7 @@ mod tests {
 
         controller.begin_scrub(PlaybackState::Playing);
 
-        assert_eq!(controller.generation_id(), 1);
+        assert_eq!(controller.generation_id().as_u64(), 1);
         assert_eq!(controller.current_mode(), SeekControllerMode::Scrubbing);
         assert_eq!(controller.resume_intent(), PlaybackResumeIntent::Play);
     }
@@ -261,7 +304,10 @@ mod tests {
     fn inactive_scrub_update_is_counted_as_stale() {
         let mut controller = SeekController::new();
 
-        let accepted = controller.accept_scrub_update(absolute_seek_request(7));
+        let accepted = controller.accept_scrub_update(ScrubUpdateIntent::new(
+            controller.generation_id(),
+            absolute_seek_request(7),
+        ));
 
         assert!(!accepted);
         assert_eq!(controller.diagnostics().stale_or_ignored_commands, 1);
@@ -284,7 +330,10 @@ mod tests {
     fn interrupt_scrub_clears_targets_and_counts_cancel() {
         let mut controller = SeekController::new();
         controller.begin_scrub(PlaybackState::Paused);
-        controller.accept_scrub_update(absolute_seek_request(3));
+        controller.accept_scrub_update(ScrubUpdateIntent::new(
+            controller.generation_id(),
+            absolute_seek_request(3),
+        ));
 
         controller.interrupt_scrub();
 
@@ -303,7 +352,50 @@ mod tests {
         let mut controller = SeekController::new();
         controller.begin_scrub(PlaybackState::Paused);
 
-        assert!(controller.accept_scrub_update(request));
+        assert!(
+            controller
+                .accept_scrub_update(ScrubUpdateIntent::new(controller.generation_id(), request,))
+        );
         assert_eq!(controller.latest_scrub_target(), Some(request));
+    }
+
+    #[test]
+    fn scrub_update_does_not_mark_target_in_flight() {
+        let mut controller = SeekController::new();
+        let generation = controller.begin_scrub(PlaybackState::Paused);
+        let request = absolute_seek_request(9);
+
+        assert!(controller.accept_scrub_update(ScrubUpdateIntent::new(generation, request,)));
+
+        assert_eq!(controller.latest_scrub_target(), Some(request));
+        assert_eq!(controller.in_flight_target(), None);
+    }
+
+    #[test]
+    fn preview_dispatch_marks_current_latest_target_in_flight() {
+        let mut controller = SeekController::new();
+        let generation = controller.begin_scrub(PlaybackState::Paused);
+        let request = absolute_seek_request(9);
+        let intent = ScrubUpdateIntent::new(generation, request);
+
+        assert!(controller.accept_scrub_update(intent));
+        assert!(controller.mark_preview_seek_dispatched(intent));
+
+        assert_eq!(controller.in_flight_target(), Some(request));
+    }
+
+    #[test]
+    fn stale_preview_generation_is_counted_and_ignored() {
+        let mut controller = SeekController::new();
+        let first_generation = controller.begin_scrub(PlaybackState::Paused);
+        let stale_request = absolute_seek_request(4);
+        controller.begin_scrub(PlaybackState::Paused);
+
+        let dispatched = controller
+            .mark_preview_seek_dispatched(ScrubUpdateIntent::new(first_generation, stale_request));
+
+        assert!(!dispatched);
+        assert_eq!(controller.in_flight_target(), None);
+        assert_eq!(controller.diagnostics().stale_or_ignored_commands, 1);
     }
 }

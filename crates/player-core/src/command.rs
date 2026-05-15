@@ -3,6 +3,24 @@ use std::time::Duration;
 
 use media_core::{MediaTime, TrackId};
 
+/// Typed id одной пользовательской scrub-операции.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ScrubGeneration(u64);
+
+impl ScrubGeneration {
+    /// Возвращает следующее поколение user intent-а без раскрытия raw-счётчика наружу.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+
+    /// Возвращает числовое значение только для diagnostics и unit tests.
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
 /// Идентификатор качества или варианта потока.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct QualityId(String);
@@ -149,6 +167,61 @@ impl SeekRequest {
 pub enum ScrubCommitPolicy {
     /// Зафиксировать последнюю цель, полученную через `UpdateScrub`.
     CommitLatest,
+}
+
+/// Tagged update/preview scrub intent после worker-side generation routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScrubUpdateIntent {
+    /// Поколение interactive scrub, к которому относится target.
+    pub generation: ScrubGeneration,
+
+    /// Цель seek-а внутри данного пользовательского intent-а.
+    pub request: SeekRequest,
+}
+
+impl ScrubUpdateIntent {
+    /// Собирает update intent без неявного копирования raw generation.
+    #[must_use]
+    pub const fn new(generation: ScrubGeneration, request: SeekRequest) -> Self {
+        Self {
+            generation,
+            request,
+        }
+    }
+}
+
+/// Tagged final scrub commit после worker-side generation routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScrubCommitIntent {
+    /// Поколение interactive scrub, которое пользователь завершает.
+    pub generation: ScrubGeneration,
+
+    /// Политика фиксации target-а на release.
+    pub policy: ScrubCommitPolicy,
+}
+
+impl ScrubCommitIntent {
+    /// Собирает final commit intent с typed generation.
+    #[must_use]
+    pub const fn new(generation: ScrubGeneration, policy: ScrubCommitPolicy) -> Self {
+        Self { generation, policy }
+    }
+}
+
+/// Internal scrub command, уже защищённая worker generation token-ом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionScrubCommand {
+    /// Начать новый scrub intent в session.
+    Begin { generation: ScrubGeneration },
+
+    /// Обновить latest target активного scrub intent-а.
+    Update(ScrubUpdateIntent),
+
+    /// Запустить live preview seek для активного scrub intent-а.
+    Preview(ScrubUpdateIntent),
+
+    /// Завершить active scrub intent выбранной commit-политикой.
+    End(ScrubCommitIntent),
 }
 
 /// Выбор качества потока для локального файла или сетевого сервиса.

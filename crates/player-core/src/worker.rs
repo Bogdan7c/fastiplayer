@@ -16,8 +16,8 @@ use crate::tick::PlayerWorkerWakeupPlan;
 use crate::{
     FrameCounters, LatencyCounterSnapshot, MediaOpenRequest, MediaSource, PlayerCommand,
     PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSession, PlayerSnapshot,
-    PlayerTickConfig, PlayerTickContext, PlayerTickResult, ScrubCommitPolicy, SeekRequest,
-    WgpuVideoBackendFactory,
+    PlayerTickConfig, PlayerTickContext, PlayerTickResult, ScrubCommitIntent, ScrubCommitPolicy,
+    ScrubGeneration, ScrubUpdateIntent, SeekRequest, SessionScrubCommand, WgpuVideoBackendFactory,
 };
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
@@ -286,13 +286,26 @@ pub struct PlayerCommandSender {
 
     /// Явный latest-slot для high-frequency scrub updates.
     scrub_coalescer: Arc<ScrubUpdateCoalescer>,
+
+    /// Общий generation sequencer для всех clone-сендеров UI/integration слоя.
+    scrub_command_sequencer: Arc<Mutex<ScrubCommandSequencer>>,
 }
 
 impl PlayerCommandSender {
     /// Отправляет команду без блокировки render/UI thread.
     pub fn try_send(&self, command: PlayerCommand) -> Result<(), PlayerWorkerSendError> {
         match command {
+            PlayerCommand::BeginScrub => self.try_send_begin_scrub(),
             PlayerCommand::UpdateScrub(request) => self.try_send_scrub_update(request),
+            PlayerCommand::PreviewScrub(request) => self.try_send_preview_scrub(request),
+            PlayerCommand::EndScrub { policy } => self.try_send_end_scrub(policy),
+            PlayerCommand::OpenMedia(_) | PlayerCommand::Stop | PlayerCommand::Shutdown => {
+                self.command_tx
+                    .try_send(WorkerCommand::Player(command))
+                    .map_err(PlayerWorkerSendError::from)?;
+                self.invalidate_sender_scrub_generation();
+                Ok(())
+            }
             other_command => self
                 .command_tx
                 .try_send(WorkerCommand::Player(other_command))
@@ -300,16 +313,118 @@ impl PlayerCommandSender {
         }
     }
 
+    /// Отправляет начало scrub-а с новым generation token-ом.
+    fn try_send_begin_scrub(&self) -> Result<(), PlayerWorkerSendError> {
+        let mut sequencer = self.scrub_command_sequencer_guard();
+        let generation = sequencer.next_begin_generation();
+        self.command_tx
+            .try_send(WorkerCommand::BeginScrub { generation })
+            .map_err(PlayerWorkerSendError::from)?;
+        sequencer.mark_scrub_started(generation);
+        Ok(())
+    }
+
     /// Отправляет latest scrub target без доступа sender-а к receiver side.
     fn try_send_scrub_update(&self, request: SeekRequest) -> Result<(), PlayerWorkerSendError> {
-        self.scrub_coalescer.submit_latest(request)
+        let intent = self.scrub_command_sequencer_guard().update_intent(request);
+        self.scrub_coalescer.submit_latest(intent)
+    }
+
+    /// Отправляет explicit preview scrub command с текущим generation token-ом.
+    fn try_send_preview_scrub(&self, request: SeekRequest) -> Result<(), PlayerWorkerSendError> {
+        let intent = self.scrub_command_sequencer_guard().update_intent(request);
+        self.command_tx
+            .try_send(WorkerCommand::PreviewScrub(intent))
+            .map_err(PlayerWorkerSendError::from)
+    }
+
+    /// Отправляет завершение scrub-а и инвалидирует поздние updates старого intent-а.
+    fn try_send_end_scrub(&self, policy: ScrubCommitPolicy) -> Result<(), PlayerWorkerSendError> {
+        let mut sequencer = self.scrub_command_sequencer_guard();
+        let intent = sequencer.commit_intent(policy);
+        self.command_tx
+            .try_send(WorkerCommand::EndScrub(intent))
+            .map_err(PlayerWorkerSendError::from)?;
+        sequencer.mark_scrub_finished();
+        Ok(())
+    }
+
+    /// Инвалидирует sender-side scrub generation после внешней boundary-команды.
+    fn invalidate_sender_scrub_generation(&self) {
+        self.scrub_command_sequencer_guard().interrupt_scrub();
+    }
+
+    /// Возвращает sequencer guard и восстанавливается после poison без потери команд.
+    fn scrub_command_sequencer_guard(&self) -> MutexGuard<'_, ScrubCommandSequencer> {
+        match self.scrub_command_sequencer.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                warn!("Scrub command sequencer mutex was poisoned; recovering generation state");
+                poisoned.into_inner()
+            }
+        }
+    }
+}
+
+/// Sender-side generator typed scrub generation-ов для public команд.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScrubCommandSequencer {
+    /// Последний выданный generation; также sentinel для no-active-scrub updates.
+    current_generation: ScrubGeneration,
+
+    /// Поколение scrub-а, который UI считает активным.
+    active_generation: Option<ScrubGeneration>,
+}
+
+impl ScrubCommandSequencer {
+    /// Создаёт sequencer без активного scrub-а.
+    fn new() -> Self {
+        Self {
+            current_generation: ScrubGeneration::default(),
+            active_generation: None,
+        }
+    }
+
+    /// Резервирует generation для следующего `BeginScrub`, не меняя state до send success.
+    fn next_begin_generation(&self) -> ScrubGeneration {
+        self.current_generation.next()
+    }
+
+    /// Фиксирует успешно отправленный `BeginScrub`.
+    fn mark_scrub_started(&mut self, generation: ScrubGeneration) {
+        self.current_generation = generation;
+        self.active_generation = Some(generation);
+    }
+
+    /// Собирает update/preview intent для текущего активного scrub-а.
+    fn update_intent(&self, request: SeekRequest) -> ScrubUpdateIntent {
+        let generation = self.active_generation.unwrap_or(self.current_generation);
+        ScrubUpdateIntent::new(generation, request)
+    }
+
+    /// Собирает final intent до invalidation старого поколения.
+    fn commit_intent(&self, policy: ScrubCommitPolicy) -> ScrubCommitIntent {
+        let generation = self.active_generation.unwrap_or(self.current_generation);
+        ScrubCommitIntent::new(generation, policy)
+    }
+
+    /// Закрывает active generation и сдвигает sentinel для поздних post-End updates.
+    fn mark_scrub_finished(&mut self) {
+        self.active_generation = None;
+        self.current_generation = self.current_generation.next();
+    }
+
+    /// Инвалидирует active scrub после Stop/Open/Shutdown boundary на sender side.
+    fn interrupt_scrub(&mut self) {
+        self.active_generation = None;
+        self.current_generation = self.current_generation.next();
     }
 }
 
 /// Явная latest-wins прослойка для частых scrub updates.
 struct ScrubUpdateCoalescer {
     /// Последняя цель scrub-а; sender только заменяет значение, worker только забирает.
-    latest_request: Mutex<Option<SeekRequest>>,
+    latest_request: Mutex<Option<ScrubUpdateIntent>>,
 
     /// Bounded wake-token: один pending token уже означает "latest_request надо проверить".
     wake_tx: Sender<()>,
@@ -325,8 +440,8 @@ impl ScrubUpdateCoalescer {
     }
 
     /// Записывает новую latest scrub-цель и будит worker одним bounded token-ом.
-    fn submit_latest(&self, request: SeekRequest) -> Result<(), PlayerWorkerSendError> {
-        *self.latest_request_guard() = Some(request);
+    fn submit_latest(&self, intent: ScrubUpdateIntent) -> Result<(), PlayerWorkerSendError> {
+        *self.latest_request_guard() = Some(intent);
 
         match self.wake_tx.try_send(()) {
             Ok(()) | Err(TrySendError::Full(())) => Ok(()),
@@ -338,12 +453,25 @@ impl ScrubUpdateCoalescer {
     }
 
     /// Забирает последнюю scrub-цель; все промежуточные цели намеренно coalesced.
-    fn take_latest(&self) -> Option<SeekRequest> {
+    fn take_latest(&self) -> Option<ScrubUpdateIntent> {
         self.latest_request_guard().take()
     }
 
+    /// Возвращает future-generation intent, если worker ещё не обработал его `BeginScrub`.
+    fn restore_future_intent(&self, intent: ScrubUpdateIntent) {
+        let mut latest_request = self.latest_request_guard();
+        if latest_request
+            .as_ref()
+            .is_some_and(|current_intent| current_intent.generation >= intent.generation)
+        {
+            return;
+        }
+
+        *latest_request = Some(intent);
+    }
+
     /// Возвращает guard latest-slot-а и восстанавливается после poison без потери command path.
-    fn latest_request_guard(&self) -> MutexGuard<'_, Option<SeekRequest>> {
+    fn latest_request_guard(&self) -> MutexGuard<'_, Option<ScrubUpdateIntent>> {
         match self.latest_request.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -675,6 +803,7 @@ impl PlayerWorker {
         let command_sender = PlayerCommandSender {
             command_tx,
             scrub_coalescer: Arc::clone(&scrub_coalescer),
+            scrub_command_sequencer: Arc::new(Mutex::new(ScrubCommandSequencer::new())),
         };
         let snapshot_rx_for_worker = snapshot_rx.clone();
         let latest_present_frame_handoff_for_worker = Arc::clone(&latest_present_frame_handoff);
@@ -889,6 +1018,18 @@ enum WorkerCommand {
     /// Обычная команда public player contract.
     Player(PlayerCommand),
 
+    /// Начать scrub с generation, выданным sender boundary.
+    BeginScrub {
+        /// User intent generation, общий для дальнейших update/preview/end.
+        generation: ScrubGeneration,
+    },
+
+    /// Explicit preview command с generation token-ом.
+    PreviewScrub(ScrubUpdateIntent),
+
+    /// Завершить scrub с generation token-ом.
+    EndScrub(ScrubCommitIntent),
+
     /// Открыть локальный файл внутри worker-owned session.
     LoadFile {
         /// Путь к media-файлу.
@@ -1016,10 +1157,10 @@ struct PlayerWorkerRuntime {
     last_preview_scrub_seek_at: Option<Instant>,
 
     /// Последняя scrub-цель, для которой preview seek уже был отправлен.
-    last_preview_scrub_target: Option<SeekRequest>,
+    last_preview_scrub_target: Option<ScrubUpdateIntent>,
 
     /// Latest scrub-цель, ожидающая preview throttle window.
-    deferred_preview_scrub_target: Option<SeekRequest>,
+    deferred_preview_scrub_target: Option<ScrubUpdateIntent>,
 
     /// Момент последнего playback tick.
     last_tick_at: Instant,
@@ -1293,6 +1434,11 @@ impl PlayerWorkerRuntime {
     fn handle_worker_command(&mut self, command: WorkerCommand) {
         match command {
             WorkerCommand::Player(player_command) => self.handle_player_command(player_command),
+            WorkerCommand::BeginScrub { generation } => self.handle_begin_scrub_command(generation),
+            WorkerCommand::PreviewScrub(intent) => {
+                self.handle_preview_scrub_command(intent);
+            }
+            WorkerCommand::EndScrub(intent) => self.handle_end_scrub_command(intent),
             WorkerCommand::LoadFile { path, autoplay } => {
                 self.interrupt_scrub_for_external_boundary();
                 self.session.load_file_with_autoplay(&path, autoplay);
@@ -1349,12 +1495,22 @@ impl PlayerWorkerRuntime {
             PlayerCommand::OpenMedia(request) => self.handle_open_media_request(request),
             PlayerCommand::Stop => self.handle_stop_command(),
             PlayerCommand::Shutdown => self.handle_shutdown_request(),
-            PlayerCommand::BeginScrub => self.handle_begin_scrub_command(),
-            PlayerCommand::UpdateScrub(request) => self.apply_scrub_update(request),
-            PlayerCommand::PreviewScrub(request) => {
-                self.dispatch_player_command(PlayerCommand::PreviewScrub(request));
+            PlayerCommand::BeginScrub => {
+                let generation = self.seek_controller.generation_id().next();
+                self.handle_begin_scrub_command(generation);
             }
-            PlayerCommand::EndScrub { policy } => self.handle_end_scrub_command(policy),
+            PlayerCommand::UpdateScrub(request) => {
+                let generation = self.seek_controller.generation_id();
+                self.apply_scrub_update(ScrubUpdateIntent::new(generation, request));
+            }
+            PlayerCommand::PreviewScrub(request) => {
+                let generation = self.seek_controller.generation_id();
+                self.handle_preview_scrub_command(ScrubUpdateIntent::new(generation, request));
+            }
+            PlayerCommand::EndScrub { policy } => {
+                let generation = self.seek_controller.generation_id();
+                self.handle_end_scrub_command(ScrubCommitIntent::new(generation, policy));
+            }
             PlayerCommand::Seek(request) => self.handle_seek_command(request),
             other_command => self.dispatch_player_command(other_command),
         }
@@ -1395,29 +1551,45 @@ impl PlayerWorkerRuntime {
     }
 
     /// BeginScrub сохраняет resume intent и временно ставит playback на паузу.
-    fn handle_begin_scrub_command(&mut self) {
+    fn handle_begin_scrub_command(&mut self, generation: ScrubGeneration) {
         self.reset_preview_scrub_state();
         self.seek_controller
-            .begin_scrub(self.session.playback_state());
-        self.dispatch_player_command(PlayerCommand::BeginScrub);
+            .begin_scrub_with_generation(generation, self.session.playback_state());
+        self.dispatch_scrub_command(SessionScrubCommand::Begin { generation });
         self.dispatch_player_command(PlayerCommand::Pause);
     }
 
     /// EndScrub коммитит latest target и применяет сохранённый resume intent.
-    fn handle_end_scrub_command(&mut self, policy: ScrubCommitPolicy) {
+    fn handle_end_scrub_command(&mut self, intent: ScrubCommitIntent) {
         self.apply_latest_scrub_update();
-        self.deferred_preview_scrub_target = None;
 
-        if !self.seek_controller.is_scrubbing() {
-            self.dispatch_player_command(PlayerCommand::EndScrub { policy });
-            self.reset_preview_scrub_state();
+        let Some(resume_intent) = self.seek_controller.finish_scrub(intent) else {
+            debug!(
+                generation = intent.generation.as_u64(),
+                "Stale EndScrub ignored before PlayerSession"
+            );
             return;
-        }
+        };
 
-        let resume_intent = self.seek_controller.finish_scrub();
-        self.dispatch_player_command(PlayerCommand::EndScrub { policy });
+        self.deferred_preview_scrub_target = None;
+        self.dispatch_scrub_command(SessionScrubCommand::End(intent));
         self.apply_end_scrub_resume_intent(resume_intent);
         self.reset_preview_scrub_state();
+    }
+
+    /// PreviewScrub проходит в session только если generation и latest target всё ещё актуальны.
+    fn handle_preview_scrub_command(&mut self, intent: ScrubUpdateIntent) -> bool {
+        if !self.seek_controller.mark_preview_seek_dispatched(intent) {
+            debug!(
+                generation = intent.generation.as_u64(),
+                "Stale PreviewScrub ignored before PlayerSession"
+            );
+            return false;
+        }
+
+        self.last_preview_scrub_target = Some(intent);
+        self.dispatch_scrub_command(SessionScrubCommand::Preview(intent));
+        true
     }
 
     /// Применяет сохранённый worker resume intent к финальному seek transaction-у.
@@ -1446,13 +1618,13 @@ impl PlayerWorkerRuntime {
     }
 
     /// Применяет один scrub update после coalescing.
-    fn apply_scrub_update(&mut self, request: SeekRequest) {
-        if !self.seek_controller.accept_scrub_update(request) {
+    fn apply_scrub_update(&mut self, intent: ScrubUpdateIntent) {
+        if !self.seek_controller.accept_scrub_update(intent) {
             return;
         }
 
-        self.dispatch_player_command(PlayerCommand::UpdateScrub(request));
-        self.queue_preview_scrub_seek(request);
+        self.dispatch_scrub_command(SessionScrubCommand::Update(intent));
+        self.queue_preview_scrub_seek(intent);
         self.dispatch_due_preview_scrub_seek();
     }
 
@@ -1460,8 +1632,13 @@ impl PlayerWorkerRuntime {
     fn apply_latest_scrub_update(&mut self) {
         drain_receiver_without_blocking(&self.scrub_wake_rx);
 
-        if let Some(request) = self.scrub_coalescer.take_latest() {
-            self.apply_scrub_update(request);
+        if let Some(intent) = self.scrub_coalescer.take_latest() {
+            if intent.generation > self.seek_controller.generation_id() {
+                self.scrub_coalescer.restore_future_intent(intent);
+                return;
+            }
+
+            self.apply_scrub_update(intent);
             self.publish_session_outputs();
         }
     }
@@ -1482,12 +1659,12 @@ impl PlayerWorkerRuntime {
     }
 
     /// Запоминает latest target, для которого нужен live preview seek.
-    fn queue_preview_scrub_seek(&mut self, request: SeekRequest) {
-        if self.last_preview_scrub_target == Some(request) {
+    fn queue_preview_scrub_seek(&mut self, intent: ScrubUpdateIntent) {
+        if self.last_preview_scrub_target == Some(intent) {
             return;
         }
 
-        self.deferred_preview_scrub_target = Some(request);
+        self.deferred_preview_scrub_target = Some(intent);
     }
 
     /// Отправляет preview seek, когда прошёл throttle interval live scrub-а.
@@ -1497,7 +1674,7 @@ impl PlayerWorkerRuntime {
             return;
         }
 
-        let Some(request) = self.deferred_preview_scrub_target else {
+        let Some(intent) = self.deferred_preview_scrub_target else {
             return;
         };
 
@@ -1507,9 +1684,9 @@ impl PlayerWorkerRuntime {
         }
 
         self.deferred_preview_scrub_target = None;
-        self.last_preview_scrub_target = Some(request);
-        self.last_preview_scrub_seek_at = Some(now);
-        self.dispatch_player_command(PlayerCommand::PreviewScrub(request));
+        if self.handle_preview_scrub_command(intent) {
+            self.last_preview_scrub_seek_at = Some(now);
+        }
     }
 
     /// Проверяет throttle window для live preview seek-а.
@@ -1527,6 +1704,14 @@ impl PlayerWorkerRuntime {
     fn dispatch_player_command(&mut self, command: PlayerCommand) {
         if let Err(error) = self.session.dispatch_command(command) {
             warn!(error = %error, "Player worker command failed");
+            self.session.mark_fatal_error(error);
+        }
+    }
+
+    /// Безопасно вызывает typed scrub boundary на session.
+    fn dispatch_scrub_command(&mut self, command: SessionScrubCommand) {
+        if let Err(error) = self.session.dispatch_scrub_command(command) {
+            warn!(error = %error, "Player worker scrub command failed");
             self.session.mark_fatal_error(error);
         }
     }
@@ -1792,6 +1977,10 @@ mod tests {
         SeekRequest::absolute(MediaTime::from_millis(milliseconds))
     }
 
+    fn scrub_update_intent(generation: ScrubGeneration, milliseconds: u64) -> ScrubUpdateIntent {
+        ScrubUpdateIntent::new(generation, seek_to_millis(milliseconds))
+    }
+
     fn wait_for_snapshot(
         worker: &mut PlayerWorker,
         predicate: impl Fn(&PlayerSnapshot) -> bool,
@@ -1920,6 +2109,7 @@ mod tests {
         let command_sender = PlayerCommandSender {
             command_tx,
             scrub_coalescer: Arc::new(ScrubUpdateCoalescer::new(scrub_wake_tx)),
+            scrub_command_sequencer: Arc::new(Mutex::new(ScrubCommandSequencer::new())),
         };
 
         (
@@ -2115,6 +2305,97 @@ mod tests {
     }
 
     #[test]
+    fn stale_preview_scrub_generation_is_ignored_before_session() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let first_generation = ScrubGeneration::default().next();
+        let second_generation = first_generation.next();
+
+        runtime.handle_begin_scrub_command(first_generation);
+        runtime.last_preview_scrub_seek_at = Some(Instant::now());
+        runtime.apply_scrub_update(scrub_update_intent(first_generation, 100));
+        runtime.handle_begin_scrub_command(second_generation);
+        runtime.last_preview_scrub_seek_at = Some(Instant::now());
+        runtime.apply_scrub_update(scrub_update_intent(second_generation, 250));
+        runtime.handle_preview_scrub_command(scrub_update_intent(first_generation, 100));
+
+        assert_eq!(
+            runtime.session.snapshot().timeline.target_position,
+            Some(MediaTime::from_millis(250))
+        );
+        assert!(runtime.session.snapshot().timeline.scrubbing);
+        assert!(runtime.session.snapshot().last_error.is_none());
+        assert_eq!(
+            runtime
+                .seek_controller
+                .diagnostics()
+                .stale_or_ignored_commands,
+            1
+        );
+    }
+
+    #[test]
+    fn stale_end_scrub_generation_does_not_commit_new_timeline() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let first_generation = ScrubGeneration::default().next();
+        let second_generation = first_generation.next();
+
+        runtime.handle_begin_scrub_command(first_generation);
+        runtime.last_preview_scrub_seek_at = Some(Instant::now());
+        runtime.apply_scrub_update(scrub_update_intent(first_generation, 100));
+        runtime.handle_begin_scrub_command(second_generation);
+        runtime.last_preview_scrub_seek_at = Some(Instant::now());
+        runtime.apply_scrub_update(scrub_update_intent(second_generation, 250));
+        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
+            first_generation,
+            ScrubCommitPolicy::CommitLatest,
+        ));
+
+        assert_eq!(
+            runtime.session.snapshot().timeline.target_position,
+            Some(MediaTime::from_millis(250))
+        );
+        assert!(runtime.session.snapshot().timeline.scrubbing);
+        assert_eq!(runtime.session.snapshot().current_position, Duration::ZERO);
+        assert!(runtime.session.snapshot().last_error.is_none());
+        assert_eq!(
+            runtime
+                .seek_controller
+                .diagnostics()
+                .stale_or_ignored_commands,
+            1
+        );
+    }
+
+    #[test]
+    fn end_scrub_does_not_drop_coalesced_update_for_queued_new_generation() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let first_generation = ScrubGeneration::default().next();
+        let second_generation = first_generation.next();
+
+        runtime.handle_begin_scrub_command(first_generation);
+        runtime.last_preview_scrub_seek_at = Some(Instant::now());
+        runtime.apply_scrub_update(scrub_update_intent(first_generation, 100));
+        runtime
+            .scrub_coalescer
+            .submit_latest(scrub_update_intent(second_generation, 250))
+            .unwrap();
+
+        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
+            first_generation,
+            ScrubCommitPolicy::CommitLatest,
+        ));
+        runtime.handle_begin_scrub_command(second_generation);
+        runtime.last_preview_scrub_seek_at = Some(Instant::now());
+        runtime.apply_latest_scrub_update();
+
+        assert_eq!(
+            runtime.session.snapshot().timeline.target_position,
+            Some(MediaTime::from_millis(250))
+        );
+        assert!(runtime.session.snapshot().timeline.scrubbing);
+    }
+
+    #[test]
     fn stop_interrupts_scrub_and_requests_pause_then_seek_zero() {
         let mut worker = PlayerWorker::spawn(worker_config_for_tests()).unwrap();
 
@@ -2166,13 +2447,23 @@ mod tests {
     fn scrub_coalescer_keeps_latest_target_without_sender_receiver_drain() {
         let (wake_tx, wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
         let coalescer = ScrubUpdateCoalescer::new(wake_tx);
+        let generation = ScrubGeneration::default().next();
 
-        coalescer.submit_latest(seek_to_millis(100)).unwrap();
-        coalescer.submit_latest(seek_to_millis(250)).unwrap();
-        coalescer.submit_latest(seek_to_millis(900)).unwrap();
+        coalescer
+            .submit_latest(scrub_update_intent(generation, 100))
+            .unwrap();
+        coalescer
+            .submit_latest(scrub_update_intent(generation, 250))
+            .unwrap();
+        coalescer
+            .submit_latest(scrub_update_intent(generation, 900))
+            .unwrap();
 
         assert_eq!(wake_rx.len(), 1);
-        assert_eq!(coalescer.take_latest(), Some(seek_to_millis(900)));
+        assert_eq!(
+            coalescer.take_latest(),
+            Some(scrub_update_intent(generation, 900))
+        );
         assert_eq!(coalescer.take_latest(), None);
     }
 
@@ -2180,9 +2471,10 @@ mod tests {
     fn scrub_coalescer_reports_disconnected_without_keeping_stale_target() {
         let (wake_tx, wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
         let coalescer = ScrubUpdateCoalescer::new(wake_tx);
+        let generation = ScrubGeneration::default().next();
         drop(wake_rx);
 
-        let send_result = coalescer.submit_latest(seek_to_millis(100));
+        let send_result = coalescer.submit_latest(scrub_update_intent(generation, 100));
 
         assert_eq!(send_result, Err(PlayerWorkerSendError::Disconnected));
         assert_eq!(coalescer.take_latest(), None);
