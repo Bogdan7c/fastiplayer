@@ -482,7 +482,7 @@ pub struct VideoSchedulerConfig {
 }
 
 impl Default for VideoSchedulerConfig {
-    /// Возвращает 60 Hz defaults с запасом для короткого catch-up, но без unbounded work.
+    /// Возвращает bounded budgets scheduler-а без привязки к display/video FPS.
     fn default() -> Self {
         Self {
             demux_packets_per_tick: 12,

@@ -907,7 +907,31 @@ impl AppState {
             "Repeated/reused: {}",
             player_snapshot.frame_counters.repeated
         ));
+        ui.monospace(format!(
+            "Worker repeats: {}",
+            player_snapshot.diagnostics.repeated_video_frames
+        ));
         ui.monospace(format!("Frame dur: {:.2}ms", frame_duration_estimate_ms));
+        let worker_wakeup = player_snapshot.diagnostics.worker_wakeup;
+        if let Some(reason) = worker_wakeup.reason {
+            ui.monospace(format!("Wake: {}", reason.metric_name()));
+        }
+        if let Some(planned_delay) = worker_wakeup.planned_delay {
+            ui.monospace(format!(
+                "Wake delay: {:.2}ms",
+                planned_delay.as_secs_f64() * 1000.0
+            ));
+        }
+        ui.monospace(format!(
+            "Wake late: {:.2}ms",
+            worker_wakeup.tick_late_by.as_secs_f64() * 1000.0
+        ));
+        if let Some(frame_timing) = worker_wakeup.frame_timing {
+            ui.monospace(format!(
+                "PTS-target: {:.2}ms",
+                frame_timing.front_frame_delta_from_target_us as f64 / 1000.0
+            ));
+        }
         ui.monospace(format!(
             "Queue: {}",
             player_snapshot.queues.decoded_video_frames

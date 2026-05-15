@@ -372,6 +372,79 @@ pub struct PipelinePauseSnapshot {
     pub queues: PipelineQueueDepthSnapshot,
 }
 
+/// Причина, по которой worker запланировал следующий playback wakeup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerWakeupReason {
+    /// Pipeline не требует самостоятельного timeout-а и ждёт внешнего события.
+    Idle,
+
+    /// Очереди ниже target или есть demux/decode work, который можно выполнить сразу.
+    PipelineWorkReady,
+
+    /// Worker ждёт короткий poll готовности decoder thread-а без привязки к video FPS.
+    DecodeReadiness,
+
+    /// Следующий wakeup привязан к PTS первого queued frame.
+    FramePtsDeadline,
+
+    /// Первый queued frame уже попадает в окно presentation.
+    FrameReady,
+
+    /// Seek/preroll/buffering gate требует быстрого продвижения state machine.
+    SeekOrPreroll,
+
+    /// Активный pipeline не дал точного media deadline-а, нужен редкий progress wakeup.
+    CoarseProgress,
+}
+
+impl WorkerWakeupReason {
+    /// Возвращает стабильное имя причины для logs/UI diagnostics.
+    #[must_use]
+    pub const fn metric_name(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::PipelineWorkReady => "pipeline_work_ready",
+            Self::DecodeReadiness => "decode_readiness",
+            Self::FramePtsDeadline => "frame_pts_deadline",
+            Self::FrameReady => "frame_ready",
+            Self::SeekOrPreroll => "seek_or_preroll",
+            Self::CoarseProgress => "coarse_progress",
+        }
+    }
+}
+
+/// Сравнение первого queued frame с media clock target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkerFrameTimingSnapshot {
+    /// PTS первого decoded frame в presentation queue.
+    pub front_frame_pts: Duration,
+
+    /// Media time, под который scheduler выбирал frame на момент планирования.
+    pub target_media_time: Duration,
+
+    /// `front_frame_pts - target_media_time` в микросекундах.
+    ///
+    /// Положительное значение означает, что frame ещё впереди media clock.
+    /// Отрицательное значение означает, что media clock уже прошёл PTS frame-а.
+    pub front_frame_delta_from_target_us: i128,
+}
+
+/// Последнее решение worker wakeup planner-а.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WorkerWakeupDiagnosticsSnapshot {
+    /// Почему worker запланировал wakeup.
+    pub reason: Option<WorkerWakeupReason>,
+
+    /// Запланированная задержка до wakeup; `None` означает ожидание только событий.
+    pub planned_delay: Option<Duration>,
+
+    /// Насколько фактический tick позже запланированного deadline-а.
+    pub tick_late_by: Duration,
+
+    /// Сравнение media clock target и первого queued video frame, если он был.
+    pub frame_timing: Option<WorkerFrameTimingSnapshot>,
+}
+
 /// Read-only diagnostics snapshot, который UI может только отображать.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaybackDiagnosticsSnapshot {
@@ -395,6 +468,12 @@ pub struct PlaybackDiagnosticsSnapshot {
 
     /// Количество decoded frames, прошедших через player diagnostics.
     pub decoded_frames: u64,
+
+    /// Количество повторов текущего present frame, не смешанное с media drops.
+    pub repeated_video_frames: u64,
+
+    /// Последнее решение worker wakeup planner-а.
+    pub worker_wakeup: WorkerWakeupDiagnosticsSnapshot,
 }
 
 impl Default for PlaybackDiagnosticsSnapshot {
@@ -408,6 +487,8 @@ impl Default for PlaybackDiagnosticsSnapshot {
             worst_latencies: PipelineLatencyCountersSnapshot::default(),
             recent_worst_samples: Vec::new(),
             decoded_frames: 0,
+            repeated_video_frames: 0,
+            worker_wakeup: WorkerWakeupDiagnosticsSnapshot::default(),
         }
     }
 }
@@ -672,6 +753,22 @@ impl PlaybackDiagnostics {
             }
         }
         self.snapshot.pauses.last = Some(PipelinePauseSnapshot { reason, queues });
+        self.snapshot.queues = queues;
+    }
+
+    /// Записывает повтор текущего frame как отдельную pacing telemetry, не как drop.
+    pub(crate) fn record_repeated_video_frame(&mut self, queues: PipelineQueueDepthSnapshot) {
+        self.snapshot.repeated_video_frames = self.snapshot.repeated_video_frames.saturating_add(1);
+        self.snapshot.queues = queues;
+    }
+
+    /// Записывает последнее решение worker wakeup planner-а.
+    pub(crate) fn record_worker_wakeup(
+        &mut self,
+        wakeup: WorkerWakeupDiagnosticsSnapshot,
+        queues: PipelineQueueDepthSnapshot,
+    ) {
+        self.snapshot.worker_wakeup = wakeup;
         self.snapshot.queues = queues;
     }
 

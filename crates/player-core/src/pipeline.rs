@@ -8,7 +8,7 @@ use codec_core::VideoDecodeRequirement;
 use media_core::{TrackId, TrackInfo};
 use webm_demux::Demuxer;
 
-/// Начальная оценка длительности video frame: 60 FPS.
+/// Bootstrap-оценка длительности frame до первых PTS observations; не worker cadence.
 pub(crate) const DEFAULT_VIDEO_FRAME_DURATION: Duration = Duration::from_micros(16_667);
 
 /// Минимальная разумная длительность кадра для оценки FPS.
@@ -16,6 +16,35 @@ pub(crate) const MIN_OBSERVED_VIDEO_FRAME_DURATION: Duration = Duration::from_mi
 
 /// Максимальная разумная длительность кадра для оценки FPS.
 pub(crate) const MAX_OBSERVED_VIDEO_FRAME_DURATION: Duration = Duration::from_millis(100);
+
+/// Anchor внутреннего monotonic media clock для media без audio clock.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MonotonicMediaClockAnchor {
+    /// Media position, которая соответствовала `anchored_at`.
+    media_position: Duration,
+
+    /// Монотонный момент, от которого считается fallback media time.
+    anchored_at: Instant,
+}
+
+impl MonotonicMediaClockAnchor {
+    /// Создаёт anchor без привязки к video FPS или worker tick cadence.
+    #[must_use]
+    pub(crate) const fn new(media_position: Duration, anchored_at: Instant) -> Self {
+        Self {
+            media_position,
+            anchored_at,
+        }
+    }
+
+    /// Возвращает media position на заданный monotonic момент.
+    #[must_use]
+    pub(crate) fn position_at(self, now: Instant) -> Duration {
+        self.media_position
+            .checked_add(now.saturating_duration_since(self.anchored_at))
+            .unwrap_or(Duration::MAX)
+    }
+}
 
 /// Сырой audio packet, который ждёт decode из-за backpressure audio buffer.
 pub(crate) struct PendingAudioPacket {
@@ -161,6 +190,9 @@ pub(crate) struct PlaybackPipeline {
     /// Абсолютная media-позиция, соответствующая нулю текущего audio clock.
     pub(crate) media_clock_base: Duration,
 
+    /// Внутренний monotonic clock для playback без доступного audio clock.
+    pub(crate) monotonic_media_clock_anchor: Option<MonotonicMediaClockAnchor>,
+
     /// Поколение packets после последнего seek transaction.
     pub(crate) seek_generation: u64,
 
@@ -201,6 +233,7 @@ impl PlaybackPipeline {
         self.video_decoder_needs_keyframe = true;
         self.audio_clock = None;
         self.media_clock_base = Duration::ZERO;
+        self.monotonic_media_clock_anchor = None;
         self.seek_generation = 0;
         self.audio_buffer_clear_generation = 0;
         self.video_frame_duration_estimate = DEFAULT_VIDEO_FRAME_DURATION;
@@ -284,6 +317,7 @@ impl Default for PlaybackPipeline {
             pending_video_packets: VecDeque::new(),
             audio_clock: None,
             media_clock_base: Duration::ZERO,
+            monotonic_media_clock_anchor: None,
             seek_generation: 0,
             audio_buffer_clear_generation: 0,
             last_audio_clock: Duration::ZERO,

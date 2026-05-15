@@ -12,14 +12,18 @@ use tracing::{debug, warn};
 use webm_demux::DemuxerOptions;
 
 use crate::seek_controller::{PlaybackResumeIntent, SeekController};
+use crate::tick::PlayerWorkerWakeupPlan;
 use crate::{
     FrameCounters, MediaOpenRequest, MediaSource, PlayerCommand, PlayerError, PlayerErrorKind,
     PlayerEvent, PlayerResult, PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext,
     PlayerTickResult, ScrubCommitPolicy, SeekRequest, WgpuVideoBackendFactory,
 };
 
-/// Интервал worker tick по умолчанию: 60 Hz без привязки к UI redraw.
-const DEFAULT_WORKER_TICK_INTERVAL: Duration = Duration::from_micros(16_667);
+/// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
+const DEFAULT_WORKER_COARSE_WAKEUP_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Короткий poll готовности decoder thread-а, пока его frame channel не участвует в `select!`.
+const DEFAULT_DECODER_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 /// Ёмкость основной очереди команд без high-frequency scrub updates.
 const COMMAND_CHANNEL_CAPACITY: usize = 128;
@@ -51,8 +55,11 @@ const DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL: Duration = Duration::from_millis(100)
 /// Конфигурация playback worker.
 #[derive(Debug, Clone, Copy)]
 pub struct PlayerWorkerConfig {
-    /// Период фонового playback tick.
-    pub tick_interval: Duration,
+    /// Редкий progress wakeup для активного pipeline без точного media deadline-а.
+    pub coarse_wakeup_interval: Duration,
+
+    /// Poll interval готовности decoder thread-а без привязки к video FPS.
+    pub decoder_readiness_poll_interval: Duration,
 
     /// Scheduler/backpressure лимиты, передаваемые в `PlayerSession::tick`.
     pub tick_config: PlayerTickConfig,
@@ -72,7 +79,8 @@ impl PlayerWorkerConfig {
     #[must_use]
     pub fn new(tick_config: PlayerTickConfig) -> Self {
         Self {
-            tick_interval: DEFAULT_WORKER_TICK_INTERVAL,
+            coarse_wakeup_interval: DEFAULT_WORKER_COARSE_WAKEUP_INTERVAL,
+            decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config,
             live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
             demuxer_options: DemuxerOptions::default(),
@@ -84,7 +92,8 @@ impl PlayerWorkerConfig {
     #[must_use]
     pub fn from_app_config(config: &rustiplayer_config::AppConfig) -> Self {
         Self {
-            tick_interval: DEFAULT_WORKER_TICK_INTERVAL,
+            coarse_wakeup_interval: DEFAULT_WORKER_COARSE_WAKEUP_INTERVAL,
+            decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config: PlayerTickConfig::from(config),
             live_scrub_preview_interval: Duration::from_millis(config.player.seek.live_interval_ms),
             demuxer_options: demuxer_options_from_config(&config.player.demux),
@@ -992,6 +1001,22 @@ struct PlayerWorkerRuntime {
     last_diagnostics_summary_at: Instant,
 }
 
+/// Источник ближайшего timeout-а worker loop.
+#[derive(Debug, Clone, Copy)]
+enum WorkerWakeupDeadline {
+    /// Playback planner попросил вызвать `PlayerSession::tick()`.
+    Playback {
+        /// Read-only план, по которому будет запущен tick.
+        plan: PlayerWorkerWakeupPlan,
+
+        /// Монотонный deadline, относительно которого считаем lateness.
+        deadline: Instant,
+    },
+
+    /// Live scrub preview throttle window достигнет срока раньше playback.
+    PreviewScrub,
+}
+
 impl PlayerWorkerRuntime {
     /// Главный цикл worker thread.
     fn run(mut self) {
@@ -1017,7 +1042,6 @@ impl PlayerWorkerRuntime {
 
             self.apply_latest_scrub_update();
             self.dispatch_due_preview_scrub_seek();
-            self.run_tick_if_due();
 
             if self.session.is_shutdown_requested() {
                 break;
@@ -1033,14 +1057,24 @@ impl PlayerWorkerRuntime {
 
     /// Ждёт ближайший command/render/shutdown wakeup вместо fixed idle polling.
     fn wait_for_worker_wakeup(&mut self) -> bool {
-        match self.next_worker_wakeup_timeout() {
-            Some(timeout) => self.wait_for_worker_wakeup_with_timeout(timeout),
+        match self.next_worker_wakeup_deadline() {
+            Some((timeout, deadline)) if timeout.is_zero() => {
+                self.handle_worker_timeout(deadline);
+                false
+            }
+            Some((timeout, deadline)) => {
+                self.wait_for_worker_wakeup_with_timeout(timeout, deadline)
+            }
             None => self.wait_for_worker_wakeup_until_event(),
         }
     }
 
     /// Блокируется до события или ближайшего tick/preview deadline-а.
-    fn wait_for_worker_wakeup_with_timeout(&mut self, timeout: Duration) -> bool {
+    fn wait_for_worker_wakeup_with_timeout(
+        &mut self,
+        timeout: Duration,
+        deadline: WorkerWakeupDeadline,
+    ) -> bool {
         crossbeam_channel::select! {
             recv(self.command_rx) -> command_result => {
                 self.handle_command_wakeup(command_result)
@@ -1058,7 +1092,10 @@ impl PlayerWorkerRuntime {
                 self.handle_shutdown_request();
                 true
             }
-            default(timeout) => false,
+            default(timeout) => {
+                self.handle_worker_timeout(deadline);
+                false
+            },
         }
     }
 
@@ -1085,28 +1122,38 @@ impl PlayerWorkerRuntime {
     }
 
     /// Вычисляет ближайший deadline, который требует самостоятельного wakeup-а worker-а.
-    fn next_worker_wakeup_timeout(&self) -> Option<Duration> {
+    fn next_worker_wakeup_deadline(&self) -> Option<(Duration, WorkerWakeupDeadline)> {
         let now = Instant::now();
-        let mut next_timeout = self.next_tick_timeout(now);
+        let mut next_deadline = self.next_playback_wakeup_deadline(now);
 
         if let Some(preview_timeout) = self.next_preview_scrub_timeout(now) {
-            next_timeout = Some(match next_timeout {
-                Some(tick_timeout) => tick_timeout.min(preview_timeout),
-                None => preview_timeout,
+            let preview_deadline = (preview_timeout, WorkerWakeupDeadline::PreviewScrub);
+            next_deadline = Some(match next_deadline {
+                Some(playback_deadline) if playback_deadline.0 <= preview_timeout => {
+                    playback_deadline
+                }
+                _ => preview_deadline,
             });
         }
 
-        next_timeout
+        next_deadline
     }
 
-    /// Возвращает время до следующего playback tick-а только для активной state machine.
-    fn next_tick_timeout(&self, now: Instant) -> Option<Duration> {
-        if !self.session.playback_state().is_playback_active() {
-            return None;
-        }
+    /// Возвращает media-clock-driven playback deadline.
+    fn next_playback_wakeup_deadline(
+        &self,
+        now: Instant,
+    ) -> Option<(Duration, WorkerWakeupDeadline)> {
+        let plan = self.session.worker_wakeup_plan(
+            now,
+            &self.config.tick_config,
+            self.config.decoder_readiness_poll_interval,
+            self.config.coarse_wakeup_interval,
+        );
+        let timeout = plan.delay?;
+        let deadline = now.checked_add(timeout).unwrap_or(now);
 
-        let elapsed_since_tick = now.saturating_duration_since(self.last_tick_at);
-        Some(self.config.tick_interval.saturating_sub(elapsed_since_tick))
+        Some((timeout, WorkerWakeupDeadline::Playback { plan, deadline }))
     }
 
     /// Возвращает время до throttled preview seek-а во время interactive scrub.
@@ -1504,15 +1551,25 @@ impl PlayerWorkerRuntime {
         }
     }
 
-    /// Выполняет playback tick, если пришло время.
-    fn run_tick_if_due(&mut self) {
-        let now = Instant::now();
-        let elapsed_since_last_tick = now.saturating_duration_since(self.last_tick_at);
-        if elapsed_since_last_tick < self.config.tick_interval {
-            return;
+    /// Обрабатывает timeout, который не был command/render/scrub event-ом.
+    fn handle_worker_timeout(&mut self, deadline: WorkerWakeupDeadline) {
+        match deadline {
+            WorkerWakeupDeadline::Playback { plan, deadline } => {
+                self.run_tick_for_wakeup_plan(plan, deadline);
+            }
+            WorkerWakeupDeadline::PreviewScrub => {
+                self.dispatch_due_preview_scrub_seek();
+                self.publish_session_outputs();
+            }
         }
+    }
 
-        let tick_late_by = elapsed_since_last_tick.saturating_sub(self.config.tick_interval);
+    /// Выполняет playback tick по media-clock-driven wakeup plan.
+    fn run_tick_for_wakeup_plan(&mut self, plan: PlayerWorkerWakeupPlan, deadline: Instant) {
+        let now = Instant::now();
+        let tick_late_by = now.saturating_duration_since(deadline);
+        self.session
+            .record_worker_wakeup(plan.diagnostics(tick_late_by));
         let tick_result = self.session.tick(PlayerTickContext::with_timing(
             now,
             self.config.tick_config,
@@ -1612,7 +1669,8 @@ mod tests {
 
     fn worker_config_for_tests() -> PlayerWorkerConfig {
         PlayerWorkerConfig {
-            tick_interval: Duration::from_millis(2),
+            coarse_wakeup_interval: Duration::from_millis(10),
+            decoder_readiness_poll_interval: Duration::from_millis(2),
             tick_config: PlayerTickConfig::default(),
             live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
             demuxer_options: DemuxerOptions::default(),
@@ -2013,16 +2071,16 @@ mod tests {
     fn idle_worker_has_no_periodic_wakeup_timeout() {
         let runtime = runtime_for_tests(Instant::now());
 
-        assert_eq!(runtime.next_worker_wakeup_timeout(), None);
+        assert!(runtime.next_worker_wakeup_deadline().is_none());
     }
 
     #[test]
-    fn active_worker_uses_tick_interval_as_wakeup_timeout() {
+    fn active_worker_uses_media_plan_as_wakeup_timeout() {
         let mut runtime = runtime_for_tests(Instant::now());
 
         runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
 
-        assert!(runtime.next_worker_wakeup_timeout().is_some());
+        assert!(runtime.next_worker_wakeup_deadline().is_some());
     }
 
     #[test]
@@ -2128,13 +2186,20 @@ mod tests {
 
     #[test]
     fn tick_runs_while_render_lease_is_active() {
-        let mut runtime = runtime_for_tests(Instant::now() - Duration::from_millis(10));
+        let mut runtime = runtime_for_tests(Instant::now());
         runtime
             .session
             .register_render_lease(0, video_core::FrameTextureHandle(11));
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
         let previous_tick_at = runtime.last_tick_at;
+        let plan = runtime.session.worker_wakeup_plan(
+            Instant::now(),
+            &runtime.config.tick_config,
+            runtime.config.decoder_readiness_poll_interval,
+            runtime.config.coarse_wakeup_interval,
+        );
 
-        runtime.run_tick_if_due();
+        runtime.run_tick_for_wakeup_plan(plan, Instant::now());
 
         assert!(runtime.last_tick_at > previous_tick_at);
     }

@@ -557,6 +557,153 @@ codec-specific probing и requirements должны жить в adapters, а о�
 - Если нужно выбрать naming/public API, который станет долгоживущим.
 - Если текущий VP9 path придется временно обернуть adapter-ом с заметным diff.
 
+## Сессия 7.5. Media-Clock-Driven Worker Wakeup
+
+  ### Контекст для копипаста
+
+  Реализуй новую Session 7.5 для smooth playback: убрать жёсткую привязку playback worker wakeup к фиксированному 60Hz tick. Сейчас worker использует `DEFAULT_WORKER_TICK_INTERVAL = 16_667us`, но media cadence должна идти от frame PTS/
+  audio clock/decode readiness, а не от предположения “видео всегда 60 fps”.
+
+  Перед правками обязательно:
+  - задать project path через MCP `code_index`;
+  - сделать deep index;
+  - свериться с Context7 по `winit`/event-loop timing и релевантным Rust API, если меняешь timing/wakeup модель;
+  - сначала предложить архитектуру, потом реализовать;
+  - искать причину drops, а не маскировать счётчики.
+
+  Исходный кейс:
+  - asset: `test-assets/4k60fps_sdr/LXb3EKWsInQ_2160p60_sdr_vp9_opus.webm`;
+  - `ffprobe` показывает фактический video rate около `59.939827 fps`;
+  - packet PTS cadence за первые 120s чистая: интервалы в основном `16ms/17ms`, bad intervals `0`;
+  - значит файл не выглядит битым, а 59.94 на 60Hz display должен давать редкие repeated refreshes, но не late media drops.
+
+  ### Цель
+
+  Сделать worker scheduling media-clock-driven:
+
+  - worker не должен постоянно тикать с fixed 60Hz как с источником истины;
+  - следующий wakeup должен вычисляться из состояния pipeline:
+    - audio/media clock;
+    - PTS первого queued video frame;
+    - допустимое present lead/window;
+    - decode/demux backpressure;
+    - seek/preroll/opening state;
+    - render release/acquire events;
+  - 59.94 fps, 60 fps, 24 fps, 30 fps и future VFR должны проходить через один PTS-based scheduler;
+  - repeated frames должны учитываться отдельно от dropped media frames.
+
+  ### План реализации
+
+  - Найти все места, где playback timing завязан на fixed 60Hz:
+    - `DEFAULT_WORKER_TICK_INTERVAL`;
+    - `position_fallback_delta`;
+    - worker `next_tick_timeout`;
+    - tests, которые предполагают fixed tick.
+  - Спроектировать функцию вычисления следующего worker wakeup:
+    - если pipeline idle, worker спит до command/release/acquire event;
+    - если есть ready frame, следующий wakeup считается от `front_frame.pts` относительно presentation clock;
+    - если очередь ниже target или есть decoder/demux work, wakeup должен быть immediate/near-immediate для bounded catch-up;
+    - если frame ещё рано показывать, worker ждёт до ближайшего meaningful deadline;
+    - если audio отсутствует, использовать monotonic media clock fallback, но не hardcoded 60Hz как video cadence.
+  - Не менять zero-copy contract и не добавлять CPU fallback.
+  - Не “лечить” smoothness отключением late drops или увеличением magic thresholds.
+  - Обновить diagnostics так, чтобы было видно:
+    - worker wakeup reason;
+    - planned wakeup delay;
+    - tick lateness;
+    - media clock vs front frame PTS diff;
+    - repeated frame count отдельно от drops.
+  - Добавить unit tests:
+    - 59.94 cadence не накапливает искусственные late drops;
+    - 60.0 cadence не регрессирует;
+    - 24/30 fps не заставляют worker бессмысленно тикать 60 раз/сек;
+    - late drop происходит только когда есть replacement frame и frame реально вышел за grace;
+    - starvation/repeat не записывается как late drop.
+  - Обновить docs/manual protocol:
+    - repeated frames допустимы на refresh/video mismatch;
+    - late drops в steady-state должны стремиться к нулю;
+    - thresholds должны быть объяснены через frame duration/PTS, а не через “60 fps”.
+
+  ### Acceptance
+
+  - Worker wakeup больше не использует fixed 60Hz как единственный playback cadence source.
+  - Scheduler остаётся PTS/audio-clock based.
+  - 59.94 fps asset не получает late drops только из-за разницы с 60Hz display/worker cadence.
+  - Repeated frames считаются отдельно и не смешиваются с dropped media frames.
+  - Diagnostics показывают причину wakeup и diff между target media time и front frame PTS.
+  - `cargo check` проходит.
+  - Релевантные unit tests проходят.
+  - Manual run 4k60 SDR VP9/NV12 показывает:
+    - zero-copy path;
+    - no CPU fallback;
+    - no steady-state `Late` drops без объяснённой причины;
+    - repeats допускаются и documented.
+
+  ### Реализация
+
+  - Worker больше не использует `16_667us` как cadence playback. `PlayerWorker`
+    получает read-only план от `PlayerSession::worker_wakeup_plan(...)` и ждёт:
+    - command/render/scrub/shutdown event без timeout, когда pipeline idle;
+    - `front_frame.pts - present_lead` относительно текущего media clock, когда
+      следующий кадр ещё рано публиковать;
+    - immediate wakeup для bounded demux/decode work, когда очереди ниже target;
+    - healthy presentation queue не превращает pending decode/demux work в
+      `0ms` wakeup: пока первый queued frame ещё future, worker ждёт media
+      deadline и не busy-spin-ит на полной очереди;
+    - короткий `decoder_readiness_poll_interval`, пока decoder thread отдаёт
+      frames через неблокирующий `try_recv_frame()`;
+    - редкий `coarse_wakeup_interval` только как progress fallback без media
+      cadence semantics.
+  - No-audio playback использует внутренний monotonic media clock anchor:
+    position считается от `Instant`, а не через прибавление fixed 60Hz delta на
+    каждом worker wakeup.
+  - `Late` drop по-прежнему возможен только когда первый queued frame реально
+    вышел за grace и есть replacement frame. Starvation и повтор текущего frame
+    считаются separately и не увеличивают late-drop counters.
+  - Diagnostics snapshot теперь показывает:
+    - `worker_wakeup.reason`;
+    - `worker_wakeup.planned_delay`;
+    - `worker_wakeup.tick_late_by`;
+    - `worker_wakeup.frame_timing.front_frame_delta_from_target_us`;
+    - `repeated_video_frames` отдельно от `drops`.
+
+  ### Manual protocol
+
+  - Запустить SDR VP9/NV12 asset:
+    `cargo run -p app-egui -- test-assets/4k60fps_sdr/LXb3EKWsInQ_2160p60_sdr_vp9_opus.webm`.
+  - В telemetry/diagnostics проверить:
+    - `Memory path` остаётся zero-copy (`DmaBufZeroCopy`);
+    - CPU fallback не появляется;
+    - `Wake` в steady-state в основном идёт через `frame_pts_deadline`, а не
+      fixed-rate polling;
+    - `Wake delay` следует PTS cadence между соседними lead-deadline-ами:
+      для 59.94 это ожидаемые интервалы порядка `16ms/17ms`, для 30fps около
+      `33ms`, для 24fps около `41ms`. Первый wakeup перед первым queued frame
+      может быть короче, потому что scheduler просыпается на `PTS - present_lead`,
+      а не ровно в PTS;
+    - `PTS-target` остаётся малым и объяснимым через PTS/frame duration;
+    - `Repeated/reused` и `Worker repeats` могут расти при refresh/video mismatch;
+    - steady-state `Late` drops должны стремиться к нулю. Если `Late` растёт,
+      смотреть `Wake late`, `PTS-target`, queue depths и decoder/render latency,
+      а не списывать это на 59.94 vs 60Hz mismatch.
+
+  ### Self-review
+
+  - Проверить, что код не подогнан только под VP9 или только под 59.94.
+  - Проверить, что нет нового hardcoded `16_667us` как media cadence.
+  - Проверить, что fixed interval может остаться только как coarse idle fallback, если это явно документировано.
+  - Проверить, что drops не скрываются и не переименовываются в repeats.
+  - Проверить, что render loop и worker loop не начали busy-spin.
+  - Проверить, что tests не требуют реальный GPU или большой media asset.
+
+  ### Остановиться и спросить
+
+  - Если нужно выбрать между двумя архитектурами:
+    - worker сам планирует exact media deadlines;
+    - render loop/worker делят ответственность за frame deadline.
+  - Если для no-audio media нужен новый public config/contract для monotonic media clock fallback.
+  - Если smoothness threshold требует продуктового решения: сколько repeated refreshes допустимо при 59.94 видео на 60Hz display.
+
 ## Сессия 8. Smooth Playback Regression Suite
 
 ### Контекст для копипаста

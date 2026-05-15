@@ -13,7 +13,9 @@ use tracing::{debug, info, warn};
 use webm_demux::{DemuxSeekability, DemuxerOptions};
 
 use crate::media_opening::OpenedMedia;
-use crate::pipeline::{MAX_OBSERVED_VIDEO_FRAME_DURATION, MIN_OBSERVED_VIDEO_FRAME_DURATION};
+use crate::pipeline::{
+    MAX_OBSERVED_VIDEO_FRAME_DURATION, MIN_OBSERVED_VIDEO_FRAME_DURATION, MonotonicMediaClockAnchor,
+};
 use crate::seek_controller::PlaybackResumeIntent;
 use crate::seek_state::{SeekCommitKind, SeekCommitState, demux_seek_request_for_transaction};
 use crate::{
@@ -23,7 +25,7 @@ use crate::{
     PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot,
     QualitySelection, QueueSnapshot, SeekRequest, TexturePoolSnapshot, TextureSlotPressureSnapshot,
     TrackId, TrackSelectionSnapshot, TrackSummarySnapshot, VideoBackendFactory, VideoDropReason,
-    VideoFrameSnapshot,
+    VideoFrameSnapshot, WorkerWakeupDiagnosticsSnapshot,
 };
 
 /// Dev-only режим, который разрешает HDR/P010 stream дойти до zero-copy boundary.
@@ -267,6 +269,70 @@ impl PlayerSession {
 
         self.snapshot
             .set_timeline_position(MediaTime::from_duration(position));
+
+        if self.snapshot.playback_state == PlaybackState::Playing
+            && self.pipeline.audio_clock.is_none()
+        {
+            self.pipeline.monotonic_media_clock_anchor =
+                Some(MonotonicMediaClockAnchor::new(position, Instant::now()));
+        }
+    }
+
+    /// Возвращает media clock position на monotonic момент `now`.
+    ///
+    /// Audio clock остаётся главным источником времени. Если audio clock отсутствует,
+    /// Playing-state использует внутренний monotonic anchor, а не частоту worker tick-а.
+    #[must_use]
+    pub(crate) fn presentation_clock_position_at(&self, now: Instant) -> Duration {
+        if self.pipeline.audio_clock.is_some() {
+            return self.audio_media_clock_position();
+        }
+
+        if let Some(seek_target_position) = self.seek_presentation_clock_override() {
+            return seek_target_position;
+        }
+
+        if self.snapshot.playback_state == PlaybackState::Playing
+            && let Some(anchor) = self.pipeline.monotonic_media_clock_anchor
+        {
+            return anchor.position_at(now);
+        }
+
+        self.snapshot.current_position
+    }
+
+    /// Синхронизирует snapshot position с monotonic fallback clock без изменения playback state.
+    fn sync_monotonic_media_clock_position(&mut self, now: Instant) {
+        if self.pipeline.audio_clock.is_some() {
+            return;
+        }
+
+        let position = self.presentation_clock_position_at(now);
+        self.update_current_position(position);
+    }
+
+    /// Запускает или перезапускает no-audio media clock от текущей snapshot position.
+    fn anchor_monotonic_media_clock_if_needed(&mut self, now: Instant) {
+        if self.pipeline.audio_clock.is_some() {
+            self.pipeline.monotonic_media_clock_anchor = None;
+            return;
+        }
+
+        self.pipeline.monotonic_media_clock_anchor = Some(MonotonicMediaClockAnchor::new(
+            self.snapshot.current_position,
+            now,
+        ));
+    }
+
+    /// Останавливает no-audio media clock, предварительно сохранив актуальную позицию.
+    fn clear_monotonic_media_clock_anchor(&mut self, now: Instant) {
+        self.sync_monotonic_media_clock_position(now);
+        self.pipeline.monotonic_media_clock_anchor = None;
+    }
+
+    /// Возвращает абсолютную media position по audio clock.
+    fn audio_media_clock_position(&self) -> Duration {
+        saturating_duration_add(self.pipeline.media_clock_base, self.audio_clock_now())
     }
 
     /// Добавляет delta к текущей позиции без panic при переполнении.
@@ -417,6 +483,7 @@ impl PlayerSession {
     /// Полностью сбрасывает состояние текущего media.
     pub fn reset_media_state(&mut self) {
         self.set_playback_state(PlaybackState::Paused);
+        self.pipeline.monotonic_media_clock_anchor = None;
         self.clear_video_frames();
         self.advance_render_generation();
 
@@ -613,6 +680,18 @@ impl PlayerSession {
     pub(crate) fn record_pipeline_pause(&mut self, reason: PipelinePauseReason) {
         let queues = self.diagnostic_queue_depths();
         self.diagnostics.record_pause(reason, queues);
+    }
+
+    /// Записывает повтор текущего present frame отдельно от drop counters.
+    pub(crate) fn record_repeated_video_frame(&mut self) {
+        let queues = self.diagnostic_queue_depths();
+        self.diagnostics.record_repeated_video_frame(queues);
+    }
+
+    /// Записывает последнее решение worker wakeup planner-а.
+    pub(crate) fn record_worker_wakeup(&mut self, wakeup: WorkerWakeupDiagnosticsSnapshot) {
+        let queues = self.diagnostic_queue_depths();
+        self.diagnostics.record_worker_wakeup(wakeup, queues);
     }
 
     /// Записывает результат render acquire.
@@ -981,6 +1060,7 @@ impl PlayerSession {
         self.seek_commit = None;
         self.last_visible_preview_position = None;
         self.pipeline.media_clock_base = seek_commit.target_position.as_duration();
+        self.pipeline.monotonic_media_clock_anchor = None;
         self.snapshot.timeline.target_position = None;
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.scrubbing = false;
@@ -1002,6 +1082,7 @@ impl PlayerSession {
                 self.pipeline.last_audio_clock = self.audio_clock_now();
                 self.pipeline.last_audio_clock_change_at = Instant::now();
                 self.set_playback_state(PlaybackState::Playing);
+                self.anchor_monotonic_media_clock_if_needed(Instant::now());
             }
         }
     }
@@ -1110,6 +1191,7 @@ impl PlayerSession {
             self.pipeline.last_audio_clock = self.audio_clock_now();
             self.pipeline.last_audio_clock_change_at = std::time::Instant::now();
         }
+        self.anchor_monotonic_media_clock_if_needed(Instant::now());
 
         Ok(())
     }
@@ -1156,6 +1238,7 @@ impl PlayerSession {
     /// Переводит playback в `Paused` и останавливает audio output.
     fn pause(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        self.clear_monotonic_media_clock_anchor(Instant::now());
         if let Some(seek_commit) = self.seek_commit.as_mut() {
             seek_commit.resume_intent = PlaybackResumeIntent::Pause;
             self.pause_audio_output_for_seek();
@@ -1443,6 +1526,7 @@ impl PlayerSession {
         self.clear_queued_video_frames();
         self.pipeline.last_decoded_video_pts = None;
         self.pipeline.media_clock_base = target_duration;
+        self.pipeline.monotonic_media_clock_anchor = None;
         self.pipeline.last_audio_clock = Duration::ZERO;
         self.pipeline.last_audio_clock_change_at = Instant::now();
         self.snapshot.timeline.target_position = Some(target_position);
@@ -2293,6 +2377,11 @@ fn is_enabled_env_value(value: &str) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+/// Добавляет media duration без panic при переполнении.
+fn saturating_duration_add(timestamp: Duration, offset: Duration) -> Duration {
+    timestamp.checked_add(offset).unwrap_or(Duration::MAX)
 }
 
 #[cfg(test)]
@@ -3300,7 +3389,6 @@ mod tests {
             .push_back(decoded_frame_for_tests(Duration::from_secs(24), 42));
 
         let tick_config = PlayerTickConfig {
-            position_fallback_delta: Duration::ZERO,
             seek_resume_video_min_ready_frames: 1,
             ..PlayerTickConfig::default()
         };

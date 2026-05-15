@@ -19,7 +19,8 @@ use tracing::{trace, warn};
 
 use crate::{
     PendingAudioPacket, PendingVideoPacket, PipelineLatencyStage, PipelinePauseReason,
-    PlaybackState, PlayerError, PlayerErrorKind, PlayerSession,
+    PlaybackState, PlayerError, PlayerErrorKind, PlayerSession, WorkerFrameTimingSnapshot,
+    WorkerWakeupDiagnosticsSnapshot, WorkerWakeupReason,
 };
 
 /// Контекст одного playback tick.
@@ -140,9 +141,6 @@ pub struct PlayerTickConfig {
     /// Длительность без движения audio clock, после которой звук считается stalled.
     pub audio_stall_timeout: Duration,
 
-    /// Fallback delta позиции для media без audio clock.
-    pub position_fallback_delta: Duration,
-
     /// Небольшой lead scheduler-а относительно audio clock в долях video frame.
     pub video_present_lead_frames: f64,
 
@@ -179,7 +177,6 @@ impl Default for PlayerTickConfig {
             seek_resume_video_min_ready_frames: 3,
             audio_stall_min_position: Duration::from_millis(100),
             audio_stall_timeout: Duration::from_millis(250),
-            position_fallback_delta: Duration::from_micros(16_667),
             video_present_lead_frames: 0.5,
             video_present_window_frames: 1.0,
             video_late_drop_grace_frames: 2.0,
@@ -339,6 +336,128 @@ pub struct PlayerPipelinePause {
     pub reason: PipelinePauseReason,
 }
 
+/// Read-only план следующего playback wakeup-а worker-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlayerWorkerWakeupPlan {
+    /// `None` означает, что worker может ждать только command/render/scrub events.
+    pub(crate) delay: Option<Duration>,
+
+    /// Машиночитаемая причина планирования.
+    pub(crate) reason: WorkerWakeupReason,
+
+    /// Сравнение media clock target и первого queued video frame.
+    pub(crate) frame_timing: Option<WorkerFrameTimingSnapshot>,
+}
+
+impl PlayerWorkerWakeupPlan {
+    /// Планирует ожидание только внешнего события.
+    #[must_use]
+    const fn idle() -> Self {
+        Self {
+            delay: None,
+            reason: WorkerWakeupReason::Idle,
+            frame_timing: None,
+        }
+    }
+
+    /// Планирует bounded timeout до следующей meaningful работы.
+    #[must_use]
+    const fn after(
+        delay: Duration,
+        reason: WorkerWakeupReason,
+        frame_timing: Option<WorkerFrameTimingSnapshot>,
+    ) -> Self {
+        Self {
+            delay: Some(delay),
+            reason,
+            frame_timing,
+        }
+    }
+
+    /// Конвертирует план в snapshot diagnostics после фактического wakeup-а.
+    #[must_use]
+    pub(crate) const fn diagnostics(
+        self,
+        tick_late_by: Duration,
+    ) -> WorkerWakeupDiagnosticsSnapshot {
+        WorkerWakeupDiagnosticsSnapshot {
+            reason: Some(self.reason),
+            planned_delay: self.delay,
+            tick_late_by,
+            frame_timing: self.frame_timing,
+        }
+    }
+}
+
+impl PlayerSession {
+    /// Вычисляет следующий worker wakeup из состояния media pipeline.
+    ///
+    /// Эта функция не меняет pipeline: она только выбирает, когда worker должен
+    /// снова вызвать `tick()`. Video cadence берётся из PTS/audio clock, а
+    /// короткий decoder poll используется только как readiness fallback, потому
+    /// что decoder thread сейчас отдаёт frames через неблокирующий `try_recv_frame()`.
+    #[must_use]
+    pub(crate) fn worker_wakeup_plan(
+        &self,
+        now: Instant,
+        tick_config: &PlayerTickConfig,
+        decoder_readiness_poll_interval: Duration,
+        coarse_progress_interval: Duration,
+    ) -> PlayerWorkerWakeupPlan {
+        if !self.playback_state().is_playback_active() {
+            return PlayerWorkerWakeupPlan::idle();
+        }
+
+        let frame_timing = front_frame_timing(self, tick_config, now);
+
+        if front_frame_ready_for_scheduler(self, tick_config, now) {
+            return PlayerWorkerWakeupPlan::after(
+                Duration::ZERO,
+                WorkerWakeupReason::FrameReady,
+                frame_timing,
+            );
+        }
+
+        if immediate_pipeline_work_available(self, tick_config) {
+            let reason = if matches!(
+                self.playback_state(),
+                PlaybackState::Buffering | PlaybackState::Seeking
+            ) {
+                WorkerWakeupReason::SeekOrPreroll
+            } else {
+                WorkerWakeupReason::PipelineWorkReady
+            };
+            return PlayerWorkerWakeupPlan::after(Duration::ZERO, reason, frame_timing);
+        }
+
+        if let Some(front_frame_delay) = front_frame_scheduler_delay(self, tick_config, now) {
+            return PlayerWorkerWakeupPlan::after(
+                front_frame_delay,
+                WorkerWakeupReason::FramePtsDeadline,
+                frame_timing,
+            );
+        }
+
+        if decoder_readiness_poll_needed(self, tick_config) {
+            return PlayerWorkerWakeupPlan::after(
+                decoder_readiness_poll_interval,
+                WorkerWakeupReason::DecodeReadiness,
+                frame_timing,
+            );
+        }
+
+        if active_pipeline_needs_coarse_progress(self) {
+            return PlayerWorkerWakeupPlan::after(
+                coarse_progress_interval,
+                WorkerWakeupReason::CoarseProgress,
+                frame_timing,
+            );
+        }
+
+        PlayerWorkerWakeupPlan::idle()
+    }
+}
+
 impl PlayerSession {
     /// Выполняет один playback tick.
     ///
@@ -349,7 +468,7 @@ impl PlayerSession {
     pub fn tick(&mut self, tick_context: PlayerTickContext) -> PlayerTickResult {
         let mut tick_result = PlayerTickResult::default();
 
-        self.update_position_for_tick(tick_context.config.position_fallback_delta);
+        self.update_position_for_tick(tick_context.now);
 
         if self.is_demuxing_active() && self.pipeline.demuxer.is_some() {
             read_demux_packets(
@@ -408,21 +527,12 @@ impl PlayerSession {
     }
 
     /// Обновляет playback position один раз за tick.
-    fn update_position_for_tick(&mut self, position_fallback_delta: Duration) {
+    fn update_position_for_tick(&mut self, now: Instant) {
         if self.playback_state() != PlaybackState::Playing {
             return;
         }
 
-        if let Some(audio_secs) = self.audio_clock_secs() {
-            if let Ok(audio_position) = Duration::try_from_secs_f64(audio_secs) {
-                self.update_current_position(saturating_duration_add(
-                    self.pipeline.media_clock_base,
-                    audio_position,
-                ));
-            }
-        } else {
-            self.advance_position(position_fallback_delta);
-        }
+        self.update_current_position(self.presentation_clock_position_at(now));
     }
 }
 
@@ -1288,12 +1398,39 @@ fn finite_non_negative_factor(value: f64, fallback: f64) -> f64 {
     }
 }
 
+/// Возвращает signed delta между двумя media timestamps в микросекундах.
+fn duration_delta_micros(left: Duration, right: Duration) -> i128 {
+    let delta = if left >= right {
+        left.saturating_sub(right)
+            .as_micros()
+            .min(i128::MAX as u128) as i128
+    } else {
+        right
+            .saturating_sub(left)
+            .as_micros()
+            .min(i128::MAX as u128) as i128
+    };
+
+    if left >= right { delta } else { -delta }
+}
+
 /// Рассчитывает media time, под который выбираем frame для ближайшего present.
 fn target_media_time_for_present(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
     presentation_now: Duration,
 ) -> Duration {
+    let present_lead = video_present_lead(session, tick_config);
+
+    saturating_duration_add(presentation_now, present_lead)
+}
+
+/// Возвращает lead scheduler-а перед PTS кадра.
+///
+/// Это не video cadence и не fixed display tick: lead считается как доля
+/// наблюдаемой длительности кадра, чтобы worker успел передать frame render
+/// thread-у до ближайшего vsync.
+fn video_present_lead(session: &PlayerSession, tick_config: &PlayerTickConfig) -> Duration {
     let lead_frames = finite_non_negative_factor(
         tick_config.video_present_lead_frames,
         PlayerTickConfig::default().video_present_lead_frames,
@@ -1303,18 +1440,165 @@ fn target_media_time_for_present(
         .video_frame_duration_estimate
         .mul_f64(lead_frames);
 
-    saturating_duration_add(presentation_now, present_lead)
+    present_lead
 }
 
-/// Возвращает clock, от которого scheduler выбирает следующий video frame.
-fn presentation_clock_now(session: &PlayerSession, audio_now: Duration) -> Duration {
-    if session.pipeline.audio_clock.is_some() {
-        saturating_duration_add(session.pipeline.media_clock_base, audio_now)
-    } else if let Some(seek_target_position) = session.seek_presentation_clock_override() {
-        seek_target_position
-    } else {
-        session.snapshot().current_position
+/// Собирает diagnostics по первому queued frame без мутации очереди.
+fn front_frame_timing(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+    now: Instant,
+) -> Option<WorkerFrameTimingSnapshot> {
+    let front_frame = session.pipeline.video_frame_queue.front()?;
+    let presentation_now = session.presentation_clock_position_at(now);
+    let target_media_time = target_media_time_for_present(session, tick_config, presentation_now);
+
+    Some(WorkerFrameTimingSnapshot {
+        front_frame_pts: front_frame.pts,
+        target_media_time,
+        front_frame_delta_from_target_us: duration_delta_micros(front_frame.pts, target_media_time),
+    })
+}
+
+/// Проверяет, должен ли scheduler немедленно обработать первый queued frame.
+fn front_frame_ready_for_scheduler(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+    now: Instant,
+) -> bool {
+    let Some(front_frame) = session.pipeline.video_frame_queue.front() else {
+        return false;
+    };
+
+    let presentation_now = session.presentation_clock_position_at(now);
+    let target_media_time = target_media_time_for_present(session, tick_config, presentation_now);
+    let present_window = video_present_window(session, tick_config);
+    let late_drop_grace = video_late_drop_grace(session, tick_config);
+
+    should_drop_front_frame_as_late(
+        &session.pipeline.video_frame_queue,
+        target_media_time,
+        late_drop_grace,
+    ) || !should_wait_for_front_frame(front_frame.pts, target_media_time, present_window)
+}
+
+/// Возвращает задержку до момента, когда scheduler должен подготовить первый queued frame.
+///
+/// Worker просыпается не ровно на PTS, а на `PTS - present_lead`: иначе
+/// `Condvar`/`select!` timeout, планировщик ОС и handoff в render thread
+/// систематически публикуют frame уже после нужного redraw-а.
+fn front_frame_scheduler_delay(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+    now: Instant,
+) -> Option<Duration> {
+    let front_frame = session.pipeline.video_frame_queue.front()?;
+    let presentation_now = session.presentation_clock_position_at(now);
+    let scheduler_media_deadline = front_frame
+        .pts
+        .saturating_sub(video_present_lead(session, tick_config));
+
+    Some(scheduler_media_deadline.saturating_sub(presentation_now))
+}
+
+/// Проверяет, есть ли работа, которую tick может выполнить без ожидания media PTS.
+fn immediate_pipeline_work_available(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+) -> bool {
+    if session.can_present_video()
+        && session.pipeline.video_frame_queue.len() >= video_present_queue_target(tick_config)
+    {
+        return false;
     }
+
+    if pending_audio_work_available(session, tick_config) {
+        return true;
+    }
+
+    if pending_video_work_available(session, tick_config) {
+        return true;
+    }
+
+    demux_work_available(session, tick_config)
+}
+
+/// Проверяет, может ли worker прямо сейчас протолкнуть audio packets.
+fn pending_audio_work_available(session: &PlayerSession, tick_config: &PlayerTickConfig) -> bool {
+    if session.pipeline.pending_audio_packets.is_empty() {
+        return false;
+    }
+
+    session.audio_buffer_level_ms().unwrap_or(0.0)
+        <= sanitize_audio_high_water_mark(tick_config.audio_buffer_high_water_mark_ms)
+}
+
+/// Проверяет, может ли worker прямо сейчас отправить или списать video packet.
+fn pending_video_work_available(session: &PlayerSession, tick_config: &PlayerTickConfig) -> bool {
+    let Some(packet) = session.pipeline.pending_video_packets.front() else {
+        return false;
+    };
+
+    if session.pipeline.video_decoder_thread.is_none() {
+        return true;
+    }
+
+    if session.can_present_video() && available_video_present_slots(session, tick_config) == 0 {
+        return false;
+    }
+
+    can_send_video_packet_to_decoder(
+        session,
+        tick_config,
+        packet.pts,
+        video_decode_ahead_target(tick_config),
+    )
+}
+
+/// Проверяет, может ли demuxer прочитать следующий packet без downstream overflow.
+fn demux_work_available(session: &PlayerSession, tick_config: &PlayerTickConfig) -> bool {
+    if !session.is_demuxing_active() || session.pipeline.demuxer.is_none() {
+        return false;
+    }
+
+    let prioritize_audio_catchup = audio_demux_catchup_needed(session, tick_config);
+    if session.pipeline.video_track_id.is_some()
+        && session.pipeline.video_frame_queue.len() >= video_present_queue_target(tick_config)
+        && !prioritize_audio_catchup
+    {
+        return false;
+    }
+
+    can_read_next_demux_packet_with_audio_priority(session, tick_config, prioritize_audio_catchup)
+}
+
+/// Проверяет, нужен ли короткий poll decoded-frame readiness.
+fn decoder_readiness_poll_needed(session: &PlayerSession, tick_config: &PlayerTickConfig) -> bool {
+    let Some(decoder_thread) = session.pipeline.video_decoder_thread.as_ref() else {
+        return false;
+    };
+
+    let decoder_has_queued_packets = decoder_thread.packet_queue_depth() > 0;
+    let worker_has_decode_inputs = !session.pipeline.pending_video_packets.is_empty()
+        || session.pipeline.demuxer.is_some()
+        || decoder_has_queued_packets;
+    if !worker_has_decode_inputs {
+        return false;
+    }
+
+    if session.pipeline.video_frame_queue.len() < video_present_queue_target(tick_config) {
+        return session.pipeline.video_track_id.is_some();
+    }
+
+    !session.pipeline.pending_video_packets.is_empty()
+}
+
+/// Проверяет, нужен ли редкий progress wakeup без точного PTS deadline-а.
+fn active_pipeline_needs_coarse_progress(session: &PlayerSession) -> bool {
+    matches!(
+        session.playback_state(),
+        PlaybackState::Playing | PlaybackState::Buffering | PlaybackState::Seeking
+    )
 }
 
 /// Возвращает допустимое окно выбора кадра вокруг target media time.
@@ -1369,9 +1653,9 @@ fn should_drop_front_frame_as_late(
 fn should_wait_for_front_frame(
     frame_pts: Duration,
     target_media_time: Duration,
-    present_window: Duration,
+    _present_window: Duration,
 ) -> bool {
-    frame_pts > saturating_duration_add(target_media_time, present_window)
+    frame_pts > target_media_time
 }
 
 /// Освобождает texture handle через decoder thread, если он ещё существует.
@@ -1435,6 +1719,7 @@ fn repeat_present_video_frame(
 ) {
     if session.pipeline.present_video_frame.is_some() {
         tick_result.record_repeated_video_frame();
+        session.record_repeated_video_frame();
     }
     if session.pipeline.video_track_id.is_some()
         && session.playback_state() == PlaybackState::Playing
@@ -1751,7 +2036,7 @@ fn process_pending_video_packets(
         return;
     }
 
-    let presentation_now = presentation_clock_now(session, audio_now);
+    let presentation_now = session.presentation_clock_position_at(tick_context.now);
     let target_media_time = target_media_time_for_present(session, tick_config, presentation_now);
     let present_window = video_present_window(session, tick_config);
     let late_drop_grace = video_late_drop_grace(session, tick_config);
@@ -1928,6 +2213,29 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_presents_frame_at_pts_minus_present_lead() {
+        let mut session = PlayerSession::new();
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.update_current_position(Duration::from_millis(8));
+        session
+            .pipeline
+            .video_frame_queue
+            .push_back(decoded_frame(Duration::from_millis(16), 1));
+
+        let tick_result = session.tick(PlayerTickContext::new(Instant::now()));
+
+        assert_eq!(tick_result.video_frames_presented, 1);
+        assert_eq!(
+            session
+                .pipeline
+                .present_video_frame
+                .as_ref()
+                .map(|frame| frame.pts),
+            Some(Duration::from_millis(16))
+        );
+    }
+
+    #[test]
     fn scheduler_uses_fallback_position_when_audio_clock_is_absent() {
         let mut session = PlayerSession::new();
         session.dispatch_command(PlayerCommand::Play).unwrap();
@@ -1937,11 +2245,7 @@ mod tests {
             .video_frame_queue
             .push_back(decoded_frame(Duration::from_millis(100), 1));
 
-        let tick_config = PlayerTickConfig {
-            position_fallback_delta: Duration::ZERO,
-            ..PlayerTickConfig::default()
-        };
-        let tick_result = session.tick(PlayerTickContext::with_config(Instant::now(), tick_config));
+        let tick_result = session.tick(PlayerTickContext::new(Instant::now()));
 
         assert_eq!(tick_result.video_frames_presented, 1);
         assert_eq!(
@@ -1953,6 +2257,129 @@ mod tests {
             Some(Duration::from_millis(100))
         );
         assert!(session.pipeline.video_frame_queue.is_empty());
+    }
+
+    #[test]
+    fn worker_wakeup_for_5994_cadence_uses_pts_minus_present_lead_deadline() {
+        let mut session = PlayerSession::new();
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.update_current_position(Duration::ZERO);
+        session
+            .pipeline
+            .video_frame_queue
+            .push_back(decoded_frame(Duration::from_micros(16_683), 1));
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &PlayerTickConfig::default(),
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+
+        assert_eq!(plan.reason, WorkerWakeupReason::FramePtsDeadline);
+        let planned_delay = plan.delay.expect("queued frame should create deadline");
+        assert!(
+            planned_delay > Duration::from_millis(6),
+            "worker woke too early for a PTS-derived lead deadline: {planned_delay:?}"
+        );
+        assert!(
+            planned_delay < Duration::from_millis(12),
+            "worker must not wait until the exact PTS and miss render handoff: {planned_delay:?}"
+        );
+    }
+
+    #[test]
+    fn worker_wakeup_for_24_and_30_fps_is_not_fixed_60hz_polling() {
+        for frame_duration in [Duration::from_millis(33), Duration::from_millis(41)] {
+            let mut session = PlayerSession::new();
+            session.dispatch_command(PlayerCommand::Play).unwrap();
+            session.update_current_position(Duration::ZERO);
+            session.pipeline.video_frame_queue.push_back(decoded_frame(
+                frame_duration,
+                frame_duration.as_micros() as u64,
+            ));
+
+            let plan = session.worker_wakeup_plan(
+                Instant::now(),
+                &PlayerTickConfig::default(),
+                Duration::from_millis(2),
+                Duration::from_millis(250),
+            );
+
+            assert_eq!(plan.reason, WorkerWakeupReason::FramePtsDeadline);
+            assert!(
+                plan.delay
+                    .is_some_and(|delay| delay > Duration::from_millis(20))
+            );
+        }
+    }
+
+    #[test]
+    fn worker_wakeup_does_not_busy_spin_when_present_queue_is_healthy() {
+        let mut session = PlayerSession::new();
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.update_current_position(Duration::ZERO);
+        let tick_config = PlayerTickConfig {
+            target_video_present_queue: 4,
+            max_video_present_queue: 8,
+            ..PlayerTickConfig::default()
+        };
+
+        for frame_index in 0..video_present_queue_target(&tick_config) {
+            session.pipeline.video_frame_queue.push_back(decoded_frame(
+                Duration::from_millis(100 + frame_index as u64 * 17),
+                frame_index as u64,
+            ));
+        }
+        session
+            .pipeline
+            .pending_video_packets
+            .push_back(PendingVideoPacket::new(
+                TrackId::new(1),
+                Duration::from_millis(180),
+                session.pipeline.seek_generation,
+                Bytes::from_static(b"future-video"),
+                true,
+            ));
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &tick_config,
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+
+        assert_eq!(plan.reason, WorkerWakeupReason::FramePtsDeadline);
+        assert!(plan.delay.is_some_and(|delay| !delay.is_zero()));
+    }
+
+    #[test]
+    fn worker_wakeup_records_front_frame_pts_diff_for_diagnostics() {
+        let mut session = PlayerSession::new();
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.update_current_position(Duration::from_millis(10));
+        session
+            .pipeline
+            .video_frame_queue
+            .push_back(decoded_frame(Duration::from_millis(30), 1));
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &PlayerTickConfig::default(),
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+        let diagnostics = plan.diagnostics(Duration::from_millis(3));
+
+        assert_eq!(
+            diagnostics.reason,
+            Some(WorkerWakeupReason::FramePtsDeadline)
+        );
+        assert_eq!(diagnostics.tick_late_by, Duration::from_millis(3));
+        assert!(diagnostics.frame_timing.is_some_and(|timing| {
+            timing.front_frame_pts == Duration::from_millis(30)
+                && timing.front_frame_delta_from_target_us > 0
+        }));
     }
 
     #[test]
@@ -1985,6 +2412,21 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_5994_vs_60hz_phase_difference_is_not_late_drop() {
+        let mut queue = VecDeque::new();
+        queue.push_back(decoded_frame(Duration::ZERO, 1));
+        queue.push_back(decoded_frame(Duration::from_micros(16_683), 2));
+
+        let should_drop = should_drop_front_frame_as_late(
+            &queue,
+            Duration::from_micros(16_667),
+            Duration::from_micros(33_366),
+        );
+
+        assert!(!should_drop);
+    }
+
+    #[test]
     fn scheduler_repeats_current_frame_when_queue_is_empty() {
         let mut session = PlayerSession::new();
         session.dispatch_command(PlayerCommand::Play).unwrap();
@@ -2000,6 +2442,21 @@ mod tests {
                 .as_ref()
                 .map(|frame| frame.pts),
             Some(Duration::ZERO)
+        );
+        assert_eq!(
+            session
+                .snapshot_with_frame_counters(crate::FrameCounters::default())
+                .diagnostics
+                .repeated_video_frames,
+            1
+        );
+        assert_eq!(
+            session
+                .snapshot_with_frame_counters(crate::FrameCounters::default())
+                .diagnostics
+                .drops
+                .late,
+            0
         );
     }
 
