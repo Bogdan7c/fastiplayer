@@ -2926,6 +2926,97 @@ mod tests {
         }
     }
 
+    /// Shared fake decoder для seek/tick тестов без VA-API и renderer resources.
+    #[derive(Clone)]
+    struct SharedFakeVideoDecoderThread {
+        /// Очередь decoded frames, которые fake decoder отдаёт через `try_recv_frame`.
+        decoded_frames: Arc<Mutex<VecDeque<video_core::DecodedFrame>>>,
+
+        /// Texture handles, которые session вернула decoder boundary через release.
+        released_handles: Arc<Mutex<Vec<video_core::FrameTextureHandle>>>,
+    }
+
+    impl SharedFakeVideoDecoderThread {
+        /// Создаёт fake decoder с пустыми output/release очередями.
+        fn new() -> Self {
+            Self {
+                decoded_frames: Arc::new(Mutex::new(VecDeque::new())),
+                released_handles: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        /// Публикует frame так, как production decoder thread сделал бы после seek decode.
+        fn push_decoded_frame(&self, frame: video_core::DecodedFrame) {
+            self.decoded_frames
+                .lock()
+                .expect("fake decoder frame queue lock")
+                .push_back(frame);
+        }
+
+        /// Возвращает release log для проверки bounded queue и ownership.
+        fn released_handles(&self) -> Vec<video_core::FrameTextureHandle> {
+            self.released_handles
+                .lock()
+                .expect("fake decoder release log lock")
+                .clone()
+        }
+    }
+
+    impl crate::pipeline::VideoDecoderThreadHandle for SharedFakeVideoDecoderThread {
+        fn backend_name(&self) -> &'static str {
+            "Shared fake decoder"
+        }
+
+        fn send_packet(
+            &self,
+            _packet: video_vaapi::DecodePacket,
+        ) -> Result<(), video_vaapi::DecodeThreadSendError> {
+            Ok(())
+        }
+
+        fn release_frame(&self, handle: video_core::FrameTextureHandle) {
+            self.released_handles
+                .lock()
+                .expect("fake decoder release log lock")
+                .push(handle);
+        }
+
+        fn try_recv_frame(&self) -> Option<video_core::DecodedFrame> {
+            self.decoded_frames
+                .lock()
+                .expect("fake decoder frame queue lock")
+                .pop_front()
+        }
+
+        fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent> {
+            None
+        }
+
+        fn try_recv_error(&self) -> Option<video_vaapi::DecodeThreadError> {
+            None
+        }
+
+        fn flush(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn texture_view_provider(&self) -> video_vaapi::VideoTextureViewProvider {
+            panic!("shared fake decoder does not provide renderer texture views")
+        }
+
+        fn texture_pool_stats(&self) -> Option<video_vaapi::texture_cache::TexturePoolStats> {
+            None
+        }
+
+        fn packet_queue_depth(&self) -> usize {
+            0
+        }
+
+        fn drain_completed_packet_count(&self) -> usize {
+            0
+        }
+    }
+
     /// Создаёт минимальный track summary для fake media.
     fn fake_track(track_id: u32, kind: TrackKind) -> TrackInfo {
         TrackInfo {
@@ -3025,6 +3116,21 @@ mod tests {
             color: codec_core::VideoColorMetadata::sdr_bt709_limited(),
             texture_handle: video_core::FrameTextureHandle(handle),
             diagnostics: video_core::VideoFrameDiagnostics::default(),
+        }
+    }
+
+    /// Создаёт tick config с маленькой present queue для seek admission тестов.
+    fn seek_admission_tick_config(
+        max_video_present_queue: usize,
+        max_decoded_video_frames_drained_per_tick: usize,
+    ) -> PlayerTickConfig {
+        PlayerTickConfig {
+            max_video_present_queue,
+            min_video_present_queue: 1,
+            target_video_present_queue: 1,
+            max_decoded_video_frames_drained_per_tick,
+            seek_resume_video_min_ready_frames: 1,
+            ..PlayerTickConfig::default()
         }
     }
 
@@ -4054,6 +4160,134 @@ mod tests {
 
         assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
         assert!(!session.snapshot().timeline.seeking);
+    }
+
+    #[test]
+    fn active_seek_drains_target_frame_when_present_queue_is_full() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+        let fake_decoder = SharedFakeVideoDecoderThread::new();
+        session
+            .pipeline
+            .set_video_decoder_thread(fake_decoder.clone());
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        session
+            .pipeline
+            .video_frame_queue
+            .push_back(decoded_frame_for_tests(Duration::from_secs(5), 5));
+        fake_decoder.push_decoded_frame(decoded_frame_for_tests(Duration::from_secs(6), 6));
+
+        let tick_result = session.tick(PlayerTickContext::with_config(
+            Instant::now(),
+            seek_admission_tick_config(1, 4),
+        ));
+
+        assert_eq!(tick_result.decoded_video_frames, 1);
+        assert_eq!(tick_result.video_frames_presented, 1);
+        assert!(session.seek_commit().is_none());
+        assert_eq!(
+            session
+                .pipeline
+                .present_video_frame
+                .as_ref()
+                .map(|frame| frame.pts),
+            Some(Duration::from_secs(6))
+        );
+        assert!(session.pipeline.video_frame_queue.is_empty());
+        assert!(!session.snapshot().timeline.stale_frame);
+        assert!(
+            fake_decoder
+                .released_handles()
+                .contains(&video_core::FrameTextureHandle(5))
+        );
+    }
+
+    #[test]
+    fn active_seek_long_preroll_drain_keeps_present_queue_bounded() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+        let fake_decoder = SharedFakeVideoDecoderThread::new();
+        session
+            .pipeline
+            .set_video_decoder_thread(fake_decoder.clone());
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(2),
+            )))
+            .unwrap();
+
+        for frame_index in 0..32u64 {
+            fake_decoder.push_decoded_frame(decoded_frame_for_tests(
+                Duration::from_millis(frame_index * 50),
+                100 + frame_index,
+            ));
+        }
+        fake_decoder.push_decoded_frame(decoded_frame_for_tests(Duration::from_secs(2), 200));
+
+        let tick_result = session.tick(PlayerTickContext::with_config(
+            Instant::now(),
+            seek_admission_tick_config(2, 64),
+        ));
+
+        assert_eq!(tick_result.decoded_video_frames, 33);
+        assert!(session.seek_commit().is_none());
+        assert!(session.pipeline.video_frame_queue.len() <= 2);
+        assert_eq!(
+            session
+                .pipeline
+                .present_video_frame
+                .as_ref()
+                .map(|frame| frame.pts),
+            Some(Duration::from_secs(2))
+        );
+        assert!(session.pipeline.seek_preroll_fallback_video_frame.is_none());
+    }
+
+    #[test]
+    fn paused_video_seek_tick_presents_target_frame_and_stays_paused() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+        let fake_decoder = SharedFakeVideoDecoderThread::new();
+        session
+            .pipeline
+            .set_video_decoder_thread(fake_decoder.clone());
+        session.pipeline.present_video_frame =
+            Some(decoded_frame_for_tests(Duration::from_secs(1), 1));
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        fake_decoder.push_decoded_frame(decoded_frame_for_tests(Duration::from_secs(6), 6));
+
+        let tick_result = session.tick(PlayerTickContext::with_config(
+            Instant::now(),
+            seek_admission_tick_config(2, 4),
+        ));
+
+        assert_eq!(tick_result.video_frames_presented, 1);
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
+        assert_eq!(
+            session
+                .pipeline
+                .present_video_frame
+                .as_ref()
+                .map(|frame| frame.pts),
+            Some(Duration::from_secs(6))
+        );
+        assert!(!session.snapshot().timeline.stale_frame);
+        assert!(
+            fake_decoder
+                .released_handles()
+                .contains(&video_core::FrameTextureHandle(1))
+        );
     }
 
     #[test]

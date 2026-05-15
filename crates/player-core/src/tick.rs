@@ -736,7 +736,7 @@ fn can_read_next_demux_packet_with_audio_priority(
         return false;
     }
 
-    available_video_present_slots(session, tick_config) > 0
+    seek_admission_active(session) || available_video_present_slots(session, tick_config) > 0
 }
 
 /// Возвращает typed причину demux backpressure вместо generic "нет места".
@@ -759,7 +759,7 @@ fn demux_backpressure_reason(
         return Some(PipelinePauseReason::DemuxBackpressure);
     }
 
-    (available_video_present_slots(session, tick_config) == 0)
+    (!seek_admission_active(session) && available_video_present_slots(session, tick_config) == 0)
         .then_some(PipelinePauseReason::WaitingForPresentQueue)
 }
 
@@ -853,6 +853,51 @@ fn video_present_queue_target(tick_config: &PlayerTickConfig) -> usize {
         .target_video_present_queue
         .max(video_present_queue_min(tick_config))
         .min(video_present_queue_limit(tick_config))
+}
+
+/// Проверяет, что seek transaction сейчас должен продвигаться независимо от обычных present slots.
+fn seek_admission_active(session: &PlayerSession) -> bool {
+    session.has_active_seek_commit()
+}
+
+/// Проверяет, блокирует ли normal playback admission работу video pipeline-а.
+fn normal_present_queue_blocks_video_admission(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+) -> bool {
+    !seek_admission_active(session)
+        && session.can_present_video()
+        && available_video_present_slots(session, tick_config) == 0
+}
+
+/// Возвращает bounded budget приёма decoded frames для текущего admission mode.
+fn decoded_frame_receive_budget(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+    max_frames_to_drain: usize,
+) -> usize {
+    if seek_admission_active(session) {
+        return max_frames_to_drain;
+    }
+
+    if session.can_present_video() {
+        return available_video_present_slots(session, tick_config).min(max_frames_to_drain);
+    }
+
+    max_frames_to_drain
+}
+
+/// Возвращает bounded budget отправки packets в decoder для текущего admission mode.
+fn video_packet_send_present_admission_budget(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+    max_packets_to_send: usize,
+) -> usize {
+    if seek_admission_active(session) {
+        return max_packets_to_send;
+    }
+
+    available_video_present_slots(session, tick_config).min(max_packets_to_send)
 }
 
 /// Возвращает безопасный максимум decode-ahead относительно audio clock.
@@ -1011,11 +1056,7 @@ fn drain_decoded_video_frames(
     }
 
     let playback_can_present = session.can_present_video();
-    let receive_budget = if playback_can_present {
-        available_video_present_slots(session, tick_config).min(max_frames_to_drain)
-    } else {
-        max_frames_to_drain
-    };
+    let receive_budget = decoded_frame_receive_budget(session, tick_config, max_frames_to_drain);
 
     if receive_budget == 0 {
         return 0;
@@ -1128,14 +1169,15 @@ fn send_pending_video_packets_to_decoder(
     }
 
     let mut sent_packets = 0usize;
+    let present_admission_budget =
+        video_packet_send_present_admission_budget(session, tick_config, max_packets_to_send);
 
     while sent_packets < max_packets_to_send {
         if catch_up_deadline_reached(catch_up_deadline) {
             break;
         }
 
-        let available_slots = available_video_present_slots(session, tick_config);
-        if available_slots == 0 {
+        if present_admission_budget == 0 {
             record_pipeline_pause(
                 session,
                 tick_result,
@@ -1143,7 +1185,7 @@ fn send_pending_video_packets_to_decoder(
             );
             break;
         }
-        if sent_packets >= available_slots {
+        if sent_packets >= present_admission_budget {
             break;
         }
 
@@ -1538,7 +1580,8 @@ fn immediate_pipeline_work_available(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> bool {
-    if session.can_present_video()
+    if !seek_admission_active(session)
+        && session.can_present_video()
         && session.pipeline.video_frame_queue.len() >= video_present_queue_target(tick_config)
     {
         return false;
@@ -1575,7 +1618,7 @@ fn pending_video_work_available(session: &PlayerSession, tick_config: &PlayerTic
         return true;
     }
 
-    if session.can_present_video() && available_video_present_slots(session, tick_config) == 0 {
+    if normal_present_queue_blocks_video_admission(session, tick_config) {
         return false;
     }
 
@@ -1597,6 +1640,7 @@ fn demux_work_available(session: &PlayerSession, tick_config: &PlayerTickConfig)
     if session.pipeline.video_track_id.is_some()
         && session.pipeline.video_frame_queue.len() >= video_present_queue_target(tick_config)
         && !prioritize_audio_catchup
+        && !seek_admission_active(session)
     {
         return false;
     }
@@ -1640,6 +1684,10 @@ fn decoder_readiness_poll_needed_for_state(
         || decoder_has_seek_in_flight_packets;
     if !worker_has_decode_inputs {
         return false;
+    }
+
+    if decoder_has_seek_in_flight_packets {
+        return video_track_selected;
     }
 
     if video_frame_queue_len < video_present_queue_target {
@@ -2546,6 +2594,24 @@ mod tests {
             true,
             0,
             video_present_queue_target(&PlayerTickConfig::default()),
+            false,
+            false,
+            false,
+            true,
+            true,
+        );
+
+        assert!(poll_needed);
+    }
+
+    #[test]
+    fn decoder_readiness_poll_keeps_seek_decoder_inflight_when_present_queue_is_full() {
+        let tick_config = PlayerTickConfig::default();
+        let present_queue_target = video_present_queue_target(&tick_config);
+        let poll_needed = decoder_readiness_poll_needed_for_state(
+            true,
+            present_queue_target,
+            present_queue_target,
             false,
             false,
             false,
