@@ -1,340 +1,102 @@
-# 06. Rendering, UI and Platform
+# 06. Rendering, UI и Platform
 
-## Platform priority
+## Renderer
 
-Порядок платформ:
+Production renderer crate: `render-wgpu`.
 
-1. Linux
-2. Windows
-3. macOS
+`render-wgpu` owns:
 
-Linux - основная платформа. Wayland является primary target. X11 нужен как fallback, особенно для старых устройств и будущего OpenGL ES renderer.
+- WGPU instance/device/surface shell;
+- egui composition through `egui-wgpu`;
+- NV12 SDR renderer;
+- P010 HDR-to-SDR renderer;
+- renderer diagnostics and frame timing.
 
-## Primary renderer
+`render-core` owns renderer-neutral contracts and must not create GPU resources.
 
-Primary renderer: `render-wgpu`.
+WGPU boundary в документации описан через surface configuration, texture formats,
+adapter/device features и limits. В коде это отражено через `RenderCapabilities`
+и WGPU device features.
 
-На Linux основная цель - Vulkan через `wgpu`.
+## Surface formats
 
-`wgpu` покрывает Vulkan/Metal/DX12/OpenGL/WebGPU/WebGL2 на уровне абстракции, но OpenGL ES 2.0 legacy path не стоит считать полноценной частью primary renderer. Для старых устройств нужен отдельный `render-gles`.
+Current render input formats:
 
-## Render backend split
+- `NV12` for SDR 8-bit 4:2:0;
+- `P010` for 10-bit 4:2:0 HDR-to-SDR path.
 
-```text
-render-core
-  common contracts
+P010 storage layouts:
 
-render-wgpu
-  Vulkan-first, advanced UI, Phase 10 HDR-to-SDR, future DX12/Metal
+- `BaselineSeparateLayer`: R16/Rg16 plane views, gated by `TEXTURE_FORMAT_16BIT_NORM`;
+- `CompatibilityComposed`: composed P010 path, gated by `TEXTURE_FORMAT_P010`.
 
-render-gles
-  future X11/GLES2 fallback, SDR 8-bit NV12 only
-```
+Both layouts become the same renderer plane kind after import: Y view plus UV view.
 
-## render-core contracts
+## Color paths
 
-`render-core` должен описывать:
+NV12 path:
 
-- render backend id;
-- render capabilities;
-- supported input frame formats;
-- color conversion support;
-- HDR/tone mapping support;
-- UI composition mode;
-- present timing metrics.
+- shader: `render-wgpu/shaders/nv12_to_rgba.wgsl`;
+- output: SDR BT.709;
+- defaults preserve current SDR visual result;
+- `SwapchainTransferMode::PreserveCurrentUnorm`.
 
-Пример:
+P010 path:
 
-```rust
-enum RenderBackendKind {
-    Wgpu,
-    OpenGles,
-}
+- shader: `render-wgpu/shaders/p010_bt2446c_to_sdr.wgsl`;
+- input: strict BT.2020 PQ/HLG P010;
+- operator: BT.2446 Method C;
+- output: SDR BT.709;
+- native HDR output: unsupported.
 
-// Compatibility name в render-core; canonical type живёт в codec-core как VideoSurfaceFormat.
-enum VideoSurfaceFormat {
-    Nv12,
-    P010,
-    Rgba8,
-}
+## UI boundary
 
-enum P010RenderReadiness {
-    Unavailable,
-    ZeroCopyBoundaryVerified,
-    Renderable,
-}
+UI uses egui and reads `PlayerSnapshot`. Actions become `PlayerCommand`.
 
-enum P010StorageLayout {
-    BaselineSeparateLayer,
-    CompatibilityComposed,
-}
+`AppState` may own:
 
-enum HdrOutputMode {
-    SdrBt709Only,
-}
+- egui context/state;
+- shell telemetry;
+- startup pending/error overlay;
+- cached render-side present frame lease;
+- transient timeline pointer state;
+- desktop integration handle.
 
-struct RenderCapabilities {
-    backend: RenderBackendKind,
-    display_name: String,
-    supports_hdr_to_sdr: bool,
-    supports_native_hdr_output: bool,
-    p010_render_readiness: P010RenderReadiness,
-    supported_p010_storage_layouts: Vec<P010StorageLayout>,
-    supported_hdr_to_sdr_operators: Vec<HdrToneMappingOperator>,
-    hdr_output_mode: HdrOutputMode,
-    supported_frame_formats: Vec<VideoSurfaceFormat>,
-    max_texture_size: Option<u32>,
-    advanced_ui: bool,
-    ui_composition_mode: UiCompositionMode,
-    present_timing_metrics: bool,
-}
+`AppState` must not own:
 
-enum SwapchainTransferMode {
-    PreserveCurrentUnorm,
-    SrgbRenderTarget,
-    ExplicitShaderOetf,
-}
+- demuxer;
+- audio decoder/output;
+- video decoder thread;
+- playback queues;
+- capability selection logic;
+- codec-specific stream logic.
 
-struct ColorPipelineSettings {
-    adjustment: ColorAdjustment,
-    tone_mapping: ToneMappingMode,
-    swapchain_transfer: SwapchainTransferMode,
-}
+## Redraw pacing
 
-struct ColorAdjustment {
-    brightness: f32,
-    contrast: f32,
-    saturation: f32,
-    exposure: f32,
-    rgb_gain: [f32; 3],
-    rgb_offset: [f32; 3],
-}
+`app-egui` uses `ControlFlow::Poll` only while playback/opening/scrubbing needs
+continuous redraw. Idle and paused states use `Wait` or `WaitUntil` for background
+YouTube startup polling.
 
-struct HdrToSdrSettings {
-    enabled: bool,
-    operator: HdrToneMappingOperator,
-    output_mode: HdrOutputMode,
-    sdr_reference_white_nits: f32,
-    hdr_reference_peak_nits: f32,
-}
-```
+## Render bridge
 
-## Vulkan profile
+`PlayerWorker::try_acquire_present_frame()` returns `PresentFrameLease`.
 
-Config profile `vulkan` - основной режим.
+Render bridge rules:
 
-Ожидания:
-
-- advanced egui UI;
-- NV12 production shader path;
-- P010 zero-copy boundary diagnostics and Phase 10 P010/HDR shader path;
-- Phase 10 HDR-to-SDR tone mapping;
-- frame pacing diagnostics;
-- GPU resource telemetry;
-- future compute-assisted color pipeline, если потребуется.
-
-## OpenGL ES profile
-
-Config profile `opengles` - будущий fallback.
-
-Ожидания:
-
-- X11 fallback;
-- OpenGL ES 2.0 compatibility;
-- SDR 8-bit NV12;
-- простая графика;
-- минимальный overlay;
-- приоритет скорости и совместимости.
-
-Не требуется:
-
-- advanced UI parity;
-- true HDR;
-- complex effects;
-- heavy telemetry overlay.
-
-## UI architecture
-
-UI остается на egui.
-
-Целевой принцип:
-
-```text
-egui input -> PlayerCommand -> PlayerWorker -> PlayerSession -> PlayerSnapshot -> egui view
-```
-
-UI не должен хранить player business state. Он может хранить только UI-local state:
-
-- открытые панели;
-- selected tab;
-- transient dialog state;
-- layout preferences;
-- search text.
-
-Timeline/seek UI не должен напрямую мутировать позицию playback. Ползунок
-timeline читает typed `PlayerSnapshot.timeline`, а действия отправляет как
-`BeginScrub`, `UpdateScrub(SeekRequest)` и `EndScrub { CommitLatest }`.
-Обычные hotkeys используют `SeekTarget::Relative(Duration)` с шагами из
-`player.seek.hotkey_small_step_secs` и `player.seek.hotkey_large_step_secs`.
-Если `timeline.seekable == false`, UI показывает disabled state и diagnostics из
-`timeline.not_seekable_reason`, но не изобретает собственную business-причину.
-
-`ui.skin = "minimal"` в schema v2 фиксирует первый production skin. Unknown skin
-id является config error, пока validation явно не вводит mapping на default.
-
-Фактическая runtime boundary после Session 3: `app-egui::AppState` владеет
-`PlayerWorker`, а не `PlayerSession`. Render/UI thread не вызывает
-`PlayerSession::tick()` и не читает pipeline internals; он отправляет команды,
-читает latest snapshot/events и получает текущий decoded frame через worker render
-lease request. Cached present frame в shell допустим только как transient render-side
-защита от missed lease reply и освобождается через RAII drop/ack.
-
-## Render frame lease
-
-Текущий render bridge сохраняет zero-copy и не раскрывает player internals:
-
-```text
-app-egui render loop
-  -> PlayerWorker::try_acquire_present_frame()
-  -> PresentFrameLease { frame metadata, handle, generation, stale }
-  -> PresentFrameLease::texture_views() on render thread
-  -> render-wgpu::WgpuRenderableFrame
-```
-
-Правила:
-
-- `PlayerWorker` выбирает latest present frame handle, но не создаёт
-  `wgpu::TextureView`;
-- `video-vaapi::VideoTextureViewProvider` создаёт Y/UV texture views на render
-  thread поверх уже импортированной/загруженной texture;
-- `PresentFrameLease` удерживает texture slot до drop последнего clone-а;
-- stale frame state идёт через snapshot/lease metadata и может использоваться UI
-  для dimming без инвалидирования inflight lease-а;
-- missing texture views, rejected frame contract и render failures отправляются
-  в worker как typed `PlayerRenderError`;
-- `app-egui` не читает `pipeline.present_video_frame` напрямую.
-
-## UI modules
-
-В `app-egui` нужно постепенно выделить:
-
-```text
-src/
-  main.rs          - winit ApplicationHandler
-  shell.rs         - связывает app, player, renderer
-  ui/
-    mod.rs
-    player_controls.rs
-    telemetry_panel.rs
-    media_info.rs
-    settings.rs
-    capability_view.rs
-    errors.rs
-  input.rs         - hotkeys -> PlayerCommand
-```
+- texture views are created on render thread via `PresentFrameLease::texture_views()`;
+- lease carries generation, stale flag and decoded frame metadata;
+- last safe lease may be reused on transient acquire miss;
+- stale generation is rejected;
+- release is RAII drop/ack;
+- missing views or renderer contract failures become `PlayerRenderError`.
 
 ## Desktop integration
 
-Нужен отдельный crate `desktop-integration`.
+`desktop-integration` talks to the player only through public contracts:
 
-Linux priority:
+- commands: `PlayerCommand`;
+- state: `PlayerSnapshot`;
+- timeline: `MediaTime`, `MediaDuration`, `TimelineSnapshot`.
 
-- MPRIS D-Bus;
-- KDE media widget playback controls;
-- metadata export;
-- play/pause/seek/next/previous commands;
-- inhibit sleep/screensaver during playback;
-- optional notifications.
-
-`desktop-integration` должен работать через `PlayerCommand` и `PlayerSnapshot`, а не напрямую через player internals.
-
-MPRIS seek/progress должен использовать те же neutral timeline contracts:
-`MediaTime`, `MediaDuration`, `SeekTarget` и `TimelineSnapshot`. Linux MPRIS -
-первый concrete adapter, а не часть core timeline model.
-
-## Windowing
-
-`winit 0.30` ApplicationHandler остается правильной базой.
-
-Правило:
-
-- `ApplicationHandler` управляет lifecycle;
-- `resumed/suspended` создают и освобождают window-bound resources;
-- `window_event` переводит input в команды;
-- render path вызывает renderer;
-- player business logic живет вне ApplicationHandler.
-
-## Device loss and recovery
-
-Renderer должен уметь:
-
-- обработать surface lost/outdated;
-- пересоздать surface config;
-- сообщить player/UI о render backend error;
-- не терять media state при пересоздании GPU resources, если возможно.
-
-## Color pipeline
-
-Color pipeline должен быть явным:
-
-```text
-decoded frame metadata
-  -> color range normalization
-  -> YUV to RGB
-  -> HDR-to-SDR tone mapping if needed
-  -> output transfer/color space
-  -> swapchain
-```
-
-Нельзя считать все видео BT.709 limited 8-bit. Это приемлемо для MVP, но не для целевой архитектуры.
-
-## Phase 8.5 SDR color pipeline prep
-
-Phase 8.5 исторически подготовил renderer к HDR, но сам HDR не реализовал. Текущий статус после Phase 10: P010/HDR renderer реализован отдельно, а ниже перечисленные SDR решения остаются действующими ограничителями для `nv12_to_rgba.wgsl`.
-
-Принятые решения:
-
-- swapchain transfer описывается enum-ом; default - `PreserveCurrentUnorm`, чтобы не менять текущий SDR result;
-- реальные color metadata собираются layered-моделью с origin/confidence;
-- tone mapping presets остаются typed future contract; Phase 10 добавляет только фиксированный `bt2446_c` config без пользовательских preset controls;
-- SDR/RGB adjustments добавляются в settings/config с identity defaults;
-- NV12 BT.2020 SDR сейчас отображается как fallback path в SDR BT.709 diagnostics, настоящий gamut mapping добавляется позже; P010 BT.2020 SDR rejected до отдельного wide-gamut SDR решения.
-
-### Swapchain transfer
-
-`Unorm` и `UnormSrgb` нельзя выбирать как взаимозаменяемые форматы. При `UnormSrgb` GPU применяет sRGB conversion при записи в render target, а при `Unorm` shader output должен уже быть display-referred. Поэтому текущий порядок выбора surface format фиксируется как осознанный режим `PreserveCurrentUnorm`.
-
-Future modes:
-
-- `SrgbRenderTarget` - shader отдаёт linear SDR, target делает sRGB encode;
-- `ExplicitShaderOetf` - shader явно применяет output transfer и пишет в `Unorm`;
-- HDR/native output modes - только после отдельного platform-specific решения.
-
-### Active color path
-
-Renderer должен уметь вернуть diagnostics вроде:
-
-```text
-NV12 8-bit BT.709 limited -> SDR BT.709 preserve-current-unorm
-NV12 8-bit BT.2020 limited -> SDR BT.709 fallback preserve-current-unorm
-```
-
-BT.2020 SDR fallback не означает wide-gamut output support. Это только честная диагностика временного поведения до gamut mapping.
-
-### Shader boundary
-
-`nv12_to_rgba.wgsl` остаётся NV12 SDR shader path. Он получает range normalization, YUV->RGB matrix, SDR adjustments и debug mode через uniforms. Shader не должен превращаться в универсальный HDR-комбайн; Phase 10 P010/HDR получает отдельный renderer path и отдельный shader.
-
-## Phase 9/10 P010 policy
-
-Phase 9 проверял только P010 zero-copy render boundary. Это не было production rendering path. Phase 10 перевёл поддержанный P010/HDR path в production `Renderable` состояние.
-
-```text
-Unavailable -> P010 path недоступен
-ZeroCopyBoundaryVerified -> P010 DMA-BUF импорт и plane views доказаны ручным dev-тестом
-Renderable -> renderer имеет production P010 shader path
-```
-
-Production HDR playback разрешается только при `Renderable` и `supports_hdr_to_sdr = true`.
-
-Phase 10 переводит P010/HDR path в `Renderable` через отдельный shader `p010_bt2446c_to_sdr.wgsl`, BT.2446 Method C и `ExplicitShaderOetf`. Это текущий WGPU production path при passing capability intersection; native HDR output остаётся `false`.
+Linux MPRIS is platform backend detail. macOS/Windows/stub backends must not leak
+platform protocol types into `player-core`.

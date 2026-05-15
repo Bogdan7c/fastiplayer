@@ -1,192 +1,80 @@
-# 07. Services and Network
+# 07. Services и Network
 
-## Цель
+## Source boundary
 
-Online services должны быть отдельными compile-time modules/crate'ами. Они не являются dynamic plugins, но код должен быть модульным.
+`source-core` owns byte access:
 
-Первый большой сервис - YouTube.
+- `ByteSource`;
+- `LocalFileSource`;
+- `HttpRangeSource`;
+- `CachedByteSource`;
+- `RamByteRangeCache`;
+- `StreamingByteReader`;
+- `SourceRuntimeConfig`;
+- cancellation and source diagnostics.
 
-## Source/service split
+It does not know YouTube, containers, codecs, renderer or UI.
 
-```text
-source-core
-  bytes, ranges, cache, credentials boundary, stream descriptors
+## HTTP Range
 
-service-youtube
-  YouTube account/session/extraction/manifest/captions
+`HttpRangeSource` opens direct media URLs with headers supplied by a caller. It
+performs a Range seekability probe and reads into caller-provided buffers. Retry
+policy is limited: one retry for retryable range/body failures.
 
-future service-*
-  другие сервисы
-```
+`Seekability::NotSeekable` is propagated into demux timeline state. The player
+must not invent byte-offset seek hints above the demuxer/source boundary.
 
-`source-core` не должен знать специфику YouTube. В целевой архитектуре `service-youtube` возвращает нормализованные media candidates, которые дальше проходят capability-based stream selection. Текущая MVP-граница описана ниже отдельно.
+## Cache
 
-## Current MVP boundary
+Current cache is RAM byte-range cache. Public knobs:
 
-Сейчас создан crate `service-youtube`, но это ещё не полноценный Rust extractor.
-Он содержит временный `yt-dlp` adapter, который:
+- `network.memory_cache_mb`;
+- `network.read_ahead_mb`;
+- `network.connect_timeout_ms`;
+- `network.read_timeout_ms`.
 
-- применяет текущий SDR VP9/Opus WebM selector для MVP playback;
-- поддерживает env override `VIDEO_PLAYER_YOUTUBE_FORMAT_SELECTOR` для ручных проверок;
-- получает direct media URLs и HTTP headers через `yt-dlp --simulate --dump-single-json`;
-- запускает HTTP fetcher threads и отдаёт `webm-demux` streaming demuxer;
-- не содержит UI/render/player state logic.
+Durable byte cache and durable metadata are future work. They must not add IO to
+playback, seek or scrub hot paths without a clear boundary.
 
-`app-egui` только распознаёт CLI URL и передаёт готовый demuxer в playback
-worker; `PlayerWorker` забирает demuxer во владение и подключает его к
-worker-owned `PlayerSession`.
-Codec/color decisions остаются в `codec-core`, `capability-core`, `player-core`
-и renderer diagnostics.
+## Demux boundary
 
-Phase 10 local HDR/P010 renderer не меняет эту MVP-границу: default YouTube
-selector остаётся SDR, чтобы не выбирать HDR stream без service-level capability
-candidate model. HDR/VP9.2 YouTube samples для ручной проверки запускаются через
-explicit `VIDEO_PLAYER_YOUTUBE_FORMAT_SELECTOR` override.
+`webm-demux` owns WebM/Matroska demuxing through Symphonia and Matroska pre-scan.
+It exposes `Demuxer`, `DemuxSeekRequest`, `DemuxSeekResult` and `DemuxSeekability`.
 
-## YouTube scope
+Rules:
 
-Будущий YouTube-клиент должен предусматривать:
+- packet payload uses `bytes::Bytes`;
+- unknown video codec stays `unknown_video`, not assumed VP9;
+- corrupted packets can be skipped only up to configured fail-safe limit;
+- seek returns actual container position, while precise commit happens in `player-core`.
 
-- account/session/cookies;
-- public video playback;
-- authenticated playback;
-- adaptive formats;
-- DASH/WebM/fMP4 variants;
-- captions;
-- playlists;
-- live streams;
-- metadata;
-- thumbnails later if needed;
-- rate-limit aware errors.
+## YouTube boundary
 
-## Replacement for yt-dlp
+`service-youtube` is a service adapter, not player logic.
 
-`yt-dlp` является временной MVP-границей. Целевое состояние - Rust implementation.
+Current implementation:
 
-Архитектурно замена должна состоять из:
+- uses `yt-dlp`;
+- resolves direct video/audio stream URLs and headers;
+- wraps expiring direct URLs with refreshable HTTP Range source for VOD when possible;
+- falls back to unseekable streaming source for live or non-seekable media;
+- returns `YoutubeStreamingMedia` with a ready demuxer and description.
 
-- request/session layer;
-- cookie/session boundary без проектной database persistence;
-- page/API metadata fetch;
-- signature/cipher handling;
-- manifest extraction;
-- stream candidate normalization;
-- captions extraction;
-- error classification.
+`app-egui` запускает подготовку CLI YouTube URL на background thread, поэтому
+создание окна и UI не блокируются.
 
-## Stream candidate model
+## Future service model
 
-Service layer возвращает candidates:
-
-```rust
-struct ServiceStreamCandidate {
-    service: ServiceId,
-    media_id: String,
-    stream_id: String,
-    container: ContainerKind,
-    video: Option<VideoStreamDescriptor>,
-    audio: Option<AudioStreamDescriptor>,
-    subtitles: Vec<SubtitleStreamDescriptor>,
-    urls: StreamUrls,
-    headers: HeaderSet,
-    bitrate: Option<u64>,
-    duration: Option<MediaTime>,
-    live: bool,
-}
-```
-
-Player/source layer выбирает playable candidate через capability matrix.
-
-## Network cache
-
-Cache нужен для:
-
-- smoother playback;
-- resume download;
-- повторного открытия недавно смотренных роликов;
-- metadata/captions caching;
-- future offline-ish scenarios.
-
-Cache metadata сейчас runtime-only. Bulk bytes cache остаётся будущим расширением
-и не должен попадать в seek/scrub hot path.
-
-Schema version 2 фиксирует public network knobs:
-
-- `network.memory_cache_mb = 128` - RAM byte-range cache budget;
-- `network.memory_cache_mb = 0` - RAM cache явно отключён;
-- `network.read_ahead_mb = 64` - read-ahead budget для streaming source;
-- `network.connect_timeout_ms = 15000` - timeout подключения;
-- `network.read_timeout_ms = 15000` - timeout чтения.
-
-`source-core` должен читать эти значения из validated config. Нельзя хардкодить
-cache/read-ahead/timeouts в `service-youtube`, `webm-demux` или `player-core`.
-
-## Resume download
-
-Source layer должен поддерживать:
-
-- HTTP range;
-- partial segment state;
-- validation by ETag/Last-Modified/content length where possible;
-- cache invalidation.
-
-## Live streams
-
-Live streams требуют отдельного состояния:
-
-- moving live edge;
-- no fixed duration;
-- segment refresh;
-- latency target;
-- buffer window;
-- discontinuity handling.
-
-Не делаем сразу, но source/player model не должен предполагать, что duration всегда известна.
-
-Live/VOD timeline описывается neutral `TimelineSnapshot`. Для VOD первый adapter
-заполняет known duration и seekable range из container/service metadata. Для live
-будущий adapter будет заполнять moving seekable window без требования fixed
-duration. Core-типы не знают, что первый production path - WebM/Matroska или
-YouTube VOD WebM.
-
-## Subtitles and captions
-
-YouTube captions - первый приоритет.
-
-Нужно предусмотреть:
-
-- external text tracks;
-- WebVTT-like timed text;
-- language;
-- autogenerated/manual flag;
-- default selection;
-- renderer-independent subtitle model.
-
-ASS/SSA можно рассматривать позже, потому что это отдельная сложная layout/render задача.
-
-## Accounts and sessions
-
-Account/session/cookies должны быть отделены от UI:
+Future service adapters should return normalized candidates instead of selecting
+only one playable stream internally:
 
 ```text
-app-egui settings/account UI
-  -> service-youtube commands
-  -> optional OS credential/session provider
+service candidate
+  -> source descriptors and headers
+  -> media/core codec metadata hints
+  -> capability-core selection
+  -> demux/player open
 ```
 
-Cookies не должны жить в config TOML.
-
-## DRM future hook
-
-DRM не является текущим scope.
-
-Но service/source architecture не должна жестко запрещать будущий protected content model. Достаточно иметь reserved types:
-
-```rust
-enum ProtectionKind {
-    Clear,
-    DrmProtected(DrmSystemId),
-}
-```
-
-Если stream protected, текущая реализация должна честно вернуть unsupported.
+Cookies/session data нельзя хранить в TOML. Если persistent credentials станут
+нужны, нужен отдельный OS credential/session boundary.
