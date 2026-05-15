@@ -5,6 +5,7 @@
 /// `AppState` оставляет у себя только egui/winit state и shell-данные.
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use capability_core::SystemCapabilities;
 use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
@@ -472,6 +473,12 @@ impl AppState {
         }
 
         self.mark_pending_worker_redraw();
+    }
+
+    /// Передаёт renderer submit/present timing в player diagnostics без render-side business logic.
+    pub fn report_gpu_submit_present_latency(&self, submit_present_elapsed: Duration) {
+        self.player_worker
+            .report_gpu_submit_present_latency(submit_present_elapsed);
     }
 
     /// Забирает worker events для shell telemetry.

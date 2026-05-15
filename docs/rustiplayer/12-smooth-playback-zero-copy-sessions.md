@@ -796,6 +796,43 @@ zero-copy invariant. Тесты не должны требовать комми�
   - renderer rejects non-zero-copy video frames.
 - Документировать команды ручной проверки и формат результата.
 
+### Manual stress protocol
+
+Ручной protocol валидирует только production path. Он не включает software video
+decode, CPU upload/readback, hidden env compatibility shims или отключение drop
+accounting.
+
+Базовый лог:
+
+```bash
+RUST_LOG=info,player_core::worker=debug cargo run -p app-egui -- <asset-or-url>
+```
+
+Локальные supported assets:
+
+```bash
+cargo run -p app-egui -- test-assets/4k60fps_sdr/LXb3EKWsInQ_2160p60_sdr_vp9_opus.webm
+cargo run -p app-egui -- test-assets/hdr/LXb3EKWsInQ_2160p60_hdr_vp9_profile2.webm
+cargo run -p app-egui -- test-assets/hdr/rs-U-zKZyks_2160p60_hlg_vp9_profile2_opus.webm
+```
+
+YouTube/network variant использует тот же diagnostics contract, но source
+starvation считается отдельной внешней причиной. Network run нельзя использовать
+для изменения decoder/render defaults, пока local file run не показал тот же
+bottleneck.
+
+Ожидаемые checks:
+
+- `memory_path = Some(DmaBufZeroCopy)`;
+- `import_failures = Some(0)`;
+- отсутствуют CPU upload/readback diagnostics;
+- steady-state `drops_late = 0`;
+- `drops_decoder_starvation = 0` для local file;
+- `wake_reason` в playback обычно `frame_pts_deadline`, а не fixed polling;
+- `render_acquire_worst_ms` и `gpu_submit_present_worst_ms` сравниваются с
+  frame budget и queue depths, но сами по себе не являются drop threshold;
+- `repeated_video_frames` анализируется отдельно от media drops.
+
 ### Acceptance
 
 - Regression suite ловит CPU fallback.
@@ -877,3 +914,97 @@ self-review из этой сессии.
 - Если remaining stutter находится ниже уровня приложения, например driver,
   compositor, kernel, display mode или hardware decoder firmware.
 - Если требуется принять продуктовый threshold для "идеально плавно".
+
+### Реализация
+
+#### Зафиксированный результат на 2026-05-15
+
+- Добавлен последний недостающий stage metric: `render-wgpu` измеряет время от
+  `queue.submit()` до возврата из `surface_texture.present()`, `app-egui`
+  передает sample в `PlayerWorker`, а `player-core` записывает его как
+  `PipelineLatencyStage::GpuSubmitPresent`.
+- Diagnostics summary теперь выводит typed drop counters, typed pause counters,
+  repeated frames, worker wakeup reason/delay/lateness, per-stage worst latency и
+  zero-copy surface pool counters.
+- Runtime compatibility shim `RUSTIPLAYER_DEV_VERIFY_P010_BOUNDARY` удалён.
+  Production HDR/P010 больше нельзя включить обходом renderer/HDR capability
+  gate: stream проходит только через обычный `check_video_requirement()`.
+- Defaults не менялись. Measurements не показали steady-state bottleneck,
+  который требовал бы увеличения queue/pool/scheduler knobs.
+
+#### Manual stress measurements
+
+Команды запускались с bounded `timeout`, поэтому exit code `124` у успешного
+manual run означает только остановку теста по времени после steady-state logs.
+
+SDR VP9 Profile 0, NV12, 4k60:
+
+```bash
+timeout 35s env RUST_LOG=info,player_core::worker=debug \
+  cargo run -p app-egui -- \
+  test-assets/4k60fps_sdr/LXb3EKWsInQ_2160p60_sdr_vp9_opus.webm
+```
+
+Итог steady-state diagnostics:
+
+- `drops = 0`, `drops_late = 0`;
+- `memory_path = Some(DmaBufZeroCopy)`;
+- `import_failures = Some(0)`;
+- `demux_worst_ms = Some(1.799079)`;
+- `decoder_submit_worst_ms = Some(15.766128)`;
+- `decoder_sync_worst_ms = Some(0.044853)`;
+- `import_worst_ms = Some(1.205236)`;
+- `worker_worst_ms = Some(0.114832)`;
+- `render_acquire_worst_ms = Some(0.031686)`;
+- `gpu_submit_present_worst_ms = Some(4.927615)`;
+- `release_ack_worst_ms = Some(1.576332)`;
+- `present_queue_depth = 6`;
+- `texture_capacity = Some(24)`, `texture_free = Some(13)`,
+  `texture_waiting_gpu = Some(0)`;
+- `imports_created = Some(1227)`, `imports_replaced = Some(1206)`,
+  `imports_reused = Some(0)`, `import_failures = Some(0)`;
+- `repeated_video_frames = 12`, отдельно от media drops.
+
+HDR VP9 Profile 2, P010, 4k60:
+
+```bash
+timeout 20s env RUST_LOG=info,player_core::worker=debug \
+  cargo run -p app-egui -- \
+  test-assets/hdr/LXb3EKWsInQ_2160p60_hdr_vp9_profile2.webm
+```
+
+Итог steady-state diagnostics:
+
+- stream прошёл production path без `RUSTIPLAYER_DEV_VERIFY_P010_BOUNDARY`;
+- `drops = 0`, `drops_late = 0`;
+- `memory_path = Some(DmaBufZeroCopy)`;
+- `import_failures = Some(0)`;
+- `demux_worst_ms = Some(3.570043)`;
+- `decoder_submit_worst_ms = Some(22.754762)`;
+- `decoder_sync_worst_ms = Some(0.020664)`;
+- `import_worst_ms = Some(1.990385)`;
+- `worker_worst_ms = Some(0.565628)`;
+- `render_acquire_worst_ms = Some(0.10512)`;
+- `gpu_submit_present_worst_ms = Some(9.26855)`;
+- `release_ack_worst_ms = Some(1.988161)`;
+- `imports_created = Some(1017)`, `imports_replaced = Some(996)`,
+  `imports_reused = Some(0)`, `import_failures = Some(0)`.
+
+У HDR sample без audio высокий `repeated_video_frames` ожидаем как accounting
+повтора текущего кадра, а не как media drop. Для network/YouTube variants
+`source/demux` starvation должен считаться отдельной причиной и не использоваться
+для изменения local decoder/render defaults без совпадающего local bottleneck.
+
+#### Session 9 self-review result
+
+- Smoothness достигнута не отключением counters: `Late`, queue, stale,
+  seek-preroll и decoder-starvation drops продолжают считаться раздельно.
+- Zero-copy invariant не ослаблен: CPU upload/readback не добавлены, а P010
+  diagnostic env shim удалён.
+- Future codec path не заблокирован VP9-specific решением: новая метрика
+  `GpuSubmitPresent` codec-neutral и подключена через render/worker boundary.
+- Diagnostics теперь достаточно детализированы для следующего incident:
+  видно source/demux, decoder, sync, import/pool, worker, render acquire,
+  GPU submit/present и release/backpressure.
+- Docs не обещают AV1/HEVC/H.264/VP8, native HDR output, wide-gamut SDR,
+  VP9 12-bit или 4:2:2/4:4:4 как production support.

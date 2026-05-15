@@ -17,6 +17,7 @@
 /// 3. Рендерим egui overlay поверх видео
 /// 4. Present на экран
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use render_core::{ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics};
@@ -214,13 +215,20 @@ impl GpuContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderFrameOutcome {
     /// Кадр был отправлен в swapchain и представлен.
-    Presented,
+    Presented(RenderFrameTiming),
 
     /// Кадр был пропущен из-за состояния surface/window.
     Dropped(RenderFrameDropReason),
 
     /// Video render path failed; caller must treat this as fatal media error.
     Failed(RenderFrameFailure),
+}
+
+/// Timing одного успешного submit/present участка render loop-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderFrameTiming {
+    /// Время от отправки command buffer-а до возврата из `surface_texture.present()`.
+    pub submit_present_elapsed: Duration,
 }
 
 /// Размер target-а и UI scale без раскрытия egui-wgpu типа наружу.
@@ -531,6 +539,8 @@ impl Renderer {
             );
         }
 
+        let submit_present_started_at = Instant::now();
+
         // Отправляем команды на GPU
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
 
@@ -546,7 +556,9 @@ impl Renderer {
 
         // Показываем кадр на экране.
         surface_texture.present();
-        RenderFrameOutcome::Presented
+        RenderFrameOutcome::Presented(RenderFrameTiming {
+            submit_present_elapsed: submit_present_started_at.elapsed(),
+        })
     }
 }
 

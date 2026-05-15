@@ -6,6 +6,40 @@
 
 Если stream требует codec/profile/bit depth/chroma/HDR режим, который текущий hardware backend не поддерживает, stream считается unavailable. Плеер не включает software video fallback.
 
+## Текущая production поддержка
+
+Поддержка означает прохождение полного capability intersection: decoder backend,
+DMA-BUF export/import, renderer import/render path и color pipeline. Если хотя бы
+одна часть не проходит, stream должен получить typed reject до тяжелого playback
+path или во время fail-closed backend boundary.
+
+- VP9 Profile 0, 8-bit, 4:2:0, SDR: `NV12` через VA-API hardware decode,
+  DMA-BUF zero-copy export/import и SDR BT.709 renderer path.
+- VP9 Profile 2, 10-bit, 4:2:0, HDR PQ/HLG: `P010` через VA-API hardware decode,
+  DMA-BUF zero-copy export/import, strict HDR metadata и BT.2446-C HDR-to-SDR
+  renderer path.
+
+VP9/HDR stream с неполной container metadata может быть предварительно выбран как
+candidate, но окончательное разрешение на decode даётся только после codec
+bitstream refinement и production capability check. Runtime env shim
+`RUSTIPLAYER_DEV_VERIFY_P010_BOUNDARY` после smooth playback Session 9 удалён и
+не является допустимым способом обойти renderer/HDR gate.
+
+## Known unsupported formats
+
+Следующие варианты не являются production support и не должны рекламироваться как
+доступные:
+
+- software video decode;
+- CPU upload или CPU readback decoded video frames;
+- VP9 12-bit;
+- VP9 4:2:2 и 4:4:4;
+- VP9 Profile 1 и Profile 3 для текущего renderer/backend path;
+- P010 BT.2020 SDR или wide-gamut SDR без отдельного gamut mapping path;
+- native HDR output в swapchain/OS compositor;
+- AV1, H.264, H.265 и VP8 production decode, пока для них не добавлены codec
+  adapters, backend validation и renderer/capability integration.
+
 ## Codec roadmap
 
 Порядок развития:

@@ -145,6 +145,40 @@ software video fallback не имеют runtime-переключателя.
 отдельным compile-time test-only path. Такой helper нельзя подключать через env,
 config, diagnostic mode или UI.
 
+## Smooth playback tuning defaults
+
+Session 9 проверяет defaults через runtime measurements и config validation. На
+2026-05-15 они не менялись: локальные SDR/HDR 4k60 stress-прогоны не показали
+steady-state late drops или CPU fallback, поэтому увеличивать буферы без причины
+нельзя.
+
+Текущие defaults:
+
+- `video.present_queue_frames = 8`;
+- `video.decoder_packet_channel_frames = 32`;
+- `video.decoder_frame_channel_frames = 8`;
+- `video.decoder_ready_queue_frames = 8`;
+- `video.decoder_surface_pool_frames = 24`;
+- `video.zero_copy_surface_pool_slots = 24`;
+- `video.max_decode_ahead_ms = 500`;
+- `video.scheduler.demux_packets_per_tick = 12`;
+- `video.scheduler.video_packets_per_tick = 8`;
+- `video.scheduler.decoded_frames_per_tick = 8`;
+- `video.scheduler.catch_up_budget_ms = 4`;
+- `video.scheduler.present_queue_min_frames = 2`;
+- `video.scheduler.present_queue_target_frames = 4`;
+- `video.scheduler.decode_ahead_target_ms = 250`;
+- `video.scheduler.surface_free_slots_min = 2`;
+- `video.scheduler.surface_free_slots_target = 4`;
+- `render.vulkan.present_mode = "fifo"`;
+- `render.vulkan.max_frame_latency = 2`.
+
+Validation rules защищают эти knobs от нулевых queue limits, target значений выше
+max и бессмысленных watermarks. Если будущие measurements покажут bottleneck,
+править нужно конкретный knob с привязкой к diagnostics stage: demux, decoder,
+surface pool, worker scheduler, render acquire, GPU submit/present или release
+acknowledgement.
+
 ## Schema version 2 seek/network/UI policy
 
 Schema version 2 фиксирует публичные knobs для live seek/scrub,

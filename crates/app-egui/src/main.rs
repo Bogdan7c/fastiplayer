@@ -796,7 +796,10 @@ fn render_frame(
             pixels_per_point,
         },
     }) {
-        RenderFrameOutcome::Presented => telemetry.record_presented_frame(),
+        RenderFrameOutcome::Presented(timing) => {
+            telemetry.record_presented_frame();
+            app_state.report_gpu_submit_present_latency(timing.submit_present_elapsed);
+        }
         RenderFrameOutcome::Dropped(_reason) => telemetry.record_dropped_frame(),
         RenderFrameOutcome::Failed(failure) => {
             telemetry.record_dropped_frame();

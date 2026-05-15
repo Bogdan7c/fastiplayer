@@ -502,17 +502,32 @@ pub struct PlaybackDiagnosticsLogSummary {
     /// Все typed drops.
     pub drops_total: u64,
 
+    /// Drop counters по причинам.
+    pub drops: VideoDropCountersSnapshot,
+
     /// Все typed pauses.
     pub pauses_total: u64,
 
+    /// Pipeline pause counters по причинам.
+    pub pauses: PipelinePauseCountersSnapshot,
+
     /// Последний observed memory path.
     pub zero_copy_memory_path: Option<FrameMemoryPath>,
+
+    /// Количество repeats, которые не являются media drops.
+    pub repeated_video_frames: u64,
+
+    /// Последнее решение worker wakeup planner-а.
+    pub worker_wakeup: WorkerWakeupDiagnosticsSnapshot,
 
     /// Самая медленная stage на момент summary.
     pub worst_stage: Option<PipelineLatencyStage>,
 
     /// Worst latency самой медленной stage.
     pub worst_latency: Option<Duration>,
+
+    /// Latency counters по всем фиксированным stage.
+    pub worst_latencies: PipelineLatencyCountersSnapshot,
 
     /// Последние queue depths.
     pub queues: PipelineQueueDepthSnapshot,
@@ -796,10 +811,15 @@ impl PlaybackDiagnostics {
         let (worst_stage, worst_latency) = self.latency_counters.global_worst();
         PlaybackDiagnosticsLogSummary {
             drops_total: self.snapshot.drops.total,
+            drops: self.snapshot.drops,
             pauses_total: self.snapshot.pauses.total,
+            pauses: self.snapshot.pauses,
             zero_copy_memory_path: self.snapshot.zero_copy_memory_path,
+            repeated_video_frames: self.snapshot.repeated_video_frames,
+            worker_wakeup: self.snapshot.worker_wakeup,
             worst_stage,
             worst_latency,
+            worst_latencies: self.latency_counters.snapshot(),
             queues,
         }
     }

@@ -217,6 +217,8 @@ Render thread получает кадр через lease, а не через п�
   `PresentFrameLease::texture_views()`;
 - создание `TextureView` не является texture copy; CPU/GPU copy fallback ради
   render bridge не добавляется;
+- render thread измеряет latency участка `queue.submit()`/`present()` и передает
+  sample в `PlayerWorker` через bounded non-blocking diagnostics channel;
 - release идёт через shared RAII drop/ack, когда освобождён последний clone lease-а;
 - если ack уже невозможно доставить из-за shutdown, lease fail-closed освобождает
   texture через provider исходного кадра;
@@ -255,22 +257,52 @@ Snapshot не должен содержать mutable handles к decoder/demuxer
 
 ## Threading model
 
-Текущая базовая модель после live seek/timeline Session 3:
+Текущая базовая модель после smooth playback Session 9:
 
 - main thread: winit/egui/render command submission;
 - player worker thread: владеет `PlayerSession`, demux/audio/video pipeline,
-  выполняет playback tick с фиксированным интервалом и публикует latest snapshot;
+  выполняет media-clock-driven playback tick и публикует latest snapshot;
 - video decode thread: blocking hardware decode + DMA-BUF zero-copy export/import;
 - HTTP fetch threads/tasks: source/network layer;
 - audio callback thread: CPAL-owned;
 - long-running persistence is not part of the current runtime: durable seek/cache
   metadata and runtime index jobs are absent and must not block playback.
 
+Worker wakeup не использует fixed 60Hz как источник cadence. Следующий wakeup
+выбирается из текущего состояния pipeline:
+
+- command/render/scrub/shutdown event;
+- deadline первого queued video frame относительно audio/media clock;
+- decoder readiness poll, пока decode thread отдаёт frames через неблокирующий
+  receive path;
+- immediate bounded catch-up, когда очереди ниже target и есть полезная
+  demux/decode работа;
+- редкий coarse progress fallback без video cadence semantics.
+
 Важное правило: render loop не должен содержать бизнес-логику playback и не должен
 вызывать `PlayerSession::tick()` напрямую. Он отправляет `PlayerCommand`,
 забирает `PlayerSnapshot`/`PlayerWorkerEvent` из worker boundary и запрашивает
 present frame через render lease. `wgpu::TextureView` создаются на render thread,
 а не в worker.
+
+## Runtime diagnostics boundary
+
+Diagnostics живут в `player-core` и backend crates, а UI только читает готовый
+snapshot или summary. Smooth playback incident должен разбираться по стадиям:
+
+- source/demux read;
+- decoder submit;
+- hardware sync;
+- DMA-BUF export/import и zero-copy surface pool;
+- worker scheduler;
+- render acquire;
+- GPU submit/present;
+- release acknowledgement/backpressure.
+
+Debug summary должен показывать typed drop counters, typed pause counters,
+`FrameMemoryPath`, queue depths, worker wakeup reason, `front_frame` diff,
+surface pool pressure и worst latency по каждой стадии. Эти метрики не требуют
+CPU readback и не меняют ownership decoded frame-ов.
 
 ## Backpressure model
 

@@ -53,6 +53,7 @@
 | Playback ownership | Runtime `PlayerSession` и media pipeline живут в потоке `PlayerWorker`; `app-egui` отправляет команды, читает latest snapshot/events и не вызывает `PlayerSession::tick()` напрямую |
 | Render frame lease | `PlayerWorker::try_acquire_present_frame()` отдаёт `PresentFrameLease`/`PlayerPresentFrame` с handle, metadata, generation и stale flag; `wgpu::TextureView` создаются на render thread через render-side provider, а release идёт через RAII drop/ack |
 | Worker channels | `player-core` использует `crossbeam-channel`; high-rate `UpdateScrub` идёт через bounded latest channel с policy `Drain Latest` |
+| Smooth playback diagnostics | Session 9 фиксирует stage metrics для source/demux, decoder, import/pool, worker scheduler, render acquire, GPU submit/present и release/backpressure |
 | Services | Модульные crate'ы, компилируются в один бинарь |
 | YouTube | Временный `yt-dlp` adapter живёт в `service-youtube`; default selector остаётся SDR VP9/Opus WebM, а HDR/VP9.2 YouTube checks требуют explicit override до capability-aware service candidates |
 | DRM | Дальняя архитектурная возможность, не текущий scope |
@@ -79,8 +80,13 @@
   не позже target: decoder reset получает keyframe, а точность пользовательской
   позиции остаётся за pre-roll/drop и commit gates в `PlayerSession`.
 - Аудио-треск после worker/audio правок устранён через CPAL playback anchor smoothing и
-  packet-boundary-safe resampler. На тяжёлых 4k60 asset-ах остаются late video drops;
-  это отдельная будущая задача render/present cadence profiling, не блокер текущего этапа.
-- План устранения late video drops, запрета CPU fallback и подготовки smooth playback
-  для будущих codec-ов описан в
-  [Smooth Playback and Zero-Copy Sessions](12-smooth-playback-zero-copy-sessions.md).
+  packet-boundary-safe resampler.
+- Smooth playback/zero-copy Sessions 1-9 закрыли production invariant: поддерживаемый
+  video path идёт через hardware decode + DMA-BUF zero-copy, drop accounting остаётся
+  включенным, а локальные SDR/HDR 4k60 stress-прогоны на 2026-05-15 показывают
+  steady-state `Late = 0` при `FrameMemoryPath::DmaBufZeroCopy`.
+- Дальнейшие performance incidents нужно разбирать по stage diagnostics из
+  [Smooth Playback and Zero-Copy Sessions](12-smooth-playback-zero-copy-sessions.md):
+  source/demux, decoder sync, import/pool, worker scheduler, render acquire,
+  GPU submit/present и release/backpressure. Если эти метрики чистые, причина
+  может быть ниже приложения: driver, compositor, kernel, display mode или firmware.

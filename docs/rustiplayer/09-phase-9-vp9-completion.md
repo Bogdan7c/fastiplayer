@@ -517,6 +517,11 @@ Manual tests:
 
 Статус: реализовано
 
+Историческая заметка: этот diagnostic mode был нужен только до Phase 10/Session 9.
+После smooth playback Session 9 runtime env
+`RUSTIPLAYER_DEV_VERIFY_P010_BOUNDARY` удалён; production HDR/P010 проходит только
+через обычный capability intersection с HDR-to-SDR renderer.
+
 Задачи:
 
 - добавить golden VP9 header fixtures;

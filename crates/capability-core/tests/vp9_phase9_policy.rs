@@ -10,7 +10,7 @@ use codec_core::{
 use render_core::{P010RenderReadiness, P010StorageLayout, RenderCapabilities, VideoFrameFormat};
 
 #[test]
-fn production_hdr_remains_rejected_until_phase10_even_after_p010_boundary_verification() {
+fn p010_boundary_without_hdr_renderer_does_not_enable_production_hdr() {
     let capabilities = capabilities_with_profile2_p010_boundary();
     let requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
         .with_profile(VideoProfile::Vp9(Vp9Profile::Profile2))
@@ -29,12 +29,11 @@ fn production_hdr_remains_rejected_until_phase10_even_after_p010_boundary_verifi
         })
     ));
 
-    let diagnostic_format = capabilities
-        .check_video_requirement_for_p010_boundary_diagnostic(&requirement)
-        .expect("manual diagnostic mode должен проверять decode/P010 boundary");
-
-    assert_eq!(diagnostic_format.bit_depth, BitDepth::Ten);
-    assert_eq!(diagnostic_format.chroma, ChromaSubsampling::Yuv420);
+    assert!(
+        production_error
+            .user_message()
+            .contains("HDR-to-SDR renderer")
+    );
 }
 
 /// Собирает Phase 9 capability report: decode/P010 boundary есть, HDR renderer-а нет.

@@ -14,9 +14,10 @@ use webm_demux::DemuxerOptions;
 use crate::seek_controller::{PlaybackResumeIntent, SeekController};
 use crate::tick::PlayerWorkerWakeupPlan;
 use crate::{
-    FrameCounters, MediaOpenRequest, MediaSource, PlayerCommand, PlayerError, PlayerErrorKind,
-    PlayerEvent, PlayerResult, PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext,
-    PlayerTickResult, ScrubCommitPolicy, SeekRequest, WgpuVideoBackendFactory,
+    FrameCounters, LatencyCounterSnapshot, MediaOpenRequest, MediaSource, PlayerCommand,
+    PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSession, PlayerSnapshot,
+    PlayerTickConfig, PlayerTickContext, PlayerTickResult, ScrubCommitPolicy, SeekRequest,
+    WgpuVideoBackendFactory,
 };
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
@@ -42,6 +43,9 @@ const RENDER_RELEASE_CHANNEL_CAPACITY: usize = 512;
 
 /// Ёмкость неблокирующих render-acquire latency samples.
 const RENDER_ACQUIRE_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
+
+/// Ёмкость неблокирующих GPU submit/present latency samples.
+const RENDER_TIMING_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
 
 /// Короткий backpressure budget для Drop path render lease-а.
 const RENDER_RELEASE_SEND_TIMEOUT: Duration = Duration::from_millis(2);
@@ -522,6 +526,12 @@ struct RenderAcquireSample {
     wait: Duration,
 }
 
+/// Неблокирующий sample renderer submit/present latency.
+struct RenderTimingSample {
+    /// Время от `queue.submit()` до возврата из `surface_texture.present()`.
+    submit_present_elapsed: Duration,
+}
+
 /// Drop-ack от render-side frame lease.
 struct RenderLeaseRelease {
     /// Поколение render resources, где lease был создан.
@@ -636,6 +646,9 @@ pub struct PlayerWorker {
     /// Неблокирующий канал latency samples render acquisition.
     render_acquire_sample_tx: Sender<RenderAcquireSample>,
 
+    /// Неблокирующий канал GPU submit/present timing samples.
+    render_timing_sample_tx: Sender<RenderTimingSample>,
+
     /// Аварийный shutdown signal, если command queue недоступна.
     shutdown_tx: Sender<()>,
 
@@ -653,6 +666,8 @@ impl PlayerWorker {
         let (render_release_tx, render_release_rx) = bounded(RENDER_RELEASE_CHANNEL_CAPACITY);
         let (render_acquire_sample_tx, render_acquire_sample_rx) =
             bounded(RENDER_ACQUIRE_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let (render_timing_sample_tx, render_timing_sample_rx) =
+            bounded(RENDER_TIMING_DIAGNOSTIC_CHANNEL_CAPACITY);
         let (shutdown_tx, shutdown_rx) = bounded(1);
         let scrub_coalescer = Arc::new(ScrubUpdateCoalescer::new(scrub_wake_tx));
         let latest_present_frame_handoff = Arc::new(LatestPresentFrameHandoff::new());
@@ -683,6 +698,7 @@ impl PlayerWorker {
                     render_release_tx,
                     render_release_rx,
                     render_acquire_sample_rx,
+                    render_timing_sample_rx,
                     shutdown_rx,
                     config,
                     last_preview_scrub_seek_at: None,
@@ -707,6 +723,7 @@ impl PlayerWorker {
             event_rx,
             latest_present_frame_handoff,
             render_acquire_sample_tx,
+            render_timing_sample_tx,
             shutdown_tx,
             join_handle: Some(join_handle),
         })
@@ -836,6 +853,13 @@ impl PlayerWorker {
         let _ = self
             .render_acquire_sample_tx
             .try_send(RenderAcquireSample { wait });
+    }
+
+    /// Сообщает worker-у renderer submit/present timing без блокировки render thread.
+    pub fn report_gpu_submit_present_latency(&self, submit_present_elapsed: Duration) {
+        let _ = self.render_timing_sample_tx.try_send(RenderTimingSample {
+            submit_present_elapsed,
+        });
     }
 
     /// Запрашивает shutdown и ждёт завершения worker thread.
@@ -979,6 +1003,9 @@ struct PlayerWorkerRuntime {
     /// Receiver неблокирующих latency samples от render thread.
     render_acquire_sample_rx: Receiver<RenderAcquireSample>,
 
+    /// Receiver неблокирующих GPU submit/present timing samples от render thread.
+    render_timing_sample_rx: Receiver<RenderTimingSample>,
+
     /// Аварийный shutdown receiver.
     shutdown_rx: Receiver<()>,
 
@@ -1025,6 +1052,7 @@ impl PlayerWorkerRuntime {
         loop {
             self.drain_render_releases();
             self.drain_render_acquire_samples();
+            self.drain_render_timing_samples();
 
             if self.shutdown_rx.try_recv().is_ok() {
                 self.handle_shutdown_request();
@@ -1085,6 +1113,9 @@ impl PlayerWorkerRuntime {
             recv(self.render_acquire_sample_rx) -> sample_result => {
                 self.handle_render_acquire_sample_wakeup(sample_result)
             }
+            recv(self.render_timing_sample_rx) -> sample_result => {
+                self.handle_render_timing_sample_wakeup(sample_result)
+            }
             recv(self.scrub_wake_rx) -> wake_result => {
                 self.handle_scrub_wakeup(wake_result)
             }
@@ -1110,6 +1141,9 @@ impl PlayerWorkerRuntime {
             }
             recv(self.render_acquire_sample_rx) -> sample_result => {
                 self.handle_render_acquire_sample_wakeup(sample_result)
+            }
+            recv(self.render_timing_sample_rx) -> sample_result => {
+                self.handle_render_timing_sample_wakeup(sample_result)
             }
             recv(self.scrub_wake_rx) -> wake_result => {
                 self.handle_scrub_wakeup(wake_result)
@@ -1216,6 +1250,19 @@ impl PlayerWorkerRuntime {
         if let Ok(sample) = sample_result {
             self.session.record_render_acquire_wait(sample.wait);
             self.drain_render_acquire_samples();
+        }
+        false
+    }
+
+    /// Обрабатывает wakeup от renderer submit/present diagnostics stream.
+    fn handle_render_timing_sample_wakeup(
+        &mut self,
+        sample_result: Result<RenderTimingSample, crossbeam_channel::RecvError>,
+    ) -> bool {
+        if let Ok(sample) = sample_result {
+            self.session
+                .record_gpu_submit_present_latency(sample.submit_present_elapsed);
+            self.drain_render_timing_samples();
         }
         false
     }
@@ -1551,6 +1598,14 @@ impl PlayerWorkerRuntime {
         }
     }
 
+    /// Снимает renderer submit/present timing samples, которые render thread отправил без ожидания worker-а.
+    fn drain_render_timing_samples(&mut self) {
+        while let Ok(sample) = self.render_timing_sample_rx.try_recv() {
+            self.session
+                .record_gpu_submit_present_latency(sample.submit_present_elapsed);
+        }
+    }
+
     /// Обрабатывает timeout, который не был command/render/scrub event-ом.
     fn handle_worker_timeout(&mut self, deadline: WorkerWakeupDeadline) {
         match deadline {
@@ -1607,16 +1662,58 @@ impl PlayerWorkerRuntime {
             .worst_latency
             .map(|latency| latency.as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
+        let wake_reason = summary
+            .worker_wakeup
+            .reason
+            .map(|reason| reason.metric_name())
+            .unwrap_or("none");
+        let wake_delay_ms = summary.worker_wakeup.planned_delay.map(duration_to_millis);
+        let wake_late_ms = duration_to_millis(summary.worker_wakeup.tick_late_by);
+        let pts_target_ms = summary
+            .worker_wakeup
+            .frame_timing
+            .map(|timing| timing.front_frame_delta_from_target_us as f64 / 1000.0);
+        let texture_slots = summary.queues.texture_slots;
+        let latencies = summary.worst_latencies;
         debug!(
             drops = summary.drops_total,
+            drops_late = summary.drops.late,
+            drops_queue = summary.drops.queue_overflow,
+            drops_stale_generation = summary.drops.stale_generation,
+            drops_seek_preroll = summary.drops.seek_preroll,
+            drops_decoder_starvation = summary.drops.decoder_starvation,
             pauses = summary.pauses_total,
+            pauses_sync_waiting = summary.pauses.sync_waiting,
+            pauses_present_queue = summary.pauses.waiting_for_present_queue,
+            pauses_gpu_release = summary.pauses.waiting_for_gpu_release,
+            repeated_video_frames = summary.repeated_video_frames,
             memory_path = ?summary.zero_copy_memory_path,
             worst_stage,
             worst_latency_ms,
+            demux_worst_ms = ?worst_latency_millis(latencies.demux_read),
+            decoder_submit_worst_ms = ?worst_latency_millis(latencies.decoder_submit),
+            decoder_sync_worst_ms = ?worst_latency_millis(latencies.hardware_sync),
+            import_worst_ms = ?worst_latency_millis(latencies.dma_buf_import),
+            worker_worst_ms = ?worst_latency_millis(latencies.worker_scheduler),
+            render_acquire_worst_ms = ?worst_latency_millis(latencies.render_acquire),
+            gpu_submit_present_worst_ms = ?worst_latency_millis(latencies.gpu_submit_present),
+            release_ack_worst_ms = ?worst_latency_millis(latencies.release_acknowledgement),
+            wake_reason,
+            wake_delay_ms = ?wake_delay_ms,
+            wake_late_ms,
+            pts_target_ms = ?pts_target_ms,
             pending_video_packets = summary.queues.pending_video_packets,
             present_queue_depth = summary.queues.present_queue_depth,
             decoder_in_flight_packets = summary.queues.decoder_in_flight_packets,
             active_render_leases = summary.queues.active_render_leases,
+            texture_in_use = ?texture_slots.map(|slots| slots.in_use),
+            texture_capacity = ?texture_slots.map(|slots| slots.capacity),
+            texture_free = ?texture_slots.map(|slots| slots.free_surfaces),
+            texture_waiting_gpu = ?texture_slots.map(|slots| slots.waiting_gpu_completion),
+            imports_created = ?texture_slots.map(|slots| slots.imports_created),
+            imports_reused = ?texture_slots.map(|slots| slots.imports_reused),
+            imports_replaced = ?texture_slots.map(|slots| slots.imports_replaced),
+            import_failures = ?texture_slots.map(|slots| slots.import_failures),
             "Playback diagnostics summary"
         );
     }
@@ -1654,6 +1751,18 @@ impl PlayerWorkerRuntime {
 /// Опустошает receiver без ожидания; используется для latest/coalescing каналов.
 fn drain_receiver_without_blocking<T>(receiver: &Receiver<T>) {
     while receiver.try_recv().is_ok() {}
+}
+
+/// Конвертирует latency в миллисекунды для compact diagnostics logs.
+fn duration_to_millis(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
+}
+
+/// Возвращает worst latency одного stage в миллисекундах, если stage уже видел samples.
+fn worst_latency_millis(counter: LatencyCounterSnapshot) -> Option<f64> {
+    counter
+        .worst
+        .map(|sample| duration_to_millis(sample.duration))
 }
 
 #[cfg(test)]
@@ -1726,6 +1835,8 @@ mod tests {
         let (render_release_tx, render_release_rx) = bounded(RENDER_RELEASE_CHANNEL_CAPACITY);
         let (_render_acquire_sample_tx, render_acquire_sample_rx) =
             bounded(RENDER_ACQUIRE_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let (_render_timing_sample_tx, render_timing_sample_rx) =
+            bounded(RENDER_TIMING_DIAGNOSTIC_CHANNEL_CAPACITY);
         let (_shutdown_tx, shutdown_rx) = bounded(1);
         let config = worker_config_for_tests();
         let scrub_coalescer = Arc::new(ScrubUpdateCoalescer::new(scrub_wake_tx));
@@ -1742,6 +1853,7 @@ mod tests {
             render_release_tx,
             render_release_rx,
             render_acquire_sample_rx,
+            render_timing_sample_rx,
             shutdown_rx,
             config,
             last_preview_scrub_seek_at: None,
@@ -1791,13 +1903,19 @@ mod tests {
 
     fn worker_with_latest_handoff_for_tests(
         latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
-    ) -> (PlayerWorker, Receiver<RenderAcquireSample>) {
+    ) -> (
+        PlayerWorker,
+        Receiver<RenderAcquireSample>,
+        Receiver<RenderTimingSample>,
+    ) {
         let (command_tx, _command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
         let (scrub_wake_tx, _scrub_wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
         let (_snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
         let (_event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
         let (render_acquire_sample_tx, render_acquire_sample_rx) =
             bounded(RENDER_ACQUIRE_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let (render_timing_sample_tx, render_timing_sample_rx) =
+            bounded(RENDER_TIMING_DIAGNOSTIC_CHANNEL_CAPACITY);
         let (shutdown_tx, _shutdown_rx) = bounded(1);
         let command_sender = PlayerCommandSender {
             command_tx,
@@ -1812,10 +1930,12 @@ mod tests {
                 event_rx,
                 latest_present_frame_handoff,
                 render_acquire_sample_tx,
+                render_timing_sample_tx,
                 shutdown_tx,
                 join_handle: None,
             },
             render_acquire_sample_rx,
+            render_timing_sample_rx,
         )
     }
 
@@ -2175,7 +2295,7 @@ mod tests {
         let frame =
             present_frame_lease_for_tests(3, expected_texture_handle, false, release_tx.clone());
         latest_present_frame_handoff.publish(Some(frame));
-        let (worker, render_acquire_sample_rx) =
+        let (worker, render_acquire_sample_rx, _render_timing_sample_rx) =
             worker_with_latest_handoff_for_tests(Arc::clone(&latest_present_frame_handoff));
 
         let acquired_frame = worker.try_acquire_present_frame().unwrap();
@@ -2183,6 +2303,20 @@ mod tests {
         assert_eq!(acquired_frame.render_generation, 3);
         assert_eq!(acquired_frame.texture_handle(), expected_texture_handle);
         assert!(render_acquire_sample_rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn player_worker_reports_gpu_submit_present_latency_without_command_queue() {
+        let latest_present_frame_handoff = Arc::new(LatestPresentFrameHandoff::new());
+        let (worker, _render_acquire_sample_rx, render_timing_sample_rx) =
+            worker_with_latest_handoff_for_tests(latest_present_frame_handoff);
+
+        worker.report_gpu_submit_present_latency(Duration::from_millis(1));
+
+        let sample = render_timing_sample_rx
+            .try_recv()
+            .expect("render timing sample should be queued");
+        assert_eq!(sample.submit_present_elapsed, Duration::from_millis(1));
     }
 
     #[test]
