@@ -42,8 +42,8 @@ Seek уже хорошо отделён от UI и renderer:
 - preview timeout может снять `stale_frame` без свежего кадра;
 - generation в `SeekController` не защищает async preview/final intent;
 - telemetry смешивает seek-discard и настоящие frame drops;
-- EndScrub может коммитить последний видимый preview вместо последней позиции
-  курсора;
+- EndScrub раньше имел неявную policy: часть веток тянулась к latest target,
+  часть фактически коммитила последний видимый preview;
 - codec/backend extensibility ограничена VP9/VA-API и Opus path.
 
 ## Сессия 1. Метрики и классификация seek-discard
@@ -305,6 +305,75 @@ scrub.
 ### Definition of Done
 
 - Поведение release описано одним enum/policy, а не спрятано в ветках session.
+
+### Итог 7-й сессии, 2026-05-15
+
+Статус на конец сессии: перемотка стала рабочей для целевого UX - без обычных
+frame drops, без залипания seek state и без заметной задержки при отпускании
+timeline после уже показанного preview.
+
+Выбранная по умолчанию policy для timeline release:
+
+- `CommitVisiblePreview`.
+
+Причина выбора изменилась по результатам ручной проверки. Изначально hybrid
+казался предпочтительным, потому что он сохраняет last visible preview как
+feedback и потом доезжает exact seek-ом до latest target. На реальном HDR/P010
+4K60 WebM это дало сильную задержку на release: final exact seek попадал на
+decode point за несколько секунд до requested target, и decoder должен был
+пройти длинный preroll перед тем, как session могла закрыть final commit.
+
+Важный нюанс: это была не проблема "магии" в `complete_visible_preview_seek_as_final`
+и не простой баг coalescing-а. Гибридная policy работала как accuracy-first
+policy и честно ждала target frame, но для timeline release это плохой UX,
+потому что пользователь уже видел приемлемый preview. Поэтому default release
+сделан latency-first: если кадр preview реально был показан, release фиксирует
+его сразу и не запускает новый exact final seek.
+
+Что осталось явно доступным:
+
+- `CommitLatestTarget`: всегда финально ехать в latest target.
+- `CommitVisiblePreview`: фиксировать последний реально показанный preview.
+- `CommitLatestTargetWithVisiblePreviewFallback`: hybrid/exact policy для
+  сценариев, где важнее exact target, чем мгновенный release.
+
+Зафиксированные edge cases:
+
+- Release immediately after update: если visible preview ещё нет, default
+  fallback-ится в latest target, чтобы click/очень быстрый release не терялся.
+- Release while preview transaction active: active preview latest target-а
+  promoted to final без второго demux seek.
+- Release after visible preview: default commit закрывается сразу на visible
+  frame, а не ждёт latest target.
+- Worker при `EndScrub` не стартует дополнительный release-preview seek поверх
+  coalesced latest update.
+- Final seek с замороженным audio clock не должен залипать: seek-time scheduler
+  обязан выпустить первый frame на/после target, даже если обычная playback
+  синхронизация ещё не готова.
+
+Проверки, которые подтвердили итог:
+
+- `cargo test -p player-core` - 126 passed.
+- `cargo test -p player-core scrub` - 25 passed.
+- `cargo test -p app-egui timeline` - 8 passed.
+- `cargo check -p player-core -p app-egui`.
+- Ручной GUI-прогон на `test-assets/hdr/LXb3EKWsInQ_2160p60_hdr_vp9_profile2.webm`:
+  в логе `EndScrub policy=CommitVisiblePreview` и `Final seek commit завершён`
+  идут в один timestamp; diagnostics показывали `drops=0`.
+
+Если в будущих сессиях появится расхождение с этим выводом, сначала сверять
+timestamp между `Worker принял EndScrub`, `Session выбирает EndScrub commit policy`
+и `Final seek commit завершён`. Если снова появится задержка, важно отличить:
+
+- задержку preview до release;
+- задержку exact final seek после release;
+- renderer/GPU backpressure;
+- обычный playback drop;
+- ожидаемый seek-discard.
+
+Этот блок фиксирует именно итог 7-й сессии, а не вечную гарантию. Если будущие
+изменения codec/backend, scheduler или render lease path снова поменяют поведение
+scrub, этот итог нужно поправить по фактическим логам.
 
 ## Сессия 8. Codec/backend readiness boundary
 
