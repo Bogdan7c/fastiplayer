@@ -14,10 +14,11 @@ use webm_demux::DemuxerOptions;
 use crate::seek_controller::{PlaybackResumeIntent, SeekController};
 use crate::tick::PlayerWorkerWakeupPlan;
 use crate::{
-    FrameCounters, LatencyCounterSnapshot, MediaOpenRequest, MediaSource, PlayerCommand,
-    PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSession, PlayerSnapshot,
-    PlayerTickConfig, PlayerTickContext, PlayerTickResult, ScrubCommitIntent, ScrubCommitPolicy,
-    ScrubGeneration, ScrubUpdateIntent, SeekRequest, SessionScrubCommand, WgpuVideoBackendFactory,
+    ActiveSeekDiagnosticsSnapshot, FrameCounters, LatencyCounterSnapshot, MediaOpenRequest,
+    MediaSource, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult,
+    PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
+    ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration, ScrubUpdateIntent, SeekRequest,
+    SessionScrubCommand, WgpuVideoBackendFactory,
 };
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
@@ -52,6 +53,18 @@ const RENDER_RELEASE_SEND_TIMEOUT: Duration = Duration::from_millis(2);
 
 /// Интервал throttled diagnostics summary в debug logs.
 const DIAGNOSTICS_SUMMARY_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Минимальный возраст final seek-а перед первым stall log-ом.
+const FINAL_SEEK_STALL_LOG_MIN_AFTER: Duration = Duration::from_millis(250);
+
+/// Максимальный возраст final seek-а перед первым stall log-ом.
+const FINAL_SEEK_STALL_LOG_MAX_AFTER: Duration = Duration::from_millis(1_000);
+
+/// Максимальный возраст preview seek-а перед stall log-ом.
+const PREVIEW_SEEK_STALL_LOG_MAX_AFTER: Duration = Duration::from_millis(250);
+
+/// Минимальный интервал между повторными active seek stall logs.
+const SEEK_STALL_LOG_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Default throttle live preview seek-а, если worker создан без app config.
 const DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL: Duration = Duration::from_millis(100);
@@ -835,6 +848,8 @@ impl PlayerWorker {
                     deferred_preview_scrub_target: None,
                     last_tick_at: worker_started_at,
                     last_diagnostics_summary_at: worker_started_at,
+                    last_seek_stall_log_key: None,
+                    last_seek_stall_log_at: None,
                 };
                 runtime.run();
             })
@@ -1167,6 +1182,12 @@ struct PlayerWorkerRuntime {
 
     /// Последний debug diagnostics summary.
     last_diagnostics_summary_at: Instant,
+
+    /// Последний active seek transaction, для которого печатали stall diagnostics.
+    last_seek_stall_log_key: Option<(u64, &'static str)>,
+
+    /// Последний момент throttled active seek stall log-а.
+    last_seek_stall_log_at: Option<Instant>,
 }
 
 /// Источник ближайшего timeout-а worker loop.
@@ -1221,6 +1242,7 @@ impl PlayerWorkerRuntime {
 
             self.apply_latest_scrub_update();
             self.dispatch_due_preview_scrub_seek();
+            self.log_active_seek_stall_if_needed(Instant::now());
 
             if self.session.is_shutdown_requested() {
                 break;
@@ -1903,8 +1925,41 @@ impl PlayerWorkerRuntime {
         ));
         self.last_tick_at = now;
         self.publish_tick_result(tick_result);
+        self.log_active_seek_stall_if_needed(now);
         self.log_diagnostics_summary_if_due(now);
         self.publish_session_outputs();
+    }
+
+    /// Пишет throttled warn-log, если active seek уже выглядит как зависший transition.
+    fn log_active_seek_stall_if_needed(&mut self, now: Instant) {
+        let Some(active_seek) = self
+            .session
+            .active_seek_diagnostics(now, &self.config.tick_config)
+        else {
+            self.last_seek_stall_log_key = None;
+            self.last_seek_stall_log_at = None;
+            return;
+        };
+
+        let active_seek_key = (active_seek.generation, active_seek.kind);
+        if self.last_seek_stall_log_key != Some(active_seek_key) {
+            self.last_seek_stall_log_key = Some(active_seek_key);
+            self.last_seek_stall_log_at = None;
+        }
+
+        let log_after = seek_stall_log_after(active_seek, self.config.tick_config);
+        if active_seek.age < log_after {
+            return;
+        }
+
+        if self.last_seek_stall_log_at.is_some_and(|last_log_at| {
+            now.saturating_duration_since(last_log_at) < SEEK_STALL_LOG_INTERVAL
+        }) {
+            return;
+        }
+
+        self.last_seek_stall_log_at = Some(now);
+        log_active_seek_stall(active_seek);
     }
 
     /// Пишет короткую diagnostics summary только при включённом debug tracing.
@@ -2017,6 +2072,71 @@ impl PlayerWorkerRuntime {
             }
         }
     }
+}
+
+/// Возвращает возраст seek-а, после которого diagnostics warning становится полезным.
+fn seek_stall_log_after(
+    active_seek: ActiveSeekDiagnosticsSnapshot,
+    tick_config: PlayerTickConfig,
+) -> Duration {
+    if active_seek.kind == "preview" {
+        return tick_config
+            .seek_preview_timeout
+            .min(PREVIEW_SEEK_STALL_LOG_MAX_AFTER);
+    }
+
+    tick_config
+        .seek_commit_timeout
+        .mul_f64(0.05)
+        .max(FINAL_SEEK_STALL_LOG_MIN_AFTER)
+        .min(FINAL_SEEK_STALL_LOG_MAX_AFTER)
+        .min(tick_config.seek_commit_timeout)
+}
+
+/// Пишет один structured event, достаточный для локализации active seek blocker-а.
+fn log_active_seek_stall(active_seek: ActiveSeekDiagnosticsSnapshot) {
+    let queues = active_seek.queues;
+    let texture_slots = queues.texture_slots;
+
+    warn!(
+        kind = active_seek.kind,
+        blocker = %active_seek.blocker.metric_name(),
+        generation = active_seek.generation,
+        scrub_generation = ?active_seek.scrub_generation,
+        age_ms = duration_to_millis(active_seek.age),
+        target_ms = duration_to_millis(active_seek.target),
+        actual_ms = duration_to_millis(active_seek.actual),
+        resume_intent = active_seek.resume_intent,
+        video_gate_ready = active_seek.video_gate_ready,
+        audio_gate_ready = active_seek.audio_gate_ready,
+        target_frame_presented = active_seek.target_frame_presented,
+        ready_video_frames = active_seek.ready_video_frames,
+        required_video_frames = active_seek.required_video_frames,
+        present_frame_pts_ms = ?active_seek.present_frame_pts.map(duration_to_millis),
+        front_queued_frame_pts_ms = ?active_seek.front_queued_frame_pts.map(duration_to_millis),
+        demuxing_active = active_seek.demuxing_active,
+        draining_after_eof = active_seek.draining_after_eof,
+        stale_frame = active_seek.stale_frame,
+        last_pause_reason = ?active_seek.last_pause_reason,
+        pending_audio_packets = queues.pending_audio_packets,
+        pending_video_packets = queues.pending_video_packets,
+        present_queue_depth = queues.present_queue_depth,
+        decoder_send_queue_depth = queues.decoder_send_queue_depth,
+        decoder_in_flight_packets = queues.decoder_in_flight_packets,
+        active_render_leases = queues.active_render_leases,
+        deferred_render_releases = queues.deferred_render_releases,
+        texture_capacity = ?texture_slots.map(|slots| slots.capacity),
+        texture_in_use = ?texture_slots.map(|slots| slots.in_use),
+        texture_available = ?texture_slots.map(|slots| slots.available_slots()),
+        texture_free_surfaces = ?texture_slots.map(|slots| slots.free_surfaces),
+        texture_waiting_gpu = ?texture_slots.map(|slots| slots.waiting_gpu_completion),
+        texture_waiting_decoder_reuse = ?texture_slots.map(|slots| slots.waiting_decoder_reuse),
+        texture_import_failures = ?texture_slots.map(|slots| slots.import_failures),
+        imports_created = ?texture_slots.map(|slots| slots.imports_created),
+        imports_reused = ?texture_slots.map(|slots| slots.imports_reused),
+        imports_replaced = ?texture_slots.map(|slots| slots.imports_replaced),
+        "Active seek transaction is still waiting"
+    );
 }
 
 /// Опустошает receiver без ожидания; используется для latest/coalescing каналов.
@@ -2206,6 +2326,8 @@ mod tests {
             deferred_preview_scrub_target: None,
             last_tick_at,
             last_diagnostics_summary_at: last_tick_at,
+            last_seek_stall_log_key: None,
+            last_seek_stall_log_at: None,
         }
     }
 

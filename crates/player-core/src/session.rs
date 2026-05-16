@@ -23,14 +23,15 @@ use crate::seek_state::{
     SeekCommitKind, SeekCommitState, SeekDemuxRequestError, demux_seek_request_for_transaction,
 };
 use crate::{
-    AudioBufferSnapshot, BackendSnapshot, FrameCounters, MediaOpenRequest, MediaSource,
-    MediaSummary, PipelineLatencyStage, PipelinePauseReason, PipelineQueueDepthSnapshot,
-    PlaybackDiagnostics, PlaybackDiagnosticsLogSummary, PlaybackPipeline, PlaybackState,
-    PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot,
-    QualitySelection, QueueSnapshot, ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration,
-    ScrubUpdateIntent, SeekRequest, SessionScrubCommand, TexturePoolSnapshot,
-    TextureSlotPressureSnapshot, TrackId, TrackSelectionSnapshot, TrackSummarySnapshot,
-    VideoBackendFactory, VideoDropReason, VideoFrameSnapshot, WorkerWakeupDiagnosticsSnapshot,
+    ActiveSeekDiagnosticsSnapshot, AudioBufferSnapshot, BackendSnapshot, FrameCounters,
+    MediaOpenRequest, MediaSource, MediaSummary, PipelineLatencyStage, PipelinePauseReason,
+    PipelineQueueDepthSnapshot, PlaybackDiagnostics, PlaybackDiagnosticsLogSummary,
+    PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent,
+    PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection, QueueSnapshot,
+    ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration, ScrubUpdateIntent, SeekProgressBlocker,
+    SeekRequest, SessionScrubCommand, TexturePoolSnapshot, TextureSlotPressureSnapshot, TrackId,
+    TrackSelectionSnapshot, TrackSummarySnapshot, VideoBackendFactory, VideoDropReason,
+    VideoFrameSnapshot, WorkerWakeupDiagnosticsSnapshot,
 };
 
 /// Preview frame, который был реально показан в рамках конкретного scrub intent-а.
@@ -924,6 +925,69 @@ impl PlayerSession {
         self.seek_commit
     }
 
+    /// Собирает подробный snapshot активного seek-а для throttled stall logs.
+    #[must_use]
+    pub(crate) fn active_seek_diagnostics(
+        &self,
+        now: Instant,
+        tick_config: &PlayerTickConfig,
+    ) -> Option<ActiveSeekDiagnosticsSnapshot> {
+        let seek_commit = self.seek_commit?;
+        let target_position = seek_commit.target_position.as_duration();
+        let queues = self.diagnostic_queue_depths();
+        let required_video_frames = self.required_seek_resume_video_ready_frames(
+            seek_commit,
+            tick_config.effective_seek_resume_video_min_ready_frames(),
+        );
+        let ready_video_frames = self.seek_ready_video_frame_count(target_position);
+        let target_frame_presented = self.seek_target_frame_presented(target_position);
+        let video_gate_ready = self.seek_video_gate_ready(seek_commit, required_video_frames);
+        let audio_gate_ready =
+            self.seek_audio_gate_ready(seek_commit, tick_config.seek_resume_audio_min_buffer_ms);
+        let diagnostics_snapshot = self.diagnostics.snapshot_with_queues(queues);
+        let blocker = self.seek_progress_blocker(
+            seek_commit,
+            tick_config,
+            queues,
+            target_frame_presented,
+            video_gate_ready,
+            audio_gate_ready,
+            ready_video_frames,
+            required_video_frames,
+        );
+
+        Some(ActiveSeekDiagnosticsSnapshot {
+            kind: seek_commit_kind_name(seek_commit.kind),
+            generation: seek_commit.generation,
+            scrub_generation: seek_commit.scrub_generation.map(ScrubGeneration::as_u64),
+            age: now.saturating_duration_since(seek_commit.started_at),
+            target: target_position,
+            actual: seek_commit.actual_position.as_duration(),
+            resume_intent: playback_resume_intent_name(seek_commit.resume_intent),
+            blocker,
+            video_gate_ready,
+            audio_gate_ready,
+            target_frame_presented,
+            ready_video_frames,
+            required_video_frames,
+            present_frame_pts: self
+                .pipeline
+                .present_video_frame
+                .as_ref()
+                .map(|frame| frame.pts),
+            front_queued_frame_pts: self
+                .pipeline
+                .video_frame_queue
+                .front()
+                .map(|frame| frame.pts),
+            demuxing_active: self.is_demuxing_active(),
+            draining_after_eof: self.draining_after_eof,
+            stale_frame: self.snapshot.timeline.stale_frame,
+            last_pause_reason: diagnostics_snapshot.pauses.last.map(|pause| pause.reason),
+            queues,
+        })
+    }
+
     /// Возвращает seek target как временный clock для scheduler-а, пока audio clock недоступен.
     ///
     /// Без этого video-only seek сравнивает decoded target frames со старой
@@ -1117,6 +1181,10 @@ impl PlayerSession {
         }
 
         let target_position = seek_commit.target_position.as_duration();
+        if self.seek_preview_visible_frame_ready(seek_commit) {
+            return true;
+        }
+
         let target_frame_presented = self
             .pipeline
             .present_video_frame
@@ -1138,6 +1206,113 @@ impl PlayerSession {
             .required_seek_resume_video_ready_frames(seek_commit, resume_video_min_ready_frames);
 
         self.seek_ready_video_frame_count(target_position) >= required_ready_frames
+    }
+
+    /// Проверяет, что target frame уже стал текущим non-stale present frame.
+    fn seek_target_frame_presented(&self, target_position: Duration) -> bool {
+        self.pipeline
+            .present_video_frame
+            .as_ref()
+            .is_some_and(|frame| frame.pts >= target_position)
+            && !self.snapshot.timeline.stale_frame
+    }
+
+    /// Preview gate готов после любого свежего кадра текущего scrub generation-а.
+    fn seek_preview_visible_frame_ready(&self, seek_commit: SeekCommitState) -> bool {
+        if seek_commit.kind != SeekCommitKind::Preview || self.snapshot.timeline.stale_frame {
+            return false;
+        }
+
+        let Some(scrub_generation) = seek_commit.scrub_generation else {
+            return false;
+        };
+        let Some(visible_preview) = self.last_visible_preview else {
+            return false;
+        };
+
+        visible_preview.generation == scrub_generation
+            && self.present_frame_matches_position(visible_preview.position.as_duration())
+    }
+
+    /// Классифицирует текущую причину, по которой active seek ещё не закрыл gates.
+    fn seek_progress_blocker(
+        &self,
+        seek_commit: SeekCommitState,
+        tick_config: &PlayerTickConfig,
+        queues: PipelineQueueDepthSnapshot,
+        target_frame_presented: bool,
+        video_gate_ready: bool,
+        audio_gate_ready: bool,
+        ready_video_frames: usize,
+        required_video_frames: usize,
+    ) -> SeekProgressBlocker {
+        if video_gate_ready && audio_gate_ready {
+            return SeekProgressBlocker::ReadyToCommit;
+        }
+
+        if self.pipeline.audio_track_id.is_some()
+            && self.pipeline.audio_buffer_clear_generation < seek_commit.generation
+        {
+            return SeekProgressBlocker::WaitingForAudioClear;
+        }
+
+        if self.pipeline.video_track_id.is_none() {
+            return SeekProgressBlocker::WaitingForAudioPreroll;
+        }
+
+        if let Some(texture_slots) = queues.texture_slots
+            && texture_slots.available_slots() <= tick_config.min_texture_slots_available_for_decode
+        {
+            if texture_slots.waiting_gpu_completion > 0
+                || texture_slots.waiting_decoder_reuse > 0
+                || queues.active_render_leases > 0
+                || queues.deferred_render_releases > 0
+            {
+                return SeekProgressBlocker::WaitingForGpuRelease;
+            }
+
+            return SeekProgressBlocker::WaitingForFreeSurface;
+        }
+
+        if !target_frame_presented {
+            return self.video_target_frame_blocker(queues);
+        }
+
+        if ready_video_frames < required_video_frames {
+            return SeekProgressBlocker::WaitingForVideoResumePreroll;
+        }
+
+        if !audio_gate_ready {
+            return SeekProgressBlocker::WaitingForAudioPreroll;
+        }
+
+        SeekProgressBlocker::Unknown
+    }
+
+    /// Уточняет blocker для состояния, где seek ещё не показал target frame.
+    fn video_target_frame_blocker(
+        &self,
+        queues: PipelineQueueDepthSnapshot,
+    ) -> SeekProgressBlocker {
+        if queues.decoder_send_queue_depth > 0 || queues.decoder_in_flight_packets > 0 {
+            return SeekProgressBlocker::WaitingForDecoderOutput;
+        }
+
+        if queues.pending_video_packets > 0 {
+            return SeekProgressBlocker::WaitingForDecoderInput;
+        }
+
+        if self.is_demuxing_active() && !self.draining_after_eof {
+            return SeekProgressBlocker::WaitingForDemux;
+        }
+
+        if self.pipeline.present_video_frame.is_some()
+            || !self.pipeline.video_frame_queue.is_empty()
+        {
+            return SeekProgressBlocker::WaitingForScheduler;
+        }
+
+        SeekProgressBlocker::WaitingForVideoTargetFrame
     }
 
     /// Возвращает требуемый video preroll для конкретного seek transaction-а.
@@ -1292,6 +1467,15 @@ impl PlayerSession {
 
     /// Закрывает live preview seek, оставляя interactive scrub активным.
     fn complete_preview_seek_commit(&mut self, seek_commit: SeekCommitState) {
+        let target_position = seek_commit.target_position.as_duration();
+        let preview_state = if self.present_frame_covers_target(target_position) {
+            TimelinePreviewState::Ready
+        } else if self.seek_preview_visible_frame_ready(seek_commit) {
+            TimelinePreviewState::Visible
+        } else {
+            TimelinePreviewState::Ready
+        };
+
         self.seek_commit = None;
         self.completed_preview_generation = seek_commit.scrub_generation;
         self.seek_eof_fallback_video_position = None;
@@ -1299,7 +1483,7 @@ impl PlayerSession {
         self.snapshot.timeline.target_position = Some(seek_commit.target_position);
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.stale_frame = false;
-        self.snapshot.timeline.preview_state = TimelinePreviewState::Ready;
+        self.snapshot.timeline.preview_state = preview_state;
         self.pause_audio_output_for_seek();
         self.set_playback_state(PlaybackState::Paused);
     }
@@ -2847,6 +3031,22 @@ fn player_error_from_decoder_flush_error(error: anyhow::Error) -> PlayerError {
     )
 }
 
+/// Возвращает stable label для типа seek transaction-а.
+fn seek_commit_kind_name(kind: SeekCommitKind) -> &'static str {
+    match kind {
+        SeekCommitKind::Final => "final",
+        SeekCommitKind::Preview => "preview",
+    }
+}
+
+/// Возвращает stable label для resume intent-а после seek.
+fn playback_resume_intent_name(intent: PlaybackResumeIntent) -> &'static str {
+    match intent {
+        PlaybackResumeIntent::Pause => "pause",
+        PlaybackResumeIntent::Play => "play",
+    }
+}
+
 /// Добавляет media duration без panic при переполнении.
 fn saturating_duration_add(timestamp: Duration, offset: Duration) -> Duration {
     timestamp.checked_add(offset).unwrap_or(Duration::MAX)
@@ -3582,6 +3782,50 @@ mod tests {
     }
 
     #[test]
+    fn preview_seek_completes_after_visible_pre_target_frame() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+        let request = SeekRequest::absolute(MediaTime::from_secs(8));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(request))
+            .unwrap();
+        session.pipeline.present_video_frame =
+            Some(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
+        session.note_presented_frame_for_seek(Duration::from_millis(7_900));
+
+        let tick_now = session
+            .seek_commit()
+            .expect("preview seek должен быть активен")
+            .started_at
+            + Duration::from_millis(1);
+        session.finish_seek_commit_if_ready(
+            tick_now,
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            1,
+        );
+
+        assert!(session.seek_commit().is_none());
+        assert!(session.snapshot().timeline.scrubbing);
+        assert!(!session.snapshot().timeline.seeking);
+        assert!(!session.snapshot().timeline.stale_frame);
+        assert_eq!(
+            session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Visible
+        );
+        assert_eq!(
+            session.snapshot().timeline.target_position,
+            Some(MediaTime::from_secs(8))
+        );
+    }
+
+    #[test]
     fn default_release_while_preview_active_promotes_preview_without_second_seek() {
         let mut session = PlayerSession::new();
         let seek_request_log = install_fake_media_with_seek_request_log(
@@ -4266,6 +4510,34 @@ mod tests {
         assert!(session.pipeline.video_decoder_needs_keyframe);
         assert_eq!(session.pipeline.video_decode_in_flight_packets(), 0);
         assert!(session.seek_commit().is_some());
+    }
+
+    #[test]
+    fn active_seek_diagnostics_identifies_demux_blocker_before_target_frame() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(5),
+            )))
+            .unwrap();
+
+        let diagnostics = session
+            .active_seek_diagnostics(
+                Instant::now() + Duration::from_millis(300),
+                &PlayerTickConfig::default(),
+            )
+            .expect("active seek diagnostics should exist while seek commit is open");
+
+        assert_eq!(diagnostics.kind, "final");
+        assert_eq!(diagnostics.target, Duration::from_secs(5));
+        assert_eq!(
+            diagnostics.blocker,
+            crate::SeekProgressBlocker::WaitingForDemux
+        );
+        assert!(!diagnostics.target_frame_presented);
+        assert_eq!(diagnostics.queues.present_queue_depth, 0);
     }
 
     #[test]

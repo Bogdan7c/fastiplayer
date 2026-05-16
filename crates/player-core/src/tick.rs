@@ -229,6 +229,16 @@ impl From<&AppConfig> for PlayerTickConfig {
     }
 }
 
+impl PlayerTickConfig {
+    /// Возвращает достижимый video preroll для seek resume с учётом размера presentation queue.
+    #[must_use]
+    pub(crate) fn effective_seek_resume_video_min_ready_frames(&self) -> usize {
+        self.seek_resume_video_min_ready_frames
+            .max(1)
+            .min(video_present_queue_limit(self).saturating_add(1))
+    }
+}
+
 /// Итог работы одного playback tick для shell-телеметрии.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlayerTickResult {
@@ -929,10 +939,7 @@ fn texture_slot_target_watermark(tick_config: &PlayerTickConfig) -> usize {
 
 /// Возвращает достижимый video preroll для seek resume с учётом размера presentation queue.
 fn effective_seek_resume_video_min_ready_frames(tick_config: &PlayerTickConfig) -> usize {
-    tick_config
-        .seek_resume_video_min_ready_frames
-        .max(1)
-        .min(video_present_queue_limit(tick_config).saturating_add(1))
+    tick_config.effective_seek_resume_video_min_ready_frames()
 }
 
 /// Кладёт decoded frame в presentation queue, сохраняя фиксированный размер очереди.

@@ -25,7 +25,9 @@ pub use command::{
     ScrubGeneration, SeekMode, SeekRequest, SeekTarget,
 };
 pub(crate) use command::{ScrubCommitIntent, ScrubUpdateIntent, SessionScrubCommand};
-pub(crate) use diagnostics::PlaybackDiagnostics;
+pub(crate) use diagnostics::{
+    ActiveSeekDiagnosticsSnapshot, PlaybackDiagnostics, SeekProgressBlocker,
+};
 pub use diagnostics::{
     LatencyCounterSnapshot, PipelineLatencyCountersSnapshot, PipelineLatencySampleSnapshot,
     PipelineLatencyStage, PipelinePauseCountersSnapshot, PipelinePauseReason,

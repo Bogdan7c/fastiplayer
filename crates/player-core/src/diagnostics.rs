@@ -448,6 +448,131 @@ pub struct WorkerWakeupDiagnosticsSnapshot {
     pub frame_timing: Option<WorkerFrameTimingSnapshot>,
 }
 
+/// Текущий blocker активного seek transition-а для логов расследования зависаний.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeekProgressBlocker {
+    /// Все gates уже готовы, следующий tick должен закрыть seek commit.
+    ReadyToCommit,
+
+    /// Audio output ещё не подтвердил очистку buffer-а для текущего seek generation.
+    WaitingForAudioClear,
+
+    /// Audio-only resume ждёт минимальный audio buffer.
+    WaitingForAudioPreroll,
+
+    /// Decoder/demux не может получить surface/import slot.
+    WaitingForFreeSurface,
+
+    /// Surface удерживается GPU/render lease/reuse path-ом.
+    WaitingForGpuRelease,
+
+    /// Video packet ждёт отправки в decoder thread.
+    WaitingForDecoderInput,
+
+    /// Packet уже ушёл в decoder, но decoded frame ещё не вернулся.
+    WaitingForDecoderOutput,
+
+    /// Demuxer ещё должен прочитать packets после seek.
+    WaitingForDemux,
+
+    /// Нужный decoded frame уже около scheduler-а, но ещё не стал present frame.
+    WaitingForScheduler,
+
+    /// Target frame ещё не был показан.
+    WaitingForVideoTargetFrame,
+
+    /// Target frame показан, но перед resume нужен дополнительный video preroll.
+    WaitingForVideoResumePreroll,
+
+    /// Диагностика не смогла свести состояние к более точному blocker-у.
+    Unknown,
+}
+
+impl SeekProgressBlocker {
+    /// Возвращает стабильное имя blocker-а для structured logs.
+    #[must_use]
+    pub const fn metric_name(self) -> &'static str {
+        match self {
+            Self::ReadyToCommit => "ready_to_commit",
+            Self::WaitingForAudioClear => "audio_clear",
+            Self::WaitingForAudioPreroll => "audio_preroll",
+            Self::WaitingForFreeSurface => "free_surface",
+            Self::WaitingForGpuRelease => "gpu_release",
+            Self::WaitingForDecoderInput => "decoder_input",
+            Self::WaitingForDecoderOutput => "decoder_output",
+            Self::WaitingForDemux => "demux",
+            Self::WaitingForScheduler => "scheduler",
+            Self::WaitingForVideoTargetFrame => "video_target_frame",
+            Self::WaitingForVideoResumePreroll => "video_resume_preroll",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Snapshot активного seek transition-а для throttled worker log-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActiveSeekDiagnosticsSnapshot {
+    /// `final` или `preview`, без раскрытия внутреннего enum-а session.
+    pub kind: &'static str,
+
+    /// Packet/frame generation, которому принадлежит seek transaction.
+    pub generation: u64,
+
+    /// User scrub generation, если seek родился из interactive scrub.
+    pub scrub_generation: Option<u64>,
+
+    /// Сколько активен seek transaction.
+    pub age: Duration,
+
+    /// Цель seek-а на media timeline.
+    pub target: Duration,
+
+    /// Фактическая container position после demux seek.
+    pub actual: Duration,
+
+    /// Resume intent, сохранённый на момент старта или release scrub-а.
+    pub resume_intent: &'static str,
+
+    /// Главный текущий blocker seek progress.
+    pub blocker: SeekProgressBlocker,
+
+    /// Готов ли video gate.
+    pub video_gate_ready: bool,
+
+    /// Готов ли audio gate.
+    pub audio_gate_ready: bool,
+
+    /// Был ли уже показан frame на/после target.
+    pub target_frame_presented: bool,
+
+    /// Сколько target/future video frames уже готовы для resume.
+    pub ready_video_frames: usize,
+
+    /// Сколько target/future video frames требуется текущей policy.
+    pub required_video_frames: usize,
+
+    /// PTS текущего present frame.
+    pub present_frame_pts: Option<Duration>,
+
+    /// PTS первого queued frame перед scheduler-ом.
+    pub front_queued_frame_pts: Option<Duration>,
+
+    /// Идёт ли demux чтение.
+    pub demuxing_active: bool,
+
+    /// Находится ли pipeline в EOF-drain.
+    pub draining_after_eof: bool,
+
+    /// Timeline всё ещё помечает картинку как stale.
+    pub stale_frame: bool,
+
+    /// Последняя typed pause-причина, если pipeline уже её зафиксировал.
+    pub last_pause_reason: Option<PipelinePauseReason>,
+
+    /// Queue/resource depths около active seek.
+    pub queues: PipelineQueueDepthSnapshot,
+}
+
 /// Read-only diagnostics snapshot, который UI может только отображать.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaybackDiagnosticsSnapshot {
