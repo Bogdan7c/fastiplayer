@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(test)]
 use crate::seek_controller::SeekControllerDiagnostics;
-use crate::seek_controller::{PlaybackResumeIntent, SeekController};
+use crate::seek_controller::{PlaybackResumeIntent, ScrubPreviewQueueResult, SeekController};
 use crate::{
     PlaybackState, PlayerCommand, ScrubCommitIntent, ScrubGeneration, ScrubUpdateIntent,
     SeekRequest, SessionScrubCommand,
@@ -138,12 +138,6 @@ pub(crate) struct ScrubDriver {
     /// Последний момент, когда worker запускал live preview seek.
     last_preview_scrub_seek_at: Option<Instant>,
 
-    /// Последняя scrub-цель, для которой preview seek уже был отправлен.
-    last_preview_scrub_target: Option<ScrubUpdateIntent>,
-
-    /// Latest scrub-цель, ожидающая preview throttle window.
-    deferred_preview_scrub_target: Option<ScrubUpdateIntent>,
-
     /// Минимальный интервал между live preview seek-ами во время scrub.
     live_scrub_preview_interval: Duration,
 }
@@ -155,8 +149,6 @@ impl ScrubDriver {
         Self {
             seek_controller: SeekController::new(),
             last_preview_scrub_seek_at: None,
-            last_preview_scrub_target: None,
-            deferred_preview_scrub_target: None,
             live_scrub_preview_interval,
         }
     }
@@ -256,13 +248,15 @@ impl ScrubDriver {
 
         let preview_decision = match preview_dispatch {
             ScrubPreviewDispatch::Allow => {
-                self.queue_preview_scrub_seek(intent);
-                self.take_due_preview_scrub_seek(Instant::now())
+                match self.seek_controller.queue_latest_preview(intent) {
+                    ScrubPreviewQueueResult::Queued => {
+                        self.take_due_preview_scrub_seek(Instant::now())
+                    }
+                    ScrubPreviewQueueResult::AlreadyDispatched => None,
+                    ScrubPreviewQueueResult::Stale => return ScrubUpdateDecision::stale(),
+                }
             }
-            ScrubPreviewDispatch::SuppressForCommit => {
-                self.clear_deferred_preview_scrub_target(intent);
-                None
-            }
+            ScrubPreviewDispatch::SuppressForCommit => None,
         };
 
         ScrubUpdateDecision {
@@ -296,20 +290,15 @@ impl ScrubDriver {
 
     /// Забирает отложенный preview intent, если throttle window уже прошёл.
     fn take_due_preview_scrub_seek(&mut self, now: Instant) -> Option<ScrubDuePreview> {
-        if !self.seek_controller.is_scrubbing() {
-            self.deferred_preview_scrub_target = None;
+        if !self.seek_controller.has_deferred_preview_target() {
             return None;
         }
-
-        let Some(intent) = self.deferred_preview_scrub_target else {
-            return None;
-        };
 
         if !self.preview_scrub_interval_elapsed(now) {
             return None;
         }
 
-        self.deferred_preview_scrub_target = None;
+        let intent = self.seek_controller.take_deferred_preview()?;
         Some(ScrubDuePreview {
             intent,
             dispatched_at: now,
@@ -319,7 +308,7 @@ impl ScrubDriver {
     /// Возвращает время до ближайшего throttled preview seek-а.
     #[must_use]
     pub(crate) fn next_preview_scrub_timeout(&self, now: Instant) -> Option<Duration> {
-        if !self.seek_controller.is_scrubbing() || self.deferred_preview_scrub_target.is_none() {
+        if !self.seek_controller.has_deferred_preview_target() {
             return None;
         }
 
@@ -339,8 +328,6 @@ impl ScrubDriver {
         let Some(resume_intent) = self.seek_controller.finish_scrub(intent) else {
             return ScrubEndDecision::stale();
         };
-
-        self.deferred_preview_scrub_target = None;
 
         ScrubEndDecision {
             session_command: Some(SessionScrubCommand::End(intent)),
@@ -369,8 +356,6 @@ impl ScrubDriver {
     /// Сбрасывает worker-only состояние preview seek-а.
     pub(crate) fn reset_preview_scrub_state(&mut self) {
         self.last_preview_scrub_seek_at = None;
-        self.last_preview_scrub_target = None;
-        self.deferred_preview_scrub_target = None;
     }
 
     /// Test hook для сценариев, где нужно удержать preview внутри throttle window.
@@ -380,22 +365,6 @@ impl ScrubDriver {
         last_seek_at: Option<Instant>,
     ) {
         self.last_preview_scrub_seek_at = last_seek_at;
-    }
-
-    /// Запоминает latest target, для которого нужен live preview seek.
-    fn queue_preview_scrub_seek(&mut self, intent: ScrubUpdateIntent) {
-        if self.last_preview_scrub_target == Some(intent) {
-            return;
-        }
-
-        self.deferred_preview_scrub_target = Some(intent);
-    }
-
-    /// Снимает отложенный preview, если release уже коммитит ту же цель final seek-ом.
-    fn clear_deferred_preview_scrub_target(&mut self, intent: ScrubUpdateIntent) {
-        if self.deferred_preview_scrub_target == Some(intent) {
-            self.deferred_preview_scrub_target = None;
-        }
     }
 
     /// Проверяет throttle window для live preview seek-а.
@@ -417,8 +386,6 @@ impl ScrubDriver {
         if !self.seek_controller.mark_preview_seek_dispatched(intent) {
             return ScrubPreviewDecision::stale(intent);
         }
-
-        self.last_preview_scrub_target = Some(intent);
 
         if let Some(dispatched_at) = dispatched_at {
             self.last_preview_scrub_seek_at = Some(dispatched_at);
@@ -504,6 +471,95 @@ mod tests {
         );
         assert_eq!(decision.due_preview, None);
         assert!(!decision.stale);
+    }
+
+    #[test]
+    fn throttled_preview_does_not_survive_new_generation() {
+        let now = Instant::now();
+        let mut driver = ScrubDriver::new(Duration::from_millis(100));
+        let first_generation = driver.next_begin_generation();
+        driver.begin_scrub(first_generation, PlaybackState::Paused);
+        driver.set_last_preview_scrub_seek_at_for_tests(Some(now));
+
+        let decision =
+            driver.apply_latest_scrub_update_for_drag(scrub_update_intent(first_generation, 100));
+
+        assert_eq!(decision.due_preview, None);
+        assert!(driver.next_preview_scrub_timeout(now).is_some());
+
+        let second_generation = first_generation.next();
+        driver.begin_scrub(second_generation, PlaybackState::Paused);
+
+        let preview_decision =
+            driver.dispatch_due_preview_scrub_seek(now + Duration::from_millis(200));
+
+        assert_eq!(driver.next_preview_scrub_timeout(now), None);
+        assert_eq!(preview_decision.intent, None);
+        assert_eq!(preview_decision.session_command, None);
+        assert!(!preview_decision.stale);
+        assert_eq!(driver.diagnostics().stale_or_ignored_commands, 0);
+    }
+
+    #[test]
+    fn throttled_preview_dispatches_only_current_latest_target() {
+        let now = Instant::now();
+        let mut driver = ScrubDriver::new(Duration::from_millis(100));
+        let generation = driver.next_begin_generation();
+        driver.begin_scrub(generation, PlaybackState::Paused);
+        driver.set_last_preview_scrub_seek_at_for_tests(Some(now));
+
+        let first_decision =
+            driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 100));
+        let second_decision =
+            driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 250));
+
+        assert_eq!(first_decision.due_preview, None);
+        assert_eq!(second_decision.due_preview, None);
+
+        let preview_decision =
+            driver.dispatch_due_preview_scrub_seek(now + Duration::from_millis(100));
+
+        assert_eq!(
+            preview_decision.session_command,
+            Some(SessionScrubCommand::Preview(scrub_update_intent(
+                generation, 250
+            )))
+        );
+        assert!(!preview_decision.stale);
+        assert_eq!(driver.in_flight_target(), Some(seek_to_millis(250)));
+    }
+
+    #[test]
+    fn deferred_preview_is_cleared_when_latest_is_already_in_flight() {
+        let now = Instant::now();
+        let mut driver = ScrubDriver::new(Duration::from_millis(100));
+        let generation = driver.next_begin_generation();
+        driver.begin_scrub(generation, PlaybackState::Paused);
+
+        let first_decision =
+            driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 100));
+        let due_preview = first_decision
+            .due_preview
+            .expect("first preview should be due immediately");
+        let preview_decision = driver.preview_due_scrub(due_preview);
+        assert_eq!(
+            preview_decision.session_command,
+            Some(SessionScrubCommand::Preview(scrub_update_intent(
+                generation, 100
+            )))
+        );
+
+        driver.set_last_preview_scrub_seek_at_for_tests(Some(now));
+        let second_decision =
+            driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 250));
+        let repeated_first_decision =
+            driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 100));
+
+        assert_eq!(second_decision.due_preview, None);
+        assert_eq!(repeated_first_decision.due_preview, None);
+        assert_eq!(driver.next_preview_scrub_timeout(now), None);
+        assert_eq!(driver.latest_scrub_target(), Some(seek_to_millis(100)));
+        assert_eq!(driver.in_flight_target(), Some(seek_to_millis(100)));
     }
 
     #[test]
