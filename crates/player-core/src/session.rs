@@ -612,16 +612,10 @@ impl PlayerSession {
     /// Очищает video frame queue и present frame, освобождая texture slots.
     pub fn clear_video_frames(&mut self) {
         self.clear_seek_preroll_fallback_frame();
-        let queued_texture_handles = self
-            .pipeline
-            .video_frame_queue
-            .drain(..)
-            .map(|frame| frame.texture_handle)
-            .collect::<Vec<_>>();
+        let queued_texture_handles = self.pipeline.clear_video_queues();
         let present_texture_handle = self
             .pipeline
-            .present_video_frame
-            .take()
+            .take_present_video_frame()
             .map(|frame| frame.texture_handle);
 
         for texture_handle in queued_texture_handles {
@@ -630,25 +624,16 @@ impl PlayerSession {
         if let Some(texture_handle) = present_texture_handle {
             self.release_video_texture(texture_handle);
         }
-
-        self.pipeline.video_frame_queue.clear();
     }
 
     /// Очищает только очередь будущих video frames, сохраняя текущий кадр на экране.
     pub fn clear_queued_video_frames(&mut self) {
         self.clear_seek_preroll_fallback_frame();
-        let queued_texture_handles = self
-            .pipeline
-            .video_frame_queue
-            .drain(..)
-            .map(|frame| frame.texture_handle)
-            .collect::<Vec<_>>();
+        let queued_texture_handles = self.pipeline.clear_video_queues();
 
         for texture_handle in queued_texture_handles {
             self.release_video_texture(texture_handle);
         }
-
-        self.pipeline.video_frame_queue.clear();
     }
 
     /// Регистрирует render lease для texture handle текущего поколения.
@@ -977,8 +962,7 @@ impl PlayerSession {
                 .map(|frame| frame.pts),
             front_queued_frame_pts: self
                 .pipeline
-                .video_frame_queue
-                .front()
+                .front_queued_video_frame()
                 .map(|frame| frame.pts),
             demuxing_active: self.is_demuxing_active(),
             draining_after_eof: self.draining_after_eof,
@@ -1307,7 +1291,7 @@ impl PlayerSession {
         }
 
         if self.pipeline.present_video_frame.is_some()
-            || !self.pipeline.video_frame_queue.is_empty()
+            || !self.pipeline.video_present_queue_is_empty()
         {
             return SeekProgressBlocker::WaitingForScheduler;
         }
@@ -1345,8 +1329,7 @@ impl PlayerSession {
             });
         let queued_ready_frames = self
             .pipeline
-            .video_frame_queue
-            .iter()
+            .queued_video_frames()
             .filter(|frame| frame.pts >= target_position)
             .count();
 
@@ -2026,7 +2009,7 @@ impl PlayerSession {
     fn drop_queued_video_frames_before_target(&mut self, target_position: Duration) {
         let mut retained_frames = std::collections::VecDeque::new();
 
-        while let Some(frame) = self.pipeline.video_frame_queue.pop_front() {
+        while let Some(frame) = self.pipeline.pop_queued_video_frame_front() {
             if frame.pts < target_position {
                 self.release_video_texture(frame.texture_handle);
             } else {
@@ -2034,7 +2017,9 @@ impl PlayerSession {
             }
         }
 
-        self.pipeline.video_frame_queue = retained_frames;
+        for frame in retained_frames {
+            self.pipeline.enqueue_queued_video_frame(frame);
+        }
     }
 
     /// Сбрасывает video decoder перед seek и делает flush явной fail-fast границей.
@@ -2151,21 +2136,15 @@ impl PlayerSession {
         }
 
         self.set_playback_state(PlaybackState::Seeking);
-        self.pipeline.seek_generation = self.pipeline.seek_generation.saturating_add(1);
-        let generation = self.pipeline.seek_generation;
+        let generation = self.pipeline.begin_seek_generation();
+        let has_video = self.pipeline.video_track_id.is_some();
 
-        self.pipeline.pending_audio_packets.clear();
-        self.pipeline.pending_video_packets.clear();
-        self.pipeline.video_decoder_needs_keyframe = self.pipeline.video_track_id.is_some();
-        self.pipeline.reset_video_decode_in_flight();
+        self.pipeline.clear_pending_packets_for_seek();
+        self.pipeline.reset_decoder_state_for_seek(has_video);
         self.seek_eof_fallback_video_position = None;
         self.clear_seek_preroll_fallback_frame();
         self.clear_queued_video_frames();
-        self.pipeline.last_decoded_video_pts = None;
-        self.pipeline.media_clock_base = target_duration;
-        self.pipeline.monotonic_media_clock_anchor = None;
-        self.pipeline.last_audio_clock = Duration::ZERO;
-        self.pipeline.last_audio_clock_change_at = Instant::now();
+        self.pipeline.reset_clocks_for_seek(target_duration);
         self.snapshot.timeline.target_position = Some(target_position);
         self.snapshot.timeline.seeking = true;
         self.snapshot.timeline.stale_frame = self.pipeline.present_video_frame.is_some();
@@ -2735,9 +2714,9 @@ impl PlayerSession {
     /// Собирает snapshot очередей без раскрытия их содержимого.
     fn queue_snapshot(&self) -> QueueSnapshot {
         QueueSnapshot {
-            pending_audio_packets: self.pipeline.pending_audio_packets.len(),
-            pending_video_packets: self.pipeline.pending_video_packets.len(),
-            decoded_video_frames: self.pipeline.video_frame_queue.len(),
+            pending_audio_packets: self.pipeline.pending_audio_packet_len(),
+            pending_video_packets: self.pipeline.pending_video_packet_len(),
+            decoded_video_frames: self.pipeline.video_present_queue_len(),
         }
     }
 
@@ -2748,12 +2727,12 @@ impl PlayerSession {
             .video_decoder_thread
             .as_ref()
             .map(|decoder_thread| decoder_thread.packet_queue_depth())
-            .unwrap_or(self.pipeline.pending_video_packets.len());
+            .unwrap_or(self.pipeline.pending_video_packet_len());
 
         PipelineQueueDepthSnapshot {
-            pending_audio_packets: self.pipeline.pending_audio_packets.len(),
-            pending_video_packets: self.pipeline.pending_video_packets.len(),
-            present_queue_depth: self.pipeline.video_frame_queue.len(),
+            pending_audio_packets: self.pipeline.pending_audio_packet_len(),
+            pending_video_packets: self.pipeline.pending_video_packet_len(),
+            present_queue_depth: self.pipeline.video_present_queue_len(),
             decoder_send_queue_depth,
             decoder_in_flight_packets: self.pipeline.video_decode_in_flight_packets(),
             decoder_ready_queue_depth: None,
@@ -3887,8 +3866,7 @@ mod tests {
             .unwrap();
         session
             .pipeline
-            .video_frame_queue
-            .push_back(decoded_frame_for_tests(Duration::from_millis(7_900), 41));
+            .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(7_900), 41));
 
         session
             .dispatch_command(PlayerCommand::EndScrub {
@@ -3906,7 +3884,7 @@ mod tests {
             Some((SeekCommitKind::Final, MediaTime::from_secs(8)))
         );
         assert!(!session.snapshot().timeline.scrubbing);
-        assert!(session.pipeline.video_frame_queue.is_empty());
+        assert!(session.pipeline.video_present_queue_is_empty());
     }
 
     #[test]
@@ -4596,8 +4574,7 @@ mod tests {
         );
         session
             .pipeline
-            .pending_audio_packets
-            .push_back(PendingAudioPacket::new(
+            .enqueue_pending_audio_packet(PendingAudioPacket::new(
                 TrackId::new(2),
                 Duration::ZERO,
                 session.pipeline.seek_generation,
@@ -4605,15 +4582,14 @@ mod tests {
             ));
         session
             .pipeline
-            .pending_video_packets
-            .push_back(PendingVideoPacket::new(
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
                 TrackId::new(1),
                 Duration::ZERO,
                 session.pipeline.seek_generation,
                 Bytes::from_static(&[4, 5, 6]),
                 true,
             ));
-        session.pipeline.video_decoder_needs_keyframe = false;
+        session.pipeline.mark_video_decoder_bootstrapped();
         session.pipeline.note_video_packet_sent_to_decoder();
         session.pipeline.note_video_packet_sent_to_decoder();
 
@@ -4623,8 +4599,8 @@ mod tests {
             )))
             .unwrap();
 
-        assert!(session.pipeline.pending_audio_packets.is_empty());
-        assert!(session.pipeline.pending_video_packets.is_empty());
+        assert!(session.pipeline.pending_audio_packet_is_empty());
+        assert!(session.pipeline.pending_video_packet_is_empty());
         assert_eq!(
             *seek_log
                 .lock()
@@ -4632,7 +4608,7 @@ mod tests {
             vec![Duration::from_secs(5)]
         );
         assert_eq!(session.pipeline.seek_generation, 1);
-        assert!(session.pipeline.video_decoder_needs_keyframe);
+        assert!(session.pipeline.video_decoder_needs_keyframe());
         assert_eq!(session.pipeline.video_decode_in_flight_packets(), 0);
         assert!(session.seek_commit().is_some());
     }
@@ -4923,8 +4899,7 @@ mod tests {
             .unwrap();
         session
             .pipeline
-            .video_frame_queue
-            .push_back(decoded_frame_for_tests(Duration::from_secs(5), 5));
+            .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_secs(5), 5));
         fake_decoder.push_decoded_frame(decoded_frame_for_tests(Duration::from_secs(6), 6));
 
         let tick_result = session.tick(PlayerTickContext::with_config(
@@ -4943,7 +4918,7 @@ mod tests {
                 .map(|frame| frame.pts),
             Some(Duration::from_secs(6))
         );
-        assert!(session.pipeline.video_frame_queue.is_empty());
+        assert!(session.pipeline.video_present_queue_is_empty());
         assert!(!session.snapshot().timeline.stale_frame);
         assert!(
             !tick_result.pipeline_pauses.iter().any(|pause| {
@@ -4987,7 +4962,7 @@ mod tests {
 
         assert_eq!(tick_result.decoded_video_frames, 33);
         assert!(session.seek_commit().is_none());
-        assert!(session.pipeline.video_frame_queue.len() <= 2);
+        assert!(session.pipeline.video_present_queue_len() <= 2);
         assert_eq!(
             session
                 .pipeline
@@ -5105,8 +5080,7 @@ mod tests {
 
         session
             .pipeline
-            .video_frame_queue
-            .push_back(decoded_frame_for_tests(Duration::from_secs(24), 42));
+            .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_secs(24), 42));
 
         let tick_config = PlayerTickConfig {
             seek_resume_video_min_ready_frames: 1,
@@ -5211,12 +5185,10 @@ mod tests {
 
         session
             .pipeline
-            .video_frame_queue
-            .push_back(decoded_frame_for_tests(Duration::from_millis(6_016), 43));
+            .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(6_016), 43));
         session
             .pipeline
-            .video_frame_queue
-            .push_back(decoded_frame_for_tests(Duration::from_millis(6_033), 44));
+            .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(6_033), 44));
 
         session.finish_seek_commit_if_ready(
             Instant::now(),

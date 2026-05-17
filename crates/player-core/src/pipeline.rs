@@ -318,6 +318,185 @@ pub(crate) struct PlaybackPipeline {
 }
 
 impl PlaybackPipeline {
+    /// Начинает новое поколение packets для seek transaction.
+    ///
+    /// Saturating increment оставляет поведение прежним: после переполнения
+    /// generation фиксируется на `u64::MAX`, а не делает wrap в старые packets.
+    pub(crate) fn begin_seek_generation(&mut self) -> u64 {
+        self.seek_generation = self.seek_generation.saturating_add(1);
+        self.seek_generation
+    }
+
+    /// Очищает pending audio/video packets, которые относятся к старой seek generation.
+    pub(crate) fn clear_pending_packets_for_seek(&mut self) {
+        self.clear_pending_audio_packets();
+        self.clear_pending_video_packets();
+    }
+
+    /// Сбрасывает decoder-side состояние, которое становится невалидным после seek.
+    pub(crate) fn reset_decoder_state_for_seek(&mut self, has_video: bool) {
+        if has_video {
+            self.require_video_decoder_keyframe();
+        } else {
+            self.mark_video_decoder_bootstrapped();
+        }
+        self.reset_video_decode_in_flight();
+        self.last_decoded_video_pts = None;
+    }
+
+    /// Переставляет media clocks на целевую позицию seek.
+    pub(crate) fn reset_clocks_for_seek(&mut self, target: Duration) {
+        self.media_clock_base = target;
+        self.monotonic_media_clock_anchor = None;
+        self.last_audio_clock = Duration::ZERO;
+        self.last_audio_clock_change_at = Instant::now();
+    }
+
+    /// Очищает очередь будущих video frames и возвращает texture handles для release.
+    #[must_use]
+    pub(crate) fn clear_video_queues(&mut self) -> Vec<video_core::FrameTextureHandle> {
+        self.video_frame_queue
+            .drain(..)
+            .map(|frame| frame.texture_handle)
+            .collect()
+    }
+
+    /// Делает decoded frame текущим кадром presentation.
+    pub(crate) fn set_present_video_frame(&mut self, frame: video_core::DecodedFrame) {
+        self.present_video_frame = Some(frame);
+    }
+
+    /// Забирает текущий present frame, чтобы вызывающий слой мог освободить texture.
+    pub(crate) fn take_present_video_frame(&mut self) -> Option<video_core::DecodedFrame> {
+        self.present_video_frame.take()
+    }
+
+    /// Добавляет audio packet в pending queue текущего pipeline.
+    pub(crate) fn enqueue_pending_audio_packet(&mut self, packet: PendingAudioPacket) {
+        self.pending_audio_packets.push_back(packet);
+    }
+
+    /// Добавляет video packet в pending queue текущего pipeline.
+    pub(crate) fn enqueue_pending_video_packet(&mut self, packet: PendingVideoPacket) {
+        self.pending_video_packets.push_back(packet);
+    }
+
+    /// Забирает первый pending video packet для drop или отправки в decoder.
+    pub(crate) fn pop_pending_video_packet_front(&mut self) -> Option<PendingVideoPacket> {
+        self.pending_video_packets.pop_front()
+    }
+
+    /// Возвращает первый pending video packet без снятия его с очереди.
+    #[must_use]
+    pub(crate) fn front_pending_video_packet(&self) -> Option<&PendingVideoPacket> {
+        self.pending_video_packets.front()
+    }
+
+    /// Проверяет, пуста ли очередь pending video packets.
+    #[must_use]
+    pub(crate) fn pending_video_packet_is_empty(&self) -> bool {
+        self.pending_video_packets.is_empty()
+    }
+
+    /// Очищает очередь pending video packets через единый pipeline boundary.
+    pub(crate) fn clear_pending_video_packets(&mut self) {
+        self.pending_video_packets.clear();
+    }
+
+    /// Забирает первый pending audio packet для декодирования.
+    pub(crate) fn pop_pending_audio_packet_front(&mut self) -> Option<PendingAudioPacket> {
+        self.pending_audio_packets.pop_front()
+    }
+
+    /// Возвращает audio packet обратно в начало очереди после throttle.
+    pub(crate) fn push_pending_audio_packet_front(&mut self, packet: PendingAudioPacket) {
+        self.pending_audio_packets.push_front(packet);
+    }
+
+    /// Проверяет, пуста ли очередь pending audio packets.
+    #[must_use]
+    pub(crate) fn pending_audio_packet_is_empty(&self) -> bool {
+        self.pending_audio_packets.is_empty()
+    }
+
+    /// Возвращает глубину pending audio queue без раскрытия поля очереди.
+    #[must_use]
+    pub(crate) fn pending_audio_packet_len(&self) -> usize {
+        self.pending_audio_packets.len()
+    }
+
+    /// Очищает очередь pending audio packets через единый pipeline boundary.
+    pub(crate) fn clear_pending_audio_packets(&mut self) {
+        self.pending_audio_packets.clear();
+    }
+
+    /// Возвращает первый decoded frame из presentation queue без мутации.
+    #[must_use]
+    pub(crate) fn front_queued_video_frame(&self) -> Option<&video_core::DecodedFrame> {
+        self.video_frame_queue.front()
+    }
+
+    /// Даёт read-only проход по presentation queue без доступа к самой структуре очереди.
+    #[must_use]
+    pub(crate) fn queued_video_frames(&self) -> impl Iterator<Item = &video_core::DecodedFrame> {
+        self.video_frame_queue.iter()
+    }
+
+    /// Возвращает первый и следующий за ним decoded frames без раскрытия очереди.
+    #[must_use]
+    pub(crate) fn front_and_next_queued_video_frames(
+        &self,
+    ) -> Option<(&video_core::DecodedFrame, &video_core::DecodedFrame)> {
+        let front_frame = self.video_frame_queue.front()?;
+        let next_frame = self.video_frame_queue.get(1)?;
+
+        Some((front_frame, next_frame))
+    }
+
+    /// Забирает первый decoded frame из presentation queue.
+    pub(crate) fn pop_queued_video_frame_front(&mut self) -> Option<video_core::DecodedFrame> {
+        self.video_frame_queue.pop_front()
+    }
+
+    /// Добавляет decoded frame в конец presentation queue.
+    pub(crate) fn enqueue_queued_video_frame(&mut self, frame: video_core::DecodedFrame) {
+        self.video_frame_queue.push_back(frame);
+    }
+
+    /// Проверяет, пуста ли presentation queue.
+    #[must_use]
+    pub(crate) fn video_present_queue_is_empty(&self) -> bool {
+        self.video_frame_queue.is_empty()
+    }
+
+    /// Возвращает глубину presentation queue без раскрытия поля очереди.
+    #[must_use]
+    pub(crate) fn video_present_queue_len(&self) -> usize {
+        self.video_frame_queue.len()
+    }
+
+    /// Возвращает глубину pending video queue без раскрытия поля очереди.
+    #[must_use]
+    pub(crate) fn pending_video_packet_len(&self) -> usize {
+        self.pending_video_packets.len()
+    }
+
+    /// Проверяет, ждёт ли video decoder первый keyframe после bootstrap/flush.
+    #[must_use]
+    pub(crate) const fn video_decoder_needs_keyframe(&self) -> bool {
+        self.video_decoder_needs_keyframe
+    }
+
+    /// Отмечает, что decoder получил keyframe и может принимать inter-frames.
+    pub(crate) fn mark_video_decoder_bootstrapped(&mut self) {
+        self.video_decoder_needs_keyframe = false;
+    }
+
+    /// Требует новый keyframe перед следующей отправкой packets в decoder.
+    pub(crate) fn require_video_decoder_keyframe(&mut self) {
+        self.video_decoder_needs_keyframe = true;
+    }
+
     /// Переводит renderer resource ids в новое поколение после полной смены media.
     pub(crate) fn advance_render_generation(&mut self) {
         self.render_generation = self.render_generation.wrapping_add(1);
@@ -332,10 +511,10 @@ impl PlaybackPipeline {
         self.audio_decoder = None;
         self.audio_output = None;
         self.audio_track_id = None;
-        self.pending_audio_packets.clear();
+        self.clear_pending_audio_packets();
         self.video_track_id = None;
-        self.pending_video_packets.clear();
-        self.video_decoder_needs_keyframe = true;
+        self.clear_pending_video_packets();
+        self.require_video_decoder_keyframe();
         self.reset_video_decode_in_flight();
         self.seek_preroll_fallback_video_frame = None;
         self.audio_clock = None;
