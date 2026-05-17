@@ -2736,6 +2736,47 @@ mod tests {
         assert!(!runtime.session.snapshot().timeline.scrubbing);
     }
 
+    /// Фиксирует latest-wins contract для плотного scrub burst перед release.
+    #[test]
+    fn aggressive_scrub_release_commits_only_latest_update() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
+        let demuxer = WorkerFakeDemuxer::empty_seekable(Arc::clone(&seek_request_log));
+        let generation = ScrubGeneration::default().next();
+
+        runtime.session.load_demuxer_with_autoplay(
+            "worker-fake".to_string(),
+            Box::new(demuxer),
+            false,
+        );
+        runtime.handle_begin_scrub_command(generation);
+        for step_index in 0..64u64 {
+            let target_millis = 100 + step_index * 25;
+            runtime
+                .scrub_coalescer
+                .submit_latest(scrub_update_intent(generation, target_millis))
+                .unwrap();
+        }
+
+        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
+            generation,
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        ));
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(
+            requests.as_slice(),
+            &[DemuxSeekRequest::accurate(Duration::from_millis(1_675))]
+        );
+        assert_eq!(
+            runtime.session.snapshot().timeline.target_position,
+            Some(MediaTime::from_millis(1_675))
+        );
+        assert_eq!(runtime.session.snapshot().current_position, Duration::ZERO);
+        assert!(runtime.session.has_active_seek_commit());
+        assert!(!runtime.session.snapshot().timeline.scrubbing);
+    }
+
     #[test]
     fn stop_interrupts_scrub_and_requests_pause_then_seek_zero() {
         let mut worker = PlayerWorker::spawn(worker_config_for_tests()).unwrap();

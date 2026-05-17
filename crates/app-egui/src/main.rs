@@ -1077,4 +1077,33 @@ mod tests {
         assert_eq!(telemetry.video_frames_other_dropped(), 0);
         assert_eq!(telemetry.seek_discarded_frames(), 2);
     }
+
+    /// Проверяет, что чистые seek-discard причины не становятся playback/render drop-ами.
+    #[test]
+    fn pure_seek_discard_reasons_do_not_count_as_playback_or_render_drops() {
+        let telemetry = Telemetry::new();
+        let tick_result = PlayerTickResult {
+            dropped_video_frames: vec![
+                PlayerVideoFrameDrop {
+                    pts: Duration::from_millis(120),
+                    reason: PlayerVideoDropReason::SeekPreroll,
+                },
+                PlayerVideoFrameDrop {
+                    pts: Duration::from_millis(140),
+                    reason: PlayerVideoDropReason::StaleGeneration,
+                },
+            ],
+            ..PlayerTickResult::default()
+        };
+
+        record_player_tick_result(&telemetry, &tick_result);
+
+        assert_eq!(telemetry.video_frames_dropped(), 0);
+        assert_eq!(telemetry.video_frames_late_dropped(), 0);
+        assert_eq!(telemetry.video_frames_queue_dropped(), 0);
+        assert_eq!(telemetry.video_frames_pause_dropped(), 0);
+        assert_eq!(telemetry.video_frames_other_dropped(), 0);
+        assert_eq!(telemetry.dropped_frames(), 0);
+        assert_eq!(telemetry.seek_discarded_frames(), 2);
+    }
 }
