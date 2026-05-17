@@ -13,6 +13,7 @@ mod event;
 mod media_opening;
 mod pipeline;
 mod render_lease_bridge;
+mod scrub_command;
 mod scrub_driver;
 mod seek_controller;
 mod seek_state;
