@@ -1,7 +1,12 @@
-use crate::PlayerVideoDecoderThreadConfig;
 use crate::pipeline::VideoDecoderThreadHandle;
 
+mod config;
+mod selector;
 mod vaapi;
+
+use crate::PlayerVideoDecoderThreadConfig;
+use config::{VideoBackendStartupConfig, VideoBackendStartupRequest};
+use selector::ProductionVideoBackendSelector;
 
 mod private {
     /// Sealed marker: внешние crates не должны создавать backend wrapper напрямую.
@@ -36,8 +41,8 @@ impl StartedVideoBackend {
 
 /// WGPU-backed factory для текущего hardware decode backend-а.
 ///
-/// Название намеренно не содержит VA-API: public caller передаёт GPU handles,
-/// а конкретный backend остаётся внутренним выбором player-core/video layer.
+/// Название намеренно не содержит конкретный decoder backend: public caller
+/// передаёт GPU handles, а production selection остаётся внутри player-core.
 pub struct WgpuVideoBackendFactory<'a> {
     /// WGPU instance для zero-copy import path.
     instance: &'a wgpu::Instance,
@@ -51,8 +56,8 @@ pub struct WgpuVideoBackendFactory<'a> {
     /// WGPU queue для texture upload/release callbacks.
     queue: &'a wgpu::Queue,
 
-    /// Bounded queue/runtime limits decoder thread-а.
-    decoder_thread_config: PlayerVideoDecoderThreadConfig,
+    /// Backend-neutral startup config для production selector-а.
+    startup_config: VideoBackendStartupConfig,
 }
 
 impl<'a> WgpuVideoBackendFactory<'a> {
@@ -87,7 +92,7 @@ impl<'a> WgpuVideoBackendFactory<'a> {
             adapter,
             device,
             queue,
-            decoder_thread_config: decoder_thread_config.into(),
+            startup_config: VideoBackendStartupConfig::new(decoder_thread_config),
         }
     }
 }
@@ -95,17 +100,18 @@ impl<'a> WgpuVideoBackendFactory<'a> {
 impl private::Sealed for WgpuVideoBackendFactory<'_> {}
 
 impl VideoBackendFactory for WgpuVideoBackendFactory<'_> {
-    /// Запускает текущий hardware decoder backend за factory boundary.
+    /// Формирует neutral startup request и делегирует backend selection selector-у.
     fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend> {
-        let decoder_thread = vaapi::start_video_decoder_thread(
+        let startup_request = VideoBackendStartupRequest::new(
             self.instance,
             self.adapter,
             self.device,
             self.queue,
-            self.decoder_thread_config,
-        )?;
+            self.startup_config,
+        );
+        let backend_selector = ProductionVideoBackendSelector::production_default();
 
-        Ok(StartedVideoBackend::from_decoder_thread(decoder_thread))
+        backend_selector.start_video_backend(&startup_request)
     }
 }
 
@@ -117,7 +123,7 @@ mod tests {
         RenderTextureProviderHandle,
     };
 
-    /// Minimal fake decoder для проверки startup wrapper-а без VA-API resources.
+    /// Minimal fake decoder для проверки startup wrapper-а без production backend resources.
     struct StartupFakeDecoderThread;
 
     impl VideoDecoderThreadHandle for StartupFakeDecoderThread {

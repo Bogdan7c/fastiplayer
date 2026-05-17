@@ -174,7 +174,7 @@ const DEFAULT_DECODER_FLUSH_TIMEOUT_MS: u64 = 2_000;
 
 /// Backend-neutral runtime limits decoder thread-а.
 ///
-/// Этот тип принадлежит player-core startup/config boundary. VA-API backend
+/// Этот тип принадлежит player-core startup/config boundary. Concrete backend
 /// получает его только через adapter conversion, поэтому worker/session callers
 /// не зависят от конкретного decoder implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

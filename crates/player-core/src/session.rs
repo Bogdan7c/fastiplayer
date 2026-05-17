@@ -2620,7 +2620,7 @@ impl PlayerSession {
         }
     }
 
-    /// Конвертирует VA-API texture pool stats в core snapshot.
+    /// Конвертирует backend resource stats в core snapshot.
     fn texture_pool_snapshot(&self) -> Option<TexturePoolSnapshot> {
         self.pipeline
             .video_decoder_resource_snapshot()
@@ -3157,7 +3157,7 @@ mod tests {
         }
     }
 
-    /// Shared fake decoder для seek/tick тестов без VA-API и renderer resources.
+    /// Shared fake decoder для seek/tick тестов без production decoder и renderer resources.
     #[derive(Clone)]
     struct SharedFakeVideoDecoderThread {
         /// Очередь decoded frames, которые fake decoder отдаёт через `try_recv_frame`.
@@ -3319,7 +3319,7 @@ mod tests {
         }
     }
 
-    /// Подключает fake demuxer без инициализации CPAL/VA-API ресурсов.
+    /// Подключает fake demuxer без инициализации audio/video backend ресурсов.
     fn install_fake_media(
         session: &mut PlayerSession,
         tracks: Vec<TrackInfo>,
@@ -3430,12 +3430,14 @@ mod tests {
     }
 
     fn capabilities_with_vp9_profile0() -> SystemCapabilities {
+        let backend_id = test_decode_backend_id();
+
         SystemCapabilities {
             schema_version: capability_core::CURRENT_CAPABILITY_SCHEMA_VERSION,
             probed_at_unix_seconds: 1,
             video_backends: vec![BackendCapabilities {
-                backend_id: DecodeBackendId::vaapi(),
-                display_name: "VA-API".to_string(),
+                backend_id: backend_id.clone(),
+                display_name: "Test hardware decoder".to_string(),
                 status: BackendProbeStatus::Available,
                 driver: BackendDriverInfo::default(),
                 supported_video_decode_formats: vec![SupportedVideoDecodeFormat {
@@ -3447,7 +3449,7 @@ mod tests {
                     max_height: Some(1080),
                     max_fps: None,
                     hdr_input: false,
-                    backend: DecodeBackendId::vaapi(),
+                    backend: backend_id,
                 }],
                 raw_profiles: Vec::new(),
                 raw_entrypoints: Vec::new(),
@@ -3462,12 +3464,14 @@ mod tests {
     }
 
     fn capabilities_with_phase10_vp9_profile2_hdr() -> SystemCapabilities {
+        let backend_id = test_decode_backend_id();
+
         SystemCapabilities {
             schema_version: capability_core::CURRENT_CAPABILITY_SCHEMA_VERSION,
             probed_at_unix_seconds: 1,
             video_backends: vec![BackendCapabilities {
-                backend_id: DecodeBackendId::vaapi(),
-                display_name: "VA-API".to_string(),
+                backend_id: backend_id.clone(),
+                display_name: "Test hardware decoder".to_string(),
                 status: BackendProbeStatus::Available,
                 driver: BackendDriverInfo::default(),
                 supported_video_decode_formats: vec![SupportedVideoDecodeFormat {
@@ -3479,7 +3483,7 @@ mod tests {
                     max_height: Some(4096),
                     max_fps: None,
                     hdr_input: true,
-                    backend: DecodeBackendId::vaapi(),
+                    backend: backend_id,
                 }],
                 raw_profiles: Vec::new(),
                 raw_entrypoints: Vec::new(),
@@ -3491,6 +3495,11 @@ mod tests {
             }],
             render_backends: vec![RenderCapabilities::wgpu_p010_bt2446c(Some(4096))],
         }
+    }
+
+    fn test_decode_backend_id() -> DecodeBackendId {
+        DecodeBackendId::new("test_hardware_decoder")
+            .expect("test backend id must use codec-core backend id syntax")
     }
 
     fn bt2020_pq_limited() -> codec_core::VideoColorMetadata {

@@ -7,23 +7,22 @@ use crate::decoder_boundary::{
 };
 use crate::pipeline::VideoDecoderThreadHandle;
 
+use super::config::VideoBackendStartupRequest;
+
 /// Стартует текущий production decoder backend за neutral factory boundary.
 pub(super) fn start_video_decoder_thread(
-    instance: &wgpu::Instance,
-    adapter: &wgpu::Adapter,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    config: PlayerVideoDecoderThreadConfig,
+    startup_request: &VideoBackendStartupRequest<'_>,
 ) -> anyhow::Result<impl VideoDecoderThreadHandle + 'static> {
-    let device = Arc::new(device.clone());
-    let queue = Arc::new(queue.clone());
+    let wgpu_context = startup_request.wgpu_context();
+    let device = Arc::new(wgpu_context.device().clone());
+    let queue = Arc::new(wgpu_context.queue().clone());
 
     video_vaapi::VideoDecodeThread::new_with_config(
         device,
         queue,
-        instance.clone(),
-        adapter.clone(),
-        config.into(),
+        wgpu_context.instance().clone(),
+        wgpu_context.adapter().clone(),
+        startup_request.decoder_thread_config().into(),
     )
 }
 

@@ -16,7 +16,7 @@ use crate::{
 /// Минимальный session-level контракт decoder thread-а, который нужен player-core.
 ///
 /// Production backend подключается через adapter, а session tests могут
-/// подставить fake handle и проверить boundary без WGPU/VA-API ресурсов.
+/// подставить fake handle и проверить boundary без production decoder ресурсов.
 pub(crate) trait VideoDecoderThreadHandle: Send {
     /// Возвращает человекочитаемое имя backend-а для snapshot/diagnostics.
     fn backend_name(&self) -> &'static str;
