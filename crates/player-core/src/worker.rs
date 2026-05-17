@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
-use media_core::MediaTime;
+use media_core::{MediaTime, TrackId};
 use rustiplayer_config::PlayerDemuxConfig;
 use tracing::{debug, warn};
 use webm_demux::DemuxerOptions;
@@ -34,8 +34,8 @@ use crate::{
     ActiveSeekDiagnosticsSnapshot, FrameCounters, LatencyCounterSnapshot, MediaOpenRequest,
     MediaSource, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult,
     PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
-    PlayerVideoDecoderThreadConfig, ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration,
-    ScrubUpdateIntent, SeekRequest, SessionScrubCommand, WgpuVideoBackendFactory,
+    PlayerVideoDecoderThreadConfig, QualitySelection, ScrubCommitIntent, ScrubCommitPolicy,
+    ScrubGeneration, ScrubUpdateIntent, SeekRequest, SessionScrubCommand, WgpuVideoBackendFactory,
 };
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
@@ -325,6 +325,122 @@ impl PlayerRenderError {
     }
 }
 
+/// Public scrub command, который sender должен маршрутизировать вне обычной worker queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlayerCommandScrubRoute {
+    /// Начать sender-sequenced scrub operation.
+    Begin,
+
+    /// Сохранить latest scrub target в coalesced update slot.
+    Update(SeekRequest),
+
+    /// Отправить explicit preview command с текущим generation token-ом.
+    Preview(SeekRequest),
+
+    /// Завершить active scrub operation выбранной policy.
+    End(ScrubCommitPolicy),
+}
+
+/// Worker-side player command без scrub variants.
+///
+/// Этот тип является внутренней границей: `WorkerCommand::Player` больше не
+/// принимает raw `PlayerCommand`, поэтому interactive scrub не может попасть
+/// в ordinary worker path без sender-side sequencer/coalescer.
+#[derive(Debug, Clone, PartialEq)]
+enum WorkerPlayerCommand {
+    /// Открыть новый media-источник.
+    OpenMedia(MediaOpenRequest),
+
+    /// Начать или продолжить воспроизведение.
+    Play,
+
+    /// Приостановить воспроизведение.
+    Pause,
+
+    /// Переключить состояние между play и pause.
+    TogglePlayback,
+
+    /// Перемотать текущий media.
+    Seek(SeekRequest),
+
+    /// Остановить текущий media без завершения всей session.
+    Stop,
+
+    /// Установить громкость в диапазоне `0.0..=1.0`.
+    SetVolume(f32),
+
+    /// Выбрать активный video track.
+    SelectVideoTrack(TrackId),
+
+    /// Выбрать активный audio track.
+    SelectAudioTrack(TrackId),
+
+    /// Выбрать subtitle track или отключить субтитры через `None`.
+    SelectSubtitleTrack(Option<TrackId>),
+
+    /// Выбрать качество потока.
+    SelectQuality(QualitySelection),
+
+    /// Перечитать runtime config.
+    ReloadConfig,
+
+    /// Завершить player session.
+    Shutdown,
+}
+
+impl TryFrom<PlayerCommand> for WorkerPlayerCommand {
+    type Error = PlayerCommandScrubRoute;
+
+    /// Классифицирует public command на sender boundary.
+    fn try_from(command: PlayerCommand) -> Result<Self, Self::Error> {
+        match command {
+            PlayerCommand::OpenMedia(request) => Ok(Self::OpenMedia(request)),
+            PlayerCommand::Play => Ok(Self::Play),
+            PlayerCommand::Pause => Ok(Self::Pause),
+            PlayerCommand::TogglePlayback => Ok(Self::TogglePlayback),
+            PlayerCommand::Seek(request) => Ok(Self::Seek(request)),
+            PlayerCommand::BeginScrub => Err(PlayerCommandScrubRoute::Begin),
+            PlayerCommand::UpdateScrub(request) => Err(PlayerCommandScrubRoute::Update(request)),
+            PlayerCommand::PreviewScrub(request) => Err(PlayerCommandScrubRoute::Preview(request)),
+            PlayerCommand::EndScrub { policy } => Err(PlayerCommandScrubRoute::End(policy)),
+            PlayerCommand::Stop => Ok(Self::Stop),
+            PlayerCommand::SetVolume(volume) => Ok(Self::SetVolume(volume)),
+            PlayerCommand::SelectVideoTrack(track_id) => Ok(Self::SelectVideoTrack(track_id)),
+            PlayerCommand::SelectAudioTrack(track_id) => Ok(Self::SelectAudioTrack(track_id)),
+            PlayerCommand::SelectSubtitleTrack(track_id) => Ok(Self::SelectSubtitleTrack(track_id)),
+            PlayerCommand::SelectQuality(selection) => Ok(Self::SelectQuality(selection)),
+            PlayerCommand::ReloadConfig => Ok(Self::ReloadConfig),
+            PlayerCommand::Shutdown => Ok(Self::Shutdown),
+        }
+    }
+}
+
+impl WorkerPlayerCommand {
+    /// Возвращает `true` для external boundary команд, которые закрывают active scrub lifecycle.
+    fn invalidates_sender_scrub_generation(&self) -> bool {
+        matches!(self, Self::OpenMedia(_) | Self::Stop | Self::Shutdown)
+    }
+
+    /// Восстанавливает public session command после worker-side policy decisions.
+    fn into_player_command(self) -> PlayerCommand {
+        match self {
+            Self::OpenMedia(request) => PlayerCommand::OpenMedia(request),
+            Self::Play => PlayerCommand::Play,
+            Self::Pause => PlayerCommand::Pause,
+            Self::TogglePlayback => PlayerCommand::TogglePlayback,
+            Self::Seek(request) => PlayerCommand::Seek(request),
+            Self::Stop => PlayerCommand::Stop,
+            Self::SetVolume(volume) => PlayerCommand::SetVolume(volume),
+            Self::SelectVideoTrack(track_id) => PlayerCommand::SelectVideoTrack(track_id),
+            Self::SelectAudioTrack(track_id) => PlayerCommand::SelectAudioTrack(track_id),
+            Self::SelectSubtitleTrack(track_id) => PlayerCommand::SelectSubtitleTrack(track_id),
+            Self::SelectQuality(selection) => PlayerCommand::SelectQuality(selection),
+            Self::ReloadConfig => PlayerCommand::ReloadConfig,
+            Self::Shutdown => PlayerCommand::Shutdown,
+        }
+    }
+}
+
 /// Cloneable sender для команд player worker.
 #[derive(Clone)]
 pub struct PlayerCommandSender {
@@ -341,23 +457,31 @@ pub struct PlayerCommandSender {
 impl PlayerCommandSender {
     /// Отправляет команду без блокировки render/UI thread.
     pub fn try_send(&self, command: PlayerCommand) -> Result<(), PlayerWorkerSendError> {
-        match command {
-            PlayerCommand::BeginScrub => self.try_send_begin_scrub(),
-            PlayerCommand::UpdateScrub(request) => self.try_send_scrub_update(request),
-            PlayerCommand::PreviewScrub(request) => self.try_send_preview_scrub(request),
-            PlayerCommand::EndScrub { policy } => self.try_send_end_scrub(policy),
-            PlayerCommand::OpenMedia(_) | PlayerCommand::Stop | PlayerCommand::Shutdown => {
-                self.command_tx
-                    .try_send(WorkerCommand::Player(command))
-                    .map_err(PlayerWorkerSendError::from)?;
-                self.invalidate_sender_scrub_generation();
-                Ok(())
-            }
-            other_command => self
-                .command_tx
-                .try_send(WorkerCommand::Player(other_command))
-                .map_err(PlayerWorkerSendError::from),
+        match WorkerPlayerCommand::try_from(command) {
+            Ok(worker_command) => self.try_send_worker_player_command(worker_command),
+            Err(PlayerCommandScrubRoute::Begin) => self.try_send_begin_scrub(),
+            Err(PlayerCommandScrubRoute::Update(request)) => self.try_send_scrub_update(request),
+            Err(PlayerCommandScrubRoute::Preview(request)) => self.try_send_preview_scrub(request),
+            Err(PlayerCommandScrubRoute::End(policy)) => self.try_send_end_scrub(policy),
         }
+    }
+
+    /// Отправляет ordinary command в worker queue и обновляет sender-side scrub lifecycle.
+    fn try_send_worker_player_command(
+        &self,
+        command: WorkerPlayerCommand,
+    ) -> Result<(), PlayerWorkerSendError> {
+        let invalidates_scrub_generation = command.invalidates_sender_scrub_generation();
+
+        self.command_tx
+            .try_send(WorkerCommand::Player(command))
+            .map_err(PlayerWorkerSendError::from)?;
+
+        if invalidates_scrub_generation {
+            self.invalidate_sender_scrub_generation();
+        }
+
+        Ok(())
     }
 
     /// Отправляет начало scrub-а с новым generation token-ом.
@@ -725,8 +849,8 @@ impl Drop for PlayerWorker {
 
 /// Внутренние команды worker boundary.
 enum WorkerCommand {
-    /// Обычная команда public player contract.
-    Player(PlayerCommand),
+    /// Обычная worker-side команда без interactive scrub variants.
+    Player(WorkerPlayerCommand),
 
     /// Начать scrub с generation, выданным sender boundary.
     BeginScrub {
@@ -1099,7 +1223,9 @@ impl PlayerWorkerRuntime {
         match self.command_rx.try_recv() {
             Ok(command) => Some(command),
             Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some(WorkerCommand::Player(PlayerCommand::Shutdown)),
+            Err(TryRecvError::Disconnected) => {
+                Some(WorkerCommand::Player(WorkerPlayerCommand::Shutdown))
+            }
         }
     }
 
@@ -1158,33 +1284,35 @@ impl PlayerWorkerRuntime {
         self.session.mark_fatal_error(error.to_player_error());
     }
 
-    /// Применяет public command с worker-level seek/scrub priority policy.
-    fn handle_player_command(&mut self, command: PlayerCommand) {
-        if self.scrub_driver.consume_resume_intent_command(&command) {
+    /// Применяет ordinary worker command с worker-level seek/scrub priority policy.
+    fn handle_player_command(&mut self, command: WorkerPlayerCommand) {
+        if self.consume_scrub_resume_intent_command(&command) {
             return;
         }
 
         match command {
-            PlayerCommand::OpenMedia(request) => self.handle_open_media_request(request),
-            PlayerCommand::Stop => self.handle_stop_command(),
-            PlayerCommand::Shutdown => self.handle_shutdown_request(),
-            scrub_command @ (PlayerCommand::BeginScrub
-            | PlayerCommand::UpdateScrub(_)
-            | PlayerCommand::PreviewScrub(_)
-            | PlayerCommand::EndScrub { .. }) => {
-                Self::reject_raw_player_scrub_command(scrub_command)
-            }
-            PlayerCommand::Seek(request) => self.handle_seek_command(request),
-            other_command => self.dispatch_player_command(other_command),
+            WorkerPlayerCommand::OpenMedia(request) => self.handle_open_media_request(request),
+            WorkerPlayerCommand::Stop => self.handle_stop_command(),
+            WorkerPlayerCommand::Shutdown => self.handle_shutdown_request(),
+            WorkerPlayerCommand::Seek(request) => self.handle_seek_command(request),
+            other_command => self.dispatch_player_command(other_command.into_player_command()),
         }
     }
 
-    /// Отсекает raw scrub `PlayerCommand`, если он обошёл sender-side sequencing boundary.
-    fn reject_raw_player_scrub_command(command: PlayerCommand) {
-        warn!(
-            command = ?command,
-            "Raw scrub PlayerCommand bypassed PlayerCommandSender; command ignored"
-        );
+    /// Обновляет сохранённый resume intent для Play/Pause/Toggle во время active scrub.
+    fn consume_scrub_resume_intent_command(&mut self, command: &WorkerPlayerCommand) -> bool {
+        match command {
+            WorkerPlayerCommand::Play => self
+                .scrub_driver
+                .consume_resume_intent_command(&PlayerCommand::Play),
+            WorkerPlayerCommand::Pause => self
+                .scrub_driver
+                .consume_resume_intent_command(&PlayerCommand::Pause),
+            WorkerPlayerCommand::TogglePlayback => self
+                .scrub_driver
+                .consume_resume_intent_command(&PlayerCommand::TogglePlayback),
+            _ => false,
+        }
     }
 
     /// Открывает media request; local file грузится полностью внутри worker thread.
@@ -1912,6 +2040,13 @@ mod tests {
         (command_sender, command_rx, scrub_wake_rx, scrub_coalescer)
     }
 
+    fn receive_worker_player_command(command_rx: &Receiver<WorkerCommand>) -> WorkerPlayerCommand {
+        match command_rx.try_recv().unwrap() {
+            WorkerCommand::Player(command) => command,
+            _ => panic!("ordinary PlayerCommand must use WorkerCommand::Player"),
+        }
+    }
+
     fn decoded_frame_for_tests(texture_handle: FrameTextureHandle) -> DecodedFrame {
         DecodedFrame {
             pts: Duration::ZERO,
@@ -2063,6 +2198,97 @@ mod tests {
         assert!(paused_index < open_index);
         assert!(open_index < shutdown_index);
         worker.shutdown().unwrap();
+    }
+
+    #[test]
+    fn ordinary_player_commands_classify_as_internal_worker_commands() {
+        let open_request =
+            MediaOpenRequest::new(MediaSource::ExternalLabel("sample".into()), false);
+        let seek_request = seek_to_millis(250);
+
+        assert_eq!(
+            WorkerPlayerCommand::try_from(PlayerCommand::Play).unwrap(),
+            WorkerPlayerCommand::Play
+        );
+        assert_eq!(
+            WorkerPlayerCommand::try_from(PlayerCommand::Seek(seek_request)).unwrap(),
+            WorkerPlayerCommand::Seek(seek_request)
+        );
+        assert_eq!(
+            WorkerPlayerCommand::try_from(PlayerCommand::OpenMedia(open_request.clone())).unwrap(),
+            WorkerPlayerCommand::OpenMedia(open_request)
+        );
+    }
+
+    #[test]
+    fn begin_scrub_does_not_classify_as_internal_worker_command() {
+        assert_eq!(
+            WorkerPlayerCommand::try_from(PlayerCommand::BeginScrub),
+            Err(PlayerCommandScrubRoute::Begin)
+        );
+    }
+
+    #[test]
+    fn update_scrub_does_not_classify_as_internal_worker_command() {
+        let request = seek_to_millis(300);
+
+        assert_eq!(
+            WorkerPlayerCommand::try_from(PlayerCommand::UpdateScrub(request)),
+            Err(PlayerCommandScrubRoute::Update(request))
+        );
+    }
+
+    #[test]
+    fn preview_scrub_does_not_classify_as_internal_worker_command() {
+        let request = seek_to_millis(400);
+
+        assert_eq!(
+            WorkerPlayerCommand::try_from(PlayerCommand::PreviewScrub(request)),
+            Err(PlayerCommandScrubRoute::Preview(request))
+        );
+    }
+
+    #[test]
+    fn end_scrub_does_not_classify_as_internal_worker_command() {
+        assert_eq!(
+            WorkerPlayerCommand::try_from(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+            }),
+            Err(PlayerCommandScrubRoute::End(
+                ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE
+            ))
+        );
+    }
+
+    #[test]
+    fn command_sender_routes_ordinary_commands_as_internal_worker_player_commands() {
+        let (command_sender, command_rx, _scrub_wake_rx, _scrub_coalescer) =
+            command_sender_for_scrub_path_tests();
+        let open_request =
+            MediaOpenRequest::new(MediaSource::ExternalLabel("sample".into()), false);
+        let seek_request = seek_to_millis(500);
+
+        command_sender.try_send(PlayerCommand::Play).unwrap();
+        assert_eq!(
+            receive_worker_player_command(&command_rx),
+            WorkerPlayerCommand::Play
+        );
+
+        command_sender
+            .try_send(PlayerCommand::Seek(seek_request))
+            .unwrap();
+        assert_eq!(
+            receive_worker_player_command(&command_rx),
+            WorkerPlayerCommand::Seek(seek_request)
+        );
+
+        command_sender
+            .try_send(PlayerCommand::OpenMedia(open_request.clone()))
+            .unwrap();
+        assert_eq!(
+            receive_worker_player_command(&command_rx),
+            WorkerPlayerCommand::OpenMedia(open_request)
+        );
     }
 
     #[test]
@@ -2419,24 +2645,29 @@ mod tests {
     }
 
     #[test]
-    fn raw_player_scrub_commands_are_rejected_before_worker_runtime_path() {
-        let mut runtime = runtime_for_tests(Instant::now());
+    fn scrub_classifier_rejection_has_no_worker_runtime_side_effects() {
+        let runtime = runtime_for_tests(Instant::now());
         let queued_intent = scrub_update_intent(ScrubGeneration::default().next(), 333);
 
         runtime
             .scrub_coalescer
             .submit_latest(queued_intent)
             .unwrap();
-        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::BeginScrub));
-        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::UpdateScrub(
-            seek_to_millis(100),
-        )));
-        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::PreviewScrub(
-            seek_to_millis(100),
-        )));
-        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        }));
+
+        assert!(WorkerPlayerCommand::try_from(PlayerCommand::BeginScrub).is_err());
+        assert!(
+            WorkerPlayerCommand::try_from(PlayerCommand::UpdateScrub(seek_to_millis(100))).is_err()
+        );
+        assert!(
+            WorkerPlayerCommand::try_from(PlayerCommand::PreviewScrub(seek_to_millis(100)))
+                .is_err()
+        );
+        assert!(
+            WorkerPlayerCommand::try_from(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+            })
+            .is_err()
+        );
 
         assert!(!runtime.scrub_driver.is_scrubbing());
         assert!(!runtime.session.snapshot().timeline.scrubbing);
@@ -2619,7 +2850,7 @@ mod tests {
     fn active_worker_uses_media_plan_as_wakeup_timeout() {
         let mut runtime = runtime_for_tests(Instant::now());
 
-        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
+        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
 
         assert!(runtime.next_worker_wakeup_deadline().is_some());
     }
@@ -2773,7 +3004,7 @@ mod tests {
         runtime
             .session
             .register_render_lease(0, video_core::FrameTextureHandle(11));
-        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
+        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
         let previous_tick_at = runtime.last_tick_at;
         let plan = runtime.session.worker_wakeup_plan(
             Instant::now(),
