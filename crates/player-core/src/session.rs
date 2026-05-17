@@ -3165,6 +3165,15 @@ mod tests {
         /// Очередь decoded frames, которые fake decoder отдаёт через `try_recv_frame`.
         decoded_frames: Arc<Mutex<VecDeque<video_core::DecodedFrame>>>,
 
+        /// Очередь результатов `send_packet` для проверки decoder boundary без реального backend-а.
+        send_results: Arc<Mutex<VecDeque<Result<(), video_vaapi::DecodeThreadSendError>>>>,
+
+        /// Накопленные packet ack-и, которые fake decoder отдаёт одним drain-вызовом.
+        completed_packet_count: Arc<Mutex<usize>>,
+
+        /// Опциональная flush ошибка для проверки проброса seek/reset failure.
+        flush_error_message: Arc<Mutex<Option<String>>>,
+
         /// Texture handles, которые session вернула decoder boundary через release.
         released_handles: Arc<Mutex<Vec<video_core::FrameTextureHandle>>>,
     }
@@ -3174,6 +3183,9 @@ mod tests {
         fn new() -> Self {
             Self {
                 decoded_frames: Arc::new(Mutex::new(VecDeque::new())),
+                send_results: Arc::new(Mutex::new(VecDeque::new())),
+                completed_packet_count: Arc::new(Mutex::new(0)),
+                flush_error_message: Arc::new(Mutex::new(None)),
                 released_handles: Arc::new(Mutex::new(Vec::new())),
             }
         }
@@ -3184,6 +3196,31 @@ mod tests {
                 .lock()
                 .expect("fake decoder frame queue lock")
                 .push_back(frame);
+        }
+
+        /// Добавляет предсказуемый результат отправки packet-а через fake boundary.
+        fn push_send_result(&self, result: Result<(), video_vaapi::DecodeThreadSendError>) {
+            self.send_results
+                .lock()
+                .expect("fake decoder send result queue lock")
+                .push_back(result);
+        }
+
+        /// Публикует packet ack-и так, как production decoder сделал бы после decode/flush drain.
+        fn add_completed_packet_count(&self, packet_count: usize) {
+            let mut completed_packet_count = self
+                .completed_packet_count
+                .lock()
+                .expect("fake decoder ack counter lock");
+            *completed_packet_count = completed_packet_count.saturating_add(packet_count);
+        }
+
+        /// Настраивает следующую flush ошибку без изменения decoder lifecycle.
+        fn fail_flush_with(&self, error_message: &str) {
+            *self
+                .flush_error_message
+                .lock()
+                .expect("fake decoder flush error lock") = Some(error_message.to_string());
         }
 
         /// Возвращает release log для проверки bounded queue и ownership.
@@ -3204,7 +3241,11 @@ mod tests {
             &self,
             _packet: video_vaapi::DecodePacket,
         ) -> Result<(), video_vaapi::DecodeThreadSendError> {
-            Ok(())
+            self.send_results
+                .lock()
+                .expect("fake decoder send result queue lock")
+                .pop_front()
+                .unwrap_or(Ok(()))
         }
 
         fn release_frame(&self, handle: video_core::FrameTextureHandle) {
@@ -3230,6 +3271,15 @@ mod tests {
         }
 
         fn flush(&self) -> anyhow::Result<()> {
+            if let Some(error_message) = self
+                .flush_error_message
+                .lock()
+                .expect("fake decoder flush error lock")
+                .take()
+            {
+                return Err(anyhow::anyhow!(error_message));
+            }
+
             Ok(())
         }
 
@@ -3246,7 +3296,13 @@ mod tests {
         }
 
         fn drain_completed_packet_count(&self) -> usize {
-            0
+            let mut completed_packet_count = self
+                .completed_packet_count
+                .lock()
+                .expect("fake decoder ack counter lock");
+            let drained_packet_count = *completed_packet_count;
+            *completed_packet_count = 0;
+            drained_packet_count
         }
     }
 
@@ -3352,6 +3408,17 @@ mod tests {
         }
     }
 
+    /// Создаёт минимальный decode packet для проверки worker -> decoder boundary.
+    fn decode_packet_for_tests(pts: Duration) -> video_vaapi::DecodePacket {
+        video_vaapi::DecodePacket {
+            track_id: TrackId::new(1),
+            pts,
+            encoded_bytes: Bytes::from_static(b"vp9-test-packet"),
+            keyframe: true,
+            resolved_color: None,
+        }
+    }
+
     /// Создаёт tick config с маленькой present queue для seek admission тестов.
     fn seek_admission_tick_config(
         max_video_present_queue: usize,
@@ -3439,6 +3506,118 @@ mod tests {
             TransferFunction::Pq,
             None,
         )
+    }
+
+    #[test]
+    fn playback_pipeline_decoder_boundary_absent_thread_is_noop() {
+        let pipeline = PlaybackPipeline::default();
+
+        assert!(pipeline.flush_video_decoder_thread().is_ok());
+        assert!(pipeline.try_recv_decoded_video_frame().is_none());
+        assert!(pipeline.try_recv_video_decoder_diagnostic_event().is_none());
+        assert!(pipeline.try_recv_video_decoder_error().is_none());
+        assert_eq!(pipeline.drain_completed_video_decode_packet_count(), 0);
+        assert_eq!(pipeline.video_decode_in_flight_packets(), 0);
+        assert!(!pipeline.can_send_video_decode_packets());
+        assert!(!pipeline.can_receive_decoded_video_frames());
+        assert!(
+            pipeline
+                .send_video_decode_packet(decode_packet_for_tests(Duration::from_millis(10)))
+                .is_none()
+        );
+        assert!(!pipeline.release_frame_to_video_decoder(video_core::FrameTextureHandle(7)));
+    }
+
+    #[test]
+    fn playback_pipeline_decoder_boundary_forwards_send_results() {
+        let mut pipeline = PlaybackPipeline::default();
+        let fake_decoder = SharedFakeVideoDecoderThread::new();
+        let backpressure_reason = video_vaapi::DecodeThreadBackpressureReason::PacketQueueFull {
+            queued_packets: 4,
+            capacity: 4,
+        };
+        fake_decoder.push_send_result(Ok(()));
+        fake_decoder.push_send_result(Err(video_vaapi::DecodeThreadSendError::Backpressure(
+            backpressure_reason,
+        )));
+        fake_decoder.push_send_result(Err(video_vaapi::DecodeThreadSendError::Fatal(
+            video_vaapi::DecodeThreadError::new("fatal send failure"),
+        )));
+        pipeline.set_video_decoder_thread(fake_decoder);
+
+        assert!(pipeline.can_send_video_decode_packets());
+        assert!(matches!(
+            pipeline.send_video_decode_packet(decode_packet_for_tests(Duration::from_millis(1))),
+            Some(Ok(()))
+        ));
+
+        match pipeline.send_video_decode_packet(decode_packet_for_tests(Duration::from_millis(2))) {
+            Some(Err(video_vaapi::DecodeThreadSendError::Backpressure(reason))) => {
+                assert_eq!(reason, backpressure_reason);
+            }
+            unexpected_result => {
+                panic!("expected decoder backpressure, got {unexpected_result:?}");
+            }
+        }
+
+        match pipeline.send_video_decode_packet(decode_packet_for_tests(Duration::from_millis(3))) {
+            Some(Err(video_vaapi::DecodeThreadSendError::Fatal(error))) => {
+                assert_eq!(error.message(), "fatal send failure");
+            }
+            unexpected_result => {
+                panic!("expected fatal decoder send error, got {unexpected_result:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn playback_pipeline_decoder_boundary_drains_acks_without_touching_in_flight() {
+        let mut pipeline = PlaybackPipeline::default();
+        let fake_decoder = SharedFakeVideoDecoderThread::new();
+        fake_decoder.add_completed_packet_count(2);
+        pipeline.set_video_decoder_thread(fake_decoder);
+        pipeline.note_video_packet_sent_to_decoder();
+        pipeline.note_video_packet_sent_to_decoder();
+        pipeline.note_video_packet_sent_to_decoder();
+
+        assert_eq!(pipeline.video_decode_in_flight_packets(), 3);
+
+        let completed_packet_count = pipeline.drain_completed_video_decode_packet_count();
+
+        assert_eq!(completed_packet_count, 2);
+        assert_eq!(pipeline.video_decode_in_flight_packets(), 3);
+        assert_eq!(pipeline.drain_completed_video_decode_packet_count(), 0);
+
+        pipeline.note_video_packets_completed_by_decoder(completed_packet_count);
+
+        assert_eq!(pipeline.video_decode_in_flight_packets(), 1);
+    }
+
+    #[test]
+    fn playback_pipeline_decoder_boundary_propagates_flush_error() {
+        let mut pipeline = PlaybackPipeline::default();
+        let fake_decoder = SharedFakeVideoDecoderThread::new();
+        fake_decoder.fail_flush_with("flush failed at decoder boundary");
+        pipeline.set_video_decoder_thread(fake_decoder);
+
+        let flush_error = pipeline
+            .flush_video_decoder_thread()
+            .expect_err("fake decoder flush should fail");
+
+        assert_eq!(flush_error.to_string(), "flush failed at decoder boundary");
+    }
+
+    #[test]
+    fn playback_pipeline_decoder_boundary_releases_active_fake_frame() {
+        let mut pipeline = PlaybackPipeline::default();
+        let fake_decoder = SharedFakeVideoDecoderThread::new();
+        let released_decoder = fake_decoder.clone();
+        let texture_handle = video_core::FrameTextureHandle(42);
+        pipeline.set_video_decoder_thread(fake_decoder);
+
+        assert!(pipeline.can_receive_decoded_video_frames());
+        assert!(pipeline.release_frame_to_video_decoder(texture_handle));
+        assert_eq!(released_decoder.released_handles(), vec![texture_handle]);
     }
 
     #[test]

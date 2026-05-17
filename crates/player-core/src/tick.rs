@@ -1029,7 +1029,7 @@ fn drain_decoded_video_frames(
         return 0;
     }
 
-    if !session.pipeline.has_video_decoder_thread() {
+    if !session.pipeline.can_receive_decoded_video_frames() {
         if !session.pipeline.pending_video_packet_is_empty() {
             tracing::warn!(
                 count = session.pipeline.pending_video_packet_len(),
@@ -1146,7 +1146,7 @@ fn send_pending_video_packets_to_decoder(
     decode_ahead_limit: Duration,
     catch_up_deadline: Option<Instant>,
 ) -> usize {
-    if !session.pipeline.has_video_decoder_thread() {
+    if !session.pipeline.can_send_video_decode_packets() {
         return 0;
     }
 
@@ -1605,7 +1605,7 @@ fn pending_video_work_available(session: &PlayerSession, tick_config: &PlayerTic
         return false;
     };
 
-    if !session.pipeline.has_video_decoder_thread() {
+    if !session.pipeline.can_send_video_decode_packets() {
         return true;
     }
 
@@ -2019,7 +2019,7 @@ fn has_texture_capacity_for_catch_up(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> bool {
-    if !session.pipeline.has_video_decoder_thread() {
+    if !session.pipeline.can_send_video_decode_packets() {
         return false;
     }
 
@@ -2041,7 +2041,7 @@ fn run_adaptive_catch_up_pass(
     let mut made_progress = false;
 
     if budget.decoded_frames > 0
-        && session.pipeline.has_video_decoder_thread()
+        && session.pipeline.can_receive_decoded_video_frames()
         && available_video_present_slots(session, tick_config) > 0
     {
         let drain_budget = budget

@@ -627,9 +627,21 @@ impl PlaybackPipeline {
         self.reset_video_decode_in_flight();
     }
 
-    /// Проверяет, подключён ли decoder thread к текущему media pipeline.
+    /// Проверяет, можно ли отправлять encoded packets через decoder I/O boundary.
+    ///
+    /// Tick-код использует этот метод как send-side readiness и не зависит от
+    /// того, каким полем pipeline владеет активным decoder backend-ом.
     #[must_use]
-    pub(crate) fn has_video_decoder_thread(&self) -> bool {
+    pub(crate) fn can_send_video_decode_packets(&self) -> bool {
+        self.video_decoder_thread.is_some()
+    }
+
+    /// Проверяет, можно ли принимать decoded frames через decoder I/O boundary.
+    ///
+    /// Receive-side readiness сейчас совпадает с наличием active backend-а, но
+    /// call sites больше не читают внутреннее устройство decoder thread-а.
+    #[must_use]
+    pub(crate) fn can_receive_decoded_video_frames(&self) -> bool {
         self.video_decoder_thread.is_some()
     }
 
