@@ -20,7 +20,8 @@ use crate::render_lease_bridge::{
     PlayerPresentFrame, PresentFrameLease, RenderLeaseBridge, RenderLeaseBridgeClient,
 };
 use crate::scrub_driver::{
-    ScrubDriver, ScrubPreviewDecision, ScrubPreviewDispatch, ScrubUpdateDecision,
+    ScrubDriver, ScrubEndDecision, ScrubInterruptDecision, ScrubPreviewDecision,
+    ScrubPreviewDispatch, ScrubUpdateDecision,
 };
 use crate::seek_controller::PlaybackResumeIntent;
 use crate::tick::PlayerWorkerWakeupPlan;
@@ -1228,7 +1229,10 @@ impl PlayerWorkerRuntime {
 
     /// Stop во время scrub сначала просит pause + seek zero, затем сбрасывает media.
     fn handle_stop_command(&mut self) {
-        if self.scrub_driver.interrupt_scrub().was_scrubbing {
+        if matches!(
+            self.scrub_driver.interrupt_scrub(),
+            ScrubInterruptDecision::Interrupted
+        ) {
             self.dispatch_player_command(PlayerCommand::Pause);
             self.dispatch_player_command(PlayerCommand::Seek(SeekRequest::absolute(
                 MediaTime::ZERO,
@@ -1269,29 +1273,34 @@ impl PlayerWorkerRuntime {
         );
         self.apply_latest_scrub_update_for_commit();
 
-        let decision = self.scrub_driver.end_scrub(intent);
-        if decision.stale {
-            debug!(
-                generation = intent.generation.as_u64(),
-                "Stale EndScrub ignored before PlayerSession"
-            );
-            return;
+        match self.scrub_driver.end_scrub(intent) {
+            ScrubEndDecision::Accepted {
+                intent: accepted_intent,
+                session_command,
+                resume_intent,
+            } => {
+                self.dispatch_scrub_command(session_command);
+                debug!(
+                    generation = accepted_intent.generation.as_u64(),
+                    resume_intent = ?resume_intent,
+                    has_active_seek_commit = self.session.has_active_seek_commit(),
+                    timeline = ?self.session.snapshot().timeline,
+                    "Worker применил EndScrub к session"
+                );
+                self.apply_end_scrub_resume_intent(resume_intent);
+                self.scrub_driver.reset_preview_scrub_state();
+            }
+            ScrubEndDecision::Rejected {
+                intent: rejected_intent,
+                reason,
+            } => {
+                debug!(
+                    generation = rejected_intent.generation.as_u64(),
+                    reason = ?reason,
+                    "EndScrub rejected before PlayerSession"
+                );
+            }
         }
-
-        if let Some(session_command) = decision.session_command {
-            self.dispatch_scrub_command(session_command);
-        }
-        debug!(
-            generation = intent.generation.as_u64(),
-            resume_intent = ?decision.resume_intent,
-            has_active_seek_commit = self.session.has_active_seek_commit(),
-            timeline = ?self.session.snapshot().timeline,
-            "Worker применил EndScrub к session"
-        );
-        if let Some(resume_intent) = decision.resume_intent {
-            self.apply_end_scrub_resume_intent(resume_intent);
-        }
-        self.scrub_driver.reset_preview_scrub_state();
     }
 
     /// PreviewScrub проходит в session только если generation и latest target всё ещё актуальны.
@@ -1300,32 +1309,32 @@ impl PlayerWorkerRuntime {
         self.dispatch_preview_scrub_decision(decision)
     }
 
-    /// Отправляет preview decision в session и логирует stale preview intent-ы.
+    /// Отправляет preview decision в session и логирует rejected preview intent-ы.
     fn dispatch_preview_scrub_decision(&mut self, decision: ScrubPreviewDecision) -> bool {
-        let Some(intent) = decision.intent else {
-            return false;
-        };
-
-        if decision.stale {
-            debug!(
-                generation = intent.generation.as_u64(),
-                request = ?intent.request,
-                "Stale PreviewScrub ignored before PlayerSession"
-            );
-            return false;
+        match decision {
+            ScrubPreviewDecision::Idle => false,
+            ScrubPreviewDecision::Dispatch {
+                intent,
+                session_command,
+            } => {
+                debug!(
+                    generation = intent.generation.as_u64(),
+                    request = ?intent.request,
+                    "Worker dispatches PreviewScrub"
+                );
+                self.dispatch_scrub_command(session_command);
+                true
+            }
+            ScrubPreviewDecision::Rejected { intent, reason } => {
+                debug!(
+                    generation = intent.generation.as_u64(),
+                    request = ?intent.request,
+                    reason = ?reason,
+                    "PreviewScrub rejected before PlayerSession"
+                );
+                false
+            }
         }
-
-        let Some(session_command) = decision.session_command else {
-            return false;
-        };
-
-        debug!(
-            generation = intent.generation.as_u64(),
-            request = ?intent.request,
-            "Worker dispatches PreviewScrub"
-        );
-        self.dispatch_scrub_command(session_command);
-        true
     }
 
     /// Применяет сохранённый worker resume intent к финальному seek transaction-у.
@@ -1356,40 +1365,42 @@ impl PlayerWorkerRuntime {
     /// Применяет один scrub update после coalescing.
     fn apply_scrub_update(&mut self, intent: ScrubUpdateIntent) {
         let decision = self.scrub_driver.apply_scrub_update(intent);
-        self.dispatch_scrub_update_decision(intent, ScrubPreviewDispatch::Allow, decision);
+        self.dispatch_scrub_update_decision(ScrubPreviewDispatch::Allow, decision);
     }
 
     /// Отправляет принятое driver-ом scrub update решение в session.
     fn dispatch_scrub_update_decision(
         &mut self,
-        intent: ScrubUpdateIntent,
         preview_dispatch: ScrubPreviewDispatch,
         decision: ScrubUpdateDecision,
     ) {
-        if decision.stale {
-            debug!(
-                generation = intent.generation.as_u64(),
-                request = ?intent.request,
-                preview_dispatch = ?preview_dispatch,
-                "Worker отбросил stale scrub update"
-            );
-            return;
-        }
-
-        let Some(session_command) = decision.session_command else {
-            return;
-        };
-
-        debug!(
-            generation = intent.generation.as_u64(),
-            request = ?intent.request,
-            preview_dispatch = ?preview_dispatch,
-            "Worker применяет scrub update"
-        );
-        self.dispatch_scrub_command(session_command);
-        if let Some(due_preview) = decision.due_preview {
-            let preview_decision = self.scrub_driver.preview_due_scrub(due_preview);
-            self.dispatch_preview_scrub_decision(preview_decision);
+        match decision {
+            ScrubUpdateDecision::Accepted {
+                intent,
+                session_command,
+                due_preview,
+            } => {
+                debug!(
+                    generation = intent.generation.as_u64(),
+                    request = ?intent.request,
+                    preview_dispatch = ?preview_dispatch,
+                    "Worker применяет scrub update"
+                );
+                self.dispatch_scrub_command(session_command);
+                if let Some(due_preview) = due_preview {
+                    let preview_decision = self.scrub_driver.preview_due_scrub(due_preview);
+                    self.dispatch_preview_scrub_decision(preview_decision);
+                }
+            }
+            ScrubUpdateDecision::Rejected { intent, reason } => {
+                debug!(
+                    generation = intent.generation.as_u64(),
+                    request = ?intent.request,
+                    preview_dispatch = ?preview_dispatch,
+                    reason = ?reason,
+                    "Scrub update rejected before PlayerSession"
+                );
+            }
         }
     }
 
@@ -1426,7 +1437,7 @@ impl PlayerWorkerRuntime {
                     .scrub_driver
                     .apply_latest_scrub_update_for_commit(intent),
             };
-            self.dispatch_scrub_update_decision(intent, preview_dispatch, decision);
+            self.dispatch_scrub_update_decision(preview_dispatch, decision);
             self.publish_session_outputs();
         }
     }
@@ -2132,6 +2143,57 @@ mod tests {
             )
         }));
         worker.shutdown().unwrap();
+    }
+
+    #[test]
+    fn stale_scrub_update_generation_is_ignored_before_session() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let first_generation = ScrubGeneration::default().next();
+        let second_generation = first_generation.next();
+
+        runtime.handle_begin_scrub_command(first_generation);
+        runtime
+            .scrub_driver
+            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
+        runtime.apply_scrub_update(scrub_update_intent(first_generation, 100));
+        runtime.handle_begin_scrub_command(second_generation);
+        runtime
+            .scrub_driver
+            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
+        runtime.apply_scrub_update(scrub_update_intent(second_generation, 250));
+        runtime.apply_scrub_update(scrub_update_intent(first_generation, 900));
+
+        assert_eq!(
+            runtime.session.snapshot().timeline.target_position,
+            Some(MediaTime::from_millis(250))
+        );
+        assert!(runtime.session.snapshot().timeline.scrubbing);
+        assert!(runtime.session.snapshot().last_error.is_none());
+        assert_eq!(
+            runtime.scrub_driver.diagnostics().stale_or_ignored_commands,
+            1
+        );
+    }
+
+    #[test]
+    fn idle_due_preview_scrub_does_not_count_stale_or_dispatch_to_session() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let generation = ScrubGeneration::default().next();
+
+        runtime.handle_begin_scrub_command(generation);
+        let target_before_idle_preview = runtime.session.snapshot().timeline.target_position;
+        runtime.dispatch_due_preview_scrub_seek();
+
+        assert_eq!(
+            runtime.session.snapshot().timeline.target_position,
+            target_before_idle_preview
+        );
+        assert!(runtime.session.snapshot().timeline.scrubbing);
+        assert!(runtime.session.snapshot().last_error.is_none());
+        assert_eq!(
+            runtime.scrub_driver.diagnostics().stale_or_ignored_commands,
+            0
+        );
     }
 
     #[test]

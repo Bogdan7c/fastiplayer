@@ -3,9 +3,9 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 use crate::seek_controller::SeekControllerDiagnostics;
 use crate::seek_controller::{
-    DeferredPreviewStatus, FinishScrubDecision, PlaybackResumeIntent, PreviewDispatchDecision,
-    PreviewQueueDecision, ScrubUpdateAcceptance, ScrubUpdatePreviewIntent, SeekController,
-    SeekScrubInterruptDecision,
+    DeferredPreviewStatus, FinishScrubDecision, FinishScrubRejection, PlaybackResumeIntent,
+    PreviewDispatchDecision, PreviewDispatchRejection, PreviewQueueDecision, ScrubUpdateAcceptance,
+    ScrubUpdatePreviewIntent, ScrubUpdateRejection, SeekController, SeekScrubInterruptDecision,
 };
 use crate::{
     PlaybackState, PlayerCommand, ScrubCommitIntent, ScrubGeneration, ScrubUpdateIntent,
@@ -32,28 +32,29 @@ pub(crate) struct ScrubBeginDecision {
     pub player_command: PlayerCommand,
 }
 
-/// Решение driver-а после принятого scrub update-а.
+/// Решение driver-а после scrub update-а на границе worker-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ScrubUpdateDecision {
-    /// Команда обновления latest target для `PlayerSession`.
-    pub session_command: Option<SessionScrubCommand>,
+pub(crate) enum ScrubUpdateDecision {
+    /// Update принят controller-ом и должен быть применён к `PlayerSession`.
+    Accepted {
+        /// Intent, который driver принял как latest scrub target.
+        intent: ScrubUpdateIntent,
 
-    /// Due preview intent, который worker должен отправить после session update.
-    pub due_preview: Option<ScrubDuePreview>,
+        /// Команда обновления latest target для `PlayerSession`.
+        session_command: SessionScrubCommand,
 
-    /// `true`, если update относится не к текущему active scrub generation.
-    pub stale: bool,
-}
+        /// Due preview intent, который worker должен отправить после session update.
+        due_preview: Option<ScrubDuePreview>,
+    },
 
-impl ScrubUpdateDecision {
-    /// Возвращает decision для stale update-а без session-side effects.
-    const fn stale() -> Self {
-        Self {
-            session_command: None,
-            due_preview: None,
-            stale: true,
-        }
-    }
+    /// Update отклонён без session-side effects.
+    Rejected {
+        /// Intent, который не прошёл operation-level проверки.
+        intent: ScrubUpdateIntent,
+
+        /// Типизированная причина отказа для logs/tests.
+        reason: ScrubUpdateRejection,
+    },
 }
 
 /// Preview seek, который стал due внутри текущего throttle window.
@@ -66,68 +67,64 @@ pub(crate) struct ScrubDuePreview {
     pub dispatched_at: Instant,
 }
 
-/// Решение driver-а по preview scrub seek-у.
+/// Решение driver-а по preview scrub seek-у на границе worker-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ScrubPreviewDecision {
-    /// Preview intent, для которого принято решение.
-    pub intent: Option<ScrubUpdateIntent>,
+pub(crate) enum ScrubPreviewDecision {
+    /// Preview сейчас не нужен: нет pending target-а или throttle window ещё не истёк.
+    Idle,
 
-    /// Preview-команда, которую worker должен отправить в `PlayerSession`.
-    pub session_command: Option<SessionScrubCommand>,
+    /// Preview прошёл controller checks и должен быть отправлен в `PlayerSession`.
+    Dispatch {
+        /// Intent, который остаётся current latest target-ом.
+        intent: ScrubUpdateIntent,
 
-    /// `true`, если preview intent больше не соответствует active scrub generation/target.
-    pub stale: bool,
+        /// Preview-команда для `PlayerSession`.
+        session_command: SessionScrubCommand,
+    },
+
+    /// Preview отклонён без session-side effects.
+    Rejected {
+        /// Intent, который не прошёл operation-level проверки.
+        intent: ScrubUpdateIntent,
+
+        /// Типизированная причина отказа для logs/tests.
+        reason: PreviewDispatchRejection,
+    },
 }
 
-impl ScrubPreviewDecision {
-    /// Возвращает пустой decision, когда preview сейчас не нужен.
-    const fn idle() -> Self {
-        Self {
-            intent: None,
-            session_command: None,
-            stale: false,
-        }
-    }
-
-    /// Возвращает stale decision без session-side effects.
-    const fn stale(intent: ScrubUpdateIntent) -> Self {
-        Self {
-            intent: Some(intent),
-            session_command: None,
-            stale: true,
-        }
-    }
-}
-
-/// Решение driver-а после завершения interactive scrub.
+/// Решение driver-а после завершения interactive scrub на границе worker-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ScrubEndDecision {
-    /// Команда финального scrub commit-а для `PlayerSession`.
-    pub session_command: Option<SessionScrubCommand>,
+pub(crate) enum ScrubEndDecision {
+    /// Finish принят controller-ом и должен закрыть scrub в `PlayerSession`.
+    Accepted {
+        /// Commit intent, который закрыл active operation.
+        intent: ScrubCommitIntent,
 
-    /// Playback intent, сохранённый на `BeginScrub`.
-    pub resume_intent: Option<PlaybackResumeIntent>,
+        /// Команда финального scrub commit-а для `PlayerSession`.
+        session_command: SessionScrubCommand,
 
-    /// `true`, если `EndScrub` относится к старому generation.
-    pub stale: bool,
-}
+        /// Playback intent, сохранённый на `BeginScrub`.
+        resume_intent: PlaybackResumeIntent,
+    },
 
-impl ScrubEndDecision {
-    /// Возвращает decision для stale `EndScrub` без session-side effects.
-    const fn stale() -> Self {
-        Self {
-            session_command: None,
-            resume_intent: None,
-            stale: true,
-        }
-    }
+    /// Finish отклонён без очистки active operation и без session-side effects.
+    Rejected {
+        /// Commit intent, который не прошёл operation-level проверки.
+        intent: ScrubCommitIntent,
+
+        /// Типизированная причина отказа для logs/tests.
+        reason: FinishScrubRejection,
+    },
 }
 
 /// Результат принудительного interrupt-а interactive scrub.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ScrubInterruptDecision {
-    /// Был ли активный scrub до interrupt-а.
-    pub was_scrubbing: bool,
+pub(crate) enum ScrubInterruptDecision {
+    /// Active scrub был прерван, worker должен выполнить boundary side effects.
+    Interrupted,
+
+    /// Active scrub отсутствовал, session-side interrupt work не нужен.
+    Idle,
 }
 
 /// Worker-side coordinator для interactive scrub.
@@ -254,12 +251,11 @@ impl ScrubDriver {
             .seek_controller
             .accept_scrub_update(intent, preview_intent);
 
-        let ScrubUpdateAcceptance::Accepted {
-            intent: accepted_intent,
-            preview: preview_decision,
-        } = update_decision
-        else {
-            return ScrubUpdateDecision::stale();
+        let (accepted_intent, preview_decision) = match update_decision {
+            ScrubUpdateAcceptance::Accepted { intent, preview } => (intent, preview),
+            ScrubUpdateAcceptance::Rejected { intent, reason } => {
+                return ScrubUpdateDecision::Rejected { intent, reason };
+            }
         };
 
         let due_preview = match preview_decision {
@@ -268,10 +264,10 @@ impl ScrubDriver {
             | PreviewQueueDecision::SuppressedForCommit { .. } => None,
         };
 
-        ScrubUpdateDecision {
-            session_command: Some(SessionScrubCommand::Update(accepted_intent)),
+        ScrubUpdateDecision::Accepted {
+            intent: accepted_intent,
+            session_command: SessionScrubCommand::Update(accepted_intent),
             due_preview,
-            stale: false,
         }
     }
 
@@ -283,7 +279,7 @@ impl ScrubDriver {
     /// Отправляет отложенный preview seek, когда прошёл throttle interval live scrub-а.
     pub(crate) fn dispatch_due_preview_scrub_seek(&mut self, now: Instant) -> ScrubPreviewDecision {
         let Some(due_preview) = self.take_due_preview_scrub_seek(now) else {
-            return ScrubPreviewDecision::idle();
+            return ScrubPreviewDecision::Idle;
         };
 
         self.prepare_preview_scrub(due_preview.intent, Some(due_preview.dispatched_at))
@@ -343,12 +339,17 @@ impl ScrubDriver {
     /// Завершает scrub и возвращает final session command вместе с resume intent-ом.
     pub(crate) fn end_scrub(&mut self, intent: ScrubCommitIntent) -> ScrubEndDecision {
         match self.seek_controller.finish_scrub(intent) {
-            FinishScrubDecision::Accepted { resume_intent, .. } => ScrubEndDecision {
-                session_command: Some(SessionScrubCommand::End(intent)),
-                resume_intent: Some(resume_intent),
-                stale: false,
+            FinishScrubDecision::Accepted {
+                intent,
+                resume_intent,
+            } => ScrubEndDecision::Accepted {
+                intent,
+                session_command: SessionScrubCommand::End(intent),
+                resume_intent,
             },
-            FinishScrubDecision::Rejected { .. } => ScrubEndDecision::stale(),
+            FinishScrubDecision::Rejected { intent, reason } => {
+                ScrubEndDecision::Rejected { intent, reason }
+            }
         }
     }
 
@@ -356,8 +357,9 @@ impl ScrubDriver {
     pub(crate) fn interrupt_scrub(&mut self) -> ScrubInterruptDecision {
         let interrupt_decision = self.seek_controller.interrupt_active_scrub();
         self.reset_preview_scrub_state();
-        ScrubInterruptDecision {
-            was_scrubbing: matches!(interrupt_decision, SeekScrubInterruptDecision::Interrupted),
+        match interrupt_decision {
+            SeekScrubInterruptDecision::Interrupted => ScrubInterruptDecision::Interrupted,
+            SeekScrubInterruptDecision::Idle => ScrubInterruptDecision::Idle,
         }
     }
 
@@ -400,8 +402,8 @@ impl ScrubDriver {
 
         let accepted_intent = match preview_decision {
             PreviewDispatchDecision::Dispatch { intent, .. } => intent,
-            PreviewDispatchDecision::Rejected { intent, .. } => {
-                return ScrubPreviewDecision::stale(intent);
+            PreviewDispatchDecision::Rejected { intent, reason } => {
+                return ScrubPreviewDecision::Rejected { intent, reason };
             }
         };
 
@@ -409,10 +411,9 @@ impl ScrubDriver {
             self.last_preview_scrub_seek_at = Some(dispatched_at);
         }
 
-        ScrubPreviewDecision {
-            intent: Some(accepted_intent),
-            session_command: Some(SessionScrubCommand::Preview(accepted_intent)),
-            stale: false,
+        ScrubPreviewDecision::Dispatch {
+            intent: accepted_intent,
+            session_command: SessionScrubCommand::Preview(accepted_intent),
         }
     }
 }
@@ -433,6 +434,85 @@ mod tests {
 
     fn scrub_update_intent(generation: ScrubGeneration, milliseconds: u64) -> ScrubUpdateIntent {
         ScrubUpdateIntent::new(generation, seek_to_millis(milliseconds))
+    }
+
+    fn accepted_update_parts(
+        decision: ScrubUpdateDecision,
+    ) -> (
+        ScrubUpdateIntent,
+        SessionScrubCommand,
+        Option<ScrubDuePreview>,
+    ) {
+        match decision {
+            ScrubUpdateDecision::Accepted {
+                intent,
+                session_command,
+                due_preview,
+            } => (intent, session_command, due_preview),
+            other_decision => {
+                panic!("expected accepted scrub update decision, got {other_decision:?}")
+            }
+        }
+    }
+
+    fn rejected_update_parts(
+        decision: ScrubUpdateDecision,
+    ) -> (ScrubUpdateIntent, ScrubUpdateRejection) {
+        match decision {
+            ScrubUpdateDecision::Rejected { intent, reason } => (intent, reason),
+            other_decision => {
+                panic!("expected rejected scrub update decision, got {other_decision:?}")
+            }
+        }
+    }
+
+    fn dispatched_preview_parts(
+        decision: ScrubPreviewDecision,
+    ) -> (ScrubUpdateIntent, SessionScrubCommand) {
+        match decision {
+            ScrubPreviewDecision::Dispatch {
+                intent,
+                session_command,
+            } => (intent, session_command),
+            other_decision => {
+                panic!("expected dispatched scrub preview decision, got {other_decision:?}")
+            }
+        }
+    }
+
+    fn rejected_preview_parts(
+        decision: ScrubPreviewDecision,
+    ) -> (ScrubUpdateIntent, PreviewDispatchRejection) {
+        match decision {
+            ScrubPreviewDecision::Rejected { intent, reason } => (intent, reason),
+            other_decision => {
+                panic!("expected rejected scrub preview decision, got {other_decision:?}")
+            }
+        }
+    }
+
+    fn accepted_end_parts(
+        decision: ScrubEndDecision,
+    ) -> (ScrubCommitIntent, SessionScrubCommand, PlaybackResumeIntent) {
+        match decision {
+            ScrubEndDecision::Accepted {
+                intent,
+                session_command,
+                resume_intent,
+            } => (intent, session_command, resume_intent),
+            other_decision => {
+                panic!("expected accepted scrub end decision, got {other_decision:?}")
+            }
+        }
+    }
+
+    fn rejected_end_parts(decision: ScrubEndDecision) -> (ScrubCommitIntent, FinishScrubRejection) {
+        match decision {
+            ScrubEndDecision::Rejected { intent, reason } => (intent, reason),
+            other_decision => {
+                panic!("expected rejected scrub end decision, got {other_decision:?}")
+            }
+        }
     }
 
     #[test]
@@ -458,18 +538,18 @@ mod tests {
 
         let decision =
             driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 250));
+        let expected_intent = scrub_update_intent(generation, 250);
+        let (accepted_intent, session_command, due_preview) = accepted_update_parts(decision);
 
+        assert_eq!(accepted_intent, expected_intent);
         assert_eq!(
-            decision.session_command,
-            Some(SessionScrubCommand::Update(scrub_update_intent(
-                generation, 250
-            )))
+            session_command,
+            SessionScrubCommand::Update(expected_intent)
         );
         assert_eq!(
-            decision.due_preview.map(|preview| preview.intent),
-            Some(scrub_update_intent(generation, 250))
+            due_preview.map(|preview| preview.intent),
+            Some(expected_intent)
         );
-        assert!(!decision.stale);
     }
 
     #[test]
@@ -481,15 +561,15 @@ mod tests {
 
         let decision =
             driver.apply_latest_scrub_update_for_commit(scrub_update_intent(generation, 900));
+        let expected_intent = scrub_update_intent(generation, 900);
+        let (accepted_intent, session_command, due_preview) = accepted_update_parts(decision);
 
+        assert_eq!(accepted_intent, expected_intent);
         assert_eq!(
-            decision.session_command,
-            Some(SessionScrubCommand::Update(scrub_update_intent(
-                generation, 900
-            )))
+            session_command,
+            SessionScrubCommand::Update(expected_intent)
         );
-        assert_eq!(decision.due_preview, None);
-        assert!(!decision.stale);
+        assert_eq!(due_preview, None);
         assert_eq!(driver.next_preview_scrub_timeout(Instant::now()), None);
     }
 
@@ -505,12 +585,13 @@ mod tests {
             driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 100));
         let stale_decision =
             driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation.next(), 250));
+        let (_current_intent, _session_command, current_due_preview) =
+            accepted_update_parts(current_decision);
+        let (rejected_intent, rejected_reason) = rejected_update_parts(stale_decision);
 
-        assert_eq!(current_decision.due_preview, None);
-        assert!(!current_decision.stale);
-        assert_eq!(stale_decision.session_command, None);
-        assert_eq!(stale_decision.due_preview, None);
-        assert!(stale_decision.stale);
+        assert_eq!(current_due_preview, None);
+        assert_eq!(rejected_intent, scrub_update_intent(generation.next(), 250));
+        assert_eq!(rejected_reason, ScrubUpdateRejection::StaleGeneration);
         assert_eq!(driver.latest_scrub_target(), Some(seek_to_millis(100)));
         assert!(driver.next_preview_scrub_timeout(now).is_some());
         assert_eq!(driver.diagnostics().stale_or_ignored_commands, 1);
@@ -523,10 +604,10 @@ mod tests {
 
         let decision =
             driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 100));
+        let (rejected_intent, rejected_reason) = rejected_update_parts(decision);
 
-        assert_eq!(decision.session_command, None);
-        assert_eq!(decision.due_preview, None);
-        assert!(decision.stale);
+        assert_eq!(rejected_intent, scrub_update_intent(generation, 100));
+        assert_eq!(rejected_reason, ScrubUpdateRejection::Inactive);
         assert_eq!(driver.latest_scrub_target(), None);
         assert_eq!(driver.diagnostics().stale_or_ignored_commands, 1);
     }
@@ -541,8 +622,9 @@ mod tests {
 
         let decision =
             driver.apply_latest_scrub_update_for_drag(scrub_update_intent(first_generation, 100));
+        let (_accepted_intent, _session_command, due_preview) = accepted_update_parts(decision);
 
-        assert_eq!(decision.due_preview, None);
+        assert_eq!(due_preview, None);
         assert!(driver.next_preview_scrub_timeout(now).is_some());
 
         let second_generation = first_generation.next();
@@ -552,9 +634,7 @@ mod tests {
             driver.dispatch_due_preview_scrub_seek(now + Duration::from_millis(200));
 
         assert_eq!(driver.next_preview_scrub_timeout(now), None);
-        assert_eq!(preview_decision.intent, None);
-        assert_eq!(preview_decision.session_command, None);
-        assert!(!preview_decision.stale);
+        assert_eq!(preview_decision, ScrubPreviewDecision::Idle);
         assert_eq!(driver.diagnostics().stale_or_ignored_commands, 0);
     }
 
@@ -570,20 +650,24 @@ mod tests {
             driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 100));
         let second_decision =
             driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 250));
+        let (_first_intent, _first_command, first_due_preview) =
+            accepted_update_parts(first_decision);
+        let (_second_intent, _second_command, second_due_preview) =
+            accepted_update_parts(second_decision);
 
-        assert_eq!(first_decision.due_preview, None);
-        assert_eq!(second_decision.due_preview, None);
+        assert_eq!(first_due_preview, None);
+        assert_eq!(second_due_preview, None);
 
         let preview_decision =
             driver.dispatch_due_preview_scrub_seek(now + Duration::from_millis(100));
+        let (preview_intent, session_command) = dispatched_preview_parts(preview_decision);
+        let expected_intent = scrub_update_intent(generation, 250);
 
+        assert_eq!(preview_intent, expected_intent);
         assert_eq!(
-            preview_decision.session_command,
-            Some(SessionScrubCommand::Preview(scrub_update_intent(
-                generation, 250
-            )))
+            session_command,
+            SessionScrubCommand::Preview(expected_intent)
         );
-        assert!(!preview_decision.stale);
         assert_eq!(driver.in_flight_target(), Some(seek_to_millis(250)));
     }
 
@@ -596,25 +680,27 @@ mod tests {
 
         let first_decision =
             driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 100));
-        let due_preview = first_decision
-            .due_preview
-            .expect("first preview should be due immediately");
+        let (_first_intent, _first_command, first_due_preview) =
+            accepted_update_parts(first_decision);
+        let due_preview = first_due_preview.expect("first preview should be due immediately");
         let preview_decision = driver.preview_due_scrub(due_preview);
-        assert_eq!(
-            preview_decision.session_command,
-            Some(SessionScrubCommand::Preview(scrub_update_intent(
-                generation, 100
-            )))
-        );
+        let (preview_intent, session_command) = dispatched_preview_parts(preview_decision);
+        let first_intent = scrub_update_intent(generation, 100);
+        assert_eq!(preview_intent, first_intent);
+        assert_eq!(session_command, SessionScrubCommand::Preview(first_intent));
 
         driver.set_last_preview_scrub_seek_at_for_tests(Some(now));
         let second_decision =
             driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 250));
         let repeated_first_decision =
             driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 100));
+        let (_second_intent, _second_command, second_due_preview) =
+            accepted_update_parts(second_decision);
+        let (_repeated_intent, _repeated_command, repeated_due_preview) =
+            accepted_update_parts(repeated_first_decision);
 
-        assert_eq!(second_decision.due_preview, None);
-        assert_eq!(repeated_first_decision.due_preview, None);
+        assert_eq!(second_due_preview, None);
+        assert_eq!(repeated_due_preview, None);
         assert_eq!(driver.next_preview_scrub_timeout(now), None);
         assert_eq!(driver.latest_scrub_target(), Some(seek_to_millis(100)));
         assert_eq!(driver.in_flight_target(), Some(seek_to_millis(100)));
@@ -629,9 +715,10 @@ mod tests {
         driver.begin_scrub(second_generation, PlaybackState::Paused);
 
         let decision = driver.preview_scrub(scrub_update_intent(first_generation, 100));
+        let (rejected_intent, rejected_reason) = rejected_preview_parts(decision);
 
-        assert!(decision.stale);
-        assert_eq!(decision.session_command, None);
+        assert_eq!(rejected_intent, scrub_update_intent(first_generation, 100));
+        assert_eq!(rejected_reason, PreviewDispatchRejection::StaleGeneration);
         assert_eq!(driver.diagnostics().stale_or_ignored_commands, 1);
     }
 
@@ -645,15 +732,57 @@ mod tests {
             generation,
             crate::ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
         ));
-
-        assert_eq!(
-            decision.session_command,
-            Some(SessionScrubCommand::End(ScrubCommitIntent::new(
-                generation,
-                crate::ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-            )))
+        let (accepted_intent, session_command, resume_intent) = accepted_end_parts(decision);
+        let expected_intent = ScrubCommitIntent::new(
+            generation,
+            crate::ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
         );
-        assert_eq!(decision.resume_intent, Some(PlaybackResumeIntent::Play));
-        assert!(!decision.stale);
+
+        assert_eq!(accepted_intent, expected_intent);
+        assert_eq!(session_command, SessionScrubCommand::End(expected_intent));
+        assert_eq!(resume_intent, PlaybackResumeIntent::Play);
+    }
+
+    #[test]
+    fn stale_end_scrub_returns_rejected_without_clearing_active_operation() {
+        let mut driver = ScrubDriver::new(Duration::from_millis(100));
+        let generation = driver.next_begin_generation();
+        driver.begin_scrub(generation, PlaybackState::Playing);
+
+        let stale_intent = ScrubCommitIntent::new(
+            generation.next(),
+            crate::ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        );
+        let decision = driver.end_scrub(stale_intent);
+        let (rejected_intent, rejected_reason) = rejected_end_parts(decision);
+
+        assert_eq!(rejected_intent, stale_intent);
+        assert_eq!(rejected_reason, FinishScrubRejection::StaleGeneration);
+        assert!(driver.is_scrubbing());
+        assert_eq!(driver.current_generation(), generation);
+        assert_eq!(driver.diagnostics().stale_or_ignored_commands, 1);
+    }
+
+    #[test]
+    fn preview_rejects_not_current_latest_separately_from_stale_generation() {
+        let mut driver = ScrubDriver::new(Duration::from_millis(100));
+        let generation = driver.next_begin_generation();
+        driver.begin_scrub(generation, PlaybackState::Paused);
+
+        let first_intent = scrub_update_intent(generation, 100);
+        let second_intent = scrub_update_intent(generation, 250);
+        let (_first_accepted, _first_command, first_due_preview) =
+            accepted_update_parts(driver.apply_latest_scrub_update_for_drag(first_intent));
+
+        assert!(first_due_preview.is_some());
+        let (_second_accepted, _second_command, _second_due_preview) =
+            accepted_update_parts(driver.apply_latest_scrub_update_for_drag(second_intent));
+
+        let decision = driver.preview_scrub(first_intent);
+        let (rejected_intent, rejected_reason) = rejected_preview_parts(decision);
+
+        assert_eq!(rejected_intent, first_intent);
+        assert_eq!(rejected_reason, PreviewDispatchRejection::NotCurrentLatest);
+        assert_eq!(driver.diagnostics().stale_or_ignored_commands, 1);
     }
 }
