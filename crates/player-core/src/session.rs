@@ -214,8 +214,7 @@ impl PlayerSession {
     /// Резервирует текущий present frame для render thread без раскрытия `PlaybackPipeline`.
     #[must_use]
     pub(crate) fn lease_present_video_frame(&mut self) -> Option<LeasedPresentFrame> {
-        let decoder_thread = self.pipeline.video_decoder_thread.as_ref()?;
-        let texture_provider = decoder_thread.texture_view_provider();
+        let texture_provider = self.pipeline.video_decoder_texture_view_provider()?;
         let frame = self.pipeline.present_video_frame()?.clone();
         let render_generation = self.pipeline.render_generation;
         let stale = self.snapshot.timeline.stale_frame;
@@ -562,9 +561,7 @@ impl PlayerSession {
         self.clear_video_frames();
         self.advance_render_generation();
 
-        if let Some(ref thread) = self.pipeline.video_decoder_thread
-            && let Err(error) = thread.flush()
-        {
+        if let Err(error) = self.pipeline.flush_video_decoder_thread() {
             warn!(error = %error, "Не удалось сбросить video decoder thread");
         }
 
@@ -812,9 +809,7 @@ impl PlayerSession {
 
     /// Непосредственно отдаёт texture slot обратно decoder thread.
     fn release_video_texture_now(&mut self, texture_handle: video_core::FrameTextureHandle) {
-        if let Some(ref thread) = self.pipeline.video_decoder_thread {
-            thread.release_frame(texture_handle);
-        }
+        self.pipeline.release_frame_to_video_decoder(texture_handle);
     }
 
     /// Обрабатывает audio packet: decode -> write to AudioOutput.
@@ -1996,12 +1991,8 @@ impl PlayerSession {
 
     /// Сбрасывает video decoder перед seek и делает flush явной fail-fast границей.
     fn reset_video_decoder_for_seek(&self) -> Result<(), PlayerError> {
-        let Some(ref thread) = self.pipeline.video_decoder_thread else {
-            return Ok(());
-        };
-
-        thread
-            .flush()
+        self.pipeline
+            .flush_video_decoder_thread()
             .map_err(player_error_from_decoder_flush_error)
     }
 

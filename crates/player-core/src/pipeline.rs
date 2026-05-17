@@ -651,6 +651,90 @@ impl PlaybackPipeline {
             .and_then(|decoder_thread| decoder_thread.texture_pool_stats())
     }
 
+    /// Возвращает provider для renderer-side texture views активного decoder thread-а.
+    #[must_use]
+    pub(crate) fn video_decoder_texture_view_provider(
+        &self,
+    ) -> Option<video_vaapi::VideoTextureViewProvider> {
+        self.video_decoder_thread
+            .as_ref()
+            .map(|decoder_thread| decoder_thread.texture_view_provider())
+    }
+
+    /// Немедленно отдаёт texture slot активному decoder thread-у.
+    ///
+    /// Метод намеренно не знает про deferred render leases: это решение остаётся
+    /// в `PlayerSession`, потому что только session видит поколение renderer-а.
+    pub(crate) fn release_frame_to_video_decoder(
+        &self,
+        texture_handle: video_core::FrameTextureHandle,
+    ) -> bool {
+        let Some(decoder_thread) = self.video_decoder_thread.as_ref() else {
+            return false;
+        };
+
+        decoder_thread.release_frame(texture_handle);
+        true
+    }
+
+    /// Сбрасывает decoder thread перед seek/media reset.
+    ///
+    /// Отсутствующий decoder thread остаётся успешным no-op, как и прежний
+    /// прямой вызов из session.
+    pub(crate) fn flush_video_decoder_thread(&self) -> anyhow::Result<()> {
+        let Some(decoder_thread) = self.video_decoder_thread.as_ref() else {
+            return Ok(());
+        };
+
+        decoder_thread.flush()
+    }
+
+    /// Забирает один decoded frame без блокировки worker-а.
+    pub(crate) fn try_recv_decoded_video_frame(&self) -> Option<video_core::DecodedFrame> {
+        self.video_decoder_thread
+            .as_ref()
+            .and_then(|decoder_thread| decoder_thread.try_recv_frame())
+    }
+
+    /// Забирает один diagnostics event от decoder/backend boundary.
+    pub(crate) fn try_recv_video_decoder_diagnostic_event(
+        &self,
+    ) -> Option<video_core::VideoDecoderDiagnosticEvent> {
+        self.video_decoder_thread
+            .as_ref()
+            .and_then(|decoder_thread| decoder_thread.try_recv_diagnostic_event())
+    }
+
+    /// Забирает один fatal decoder-thread error, если backend уже остановился.
+    pub(crate) fn try_recv_video_decoder_error(&self) -> Option<video_vaapi::DecodeThreadError> {
+        self.video_decoder_thread
+            .as_ref()
+            .and_then(|decoder_thread| decoder_thread.try_recv_error())
+    }
+
+    /// Забирает packet ack-и decoder thread-а без изменения player-side accounting.
+    #[must_use]
+    pub(crate) fn drain_completed_video_decode_packet_count(&self) -> usize {
+        self.video_decoder_thread
+            .as_ref()
+            .map(|decoder_thread| decoder_thread.drain_completed_packet_count())
+            .unwrap_or(0)
+    }
+
+    /// Отправляет encoded packet в активный decoder thread.
+    ///
+    /// `None` означает, что decoder thread отсутствует. `Some(Ok(()))`
+    /// означает принятую отправку, а `Some(Err(_))` сохраняет различие между
+    /// backpressure и fatal send failure.
+    pub(crate) fn send_video_decode_packet(
+        &self,
+        packet: video_vaapi::DecodePacket,
+    ) -> Option<Result<(), video_vaapi::DecodeThreadSendError>> {
+        self.video_decoder_thread
+            .as_ref()
+            .map(|decoder_thread| decoder_thread.send_packet(packet))
+    }
+
     /// Сбрасывает счётчик packets, которые могли остаться внутри decoder после flush/seek.
     pub(crate) fn reset_video_decode_in_flight(&mut self) {
         self.video_decode_in_flight_packets = 0;

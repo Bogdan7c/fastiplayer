@@ -969,10 +969,8 @@ fn enqueue_decoded_video_frame(
 fn drain_video_decoder_thread_error(session: &mut PlayerSession) -> bool {
     let mut fatal_decoder_error = None;
 
-    if let Some(thread) = session.pipeline.video_decoder_thread.as_ref() {
-        while let Some(error) = thread.try_recv_error() {
-            fatal_decoder_error = Some(error);
-        }
+    while let Some(error) = session.pipeline.try_recv_video_decoder_error() {
+        fatal_decoder_error = Some(error);
     }
 
     let Some(error) = fatal_decoder_error else {
@@ -991,11 +989,7 @@ fn drain_video_decoder_thread_diagnostics(
     tick_result: &mut PlayerTickResult,
 ) {
     loop {
-        let diagnostic_event = session
-            .pipeline
-            .video_decoder_thread
-            .as_ref()
-            .and_then(|thread| thread.try_recv_diagnostic_event());
+        let diagnostic_event = session.pipeline.try_recv_video_decoder_diagnostic_event();
         let Some(event) = diagnostic_event else {
             break;
         };
@@ -1061,22 +1055,16 @@ fn drain_decoded_video_frames(
         return 0;
     }
 
-    let decoded_frames = {
-        let Some(thread) = session.pipeline.video_decoder_thread.as_ref() else {
-            return 0;
-        };
-        let mut decoded_frames = Vec::new();
-        for _ in 0..receive_budget {
-            if catch_up_deadline_reached(catch_up_deadline) {
-                break;
-            }
-            let Some(frame) = thread.try_recv_frame() else {
-                break;
-            };
-            decoded_frames.push(frame);
+    let mut decoded_frames = Vec::new();
+    for _ in 0..receive_budget {
+        if catch_up_deadline_reached(catch_up_deadline) {
+            break;
         }
-        decoded_frames
-    };
+        let Some(frame) = session.pipeline.try_recv_decoded_video_frame() else {
+            break;
+        };
+        decoded_frames.push(frame);
+    }
 
     if drain_video_decoder_thread_error(session) {
         for frame in decoded_frames {
@@ -1142,12 +1130,7 @@ fn drain_decoded_video_frames(
 
 /// Синхронизирует player-side in-flight счётчик с packet ack-ами decoder thread-а.
 fn drain_completed_video_decode_packets(session: &mut PlayerSession) {
-    let completed_packet_count = session
-        .pipeline
-        .video_decoder_thread
-        .as_ref()
-        .map(|decoder_thread| decoder_thread.drain_completed_packet_count())
-        .unwrap_or(0);
+    let completed_packet_count = session.pipeline.drain_completed_video_decode_packet_count();
 
     session
         .pipeline
@@ -1266,15 +1249,13 @@ fn send_pending_video_packets_to_decoder(
             resolved_color,
         };
 
-        let Some(ref thread) = session.pipeline.video_decoder_thread else {
-            break;
-        };
-        match thread.send_packet(decode_packet) {
-            Ok(()) => {
+        match session.pipeline.send_video_decode_packet(decode_packet) {
+            None => break,
+            Some(Ok(())) => {
                 session.pipeline.pop_pending_video_packet_front();
                 session.pipeline.note_video_packet_sent_to_decoder();
             }
-            Err(video_vaapi::DecodeThreadSendError::Backpressure(reason)) => {
+            Some(Err(video_vaapi::DecodeThreadSendError::Backpressure(reason))) => {
                 tracing::debug!(reason = %reason, "Decoder packet channel backpressure");
                 record_pipeline_pause(
                     session,
@@ -1283,7 +1264,7 @@ fn send_pending_video_packets_to_decoder(
                 );
                 break;
             }
-            Err(video_vaapi::DecodeThreadSendError::Fatal(error)) => {
+            Some(Err(video_vaapi::DecodeThreadSendError::Fatal(error))) => {
                 tracing::warn!(error = %error, "Failed to send packet to decoder thread");
                 session.mark_fatal_error(PlayerError::new(
                     PlayerErrorKind::RuntimeError,
