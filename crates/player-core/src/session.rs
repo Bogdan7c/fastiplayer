@@ -3725,6 +3725,35 @@ mod tests {
     }
 
     #[test]
+    fn direct_dispatch_scrub_commands_remain_session_compatibility_path() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, Vec::new());
+        let request = SeekRequest::absolute(MediaTime::from_secs(3));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        assert_eq!(
+            session.active_scrub_generation,
+            Some(ScrubGeneration::default().next())
+        );
+
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        assert!(session.snapshot().timeline.scrubbing);
+        assert_eq!(
+            session.snapshot().timeline.target_position,
+            Some(MediaTime::from_secs(3))
+        );
+
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+            })
+            .unwrap();
+        assert!(!session.snapshot().timeline.scrubbing);
+    }
+
+    #[test]
     fn default_release_after_update_commits_latest_target_without_visible_preview() {
         let mut session = PlayerSession::new();
         install_fake_media(&mut session, Vec::new());

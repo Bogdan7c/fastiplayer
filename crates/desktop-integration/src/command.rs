@@ -207,6 +207,39 @@ mod tests {
     }
 
     #[test]
+    fn mpris_mapping_never_emits_scrub_commands() {
+        let snapshot = seekable_snapshot(MediaTime::from_secs(10), MediaDuration::from_secs(100));
+        let commands_to_check = [
+            MprisCommand::Play,
+            MprisCommand::Pause,
+            MprisCommand::PlayPause,
+            MprisCommand::Stop,
+            MprisCommand::Seek {
+                offset_microseconds: 5_000_000,
+            },
+            MprisCommand::SetPosition(MprisSetPositionRequest {
+                track_id: MPRIS_CURRENT_TRACK_ID.to_string(),
+                position_microseconds: 20_000_000,
+            }),
+        ];
+
+        for mpris_command in commands_to_check {
+            let player_commands = map_mpris_command_to_player_commands(mpris_command, &snapshot);
+
+            assert!(
+                player_commands.iter().all(|player_command| !matches!(
+                    player_command,
+                    PlayerCommand::BeginScrub
+                        | PlayerCommand::UpdateScrub(_)
+                        | PlayerCommand::PreviewScrub(_)
+                        | PlayerCommand::EndScrub { .. }
+                )),
+                "MPRIS mapping must not emit scrub commands: {player_commands:?}"
+            );
+        }
+    }
+
+    #[test]
     fn seek_maps_signed_offset_to_absolute_target() {
         let snapshot = seekable_snapshot(MediaTime::from_secs(10), MediaDuration::from_secs(100));
 

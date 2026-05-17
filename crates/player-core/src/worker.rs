@@ -1168,28 +1168,23 @@ impl PlayerWorkerRuntime {
             PlayerCommand::OpenMedia(request) => self.handle_open_media_request(request),
             PlayerCommand::Stop => self.handle_stop_command(),
             PlayerCommand::Shutdown => self.handle_shutdown_request(),
-            PlayerCommand::BeginScrub => {
-                let decision = self
-                    .scrub_driver
-                    .begin_scrub_from_player_command(self.session.playback_state());
-                self.dispatch_begin_scrub_decision(decision);
-            }
-            PlayerCommand::UpdateScrub(request) => {
-                let decision = self.scrub_driver.apply_player_scrub_update(request);
-                self.dispatch_scrub_update_decision(ScrubPreviewDispatch::Allow, decision);
-            }
-            PlayerCommand::PreviewScrub(request) => {
-                let decision = self.scrub_driver.preview_player_scrub(request);
-                self.dispatch_preview_scrub_decision(decision);
-            }
-            PlayerCommand::EndScrub { policy } => {
-                self.apply_latest_scrub_update_for_commit();
-                let decision = self.scrub_driver.end_player_scrub(policy);
-                self.dispatch_end_scrub_decision(decision);
+            scrub_command @ (PlayerCommand::BeginScrub
+            | PlayerCommand::UpdateScrub(_)
+            | PlayerCommand::PreviewScrub(_)
+            | PlayerCommand::EndScrub { .. }) => {
+                Self::reject_raw_player_scrub_command(scrub_command)
             }
             PlayerCommand::Seek(request) => self.handle_seek_command(request),
             other_command => self.dispatch_player_command(other_command),
         }
+    }
+
+    /// Отсекает raw scrub `PlayerCommand`, если он обошёл sender-side sequencing boundary.
+    fn reject_raw_player_scrub_command(command: PlayerCommand) {
+        warn!(
+            command = ?command,
+            "Raw scrub PlayerCommand bypassed PlayerCommandSender; command ignored"
+        );
     }
 
     /// Открывает media request; local file грузится полностью внутри worker thread.
@@ -1899,6 +1894,24 @@ mod tests {
         }
     }
 
+    fn command_sender_for_scrub_path_tests() -> (
+        PlayerCommandSender,
+        Receiver<WorkerCommand>,
+        Receiver<()>,
+        Arc<ScrubUpdateCoalescer>,
+    ) {
+        let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
+        let (scrub_wake_tx, scrub_wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
+        let scrub_coalescer = Arc::new(ScrubUpdateCoalescer::new(scrub_wake_tx));
+        let command_sender = PlayerCommandSender {
+            command_tx,
+            scrub_coalescer: Arc::clone(&scrub_coalescer),
+            scrub_command_sequencer: Arc::new(Mutex::new(ScrubCommandSequencer::new())),
+        };
+
+        (command_sender, command_rx, scrub_wake_rx, scrub_coalescer)
+    }
+
     fn decoded_frame_for_tests(texture_handle: FrameTextureHandle) -> DecodedFrame {
         DecodedFrame {
             pts: Duration::ZERO,
@@ -2050,6 +2063,53 @@ mod tests {
         assert!(paused_index < open_index);
         assert!(open_index < shutdown_index);
         worker.shutdown().unwrap();
+    }
+
+    #[test]
+    fn command_sender_routes_scrub_commands_through_typed_path() {
+        let (command_sender, command_rx, scrub_wake_rx, scrub_coalescer) =
+            command_sender_for_scrub_path_tests();
+
+        command_sender.try_send(PlayerCommand::BeginScrub).unwrap();
+        let active_generation = match command_rx.try_recv().unwrap() {
+            WorkerCommand::BeginScrub { generation } => generation,
+            _ => panic!("BeginScrub must use typed worker command"),
+        };
+
+        command_sender
+            .try_send(PlayerCommand::UpdateScrub(seek_to_millis(250)))
+            .unwrap();
+        assert!(command_rx.try_recv().is_err());
+        assert_eq!(scrub_wake_rx.len(), 1);
+        assert_eq!(
+            scrub_coalescer.take_for_generation(active_generation),
+            ScrubCoalescedUpdateDecision::Ready {
+                intent: scrub_update_intent(active_generation, 250),
+            }
+        );
+
+        command_sender
+            .try_send(PlayerCommand::PreviewScrub(seek_to_millis(250)))
+            .unwrap();
+        match command_rx.try_recv().unwrap() {
+            WorkerCommand::PreviewScrub(intent) => {
+                assert_eq!(intent, scrub_update_intent(active_generation, 250));
+            }
+            _ => panic!("PreviewScrub must use typed worker command"),
+        }
+
+        command_sender
+            .try_send(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+            })
+            .unwrap();
+        match command_rx.try_recv().unwrap() {
+            WorkerCommand::EndScrub(intent) => {
+                assert_eq!(intent.generation, active_generation);
+                assert_eq!(intent.policy, ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE);
+            }
+            _ => panic!("EndScrub must use typed worker command"),
+        }
     }
 
     #[test]
@@ -2355,6 +2415,44 @@ mod tests {
         assert_eq!(
             runtime.scrub_driver.diagnostics().stale_or_ignored_commands,
             1
+        );
+    }
+
+    #[test]
+    fn raw_player_scrub_commands_are_rejected_before_worker_runtime_path() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let queued_intent = scrub_update_intent(ScrubGeneration::default().next(), 333);
+
+        runtime
+            .scrub_coalescer
+            .submit_latest(queued_intent)
+            .unwrap();
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::BeginScrub));
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::UpdateScrub(
+            seek_to_millis(100),
+        )));
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::PreviewScrub(
+            seek_to_millis(100),
+        )));
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::EndScrub {
+            policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        }));
+
+        assert!(!runtime.scrub_driver.is_scrubbing());
+        assert!(!runtime.session.snapshot().timeline.scrubbing);
+        assert_eq!(runtime.session.snapshot().timeline.target_position, None);
+        assert!(runtime.session.snapshot().last_error.is_none());
+        assert_eq!(
+            runtime.scrub_driver.diagnostics().stale_or_ignored_commands,
+            0
+        );
+        assert_eq!(
+            runtime
+                .scrub_coalescer
+                .take_for_generation(queued_intent.generation),
+            ScrubCoalescedUpdateDecision::Ready {
+                intent: queued_intent,
+            }
         );
     }
 
