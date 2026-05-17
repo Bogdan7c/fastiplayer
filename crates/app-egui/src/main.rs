@@ -51,7 +51,7 @@ use winit::{
 };
 
 use crate::state::{AppState, RenderablePresentFrame};
-use crate::telemetry::{Telemetry, VideoDropReason, VideoFrameTelemetryEvent};
+use crate::telemetry::{SeekDiscardReason, Telemetry, VideoDropReason, VideoFrameTelemetryEvent};
 
 /// Интервал polling-а фоновой подготовки YouTube, когда playback ещё не активен.
 const YOUTUBE_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -625,8 +625,8 @@ fn record_player_tick_result(telemetry: &Telemetry, tick_result: &PlayerTickResu
             VideoFrameTelemetryEvent::PlaybackDrop(reason) => {
                 telemetry.record_video_frame_dropped(reason);
             }
-            VideoFrameTelemetryEvent::SeekDiscard => {
-                telemetry.record_seek_discarded_frame();
+            VideoFrameTelemetryEvent::SeekDiscard(reason) => {
+                telemetry.record_seek_discarded_frame(reason);
             }
         }
     }
@@ -657,11 +657,16 @@ fn map_video_frame_telemetry_event(reason: PlayerVideoDropReason) -> VideoFrameT
         PlayerVideoDropReason::Paused => {
             VideoFrameTelemetryEvent::PlaybackDrop(VideoDropReason::Paused)
         }
-        PlayerVideoDropReason::StaleGeneration | PlayerVideoDropReason::SeekPreroll => {
-            VideoFrameTelemetryEvent::SeekDiscard
+        PlayerVideoDropReason::SeekPreroll => {
+            VideoFrameTelemetryEvent::SeekDiscard(SeekDiscardReason::SeekPreroll)
         }
-        PlayerVideoDropReason::RenderAcquisitionTimeout
-        | PlayerVideoDropReason::DecoderStarvation => {
+        PlayerVideoDropReason::StaleGeneration => {
+            VideoFrameTelemetryEvent::SeekDiscard(SeekDiscardReason::StaleGeneration)
+        }
+        PlayerVideoDropReason::DecoderStarvation => {
+            VideoFrameTelemetryEvent::PlaybackDrop(VideoDropReason::DecoderStarvation)
+        }
+        PlayerVideoDropReason::RenderAcquisitionTimeout => {
             VideoFrameTelemetryEvent::PlaybackDrop(VideoDropReason::Other)
         }
     }
@@ -819,12 +824,12 @@ fn render_frame(
         },
     }) {
         RenderFrameOutcome::Presented(timing) => {
-            telemetry.record_presented_frame();
+            telemetry.record_frame_presented_to_surface();
             app_state.report_gpu_submit_present_latency(timing.submit_present_elapsed);
         }
-        RenderFrameOutcome::Dropped(_reason) => telemetry.record_dropped_frame(),
+        RenderFrameOutcome::Dropped(_reason) => telemetry.record_surface_dropped_frame(),
         RenderFrameOutcome::Failed(failure) => {
-            telemetry.record_dropped_frame();
+            telemetry.record_surface_dropped_frame();
             app_state.report_render_error(PlayerRenderError::render_device_lost(format!(
                 "Video render failed: {}",
                 failure.message
@@ -1100,6 +1105,47 @@ mod tests {
         assert_eq!(telemetry.video_frames_late_dropped(), 1);
         assert_eq!(telemetry.video_frames_other_dropped(), 0);
         assert_eq!(telemetry.seek_discarded_frames(), 2);
+        assert_eq!(telemetry.seek_preroll_discarded(), 1);
+        assert_eq!(telemetry.stale_generation_discarded(), 1);
+    }
+
+    /// Проверяет, что playback причины не смешиваются с seek или surface taxonomy.
+    #[test]
+    fn playback_reasons_map_to_dedicated_playback_categories() {
+        let telemetry = Telemetry::new();
+        let tick_result = PlayerTickResult {
+            dropped_video_frames: vec![
+                PlayerVideoFrameDrop {
+                    pts: Duration::from_millis(120),
+                    reason: PlayerVideoDropReason::Late,
+                },
+                PlayerVideoFrameDrop {
+                    pts: Duration::from_millis(140),
+                    reason: PlayerVideoDropReason::QueueOverflow,
+                },
+                PlayerVideoFrameDrop {
+                    pts: Duration::from_millis(160),
+                    reason: PlayerVideoDropReason::Paused,
+                },
+                PlayerVideoFrameDrop {
+                    pts: Duration::from_millis(180),
+                    reason: PlayerVideoDropReason::DecoderStarvation,
+                },
+            ],
+            ..PlayerTickResult::default()
+        };
+
+        record_player_tick_result(&telemetry, &tick_result);
+
+        assert_eq!(telemetry.video_frames_dropped(), 4);
+        assert_eq!(telemetry.playback_visible_drops(), 3);
+        assert_eq!(telemetry.video_late_drops(), 1);
+        assert_eq!(telemetry.video_queue_drops(), 1);
+        assert_eq!(telemetry.video_pause_drops(), 1);
+        assert_eq!(telemetry.video_decoder_starvation(), 1);
+        assert_eq!(telemetry.video_other_drops(), 0);
+        assert_eq!(telemetry.seek_discarded_frames(), 0);
+        assert_eq!(telemetry.surface_dropped_frames(), 0);
     }
 
     /// Проверяет, что чистые seek-discard причины не становятся playback/render drop-ами.
@@ -1129,5 +1175,7 @@ mod tests {
         assert_eq!(telemetry.video_frames_other_dropped(), 0);
         assert_eq!(telemetry.dropped_frames(), 0);
         assert_eq!(telemetry.seek_discarded_frames(), 2);
+        assert_eq!(telemetry.seek_preroll_discarded(), 1);
+        assert_eq!(telemetry.stale_generation_discarded(), 1);
     }
 }

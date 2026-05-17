@@ -877,16 +877,32 @@ impl AppState {
                     .show(ui, |ui| {
                         let fps = telemetry.current_fps();
                         let frame_time = telemetry.last_frame_time_ms();
-                        let presented = telemetry.presented_frames();
-                        let dropped = telemetry.dropped_frames();
-                        let drop_rate = telemetry.drop_rate_percent();
+                        let frames_presented_to_surface = telemetry.frames_presented_to_surface();
+                        let surface_dropped_frames = telemetry.surface_dropped_frames();
+                        let surface_drop_rate = telemetry.surface_drop_rate_percent();
 
                         ui.monospace(format!("FPS: {fps}"));
                         ui.monospace(format!("Frame time: {:.2} ms", frame_time as f64));
                         ui.separator();
-                        ui.monospace(format!("Presented: {presented}"));
-                        ui.monospace(format!("Dropped: {dropped}"));
-                        ui.monospace(format!("Drop rate: {drop_rate:.2}%"));
+                        ui.heading("Swapchain");
+                        ui.monospace(format!(
+                            "frames_presented_to_surface: {frames_presented_to_surface}"
+                        ));
+                        ui.monospace(format!("surface_dropped_frames: {surface_dropped_frames}"));
+                        ui.monospace(format!("surface_drop_rate: {surface_drop_rate:.2}%"));
+                        ui.separator();
+                        ui.heading("Smoothness");
+                        ui.monospace(format!(
+                            "Playback visible drops: {}",
+                            telemetry.playback_visible_drops()
+                        ));
+                        ui.monospace(format!("repeated_frames: {}", telemetry.repeated_frames()));
+                        ui.separator();
+                        ui.heading("Seek");
+                        ui.monospace(format!(
+                            "Seek discard, expected: {}",
+                            telemetry.seek_discarded_frames()
+                        ));
                         ui.separator();
 
                         let quality_color = if fps >= 55 {
@@ -1013,48 +1029,67 @@ impl AppState {
         }
         ui.monospace(format!("Decoded: {}", telemetry.video_frames_decoded()));
         ui.monospace(format!(
-            "Presented: {}",
+            "video_frames_presented: {}",
             player_snapshot.frame_counters.presented
         ));
         ui.monospace(format!(
-            "Dropped: {}",
+            "Playback visible drops: {}",
+            telemetry.playback_visible_drops()
+        ));
+        ui.monospace(format!(
+            "Playback drops incl pause: {}",
             player_snapshot.frame_counters.dropped
         ));
-        ui.monospace(format!("  Late: {}", telemetry.video_frames_late_dropped()));
         ui.monospace(format!(
-            "  Queue: {}",
-            telemetry.video_frames_queue_dropped()
+            "  video_late_drops: {}",
+            telemetry.video_late_drops()
         ));
         ui.monospace(format!(
-            "  Pause: {}",
-            telemetry.video_frames_pause_dropped()
+            "  video_queue_drops: {}",
+            telemetry.video_queue_drops()
         ));
         ui.monospace(format!(
-            "  Other: {}",
-            telemetry.video_frames_other_dropped()
+            "  video_pause_drops: {}",
+            telemetry.video_pause_drops()
         ));
         ui.monospace(format!(
-            "Seek discarded: {}",
+            "  video_decoder_starvation: {}",
+            telemetry.video_decoder_starvation()
+        ));
+        ui.monospace(format!(
+            "  video_other_drops: {}",
+            telemetry.video_other_drops()
+        ));
+        ui.monospace(format!(
+            "Seek discard, expected: {}",
             telemetry.seek_discarded_frames()
         ));
         ui.monospace(format!(
-            "  Seek/pre-roll: {}",
+            "  seek_preroll_discarded: {}",
+            telemetry.seek_preroll_discarded()
+        ));
+        ui.monospace(format!(
+            "  stale_generation_discarded: {}",
+            telemetry.stale_generation_discarded()
+        ));
+        ui.monospace(format!(
+            "  core seek/pre-roll diagnostics: {}",
             player_snapshot.diagnostics.drops.seek_preroll
         ));
         ui.monospace(format!(
-            "  Stale gen: {}",
+            "  core stale-generation diagnostics: {}",
             player_snapshot.diagnostics.drops.stale_generation
         ));
         ui.monospace(format!(
-            "  Acquire timeout (legacy): {}",
+            "  core render acquisition timeout: {}",
             player_snapshot.diagnostics.drops.render_acquisition_timeout
         ));
         ui.monospace(format!(
-            "  Decoder starvation: {}",
+            "  core decoder starvation diagnostics: {}",
             player_snapshot.diagnostics.drops.decoder_starvation
         ));
         ui.monospace(format!(
-            "Repeated/reused: {}",
+            "repeated_frames: {}",
             player_snapshot.frame_counters.repeated
         ));
         ui.monospace(format!(
