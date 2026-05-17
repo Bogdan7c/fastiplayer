@@ -28,10 +28,10 @@ use crate::{
     PipelineQueueDepthSnapshot, PlaybackDiagnostics, PlaybackDiagnosticsLogSummary,
     PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent,
     PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection, QueueSnapshot,
-    ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration, ScrubUpdateIntent, SeekProgressBlocker,
-    SeekRequest, SessionScrubCommand, TexturePoolSnapshot, TextureSlotPressureSnapshot, TrackId,
-    TrackSelectionSnapshot, TrackSummarySnapshot, VideoBackendFactory, VideoDropReason,
-    VideoFrameSnapshot, WorkerWakeupDiagnosticsSnapshot,
+    RenderTextureProviderHandle, ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration,
+    ScrubUpdateIntent, SeekProgressBlocker, SeekRequest, SessionScrubCommand, TexturePoolSnapshot,
+    TextureSlotPressureSnapshot, TrackId, TrackSelectionSnapshot, TrackSummarySnapshot,
+    VideoBackendFactory, VideoDropReason, VideoFrameSnapshot, WorkerWakeupDiagnosticsSnapshot,
 };
 
 /// Preview frame, который был реально показан в рамках конкретного scrub intent-а.
@@ -107,7 +107,7 @@ pub(crate) struct LeasedPresentFrame {
     pub stale: bool,
 
     /// Provider texture views из backend-а, создавшего кадр.
-    pub texture_provider: video_vaapi::VideoTextureViewProvider,
+    pub texture_provider: RenderTextureProviderHandle,
 }
 
 impl PlayerSession {
@@ -668,7 +668,7 @@ impl PlayerSession {
         &mut self,
         render_generation: u64,
         texture_handle: video_core::FrameTextureHandle,
-        texture_provider: Option<&video_vaapi::VideoTextureViewProvider>,
+        texture_provider: Option<&RenderTextureProviderHandle>,
     ) {
         let lease_key = (render_generation, texture_handle.0);
 
@@ -2623,7 +2623,7 @@ impl PlayerSession {
     /// Конвертирует VA-API texture pool stats в core snapshot.
     fn texture_pool_snapshot(&self) -> Option<TexturePoolSnapshot> {
         self.pipeline
-            .video_decoder_texture_pool_stats()
+            .video_decoder_resource_snapshot()
             .map(|texture_stats| TexturePoolSnapshot {
                 capacity: texture_stats.capacity,
                 slots: texture_stats.slots,
@@ -2995,8 +2995,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        MediaSource, PendingAudioPacket, PendingVideoPacket, PlayerCommand, PlayerTickConfig,
-        PlayerTickContext, ScrubCommitPolicy, SeekMode, SeekTarget,
+        DecodeBackpressureReason, DecodeSendError, DecodeThreadError, DecoderResourceSnapshot,
+        MediaSource, PendingAudioPacket, PendingVideoPacket, PlayerCommand, PlayerDecodePacket,
+        PlayerTickConfig, PlayerTickContext, ScrubCommitPolicy, SeekMode, SeekTarget,
     };
     use bytes::Bytes;
     use capability_core::{
@@ -3115,13 +3116,10 @@ mod tests {
             "Fake failing decoder"
         }
 
-        fn send_packet(
-            &self,
-            _packet: video_vaapi::DecodePacket,
-        ) -> Result<(), video_vaapi::DecodeThreadSendError> {
-            Err(video_vaapi::DecodeThreadSendError::Fatal(
-                video_vaapi::DecodeThreadError::new("fake decoder cannot accept packets"),
-            ))
+        fn send_packet(&self, _packet: PlayerDecodePacket) -> Result<(), DecodeSendError> {
+            Err(DecodeSendError::Fatal(DecodeThreadError::new(
+                "fake decoder cannot accept packets",
+            )))
         }
 
         fn release_frame(&self, _handle: video_core::FrameTextureHandle) {}
@@ -3134,7 +3132,7 @@ mod tests {
             None
         }
 
-        fn try_recv_error(&self) -> Option<video_vaapi::DecodeThreadError> {
+        fn try_recv_error(&self) -> Option<DecodeThreadError> {
             None
         }
 
@@ -3142,11 +3140,11 @@ mod tests {
             Err(anyhow::anyhow!("{}", self.error_message))
         }
 
-        fn texture_view_provider(&self) -> video_vaapi::VideoTextureViewProvider {
+        fn texture_view_provider(&self) -> RenderTextureProviderHandle {
             panic!("fake failing decoder does not provide renderer texture views")
         }
 
-        fn texture_pool_stats(&self) -> Option<video_vaapi::texture_cache::TexturePoolStats> {
+        fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {
             None
         }
 
@@ -3166,7 +3164,7 @@ mod tests {
         decoded_frames: Arc<Mutex<VecDeque<video_core::DecodedFrame>>>,
 
         /// Очередь результатов `send_packet` для проверки decoder boundary без реального backend-а.
-        send_results: Arc<Mutex<VecDeque<Result<(), video_vaapi::DecodeThreadSendError>>>>,
+        send_results: Arc<Mutex<VecDeque<Result<(), DecodeSendError>>>>,
 
         /// Накопленные packet ack-и, которые fake decoder отдаёт одним drain-вызовом.
         completed_packet_count: Arc<Mutex<usize>>,
@@ -3199,7 +3197,7 @@ mod tests {
         }
 
         /// Добавляет предсказуемый результат отправки packet-а через fake boundary.
-        fn push_send_result(&self, result: Result<(), video_vaapi::DecodeThreadSendError>) {
+        fn push_send_result(&self, result: Result<(), DecodeSendError>) {
             self.send_results
                 .lock()
                 .expect("fake decoder send result queue lock")
@@ -3237,10 +3235,7 @@ mod tests {
             "Shared fake decoder"
         }
 
-        fn send_packet(
-            &self,
-            _packet: video_vaapi::DecodePacket,
-        ) -> Result<(), video_vaapi::DecodeThreadSendError> {
+        fn send_packet(&self, _packet: PlayerDecodePacket) -> Result<(), DecodeSendError> {
             self.send_results
                 .lock()
                 .expect("fake decoder send result queue lock")
@@ -3266,7 +3261,7 @@ mod tests {
             None
         }
 
-        fn try_recv_error(&self) -> Option<video_vaapi::DecodeThreadError> {
+        fn try_recv_error(&self) -> Option<DecodeThreadError> {
             None
         }
 
@@ -3283,11 +3278,11 @@ mod tests {
             Ok(())
         }
 
-        fn texture_view_provider(&self) -> video_vaapi::VideoTextureViewProvider {
+        fn texture_view_provider(&self) -> RenderTextureProviderHandle {
             panic!("shared fake decoder does not provide renderer texture views")
         }
 
-        fn texture_pool_stats(&self) -> Option<video_vaapi::texture_cache::TexturePoolStats> {
+        fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {
             None
         }
 
@@ -3409,8 +3404,8 @@ mod tests {
     }
 
     /// Создаёт минимальный decode packet для проверки worker -> decoder boundary.
-    fn decode_packet_for_tests(pts: Duration) -> video_vaapi::DecodePacket {
-        video_vaapi::DecodePacket {
+    fn decode_packet_for_tests(pts: Duration) -> PlayerDecodePacket {
+        PlayerDecodePacket {
             track_id: TrackId::new(1),
             pts,
             encoded_bytes: Bytes::from_static(b"vp9-test-packet"),
@@ -3532,17 +3527,15 @@ mod tests {
     fn playback_pipeline_decoder_boundary_forwards_send_results() {
         let mut pipeline = PlaybackPipeline::default();
         let fake_decoder = SharedFakeVideoDecoderThread::new();
-        let backpressure_reason = video_vaapi::DecodeThreadBackpressureReason::PacketQueueFull {
+        let backpressure_reason = DecodeBackpressureReason::PacketQueueFull {
             queued_packets: 4,
             capacity: 4,
         };
         fake_decoder.push_send_result(Ok(()));
-        fake_decoder.push_send_result(Err(video_vaapi::DecodeThreadSendError::Backpressure(
-            backpressure_reason,
-        )));
-        fake_decoder.push_send_result(Err(video_vaapi::DecodeThreadSendError::Fatal(
-            video_vaapi::DecodeThreadError::new("fatal send failure"),
-        )));
+        fake_decoder.push_send_result(Err(DecodeSendError::Backpressure(backpressure_reason)));
+        fake_decoder.push_send_result(Err(DecodeSendError::Fatal(DecodeThreadError::new(
+            "fatal send failure",
+        ))));
         pipeline.set_video_decoder_thread(fake_decoder);
 
         assert!(pipeline.can_send_video_decode_packets());
@@ -3552,7 +3545,7 @@ mod tests {
         ));
 
         match pipeline.send_video_decode_packet(decode_packet_for_tests(Duration::from_millis(2))) {
-            Some(Err(video_vaapi::DecodeThreadSendError::Backpressure(reason))) => {
+            Some(Err(DecodeSendError::Backpressure(reason))) => {
                 assert_eq!(reason, backpressure_reason);
             }
             unexpected_result => {
@@ -3561,7 +3554,7 @@ mod tests {
         }
 
         match pipeline.send_video_decode_packet(decode_packet_for_tests(Duration::from_millis(3))) {
-            Some(Err(video_vaapi::DecodeThreadSendError::Fatal(error))) => {
+            Some(Err(DecodeSendError::Fatal(error))) => {
                 assert_eq!(error.message(), "fatal send failure");
             }
             unexpected_result => {

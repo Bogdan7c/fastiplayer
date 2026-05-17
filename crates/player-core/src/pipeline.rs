@@ -8,6 +8,11 @@ use codec_core::VideoDecodeRequirement;
 use media_core::{TrackId, TrackInfo};
 use webm_demux::Demuxer;
 
+use crate::{
+    DecodeSendError, DecodeThreadError, DecoderResourceSnapshot, PlayerDecodePacket,
+    RenderTextureProviderHandle,
+};
+
 /// Минимальный session-level контракт decoder thread-а, который нужен player-core.
 ///
 /// Production backend остаётся `video_vaapi::VideoDecodeThread`, но session tests
@@ -17,10 +22,7 @@ pub(crate) trait VideoDecoderThreadHandle: Send {
     fn backend_name(&self) -> &'static str;
 
     /// Отправляет encoded packet в decoder thread.
-    fn send_packet(
-        &self,
-        packet: video_vaapi::DecodePacket,
-    ) -> Result<(), video_vaapi::DecodeThreadSendError>;
+    fn send_packet(&self, packet: PlayerDecodePacket) -> Result<(), DecodeSendError>;
 
     /// Освобождает texture/surface handle после presentation/drop.
     fn release_frame(&self, handle: video_core::FrameTextureHandle);
@@ -32,16 +34,16 @@ pub(crate) trait VideoDecoderThreadHandle: Send {
     fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent>;
 
     /// Забирает fatal decoder-thread error, если backend остановился.
-    fn try_recv_error(&self) -> Option<video_vaapi::DecodeThreadError>;
+    fn try_recv_error(&self) -> Option<DecodeThreadError>;
 
     /// Сбрасывает decoder state перед seek transaction.
     fn flush(&self) -> anyhow::Result<()>;
 
     /// Возвращает provider для renderer-side texture views/release path.
-    fn texture_view_provider(&self) -> video_vaapi::VideoTextureViewProvider;
+    fn texture_view_provider(&self) -> RenderTextureProviderHandle;
 
     /// Возвращает snapshot texture pool-а для UI/backpressure diagnostics.
-    fn texture_pool_stats(&self) -> Option<video_vaapi::texture_cache::TexturePoolStats>;
+    fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot>;
 
     /// Возвращает глубину packet channel-а внутри decoder thread.
     fn packet_queue_depth(&self) -> usize;
@@ -55,11 +57,8 @@ impl VideoDecoderThreadHandle for video_vaapi::VideoDecodeThread {
         video_vaapi::VideoDecodeThread::backend_name(self)
     }
 
-    fn send_packet(
-        &self,
-        packet: video_vaapi::DecodePacket,
-    ) -> Result<(), video_vaapi::DecodeThreadSendError> {
-        video_vaapi::VideoDecodeThread::send_packet(self, packet)
+    fn send_packet(&self, packet: PlayerDecodePacket) -> Result<(), DecodeSendError> {
+        video_vaapi::VideoDecodeThread::send_packet(self, packet.into()).map_err(Into::into)
     }
 
     fn release_frame(&self, handle: video_core::FrameTextureHandle) {
@@ -74,20 +73,22 @@ impl VideoDecoderThreadHandle for video_vaapi::VideoDecodeThread {
         video_vaapi::VideoDecodeThread::try_recv_diagnostic_event(self)
     }
 
-    fn try_recv_error(&self) -> Option<video_vaapi::DecodeThreadError> {
-        video_vaapi::VideoDecodeThread::try_recv_error(self)
+    fn try_recv_error(&self) -> Option<DecodeThreadError> {
+        video_vaapi::VideoDecodeThread::try_recv_error(self).map(Into::into)
     }
 
     fn flush(&self) -> anyhow::Result<()> {
         video_vaapi::VideoDecodeThread::flush(self)
     }
 
-    fn texture_view_provider(&self) -> video_vaapi::VideoTextureViewProvider {
-        video_vaapi::VideoDecodeThread::texture_view_provider(self)
+    fn texture_view_provider(&self) -> RenderTextureProviderHandle {
+        RenderTextureProviderHandle::new(video_vaapi::VideoDecodeThread::texture_view_provider(
+            self,
+        ))
     }
 
-    fn texture_pool_stats(&self) -> Option<video_vaapi::texture_cache::TexturePoolStats> {
-        video_vaapi::VideoDecodeThread::texture_pool_stats(self)
+    fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {
+        video_vaapi::VideoDecodeThread::texture_pool_stats(self).map(Into::into)
     }
 
     fn packet_queue_depth(&self) -> usize {
@@ -655,19 +656,17 @@ impl PlaybackPipeline {
 
     /// Возвращает snapshot texture pool-а, не раскрывая decoder thread наружу.
     #[must_use]
-    pub(crate) fn video_decoder_texture_pool_stats(
-        &self,
-    ) -> Option<video_vaapi::texture_cache::TexturePoolStats> {
+    pub(crate) fn video_decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {
         self.video_decoder_thread
             .as_ref()
-            .and_then(|decoder_thread| decoder_thread.texture_pool_stats())
+            .and_then(|decoder_thread| decoder_thread.decoder_resource_snapshot())
     }
 
     /// Возвращает provider для renderer-side texture views активного decoder thread-а.
     #[must_use]
     pub(crate) fn video_decoder_texture_view_provider(
         &self,
-    ) -> Option<video_vaapi::VideoTextureViewProvider> {
+    ) -> Option<RenderTextureProviderHandle> {
         self.video_decoder_thread
             .as_ref()
             .map(|decoder_thread| decoder_thread.texture_view_provider())
@@ -718,7 +717,7 @@ impl PlaybackPipeline {
     }
 
     /// Забирает один fatal decoder-thread error, если backend уже остановился.
-    pub(crate) fn try_recv_video_decoder_error(&self) -> Option<video_vaapi::DecodeThreadError> {
+    pub(crate) fn try_recv_video_decoder_error(&self) -> Option<DecodeThreadError> {
         self.video_decoder_thread
             .as_ref()
             .and_then(|decoder_thread| decoder_thread.try_recv_error())
@@ -740,8 +739,8 @@ impl PlaybackPipeline {
     /// backpressure и fatal send failure.
     pub(crate) fn send_video_decode_packet(
         &self,
-        packet: video_vaapi::DecodePacket,
-    ) -> Option<Result<(), video_vaapi::DecodeThreadSendError>> {
+        packet: PlayerDecodePacket,
+    ) -> Option<Result<(), DecodeSendError>> {
         self.video_decoder_thread
             .as_ref()
             .map(|decoder_thread| decoder_thread.send_packet(packet))

@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod command;
+mod decoder_boundary;
 mod diagnostics;
 mod error;
 mod event;
@@ -27,6 +28,12 @@ pub use command::{
     ScrubGeneration, SeekMode, SeekRequest, SeekTarget,
 };
 pub(crate) use command::{ScrubCommitIntent, ScrubUpdateIntent, SessionScrubCommand};
+#[cfg(test)]
+pub(crate) use decoder_boundary::DecodeBackpressureReason;
+pub(crate) use decoder_boundary::{
+    DecodeSendError, DecodeThreadError, DecoderResourceSnapshot, PlayerDecodePacket,
+    RenderTextureProviderHandle,
+};
 pub(crate) use diagnostics::{
     ActiveSeekDiagnosticsSnapshot, PlaybackDiagnostics, SeekProgressBlocker,
 };

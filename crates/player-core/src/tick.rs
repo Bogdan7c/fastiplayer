@@ -17,9 +17,10 @@ use rustiplayer_config::AppConfig;
 use tracing::{trace, warn};
 
 use crate::{
-    PendingAudioPacket, PendingVideoPacket, PipelineLatencyStage, PipelinePauseReason,
-    PlaybackState, PlayerError, PlayerErrorKind, PlayerSession, WorkerFrameTimingSnapshot,
-    WorkerWakeupDiagnosticsSnapshot, WorkerWakeupReason,
+    DecodeSendError, DecodeThreadError, PendingAudioPacket, PendingVideoPacket,
+    PipelineLatencyStage, PipelinePauseReason, PlaybackState, PlayerDecodePacket, PlayerError,
+    PlayerErrorKind, PlayerSession, WorkerFrameTimingSnapshot, WorkerWakeupDiagnosticsSnapshot,
+    WorkerWakeupReason,
 };
 
 /// Контекст одного playback tick.
@@ -803,7 +804,7 @@ fn texture_capacity_backpressure_reason(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> Option<PipelinePauseReason> {
-    let Some(stats) = session.pipeline.video_decoder_texture_pool_stats() else {
+    let Some(stats) = session.pipeline.video_decoder_resource_snapshot() else {
         return None;
     };
 
@@ -1007,7 +1008,7 @@ fn drain_video_decoder_thread_diagnostics(
 }
 
 /// Мапит fail-closed ошибку decoder thread в player error model.
-fn player_error_from_decode_thread_error(error: &video_vaapi::DecodeThreadError) -> PlayerError {
+fn player_error_from_decode_thread_error(error: &DecodeThreadError) -> PlayerError {
     PlayerError::new(
         PlayerErrorKind::RuntimeError,
         format!("Video decoder thread failed: {}", error.message()),
@@ -1241,7 +1242,7 @@ fn send_pending_video_packets_to_decoder(
             .active_video_requirement
             .as_ref()
             .and_then(|requirement| requirement.color.clone());
-        let decode_packet = video_vaapi::DecodePacket {
+        let decode_packet = PlayerDecodePacket {
             track_id: packet_track_id,
             pts: packet_pts,
             encoded_bytes: packet_probe.encoded_bytes,
@@ -1255,7 +1256,7 @@ fn send_pending_video_packets_to_decoder(
                 session.pipeline.pop_pending_video_packet_front();
                 session.pipeline.note_video_packet_sent_to_decoder();
             }
-            Some(Err(video_vaapi::DecodeThreadSendError::Backpressure(reason))) => {
+            Some(Err(DecodeSendError::Backpressure(reason))) => {
                 tracing::debug!(reason = %reason, "Decoder packet channel backpressure");
                 record_pipeline_pause(
                     session,
@@ -1264,7 +1265,7 @@ fn send_pending_video_packets_to_decoder(
                 );
                 break;
             }
-            Some(Err(video_vaapi::DecodeThreadSendError::Fatal(error))) => {
+            Some(Err(DecodeSendError::Fatal(error))) => {
                 tracing::warn!(error = %error, "Failed to send packet to decoder thread");
                 session.mark_fatal_error(PlayerError::new(
                     PlayerErrorKind::RuntimeError,
@@ -2023,7 +2024,7 @@ fn has_texture_capacity_for_catch_up(
         return false;
     }
 
-    let Some(stats) = session.pipeline.video_decoder_texture_pool_stats() else {
+    let Some(stats) = session.pipeline.video_decoder_resource_snapshot() else {
         return true;
     };
 
@@ -2725,8 +2726,7 @@ mod tests {
 
     #[test]
     fn decoder_thread_error_maps_to_runtime_player_error() {
-        let decode_thread_error =
-            video_vaapi::DecodeThreadError::new("P010 DMA-BUF zero-copy import failed");
+        let decode_thread_error = DecodeThreadError::new("P010 DMA-BUF zero-copy import failed");
 
         let player_error = player_error_from_decode_thread_error(&decode_thread_error);
 

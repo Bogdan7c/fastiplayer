@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvError, SendTimeoutError, Sender, TrySendError, bounded};
 use tracing::warn;
 
+use crate::RenderTextureProviderHandle;
 use crate::session::{LeasedPresentFrame, PlayerSession};
 
 /// Ёмкость release ack stream; защищает worker от бесконечного роста drop-ack очереди.
@@ -40,7 +41,7 @@ pub struct PresentFrameLease {
     pub stale: bool,
 
     /// Render-side provider для ленивого получения WGPU views по frame handle.
-    texture_provider: Option<video_vaapi::VideoTextureViewProvider>,
+    texture_provider: Option<RenderTextureProviderHandle>,
 
     /// Shared lease отправляет drop-ack, когда последний clone кадра освобождён.
     _drop_ack: Arc<PresentFrameDropAck>,
@@ -251,7 +252,7 @@ pub(crate) struct RenderLeaseRelease {
     pub(crate) texture_handle: video_core::FrameTextureHandle,
 
     /// Provider исходного decoder texture pool для release после смены поколения.
-    pub(crate) texture_provider: Option<video_vaapi::VideoTextureViewProvider>,
+    pub(crate) texture_provider: Option<RenderTextureProviderHandle>,
 
     /// Монотонный момент drop-а render lease на render/UI side.
     pub(crate) released_at: Instant,
@@ -266,7 +267,7 @@ struct PresentFrameDropAck {
     texture_handle: video_core::FrameTextureHandle,
 
     /// Provider исходного frame-а; нужен, если ack пришёл после смены поколения.
-    texture_provider: Option<video_vaapi::VideoTextureViewProvider>,
+    texture_provider: Option<RenderTextureProviderHandle>,
 
     /// Канал drop-ack обратно в playback worker.
     release_tx: Sender<RenderLeaseRelease>,
