@@ -1,7 +1,7 @@
-use std::sync::Arc;
-
 use crate::PlayerVideoDecoderThreadConfig;
 use crate::pipeline::VideoDecoderThreadHandle;
+
+mod vaapi;
 
 mod private {
     /// Sealed marker: внешние crates не должны создавать backend wrapper напрямую.
@@ -97,14 +97,12 @@ impl private::Sealed for WgpuVideoBackendFactory<'_> {}
 impl VideoBackendFactory for WgpuVideoBackendFactory<'_> {
     /// Запускает текущий hardware decoder backend за factory boundary.
     fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend> {
-        let device = Arc::new(self.device.clone());
-        let queue = Arc::new(self.queue.clone());
-        let decoder_thread = video_vaapi::VideoDecodeThread::new_with_config(
-            device,
-            queue,
-            self.instance.clone(),
-            self.adapter.clone(),
-            self.decoder_thread_config.into(),
+        let decoder_thread = vaapi::start_video_decoder_thread(
+            self.instance,
+            self.adapter,
+            self.device,
+            self.queue,
+            self.decoder_thread_config,
         )?;
 
         Ok(StartedVideoBackend::from_decoder_thread(decoder_thread))

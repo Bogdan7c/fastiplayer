@@ -52,54 +52,6 @@ pub(crate) trait VideoDecoderThreadHandle: Send {
     fn drain_completed_packet_count(&self) -> usize;
 }
 
-impl VideoDecoderThreadHandle for video_vaapi::VideoDecodeThread {
-    fn backend_name(&self) -> &'static str {
-        video_vaapi::VideoDecodeThread::backend_name(self)
-    }
-
-    fn send_packet(&self, packet: PlayerDecodePacket) -> Result<(), DecodeSendError> {
-        video_vaapi::VideoDecodeThread::send_packet(self, packet.into()).map_err(Into::into)
-    }
-
-    fn release_frame(&self, handle: video_core::FrameTextureHandle) {
-        video_vaapi::VideoDecodeThread::release_frame(self, handle);
-    }
-
-    fn try_recv_frame(&self) -> Option<video_core::DecodedFrame> {
-        video_vaapi::VideoDecodeThread::try_recv_frame(self)
-    }
-
-    fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent> {
-        video_vaapi::VideoDecodeThread::try_recv_diagnostic_event(self)
-    }
-
-    fn try_recv_error(&self) -> Option<DecodeThreadError> {
-        video_vaapi::VideoDecodeThread::try_recv_error(self).map(Into::into)
-    }
-
-    fn flush(&self) -> anyhow::Result<()> {
-        video_vaapi::VideoDecodeThread::flush(self)
-    }
-
-    fn texture_view_provider(&self) -> RenderTextureProviderHandle {
-        RenderTextureProviderHandle::new(video_vaapi::VideoDecodeThread::texture_view_provider(
-            self,
-        ))
-    }
-
-    fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {
-        video_vaapi::VideoDecodeThread::texture_pool_stats(self).map(Into::into)
-    }
-
-    fn packet_queue_depth(&self) -> usize {
-        video_vaapi::VideoDecodeThread::packet_queue_depth(self)
-    }
-
-    fn drain_completed_packet_count(&self) -> usize {
-        video_vaapi::VideoDecodeThread::drain_completed_packet_count(self)
-    }
-}
-
 /// Bootstrap-оценка длительности frame до первых PTS observations; не worker cadence.
 pub(crate) const DEFAULT_VIDEO_FRAME_DURATION: Duration = Duration::from_micros(16_667);
 
