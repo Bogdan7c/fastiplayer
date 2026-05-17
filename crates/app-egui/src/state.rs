@@ -1024,6 +1024,21 @@ impl AppState {
         if let Some(worst_render_acquire_ms) = worst_render_acquire {
             ui.monospace(format!("Worst acquire: {worst_render_acquire_ms:.3}ms"));
         }
+        let texture_view_lock_wait = player_snapshot
+            .diagnostics
+            .worst_latencies
+            .texture_view_lock_wait;
+        if texture_view_lock_wait.samples > 0 {
+            let average_lock_wait_ms = texture_view_lock_wait.average.as_secs_f64() * 1000.0;
+            let worst_lock_wait_ms = texture_view_lock_wait
+                .worst
+                .map(|sample| sample.duration.as_secs_f64() * 1000.0)
+                .unwrap_or(0.0);
+            ui.monospace(format!(
+                "Texture view lock: count={} avg={average_lock_wait_ms:.3}ms max={worst_lock_wait_ms:.3}ms",
+                texture_view_lock_wait.samples
+            ));
+        }
         ui.monospace(format!(
             "Pipeline pauses: {}",
             player_snapshot.diagnostics.pauses.total

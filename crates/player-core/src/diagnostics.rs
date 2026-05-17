@@ -39,6 +39,9 @@ pub enum PipelineLatencyStage {
     /// Ожидание render thread-а при запросе present frame.
     RenderAcquire,
 
+    /// Ожидание backend texture pool lock-а внутри render-side texture_views().
+    TextureViewLockWait,
+
     /// Submit/present render work, если renderer сообщил timing.
     GpuSubmitPresent,
 
@@ -61,6 +64,7 @@ impl PipelineLatencyStage {
             Self::DecodedFramePublish => "decoder.frame_publish",
             Self::WorkerScheduler => "worker.scheduler",
             Self::RenderAcquire => "render.acquire",
+            Self::TextureViewLockWait => "render.texture_view_lock_wait",
             Self::GpuSubmitPresent => "gpu.submit_present",
             Self::ReleaseAcknowledgement => "release.ack",
         }
@@ -276,6 +280,9 @@ pub struct PipelineLatencyCountersSnapshot {
 
     /// Render acquire wait latency.
     pub render_acquire: LatencyCounterSnapshot,
+
+    /// Wait time на mutex texture pool-а внутри render-side `texture_views()`.
+    pub texture_view_lock_wait: LatencyCounterSnapshot,
 
     /// GPU submit/present timing, если доступен.
     pub gpu_submit_present: LatencyCounterSnapshot,
@@ -1012,6 +1019,9 @@ struct PipelineLatencyCounters {
     /// Render acquire.
     render_acquire: LatencyCounter,
 
+    /// Texture view mutex wait.
+    texture_view_lock_wait: LatencyCounter,
+
     /// GPU submit/present.
     gpu_submit_present: LatencyCounter,
 
@@ -1038,6 +1048,7 @@ impl PipelineLatencyCounters {
             decoded_frame_publish: self.decoded_frame_publish.snapshot(),
             worker_scheduler: self.worker_scheduler.snapshot(),
             render_acquire: self.render_acquire.snapshot(),
+            texture_view_lock_wait: self.texture_view_lock_wait.snapshot(),
             gpu_submit_present: self.gpu_submit_present.snapshot(),
             release_acknowledgement: self.release_acknowledgement.snapshot(),
         }
@@ -1074,13 +1085,14 @@ impl PipelineLatencyCounters {
             PipelineLatencyStage::DecodedFramePublish => &mut self.decoded_frame_publish,
             PipelineLatencyStage::WorkerScheduler => &mut self.worker_scheduler,
             PipelineLatencyStage::RenderAcquire => &mut self.render_acquire,
+            PipelineLatencyStage::TextureViewLockWait => &mut self.texture_view_lock_wait,
             PipelineLatencyStage::GpuSubmitPresent => &mut self.gpu_submit_present,
             PipelineLatencyStage::ReleaseAcknowledgement => &mut self.release_acknowledgement,
         }
     }
 
     /// Возвращает fixed list stage counters для summary.
-    fn stage_counters(&self) -> [(PipelineLatencyStage, &LatencyCounter); 12] {
+    fn stage_counters(&self) -> [(PipelineLatencyStage, &LatencyCounter); 13] {
         [
             (PipelineLatencyStage::DemuxRead, &self.demux_read),
             (
@@ -1104,6 +1116,10 @@ impl PipelineLatencyCounters {
                 &self.worker_scheduler,
             ),
             (PipelineLatencyStage::RenderAcquire, &self.render_acquire),
+            (
+                PipelineLatencyStage::TextureViewLockWait,
+                &self.texture_view_lock_wait,
+            ),
             (
                 PipelineLatencyStage::GpuSubmitPresent,
                 &self.gpu_submit_present,
@@ -1293,6 +1309,37 @@ mod tests {
                 .last()
                 .map(|sample| sample.duration),
             Some(Duration::from_millis(63))
+        );
+    }
+
+    #[test]
+    fn texture_view_lock_wait_latency_has_count_average_and_worst() {
+        let mut diagnostics = PlaybackDiagnostics::new();
+        let queues = queue_depths_for_tests(0);
+
+        diagnostics.record_latency(
+            PipelineLatencyStage::TextureViewLockWait,
+            Duration::from_micros(100),
+            Some(Duration::from_millis(40)),
+            Some(FrameMemoryPath::DmaBufZeroCopy),
+            queues,
+        );
+        diagnostics.record_latency(
+            PipelineLatencyStage::TextureViewLockWait,
+            Duration::from_micros(300),
+            Some(Duration::from_millis(41)),
+            Some(FrameMemoryPath::DmaBufZeroCopy),
+            queues,
+        );
+
+        let snapshot = diagnostics.snapshot_with_queues(queues);
+        let texture_view_lock_wait = snapshot.worst_latencies.texture_view_lock_wait;
+
+        assert_eq!(texture_view_lock_wait.samples, 2);
+        assert_eq!(texture_view_lock_wait.average, Duration::from_micros(200));
+        assert_eq!(
+            texture_view_lock_wait.worst.map(|sample| sample.duration),
+            Some(Duration::from_micros(300))
         );
     }
 }

@@ -292,10 +292,22 @@ pub(crate) struct RenderTextureViews {
     pub(crate) uv_view: wgpu::TextureView,
 }
 
+/// Результат renderer-side lookup-а texture views без раскрытия backend pool-а.
+pub(crate) struct RenderTextureViewLookup {
+    /// Views для renderer-а; `None` сохраняет прежнюю missing-resource семантику.
+    pub(crate) views: Option<RenderTextureViews>,
+
+    /// Сколько render thread ждал lock texture pool-а внутри backend provider-а.
+    pub(crate) texture_pool_lock_wait: Duration,
+}
+
 /// Backend-neutral render-side provider для texture views и renderer-owned release.
 pub(crate) trait RenderTextureProvider: Send + Sync {
-    /// Получает WGPU views для frame handle на render thread.
-    fn texture_views(&self, handle: video_core::FrameTextureHandle) -> Option<RenderTextureViews>;
+    /// Получает WGPU views и lock diagnostics для frame handle на render thread.
+    fn texture_view_lookup(
+        &self,
+        handle: video_core::FrameTextureHandle,
+    ) -> RenderTextureViewLookup;
 
     /// Освобождает renderer-owned frame после submitted GPU work или fallback release.
     fn release_frame(&self, handle: video_core::FrameTextureHandle);
@@ -317,13 +329,13 @@ impl RenderTextureProviderHandle {
         }
     }
 
-    /// Получает WGPU views через backend provider без раскрытия backend type.
+    /// Получает WGPU views и lock diagnostics через backend provider.
     #[must_use]
-    pub(crate) fn texture_views(
+    pub(crate) fn texture_view_lookup(
         &self,
         handle: video_core::FrameTextureHandle,
-    ) -> Option<RenderTextureViews> {
-        self.provider.texture_views(handle)
+    ) -> RenderTextureViewLookup {
+        self.provider.texture_view_lookup(handle)
     }
 
     /// Освобождает frame через backend provider, который создал texture handle.

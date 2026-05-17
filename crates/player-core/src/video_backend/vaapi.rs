@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::decoder_boundary::{
     DecodeBackpressureReason, DecodeSendError, DecodeThreadError, DecoderResourceSnapshot,
     PlayerDecodePacket, PlayerVideoDecoderThreadConfig, RenderTextureProvider,
-    RenderTextureProviderHandle, RenderTextureViews,
+    RenderTextureProviderHandle, RenderTextureViewLookup, RenderTextureViews,
 };
 use crate::pipeline::VideoDecoderThreadHandle;
 
@@ -185,14 +185,21 @@ impl From<DecoderResourceSnapshot> for video_vaapi::texture_cache::TexturePoolSt
 }
 
 impl RenderTextureProvider for video_vaapi::VideoTextureViewProvider {
-    /// Делегирует texture view lookup в текущий VA-API production provider.
-    fn texture_views(&self, handle: video_core::FrameTextureHandle) -> Option<RenderTextureViews> {
-        video_vaapi::VideoTextureViewProvider::texture_views(self, handle).map(|views| {
-            RenderTextureViews {
-                y_view: views.y_view,
-                uv_view: views.uv_view,
-            }
-        })
+    /// Делегирует texture view lookup и lock timing в текущий VA-API production provider.
+    fn texture_view_lookup(
+        &self,
+        handle: video_core::FrameTextureHandle,
+    ) -> RenderTextureViewLookup {
+        let lookup = video_vaapi::VideoTextureViewProvider::texture_view_lookup(self, handle);
+        let views = lookup.views.map(|views| RenderTextureViews {
+            y_view: views.y_view,
+            uv_view: views.uv_view,
+        });
+
+        RenderTextureViewLookup {
+            views,
+            texture_pool_lock_wait: lookup.lock_diagnostics.wait,
+        }
     }
 
     /// Делегирует renderer-owned release в текущий VA-API production provider.

@@ -762,6 +762,21 @@ impl PlayerSession {
         self.record_pipeline_latency(PipelineLatencyStage::RenderAcquire, wait, None, None);
     }
 
+    /// Записывает ожидание texture pool lock-а внутри render-side `texture_views()`.
+    pub(crate) fn record_texture_view_lock_wait(
+        &mut self,
+        wait: Duration,
+        pts: Option<Duration>,
+        memory_path: Option<video_core::FrameMemoryPath>,
+    ) {
+        self.record_pipeline_latency(
+            PipelineLatencyStage::TextureViewLockWait,
+            wait,
+            pts,
+            memory_path,
+        );
+    }
+
     /// Записывает render acquire timeout как drop и pause attribution.
     #[allow(dead_code)]
     pub(crate) fn record_render_acquire_timeout(&mut self, wait: Duration) {

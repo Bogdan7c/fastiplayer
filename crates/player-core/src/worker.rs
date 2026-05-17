@@ -954,6 +954,11 @@ impl PlayerWorkerRuntime {
                     .handle_timing_sample_wakeup(&mut self.session, sample_result);
                 false
             }
+            recv(self.render_bridge.texture_view_lock_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_texture_view_lock_sample_wakeup(&mut self.session, sample_result);
+                false
+            }
             recv(self.scrub_wake_rx) -> wake_result => {
                 self.handle_scrub_wakeup(wake_result)
             }
@@ -987,6 +992,11 @@ impl PlayerWorkerRuntime {
             recv(self.render_bridge.render_timing_sample_receiver()) -> sample_result => {
                 self.render_bridge
                     .handle_timing_sample_wakeup(&mut self.session, sample_result);
+                false
+            }
+            recv(self.render_bridge.texture_view_lock_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_texture_view_lock_sample_wakeup(&mut self.session, sample_result);
                 false
             }
             recv(self.scrub_wake_rx) -> wake_result => {
@@ -1515,6 +1525,7 @@ impl PlayerWorkerRuntime {
             .map(|timing| timing.front_frame_delta_from_target_us as f64 / 1000.0);
         let texture_slots = summary.queues.texture_slots;
         let latencies = summary.worst_latencies;
+        let texture_view_lock_wait = latencies.texture_view_lock_wait;
         debug!(
             drops = summary.drops_total,
             drops_late = summary.drops.late,
@@ -1536,6 +1547,9 @@ impl PlayerWorkerRuntime {
             import_worst_ms = ?worst_latency_millis(latencies.dma_buf_import),
             worker_worst_ms = ?worst_latency_millis(latencies.worker_scheduler),
             render_acquire_worst_ms = ?worst_latency_millis(latencies.render_acquire),
+            texture_view_lock_wait_count = texture_view_lock_wait.samples,
+            texture_view_lock_wait_avg_ms = duration_to_millis(texture_view_lock_wait.average),
+            texture_view_lock_wait_max_ms = ?worst_latency_millis(texture_view_lock_wait),
             gpu_submit_present_worst_ms = ?worst_latency_millis(latencies.gpu_submit_present),
             release_ack_worst_ms = ?worst_latency_millis(latencies.release_acknowledgement),
             wake_reason,

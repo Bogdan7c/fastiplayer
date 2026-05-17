@@ -341,6 +341,22 @@ pub struct VideoTextureViews {
     pub uv_view: wgpu::TextureView,
 }
 
+/// Диагностика получения texture views на render hot path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoTextureViewLockDiagnostics {
+    /// Сколько render thread ждал mutex texture pool-а.
+    pub wait: Duration,
+}
+
+/// Результат lookup-а texture views вместе с timing-ом mutex boundary.
+pub struct VideoTextureViewLookup {
+    /// Views для renderer-а; `None` сохраняет прежний missing-views контракт.
+    pub views: Option<VideoTextureViews>,
+
+    /// Timing ожидания `WgpuTexturePool` lock-а.
+    pub lock_diagnostics: VideoTextureViewLockDiagnostics,
+}
+
 /// Узкий render-side provider для доступа к texture views по opaque frame handle.
 ///
 /// Provider не раскрывает decoder internals и не копирует pixels: render thread
@@ -361,21 +377,22 @@ pub struct VideoTextureViewProvider {
 }
 
 impl VideoTextureViewProvider {
+    /// Получает Y/UV views и timing ожидания texture pool mutex-а на render thread.
+    #[must_use]
+    pub fn texture_view_lookup(
+        &self,
+        handle: video_core::FrameTextureHandle,
+    ) -> VideoTextureViewLookup {
+        texture_view_lookup_from_pool(self.texture_pool.as_ref(), handle)
+    }
+
     /// Получает Y/UV views для frame handle на render thread.
     #[must_use]
     pub fn texture_views(
         &self,
         handle: video_core::FrameTextureHandle,
     ) -> Option<VideoTextureViews> {
-        match self.texture_pool.lock() {
-            Ok(texture_pool) => texture_pool
-                .get_views(handle)
-                .map(|(y_view, uv_view)| VideoTextureViews { y_view, uv_view }),
-            Err(error) => {
-                tracing::warn!(error = %error, "Texture pool mutex poisoned during get_views");
-                None
-            }
-        }
+        self.texture_view_lookup(handle).views
     }
 
     /// Освобождает renderer-owned frame после submitted GPU work.
@@ -460,6 +477,42 @@ impl VideoTextureViewProvider {
                 );
             }
         });
+    }
+}
+
+/// Измеряет ожидание texture pool mutex-а и сохраняет прежнюю lookup семантику.
+fn texture_view_lookup_from_pool(
+    texture_pool: &Mutex<crate::texture_cache::WgpuTexturePool>,
+    handle: video_core::FrameTextureHandle,
+) -> VideoTextureViewLookup {
+    texture_view_lookup_from_pool_started_at(texture_pool, handle, Instant::now())
+}
+
+/// Выполняет lookup от уже зафиксированного start time; используется для точного теста timing-а.
+fn texture_view_lookup_from_pool_started_at(
+    texture_pool: &Mutex<crate::texture_cache::WgpuTexturePool>,
+    handle: video_core::FrameTextureHandle,
+    lock_started_at: Instant,
+) -> VideoTextureViewLookup {
+    // TODO(render-hot-path phase 2): заменить blocking lock на try_lock и вернуть
+    // typed busy-result, чтобы renderer мог reuse-нуть предыдущий frame без stall-а.
+    let texture_pool_lock = texture_pool.lock();
+    let lock_diagnostics = VideoTextureViewLockDiagnostics {
+        wait: lock_started_at.elapsed(),
+    };
+    let views = match texture_pool_lock {
+        Ok(texture_pool) => texture_pool
+            .get_views(handle)
+            .map(|(y_view, uv_view)| VideoTextureViews { y_view, uv_view }),
+        Err(error) => {
+            tracing::warn!(error = %error, "Texture pool mutex poisoned during get_views");
+            None
+        }
+    };
+
+    VideoTextureViewLookup {
+        views,
+        lock_diagnostics,
     }
 }
 
@@ -1281,6 +1334,24 @@ mod tests {
         assert_eq!(config.decoder_surface_pool_frames, 1);
         assert_eq!(config.zero_copy_surface_pool_slots, 1);
         assert_eq!(config.flush_timeout, Duration::from_millis(1));
+    }
+
+    /// Проверяет, что texture view lookup считает lock wait даже при missing views.
+    #[test]
+    fn texture_view_lookup_reports_lock_wait_without_changing_missing_views_semantics() {
+        let texture_pool = Mutex::new(crate::texture_cache::WgpuTexturePool::new(None));
+        let lock_started_at = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("test start instant should allow small subtraction");
+
+        let lookup = texture_view_lookup_from_pool_started_at(
+            &texture_pool,
+            FrameTextureHandle(99),
+            lock_started_at,
+        );
+
+        assert!(lookup.views.is_none());
+        assert!(lookup.lock_diagnostics.wait >= Duration::from_millis(1));
     }
 
     /// Проверяет bounded decoded-frame publish: full channel не дропает frame молча.
