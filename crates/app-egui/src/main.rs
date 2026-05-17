@@ -679,11 +679,11 @@ fn render_frame(
 
     // Получаем ввод от egui_winit
     let egui_input = app_state.egui_winit_state.take_egui_input(window);
-    app_state.set_render_diagnostics(renderer.diagnostics());
     record_worker_events(telemetry, app_state.drain_worker_events());
+    let frame_context = app_state.begin_frame_context(renderer.diagnostics());
 
     // Рендерим egui UI — получаем paint jobs и texture updates
-    let egui_full_output = app_state.render_ui(window, egui_input);
+    let egui_full_output = app_state.render_ui(window, egui_input, &frame_context);
     let egui_requested_repaint = app_state.egui_ctx.has_requested_repaint();
 
     // Обработка platform output (курсор, буфер обмена и т.д.)
@@ -703,7 +703,8 @@ fn render_frame(
 
     let mut video_render_error = None;
 
-    let present_frame_acquisition = app_state.acquire_present_frame_for_render();
+    let present_frame_acquisition =
+        app_state.acquire_present_frame_for_render(frame_context.player_snapshot());
     let present_frame_acquisition_state = present_frame_acquisition.metric_name();
     if present_frame_acquisition.reused_previous_frame() {
         telemetry.record_video_frame_repeated();
@@ -806,7 +807,6 @@ fn render_frame(
             )));
         }
     }
-    app_state.set_render_diagnostics(renderer.diagnostics());
 
     // Измеряем время кадра и обновляем телеметрию
     let frame_duration = frame_start.elapsed();

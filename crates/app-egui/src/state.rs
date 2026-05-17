@@ -50,6 +50,29 @@ struct TelemetryPanelState<'panel> {
     frame_duration_estimate_ms: f64,
 }
 
+/// Immutable данные, зафиксированные один раз для текущего render frame-а.
+pub struct AppFrameContext {
+    /// Snapshot player-а, общий для UI, renderer boundary, desktop integration и pacing.
+    player_snapshot: PlayerSnapshot,
+
+    /// Renderer-neutral diagnostics, которые UI показывает в этом же frame-е.
+    render_diagnostics: RenderDiagnostics,
+}
+
+impl AppFrameContext {
+    /// Возвращает единственный player snapshot текущего render frame-а.
+    #[must_use]
+    pub const fn player_snapshot(&self) -> &PlayerSnapshot {
+        &self.player_snapshot
+    }
+
+    /// Возвращает render diagnostics, зафиксированные для текущего render frame-а.
+    #[must_use]
+    pub const fn render_diagnostics(&self) -> &RenderDiagnostics {
+        &self.render_diagnostics
+    }
+}
+
 /// Явный результат получения frame lease-а для render boundary.
 pub enum PresentFrameAcquisition {
     /// Worker ещё не публиковал zero-copy frame для текущей media session.
@@ -127,9 +150,6 @@ pub struct AppState {
     /// Pending-состояние shell-слоя для операций, которые ещё не дошли до player.
     pub startup_pending: Option<String>,
 
-    /// Последняя renderer-neutral диагностика без GPU handles.
-    render_diagnostics: RenderDiagnostics,
-
     /// Последний snapshot, уже доставленный UI; используется shell redraw pacing-ом.
     last_player_snapshot: PlayerSnapshot,
 
@@ -199,7 +219,6 @@ impl AppState {
             app_config,
             startup_error,
             startup_pending: None,
-            render_diagnostics: RenderDiagnostics::default(),
             last_player_snapshot: PlayerSnapshot::empty(),
             pending_redraw_after_worker_command: false,
             cached_present_frame: None,
@@ -229,9 +248,21 @@ impl AppState {
         self.frame_index = self.frame_index.saturating_add(1);
     }
 
-    /// Обновляет renderer diagnostics, которые UI покажет в telemetry panel.
-    pub fn set_render_diagnostics(&mut self, render_diagnostics: RenderDiagnostics) {
-        self.render_diagnostics = render_diagnostics;
+    /// Собирает immutable context одного render frame-а.
+    ///
+    /// Внутри frame-а `PlayerSnapshot` читается только здесь, чтобы UI, renderer boundary,
+    /// desktop integration и redraw pacing не расходились на один worker tick.
+    #[must_use]
+    pub fn begin_frame_context(
+        &mut self,
+        render_diagnostics: RenderDiagnostics,
+    ) -> AppFrameContext {
+        let player_snapshot = self.player_snapshot();
+
+        AppFrameContext {
+            player_snapshot,
+            render_diagnostics,
+        }
     }
 
     /// Показывает shell-level pending state, пока media ещё не передано в player.
@@ -255,7 +286,7 @@ impl AppState {
         self.mark_pending_worker_redraw();
     }
 
-    /// Возвращает read-only snapshot из `player-core` для UI и renderer diagnostics.
+    /// Возвращает read-only snapshot из `player-core` и обновляет shell integrations.
     #[must_use]
     pub fn player_snapshot(&mut self) -> PlayerSnapshot {
         let player_snapshot = self
@@ -376,9 +407,11 @@ impl AppState {
 
     /// Пытается получить текущий video frame для renderer-а.
     #[must_use]
-    pub fn acquire_present_frame_for_render(&mut self) -> PresentFrameAcquisition {
-        let player_snapshot = self.player_snapshot();
-        let rejected_stale_cached_frame = self.drop_stale_cached_present_frame(&player_snapshot);
+    pub fn acquire_present_frame_for_render(
+        &mut self,
+        player_snapshot: &PlayerSnapshot,
+    ) -> PresentFrameAcquisition {
+        let rejected_stale_cached_frame = self.drop_stale_cached_present_frame(player_snapshot);
 
         if let Some(mut present_frame) = self.player_worker.try_acquire_present_frame() {
             if present_frame.render_generation != player_snapshot.render_generation {
@@ -496,9 +529,14 @@ impl AppState {
     /// Рендерит egui UI поверх видео.
     ///
     /// UI читает только `PlayerSnapshot`, а действия после egui closure отправляет worker-у.
-    #[instrument(skip(self, window))]
-    pub fn render_ui(&mut self, window: &Window, egui_input: egui::RawInput) -> egui::FullOutput {
-        let player_snapshot = self.player_snapshot();
+    #[instrument(skip(self, window, frame_context))]
+    pub fn render_ui(
+        &mut self,
+        window: &Window,
+        egui_input: egui::RawInput,
+        frame_context: &AppFrameContext,
+    ) -> egui::FullOutput {
+        let player_snapshot = frame_context.player_snapshot();
         let is_playing = player_snapshot.playback_state == PlaybackState::Playing;
 
         if is_playing {
@@ -527,7 +565,7 @@ impl AppState {
         } else {
             None
         };
-        let render_diagnostics = self.render_diagnostics.clone();
+        let render_diagnostics = frame_context.render_diagnostics();
         let selected_skin = skin::skin_from_config(&self.app_config.ui.skin).unwrap_or_else(|| {
             warn!(
                 skin = %self.app_config.ui.skin,
@@ -544,7 +582,7 @@ impl AppState {
             player_controls::render_top_bar(ui, app_version, &selected_skin);
             control_actions = player_controls::render_bottom_controls(
                 ui,
-                &player_snapshot,
+                player_snapshot,
                 &mut timeline_ui_state,
                 &selected_skin,
             );
@@ -553,9 +591,9 @@ impl AppState {
                 Self::render_telemetry_panel(
                     ui,
                     TelemetryPanelState {
-                        player_snapshot: &player_snapshot,
+                        player_snapshot,
                         telemetry: &telemetry,
-                        render_diagnostics: &render_diagnostics,
+                        render_diagnostics,
                         timeline_ui_state: &timeline_ui_state,
                         backend_name: &backend_name,
                         start_time,
