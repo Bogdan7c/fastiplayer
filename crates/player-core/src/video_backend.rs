@@ -1,5 +1,8 @@
 use std::sync::Arc;
 
+use crate::PlayerVideoDecoderThreadConfig;
+use crate::pipeline::VideoDecoderThreadHandle;
+
 mod private {
     /// Sealed marker: внешние crates не должны создавать backend wrapper напрямую.
     pub trait Sealed {}
@@ -13,14 +16,21 @@ pub trait VideoBackendFactory: private::Sealed {
 
 /// Запущенный video backend, подготовленный фабрикой для установки в playback pipeline.
 pub struct StartedVideoBackend {
-    /// Decoder thread остаётся внутренней деталью player-core pipeline.
-    pub(crate) decoder_thread: video_vaapi::VideoDecodeThread,
+    /// Decoder thread остаётся за neutral handle boundary.
+    decoder_thread: Box<dyn VideoDecoderThreadHandle>,
 }
 
 impl StartedVideoBackend {
     /// Создаёт backend wrapper вокруг decoder thread, который уже прошёл init handshake.
-    fn from_decoder_thread(decoder_thread: video_vaapi::VideoDecodeThread) -> Self {
-        Self { decoder_thread }
+    fn from_decoder_thread(decoder_thread: impl VideoDecoderThreadHandle + 'static) -> Self {
+        Self {
+            decoder_thread: Box::new(decoder_thread),
+        }
+    }
+
+    /// Передаёт decoder handle pipeline-у без раскрытия concrete backend type.
+    pub(crate) fn into_decoder_thread(self) -> Box<dyn VideoDecoderThreadHandle> {
+        self.decoder_thread
     }
 }
 
@@ -42,7 +52,7 @@ pub struct WgpuVideoBackendFactory<'a> {
     queue: &'a wgpu::Queue,
 
     /// Bounded queue/runtime limits decoder thread-а.
-    decoder_thread_config: video_vaapi::VideoDecodeThreadConfig,
+    decoder_thread_config: PlayerVideoDecoderThreadConfig,
 }
 
 impl<'a> WgpuVideoBackendFactory<'a> {
@@ -59,7 +69,7 @@ impl<'a> WgpuVideoBackendFactory<'a> {
             adapter,
             device,
             queue,
-            video_vaapi::VideoDecodeThreadConfig::default(),
+            PlayerVideoDecoderThreadConfig::default(),
         )
     }
 
@@ -70,14 +80,14 @@ impl<'a> WgpuVideoBackendFactory<'a> {
         adapter: &'a wgpu::Adapter,
         device: &'a wgpu::Device,
         queue: &'a wgpu::Queue,
-        decoder_thread_config: video_vaapi::VideoDecodeThreadConfig,
+        decoder_thread_config: impl Into<PlayerVideoDecoderThreadConfig>,
     ) -> Self {
         Self {
             instance,
             adapter,
             device,
             queue,
-            decoder_thread_config,
+            decoder_thread_config: decoder_thread_config.into(),
         }
     }
 }
@@ -94,9 +104,76 @@ impl VideoBackendFactory for WgpuVideoBackendFactory<'_> {
             queue,
             self.instance.clone(),
             self.adapter.clone(),
-            self.decoder_thread_config,
+            self.decoder_thread_config.into(),
         )?;
 
         Ok(StartedVideoBackend::from_decoder_thread(decoder_thread))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        DecodeSendError, DecodeThreadError, DecoderResourceSnapshot, PlayerDecodePacket,
+        RenderTextureProviderHandle,
+    };
+
+    /// Minimal fake decoder для проверки startup wrapper-а без VA-API resources.
+    struct StartupFakeDecoderThread;
+
+    impl VideoDecoderThreadHandle for StartupFakeDecoderThread {
+        fn backend_name(&self) -> &'static str {
+            "startup fake decoder"
+        }
+
+        fn send_packet(&self, _packet: PlayerDecodePacket) -> Result<(), DecodeSendError> {
+            Err(DecodeSendError::Fatal(DecodeThreadError::new(
+                "startup fake decoder does not accept packets",
+            )))
+        }
+
+        fn release_frame(&self, _handle: video_core::FrameTextureHandle) {}
+
+        fn try_recv_frame(&self) -> Option<video_core::DecodedFrame> {
+            None
+        }
+
+        fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent> {
+            None
+        }
+
+        fn try_recv_error(&self) -> Option<DecodeThreadError> {
+            None
+        }
+
+        fn flush(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn texture_view_provider(&self) -> RenderTextureProviderHandle {
+            panic!("startup fake decoder does not provide renderer texture views")
+        }
+
+        fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {
+            None
+        }
+
+        fn packet_queue_depth(&self) -> usize {
+            0
+        }
+
+        fn drain_completed_packet_count(&self) -> usize {
+            0
+        }
+    }
+
+    /// Проверяет, что StartedVideoBackend отдаёт только neutral decoder handle.
+    #[test]
+    fn started_video_backend_returns_neutral_decoder_handle() {
+        let started_backend = StartedVideoBackend::from_decoder_thread(StartupFakeDecoderThread);
+        let decoder_thread = started_backend.into_decoder_thread();
+
+        assert_eq!(decoder_thread.backend_name(), "startup fake decoder");
     }
 }

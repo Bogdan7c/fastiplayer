@@ -1505,7 +1505,7 @@ impl PlayerSession {
         match backend_factory.start_video_backend() {
             Ok(started_backend) => {
                 self.pipeline
-                    .set_video_decoder_thread(started_backend.decoder_thread);
+                    .set_video_decoder_thread_handle(started_backend.into_decoder_thread());
                 info!(
                     backend = self.pipeline.video_backend,
                     "Video backend started"

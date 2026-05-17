@@ -15,8 +15,8 @@ use crate::{
 
 /// Минимальный session-level контракт decoder thread-а, который нужен player-core.
 ///
-/// Production backend остаётся `video_vaapi::VideoDecodeThread`, но session tests
-/// могут подставить fake handle и проверить boundary без WGPU/VA-API ресурсов.
+/// Production backend подключается через adapter, а session tests могут
+/// подставить fake handle и проверить boundary без WGPU/VA-API ресурсов.
 pub(crate) trait VideoDecoderThreadHandle: Send {
     /// Возвращает человекочитаемое имя backend-а для snapshot/diagnostics.
     fn backend_name(&self) -> &'static str;
@@ -619,12 +619,21 @@ impl PlaybackPipeline {
     }
 
     /// Сохраняет запущенный video backend без раскрытия backend-specific init в session.
+    #[cfg(test)]
     pub(crate) fn set_video_decoder_thread(
         &mut self,
         decoder_thread: impl VideoDecoderThreadHandle + 'static,
     ) {
+        self.set_video_decoder_thread_handle(Box::new(decoder_thread));
+    }
+
+    /// Сохраняет decoder handle, который уже прошёл backend startup boundary.
+    pub(crate) fn set_video_decoder_thread_handle(
+        &mut self,
+        decoder_thread: Box<dyn VideoDecoderThreadHandle>,
+    ) {
         self.video_backend = decoder_thread.backend_name();
-        self.video_decoder_thread = Some(Box::new(decoder_thread));
+        self.video_decoder_thread = Some(decoder_thread);
         self.reset_video_decode_in_flight();
     }
 

@@ -28,8 +28,8 @@ use crate::{
     ActiveSeekDiagnosticsSnapshot, FrameCounters, LatencyCounterSnapshot, MediaOpenRequest,
     MediaSource, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult,
     PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
-    ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration, ScrubUpdateIntent, SeekRequest,
-    SessionScrubCommand, WgpuVideoBackendFactory,
+    PlayerVideoDecoderThreadConfig, ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration,
+    ScrubUpdateIntent, SeekRequest, SessionScrubCommand, WgpuVideoBackendFactory,
 };
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
@@ -87,7 +87,7 @@ pub struct PlayerWorkerConfig {
     pub demuxer_options: DemuxerOptions,
 
     /// Bounded queue/runtime limits decoder thread-а.
-    pub decoder_thread_config: video_vaapi::VideoDecodeThreadConfig,
+    pub decoder_thread_config: PlayerVideoDecoderThreadConfig,
 }
 
 impl PlayerWorkerConfig {
@@ -100,7 +100,7 @@ impl PlayerWorkerConfig {
             tick_config,
             live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
             demuxer_options: DemuxerOptions::default(),
-            decoder_thread_config: video_vaapi::VideoDecodeThreadConfig::default(),
+            decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
         }
     }
 
@@ -134,14 +134,14 @@ fn demuxer_options_from_config(config: &PlayerDemuxConfig) -> DemuxerOptions {
 /// Конвертирует validated TOML config в bounded decoder thread limits.
 fn decoder_thread_config_from_app_config(
     config: &rustiplayer_config::AppConfig,
-) -> video_vaapi::VideoDecodeThreadConfig {
-    video_vaapi::VideoDecodeThreadConfig {
+) -> PlayerVideoDecoderThreadConfig {
+    PlayerVideoDecoderThreadConfig {
         packet_channel_frames: config.video.decoder_packet_channel_frames,
         frame_channel_frames: config.video.decoder_frame_channel_frames,
         decoder_ready_queue_frames: config.video.decoder_ready_queue_frames,
         decoder_surface_pool_frames: config.video.decoder_surface_pool_frames,
         zero_copy_surface_pool_slots: config.video.zero_copy_surface_pool_slots,
-        ..video_vaapi::VideoDecodeThreadConfig::from_env()
+        ..PlayerVideoDecoderThreadConfig::from_env()
     }
     .normalized()
 }
@@ -1691,7 +1691,7 @@ mod tests {
             tick_config: PlayerTickConfig::default(),
             live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
             demuxer_options: DemuxerOptions::default(),
-            decoder_thread_config: video_vaapi::VideoDecodeThreadConfig::default(),
+            decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
         }
     }
 

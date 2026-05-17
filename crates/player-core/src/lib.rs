@@ -30,6 +30,7 @@ pub use command::{
 pub(crate) use command::{ScrubCommitIntent, ScrubUpdateIntent, SessionScrubCommand};
 #[cfg(test)]
 pub(crate) use decoder_boundary::DecodeBackpressureReason;
+pub use decoder_boundary::PlayerVideoDecoderThreadConfig;
 pub(crate) use decoder_boundary::{
     DecodeSendError, DecodeThreadError, DecoderResourceSnapshot, PlayerDecodePacket,
     RenderTextureProviderHandle,
