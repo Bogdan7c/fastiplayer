@@ -1,7 +1,4 @@
-use crate::{
-    PlaybackState, PlayerCommand, ScrubCommitIntent, ScrubGeneration, ScrubUpdateIntent,
-    SeekRequest,
-};
+use crate::{PlaybackState, ScrubCommitIntent, ScrubGeneration, ScrubUpdateIntent, SeekRequest};
 
 /// Режим seek/scrub state machine внутри playback worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +25,19 @@ pub enum PlaybackResumeIntent {
 
     /// Вернуться к playing-состоянию.
     Play,
+}
+
+/// Внутренняя команда, которой worker описывает изменение resume intent во время scrub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaybackResumeCommand {
+    /// Пользователь явно хочет продолжить playback после завершения scrub.
+    Play,
+
+    /// Пользователь явно хочет остаться на паузе после завершения scrub.
+    Pause,
+
+    /// Пользователь хочет переключить сохранённый resume intent без изменения session state.
+    TogglePlayback,
 }
 
 impl PlaybackResumeIntent {
@@ -608,27 +618,26 @@ impl SeekController {
         decision
     }
 
-    /// Обрабатывает Play/Pause/Toggle во время scrub без изменения session state.
-    pub fn consume_resume_intent_command(&mut self, command: &PlayerCommand) -> bool {
+    /// Обрабатывает типизированную resume-команду во время scrub без изменения session state.
+    pub(crate) fn consume_resume_intent_command(&mut self, command: PlaybackResumeCommand) -> bool {
         if !self.is_scrubbing() {
             return false;
         }
 
         match command {
-            PlayerCommand::Play => {
+            PlaybackResumeCommand::Play => {
                 self.operation.set_resume_intent(PlaybackResumeIntent::Play);
                 true
             }
-            PlayerCommand::Pause => {
+            PlaybackResumeCommand::Pause => {
                 self.operation
                     .set_resume_intent(PlaybackResumeIntent::Pause);
                 true
             }
-            PlayerCommand::TogglePlayback => {
+            PlaybackResumeCommand::TogglePlayback => {
                 self.operation.toggle_resume_intent();
                 true
             }
-            _ => false,
         }
     }
 
@@ -755,16 +764,47 @@ mod tests {
     }
 
     #[test]
-    fn play_pause_during_scrub_only_updates_resume_intent() {
+    fn play_resume_command_during_scrub_sets_play_intent() {
+        let mut controller = SeekController::new();
+        controller.begin_scrub(PlaybackState::Paused);
+
+        assert!(controller.consume_resume_intent_command(PlaybackResumeCommand::Play));
+        assert_eq!(controller.resume_intent(), PlaybackResumeIntent::Play);
+    }
+
+    #[test]
+    fn pause_resume_command_during_scrub_sets_pause_intent() {
         let mut controller = SeekController::new();
         controller.begin_scrub(PlaybackState::Playing);
 
-        assert!(controller.consume_resume_intent_command(&PlayerCommand::Pause));
+        assert!(controller.consume_resume_intent_command(PlaybackResumeCommand::Pause));
         assert_eq!(controller.resume_intent(), PlaybackResumeIntent::Pause);
-        assert!(controller.consume_resume_intent_command(&PlayerCommand::Play));
+    }
+
+    #[test]
+    fn toggle_resume_command_during_scrub_toggles_resume_intent() {
+        let mut controller = SeekController::new();
+        controller.begin_scrub(PlaybackState::Playing);
+
+        assert!(controller.consume_resume_intent_command(PlaybackResumeCommand::TogglePlayback));
+        assert_eq!(controller.resume_intent(), PlaybackResumeIntent::Pause);
+        assert!(controller.consume_resume_intent_command(PlaybackResumeCommand::TogglePlayback));
         assert_eq!(controller.resume_intent(), PlaybackResumeIntent::Play);
-        assert!(controller.consume_resume_intent_command(&PlayerCommand::TogglePlayback));
+    }
+
+    #[test]
+    fn resume_command_outside_scrub_is_no_op() {
+        let mut controller = SeekController::new();
+        let generation_before_command = controller.generation_id();
+        let diagnostics_before_command = controller.diagnostics();
+
+        assert!(!controller.consume_resume_intent_command(PlaybackResumeCommand::Play));
+        assert!(!controller.consume_resume_intent_command(PlaybackResumeCommand::Pause));
+        assert!(!controller.consume_resume_intent_command(PlaybackResumeCommand::TogglePlayback));
+        assert_eq!(controller.current_mode(), SeekControllerMode::Idle);
         assert_eq!(controller.resume_intent(), PlaybackResumeIntent::Pause);
+        assert_eq!(controller.generation_id(), generation_before_command);
+        assert_eq!(controller.diagnostics(), diagnostics_before_command);
     }
 
     #[test]

@@ -28,7 +28,7 @@ use crate::scrub_driver::{
     ScrubBeginDecision, ScrubDriver, ScrubEndDecision, ScrubInterruptDecision,
     ScrubPreviewDecision, ScrubPreviewDispatch, ScrubUpdateDecision,
 };
-use crate::seek_controller::PlaybackResumeIntent;
+use crate::seek_controller::{PlaybackResumeCommand, PlaybackResumeIntent};
 use crate::tick::PlayerWorkerWakeupPlan;
 use crate::{
     ActiveSeekDiagnosticsSnapshot, FrameCounters, LatencyCounterSnapshot, MediaOpenRequest,
@@ -419,6 +419,16 @@ impl WorkerPlayerCommand {
     /// Возвращает `true` для external boundary команд, которые закрывают active scrub lifecycle.
     fn invalidates_sender_scrub_generation(&self) -> bool {
         matches!(self, Self::OpenMedia(_) | Self::Stop | Self::Shutdown)
+    }
+
+    /// Классифицирует playback-команду в operation-level resume intent boundary.
+    fn playback_resume_command(&self) -> Option<PlaybackResumeCommand> {
+        match self {
+            Self::Play => Some(PlaybackResumeCommand::Play),
+            Self::Pause => Some(PlaybackResumeCommand::Pause),
+            Self::TogglePlayback => Some(PlaybackResumeCommand::TogglePlayback),
+            _ => None,
+        }
     }
 
     /// Восстанавливает public session command после worker-side policy decisions.
@@ -1301,18 +1311,12 @@ impl PlayerWorkerRuntime {
 
     /// Обновляет сохранённый resume intent для Play/Pause/Toggle во время active scrub.
     fn consume_scrub_resume_intent_command(&mut self, command: &WorkerPlayerCommand) -> bool {
-        match command {
-            WorkerPlayerCommand::Play => self
-                .scrub_driver
-                .consume_resume_intent_command(&PlayerCommand::Play),
-            WorkerPlayerCommand::Pause => self
-                .scrub_driver
-                .consume_resume_intent_command(&PlayerCommand::Pause),
-            WorkerPlayerCommand::TogglePlayback => self
-                .scrub_driver
-                .consume_resume_intent_command(&PlayerCommand::TogglePlayback),
-            _ => false,
-        }
+        let Some(resume_command) = command.playback_resume_command() else {
+            return false;
+        };
+
+        self.scrub_driver
+            .consume_resume_intent_command(resume_command)
     }
 
     /// Открывает media request; local file грузится полностью внутри worker thread.
@@ -2430,6 +2434,67 @@ mod tests {
             )
         }));
         worker.shutdown().unwrap();
+    }
+
+    #[test]
+    fn active_scrub_consumes_resume_commands_without_session_dispatch() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let generation = ScrubGeneration::default().next();
+
+        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
+        runtime.handle_begin_scrub_command(generation);
+
+        assert_eq!(
+            runtime.session.snapshot().playback_state,
+            PlaybackState::Paused
+        );
+        assert_eq!(
+            runtime.scrub_driver.resume_intent(),
+            PlaybackResumeIntent::Play
+        );
+
+        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Pause));
+        assert_eq!(
+            runtime.session.snapshot().playback_state,
+            PlaybackState::Paused
+        );
+        assert_eq!(
+            runtime.scrub_driver.resume_intent(),
+            PlaybackResumeIntent::Pause
+        );
+
+        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
+        assert_eq!(
+            runtime.session.snapshot().playback_state,
+            PlaybackState::Paused
+        );
+        assert_eq!(
+            runtime.scrub_driver.resume_intent(),
+            PlaybackResumeIntent::Play
+        );
+
+        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::TogglePlayback));
+        assert_eq!(
+            runtime.session.snapshot().playback_state,
+            PlaybackState::Paused
+        );
+        assert_eq!(
+            runtime.scrub_driver.resume_intent(),
+            PlaybackResumeIntent::Pause
+        );
+        assert!(runtime.scrub_driver.is_scrubbing());
+    }
+
+    #[test]
+    fn ordinary_non_resume_command_dispatches_to_session_during_active_scrub() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let generation = ScrubGeneration::default().next();
+
+        runtime.handle_begin_scrub_command(generation);
+        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::SetVolume(0.25)));
+
+        assert_eq!(runtime.session.snapshot().volume, 0.25);
+        assert!(runtime.scrub_driver.is_scrubbing());
     }
 
     #[test]

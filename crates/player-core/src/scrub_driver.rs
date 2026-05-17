@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 use crate::seek_controller::SeekControllerDiagnostics;
 use crate::seek_controller::{
-    DeferredPreviewStatus, FinishScrubDecision, FinishScrubRejection, PlaybackResumeIntent,
-    PreviewDispatchDecision, PreviewDispatchRejection, PreviewQueueDecision, ScrubUpdateAcceptance,
-    ScrubUpdatePreviewIntent, ScrubUpdateRejection, SeekController, SeekScrubInterruptDecision,
+    DeferredPreviewStatus, FinishScrubDecision, FinishScrubRejection, PlaybackResumeCommand,
+    PlaybackResumeIntent, PreviewDispatchDecision, PreviewDispatchRejection, PreviewQueueDecision,
+    ScrubUpdateAcceptance, ScrubUpdatePreviewIntent, ScrubUpdateRejection, SeekController,
+    SeekScrubInterruptDecision,
 };
 use crate::{
     PlaybackState, PlayerCommand, ScrubCommitIntent, ScrubGeneration, ScrubUpdateIntent,
@@ -193,8 +194,15 @@ impl ScrubDriver {
         self.seek_controller.is_scrubbing()
     }
 
-    /// Обрабатывает Play/Pause/Toggle во время scrub без изменения `PlayerSession`.
-    pub(crate) fn consume_resume_intent_command(&mut self, command: &PlayerCommand) -> bool {
+    /// Возвращает сохранённый resume intent для worker-level tests.
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn resume_intent(&self) -> PlaybackResumeIntent {
+        self.seek_controller.resume_intent()
+    }
+
+    /// Обрабатывает типизированный Play/Pause/Toggle intent во время scrub без изменения `PlayerSession`.
+    pub(crate) fn consume_resume_intent_command(&mut self, command: PlaybackResumeCommand) -> bool {
         self.seek_controller.consume_resume_intent_command(command)
     }
 
@@ -530,6 +538,21 @@ mod tests {
         );
         assert_eq!(decision.player_command, PlayerCommand::Pause);
         assert!(driver.is_scrubbing());
+    }
+
+    #[test]
+    fn resume_command_during_scrub_updates_driver_resume_intent() {
+        let mut driver = ScrubDriver::new(Duration::from_millis(100));
+        let generation = driver.next_begin_generation();
+
+        driver.begin_scrub(generation, PlaybackState::Playing);
+
+        assert!(driver.consume_resume_intent_command(PlaybackResumeCommand::Pause));
+        assert_eq!(driver.resume_intent(), PlaybackResumeIntent::Pause);
+        assert!(driver.consume_resume_intent_command(PlaybackResumeCommand::Play));
+        assert_eq!(driver.resume_intent(), PlaybackResumeIntent::Play);
+        assert!(driver.consume_resume_intent_command(PlaybackResumeCommand::TogglePlayback));
+        assert_eq!(driver.resume_intent(), PlaybackResumeIntent::Pause);
     }
 
     #[test]
