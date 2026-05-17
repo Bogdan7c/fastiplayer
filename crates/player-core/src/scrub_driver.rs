@@ -8,8 +8,8 @@ use crate::seek_controller::{
     ScrubUpdatePreviewIntent, ScrubUpdateRejection, SeekController, SeekScrubInterruptDecision,
 };
 use crate::{
-    PlaybackState, PlayerCommand, ScrubCommitIntent, ScrubGeneration, ScrubUpdateIntent,
-    SeekRequest, SessionScrubCommand,
+    PlaybackState, PlayerCommand, ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration,
+    ScrubUpdateIntent, SeekRequest, SessionScrubCommand,
 };
 
 /// Выбор preview-поведения после принятого scrub update-а.
@@ -213,6 +213,15 @@ impl ScrubDriver {
         }
     }
 
+    /// Начинает scrub для legacy direct `PlayerCommand` path-а внутри worker-а.
+    pub(crate) fn begin_scrub_from_player_command(
+        &mut self,
+        playback_state: PlaybackState,
+    ) -> ScrubBeginDecision {
+        let generation = self.next_begin_generation();
+        self.begin_scrub(generation, playback_state)
+    }
+
     /// Применяет latest scrub update из drag path и разрешает live preview.
     pub(crate) fn apply_latest_scrub_update_for_drag(
         &mut self,
@@ -235,6 +244,15 @@ impl ScrubDriver {
     /// Применяет explicit scrub update от worker command path.
     pub(crate) fn apply_scrub_update(&mut self, intent: ScrubUpdateIntent) -> ScrubUpdateDecision {
         self.apply_scrub_update_with_preview_dispatch(intent, ScrubPreviewDispatch::Allow)
+    }
+
+    /// Применяет legacy direct `UpdateScrub` без раскрытия generation routing в worker.
+    pub(crate) fn apply_player_scrub_update(
+        &mut self,
+        request: SeekRequest,
+    ) -> ScrubUpdateDecision {
+        let intent = ScrubUpdateIntent::new(self.current_generation(), request);
+        self.apply_scrub_update(intent)
     }
 
     /// Применяет update и выбирает, должен ли он породить preview seek.
@@ -274,6 +292,12 @@ impl ScrubDriver {
     /// Готовит explicit preview command, если generation и latest target ещё актуальны.
     pub(crate) fn preview_scrub(&mut self, intent: ScrubUpdateIntent) -> ScrubPreviewDecision {
         self.prepare_preview_scrub(intent, None)
+    }
+
+    /// Готовит legacy direct `PreviewScrub` без generation decisions в worker.
+    pub(crate) fn preview_player_scrub(&mut self, request: SeekRequest) -> ScrubPreviewDecision {
+        let intent = ScrubUpdateIntent::new(self.current_generation(), request);
+        self.preview_scrub(intent)
     }
 
     /// Отправляет отложенный preview seek, когда прошёл throttle interval live scrub-а.
@@ -351,6 +375,12 @@ impl ScrubDriver {
                 ScrubEndDecision::Rejected { intent, reason }
             }
         }
+    }
+
+    /// Завершает legacy direct `EndScrub` без generation decisions в worker.
+    pub(crate) fn end_player_scrub(&mut self, policy: ScrubCommitPolicy) -> ScrubEndDecision {
+        let intent = ScrubCommitIntent::new(self.current_generation(), policy);
+        self.end_scrub(intent)
     }
 
     /// Прерывает active scrub для Stop/Open/Shutdown/load boundary команд.
