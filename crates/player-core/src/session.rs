@@ -216,7 +216,7 @@ impl PlayerSession {
     pub(crate) fn lease_present_video_frame(&mut self) -> Option<LeasedPresentFrame> {
         let decoder_thread = self.pipeline.video_decoder_thread.as_ref()?;
         let texture_provider = decoder_thread.texture_view_provider();
-        let frame = self.pipeline.present_video_frame.as_ref()?.clone();
+        let frame = self.pipeline.present_video_frame()?.clone();
         let render_generation = self.pipeline.render_generation;
         let stale = self.snapshot.timeline.stale_frame;
 
@@ -955,11 +955,7 @@ impl PlayerSession {
             target_frame_presented,
             ready_video_frames,
             required_video_frames,
-            present_frame_pts: self
-                .pipeline
-                .present_video_frame
-                .as_ref()
-                .map(|frame| frame.pts),
+            present_frame_pts: self.pipeline.present_video_frame_pts(),
             front_queued_frame_pts: self
                 .pipeline
                 .front_queued_video_frame()
@@ -1021,18 +1017,17 @@ impl PlayerSession {
         frame: video_core::DecodedFrame,
     ) -> Option<video_core::DecodedFrame> {
         self.pipeline
-            .seek_preroll_fallback_video_frame
-            .replace(frame)
+            .replace_seek_preroll_fallback_video_frame(frame)
     }
 
     /// Забирает EOF fallback frame, если scheduler решил, что target frame уже не придёт.
     pub(crate) fn take_seek_preroll_fallback_frame(&mut self) -> Option<video_core::DecodedFrame> {
-        self.pipeline.seek_preroll_fallback_video_frame.take()
+        self.pipeline.take_seek_preroll_fallback_video_frame()
     }
 
     /// Освобождает EOF fallback frame при новом seek/reset/точном target frame-е.
     pub(crate) fn clear_seek_preroll_fallback_frame(&mut self) {
-        if let Some(frame) = self.pipeline.seek_preroll_fallback_video_frame.take() {
+        if let Some(frame) = self.pipeline.clear_seek_preroll_fallback_video_frame() {
             self.release_video_texture(frame.texture_handle);
         }
     }
@@ -1169,11 +1164,7 @@ impl PlayerSession {
             return true;
         }
 
-        let target_frame_presented = self
-            .pipeline
-            .present_video_frame
-            .as_ref()
-            .is_some_and(|frame| frame.pts >= target_position)
+        let target_frame_presented = self.pipeline.present_video_frame_covers(target_position)
             && !self.snapshot.timeline.stale_frame;
         let eof_fallback_presented =
             self.seek_eof_fallback_video_ready(seek_commit, target_position);
@@ -1194,10 +1185,7 @@ impl PlayerSession {
 
     /// Проверяет, что target frame уже стал текущим non-stale present frame.
     fn seek_target_frame_presented(&self, target_position: Duration) -> bool {
-        self.pipeline
-            .present_video_frame
-            .as_ref()
-            .is_some_and(|frame| frame.pts >= target_position)
+        self.pipeline.present_video_frame_covers(target_position)
             && !self.snapshot.timeline.stale_frame
     }
 
@@ -1290,8 +1278,7 @@ impl PlayerSession {
             return SeekProgressBlocker::WaitingForDemux;
         }
 
-        if self.pipeline.present_video_frame.is_some()
-            || !self.pipeline.video_present_queue_is_empty()
+        if self.pipeline.has_present_video_frame() || !self.pipeline.video_present_queue_is_empty()
         {
             return SeekProgressBlocker::WaitingForScheduler;
         }
@@ -1320,13 +1307,8 @@ impl PlayerSession {
 
     /// Считает target/current frame и уже декодированные future frames для seek resume.
     fn seek_ready_video_frame_count(&self, target_position: Duration) -> usize {
-        let current_frame_ready = self
-            .pipeline
-            .present_video_frame
-            .as_ref()
-            .is_some_and(|frame| {
-                frame.pts >= target_position && !self.snapshot.timeline.stale_frame
-            });
+        let current_frame_ready = self.pipeline.present_video_frame_covers(target_position)
+            && !self.snapshot.timeline.stale_frame;
         let queued_ready_frames = self
             .pipeline
             .queued_video_frames()
@@ -1354,10 +1336,7 @@ impl PlayerSession {
             return false;
         }
 
-        self.pipeline
-            .present_video_frame
-            .as_ref()
-            .is_some_and(|frame| frame.pts == fallback_position)
+        self.pipeline.present_video_frame_matches(fallback_position)
     }
 
     /// Audio gate готов после очистки buffer; video seek не ждёт audio preroll.
@@ -1515,7 +1494,7 @@ impl PlayerSession {
         self.clear_seek_preroll_fallback_frame();
         self.snapshot.timeline.target_position = Some(seek_commit.target_position);
         self.snapshot.timeline.seeking = false;
-        self.snapshot.timeline.stale_frame = self.pipeline.present_video_frame.is_some()
+        self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame()
             && !self.present_frame_covers_target(seek_commit.target_position.as_duration());
         self.snapshot.timeline.preview_state = TimelinePreviewState::Expired;
         self.pause_audio_output_for_seek();
@@ -1652,7 +1631,7 @@ impl PlayerSession {
             .map(|level_ms| level_ms >= audio_preroll_target_ms.max(1.0))
             .unwrap_or(true);
         let video_ready =
-            self.pipeline.video_track_id.is_none() || self.pipeline.present_video_frame.is_some();
+            self.pipeline.video_track_id.is_none() || self.pipeline.has_present_video_frame();
 
         audio_ready && video_ready
     }
@@ -1936,7 +1915,7 @@ impl PlayerSession {
         seek_commit.started_at = Instant::now();
         self.snapshot.timeline.scrubbing = false;
         self.snapshot.timeline.seeking = true;
-        self.snapshot.timeline.stale_frame = self.pipeline.present_video_frame.is_some()
+        self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame()
             && !self.present_frame_covers_target(target_position.as_duration());
         self.snapshot.timeline.target_position = Some(target_position);
         self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
@@ -1989,20 +1968,13 @@ impl PlayerSession {
             return true;
         }
 
-        self.pipeline
-            .present_video_frame
-            .as_ref()
-            .is_some_and(|frame| frame.pts >= target_position)
+        self.pipeline.present_video_frame_covers(target_position)
     }
 
     /// Проверяет, что текущий present frame ровно тот preview-кадр, который хотим зафиксировать.
     fn present_frame_matches_position(&self, position: Duration) -> bool {
         self.pipeline.video_track_id.is_some()
-            && self
-                .pipeline
-                .present_video_frame
-                .as_ref()
-                .is_some_and(|frame| frame.pts == position)
+            && self.pipeline.present_video_frame_matches(position)
     }
 
     /// Убирает pre-target кадры из future queue при переходе preview -> final.
@@ -2107,8 +2079,7 @@ impl PlayerSession {
                 if commit_kind == SeekCommitKind::Preview {
                     self.snapshot.timeline.target_position = Some(target_position);
                     self.snapshot.timeline.preview_state = TimelinePreviewState::Failed;
-                    self.snapshot.timeline.stale_frame =
-                        self.pipeline.present_video_frame.is_some();
+                    self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame();
                 }
                 self.record_recoverable_error(player_error_from_seek_demux_request_error(error));
                 return Ok(());
@@ -2147,7 +2118,7 @@ impl PlayerSession {
         self.pipeline.reset_clocks_for_seek(target_duration);
         self.snapshot.timeline.target_position = Some(target_position);
         self.snapshot.timeline.seeking = true;
-        self.snapshot.timeline.stale_frame = self.pipeline.present_video_frame.is_some();
+        self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame();
         self.snapshot.timeline.preview_state = match commit_kind {
             SeekCommitKind::Final => TimelinePreviewState::Inactive,
             SeekCommitKind::Preview => TimelinePreviewState::Pending,
@@ -2223,7 +2194,7 @@ impl PlayerSession {
                 self.snapshot.timeline.seeking = false;
                 self.snapshot.timeline.stale_frame = match commit_kind {
                     SeekCommitKind::Final => false,
-                    SeekCommitKind::Preview => self.pipeline.present_video_frame.is_some(),
+                    SeekCommitKind::Preview => self.pipeline.has_present_video_frame(),
                 };
                 self.set_playback_state(PlaybackState::Paused);
                 self.snapshot.timeline.target_position = match commit_kind {
@@ -2661,9 +2632,7 @@ impl PlayerSession {
     /// Конвертирует VA-API texture pool stats в core snapshot.
     fn texture_pool_snapshot(&self) -> Option<TexturePoolSnapshot> {
         self.pipeline
-            .video_decoder_thread
-            .as_ref()
-            .and_then(|decoder_thread| decoder_thread.texture_pool_stats())
+            .video_decoder_texture_pool_stats()
             .map(|texture_stats| TexturePoolSnapshot {
                 capacity: texture_stats.capacity,
                 slots: texture_stats.slots,
@@ -2681,8 +2650,7 @@ impl PlayerSession {
     /// Описывает текущий кадр без передачи renderer-owned ресурсов.
     fn current_video_frame_snapshot(&self) -> Option<VideoFrameSnapshot> {
         self.pipeline
-            .present_video_frame
-            .as_ref()
+            .present_video_frame()
             .map(|present_frame| VideoFrameSnapshot {
                 render_generation: self.pipeline.render_generation,
                 handle: present_frame.texture_handle.0,
@@ -2724,9 +2692,7 @@ impl PlayerSession {
     fn diagnostic_queue_depths(&self) -> PipelineQueueDepthSnapshot {
         let decoder_send_queue_depth = self
             .pipeline
-            .video_decoder_thread
-            .as_ref()
-            .map(|decoder_thread| decoder_thread.packet_queue_depth())
+            .video_decoder_packet_queue_depth()
             .unwrap_or(self.pipeline.pending_video_packet_len());
 
         PipelineQueueDepthSnapshot {

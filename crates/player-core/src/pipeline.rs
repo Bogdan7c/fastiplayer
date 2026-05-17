@@ -361,6 +361,38 @@ impl PlaybackPipeline {
             .collect()
     }
 
+    /// Возвращает текущий present frame без передачи владения наружу pipeline.
+    #[must_use]
+    pub(crate) fn present_video_frame(&self) -> Option<&video_core::DecodedFrame> {
+        self.present_video_frame.as_ref()
+    }
+
+    /// Возвращает PTS текущего present frame-а для diagnostics и seek gates.
+    #[must_use]
+    pub(crate) fn present_video_frame_pts(&self) -> Option<Duration> {
+        self.present_video_frame().map(|frame| frame.pts)
+    }
+
+    /// Проверяет, что текущий present frame покрывает целевую media-позицию.
+    #[must_use]
+    pub(crate) fn present_video_frame_covers(&self, target: Duration) -> bool {
+        self.present_video_frame()
+            .is_some_and(|frame| frame.pts >= target)
+    }
+
+    /// Проверяет, что текущий present frame ровно совпадает с media-позицией.
+    #[must_use]
+    pub(crate) fn present_video_frame_matches(&self, position: Duration) -> bool {
+        self.present_video_frame()
+            .is_some_and(|frame| frame.pts == position)
+    }
+
+    /// Проверяет наличие текущего present frame-а без раскрытия внутреннего `Option`.
+    #[must_use]
+    pub(crate) fn has_present_video_frame(&self) -> bool {
+        self.present_video_frame.is_some()
+    }
+
     /// Делает decoded frame текущим кадром presentation.
     pub(crate) fn set_present_video_frame(&mut self, frame: video_core::DecodedFrame) {
         self.present_video_frame = Some(frame);
@@ -369,6 +401,44 @@ impl PlaybackPipeline {
     /// Забирает текущий present frame, чтобы вызывающий слой мог освободить texture.
     pub(crate) fn take_present_video_frame(&mut self) -> Option<video_core::DecodedFrame> {
         self.present_video_frame.take()
+    }
+
+    /// Заменяет текущий present frame и возвращает старый frame для явного release.
+    pub(crate) fn replace_present_video_frame(
+        &mut self,
+        frame: video_core::DecodedFrame,
+    ) -> Option<video_core::DecodedFrame> {
+        let old_frame = self.take_present_video_frame();
+        self.set_present_video_frame(frame);
+        old_frame
+    }
+
+    /// Проверяет наличие EOF fallback frame-а для final seek near EOF.
+    #[must_use]
+    pub(crate) fn has_seek_preroll_fallback_video_frame(&self) -> bool {
+        self.seek_preroll_fallback_video_frame.is_some()
+    }
+
+    /// Забирает EOF fallback frame, когда scheduler решил показать его после EOF.
+    pub(crate) fn take_seek_preroll_fallback_video_frame(
+        &mut self,
+    ) -> Option<video_core::DecodedFrame> {
+        self.seek_preroll_fallback_video_frame.take()
+    }
+
+    /// Заменяет EOF fallback frame и возвращает прежний frame для явного release.
+    pub(crate) fn replace_seek_preroll_fallback_video_frame(
+        &mut self,
+        frame: video_core::DecodedFrame,
+    ) -> Option<video_core::DecodedFrame> {
+        self.seek_preroll_fallback_video_frame.replace(frame)
+    }
+
+    /// Очищает EOF fallback frame и возвращает его владельцу release path-а.
+    pub(crate) fn clear_seek_preroll_fallback_video_frame(
+        &mut self,
+    ) -> Option<video_core::DecodedFrame> {
+        self.seek_preroll_fallback_video_frame.take()
     }
 
     /// Добавляет audio packet в pending queue текущего pipeline.
@@ -516,6 +586,10 @@ impl PlaybackPipeline {
         self.clear_pending_video_packets();
         self.require_video_decoder_keyframe();
         self.reset_video_decode_in_flight();
+        debug_assert!(
+            self.seek_preroll_fallback_video_frame.is_none(),
+            "reset_media_slots вызывается только после release всех video frames"
+        );
         self.seek_preroll_fallback_video_frame = None;
         self.audio_clock = None;
         self.media_clock_base = Duration::ZERO;
@@ -551,6 +625,30 @@ impl PlaybackPipeline {
         self.video_backend = decoder_thread.backend_name();
         self.video_decoder_thread = Some(Box::new(decoder_thread));
         self.reset_video_decode_in_flight();
+    }
+
+    /// Проверяет, подключён ли decoder thread к текущему media pipeline.
+    #[must_use]
+    pub(crate) fn has_video_decoder_thread(&self) -> bool {
+        self.video_decoder_thread.is_some()
+    }
+
+    /// Возвращает глубину send queue decoder thread-а, если backend запущен.
+    #[must_use]
+    pub(crate) fn video_decoder_packet_queue_depth(&self) -> Option<usize> {
+        self.video_decoder_thread
+            .as_ref()
+            .map(|decoder_thread| decoder_thread.packet_queue_depth())
+    }
+
+    /// Возвращает snapshot texture pool-а, не раскрывая decoder thread наружу.
+    #[must_use]
+    pub(crate) fn video_decoder_texture_pool_stats(
+        &self,
+    ) -> Option<video_vaapi::texture_cache::TexturePoolStats> {
+        self.video_decoder_thread
+            .as_ref()
+            .and_then(|decoder_thread| decoder_thread.texture_pool_stats())
     }
 
     /// Сбрасывает счётчик packets, которые могли остаться внутри decoder после flush/seek.

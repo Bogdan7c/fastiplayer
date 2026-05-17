@@ -803,11 +803,7 @@ fn texture_capacity_backpressure_reason(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> Option<PipelinePauseReason> {
-    let Some(ref thread) = session.pipeline.video_decoder_thread else {
-        return None;
-    };
-
-    let Some(stats) = thread.texture_pool_stats() else {
+    let Some(stats) = session.pipeline.video_decoder_texture_pool_stats() else {
         return None;
     };
 
@@ -1039,7 +1035,7 @@ fn drain_decoded_video_frames(
         return 0;
     }
 
-    if session.pipeline.video_decoder_thread.is_none() {
+    if !session.pipeline.has_video_decoder_thread() {
         if !session.pipeline.pending_video_packet_is_empty() {
             tracing::warn!(
                 count = session.pipeline.pending_video_packet_len(),
@@ -1167,7 +1163,7 @@ fn send_pending_video_packets_to_decoder(
     decode_ahead_limit: Duration,
     catch_up_deadline: Option<Instant>,
 ) -> usize {
-    if session.pipeline.video_decoder_thread.is_none() {
+    if !session.pipeline.has_video_decoder_thread() {
         return 0;
     }
 
@@ -1628,7 +1624,7 @@ fn pending_video_work_available(session: &PlayerSession, tick_config: &PlayerTic
         return false;
     };
 
-    if session.pipeline.video_decoder_thread.is_none() {
+    if !session.pipeline.has_video_decoder_thread() {
         return true;
     }
 
@@ -1664,7 +1660,8 @@ fn demux_work_available(session: &PlayerSession, tick_config: &PlayerTickConfig)
 
 /// Проверяет, нужен ли короткий poll decoded-frame readiness.
 fn decoder_readiness_poll_needed(session: &PlayerSession, tick_config: &PlayerTickConfig) -> bool {
-    let Some(decoder_thread) = session.pipeline.video_decoder_thread.as_ref() else {
+    let Some(decoder_packet_queue_depth) = session.pipeline.video_decoder_packet_queue_depth()
+    else {
         return false;
     };
 
@@ -1674,7 +1671,7 @@ fn decoder_readiness_poll_needed(session: &PlayerSession, tick_config: &PlayerTi
         video_present_queue_target(tick_config),
         !session.pipeline.pending_video_packet_is_empty(),
         session.pipeline.demuxer.is_some(),
-        decoder_thread.packet_queue_depth() > 0,
+        decoder_packet_queue_depth > 0,
         session.pipeline.video_decode_in_flight_packets() > 0,
         session.has_active_seek_commit(),
     )
@@ -1849,16 +1846,14 @@ fn present_front_queued_video_frame(
         return false;
     };
 
-    if let Some(old_frame) = session.pipeline.take_present_video_frame() {
-        release_video_texture(session, old_frame.texture_handle);
-    }
-
     tracing::debug!(
         pts_ms = frame.pts.as_millis(),
         "Presenting scheduled video frame"
     );
     let frame_pts = frame.pts;
-    session.pipeline.set_present_video_frame(frame);
+    if let Some(old_frame) = session.pipeline.replace_present_video_frame(frame) {
+        release_video_texture(session, old_frame.texture_handle);
+    }
     session.note_presented_frame_for_seek(frame_pts);
     tick_result.record_presented_video_frame();
     true
@@ -1877,16 +1872,14 @@ fn present_seek_preroll_fallback_after_eof(
         return false;
     };
 
-    if let Some(old_frame) = session.pipeline.take_present_video_frame() {
-        release_video_texture(session, old_frame.texture_handle);
-    }
-
     let frame_pts = frame.pts;
     tracing::debug!(
         pts_ms = frame_pts.as_millis(),
         "Presenting final seek EOF fallback frame"
     );
-    session.pipeline.set_present_video_frame(frame);
+    if let Some(old_frame) = session.pipeline.replace_present_video_frame(frame) {
+        release_video_texture(session, old_frame.texture_handle);
+    }
     session.note_presented_seek_eof_fallback_frame(frame_pts);
     tick_result.record_presented_video_frame();
     true
@@ -1898,7 +1891,7 @@ fn seek_preroll_fallback_ready_after_eof(session: &PlayerSession) -> bool {
         return false;
     }
 
-    if session.pipeline.seek_preroll_fallback_video_frame.is_none() {
+    if !session.pipeline.has_seek_preroll_fallback_video_frame() {
         return false;
     }
 
@@ -1911,11 +1904,8 @@ fn seek_preroll_fallback_ready_after_eof(session: &PlayerSession) -> bool {
 
     session
         .pipeline
-        .video_decoder_thread
-        .as_ref()
-        .map_or(true, |decoder_thread| {
-            decoder_thread.packet_queue_depth() == 0
-        })
+        .video_decoder_packet_queue_depth()
+        .is_none_or(|packet_queue_depth| packet_queue_depth == 0)
 }
 
 /// Повторно показывает текущий кадр и учитывает это в telemetry result.
@@ -1924,7 +1914,7 @@ fn repeat_present_video_frame(
     tick_result: &mut PlayerTickResult,
     pause_reason: Option<PipelinePauseReason>,
 ) {
-    if session.pipeline.present_video_frame.is_some() {
+    if session.pipeline.has_present_video_frame() {
         tick_result.record_repeated_video_frame();
         session.record_repeated_video_frame();
     }
@@ -2048,11 +2038,11 @@ fn has_texture_capacity_for_catch_up(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> bool {
-    let Some(ref thread) = session.pipeline.video_decoder_thread else {
+    if !session.pipeline.has_video_decoder_thread() {
         return false;
-    };
+    }
 
-    let Some(stats) = thread.texture_pool_stats() else {
+    let Some(stats) = session.pipeline.video_decoder_texture_pool_stats() else {
         return true;
     };
 
@@ -2070,7 +2060,7 @@ fn run_adaptive_catch_up_pass(
     let mut made_progress = false;
 
     if budget.decoded_frames > 0
-        && session.pipeline.video_decoder_thread.is_some()
+        && session.pipeline.has_video_decoder_thread()
         && available_video_present_slots(session, tick_config) > 0
     {
         let drain_budget = budget
