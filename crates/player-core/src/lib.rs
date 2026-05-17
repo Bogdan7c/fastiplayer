@@ -11,6 +11,7 @@ mod error;
 mod event;
 mod media_opening;
 mod pipeline;
+mod scrub_driver;
 mod seek_controller;
 mod seek_state;
 mod session;

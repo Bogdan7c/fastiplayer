@@ -11,7 +11,10 @@ use rustiplayer_config::PlayerDemuxConfig;
 use tracing::{debug, warn};
 use webm_demux::DemuxerOptions;
 
-use crate::seek_controller::{PlaybackResumeIntent, SeekController};
+use crate::scrub_driver::{
+    ScrubDriver, ScrubPreviewDecision, ScrubPreviewDispatch, ScrubUpdateDecision,
+};
+use crate::seek_controller::PlaybackResumeIntent;
 use crate::tick::PlayerWorkerWakeupPlan;
 use crate::{
     ActiveSeekDiagnosticsSnapshot, FrameCounters, LatencyCounterSnapshot, MediaOpenRequest,
@@ -827,7 +830,7 @@ impl PlayerWorker {
             .spawn(move || {
                 let runtime = PlayerWorkerRuntime {
                     session: PlayerSession::with_demuxer_options(config.demuxer_options),
-                    seek_controller: SeekController::new(),
+                    scrub_driver: ScrubDriver::new(config.live_scrub_preview_interval),
                     command_rx,
                     scrub_wake_rx,
                     scrub_coalescer,
@@ -843,9 +846,6 @@ impl PlayerWorker {
                     render_timing_sample_rx,
                     shutdown_rx,
                     config,
-                    last_preview_scrub_seek_at: None,
-                    last_preview_scrub_target: None,
-                    deferred_preview_scrub_target: None,
                     last_tick_at: worker_started_at,
                     last_diagnostics_summary_at: worker_started_at,
                     last_seek_stall_log_key: None,
@@ -1129,8 +1129,8 @@ struct PlayerWorkerRuntime {
     /// Worker-owned player session и весь playback pipeline.
     session: PlayerSession,
 
-    /// Seek/scrub skeleton controller.
-    seek_controller: SeekController,
+    /// Worker-side coordinator seek/scrub orchestration.
+    scrub_driver: ScrubDriver,
 
     /// Receiver основной очереди команд.
     command_rx: Receiver<WorkerCommand>,
@@ -1168,15 +1168,6 @@ struct PlayerWorkerRuntime {
     /// Runtime config worker-а.
     config: PlayerWorkerConfig,
 
-    /// Последний момент, когда worker запускал live preview seek.
-    last_preview_scrub_seek_at: Option<Instant>,
-
-    /// Последняя scrub-цель, для которой preview seek уже был отправлен.
-    last_preview_scrub_target: Option<ScrubUpdateIntent>,
-
-    /// Latest scrub-цель, ожидающая preview throttle window.
-    deferred_preview_scrub_target: Option<ScrubUpdateIntent>,
-
     /// Момент последнего playback tick.
     last_tick_at: Instant,
 
@@ -1204,16 +1195,6 @@ enum WorkerWakeupDeadline {
 
     /// Live scrub preview throttle window достигнет срока раньше playback.
     PreviewScrub,
-}
-
-/// Нужно ли запускать live preview seek после принятого scrub update-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ScrubPreviewDispatch {
-    /// Обычный drag/update path: latest target должен получить live preview.
-    Allow,
-
-    /// Release path: latest target нужен только final commit-у, без нового preview.
-    SuppressForCommit,
 }
 
 impl PlayerWorkerRuntime {
@@ -1365,19 +1346,7 @@ impl PlayerWorkerRuntime {
 
     /// Возвращает время до throttled preview seek-а во время interactive scrub.
     fn next_preview_scrub_timeout(&self, now: Instant) -> Option<Duration> {
-        if !self.seek_controller.is_scrubbing() || self.deferred_preview_scrub_target.is_none() {
-            return None;
-        }
-
-        let Some(last_seek_at) = self.last_preview_scrub_seek_at else {
-            return Some(Duration::ZERO);
-        };
-        let elapsed_since_preview = now.saturating_duration_since(last_seek_at);
-        Some(
-            self.config
-                .live_scrub_preview_interval
-                .saturating_sub(elapsed_since_preview),
-        )
+        self.scrub_driver.next_preview_scrub_timeout(now)
     }
 
     /// Обрабатывает wakeup от основной очереди команд.
@@ -1519,7 +1488,7 @@ impl PlayerWorkerRuntime {
 
     /// Применяет public command с worker-level seek/scrub priority policy.
     fn handle_player_command(&mut self, command: PlayerCommand) {
-        if self.seek_controller.consume_resume_intent_command(&command) {
+        if self.scrub_driver.consume_resume_intent_command(&command) {
             return;
         }
 
@@ -1528,19 +1497,19 @@ impl PlayerWorkerRuntime {
             PlayerCommand::Stop => self.handle_stop_command(),
             PlayerCommand::Shutdown => self.handle_shutdown_request(),
             PlayerCommand::BeginScrub => {
-                let generation = self.seek_controller.generation_id().next();
+                let generation = self.scrub_driver.next_begin_generation();
                 self.handle_begin_scrub_command(generation);
             }
             PlayerCommand::UpdateScrub(request) => {
-                let generation = self.seek_controller.generation_id();
+                let generation = self.scrub_driver.current_generation();
                 self.apply_scrub_update(ScrubUpdateIntent::new(generation, request));
             }
             PlayerCommand::PreviewScrub(request) => {
-                let generation = self.seek_controller.generation_id();
+                let generation = self.scrub_driver.current_generation();
                 self.handle_preview_scrub_command(ScrubUpdateIntent::new(generation, request));
             }
             PlayerCommand::EndScrub { policy } => {
-                let generation = self.seek_controller.generation_id();
+                let generation = self.scrub_driver.current_generation();
                 self.handle_end_scrub_command(ScrubCommitIntent::new(generation, policy));
             }
             PlayerCommand::Seek(request) => self.handle_seek_command(request),
@@ -1565,8 +1534,7 @@ impl PlayerWorkerRuntime {
 
     /// Stop во время scrub сначала просит pause + seek zero, затем сбрасывает media.
     fn handle_stop_command(&mut self) {
-        if self.seek_controller.is_scrubbing() {
-            self.seek_controller.interrupt_scrub();
+        if self.scrub_driver.interrupt_scrub().was_scrubbing {
             self.dispatch_player_command(PlayerCommand::Pause);
             self.dispatch_player_command(PlayerCommand::Seek(SeekRequest::absolute(
                 MediaTime::ZERO,
@@ -1589,11 +1557,11 @@ impl PlayerWorkerRuntime {
             playback_state = ?self.session.playback_state(),
             "Worker принял BeginScrub"
         );
-        self.reset_preview_scrub_state();
-        self.seek_controller
-            .begin_scrub_with_generation(generation, self.session.playback_state());
-        self.dispatch_scrub_command(SessionScrubCommand::Begin { generation });
-        self.dispatch_player_command(PlayerCommand::Pause);
+        let decision = self
+            .scrub_driver
+            .begin_scrub(generation, self.session.playback_state());
+        self.dispatch_scrub_command(decision.session_command);
+        self.dispatch_player_command(decision.player_command);
     }
 
     /// EndScrub применяет выбранную commit policy и сохранённый resume intent.
@@ -1601,36 +1569,50 @@ impl PlayerWorkerRuntime {
         debug!(
             generation = intent.generation.as_u64(),
             policy = ?intent.policy,
-            latest_target = ?self.seek_controller.latest_scrub_target(),
-            in_flight_target = ?self.seek_controller.in_flight_target(),
+            latest_target = ?self.scrub_driver.latest_scrub_target(),
+            in_flight_target = ?self.scrub_driver.in_flight_target(),
             "Worker принял EndScrub"
         );
         self.apply_latest_scrub_update_for_commit();
 
-        let Some(resume_intent) = self.seek_controller.finish_scrub(intent) else {
+        let decision = self.scrub_driver.end_scrub(intent);
+        if decision.stale {
             debug!(
                 generation = intent.generation.as_u64(),
                 "Stale EndScrub ignored before PlayerSession"
             );
             return;
-        };
+        }
 
-        self.deferred_preview_scrub_target = None;
-        self.dispatch_scrub_command(SessionScrubCommand::End(intent));
+        if let Some(session_command) = decision.session_command {
+            self.dispatch_scrub_command(session_command);
+        }
         debug!(
             generation = intent.generation.as_u64(),
-            resume_intent = ?resume_intent,
+            resume_intent = ?decision.resume_intent,
             has_active_seek_commit = self.session.has_active_seek_commit(),
             timeline = ?self.session.snapshot().timeline,
             "Worker применил EndScrub к session"
         );
-        self.apply_end_scrub_resume_intent(resume_intent);
-        self.reset_preview_scrub_state();
+        if let Some(resume_intent) = decision.resume_intent {
+            self.apply_end_scrub_resume_intent(resume_intent);
+        }
+        self.scrub_driver.reset_preview_scrub_state();
     }
 
     /// PreviewScrub проходит в session только если generation и latest target всё ещё актуальны.
     fn handle_preview_scrub_command(&mut self, intent: ScrubUpdateIntent) -> bool {
-        if !self.seek_controller.mark_preview_seek_dispatched(intent) {
+        let decision = self.scrub_driver.preview_scrub(intent);
+        self.dispatch_preview_scrub_decision(decision)
+    }
+
+    /// Отправляет preview decision в session и логирует stale preview intent-ы.
+    fn dispatch_preview_scrub_decision(&mut self, decision: ScrubPreviewDecision) -> bool {
+        let Some(intent) = decision.intent else {
+            return false;
+        };
+
+        if decision.stale {
             debug!(
                 generation = intent.generation.as_u64(),
                 request = ?intent.request,
@@ -1639,13 +1621,16 @@ impl PlayerWorkerRuntime {
             return false;
         }
 
+        let Some(session_command) = decision.session_command else {
+            return false;
+        };
+
         debug!(
             generation = intent.generation.as_u64(),
             request = ?intent.request,
             "Worker dispatches PreviewScrub"
         );
-        self.last_preview_scrub_target = Some(intent);
-        self.dispatch_scrub_command(SessionScrubCommand::Preview(intent));
+        self.dispatch_scrub_command(session_command);
         true
     }
 
@@ -1666,7 +1651,7 @@ impl PlayerWorkerRuntime {
 
     /// Внешний Seek игнорируется, пока активен scrub.
     fn handle_seek_command(&mut self, request: SeekRequest) {
-        if self.seek_controller.should_ignore_external_seek() {
+        if self.scrub_driver.should_ignore_external_seek() {
             debug!("External seek ignored during active scrub");
             return;
         }
@@ -1676,16 +1661,18 @@ impl PlayerWorkerRuntime {
 
     /// Применяет один scrub update после coalescing.
     fn apply_scrub_update(&mut self, intent: ScrubUpdateIntent) {
-        self.apply_scrub_update_with_preview_dispatch(intent, ScrubPreviewDispatch::Allow);
+        let decision = self.scrub_driver.apply_scrub_update(intent);
+        self.dispatch_scrub_update_decision(intent, ScrubPreviewDispatch::Allow, decision);
     }
 
-    /// Применяет scrub update и явно выбирает, можно ли вслед за ним отправлять preview.
-    fn apply_scrub_update_with_preview_dispatch(
+    /// Отправляет принятое driver-ом scrub update решение в session.
+    fn dispatch_scrub_update_decision(
         &mut self,
         intent: ScrubUpdateIntent,
         preview_dispatch: ScrubPreviewDispatch,
+        decision: ScrubUpdateDecision,
     ) {
-        if !self.seek_controller.accept_scrub_update(intent) {
+        if decision.stale {
             debug!(
                 generation = intent.generation.as_u64(),
                 request = ?intent.request,
@@ -1695,117 +1682,71 @@ impl PlayerWorkerRuntime {
             return;
         }
 
+        let Some(session_command) = decision.session_command else {
+            return;
+        };
+
         debug!(
             generation = intent.generation.as_u64(),
             request = ?intent.request,
             preview_dispatch = ?preview_dispatch,
             "Worker применяет scrub update"
         );
-        self.dispatch_scrub_command(SessionScrubCommand::Update(intent));
-
-        match preview_dispatch {
-            ScrubPreviewDispatch::Allow => {
-                self.queue_preview_scrub_seek(intent);
-                self.dispatch_due_preview_scrub_seek();
-            }
-            ScrubPreviewDispatch::SuppressForCommit => {
-                self.clear_deferred_preview_scrub_target(intent);
-            }
+        self.dispatch_scrub_command(session_command);
+        if let Some(due_preview) = decision.due_preview {
+            let preview_decision = self.scrub_driver.preview_due_scrub(due_preview);
+            self.dispatch_preview_scrub_decision(preview_decision);
         }
     }
 
     /// Забирает latest scrub update из bounded канала и применяет только последнюю цель.
     fn apply_latest_scrub_update(&mut self) {
-        self.apply_latest_scrub_update_with_preview_dispatch(ScrubPreviewDispatch::Allow);
+        self.drain_latest_scrub_update_with_preview_dispatch(ScrubPreviewDispatch::Allow);
     }
 
     /// Забирает latest scrub update перед EndScrub, не создавая новый preview transaction.
     fn apply_latest_scrub_update_for_commit(&mut self) {
-        self.apply_latest_scrub_update_with_preview_dispatch(
+        self.drain_latest_scrub_update_with_preview_dispatch(
             ScrubPreviewDispatch::SuppressForCommit,
         );
     }
 
     /// Общий latest-wins drain для обычного scrub-а и release commit-а.
-    fn apply_latest_scrub_update_with_preview_dispatch(
+    fn drain_latest_scrub_update_with_preview_dispatch(
         &mut self,
         preview_dispatch: ScrubPreviewDispatch,
     ) {
         drain_receiver_without_blocking(&self.scrub_wake_rx);
 
         if let Some(intent) = self.scrub_coalescer.take_latest() {
-            if intent.generation > self.seek_controller.generation_id() {
+            if intent.generation > self.scrub_driver.current_generation() {
                 self.scrub_coalescer.restore_future_intent(intent);
                 return;
             }
 
-            self.apply_scrub_update_with_preview_dispatch(intent, preview_dispatch);
+            let decision = match preview_dispatch {
+                ScrubPreviewDispatch::Allow => {
+                    self.scrub_driver.apply_latest_scrub_update_for_drag(intent)
+                }
+                ScrubPreviewDispatch::SuppressForCommit => self
+                    .scrub_driver
+                    .apply_latest_scrub_update_for_commit(intent),
+            };
+            self.dispatch_scrub_update_decision(intent, preview_dispatch, decision);
             self.publish_session_outputs();
         }
     }
 
     /// Прерывает scrub для Open/Shutdown/load boundary команд.
     fn interrupt_scrub_for_external_boundary(&mut self) {
-        if self.seek_controller.is_scrubbing() {
-            self.seek_controller.interrupt_scrub();
-        }
-        self.reset_preview_scrub_state();
-    }
-
-    /// Сбрасывает worker-only состояние preview seek-а для новой scrub операции.
-    fn reset_preview_scrub_state(&mut self) {
-        self.last_preview_scrub_seek_at = None;
-        self.last_preview_scrub_target = None;
-        self.deferred_preview_scrub_target = None;
-    }
-
-    /// Запоминает latest target, для которого нужен live preview seek.
-    fn queue_preview_scrub_seek(&mut self, intent: ScrubUpdateIntent) {
-        if self.last_preview_scrub_target == Some(intent) {
-            return;
-        }
-
-        self.deferred_preview_scrub_target = Some(intent);
-    }
-
-    /// Снимает отложенный preview, если release уже коммитит ту же цель final seek-ом.
-    fn clear_deferred_preview_scrub_target(&mut self, intent: ScrubUpdateIntent) {
-        if self.deferred_preview_scrub_target == Some(intent) {
-            self.deferred_preview_scrub_target = None;
-        }
+        self.scrub_driver.interrupt_scrub();
     }
 
     /// Отправляет preview seek, когда прошёл throttle interval live scrub-а.
     fn dispatch_due_preview_scrub_seek(&mut self) {
-        if !self.seek_controller.is_scrubbing() {
-            self.deferred_preview_scrub_target = None;
-            return;
-        }
-
-        let Some(intent) = self.deferred_preview_scrub_target else {
-            return;
-        };
-
         let now = Instant::now();
-        if !self.preview_scrub_interval_elapsed(now) {
-            return;
-        }
-
-        self.deferred_preview_scrub_target = None;
-        if self.handle_preview_scrub_command(intent) {
-            self.last_preview_scrub_seek_at = Some(now);
-        }
-    }
-
-    /// Проверяет throttle window для live preview seek-а.
-    fn preview_scrub_interval_elapsed(&self, now: Instant) -> bool {
-        match self.last_preview_scrub_seek_at {
-            Some(last_seek_at) => {
-                now.saturating_duration_since(last_seek_at)
-                    >= self.config.live_scrub_preview_interval
-            }
-            None => true,
-        }
+        let decision = self.scrub_driver.dispatch_due_preview_scrub_seek(now);
+        self.dispatch_preview_scrub_decision(decision);
     }
 
     /// Безопасно вызывает `PlayerSession::dispatch_command` и сохраняет ошибку в session.
@@ -2308,7 +2249,7 @@ mod tests {
 
         PlayerWorkerRuntime {
             session: PlayerSession::with_demuxer_options(config.demuxer_options),
-            seek_controller: SeekController::new(),
+            scrub_driver: ScrubDriver::new(config.live_scrub_preview_interval),
             command_rx,
             scrub_wake_rx,
             scrub_coalescer,
@@ -2321,9 +2262,6 @@ mod tests {
             render_timing_sample_rx,
             shutdown_rx,
             config,
-            last_preview_scrub_seek_at: None,
-            last_preview_scrub_target: None,
-            deferred_preview_scrub_target: None,
             last_tick_at,
             last_diagnostics_summary_at: last_tick_at,
             last_seek_stall_log_key: None,
@@ -2589,10 +2527,14 @@ mod tests {
         let second_generation = first_generation.next();
 
         runtime.handle_begin_scrub_command(first_generation);
-        runtime.last_preview_scrub_seek_at = Some(Instant::now());
+        runtime
+            .scrub_driver
+            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
         runtime.apply_scrub_update(scrub_update_intent(first_generation, 100));
         runtime.handle_begin_scrub_command(second_generation);
-        runtime.last_preview_scrub_seek_at = Some(Instant::now());
+        runtime
+            .scrub_driver
+            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
         runtime.apply_scrub_update(scrub_update_intent(second_generation, 250));
         runtime.handle_preview_scrub_command(scrub_update_intent(first_generation, 100));
 
@@ -2603,10 +2545,7 @@ mod tests {
         assert!(runtime.session.snapshot().timeline.scrubbing);
         assert!(runtime.session.snapshot().last_error.is_none());
         assert_eq!(
-            runtime
-                .seek_controller
-                .diagnostics()
-                .stale_or_ignored_commands,
+            runtime.scrub_driver.diagnostics().stale_or_ignored_commands,
             1
         );
     }
@@ -2618,10 +2557,14 @@ mod tests {
         let second_generation = first_generation.next();
 
         runtime.handle_begin_scrub_command(first_generation);
-        runtime.last_preview_scrub_seek_at = Some(Instant::now());
+        runtime
+            .scrub_driver
+            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
         runtime.apply_scrub_update(scrub_update_intent(first_generation, 100));
         runtime.handle_begin_scrub_command(second_generation);
-        runtime.last_preview_scrub_seek_at = Some(Instant::now());
+        runtime
+            .scrub_driver
+            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
         runtime.apply_scrub_update(scrub_update_intent(second_generation, 250));
         runtime.handle_end_scrub_command(ScrubCommitIntent::new(
             first_generation,
@@ -2636,10 +2579,7 @@ mod tests {
         assert_eq!(runtime.session.snapshot().current_position, Duration::ZERO);
         assert!(runtime.session.snapshot().last_error.is_none());
         assert_eq!(
-            runtime
-                .seek_controller
-                .diagnostics()
-                .stale_or_ignored_commands,
+            runtime.scrub_driver.diagnostics().stale_or_ignored_commands,
             1
         );
     }
@@ -2651,7 +2591,9 @@ mod tests {
         let second_generation = first_generation.next();
 
         runtime.handle_begin_scrub_command(first_generation);
-        runtime.last_preview_scrub_seek_at = Some(Instant::now());
+        runtime
+            .scrub_driver
+            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
         runtime.apply_scrub_update(scrub_update_intent(first_generation, 100));
         runtime
             .scrub_coalescer
@@ -2663,7 +2605,9 @@ mod tests {
             ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
         ));
         runtime.handle_begin_scrub_command(second_generation);
-        runtime.last_preview_scrub_seek_at = Some(Instant::now());
+        runtime
+            .scrub_driver
+            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
         runtime.apply_latest_scrub_update();
 
         assert_eq!(
