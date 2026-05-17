@@ -1,16 +1,24 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
-use crossbeam_channel::{Receiver, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded};
+use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
 use media_core::MediaTime;
 use rustiplayer_config::PlayerDemuxConfig;
 use tracing::{debug, warn};
 use webm_demux::DemuxerOptions;
 
+#[cfg(test)]
+use crate::render_lease_bridge::{
+    LatestPresentFrameAcquire, LatestPresentFrameHandoff, RenderAcquireSample, RenderLeaseRelease,
+    RenderTimingSample,
+};
+use crate::render_lease_bridge::{
+    PlayerPresentFrame, PresentFrameLease, RenderLeaseBridge, RenderLeaseBridgeClient,
+};
 use crate::scrub_driver::{
     ScrubDriver, ScrubPreviewDecision, ScrubPreviewDispatch, ScrubUpdateDecision,
 };
@@ -41,18 +49,6 @@ const SNAPSHOT_CHANNEL_CAPACITY: usize = 1;
 
 /// Ёмкость event stream; переполнение не должно блокировать playback thread.
 const EVENT_CHANNEL_CAPACITY: usize = 512;
-
-/// Ёмкость release ack stream; защищает worker от бесконечного роста drop-ack очереди.
-const RENDER_RELEASE_CHANNEL_CAPACITY: usize = 512;
-
-/// Ёмкость неблокирующих render-acquire latency samples.
-const RENDER_ACQUIRE_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
-
-/// Ёмкость неблокирующих GPU submit/present latency samples.
-const RENDER_TIMING_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
-
-/// Короткий backpressure budget для Drop path render lease-а.
-const RENDER_RELEASE_SEND_TIMEOUT: Duration = Duration::from_millis(2);
 
 /// Интервал throttled diagnostics summary в debug logs.
 const DIAGNOSTICS_SUMMARY_INTERVAL: Duration = Duration::from_secs(2);
@@ -498,278 +494,6 @@ impl ScrubUpdateCoalescer {
     }
 }
 
-/// WGPU texture views, полученные render thread-ом по opaque frame handle.
-pub struct PresentFrameTextureViews {
-    /// Texture view с luma/Y plane.
-    pub y_view: wgpu::TextureView,
-
-    /// Texture view с chroma/UV plane.
-    pub uv_view: wgpu::TextureView,
-}
-
-/// Lease текущего кадра, который render thread может отдать `render-wgpu`.
-#[derive(Clone)]
-pub struct PresentFrameLease {
-    /// Поколение render resources, которому принадлежит texture handle.
-    pub render_generation: u64,
-
-    /// Metadata decoded frame без прямого доступа к `PlayerSession`.
-    pub frame: video_core::DecodedFrame,
-
-    /// Признак, что кадр является stale fallback для текущего timeline состояния.
-    pub stale: bool,
-
-    /// Render-side provider для ленивого получения WGPU views по frame handle.
-    texture_provider: Option<video_vaapi::VideoTextureViewProvider>,
-
-    /// Shared lease отправляет drop-ack, когда последний clone кадра освобождён.
-    _drop_ack: Arc<PresentFrameDropAck>,
-}
-
-/// Backward-compatible имя public frame lease для текущего app shell.
-pub type PlayerPresentFrame = PresentFrameLease;
-
-impl PresentFrameLease {
-    /// Возвращает opaque texture handle кадра без доступа к player pipeline.
-    #[must_use]
-    pub const fn texture_handle(&self) -> video_core::FrameTextureHandle {
-        self.frame.texture_handle
-    }
-
-    /// Возвращает `true`, если lease устарел относительно актуального render generation.
-    #[must_use]
-    pub const fn stale_for_generation(&self, current_render_generation: u64) -> bool {
-        self.stale || self.render_generation != current_render_generation
-    }
-
-    /// Получает WGPU views на render thread через render-side provider.
-    #[must_use]
-    pub fn texture_views(&self) -> Option<PresentFrameTextureViews> {
-        self.texture_provider
-            .as_ref()
-            .and_then(|provider| provider.texture_views(self.texture_handle()))
-            .map(|views| PresentFrameTextureViews {
-                y_view: views.y_view,
-                uv_view: views.uv_view,
-            })
-    }
-}
-
-/// Стабильная identity кадра для latest-slot без сравнения backend handles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PresentFrameLeaseIdentity {
-    /// Поколение render resources, где был создан texture handle.
-    render_generation: u64,
-
-    /// Opaque texture handle decoded frame-а.
-    texture_handle: video_core::FrameTextureHandle,
-}
-
-impl PresentFrameLeaseIdentity {
-    /// Собирает identity из lease-а, который уже безопасно опубликован render-side.
-    #[must_use]
-    const fn from_lease(lease: &PresentFrameLease) -> Self {
-        Self {
-            render_generation: lease.render_generation,
-            texture_handle: lease.frame.texture_handle,
-        }
-    }
-}
-
-/// Результат неблокирующего чтения latest present frame.
-enum LatestPresentFrameAcquire {
-    /// Latest-slot содержит lease, clone которого можно отдать renderer-у.
-    Acquired(PlayerPresentFrame),
-
-    /// Worker ещё не публиковал frame или уже очистил stale frame.
-    Empty,
-
-    /// Worker прямо сейчас обновляет slot; render thread должен reuse-нуть cache.
-    Busy,
-}
-
-/// Latest-slot для передачи frame lease-а из worker thread в render thread без request/reply.
-struct LatestPresentFrameHandoff {
-    /// Единственный опубликованный lease; его clone-ы разделяют один RAII drop-ack.
-    latest_frame: Mutex<Option<PlayerPresentFrame>>,
-}
-
-impl LatestPresentFrameHandoff {
-    /// Создаёт пустой handoff slot.
-    fn new() -> Self {
-        Self {
-            latest_frame: Mutex::new(None),
-        }
-    }
-
-    /// Неблокирующе clone-ит latest frame для render hot path.
-    fn try_clone_latest(&self) -> LatestPresentFrameAcquire {
-        match self.latest_frame.try_lock() {
-            Ok(guard) => Self::clone_from_guard(&guard),
-            Err(TryLockError::WouldBlock) => LatestPresentFrameAcquire::Busy,
-            Err(TryLockError::Poisoned(poisoned)) => {
-                warn!("Latest present frame handoff mutex was poisoned; recovering slot");
-                let guard = poisoned.into_inner();
-                Self::clone_from_guard(&guard)
-            }
-        }
-    }
-
-    /// Публикует новый latest frame и dropping старого lease-а выполняет вне mutex guard-а.
-    fn publish(&self, frame: Option<PlayerPresentFrame>) {
-        let previous_frame = {
-            let mut guard = self.latest_frame_guard();
-            std::mem::replace(&mut *guard, frame)
-        };
-        drop(previous_frame);
-    }
-
-    /// Возвращает identity текущего slot-а, чтобы worker не создавал новый lease без причины.
-    fn current_identity(&self) -> Option<PresentFrameLeaseIdentity> {
-        self.latest_frame_guard()
-            .as_ref()
-            .map(PresentFrameLeaseIdentity::from_lease)
-    }
-
-    /// Очищает latest-slot и отдаёт release ack старого frame-а через RAII.
-    fn clear(&self) {
-        self.publish(None);
-    }
-
-    /// Clone-ит frame из уже полученного guard-а.
-    fn clone_from_guard(guard: &Option<PlayerPresentFrame>) -> LatestPresentFrameAcquire {
-        guard
-            .as_ref()
-            .cloned()
-            .map(LatestPresentFrameAcquire::Acquired)
-            .unwrap_or(LatestPresentFrameAcquire::Empty)
-    }
-
-    /// Берёт mutex для worker-side обновлений и восстанавливается после poison.
-    fn latest_frame_guard(&self) -> MutexGuard<'_, Option<PlayerPresentFrame>> {
-        match self.latest_frame.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                warn!("Latest present frame handoff mutex was poisoned; recovering slot");
-                poisoned.into_inner()
-            }
-        }
-    }
-}
-
-impl Default for LatestPresentFrameHandoff {
-    /// Возвращает пустой latest-slot.
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Неблокирующий sample render acquisition latency.
-struct RenderAcquireSample {
-    /// Сколько заняла попытка получить latest frame на render thread.
-    wait: Duration,
-}
-
-/// Неблокирующий sample renderer submit/present latency.
-struct RenderTimingSample {
-    /// Время от `queue.submit()` до возврата из `surface_texture.present()`.
-    submit_present_elapsed: Duration,
-}
-
-/// Drop-ack от render-side frame lease.
-struct RenderLeaseRelease {
-    /// Поколение render resources, где lease был создан.
-    render_generation: u64,
-
-    /// Texture handle, который больше не удерживает render/UI side.
-    texture_handle: video_core::FrameTextureHandle,
-
-    /// Provider исходного decoder texture pool для release после смены поколения.
-    texture_provider: Option<video_vaapi::VideoTextureViewProvider>,
-
-    /// Монотонный момент drop-а render lease на render/UI side.
-    released_at: Instant,
-}
-
-/// Shared guard, который отправляет release ack ровно один раз на группу clone-ов.
-struct PresentFrameDropAck {
-    /// Поколение render resources, где lease был создан.
-    render_generation: u64,
-
-    /// Texture handle, защищённый от premature release.
-    texture_handle: video_core::FrameTextureHandle,
-
-    /// Provider исходного frame-а; нужен, если ack пришёл после смены поколения.
-    texture_provider: Option<video_vaapi::VideoTextureViewProvider>,
-
-    /// Канал drop-ack обратно в playback worker.
-    release_tx: Sender<RenderLeaseRelease>,
-}
-
-impl Drop for PresentFrameDropAck {
-    /// Освобождает render lease без участия UI-кода.
-    fn drop(&mut self) {
-        let release = RenderLeaseRelease {
-            render_generation: self.render_generation,
-            texture_handle: self.texture_handle,
-            texture_provider: self.texture_provider.clone(),
-            released_at: Instant::now(),
-        };
-
-        self.send_release_ack(release);
-    }
-}
-
-impl PresentFrameDropAck {
-    /// Отправляет release ack через bounded queue с коротким backpressure budget.
-    fn send_release_ack(&self, release: RenderLeaseRelease) {
-        match self.release_tx.try_send(release) {
-            Ok(()) => {}
-            Err(TrySendError::Full(release)) => {
-                self.send_release_ack_with_timeout(release);
-            }
-            Err(TrySendError::Disconnected(release)) => {
-                Self::release_without_worker(release);
-            }
-        }
-    }
-
-    /// Даёт worker-у короткое окно на drain, но не блокирует render/UI thread навсегда.
-    fn send_release_ack_with_timeout(&self, release: RenderLeaseRelease) {
-        match self
-            .release_tx
-            .send_timeout(release, RENDER_RELEASE_SEND_TIMEOUT)
-        {
-            Ok(()) => {}
-            Err(SendTimeoutError::Timeout(release)) => {
-                warn!(
-                    generation = release.render_generation,
-                    texture_handle = release.texture_handle.0,
-                    "Render release queue is full; releasing texture outside worker bookkeeping"
-                );
-                Self::release_without_worker(release);
-            }
-            Err(SendTimeoutError::Disconnected(release)) => {
-                Self::release_without_worker(release);
-            }
-        }
-    }
-
-    /// Последний шанс освободить backend resource, когда worker уже недоступен или перегружен.
-    fn release_without_worker(release: RenderLeaseRelease) {
-        let Some(texture_provider) = release.texture_provider else {
-            warn!(
-                generation = release.render_generation,
-                texture_handle = release.texture_handle.0,
-                "Render release ack could not reach worker and has no texture provider fallback"
-            );
-            return;
-        };
-
-        texture_provider.release_frame(release.texture_handle);
-    }
-}
-
 /// Playback worker boundary, которым владеет app shell.
 pub struct PlayerWorker {
     /// Cloneable command sender для UI и integration слоёв.
@@ -784,14 +508,8 @@ pub struct PlayerWorker {
     /// Канал событий и tick telemetry.
     event_rx: Receiver<PlayerWorkerEvent>,
 
-    /// Shared latest-slot, из которого render thread неблокирующе clone-ит frame lease.
-    latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
-
-    /// Неблокирующий канал latency samples render acquisition.
-    render_acquire_sample_tx: Sender<RenderAcquireSample>,
-
-    /// Неблокирующий канал GPU submit/present timing samples.
-    render_timing_sample_tx: Sender<RenderTimingSample>,
+    /// Render-side handle для прежнего public API acquire/timing без доступа к runtime loop.
+    render_bridge_client: RenderLeaseBridgeClient,
 
     /// Аварийный shutdown signal, если command queue недоступна.
     shutdown_tx: Sender<()>,
@@ -807,14 +525,9 @@ impl PlayerWorker {
         let (scrub_wake_tx, scrub_wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
         let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
         let (event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
-        let (render_release_tx, render_release_rx) = bounded(RENDER_RELEASE_CHANNEL_CAPACITY);
-        let (render_acquire_sample_tx, render_acquire_sample_rx) =
-            bounded(RENDER_ACQUIRE_DIAGNOSTIC_CHANNEL_CAPACITY);
-        let (render_timing_sample_tx, render_timing_sample_rx) =
-            bounded(RENDER_TIMING_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let (render_bridge, render_bridge_client) = RenderLeaseBridge::new();
         let (shutdown_tx, shutdown_rx) = bounded(1);
         let scrub_coalescer = Arc::new(ScrubUpdateCoalescer::new(scrub_wake_tx));
-        let latest_present_frame_handoff = Arc::new(LatestPresentFrameHandoff::new());
 
         let command_sender = PlayerCommandSender {
             command_tx,
@@ -822,7 +535,6 @@ impl PlayerWorker {
             scrub_command_sequencer: Arc::new(Mutex::new(ScrubCommandSequencer::new())),
         };
         let snapshot_rx_for_worker = snapshot_rx.clone();
-        let latest_present_frame_handoff_for_worker = Arc::clone(&latest_present_frame_handoff);
 
         let worker_started_at = Instant::now();
         let join_handle = thread::Builder::new()
@@ -839,11 +551,7 @@ impl PlayerWorker {
                         snapshot_rx_for_worker,
                     ),
                     event_tx,
-                    latest_present_frame_handoff: latest_present_frame_handoff_for_worker,
-                    render_release_tx,
-                    render_release_rx,
-                    render_acquire_sample_rx,
-                    render_timing_sample_rx,
+                    render_bridge,
                     shutdown_rx,
                     config,
                     last_tick_at: worker_started_at,
@@ -865,9 +573,7 @@ impl PlayerWorker {
             snapshot_rx,
             cached_snapshot: PlayerSnapshot::empty(),
             event_rx,
-            latest_present_frame_handoff,
-            render_acquire_sample_tx,
-            render_timing_sample_tx,
+            render_bridge_client,
             shutdown_tx,
             join_handle: Some(join_handle),
         })
@@ -982,28 +688,13 @@ impl PlayerWorker {
     /// Пытается получить текущий кадр для renderer-а без раскрытия `PlayerSession`.
     #[must_use]
     pub fn try_acquire_present_frame(&self) -> Option<PlayerPresentFrame> {
-        let acquire_started_at = Instant::now();
-        let acquire_result = self.latest_present_frame_handoff.try_clone_latest();
-        self.report_render_acquire_sample(acquire_started_at.elapsed());
-
-        match acquire_result {
-            LatestPresentFrameAcquire::Acquired(frame) => Some(frame),
-            LatestPresentFrameAcquire::Empty | LatestPresentFrameAcquire::Busy => None,
-        }
-    }
-
-    /// Сообщает worker-у latency render acquisition без блокировки render thread.
-    fn report_render_acquire_sample(&self, wait: Duration) {
-        let _ = self
-            .render_acquire_sample_tx
-            .try_send(RenderAcquireSample { wait });
+        self.render_bridge_client.try_acquire_present_frame()
     }
 
     /// Сообщает worker-у renderer submit/present timing без блокировки render thread.
     pub fn report_gpu_submit_present_latency(&self, submit_present_elapsed: Duration) {
-        let _ = self.render_timing_sample_tx.try_send(RenderTimingSample {
-            submit_present_elapsed,
-        });
+        self.render_bridge_client
+            .report_gpu_submit_present_latency(submit_present_elapsed);
     }
 
     /// Запрашивает shutdown и ждёт завершения worker thread.
@@ -1147,20 +838,8 @@ struct PlayerWorkerRuntime {
     /// Event stream sender.
     event_tx: Sender<PlayerWorkerEvent>,
 
-    /// Shared latest-slot для публикации frame lease-а render thread-у.
-    latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
-
-    /// Sender render lease release ack-ов для новых present frames.
-    render_release_tx: Sender<RenderLeaseRelease>,
-
-    /// Receiver render lease release ack-ов от UI/render side.
-    render_release_rx: Receiver<RenderLeaseRelease>,
-
-    /// Receiver неблокирующих latency samples от render thread.
-    render_acquire_sample_rx: Receiver<RenderAcquireSample>,
-
-    /// Receiver неблокирующих GPU submit/present timing samples от render thread.
-    render_timing_sample_rx: Receiver<RenderTimingSample>,
+    /// Worker-side bridge render lease handoff/release/diagnostics.
+    render_bridge: RenderLeaseBridge,
 
     /// Аварийный shutdown receiver.
     shutdown_rx: Receiver<()>,
@@ -1203,9 +882,8 @@ impl PlayerWorkerRuntime {
         self.publish_session_outputs();
 
         loop {
-            self.drain_render_releases();
-            self.drain_render_acquire_samples();
-            self.drain_render_timing_samples();
+            self.render_bridge.drain_releases(&mut self.session);
+            self.render_bridge.drain_diagnostics(&mut self.session);
 
             if self.shutdown_rx.try_recv().is_ok() {
                 self.handle_shutdown_request();
@@ -1261,14 +939,20 @@ impl PlayerWorkerRuntime {
             recv(self.command_rx) -> command_result => {
                 self.handle_command_wakeup(command_result)
             }
-            recv(self.render_release_rx) -> release_result => {
-                self.handle_render_release_wakeup(release_result)
+            recv(self.render_bridge.render_release_receiver()) -> release_result => {
+                self.render_bridge
+                    .handle_release_wakeup(&mut self.session, release_result);
+                false
             }
-            recv(self.render_acquire_sample_rx) -> sample_result => {
-                self.handle_render_acquire_sample_wakeup(sample_result)
+            recv(self.render_bridge.render_acquire_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_acquire_sample_wakeup(&mut self.session, sample_result);
+                false
             }
-            recv(self.render_timing_sample_rx) -> sample_result => {
-                self.handle_render_timing_sample_wakeup(sample_result)
+            recv(self.render_bridge.render_timing_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_timing_sample_wakeup(&mut self.session, sample_result);
+                false
             }
             recv(self.scrub_wake_rx) -> wake_result => {
                 self.handle_scrub_wakeup(wake_result)
@@ -1290,14 +974,20 @@ impl PlayerWorkerRuntime {
             recv(self.command_rx) -> command_result => {
                 self.handle_command_wakeup(command_result)
             }
-            recv(self.render_release_rx) -> release_result => {
-                self.handle_render_release_wakeup(release_result)
+            recv(self.render_bridge.render_release_receiver()) -> release_result => {
+                self.render_bridge
+                    .handle_release_wakeup(&mut self.session, release_result);
+                false
             }
-            recv(self.render_acquire_sample_rx) -> sample_result => {
-                self.handle_render_acquire_sample_wakeup(sample_result)
+            recv(self.render_bridge.render_acquire_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_acquire_sample_wakeup(&mut self.session, sample_result);
+                false
             }
-            recv(self.render_timing_sample_rx) -> sample_result => {
-                self.handle_render_timing_sample_wakeup(sample_result)
+            recv(self.render_bridge.render_timing_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_timing_sample_wakeup(&mut self.session, sample_result);
+                false
             }
             recv(self.scrub_wake_rx) -> wake_result => {
                 self.handle_scrub_wakeup(wake_result)
@@ -1365,48 +1055,6 @@ impl PlayerWorkerRuntime {
                 true
             }
         }
-    }
-
-    /// Обрабатывает wakeup от bounded release ack queue.
-    fn handle_render_release_wakeup(
-        &mut self,
-        release_result: Result<RenderLeaseRelease, crossbeam_channel::RecvError>,
-    ) -> bool {
-        if let Ok(release) = release_result {
-            self.session
-                .record_release_ack_latency(release.released_at.elapsed());
-            self.session.release_render_lease_with_provider(
-                release.render_generation,
-                release.texture_handle,
-                release.texture_provider.as_ref(),
-            );
-        }
-        false
-    }
-
-    /// Обрабатывает wakeup от render-acquire diagnostics stream.
-    fn handle_render_acquire_sample_wakeup(
-        &mut self,
-        sample_result: Result<RenderAcquireSample, crossbeam_channel::RecvError>,
-    ) -> bool {
-        if let Ok(sample) = sample_result {
-            self.session.record_render_acquire_wait(sample.wait);
-            self.drain_render_acquire_samples();
-        }
-        false
-    }
-
-    /// Обрабатывает wakeup от renderer submit/present diagnostics stream.
-    fn handle_render_timing_sample_wakeup(
-        &mut self,
-        sample_result: Result<RenderTimingSample, crossbeam_channel::RecvError>,
-    ) -> bool {
-        if let Ok(sample) = sample_result {
-            self.session
-                .record_gpu_submit_present_latency(sample.submit_present_elapsed);
-            self.drain_render_timing_samples();
-        }
-        false
     }
 
     /// Обрабатывает wake-token scrub coalescer-а.
@@ -1765,81 +1413,6 @@ impl PlayerWorkerRuntime {
         }
     }
 
-    /// Публикует latest present frame lease, если worker-side frame identity изменилась.
-    fn publish_latest_present_frame(&mut self) {
-        self.drain_render_releases();
-        let Some(current_identity) = self.current_present_frame_identity() else {
-            self.latest_present_frame_handoff.clear();
-            return;
-        };
-
-        if self.latest_present_frame_handoff.current_identity() == Some(current_identity) {
-            return;
-        }
-
-        let present_frame = self.build_present_frame();
-        self.latest_present_frame_handoff.publish(present_frame);
-    }
-
-    /// Возвращает identity текущего present frame без создания нового render lease-а.
-    fn current_present_frame_identity(&self) -> Option<PresentFrameLeaseIdentity> {
-        self.session.pipeline.video_decoder_thread.as_ref()?;
-        self.session
-            .pipeline
-            .present_video_frame
-            .as_ref()
-            .map(|frame| PresentFrameLeaseIdentity {
-                render_generation: self.session.pipeline.render_generation,
-                texture_handle: frame.texture_handle,
-            })
-    }
-
-    /// Собирает renderable frame без передачи `PlayerSession` наружу.
-    fn build_present_frame(&mut self) -> Option<PlayerPresentFrame> {
-        let leased_frame = self.session.lease_present_video_frame()?;
-
-        Some(PlayerPresentFrame {
-            render_generation: leased_frame.render_generation,
-            frame: leased_frame.frame.clone(),
-            stale: leased_frame.stale,
-            texture_provider: Some(leased_frame.texture_provider.clone()),
-            _drop_ack: Arc::new(PresentFrameDropAck {
-                render_generation: leased_frame.render_generation,
-                texture_handle: leased_frame.frame.texture_handle,
-                texture_provider: Some(leased_frame.texture_provider),
-                release_tx: self.render_release_tx.clone(),
-            }),
-        })
-    }
-
-    /// Снимает все render leases, которые UI/render side уже dropped.
-    fn drain_render_releases(&mut self) {
-        while let Ok(release) = self.render_release_rx.try_recv() {
-            self.session
-                .record_release_ack_latency(release.released_at.elapsed());
-            self.session.release_render_lease_with_provider(
-                release.render_generation,
-                release.texture_handle,
-                release.texture_provider.as_ref(),
-            );
-        }
-    }
-
-    /// Снимает render acquire latency samples, которые render thread отправил без ожидания worker-а.
-    fn drain_render_acquire_samples(&mut self) {
-        while let Ok(sample) = self.render_acquire_sample_rx.try_recv() {
-            self.session.record_render_acquire_wait(sample.wait);
-        }
-    }
-
-    /// Снимает renderer submit/present timing samples, которые render thread отправил без ожидания worker-а.
-    fn drain_render_timing_samples(&mut self) {
-        while let Ok(sample) = self.render_timing_sample_rx.try_recv() {
-            self.session
-                .record_gpu_submit_present_latency(sample.submit_present_elapsed);
-        }
-    }
-
     /// Обрабатывает timeout, который не был command/render/scrub event-ом.
     fn handle_worker_timeout(&mut self, deadline: WorkerWakeupDeadline) {
         match deadline {
@@ -1987,7 +1560,8 @@ impl PlayerWorkerRuntime {
 
     /// Публикует latest snapshot и накопленные session events.
     fn publish_session_outputs(&mut self) {
-        self.publish_latest_present_frame();
+        self.render_bridge
+            .publish_latest_present_frame(&mut self.session);
 
         let snapshot = self
             .session
@@ -2238,11 +1812,7 @@ mod tests {
         let (scrub_wake_tx, scrub_wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
         let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
         let (event_tx, _event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
-        let (render_release_tx, render_release_rx) = bounded(RENDER_RELEASE_CHANNEL_CAPACITY);
-        let (_render_acquire_sample_tx, render_acquire_sample_rx) =
-            bounded(RENDER_ACQUIRE_DIAGNOSTIC_CHANNEL_CAPACITY);
-        let (_render_timing_sample_tx, render_timing_sample_rx) =
-            bounded(RENDER_TIMING_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let (render_bridge, _render_bridge_client) = RenderLeaseBridge::new();
         let (_shutdown_tx, shutdown_rx) = bounded(1);
         let config = worker_config_for_tests();
         let scrub_coalescer = Arc::new(ScrubUpdateCoalescer::new(scrub_wake_tx));
@@ -2255,11 +1825,7 @@ mod tests {
             scrub_coalescer,
             snapshot_publisher: LatestSnapshotPublisher::new(snapshot_tx, snapshot_rx),
             event_tx,
-            latest_present_frame_handoff: Arc::new(LatestPresentFrameHandoff::new()),
-            render_release_tx,
-            render_release_rx,
-            render_acquire_sample_rx,
-            render_timing_sample_rx,
+            render_bridge,
             shutdown_rx,
             config,
             last_tick_at,
@@ -2292,18 +1858,12 @@ mod tests {
         stale: bool,
         release_tx: Sender<RenderLeaseRelease>,
     ) -> PresentFrameLease {
-        PresentFrameLease {
+        PresentFrameLease::new_for_tests(
             render_generation,
-            frame: decoded_frame_for_tests(texture_handle),
+            decoded_frame_for_tests(texture_handle),
             stale,
-            texture_provider: None,
-            _drop_ack: Arc::new(PresentFrameDropAck {
-                render_generation,
-                texture_handle,
-                texture_provider: None,
-                release_tx,
-            }),
-        }
+            release_tx,
+        )
     }
 
     fn worker_with_latest_handoff_for_tests(
@@ -2317,10 +1877,8 @@ mod tests {
         let (scrub_wake_tx, _scrub_wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
         let (_snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
         let (_event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
-        let (render_acquire_sample_tx, render_acquire_sample_rx) =
-            bounded(RENDER_ACQUIRE_DIAGNOSTIC_CHANNEL_CAPACITY);
-        let (render_timing_sample_tx, render_timing_sample_rx) =
-            bounded(RENDER_TIMING_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let (render_bridge_client, render_acquire_sample_rx, render_timing_sample_rx) =
+            RenderLeaseBridgeClient::with_handoff_for_tests(latest_present_frame_handoff);
         let (shutdown_tx, _shutdown_rx) = bounded(1);
         let command_sender = PlayerCommandSender {
             command_tx,
@@ -2334,9 +1892,7 @@ mod tests {
                 snapshot_rx,
                 cached_snapshot: PlayerSnapshot::empty(),
                 event_rx,
-                latest_present_frame_handoff,
-                render_acquire_sample_tx,
-                render_timing_sample_tx,
+                render_bridge_client,
                 shutdown_tx,
                 join_handle: None,
             },
@@ -2829,7 +2385,8 @@ mod tests {
             .session
             .register_render_lease(0, video_core::FrameTextureHandle(7));
         runtime
-            .render_release_tx
+            .render_bridge
+            .release_sender_for_tests()
             .try_send(RenderLeaseRelease {
                 render_generation: 0,
                 texture_handle: video_core::FrameTextureHandle(7),
@@ -2838,11 +2395,13 @@ mod tests {
             })
             .unwrap();
 
-        runtime.publish_latest_present_frame();
+        runtime
+            .render_bridge
+            .publish_latest_present_frame(&mut runtime.session);
 
         assert_eq!(runtime.session.render_lease_count(), 0);
         assert!(matches!(
-            runtime.latest_present_frame_handoff.try_clone_latest(),
+            runtime.render_bridge.try_clone_latest_for_tests(),
             LatestPresentFrameAcquire::Empty
         ));
     }

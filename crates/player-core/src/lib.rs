@@ -11,6 +11,7 @@ mod error;
 mod event;
 mod media_opening;
 mod pipeline;
+mod render_lease_bridge;
 mod scrub_driver;
 mod seek_controller;
 mod seek_state;
@@ -43,6 +44,7 @@ pub use event::{
 };
 pub use media_core::TrackId;
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
+pub use render_lease_bridge::{PlayerPresentFrame, PresentFrameLease, PresentFrameTextureViews};
 pub use seek_controller::{
     PlaybackResumeIntent, SeekController, SeekControllerDiagnostics, SeekControllerMode,
 };
@@ -59,7 +61,6 @@ pub use tick::{
 };
 pub use video_backend::{StartedVideoBackend, VideoBackendFactory, WgpuVideoBackendFactory};
 pub use worker::{
-    PlayerCommandSender, PlayerPresentFrame, PlayerRenderError, PlayerRenderErrorKind,
-    PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PlayerWorkerJoinError,
-    PlayerWorkerSendError, PresentFrameLease, PresentFrameTextureViews,
+    PlayerCommandSender, PlayerRenderError, PlayerRenderErrorKind, PlayerWorker,
+    PlayerWorkerConfig, PlayerWorkerEvent, PlayerWorkerJoinError, PlayerWorkerSendError,
 };
