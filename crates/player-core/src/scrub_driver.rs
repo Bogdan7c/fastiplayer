@@ -9,8 +9,8 @@ use crate::seek_controller::{
     SeekScrubInterruptDecision,
 };
 use crate::{
-    PlaybackState, PlayerCommand, ScrubCommitIntent, ScrubGeneration, ScrubUpdateIntent,
-    SeekRequest, SessionScrubCommand,
+    PlaybackState, ScrubCommitIntent, ScrubGeneration, ScrubUpdateIntent, SeekRequest,
+    SessionScrubCommand,
 };
 
 /// Выбор preview-поведения после принятого scrub update-а.
@@ -24,13 +24,20 @@ pub(crate) enum ScrubPreviewDispatch {
 }
 
 /// Решение driver-а после начала interactive scrub.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ScrubBeginDecision {
     /// Команда для session-side scrub state machine.
     pub session_command: SessionScrubCommand,
 
-    /// Playback-команда, которой worker временно ставит playback на паузу.
-    pub player_command: PlayerCommand,
+    /// Worker-side playback action, который временно глушит playback на время scrub-а.
+    pub playback_action: ScrubBeginPlaybackAction,
+}
+
+/// Playback side effect, который worker должен выполнить при начале scrub-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScrubBeginPlaybackAction {
+    /// Временно поставить session на паузу, сохранив resume intent внутри driver-а.
+    Pause,
 }
 
 /// Решение driver-а после scrub update-а на границе worker-а.
@@ -218,7 +225,7 @@ impl ScrubDriver {
 
         ScrubBeginDecision {
             session_command: SessionScrubCommand::Begin { generation },
-            player_command: PlayerCommand::Pause,
+            playback_action: ScrubBeginPlaybackAction::Pause,
         }
     }
 
@@ -526,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn begin_scrub_returns_session_begin_and_pause_command() {
+    fn begin_scrub_returns_session_begin_and_internal_pause_action() {
         let mut driver = ScrubDriver::new(Duration::from_millis(100));
         let generation = driver.next_begin_generation();
 
@@ -536,7 +543,7 @@ mod tests {
             decision.session_command,
             SessionScrubCommand::Begin { generation }
         );
-        assert_eq!(decision.player_command, PlayerCommand::Pause);
+        assert_eq!(decision.playback_action, ScrubBeginPlaybackAction::Pause);
         assert!(driver.is_scrubbing());
     }
 

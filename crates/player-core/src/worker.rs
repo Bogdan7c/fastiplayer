@@ -25,8 +25,8 @@ use crate::scrub_command::{
     ScrubSequencerUpdateDecision, ScrubUpdateCoalescer,
 };
 use crate::scrub_driver::{
-    ScrubBeginDecision, ScrubDriver, ScrubEndDecision, ScrubInterruptDecision,
-    ScrubPreviewDecision, ScrubPreviewDispatch, ScrubUpdateDecision,
+    ScrubBeginDecision, ScrubBeginPlaybackAction, ScrubDriver, ScrubEndDecision,
+    ScrubInterruptDecision, ScrubPreviewDecision, ScrubPreviewDispatch, ScrubUpdateDecision,
 };
 use crate::seek_controller::{PlaybackResumeCommand, PlaybackResumeIntent};
 use crate::tick::PlayerWorkerWakeupPlan;
@@ -1371,7 +1371,14 @@ impl PlayerWorkerRuntime {
     /// Отправляет begin decision в session и pause command.
     fn dispatch_begin_scrub_decision(&mut self, decision: ScrubBeginDecision) {
         self.dispatch_scrub_command(decision.session_command);
-        self.dispatch_player_command(decision.player_command);
+        self.dispatch_begin_scrub_playback_action(decision.playback_action);
+    }
+
+    /// Конвертирует internal begin-scrub playback action в существующий session command.
+    fn dispatch_begin_scrub_playback_action(&mut self, action: ScrubBeginPlaybackAction) {
+        match action {
+            ScrubBeginPlaybackAction::Pause => self.dispatch_player_command(PlayerCommand::Pause),
+        }
     }
 
     /// EndScrub применяет выбранную commit policy и сохранённый resume intent.
@@ -2434,6 +2441,30 @@ mod tests {
             )
         }));
         worker.shutdown().unwrap();
+    }
+
+    #[test]
+    fn begin_scrub_playback_action_still_pauses_session() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let generation = ScrubGeneration::default().next();
+
+        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
+        assert_eq!(
+            runtime.session.snapshot().playback_state,
+            PlaybackState::Playing
+        );
+
+        runtime.handle_begin_scrub_command(generation);
+
+        assert_eq!(
+            runtime.session.snapshot().playback_state,
+            PlaybackState::Paused
+        );
+        assert!(runtime.session.snapshot().timeline.scrubbing);
+        assert_eq!(
+            runtime.scrub_driver.resume_intent(),
+            PlaybackResumeIntent::Play
+        );
     }
 
     #[test]
