@@ -2,7 +2,11 @@ use std::time::{Duration, Instant};
 
 #[cfg(test)]
 use crate::seek_controller::SeekControllerDiagnostics;
-use crate::seek_controller::{PlaybackResumeIntent, ScrubPreviewQueueResult, SeekController};
+use crate::seek_controller::{
+    DeferredPreviewStatus, FinishScrubDecision, PlaybackResumeIntent, PreviewDispatchDecision,
+    PreviewQueueDecision, ScrubUpdateAcceptance, ScrubUpdatePreviewIntent, SeekController,
+    SeekScrubInterruptDecision,
+};
 use crate::{
     PlaybackState, PlayerCommand, ScrubCommitIntent, ScrubGeneration, ScrubUpdateIntent,
     SeekRequest, SessionScrubCommand,
@@ -242,26 +246,31 @@ impl ScrubDriver {
         intent: ScrubUpdateIntent,
         preview_dispatch: ScrubPreviewDispatch,
     ) -> ScrubUpdateDecision {
-        if !self.seek_controller.accept_scrub_update(intent) {
-            return ScrubUpdateDecision::stale();
-        }
+        let preview_intent = match preview_dispatch {
+            ScrubPreviewDispatch::Allow => ScrubUpdatePreviewIntent::QueueLatest,
+            ScrubPreviewDispatch::SuppressForCommit => ScrubUpdatePreviewIntent::SuppressForCommit,
+        };
+        let update_decision = self
+            .seek_controller
+            .accept_scrub_update(intent, preview_intent);
 
-        let preview_decision = match preview_dispatch {
-            ScrubPreviewDispatch::Allow => {
-                match self.seek_controller.queue_latest_preview(intent) {
-                    ScrubPreviewQueueResult::Queued => {
-                        self.take_due_preview_scrub_seek(Instant::now())
-                    }
-                    ScrubPreviewQueueResult::AlreadyDispatched => None,
-                    ScrubPreviewQueueResult::Stale => return ScrubUpdateDecision::stale(),
-                }
-            }
-            ScrubPreviewDispatch::SuppressForCommit => None,
+        let ScrubUpdateAcceptance::Accepted {
+            intent: accepted_intent,
+            preview: preview_decision,
+        } = update_decision
+        else {
+            return ScrubUpdateDecision::stale();
+        };
+
+        let due_preview = match preview_decision {
+            PreviewQueueDecision::Queued { .. } => self.take_due_preview_scrub_seek(Instant::now()),
+            PreviewQueueDecision::AlreadyInFlight { .. }
+            | PreviewQueueDecision::SuppressedForCommit { .. } => None,
         };
 
         ScrubUpdateDecision {
-            session_command: Some(SessionScrubCommand::Update(intent)),
-            due_preview: preview_decision,
+            session_command: Some(SessionScrubCommand::Update(accepted_intent)),
+            due_preview,
             stale: false,
         }
     }
@@ -290,7 +299,10 @@ impl ScrubDriver {
 
     /// Забирает отложенный preview intent, если throttle window уже прошёл.
     fn take_due_preview_scrub_seek(&mut self, now: Instant) -> Option<ScrubDuePreview> {
-        if !self.seek_controller.has_deferred_preview_target() {
+        if !matches!(
+            self.seek_controller.deferred_preview_status(),
+            DeferredPreviewStatus::Pending { .. }
+        ) {
             return None;
         }
 
@@ -298,17 +310,22 @@ impl ScrubDriver {
             return None;
         }
 
-        let intent = self.seek_controller.take_deferred_preview()?;
-        Some(ScrubDuePreview {
-            intent,
-            dispatched_at: now,
-        })
+        match self.seek_controller.take_deferred_preview() {
+            DeferredPreviewStatus::Pending { intent } => Some(ScrubDuePreview {
+                intent,
+                dispatched_at: now,
+            }),
+            DeferredPreviewStatus::Idle => None,
+        }
     }
 
     /// Возвращает время до ближайшего throttled preview seek-а.
     #[must_use]
     pub(crate) fn next_preview_scrub_timeout(&self, now: Instant) -> Option<Duration> {
-        if !self.seek_controller.has_deferred_preview_target() {
+        if !matches!(
+            self.seek_controller.deferred_preview_status(),
+            DeferredPreviewStatus::Pending { .. }
+        ) {
             return None;
         }
 
@@ -325,27 +342,23 @@ impl ScrubDriver {
 
     /// Завершает scrub и возвращает final session command вместе с resume intent-ом.
     pub(crate) fn end_scrub(&mut self, intent: ScrubCommitIntent) -> ScrubEndDecision {
-        let Some(resume_intent) = self.seek_controller.finish_scrub(intent) else {
-            return ScrubEndDecision::stale();
-        };
-
-        ScrubEndDecision {
-            session_command: Some(SessionScrubCommand::End(intent)),
-            resume_intent: Some(resume_intent),
-            stale: false,
+        match self.seek_controller.finish_scrub(intent) {
+            FinishScrubDecision::Accepted { resume_intent, .. } => ScrubEndDecision {
+                session_command: Some(SessionScrubCommand::End(intent)),
+                resume_intent: Some(resume_intent),
+                stale: false,
+            },
+            FinishScrubDecision::Rejected { .. } => ScrubEndDecision::stale(),
         }
     }
 
     /// Прерывает active scrub для Stop/Open/Shutdown/load boundary команд.
     pub(crate) fn interrupt_scrub(&mut self) -> ScrubInterruptDecision {
-        let was_scrubbing = self.seek_controller.is_scrubbing();
-
-        if was_scrubbing {
-            self.seek_controller.interrupt_scrub();
-        }
-
+        let interrupt_decision = self.seek_controller.interrupt_active_scrub();
         self.reset_preview_scrub_state();
-        ScrubInterruptDecision { was_scrubbing }
+        ScrubInterruptDecision {
+            was_scrubbing: matches!(interrupt_decision, SeekScrubInterruptDecision::Interrupted),
+        }
     }
 
     /// Возвращает `true`, если внешний seek нужно отбросить из-за active scrub.
@@ -383,17 +396,22 @@ impl ScrubDriver {
         intent: ScrubUpdateIntent,
         dispatched_at: Option<Instant>,
     ) -> ScrubPreviewDecision {
-        if !self.seek_controller.mark_preview_seek_dispatched(intent) {
-            return ScrubPreviewDecision::stale(intent);
-        }
+        let preview_decision = self.seek_controller.mark_preview_seek_dispatched(intent);
+
+        let accepted_intent = match preview_decision {
+            PreviewDispatchDecision::Dispatch { intent, .. } => intent,
+            PreviewDispatchDecision::Rejected { intent, .. } => {
+                return ScrubPreviewDecision::stale(intent);
+            }
+        };
 
         if let Some(dispatched_at) = dispatched_at {
             self.last_preview_scrub_seek_at = Some(dispatched_at);
         }
 
         ScrubPreviewDecision {
-            intent: Some(intent),
-            session_command: Some(SessionScrubCommand::Preview(intent)),
+            intent: Some(accepted_intent),
+            session_command: Some(SessionScrubCommand::Preview(accepted_intent)),
             stale: false,
         }
     }
@@ -459,6 +477,7 @@ mod tests {
         let mut driver = ScrubDriver::new(Duration::from_millis(100));
         let generation = driver.next_begin_generation();
         driver.begin_scrub(generation, PlaybackState::Paused);
+        driver.set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
 
         let decision =
             driver.apply_latest_scrub_update_for_commit(scrub_update_intent(generation, 900));
@@ -471,6 +490,45 @@ mod tests {
         );
         assert_eq!(decision.due_preview, None);
         assert!(!decision.stale);
+        assert_eq!(driver.next_preview_scrub_timeout(Instant::now()), None);
+    }
+
+    #[test]
+    fn stale_update_does_not_replace_current_target_or_queue_preview() {
+        let now = Instant::now();
+        let mut driver = ScrubDriver::new(Duration::from_millis(100));
+        let generation = driver.next_begin_generation();
+        driver.begin_scrub(generation, PlaybackState::Paused);
+        driver.set_last_preview_scrub_seek_at_for_tests(Some(now));
+
+        let current_decision =
+            driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 100));
+        let stale_decision =
+            driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation.next(), 250));
+
+        assert_eq!(current_decision.due_preview, None);
+        assert!(!current_decision.stale);
+        assert_eq!(stale_decision.session_command, None);
+        assert_eq!(stale_decision.due_preview, None);
+        assert!(stale_decision.stale);
+        assert_eq!(driver.latest_scrub_target(), Some(seek_to_millis(100)));
+        assert!(driver.next_preview_scrub_timeout(now).is_some());
+        assert_eq!(driver.diagnostics().stale_or_ignored_commands, 1);
+    }
+
+    #[test]
+    fn stale_update_path_counts_diagnostics_once() {
+        let mut driver = ScrubDriver::new(Duration::from_millis(100));
+        let generation = ScrubGeneration::default().next();
+
+        let decision =
+            driver.apply_latest_scrub_update_for_drag(scrub_update_intent(generation, 100));
+
+        assert_eq!(decision.session_command, None);
+        assert_eq!(decision.due_preview, None);
+        assert!(decision.stale);
+        assert_eq!(driver.latest_scrub_target(), None);
+        assert_eq!(driver.diagnostics().stale_or_ignored_commands, 1);
     }
 
     #[test]
