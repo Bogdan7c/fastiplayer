@@ -12,8 +12,8 @@ use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
 use media_core::TrackKind;
 use player_core::{
     FrameCounters, PlaybackState, PlayerCommand, PlayerPresentFrame, PlayerRenderError,
-    PlayerSnapshot, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, ScrubCommitPolicy,
-    SeekRequest,
+    PlayerSnapshot, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PresentFrameTextureViews,
+    ScrubCommitPolicy, SeekRequest,
 };
 use render_core::RenderDiagnostics;
 use rustiplayer_config::AppConfig;
@@ -88,6 +88,68 @@ pub enum PresentFrameAcquisition {
     StaleFrameRejected,
 }
 
+/// Кадр, для которого уже получены texture views и удерживается правильный render lease.
+#[derive(Clone)]
+pub struct RenderablePresentFrame {
+    /// Lease удерживает backend texture resource до завершения render-side использования.
+    pub present_frame: PlayerPresentFrame,
+
+    /// Texture views соответствуют `present_frame` и не используются без его lease-а.
+    pub texture_views: PresentFrameTextureViews,
+}
+
+impl RenderablePresentFrame {
+    /// Собирает renderable frame из lease-а и texture views одного decoded кадра.
+    #[must_use]
+    pub fn new(present_frame: PlayerPresentFrame, texture_views: PresentFrameTextureViews) -> Self {
+        Self {
+            present_frame,
+            texture_views,
+        }
+    }
+}
+
+/// Cached renderable frame вместе с media source identity.
+#[derive(Clone)]
+struct CachedRenderablePresentFrame {
+    /// Последний кадр, который точно прошёл texture view lookup.
+    renderable_frame: RenderablePresentFrame,
+
+    /// Source label защищает от reuse после открытия другого media.
+    source_label: Option<String>,
+}
+
+/// Минимальная state-модель для проверки safe previous-frame reuse без GPU handles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TextureBusyFallbackReuseState {
+    /// Render generation cached frame-а.
+    cached_generation: u64,
+
+    /// Актуальное render generation из player snapshot-а.
+    current_generation: u64,
+
+    /// Совпадает ли media source cached frame-а с текущим source.
+    source_matches: bool,
+
+    /// Есть ли у player-а текущий video frame для этой media session.
+    has_current_video_frame: bool,
+
+    /// Был ли cached frame уже помечен stale при публикации lease-а.
+    cached_frame_is_stale: bool,
+
+    /// Помечает ли timeline текущую картинку stale относительно seek/scrub состояния.
+    timeline_marks_frame_stale: bool,
+}
+
+/// Решает, можно ли использовать previous renderable frame при busy texture lock-е.
+fn texture_busy_fallback_can_reuse_previous_frame(state: TextureBusyFallbackReuseState) -> bool {
+    state.cached_generation == state.current_generation
+        && state.source_matches
+        && state.has_current_video_frame
+        && !state.cached_frame_is_stale
+        && !state.timeline_marks_frame_stale
+}
+
 impl PresentFrameAcquisition {
     /// Возвращает frame lease, если acquisition state разрешает rendering video.
     #[must_use]
@@ -156,11 +218,8 @@ pub struct AppState {
     /// Нужен один follow-up redraw после команды, которая уйдёт в worker асинхронно.
     pending_redraw_after_worker_command: bool,
 
-    /// Последний валидный кадр, который можно повторить при transient miss render boundary.
-    cached_present_frame: Option<PlayerPresentFrame>,
-
-    /// Source label, которому принадлежит cached present frame.
-    cached_present_source_label: Option<String>,
+    /// Последний кадр с уже полученными texture views для safe fallback на busy lock.
+    cached_renderable_present_frame: Option<CachedRenderablePresentFrame>,
 
     /// Последний локальный файл, открытый shell-ом, для восстановления после suspend.
     current_local_file: Option<PathBuf>,
@@ -221,8 +280,7 @@ impl AppState {
             startup_pending: None,
             last_player_snapshot: PlayerSnapshot::empty(),
             pending_redraw_after_worker_command: false,
-            cached_present_frame: None,
-            cached_present_source_label: None,
+            cached_renderable_present_frame: None,
             current_local_file: None,
             timeline_ui_state: TimelineUiState::default(),
             app_version: env!("CARGO_PKG_VERSION"),
@@ -420,16 +478,19 @@ impl AppState {
             }
 
             present_frame.stale = present_frame.stale || player_snapshot.timeline.stale_frame;
-            let cached_frame_identity = self
-                .cached_present_frame
-                .as_ref()
-                .map(Self::present_frame_identity);
+            let cached_frame_identity =
+                self.cached_renderable_present_frame
+                    .as_ref()
+                    .map(|cached_frame| {
+                        Self::present_frame_identity(&cached_frame.renderable_frame.present_frame)
+                    });
             let acquired_frame_identity = Self::present_frame_identity(&present_frame);
 
             if cached_frame_identity == Some(acquired_frame_identity) {
                 return self
-                    .cached_present_frame
-                    .clone()
+                    .cached_renderable_present_frame
+                    .as_ref()
+                    .map(|cached_frame| cached_frame.renderable_frame.present_frame.clone())
                     .map(|mut cached_present_frame| {
                         cached_present_frame.stale = present_frame.stale;
                         PresentFrameAcquisition::ReusedPreviousFrame(cached_present_frame)
@@ -437,12 +498,14 @@ impl AppState {
                     .unwrap_or(PresentFrameAcquisition::NoFrameYet);
             }
 
-            self.cached_present_source_label = player_snapshot.source_label.clone();
-            self.cached_present_frame = Some(present_frame.clone());
             return PresentFrameAcquisition::NewFrameAcquired(present_frame);
         }
 
-        if let Some(mut cached_present_frame) = self.cached_present_frame.clone() {
+        if let Some(mut cached_present_frame) = self
+            .cached_renderable_present_frame
+            .as_ref()
+            .map(|cached_frame| cached_frame.renderable_frame.present_frame.clone())
+        {
             cached_present_frame.stale =
                 cached_present_frame.stale || player_snapshot.timeline.stale_frame;
             return PresentFrameAcquisition::ReusedPreviousFrame(cached_present_frame);
@@ -457,26 +520,28 @@ impl AppState {
 
     /// Сбрасывает cached frame, когда он уже не принадлежит текущему media/render поколению.
     fn drop_stale_cached_present_frame(&mut self, player_snapshot: &PlayerSnapshot) -> bool {
-        if self.cached_present_frame.is_none() {
-            return false;
-        }
-
-        if player_snapshot.current_video_frame.is_none() {
-            self.cached_present_frame = None;
-            self.cached_present_source_label = None;
-            return false;
-        }
-
-        if self.cached_present_source_label != player_snapshot.source_label {
-            self.cached_present_frame = None;
-            self.cached_present_source_label = None;
-            return false;
-        }
-
-        let Some(cached_present_frame) = &self.cached_present_frame else {
+        let Some(cached_renderable_frame) = &self.cached_renderable_present_frame else {
             return false;
         };
-        if cached_present_frame.render_generation != player_snapshot.render_generation {
+
+        if player_snapshot.current_video_frame.is_none() {
+            self.clear_cached_present_frame();
+            return false;
+        }
+
+        if cached_renderable_frame.source_label.as_deref()
+            != player_snapshot.source_label.as_deref()
+        {
+            self.clear_cached_present_frame();
+            return false;
+        }
+
+        if cached_renderable_frame
+            .renderable_frame
+            .present_frame
+            .render_generation
+            != player_snapshot.render_generation
+        {
             self.clear_cached_present_frame();
             return true;
         }
@@ -494,8 +559,48 @@ impl AppState {
 
     /// Освобождает cached present frame и отправляет drop-ack worker-у через lease guard.
     fn clear_cached_present_frame(&mut self) {
-        self.cached_present_frame = None;
-        self.cached_present_source_label = None;
+        self.cached_renderable_present_frame = None;
+    }
+
+    /// Запоминает последний frame, который реально получил texture views.
+    pub fn remember_renderable_present_frame(
+        &mut self,
+        renderable_frame: RenderablePresentFrame,
+        player_snapshot: &PlayerSnapshot,
+    ) {
+        self.cached_renderable_present_frame = Some(CachedRenderablePresentFrame {
+            renderable_frame,
+            source_label: player_snapshot.source_label.clone(),
+        });
+    }
+
+    /// Возвращает previous renderable frame для busy fallback, если lifecycle всё ещё валиден.
+    #[must_use]
+    pub fn reusable_renderable_frame_for_texture_busy(
+        &mut self,
+        player_snapshot: &PlayerSnapshot,
+    ) -> Option<RenderablePresentFrame> {
+        self.drop_stale_cached_present_frame(player_snapshot);
+
+        let cached_renderable_frame = self.cached_renderable_present_frame.as_ref()?;
+        let reuse_state = TextureBusyFallbackReuseState {
+            cached_generation: cached_renderable_frame
+                .renderable_frame
+                .present_frame
+                .render_generation,
+            current_generation: player_snapshot.render_generation,
+            source_matches: cached_renderable_frame.source_label.as_deref()
+                == player_snapshot.source_label.as_deref(),
+            has_current_video_frame: player_snapshot.current_video_frame.is_some(),
+            cached_frame_is_stale: cached_renderable_frame.renderable_frame.present_frame.stale,
+            timeline_marks_frame_stale: player_snapshot.timeline.stale_frame,
+        };
+
+        if texture_busy_fallback_can_reuse_previous_frame(reuse_state) {
+            Some(cached_renderable_frame.renderable_frame.clone())
+        } else {
+            None
+        }
     }
 
     /// Передаёт typed render bridge error в worker-owned player session.
@@ -512,6 +617,12 @@ impl AppState {
     pub fn report_gpu_submit_present_latency(&self, submit_present_elapsed: Duration) {
         self.player_worker
             .report_gpu_submit_present_latency(submit_present_elapsed);
+    }
+
+    /// Передаёт player diagnostics событие reuse previous frame-а из-за busy texture lock-а.
+    pub fn report_texture_view_previous_frame_reuse(&self) {
+        self.player_worker
+            .report_texture_view_previous_frame_reuse();
     }
 
     /// Забирает worker events для shell telemetry.
@@ -1039,6 +1150,15 @@ impl AppState {
                 texture_view_lock_wait.samples
             ));
         }
+        if player_snapshot.diagnostics.texture_view_lock_busy_count > 0 {
+            ui.monospace(format!(
+                "Texture view busy: count={} reuse={}",
+                player_snapshot.diagnostics.texture_view_lock_busy_count,
+                player_snapshot
+                    .diagnostics
+                    .texture_view_previous_frame_reuse_count
+            ));
+        }
         ui.monospace(format!(
             "Pipeline pauses: {}",
             player_snapshot.diagnostics.pauses.total
@@ -1109,7 +1229,9 @@ mod tests {
         HdrReferenceDefaultDiagnostics, RenderDiagnostics, VideoFrameFormat,
     };
 
-    use super::AppState;
+    use super::{
+        AppState, TextureBusyFallbackReuseState, texture_busy_fallback_can_reuse_previous_frame,
+    };
 
     /// Проверяет, что UI diagnostics получает active path как renderer-neutral данные.
     #[test]
@@ -1151,5 +1273,52 @@ mod tests {
 
         assert!(!include_str!("state.rs").contains(forbidden_member));
         assert!(!include_str!("main.rs").contains(forbidden_member));
+    }
+
+    /// Проверяет pure decision для phase 2 texture-view busy fallback.
+    #[test]
+    fn texture_busy_fallback_reuses_only_valid_previous_frame() {
+        let valid_previous_frame = TextureBusyFallbackReuseState {
+            cached_generation: 5,
+            current_generation: 5,
+            source_matches: true,
+            has_current_video_frame: true,
+            cached_frame_is_stale: false,
+            timeline_marks_frame_stale: false,
+        };
+
+        assert!(texture_busy_fallback_can_reuse_previous_frame(
+            valid_previous_frame
+        ));
+        assert!(!texture_busy_fallback_can_reuse_previous_frame(
+            TextureBusyFallbackReuseState {
+                current_generation: 6,
+                ..valid_previous_frame
+            }
+        ));
+        assert!(!texture_busy_fallback_can_reuse_previous_frame(
+            TextureBusyFallbackReuseState {
+                source_matches: false,
+                ..valid_previous_frame
+            }
+        ));
+        assert!(!texture_busy_fallback_can_reuse_previous_frame(
+            TextureBusyFallbackReuseState {
+                has_current_video_frame: false,
+                ..valid_previous_frame
+            }
+        ));
+        assert!(!texture_busy_fallback_can_reuse_previous_frame(
+            TextureBusyFallbackReuseState {
+                cached_frame_is_stale: true,
+                ..valid_previous_frame
+            }
+        ));
+        assert!(!texture_busy_fallback_can_reuse_previous_frame(
+            TextureBusyFallbackReuseState {
+                timeline_marks_frame_stale: true,
+                ..valid_previous_frame
+            }
+        ));
     }
 }

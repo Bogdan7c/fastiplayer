@@ -293,12 +293,55 @@ pub(crate) struct RenderTextureViews {
 }
 
 /// Результат renderer-side lookup-а texture views без раскрытия backend pool-а.
-pub(crate) struct RenderTextureViewLookup {
-    /// Views для renderer-а; `None` сохраняет прежнюю missing-resource семантику.
-    pub(crate) views: Option<RenderTextureViews>,
+pub(crate) enum RenderTextureViewLookup {
+    /// Backend вернул валидные plane views для renderer-а.
+    Ready {
+        /// Texture views, которые можно передать render backend-у.
+        views: RenderTextureViews,
 
-    /// Сколько render thread ждал lock texture pool-а внутри backend provider-а.
-    pub(crate) texture_pool_lock_wait: Duration,
+        /// Сколько render thread ждал lock texture pool-а внутри backend provider-а.
+        texture_pool_lock_wait: Duration,
+    },
+
+    /// Backend texture pool занят, render hot path должен выбрать fallback без ожидания.
+    Busy {
+        /// Сколько заняла non-blocking попытка получить lock.
+        texture_pool_lock_wait: Duration,
+    },
+
+    /// Backend доступен, но texture views для handle отсутствуют.
+    Missing {
+        /// Сколько render thread ждал lock texture pool-а внутри backend provider-а.
+        texture_pool_lock_wait: Duration,
+    },
+
+    /// Backend обнаружил poisoned/fatal state при lookup-е.
+    Error {
+        /// Сколько render thread ждал lock texture pool-а внутри backend provider-а.
+        texture_pool_lock_wait: Duration,
+    },
+}
+
+impl RenderTextureViewLookup {
+    /// Возвращает lock wait sample без раскрытия конкретного outcome.
+    #[must_use]
+    pub(crate) const fn texture_pool_lock_wait(&self) -> Duration {
+        match self {
+            Self::Ready {
+                texture_pool_lock_wait,
+                ..
+            }
+            | Self::Busy {
+                texture_pool_lock_wait,
+            }
+            | Self::Missing {
+                texture_pool_lock_wait,
+            }
+            | Self::Error {
+                texture_pool_lock_wait,
+            } => *texture_pool_lock_wait,
+        }
+    }
 }
 
 /// Backend-neutral render-side provider для texture views и renderer-owned release.
@@ -308,6 +351,14 @@ pub(crate) trait RenderTextureProvider: Send + Sync {
         &self,
         handle: video_core::FrameTextureHandle,
     ) -> RenderTextureViewLookup;
+
+    /// Пытается получить WGPU views без ожидания backend texture pool mutex-а.
+    fn try_texture_view_lookup(
+        &self,
+        handle: video_core::FrameTextureHandle,
+    ) -> RenderTextureViewLookup {
+        self.texture_view_lookup(handle)
+    }
 
     /// Освобождает renderer-owned frame после submitted GPU work или fallback release.
     fn release_frame(&self, handle: video_core::FrameTextureHandle);
@@ -336,6 +387,15 @@ impl RenderTextureProviderHandle {
         handle: video_core::FrameTextureHandle,
     ) -> RenderTextureViewLookup {
         self.provider.texture_view_lookup(handle)
+    }
+
+    /// Пытается получить WGPU views без ожидания backend texture pool mutex-а.
+    #[must_use]
+    pub(crate) fn try_texture_view_lookup(
+        &self,
+        handle: video_core::FrameTextureHandle,
+    ) -> RenderTextureViewLookup {
+        self.provider.try_texture_view_lookup(handle)
     }
 
     /// Освобождает frame через backend provider, который создал texture handle.

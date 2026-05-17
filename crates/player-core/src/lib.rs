@@ -52,7 +52,9 @@ pub use event::{
 };
 pub use media_core::TrackId;
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
-pub use render_lease_bridge::{PlayerPresentFrame, PresentFrameLease, PresentFrameTextureViews};
+pub use render_lease_bridge::{
+    PlayerPresentFrame, PresentFrameLease, PresentFrameTextureViewLookup, PresentFrameTextureViews,
+};
 pub use seek_controller::{
     PlaybackResumeIntent, SeekController, SeekControllerDiagnostics, SeekControllerMode,
 };

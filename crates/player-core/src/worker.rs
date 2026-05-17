@@ -14,7 +14,7 @@ use webm_demux::DemuxerOptions;
 #[cfg(test)]
 use crate::render_lease_bridge::{
     LatestPresentFrameAcquire, LatestPresentFrameHandoff, RenderAcquireSample, RenderLeaseRelease,
-    RenderTimingSample,
+    RenderTextureViewPreviousFrameReuseSample, RenderTimingSample,
 };
 use crate::render_lease_bridge::{
     PlayerPresentFrame, PresentFrameLease, RenderLeaseBridge, RenderLeaseBridgeClient,
@@ -210,6 +210,9 @@ pub enum PlayerRenderErrorKind {
     /// Render thread не смог получить texture views по handle lease-а.
     MissingTextureViews,
 
+    /// Backend texture view lookup завершился poisoned/fatal состоянием.
+    TextureViewLookupFailed,
+
     /// Renderer отказал decoded frame metadata или plane contract.
     UnsupportedFrameFormat,
 
@@ -250,6 +253,22 @@ impl PlayerRenderError {
         }
     }
 
+    /// Создаёт ошибку fatal texture view lookup для конкретного lease-а.
+    #[must_use]
+    pub fn texture_view_lookup_failed(lease: &PresentFrameLease) -> Self {
+        Self {
+            kind: PlayerRenderErrorKind::TextureViewLookupFailed,
+            render_generation: Some(lease.render_generation),
+            frame_handle: Some(lease.texture_handle().0),
+            message: format!(
+                "Render texture view lookup failed for {} frame handle {} in generation {}",
+                lease.frame.format,
+                lease.texture_handle().0,
+                lease.render_generation
+            ),
+        }
+    }
+
     /// Создаёт ошибку renderer boundary validation для конкретного lease-а.
     #[must_use]
     pub fn unsupported_frame_format(lease: &PresentFrameLease, message: impl Into<String>) -> Self {
@@ -277,6 +296,7 @@ impl PlayerRenderError {
     pub fn to_player_error(&self) -> PlayerError {
         let kind = match self.kind {
             PlayerRenderErrorKind::MissingTextureViews
+            | PlayerRenderErrorKind::TextureViewLookupFailed
             | PlayerRenderErrorKind::UnsupportedFrameFormat => {
                 PlayerErrorKind::UnsupportedRenderFormat
             }
@@ -697,6 +717,12 @@ impl PlayerWorker {
             .report_gpu_submit_present_latency(submit_present_elapsed);
     }
 
+    /// Сообщает worker-у, что renderer повторил previous valid frame из-за busy texture lock-а.
+    pub fn report_texture_view_previous_frame_reuse(&self) {
+        self.render_bridge_client
+            .report_texture_view_previous_frame_reuse();
+    }
+
     /// Запрашивает shutdown и ждёт завершения worker thread.
     pub fn shutdown(&mut self) -> Result<(), PlayerWorkerJoinError> {
         let _ = self.try_send_command(PlayerCommand::Shutdown);
@@ -959,6 +985,11 @@ impl PlayerWorkerRuntime {
                     .handle_texture_view_lock_sample_wakeup(&mut self.session, sample_result);
                 false
             }
+            recv(self.render_bridge.texture_view_previous_frame_reuse_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_texture_view_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
+                false
+            }
             recv(self.scrub_wake_rx) -> wake_result => {
                 self.handle_scrub_wakeup(wake_result)
             }
@@ -997,6 +1028,11 @@ impl PlayerWorkerRuntime {
             recv(self.render_bridge.texture_view_lock_sample_receiver()) -> sample_result => {
                 self.render_bridge
                     .handle_texture_view_lock_sample_wakeup(&mut self.session, sample_result);
+                false
+            }
+            recv(self.render_bridge.texture_view_previous_frame_reuse_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_texture_view_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
                 false
             }
             recv(self.scrub_wake_rx) -> wake_result => {
@@ -1538,6 +1574,8 @@ impl PlayerWorkerRuntime {
             pauses_present_queue = summary.pauses.waiting_for_present_queue,
             pauses_gpu_release = summary.pauses.waiting_for_gpu_release,
             repeated_video_frames = summary.repeated_video_frames,
+            texture_view_lock_busy_count = summary.texture_view_lock_busy_count,
+            texture_view_previous_frame_reuse_count = summary.texture_view_previous_frame_reuse_count,
             memory_path = ?summary.zero_copy_memory_path,
             worst_stage,
             worst_latency_ms,
@@ -1886,13 +1924,18 @@ mod tests {
         PlayerWorker,
         Receiver<RenderAcquireSample>,
         Receiver<RenderTimingSample>,
+        Receiver<RenderTextureViewPreviousFrameReuseSample>,
     ) {
         let (command_tx, _command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
         let (scrub_wake_tx, _scrub_wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
         let (_snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
         let (_event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
-        let (render_bridge_client, render_acquire_sample_rx, render_timing_sample_rx) =
-            RenderLeaseBridgeClient::with_handoff_for_tests(latest_present_frame_handoff);
+        let (
+            render_bridge_client,
+            render_acquire_sample_rx,
+            render_timing_sample_rx,
+            texture_view_previous_frame_reuse_sample_rx,
+        ) = RenderLeaseBridgeClient::with_handoff_for_tests(latest_present_frame_handoff);
         let (shutdown_tx, _shutdown_rx) = bounded(1);
         let command_sender = PlayerCommandSender {
             command_tx,
@@ -1912,6 +1955,7 @@ mod tests {
             },
             render_acquire_sample_rx,
             render_timing_sample_rx,
+            texture_view_previous_frame_reuse_sample_rx,
         )
     }
 
@@ -2486,8 +2530,12 @@ mod tests {
         let frame =
             present_frame_lease_for_tests(3, expected_texture_handle, false, release_tx.clone());
         latest_present_frame_handoff.publish(Some(frame));
-        let (worker, render_acquire_sample_rx, _render_timing_sample_rx) =
-            worker_with_latest_handoff_for_tests(Arc::clone(&latest_present_frame_handoff));
+        let (
+            worker,
+            render_acquire_sample_rx,
+            _render_timing_sample_rx,
+            _texture_view_previous_frame_reuse_sample_rx,
+        ) = worker_with_latest_handoff_for_tests(Arc::clone(&latest_present_frame_handoff));
 
         let acquired_frame = worker.try_acquire_present_frame().unwrap();
 
@@ -2499,8 +2547,12 @@ mod tests {
     #[test]
     fn player_worker_reports_gpu_submit_present_latency_without_command_queue() {
         let latest_present_frame_handoff = Arc::new(LatestPresentFrameHandoff::new());
-        let (worker, _render_acquire_sample_rx, render_timing_sample_rx) =
-            worker_with_latest_handoff_for_tests(latest_present_frame_handoff);
+        let (
+            worker,
+            _render_acquire_sample_rx,
+            render_timing_sample_rx,
+            _texture_view_previous_frame_reuse_sample_rx,
+        ) = worker_with_latest_handoff_for_tests(latest_present_frame_handoff);
 
         worker.report_gpu_submit_present_latency(Duration::from_millis(1));
 
@@ -2508,6 +2560,23 @@ mod tests {
             .try_recv()
             .expect("render timing sample should be queued");
         assert_eq!(sample.submit_present_elapsed, Duration::from_millis(1));
+    }
+
+    #[test]
+    fn player_worker_reports_texture_view_previous_frame_reuse_without_command_queue() {
+        let latest_present_frame_handoff = Arc::new(LatestPresentFrameHandoff::new());
+        let (
+            worker,
+            _render_acquire_sample_rx,
+            _render_timing_sample_rx,
+            texture_view_previous_frame_reuse_sample_rx,
+        ) = worker_with_latest_handoff_for_tests(latest_present_frame_handoff);
+
+        worker.report_texture_view_previous_frame_reuse();
+
+        texture_view_previous_frame_reuse_sample_rx
+            .try_recv()
+            .expect("texture view previous-frame reuse sample should be queued");
     }
 
     #[test]

@@ -607,6 +607,12 @@ pub struct PlaybackDiagnosticsSnapshot {
     /// Количество повторов текущего present frame, не смешанное с media drops.
     pub repeated_video_frames: u64,
 
+    /// Сколько раз non-blocking texture view lookup встретил занятый backend lock.
+    pub texture_view_lock_busy_count: u64,
+
+    /// Сколько раз renderer переиспользовал previous valid frame из-за busy lock-а.
+    pub texture_view_previous_frame_reuse_count: u64,
+
     /// Последнее решение worker wakeup planner-а.
     pub worker_wakeup: WorkerWakeupDiagnosticsSnapshot,
 }
@@ -623,6 +629,8 @@ impl Default for PlaybackDiagnosticsSnapshot {
             recent_worst_samples: Vec::new(),
             decoded_frames: 0,
             repeated_video_frames: 0,
+            texture_view_lock_busy_count: 0,
+            texture_view_previous_frame_reuse_count: 0,
             worker_wakeup: WorkerWakeupDiagnosticsSnapshot::default(),
         }
     }
@@ -649,6 +657,12 @@ pub struct PlaybackDiagnosticsLogSummary {
     /// Количество repeats, которые не являются media drops.
     pub repeated_video_frames: u64,
 
+    /// Сколько раз non-blocking texture view lookup встретил занятый backend lock.
+    pub texture_view_lock_busy_count: u64,
+
+    /// Сколько раз renderer переиспользовал previous valid frame из-за busy lock-а.
+    pub texture_view_previous_frame_reuse_count: u64,
+
     /// Последнее решение worker wakeup planner-а.
     pub worker_wakeup: WorkerWakeupDiagnosticsSnapshot,
 
@@ -671,6 +685,8 @@ impl PlaybackDiagnosticsLogSummary {
     pub const fn has_activity(self) -> bool {
         self.drops_total > 0
             || self.pauses_total > 0
+            || self.texture_view_lock_busy_count > 0
+            || self.texture_view_previous_frame_reuse_count > 0
             || self.zero_copy_memory_path.is_some()
             || self.worst_latency.is_some()
     }
@@ -912,6 +928,25 @@ impl PlaybackDiagnostics {
         self.snapshot.queues = queues;
     }
 
+    /// Записывает busy outcome non-blocking texture view lookup-а.
+    pub(crate) fn record_texture_view_lock_busy(&mut self, queues: PipelineQueueDepthSnapshot) {
+        self.snapshot.texture_view_lock_busy_count =
+            self.snapshot.texture_view_lock_busy_count.saturating_add(1);
+        self.snapshot.queues = queues;
+    }
+
+    /// Записывает reuse previous frame-а из-за busy texture view lock-а.
+    pub(crate) fn record_texture_view_previous_frame_reuse(
+        &mut self,
+        queues: PipelineQueueDepthSnapshot,
+    ) {
+        self.snapshot.texture_view_previous_frame_reuse_count = self
+            .snapshot
+            .texture_view_previous_frame_reuse_count
+            .saturating_add(1);
+        self.snapshot.queues = queues;
+    }
+
     /// Записывает последнее решение worker wakeup planner-а.
     pub(crate) fn record_worker_wakeup(
         &mut self,
@@ -948,6 +983,10 @@ impl PlaybackDiagnostics {
             pauses: self.snapshot.pauses,
             zero_copy_memory_path: self.snapshot.zero_copy_memory_path,
             repeated_video_frames: self.snapshot.repeated_video_frames,
+            texture_view_lock_busy_count: self.snapshot.texture_view_lock_busy_count,
+            texture_view_previous_frame_reuse_count: self
+                .snapshot
+                .texture_view_previous_frame_reuse_count,
             worker_wakeup: self.snapshot.worker_wakeup,
             worst_stage,
             worst_latency,
@@ -1341,5 +1380,20 @@ mod tests {
             texture_view_lock_wait.worst.map(|sample| sample.duration),
             Some(Duration::from_micros(300))
         );
+    }
+
+    #[test]
+    fn texture_view_busy_and_reuse_counters_are_aggregated_separately() {
+        let mut diagnostics = PlaybackDiagnostics::new();
+        let queues = queue_depths_for_tests(0);
+
+        diagnostics.record_texture_view_lock_busy(queues);
+        diagnostics.record_texture_view_previous_frame_reuse(queues);
+        diagnostics.record_texture_view_previous_frame_reuse(queues);
+
+        let snapshot = diagnostics.snapshot_with_queues(queues);
+
+        assert_eq!(snapshot.texture_view_lock_busy_count, 1);
+        assert_eq!(snapshot.texture_view_previous_frame_reuse_count, 2);
     }
 }

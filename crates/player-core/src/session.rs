@@ -777,6 +777,19 @@ impl PlayerSession {
         );
     }
 
+    /// Записывает busy outcome non-blocking texture view lookup-а.
+    pub(crate) fn record_texture_view_lock_busy(&mut self) {
+        let queues = self.diagnostic_queue_depths();
+        self.diagnostics.record_texture_view_lock_busy(queues);
+    }
+
+    /// Записывает reuse предыдущего renderable frame-а из-за busy texture view lock-а.
+    pub(crate) fn record_texture_view_previous_frame_reuse(&mut self) {
+        let queues = self.diagnostic_queue_depths();
+        self.diagnostics
+            .record_texture_view_previous_frame_reuse(queues);
+    }
+
     /// Записывает render acquire timeout как drop и pause attribution.
     #[allow(dead_code)]
     pub(crate) fn record_render_acquire_timeout(&mut self, wait: Duration) {

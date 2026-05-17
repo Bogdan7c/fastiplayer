@@ -9,7 +9,7 @@
 /// - Texture pool (Arc<Mutex<WgpuTexturePool>>) shared между потоками:
 ///   decoder thread публикует или переиспользует persistent DMA-BUF imports,
 ///   render thread делает get_views и отдаёт release через GPU completion ack.
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -349,12 +349,48 @@ pub struct VideoTextureViewLockDiagnostics {
 }
 
 /// Результат lookup-а texture views вместе с timing-ом mutex boundary.
-pub struct VideoTextureViewLookup {
-    /// Views для renderer-а; `None` сохраняет прежний missing-views контракт.
-    pub views: Option<VideoTextureViews>,
+pub enum VideoTextureViewLookup {
+    /// Texture pool доступен, handle валиден, renderer получил обе plane views.
+    Ready {
+        /// Views для renderer-а, пока lease удерживает decoded frame.
+        views: VideoTextureViews,
 
-    /// Timing ожидания `WgpuTexturePool` lock-а.
-    pub lock_diagnostics: VideoTextureViewLockDiagnostics,
+        /// Timing ожидания `WgpuTexturePool` lock-а.
+        lock_diagnostics: VideoTextureViewLockDiagnostics,
+    },
+
+    /// Texture pool сейчас занят другим потоком, render hot path не должен ждать.
+    Busy {
+        /// Timing короткой non-blocking попытки получить `WgpuTexturePool`.
+        lock_diagnostics: VideoTextureViewLockDiagnostics,
+    },
+
+    /// Texture pool доступен, но handle не указывает на активные renderer views.
+    Missing {
+        /// Timing ожидания `WgpuTexturePool` lock-а.
+        lock_diagnostics: VideoTextureViewLockDiagnostics,
+    },
+
+    /// Texture pool не может безопасно отдать views из-за poisoned/fatal состояния.
+    Error {
+        /// Timing ожидания `WgpuTexturePool` lock-а.
+        lock_diagnostics: VideoTextureViewLockDiagnostics,
+    },
+}
+
+impl VideoTextureViewLookup {
+    /// Возвращает timing mutex boundary независимо от lookup outcome.
+    #[must_use]
+    pub const fn lock_diagnostics(&self) -> VideoTextureViewLockDiagnostics {
+        match self {
+            Self::Ready {
+                lock_diagnostics, ..
+            }
+            | Self::Busy { lock_diagnostics }
+            | Self::Missing { lock_diagnostics }
+            | Self::Error { lock_diagnostics } => *lock_diagnostics,
+        }
+    }
 }
 
 /// Узкий render-side provider для доступа к texture views по opaque frame handle.
@@ -386,13 +422,27 @@ impl VideoTextureViewProvider {
         texture_view_lookup_from_pool(self.texture_pool.as_ref(), handle)
     }
 
+    /// Пытается получить Y/UV views без ожидания texture pool mutex-а.
+    #[must_use]
+    pub fn try_texture_view_lookup(
+        &self,
+        handle: video_core::FrameTextureHandle,
+    ) -> VideoTextureViewLookup {
+        try_texture_view_lookup_from_pool(self.texture_pool.as_ref(), handle)
+    }
+
     /// Получает Y/UV views для frame handle на render thread.
     #[must_use]
     pub fn texture_views(
         &self,
         handle: video_core::FrameTextureHandle,
     ) -> Option<VideoTextureViews> {
-        self.texture_view_lookup(handle).views
+        match self.texture_view_lookup(handle) {
+            VideoTextureViewLookup::Ready { views, .. } => Some(views),
+            VideoTextureViewLookup::Busy { .. }
+            | VideoTextureViewLookup::Missing { .. }
+            | VideoTextureViewLookup::Error { .. } => None,
+        }
     }
 
     /// Освобождает renderer-owned frame после submitted GPU work.
@@ -494,25 +544,72 @@ fn texture_view_lookup_from_pool_started_at(
     handle: video_core::FrameTextureHandle,
     lock_started_at: Instant,
 ) -> VideoTextureViewLookup {
-    // TODO(render-hot-path phase 2): заменить blocking lock на try_lock и вернуть
-    // typed busy-result, чтобы renderer мог reuse-нуть предыдущий frame без stall-а.
-    let texture_pool_lock = texture_pool.lock();
-    let lock_diagnostics = VideoTextureViewLockDiagnostics {
-        wait: lock_started_at.elapsed(),
-    };
-    let views = match texture_pool_lock {
-        Ok(texture_pool) => texture_pool
-            .get_views(handle)
-            .map(|(y_view, uv_view)| VideoTextureViews { y_view, uv_view }),
-        Err(error) => {
-            tracing::warn!(error = %error, "Texture pool mutex poisoned during get_views");
-            None
+    match texture_pool.lock() {
+        Ok(texture_pool) => {
+            let lock_diagnostics = VideoTextureViewLockDiagnostics {
+                wait: lock_started_at.elapsed(),
+            };
+            texture_view_lookup_from_locked_pool(&texture_pool, handle, lock_diagnostics)
         }
-    };
+        Err(error) => {
+            let lock_diagnostics = VideoTextureViewLockDiagnostics {
+                wait: lock_started_at.elapsed(),
+            };
+            tracing::warn!(error = %error, "Texture pool mutex poisoned during get_views");
+            VideoTextureViewLookup::Error { lock_diagnostics }
+        }
+    }
+}
 
-    VideoTextureViewLookup {
-        views,
-        lock_diagnostics,
+/// Неблокирующе выполняет lookup и отдельно возвращает transient busy state.
+fn try_texture_view_lookup_from_pool(
+    texture_pool: &Mutex<crate::texture_cache::WgpuTexturePool>,
+    handle: video_core::FrameTextureHandle,
+) -> VideoTextureViewLookup {
+    try_texture_view_lookup_from_pool_started_at(texture_pool, handle, Instant::now())
+}
+
+/// Выполняет non-blocking lookup от уже зафиксированного start time для unit-тестов.
+fn try_texture_view_lookup_from_pool_started_at(
+    texture_pool: &Mutex<crate::texture_cache::WgpuTexturePool>,
+    handle: video_core::FrameTextureHandle,
+    lock_started_at: Instant,
+) -> VideoTextureViewLookup {
+    match texture_pool.try_lock() {
+        Ok(texture_pool) => {
+            let lock_diagnostics = VideoTextureViewLockDiagnostics {
+                wait: lock_started_at.elapsed(),
+            };
+            texture_view_lookup_from_locked_pool(&texture_pool, handle, lock_diagnostics)
+        }
+        Err(TryLockError::WouldBlock) => {
+            let lock_diagnostics = VideoTextureViewLockDiagnostics {
+                wait: lock_started_at.elapsed(),
+            };
+            VideoTextureViewLookup::Busy { lock_diagnostics }
+        }
+        Err(TryLockError::Poisoned(error)) => {
+            let lock_diagnostics = VideoTextureViewLockDiagnostics {
+                wait: lock_started_at.elapsed(),
+            };
+            tracing::warn!(error = %error, "Texture pool mutex poisoned during try_get_views");
+            VideoTextureViewLookup::Error { lock_diagnostics }
+        }
+    }
+}
+
+/// Преобразует доступный texture pool в typed lookup result без знания о mutex state.
+fn texture_view_lookup_from_locked_pool(
+    texture_pool: &crate::texture_cache::WgpuTexturePool,
+    handle: video_core::FrameTextureHandle,
+    lock_diagnostics: VideoTextureViewLockDiagnostics,
+) -> VideoTextureViewLookup {
+    match texture_pool.get_views(handle) {
+        Some((y_view, uv_view)) => VideoTextureViewLookup::Ready {
+            views: VideoTextureViews { y_view, uv_view },
+            lock_diagnostics,
+        },
+        None => VideoTextureViewLookup::Missing { lock_diagnostics },
     }
 }
 
@@ -1350,8 +1447,88 @@ mod tests {
             lock_started_at,
         );
 
-        assert!(lookup.views.is_none());
-        assert!(lookup.lock_diagnostics.wait >= Duration::from_millis(1));
+        match lookup {
+            VideoTextureViewLookup::Missing { lock_diagnostics } => {
+                assert!(lock_diagnostics.wait >= Duration::from_millis(1));
+            }
+            VideoTextureViewLookup::Ready { .. }
+            | VideoTextureViewLookup::Busy { .. }
+            | VideoTextureViewLookup::Error { .. } => {
+                panic!("missing handle should keep missing semantics");
+            }
+        }
+    }
+
+    /// Проверяет, что non-blocking lookup возвращает Busy, пока texture pool lock удержан.
+    #[test]
+    fn try_texture_view_lookup_reports_busy_when_texture_pool_lock_is_held() {
+        let texture_pool = Mutex::new(crate::texture_cache::WgpuTexturePool::new(None));
+        let _held_texture_pool_lock = texture_pool
+            .lock()
+            .expect("test mutex should lock before try lookup");
+        let lock_started_at = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("test start instant should allow small subtraction");
+
+        let lookup = try_texture_view_lookup_from_pool_started_at(
+            &texture_pool,
+            FrameTextureHandle(99),
+            lock_started_at,
+        );
+
+        match lookup {
+            VideoTextureViewLookup::Busy { lock_diagnostics } => {
+                assert!(lock_diagnostics.wait >= Duration::from_millis(1));
+            }
+            VideoTextureViewLookup::Ready { .. }
+            | VideoTextureViewLookup::Missing { .. }
+            | VideoTextureViewLookup::Error { .. } => {
+                panic!("held mutex should produce busy without get_views");
+            }
+        }
+    }
+
+    /// Проверяет, что non-blocking Missing остаётся отличимым от Busy.
+    #[test]
+    fn try_texture_view_lookup_keeps_missing_distinct_from_busy() {
+        let texture_pool = Mutex::new(crate::texture_cache::WgpuTexturePool::new(None));
+
+        let lookup = try_texture_view_lookup_from_pool(&texture_pool, FrameTextureHandle(123));
+
+        match lookup {
+            VideoTextureViewLookup::Missing { .. } => {}
+            VideoTextureViewLookup::Ready { .. }
+            | VideoTextureViewLookup::Busy { .. }
+            | VideoTextureViewLookup::Error { .. } => {
+                panic!("available pool with unknown handle should be missing");
+            }
+        }
+    }
+
+    /// Проверяет, что poisoned mutex остаётся ошибочным состоянием, а не Busy/Missing.
+    #[test]
+    fn try_texture_view_lookup_reports_error_when_texture_pool_mutex_is_poisoned() {
+        let texture_pool = Arc::new(Mutex::new(crate::texture_cache::WgpuTexturePool::new(None)));
+        let poison_texture_pool = Arc::clone(&texture_pool);
+        let _ = std::thread::spawn(move || {
+            let _held_texture_pool_lock = poison_texture_pool
+                .lock()
+                .expect("test mutex should lock before poisoning");
+            panic!("poison texture pool mutex for lookup test");
+        })
+        .join();
+
+        let lookup =
+            try_texture_view_lookup_from_pool(texture_pool.as_ref(), FrameTextureHandle(123));
+
+        match lookup {
+            VideoTextureViewLookup::Error { .. } => {}
+            VideoTextureViewLookup::Ready { .. }
+            | VideoTextureViewLookup::Busy { .. }
+            | VideoTextureViewLookup::Missing { .. } => {
+                panic!("poisoned mutex should preserve error semantics");
+            }
+        }
     }
 
     /// Проверяет bounded decoded-frame publish: full channel не дропает frame молча.

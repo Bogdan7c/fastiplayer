@@ -191,20 +191,56 @@ impl RenderTextureProvider for video_vaapi::VideoTextureViewProvider {
         handle: video_core::FrameTextureHandle,
     ) -> RenderTextureViewLookup {
         let lookup = video_vaapi::VideoTextureViewProvider::texture_view_lookup(self, handle);
-        let views = lookup.views.map(|views| RenderTextureViews {
-            y_view: views.y_view,
-            uv_view: views.uv_view,
-        });
 
-        RenderTextureViewLookup {
-            views,
-            texture_pool_lock_wait: lookup.lock_diagnostics.wait,
-        }
+        render_texture_view_lookup_from_vaapi(lookup)
+    }
+
+    /// Делегирует non-blocking lookup в VA-API provider без раскрытия backend enum-а.
+    fn try_texture_view_lookup(
+        &self,
+        handle: video_core::FrameTextureHandle,
+    ) -> RenderTextureViewLookup {
+        let lookup = video_vaapi::VideoTextureViewProvider::try_texture_view_lookup(self, handle);
+
+        render_texture_view_lookup_from_vaapi(lookup)
     }
 
     /// Делегирует renderer-owned release в текущий VA-API production provider.
     fn release_frame(&self, handle: video_core::FrameTextureHandle) {
         video_vaapi::VideoTextureViewProvider::release_frame(self, handle);
+    }
+}
+
+/// Конвертирует VA-API typed lookup в backend-neutral player-core boundary.
+fn render_texture_view_lookup_from_vaapi(
+    lookup: video_vaapi::VideoTextureViewLookup,
+) -> RenderTextureViewLookup {
+    match lookup {
+        video_vaapi::VideoTextureViewLookup::Ready {
+            views,
+            lock_diagnostics,
+        } => RenderTextureViewLookup::Ready {
+            views: RenderTextureViews {
+                y_view: views.y_view,
+                uv_view: views.uv_view,
+            },
+            texture_pool_lock_wait: lock_diagnostics.wait,
+        },
+        video_vaapi::VideoTextureViewLookup::Busy { lock_diagnostics } => {
+            RenderTextureViewLookup::Busy {
+                texture_pool_lock_wait: lock_diagnostics.wait,
+            }
+        }
+        video_vaapi::VideoTextureViewLookup::Missing { lock_diagnostics } => {
+            RenderTextureViewLookup::Missing {
+                texture_pool_lock_wait: lock_diagnostics.wait,
+            }
+        }
+        video_vaapi::VideoTextureViewLookup::Error { lock_diagnostics } => {
+            RenderTextureViewLookup::Error {
+                texture_pool_lock_wait: lock_diagnostics.wait,
+            }
+        }
     }
 }
 

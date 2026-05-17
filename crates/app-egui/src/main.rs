@@ -30,7 +30,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use capability_core::CapabilityScanner;
-use player_core::{PlayerRenderError, PlayerTickResult, PlayerVideoDropReason, PlayerWorkerEvent};
+use player_core::{
+    PlayerRenderError, PlayerTickResult, PlayerVideoDropReason, PlayerWorkerEvent,
+    PresentFrameTextureViewLookup,
+};
 use render_core::{
     ColorAdjustment, ColorPipelineSettings, HdrOutputMode, HdrToSdrSettings,
     HdrToneMappingOperator, RenderCapabilities, SwapchainTransferMode,
@@ -47,7 +50,7 @@ use winit::{
     window::Window,
 };
 
-use crate::state::AppState;
+use crate::state::{AppState, RenderablePresentFrame};
 use crate::telemetry::{Telemetry, VideoDropReason, VideoFrameTelemetryEvent};
 
 /// Интервал polling-а фоновой подготовки YouTube, когда playback ещё не активен.
@@ -711,20 +714,41 @@ fn render_frame(
     }
     let present_frame = present_frame_acquisition.into_present_frame();
 
-    let present_frame_texture_views = match present_frame.as_ref() {
-        Some(present_frame) => match present_frame.texture_views() {
-            Some(texture_views) => Some(texture_views),
-            None => {
-                video_render_error = Some(PlayerRenderError::missing_texture_views(present_frame));
-                None
+    let mut renderable_present_frame = None;
+    if let Some(present_frame) = present_frame {
+        match present_frame.try_texture_view_lookup() {
+            PresentFrameTextureViewLookup::Ready(texture_views) => {
+                let current_renderable_frame =
+                    RenderablePresentFrame::new(present_frame, texture_views);
+                app_state.remember_renderable_present_frame(
+                    current_renderable_frame.clone(),
+                    frame_context.player_snapshot(),
+                );
+                renderable_present_frame = Some(current_renderable_frame);
             }
-        },
-        None => None,
-    };
+            PresentFrameTextureViewLookup::Busy => {
+                renderable_present_frame = app_state
+                    .reusable_renderable_frame_for_texture_busy(frame_context.player_snapshot());
+                if renderable_present_frame.is_some() {
+                    app_state.report_texture_view_previous_frame_reuse();
+                }
+            }
+            PresentFrameTextureViewLookup::Missing => {
+                video_render_error = Some(PlayerRenderError::missing_texture_views(&present_frame));
+            }
+            PresentFrameTextureViewLookup::Error => {
+                video_render_error = Some(PlayerRenderError::texture_view_lookup_failed(
+                    &present_frame,
+                ));
+            }
+        }
+    }
 
     // Собираем renderer boundary frame только если lease metadata и обе texture planes готовы.
-    let video_frame = match (present_frame.as_ref(), present_frame_texture_views.as_ref()) {
-        (Some(present_frame), Some(texture_views)) => {
+    let video_frame = match renderable_present_frame.as_ref() {
+        Some(renderable_frame) => {
+            let present_frame = &renderable_frame.present_frame;
+            let texture_views = &renderable_frame.texture_views;
             tracing::trace!(
                 handle_id = present_frame.frame.texture_handle.0,
                 pts_ms = present_frame.frame.pts.as_millis(),
@@ -772,7 +796,7 @@ fn render_frame(
                 }
             }
         }
-        _ => None,
+        None => None,
     };
 
     if let Some(error) = video_render_error {
