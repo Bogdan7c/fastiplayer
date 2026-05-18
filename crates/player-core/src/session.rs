@@ -45,6 +45,159 @@ struct VisibleScrubPreview {
     position: MediaTime,
 }
 
+/// Причина, по которой session не приняла latest scrub update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionScrubUpdateRejection {
+    /// Сейчас нет active scrub generation.
+    Inactive,
+
+    /// Update относится к generation, который уже не является текущим.
+    StaleGeneration,
+}
+
+/// Typed результат session-side update boundary.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionScrubUpdateAcceptance {
+    /// Update принят и стал latest request-ом текущего scrub-а.
+    Accepted {
+        /// Intent, который session сохранила как latest request.
+        intent: ScrubUpdateIntent,
+    },
+
+    /// Update отброшен без изменения scrub state.
+    Rejected {
+        /// Intent, который не прошёл session boundary.
+        intent: ScrubUpdateIntent,
+
+        /// Точная причина отказа для diagnostics и тестов.
+        reason: SessionScrubUpdateRejection,
+    },
+}
+
+/// Причина, по которой visible preview не записан в session scrub state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisiblePreviewRejection {
+    /// Сейчас нет active scrub generation.
+    Inactive,
+
+    /// Preview относится к устаревшему generation.
+    StaleGeneration,
+}
+
+/// Typed результат записи реально показанного preview frame-а.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisiblePreviewDecision {
+    /// Preview принадлежит текущему generation и записан как visible.
+    Recorded {
+        /// Preview, который теперь является visible feedback-ом release policy.
+        preview: VisibleScrubPreview,
+    },
+
+    /// Preview отброшен без изменения visible preview state.
+    Rejected {
+        /// Generation preview frame-а, который не был принят.
+        generation: ScrubGeneration,
+
+        /// Позиция frame-а, которую caller пытался записать.
+        position: MediaTime,
+
+        /// Точная причина отказа.
+        reason: VisiblePreviewRejection,
+    },
+}
+
+/// Причина, по которой completed preview не записан в session scrub state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewCompletionRejection {
+    /// Сейчас нет active scrub generation.
+    Inactive,
+
+    /// Preview completion относится к устаревшему generation.
+    StaleGeneration,
+}
+
+/// Typed результат отметки завершённого preview seek-а.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewCompletionDecision {
+    /// Preview текущего generation завершён и может участвовать в release policy.
+    Completed {
+        /// Generation завершённого preview.
+        generation: ScrubGeneration,
+    },
+
+    /// Completion отброшен без изменения completed preview state.
+    Rejected {
+        /// Generation preview, который не был принят.
+        generation: ScrubGeneration,
+
+        /// Точная причина отказа.
+        reason: PreviewCompletionRejection,
+    },
+}
+
+/// Причина, по которой completed preview не был инвалидирован.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletedPreviewInvalidationRejection {
+    /// Сейчас нет active scrub generation.
+    Inactive,
+
+    /// Invalidation относится к устаревшему generation.
+    StaleGeneration,
+}
+
+/// Typed результат invalidation-а completed preview marker-а.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletedPreviewInvalidationDecision {
+    /// Completed preview marker текущего generation очищен.
+    Invalidated {
+        /// Generation, для которого marker был очищен.
+        generation: ScrubGeneration,
+    },
+
+    /// Invalidation отброшен без изменения completed preview state.
+    Rejected {
+        /// Generation, который caller пытался инвалидировать.
+        generation: ScrubGeneration,
+
+        /// Точная причина отказа.
+        reason: CompletedPreviewInvalidationRejection,
+    },
+}
+
+/// Причина, по которой session не может завершить scrub generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionScrubFinishRejection {
+    /// Сейчас нет active scrub generation.
+    Inactive,
+
+    /// Finish относится к generation, который уже не является текущим.
+    StaleGeneration,
+}
+
+/// Pure typed decision для EndScrub до мутации state.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionScrubFinishDecision {
+    /// Generation является текущим и caller может применить commit policy.
+    Current {
+        /// Generation, который прошёл проверку актуальности.
+        generation: ScrubGeneration,
+    },
+
+    /// Finish отброшен без изменения scrub state.
+    Rejected {
+        /// Generation, который не прошёл проверку.
+        generation: ScrubGeneration,
+
+        /// Точная причина отказа.
+        reason: SessionScrubFinishRejection,
+    },
+}
+
 /// Session-side scrub state, который группирует данные только активного пользовательского scrub-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionScrubState {
@@ -79,7 +232,7 @@ impl SessionScrubState {
     }
 
     /// Принимает latest target только для текущего active generation.
-    fn accept_update(&mut self, intent: ScrubUpdateIntent) -> bool {
+    fn accept_update(&mut self, intent: ScrubUpdateIntent) -> SessionScrubUpdateAcceptance {
         match self {
             Self::Active {
                 generation,
@@ -87,32 +240,53 @@ impl SessionScrubState {
                 ..
             } if *generation == intent.generation => {
                 *latest_request = Some(intent);
-                true
+                SessionScrubUpdateAcceptance::Accepted { intent }
             }
-            Self::Active { .. } | Self::Idle => false,
+            Self::Active { .. } => SessionScrubUpdateAcceptance::Rejected {
+                intent,
+                reason: SessionScrubUpdateRejection::StaleGeneration,
+            },
+            Self::Idle => SessionScrubUpdateAcceptance::Rejected {
+                intent,
+                reason: SessionScrubUpdateRejection::Inactive,
+            },
         }
     }
 
     /// Запоминает реально показанный preview только для текущего active generation.
-    fn note_visible_preview(&mut self, generation: ScrubGeneration, position: MediaTime) -> bool {
+    fn note_visible_preview(
+        &mut self,
+        generation: ScrubGeneration,
+        position: MediaTime,
+    ) -> VisiblePreviewDecision {
         match self {
             Self::Active {
                 generation: active_generation,
                 visible_preview,
                 ..
             } if *active_generation == generation => {
-                *visible_preview = Some(VisibleScrubPreview {
+                let preview = VisibleScrubPreview {
                     generation,
                     position,
-                });
-                true
+                };
+                *visible_preview = Some(preview);
+                VisiblePreviewDecision::Recorded { preview }
             }
-            Self::Active { .. } | Self::Idle => false,
+            Self::Active { .. } => VisiblePreviewDecision::Rejected {
+                generation,
+                position,
+                reason: VisiblePreviewRejection::StaleGeneration,
+            },
+            Self::Idle => VisiblePreviewDecision::Rejected {
+                generation,
+                position,
+                reason: VisiblePreviewRejection::Inactive,
+            },
         }
     }
 
     /// Отмечает завершённый preview только для текущего active generation.
-    fn complete_preview(&mut self, generation: ScrubGeneration) -> bool {
+    fn complete_preview(&mut self, generation: ScrubGeneration) -> PreviewCompletionDecision {
         match self {
             Self::Active {
                 generation: active_generation,
@@ -120,36 +294,51 @@ impl SessionScrubState {
                 ..
             } if *active_generation == generation => {
                 *completed_preview_generation = Some(generation);
-                true
+                PreviewCompletionDecision::Completed { generation }
             }
-            Self::Active { .. } | Self::Idle => false,
+            Self::Active { .. } => PreviewCompletionDecision::Rejected {
+                generation,
+                reason: PreviewCompletionRejection::StaleGeneration,
+            },
+            Self::Idle => PreviewCompletionDecision::Rejected {
+                generation,
+                reason: PreviewCompletionRejection::Inactive,
+            },
+        }
+    }
+
+    /// Проверяет EndScrub без мутации, чтобы commit policy видела старый state.
+    fn finish_decision(&self, generation: ScrubGeneration) -> SessionScrubFinishDecision {
+        match self {
+            Self::Active {
+                generation: active_generation,
+                ..
+            } if *active_generation == generation => {
+                SessionScrubFinishDecision::Current { generation }
+            }
+            Self::Active { .. } => SessionScrubFinishDecision::Rejected {
+                generation,
+                reason: SessionScrubFinishRejection::StaleGeneration,
+            },
+            Self::Idle => SessionScrubFinishDecision::Rejected {
+                generation,
+                reason: SessionScrubFinishRejection::Inactive,
+            },
         }
     }
 
     /// Закрывает active scrub после commit policy, если caller пришёл с актуальным generation.
-    fn end(&mut self, generation: ScrubGeneration) -> bool {
-        if !self.is_current(generation) {
-            return false;
+    fn close_current(&mut self, generation: ScrubGeneration) -> SessionScrubFinishDecision {
+        let decision = self.finish_decision(generation);
+        if let SessionScrubFinishDecision::Current { .. } = decision {
+            *self = Self::Idle;
         }
-
-        *self = Self::Idle;
-        true
+        decision
     }
 
     /// Полностью очищает scrub state для media reset, final complete и timeout путей.
     fn clear(&mut self) {
         *self = Self::Idle;
-    }
-
-    /// Проверяет, что generation принадлежит текущему active scrub.
-    fn is_current(&self, generation: ScrubGeneration) -> bool {
-        matches!(
-            self,
-            Self::Active {
-                generation: active_generation,
-                ..
-            } if *active_generation == generation
-        )
     }
 
     /// Возвращает текущий active generation без раскрытия внутреннего enum layout-а.
@@ -208,7 +397,10 @@ impl SessionScrubState {
     }
 
     /// Инвалидирует completed preview текущего generation перед новым preview attempt-ом.
-    fn invalidate_completed_preview(&mut self, generation: ScrubGeneration) -> bool {
+    fn invalidate_completed_preview(
+        &mut self,
+        generation: ScrubGeneration,
+    ) -> CompletedPreviewInvalidationDecision {
         match self {
             Self::Active {
                 generation: active_generation,
@@ -216,9 +408,16 @@ impl SessionScrubState {
                 ..
             } if *active_generation == generation => {
                 *completed_preview_generation = None;
-                true
+                CompletedPreviewInvalidationDecision::Invalidated { generation }
             }
-            Self::Active { .. } | Self::Idle => false,
+            Self::Active { .. } => CompletedPreviewInvalidationDecision::Rejected {
+                generation,
+                reason: CompletedPreviewInvalidationRejection::StaleGeneration,
+            },
+            Self::Idle => CompletedPreviewInvalidationDecision::Rejected {
+                generation,
+                reason: CompletedPreviewInvalidationRejection::Inactive,
+            },
         }
     }
 
@@ -510,11 +709,6 @@ impl PlayerSession {
                 generation
             }
         }
-    }
-
-    /// Проверяет, что tagged scrub intent не относится к уже заменённому scrub.
-    fn scrub_intent_is_current(&self, generation: ScrubGeneration) -> bool {
-        self.scrub_state.is_current(generation)
     }
 
     /// Переключает playback между `Playing` и `Paused`.
@@ -1280,7 +1474,8 @@ impl PlayerSession {
         match seek_commit.kind {
             SeekCommitKind::Preview => {
                 if let Some(generation) = seek_commit.scrub_generation {
-                    self.scrub_state
+                    let _visible_preview_decision = self
+                        .scrub_state
                         .note_visible_preview(generation, MediaTime::from_duration(frame_pts));
                 }
                 self.snapshot.timeline.preview_state =
@@ -1654,7 +1849,7 @@ impl PlayerSession {
 
         self.seek_commit = None;
         if let Some(generation) = seek_commit.scrub_generation {
-            self.scrub_state.complete_preview(generation);
+            let _preview_completion = self.scrub_state.complete_preview(generation);
         }
         self.seek_eof_fallback_video_position = None;
         self.clear_seek_preroll_fallback_frame();
@@ -1703,7 +1898,7 @@ impl PlayerSession {
     fn fail_preview_seek_commit_on_timeout(&mut self, seek_commit: SeekCommitState) {
         self.seek_commit = None;
         if let Some(generation) = seek_commit.scrub_generation {
-            self.scrub_state.invalidate_completed_preview(generation);
+            let _preview_invalidation = self.scrub_state.invalidate_completed_preview(generation);
         }
         self.seek_eof_fallback_video_position = None;
         self.clear_seek_preroll_fallback_frame();
@@ -1908,11 +2103,12 @@ impl PlayerSession {
     /// Запоминает последнюю цель scrub без изменения текущей playback позиции.
     fn update_scrub(&mut self, intent: ScrubUpdateIntent) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        if !self.scrub_state.accept_update(intent) {
-            return Ok(());
-        }
+        let accepted_intent = match self.scrub_state.accept_update(intent) {
+            SessionScrubUpdateAcceptance::Accepted { intent } => intent,
+            SessionScrubUpdateAcceptance::Rejected { .. } => return Ok(()),
+        };
 
-        let request = intent.request;
+        let request = accepted_intent.request;
         let target_position = self.resolve_seek_target(request);
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = true;
@@ -1926,39 +2122,42 @@ impl PlayerSession {
     /// Делает live preview seek для активного scrub-а без фиксации playback позиции.
     fn preview_scrub(&mut self, intent: ScrubUpdateIntent) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        if !self.scrub_state.accept_update(intent) {
-            return Ok(());
-        }
+        let accepted_intent = match self.scrub_state.accept_update(intent) {
+            SessionScrubUpdateAcceptance::Accepted { intent } => intent,
+            SessionScrubUpdateAcceptance::Rejected { .. } => return Ok(()),
+        };
 
-        let request = intent.request;
+        let request = accepted_intent.request;
         let target_position = self.resolve_seek_target(request);
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = true;
         self.snapshot.timeline.target_position = Some(target_position);
         self.snapshot.timeline.preview_state = TimelinePreviewState::Pending;
-        self.scrub_state
-            .invalidate_completed_preview(intent.generation);
+        let _preview_invalidation = self
+            .scrub_state
+            .invalidate_completed_preview(accepted_intent.generation);
         self.start_seek_transaction(
             target_position,
             request.mode,
             SeekCommitKind::Preview,
-            Some(intent.generation),
+            Some(accepted_intent.generation),
         )
     }
 
     /// Завершает scrub и применяет последнюю цель согласно выбранной политике.
     fn end_scrub(&mut self, intent: ScrubCommitIntent) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        if !self.scrub_intent_is_current(intent.generation) {
-            return Ok(());
-        }
+        match self.scrub_state.finish_decision(intent.generation) {
+            SessionScrubFinishDecision::Current { .. } => {}
+            SessionScrubFinishDecision::Rejected { .. } => return Ok(()),
+        };
 
         if let Some(target_position) = self.snapshot.timeline.target_position {
             let seek_mode = self.seek_mode_for_scrub_commit(intent.generation);
             self.apply_scrub_commit_policy(target_position, seek_mode, intent)?;
         }
         self.snapshot.timeline.scrubbing = false;
-        self.scrub_state.end(intent.generation);
+        let _finish_decision = self.scrub_state.close_current(intent.generation);
         Ok(())
     }
 
@@ -2291,7 +2490,8 @@ impl PlayerSession {
             }
             SeekCommitKind::Preview => {
                 if let Some(generation) = scrub_generation {
-                    self.scrub_state.invalidate_completed_preview(generation);
+                    let _preview_invalidation =
+                        self.scrub_state.invalidate_completed_preview(generation);
                 }
                 self.snapshot.timeline.preview_state = TimelinePreviewState::Pending;
                 PlaybackResumeIntent::Pause
@@ -3240,9 +3440,27 @@ mod tests {
         let mut scrub_state = SessionScrubState::default();
 
         scrub_state.begin(first_generation);
-        assert!(scrub_state.accept_update(first_intent));
-        assert!(scrub_state.note_visible_preview(first_generation, MediaTime::from_secs(6)));
-        assert!(scrub_state.complete_preview(first_generation));
+        assert_eq!(
+            scrub_state.accept_update(first_intent),
+            SessionScrubUpdateAcceptance::Accepted {
+                intent: first_intent,
+            }
+        );
+        assert_eq!(
+            scrub_state.note_visible_preview(first_generation, MediaTime::from_secs(6)),
+            VisiblePreviewDecision::Recorded {
+                preview: VisibleScrubPreview {
+                    generation: first_generation,
+                    position: MediaTime::from_secs(6),
+                },
+            }
+        );
+        assert_eq!(
+            scrub_state.complete_preview(first_generation),
+            PreviewCompletionDecision::Completed {
+                generation: first_generation,
+            }
+        );
 
         scrub_state.begin(second_generation);
 
@@ -3255,7 +3473,25 @@ mod tests {
     }
 
     #[test]
-    fn session_scrub_state_ignores_stale_generation() {
+    fn session_scrub_accept_update_outside_active_returns_inactive_rejection() {
+        let generation = ScrubGeneration::default().next();
+        let intent = session_scrub_intent(generation, 5, SeekMode::Accurate);
+        let mut scrub_state = SessionScrubState::default();
+
+        assert_eq!(
+            scrub_state.accept_update(intent),
+            SessionScrubUpdateAcceptance::Rejected {
+                intent,
+                reason: SessionScrubUpdateRejection::Inactive,
+            }
+        );
+
+        assert_eq!(scrub_state.current_generation(), None);
+        assert_eq!(scrub_state.latest_request_for(generation), None);
+    }
+
+    #[test]
+    fn session_scrub_accept_update_rejects_stale_generation_without_changing_latest_request() {
         let current_generation = ScrubGeneration::default().next();
         let stale_generation = current_generation.next();
         let current_intent = session_scrub_intent(current_generation, 5, SeekMode::Accurate);
@@ -3263,12 +3499,20 @@ mod tests {
         let mut scrub_state = SessionScrubState::default();
 
         scrub_state.begin(current_generation);
-        assert!(scrub_state.accept_update(current_intent));
+        assert_eq!(
+            scrub_state.accept_update(current_intent),
+            SessionScrubUpdateAcceptance::Accepted {
+                intent: current_intent,
+            }
+        );
 
-        assert!(!scrub_state.accept_update(stale_intent));
-        assert!(!scrub_state.note_visible_preview(stale_generation, MediaTime::from_secs(9)));
-        assert!(!scrub_state.complete_preview(stale_generation));
-        assert!(!scrub_state.end(stale_generation));
+        assert_eq!(
+            scrub_state.accept_update(stale_intent),
+            SessionScrubUpdateAcceptance::Rejected {
+                intent: stale_intent,
+                reason: SessionScrubUpdateRejection::StaleGeneration,
+            }
+        );
 
         assert_eq!(
             scrub_state.latest_request_for(current_generation),
@@ -3287,7 +3531,10 @@ mod tests {
         let mut scrub_state = SessionScrubState::default();
 
         scrub_state.begin(generation);
-        assert!(scrub_state.accept_update(intent));
+        assert_eq!(
+            scrub_state.accept_update(intent),
+            SessionScrubUpdateAcceptance::Accepted { intent }
+        );
 
         assert_eq!(scrub_state.latest_request_for(generation), Some(intent));
         assert_eq!(
@@ -3297,16 +3544,31 @@ mod tests {
     }
 
     #[test]
-    fn session_scrub_visible_preview_belongs_only_to_current_generation() {
+    fn session_scrub_note_visible_preview_rejects_stale_generation_without_changing_preview() {
         let current_generation = ScrubGeneration::default().next();
         let stale_generation = current_generation.next();
         let mut scrub_state = SessionScrubState::default();
 
         scrub_state.begin(current_generation);
+        assert_eq!(
+            scrub_state.note_visible_preview(current_generation, MediaTime::from_secs(3)),
+            VisiblePreviewDecision::Recorded {
+                preview: VisibleScrubPreview {
+                    generation: current_generation,
+                    position: MediaTime::from_secs(3),
+                },
+            }
+        );
 
-        assert!(!scrub_state.note_visible_preview(stale_generation, MediaTime::from_secs(13)));
-        assert_eq!(scrub_state.visible_preview_for(stale_generation), None);
-        assert!(scrub_state.note_visible_preview(current_generation, MediaTime::from_secs(3)));
+        assert_eq!(
+            scrub_state.note_visible_preview(stale_generation, MediaTime::from_secs(13)),
+            VisiblePreviewDecision::Rejected {
+                generation: stale_generation,
+                position: MediaTime::from_secs(13),
+                reason: VisiblePreviewRejection::StaleGeneration,
+            }
+        );
+
         assert_eq!(
             scrub_state.visible_preview_for(current_generation),
             Some(VisibleScrubPreview {
@@ -3314,11 +3576,56 @@ mod tests {
                 position: MediaTime::from_secs(3),
             })
         );
+        assert_eq!(scrub_state.visible_preview_for(stale_generation), None);
+    }
+
+    #[test]
+    fn session_scrub_visible_preview_belongs_only_to_current_generation() {
+        let current_generation = ScrubGeneration::default().next();
+        let stale_generation = current_generation.next();
+        let mut scrub_state = SessionScrubState::default();
+
+        scrub_state.begin(current_generation);
+        assert_eq!(
+            scrub_state.note_visible_preview(current_generation, MediaTime::from_secs(3)),
+            VisiblePreviewDecision::Recorded {
+                preview: VisibleScrubPreview {
+                    generation: current_generation,
+                    position: MediaTime::from_secs(3),
+                },
+            }
+        );
 
         scrub_state.begin(stale_generation);
 
         assert_eq!(scrub_state.visible_preview_for(current_generation), None);
         assert_eq!(scrub_state.visible_preview_for(stale_generation), None);
+    }
+
+    #[test]
+    fn session_scrub_complete_preview_rejects_stale_generation_without_changing_completed_preview()
+    {
+        let current_generation = ScrubGeneration::default().next();
+        let stale_generation = current_generation.next();
+        let mut scrub_state = SessionScrubState::default();
+
+        scrub_state.begin(current_generation);
+
+        assert_eq!(
+            scrub_state.complete_preview(current_generation),
+            PreviewCompletionDecision::Completed {
+                generation: current_generation,
+            }
+        );
+        assert_eq!(
+            scrub_state.complete_preview(stale_generation),
+            PreviewCompletionDecision::Rejected {
+                generation: stale_generation,
+                reason: PreviewCompletionRejection::StaleGeneration,
+            }
+        );
+        assert!(scrub_state.completed_preview_for(current_generation));
+        assert!(!scrub_state.completed_preview_for(stale_generation));
     }
 
     #[test]
@@ -3329,15 +3636,127 @@ mod tests {
 
         scrub_state.begin(current_generation);
 
-        assert!(!scrub_state.complete_preview(stale_generation));
-        assert!(!scrub_state.completed_preview_for(stale_generation));
-        assert!(scrub_state.complete_preview(current_generation));
+        assert_eq!(
+            scrub_state.complete_preview(current_generation),
+            PreviewCompletionDecision::Completed {
+                generation: current_generation,
+            }
+        );
         assert!(scrub_state.completed_preview_for(current_generation));
 
         scrub_state.begin(stale_generation);
 
         assert!(!scrub_state.completed_preview_for(current_generation));
         assert!(!scrub_state.completed_preview_for(stale_generation));
+    }
+
+    #[test]
+    fn session_scrub_finish_decision_rejects_stale_generation_without_closing_active_state() {
+        let current_generation = ScrubGeneration::default().next();
+        let stale_generation = current_generation.next();
+        let mut scrub_state = SessionScrubState::default();
+
+        scrub_state.begin(current_generation);
+
+        assert_eq!(
+            scrub_state.finish_decision(stale_generation),
+            SessionScrubFinishDecision::Rejected {
+                generation: stale_generation,
+                reason: SessionScrubFinishRejection::StaleGeneration,
+            }
+        );
+        assert_eq!(
+            scrub_state.close_current(stale_generation),
+            SessionScrubFinishDecision::Rejected {
+                generation: stale_generation,
+                reason: SessionScrubFinishRejection::StaleGeneration,
+            }
+        );
+        assert_eq!(scrub_state.current_generation(), Some(current_generation));
+    }
+
+    #[test]
+    fn session_scrub_close_current_generation_closes_active_state() {
+        let generation = ScrubGeneration::default().next();
+        let mut scrub_state = SessionScrubState::default();
+
+        scrub_state.begin(generation);
+
+        assert_eq!(
+            scrub_state.finish_decision(generation),
+            SessionScrubFinishDecision::Current { generation }
+        );
+        assert_eq!(
+            scrub_state.close_current(generation),
+            SessionScrubFinishDecision::Current { generation }
+        );
+        assert_eq!(scrub_state.current_generation(), None);
+    }
+
+    #[test]
+    fn session_scrub_invalidate_completed_preview_current_generation_clears_only_completion() {
+        let generation = ScrubGeneration::default().next();
+        let intent = session_scrub_intent(generation, 17, SeekMode::KeyframeBefore);
+        let visible_preview = VisibleScrubPreview {
+            generation,
+            position: MediaTime::from_secs(16),
+        };
+        let mut scrub_state = SessionScrubState::default();
+
+        scrub_state.begin(generation);
+        assert_eq!(
+            scrub_state.accept_update(intent),
+            SessionScrubUpdateAcceptance::Accepted { intent }
+        );
+        assert_eq!(
+            scrub_state.note_visible_preview(generation, visible_preview.position),
+            VisiblePreviewDecision::Recorded {
+                preview: visible_preview,
+            }
+        );
+        assert_eq!(
+            scrub_state.complete_preview(generation),
+            PreviewCompletionDecision::Completed { generation }
+        );
+
+        assert_eq!(
+            scrub_state.invalidate_completed_preview(generation),
+            CompletedPreviewInvalidationDecision::Invalidated { generation }
+        );
+
+        assert_eq!(scrub_state.current_generation(), Some(generation));
+        assert_eq!(scrub_state.latest_request_for(generation), Some(intent));
+        assert_eq!(
+            scrub_state.visible_preview_for(generation),
+            Some(visible_preview)
+        );
+        assert!(!scrub_state.completed_preview_for(generation));
+    }
+
+    #[test]
+    fn session_scrub_invalidate_completed_preview_rejects_stale_generation_without_change() {
+        let current_generation = ScrubGeneration::default().next();
+        let stale_generation = current_generation.next();
+        let mut scrub_state = SessionScrubState::default();
+
+        scrub_state.begin(current_generation);
+        assert_eq!(
+            scrub_state.complete_preview(current_generation),
+            PreviewCompletionDecision::Completed {
+                generation: current_generation,
+            }
+        );
+
+        assert_eq!(
+            scrub_state.invalidate_completed_preview(stale_generation),
+            CompletedPreviewInvalidationDecision::Rejected {
+                generation: stale_generation,
+                reason: CompletedPreviewInvalidationRejection::StaleGeneration,
+            }
+        );
+
+        assert_eq!(scrub_state.current_generation(), Some(current_generation));
+        assert!(scrub_state.completed_preview_for(current_generation));
     }
 
     #[test]
@@ -3358,13 +3777,16 @@ mod tests {
             kind: SeekCommitKind::Final,
         });
         session.scrub_state.begin(generation);
-        assert!(session.scrub_state.accept_update(session_scrub_intent(
-            generation,
-            17,
-            SeekMode::Accurate,
-        )));
+        let intent = session_scrub_intent(generation, 17, SeekMode::Accurate);
+        assert_eq!(
+            session.scrub_state.accept_update(intent),
+            SessionScrubUpdateAcceptance::Accepted { intent }
+        );
 
-        assert!(session.scrub_state.end(generation));
+        assert_eq!(
+            session.scrub_state.close_current(generation),
+            SessionScrubFinishDecision::Current { generation }
+        );
 
         assert_eq!(session.scrub_state.current_generation(), None);
         assert_eq!(session.scrub_state.latest_request_for(generation), None);
@@ -3382,13 +3804,24 @@ mod tests {
         let mut scrub_state = SessionScrubState::default();
 
         scrub_state.begin(generation);
-        assert!(scrub_state.accept_update(session_scrub_intent(
-            generation,
-            19,
-            SeekMode::Accurate,
-        )));
-        assert!(scrub_state.note_visible_preview(generation, MediaTime::from_secs(18)));
-        assert!(scrub_state.complete_preview(generation));
+        let intent = session_scrub_intent(generation, 19, SeekMode::Accurate);
+        assert_eq!(
+            scrub_state.accept_update(intent),
+            SessionScrubUpdateAcceptance::Accepted { intent }
+        );
+        assert_eq!(
+            scrub_state.note_visible_preview(generation, MediaTime::from_secs(18)),
+            VisiblePreviewDecision::Recorded {
+                preview: VisibleScrubPreview {
+                    generation,
+                    position: MediaTime::from_secs(18),
+                },
+            }
+        );
+        assert_eq!(
+            scrub_state.complete_preview(generation),
+            PreviewCompletionDecision::Completed { generation }
+        );
 
         scrub_state.clear();
 
@@ -4154,6 +4587,14 @@ mod tests {
     }
 
     #[test]
+    fn default_timeline_release_policy_remains_commit_visible_preview() {
+        assert_eq!(
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+            ScrubCommitPolicy::CommitVisiblePreview
+        );
+    }
+
+    #[test]
     fn default_release_after_update_commits_latest_target_without_visible_preview() {
         let mut session = PlayerSession::new();
         install_fake_media(&mut session, Vec::new());
@@ -4566,6 +5007,8 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].timestamp, Duration::from_secs(8));
+        assert_eq!(requests[0].mode, webm_demux::DemuxSeekMode::Preview);
         assert!(session.seek_commit().is_none());
         assert_eq!(
             session.snapshot().current_position,
@@ -4608,6 +5051,8 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].timestamp, Duration::from_secs(8));
+        assert_eq!(requests[0].mode, webm_demux::DemuxSeekMode::Preview);
         assert!(session.seek_commit().is_none());
         assert_eq!(
             session.snapshot().current_position,
@@ -4707,6 +5152,8 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].timestamp, Duration::from_secs(8));
+        assert_eq!(requests[0].mode, webm_demux::DemuxSeekMode::Preview);
         assert!(session.seek_commit().is_none());
         assert_eq!(
             session.snapshot().current_position,
