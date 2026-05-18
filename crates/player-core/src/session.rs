@@ -733,6 +733,16 @@ impl PlayerSession {
         self.diagnostics.observe_decoded_frame(frame, queues);
     }
 
+    /// Записывает pressure counters decoder-thread publish boundary.
+    pub(crate) fn record_decoded_frame_publish_pressure(
+        &mut self,
+        pressure: video_core::VideoFramePublishPressureDiagnostics,
+    ) {
+        let queues = self.diagnostic_queue_depths();
+        self.diagnostics
+            .record_decoded_frame_publish_pressure(pressure, queues);
+    }
+
     /// Записывает typed video drop reason с текущими queue depths.
     pub(crate) fn record_video_drop(&mut self, pts: Option<Duration>, reason: VideoDropReason) {
         let queues = self.diagnostic_queue_depths();
@@ -3197,6 +3207,9 @@ mod tests {
         /// Накопленные packet ack-и, которые fake decoder отдаёт одним drain-вызовом.
         completed_packet_count: Arc<Mutex<usize>>,
 
+        /// Diagnostics events, которые fake decoder отдаёт через boundary drain.
+        diagnostic_events: Arc<Mutex<VecDeque<video_core::VideoDecoderDiagnosticEvent>>>,
+
         /// Опциональная flush ошибка для проверки проброса seek/reset failure.
         flush_error_message: Arc<Mutex<Option<String>>>,
 
@@ -3211,6 +3224,7 @@ mod tests {
                 decoded_frames: Arc::new(Mutex::new(VecDeque::new())),
                 send_results: Arc::new(Mutex::new(VecDeque::new())),
                 completed_packet_count: Arc::new(Mutex::new(0)),
+                diagnostic_events: Arc::new(Mutex::new(VecDeque::new())),
                 flush_error_message: Arc::new(Mutex::new(None)),
                 released_handles: Arc::new(Mutex::new(Vec::new())),
             }
@@ -3239,6 +3253,14 @@ mod tests {
                 .lock()
                 .expect("fake decoder ack counter lock");
             *completed_packet_count = completed_packet_count.saturating_add(packet_count);
+        }
+
+        /// Публикует diagnostics event так, как production decoder boundary сделал бы.
+        fn push_diagnostic_event(&self, event: video_core::VideoDecoderDiagnosticEvent) {
+            self.diagnostic_events
+                .lock()
+                .expect("fake decoder diagnostics queue lock")
+                .push_back(event);
         }
 
         /// Настраивает следующую flush ошибку без изменения decoder lifecycle.
@@ -3286,7 +3308,10 @@ mod tests {
         }
 
         fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent> {
-            None
+            self.diagnostic_events
+                .lock()
+                .expect("fake decoder diagnostics queue lock")
+                .pop_front()
         }
 
         fn try_recv_error(&self) -> Option<DecodeThreadError> {
@@ -3621,6 +3646,32 @@ mod tests {
         pipeline.note_video_packets_completed_by_decoder(completed_packet_count);
 
         assert_eq!(pipeline.video_decode_in_flight_packets(), 1);
+    }
+
+    #[test]
+    fn playback_pipeline_decoder_boundary_forwards_diagnostic_events() {
+        let mut pipeline = PlaybackPipeline::default();
+        let fake_decoder = SharedFakeVideoDecoderThread::new();
+        let pressure = video_core::VideoFramePublishPressureDiagnostics {
+            frame_publish_channel_full_count: 2,
+            pending_publish_retry_count: 1,
+            max_decoded_frame_publish_latency: Duration::from_millis(8),
+            total_decoded_frame_publish_latency: Duration::from_millis(8),
+        };
+        fake_decoder.push_diagnostic_event(
+            video_core::VideoDecoderDiagnosticEvent::DecodedFramePublishPressure { pressure },
+        );
+        pipeline.set_video_decoder_thread(fake_decoder);
+
+        let event = pipeline
+            .try_recv_video_decoder_diagnostic_event()
+            .expect("fake decoder diagnostic event should cross pipeline boundary");
+
+        assert_eq!(
+            event,
+            video_core::VideoDecoderDiagnosticEvent::DecodedFramePublishPressure { pressure }
+        );
+        assert!(pipeline.try_recv_video_decoder_diagnostic_event().is_none());
     }
 
     #[test]

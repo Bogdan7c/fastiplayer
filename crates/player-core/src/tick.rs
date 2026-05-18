@@ -1003,6 +1003,9 @@ fn drain_video_decoder_thread_diagnostics(
                 };
                 record_video_drop(session, tick_result, pts, drop_reason);
             }
+            video_core::VideoDecoderDiagnosticEvent::DecodedFramePublishPressure { pressure } => {
+                session.record_decoded_frame_publish_pressure(pressure);
+            }
         }
     }
 }

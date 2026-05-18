@@ -19,7 +19,9 @@ use crossbeam_channel::{
 };
 use media_core::{Packet, TrackId, TrackKind};
 use tracing::{info, trace};
-use video_core::{DecodedFrame, VideoDecoder, VideoDecoderDiagnosticEvent};
+use video_core::{
+    DecodedFrame, VideoDecoder, VideoDecoderDiagnosticEvent, VideoFramePublishPressureDiagnostics,
+};
 
 use crate::decoder::VaapiDecoderRuntimeConfig;
 use crate::texture_cache::{DEFAULT_ZERO_COPY_SURFACE_POOL_SLOTS, TexturePoolStats};
@@ -32,6 +34,12 @@ type DecodePacketAck = ();
 
 /// Bounded capacity diagnostics events от decoder thread.
 const DECODER_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
+
+/// Sender typed diagnostics events без зависимости decoder thread-а от player-core.
+type DecoderDiagnosticSender = std::sync::mpsc::SyncSender<VideoDecoderDiagnosticEvent>;
+
+/// Receiver typed diagnostics events для player-core drain boundary.
+type DecoderDiagnosticReceiver = std::sync::mpsc::Receiver<VideoDecoderDiagnosticEvent>;
 
 /// Production default packet channel между worker и decoder thread.
 ///
@@ -649,7 +657,7 @@ pub struct VideoDecodeThread {
     frame_rx: Receiver<DecodedFrame>,
     packet_ack_rx: Receiver<DecodePacketAck>,
     error_rx: Receiver<DecodeThreadError>,
-    diagnostic_rx: std::sync::mpsc::Receiver<VideoDecoderDiagnosticEvent>,
+    diagnostic_rx: DecoderDiagnosticReceiver,
     queue: Arc<wgpu::Queue>,
     texture_pool: Arc<Mutex<crate::texture_cache::WgpuTexturePool>>,
     thread_state: DecoderThreadState,
@@ -712,9 +720,9 @@ impl VideoDecodeThread {
         let (frame_tx, frame_rx) = bounded::<DecodedFrame>(config.frame_channel_frames);
         let (packet_ack_tx, packet_ack_rx) = unbounded::<DecodePacketAck>();
         let (error_tx, error_rx) = bounded::<DecodeThreadError>(1);
-        let (diagnostic_tx, diagnostic_rx) = std::sync::mpsc::sync_channel::<
-            VideoDecoderDiagnosticEvent,
-        >(DECODER_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let (diagnostic_tx, diagnostic_rx) =
+            std::sync::mpsc::sync_channel(DECODER_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let thread_diagnostic_tx = diagnostic_tx.clone();
         let (init_tx, init_rx) = bounded::<anyhow::Result<()>>(1);
         let thread_state = DecoderThreadState::new();
         let decoder_runtime_config = config.vaapi_decoder_config();
@@ -757,6 +765,7 @@ impl VideoDecodeThread {
                     frame_tx,
                     packet_ack_tx,
                     error_tx,
+                    thread_diagnostic_tx,
                 );
                 info!("Decoder thread exiting");
             })
@@ -1029,6 +1038,9 @@ struct PendingFramePublish {
 
     /// Монотонный момент начала publish stage.
     publish_started_at: Instant,
+
+    /// Был ли этот frame уже остановлен заполненным bounded frame channel.
+    has_seen_channel_full: bool,
 }
 
 impl PendingFramePublish {
@@ -1037,7 +1049,52 @@ impl PendingFramePublish {
         Self {
             frame,
             publish_started_at: Instant::now(),
+            has_seen_channel_full: false,
         }
+    }
+
+    /// Помечает frame как ожидающий свободного места в bounded frame channel.
+    fn mark_channel_full(&mut self) {
+        self.has_seen_channel_full = true;
+    }
+}
+
+/// Локальные counters decoder thread-а для decoded-frame publish boundary.
+#[derive(Debug, Default)]
+struct FramePublishPressureCounters {
+    /// Накопительный snapshot, который можно отправлять через diagnostics event.
+    pressure: VideoFramePublishPressureDiagnostics,
+}
+
+impl FramePublishPressureCounters {
+    /// Учитывает заполненный bounded frame channel без изменения publish lifecycle.
+    fn record_channel_full(&mut self) {
+        self.pressure.frame_publish_channel_full_count = self
+            .pressure
+            .frame_publish_channel_full_count
+            .saturating_add(1);
+    }
+
+    /// Учитывает повторную попытку публикации уже pending frame.
+    fn record_pending_retry(&mut self) {
+        self.pressure.pending_publish_retry_count =
+            self.pressure.pending_publish_retry_count.saturating_add(1);
+    }
+
+    /// Учитывает latency только один раз: когда frame реально опубликован worker-у.
+    fn record_published_latency(&mut self, latency: Duration) {
+        self.pressure.total_decoded_frame_publish_latency = self
+            .pressure
+            .total_decoded_frame_publish_latency
+            .saturating_add(latency);
+        if latency > self.pressure.max_decoded_frame_publish_latency {
+            self.pressure.max_decoded_frame_publish_latency = latency;
+        }
+    }
+
+    /// Возвращает копию counters для неблокирующей отправки в diagnostics channel.
+    fn snapshot(&self) -> VideoFramePublishPressureDiagnostics {
+        self.pressure
     }
 }
 
@@ -1059,8 +1116,10 @@ fn decoder_thread_loop(
     frame_tx: Sender<DecodedFrame>,
     packet_ack_tx: Sender<DecodePacketAck>,
     error_tx: Sender<DecodeThreadError>,
+    diagnostic_tx: DecoderDiagnosticSender,
 ) {
     let mut pending_publish: Option<PendingFramePublish> = None;
+    let mut publish_pressure = FramePublishPressureCounters::default();
     let mut latest_color_metadata: Option<VideoColorMetadata> = None;
 
     loop {
@@ -1074,7 +1133,12 @@ fn decoder_thread_loop(
             break;
         }
 
-        if !publish_pending_frame(&frame_tx, &mut pending_publish) {
+        if !publish_pending_frame(
+            &frame_tx,
+            &mut pending_publish,
+            &mut publish_pressure,
+            &diagnostic_tx,
+        ) {
             break;
         }
 
@@ -1132,6 +1196,8 @@ fn decoder_thread_loop(
                             &packet_ack_tx,
                             &error_tx,
                             &mut pending_publish,
+                            &mut publish_pressure,
+                            &diagnostic_tx,
                             &mut latest_color_metadata,
                         ) {
                             break;
@@ -1252,6 +1318,8 @@ fn decode_queued_packet(
     packet_ack_tx: &Sender<DecodePacketAck>,
     error_tx: &Sender<DecodeThreadError>,
     pending_publish: &mut Option<PendingFramePublish>,
+    publish_pressure: &mut FramePublishPressureCounters,
+    diagnostic_tx: &DecoderDiagnosticSender,
     latest_color_metadata: &mut Option<VideoColorMetadata>,
 ) -> bool {
     let packet_receive_latency = queued_packet.enqueued_at.elapsed();
@@ -1284,7 +1352,7 @@ fn decode_queued_packet(
             }
             frame.diagnostics.timings.decoder_packet_receive_latency = Some(packet_receive_latency);
             *pending_publish = Some(PendingFramePublish::new(frame));
-            publish_pending_frame(frame_tx, pending_publish)
+            publish_pending_frame(frame_tx, pending_publish, publish_pressure, diagnostic_tx)
         }
         Ok(None) => true,
         Err(error) => {
@@ -1307,27 +1375,52 @@ fn decode_queued_packet(
 fn publish_pending_frame(
     frame_tx: &Sender<DecodedFrame>,
     pending_publish: &mut Option<PendingFramePublish>,
+    publish_pressure: &mut FramePublishPressureCounters,
+    diagnostic_tx: &DecoderDiagnosticSender,
 ) -> bool {
     let Some(mut pending_frame) = pending_publish.take() else {
         return true;
     };
 
+    let is_retry = pending_frame.has_seen_channel_full;
+    let publish_latency = pending_frame.publish_started_at.elapsed();
     pending_frame
         .frame
         .diagnostics
         .timings
-        .decoded_frame_publish_latency = Some(pending_frame.publish_started_at.elapsed());
+        .decoded_frame_publish_latency = Some(publish_latency);
 
     match frame_tx.try_send(pending_frame.frame) {
-        Ok(()) => true,
+        Ok(()) => {
+            if is_retry {
+                publish_pressure.record_pending_retry();
+            }
+            publish_pressure.record_published_latency(publish_latency);
+            if is_retry {
+                send_frame_publish_pressure_event(diagnostic_tx, publish_pressure.snapshot());
+            }
+            true
+        }
         Err(TrySendError::Full(frame)) => {
-            *pending_publish = Some(PendingFramePublish {
+            if is_retry {
+                publish_pressure.record_pending_retry();
+            }
+            publish_pressure.record_channel_full();
+            let mut blocked_frame = PendingFramePublish {
                 frame,
                 publish_started_at: pending_frame.publish_started_at,
-            });
+                has_seen_channel_full: pending_frame.has_seen_channel_full,
+            };
+            blocked_frame.mark_channel_full();
+            *pending_publish = Some(blocked_frame);
+            send_frame_publish_pressure_event(diagnostic_tx, publish_pressure.snapshot());
             true
         }
         Err(TrySendError::Disconnected(frame)) => {
+            if is_retry {
+                publish_pressure.record_pending_retry();
+                send_frame_publish_pressure_event(diagnostic_tx, publish_pressure.snapshot());
+            }
             tracing::warn!(
                 handle_id = frame.texture_handle.0,
                 "Player thread dropped decoded frame receiver"
@@ -1335,10 +1428,20 @@ fn publish_pending_frame(
             *pending_publish = Some(PendingFramePublish {
                 frame,
                 publish_started_at: pending_frame.publish_started_at,
+                has_seen_channel_full: pending_frame.has_seen_channel_full,
             });
             false
         }
     }
+}
+
+/// Отправляет cumulative publish-pressure snapshot без блокировки decoder thread-а.
+fn send_frame_publish_pressure_event(
+    diagnostic_tx: &DecoderDiagnosticSender,
+    pressure: VideoFramePublishPressureDiagnostics,
+) {
+    let _ = diagnostic_tx
+        .try_send(VideoDecoderDiagnosticEvent::DecodedFramePublishPressure { pressure });
 }
 
 /// Освобождает frame, который decoder уже импортировал, но не успел отдать worker-у.
@@ -1535,20 +1638,54 @@ mod tests {
     #[test]
     fn frame_publish_keeps_pending_frame_when_channel_is_full() {
         let (frame_tx, frame_rx) = bounded(1);
+        let (diagnostic_tx, diagnostic_rx) = std::sync::mpsc::sync_channel(4);
+        let mut publish_pressure = FramePublishPressureCounters::default();
         frame_tx
             .try_send(decoded_frame_for_tests(1))
             .expect("test channel has one free slot");
         let mut pending_publish = Some(PendingFramePublish::new(decoded_frame_for_tests(2)));
 
-        assert!(publish_pending_frame(&frame_tx, &mut pending_publish));
+        assert!(publish_pending_frame(
+            &frame_tx,
+            &mut pending_publish,
+            &mut publish_pressure,
+            &diagnostic_tx,
+        ));
         assert!(pending_publish.is_some());
+        let first_pressure = match diagnostic_rx
+            .try_recv()
+            .expect("full frame channel should emit pressure diagnostics")
+        {
+            VideoDecoderDiagnosticEvent::DecodedFramePublishPressure { pressure } => pressure,
+            VideoDecoderDiagnosticEvent::FrameDropped { .. } => {
+                panic!("publish pressure test should not emit frame drop diagnostics")
+            }
+        };
+        assert_eq!(first_pressure.frame_publish_channel_full_count, 1);
+        assert_eq!(first_pressure.pending_publish_retry_count, 0);
         assert_eq!(
             frame_rx.try_recv().unwrap().texture_handle,
             FrameTextureHandle(1)
         );
 
-        assert!(publish_pending_frame(&frame_tx, &mut pending_publish));
+        assert!(publish_pending_frame(
+            &frame_tx,
+            &mut pending_publish,
+            &mut publish_pressure,
+            &diagnostic_tx,
+        ));
         assert!(pending_publish.is_none());
+        let retry_pressure = match diagnostic_rx
+            .try_recv()
+            .expect("successful retry should emit retry diagnostics")
+        {
+            VideoDecoderDiagnosticEvent::DecodedFramePublishPressure { pressure } => pressure,
+            VideoDecoderDiagnosticEvent::FrameDropped { .. } => {
+                panic!("publish retry test should not emit frame drop diagnostics")
+            }
+        };
+        assert_eq!(retry_pressure.frame_publish_channel_full_count, 1);
+        assert_eq!(retry_pressure.pending_publish_retry_count, 1);
         let published_frame = frame_rx.try_recv().unwrap();
         assert_eq!(published_frame.texture_handle, FrameTextureHandle(2));
         assert!(
@@ -1557,6 +1694,10 @@ mod tests {
                 .timings
                 .decoded_frame_publish_latency
                 .is_some()
+        );
+        assert_eq!(
+            retry_pressure.max_decoded_frame_publish_latency,
+            retry_pressure.total_decoded_frame_publish_latency
         );
     }
 

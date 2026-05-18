@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use video_core::{DecodedFrame, FrameMemoryPath};
+use video_core::{DecodedFrame, FrameMemoryPath, VideoFramePublishPressureDiagnostics};
 
 /// Максимум latency samples, которые diagnostics держит в памяти.
 const RECENT_WORST_SAMPLE_LIMIT: usize = 16;
@@ -382,6 +382,41 @@ pub struct PipelinePauseSnapshot {
     pub queues: PipelineQueueDepthSnapshot,
 }
 
+/// Snapshot давления на decoder->worker publish boundary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DecoderFramePublishPressureSnapshot {
+    /// Сколько раз bounded decoded-frame channel был заполнен.
+    pub frame_publish_channel_full_count: u64,
+
+    /// Максимальная latency publish stage среди decoded frames, дошедших до player diagnostics.
+    pub max_decoded_frame_publish_latency: Duration,
+
+    /// Суммарная latency publish stage среди decoded frames, дошедших до player diagnostics.
+    pub total_decoded_frame_publish_latency: Duration,
+
+    /// Сколько retry attempts сделал decoder thread для pending publish frame.
+    pub pending_publish_retry_count: u64,
+}
+
+impl DecoderFramePublishPressureSnapshot {
+    /// Обновляет channel-pressure counters из decoder-thread event-а.
+    fn observe_pressure_event(&mut self, pressure: VideoFramePublishPressureDiagnostics) {
+        // Latency totals считаются из `DecodedFrame`: event может прийти раньше frame drain-а.
+        self.frame_publish_channel_full_count = pressure.frame_publish_channel_full_count;
+        self.pending_publish_retry_count = pressure.pending_publish_retry_count;
+    }
+
+    /// Учитывает publish latency ровно один раз после получения decoded frame.
+    fn observe_published_frame_latency(&mut self, latency: Duration) {
+        self.total_decoded_frame_publish_latency = self
+            .total_decoded_frame_publish_latency
+            .saturating_add(latency);
+        if latency > self.max_decoded_frame_publish_latency {
+            self.max_decoded_frame_publish_latency = latency;
+        }
+    }
+}
+
 /// Причина, по которой worker запланировал следующий playback wakeup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerWakeupReason {
@@ -613,6 +648,9 @@ pub struct PlaybackDiagnosticsSnapshot {
     /// Сколько раз renderer переиспользовал previous valid frame из-за busy lock-а.
     pub texture_view_previous_frame_reuse_count: u64,
 
+    /// Давление на bounded decoder->worker decoded-frame publish channel.
+    pub decoder_frame_publish_pressure: DecoderFramePublishPressureSnapshot,
+
     /// Последнее решение worker wakeup planner-а.
     pub worker_wakeup: WorkerWakeupDiagnosticsSnapshot,
 }
@@ -631,6 +669,7 @@ impl Default for PlaybackDiagnosticsSnapshot {
             repeated_video_frames: 0,
             texture_view_lock_busy_count: 0,
             texture_view_previous_frame_reuse_count: 0,
+            decoder_frame_publish_pressure: DecoderFramePublishPressureSnapshot::default(),
             worker_wakeup: WorkerWakeupDiagnosticsSnapshot::default(),
         }
     }
@@ -663,6 +702,9 @@ pub struct PlaybackDiagnosticsLogSummary {
     /// Сколько раз renderer переиспользовал previous valid frame из-за busy lock-а.
     pub texture_view_previous_frame_reuse_count: u64,
 
+    /// Давление на bounded decoder->worker decoded-frame publish channel.
+    pub decoder_frame_publish_pressure: DecoderFramePublishPressureSnapshot,
+
     /// Последнее решение worker wakeup planner-а.
     pub worker_wakeup: WorkerWakeupDiagnosticsSnapshot,
 
@@ -687,6 +729,14 @@ impl PlaybackDiagnosticsLogSummary {
             || self.pauses_total > 0
             || self.texture_view_lock_busy_count > 0
             || self.texture_view_previous_frame_reuse_count > 0
+            || self
+                .decoder_frame_publish_pressure
+                .frame_publish_channel_full_count
+                > 0
+            || self
+                .decoder_frame_publish_pressure
+                .pending_publish_retry_count
+                > 0
             || self.zero_copy_memory_path.is_some()
             || self.worst_latency.is_some()
     }
@@ -780,6 +830,23 @@ impl PlaybackDiagnostics {
             Some(frame.memory_path),
             queues,
         );
+        if let Some(latency) = frame.diagnostics.timings.decoded_frame_publish_latency {
+            self.snapshot
+                .decoder_frame_publish_pressure
+                .observe_published_frame_latency(latency);
+        }
+    }
+
+    /// Записывает pressure counters, пришедшие от decoder-thread publish boundary.
+    pub(crate) fn record_decoded_frame_publish_pressure(
+        &mut self,
+        pressure: VideoFramePublishPressureDiagnostics,
+        queues: PipelineQueueDepthSnapshot,
+    ) {
+        self.snapshot
+            .decoder_frame_publish_pressure
+            .observe_pressure_event(pressure);
+        self.snapshot.queues = queues;
     }
 
     /// Записывает latency sample конкретной stage.
@@ -987,6 +1054,7 @@ impl PlaybackDiagnostics {
             texture_view_previous_frame_reuse_count: self
                 .snapshot
                 .texture_view_previous_frame_reuse_count,
+            decoder_frame_publish_pressure: self.snapshot.decoder_frame_publish_pressure,
             worker_wakeup: self.snapshot.worker_wakeup,
             worst_stage,
             worst_latency,
@@ -1319,6 +1387,47 @@ mod tests {
         assert_eq!(snapshot.worst_latencies.decoder_submit.samples, 1);
         assert_eq!(snapshot.worst_latencies.dma_buf_import.samples, 1);
         assert!(snapshot.recent_worst_samples.len() <= RECENT_WORST_SAMPLE_LIMIT);
+    }
+
+    #[test]
+    fn aggregation_records_decoder_frame_publish_pressure_snapshot() {
+        let mut diagnostics = PlaybackDiagnostics::new();
+        let queues = queue_depths_for_tests(2);
+        let pressure = VideoFramePublishPressureDiagnostics {
+            frame_publish_channel_full_count: 3,
+            pending_publish_retry_count: 2,
+            max_decoded_frame_publish_latency: Duration::from_millis(99),
+            total_decoded_frame_publish_latency: Duration::from_millis(150),
+        };
+        let mut first_frame = decoded_frame_for_tests();
+        first_frame
+            .diagnostics
+            .timings
+            .decoded_frame_publish_latency = Some(Duration::from_millis(4));
+        let mut second_frame = decoded_frame_for_tests();
+        second_frame
+            .diagnostics
+            .timings
+            .decoded_frame_publish_latency = Some(Duration::from_millis(6));
+
+        diagnostics.record_decoded_frame_publish_pressure(pressure, queues);
+        diagnostics.observe_decoded_frame(&first_frame, queues);
+        diagnostics.observe_decoded_frame(&second_frame, queues);
+
+        let snapshot = diagnostics.snapshot_with_queues(queues);
+        let publish_pressure = snapshot.decoder_frame_publish_pressure;
+
+        assert_eq!(publish_pressure.frame_publish_channel_full_count, 3);
+        assert_eq!(publish_pressure.pending_publish_retry_count, 2);
+        assert_eq!(
+            publish_pressure.max_decoded_frame_publish_latency,
+            Duration::from_millis(6)
+        );
+        assert_eq!(
+            publish_pressure.total_decoded_frame_publish_latency,
+            Duration::from_millis(10)
+        );
+        assert_eq!(snapshot.worst_latencies.decoded_frame_publish.samples, 2);
     }
 
     #[test]

@@ -87,6 +87,22 @@ pub enum VideoDecoderDropReason {
     ReadyQueueOverflow,
 }
 
+/// Накопительная диагностика давления на публикацию decoded frames.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VideoFramePublishPressureDiagnostics {
+    /// Сколько раз bounded decoder->worker frame channel был заполнен.
+    pub frame_publish_channel_full_count: u64,
+
+    /// Максимальная latency publish stage среди успешно опубликованных кадров.
+    pub max_decoded_frame_publish_latency: Duration,
+
+    /// Суммарная latency publish stage среди успешно опубликованных кадров.
+    pub total_decoded_frame_publish_latency: Duration,
+
+    /// Сколько повторных publish attempts сделано для уже pending frame.
+    pub pending_publish_retry_count: u64,
+}
+
 /// Typed diagnostics event от video backend-а в player-core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoDecoderDiagnosticEvent {
@@ -97,5 +113,11 @@ pub enum VideoDecoderDiagnosticEvent {
 
         /// Backend-local typed причина удаления.
         reason: VideoDecoderDropReason,
+    },
+
+    /// Decoder thread встретил pressure на bounded decoded-frame publish channel.
+    DecodedFramePublishPressure {
+        /// Накопительные counters publish boundary.
+        pressure: VideoFramePublishPressureDiagnostics,
     },
 }

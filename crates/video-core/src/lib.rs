@@ -7,6 +7,6 @@ pub use decoder::{
 };
 pub use diagnostics::{
     VideoDecoderDiagnosticEvent, VideoDecoderDropReason, VideoFrameDiagnostics,
-    VideoFrameTimingDiagnostics, VideoTexturePoolDiagnostics,
+    VideoFramePublishPressureDiagnostics, VideoFrameTimingDiagnostics, VideoTexturePoolDiagnostics,
 };
 pub use sync::{AvSync, FrameAction};

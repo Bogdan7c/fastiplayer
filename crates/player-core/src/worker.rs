@@ -1755,6 +1755,7 @@ impl PlayerWorkerRuntime {
         let texture_slots = summary.queues.texture_slots;
         let latencies = summary.worst_latencies;
         let texture_view_lock_wait = latencies.texture_view_lock_wait;
+        let publish_pressure = summary.decoder_frame_publish_pressure;
         debug!(
             drops = summary.drops_total,
             drops_late = summary.drops.late,
@@ -1769,6 +1770,14 @@ impl PlayerWorkerRuntime {
             repeated_video_frames = summary.repeated_video_frames,
             texture_view_lock_busy_count = summary.texture_view_lock_busy_count,
             texture_view_previous_frame_reuse_count = summary.texture_view_previous_frame_reuse_count,
+            decoder_publish_channel_full_count = publish_pressure.frame_publish_channel_full_count,
+            decoder_publish_retry_count = publish_pressure.pending_publish_retry_count,
+            decoder_publish_total_ms = duration_to_millis(
+                publish_pressure.total_decoded_frame_publish_latency
+            ),
+            decoder_publish_max_ms = duration_to_millis(
+                publish_pressure.max_decoded_frame_publish_latency
+            ),
             memory_path = ?summary.zero_copy_memory_path,
             worst_stage,
             worst_latency_ms,

@@ -1241,6 +1241,18 @@ impl AppState {
             "Worker repeats: {}",
             player_snapshot.diagnostics.repeated_video_frames
         ));
+        let publish_pressure = player_snapshot.diagnostics.decoder_frame_publish_pressure;
+        ui.monospace(format!(
+            "Decoder publish pressure: {}",
+            publish_pressure.frame_publish_channel_full_count
+        ));
+        ui.monospace(format!(
+            "Publish max: {:.3}ms",
+            publish_pressure
+                .max_decoded_frame_publish_latency
+                .as_secs_f64()
+                * 1000.0
+        ));
         ui.monospace(format!("Frame dur: {:.2}ms", frame_duration_estimate_ms));
         let worker_wakeup = player_snapshot.diagnostics.worker_wakeup;
         if let Some(reason) = worker_wakeup.reason {
