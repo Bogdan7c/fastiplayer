@@ -47,6 +47,9 @@ const DEFAULT_DECODER_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(
 /// Ёмкость основной очереди команд без high-frequency scrub updates.
 const COMMAND_CHANNEL_CAPACITY: usize = 128;
 
+/// Максимум ordinary worker command-ов перед обязательной проверкой render/scrub/tick.
+const MAX_COMMANDS_PER_LOOP: usize = 8;
+
 /// Ёмкость wake-очереди scrub updates; сами координаты лежат в latest-slot.
 const SCRUB_WAKE_CHANNEL_CAPACITY: usize = 1;
 
@@ -1020,29 +1023,23 @@ impl PlayerWorkerRuntime {
         self.publish_session_outputs();
 
         loop {
-            self.render_bridge.drain_releases(&mut self.session);
-            self.render_bridge.drain_diagnostics(&mut self.session);
+            self.drain_render_feedback();
 
             if self.shutdown_rx.try_recv().is_ok() {
                 self.handle_shutdown_request();
                 break;
             }
 
-            if let Some(command) = self.receive_next_command() {
-                self.handle_worker_command(command);
-                self.publish_session_outputs();
-                if self.session.is_shutdown_requested() {
-                    break;
-                }
-                continue;
-            }
-
-            self.apply_latest_scrub_update();
-            self.dispatch_due_preview_scrub_seek();
+            let processed_commands = self.drain_pending_command_batch();
+            self.service_worker_fairness_checkpoint(processed_commands);
             self.log_active_seek_stall_if_needed(Instant::now());
 
             if self.session.is_shutdown_requested() {
                 break;
+            }
+
+            if processed_commands == MAX_COMMANDS_PER_LOOP {
+                continue;
             }
 
             if self.wait_for_worker_wakeup() {
@@ -1051,6 +1048,43 @@ impl PlayerWorkerRuntime {
         }
 
         self.publish_session_outputs();
+    }
+
+    /// Снимает render feedback, которым worker владеет как частью session lifecycle.
+    fn drain_render_feedback(&mut self) {
+        self.render_bridge.drain_releases(&mut self.session);
+        self.render_bridge.drain_diagnostics(&mut self.session);
+    }
+
+    /// Обрабатывает bounded batch pending command-ов без монополизации worker loop-а.
+    fn drain_pending_command_batch(&mut self) -> usize {
+        let mut processed_commands = 0;
+
+        for _ in 0..MAX_COMMANDS_PER_LOOP {
+            let Some(command) = self.receive_next_command() else {
+                break;
+            };
+
+            self.handle_worker_command(command);
+            self.publish_session_outputs();
+            processed_commands += 1;
+
+            if self.session.is_shutdown_requested() {
+                break;
+            }
+        }
+
+        processed_commands
+    }
+
+    /// Обязательная fairness-точка после command batch-а.
+    fn service_worker_fairness_checkpoint(&mut self, processed_commands: usize) {
+        self.drain_render_feedback();
+        self.apply_latest_scrub_update();
+        self.dispatch_due_preview_scrub_seek();
+        if processed_commands > 0 {
+            self.run_overdue_playback_tick();
+        }
     }
 
     /// Ждёт ближайший command/render/shutdown wakeup вместо fixed idle polling.
@@ -1195,6 +1229,19 @@ impl PlayerWorkerRuntime {
     /// Возвращает время до throttled preview seek-а во время interactive scrub.
     fn next_preview_scrub_timeout(&self, now: Instant) -> Option<Duration> {
         self.scrub_driver.next_preview_scrub_timeout(now)
+    }
+
+    /// Выполняет playback tick без ожидания, если media planner уже вернул due deadline.
+    fn run_overdue_playback_tick(&mut self) {
+        let Some((timeout, WorkerWakeupDeadline::Playback { plan, deadline })) =
+            self.next_playback_wakeup_deadline(Instant::now())
+        else {
+            return;
+        };
+
+        if timeout.is_zero() {
+            self.run_tick_for_wakeup_plan(plan, deadline);
+        }
     }
 
     /// Обрабатывает wakeup от основной очереди команд.
@@ -2006,7 +2053,13 @@ mod tests {
     }
 
     fn runtime_for_tests(last_tick_at: Instant) -> PlayerWorkerRuntime {
-        let (_command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
+        runtime_for_tests_with_command_sender(last_tick_at).0
+    }
+
+    fn runtime_for_tests_with_command_sender(
+        last_tick_at: Instant,
+    ) -> (PlayerWorkerRuntime, Sender<WorkerCommand>) {
+        let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
         let (scrub_wake_tx, scrub_wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
         let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
         let (event_tx, _event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
@@ -2015,22 +2068,25 @@ mod tests {
         let config = worker_config_for_tests();
         let scrub_coalescer = Arc::new(ScrubUpdateCoalescer::new(scrub_wake_tx));
 
-        PlayerWorkerRuntime {
-            session: PlayerSession::with_demuxer_options(config.demuxer_options),
-            scrub_driver: ScrubDriver::new(config.live_scrub_preview_interval),
-            command_rx,
-            scrub_wake_rx,
-            scrub_coalescer,
-            snapshot_publisher: LatestSnapshotPublisher::new(snapshot_tx, snapshot_rx),
-            event_tx,
-            render_bridge,
-            shutdown_rx,
-            config,
-            last_tick_at,
-            last_diagnostics_summary_at: last_tick_at,
-            last_seek_stall_log_key: None,
-            last_seek_stall_log_at: None,
-        }
+        (
+            PlayerWorkerRuntime {
+                session: PlayerSession::with_demuxer_options(config.demuxer_options),
+                scrub_driver: ScrubDriver::new(config.live_scrub_preview_interval),
+                command_rx,
+                scrub_wake_rx,
+                scrub_coalescer,
+                snapshot_publisher: LatestSnapshotPublisher::new(snapshot_tx, snapshot_rx),
+                event_tx,
+                render_bridge,
+                shutdown_rx,
+                config,
+                last_tick_at,
+                last_diagnostics_summary_at: last_tick_at,
+                last_seek_stall_log_key: None,
+                last_seek_stall_log_at: None,
+            },
+            command_tx,
+        )
     }
 
     fn command_sender_for_scrub_path_tests() -> (
@@ -2949,6 +3005,58 @@ mod tests {
         runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
 
         assert!(runtime.next_worker_wakeup_deadline().is_some());
+    }
+
+    #[test]
+    fn command_batch_yields_to_overdue_tick_during_command_storm() {
+        let (mut runtime, command_tx) = runtime_for_tests_with_command_sender(Instant::now());
+        runtime.config.coarse_wakeup_interval = Duration::ZERO;
+        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
+
+        for command_index in 0..MAX_COMMANDS_PER_LOOP * 2 {
+            command_tx
+                .try_send(WorkerCommand::SetSystemCapabilities(
+                    SystemCapabilities::empty(command_index as u64),
+                ))
+                .unwrap();
+        }
+
+        let previous_tick_at = runtime.last_tick_at;
+        let processed_commands = runtime.drain_pending_command_batch();
+        runtime.service_worker_fairness_checkpoint(processed_commands);
+
+        assert_eq!(processed_commands, MAX_COMMANDS_PER_LOOP);
+        assert_eq!(runtime.command_rx.len(), MAX_COMMANDS_PER_LOOP);
+        assert!(runtime.last_tick_at > previous_tick_at);
+    }
+
+    #[test]
+    fn command_batch_yields_to_latest_scrub_update_during_command_storm() {
+        let (mut runtime, command_tx) = runtime_for_tests_with_command_sender(Instant::now());
+        let generation = runtime.scrub_driver.next_begin_generation();
+        runtime.handle_worker_command(WorkerCommand::BeginScrub { generation });
+        runtime
+            .scrub_coalescer
+            .submit_latest(scrub_update_intent(generation, 750))
+            .unwrap();
+
+        for command_index in 0..MAX_COMMANDS_PER_LOOP * 2 {
+            command_tx
+                .try_send(WorkerCommand::SetSystemCapabilities(
+                    SystemCapabilities::empty(command_index as u64),
+                ))
+                .unwrap();
+        }
+
+        let processed_commands = runtime.drain_pending_command_batch();
+        runtime.service_worker_fairness_checkpoint(processed_commands);
+
+        assert_eq!(processed_commands, MAX_COMMANDS_PER_LOOP);
+        assert_eq!(runtime.command_rx.len(), MAX_COMMANDS_PER_LOOP);
+        assert_eq!(
+            runtime.scrub_driver.latest_scrub_target(),
+            Some(seek_to_millis(750))
+        );
     }
 
     #[test]
