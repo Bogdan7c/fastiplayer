@@ -38,7 +38,7 @@ use render_core::{
     ColorAdjustment, ColorPipelineSettings, HdrOutputMode, HdrToSdrSettings,
     HdrToneMappingOperator, RenderCapabilities, SwapchainTransferMode,
 };
-use render_wgpu::{RenderFrameOutcome, Renderer};
+use render_wgpu::{RenderFrameDropReason, RenderFrameOutcome, Renderer};
 use rustiplayer_config::{AppConfig, HdrToSdrOperatorConfig};
 use tracing::{debug, info, instrument, warn};
 use video_core::DecodedPixelFormat;
@@ -307,12 +307,15 @@ impl App {
 
     /// Освобождает runtime-ресурсы в порядке, безопасном для GPU/audio cleanup.
     fn drop_runtime(&mut self) {
-        if let Some(app_state) = &self.app_state
-            && let Some(path) = app_state.current_local_file()
-        {
-            self.initial_media = Some(InitialMedia::File(path.to_path_buf()));
-            self.startup_error = None;
+        if let Some(app_state) = &mut self.app_state {
+            app_state.clear_cached_present_frame_for_runtime_drop();
+
+            if let Some(path) = app_state.current_local_file() {
+                self.initial_media = Some(InitialMedia::File(path.to_path_buf()));
+                self.startup_error = None;
+            }
         }
+
         self.app_state = None;
         self.renderer = None;
     }
@@ -632,17 +635,36 @@ fn record_player_tick_result(telemetry: &Telemetry, tick_result: &PlayerTickResu
     }
 }
 
-/// Переносит worker event stream в shell telemetry.
-fn record_worker_events(telemetry: &Telemetry, events: Vec<PlayerWorkerEvent>) {
+/// Переносит worker event stream в shell telemetry и app-level lifecycle boundaries.
+fn record_worker_events(
+    telemetry: &Telemetry,
+    app_state: &mut AppState,
+    events: Vec<PlayerWorkerEvent>,
+) {
     for event in events {
         match event {
             PlayerWorkerEvent::Tick(tick_result) => {
                 record_player_tick_result(telemetry, &tick_result);
             }
-            PlayerWorkerEvent::RenderError(_) => {}
-            PlayerWorkerEvent::Player(_) => {}
+            PlayerWorkerEvent::RenderError(_) => {
+                app_state.clear_cached_present_frame_after_worker_render_error();
+            }
+            PlayerWorkerEvent::Player(player_event) => {
+                app_state.handle_cached_present_frame_player_event(&player_event);
+            }
         }
     }
+}
+
+/// Возвращает `true`, если surface drop означает разрыв lifecycle для cached texture.
+fn render_drop_reason_invalidates_cached_present_frame(reason: RenderFrameDropReason) -> bool {
+    matches!(
+        reason,
+        RenderFrameDropReason::SurfaceOccluded
+            | RenderFrameDropReason::SurfaceLost
+            | RenderFrameDropReason::SurfaceValidation
+            | RenderFrameDropReason::SurfaceOutdatedRecoveryFailed
+    )
 }
 
 /// Классифицирует core-причину удаления кадра для пользовательской telemetry.
@@ -687,7 +709,8 @@ fn render_frame(
 
     // Получаем ввод от egui_winit
     let egui_input = app_state.egui_winit_state.take_egui_input(window);
-    record_worker_events(telemetry, app_state.drain_worker_events());
+    let worker_events = app_state.drain_worker_events();
+    record_worker_events(telemetry, app_state, worker_events);
     let frame_context = app_state.begin_frame_context(renderer.diagnostics());
 
     // Рендерим egui UI — получаем paint jobs и texture updates
@@ -805,6 +828,7 @@ fn render_frame(
     };
 
     if let Some(error) = video_render_error {
+        app_state.clear_cached_present_frame_after_render_failure();
         app_state.report_render_error(error);
         tracing::debug!(
             acquisition = "render_error_reported",
@@ -827,9 +851,15 @@ fn render_frame(
             telemetry.record_frame_presented_to_surface();
             app_state.report_gpu_submit_present_latency(timing.submit_present_elapsed);
         }
-        RenderFrameOutcome::Dropped(_reason) => telemetry.record_surface_dropped_frame(),
+        RenderFrameOutcome::Dropped(reason) => {
+            telemetry.record_surface_dropped_frame();
+            if render_drop_reason_invalidates_cached_present_frame(reason) {
+                app_state.clear_cached_present_frame_after_surface_lifecycle_break();
+            }
+        }
         RenderFrameOutcome::Failed(failure) => {
             telemetry.record_surface_dropped_frame();
+            app_state.clear_cached_present_frame_after_render_failure();
             app_state.report_render_error(PlayerRenderError::render_device_lost(format!(
                 "Video render failed: {}",
                 failure.message
@@ -1017,7 +1047,7 @@ fn rgb_triplet_from_config(field: &'static str, values: &[f32]) -> Result<[f32; 
 mod tests {
     use super::*;
     use player_core::PlayerVideoFrameDrop;
-    use render_wgpu::RenderFrameFailure;
+    use render_wgpu::{RenderFrameDropReason, RenderFrameFailure};
 
     /// Проверяет, что identity config доезжает до renderer без изменения SDR картинки.
     #[test]
@@ -1075,6 +1105,26 @@ mod tests {
                 .message
                 .contains("WGPU renderable frame rejected decoded P010 frame")
         );
+    }
+
+    /// Проверяет, что cache чистится на lifecycle break, но не на transient timeout.
+    #[test]
+    fn surface_drop_reason_invalidates_cached_present_frame_only_on_lifecycle_break() {
+        assert!(render_drop_reason_invalidates_cached_present_frame(
+            RenderFrameDropReason::SurfaceLost
+        ));
+        assert!(render_drop_reason_invalidates_cached_present_frame(
+            RenderFrameDropReason::SurfaceOutdatedRecoveryFailed
+        ));
+        assert!(render_drop_reason_invalidates_cached_present_frame(
+            RenderFrameDropReason::SurfaceValidation
+        ));
+        assert!(render_drop_reason_invalidates_cached_present_frame(
+            RenderFrameDropReason::SurfaceOccluded
+        ));
+        assert!(!render_drop_reason_invalidates_cached_present_frame(
+            RenderFrameDropReason::SurfaceTimeout
+        ));
     }
 
     /// Проверяет, что seek-discard причины не попадают в пользовательский счётчик drops.

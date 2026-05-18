@@ -11,9 +11,9 @@ use capability_core::SystemCapabilities;
 use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
 use media_core::TrackKind;
 use player_core::{
-    FrameCounters, PlaybackState, PlayerCommand, PlayerPresentFrame, PlayerRenderError,
-    PlayerSnapshot, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PresentFrameTextureViews,
-    ScrubCommitPolicy, SeekRequest,
+    FrameCounters, PlaybackState, PlayerCommand, PlayerEvent, PlayerPresentFrame,
+    PlayerRenderError, PlayerSnapshot, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
+    PresentFrameTextureViews, ScrubCommitPolicy, SeekRequest,
 };
 use render_core::RenderDiagnostics;
 use rustiplayer_config::AppConfig;
@@ -117,6 +117,121 @@ struct CachedRenderablePresentFrame {
 
     /// Source label защищает от reuse после открытия другого media.
     source_label: Option<String>,
+}
+
+/// Причина явного освобождения cached present frame-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CachedPresentFrameDiscardReason {
+    /// Пользователь или shell начинает открывать другой media source.
+    MediaOpenBoundary,
+
+    /// Runtime с window/surface уничтожается целиком.
+    RuntimeDrop,
+
+    /// Player больше не держит текущий video frame для этой session.
+    CurrentVideoFrameMissing,
+
+    /// Cached frame относится к другому media source.
+    SourceLabelChanged,
+
+    /// Cached frame относится к старому render generation.
+    RenderGenerationChanged,
+
+    /// Swapchain/window lifecycle сделал cached texture небезопасной для удержания.
+    SurfaceLifecycleBreak,
+
+    /// Renderer/device path перешёл в fatal failure.
+    RenderFailure,
+
+    /// Worker сообщил render error вне текущего render call stack-а.
+    WorkerRenderError,
+
+    /// Player начал открытие media через event stream.
+    PlayerMediaOpenRequested,
+
+    /// Player завершил открытие media и source identity сменился на новую session.
+    PlayerMediaOpened,
+
+    /// Player остановил текущий media.
+    PlayerStopped,
+
+    /// Player перешёл в failed state.
+    PlayerFailed,
+
+    /// Player завершает session.
+    PlayerShutdownRequested,
+
+    /// Player сообщил fatal media/runtime error.
+    PlayerFatalError,
+}
+
+/// Данные для pure-проверки, остаётся ли cached frame валидным для текущего player snapshot-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedPresentFrameValidationState {
+    /// Есть ли у player-а текущий video frame в этой session.
+    current_video_frame_present: bool,
+
+    /// Совпадает ли media source cached frame-а с текущим source.
+    source_matches: bool,
+
+    /// Render generation cached frame-а.
+    cached_generation: u64,
+
+    /// Актуальное render generation из player snapshot-а.
+    current_generation: u64,
+}
+
+/// Возвращает причину invalidation, если cached frame нельзя больше reuse-ить.
+fn cached_present_frame_stale_reason(
+    state: CachedPresentFrameValidationState,
+) -> Option<CachedPresentFrameDiscardReason> {
+    if !state.current_video_frame_present {
+        return Some(CachedPresentFrameDiscardReason::CurrentVideoFrameMissing);
+    }
+
+    if !state.source_matches {
+        return Some(CachedPresentFrameDiscardReason::SourceLabelChanged);
+    }
+
+    if state.cached_generation != state.current_generation {
+        return Some(CachedPresentFrameDiscardReason::RenderGenerationChanged);
+    }
+
+    None
+}
+
+/// Мапит player event stream в cache lifecycle invalidation.
+fn cached_present_frame_discard_reason_for_player_event(
+    player_event: &PlayerEvent,
+) -> Option<CachedPresentFrameDiscardReason> {
+    match player_event {
+        PlayerEvent::MediaOpenRequested(_) => {
+            Some(CachedPresentFrameDiscardReason::PlayerMediaOpenRequested)
+        }
+        PlayerEvent::MediaOpened(_) => Some(CachedPresentFrameDiscardReason::PlayerMediaOpened),
+        PlayerEvent::PlaybackStateChanged(PlaybackState::Stopped) => {
+            Some(CachedPresentFrameDiscardReason::PlayerStopped)
+        }
+        PlayerEvent::PlaybackStateChanged(PlaybackState::Failed) => {
+            Some(CachedPresentFrameDiscardReason::PlayerFailed)
+        }
+        PlayerEvent::ShutdownRequested => {
+            Some(CachedPresentFrameDiscardReason::PlayerShutdownRequested)
+        }
+        PlayerEvent::FatalError(_) => Some(CachedPresentFrameDiscardReason::PlayerFatalError),
+        PlayerEvent::PlaybackStateChanged(_)
+        | PlayerEvent::PositionChanged(_)
+        | PlayerEvent::SeekRequested(_)
+        | PlayerEvent::VideoFrameReady(_)
+        | PlayerEvent::BufferingStateChanged(_)
+        | PlayerEvent::CapabilityScanCompleted(_)
+        | PlayerEvent::VideoTrackSelected(_)
+        | PlayerEvent::AudioTrackSelected(_)
+        | PlayerEvent::SubtitleTrackSelected(_)
+        | PlayerEvent::QualitySelectionChanged(_)
+        | PlayerEvent::ConfigReloadRequested
+        | PlayerEvent::RecoverableError(_) => None,
+    }
 }
 
 /// Минимальная state-модель для проверки safe previous-frame reuse без GPU handles.
@@ -405,7 +520,7 @@ impl AppState {
     /// Загружает локальный файл через playback worker.
     pub fn load_file(&mut self, path: &Path) {
         let autoplay = !self.app_config.player.start_paused;
-        self.clear_cached_present_frame();
+        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.clear_startup_status();
         self.current_local_file = Some(path.to_path_buf());
         if let Err(error) = self.player_worker.load_file(path, autoplay) {
@@ -423,7 +538,7 @@ impl AppState {
         demuxer: Box<dyn webm_demux::Demuxer + Send>,
     ) {
         let autoplay = !self.app_config.player.start_paused;
-        self.clear_cached_present_frame();
+        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.clear_startup_status();
         self.current_local_file = None;
         if let Err(error) = self.player_worker.load_demuxer(label, demuxer, autoplay) {
@@ -473,7 +588,9 @@ impl AppState {
 
         if let Some(mut present_frame) = self.player_worker.try_acquire_present_frame() {
             if present_frame.render_generation != player_snapshot.render_generation {
-                self.clear_cached_present_frame();
+                self.clear_cached_present_frame(
+                    CachedPresentFrameDiscardReason::RenderGenerationChanged,
+                );
                 return PresentFrameAcquisition::StaleFrameRejected;
             }
 
@@ -524,29 +641,24 @@ impl AppState {
             return false;
         };
 
-        if player_snapshot.current_video_frame.is_none() {
-            self.clear_cached_present_frame();
+        let validation_state = CachedPresentFrameValidationState {
+            current_video_frame_present: player_snapshot.current_video_frame.is_some(),
+            source_matches: cached_renderable_frame.source_label.as_deref()
+                == player_snapshot.source_label.as_deref(),
+            cached_generation: cached_renderable_frame
+                .renderable_frame
+                .present_frame
+                .render_generation,
+            current_generation: player_snapshot.render_generation,
+        };
+        let Some(reason) = cached_present_frame_stale_reason(validation_state) else {
             return false;
-        }
+        };
+        let rejected_generation =
+            reason == CachedPresentFrameDiscardReason::RenderGenerationChanged;
 
-        if cached_renderable_frame.source_label.as_deref()
-            != player_snapshot.source_label.as_deref()
-        {
-            self.clear_cached_present_frame();
-            return false;
-        }
-
-        if cached_renderable_frame
-            .renderable_frame
-            .present_frame
-            .render_generation
-            != player_snapshot.render_generation
-        {
-            self.clear_cached_present_frame();
-            return true;
-        }
-
-        false
+        self.clear_cached_present_frame(reason);
+        rejected_generation
     }
 
     /// Возвращает identity frame-а, достаточную для отличия нового lease-а от reuse.
@@ -558,8 +670,41 @@ impl AppState {
     }
 
     /// Освобождает cached present frame и отправляет drop-ack worker-у через lease guard.
-    fn clear_cached_present_frame(&mut self) {
+    fn clear_cached_present_frame(&mut self, reason: CachedPresentFrameDiscardReason) {
+        if self.cached_renderable_present_frame.is_some() {
+            debug!(?reason, "Clearing cached present frame");
+        }
         self.cached_renderable_present_frame = None;
+    }
+
+    /// Освобождает cached frame перед уничтожением app/window runtime.
+    pub fn clear_cached_present_frame_for_runtime_drop(&mut self) {
+        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::RuntimeDrop);
+    }
+
+    /// Освобождает cached frame после swapchain/surface lifecycle break-а.
+    pub fn clear_cached_present_frame_after_surface_lifecycle_break(&mut self) {
+        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::SurfaceLifecycleBreak);
+    }
+
+    /// Освобождает cached frame после renderer/device failure.
+    pub fn clear_cached_present_frame_after_render_failure(&mut self) {
+        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::RenderFailure);
+    }
+
+    /// Освобождает cached frame после worker-side render error event-а.
+    pub fn clear_cached_present_frame_after_worker_render_error(&mut self) {
+        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::WorkerRenderError);
+    }
+
+    /// Синхронизирует cache lifecycle с событиями player state machine.
+    pub fn handle_cached_present_frame_player_event(&mut self, player_event: &PlayerEvent) {
+        let Some(reason) = cached_present_frame_discard_reason_for_player_event(player_event)
+        else {
+            return;
+        };
+
+        self.clear_cached_present_frame(reason);
     }
 
     /// Запоминает последний frame, который реально получил texture views.
@@ -1259,13 +1404,19 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
+    use player_core::{
+        MediaOpenRequest, MediaSource, MediaSummary, PlaybackState, PlayerError, PlayerErrorKind,
+        PlayerEvent,
+    };
     use render_core::{
         ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
         HdrReferenceDefaultDiagnostics, RenderDiagnostics, VideoFrameFormat,
     };
 
     use super::{
-        AppState, TextureBusyFallbackReuseState, texture_busy_fallback_can_reuse_previous_frame,
+        AppState, CachedPresentFrameDiscardReason, CachedPresentFrameValidationState,
+        TextureBusyFallbackReuseState, cached_present_frame_discard_reason_for_player_event,
+        cached_present_frame_stale_reason, texture_busy_fallback_can_reuse_previous_frame,
     };
 
     /// Проверяет, что UI diagnostics получает active path как renderer-neutral данные.
@@ -1308,6 +1459,90 @@ mod tests {
 
         assert!(!include_str!("state.rs").contains(forbidden_member));
         assert!(!include_str!("main.rs").contains(forbidden_member));
+    }
+
+    /// Проверяет pure-classifier stale cache без создания GPU lease-а.
+    #[test]
+    fn cached_present_frame_validation_rejects_stale_lifecycle_identity() {
+        let valid_state = CachedPresentFrameValidationState {
+            current_video_frame_present: true,
+            source_matches: true,
+            cached_generation: 7,
+            current_generation: 7,
+        };
+
+        assert_eq!(cached_present_frame_stale_reason(valid_state), None);
+        assert_eq!(
+            cached_present_frame_stale_reason(CachedPresentFrameValidationState {
+                current_video_frame_present: false,
+                ..valid_state
+            }),
+            Some(CachedPresentFrameDiscardReason::CurrentVideoFrameMissing)
+        );
+        assert_eq!(
+            cached_present_frame_stale_reason(CachedPresentFrameValidationState {
+                source_matches: false,
+                ..valid_state
+            }),
+            Some(CachedPresentFrameDiscardReason::SourceLabelChanged)
+        );
+        assert_eq!(
+            cached_present_frame_stale_reason(CachedPresentFrameValidationState {
+                current_generation: 8,
+                ..valid_state
+            }),
+            Some(CachedPresentFrameDiscardReason::RenderGenerationChanged)
+        );
+    }
+
+    /// Проверяет, что player lifecycle events инвалидируют cache только на boundary-событиях.
+    #[test]
+    fn player_lifecycle_events_invalidate_cached_present_frame_at_boundaries() {
+        let media_open_request =
+            MediaOpenRequest::new(MediaSource::ExternalLabel("next-source".to_string()), true);
+        let media_summary = MediaSummary {
+            title: None,
+            source_label: "next-source".to_string(),
+            duration: None,
+        };
+        let fatal_error = PlayerError::new(PlayerErrorKind::RenderDeviceLost, "device lost");
+
+        assert_eq!(
+            cached_present_frame_discard_reason_for_player_event(&PlayerEvent::MediaOpenRequested(
+                media_open_request
+            )),
+            Some(CachedPresentFrameDiscardReason::PlayerMediaOpenRequested)
+        );
+        assert_eq!(
+            cached_present_frame_discard_reason_for_player_event(&PlayerEvent::MediaOpened(
+                media_summary
+            )),
+            Some(CachedPresentFrameDiscardReason::PlayerMediaOpened)
+        );
+        assert_eq!(
+            cached_present_frame_discard_reason_for_player_event(
+                &PlayerEvent::PlaybackStateChanged(PlaybackState::Stopped)
+            ),
+            Some(CachedPresentFrameDiscardReason::PlayerStopped)
+        );
+        assert_eq!(
+            cached_present_frame_discard_reason_for_player_event(
+                &PlayerEvent::PlaybackStateChanged(PlaybackState::Failed)
+            ),
+            Some(CachedPresentFrameDiscardReason::PlayerFailed)
+        );
+        assert_eq!(
+            cached_present_frame_discard_reason_for_player_event(&PlayerEvent::FatalError(
+                fatal_error
+            )),
+            Some(CachedPresentFrameDiscardReason::PlayerFatalError)
+        );
+        assert_eq!(
+            cached_present_frame_discard_reason_for_player_event(
+                &PlayerEvent::PlaybackStateChanged(PlaybackState::Paused)
+            ),
+            None
+        );
     }
 
     /// Проверяет pure decision для phase 2 texture-view busy fallback.
