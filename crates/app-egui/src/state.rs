@@ -256,13 +256,52 @@ struct TextureBusyFallbackReuseState {
     timeline_marks_frame_stale: bool,
 }
 
+/// Причина, по которой Busy fallback не имеет права повторить cached frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextureBusyFallbackRejectReason {
+    /// Cached frame относится к старому render generation.
+    RenderGenerationChanged,
+
+    /// Cached frame был получен для другого media source.
+    SourceLabelChanged,
+
+    /// Player snapshot больше не содержит текущий video frame.
+    CurrentVideoFrameMissing,
+
+    /// Cached lease уже был помечен stale на render boundary.
+    CachedFrameStale,
+
+    /// Timeline сейчас считает видимый кадр stale относительно seek/scrub.
+    TimelineFrameStale,
+}
+
+/// Возвращает причину отказа Busy fallback-а или `None`, если reuse безопасен.
+fn texture_busy_fallback_reject_reason(
+    state: TextureBusyFallbackReuseState,
+) -> Option<TextureBusyFallbackRejectReason> {
+    if state.cached_generation != state.current_generation {
+        return Some(TextureBusyFallbackRejectReason::RenderGenerationChanged);
+    }
+    if !state.source_matches {
+        return Some(TextureBusyFallbackRejectReason::SourceLabelChanged);
+    }
+    if !state.has_current_video_frame {
+        return Some(TextureBusyFallbackRejectReason::CurrentVideoFrameMissing);
+    }
+    if state.cached_frame_is_stale {
+        return Some(TextureBusyFallbackRejectReason::CachedFrameStale);
+    }
+    if state.timeline_marks_frame_stale {
+        return Some(TextureBusyFallbackRejectReason::TimelineFrameStale);
+    }
+
+    None
+}
+
 /// Решает, можно ли использовать previous renderable frame при busy texture lock-е.
+#[cfg(test)]
 fn texture_busy_fallback_can_reuse_previous_frame(state: TextureBusyFallbackReuseState) -> bool {
-    state.cached_generation == state.current_generation
-        && state.source_matches
-        && state.has_current_video_frame
-        && !state.cached_frame_is_stale
-        && !state.timeline_marks_frame_stale
+    texture_busy_fallback_reject_reason(state).is_none()
 }
 
 impl PresentFrameAcquisition {
@@ -741,11 +780,15 @@ impl AppState {
             timeline_marks_frame_stale: player_snapshot.timeline.stale_frame,
         };
 
-        if texture_busy_fallback_can_reuse_previous_frame(reuse_state) {
-            Some(cached_renderable_frame.renderable_frame.clone())
-        } else {
-            None
+        if let Some(reject_reason) = texture_busy_fallback_reject_reason(reuse_state) {
+            debug!(
+                ?reject_reason,
+                "Texture view Busy fallback rejected cached renderable frame"
+            );
+            return None;
         }
+
+        Some(cached_renderable_frame.renderable_frame.clone())
     }
 
     /// Передаёт typed render bridge error в worker-owned player session.
@@ -1427,8 +1470,9 @@ mod tests {
 
     use super::{
         AppState, CachedPresentFrameDiscardReason, CachedPresentFrameValidationState,
-        TextureBusyFallbackReuseState, cached_present_frame_discard_reason_for_player_event,
-        cached_present_frame_stale_reason, texture_busy_fallback_can_reuse_previous_frame,
+        TextureBusyFallbackRejectReason, TextureBusyFallbackReuseState,
+        cached_present_frame_discard_reason_for_player_event, cached_present_frame_stale_reason,
+        texture_busy_fallback_can_reuse_previous_frame, texture_busy_fallback_reject_reason,
     };
 
     /// Проверяет, что UI diagnostics получает active path как renderer-neutral данные.
@@ -1557,9 +1601,9 @@ mod tests {
         );
     }
 
-    /// Проверяет pure decision для phase 2 texture-view busy fallback.
+    /// Проверяет pure decision для texture-view Busy fallback-а.
     #[test]
-    fn texture_busy_fallback_reuses_only_valid_previous_frame() {
+    fn texture_busy_fallback_reuses_valid_previous_frame() {
         let valid_previous_frame = TextureBusyFallbackReuseState {
             cached_generation: 5,
             current_generation: 5,
@@ -1572,35 +1616,88 @@ mod tests {
         assert!(texture_busy_fallback_can_reuse_previous_frame(
             valid_previous_frame
         ));
+        assert_eq!(
+            texture_busy_fallback_reject_reason(valid_previous_frame),
+            None
+        );
+    }
+
+    /// Проверяет, что Busy fallback различает lifecycle причины отказа.
+    #[test]
+    fn texture_busy_fallback_rejects_stale_lifecycle_identity() {
+        let valid_previous_frame = TextureBusyFallbackReuseState {
+            cached_generation: 5,
+            current_generation: 5,
+            source_matches: true,
+            has_current_video_frame: true,
+            cached_frame_is_stale: false,
+            timeline_marks_frame_stale: false,
+        };
+
         assert!(!texture_busy_fallback_can_reuse_previous_frame(
             TextureBusyFallbackReuseState {
                 current_generation: 6,
                 ..valid_previous_frame
             }
         ));
+        assert_eq!(
+            texture_busy_fallback_reject_reason(TextureBusyFallbackReuseState {
+                current_generation: 6,
+                ..valid_previous_frame
+            }),
+            Some(TextureBusyFallbackRejectReason::RenderGenerationChanged)
+        );
         assert!(!texture_busy_fallback_can_reuse_previous_frame(
             TextureBusyFallbackReuseState {
                 source_matches: false,
                 ..valid_previous_frame
             }
         ));
+        assert_eq!(
+            texture_busy_fallback_reject_reason(TextureBusyFallbackReuseState {
+                source_matches: false,
+                ..valid_previous_frame
+            }),
+            Some(TextureBusyFallbackRejectReason::SourceLabelChanged)
+        );
         assert!(!texture_busy_fallback_can_reuse_previous_frame(
             TextureBusyFallbackReuseState {
                 has_current_video_frame: false,
                 ..valid_previous_frame
             }
         ));
+        assert_eq!(
+            texture_busy_fallback_reject_reason(TextureBusyFallbackReuseState {
+                has_current_video_frame: false,
+                ..valid_previous_frame
+            }),
+            Some(TextureBusyFallbackRejectReason::CurrentVideoFrameMissing)
+        );
         assert!(!texture_busy_fallback_can_reuse_previous_frame(
             TextureBusyFallbackReuseState {
                 cached_frame_is_stale: true,
                 ..valid_previous_frame
             }
         ));
+        assert_eq!(
+            texture_busy_fallback_reject_reason(TextureBusyFallbackReuseState {
+                cached_frame_is_stale: true,
+                ..valid_previous_frame
+            }),
+            Some(TextureBusyFallbackRejectReason::CachedFrameStale)
+        );
         assert!(!texture_busy_fallback_can_reuse_previous_frame(
             TextureBusyFallbackReuseState {
                 timeline_marks_frame_stale: true,
                 ..valid_previous_frame
             }
         ));
+        assert_eq!(
+            texture_busy_fallback_reject_reason(TextureBusyFallbackReuseState {
+                timeline_marks_frame_stale: true,
+                ..valid_previous_frame
+            }),
+            Some(TextureBusyFallbackRejectReason::TimelineFrameStale)
+        );
     }
 }
