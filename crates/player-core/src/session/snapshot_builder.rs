@@ -109,7 +109,7 @@ impl<'session> PlayerSnapshotBuilder<'session> {
     /// Собирает snapshot активного backend и texture pool.
     fn backend_snapshot(&self) -> BackendSnapshot {
         BackendSnapshot {
-            name: Some(self.session.pipeline.video_backend.to_string()),
+            name: Some(self.session.pipeline.video_backend_name().to_string()),
             texture_pool: self.texture_pool_snapshot(),
         }
     }

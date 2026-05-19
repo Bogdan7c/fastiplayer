@@ -1362,7 +1362,7 @@ impl PlayerSession {
                 self.pipeline
                     .set_video_decoder_thread_handle(started_backend.into_decoder_thread());
                 info!(
-                    backend = self.pipeline.video_backend,
+                    backend = self.pipeline.video_backend_name(),
                     "Video backend started"
                 );
             }
@@ -3545,6 +3545,8 @@ mod tests {
     fn playback_pipeline_decoder_boundary_absent_thread_is_noop() {
         let pipeline = PlaybackPipeline::default();
 
+        assert!(!pipeline.has_active_video_decoder());
+        assert_eq!(pipeline.video_backend_name(), "Synthetic (test)");
         assert!(pipeline.flush_video_decoder_thread().is_ok());
         assert!(pipeline.try_recv_decoded_video_frame().is_none());
         assert!(pipeline.try_recv_video_decoder_diagnostic_event().is_none());
@@ -3577,6 +3579,8 @@ mod tests {
         ))));
         pipeline.set_video_decoder_thread(fake_decoder);
 
+        assert!(pipeline.has_active_video_decoder());
+        assert_eq!(pipeline.video_backend_name(), "Shared fake decoder");
         assert!(pipeline.can_send_video_decode_packets());
         assert!(matches!(
             pipeline.send_video_decode_packet(decode_packet_for_tests(Duration::from_millis(1))),
@@ -3696,6 +3700,22 @@ mod tests {
         assert!(pipeline.can_receive_decoded_video_frames());
         assert!(pipeline.release_frame_to_video_decoder(texture_handle));
         assert_eq!(released_decoder.released_handles(), vec![texture_handle]);
+    }
+
+    #[test]
+    fn snapshot_backend_name_uses_pipeline_decoder_boundary() {
+        let mut session = PlayerSession::new();
+
+        session
+            .pipeline
+            .set_video_decoder_thread(SharedFakeVideoDecoderThread::new());
+
+        let snapshot = session.snapshot_with_frame_counters(FrameCounters::default());
+
+        assert_eq!(
+            snapshot.active_backend.name.as_deref(),
+            Some("Shared fake decoder")
+        );
     }
 
     #[test]

@@ -733,7 +733,10 @@ impl RenderLeaseBridge {
     fn current_present_frame_identity(
         session: &PlayerSession,
     ) -> Option<PresentFrameLeaseIdentity> {
-        session.pipeline.video_decoder_thread.as_ref()?;
+        if !session.pipeline.has_active_video_decoder() {
+            return None;
+        }
+
         session
             .pipeline
             .present_video_frame()

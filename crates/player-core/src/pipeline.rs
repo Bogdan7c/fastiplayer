@@ -180,7 +180,7 @@ pub(crate) struct PlaybackPipeline {
     pending_audio_packets: VecDeque<PendingAudioPacket>,
 
     /// Video decoder thread: backend decode в отдельном потоке за узким session contract.
-    pub(crate) video_decoder_thread: Option<Box<PlayerVideoDecoderThreadHandle>>,
+    video_decoder_thread: Option<Box<PlayerVideoDecoderThreadHandle>>,
 
     /// Требует ли decoder следующий video packet быть keyframe-ом.
     ///
@@ -188,14 +188,14 @@ pub(crate) struct PlaybackPipeline {
     /// отправить inter-frame, decoder может показать зелёные артефакты до
     /// следующего keyframe. Флаг держит этот codec contract рядом с очередью
     /// packets, а не в UI/render слое.
-    pub(crate) video_decoder_needs_keyframe: bool,
+    video_decoder_needs_keyframe: bool,
 
     /// Сколько video packets уже ушло в decoder thread и ещё не получило packet ack.
     ///
     /// `VideoDecodeThread::packet_queue_depth()` не видит packet, который decoder
     /// уже забрал из channel и прямо сейчас обрабатывает. Decoder ack приходит
     /// по отдельному channel независимо от того, дал packet output frame или нет.
-    pub(crate) video_decode_in_flight_packets: usize,
+    video_decode_in_flight_packets: usize,
 
     /// Очередь декодированных видеокадров перед presentation.
     video_frame_queue: VecDeque<video_core::DecodedFrame>,
@@ -253,7 +253,7 @@ pub(crate) struct PlaybackPipeline {
     pub(crate) last_audio_clock_change_at: Instant,
 
     /// Индикатор текущего видео backend для UI и диагностики.
-    pub(crate) video_backend: &'static str,
+    video_backend: &'static str,
 
     /// Требование активного video track, уточнённое container metadata или bitstream probe.
     active_video_requirement: Option<VideoDecodeRequirement>,
@@ -722,13 +722,25 @@ impl PlaybackPipeline {
         self.reset_video_decode_in_flight();
     }
 
+    /// Проверяет, есть ли active decoder для операций presentation/render handoff.
+    #[must_use]
+    pub(crate) fn has_active_video_decoder(&self) -> bool {
+        self.video_decoder_thread.is_some()
+    }
+
+    /// Возвращает имя текущего video backend-а без раскрытия runtime slot-а.
+    #[must_use]
+    pub(crate) const fn video_backend_name(&self) -> &'static str {
+        self.video_backend
+    }
+
     /// Проверяет, можно ли отправлять encoded packets через decoder I/O boundary.
     ///
     /// Tick-код использует этот метод как send-side readiness и не зависит от
     /// того, каким полем pipeline владеет активным decoder backend-ом.
     #[must_use]
     pub(crate) fn can_send_video_decode_packets(&self) -> bool {
-        self.video_decoder_thread.is_some()
+        self.has_active_video_decoder()
     }
 
     /// Проверяет, можно ли принимать decoded frames через decoder I/O boundary.
@@ -737,7 +749,7 @@ impl PlaybackPipeline {
     /// call sites больше не читают внутреннее устройство decoder thread-а.
     #[must_use]
     pub(crate) fn can_receive_decoded_video_frames(&self) -> bool {
-        self.video_decoder_thread.is_some()
+        self.has_active_video_decoder()
     }
 
     /// Возвращает глубину send queue decoder thread-а, если backend запущен.
