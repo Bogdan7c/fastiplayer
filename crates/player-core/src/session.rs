@@ -3842,7 +3842,9 @@ mod tests {
         }
     }
 
-    impl crate::pipeline::VideoDecoderThreadHandle for FailingFlushVideoDecoderThread {
+    impl video_core::VideoDecoderThreadHandle for FailingFlushVideoDecoderThread {
+        type TextureViewProvider = WgpuRenderTextureProviderHandle;
+
         fn backend_name(&self) -> &'static str {
             "Fake failing decoder"
         }
@@ -3985,7 +3987,9 @@ mod tests {
         }
     }
 
-    impl crate::pipeline::VideoDecoderThreadHandle for SharedFakeVideoDecoderThread {
+    impl video_core::VideoDecoderThreadHandle for SharedFakeVideoDecoderThread {
+        type TextureViewProvider = WgpuRenderTextureProviderHandle;
+
         fn backend_name(&self) -> &'static str {
             "Shared fake decoder"
         }

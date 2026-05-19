@@ -185,24 +185,8 @@ impl TextureSlotPressureSnapshot {
     }
 }
 
-/// Snapshot давления на decoder control channel без backend-specific типов.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DecoderControlChannelPressureSnapshot {
-    /// Текущая глубина control channel на момент чтения snapshot-а.
-    pub control_channel_len: usize,
-
-    /// Bounded capacity control channel-а.
-    pub control_channel_capacity: usize,
-
-    /// Сколько send failures произошло именно из-за заполненного control channel-а.
-    pub control_channel_full_count: u64,
-
-    /// Сколько раз release path не смог отправить control message.
-    pub release_control_send_fail_count: u64,
-
-    /// Сколько раз flush path не смог отправить control message.
-    pub flush_control_send_fail_count: u64,
-}
+/// Backwards-compatible public name для neutral decoder control-channel diagnostics.
+pub use video_core::VideoDecoderControlChannelPressureSnapshot as DecoderControlChannelPressureSnapshot;
 
 /// Queue depths, снятые около latency/drop события.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

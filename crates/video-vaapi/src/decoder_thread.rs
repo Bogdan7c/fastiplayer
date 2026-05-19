@@ -747,6 +747,192 @@ pub struct DecodePacket {
     pub resolved_color: Option<VideoColorMetadata>,
 }
 
+impl From<video_core::DecodePacket> for DecodePacket {
+    /// Адаптирует neutral packet к текущему production VA-API backend-у.
+    fn from(packet: video_core::DecodePacket) -> Self {
+        Self {
+            track_id: packet.track_id,
+            pts: packet.pts,
+            encoded_bytes: packet.encoded_bytes,
+            keyframe: packet.keyframe,
+            resolved_color: packet.resolved_color,
+        }
+    }
+}
+
+impl From<DecodePacket> for video_core::DecodePacket {
+    /// Возвращает VA-API packet в neutral форму для adapter coverage.
+    fn from(packet: DecodePacket) -> Self {
+        Self {
+            track_id: packet.track_id,
+            pts: packet.pts,
+            encoded_bytes: packet.encoded_bytes,
+            keyframe: packet.keyframe,
+            resolved_color: packet.resolved_color,
+        }
+    }
+}
+
+impl From<video_core::VideoDecoderThreadConfig> for VideoDecodeThreadConfig {
+    /// Адаптирует neutral decoder-thread limits к текущему VA-API backend-у.
+    fn from(config: video_core::VideoDecoderThreadConfig) -> Self {
+        Self {
+            packet_channel_frames: config.packet_channel_frames,
+            frame_channel_frames: config.frame_channel_frames,
+            control_channel_frames: config.control_channel_frames,
+            decoder_ready_queue_frames: config.decoder_ready_queue_frames,
+            decoder_surface_pool_frames: config.decoder_surface_pool_frames,
+            zero_copy_surface_pool_slots: config.zero_copy_surface_pool_slots,
+            flush_timeout: config.flush_timeout,
+        }
+    }
+}
+
+impl From<VideoDecodeThreadConfig> for video_core::VideoDecoderThreadConfig {
+    /// Возвращает VA-API config в neutral форму для compatibility и adapter tests.
+    fn from(config: VideoDecodeThreadConfig) -> Self {
+        Self {
+            packet_channel_frames: config.packet_channel_frames,
+            frame_channel_frames: config.frame_channel_frames,
+            control_channel_frames: config.control_channel_frames,
+            decoder_ready_queue_frames: config.decoder_ready_queue_frames,
+            decoder_surface_pool_frames: config.decoder_surface_pool_frames,
+            zero_copy_surface_pool_slots: config.zero_copy_surface_pool_slots,
+            flush_timeout: config.flush_timeout,
+        }
+    }
+}
+
+impl From<video_core::DecodeThreadError> for DecodeThreadError {
+    /// Адаптирует neutral fatal error для VA-API-facing adapter paths.
+    fn from(error: video_core::DecodeThreadError) -> Self {
+        Self::new(error.message().to_owned())
+    }
+}
+
+impl From<DecodeThreadError> for video_core::DecodeThreadError {
+    /// Сохраняет текст fatal ошибки без привязки player-core к VA-API error type.
+    fn from(error: DecodeThreadError) -> Self {
+        Self::new(error.message().to_owned())
+    }
+}
+
+impl From<video_core::DecodeBackpressureReason> for DecodeThreadBackpressureReason {
+    /// Адаптирует neutral backpressure reason к текущему VA-API send error.
+    fn from(reason: video_core::DecodeBackpressureReason) -> Self {
+        match reason {
+            video_core::DecodeBackpressureReason::PacketQueueFull {
+                queued_packets,
+                capacity,
+            } => Self::PacketQueueFull {
+                queued_packets,
+                capacity,
+            },
+        }
+    }
+}
+
+impl From<DecodeThreadBackpressureReason> for video_core::DecodeBackpressureReason {
+    /// Сохраняет typed backpressure reason и queue accounting.
+    fn from(reason: DecodeThreadBackpressureReason) -> Self {
+        match reason {
+            DecodeThreadBackpressureReason::PacketQueueFull {
+                queued_packets,
+                capacity,
+            } => Self::PacketQueueFull {
+                queued_packets,
+                capacity,
+            },
+        }
+    }
+}
+
+impl From<video_core::DecodeSendError> for DecodeThreadSendError {
+    /// Адаптирует neutral send error к VA-API-facing adapter paths.
+    fn from(error: video_core::DecodeSendError) -> Self {
+        match error {
+            video_core::DecodeSendError::Backpressure(reason) => Self::Backpressure(reason.into()),
+            video_core::DecodeSendError::Fatal(error) => Self::Fatal(error.into()),
+        }
+    }
+}
+
+impl From<DecodeThreadSendError> for video_core::DecodeSendError {
+    /// Сохраняет различие backpressure/fatal на neutral decoder boundary.
+    fn from(error: DecodeThreadSendError) -> Self {
+        match error {
+            DecodeThreadSendError::Backpressure(reason) => Self::Backpressure(reason.into()),
+            DecodeThreadSendError::Fatal(error) => Self::Fatal(error.into()),
+        }
+    }
+}
+
+impl From<TexturePoolStats> for video_core::DecoderResourceSnapshot {
+    /// Копирует VA-API texture pool counters в backend-neutral diagnostics snapshot.
+    fn from(stats: TexturePoolStats) -> Self {
+        Self {
+            capacity: stats.capacity,
+            slots: stats.slots,
+            in_use: stats.in_use,
+            free_surfaces: stats.free_surfaces,
+            waiting_gpu_completion: stats.waiting_gpu_completion,
+            waiting_decoder_reuse: stats.waiting_decoder_reuse,
+            import_failures: stats.import_failures,
+            imports_created: stats.imports_created,
+            imports_reused: stats.imports_reused,
+            imports_replaced: stats.imports_replaced,
+        }
+    }
+}
+
+impl From<video_core::DecoderResourceSnapshot> for TexturePoolStats {
+    /// Адаптирует neutral diagnostics snapshot обратно к текущему VA-API stats type.
+    fn from(stats: video_core::DecoderResourceSnapshot) -> Self {
+        Self {
+            capacity: stats.capacity,
+            slots: stats.slots,
+            in_use: stats.in_use,
+            free_surfaces: stats.free_surfaces,
+            waiting_gpu_completion: stats.waiting_gpu_completion,
+            waiting_decoder_reuse: stats.waiting_decoder_reuse,
+            import_failures: stats.import_failures,
+            imports_created: stats.imports_created,
+            imports_reused: stats.imports_reused,
+            imports_replaced: stats.imports_replaced,
+        }
+    }
+}
+
+impl From<VideoDecoderControlChannelPressureStats>
+    for video_core::VideoDecoderControlChannelPressureSnapshot
+{
+    /// Копирует VA-API control-channel counters в neutral diagnostics snapshot.
+    fn from(stats: VideoDecoderControlChannelPressureStats) -> Self {
+        Self {
+            control_channel_len: stats.control_channel_len,
+            control_channel_capacity: stats.control_channel_capacity,
+            control_channel_full_count: stats.control_channel_full_count,
+            release_control_send_fail_count: stats.release_control_send_fail_count,
+            flush_control_send_fail_count: stats.flush_control_send_fail_count,
+        }
+    }
+}
+
+impl From<video_core::VideoDecoderControlChannelPressureSnapshot>
+    for VideoDecoderControlChannelPressureStats
+{
+    /// Адаптирует neutral control-channel snapshot обратно к VA-API stats type.
+    fn from(stats: video_core::VideoDecoderControlChannelPressureSnapshot) -> Self {
+        Self {
+            control_channel_len: stats.control_channel_len,
+            control_channel_capacity: stats.control_channel_capacity,
+            control_channel_full_count: stats.control_channel_full_count,
+            release_control_send_fail_count: stats.release_control_send_fail_count,
+            flush_control_send_fail_count: stats.flush_control_send_fail_count,
+        }
+    }
+}
+
 /// Packet вместе с моментом попадания в bounded decoder channel.
 struct QueuedDecodePacket {
     /// Encoded packet payload и metadata.

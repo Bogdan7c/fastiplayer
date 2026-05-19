@@ -1,12 +1,13 @@
-use crate::pipeline::VideoDecoderThreadHandle;
-
 mod config;
 mod selector;
 mod vaapi;
 
-use crate::PlayerVideoDecoderThreadConfig;
+use crate::{
+    PlayerVideoDecoderThreadConfig, PlayerVideoDecoderThreadHandle, WgpuRenderTextureProviderHandle,
+};
 use config::{VideoBackendStartupConfig, VideoBackendStartupRequest};
 use selector::ProductionVideoBackendSelector;
+use video_core::VideoDecoderThreadHandle;
 
 mod private {
     /// Sealed marker: внешние crates не должны создавать backend wrapper напрямую.
@@ -22,19 +23,23 @@ pub trait VideoBackendFactory: private::Sealed {
 /// Запущенный video backend, подготовленный фабрикой для установки в playback pipeline.
 pub struct StartedVideoBackend {
     /// Decoder thread остаётся за neutral handle boundary.
-    decoder_thread: Box<dyn VideoDecoderThreadHandle>,
+    decoder_thread: Box<PlayerVideoDecoderThreadHandle>,
 }
 
 impl StartedVideoBackend {
     /// Создаёт backend wrapper вокруг decoder thread, который уже прошёл init handshake.
-    fn from_decoder_thread(decoder_thread: impl VideoDecoderThreadHandle + 'static) -> Self {
+    fn from_decoder_thread(
+        decoder_thread: impl VideoDecoderThreadHandle<
+            TextureViewProvider = WgpuRenderTextureProviderHandle,
+        > + 'static,
+    ) -> Self {
         Self {
             decoder_thread: Box::new(decoder_thread),
         }
     }
 
     /// Передаёт decoder handle pipeline-у без раскрытия concrete backend type.
-    pub(crate) fn into_decoder_thread(self) -> Box<dyn VideoDecoderThreadHandle> {
+    pub(crate) fn into_decoder_thread(self) -> Box<PlayerVideoDecoderThreadHandle> {
         self.decoder_thread
     }
 }
@@ -127,6 +132,8 @@ mod tests {
     struct StartupFakeDecoderThread;
 
     impl VideoDecoderThreadHandle for StartupFakeDecoderThread {
+        type TextureViewProvider = WgpuRenderTextureProviderHandle;
+
         fn backend_name(&self) -> &'static str {
             "startup fake decoder"
         }

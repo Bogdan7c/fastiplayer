@@ -1,188 +1,46 @@
 use std::sync::Arc;
 
-use crate::DecoderControlChannelPressureSnapshot;
 use crate::decoder_boundary::{
-    DecodeBackpressureReason, DecodeSendError, DecodeThreadError, DecoderResourceSnapshot,
-    PlayerDecodePacket, PlayerVideoDecoderThreadConfig, WgpuRenderTextureProvider,
-    WgpuRenderTextureProviderHandle, WgpuRenderTextureViewLookup, WgpuRenderTextureViews,
+    DecodeSendError, DecodeThreadError, DecoderResourceSnapshot, PlayerDecodePacket,
+    WgpuRenderTextureProvider, WgpuRenderTextureProviderHandle, WgpuRenderTextureViewLookup,
+    WgpuRenderTextureViews,
 };
-use crate::pipeline::VideoDecoderThreadHandle;
+use video_core::VideoDecoderThreadHandle;
 
 use super::config::VideoBackendStartupRequest;
+
+/// Player-core adapter вокруг concrete VA-API decoder thread.
+struct VaapiVideoDecoderThreadHandle {
+    /// Concrete backend остаётся скрыт за neutral contract boundary.
+    decoder_thread: video_vaapi::VideoDecodeThread,
+}
+
+impl VaapiVideoDecoderThreadHandle {
+    /// Оборачивает запущенный VA-API thread без изменения lifecycle ownership.
+    fn new(decoder_thread: video_vaapi::VideoDecodeThread) -> Self {
+        Self { decoder_thread }
+    }
+}
 
 /// Стартует текущий production decoder backend за neutral factory boundary.
 pub(super) fn start_video_decoder_thread(
     startup_request: &VideoBackendStartupRequest<'_>,
-) -> anyhow::Result<impl VideoDecoderThreadHandle + 'static> {
+) -> anyhow::Result<
+    impl VideoDecoderThreadHandle<TextureViewProvider = WgpuRenderTextureProviderHandle> + 'static,
+> {
     let wgpu_context = startup_request.wgpu_context();
     let device = Arc::new(wgpu_context.device().clone());
     let queue = Arc::new(wgpu_context.queue().clone());
 
-    video_vaapi::VideoDecodeThread::new_with_config(
+    let decoder_thread = video_vaapi::VideoDecodeThread::new_with_config(
         device,
         queue,
         wgpu_context.instance().clone(),
         wgpu_context.adapter().clone(),
         startup_request.decoder_thread_config().into(),
-    )
-}
+    )?;
 
-impl From<PlayerDecodePacket> for video_vaapi::DecodePacket {
-    /// Адаптирует neutral packet к текущему production VA-API backend-у.
-    fn from(packet: PlayerDecodePacket) -> Self {
-        Self {
-            track_id: packet.track_id,
-            pts: packet.pts,
-            encoded_bytes: packet.encoded_bytes,
-            keyframe: packet.keyframe,
-            resolved_color: packet.resolved_color,
-        }
-    }
-}
-
-impl From<video_vaapi::DecodePacket> for PlayerDecodePacket {
-    /// Возвращает VA-API packet в neutral форму для adapter coverage.
-    fn from(packet: video_vaapi::DecodePacket) -> Self {
-        Self {
-            track_id: packet.track_id,
-            pts: packet.pts,
-            encoded_bytes: packet.encoded_bytes,
-            keyframe: packet.keyframe,
-            resolved_color: packet.resolved_color,
-        }
-    }
-}
-
-impl From<PlayerVideoDecoderThreadConfig> for video_vaapi::VideoDecodeThreadConfig {
-    /// Адаптирует neutral decoder-thread limits к текущему VA-API production backend-у.
-    fn from(config: PlayerVideoDecoderThreadConfig) -> Self {
-        Self {
-            packet_channel_frames: config.packet_channel_frames,
-            frame_channel_frames: config.frame_channel_frames,
-            control_channel_frames: config.control_channel_frames,
-            decoder_ready_queue_frames: config.decoder_ready_queue_frames,
-            decoder_surface_pool_frames: config.decoder_surface_pool_frames,
-            zero_copy_surface_pool_slots: config.zero_copy_surface_pool_slots,
-            flush_timeout: config.flush_timeout,
-        }
-    }
-}
-
-impl From<video_vaapi::VideoDecodeThreadConfig> for PlayerVideoDecoderThreadConfig {
-    /// Возвращает VA-API config в neutral форму для compatibility и adapter tests.
-    fn from(config: video_vaapi::VideoDecodeThreadConfig) -> Self {
-        Self {
-            packet_channel_frames: config.packet_channel_frames,
-            frame_channel_frames: config.frame_channel_frames,
-            control_channel_frames: config.control_channel_frames,
-            decoder_ready_queue_frames: config.decoder_ready_queue_frames,
-            decoder_surface_pool_frames: config.decoder_surface_pool_frames,
-            zero_copy_surface_pool_slots: config.zero_copy_surface_pool_slots,
-            flush_timeout: config.flush_timeout,
-        }
-    }
-}
-
-impl From<video_vaapi::DecodeThreadError> for DecodeThreadError {
-    /// Сохраняет текст fatal ошибки без привязки player-core к VA-API error type.
-    fn from(error: video_vaapi::DecodeThreadError) -> Self {
-        Self::new(error.message().to_owned())
-    }
-}
-
-impl From<DecodeThreadError> for video_vaapi::DecodeThreadError {
-    /// Адаптирует neutral fatal error для VA-API-facing adapter paths.
-    fn from(error: DecodeThreadError) -> Self {
-        Self::new(error.message().to_owned())
-    }
-}
-
-impl From<video_vaapi::DecodeThreadBackpressureReason> for DecodeBackpressureReason {
-    /// Сохраняет typed backpressure reason и queue accounting.
-    fn from(reason: video_vaapi::DecodeThreadBackpressureReason) -> Self {
-        match reason {
-            video_vaapi::DecodeThreadBackpressureReason::PacketQueueFull {
-                queued_packets,
-                capacity,
-            } => Self::PacketQueueFull {
-                queued_packets,
-                capacity,
-            },
-        }
-    }
-}
-
-impl From<DecodeBackpressureReason> for video_vaapi::DecodeThreadBackpressureReason {
-    /// Адаптирует neutral backpressure reason к текущему VA-API send error.
-    fn from(reason: DecodeBackpressureReason) -> Self {
-        match reason {
-            DecodeBackpressureReason::PacketQueueFull {
-                queued_packets,
-                capacity,
-            } => Self::PacketQueueFull {
-                queued_packets,
-                capacity,
-            },
-        }
-    }
-}
-
-impl From<video_vaapi::DecodeThreadSendError> for DecodeSendError {
-    /// Сохраняет различие backpressure/fatal на player-core boundary.
-    fn from(error: video_vaapi::DecodeThreadSendError) -> Self {
-        match error {
-            video_vaapi::DecodeThreadSendError::Backpressure(reason) => {
-                Self::Backpressure(reason.into())
-            }
-            video_vaapi::DecodeThreadSendError::Fatal(error) => Self::Fatal(error.into()),
-        }
-    }
-}
-
-impl From<DecodeSendError> for video_vaapi::DecodeThreadSendError {
-    /// Адаптирует neutral send error к VA-API-facing adapter paths.
-    fn from(error: DecodeSendError) -> Self {
-        match error {
-            DecodeSendError::Backpressure(reason) => Self::Backpressure(reason.into()),
-            DecodeSendError::Fatal(error) => Self::Fatal(error.into()),
-        }
-    }
-}
-
-impl From<video_vaapi::texture_cache::TexturePoolStats> for DecoderResourceSnapshot {
-    /// Копирует VA-API texture pool counters в backend-neutral diagnostics snapshot.
-    fn from(stats: video_vaapi::texture_cache::TexturePoolStats) -> Self {
-        Self {
-            capacity: stats.capacity,
-            slots: stats.slots,
-            in_use: stats.in_use,
-            free_surfaces: stats.free_surfaces,
-            waiting_gpu_completion: stats.waiting_gpu_completion,
-            waiting_decoder_reuse: stats.waiting_decoder_reuse,
-            import_failures: stats.import_failures,
-            imports_created: stats.imports_created,
-            imports_reused: stats.imports_reused,
-            imports_replaced: stats.imports_replaced,
-        }
-    }
-}
-
-impl From<DecoderResourceSnapshot> for video_vaapi::texture_cache::TexturePoolStats {
-    /// Адаптирует neutral diagnostics snapshot обратно к текущему VA-API stats type.
-    fn from(stats: DecoderResourceSnapshot) -> Self {
-        Self {
-            capacity: stats.capacity,
-            slots: stats.slots,
-            in_use: stats.in_use,
-            free_surfaces: stats.free_surfaces,
-            waiting_gpu_completion: stats.waiting_gpu_completion,
-            waiting_decoder_reuse: stats.waiting_decoder_reuse,
-            import_failures: stats.import_failures,
-            imports_created: stats.imports_created,
-            imports_reused: stats.imports_reused,
-            imports_replaced: stats.imports_replaced,
-        }
-    }
+    Ok(VaapiVideoDecoderThreadHandle::new(decoder_thread))
 }
 
 impl WgpuRenderTextureProvider for video_vaapi::VideoTextureViewProvider {
@@ -245,62 +103,63 @@ fn wgpu_render_texture_view_lookup_from_vaapi(
     }
 }
 
-impl VideoDecoderThreadHandle for video_vaapi::VideoDecodeThread {
+impl VideoDecoderThreadHandle for VaapiVideoDecoderThreadHandle {
+    type TextureViewProvider = WgpuRenderTextureProviderHandle;
+
     fn backend_name(&self) -> &'static str {
-        video_vaapi::VideoDecodeThread::backend_name(self)
+        video_vaapi::VideoDecodeThread::backend_name(&self.decoder_thread)
     }
 
     fn send_packet(&self, packet: PlayerDecodePacket) -> Result<(), DecodeSendError> {
-        video_vaapi::VideoDecodeThread::send_packet(self, packet.into()).map_err(Into::into)
+        video_vaapi::VideoDecodeThread::send_packet(&self.decoder_thread, packet.into())
+            .map_err(Into::into)
     }
 
     fn release_frame(&self, handle: video_core::FrameTextureHandle) {
-        video_vaapi::VideoDecodeThread::release_frame(self, handle);
+        video_vaapi::VideoDecodeThread::release_frame(&self.decoder_thread, handle);
     }
 
     fn try_recv_frame(&self) -> Option<video_core::DecodedFrame> {
-        video_vaapi::VideoDecodeThread::try_recv_frame(self)
+        video_vaapi::VideoDecodeThread::try_recv_frame(&self.decoder_thread)
     }
 
     fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent> {
-        video_vaapi::VideoDecodeThread::try_recv_diagnostic_event(self)
+        video_vaapi::VideoDecodeThread::try_recv_diagnostic_event(&self.decoder_thread)
     }
 
     fn try_recv_error(&self) -> Option<DecodeThreadError> {
-        video_vaapi::VideoDecodeThread::try_recv_error(self).map(Into::into)
+        video_vaapi::VideoDecodeThread::try_recv_error(&self.decoder_thread).map(Into::into)
     }
 
     fn flush(&self) -> anyhow::Result<()> {
-        video_vaapi::VideoDecodeThread::flush(self)
+        video_vaapi::VideoDecodeThread::flush(&self.decoder_thread)
     }
 
     fn texture_view_provider(&self) -> WgpuRenderTextureProviderHandle {
         WgpuRenderTextureProviderHandle::new(video_vaapi::VideoDecodeThread::texture_view_provider(
-            self,
+            &self.decoder_thread,
         ))
     }
 
     fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {
-        video_vaapi::VideoDecodeThread::texture_pool_stats(self).map(Into::into)
+        video_vaapi::VideoDecodeThread::texture_pool_stats(&self.decoder_thread).map(Into::into)
     }
 
-    fn decoder_control_channel_pressure(&self) -> Option<DecoderControlChannelPressureSnapshot> {
-        let pressure = video_vaapi::VideoDecodeThread::control_channel_pressure_stats(self);
-        Some(DecoderControlChannelPressureSnapshot {
-            control_channel_len: pressure.control_channel_len,
-            control_channel_capacity: pressure.control_channel_capacity,
-            control_channel_full_count: pressure.control_channel_full_count,
-            release_control_send_fail_count: pressure.release_control_send_fail_count,
-            flush_control_send_fail_count: pressure.flush_control_send_fail_count,
-        })
+    fn decoder_control_channel_pressure(
+        &self,
+    ) -> Option<video_core::VideoDecoderControlChannelPressureSnapshot> {
+        let pressure =
+            video_vaapi::VideoDecodeThread::control_channel_pressure_stats(&self.decoder_thread);
+
+        Some(pressure.into())
     }
 
     fn packet_queue_depth(&self) -> usize {
-        video_vaapi::VideoDecodeThread::packet_queue_depth(self)
+        video_vaapi::VideoDecodeThread::packet_queue_depth(&self.decoder_thread)
     }
 
     fn drain_completed_packet_count(&self) -> usize {
-        video_vaapi::VideoDecodeThread::drain_completed_packet_count(self)
+        video_vaapi::VideoDecodeThread::drain_completed_packet_count(&self.decoder_thread)
     }
 }
 
@@ -310,6 +169,8 @@ mod tests {
 
     use bytes::Bytes;
     use media_core::TrackId;
+
+    use crate::decoder_boundary::{DecodeBackpressureReason, PlayerVideoDecoderThreadConfig};
 
     use super::*;
 

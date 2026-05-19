@@ -9,52 +9,11 @@ use media_core::{Demuxer, TrackId, TrackInfo};
 
 use crate::{
     DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
-    DecoderResourceSnapshot, PlayerDecodePacket, WgpuRenderTextureProviderHandle,
+    DecoderResourceSnapshot, PlayerDecodePacket, PlayerVideoDecoderThreadHandle,
+    WgpuRenderTextureProviderHandle,
 };
-
-/// Минимальный session-level контракт decoder thread-а, который нужен player-core.
-///
-/// Production backend подключается через adapter, а session tests могут
-/// подставить fake handle и проверить boundary без production decoder ресурсов.
-pub(crate) trait VideoDecoderThreadHandle: Send {
-    /// Возвращает человекочитаемое имя backend-а для snapshot/diagnostics.
-    fn backend_name(&self) -> &'static str;
-
-    /// Отправляет encoded packet в decoder thread.
-    fn send_packet(&self, packet: PlayerDecodePacket) -> Result<(), DecodeSendError>;
-
-    /// Освобождает texture/surface handle после presentation/drop.
-    fn release_frame(&self, handle: video_core::FrameTextureHandle);
-
-    /// Забирает следующий decoded frame без блокировки worker-а.
-    fn try_recv_frame(&self) -> Option<video_core::DecodedFrame>;
-
-    /// Забирает backend diagnostics event без блокировки worker-а.
-    fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent>;
-
-    /// Забирает fatal decoder-thread error, если backend остановился.
-    fn try_recv_error(&self) -> Option<DecodeThreadError>;
-
-    /// Сбрасывает decoder state перед seek transaction.
-    fn flush(&self) -> anyhow::Result<()>;
-
-    /// Возвращает WGPU provider для renderer-side texture views/release path.
-    fn texture_view_provider(&self) -> WgpuRenderTextureProviderHandle;
-
-    /// Возвращает snapshot texture pool-а для UI/backpressure diagnostics.
-    fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot>;
-
-    /// Возвращает snapshot bounded control channel-а для diagnostics.
-    fn decoder_control_channel_pressure(&self) -> Option<DecoderControlChannelPressureSnapshot> {
-        None
-    }
-
-    /// Возвращает глубину packet channel-а внутри decoder thread.
-    fn packet_queue_depth(&self) -> usize;
-
-    /// Забирает количество packets, обработанных decoder thread-ом.
-    fn drain_completed_packet_count(&self) -> usize;
-}
+#[cfg(test)]
+use video_core::VideoDecoderThreadHandle;
 
 /// Bootstrap-оценка длительности frame до первых PTS observations; не worker cadence.
 pub(crate) const DEFAULT_VIDEO_FRAME_DURATION: Duration = Duration::from_micros(16_667);
@@ -195,7 +154,7 @@ pub(crate) struct PlaybackPipeline {
     pub(crate) pending_audio_packets: VecDeque<PendingAudioPacket>,
 
     /// Video decoder thread: backend decode в отдельном потоке за узким session contract.
-    pub(crate) video_decoder_thread: Option<Box<dyn VideoDecoderThreadHandle>>,
+    pub(crate) video_decoder_thread: Option<Box<PlayerVideoDecoderThreadHandle>>,
 
     /// Требует ли decoder следующий video packet быть keyframe-ом.
     ///
@@ -578,7 +537,9 @@ impl PlaybackPipeline {
     #[cfg(test)]
     pub(crate) fn set_video_decoder_thread(
         &mut self,
-        decoder_thread: impl VideoDecoderThreadHandle + 'static,
+        decoder_thread: impl VideoDecoderThreadHandle<
+            TextureViewProvider = WgpuRenderTextureProviderHandle,
+        > + 'static,
     ) {
         self.set_video_decoder_thread_handle(Box::new(decoder_thread));
     }
@@ -586,7 +547,7 @@ impl PlaybackPipeline {
     /// Сохраняет decoder handle, который уже прошёл backend startup boundary.
     pub(crate) fn set_video_decoder_thread_handle(
         &mut self,
-        decoder_thread: Box<dyn VideoDecoderThreadHandle>,
+        decoder_thread: Box<PlayerVideoDecoderThreadHandle>,
     ) {
         self.video_backend = decoder_thread.backend_name();
         self.video_decoder_thread = Some(decoder_thread);

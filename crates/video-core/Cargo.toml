@@ -6,5 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+bytes.workspace = true
 codec-core = { workspace = true }
 media-core = { workspace = true }
+tracing.workspace = true

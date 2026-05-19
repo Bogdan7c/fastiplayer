@@ -35,7 +35,7 @@ pub(crate) use decoder_boundary::DecodeBackpressureReason;
 pub use decoder_boundary::PlayerVideoDecoderThreadConfig;
 pub(crate) use decoder_boundary::{
     DecodeSendError, DecodeThreadError, DecoderResourceSnapshot, PlayerDecodePacket,
-    WgpuRenderTextureProviderHandle,
+    PlayerVideoDecoderThreadHandle, WgpuRenderTextureProviderHandle,
 };
 pub(crate) use diagnostics::{
     ActiveSeekDiagnosticsSnapshot, PlaybackDiagnostics, SeekProgressBlocker,
