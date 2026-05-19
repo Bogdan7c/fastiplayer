@@ -23,6 +23,7 @@ mod state;
 mod tick;
 mod video_backend;
 mod worker;
+mod worker_scheduler;
 
 pub use command::{
     MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, ScrubCommitPolicy,
