@@ -46,7 +46,7 @@ impl<'session> PlayerSnapshotBuilder<'session> {
         snapshot.tracks = self.track_summary_snapshot();
         snapshot.active_backend = self.backend_snapshot();
         snapshot.current_video_frame = self.current_video_frame_snapshot();
-        snapshot.render_generation = self.session.pipeline.render_generation;
+        snapshot.render_generation = self.session.pipeline.render_generation();
         snapshot.video_frame_duration_estimate =
             self.session.pipeline.video_frame_duration_estimate();
         snapshot.audio_buffer = self.audio_buffer_snapshot();
@@ -139,7 +139,7 @@ impl<'session> PlayerSnapshotBuilder<'session> {
             .pipeline
             .present_video_frame()
             .map(|present_frame| VideoFrameSnapshot {
-                render_generation: self.session.pipeline.render_generation,
+                render_generation: self.session.pipeline.render_generation(),
                 handle: present_frame.texture_handle.0,
                 pts: present_frame.pts,
                 width: present_frame.width,
@@ -283,6 +283,20 @@ mod tests {
 
         assert_eq!(snapshot.source_label.as_deref(), Some("/tmp/sample.webm"));
         assert_eq!(snapshot.media_title.as_deref(), Some("sample.webm"));
+    }
+
+    #[test]
+    fn builder_preserves_render_generation_from_pipeline_getter() {
+        let mut session = PlayerSession::default();
+        session.pipeline.advance_render_generation();
+        session.pipeline.advance_render_generation();
+
+        let snapshot = build_snapshot(&session, FrameCounters::default());
+
+        assert_eq!(
+            snapshot.render_generation,
+            session.pipeline.render_generation()
+        );
     }
 
     #[test]

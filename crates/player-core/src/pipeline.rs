@@ -230,13 +230,13 @@ pub(crate) struct PlaybackPipeline {
     present_video_frame: Option<video_core::DecodedFrame>,
 
     /// Поколение render resources текущего media pipeline.
-    pub(crate) render_generation: u64,
+    render_generation: u64,
 
     /// Texture handles, которые сейчас удерживает render/UI thread.
-    pub(crate) leased_video_textures: HashMap<(u64, u64), usize>,
+    leased_video_textures: HashMap<(u64, u64), usize>,
 
     /// Texture handles, release которых отложен до drop-ack от render/UI thread.
-    pub(crate) deferred_video_texture_releases: HashSet<(u64, u64)>,
+    deferred_video_texture_releases: HashSet<(u64, u64)>,
 
     /// Track ID выбранного video трека.
     video_track_id: Option<TrackId>,
