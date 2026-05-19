@@ -643,7 +643,7 @@ impl PlayerSession {
     #[allow(dead_code)]
     pub(crate) fn record_render_acquire_timeout(&mut self, wait: Duration) {
         self.record_pipeline_latency(PipelineLatencyStage::RenderAcquire, wait, None, None);
-        if self.pipeline.video_track_id.is_none() {
+        if !self.pipeline.has_selected_video_track() {
             return;
         }
         self.record_video_drop(None, VideoDropReason::RenderAcquisitionTimeout);
@@ -679,7 +679,7 @@ impl PlayerSession {
         generation: u64,
         encoded_audio_bytes: &[u8],
     ) {
-        if self.pipeline.audio_track_id != Some(track_id) {
+        if self.pipeline.selected_audio_track_id() != Some(track_id) {
             return;
         }
 
@@ -1008,7 +1008,7 @@ impl PlayerSession {
         seek_commit: SeekCommitState,
         resume_video_min_ready_frames: usize,
     ) -> bool {
-        if self.pipeline.video_track_id.is_none() {
+        if !self.pipeline.has_selected_video_track() {
             return true;
         }
 
@@ -1074,13 +1074,13 @@ impl PlayerSession {
             return SeekProgressBlocker::ReadyToCommit;
         }
 
-        if self.pipeline.audio_track_id.is_some()
+        if self.pipeline.has_selected_audio_track()
             && self.pipeline.audio_buffer_clear_generation < seek_commit.generation
         {
             return SeekProgressBlocker::WaitingForAudioClear;
         }
 
-        if self.pipeline.video_track_id.is_none() {
+        if !self.pipeline.has_selected_video_track() {
             return SeekProgressBlocker::WaitingForAudioPreroll;
         }
 
@@ -1146,7 +1146,7 @@ impl PlayerSession {
     ) -> usize {
         match (seek_commit.kind, seek_commit.resume_intent) {
             (SeekCommitKind::Final, PlaybackResumeIntent::Play)
-                if self.pipeline.audio_track_id.is_some() =>
+                if self.pipeline.has_selected_audio_track() =>
             {
                 1
             }
@@ -1201,7 +1201,7 @@ impl PlayerSession {
         seek_commit: SeekCommitState,
         resume_audio_min_buffer_ms: f64,
     ) -> bool {
-        if self.pipeline.audio_track_id.is_none() {
+        if !self.pipeline.has_selected_audio_track() {
             return true;
         }
 
@@ -1217,7 +1217,7 @@ impl PlayerSession {
             return true;
         }
 
-        if self.pipeline.video_track_id.is_some() {
+        if self.pipeline.has_selected_video_track() {
             return true;
         }
 
@@ -1481,7 +1481,7 @@ impl PlayerSession {
             .map(|level_ms| level_ms >= audio_preroll_target_ms.max(1.0))
             .unwrap_or(true);
         let video_ready =
-            self.pipeline.video_track_id.is_none() || self.pipeline.has_present_video_frame();
+            !self.pipeline.has_selected_video_track() || self.pipeline.has_present_video_frame();
 
         audio_ready && video_ready
     }
@@ -1807,7 +1807,7 @@ impl PlayerSession {
 
     /// Проверяет, что текущий video frame уже соответствует target; audio-only media проходит.
     fn present_frame_covers_target(&self, target_position: Duration) -> bool {
-        if self.pipeline.video_track_id.is_none() {
+        if !self.pipeline.has_selected_video_track() {
             return true;
         }
 
@@ -1816,7 +1816,7 @@ impl PlayerSession {
 
     /// Проверяет, что текущий present frame ровно тот preview-кадр, который хотим зафиксировать.
     fn present_frame_matches_position(&self, position: Duration) -> bool {
-        self.pipeline.video_track_id.is_some()
+        self.pipeline.has_selected_video_track()
             && self.pipeline.present_video_frame_matches(position)
     }
 
@@ -1906,7 +1906,7 @@ impl PlayerSession {
         let target_duration = target_position.as_duration();
         let demux_seek_request = match demux_seek_request_for_transaction(
             commit_kind,
-            self.pipeline.video_track_id.is_some(),
+            self.pipeline.has_selected_video_track(),
             target_duration,
             seek_mode,
         ) {
@@ -1946,7 +1946,7 @@ impl PlayerSession {
 
         self.set_playback_state(PlaybackState::Seeking);
         let generation = self.pipeline.begin_seek_generation();
-        let has_video = self.pipeline.video_track_id.is_some();
+        let has_video = self.pipeline.has_selected_video_track();
 
         self.pipeline.clear_pending_packets_for_seek();
         self.pipeline.reset_decoder_state_for_seek(has_video);
@@ -2091,7 +2091,8 @@ impl PlayerSession {
     /// Выбирает video track.
     fn select_video_track(&mut self, track_id: TrackId) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        self.pipeline.video_track_id = Some(track_id);
+        self.pipeline
+            .select_video_track_preserving_active_requirement(track_id);
         self.snapshot.selected_tracks.video_track = Some(track_id);
         self.pending_events
             .push(PlayerEvent::VideoTrackSelected(track_id));
@@ -2101,7 +2102,7 @@ impl PlayerSession {
     /// Выбирает audio track.
     fn select_audio_track(&mut self, track_id: TrackId) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        self.pipeline.audio_track_id = Some(track_id);
+        self.pipeline.select_audio_track(track_id);
         self.snapshot.selected_tracks.audio_track = Some(track_id);
         self.pending_events
             .push(PlayerEvent::AudioTrackSelected(track_id));
@@ -2283,10 +2284,9 @@ impl PlayerSession {
 
     /// Активирует video track после обычной проверки или разрешённого deferred refinement.
     fn activate_video_track(&mut self, track: &TrackInfo, requirement: VideoDecodeRequirement) {
-        self.pipeline.video_track_id = Some(track.id);
-        self.pipeline.active_video_requirement = Some(requirement);
+        self.pipeline.select_video_track(track.id, requirement);
         self.snapshot.selected_tracks.video_track = Some(track.id);
-        log_selected_video_track_metadata(track, self.pipeline.active_video_requirement.as_ref());
+        log_selected_video_track_metadata(track, self.pipeline.active_video_requirement());
     }
 
     /// Разрешает отложить codec validation до первого packet header-а, если container неполный.
@@ -2327,7 +2327,7 @@ impl PlayerSession {
         requirement: VideoDecodeRequirement,
     ) -> PlayerResult<()> {
         self.validate_video_decode_requirement(&requirement)?;
-        self.pipeline.active_video_requirement = Some(requirement);
+        self.pipeline.set_active_video_requirement(requirement);
         Ok(())
     }
 
@@ -2407,7 +2407,7 @@ impl PlayerSession {
             }
         }
 
-        self.pipeline.audio_track_id = Some(init_spec.track_id);
+        self.pipeline.select_audio_track(init_spec.track_id);
         self.snapshot.selected_tracks.audio_track = Some(init_spec.track_id);
 
         if let Some(ref output) = self.pipeline.audio_output {
@@ -3270,7 +3270,7 @@ mod tests {
 
         assert!(session.pipeline.audio_decoder.is_none());
         assert!(session.pipeline.audio_output.is_none());
-        assert!(session.pipeline.audio_track_id.is_none());
+        assert!(session.pipeline.selected_audio_track_id().is_none());
         assert!(session.take_events().iter().any(|event| matches!(
             event,
             PlayerEvent::RecoverableError(error)
@@ -3303,14 +3303,22 @@ mod tests {
         session
             .pipeline
             .install_opened_media(Box::new(demuxer), None, None, tracks.clone());
-        session.pipeline.video_track_id = tracks
+        if let Some(video_track_id) = tracks
             .iter()
             .find(|track| track.kind == TrackKind::Video)
-            .map(|track| track.id);
-        session.pipeline.audio_track_id = tracks
+            .map(|track| track.id)
+        {
+            session
+                .pipeline
+                .select_video_track_preserving_active_requirement(video_track_id);
+        }
+        if let Some(audio_track_id) = tracks
             .iter()
             .find(|track| track.kind == TrackKind::Audio)
-            .map(|track| track.id);
+            .map(|track| track.id)
+        {
+            session.pipeline.select_audio_track(audio_track_id);
+        }
         session.set_snapshot_duration(Some(Duration::from_secs(30)));
         session.apply_demux_seekability(seekability);
         session.set_playback_state(PlaybackState::Paused);
@@ -3331,14 +3339,22 @@ mod tests {
         session
             .pipeline
             .install_opened_media(Box::new(demuxer), None, None, tracks.clone());
-        session.pipeline.video_track_id = tracks
+        if let Some(video_track_id) = tracks
             .iter()
             .find(|track| track.kind == TrackKind::Video)
-            .map(|track| track.id);
-        session.pipeline.audio_track_id = tracks
+            .map(|track| track.id)
+        {
+            session
+                .pipeline
+                .select_video_track_preserving_active_requirement(video_track_id);
+        }
+        if let Some(audio_track_id) = tracks
             .iter()
             .find(|track| track.kind == TrackKind::Audio)
-            .map(|track| track.id);
+            .map(|track| track.id)
+        {
+            session.pipeline.select_audio_track(audio_track_id);
+        }
         session.set_snapshot_duration(Some(Duration::from_secs(30)));
         session.apply_demux_seekability(DemuxSeekability::Seekable);
         session.set_playback_state(PlaybackState::Paused);
@@ -5656,6 +5672,51 @@ mod tests {
         assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoProfile);
         assert!(error.message.contains("profile VP9 Profile 2"));
         assert!(!session.can_defer_packet_refinement(&requirement));
+    }
+
+    #[test]
+    fn active_video_requirement_refinement_preserves_selection_and_rejects_before_mutation() {
+        let mut session = PlayerSession::new();
+        session.set_system_capabilities(capabilities_with_vp9_profile0());
+        let video_track_id = TrackId::new(1);
+        let initial_requirement = VideoDecodeRequirement::new(VideoCodec::Vp9);
+        let supported_requirement = initial_requirement
+            .clone()
+            .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0));
+        let rejected_requirement = initial_requirement
+            .clone()
+            .with_profile(VideoProfile::Vp9(Vp9Profile::Profile2));
+
+        session
+            .pipeline
+            .select_video_track(video_track_id, initial_requirement);
+
+        session
+            .refine_active_video_requirement(supported_requirement.clone())
+            .expect("profile0 requirement должен пройти fake capabilities");
+
+        assert_eq!(
+            session.pipeline.selected_video_track_id(),
+            Some(video_track_id)
+        );
+        assert_eq!(
+            session.pipeline.active_video_requirement(),
+            Some(&supported_requirement)
+        );
+
+        let error = session
+            .refine_active_video_requirement(rejected_requirement)
+            .expect_err("profile2 должен быть отвергнут до изменения active requirement");
+
+        assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoProfile);
+        assert_eq!(
+            session.pipeline.selected_video_track_id(),
+            Some(video_track_id)
+        );
+        assert_eq!(
+            session.pipeline.active_video_requirement(),
+            Some(&supported_requirement)
+        );
     }
 
     #[test]

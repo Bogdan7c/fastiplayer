@@ -174,7 +174,7 @@ pub(crate) struct PlaybackPipeline {
     pub(crate) audio_output: Option<audio::AudioOutput>,
 
     /// Track ID выбранного audio трека.
-    pub(crate) audio_track_id: Option<TrackId>,
+    audio_track_id: Option<TrackId>,
 
     /// Очередь сырых audio packets для throttle.
     pub(crate) pending_audio_packets: VecDeque<PendingAudioPacket>,
@@ -226,7 +226,7 @@ pub(crate) struct PlaybackPipeline {
     pub(crate) deferred_video_texture_releases: HashSet<(u64, u64)>,
 
     /// Track ID выбранного video трека.
-    pub(crate) video_track_id: Option<TrackId>,
+    video_track_id: Option<TrackId>,
 
     /// Очередь сырых video packets для decode.
     pub(crate) pending_video_packets: VecDeque<PendingVideoPacket>,
@@ -256,10 +256,78 @@ pub(crate) struct PlaybackPipeline {
     pub(crate) video_backend: &'static str,
 
     /// Требование активного video track, уточнённое container metadata или bitstream probe.
-    pub(crate) active_video_requirement: Option<VideoDecodeRequirement>,
+    active_video_requirement: Option<VideoDecodeRequirement>,
 }
 
 impl PlaybackPipeline {
+    /// Возвращает выбранный video track id без раскрытия storage поля.
+    #[must_use]
+    pub(crate) fn selected_video_track_id(&self) -> Option<TrackId> {
+        self.video_track_id
+    }
+
+    /// Возвращает выбранный audio track id без раскрытия storage поля.
+    #[must_use]
+    pub(crate) fn selected_audio_track_id(&self) -> Option<TrackId> {
+        self.audio_track_id
+    }
+
+    /// Проверяет, выбран ли video track в текущем pipeline.
+    #[must_use]
+    pub(crate) fn has_selected_video_track(&self) -> bool {
+        self.video_track_id.is_some()
+    }
+
+    /// Проверяет, выбран ли audio track в текущем pipeline.
+    #[must_use]
+    pub(crate) fn has_selected_audio_track(&self) -> bool {
+        self.audio_track_id.is_some()
+    }
+
+    /// Проверяет, относится ли video packet к активному video track.
+    #[must_use]
+    pub(crate) fn video_packet_belongs_to_selected_track(&self, track_id: TrackId) -> bool {
+        self.video_track_id == Some(track_id)
+    }
+
+    /// Выбирает video track вместе с уже принятым session policy decode requirement.
+    pub(crate) fn select_video_track(
+        &mut self,
+        track_id: TrackId,
+        requirement: VideoDecodeRequirement,
+    ) {
+        self.video_track_id = Some(track_id);
+        self.active_video_requirement = Some(requirement);
+    }
+
+    /// Меняет selected video track, сохраняя текущий active requirement как legacy command path.
+    pub(crate) fn select_video_track_preserving_active_requirement(&mut self, track_id: TrackId) {
+        self.video_track_id = Some(track_id);
+    }
+
+    /// Выбирает audio track id без side effects для decoder/output ownership.
+    pub(crate) fn select_audio_track(&mut self, track_id: TrackId) {
+        self.audio_track_id = Some(track_id);
+    }
+
+    /// Очищает выбранные tracks и requirement, не трогая queues/decoder/source slots.
+    pub(crate) fn clear_selected_tracks(&mut self) {
+        self.audio_track_id = None;
+        self.video_track_id = None;
+        self.active_video_requirement = None;
+    }
+
+    /// Возвращает active video requirement без передачи владения наружу pipeline.
+    #[must_use]
+    pub(crate) fn active_video_requirement(&self) -> Option<&VideoDecodeRequirement> {
+        self.active_video_requirement.as_ref()
+    }
+
+    /// Сохраняет requirement, который session уже провалидировала или разрешила отложить.
+    pub(crate) fn set_active_video_requirement(&mut self, requirement: VideoDecodeRequirement) {
+        self.active_video_requirement = Some(requirement);
+    }
+
     /// Начинает новое поколение packets для seek transaction.
     ///
     /// Saturating increment оставляет поведение прежним: после переполнения
@@ -525,9 +593,8 @@ impl PlaybackPipeline {
         self.clear_media_source_slots();
         self.audio_decoder = None;
         self.audio_output = None;
-        self.audio_track_id = None;
+        self.clear_selected_tracks();
         self.clear_pending_audio_packets();
-        self.video_track_id = None;
         self.clear_pending_video_packets();
         self.require_video_decoder_keyframe();
         self.reset_video_decode_in_flight();
@@ -545,7 +612,6 @@ impl PlaybackPipeline {
         self.last_decoded_video_pts = None;
         self.last_audio_clock = Duration::ZERO;
         self.last_audio_clock_change_at = Instant::now();
-        self.active_video_requirement = None;
     }
 
     /// Очищает только source identity и demux handle без изменения остальных lifecycle slots.
@@ -908,6 +974,7 @@ impl Default for PlaybackPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codec_core::VideoCodec;
     use media_core::{MediaTime, TrackKind};
 
     /// Создаёт decoded frame без реальных GPU resources для проверки pipeline storage.
@@ -1048,6 +1115,72 @@ mod tests {
             .expect("installed demuxer должен принять seek через boundary")
             .expect("fake demuxer должен принять accurate seek");
         assert_eq!(seek_result.actual_position, MediaTime::from_secs(3));
+    }
+
+    #[test]
+    fn selected_track_boundaries_manage_ids_requirement_and_clear_only_selection() {
+        let mut pipeline = PlaybackPipeline::default();
+        let video_track_id = TrackId::new(10);
+        let audio_track_id = TrackId::new(20);
+        let source_tracks = vec![
+            source_slot_track(video_track_id, TrackKind::Video, "V_VP9"),
+            source_slot_track(audio_track_id, TrackKind::Audio, "A_OPUS"),
+        ];
+        let initial_requirement = VideoDecodeRequirement::new(VideoCodec::Vp9);
+        let refined_requirement = initial_requirement.clone().with_resolution(1920, 1080);
+
+        pipeline.install_opened_media(
+            Box::new(SourceSlotFakeDemuxer::new(source_tracks.clone())),
+            None,
+            Some("selected-track-test".to_owned()),
+            source_tracks,
+        );
+        pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
+            audio_track_id,
+            Duration::from_millis(1),
+            pipeline.seek_generation,
+            Bytes::from_static(b"audio"),
+        ));
+        pipeline.enqueue_pending_video_packet(PendingVideoPacket::new(
+            video_track_id,
+            Duration::from_millis(2),
+            pipeline.seek_generation,
+            Bytes::from_static(b"video"),
+            true,
+        ));
+
+        pipeline.select_audio_track(audio_track_id);
+        pipeline.select_video_track(video_track_id, initial_requirement.clone());
+
+        assert_eq!(pipeline.selected_audio_track_id(), Some(audio_track_id));
+        assert_eq!(pipeline.selected_video_track_id(), Some(video_track_id));
+        assert!(pipeline.has_selected_audio_track());
+        assert!(pipeline.has_selected_video_track());
+        assert!(pipeline.video_packet_belongs_to_selected_track(video_track_id));
+        assert!(!pipeline.video_packet_belongs_to_selected_track(TrackId::new(99)));
+        assert_eq!(
+            pipeline.active_video_requirement(),
+            Some(&initial_requirement)
+        );
+
+        pipeline.set_active_video_requirement(refined_requirement.clone());
+
+        assert_eq!(
+            pipeline.active_video_requirement(),
+            Some(&refined_requirement)
+        );
+
+        pipeline.clear_selected_tracks();
+
+        assert!(pipeline.selected_audio_track_id().is_none());
+        assert!(pipeline.selected_video_track_id().is_none());
+        assert!(!pipeline.has_selected_audio_track());
+        assert!(!pipeline.has_selected_video_track());
+        assert!(pipeline.active_video_requirement().is_none());
+        assert_eq!(pipeline.pending_audio_packet_len(), 1);
+        assert_eq!(pipeline.pending_video_packet_len(), 1);
+        assert!(pipeline.has_demuxer());
+        assert_eq!(pipeline.track_count(), 2);
     }
 
     #[test]

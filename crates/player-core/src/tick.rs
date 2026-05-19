@@ -582,7 +582,7 @@ fn audio_catchup_pending_video_limit(tick_config: &PlayerTickConfig) -> usize {
 /// Проверяет, нужно ли временно приоритизировать demux ради заполнения audio buffer.
 fn audio_demux_catchup_needed(session: &PlayerSession, tick_config: &PlayerTickConfig) -> bool {
     audio_demux_catchup_needed_for_level(
-        session.pipeline.audio_track_id.is_some(),
+        session.pipeline.has_selected_audio_track(),
         session.audio_buffer_level_ms(),
         tick_config.audio_demux_low_water_mark_ms,
     )
@@ -777,7 +777,7 @@ fn can_send_video_packet_to_decoder(
         return false;
     }
 
-    if session.pipeline.audio_track_id.is_none() || session.pipeline.audio_clock.is_none() {
+    if !session.pipeline.has_selected_audio_track() || session.pipeline.audio_clock.is_none() {
         return true;
     }
 
@@ -1190,7 +1190,10 @@ fn send_pending_video_packets_to_decoder(
             continue;
         }
 
-        if session.pipeline.video_track_id != Some(packet_track_id) {
+        if !session
+            .pipeline
+            .video_packet_belongs_to_selected_track(packet_track_id)
+        {
             session.pipeline.pop_pending_video_packet_front();
             continue;
         }
@@ -1239,8 +1242,7 @@ fn send_pending_video_packets_to_decoder(
 
         let resolved_color = session
             .pipeline
-            .active_video_requirement
-            .as_ref()
+            .active_video_requirement()
             .and_then(|requirement| requirement.color.clone());
         let decode_packet = PlayerDecodePacket {
             track_id: packet_track_id,
@@ -1327,8 +1329,7 @@ fn validate_pending_video_packet_before_decode(
 ) -> bool {
     if session
         .pipeline
-        .active_video_requirement
-        .as_ref()
+        .active_video_requirement()
         .is_some_and(|requirement| !video_requirement_needs_packet_refinement(requirement))
     {
         return true;
@@ -1629,7 +1630,7 @@ fn demux_work_available(session: &PlayerSession, tick_config: &PlayerTickConfig)
     }
 
     let prioritize_audio_catchup = audio_demux_catchup_needed(session, tick_config);
-    if session.pipeline.video_track_id.is_some()
+    if session.pipeline.has_selected_video_track()
         && session.pipeline.video_present_queue_len() >= video_present_queue_target(tick_config)
         && !prioritize_audio_catchup
         && !seek_admission_active(session)
@@ -1648,7 +1649,7 @@ fn decoder_readiness_poll_needed(session: &PlayerSession, tick_config: &PlayerTi
     };
 
     decoder_readiness_poll_needed_for_state(
-        session.pipeline.video_track_id.is_some(),
+        session.pipeline.has_selected_video_track(),
         session.pipeline.video_present_queue_len(),
         video_present_queue_target(tick_config),
         !session.pipeline.pending_video_packet_is_empty(),
@@ -1900,7 +1901,7 @@ fn repeat_present_video_frame(
         tick_result.record_repeated_video_frame();
         session.record_repeated_video_frame();
     }
-    if session.pipeline.video_track_id.is_some()
+    if session.pipeline.has_selected_video_track()
         && session.playback_state() == PlaybackState::Playing
         && let Some(pause_reason) = pause_reason
     {
@@ -2322,10 +2323,13 @@ fn record_pipeline_pause(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
 
     use super::*;
-    use crate::{PlayerCommand, PlayerSession};
+    use crate::{PlayerCommand, PlayerSession, WgpuRenderTextureProviderHandle};
 
     /// Создаёт test frame без реальных GPU resources с явным decoded contract.
     fn decoded_frame_with_format(
@@ -2366,6 +2370,78 @@ mod tests {
     /// Создаёт текущий production NV12 test frame без привязки scheduler assertions к формату.
     fn decoded_frame(pts: Duration, handle: u64) -> video_core::DecodedFrame {
         decoded_frame_with_format(pts, handle, video_core::DecodedPixelFormat::Nv12)
+    }
+
+    /// Fake decoder, который записывает отправленные packets без реального backend-а.
+    #[derive(Clone, Default)]
+    struct RecordingVideoDecoderThread {
+        /// Packet log нужен тесту, чтобы отличить drop от отправки в decoder.
+        sent_packets: Arc<Mutex<Vec<PlayerDecodePacket>>>,
+    }
+
+    impl RecordingVideoDecoderThread {
+        /// Создаёт пустой fake decoder для проверки routing/drop behavior.
+        fn new() -> Self {
+            Self::default()
+        }
+
+        /// Возвращает snapshot отправленных packets без раскрытия mutex наружу.
+        fn sent_packets(&self) -> Vec<PlayerDecodePacket> {
+            self.sent_packets
+                .lock()
+                .expect("recording decoder packet log lock")
+                .clone()
+        }
+    }
+
+    impl video_core::VideoDecoderThreadHandle for RecordingVideoDecoderThread {
+        type TextureViewProvider = WgpuRenderTextureProviderHandle;
+
+        fn backend_name(&self) -> &'static str {
+            "Recording fake decoder"
+        }
+
+        fn send_packet(&self, packet: PlayerDecodePacket) -> Result<(), DecodeSendError> {
+            self.sent_packets
+                .lock()
+                .expect("recording decoder packet log lock")
+                .push(packet);
+            Ok(())
+        }
+
+        fn release_frame(&self, _handle: video_core::FrameTextureHandle) {}
+
+        fn try_recv_frame(&self) -> Option<video_core::DecodedFrame> {
+            None
+        }
+
+        fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent> {
+            None
+        }
+
+        fn try_recv_error(&self) -> Option<DecodeThreadError> {
+            None
+        }
+
+        fn flush(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn texture_view_provider(&self) -> WgpuRenderTextureProviderHandle {
+            panic!("recording fake decoder does not provide renderer texture views")
+        }
+
+        fn decoder_resource_snapshot(&self) -> Option<crate::DecoderResourceSnapshot> {
+            None
+        }
+
+        fn packet_queue_depth(&self) -> usize {
+            0
+        }
+
+        fn drain_completed_packet_count(&self) -> usize {
+            0
+        }
     }
 
     #[test]
@@ -3046,6 +3122,44 @@ mod tests {
         assert!(pending_packet.keyframe);
         assert_eq!(pending_packet.encoded_bytes.as_ptr(), payload_ptr);
         assert_eq!(&pending_packet.encoded_bytes[..], &[0x82, 0x49, 0x83, 0x42]);
+    }
+
+    #[test]
+    fn pending_video_packet_from_unselected_track_is_dropped_before_decoder_send() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+
+        session
+            .pipeline
+            .set_video_decoder_thread(decoder_thread.clone());
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                TrackId::new(2),
+                Duration::from_millis(120),
+                session.pipeline.seek_generation,
+                Bytes::from_static(b"foreign-video-track"),
+                true,
+            ));
+
+        let sent_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &PlayerTickConfig::default(),
+            &mut tick_result,
+            1,
+            Duration::from_millis(250),
+            None,
+        );
+
+        assert_eq!(sent_packets, 0);
+        assert!(session.pipeline.pending_video_packet_is_empty());
+        assert!(decoder_thread.sent_packets().is_empty());
+        assert!(tick_result.dropped_video_frames.is_empty());
     }
 
     #[test]

@@ -82,8 +82,8 @@ impl<'session> PlayerSnapshotBuilder<'session> {
     /// Собирает snapshot выбранных tracks.
     fn track_selection_snapshot(&self) -> TrackSelectionSnapshot {
         TrackSelectionSnapshot {
-            video_track: self.session.pipeline.video_track_id,
-            audio_track: self.session.pipeline.audio_track_id,
+            video_track: self.session.pipeline.selected_video_track_id(),
+            audio_track: self.session.pipeline.selected_audio_track_id(),
             subtitle_track: self.session.snapshot.selected_tracks.subtitle_track,
         }
     }
