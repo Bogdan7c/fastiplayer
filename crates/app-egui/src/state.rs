@@ -940,7 +940,11 @@ impl AppState {
         }
     }
 
-    /// Конвертирует timeline action в typed player command.
+    /// Конвертирует pointer timeline action в typed player command.
+    ///
+    /// Здесь находится единственный app-egui route, который применяет
+    /// `ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE`. Exact seek-команды должны отправлять
+    /// `PlayerCommand::Seek`, чтобы сохранять accurate final target semantics.
     fn send_timeline_action(&mut self, action: TimelineAction) {
         debug!(action = ?action, "Timeline action отправлен в player worker");
         let command = match action {
@@ -949,6 +953,8 @@ impl AppState {
                 PlayerCommand::UpdateScrub(SeekRequest::absolute(position))
             }
             TimelineAction::EndScrubCommitDefault => PlayerCommand::EndScrub {
+                // TODO(config): выбирать policy из
+                // `player.seek.timeline_release_policy = visible-preview/latest-target/hybrid`.
                 policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
             },
         };

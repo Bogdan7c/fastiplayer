@@ -163,21 +163,31 @@ impl SeekRequest {
 }
 
 /// Политика завершения interactive scrub.
+///
+/// Этот enum описывает только release semantics для `PlayerCommand::EndScrub`.
+/// Обычные exact seek-команды должны идти через `PlayerCommand::Seek`, чтобы не
+/// наследовать latency-first UX policy timeline-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrubCommitPolicy {
-    /// Всегда выполнить final seek в последнюю цель, полученную через `UpdateScrub`.
+    /// Exact final target: всегда выполнить final seek в последнюю цель `UpdateScrub`.
     CommitLatestTarget,
 
-    /// Зафиксировать последний preview-кадр, который реально был показан пользователю.
+    /// UX smooth pointer release: зафиксировать последний реально видимый preview.
     CommitVisiblePreview,
 
-    /// Сохранить visible preview как stale feedback, но финально доехать до latest target.
+    /// Hybrid: оставить visible preview как stale feedback и финально доехать до latest target.
     CommitLatestTargetWithVisiblePreviewFallback,
 }
 
 impl ScrubCommitPolicy {
-    /// UX policy по умолчанию для отпускания pointer-а на timeline: release не ждёт exact seek,
-    /// если пользователь уже видел preview frame.
+    /// UX policy по умолчанию для отпускания pointer-а на timeline.
+    ///
+    /// Текущее поведение latency-first: release не ждёт exact seek, если пользователь уже
+    /// видел preview frame.
+    ///
+    /// TODO(config): когда появится runtime config, `app-egui` должен выбирать policy из
+    /// `player.seek.timeline_release_policy = visible-preview/latest-target/hybrid`, а этот
+    /// default должен остаться совместимым fallback-ом.
     pub const DEFAULT_TIMELINE_RELEASE: Self = Self::CommitVisiblePreview;
 }
 
@@ -261,7 +271,10 @@ pub enum PlayerCommand {
     /// Переключить состояние между play и pause.
     TogglePlayback,
 
-    /// Перемотать текущий media.
+    /// Выполнить exact/accurate final seek текущего media.
+    ///
+    /// Эта команда не использует `ScrubCommitPolicy` и остаётся route-ом для keyboard seek,
+    /// external/MPRIS seek, будущего chapter seek и любого отделённого exact click-to-seek.
     Seek(SeekRequest),
 
     /// Начать interactive scrub без немедленного commit-а playback позиции.

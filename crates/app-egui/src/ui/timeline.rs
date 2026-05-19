@@ -36,6 +36,9 @@ impl TimelineUiState {
 }
 
 /// Действие timeline, которое `AppState` конвертирует в `PlayerCommand`.
+///
+/// Эти actions описывают pointer timeline UX. Exact seek-команды должны иметь
+/// отдельный route через `PlayerCommand::Seek`, а не наследовать default scrub release policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimelineAction {
     /// Начало interactive scrub.
@@ -44,7 +47,11 @@ pub enum TimelineAction {
     /// Обновление целевой позиции interactive scrub.
     UpdateScrub(MediaTime),
 
-    /// Завершение scrub с default commit policy timeline-а.
+    /// Завершение pointer timeline scrub с default commit policy timeline-а.
+    ///
+    /// Сейчас одиночный click-to-seek остаётся в этом же pointer release flow для
+    /// совместимости поведения. Если click-to-seek отделяется в exact command, ему нужна
+    /// отдельная action/route, не меняющая semantics этого variant-а.
     EndScrubCommitDefault,
 }
 
@@ -182,6 +189,7 @@ pub fn map_timeline_interaction(
 
     let should_finish_scrub = state.has_active_drag() && (input.clicked || input.drag_stopped);
     if should_finish_scrub {
+        // Click и drag release сейчас намеренно используют одну pointer timeline policy.
         actions.push(TimelineAction::EndScrubCommitDefault);
         state.clear_transient_drag();
     }

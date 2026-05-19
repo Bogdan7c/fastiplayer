@@ -1,6 +1,6 @@
 # 12. План усиления seek/scrub
 
-Актуализировано: 2026-05-15.
+Актуализировано: 2026-05-19.
 
 Этот документ разбивает исправление seek/scrub на короткие сессии. Его можно
 прикладывать к каждой новой сессии вместе с названием нужного шага.
@@ -336,6 +336,38 @@ policy и честно ждала target frame, но для timeline release э�
 - `CommitVisiblePreview`: фиксировать последний реально показанный preview.
 - `CommitLatestTargetWithVisiblePreviewFallback`: hybrid/exact policy для
   сценариев, где важнее exact target, чем мгновенный release.
+
+### Контракт seek semantics, 2026-05-19
+
+Этот блок фиксирует routing без изменения runtime behavior. Главная граница:
+`ScrubCommitPolicy` относится только к `EndScrub`, а exact seek commands идут
+через `PlayerCommand::Seek(SeekRequest)`.
+
+- Pointer timeline scrub release: `TimelineAction::EndScrubCommitDefault` ->
+  `PlayerCommand::EndScrub { policy: DEFAULT_TIMELINE_RELEASE }`. На текущий
+  момент `DEFAULT_TIMELINE_RELEASE = CommitVisiblePreview`, то есть release
+  latency-first фиксирует последний реально видимый preview.
+- Click-to-seek: текущий `app-egui` mapper оставляет click в том же pointer
+  timeline flow (`BeginScrub` -> `UpdateScrub` -> `EndScrubCommitDefault`) для
+  совместимости поведения. Если click-to-seek будет отделён как exact command,
+  он должен получить отдельный route через `PlayerCommand::Seek` или явную
+  policy `CommitLatestTarget`, а не молча наследовать `CommitVisiblePreview`.
+- Keyboard seek: должен идти через `PlayerCommand::Seek`. Это exact/accurate
+  final target semantics; `ScrubCommitPolicy` здесь не участвует.
+- External/MPRIS seek: `desktop-integration` мапит `Seek`/`SetPosition` в
+  `PlayerCommand::Seek(SeekRequest::absolute(...))`. Это external exact route,
+  не pointer release policy.
+- Future chapter seek: должен использовать `PlayerCommand::Seek` как exact
+  chapter target route. Если понадобится отдельная chapter-specific policy, её
+  нужно добавлять явно, не переиспользуя timeline release default.
+
+Документированный future config hook без реализации config:
+
+- `player.seek.timeline_release_policy = visible-preview/latest-target/hybrid`.
+- Текущее значение fallback-а: `visible-preview`
+  (`ScrubCommitPolicy::CommitVisiblePreview`).
+- Значение config должно влиять только на pointer timeline release route и не
+  менять semantics `PlayerCommand::Seek`.
 
 Зафиксированные edge cases:
 
