@@ -158,13 +158,7 @@ impl<'session> PlayerSnapshotBuilder<'session> {
                 .session
                 .audio_buffer_level_ms()
                 .and_then(|level_ms| optional_duration_from_seconds(level_ms / 1000.0)),
-            underruns: self
-                .session
-                .pipeline
-                .audio_clock
-                .as_ref()
-                .map(|audio_clock| audio_clock.underrun_callbacks())
-                .unwrap_or(0),
+            underruns: self.session.pipeline.audio_clock_underrun_callbacks(),
         }
     }
 

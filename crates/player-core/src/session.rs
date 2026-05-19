@@ -14,7 +14,6 @@ use media_core::{
 use tracing::{debug, info, trace, warn};
 
 use crate::media_opening::PreparedMedia;
-use crate::pipeline::MonotonicMediaClockAnchor;
 use crate::seek_controller::PlaybackResumeIntent;
 use crate::seek_state::{
     SeekCommitKind, SeekCommitState, SeekDemuxRequestError, demux_seek_request_for_transaction,
@@ -255,10 +254,10 @@ impl PlayerSession {
             .set_timeline_position(MediaTime::from_duration(position));
 
         if self.snapshot.playback_state == PlaybackState::Playing
-            && self.pipeline.audio_clock.is_none()
+            && !self.pipeline.has_audio_clock()
         {
-            self.pipeline.monotonic_media_clock_anchor =
-                Some(MonotonicMediaClockAnchor::new(position, Instant::now()));
+            self.pipeline
+                .start_monotonic_media_clock(position, Instant::now());
         }
     }
 
@@ -268,7 +267,7 @@ impl PlayerSession {
     /// Playing-state использует внутренний monotonic anchor, а не частоту worker tick-а.
     #[must_use]
     pub(crate) fn presentation_clock_position_at(&self, now: Instant) -> Duration {
-        if self.pipeline.audio_clock.is_some() {
+        if self.pipeline.has_audio_clock() {
             return self.audio_media_clock_position();
         }
 
@@ -277,9 +276,9 @@ impl PlayerSession {
         }
 
         if self.snapshot.playback_state == PlaybackState::Playing
-            && let Some(anchor) = self.pipeline.monotonic_media_clock_anchor
+            && let Some(position) = self.pipeline.monotonic_media_position(now)
         {
-            return anchor.position_at(now);
+            return position;
         }
 
         self.snapshot.current_position
@@ -287,7 +286,7 @@ impl PlayerSession {
 
     /// Синхронизирует snapshot position с monotonic fallback clock без изменения playback state.
     fn sync_monotonic_media_clock_position(&mut self, now: Instant) {
-        if self.pipeline.audio_clock.is_some() {
+        if self.pipeline.has_audio_clock() {
             return;
         }
 
@@ -297,26 +296,24 @@ impl PlayerSession {
 
     /// Запускает или перезапускает no-audio media clock от текущей snapshot position.
     fn anchor_monotonic_media_clock_if_needed(&mut self, now: Instant) {
-        if self.pipeline.audio_clock.is_some() {
-            self.pipeline.monotonic_media_clock_anchor = None;
+        if self.pipeline.has_audio_clock() {
+            self.pipeline.clear_monotonic_media_clock();
             return;
         }
 
-        self.pipeline.monotonic_media_clock_anchor = Some(MonotonicMediaClockAnchor::new(
-            self.snapshot.current_position,
-            now,
-        ));
+        self.pipeline
+            .start_monotonic_media_clock(self.snapshot.current_position, now);
     }
 
     /// Останавливает no-audio media clock, предварительно сохранив актуальную позицию.
     fn clear_monotonic_media_clock_anchor(&mut self, now: Instant) {
         self.sync_monotonic_media_clock_position(now);
-        self.pipeline.monotonic_media_clock_anchor = None;
+        self.pipeline.clear_monotonic_media_clock();
     }
 
     /// Возвращает абсолютную media position по audio clock.
     fn audio_media_clock_position(&self) -> Duration {
-        saturating_duration_add(self.pipeline.media_clock_base, self.audio_clock_now())
+        self.pipeline.media_position_from_audio_clock()
     }
 
     /// Добавляет delta к текущей позиции без panic при переполнении.
@@ -461,7 +458,7 @@ impl PlayerSession {
     /// Полностью сбрасывает состояние текущего media.
     pub fn reset_media_state(&mut self) {
         self.set_playback_state(PlaybackState::Paused);
-        self.pipeline.monotonic_media_clock_anchor = None;
+        self.pipeline.clear_monotonic_media_clock();
         self.clear_video_frames();
         self.advance_render_generation();
 
@@ -678,7 +675,7 @@ impl PlayerSession {
                     let samples = trim_decoded_audio_to_clock_base(
                         &decoded_audio.samples,
                         packet_pts,
-                        self.pipeline.media_clock_base,
+                        self.pipeline.media_clock_base(),
                         decoded_audio.sample_rate,
                         decoded_audio.channels,
                     );
@@ -721,11 +718,7 @@ impl PlayerSession {
     /// Возвращает текущее время audio clock.
     #[must_use]
     pub fn audio_clock_now(&self) -> Duration {
-        self.pipeline
-            .audio_clock
-            .as_ref()
-            .map(|clock| clock.now())
-            .unwrap_or(Duration::ZERO)
+        self.pipeline.audio_clock_now()
     }
 
     /// Проверяет, есть ли активный seek commit для scheduler/gate логики.
@@ -805,7 +798,7 @@ impl PlayerSession {
     /// `current_position` и может бесконечно ждать, считая кадр "слишком ранним".
     #[must_use]
     pub(crate) fn seek_presentation_clock_override(&self) -> Option<Duration> {
-        if self.pipeline.audio_clock.is_some() {
+        if self.pipeline.has_audio_clock() {
             return None;
         }
 
@@ -1224,8 +1217,9 @@ impl PlayerSession {
         self.scrub_state.clear();
         self.seek_eof_fallback_video_position = None;
         self.clear_seek_preroll_fallback_frame();
-        self.pipeline.media_clock_base = seek_commit.target_position.as_duration();
-        self.pipeline.monotonic_media_clock_anchor = None;
+        self.pipeline
+            .set_media_clock_base(seek_commit.target_position.as_duration());
+        self.pipeline.clear_monotonic_media_clock();
         self.snapshot.timeline.target_position = None;
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.scrubbing = false;
@@ -1243,10 +1237,12 @@ impl PlayerSession {
                     warn!(error = %error, "Не удалось запустить audio после seek");
                     self.set_runtime_error(format!("Audio play after seek error: {error}"));
                 }
-                self.pipeline.last_audio_clock = self.audio_clock_now();
-                self.pipeline.last_audio_clock_change_at = Instant::now();
+                let observed_at = Instant::now();
+                let audio_now = self.audio_clock_now();
+                self.pipeline
+                    .reset_audio_clock_sample(audio_now, observed_at);
                 self.set_playback_state(PlaybackState::Playing);
-                self.anchor_monotonic_media_clock_if_needed(Instant::now());
+                self.anchor_monotonic_media_clock_if_needed(observed_at);
             }
         }
     }
@@ -1381,8 +1377,10 @@ impl PlayerSession {
                 warn!(error = %error, "Не удалось запустить audio");
                 self.set_runtime_error(format!("Audio play error: {error}"));
             }
-            self.pipeline.last_audio_clock = self.audio_clock_now();
-            self.pipeline.last_audio_clock_change_at = std::time::Instant::now();
+            let observed_at = Instant::now();
+            let audio_now = self.audio_clock_now();
+            self.pipeline
+                .reset_audio_clock_sample(audio_now, observed_at);
         }
         self.anchor_monotonic_media_clock_if_needed(Instant::now());
 
@@ -1427,8 +1425,10 @@ impl PlayerSession {
         self.ensure_not_shutdown()?;
         self.pending_autoplay = false;
         self.set_playback_state(PlaybackState::Buffering);
-        self.pipeline.last_audio_clock = self.audio_clock_now();
-        self.pipeline.last_audio_clock_change_at = std::time::Instant::now();
+        let observed_at = Instant::now();
+        let audio_now = self.audio_clock_now();
+        self.pipeline
+            .reset_audio_clock_sample(audio_now, observed_at);
         Ok(())
     }
 
@@ -1958,9 +1958,7 @@ impl PlayerSession {
             }
         } else {
             self.pipeline.mark_audio_buffer_clear_ack(generation);
-            if let Some(ref clock) = self.pipeline.audio_clock {
-                clock.reset();
-            }
+            self.pipeline.reset_audio_clock();
         }
 
         let seek_result = {
@@ -2378,7 +2376,7 @@ impl PlayerSession {
         self.snapshot.selected_tracks.audio_track = Some(init_spec.track_id);
 
         if let Some(clock) = self.pipeline.audio_output_clock().cloned() {
-            self.pipeline.audio_clock = Some(clock);
+            self.pipeline.install_audio_clock(clock);
         }
 
         info!(
@@ -2713,11 +2711,6 @@ fn playback_resume_intent_name(intent: PlaybackResumeIntent) -> &'static str {
         PlaybackResumeIntent::Pause => "pause",
         PlaybackResumeIntent::Play => "play",
     }
-}
-
-/// Добавляет media duration без panic при переполнении.
-fn saturating_duration_add(timestamp: Duration, offset: Duration) -> Duration {
-    timestamp.checked_add(offset).unwrap_or(Duration::MAX)
 }
 
 #[cfg(test)]
@@ -4217,7 +4210,7 @@ mod tests {
             Duration::from_millis(7_900)
         );
         assert_eq!(
-            session.pipeline.media_clock_base,
+            session.pipeline.media_clock_base(),
             Duration::from_millis(7_900)
         );
         assert!(!session.snapshot().timeline.scrubbing);
@@ -4262,7 +4255,7 @@ mod tests {
             Duration::from_millis(7_900)
         );
         assert_eq!(
-            session.pipeline.media_clock_base,
+            session.pipeline.media_clock_base(),
             Duration::from_millis(7_900)
         );
         assert!(!session.snapshot().timeline.scrubbing);
@@ -5263,7 +5256,9 @@ mod tests {
         session
             .pipeline
             .set_video_decoder_thread(fake_decoder.clone());
-        session.pipeline.audio_clock = Some(Arc::new(audio::AudioClock::new(48_000, 2)));
+        session
+            .pipeline
+            .install_audio_clock(Arc::new(audio::AudioClock::new(48_000, 2)));
 
         session.dispatch_command(PlayerCommand::Play).unwrap();
         session

@@ -65,7 +65,7 @@ pub(crate) struct DecodedAudioPacket {
 
 /// Anchor внутреннего monotonic media clock для media без audio clock.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct MonotonicMediaClockAnchor {
+struct MonotonicMediaClockAnchor {
     /// Media position, которая соответствовала `anchored_at`.
     media_position: Duration,
 
@@ -76,7 +76,7 @@ pub(crate) struct MonotonicMediaClockAnchor {
 impl MonotonicMediaClockAnchor {
     /// Создаёт anchor без привязки к video FPS или worker tick cadence.
     #[must_use]
-    pub(crate) const fn new(media_position: Duration, anchored_at: Instant) -> Self {
+    const fn new(media_position: Duration, anchored_at: Instant) -> Self {
         Self {
             media_position,
             anchored_at,
@@ -85,7 +85,7 @@ impl MonotonicMediaClockAnchor {
 
     /// Возвращает media position на заданный monotonic момент.
     #[must_use]
-    pub(crate) fn position_at(self, now: Instant) -> Duration {
+    fn position_at(self, now: Instant) -> Duration {
         self.media_position
             .checked_add(now.saturating_duration_since(self.anchored_at))
             .unwrap_or(Duration::MAX)
@@ -245,13 +245,13 @@ pub(crate) struct PlaybackPipeline {
     pending_video_packets: VecDeque<PendingVideoPacket>,
 
     /// Audio clock для A/V sync.
-    pub(crate) audio_clock: Option<Arc<audio::clock::AudioClock>>,
+    audio_clock: Option<Arc<audio::clock::AudioClock>>,
 
     /// Абсолютная media-позиция, соответствующая нулю текущего audio clock.
-    pub(crate) media_clock_base: Duration,
+    media_clock_base: Duration,
 
     /// Внутренний monotonic clock для playback без доступного audio clock.
-    pub(crate) monotonic_media_clock_anchor: Option<MonotonicMediaClockAnchor>,
+    monotonic_media_clock_anchor: Option<MonotonicMediaClockAnchor>,
 
     /// Поколение packets после последнего seek transaction.
     seek_generation: u64,
@@ -260,10 +260,10 @@ pub(crate) struct PlaybackPipeline {
     audio_buffer_clear_generation: u64,
 
     /// Последнее значение audio clock для обнаружения stalled audio.
-    pub(crate) last_audio_clock: Duration,
+    last_audio_clock: Duration,
 
     /// Момент последнего изменения audio clock.
-    pub(crate) last_audio_clock_change_at: Instant,
+    last_audio_clock_change_at: Instant,
 
     /// Индикатор текущего видео backend для UI и диагностики.
     video_backend: &'static str,
@@ -382,6 +382,109 @@ impl PlaybackPipeline {
     #[must_use]
     pub(crate) fn audio_output_clock(&self) -> Option<&Arc<audio::clock::AudioClock>> {
         self.audio_output.as_ref().map(audio::AudioOutput::clock)
+    }
+
+    /// Проверяет наличие audio clock без раскрытия `Option` storage.
+    #[must_use]
+    pub(crate) fn has_audio_clock(&self) -> bool {
+        self.audio_clock.is_some()
+    }
+
+    /// Устанавливает audio clock handle и отключает no-audio monotonic fallback.
+    pub(crate) fn install_audio_clock(&mut self, clock: Arc<audio::clock::AudioClock>) {
+        self.audio_clock = Some(clock);
+        self.clear_monotonic_media_clock();
+    }
+
+    /// Удаляет audio clock handle без изменения decoder/output slots.
+    pub(crate) fn clear_audio_clock(&mut self) {
+        self.audio_clock = None;
+    }
+
+    /// Сбрасывает установленный audio clock; absent clock остаётся явным no-op.
+    pub(crate) fn reset_audio_clock(&self) -> bool {
+        let Some(clock) = self.audio_clock.as_ref() else {
+            return false;
+        };
+
+        clock.reset();
+        true
+    }
+
+    /// Возвращает текущее audio clock time или `Duration::ZERO`, если clock отсутствует.
+    #[must_use]
+    pub(crate) fn audio_clock_now(&self) -> Duration {
+        self.audio_clock
+            .as_ref()
+            .map(|clock| clock.now())
+            .unwrap_or(Duration::ZERO)
+    }
+
+    /// Возвращает число audio underrun callbacks для snapshot diagnostics.
+    #[must_use]
+    pub(crate) fn audio_clock_underrun_callbacks(&self) -> u64 {
+        self.audio_clock
+            .as_ref()
+            .map(|clock| clock.underrun_callbacks())
+            .unwrap_or(0)
+    }
+
+    /// Возвращает media base, соответствующий нулю текущего audio clock.
+    #[must_use]
+    pub(crate) const fn media_clock_base(&self) -> Duration {
+        self.media_clock_base
+    }
+
+    /// Устанавливает media base без изменения audio clock handle или sample accounting.
+    pub(crate) fn set_media_clock_base(&mut self, position: Duration) {
+        self.media_clock_base = position;
+    }
+
+    /// Возвращает абсолютную media position, вычисленную от audio clock и media base.
+    #[must_use]
+    pub(crate) fn media_position_from_audio_clock(&self) -> Duration {
+        self.media_clock_base
+            .checked_add(self.audio_clock_now())
+            .unwrap_or(Duration::MAX)
+    }
+
+    /// Запускает monotonic fallback clock от заданной media position.
+    pub(crate) fn start_monotonic_media_clock(&mut self, position: Duration, now: Instant) {
+        self.monotonic_media_clock_anchor = Some(MonotonicMediaClockAnchor::new(position, now));
+    }
+
+    /// Очищает monotonic fallback clock для pause/seek/audio-clock paths.
+    pub(crate) fn clear_monotonic_media_clock(&mut self) {
+        self.monotonic_media_clock_anchor = None;
+    }
+
+    /// Возвращает no-audio fallback media position, если fallback anchor активен.
+    #[must_use]
+    pub(crate) fn monotonic_media_position(&self, now: Instant) -> Option<Duration> {
+        self.monotonic_media_clock_anchor
+            .map(|anchor| anchor.position_at(now))
+    }
+
+    /// Обновляет sample для stall detection только при реальном движении audio clock.
+    pub(crate) fn note_audio_clock_sample(&mut self, audio_now: Duration, observed_at: Instant) {
+        if audio_now == self.last_audio_clock {
+            return;
+        }
+
+        self.last_audio_clock = audio_now;
+        self.last_audio_clock_change_at = observed_at;
+    }
+
+    /// Переставляет baseline stall detection после play/autoplay/seek resume.
+    pub(crate) fn reset_audio_clock_sample(&mut self, audio_now: Duration, observed_at: Instant) {
+        self.last_audio_clock = audio_now;
+        self.last_audio_clock_change_at = observed_at;
+    }
+
+    /// Возвращает длительность, в течение которой audio clock не менял значение.
+    #[must_use]
+    pub(crate) fn audio_clock_stalled_for(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.last_audio_clock_change_at)
     }
 
     /// Возвращает последнее поколение, для которого audio buffer clear был подтверждён.
@@ -538,10 +641,9 @@ impl PlaybackPipeline {
 
     /// Переставляет media clocks на целевую позицию seek.
     pub(crate) fn reset_clocks_for_seek(&mut self, target: Duration) {
-        self.media_clock_base = target;
-        self.monotonic_media_clock_anchor = None;
-        self.last_audio_clock = Duration::ZERO;
-        self.last_audio_clock_change_at = Instant::now();
+        self.set_media_clock_base(target);
+        self.clear_monotonic_media_clock();
+        self.reset_audio_clock_sample(Duration::ZERO, Instant::now());
     }
 
     /// Очищает очередь будущих video frames и возвращает texture handles для release.
@@ -785,14 +887,13 @@ impl PlaybackPipeline {
             "reset_media_slots вызывается только после release всех video frames"
         );
         self.seek_preroll_fallback_video_frame = None;
-        self.audio_clock = None;
-        self.media_clock_base = Duration::ZERO;
-        self.monotonic_media_clock_anchor = None;
+        self.clear_audio_clock();
+        self.set_media_clock_base(Duration::ZERO);
+        self.clear_monotonic_media_clock();
         self.seek_generation = 0;
         self.mark_audio_buffer_clear_ack(0);
         self.reset_video_frame_timing_estimator();
-        self.last_audio_clock = Duration::ZERO;
-        self.last_audio_clock_change_at = Instant::now();
+        self.reset_audio_clock_sample(Duration::ZERO, Instant::now());
     }
 
     /// Очищает только source identity и demux handle без изменения остальных lifecycle slots.
@@ -1442,6 +1543,74 @@ mod tests {
         pipeline.mark_audio_buffer_clear_ack(7);
 
         assert_eq!(pipeline.audio_buffer_clear_generation(), 7);
+    }
+
+    #[test]
+    fn no_audio_monotonic_fallback_counts_position_from_anchor() {
+        let mut pipeline = PlaybackPipeline::default();
+        let anchored_at = Instant::now();
+        let initial_position = Duration::from_millis(100);
+
+        pipeline.start_monotonic_media_clock(initial_position, anchored_at);
+
+        assert_eq!(
+            pipeline.monotonic_media_position(anchored_at + Duration::from_millis(40)),
+            Some(Duration::from_millis(140))
+        );
+    }
+
+    #[test]
+    fn installing_audio_clock_clears_monotonic_fallback_anchor() {
+        let mut pipeline = PlaybackPipeline::default();
+        let anchored_at = Instant::now();
+
+        pipeline.start_monotonic_media_clock(Duration::from_secs(3), anchored_at);
+        assert!(pipeline.monotonic_media_position(anchored_at).is_some());
+
+        pipeline.install_audio_clock(Arc::new(audio::AudioClock::new(48_000, 2)));
+
+        assert!(pipeline.has_audio_clock());
+        assert!(pipeline.monotonic_media_position(anchored_at).is_none());
+    }
+
+    #[test]
+    fn seek_clock_reset_restores_base_and_clears_fallback_sample_window() {
+        let mut pipeline = PlaybackPipeline::default();
+        let anchored_at = Instant::now();
+        let target_position = Duration::from_secs(9);
+
+        pipeline.set_media_clock_base(Duration::from_secs(2));
+        pipeline.start_monotonic_media_clock(Duration::from_secs(4), anchored_at);
+        pipeline.reset_audio_clock_sample(Duration::from_secs(3), anchored_at);
+
+        pipeline.reset_clocks_for_seek(target_position);
+
+        assert_eq!(pipeline.media_clock_base(), target_position);
+        assert!(pipeline.monotonic_media_position(anchored_at).is_none());
+        assert!(pipeline.audio_clock_stalled_for(Instant::now()) < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn stalled_audio_duration_is_measured_from_last_changed_sample() {
+        let mut pipeline = PlaybackPipeline::default();
+        let first_observed_at = Instant::now();
+        let unchanged_observed_at = first_observed_at + Duration::from_millis(20);
+        let changed_observed_at = first_observed_at + Duration::from_millis(40);
+
+        pipeline.reset_audio_clock_sample(Duration::ZERO, first_observed_at);
+        pipeline.note_audio_clock_sample(Duration::ZERO, unchanged_observed_at);
+
+        assert_eq!(
+            pipeline.audio_clock_stalled_for(first_observed_at + Duration::from_millis(30)),
+            Duration::from_millis(30)
+        );
+
+        pipeline.note_audio_clock_sample(Duration::from_millis(5), changed_observed_at);
+
+        assert_eq!(
+            pipeline.audio_clock_stalled_for(changed_observed_at + Duration::from_millis(15)),
+            Duration::from_millis(15)
+        );
     }
 
     #[test]

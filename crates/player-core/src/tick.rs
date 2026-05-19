@@ -777,12 +777,11 @@ fn can_send_video_packet_to_decoder(
         return false;
     }
 
-    if !session.pipeline.has_selected_audio_track() || session.pipeline.audio_clock.is_none() {
+    if !session.pipeline.has_selected_audio_track() || !session.pipeline.has_audio_clock() {
         return true;
     }
 
-    let audio_now = session.audio_clock_now();
-    let media_audio_now = saturating_duration_add(session.pipeline.media_clock_base, audio_now);
+    let media_audio_now = session.pipeline.media_position_from_audio_clock();
     let packet_lead = packet_pts.saturating_sub(media_audio_now);
 
     packet_lead <= decode_ahead_limit.min(video_decode_ahead_limit(tick_config))
@@ -2191,14 +2190,11 @@ fn process_pending_video_packets(
     }
 
     let audio_now = session.audio_clock_now();
-    if audio_now != session.pipeline.last_audio_clock {
-        session.pipeline.last_audio_clock = audio_now;
-        session.pipeline.last_audio_clock_change_at = tick_context.now;
-    }
+    session
+        .pipeline
+        .note_audio_clock_sample(audio_now, tick_context.now);
 
-    let audio_stall_elapsed = tick_context
-        .now
-        .saturating_duration_since(session.pipeline.last_audio_clock_change_at);
+    let audio_stall_elapsed = session.pipeline.audio_clock_stalled_for(tick_context.now);
     let audio_stalled = audio_now >= tick_config.audio_stall_min_position
         && audio_stall_elapsed >= tick_config.audio_stall_timeout;
 
