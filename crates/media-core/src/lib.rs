@@ -6,10 +6,14 @@
 
 #![forbid(unsafe_code)]
 
+mod demux;
 mod packet;
 mod time;
 mod track;
 
+pub use demux::{
+    DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaDemuxError,
+};
 pub use packet::Packet;
 pub use time::{
     MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason, TimelinePreviewState,

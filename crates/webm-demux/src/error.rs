@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::demuxer::DemuxSeekMode;
+use media_core::DemuxSeekMode;
 
 /// Ошибки demuxer.
 #[derive(Debug, thiserror::Error)]

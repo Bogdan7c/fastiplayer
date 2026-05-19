@@ -6,9 +6,11 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use media_core::{Packet, TrackId, TrackInfo, TrackKind};
+use media_core::{
+    DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, Packet, TrackId,
+    TrackInfo, TrackKind,
+};
 
-use crate::demuxer::{DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer};
 use crate::symphonia_demuxer::SymphoniaDemuxer;
 
 /// Track id для video после remap.
@@ -179,13 +181,9 @@ impl Demuxer for DualStreamDemuxer {
     fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
         let video_seek = self.video_demuxer.seek_with_request(request)?;
         let audio_request = match request.mode {
-            crate::demuxer::DemuxSeekMode::Accurate => {
-                DemuxSeekRequest::accurate(request.timestamp)
-            }
-            crate::demuxer::DemuxSeekMode::DecodePointBefore => {
-                DemuxSeekRequest::accurate(request.timestamp)
-            }
-            crate::demuxer::DemuxSeekMode::Preview => DemuxSeekRequest::preview(request.timestamp),
+            DemuxSeekMode::Accurate => DemuxSeekRequest::accurate(request.timestamp),
+            DemuxSeekMode::DecodePointBefore => DemuxSeekRequest::accurate(request.timestamp),
+            DemuxSeekMode::Preview => DemuxSeekRequest::preview(request.timestamp),
         };
         let _audio_seek = self.audio_demuxer.seek_with_request(audio_request)?;
 

@@ -2155,8 +2155,10 @@ dependencies = [
 name = "media-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bytes",
  "codec-core",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

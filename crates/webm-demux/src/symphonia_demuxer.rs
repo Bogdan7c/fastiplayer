@@ -8,8 +8,9 @@ use anyhow::Result;
 use bytes::Bytes;
 use codec_core::{VideoCodec, VideoPacketKeyframeProbe, probe_video_packet_keyframe};
 use media_core::{
-    MediaTime, Packet as OurPacket, TimeBase as OurTimeBase, TimelineNotSeekableReason, TrackId,
-    TrackInfo, TrackKind, TrackTimestamp,
+    DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaTime,
+    Packet as OurPacket, TimeBase as OurTimeBase, TimelineNotSeekableReason, TrackId, TrackInfo,
+    TrackKind, TrackTimestamp,
 };
 use source_core::{
     ByteSource, CancellationToken, Seekability as SourceSeekability, SourceError, SourceResult,
@@ -26,7 +27,6 @@ use symphonia::core::units::{Time, TimeBase};
 use tracing::{info, warn};
 
 use crate::byte_source::ByteSourceMediaSource;
-use crate::demuxer::{DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer};
 use crate::error::DemuxError;
 use crate::matroska_metadata::{
     MatroskaVideoTrack, extract_video_tracks_from_file, scan_video_tracks_from_bytes,
@@ -852,7 +852,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use media_core::{TrackId, TrackKind, VideoTrackMetadata};
+    use media_core::{
+        DemuxSeekRequest, DemuxSeekability, Demuxer, TrackId, TrackKind, VideoTrackMetadata,
+    };
     use symphonia::core::codecs::CodecParameters;
     use symphonia::core::errors::Error as SymphoniaError;
     use symphonia::core::formats::{
@@ -866,7 +868,6 @@ mod tests {
         SymphoniaDemuxer, build_track_entry, duration_to_symphonia_time,
         symphonia_timestamp_to_duration, take_matroska_video_track_for_track_id,
     };
-    use crate::demuxer::{DemuxSeekRequest, Demuxer};
     use crate::error::DemuxError;
     use crate::matroska_metadata::MatroskaVideoTrack;
     use crate::options::DemuxerOptions;
@@ -984,7 +985,7 @@ mod tests {
             Box::new(reader),
             "fake",
             matroska_tracks,
-            crate::demuxer::DemuxSeekability::Seekable,
+            DemuxSeekability::Seekable,
             options,
         )
         .expect("fake demuxer должен открыться")
@@ -998,7 +999,7 @@ mod tests {
             Box::new(reader),
             "fake",
             HashMap::new(),
-            crate::demuxer::DemuxSeekability::Seekable,
+            DemuxSeekability::Seekable,
             DemuxerOptions::default(),
         )
         .expect("fake demuxer должен открыться");
