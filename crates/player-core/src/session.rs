@@ -683,7 +683,7 @@ impl PlayerSession {
             return;
         }
 
-        if generation != self.pipeline.seek_generation {
+        if !self.pipeline.packet_generation_is_current(generation) {
             return;
         }
 
@@ -1712,7 +1712,7 @@ impl PlayerSession {
         let packet_generation = self
             .seek_commit
             .map(|seek_commit| seek_commit.generation)
-            .unwrap_or(self.pipeline.seek_generation);
+            .unwrap_or_else(|| self.pipeline.seek_generation());
         let actual_position = self
             .seek_commit
             .map(|seek_commit| seek_commit.actual_position)
@@ -1777,7 +1777,7 @@ impl PlayerSession {
         }
 
         let promoted_seek_commit = SeekCommitState {
-            generation: self.pipeline.seek_generation,
+            generation: self.pipeline.seek_generation(),
             scrub_generation: Some(generation),
             target_position,
             actual_position: target_position,
@@ -4826,7 +4826,7 @@ mod tests {
             .enqueue_pending_audio_packet(PendingAudioPacket::new(
                 TrackId::new(2),
                 Duration::ZERO,
-                session.pipeline.seek_generation,
+                session.pipeline.seek_generation(),
                 Bytes::from_static(&[1, 2, 3]),
             ));
         session
@@ -4834,7 +4834,7 @@ mod tests {
             .enqueue_pending_video_packet(PendingVideoPacket::new(
                 TrackId::new(1),
                 Duration::ZERO,
-                session.pipeline.seek_generation,
+                session.pipeline.seek_generation(),
                 Bytes::from_static(&[4, 5, 6]),
                 true,
             ));
@@ -4856,7 +4856,7 @@ mod tests {
                 .expect("seek log mutex should not be poisoned"),
             vec![Duration::from_secs(5)]
         );
-        assert_eq!(session.pipeline.seek_generation, 1);
+        assert_eq!(session.pipeline.seek_generation(), 1);
         assert!(session.pipeline.video_decoder_needs_keyframe());
         assert_eq!(session.pipeline.video_decode_in_flight_packets(), 0);
         assert!(session.seek_commit().is_some());
@@ -4897,7 +4897,7 @@ mod tests {
         session
             .pipeline
             .set_video_decoder_thread(FailingFlushVideoDecoderThread::new("flush failed"));
-        let initial_generation = session.pipeline.seek_generation;
+        let initial_generation = session.pipeline.seek_generation();
 
         session
             .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
@@ -4911,7 +4911,7 @@ mod tests {
                 .expect("seek log mutex should not be poisoned")
                 .is_empty()
         );
-        assert_eq!(session.pipeline.seek_generation, initial_generation);
+        assert_eq!(session.pipeline.seek_generation(), initial_generation);
         assert!(session.seek_commit().is_none());
         assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
         assert!(!session.snapshot().timeline.seeking);
@@ -4937,7 +4937,7 @@ mod tests {
                 MediaTime::from_secs(3),
             )))
             .unwrap();
-        let generation_after_first_seek = session.pipeline.seek_generation;
+        let generation_after_first_seek = session.pipeline.seek_generation();
         assert!(session.seek_commit().is_some());
 
         session
@@ -4956,7 +4956,7 @@ mod tests {
             vec![Duration::from_secs(3)]
         );
         assert_eq!(
-            session.pipeline.seek_generation,
+            session.pipeline.seek_generation(),
             generation_after_first_seek
         );
         assert!(session.seek_commit().is_none());

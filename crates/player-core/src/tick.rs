@@ -18,9 +18,9 @@ use tracing::{trace, warn};
 
 use crate::{
     DecodeSendError, DecodeThreadError, PendingAudioPacket, PendingVideoPacket,
-    PipelineLatencyStage, PipelinePauseReason, PlaybackState, PlayerDecodePacket, PlayerError,
-    PlayerErrorKind, PlayerSession, WorkerFrameTimingSnapshot, WorkerWakeupDiagnosticsSnapshot,
-    WorkerWakeupReason,
+    PipelineLatencyStage, PipelinePauseReason, PlaybackPipeline, PlaybackState, PlayerDecodePacket,
+    PlayerError, PlayerErrorKind, PlayerSession, WorkerFrameTimingSnapshot,
+    WorkerWakeupDiagnosticsSnapshot, WorkerWakeupReason,
 };
 
 /// Контекст одного playback tick.
@@ -695,7 +695,7 @@ fn read_demux_packets(
 
 /// Перекладывает packet из demuxer в соответствующую pending queue.
 fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet) {
-    let generation = session.pipeline.seek_generation;
+    let generation = session.pipeline.seek_generation();
 
     match packet.kind {
         TrackKind::Audio => {
@@ -1181,10 +1181,9 @@ fn send_pending_video_packets_to_decoder(
         let packet_keyframe = packet.keyframe;
         let encoded_bytes = packet.encoded_bytes.clone();
 
-        if let Some(drop_reason) = pending_video_packet_generation_drop_reason(
-            session.pipeline.seek_generation,
-            packet_generation,
-        ) {
+        if let Some(drop_reason) =
+            pending_video_packet_generation_drop_reason(&session.pipeline, packet_generation)
+        {
             session.pipeline.pop_pending_video_packet_front();
             record_video_drop(session, tick_result, packet_pts, drop_reason);
             continue;
@@ -1307,10 +1306,11 @@ fn accept_video_packet_for_decoder_bootstrap(
 
 /// Отделяет stale seek generation от late-drop policy.
 fn pending_video_packet_generation_drop_reason(
-    current_generation: u64,
+    pipeline: &PlaybackPipeline,
     packet_generation: u64,
 ) -> Option<PlayerVideoDropReason> {
-    (packet_generation != current_generation).then_some(PlayerVideoDropReason::StaleGeneration)
+    (!pipeline.packet_generation_is_current(packet_generation))
+        .then_some(PlayerVideoDropReason::StaleGeneration)
 }
 
 /// Минимальный view pending packet-а для bitstream capability validation.
@@ -2599,7 +2599,7 @@ mod tests {
             .enqueue_pending_video_packet(PendingVideoPacket::new(
                 TrackId::new(1),
                 Duration::from_millis(180),
-                session.pipeline.seek_generation,
+                session.pipeline.seek_generation(),
                 Bytes::from_static(b"future-video"),
                 true,
             ));
@@ -2926,11 +2926,18 @@ mod tests {
 
     #[test]
     fn seek_generation_transition_is_not_counted_as_late_drop() {
+        let mut pipeline = PlaybackPipeline::default();
+        let stale_generation = pipeline.seek_generation();
+        let current_generation = pipeline.begin_seek_generation();
+
         assert_eq!(
-            pending_video_packet_generation_drop_reason(2, 1),
+            pending_video_packet_generation_drop_reason(&pipeline, stale_generation),
             Some(PlayerVideoDropReason::StaleGeneration)
         );
-        assert_eq!(pending_video_packet_generation_drop_reason(2, 2), None);
+        assert_eq!(
+            pending_video_packet_generation_drop_reason(&pipeline, current_generation),
+            None
+        );
     }
 
     #[test]
@@ -2962,7 +2969,7 @@ mod tests {
                 .enqueue_pending_video_packet(PendingVideoPacket::new(
                     TrackId::new(1),
                     Duration::from_millis(packet_index as u64),
-                    session.pipeline.seek_generation,
+                    session.pipeline.seek_generation(),
                     Bytes::new(),
                     false,
                 ));
@@ -2987,7 +2994,7 @@ mod tests {
                 .enqueue_pending_video_packet(PendingVideoPacket::new(
                     TrackId::new(1),
                     Duration::from_millis(packet_index as u64),
-                    session.pipeline.seek_generation,
+                    session.pipeline.seek_generation(),
                     Bytes::new(),
                     false,
                 ));
@@ -3031,7 +3038,7 @@ mod tests {
                 .enqueue_pending_video_packet(PendingVideoPacket::new(
                     TrackId::new(1),
                     Duration::from_millis(packet_index as u64),
-                    session.pipeline.seek_generation,
+                    session.pipeline.seek_generation(),
                     Bytes::new(),
                     false,
                 ));
@@ -3090,7 +3097,10 @@ mod tests {
 
         assert_eq!(pending_packet.track_id, TrackId::new(2));
         assert_eq!(pending_packet.pts, Duration::from_millis(42));
-        assert_eq!(pending_packet.generation, session.pipeline.seek_generation);
+        assert_eq!(
+            pending_packet.generation,
+            session.pipeline.seek_generation()
+        );
         assert_eq!(pending_packet.encoded_bytes.as_ptr(), payload_ptr);
         assert_eq!(&pending_packet.encoded_bytes[..], b"Opus");
     }
@@ -3118,7 +3128,10 @@ mod tests {
 
         assert_eq!(pending_packet.track_id, TrackId::new(1));
         assert_eq!(pending_packet.pts, Duration::from_millis(120));
-        assert_eq!(pending_packet.generation, session.pipeline.seek_generation);
+        assert_eq!(
+            pending_packet.generation,
+            session.pipeline.seek_generation()
+        );
         assert!(pending_packet.keyframe);
         assert_eq!(pending_packet.encoded_bytes.as_ptr(), payload_ptr);
         assert_eq!(&pending_packet.encoded_bytes[..], &[0x82, 0x49, 0x83, 0x42]);
@@ -3142,7 +3155,7 @@ mod tests {
             .enqueue_pending_video_packet(PendingVideoPacket::new(
                 TrackId::new(2),
                 Duration::from_millis(120),
-                session.pipeline.seek_generation,
+                session.pipeline.seek_generation(),
                 Bytes::from_static(b"foreign-video-track"),
                 true,
             ));
@@ -3160,6 +3173,52 @@ mod tests {
         assert!(session.pipeline.pending_video_packet_is_empty());
         assert!(decoder_thread.sent_packets().is_empty());
         assert!(tick_result.dropped_video_frames.is_empty());
+    }
+
+    #[test]
+    fn stale_pending_video_packet_is_dropped_as_stale_generation_before_decoder_send() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+        let stale_generation = session.pipeline.seek_generation();
+
+        session
+            .pipeline
+            .set_video_decoder_thread(decoder_thread.clone());
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        session.pipeline.begin_seek_generation();
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                TrackId::new(1),
+                Duration::from_millis(120),
+                stale_generation,
+                Bytes::from_static(b"stale-video"),
+                true,
+            ));
+
+        let sent_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &PlayerTickConfig::default(),
+            &mut tick_result,
+            1,
+            Duration::from_millis(250),
+            None,
+        );
+
+        assert_eq!(sent_packets, 0);
+        assert!(session.pipeline.pending_video_packet_is_empty());
+        assert!(decoder_thread.sent_packets().is_empty());
+        assert_eq!(
+            tick_result.dropped_video_frames,
+            vec![PlayerVideoFrameDrop {
+                pts: Duration::from_millis(120),
+                reason: PlayerVideoDropReason::StaleGeneration,
+            }]
+        );
     }
 
     #[test]

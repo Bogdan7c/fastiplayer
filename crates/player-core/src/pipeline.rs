@@ -177,7 +177,7 @@ pub(crate) struct PlaybackPipeline {
     audio_track_id: Option<TrackId>,
 
     /// Очередь сырых audio packets для throttle.
-    pub(crate) pending_audio_packets: VecDeque<PendingAudioPacket>,
+    pending_audio_packets: VecDeque<PendingAudioPacket>,
 
     /// Video decoder thread: backend decode в отдельном потоке за узким session contract.
     pub(crate) video_decoder_thread: Option<Box<PlayerVideoDecoderThreadHandle>>,
@@ -229,7 +229,7 @@ pub(crate) struct PlaybackPipeline {
     video_track_id: Option<TrackId>,
 
     /// Очередь сырых video packets для decode.
-    pub(crate) pending_video_packets: VecDeque<PendingVideoPacket>,
+    pending_video_packets: VecDeque<PendingVideoPacket>,
 
     /// Audio clock для A/V sync.
     pub(crate) audio_clock: Option<Arc<audio::clock::AudioClock>>,
@@ -241,7 +241,7 @@ pub(crate) struct PlaybackPipeline {
     pub(crate) monotonic_media_clock_anchor: Option<MonotonicMediaClockAnchor>,
 
     /// Поколение packets после последнего seek transaction.
-    pub(crate) seek_generation: u64,
+    seek_generation: u64,
 
     /// Последнее поколение, для которого audio output подтвердил очистку buffer.
     pub(crate) audio_buffer_clear_generation: u64,
@@ -328,6 +328,12 @@ impl PlaybackPipeline {
         self.active_video_requirement = Some(requirement);
     }
 
+    /// Возвращает текущее поколение packets без раскрытия storage поля.
+    #[must_use]
+    pub(crate) const fn seek_generation(&self) -> u64 {
+        self.seek_generation
+    }
+
     /// Начинает новое поколение packets для seek transaction.
     ///
     /// Saturating increment оставляет поведение прежним: после переполнения
@@ -335,6 +341,18 @@ impl PlaybackPipeline {
     pub(crate) fn begin_seek_generation(&mut self) -> u64 {
         self.seek_generation = self.seek_generation.saturating_add(1);
         self.seek_generation
+    }
+
+    /// Проверяет, относится ли packet к актуальному поколению после последнего seek.
+    #[must_use]
+    pub(crate) const fn packet_generation_is_current(&self, generation: u64) -> bool {
+        generation == self.seek_generation
+    }
+
+    /// Устанавливает generation для edge-case тестов saturation без обхода boundary чтения.
+    #[cfg(test)]
+    pub(crate) fn set_seek_generation_for_tests(&mut self, generation: u64) {
+        self.seek_generation = generation;
     }
 
     /// Очищает pending audio/video packets, которые относятся к старой seek generation.
@@ -1138,13 +1156,13 @@ mod tests {
         pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
             audio_track_id,
             Duration::from_millis(1),
-            pipeline.seek_generation,
+            pipeline.seek_generation(),
             Bytes::from_static(b"audio"),
         ));
         pipeline.enqueue_pending_video_packet(PendingVideoPacket::new(
             video_track_id,
             Duration::from_millis(2),
-            pipeline.seek_generation,
+            pipeline.seek_generation(),
             Bytes::from_static(b"video"),
             true,
         ));
@@ -1181,6 +1199,130 @@ mod tests {
         assert_eq!(pipeline.pending_video_packet_len(), 1);
         assert!(pipeline.has_demuxer());
         assert_eq!(pipeline.track_count(), 2);
+    }
+
+    #[test]
+    fn pending_packet_queue_boundaries_preserve_fifo_order_and_lengths() {
+        let mut pipeline = PlaybackPipeline::default();
+        let audio_track_id = TrackId::new(20);
+        let video_track_id = TrackId::new(10);
+        let generation = pipeline.seek_generation();
+
+        assert!(pipeline.pending_audio_packet_is_empty());
+        assert!(pipeline.pending_video_packet_is_empty());
+
+        pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
+            audio_track_id,
+            Duration::from_millis(10),
+            generation,
+            Bytes::from_static(b"audio-10"),
+        ));
+        pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
+            audio_track_id,
+            Duration::from_millis(20),
+            generation,
+            Bytes::from_static(b"audio-20"),
+        ));
+        pipeline.enqueue_pending_video_packet(PendingVideoPacket::new(
+            video_track_id,
+            Duration::from_millis(30),
+            generation,
+            Bytes::from_static(b"video-30"),
+            true,
+        ));
+        pipeline.enqueue_pending_video_packet(PendingVideoPacket::new(
+            video_track_id,
+            Duration::from_millis(40),
+            generation,
+            Bytes::from_static(b"video-40"),
+            false,
+        ));
+
+        assert_eq!(pipeline.pending_audio_packet_len(), 2);
+        assert_eq!(pipeline.pending_video_packet_len(), 2);
+        assert_eq!(
+            pipeline
+                .front_pending_video_packet()
+                .map(|packet| packet.pts),
+            Some(Duration::from_millis(30))
+        );
+        assert_eq!(
+            pipeline
+                .pop_pending_audio_packet_front()
+                .map(|packet| packet.pts),
+            Some(Duration::from_millis(10))
+        );
+        assert_eq!(
+            pipeline
+                .pop_pending_audio_packet_front()
+                .map(|packet| packet.pts),
+            Some(Duration::from_millis(20))
+        );
+        assert_eq!(
+            pipeline
+                .pop_pending_video_packet_front()
+                .map(|packet| packet.pts),
+            Some(Duration::from_millis(30))
+        );
+        assert_eq!(
+            pipeline
+                .pop_pending_video_packet_front()
+                .map(|packet| packet.pts),
+            Some(Duration::from_millis(40))
+        );
+        assert!(pipeline.pending_audio_packet_is_empty());
+        assert!(pipeline.pending_video_packet_is_empty());
+    }
+
+    #[test]
+    fn begin_seek_generation_saturates_without_wrapping() {
+        let mut pipeline = PlaybackPipeline::default();
+
+        pipeline.set_seek_generation_for_tests(u64::MAX - 1);
+
+        assert_eq!(pipeline.begin_seek_generation(), u64::MAX);
+        assert_eq!(pipeline.seek_generation(), u64::MAX);
+        assert_eq!(pipeline.begin_seek_generation(), u64::MAX);
+        assert_eq!(pipeline.seek_generation(), u64::MAX);
+        assert!(pipeline.packet_generation_is_current(u64::MAX));
+        assert!(!pipeline.packet_generation_is_current(u64::MAX - 1));
+    }
+
+    #[test]
+    fn clear_pending_packets_for_seek_does_not_touch_selection_or_decoder_state() {
+        let mut pipeline = PlaybackPipeline::default();
+        let video_track_id = TrackId::new(10);
+        let audio_track_id = TrackId::new(20);
+        let requirement = VideoDecodeRequirement::new(VideoCodec::Vp9);
+        let generation = pipeline.seek_generation();
+
+        pipeline.select_audio_track(audio_track_id);
+        pipeline.select_video_track(video_track_id, requirement.clone());
+        pipeline.mark_video_decoder_bootstrapped();
+        pipeline.note_video_packet_sent_to_decoder();
+        pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
+            audio_track_id,
+            Duration::from_millis(10),
+            generation,
+            Bytes::from_static(b"audio"),
+        ));
+        pipeline.enqueue_pending_video_packet(PendingVideoPacket::new(
+            video_track_id,
+            Duration::from_millis(20),
+            generation,
+            Bytes::from_static(b"video"),
+            true,
+        ));
+
+        pipeline.clear_pending_packets_for_seek();
+
+        assert!(pipeline.pending_audio_packet_is_empty());
+        assert!(pipeline.pending_video_packet_is_empty());
+        assert_eq!(pipeline.selected_audio_track_id(), Some(audio_track_id));
+        assert_eq!(pipeline.selected_video_track_id(), Some(video_track_id));
+        assert_eq!(pipeline.active_video_requirement(), Some(&requirement));
+        assert!(!pipeline.video_decoder_needs_keyframe());
+        assert_eq!(pipeline.video_decode_in_flight_packets(), 1);
     }
 
     #[test]

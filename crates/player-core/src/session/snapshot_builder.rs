@@ -319,25 +319,25 @@ mod tests {
     #[test]
     fn builder_reads_queue_counters_without_draining_pipeline() {
         let mut session = PlayerSession::default();
+        let generation = session.pipeline.seek_generation();
+
         session
             .pipeline
-            .pending_audio_packets
-            .push_back(PendingAudioPacket {
-                track_id: TrackId::new(1),
-                pts: Duration::from_millis(10),
-                generation: 0,
-                encoded_bytes: Bytes::new(),
-            });
+            .enqueue_pending_audio_packet(PendingAudioPacket::new(
+                TrackId::new(1),
+                Duration::from_millis(10),
+                generation,
+                Bytes::new(),
+            ));
         session
             .pipeline
-            .pending_video_packets
-            .push_back(PendingVideoPacket {
-                track_id: TrackId::new(2),
-                pts: Duration::from_millis(20),
-                generation: 0,
-                encoded_bytes: Bytes::new(),
-                keyframe: true,
-            });
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                TrackId::new(2),
+                Duration::from_millis(20),
+                generation,
+                Bytes::new(),
+                true,
+            ));
 
         let snapshot = build_snapshot(&session, FrameCounters::default());
 
