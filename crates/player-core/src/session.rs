@@ -8,13 +8,12 @@ use codec_core::{
     video_requirement_needs_packet_refinement,
 };
 use media_core::{
-    DemuxSeekability, MediaDuration, MediaTime, TimelineNotSeekableReason, TimelinePreviewState,
-    TrackInfo, TrackKind,
+    DemuxSeekability, MediaDemuxError, MediaDuration, MediaTime, TimelineNotSeekableReason,
+    TimelinePreviewState, TrackInfo, TrackKind,
 };
 use tracing::{debug, info, trace, warn};
-use webm_demux::DemuxerOptions;
 
-use crate::media_opening::OpenedMedia;
+use crate::media_opening::PreparedMedia;
 use crate::pipeline::{
     MAX_OBSERVED_VIDEO_FRAME_DURATION, MIN_OBSERVED_VIDEO_FRAME_DURATION, MonotonicMediaClockAnchor,
 };
@@ -479,9 +478,6 @@ pub struct PlayerSession {
 
     /// Final seek near EOF завершился свежим frame-ом до requested target.
     seek_eof_fallback_video_position: Option<MediaTime>,
-
-    /// Fail-safe настройки demuxer-а для новых локальных media.
-    demuxer_options: DemuxerOptions,
 }
 
 /// Данные present frame, которые worker превращает в render lease без доступа к pipeline.
@@ -504,15 +500,6 @@ impl PlayerSession {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Создаёт пустую player session с явной demux fail-safe политикой.
-    #[must_use]
-    pub fn with_demuxer_options(demuxer_options: DemuxerOptions) -> Self {
-        Self {
-            demuxer_options,
-            ..Self::default()
-        }
     }
 
     /// Возвращает последний базовый immutable snapshot.
@@ -788,29 +775,6 @@ impl PlayerSession {
         self.update_current_position(next_position);
     }
 
-    /// Загружает локальный WebM/Matroska файл и передаёт demuxer во владение session.
-    pub fn load_file(&mut self, path: &Path) {
-        self.load_file_with_autoplay(path, false);
-    }
-
-    /// Загружает локальный WebM/Matroska файл с явной autoplay-политикой.
-    pub fn load_file_with_autoplay(&mut self, path: &Path, autoplay: bool) {
-        if !self.begin_media_open(MediaSource::LocalFile(path.to_path_buf()), autoplay) {
-            return;
-        }
-
-        match OpenedMedia::open_local_file(path, self.demuxer_options) {
-            Ok(opened_media) => self.install_opened_media(opened_media),
-            Err(error) => {
-                warn!(error = %error, "Не удалось открыть файл");
-                self.mark_fatal_error(PlayerError::new(
-                    PlayerErrorKind::DemuxError,
-                    format!("Ошибка: {error}"),
-                ));
-            }
-        }
-    }
-
     /// Загружает уже открытый demuxer для streaming source.
     pub fn load_demuxer(&mut self, label: String, demuxer: Box<dyn media_core::Demuxer + Send>) {
         self.load_demuxer_with_autoplay(label, demuxer, false);
@@ -823,12 +787,35 @@ impl PlayerSession {
         demuxer: Box<dyn media_core::Demuxer + Send>,
         autoplay: bool,
     ) {
-        if !self.begin_media_open(MediaSource::ExternalLabel(label.clone()), autoplay) {
+        let prepared_media = PreparedMedia::from_external_label(label, demuxer);
+        self.load_prepared_media_with_autoplay(prepared_media, autoplay);
+    }
+
+    /// Устанавливает media, уже открытый shell/container adapter слоем.
+    pub fn load_prepared_media(&mut self, prepared_media: PreparedMedia) {
+        self.load_prepared_media_with_autoplay(prepared_media, false);
+    }
+
+    /// Устанавливает prepared media с явной autoplay-политикой.
+    pub fn load_prepared_media_with_autoplay(
+        &mut self,
+        prepared_media: PreparedMedia,
+        autoplay: bool,
+    ) {
+        if !self.begin_media_open(prepared_media.source.media_source(), autoplay) {
             return;
         }
 
-        let opened_media = OpenedMedia::from_external_demuxer(label, demuxer);
-        self.install_opened_media(opened_media);
+        self.install_prepared_media(prepared_media);
+    }
+
+    /// Публикует failed open transition, когда adapter не смог подготовить demuxer.
+    pub fn fail_media_open_with_error(&mut self, request: MediaOpenRequest, error: PlayerError) {
+        if !self.begin_media_open(request.source, request.autoplay) {
+            return;
+        }
+
+        self.mark_fatal_error(error);
     }
 
     /// Переводит state machine в `Opening` перед blocking/opened source phase.
@@ -845,18 +832,18 @@ impl PlayerSession {
     }
 
     /// Подключает уже открытый media к pipeline и публикует успешный open transition.
-    fn install_opened_media(&mut self, opened_media: OpenedMedia) {
+    fn install_prepared_media(&mut self, prepared_media: PreparedMedia) {
         info!(
-            source = %opened_media.source.display_label(),
-            tracks = opened_media.tracks.len(),
-            duration = ?opened_media.duration,
+            source = %prepared_media.source.display_label(),
+            tracks = prepared_media.tracks.len(),
+            duration = ?prepared_media.duration,
             "Media demuxer загружен"
         );
 
-        self.init_audio_pipeline(&opened_media.tracks);
+        self.init_audio_pipeline(&prepared_media.tracks);
         if let Err(error) = self.select_default_video_track(
-            &opened_media.tracks,
-            opened_media.source.missing_video_track_message(),
+            &prepared_media.tracks,
+            prepared_media.source.missing_video_track_message(),
         ) {
             warn!(error = %error, "Video track rejected during media load");
             self.mark_fatal_error(error);
@@ -864,19 +851,19 @@ impl PlayerSession {
         }
 
         let summary = MediaSummary {
-            title: opened_media.source.media_title(),
-            source_label: opened_media.source.display_label(),
-            duration: opened_media.duration,
+            title: prepared_media.source.media_title(),
+            source_label: prepared_media.source.display_label(),
+            duration: prepared_media.duration,
         };
-        let seekability = opened_media.seekability;
-        let file_path = opened_media.source.pipeline_file_path();
-        let source_label = opened_media.source.pipeline_source_label();
+        let seekability = prepared_media.seekability;
+        let file_path = prepared_media.source.pipeline_file_path();
+        let source_label = prepared_media.source.pipeline_source_label();
 
         self.pipeline.install_opened_media(
-            opened_media.demuxer,
+            prepared_media.demuxer,
             file_path,
             source_label,
-            opened_media.tracks,
+            prepared_media.tracks,
         );
         self.clear_error();
 
@@ -3114,7 +3101,6 @@ impl Default for PlayerSession {
             scrub_state: SessionScrubState::default(),
             direct_scrub_generation_seed: ScrubGeneration::default(),
             seek_eof_fallback_video_position: None,
-            demuxer_options: DemuxerOptions::default(),
         }
     }
 }
@@ -3156,10 +3142,11 @@ fn duration_to_audio_frames(duration: Duration, sample_rate: u32) -> usize {
 
 /// Мапит ошибку demux seek в player error без смешивания unavailable/timeout/demux.
 fn player_error_from_demux_seek_error(error: anyhow::Error) -> PlayerError {
-    if error
-        .downcast_ref::<webm_demux::DemuxError>()
-        .is_some_and(webm_demux::DemuxError::is_seek_unavailable)
-    {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<MediaDemuxError>()
+            .is_some_and(MediaDemuxError::is_seek_unavailable)
+    }) {
         return PlayerError::new(
             PlayerErrorKind::SeekUnavailable,
             format!("Seek failed: {error}"),
@@ -4058,6 +4045,58 @@ mod tests {
         session.set_playback_state(PlaybackState::Paused);
 
         seek_request_log
+    }
+
+    #[test]
+    fn prepared_media_install_publishes_open_snapshot_and_events() {
+        let mut session = PlayerSession::new();
+        let tracks = vec![fake_track(1, TrackKind::Video)];
+        let seek_log = Arc::new(Mutex::new(Vec::new()));
+        let demuxer =
+            FakeDemuxer::new(tracks, Some(Duration::from_secs(30)), Arc::clone(&seek_log))
+                .with_seekability(DemuxSeekability::NotSeekable {
+                    reason: TimelineNotSeekableReason::SourceNotSeekable,
+                });
+        let media_path = std::path::PathBuf::from("/tmp/sample.webm");
+        let prepared_media = PreparedMedia::from_local_file(media_path.clone(), Box::new(demuxer));
+
+        session.load_prepared_media_with_autoplay(prepared_media, false);
+
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
+        assert_eq!(
+            session.snapshot().source_label.as_deref(),
+            Some("/tmp/sample.webm")
+        );
+        assert_eq!(session.snapshot().media_title.as_deref(), Some("sample"));
+        assert_eq!(session.snapshot().duration, Some(Duration::from_secs(30)));
+        assert_eq!(
+            session.snapshot().selected_tracks.video_track,
+            Some(TrackId::new(1))
+        );
+        assert!(!session.snapshot().timeline.seekable);
+        assert_eq!(
+            session.snapshot().timeline.not_seekable_reason,
+            Some(TimelineNotSeekableReason::SourceNotSeekable)
+        );
+
+        let events = session.take_events();
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                PlayerEvent::MediaOpenRequested(request)
+                    if request.source == MediaSource::LocalFile(media_path.clone())
+                        && !request.autoplay
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                PlayerEvent::MediaOpened(summary)
+                    if summary.source_label == "/tmp/sample.webm"
+                        && summary.title.as_deref() == Some("sample")
+                        && summary.duration == Some(Duration::from_secs(30))
+            )
+        }));
     }
 
     /// Создаёт decoded frame без реальных GPU resources.

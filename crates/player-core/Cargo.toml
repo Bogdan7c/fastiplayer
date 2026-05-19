@@ -20,7 +20,6 @@ rustiplayer-config = { workspace = true }
 tracing = { workspace = true }
 video-core = { path = "../video-core" }
 video-vaapi = { path = "../video-vaapi" }
-webm-demux = { path = "../webm-demux" }
 wgpu = { workspace = true }
 
 [dev-dependencies]

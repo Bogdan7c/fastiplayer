@@ -54,6 +54,7 @@ pub use event::{
     BufferingState, CapabilitySummary, FramePresentationInfo, MediaSummary, PlayerEvent,
 };
 pub use media_core::TrackId;
+pub use media_opening::{PreparedMedia, PreparedMediaSource};
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
 pub use render_lease_bridge::{
     PlayerPresentFrame, PresentFrameLease, PresentFrameTextureViewLookup, PresentFrameTextureViews,

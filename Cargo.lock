@@ -2896,7 +2896,6 @@ dependencies = [
  "tracing",
  "video-core",
  "video-vaapi",
- "webm-demux",
  "wgpu",
 ]
 

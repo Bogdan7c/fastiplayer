@@ -11,15 +11,17 @@ use capability_core::SystemCapabilities;
 use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
 use media_core::TrackKind;
 use player_core::{
-    FrameCounters, PlaybackState, PlayerCommand, PlayerEvent, PlayerPresentFrame,
-    PlayerRenderError, PlayerSnapshot, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
-    PresentFrameTextureViews, ScrubCommitPolicy, SeekRequest,
+    FrameCounters, MediaOpenRequest, MediaSource, PlaybackState, PlayerCommand, PlayerError,
+    PlayerErrorKind, PlayerEvent, PlayerPresentFrame, PlayerRenderError, PlayerSnapshot,
+    PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PresentFrameTextureViews,
+    ScrubCommitPolicy, SeekRequest,
 };
 use render_core::RenderDiagnostics;
 use rustiplayer_config::AppConfig;
 use tracing::{debug, instrument, warn};
 use winit::window::Window;
 
+use crate::local_media;
 use crate::telemetry::Telemetry;
 use crate::ui::animation::AnimationState;
 use crate::ui::player_controls::{self, ControlAction};
@@ -562,9 +564,31 @@ impl AppState {
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.clear_startup_status();
         self.current_local_file = Some(path.to_path_buf());
-        if let Err(error) = self.player_worker.load_file(path, autoplay) {
-            warn!(error = %error, "Не удалось отправить команду открытия файла в worker");
-            return;
+
+        match local_media::prepare_local_file(path, &self.app_config.player.demux) {
+            Ok(prepared_media) => {
+                if let Err(error) = self
+                    .player_worker
+                    .load_prepared_media(prepared_media, autoplay)
+                {
+                    warn!(error = %error, "Не удалось отправить подготовленный файл в worker");
+                    return;
+                }
+            }
+            Err(error) => {
+                warn!(error = %error, "Не удалось открыть файл");
+                let open_request =
+                    MediaOpenRequest::new(MediaSource::LocalFile(path.to_path_buf()), autoplay);
+                let player_error =
+                    PlayerError::new(PlayerErrorKind::DemuxError, format!("Ошибка: {error}"));
+                if let Err(send_error) = self
+                    .player_worker
+                    .fail_media_open(open_request, player_error)
+                {
+                    warn!(error = %send_error, "Не удалось отправить ошибку открытия файла в worker");
+                    return;
+                }
+            }
         }
 
         self.mark_pending_worker_redraw();

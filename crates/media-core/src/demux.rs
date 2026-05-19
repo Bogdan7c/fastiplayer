@@ -86,12 +86,30 @@ pub enum DemuxSeekability {
 /// но default methods в `media-core` не должны зависеть от контейнерных crate'ов.
 #[derive(Debug, thiserror::Error)]
 pub enum MediaDemuxError {
+    /// Источник или контейнер не поддерживает seek для текущего media.
+    #[error("Seek недоступен: {reason}")]
+    SeekUnavailable {
+        /// Человекочитаемая причина от container/source adapter-а.
+        reason: String,
+    },
+
     /// Запрошенный режим нельзя честно выполнить через legacy `seek(timestamp)`.
     #[error("Seek mode {mode:?} не поддерживается этой реализацией demuxer-а")]
     UnsupportedSeekMode {
         /// Container-level режим, который demuxer не умеет честно выполнить.
         mode: DemuxSeekMode,
     },
+}
+
+impl MediaDemuxError {
+    /// Возвращает `true`, если ошибка означает отсутствие seek capability.
+    #[must_use]
+    pub const fn is_seek_unavailable(&self) -> bool {
+        matches!(
+            self,
+            Self::SeekUnavailable { .. } | Self::UnsupportedSeekMode { .. }
+        )
+    }
 }
 
 /// Trait, абстрагирующий источник media packets.

@@ -1,5 +1,4 @@
 use std::fmt;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -7,9 +6,7 @@ use std::time::{Duration, Instant};
 use capability_core::SystemCapabilities;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
 use media_core::{MediaTime, TrackId};
-use rustiplayer_config::PlayerDemuxConfig;
 use tracing::{debug, warn};
-use webm_demux::DemuxerOptions;
 
 #[cfg(test)]
 use crate::render_lease_bridge::{
@@ -35,8 +32,9 @@ use crate::{
     ActiveSeekDiagnosticsSnapshot, FrameCounters, LatencyCounterSnapshot, MediaOpenRequest,
     MediaSource, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult,
     PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
-    PlayerVideoDecoderThreadConfig, QualitySelection, ScrubCommitIntent, ScrubCommitPolicy,
-    ScrubGeneration, ScrubUpdateIntent, SeekRequest, SessionScrubCommand, WgpuVideoBackendFactory,
+    PlayerVideoDecoderThreadConfig, PreparedMedia, QualitySelection, ScrubCommitIntent,
+    ScrubCommitPolicy, ScrubGeneration, ScrubUpdateIntent, SeekRequest, SessionScrubCommand,
+    WgpuVideoBackendFactory,
 };
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
@@ -93,9 +91,6 @@ pub struct PlayerWorkerConfig {
     /// Минимальный интервал между live preview seek-ами во время scrub.
     pub live_scrub_preview_interval: Duration,
 
-    /// Fail-safe настройки demuxer-а для media, которые worker открывает сам.
-    pub demuxer_options: DemuxerOptions,
-
     /// Bounded queue/runtime limits decoder thread-а.
     pub decoder_thread_config: PlayerVideoDecoderThreadConfig,
 }
@@ -109,7 +104,6 @@ impl PlayerWorkerConfig {
             decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config,
             live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
-            demuxer_options: DemuxerOptions::default(),
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
         }
     }
@@ -122,7 +116,6 @@ impl PlayerWorkerConfig {
             decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config: PlayerTickConfig::from(config),
             live_scrub_preview_interval: Duration::from_millis(config.player.seek.live_interval_ms),
-            demuxer_options: demuxer_options_from_config(&config.player.demux),
             decoder_thread_config: decoder_thread_config_from_app_config(config),
         }
     }
@@ -133,12 +126,6 @@ impl Default for PlayerWorkerConfig {
     fn default() -> Self {
         Self::new(PlayerTickConfig::default())
     }
-}
-
-/// Конвертирует validated TOML config в runtime options demuxer-а.
-fn demuxer_options_from_config(config: &PlayerDemuxConfig) -> DemuxerOptions {
-    DemuxerOptions::from_max_consecutive_corrupted_packets(config.max_consecutive_corrupted_packets)
-        .expect("validated AppConfig must provide positive demux corrupted packet limit")
 }
 
 /// Конвертирует validated TOML config в bounded decoder thread limits.
@@ -677,7 +664,7 @@ impl PlayerWorker {
             .name("player-worker".into())
             .spawn(move || {
                 let runtime = PlayerWorkerRuntime {
-                    session: PlayerSession::with_demuxer_options(config.demuxer_options),
+                    session: PlayerSession::new(),
                     scrub_driver: ScrubDriver::new(config.live_scrub_preview_interval),
                     worker_scheduler: WorkerScheduler,
                     command_rx,
@@ -727,12 +714,16 @@ impl PlayerWorker {
         self.command_sender.try_send(command)
     }
 
-    /// Загружает локальный файл на worker thread.
-    pub fn load_file(&self, path: &Path, autoplay: bool) -> Result<(), PlayerWorkerSendError> {
+    /// Передаёт уже подготовленный media во владение worker thread.
+    pub fn load_prepared_media(
+        &self,
+        prepared_media: PreparedMedia,
+        autoplay: bool,
+    ) -> Result<(), PlayerWorkerSendError> {
         self.command_sender
             .command_tx
-            .try_send(WorkerCommand::LoadFile {
-                path: path.to_path_buf(),
+            .try_send(WorkerCommand::LoadPreparedMedia {
+                prepared_media,
                 autoplay,
             })
             .map_err(PlayerWorkerSendError::from)
@@ -745,13 +736,19 @@ impl PlayerWorker {
         demuxer: Box<dyn media_core::Demuxer + Send>,
         autoplay: bool,
     ) -> Result<(), PlayerWorkerSendError> {
+        let prepared_media = PreparedMedia::from_external_label(label, demuxer);
+        self.load_prepared_media(prepared_media, autoplay)
+    }
+
+    /// Публикует ошибку adapter-а, который не смог подготовить media.
+    pub fn fail_media_open(
+        &self,
+        request: MediaOpenRequest,
+        error: PlayerError,
+    ) -> Result<(), PlayerWorkerSendError> {
         self.command_sender
             .command_tx
-            .try_send(WorkerCommand::LoadDemuxer {
-                label,
-                demuxer,
-                autoplay,
-            })
+            .try_send(WorkerCommand::MediaOpenFailed { request, error })
             .map_err(PlayerWorkerSendError::from)
     }
 
@@ -879,25 +876,22 @@ enum WorkerCommand {
     /// Завершить scrub с generation token-ом.
     EndScrub(ScrubCommitIntent),
 
-    /// Открыть локальный файл внутри worker-owned session.
-    LoadFile {
-        /// Путь к media-файлу.
-        path: PathBuf,
+    /// Подключить уже подготовленный media к worker-owned session.
+    LoadPreparedMedia {
+        /// Prepared-media contract, открытый container adapter-ом вне `player-core`.
+        prepared_media: PreparedMedia,
 
         /// Нужно ли начать playback после успешного открытия.
         autoplay: bool,
     },
 
-    /// Подключить уже созданный demuxer к worker-owned session.
-    LoadDemuxer {
-        /// User-facing label stream-а.
-        label: String,
+    /// Зафиксировать ошибку подготовки media, не скрывая open-request transition.
+    MediaOpenFailed {
+        /// Исходный запрос, для которого adapter не смог создать demuxer.
+        request: MediaOpenRequest,
 
-        /// Demuxer, который worker забирает во владение.
-        demuxer: Box<dyn media_core::Demuxer + Send>,
-
-        /// Нужно ли начать playback после успешного открытия.
-        autoplay: bool,
+        /// Уже смэпленная player error с сохранённой категорией ошибки.
+        error: PlayerError,
     },
 
     /// Инициализация video backend с GPU handles shell-а.
@@ -1273,18 +1267,17 @@ impl PlayerWorkerRuntime {
                 self.handle_preview_scrub_command(intent);
             }
             WorkerCommand::EndScrub(intent) => self.handle_end_scrub_command(intent),
-            WorkerCommand::LoadFile { path, autoplay } => {
-                self.interrupt_scrub_for_external_boundary();
-                self.session.load_file_with_autoplay(&path, autoplay);
-            }
-            WorkerCommand::LoadDemuxer {
-                label,
-                demuxer,
+            WorkerCommand::LoadPreparedMedia {
+                prepared_media,
                 autoplay,
             } => {
                 self.interrupt_scrub_for_external_boundary();
                 self.session
-                    .load_demuxer_with_autoplay(label, demuxer, autoplay);
+                    .load_prepared_media_with_autoplay(prepared_media, autoplay);
+            }
+            WorkerCommand::MediaOpenFailed { request, error } => {
+                self.interrupt_scrub_for_external_boundary();
+                self.session.fail_media_open_with_error(request, error);
             }
             WorkerCommand::InitVideoPipeline {
                 instance,
@@ -1344,14 +1337,19 @@ impl PlayerWorkerRuntime {
             .consume_resume_intent_command(resume_command)
     }
 
-    /// Открывает media request; local file грузится полностью внутри worker thread.
+    /// Открывает media request без знания concrete container adapter-а.
     fn handle_open_media_request(&mut self, request: MediaOpenRequest) {
         self.interrupt_scrub_for_external_boundary();
 
         match request.source.clone() {
-            MediaSource::LocalFile(path) => {
-                self.session
-                    .load_file_with_autoplay(&path, request.autoplay);
+            MediaSource::LocalFile(_) => {
+                self.session.fail_media_open_with_error(
+                    request,
+                    PlayerError::new(
+                        PlayerErrorKind::DemuxError,
+                        "Локальный файл должен быть подготовлен adapter-слоем до player-core",
+                    ),
+                );
             }
             MediaSource::Url(_) | MediaSource::ExternalLabel(_) => {
                 self.dispatch_player_command(PlayerCommand::OpenMedia(request));
@@ -1928,7 +1926,6 @@ mod tests {
             decoder_readiness_poll_interval: Duration::from_millis(2),
             tick_config: PlayerTickConfig::default(),
             live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
-            demuxer_options: DemuxerOptions::default(),
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
         }
     }
@@ -2063,7 +2060,7 @@ mod tests {
 
         (
             PlayerWorkerRuntime {
-                session: PlayerSession::with_demuxer_options(config.demuxer_options),
+                session: PlayerSession::new(),
                 scrub_driver: ScrubDriver::new(config.live_scrub_preview_interval),
                 worker_scheduler: WorkerScheduler,
                 command_rx,

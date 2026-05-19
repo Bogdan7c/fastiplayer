@@ -8,9 +8,9 @@ use anyhow::Result;
 use bytes::Bytes;
 use codec_core::{VideoCodec, VideoPacketKeyframeProbe, probe_video_packet_keyframe};
 use media_core::{
-    DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaTime,
-    Packet as OurPacket, TimeBase as OurTimeBase, TimelineNotSeekableReason, TrackId, TrackInfo,
-    TrackKind, TrackTimestamp,
+    DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaDemuxError,
+    MediaTime, Packet as OurPacket, TimeBase as OurTimeBase, TimelineNotSeekableReason, TrackId,
+    TrackInfo, TrackKind, TrackTimestamp,
 };
 use source_core::{
     ByteSource, CancellationToken, Seekability as SourceSeekability, SourceError, SourceResult,
@@ -832,15 +832,18 @@ fn duration_to_symphonia_time(duration: Duration) -> Time {
     )
 }
 
-/// Мапит Symphonia seek failures в typed demux errors для player-core.
-fn symphonia_seek_error_to_demux_error(error: SymphoniaError) -> DemuxError {
+/// Мапит Symphonia seek failures в typed neutral ошибки для player-core.
+fn symphonia_seek_error_to_demux_error(error: SymphoniaError) -> anyhow::Error {
     match error {
         SymphoniaError::SeekError(SeekErrorKind::Unseekable)
         | SymphoniaError::SeekError(SeekErrorKind::ForwardOnly) => {
-            DemuxError::SeekUnavailable(error.to_string())
+            MediaDemuxError::SeekUnavailable {
+                reason: error.to_string(),
+            }
+            .into()
         }
-        SymphoniaError::SeekError(_) => DemuxError::SeekFailed(error.to_string()),
-        other_error => DemuxError::Parse(other_error),
+        SymphoniaError::SeekError(_) => DemuxError::SeekFailed(error.to_string()).into(),
+        other_error => DemuxError::Parse(other_error).into(),
     }
 }
 

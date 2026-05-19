@@ -1,50 +1,73 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use media_core::{DemuxSeekability, Demuxer, TrackInfo};
-use webm_demux::DemuxerOptions;
 
-/// Подготовленный media source, который уже открыт, но ещё не применён к state machine.
-pub(crate) struct OpenedMedia {
+use crate::MediaSource;
+
+/// Подготовленный media source, который уже открыт за границей `player-core`.
+pub struct PreparedMedia {
     /// Источник media: локальный файл или внешний streaming label.
-    pub source: OpenedMediaSource,
+    pub(crate) source: PreparedMediaSource,
 
     /// Demuxer, готовый к чтению packets текущего media.
-    pub demuxer: Box<dyn Demuxer + Send>,
+    pub(crate) demuxer: Box<dyn Demuxer + Send>,
 
     /// Tracks, считанные из demuxer metadata на этапе opening.
-    pub tracks: Vec<TrackInfo>,
+    pub(crate) tracks: Vec<TrackInfo>,
 
     /// Duration container-а, если demuxer смог её определить.
-    pub duration: Option<Duration>,
+    pub(crate) duration: Option<Duration>,
 
     /// Seekability container-а, которую session публикует в timeline snapshot.
-    pub seekability: DemuxSeekability,
+    pub(crate) seekability: DemuxSeekability,
 }
 
-impl OpenedMedia {
-    /// Открывает локальный файл и возвращает только подготовленные media данные.
-    ///
-    /// State transition (`Opening`, `Failed`, autoplay) остаётся в `PlayerSession`,
-    /// чтобы IO/opening слой не менял playback state напрямую.
-    pub(crate) fn open_local_file(
-        path: &Path,
-        demuxer_options: DemuxerOptions,
-    ) -> anyhow::Result<Self> {
-        let demuxer = webm_demux::SymphoniaDemuxer::from_file_with_options(path, demuxer_options)?;
-        Ok(Self::from_open_demuxer(
-            OpenedMediaSource::LocalFile(path.to_path_buf()),
-            Box::new(demuxer),
-        ))
+impl PreparedMedia {
+    /// Создаёт prepared-media contract для локального файла, уже открытого shell/adapter слоем.
+    #[must_use]
+    pub fn from_local_file(path: impl Into<PathBuf>, demuxer: Box<dyn Demuxer + Send>) -> Self {
+        Self::from_open_demuxer(PreparedMediaSource::LocalFile(path.into()), demuxer)
     }
 
     /// Оборачивает demuxer, который внешний service layer уже открыл заранее.
-    pub(crate) fn from_external_demuxer(label: String, demuxer: Box<dyn Demuxer + Send>) -> Self {
-        Self::from_open_demuxer(OpenedMediaSource::ExternalLabel(label), demuxer)
+    #[must_use]
+    pub fn from_external_label(label: impl Into<String>, demuxer: Box<dyn Demuxer + Send>) -> Self {
+        Self::from_open_demuxer(PreparedMediaSource::ExternalLabel(label.into()), demuxer)
+    }
+
+    /// Возвращает user-facing label source-а без передачи владения demuxer-ом.
+    #[must_use]
+    pub fn source_label(&self) -> String {
+        self.source.display_label()
+    }
+
+    /// Возвращает title, который UI может показать как имя media.
+    #[must_use]
+    pub fn media_title(&self) -> Option<String> {
+        self.source.media_title()
+    }
+
+    /// Возвращает immutable snapshot tracks, снятый во время подготовки media.
+    #[must_use]
+    pub fn tracks(&self) -> &[TrackInfo] {
+        &self.tracks
+    }
+
+    /// Возвращает duration, снятую во время подготовки media.
+    #[must_use]
+    pub const fn duration(&self) -> Option<Duration> {
+        self.duration
+    }
+
+    /// Возвращает seekability, снятую во время подготовки media.
+    #[must_use]
+    pub const fn seekability(&self) -> DemuxSeekability {
+        self.seekability
     }
 
     /// Снимает metadata с demuxer один раз и сохраняет её рядом с owned demuxer.
-    fn from_open_demuxer(source: OpenedMediaSource, demuxer: Box<dyn Demuxer + Send>) -> Self {
+    fn from_open_demuxer(source: PreparedMediaSource, demuxer: Box<dyn Demuxer + Send>) -> Self {
         let tracks = demuxer.tracks().to_vec();
         let duration = demuxer.duration();
         let seekability = demuxer.seekability();
@@ -60,7 +83,7 @@ impl OpenedMedia {
 }
 
 /// User-visible identity открытого media source без доступа к demuxer internals.
-pub(crate) enum OpenedMediaSource {
+pub enum PreparedMediaSource {
     /// Media открыт из локальной файловой системы.
     LocalFile(PathBuf),
 
@@ -68,7 +91,15 @@ pub(crate) enum OpenedMediaSource {
     ExternalLabel(String),
 }
 
-impl OpenedMediaSource {
+impl PreparedMediaSource {
+    /// Возвращает public open-request source для session state machine.
+    pub(crate) fn media_source(&self) -> MediaSource {
+        match self {
+            Self::LocalFile(path) => MediaSource::LocalFile(path.clone()),
+            Self::ExternalLabel(label) => MediaSource::ExternalLabel(label.clone()),
+        }
+    }
+
     /// Возвращает label для snapshot/event слоя.
     pub(crate) fn display_label(&self) -> String {
         match self {
