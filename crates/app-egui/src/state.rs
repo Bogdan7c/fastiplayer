@@ -1295,6 +1295,18 @@ impl AppState {
             "Decoder publish pressure: {}",
             publish_pressure.frame_publish_channel_full_count
         ));
+        if let Some(control_pressure) = player_snapshot.diagnostics.queues.decoder_control_channel {
+            ui.monospace(format!(
+                "Decoder control queue: {}/{}",
+                control_pressure.control_channel_len, control_pressure.control_channel_capacity
+            ));
+            ui.monospace(format!(
+                "Control full/fail: full={} release={} flush={}",
+                control_pressure.control_channel_full_count,
+                control_pressure.release_control_send_fail_count,
+                control_pressure.flush_control_send_fail_count
+            ));
+        }
         ui.monospace(format!(
             "Publish max: {:.3}ms",
             publish_pressure

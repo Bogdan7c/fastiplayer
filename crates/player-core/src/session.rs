@@ -2963,6 +2963,7 @@ impl PlayerSession {
             .pipeline
             .video_decoder_packet_queue_depth()
             .unwrap_or(self.pipeline.pending_video_packet_len());
+        let decoder_resource_snapshot = self.pipeline.video_decoder_resource_snapshot();
 
         PipelineQueueDepthSnapshot {
             pending_audio_packets: self.pipeline.pending_audio_packet_len(),
@@ -2973,10 +2974,8 @@ impl PlayerSession {
             decoder_ready_queue_depth: None,
             active_render_leases: self.pipeline.leased_video_textures.len(),
             deferred_render_releases: self.pipeline.deferred_video_texture_releases.len(),
-            texture_slots: self
-                .pipeline
-                .video_decoder_resource_snapshot()
-                .map(|texture_stats| TextureSlotPressureSnapshot {
+            texture_slots: decoder_resource_snapshot.map(|texture_stats| {
+                TextureSlotPressureSnapshot {
                     capacity: texture_stats.capacity,
                     slots: texture_stats.slots,
                     in_use: texture_stats.in_use,
@@ -2987,7 +2986,9 @@ impl PlayerSession {
                     imports_created: texture_stats.imports_created,
                     imports_reused: texture_stats.imports_reused,
                     imports_replaced: texture_stats.imports_replaced,
-                }),
+                }
+            }),
+            decoder_control_channel: self.pipeline.video_decoder_control_channel_pressure(),
         }
     }
 }
@@ -3215,8 +3216,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        DecodeBackpressureReason, DecodeSendError, DecodeThreadError, DecoderResourceSnapshot,
-        MediaSource, PendingAudioPacket, PendingVideoPacket, PlayerCommand, PlayerDecodePacket,
+        DecodeBackpressureReason, DecodeSendError, DecodeThreadError,
+        DecoderControlChannelPressureSnapshot, DecoderResourceSnapshot, MediaSource,
+        PendingAudioPacket, PendingVideoPacket, PlayerCommand, PlayerDecodePacket,
         PlayerTickConfig, PlayerTickContext, ScrubCommitPolicy, SeekMode, SeekTarget,
     };
     use bytes::Bytes;
@@ -3813,6 +3815,9 @@ mod tests {
 
         /// Texture handles, которые session вернула decoder boundary через release.
         released_handles: Arc<Mutex<Vec<video_core::FrameTextureHandle>>>,
+
+        /// Control-channel pressure snapshot, который fake отдаёт через decoder boundary.
+        control_pressure: Arc<Mutex<Option<DecoderControlChannelPressureSnapshot>>>,
     }
 
     impl SharedFakeVideoDecoderThread {
@@ -3825,6 +3830,7 @@ mod tests {
                 diagnostic_events: Arc::new(Mutex::new(VecDeque::new())),
                 flush_error_message: Arc::new(Mutex::new(None)),
                 released_handles: Arc::new(Mutex::new(Vec::new())),
+                control_pressure: Arc::new(Mutex::new(None)),
             }
         }
 
@@ -3875,6 +3881,14 @@ mod tests {
                 .lock()
                 .expect("fake decoder release log lock")
                 .clone()
+        }
+
+        /// Настраивает control-channel pressure snapshot для проверки pipeline boundary.
+        fn set_control_pressure(&self, pressure: DecoderControlChannelPressureSnapshot) {
+            *self
+                .control_pressure
+                .lock()
+                .expect("fake decoder control pressure lock") = Some(pressure);
         }
     }
 
@@ -3935,6 +3949,15 @@ mod tests {
 
         fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {
             None
+        }
+
+        fn decoder_control_channel_pressure(
+            &self,
+        ) -> Option<DecoderControlChannelPressureSnapshot> {
+            *self
+                .control_pressure
+                .lock()
+                .expect("fake decoder control pressure lock")
         }
 
         fn packet_queue_depth(&self) -> usize {
@@ -4172,6 +4195,7 @@ mod tests {
         assert!(pipeline.try_recv_video_decoder_diagnostic_event().is_none());
         assert!(pipeline.try_recv_video_decoder_error().is_none());
         assert_eq!(pipeline.drain_completed_video_decode_packet_count(), 0);
+        assert!(pipeline.video_decoder_control_channel_pressure().is_none());
         assert_eq!(pipeline.video_decode_in_flight_packets(), 0);
         assert!(!pipeline.can_send_video_decode_packets());
         assert!(!pipeline.can_receive_decoded_video_frames());
@@ -4270,6 +4294,26 @@ mod tests {
             video_core::VideoDecoderDiagnosticEvent::DecodedFramePublishPressure { pressure }
         );
         assert!(pipeline.try_recv_video_decoder_diagnostic_event().is_none());
+    }
+
+    #[test]
+    fn playback_pipeline_decoder_boundary_forwards_control_pressure_snapshot() {
+        let mut pipeline = PlaybackPipeline::default();
+        let fake_decoder = SharedFakeVideoDecoderThread::new();
+        let pressure = DecoderControlChannelPressureSnapshot {
+            control_channel_len: 31,
+            control_channel_capacity: 32,
+            control_channel_full_count: 2,
+            release_control_send_fail_count: 1,
+            flush_control_send_fail_count: 1,
+        };
+        fake_decoder.set_control_pressure(pressure);
+        pipeline.set_video_decoder_thread(fake_decoder);
+
+        assert_eq!(
+            pipeline.video_decoder_control_channel_pressure(),
+            Some(pressure)
+        );
     }
 
     #[test]

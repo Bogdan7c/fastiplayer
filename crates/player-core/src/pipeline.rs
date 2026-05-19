@@ -9,8 +9,8 @@ use media_core::{TrackId, TrackInfo};
 use webm_demux::Demuxer;
 
 use crate::{
-    DecodeSendError, DecodeThreadError, DecoderResourceSnapshot, PlayerDecodePacket,
-    RenderTextureProviderHandle,
+    DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
+    DecoderResourceSnapshot, PlayerDecodePacket, RenderTextureProviderHandle,
 };
 
 /// Минимальный session-level контракт decoder thread-а, который нужен player-core.
@@ -44,6 +44,11 @@ pub(crate) trait VideoDecoderThreadHandle: Send {
 
     /// Возвращает snapshot texture pool-а для UI/backpressure diagnostics.
     fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot>;
+
+    /// Возвращает snapshot bounded control channel-а для diagnostics.
+    fn decoder_control_channel_pressure(&self) -> Option<DecoderControlChannelPressureSnapshot> {
+        None
+    }
 
     /// Возвращает глубину packet channel-а внутри decoder thread.
     fn packet_queue_depth(&self) -> usize;
@@ -621,6 +626,15 @@ impl PlaybackPipeline {
         self.video_decoder_thread
             .as_ref()
             .and_then(|decoder_thread| decoder_thread.decoder_resource_snapshot())
+    }
+
+    /// Возвращает pressure snapshot decoder control channel-а, если backend его поддерживает.
+    pub(crate) fn video_decoder_control_channel_pressure(
+        &self,
+    ) -> Option<DecoderControlChannelPressureSnapshot> {
+        self.video_decoder_thread
+            .as_ref()
+            .and_then(|decoder_thread| decoder_thread.decoder_control_channel_pressure())
     }
 
     /// Возвращает provider для renderer-side texture views активного decoder thread-а.

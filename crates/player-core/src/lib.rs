@@ -40,12 +40,13 @@ pub(crate) use diagnostics::{
     ActiveSeekDiagnosticsSnapshot, PlaybackDiagnostics, SeekProgressBlocker,
 };
 pub use diagnostics::{
-    DecoderFramePublishPressureSnapshot, LatencyCounterSnapshot, PipelineLatencyCountersSnapshot,
-    PipelineLatencySampleSnapshot, PipelineLatencyStage, PipelinePauseCountersSnapshot,
-    PipelinePauseReason, PipelinePauseSnapshot, PipelineQueueDepthSnapshot,
-    PlaybackDiagnosticsLogSummary, PlaybackDiagnosticsSnapshot, TextureSlotPressureSnapshot,
-    VideoDropAttributionSnapshot, VideoDropCountersSnapshot, VideoDropReason,
-    WorkerFrameTimingSnapshot, WorkerWakeupDiagnosticsSnapshot, WorkerWakeupReason,
+    DecoderControlChannelPressureSnapshot, DecoderFramePublishPressureSnapshot,
+    LatencyCounterSnapshot, PipelineLatencyCountersSnapshot, PipelineLatencySampleSnapshot,
+    PipelineLatencyStage, PipelinePauseCountersSnapshot, PipelinePauseReason,
+    PipelinePauseSnapshot, PipelineQueueDepthSnapshot, PlaybackDiagnosticsLogSummary,
+    PlaybackDiagnosticsSnapshot, TextureSlotPressureSnapshot, VideoDropAttributionSnapshot,
+    VideoDropCountersSnapshot, VideoDropReason, WorkerFrameTimingSnapshot,
+    WorkerWakeupDiagnosticsSnapshot, WorkerWakeupReason,
 };
 pub use error::{PlayerError, PlayerErrorKind, PlayerResult};
 pub use event::{

@@ -1753,6 +1753,7 @@ impl PlayerWorkerRuntime {
             .frame_timing
             .map(|timing| timing.front_frame_delta_from_target_us as f64 / 1000.0);
         let texture_slots = summary.queues.texture_slots;
+        let control_channel = summary.queues.decoder_control_channel;
         let latencies = summary.worst_latencies;
         let texture_view_lock_wait = latencies.texture_view_lock_wait;
         let publish_pressure = summary.decoder_frame_publish_pressure;
@@ -1799,6 +1800,11 @@ impl PlayerWorkerRuntime {
             pending_video_packets = summary.queues.pending_video_packets,
             present_queue_depth = summary.queues.present_queue_depth,
             decoder_in_flight_packets = summary.queues.decoder_in_flight_packets,
+            decoder_control_channel_len = ?control_channel.map(|pressure| pressure.control_channel_len),
+            decoder_control_channel_capacity = ?control_channel.map(|pressure| pressure.control_channel_capacity),
+            decoder_control_channel_full_count = ?control_channel.map(|pressure| pressure.control_channel_full_count),
+            decoder_release_control_send_fail_count = ?control_channel.map(|pressure| pressure.release_control_send_fail_count),
+            decoder_flush_control_send_fail_count = ?control_channel.map(|pressure| pressure.flush_control_send_fail_count),
             active_render_leases = summary.queues.active_render_leases,
             texture_in_use = ?texture_slots.map(|slots| slots.in_use),
             texture_capacity = ?texture_slots.map(|slots| slots.capacity),

@@ -9,6 +9,7 @@
 /// - Texture pool (Arc<Mutex<WgpuTexturePool>>) shared между потоками:
 ///   decoder thread публикует или переиспользует persistent DMA-BUF imports,
 ///   render thread делает get_views и отдаёт release через GPU completion ack.
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -217,6 +218,25 @@ impl std::fmt::Display for DecodeThreadError {
 
 impl std::error::Error for DecodeThreadError {}
 
+/// Snapshot давления на bounded decoder control channel.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VideoDecoderControlChannelPressureStats {
+    /// Текущая глубина control channel на момент чтения snapshot-а.
+    pub control_channel_len: usize,
+
+    /// Bounded capacity control channel-а.
+    pub control_channel_capacity: usize,
+
+    /// Сколько send failures произошло именно из-за заполненного control channel-а.
+    pub control_channel_full_count: u64,
+
+    /// Сколько раз release path не смог отправить control message.
+    pub release_control_send_fail_count: u64,
+
+    /// Сколько раз flush path не смог отправить control message.
+    pub flush_control_send_fail_count: u64,
+}
+
 /// Typed причина, по которой decoder thread временно не принимает packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeThreadBackpressureReason {
@@ -340,6 +360,86 @@ enum ThreadControlMsg {
     Flush(Sender<FlushAck>),
 }
 
+/// Sender-side control operation для logs и раздельных counters.
+#[derive(Debug, Clone, Copy)]
+enum DecoderControlOperation {
+    /// Возврат zero-copy surface после renderer/GPU ownership.
+    Release,
+
+    /// Синхронный flush decoder thread-а.
+    Flush,
+}
+
+impl DecoderControlOperation {
+    /// Возвращает стабильное имя операции для structured logs.
+    const fn metric_name(self) -> &'static str {
+        match self {
+            Self::Release => "release",
+            Self::Flush => "flush",
+        }
+    }
+
+    /// Возвращает прежний текстовый контекст fatal error-а.
+    const fn fatal_context(self) -> &'static str {
+        match self {
+            Self::Release => "zero-copy release",
+            Self::Flush => "decoder flush",
+        }
+    }
+}
+
+/// Shared sender-side counters decoder control channel-а.
+#[derive(Debug, Default)]
+struct DecoderControlChannelPressureCounters {
+    /// Накопительное число Full отказов независимо от операции.
+    full_count: AtomicU64,
+
+    /// Накопительное число release send failures.
+    release_send_fail_count: AtomicU64,
+
+    /// Накопительное число flush send failures.
+    flush_send_fail_count: AtomicU64,
+}
+
+impl DecoderControlChannelPressureCounters {
+    /// Учитывает failed send до fail-closed перехода и возвращает актуальный snapshot.
+    fn record_send_failure(
+        &self,
+        operation: DecoderControlOperation,
+        control_tx: &Sender<ThreadControlMsg>,
+        error: &TrySendError<ThreadControlMsg>,
+    ) -> VideoDecoderControlChannelPressureStats {
+        if matches!(error, TrySendError::Full(_)) {
+            self.full_count.fetch_add(1, Ordering::Relaxed);
+        }
+
+        match operation {
+            DecoderControlOperation::Release => {
+                self.release_send_fail_count.fetch_add(1, Ordering::Relaxed);
+            }
+            DecoderControlOperation::Flush => {
+                self.flush_send_fail_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        self.snapshot(control_tx)
+    }
+
+    /// Снимает текущую глубину канала и накопительные counters.
+    fn snapshot(
+        &self,
+        control_tx: &Sender<ThreadControlMsg>,
+    ) -> VideoDecoderControlChannelPressureStats {
+        VideoDecoderControlChannelPressureStats {
+            control_channel_len: control_tx.len(),
+            control_channel_capacity: control_tx.capacity().unwrap_or(0),
+            control_channel_full_count: self.full_count.load(Ordering::Relaxed),
+            release_control_send_fail_count: self.release_send_fail_count.load(Ordering::Relaxed),
+            flush_control_send_fail_count: self.flush_send_fail_count.load(Ordering::Relaxed),
+        }
+    }
+}
+
 /// Пара WGPU texture views для decoded YUV/P010 кадра.
 pub struct VideoTextureViews {
     /// Texture view с luma/Y plane.
@@ -409,6 +509,9 @@ impl VideoTextureViewLookup {
 pub struct VideoTextureViewProvider {
     /// Канал decoder thread для release zero-copy VA handles после GPU fence.
     control_tx: Sender<ThreadControlMsg>,
+
+    /// Shared counters pressure/failure diagnostics для control channel.
+    control_pressure: Arc<DecoderControlChannelPressureCounters>,
 
     /// WGPU queue нужен только для callback-а завершения уже отправленной GPU work.
     queue: Arc<wgpu::Queue>,
@@ -487,6 +590,7 @@ impl VideoTextureViewProvider {
         };
 
         let msg_tx = self.control_tx.clone();
+        let control_pressure = self.control_pressure.clone();
         let thread_state = self.thread_state.clone();
         let texture_pool = self.texture_pool.clone();
         self.queue.on_submitted_work_done(move || {
@@ -524,9 +628,13 @@ impl VideoTextureViewProvider {
                 "Submitted GPU work completed; releasing decoded surface to decoder"
             );
             if let Err(error) = msg_tx.try_send(ThreadControlMsg::ReleaseZeroCopy(ready_handle)) {
-                let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(
-                    decoder_control_send_error_message("zero-copy release", &error),
-                ));
+                let error_message = record_decoder_control_send_failure(
+                    DecoderControlOperation::Release,
+                    &msg_tx,
+                    &control_pressure,
+                    &error,
+                );
+                let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(error_message));
                 tracing::warn!(
                     error = %error,
                     fatal = %fatal_error,
@@ -654,6 +762,7 @@ struct QueuedDecodePacket {
 pub struct VideoDecodeThread {
     packet_tx: Sender<QueuedDecodePacket>,
     control_tx: Sender<ThreadControlMsg>,
+    control_pressure: Arc<DecoderControlChannelPressureCounters>,
     frame_rx: Receiver<DecodedFrame>,
     packet_ack_rx: Receiver<DecodePacketAck>,
     error_rx: Receiver<DecodeThreadError>,
@@ -717,6 +826,7 @@ impl VideoDecodeThread {
 
         let (packet_tx, packet_rx) = bounded::<QueuedDecodePacket>(config.packet_channel_frames);
         let (control_tx, control_rx) = bounded::<ThreadControlMsg>(config.control_channel_frames);
+        let control_pressure = Arc::new(DecoderControlChannelPressureCounters::default());
         let (frame_tx, frame_rx) = bounded::<DecodedFrame>(config.frame_channel_frames);
         let (packet_ack_tx, packet_ack_rx) = unbounded::<DecodePacketAck>();
         let (error_tx, error_rx) = bounded::<DecodeThreadError>(1);
@@ -785,6 +895,7 @@ impl VideoDecodeThread {
         Ok(Self {
             packet_tx,
             control_tx,
+            control_pressure,
             frame_rx,
             packet_ack_rx,
             error_rx,
@@ -862,9 +973,15 @@ impl VideoDecodeThread {
             .control_tx
             .try_send(ThreadControlMsg::ReleaseZeroCopy(handle))
         {
-            let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(
-                decoder_control_send_error_message("zero-copy release", &error),
-            ));
+            let error_message = record_decoder_control_send_failure(
+                DecoderControlOperation::Release,
+                &self.control_tx,
+                &self.control_pressure,
+                &error,
+            );
+            let fatal_error = self
+                .thread_state
+                .mark_fatal(DecodeThreadError::new(error_message));
             tracing::warn!(
                 error = %error,
                 fatal = %fatal_error,
@@ -900,9 +1017,15 @@ impl VideoDecodeThread {
         let (done_tx, done_rx) = bounded(1);
         if let Err(error) = self.control_tx.try_send(ThreadControlMsg::Flush(done_tx)) {
             self.release_received_frames();
-            let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(
-                decoder_control_send_error_message("decoder flush", &error),
-            ));
+            let error_message = record_decoder_control_send_failure(
+                DecoderControlOperation::Flush,
+                &self.control_tx,
+                &self.control_pressure,
+                &error,
+            );
+            let fatal_error = self
+                .thread_state
+                .mark_fatal(DecodeThreadError::new(error_message));
             return Err(anyhow::anyhow!("{}", fatal_error));
         }
 
@@ -928,6 +1051,7 @@ impl VideoDecodeThread {
     pub fn texture_view_provider(&self) -> VideoTextureViewProvider {
         VideoTextureViewProvider {
             control_tx: self.control_tx.clone(),
+            control_pressure: self.control_pressure.clone(),
             queue: self.queue.clone(),
             texture_pool: self.texture_pool.clone(),
             thread_state: self.thread_state.clone(),
@@ -943,6 +1067,12 @@ impl VideoDecodeThread {
                 None
             }
         }
+    }
+
+    /// Возвращает sender-side pressure snapshot bounded control channel-а.
+    #[must_use]
+    pub fn control_channel_pressure_stats(&self) -> VideoDecoderControlChannelPressureStats {
+        self.control_pressure.snapshot(&self.control_tx)
     }
 
     /// Возвращает текущую глубину bounded packet channel.
@@ -1096,6 +1226,27 @@ impl FramePublishPressureCounters {
     fn snapshot(&self) -> VideoFramePublishPressureDiagnostics {
         self.pressure
     }
+}
+
+/// Учитывает failed control send и пишет pressure fields перед fail-closed переходом.
+fn record_decoder_control_send_failure(
+    operation: DecoderControlOperation,
+    control_tx: &Sender<ThreadControlMsg>,
+    pressure_counters: &DecoderControlChannelPressureCounters,
+    error: &TrySendError<ThreadControlMsg>,
+) -> String {
+    let pressure = pressure_counters.record_send_failure(operation, control_tx, error);
+    tracing::debug!(
+        operation = operation.metric_name(),
+        len = pressure.control_channel_len,
+        capacity = pressure.control_channel_capacity,
+        control_channel_full_count = pressure.control_channel_full_count,
+        release_control_send_fail_count = pressure.release_control_send_fail_count,
+        flush_control_send_fail_count = pressure.flush_control_send_fail_count,
+        error = %error,
+        "Decoder control channel send failed before fail-closed transition"
+    );
+    decoder_control_send_error_message(operation.fatal_context(), error)
 }
 
 /// Печатает control-channel failure как fatal lifecycle ошибку.
@@ -1699,6 +1850,59 @@ mod tests {
             retry_pressure.max_decoded_frame_publish_latency,
             retry_pressure.total_decoded_frame_publish_latency
         );
+    }
+
+    /// Проверяет, что control-channel pressure counters различают release и flush failures.
+    #[test]
+    fn control_channel_pressure_counts_full_failures_by_operation() {
+        let (control_tx, _control_rx) = bounded(1);
+        let pressure_counters = DecoderControlChannelPressureCounters::default();
+        if control_tx
+            .try_send(ThreadControlMsg::ReleaseZeroCopy(FrameTextureHandle(1)))
+            .is_err()
+        {
+            panic!("test control channel has one free slot before pressure setup");
+        }
+
+        let release_error =
+            match control_tx.try_send(ThreadControlMsg::ReleaseZeroCopy(FrameTextureHandle(2))) {
+                Ok(()) => panic!("full control channel must reject release message"),
+                Err(error) => error,
+            };
+        let release_message = record_decoder_control_send_failure(
+            DecoderControlOperation::Release,
+            &control_tx,
+            &pressure_counters,
+            &release_error,
+        );
+
+        assert!(release_message.contains("zero-copy release"));
+        let after_release = pressure_counters.snapshot(&control_tx);
+        assert_eq!(after_release.control_channel_len, 1);
+        assert_eq!(after_release.control_channel_capacity, 1);
+        assert_eq!(after_release.control_channel_full_count, 1);
+        assert_eq!(after_release.release_control_send_fail_count, 1);
+        assert_eq!(after_release.flush_control_send_fail_count, 0);
+
+        let (done_tx, _done_rx) = bounded(1);
+        let flush_error = match control_tx.try_send(ThreadControlMsg::Flush(done_tx)) {
+            Ok(()) => panic!("full control channel must reject flush message"),
+            Err(error) => error,
+        };
+        let flush_message = record_decoder_control_send_failure(
+            DecoderControlOperation::Flush,
+            &control_tx,
+            &pressure_counters,
+            &flush_error,
+        );
+
+        assert!(flush_message.contains("decoder flush"));
+        let after_flush = pressure_counters.snapshot(&control_tx);
+        assert_eq!(after_flush.control_channel_len, 1);
+        assert_eq!(after_flush.control_channel_capacity, 1);
+        assert_eq!(after_flush.control_channel_full_count, 2);
+        assert_eq!(after_flush.release_control_send_fail_count, 1);
+        assert_eq!(after_flush.flush_control_send_fail_count, 1);
     }
 
     /// Проверяет seek/flush cancellation: старые packets не остаются после backend flush.

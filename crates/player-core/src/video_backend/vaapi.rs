@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::DecoderControlChannelPressureSnapshot;
 use crate::decoder_boundary::{
     DecodeBackpressureReason, DecodeSendError, DecodeThreadError, DecoderResourceSnapshot,
     PlayerDecodePacket, PlayerVideoDecoderThreadConfig, RenderTextureProvider,
@@ -281,6 +282,17 @@ impl VideoDecoderThreadHandle for video_vaapi::VideoDecodeThread {
 
     fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {
         video_vaapi::VideoDecodeThread::texture_pool_stats(self).map(Into::into)
+    }
+
+    fn decoder_control_channel_pressure(&self) -> Option<DecoderControlChannelPressureSnapshot> {
+        let pressure = video_vaapi::VideoDecodeThread::control_channel_pressure_stats(self);
+        Some(DecoderControlChannelPressureSnapshot {
+            control_channel_len: pressure.control_channel_len,
+            control_channel_capacity: pressure.control_channel_capacity,
+            control_channel_full_count: pressure.control_channel_full_count,
+            release_control_send_fail_count: pressure.release_control_send_fail_count,
+            flush_control_send_fail_count: pressure.flush_control_send_fail_count,
+        })
     }
 
     fn packet_queue_depth(&self) -> usize {

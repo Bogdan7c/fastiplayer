@@ -185,6 +185,25 @@ impl TextureSlotPressureSnapshot {
     }
 }
 
+/// Snapshot давления на decoder control channel без backend-specific типов.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DecoderControlChannelPressureSnapshot {
+    /// Текущая глубина control channel на момент чтения snapshot-а.
+    pub control_channel_len: usize,
+
+    /// Bounded capacity control channel-а.
+    pub control_channel_capacity: usize,
+
+    /// Сколько send failures произошло именно из-за заполненного control channel-а.
+    pub control_channel_full_count: u64,
+
+    /// Сколько раз release path не смог отправить control message.
+    pub release_control_send_fail_count: u64,
+
+    /// Сколько раз flush path не смог отправить control message.
+    pub flush_control_send_fail_count: u64,
+}
+
 /// Queue depths, снятые около latency/drop события.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PipelineQueueDepthSnapshot {
@@ -214,6 +233,9 @@ pub struct PipelineQueueDepthSnapshot {
 
     /// Texture/surface slot pressure.
     pub texture_slots: Option<TextureSlotPressureSnapshot>,
+
+    /// Pressure/failure counters bounded decoder control channel-а.
+    pub decoder_control_channel: Option<DecoderControlChannelPressureSnapshot>,
 }
 
 /// Worst/average latency по одной stage.
@@ -737,6 +759,14 @@ impl PlaybackDiagnosticsLogSummary {
                 .decoder_frame_publish_pressure
                 .pending_publish_retry_count
                 > 0
+            || match self.queues.decoder_control_channel {
+                Some(pressure) => {
+                    pressure.control_channel_full_count > 0
+                        || pressure.release_control_send_fail_count > 0
+                        || pressure.flush_control_send_fail_count > 0
+                }
+                None => false,
+            }
             || self.zero_copy_memory_path.is_some()
             || self.worst_latency.is_some()
     }
@@ -1428,6 +1458,32 @@ mod tests {
             Duration::from_millis(10)
         );
         assert_eq!(snapshot.worst_latencies.decoded_frame_publish.samples, 2);
+    }
+
+    #[test]
+    fn log_summary_treats_decoder_control_pressure_as_activity() {
+        let diagnostics = PlaybackDiagnostics::new();
+        let mut queues = queue_depths_for_tests(0);
+        queues.decoder_control_channel = Some(DecoderControlChannelPressureSnapshot {
+            control_channel_len: 32,
+            control_channel_capacity: 32,
+            control_channel_full_count: 1,
+            release_control_send_fail_count: 1,
+            flush_control_send_fail_count: 0,
+        });
+
+        let summary = diagnostics.log_summary(queues);
+        let control_pressure = summary
+            .queues
+            .decoder_control_channel
+            .expect("control pressure snapshot should be preserved in log summary");
+
+        assert!(summary.has_activity());
+        assert_eq!(control_pressure.control_channel_len, 32);
+        assert_eq!(control_pressure.control_channel_capacity, 32);
+        assert_eq!(control_pressure.control_channel_full_count, 1);
+        assert_eq!(control_pressure.release_control_send_fail_count, 1);
+        assert_eq!(control_pressure.flush_control_send_fail_count, 0);
     }
 
     #[test]
