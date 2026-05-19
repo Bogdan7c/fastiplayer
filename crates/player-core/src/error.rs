@@ -21,6 +21,9 @@ pub enum PlayerErrorKind {
     /// HDR-режим пока не может быть корректно отображён.
     UnsupportedHdrMode,
 
+    /// Audio codec не поддерживается текущей audio decoder factory.
+    UnsupportedAudioCodec,
+
     /// Renderer backend не умеет принять формат кадра после decode.
     UnsupportedRenderFormat,
 

@@ -54,6 +54,22 @@ enum SessionScrubUpdateRejection {
     StaleGeneration,
 }
 
+/// Чистый план запуска audio decoder-а без CPAL/output side effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AudioDecoderInitSpec {
+    /// Track ID выбранного audio трека.
+    track_id: TrackId,
+
+    /// Нормализованный codec из общей codec model.
+    codec: AudioCodec,
+
+    /// Sample rate, который demuxer сообщил для decoder/output init.
+    sample_rate: u32,
+
+    /// Количество каналов, которое demuxer сообщил для decoder/output init.
+    channels: u32,
+}
+
 /// Typed результат session-side update boundary.
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2883,58 +2899,50 @@ impl PlayerSession {
             .and_then(video_metadata_source_from_track)
     }
 
-    /// Инициализирует audio pipeline если есть Opus-compatible audio track.
+    /// Инициализирует audio pipeline если есть audio track с поддержанным decoder contract.
     fn init_audio_pipeline(&mut self, tracks: &[TrackInfo]) {
-        let audio_track = tracks.iter().find(|track| {
-            track.kind == TrackKind::Audio
-                && track.sample_rate.is_some()
-                && track.channels.is_some()
-        });
-
-        let Some(track) = audio_track else {
-            info!("Audio track не найден или параметры неизвестны — playback без звука");
-            return;
-        };
-
-        let (Some(sample_rate), Some(channels)) = (track.sample_rate, track.channels) else {
-            warn!(
-                track_id = %track.id,
-                "Audio track выбран без sample_rate/channels"
-            );
-            return;
+        let init_spec = match audio_decoder_init_spec_from_tracks(tracks) {
+            Ok(Some(init_spec)) => init_spec,
+            Ok(None) => {
+                info!("Audio track не найден или параметры неизвестны — playback без звука");
+                return;
+            }
+            Err(error) => {
+                warn!(error = %error, "Audio track rejected during decoder init");
+                self.record_recoverable_error(error);
+                return;
+            }
         };
 
         info!(
-            track_id = %track.id,
-            codec = %track.codec_id,
-            sample_rate,
-            channels,
+            track_id = %init_spec.track_id,
+            codec = %init_spec.codec,
+            sample_rate = init_spec.sample_rate,
+            channels = init_spec.channels,
             "Инициализация audio pipeline"
         );
 
-        let Some(codec) = AudioCodec::from_container_codec_id(&track.codec_id) else {
-            let error_message = format!("Unsupported audio codec id: {}", track.codec_id);
-            warn!(
-                track_id = %track.id,
-                codec = %track.codec_id,
-                "Audio codec не поддержан текущей codec model"
-            );
-            self.set_runtime_error(format!("Audio error: {error_message}"));
-            return;
-        };
-
-        match audio::create_audio_decoder(codec, sample_rate, channels) {
+        match audio::create_audio_decoder(
+            init_spec.codec,
+            init_spec.sample_rate,
+            init_spec.channels,
+        ) {
             Ok(decoder) => {
                 self.pipeline.audio_decoder = Some(decoder);
             }
             Err(error) => {
-                warn!(error = %error, codec = %codec, "Не удалось создать audio decoder");
-                self.set_runtime_error(format!("Audio error: {error}"));
+                let player_error = player_error_from_audio_decoder_factory_error(error);
+                warn!(
+                    error = %player_error,
+                    codec = %init_spec.codec,
+                    "Не удалось создать audio decoder"
+                );
+                self.record_recoverable_error(player_error);
                 return;
             }
         }
 
-        match audio::AudioOutput::new(sample_rate, channels) {
+        match audio::AudioOutput::new(init_spec.sample_rate, init_spec.channels) {
             Ok(mut output) => {
                 output.set_volume(self.snapshot.volume);
                 self.pipeline.audio_output = Some(output);
@@ -2946,14 +2954,19 @@ impl PlayerSession {
             }
         }
 
-        self.pipeline.audio_track_id = Some(track.id);
-        self.snapshot.selected_tracks.audio_track = Some(track.id);
+        self.pipeline.audio_track_id = Some(init_spec.track_id);
+        self.snapshot.selected_tracks.audio_track = Some(init_spec.track_id);
 
         if let Some(ref output) = self.pipeline.audio_output {
             self.pipeline.audio_clock = Some(output.clock().clone());
         }
 
-        info!("Audio pipeline инициализирован");
+        info!(
+            track_id = %init_spec.track_id,
+            sample_rate = init_spec.sample_rate,
+            channels = init_spec.channels,
+            "Audio pipeline инициализирован"
+        );
     }
 
     /// Собирает codec/render-neutral queue depths для diagnostics aggregator.
@@ -2990,6 +3003,87 @@ impl PlayerSession {
             decoder_control_channel: self.pipeline.video_decoder_control_channel_pressure(),
         }
     }
+}
+
+/// Находит первый audio track, для которого достаточно metadata для decoder/output init.
+fn audio_track_with_decoder_parameters(tracks: &[TrackInfo]) -> Option<&TrackInfo> {
+    tracks.iter().find(|track| {
+        track.kind == TrackKind::Audio && track.sample_rate.is_some() && track.channels.is_some()
+    })
+}
+
+/// Создаёт чистый init plan для audio decoder-а без открытия CPAL device.
+fn audio_decoder_init_spec_from_track(track: &TrackInfo) -> PlayerResult<AudioDecoderInitSpec> {
+    let Some(sample_rate) = track.sample_rate else {
+        return Err(PlayerError::new(
+            PlayerErrorKind::RuntimeError,
+            format!(
+                "Audio track `{}` выбран без sample_rate для decoder init",
+                track.id
+            ),
+        ));
+    };
+
+    let Some(channels) = track.channels else {
+        return Err(PlayerError::new(
+            PlayerErrorKind::RuntimeError,
+            format!(
+                "Audio track `{}` выбран без channel count для decoder init",
+                track.id
+            ),
+        ));
+    };
+
+    let Some(codec) = AudioCodec::from_container_codec_id(&track.codec_id) else {
+        return Err(unsupported_audio_codec_id_error(track));
+    };
+
+    Ok(AudioDecoderInitSpec {
+        track_id: track.id,
+        codec,
+        sample_rate,
+        channels,
+    })
+}
+
+/// Выбирает audio decoder init plan по track metadata, не создавая decoder/output ресурсы.
+fn audio_decoder_init_spec_from_tracks(
+    tracks: &[TrackInfo],
+) -> PlayerResult<Option<AudioDecoderInitSpec>> {
+    let Some(track) = audio_track_with_decoder_parameters(tracks) else {
+        return Ok(None);
+    };
+
+    audio_decoder_init_spec_from_track(track).map(Some)
+}
+
+/// Создаёт typed player error для codec id, которого нет в общей audio model.
+fn unsupported_audio_codec_id_error(track: &TrackInfo) -> PlayerError {
+    PlayerError::new(
+        PlayerErrorKind::UnsupportedAudioCodec,
+        format!(
+            "Audio error: Unsupported audio codec id: {}",
+            track.codec_id
+        ),
+    )
+}
+
+/// Сохраняет typed unsupported-codec ошибку factory, не меняя остальные init errors.
+fn player_error_from_audio_decoder_factory_error(error: anyhow::Error) -> PlayerError {
+    if matches!(
+        error.downcast_ref::<audio::AudioDecoderError>(),
+        Some(audio::AudioDecoderError::UnsupportedCodec { .. })
+    ) {
+        return PlayerError::new(
+            PlayerErrorKind::UnsupportedAudioCodec,
+            format!("Audio error: {error}"),
+        );
+    }
+
+    PlayerError::new(
+        PlayerErrorKind::RuntimeError,
+        format!("Audio error: {error}"),
+    )
 }
 
 /// Строит минимальное decode requirement из container track metadata.
@@ -3990,6 +4084,100 @@ mod tests {
             channels: (kind == TrackKind::Audio).then_some(2),
             video: None,
         }
+    }
+
+    /// Создаёт audio track с заданным container codec id для чистых codec selection tests.
+    fn fake_audio_track_with_codec(track_id: u32, codec_id: &str) -> TrackInfo {
+        let mut track = fake_track(track_id, TrackKind::Audio);
+        track.codec_id = codec_id.to_string();
+        track
+    }
+
+    #[test]
+    fn audio_decoder_init_spec_maps_opus_track_without_cpal_device() {
+        let tracks = vec![
+            fake_track(1, TrackKind::Video),
+            fake_audio_track_with_codec(2, "A_OPUS"),
+        ];
+
+        let init_spec = audio_decoder_init_spec_from_tracks(&tracks)
+            .expect("Opus audio track should be accepted")
+            .expect("audio init spec should exist");
+
+        assert_eq!(
+            init_spec,
+            AudioDecoderInitSpec {
+                track_id: TrackId::new(2),
+                codec: AudioCodec::Opus,
+                sample_rate: 48_000,
+                channels: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn audio_decoder_init_spec_maps_known_unsupported_codecs_without_cpal_device() {
+        let codec_cases = [
+            ("A_AAC/MPEG4/LC", AudioCodec::Aac),
+            ("A_VORBIS", AudioCodec::Vorbis),
+        ];
+
+        for (codec_id, expected_codec) in codec_cases {
+            let tracks = vec![fake_audio_track_with_codec(2, codec_id)];
+            let init_spec = audio_decoder_init_spec_from_tracks(&tracks)
+                .expect("known audio codec id should map through codec-core")
+                .expect("audio init spec should exist");
+
+            assert_eq!(init_spec.codec, expected_codec);
+            assert_eq!(init_spec.track_id, TrackId::new(2));
+            assert_eq!(init_spec.sample_rate, 48_000);
+            assert_eq!(init_spec.channels, 2);
+        }
+    }
+
+    #[test]
+    fn audio_decoder_init_spec_returns_none_when_audio_parameters_are_absent() {
+        let mut audio_track_without_sample_rate = fake_audio_track_with_codec(2, "A_OPUS");
+        audio_track_without_sample_rate.sample_rate = None;
+
+        let init_spec = audio_decoder_init_spec_from_tracks(&[
+            fake_track(1, TrackKind::Video),
+            audio_track_without_sample_rate,
+        ])
+        .expect("missing audio parameters should not be a codec error");
+
+        assert!(init_spec.is_none());
+    }
+
+    #[test]
+    fn audio_decoder_init_spec_rejects_unknown_codec_with_typed_error_without_cpal_device() {
+        let tracks = vec![fake_audio_track_with_codec(2, "A_FLAC")];
+
+        let error = audio_decoder_init_spec_from_tracks(&tracks)
+            .expect_err("unknown audio codec should be rejected before output init");
+
+        assert_eq!(error.kind, PlayerErrorKind::UnsupportedAudioCodec);
+        assert_eq!(
+            error.message,
+            "Audio error: Unsupported audio codec id: A_FLAC"
+        );
+    }
+
+    #[test]
+    fn init_audio_pipeline_reports_unsupported_factory_codec_without_cpal_device() {
+        let mut session = PlayerSession::new();
+        let tracks = vec![fake_audio_track_with_codec(2, "A_AAC")];
+
+        session.init_audio_pipeline(&tracks);
+
+        assert!(session.pipeline.audio_decoder.is_none());
+        assert!(session.pipeline.audio_output.is_none());
+        assert!(session.pipeline.audio_track_id.is_none());
+        assert!(session.take_events().iter().any(|event| matches!(
+            event,
+            PlayerEvent::RecoverableError(error)
+                if error.kind == PlayerErrorKind::UnsupportedAudioCodec
+        )));
     }
 
     /// Подключает fake demuxer без инициализации audio/video backend ресурсов.

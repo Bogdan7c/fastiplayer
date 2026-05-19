@@ -18,5 +18,7 @@ pub mod decoder;
 pub mod output;
 
 pub use clock::AudioClock;
-pub use decoder::{AudioDecoder, AudioDecoderError, OpusDecoder, create_audio_decoder};
+pub use decoder::{
+    AudioDecoder, AudioDecoderError, AudioDecoderHandle, OpusDecoder, create_audio_decoder,
+};
 pub use output::AudioOutput;

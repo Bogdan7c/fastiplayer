@@ -183,7 +183,7 @@ pub(crate) struct PlaybackPipeline {
     pub(crate) source_label: Option<String>,
 
     /// Codec-neutral audio decoder для выбранного audio трека.
-    pub(crate) audio_decoder: Option<Box<dyn audio::AudioDecoder>>,
+    pub(crate) audio_decoder: Option<audio::AudioDecoderHandle>,
 
     /// Audio output: CPAL stream и ring buffer.
     pub(crate) audio_output: Option<audio::AudioOutput>,

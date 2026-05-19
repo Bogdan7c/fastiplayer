@@ -35,6 +35,9 @@ pub trait AudioDecoder: Send {
     fn channels(&self) -> u32;
 }
 
+/// Владеющий handle codec-neutral decoder-а, который можно хранить в player pipeline.
+pub type AudioDecoderHandle = Box<dyn AudioDecoder + Send>;
+
 /// Ошибки audio decoder factory, которые caller может downcast-ить из anyhow.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AudioDecoderError {
@@ -51,7 +54,7 @@ pub fn create_audio_decoder(
     codec: AudioCodec,
     sample_rate: u32,
     channels: u32,
-) -> Result<Box<dyn AudioDecoder>> {
+) -> Result<AudioDecoderHandle> {
     match codec {
         AudioCodec::Opus => Ok(Box::new(OpusDecoder::new(sample_rate, channels)?)),
         AudioCodec::Aac | AudioCodec::Vorbis => {
@@ -193,7 +196,7 @@ mod tests {
     use anyhow::Result;
     use codec_core::AudioCodec;
 
-    use super::{AudioDecoder, AudioDecoderError, create_audio_decoder};
+    use super::{AudioDecoder, AudioDecoderError, AudioDecoderHandle, create_audio_decoder};
 
     /// Fake decoder нужен только для проверки object-safe contract без libopus path.
     struct FakeAudioDecoder {
@@ -275,8 +278,30 @@ mod tests {
     }
 
     #[test]
+    fn vorbis_codec_returns_same_typed_unsupported_error() {
+        let error = match create_audio_decoder(AudioCodec::Vorbis, 48_000, 2) {
+            Ok(_) => panic!("Vorbis must stay unsupported in this refactor"),
+            Err(error) => error,
+        };
+        let typed_error = error
+            .downcast_ref::<AudioDecoderError>()
+            .expect("factory error should keep typed error");
+
+        assert_eq!(
+            typed_error,
+            &AudioDecoderError::UnsupportedCodec {
+                codec: AudioCodec::Vorbis
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "Audio codec Vorbis is not supported by the audio decoder factory"
+        );
+    }
+
+    #[test]
     fn trait_object_path_preserves_decoder_properties() {
-        let mut decoder: Box<dyn AudioDecoder> = Box::new(FakeAudioDecoder {
+        let mut decoder: AudioDecoderHandle = Box::new(FakeAudioDecoder {
             sample_rate: 44_100,
             channels: 2,
         });
