@@ -5,8 +5,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use codec_core::VideoDecodeRequirement;
-use media_core::{TrackId, TrackInfo};
-use webm_demux::Demuxer;
+use media_core::{Demuxer, TrackId, TrackInfo};
 
 use crate::{
     DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
@@ -171,8 +170,8 @@ impl PendingVideoPacket {
 /// Поля остаются видимыми только внутри `player-core`, пока tick/scheduler
 /// живут отдельным модулем. Наружный API работает через методы `PlayerSession`.
 pub(crate) struct PlaybackPipeline {
-    /// Demuxer текущего WebM/Matroska media.
-    pub(crate) demuxer: Option<Box<dyn webm_demux::Demuxer + Send>>,
+    /// Demuxer текущего media source через нейтральный media-core contract.
+    pub(crate) demuxer: Option<Box<dyn media_core::Demuxer + Send>>,
 
     /// Локальный путь, если media был открыт из файловой системы.
     pub(crate) file_path: Option<PathBuf>,

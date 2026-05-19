@@ -8,10 +8,11 @@ use codec_core::{
     video_requirement_needs_packet_refinement,
 };
 use media_core::{
-    MediaDuration, MediaTime, TimelineNotSeekableReason, TimelinePreviewState, TrackInfo, TrackKind,
+    DemuxSeekability, MediaDuration, MediaTime, TimelineNotSeekableReason, TimelinePreviewState,
+    TrackInfo, TrackKind,
 };
 use tracing::{debug, info, trace, warn};
-use webm_demux::{DemuxSeekability, DemuxerOptions};
+use webm_demux::DemuxerOptions;
 
 use crate::media_opening::OpenedMedia;
 use crate::pipeline::{
@@ -811,7 +812,7 @@ impl PlayerSession {
     }
 
     /// Загружает уже открытый demuxer для streaming source.
-    pub fn load_demuxer(&mut self, label: String, demuxer: Box<dyn webm_demux::Demuxer + Send>) {
+    pub fn load_demuxer(&mut self, label: String, demuxer: Box<dyn media_core::Demuxer + Send>) {
         self.load_demuxer_with_autoplay(label, demuxer, false);
     }
 
@@ -819,7 +820,7 @@ impl PlayerSession {
     pub fn load_demuxer_with_autoplay(
         &mut self,
         label: String,
-        demuxer: Box<dyn webm_demux::Demuxer + Send>,
+        demuxer: Box<dyn media_core::Demuxer + Send>,
         autoplay: bool,
     ) {
         if !self.begin_media_open(MediaSource::ExternalLabel(label.clone()), autoplay) {
@@ -3230,8 +3231,8 @@ mod tests {
         BitDepth, ChromaSubsampling, DecodeBackendId, SupportedVideoDecodeFormat, VideoProfile,
         Vp9Profile,
     };
+    use media_core::{DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer};
     use render_core::RenderCapabilities;
-    use webm_demux::{DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer};
 
     /// Собирает абсолютный scrub request с явным seek mode для проверки boundary state.
     fn session_scrub_request(seconds: u64, mode: SeekMode) -> SeekRequest {
@@ -4515,10 +4516,7 @@ mod tests {
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].timestamp, Duration::from_secs(12));
-        assert_eq!(
-            requests[0].mode,
-            webm_demux::DemuxSeekMode::DecodePointBefore
-        );
+        assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
         assert_eq!(
             session
                 .seek_commit()
@@ -4773,7 +4771,7 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].mode, webm_demux::DemuxSeekMode::Preview);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert_eq!(
             session
                 .seek_commit()
@@ -4822,7 +4820,7 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].mode, webm_demux::DemuxSeekMode::Preview);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert_eq!(tick_result.decoded_video_frames, 1);
         assert_eq!(tick_result.video_frames_presented, 1);
         assert!(session.seek_commit().is_none());
@@ -4868,7 +4866,7 @@ mod tests {
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].timestamp, Duration::from_secs(8));
-        assert_eq!(requests[0].mode, webm_demux::DemuxSeekMode::Preview);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert!(session.seek_commit().is_none());
         assert_eq!(
             session.snapshot().current_position,
@@ -4912,7 +4910,7 @@ mod tests {
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].timestamp, Duration::from_secs(8));
-        assert_eq!(requests[0].mode, webm_demux::DemuxSeekMode::Preview);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert!(session.seek_commit().is_none());
         assert_eq!(
             session.snapshot().current_position,
@@ -4955,7 +4953,7 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].mode, webm_demux::DemuxSeekMode::Preview);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert_eq!(
             session
                 .seek_commit()
@@ -5013,7 +5011,7 @@ mod tests {
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].timestamp, Duration::from_secs(8));
-        assert_eq!(requests[0].mode, webm_demux::DemuxSeekMode::Preview);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert!(session.seek_commit().is_none());
         assert_eq!(
             session.snapshot().current_position,
@@ -5140,10 +5138,7 @@ mod tests {
             DemuxSeekRequest::preview(Duration::from_secs(8))
         );
         assert_eq!(requests[1].timestamp, Duration::from_secs(9));
-        assert_eq!(
-            requests[1].mode,
-            webm_demux::DemuxSeekMode::DecodePointBefore
-        );
+        assert_eq!(requests[1].mode, DemuxSeekMode::DecodePointBefore);
         assert_eq!(
             session
                 .seek_commit()
@@ -5188,12 +5183,9 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].mode, webm_demux::DemuxSeekMode::Preview);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert_eq!(requests[1].timestamp, Duration::from_secs(9));
-        assert_eq!(
-            requests[1].mode,
-            webm_demux::DemuxSeekMode::DecodePointBefore
-        );
+        assert_eq!(requests[1].mode, DemuxSeekMode::DecodePointBefore);
         assert_eq!(
             session
                 .seek_commit()
@@ -5323,10 +5315,7 @@ mod tests {
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].timestamp, Duration::from_secs(8));
-        assert_eq!(
-            requests[0].mode,
-            webm_demux::DemuxSeekMode::DecodePointBefore
-        );
+        assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
     }
 
     #[test]
@@ -5345,7 +5334,7 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].mode, webm_demux::DemuxSeekMode::Accurate);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Accurate);
     }
 
     #[test]
@@ -5365,10 +5354,7 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
-        assert_eq!(
-            requests[0].mode,
-            webm_demux::DemuxSeekMode::DecodePointBefore
-        );
+        assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
     }
 
     #[test]
@@ -5426,10 +5412,7 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
-        assert_eq!(
-            requests[0].mode,
-            webm_demux::DemuxSeekMode::DecodePointBefore
-        );
+        assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
     }
 
     #[test]

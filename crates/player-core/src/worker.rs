@@ -742,7 +742,7 @@ impl PlayerWorker {
     pub fn load_demuxer(
         &self,
         label: String,
-        demuxer: Box<dyn webm_demux::Demuxer + Send>,
+        demuxer: Box<dyn media_core::Demuxer + Send>,
         autoplay: bool,
     ) -> Result<(), PlayerWorkerSendError> {
         self.command_sender
@@ -894,7 +894,7 @@ enum WorkerCommand {
         label: String,
 
         /// Demuxer, который worker забирает во владение.
-        demuxer: Box<dyn webm_demux::Demuxer + Send>,
+        demuxer: Box<dyn media_core::Demuxer + Send>,
 
         /// Нужно ли начать playback после успешного открытия.
         autoplay: bool,
@@ -1916,8 +1916,8 @@ mod tests {
 
     use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
     use crossbeam_channel::unbounded;
+    use media_core::{DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer};
     use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
-    use webm_demux::{DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer};
 
     use super::*;
     use crate::{MediaSource, PlaybackState, SeekTarget};

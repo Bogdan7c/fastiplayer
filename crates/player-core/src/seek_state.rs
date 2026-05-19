@@ -1,7 +1,6 @@
 use std::time::{Duration, Instant};
 
-use media_core::MediaTime;
-use webm_demux::DemuxSeekRequest;
+use media_core::{DemuxSeekRequest, MediaTime};
 
 use crate::seek_controller::PlaybackResumeIntent;
 use crate::{ScrubGeneration, SeekMode};
@@ -95,7 +94,7 @@ fn final_demux_seek_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use webm_demux::DemuxSeekMode;
+    use media_core::DemuxSeekMode;
 
     fn request_mode(
         commit_kind: SeekCommitKind,

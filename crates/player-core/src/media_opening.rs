@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use media_core::TrackInfo;
-use webm_demux::{DemuxSeekability, Demuxer, DemuxerOptions};
+use media_core::{DemuxSeekability, Demuxer, TrackInfo};
+use webm_demux::DemuxerOptions;
 
 /// Подготовленный media source, который уже открыт, но ещё не применён к state machine.
 pub(crate) struct OpenedMedia {
