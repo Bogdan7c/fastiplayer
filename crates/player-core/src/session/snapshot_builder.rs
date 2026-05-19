@@ -63,10 +63,9 @@ impl<'session> PlayerSnapshotBuilder<'session> {
     fn source_label(&self) -> Option<String> {
         self.session
             .pipeline
-            .file_path
-            .as_ref()
+            .source_file_path()
             .map(|file_path| file_path.display().to_string())
-            .or_else(|| self.session.pipeline.source_label.clone())
+            .or_else(|| self.session.pipeline.source_label().map(ToOwned::to_owned))
             .or_else(|| self.session.snapshot.source_label.clone())
     }
 
@@ -74,8 +73,7 @@ impl<'session> PlayerSnapshotBuilder<'session> {
     fn media_title(&self) -> Option<String> {
         self.session
             .pipeline
-            .file_path
-            .as_ref()
+            .source_file_path()
             .and_then(|file_path| file_path.file_name())
             .map(|file_name| file_name.to_string_lossy().into_owned())
             .or_else(|| self.session.snapshot.media_title.clone())
@@ -92,19 +90,20 @@ impl<'session> PlayerSnapshotBuilder<'session> {
 
     /// Собирает compact track metadata для UI.
     fn track_summary_snapshot(&self) -> Vec<TrackSummarySnapshot> {
-        self.session
-            .pipeline
-            .tracks
-            .iter()
-            .map(|track| TrackSummarySnapshot {
+        let mut track_summaries = Vec::with_capacity(self.session.pipeline.track_count());
+
+        for track in self.session.pipeline.tracks() {
+            track_summaries.push(TrackSummarySnapshot {
                 id: track.id,
                 kind: track.kind,
                 codec_id: track.codec_id.clone(),
                 sample_rate: track.sample_rate,
                 channels: track.channels,
                 video_color_summary: video_color_summary(track),
-            })
-            .collect()
+            });
+        }
+
+        track_summaries
     }
 
     /// Собирает snapshot активного backend и texture pool.
@@ -239,7 +238,10 @@ fn optional_duration_from_seconds(seconds: f64) -> Option<Duration> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use bytes::Bytes;
+    use media_core::{DemuxSeekResult, Demuxer, MediaTime, TrackKind};
 
     use crate::pipeline::{PendingAudioPacket, PendingVideoPacket};
     use crate::{FrameCounters, TrackId};
@@ -250,7 +252,12 @@ mod tests {
     fn builder_does_not_mutate_base_session_snapshot() {
         let mut session = PlayerSession::default();
         session.snapshot.source_label = Some("fallback source".to_owned());
-        session.pipeline.source_label = Some("pipeline source".to_owned());
+        session.pipeline.install_opened_media(
+            Box::new(SnapshotFakeDemuxer::empty()),
+            None,
+            Some("pipeline source".to_owned()),
+            Vec::new(),
+        );
 
         let snapshot_before_build = session.snapshot.clone();
         let frame_counters = FrameCounters {
@@ -264,6 +271,49 @@ mod tests {
         assert_eq!(snapshot.source_label.as_deref(), Some("pipeline source"));
         assert_eq!(snapshot.frame_counters, frame_counters);
         assert_eq!(session.snapshot, snapshot_before_build);
+    }
+
+    #[test]
+    fn builder_preserves_file_path_label_and_title_fallback() {
+        let mut session = PlayerSession::default();
+        session.snapshot.source_label = Some("fallback source".to_owned());
+        session.snapshot.media_title = Some("fallback title".to_owned());
+        session.pipeline.install_opened_media(
+            Box::new(SnapshotFakeDemuxer::empty()),
+            Some(PathBuf::from("/tmp/sample.webm")),
+            Some("streaming source".to_owned()),
+            Vec::new(),
+        );
+
+        let snapshot = build_snapshot(&session, FrameCounters::default());
+
+        assert_eq!(snapshot.source_label.as_deref(), Some("/tmp/sample.webm"));
+        assert_eq!(snapshot.media_title.as_deref(), Some("sample.webm"));
+    }
+
+    #[test]
+    fn builder_preserves_track_snapshot_from_pipeline_getter() {
+        let mut session = PlayerSession::default();
+        let track_infos = vec![
+            snapshot_track(TrackId::new(1), TrackKind::Video, "V_VP9"),
+            snapshot_track(TrackId::new(2), TrackKind::Audio, "A_OPUS"),
+        ];
+        session.pipeline.install_opened_media(
+            Box::new(SnapshotFakeDemuxer::new(track_infos.clone())),
+            None,
+            Some("pipeline source".to_owned()),
+            track_infos,
+        );
+
+        let snapshot = build_snapshot(&session, FrameCounters::default());
+
+        assert_eq!(snapshot.tracks.len(), 2);
+        assert_eq!(snapshot.tracks[0].id, TrackId::new(1));
+        assert_eq!(snapshot.tracks[0].kind, TrackKind::Video);
+        assert_eq!(snapshot.tracks[0].codec_id, "V_VP9");
+        assert_eq!(snapshot.tracks[1].id, TrackId::new(2));
+        assert_eq!(snapshot.tracks[1].kind, TrackKind::Audio);
+        assert_eq!(snapshot.tracks[1].codec_id, "A_OPUS");
     }
 
     #[test]
@@ -297,5 +347,60 @@ mod tests {
         assert_eq!(snapshot.diagnostics.queues.pending_video_packets, 1);
         assert_eq!(session.pipeline.pending_audio_packet_len(), 1);
         assert_eq!(session.pipeline.pending_video_packet_len(), 1);
+    }
+
+    /// Fake demuxer для snapshot tests: builder не читает packets, но pipeline требует handle.
+    struct SnapshotFakeDemuxer {
+        /// Metadata tracks, которые возвращает neutral demux contract.
+        track_infos: Vec<TrackInfo>,
+    }
+
+    impl SnapshotFakeDemuxer {
+        /// Создаёт fake demuxer без tracks для source fallback сценариев.
+        fn empty() -> Self {
+            Self::new(Vec::new())
+        }
+
+        /// Создаёт fake demuxer с явным immutable tracks snapshot.
+        fn new(track_infos: Vec<TrackInfo>) -> Self {
+            Self { track_infos }
+        }
+    }
+
+    impl Demuxer for SnapshotFakeDemuxer {
+        fn tracks(&self) -> &[TrackInfo] {
+            &self.track_infos
+        }
+
+        fn duration(&self) -> Option<Duration> {
+            None
+        }
+
+        fn next_packet(&mut self) -> anyhow::Result<Option<media_core::Packet>> {
+            Ok(None)
+        }
+
+        fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+            Ok(DemuxSeekResult {
+                requested_position: MediaTime::from_duration(timestamp),
+                actual_position: MediaTime::from_duration(timestamp),
+                actual_track_timestamp: None,
+            })
+        }
+    }
+
+    /// Создаёт минимальный track metadata для проверки snapshot mapping.
+    fn snapshot_track(track_id: TrackId, kind: TrackKind, codec_id: &str) -> TrackInfo {
+        TrackInfo {
+            id: track_id,
+            kind,
+            codec_id: codec_id.to_owned(),
+            codec_private: None,
+            time_base: media_core::TimeBase::new(1, 1_000),
+            duration: Some(Duration::from_secs(30)),
+            sample_rate: (kind == TrackKind::Audio).then_some(48_000),
+            channels: (kind == TrackKind::Audio).then_some(2),
+            video: None,
+        }
     }
 }

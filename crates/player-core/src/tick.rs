@@ -488,7 +488,7 @@ impl PlayerSession {
 
         self.update_position_for_tick(tick_context.now);
 
-        if self.is_demuxing_active() && self.pipeline.demuxer.is_some() {
+        if self.is_demuxing_active() && self.pipeline.has_demuxer() {
             read_demux_packets(
                 self,
                 &tick_context.config,
@@ -659,11 +659,8 @@ fn read_demux_packets(
         }
 
         let demux_read_started_at = Instant::now();
-        let packet_result = {
-            let Some(demuxer) = session.pipeline.demuxer.as_mut() else {
-                break;
-            };
-            demuxer.next_packet()
+        let Some(packet_result) = session.pipeline.demux_next_packet() else {
+            break;
         };
         session.record_pipeline_latency(
             PipelineLatencyStage::DemuxRead,
@@ -1627,7 +1624,7 @@ fn pending_video_work_available(session: &PlayerSession, tick_config: &PlayerTic
 
 /// Проверяет, может ли demuxer прочитать следующий packet без downstream overflow.
 fn demux_work_available(session: &PlayerSession, tick_config: &PlayerTickConfig) -> bool {
-    if !session.is_demuxing_active() || session.pipeline.demuxer.is_none() {
+    if !session.is_demuxing_active() || !session.pipeline.has_demuxer() {
         return false;
     }
 
@@ -1655,7 +1652,7 @@ fn decoder_readiness_poll_needed(session: &PlayerSession, tick_config: &PlayerTi
         session.pipeline.video_present_queue_len(),
         video_present_queue_target(tick_config),
         !session.pipeline.pending_video_packet_is_empty(),
-        session.pipeline.demuxer.is_some(),
+        session.pipeline.has_demuxer(),
         decoder_packet_queue_depth > 0,
         session.pipeline.video_decode_in_flight_packets() > 0,
         session.has_active_seek_commit(),
@@ -2970,6 +2967,28 @@ mod tests {
             reason,
             Some(PipelinePauseReason::WaitingForDemuxAudioPriority)
         );
+    }
+
+    #[test]
+    fn read_demux_packets_without_demuxer_is_noop() {
+        let mut session = PlayerSession::new();
+        let tick_config = PlayerTickConfig::default();
+        let mut tick_result = PlayerTickResult::default();
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+
+        let packets_read = read_demux_packets(
+            &mut session,
+            &tick_config,
+            &mut tick_result,
+            tick_config.max_demux_packets_per_tick,
+            None,
+        );
+
+        assert_eq!(packets_read, 0);
+        assert!(tick_result.demuxed_packets.is_empty());
+        assert!(!tick_result.demux_backpressured);
+        assert!(session.snapshot().last_error.is_none());
     }
 
     #[test]

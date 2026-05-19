@@ -42,6 +42,12 @@ impl PreparedMedia {
         self.source.display_label()
     }
 
+    /// Возвращает public open-request source для session state machine.
+    #[must_use]
+    pub(crate) fn media_source(&self) -> MediaSource {
+        self.source.media_source()
+    }
+
     /// Возвращает title, который UI может показать как имя media.
     #[must_use]
     pub fn media_title(&self) -> Option<String> {
@@ -54,6 +60,12 @@ impl PreparedMedia {
         &self.tracks
     }
 
+    /// Возвращает количество tracks без передачи доступа к storage.
+    #[must_use]
+    pub(crate) fn track_count(&self) -> usize {
+        self.tracks.len()
+    }
+
     /// Возвращает duration, снятую во время подготовки media.
     #[must_use]
     pub const fn duration(&self) -> Option<Duration> {
@@ -64,6 +76,27 @@ impl PreparedMedia {
     #[must_use]
     pub const fn seekability(&self) -> DemuxSeekability {
         self.seekability
+    }
+
+    /// Возвращает диагностику отсутствующего video track-а для текущего типа source.
+    #[must_use]
+    pub(crate) fn missing_video_track_message(&self) -> &'static str {
+        self.source.missing_video_track_message()
+    }
+
+    /// Разбирает prepared media на slots, которые `PlaybackPipeline` устанавливает как владелец.
+    pub(crate) fn into_pipeline_slots(
+        self,
+    ) -> (
+        Box<dyn Demuxer + Send>,
+        Option<PathBuf>,
+        Option<String>,
+        Vec<TrackInfo>,
+    ) {
+        let file_path = self.source.pipeline_file_path();
+        let source_label = self.source.pipeline_source_label();
+
+        (self.demuxer, file_path, source_label, self.tracks)
     }
 
     /// Снимает metadata с demuxer один раз и сохраняет её рядом с owned demuxer.

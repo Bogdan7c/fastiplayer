@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use codec_core::VideoDecodeRequirement;
-use media_core::{Demuxer, TrackId, TrackInfo};
+use media_core::{DemuxSeekRequest, DemuxSeekResult, Demuxer, TrackId, TrackInfo};
 
 use crate::{
     DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
@@ -156,16 +156,16 @@ impl PendingVideoPacket {
 /// живут отдельным модулем. Наружный API работает через методы `PlayerSession`.
 pub(crate) struct PlaybackPipeline {
     /// Demuxer текущего media source через нейтральный media-core contract.
-    pub(crate) demuxer: Option<Box<dyn media_core::Demuxer + Send>>,
+    demuxer: Option<Box<dyn media_core::Demuxer + Send>>,
 
     /// Локальный путь, если media был открыт из файловой системы.
-    pub(crate) file_path: Option<PathBuf>,
+    file_path: Option<PathBuf>,
 
     /// Tracks текущего media без доступа UI к demuxer handle.
-    pub(crate) tracks: Vec<TrackInfo>,
+    tracks: Vec<TrackInfo>,
 
     /// User-facing label для streaming source без локального path.
-    pub(crate) source_label: Option<String>,
+    source_label: Option<String>,
 
     /// Codec-neutral audio decoder для выбранного audio трека.
     pub(crate) audio_decoder: Option<audio::AudioDecoderHandle>,
@@ -522,10 +522,7 @@ impl PlaybackPipeline {
 
     /// Сбрасывает все media-specific поля после того, как session освободила video frames.
     pub(crate) fn reset_media_slots(&mut self) {
-        self.demuxer = None;
-        self.file_path = None;
-        self.tracks.clear();
-        self.source_label = None;
+        self.clear_media_source_slots();
         self.audio_decoder = None;
         self.audio_output = None;
         self.audio_track_id = None;
@@ -551,6 +548,14 @@ impl PlaybackPipeline {
         self.active_video_requirement = None;
     }
 
+    /// Очищает только source identity и demux handle без изменения остальных lifecycle slots.
+    fn clear_media_source_slots(&mut self) {
+        self.demuxer = None;
+        self.file_path = None;
+        self.tracks.clear();
+        self.source_label = None;
+    }
+
     /// Подключает уже открытый demuxer и source identity к текущему pipeline.
     pub(crate) fn install_opened_media(
         &mut self,
@@ -563,6 +568,53 @@ impl PlaybackPipeline {
         self.file_path = file_path;
         self.source_label = source_label;
         self.tracks = tracks;
+    }
+
+    /// Проверяет, установлен ли demuxer текущего media source.
+    #[must_use]
+    pub(crate) fn has_demuxer(&self) -> bool {
+        self.demuxer.is_some()
+    }
+
+    /// Возвращает путь локального source без передачи владения path storage.
+    #[must_use]
+    pub(crate) fn source_file_path(&self) -> Option<&Path> {
+        self.file_path.as_deref()
+    }
+
+    /// Возвращает streaming/source label без раскрытия внутреннего `Option<String>`.
+    #[must_use]
+    pub(crate) fn source_label(&self) -> Option<&str> {
+        self.source_label.as_deref()
+    }
+
+    /// Возвращает immutable tracks snapshot текущего media.
+    #[must_use]
+    pub(crate) fn tracks(&self) -> &[TrackInfo] {
+        &self.tracks
+    }
+
+    /// Возвращает количество tracks, когда вызывающему коду не нужны сами metadata.
+    #[must_use]
+    pub(crate) fn track_count(&self) -> usize {
+        self.tracks.len()
+    }
+
+    /// Читает следующий packet через demux boundary, сохраняя absent-demuxer как no-op.
+    pub(crate) fn demux_next_packet(
+        &mut self,
+    ) -> Option<anyhow::Result<Option<media_core::Packet>>> {
+        self.demuxer.as_mut().map(|demuxer| demuxer.next_packet())
+    }
+
+    /// Выполняет seek текущего demuxer-а, не раскрывая место хранения demux handle.
+    pub(crate) fn seek_demuxer(
+        &mut self,
+        request: DemuxSeekRequest,
+    ) -> Option<anyhow::Result<DemuxSeekResult>> {
+        self.demuxer
+            .as_mut()
+            .map(|demuxer| demuxer.seek_with_request(request))
     }
 
     /// Сохраняет запущенный video backend без раскрытия backend-specific init в session.
@@ -856,6 +908,7 @@ impl Default for PlaybackPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use media_core::{MediaTime, TrackKind};
 
     /// Создаёт decoded frame без реальных GPU resources для проверки pipeline storage.
     fn decoded_frame_for_tests(pts: Duration, texture_handle: u64) -> video_core::DecodedFrame {
@@ -946,6 +999,58 @@ mod tests {
     }
 
     #[test]
+    fn opened_media_boundary_methods_expose_installed_source_slots() {
+        let mut pipeline = PlaybackPipeline::default();
+        let track_infos = vec![
+            source_slot_track(TrackId::new(1), TrackKind::Video, "V_VP9"),
+            source_slot_track(TrackId::new(2), TrackKind::Audio, "A_OPUS"),
+        ];
+
+        assert!(!pipeline.has_demuxer());
+        assert_eq!(pipeline.track_count(), 0);
+
+        pipeline.install_opened_media(
+            Box::new(SourceSlotFakeDemuxer::new(track_infos.clone())),
+            Some(PathBuf::from("/tmp/source.webm")),
+            Some("external source".to_owned()),
+            track_infos,
+        );
+
+        assert!(pipeline.has_demuxer());
+        assert_eq!(
+            pipeline.source_file_path(),
+            Some(Path::new("/tmp/source.webm"))
+        );
+        assert_eq!(pipeline.source_label(), Some("external source"));
+        assert_eq!(pipeline.track_count(), 2);
+        assert_eq!(pipeline.tracks()[0].id, TrackId::new(1));
+        assert_eq!(pipeline.tracks()[1].kind, TrackKind::Audio);
+    }
+
+    #[test]
+    fn demux_boundaries_preserve_eof_and_seek_results() {
+        let mut pipeline = PlaybackPipeline::default();
+        pipeline.install_opened_media(
+            Box::new(SourceSlotFakeDemuxer::new(Vec::new())),
+            None,
+            None,
+            Vec::new(),
+        );
+
+        let packet_result = pipeline
+            .demux_next_packet()
+            .expect("installed demuxer должен быть видим через boundary")
+            .expect("fake demuxer не должен возвращать ошибку");
+        assert!(packet_result.is_none());
+
+        let seek_result = pipeline
+            .seek_demuxer(DemuxSeekRequest::accurate(Duration::from_secs(3)))
+            .expect("installed demuxer должен принять seek через boundary")
+            .expect("fake demuxer должен принять accurate seek");
+        assert_eq!(seek_result.actual_position, MediaTime::from_secs(3));
+    }
+
+    #[test]
     fn clear_video_queues_returns_only_queued_texture_handles() {
         let mut pipeline = PlaybackPipeline::default();
 
@@ -979,5 +1084,55 @@ mod tests {
                 .map(|frame| frame.texture_handle),
             Some(video_core::FrameTextureHandle(4))
         );
+    }
+
+    /// Fake demuxer для проверки source-slot boundaries без реального container backend-а.
+    struct SourceSlotFakeDemuxer {
+        /// Metadata tracks, которые demuxer отдаёт по neutral contract.
+        track_infos: Vec<TrackInfo>,
+    }
+
+    impl SourceSlotFakeDemuxer {
+        /// Создаёт fake demuxer с фиксированным набором tracks.
+        fn new(track_infos: Vec<TrackInfo>) -> Self {
+            Self { track_infos }
+        }
+    }
+
+    impl Demuxer for SourceSlotFakeDemuxer {
+        fn tracks(&self) -> &[TrackInfo] {
+            &self.track_infos
+        }
+
+        fn duration(&self) -> Option<Duration> {
+            Some(Duration::from_secs(30))
+        }
+
+        fn next_packet(&mut self) -> anyhow::Result<Option<media_core::Packet>> {
+            Ok(None)
+        }
+
+        fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+            Ok(DemuxSeekResult {
+                requested_position: MediaTime::from_duration(timestamp),
+                actual_position: MediaTime::from_duration(timestamp),
+                actual_track_timestamp: None,
+            })
+        }
+    }
+
+    /// Создаёт минимальный track metadata для проверки source-slot getters.
+    fn source_slot_track(track_id: TrackId, kind: TrackKind, codec_id: &str) -> TrackInfo {
+        TrackInfo {
+            id: track_id,
+            kind,
+            codec_id: codec_id.to_owned(),
+            codec_private: None,
+            time_base: media_core::TimeBase::new(1, 1_000),
+            duration: Some(Duration::from_secs(30)),
+            sample_rate: (kind == TrackKind::Audio).then_some(48_000),
+            channels: (kind == TrackKind::Audio).then_some(2),
+            video: None,
+        }
     }
 }

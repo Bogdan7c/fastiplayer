@@ -163,13 +163,13 @@ impl PlayerSession {
     /// Возвращает `true`, если текущая session владеет открытым demuxer-ом.
     #[must_use]
     pub fn has_loaded_media_pipeline(&self) -> bool {
-        self.pipeline.demuxer.is_some()
+        self.pipeline.has_demuxer()
     }
 
     /// Возвращает путь текущего локального файла, если media было открыто с диска.
     #[must_use]
     pub fn current_file_path(&self) -> Option<&Path> {
-        self.pipeline.file_path.as_deref()
+        self.pipeline.source_file_path()
     }
 
     /// Применяет команду к state machine.
@@ -358,7 +358,7 @@ impl PlayerSession {
         prepared_media: PreparedMedia,
         autoplay: bool,
     ) {
-        if !self.begin_media_open(prepared_media.source.media_source(), autoplay) {
+        if !self.begin_media_open(prepared_media.media_source(), autoplay) {
             return;
         }
 
@@ -390,16 +390,16 @@ impl PlayerSession {
     /// Подключает уже открытый media к pipeline и публикует успешный open transition.
     fn install_prepared_media(&mut self, prepared_media: PreparedMedia) {
         info!(
-            source = %prepared_media.source.display_label(),
-            tracks = prepared_media.tracks.len(),
-            duration = ?prepared_media.duration,
+            source = %prepared_media.source_label(),
+            tracks = prepared_media.track_count(),
+            duration = ?prepared_media.duration(),
             "Media demuxer загружен"
         );
 
-        self.init_audio_pipeline(&prepared_media.tracks);
+        self.init_audio_pipeline(prepared_media.tracks());
         if let Err(error) = self.select_default_video_track(
-            &prepared_media.tracks,
-            prepared_media.source.missing_video_track_message(),
+            prepared_media.tracks(),
+            prepared_media.missing_video_track_message(),
         ) {
             warn!(error = %error, "Video track rejected during media load");
             self.mark_fatal_error(error);
@@ -407,20 +407,15 @@ impl PlayerSession {
         }
 
         let summary = MediaSummary {
-            title: prepared_media.source.media_title(),
-            source_label: prepared_media.source.display_label(),
-            duration: prepared_media.duration,
+            title: prepared_media.media_title(),
+            source_label: prepared_media.source_label(),
+            duration: prepared_media.duration(),
         };
-        let seekability = prepared_media.seekability;
-        let file_path = prepared_media.source.pipeline_file_path();
-        let source_label = prepared_media.source.pipeline_source_label();
+        let seekability = prepared_media.seekability();
+        let (demuxer, file_path, source_label, tracks) = prepared_media.into_pipeline_slots();
 
-        self.pipeline.install_opened_media(
-            prepared_media.demuxer,
-            file_path,
-            source_label,
-            prepared_media.tracks,
-        );
+        self.pipeline
+            .install_opened_media(demuxer, file_path, source_label, tracks);
         self.clear_error();
 
         if let Err(error) = self.mark_media_opened(summary) {
@@ -1421,7 +1416,7 @@ impl PlayerSession {
 
     /// Запускает повторное воспроизведение после штатного EOF через обычный seek pipeline.
     fn restart_playback_after_eof(&mut self) -> PlayerResult<()> {
-        if self.pipeline.demuxer.is_none() {
+        if !self.pipeline.has_demuxer() {
             let error = PlayerError::new(
                 PlayerErrorKind::SeekUnavailable,
                 "Replay невозможен: media pipeline уже закрыт",
@@ -1522,7 +1517,7 @@ impl PlayerSession {
         self.pending_events
             .push(PlayerEvent::SeekRequested(request));
 
-        if self.pipeline.demuxer.is_none() {
+        if !self.pipeline.has_demuxer() {
             let error = PlayerError::new(
                 PlayerErrorKind::SeekUnavailable,
                 "Seek невозможен: media pipeline ещё не открыт",
@@ -1899,7 +1894,7 @@ impl PlayerSession {
             return Ok(());
         }
 
-        if self.pipeline.demuxer.is_none() {
+        if !self.pipeline.has_demuxer() {
             let error = PlayerError::new(
                 PlayerErrorKind::SeekUnavailable,
                 "Seek невозможен: media pipeline ещё не открыт",
@@ -1998,9 +1993,6 @@ impl PlayerSession {
         }
 
         let seek_result = {
-            let Some(demuxer) = self.pipeline.demuxer.as_mut() else {
-                return Ok(());
-            };
             debug!(
                 kind = ?commit_kind,
                 target_ms = target_duration.as_millis(),
@@ -2009,7 +2001,10 @@ impl PlayerSession {
                 scrub_generation = ?scrub_generation.map(ScrubGeneration::as_u64),
                 "Starting demux seek transaction"
             );
-            demuxer.seek_with_request(demux_seek_request)
+            let Some(seek_result) = self.pipeline.seek_demuxer(demux_seek_request) else {
+                return Ok(());
+            };
+            seek_result
         };
 
         match seek_result {
@@ -2339,7 +2334,7 @@ impl PlayerSession {
     /// Возвращает codec текущего video track по `TrackId`.
     pub(crate) fn video_codec_for_track(&self, track_id: TrackId) -> Option<VideoCodec> {
         self.pipeline
-            .tracks
+            .tracks()
             .iter()
             .find(|track| track.id == track_id && track.kind == TrackKind::Video)
             .and_then(|track| VideoCodec::from_container_codec_id(&track.codec_id))
@@ -2351,7 +2346,7 @@ impl PlayerSession {
         track_id: TrackId,
     ) -> Option<VideoMetadataSource> {
         self.pipeline
-            .tracks
+            .tracks()
             .iter()
             .find(|track| track.id == track_id && track.kind == TrackKind::Video)
             .and_then(video_metadata_source_from_track)
@@ -3305,8 +3300,9 @@ mod tests {
         )
         .with_seekability(seekability);
 
-        session.pipeline.demuxer = Some(Box::new(demuxer));
-        session.pipeline.tracks = tracks.clone();
+        session
+            .pipeline
+            .install_opened_media(Box::new(demuxer), None, None, tracks.clone());
         session.pipeline.video_track_id = tracks
             .iter()
             .find(|track| track.kind == TrackKind::Video)
@@ -3332,8 +3328,9 @@ mod tests {
         let demuxer = FakeDemuxer::new(tracks.clone(), Some(Duration::from_secs(30)), seek_log)
             .with_seek_request_log(Arc::clone(&seek_request_log));
 
-        session.pipeline.demuxer = Some(Box::new(demuxer));
-        session.pipeline.tracks = tracks.clone();
+        session
+            .pipeline
+            .install_opened_media(Box::new(demuxer), None, None, tracks.clone());
         session.pipeline.video_track_id = tracks
             .iter()
             .find(|track| track.kind == TrackKind::Video)
@@ -5584,7 +5581,7 @@ mod tests {
 
         session.enter_eof_drain();
 
-        assert!(session.pipeline.demuxer.is_some());
+        assert!(session.pipeline.has_demuxer());
         session
             .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
                 MediaTime::from_secs(5),
