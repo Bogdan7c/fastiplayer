@@ -283,8 +283,8 @@ impl Default for PlayerVideoDecoderThreadConfig {
     }
 }
 
-/// WGPU texture views, полученные render thread-ом по opaque frame handle.
-pub(crate) struct RenderTextureViews {
+/// WGPU-specific texture views, полученные render thread-ом по opaque frame handle.
+pub(crate) struct WgpuRenderTextureViews {
     /// Texture view с luma/Y plane.
     pub(crate) y_view: wgpu::TextureView,
 
@@ -292,12 +292,12 @@ pub(crate) struct RenderTextureViews {
     pub(crate) uv_view: wgpu::TextureView,
 }
 
-/// Результат renderer-side lookup-а texture views без раскрытия backend pool-а.
-pub(crate) enum RenderTextureViewLookup {
+/// Результат WGPU renderer-side lookup-а texture views без раскрытия backend pool-а.
+pub(crate) enum WgpuRenderTextureViewLookup {
     /// Backend вернул валидные plane views для renderer-а.
     Ready {
-        /// Texture views, которые можно передать render backend-у.
-        views: RenderTextureViews,
+        /// Texture views, которые можно передать WGPU render backend-у.
+        views: WgpuRenderTextureViews,
 
         /// Сколько render thread ждал lock texture pool-а внутри backend provider-а.
         texture_pool_lock_wait: Duration,
@@ -322,7 +322,7 @@ pub(crate) enum RenderTextureViewLookup {
     },
 }
 
-impl RenderTextureViewLookup {
+impl WgpuRenderTextureViewLookup {
     /// Возвращает lock wait sample без раскрытия конкретного outcome.
     #[must_use]
     pub(crate) const fn texture_pool_lock_wait(&self) -> Duration {
@@ -344,19 +344,19 @@ impl RenderTextureViewLookup {
     }
 }
 
-/// Backend-neutral render-side provider для texture views и renderer-owned release.
-pub(crate) trait RenderTextureProvider: Send + Sync {
+/// WGPU-specific render-side provider для texture views и renderer-owned release.
+pub(crate) trait WgpuRenderTextureProvider: Send + Sync {
     /// Получает WGPU views и lock diagnostics для frame handle на render thread.
     fn texture_view_lookup(
         &self,
         handle: video_core::FrameTextureHandle,
-    ) -> RenderTextureViewLookup;
+    ) -> WgpuRenderTextureViewLookup;
 
     /// Пытается получить WGPU views без ожидания backend texture pool mutex-а.
     fn try_texture_view_lookup(
         &self,
         handle: video_core::FrameTextureHandle,
-    ) -> RenderTextureViewLookup {
+    ) -> WgpuRenderTextureViewLookup {
         self.texture_view_lookup(handle)
     }
 
@@ -366,15 +366,15 @@ pub(crate) trait RenderTextureProvider: Send + Sync {
 
 /// Clone-able handle, который скрывает конкретный backend provider за trait boundary.
 #[derive(Clone)]
-pub(crate) struct RenderTextureProviderHandle {
+pub(crate) struct WgpuRenderTextureProviderHandle {
     /// Shared provider живёт столько же, сколько render leases, которые его держат.
-    provider: Arc<dyn RenderTextureProvider>,
+    provider: Arc<dyn WgpuRenderTextureProvider>,
 }
 
-impl RenderTextureProviderHandle {
-    /// Оборачивает concrete backend provider в neutral render boundary handle.
+impl WgpuRenderTextureProviderHandle {
+    /// Оборачивает concrete backend provider в WGPU render boundary handle.
     #[must_use]
-    pub(crate) fn new(provider: impl RenderTextureProvider + 'static) -> Self {
+    pub(crate) fn new(provider: impl WgpuRenderTextureProvider + 'static) -> Self {
         Self {
             provider: Arc::new(provider),
         }
@@ -385,7 +385,7 @@ impl RenderTextureProviderHandle {
     pub(crate) fn texture_view_lookup(
         &self,
         handle: video_core::FrameTextureHandle,
-    ) -> RenderTextureViewLookup {
+    ) -> WgpuRenderTextureViewLookup {
         self.provider.texture_view_lookup(handle)
     }
 
@@ -394,7 +394,7 @@ impl RenderTextureProviderHandle {
     pub(crate) fn try_texture_view_lookup(
         &self,
         handle: video_core::FrameTextureHandle,
-    ) -> RenderTextureViewLookup {
+    ) -> WgpuRenderTextureViewLookup {
         self.provider.try_texture_view_lookup(handle)
     }
 

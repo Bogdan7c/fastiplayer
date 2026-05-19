@@ -120,7 +120,7 @@ mod tests {
     use super::*;
     use crate::{
         DecodeSendError, DecodeThreadError, DecoderResourceSnapshot, PlayerDecodePacket,
-        RenderTextureProviderHandle,
+        WgpuRenderTextureProviderHandle,
     };
 
     /// Minimal fake decoder для проверки startup wrapper-а без production backend resources.
@@ -155,7 +155,7 @@ mod tests {
             Ok(())
         }
 
-        fn texture_view_provider(&self) -> RenderTextureProviderHandle {
+        fn texture_view_provider(&self) -> WgpuRenderTextureProviderHandle {
             panic!("startup fake decoder does not provide renderer texture views")
         }
 

@@ -9,7 +9,7 @@ use media_core::{Demuxer, TrackId, TrackInfo};
 
 use crate::{
     DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
-    DecoderResourceSnapshot, PlayerDecodePacket, RenderTextureProviderHandle,
+    DecoderResourceSnapshot, PlayerDecodePacket, WgpuRenderTextureProviderHandle,
 };
 
 /// Минимальный session-level контракт decoder thread-а, который нужен player-core.
@@ -38,8 +38,8 @@ pub(crate) trait VideoDecoderThreadHandle: Send {
     /// Сбрасывает decoder state перед seek transaction.
     fn flush(&self) -> anyhow::Result<()>;
 
-    /// Возвращает provider для renderer-side texture views/release path.
-    fn texture_view_provider(&self) -> RenderTextureProviderHandle;
+    /// Возвращает WGPU provider для renderer-side texture views/release path.
+    fn texture_view_provider(&self) -> WgpuRenderTextureProviderHandle;
 
     /// Возвращает snapshot texture pool-а для UI/backpressure diagnostics.
     fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot>;
@@ -636,11 +636,11 @@ impl PlaybackPipeline {
             .and_then(|decoder_thread| decoder_thread.decoder_control_channel_pressure())
     }
 
-    /// Возвращает provider для renderer-side texture views активного decoder thread-а.
+    /// Возвращает WGPU provider для renderer-side texture views активного decoder thread-а.
     #[must_use]
     pub(crate) fn video_decoder_texture_view_provider(
         &self,
-    ) -> Option<RenderTextureProviderHandle> {
+    ) -> Option<WgpuRenderTextureProviderHandle> {
         self.video_decoder_thread
             .as_ref()
             .map(|decoder_thread| decoder_thread.texture_view_provider())

@@ -26,10 +26,10 @@ use crate::{
     PipelineLatencyStage, PipelinePauseReason, PipelineQueueDepthSnapshot, PlaybackDiagnostics,
     PlaybackDiagnosticsLogSummary, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError,
     PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection,
-    RenderTextureProviderHandle, ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration,
-    ScrubUpdateIntent, SeekMode, SeekProgressBlocker, SeekRequest, SessionScrubCommand,
-    TextureSlotPressureSnapshot, TrackId, TrackSelectionSnapshot, VideoBackendFactory,
-    VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
+    ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration, ScrubUpdateIntent, SeekMode,
+    SeekProgressBlocker, SeekRequest, SessionScrubCommand, TextureSlotPressureSnapshot, TrackId,
+    TrackSelectionSnapshot, VideoBackendFactory, VideoDropReason, WgpuRenderTextureProviderHandle,
+    WorkerWakeupDiagnosticsSnapshot,
 };
 
 mod snapshot_builder;
@@ -507,8 +507,8 @@ pub(crate) struct LeasedPresentFrame {
     /// `true`, если кадр ещё относится к старой позиции во время seek/scrub.
     pub stale: bool,
 
-    /// Provider texture views из backend-а, создавшего кадр.
-    pub texture_provider: RenderTextureProviderHandle,
+    /// WGPU provider texture views из backend-а, создавшего кадр.
+    pub texture_provider: WgpuRenderTextureProviderHandle,
 }
 
 impl PlayerSession {
@@ -1036,7 +1036,7 @@ impl PlayerSession {
         &mut self,
         render_generation: u64,
         texture_handle: video_core::FrameTextureHandle,
-        texture_provider: Option<&RenderTextureProviderHandle>,
+        texture_provider: Option<&WgpuRenderTextureProviderHandle>,
     ) {
         let lease_key = (render_generation, texture_handle.0);
 
@@ -3871,7 +3871,7 @@ mod tests {
             Err(anyhow::anyhow!("{}", self.error_message))
         }
 
-        fn texture_view_provider(&self) -> RenderTextureProviderHandle {
+        fn texture_view_provider(&self) -> WgpuRenderTextureProviderHandle {
             panic!("fake failing decoder does not provide renderer texture views")
         }
 
@@ -4036,7 +4036,7 @@ mod tests {
             Ok(())
         }
 
-        fn texture_view_provider(&self) -> RenderTextureProviderHandle {
+        fn texture_view_provider(&self) -> WgpuRenderTextureProviderHandle {
             panic!("shared fake decoder does not provide renderer texture views")
         }
 

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::DecoderControlChannelPressureSnapshot;
 use crate::decoder_boundary::{
     DecodeBackpressureReason, DecodeSendError, DecodeThreadError, DecoderResourceSnapshot,
-    PlayerDecodePacket, PlayerVideoDecoderThreadConfig, RenderTextureProvider,
-    RenderTextureProviderHandle, RenderTextureViewLookup, RenderTextureViews,
+    PlayerDecodePacket, PlayerVideoDecoderThreadConfig, WgpuRenderTextureProvider,
+    WgpuRenderTextureProviderHandle, WgpuRenderTextureViewLookup, WgpuRenderTextureViews,
 };
 use crate::pipeline::VideoDecoderThreadHandle;
 
@@ -185,25 +185,25 @@ impl From<DecoderResourceSnapshot> for video_vaapi::texture_cache::TexturePoolSt
     }
 }
 
-impl RenderTextureProvider for video_vaapi::VideoTextureViewProvider {
+impl WgpuRenderTextureProvider for video_vaapi::VideoTextureViewProvider {
     /// Делегирует texture view lookup и lock timing в текущий VA-API production provider.
     fn texture_view_lookup(
         &self,
         handle: video_core::FrameTextureHandle,
-    ) -> RenderTextureViewLookup {
+    ) -> WgpuRenderTextureViewLookup {
         let lookup = video_vaapi::VideoTextureViewProvider::texture_view_lookup(self, handle);
 
-        render_texture_view_lookup_from_vaapi(lookup)
+        wgpu_render_texture_view_lookup_from_vaapi(lookup)
     }
 
     /// Делегирует non-blocking lookup в VA-API provider без раскрытия backend enum-а.
     fn try_texture_view_lookup(
         &self,
         handle: video_core::FrameTextureHandle,
-    ) -> RenderTextureViewLookup {
+    ) -> WgpuRenderTextureViewLookup {
         let lookup = video_vaapi::VideoTextureViewProvider::try_texture_view_lookup(self, handle);
 
-        render_texture_view_lookup_from_vaapi(lookup)
+        wgpu_render_texture_view_lookup_from_vaapi(lookup)
     }
 
     /// Делегирует renderer-owned release в текущий VA-API production provider.
@@ -212,33 +212,33 @@ impl RenderTextureProvider for video_vaapi::VideoTextureViewProvider {
     }
 }
 
-/// Конвертирует VA-API typed lookup в backend-neutral player-core boundary.
-fn render_texture_view_lookup_from_vaapi(
+/// Конвертирует VA-API typed lookup в WGPU-specific player-core boundary.
+fn wgpu_render_texture_view_lookup_from_vaapi(
     lookup: video_vaapi::VideoTextureViewLookup,
-) -> RenderTextureViewLookup {
+) -> WgpuRenderTextureViewLookup {
     match lookup {
         video_vaapi::VideoTextureViewLookup::Ready {
             views,
             lock_diagnostics,
-        } => RenderTextureViewLookup::Ready {
-            views: RenderTextureViews {
+        } => WgpuRenderTextureViewLookup::Ready {
+            views: WgpuRenderTextureViews {
                 y_view: views.y_view,
                 uv_view: views.uv_view,
             },
             texture_pool_lock_wait: lock_diagnostics.wait,
         },
         video_vaapi::VideoTextureViewLookup::Busy { lock_diagnostics } => {
-            RenderTextureViewLookup::Busy {
+            WgpuRenderTextureViewLookup::Busy {
                 texture_pool_lock_wait: lock_diagnostics.wait,
             }
         }
         video_vaapi::VideoTextureViewLookup::Missing { lock_diagnostics } => {
-            RenderTextureViewLookup::Missing {
+            WgpuRenderTextureViewLookup::Missing {
                 texture_pool_lock_wait: lock_diagnostics.wait,
             }
         }
         video_vaapi::VideoTextureViewLookup::Error { lock_diagnostics } => {
-            RenderTextureViewLookup::Error {
+            WgpuRenderTextureViewLookup::Error {
                 texture_pool_lock_wait: lock_diagnostics.wait,
             }
         }
@@ -274,8 +274,8 @@ impl VideoDecoderThreadHandle for video_vaapi::VideoDecodeThread {
         video_vaapi::VideoDecodeThread::flush(self)
     }
 
-    fn texture_view_provider(&self) -> RenderTextureProviderHandle {
-        RenderTextureProviderHandle::new(video_vaapi::VideoDecodeThread::texture_view_provider(
+    fn texture_view_provider(&self) -> WgpuRenderTextureProviderHandle {
+        WgpuRenderTextureProviderHandle::new(video_vaapi::VideoDecodeThread::texture_view_provider(
             self,
         ))
     }

@@ -13,7 +13,7 @@ use media_core::TrackKind;
 use player_core::{
     FrameCounters, MediaOpenRequest, MediaSource, PlaybackState, PlayerCommand, PlayerError,
     PlayerErrorKind, PlayerEvent, PlayerPresentFrame, PlayerRenderError, PlayerSnapshot,
-    PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PresentFrameTextureViews,
+    PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PresentFrameWgpuTextureViews,
     ScrubCommitPolicy, SeekRequest,
 };
 use render_core::RenderDiagnostics;
@@ -90,20 +90,23 @@ pub enum PresentFrameAcquisition {
     StaleFrameRejected,
 }
 
-/// Кадр, для которого уже получены texture views и удерживается правильный render lease.
+/// Кадр, для которого уже получены WGPU texture views и удерживается правильный render lease.
 #[derive(Clone)]
 pub struct RenderablePresentFrame {
     /// Lease удерживает backend texture resource до завершения render-side использования.
     pub present_frame: PlayerPresentFrame,
 
-    /// Texture views соответствуют `present_frame` и не используются без его lease-а.
-    pub texture_views: PresentFrameTextureViews,
+    /// WGPU texture views соответствуют `present_frame` и не используются без его lease-а.
+    pub texture_views: PresentFrameWgpuTextureViews,
 }
 
 impl RenderablePresentFrame {
-    /// Собирает renderable frame из lease-а и texture views одного decoded кадра.
+    /// Собирает renderable frame из lease-а и WGPU texture views одного decoded кадра.
     #[must_use]
-    pub fn new(present_frame: PlayerPresentFrame, texture_views: PresentFrameTextureViews) -> Self {
+    pub fn new(
+        present_frame: PlayerPresentFrame,
+        texture_views: PresentFrameWgpuTextureViews,
+    ) -> Self {
         Self {
             present_frame,
             texture_views,
@@ -114,7 +117,7 @@ impl RenderablePresentFrame {
 /// Cached renderable frame вместе с media source identity.
 #[derive(Clone)]
 struct CachedRenderablePresentFrame {
-    /// Последний кадр, который точно прошёл texture view lookup.
+    /// Последний кадр, который точно прошёл WGPU texture view lookup.
     renderable_frame: RenderablePresentFrame,
 
     /// Source label защищает от reuse после открытия другого media.

@@ -35,7 +35,7 @@ pub(crate) use decoder_boundary::DecodeBackpressureReason;
 pub use decoder_boundary::PlayerVideoDecoderThreadConfig;
 pub(crate) use decoder_boundary::{
     DecodeSendError, DecodeThreadError, DecoderResourceSnapshot, PlayerDecodePacket,
-    RenderTextureProviderHandle,
+    WgpuRenderTextureProviderHandle,
 };
 pub(crate) use diagnostics::{
     ActiveSeekDiagnosticsSnapshot, PlaybackDiagnostics, SeekProgressBlocker,
@@ -58,6 +58,7 @@ pub use media_opening::{PreparedMedia, PreparedMediaSource};
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
 pub use render_lease_bridge::{
     PlayerPresentFrame, PresentFrameLease, PresentFrameTextureViewLookup, PresentFrameTextureViews,
+    PresentFrameWgpuTextureViews,
 };
 pub use seek_controller::{
     PlaybackResumeIntent, SeekController, SeekControllerDiagnostics, SeekControllerMode,

@@ -4,10 +4,10 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvError, SendTimeoutError, Sender, TrySendError, bounded};
 use tracing::warn;
 
-use crate::RenderTextureProviderHandle;
+use crate::WgpuRenderTextureProviderHandle;
 #[cfg(test)]
-use crate::decoder_boundary::RenderTextureProvider;
-use crate::decoder_boundary::RenderTextureViewLookup;
+use crate::decoder_boundary::WgpuRenderTextureProvider;
+use crate::decoder_boundary::WgpuRenderTextureViewLookup;
 use crate::session::{LeasedPresentFrame, PlayerSession};
 
 /// Ёмкость release ack stream; защищает worker от бесконечного роста drop-ack очереди.
@@ -30,7 +30,7 @@ const RENDER_RELEASE_SEND_TIMEOUT: Duration = Duration::from_millis(2);
 
 /// WGPU texture views, полученные render thread-ом по opaque frame handle.
 #[derive(Clone)]
-pub struct PresentFrameTextureViews {
+pub struct PresentFrameWgpuTextureViews {
     /// Texture view с luma/Y plane.
     pub y_view: wgpu::TextureView,
 
@@ -38,10 +38,15 @@ pub struct PresentFrameTextureViews {
     pub uv_view: wgpu::TextureView,
 }
 
-/// Typed результат render-side lookup-а texture views для present frame lease-а.
+/// TODO(renderer-neutral): extract renderer-neutral resource lookup later.
+///
+/// Backward-compatible имя public WGPU texture views для текущих callers.
+pub type PresentFrameTextureViews = PresentFrameWgpuTextureViews;
+
+/// Typed результат WGPU render-side lookup-а texture views для present frame lease-а.
 pub enum PresentFrameTextureViewLookup {
-    /// Texture views готовы, renderer может строить `WgpuRenderableFrame`.
-    Ready(PresentFrameTextureViews),
+    /// WGPU texture views готовы, renderer может строить `WgpuRenderableFrame`.
+    Ready(PresentFrameWgpuTextureViews),
 
     /// Backend texture pool занят, caller должен использовать safe fallback без stall-а.
     Busy,
@@ -65,8 +70,8 @@ pub struct PresentFrameLease {
     /// Признак, что кадр является stale fallback для текущего timeline состояния.
     pub stale: bool,
 
-    /// Render-side provider для ленивого получения WGPU views по frame handle.
-    texture_provider: Option<RenderTextureProviderHandle>,
+    /// WGPU render-side provider для ленивого получения views по frame handle.
+    texture_provider: Option<WgpuRenderTextureProviderHandle>,
 
     /// Неблокирующий канал sample-ов ожидания backend texture pool lock-а.
     texture_view_lock_sample_tx: Option<Sender<RenderTextureViewLockSample>>,
@@ -141,7 +146,7 @@ impl PresentFrameLease {
 
     /// Получает WGPU views на render thread через render-side provider.
     #[must_use]
-    pub fn texture_views(&self) -> Option<PresentFrameTextureViews> {
+    pub fn texture_views(&self) -> Option<PresentFrameWgpuTextureViews> {
         let provider = self.texture_provider.as_ref()?;
         let lookup = provider.texture_view_lookup(self.texture_handle());
 
@@ -164,25 +169,25 @@ impl PresentFrameLease {
         self.present_texture_view_lookup_from_boundary(lookup)
     }
 
-    /// Конвертирует backend-neutral lookup в public lease outcome и diagnostics.
+    /// Конвертирует WGPU-specific lookup в public lease outcome и diagnostics.
     fn present_texture_view_lookup_from_boundary(
         &self,
-        lookup: RenderTextureViewLookup,
+        lookup: WgpuRenderTextureViewLookup,
     ) -> PresentFrameTextureViewLookup {
         let texture_pool_lock_wait = lookup.texture_pool_lock_wait();
-        let lookup_was_busy = matches!(lookup, RenderTextureViewLookup::Busy { .. });
+        let lookup_was_busy = matches!(lookup, WgpuRenderTextureViewLookup::Busy { .. });
         self.report_texture_view_lock_sample(texture_pool_lock_wait, lookup_was_busy);
 
         match lookup {
-            RenderTextureViewLookup::Ready { views, .. } => {
-                PresentFrameTextureViewLookup::Ready(PresentFrameTextureViews {
+            WgpuRenderTextureViewLookup::Ready { views, .. } => {
+                PresentFrameTextureViewLookup::Ready(PresentFrameWgpuTextureViews {
                     y_view: views.y_view,
                     uv_view: views.uv_view,
                 })
             }
-            RenderTextureViewLookup::Busy { .. } => PresentFrameTextureViewLookup::Busy,
-            RenderTextureViewLookup::Missing { .. } => PresentFrameTextureViewLookup::Missing,
-            RenderTextureViewLookup::Error { .. } => PresentFrameTextureViewLookup::Error,
+            WgpuRenderTextureViewLookup::Busy { .. } => PresentFrameTextureViewLookup::Busy,
+            WgpuRenderTextureViewLookup::Missing { .. } => PresentFrameTextureViewLookup::Missing,
+            WgpuRenderTextureViewLookup::Error { .. } => PresentFrameTextureViewLookup::Error,
         }
     }
 
@@ -350,7 +355,7 @@ pub(crate) struct RenderLeaseRelease {
     pub(crate) texture_handle: video_core::FrameTextureHandle,
 
     /// Provider исходного decoder texture pool для release после смены поколения.
-    pub(crate) texture_provider: Option<RenderTextureProviderHandle>,
+    pub(crate) texture_provider: Option<WgpuRenderTextureProviderHandle>,
 
     /// Монотонный момент drop-а render lease на render/UI side.
     pub(crate) released_at: Instant,
@@ -365,7 +370,7 @@ struct PresentFrameDropAck {
     texture_handle: video_core::FrameTextureHandle,
 
     /// Provider исходного frame-а; нужен, если ack пришёл после смены поколения.
-    texture_provider: Option<RenderTextureProviderHandle>,
+    texture_provider: Option<WgpuRenderTextureProviderHandle>,
 
     /// Канал drop-ack обратно в playback worker.
     release_tx: Sender<RenderLeaseRelease>,
@@ -846,11 +851,11 @@ mod tests {
         lock_wait: Duration,
     }
 
-    impl RenderTextureProvider for MissingViewsProvider {
+    impl WgpuRenderTextureProvider for MissingViewsProvider {
         /// Возвращает missing views, сохраняя lock wait diagnostics.
-        fn texture_view_lookup(&self, handle: FrameTextureHandle) -> RenderTextureViewLookup {
+        fn texture_view_lookup(&self, handle: FrameTextureHandle) -> WgpuRenderTextureViewLookup {
             assert_eq!(handle, self.expected_handle);
-            RenderTextureViewLookup::Missing {
+            WgpuRenderTextureViewLookup::Missing {
                 texture_pool_lock_wait: self.lock_wait,
             }
         }
@@ -868,16 +873,19 @@ mod tests {
         lock_wait: Duration,
     }
 
-    impl RenderTextureProvider for BusyViewsProvider {
+    impl WgpuRenderTextureProvider for BusyViewsProvider {
         /// Blocking compatibility path в этом тесте не используется.
-        fn texture_view_lookup(&self, handle: FrameTextureHandle) -> RenderTextureViewLookup {
+        fn texture_view_lookup(&self, handle: FrameTextureHandle) -> WgpuRenderTextureViewLookup {
             self.try_texture_view_lookup(handle)
         }
 
         /// Возвращает busy lookup, не смешивая его с missing views.
-        fn try_texture_view_lookup(&self, handle: FrameTextureHandle) -> RenderTextureViewLookup {
+        fn try_texture_view_lookup(
+            &self,
+            handle: FrameTextureHandle,
+        ) -> WgpuRenderTextureViewLookup {
             assert_eq!(handle, self.expected_handle);
-            RenderTextureViewLookup::Busy {
+            WgpuRenderTextureViewLookup::Busy {
                 texture_pool_lock_wait: self.lock_wait,
             }
         }
@@ -895,17 +903,20 @@ mod tests {
         lock_wait: Duration,
     }
 
-    impl RenderTextureProvider for ErrorViewsProvider {
+    impl WgpuRenderTextureProvider for ErrorViewsProvider {
         /// Возвращает error lookup для проверки typed boundary.
-        fn texture_view_lookup(&self, handle: FrameTextureHandle) -> RenderTextureViewLookup {
+        fn texture_view_lookup(&self, handle: FrameTextureHandle) -> WgpuRenderTextureViewLookup {
             assert_eq!(handle, self.expected_handle);
-            RenderTextureViewLookup::Error {
+            WgpuRenderTextureViewLookup::Error {
                 texture_pool_lock_wait: self.lock_wait,
             }
         }
 
         /// Non-blocking path сохраняет тот же fatal outcome.
-        fn try_texture_view_lookup(&self, handle: FrameTextureHandle) -> RenderTextureViewLookup {
+        fn try_texture_view_lookup(
+            &self,
+            handle: FrameTextureHandle,
+        ) -> WgpuRenderTextureViewLookup {
             self.texture_view_lookup(handle)
         }
 
@@ -942,7 +953,7 @@ mod tests {
             render_generation: 9,
             frame,
             stale: false,
-            texture_provider: Some(RenderTextureProviderHandle::new(MissingViewsProvider {
+            texture_provider: Some(WgpuRenderTextureProviderHandle::new(MissingViewsProvider {
                 expected_handle: texture_handle,
                 lock_wait,
             })),
@@ -977,7 +988,7 @@ mod tests {
             render_generation: 9,
             frame,
             stale: false,
-            texture_provider: Some(RenderTextureProviderHandle::new(BusyViewsProvider {
+            texture_provider: Some(WgpuRenderTextureProviderHandle::new(BusyViewsProvider {
                 expected_handle: texture_handle,
                 lock_wait,
             })),
@@ -1013,7 +1024,7 @@ mod tests {
             render_generation: 9,
             frame,
             stale: false,
-            texture_provider: Some(RenderTextureProviderHandle::new(ErrorViewsProvider {
+            texture_provider: Some(WgpuRenderTextureProviderHandle::new(ErrorViewsProvider {
                 expected_handle: texture_handle,
                 lock_wait,
             })),
