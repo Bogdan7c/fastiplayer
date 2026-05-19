@@ -182,8 +182,8 @@ pub(crate) struct PlaybackPipeline {
     /// User-facing label для streaming source без локального path.
     pub(crate) source_label: Option<String>,
 
-    /// Audio decoder для Opus трека.
-    pub(crate) audio_decoder: Option<audio::OpusDecoder>,
+    /// Codec-neutral audio decoder для выбранного audio трека.
+    pub(crate) audio_decoder: Option<Box<dyn audio::AudioDecoder>>,
 
     /// Audio output: CPAL stream и ring buffer.
     pub(crate) audio_output: Option<audio::AudioOutput>,

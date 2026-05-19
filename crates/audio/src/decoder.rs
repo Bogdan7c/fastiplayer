@@ -1,22 +1,64 @@
-//! Opus audio decoder — обёртка над libopus (opus crate).
+//! Audio decoder boundary и Opus реализация поверх libopus (opus crate).
 //!
 //! Принимает raw Opus packet bytes (из demuxer) и возвращает
 //! декодированные PCM f32 samples (interleaved).
 //!
 //! Архитектура:
-//! - Инициализируется с sample_rate + channels из track info
-//! - decode() принимает raw Opus packet → возвращает Vec<f32>
-//! - Использует i16 intermediate buffer (opus crate выдаёт i16)
-//! - Конвертирует i16 → f32 для совместимости с cpal
+//! - AudioDecoder описывает codec-neutral contract для player-core
+//! - create_audio_decoder() выбирает concrete decoder по codec_core::AudioCodec
+//! - OpusDecoder сохраняет прежний decode/reset path и формат Vec<f32>
+//! - PCM остаётся interleaved, чтобы AudioOutput не знал о codec backend-е
 //!
 //! Зависимость: opus crate → требует libopus в системе.
 //! На Linux: apt install libopus-dev / pacman -S opus
 
 use anyhow::{Context, Result};
+use codec_core::AudioCodec;
+use thiserror::Error;
 use tracing::info;
 
 /// Максимальное количество samples на packet (120ms @ 48kHz stereo).
 const MAX_SAMPLES_PER_PACKET: usize = 48000 * 2 * 120 / 1000;
+
+/// Codec-neutral audio decoder contract для playback pipeline.
+pub trait AudioDecoder: Send {
+    /// Декодирует один encoded audio packet в interleaved PCM f32.
+    fn decode(&mut self, packet_data: &[u8]) -> Result<Vec<f32>>;
+
+    /// Сбрасывает codec state после seek или смены discontinuity.
+    fn reset(&mut self) -> Result<()>;
+
+    /// Возвращает sample rate decoded PCM.
+    fn sample_rate(&self) -> u32;
+
+    /// Возвращает количество interleaved channels decoded PCM.
+    fn channels(&self) -> u32;
+}
+
+/// Ошибки audio decoder factory, которые caller может downcast-ить из anyhow.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum AudioDecoderError {
+    /// Codec известен общей модели, но production decoder для него ещё не добавлен.
+    #[error("Audio codec {codec} is not supported by the audio decoder factory")]
+    UnsupportedCodec {
+        /// Codec, для которого нет concrete audio decoder implementation.
+        codec: AudioCodec,
+    },
+}
+
+/// Создаёт codec-neutral decoder object для заданного audio codec.
+pub fn create_audio_decoder(
+    codec: AudioCodec,
+    sample_rate: u32,
+    channels: u32,
+) -> Result<Box<dyn AudioDecoder>> {
+    match codec {
+        AudioCodec::Opus => Ok(Box::new(OpusDecoder::new(sample_rate, channels)?)),
+        AudioCodec::Aac | AudioCodec::Vorbis => {
+            Err(AudioDecoderError::UnsupportedCodec { codec }.into())
+        }
+    }
+}
 
 /// Декодер для Opus audio.
 ///
@@ -121,5 +163,127 @@ impl OpusDecoder {
     /// Возвращает количество каналов.
     pub fn channels(&self) -> u32 {
         self.channels
+    }
+}
+
+impl AudioDecoder for OpusDecoder {
+    /// Декодирует Opus packet через прежний concrete path.
+    fn decode(&mut self, packet_data: &[u8]) -> Result<Vec<f32>> {
+        OpusDecoder::decode(self, packet_data)
+    }
+
+    /// Сбрасывает Opus state через прежний concrete path.
+    fn reset(&mut self) -> Result<()> {
+        OpusDecoder::reset(self)
+    }
+
+    /// Возвращает sample rate, с которым создан Opus decoder.
+    fn sample_rate(&self) -> u32 {
+        OpusDecoder::sample_rate(self)
+    }
+
+    /// Возвращает количество каналов, с которым создан Opus decoder.
+    fn channels(&self) -> u32 {
+        OpusDecoder::channels(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+    use codec_core::AudioCodec;
+
+    use super::{AudioDecoder, AudioDecoderError, create_audio_decoder};
+
+    /// Fake decoder нужен только для проверки object-safe contract без libopus path.
+    struct FakeAudioDecoder {
+        /// Sample rate, который должен быть виден через trait object.
+        sample_rate: u32,
+
+        /// Количество каналов, которое должно быть видно через trait object.
+        channels: u32,
+    }
+
+    impl AudioDecoder for FakeAudioDecoder {
+        /// Fake decode возвращает входной размер как sample, чтобы путь был наблюдаемым.
+        fn decode(&mut self, packet_data: &[u8]) -> Result<Vec<f32>> {
+            Ok(vec![packet_data.len() as f32])
+        }
+
+        /// Fake reset не владеет внешними ресурсами.
+        fn reset(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        /// Возвращает sample rate fake decoder-а.
+        fn sample_rate(&self) -> u32 {
+            self.sample_rate
+        }
+
+        /// Возвращает количество каналов fake decoder-а.
+        fn channels(&self) -> u32 {
+            self.channels
+        }
+    }
+
+    #[test]
+    fn factory_creates_opus_decoder_for_valid_mono_and_stereo_params() {
+        let mono_decoder = create_audio_decoder(AudioCodec::Opus, 48_000, 1)
+            .expect("mono Opus decoder should be created");
+        let stereo_decoder = create_audio_decoder(AudioCodec::Opus, 48_000, 2)
+            .expect("stereo Opus decoder should be created");
+
+        assert_eq!(mono_decoder.sample_rate(), 48_000);
+        assert_eq!(mono_decoder.channels(), 1);
+        assert_eq!(stereo_decoder.sample_rate(), 48_000);
+        assert_eq!(stereo_decoder.channels(), 2);
+    }
+
+    #[test]
+    fn factory_keeps_opus_channel_validation_message() {
+        let error = match create_audio_decoder(AudioCodec::Opus, 48_000, 6) {
+            Ok(_) => panic!("invalid Opus channel count should be rejected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "Opus поддерживает только mono/stereo, получено: 6"
+        );
+    }
+
+    #[test]
+    fn unsupported_codec_returns_stable_typed_error() {
+        let error = match create_audio_decoder(AudioCodec::Aac, 48_000, 2) {
+            Ok(_) => panic!("AAC must stay unsupported in this refactor"),
+            Err(error) => error,
+        };
+        let typed_error = error
+            .downcast_ref::<AudioDecoderError>()
+            .expect("factory error should keep typed error");
+
+        assert_eq!(
+            typed_error,
+            &AudioDecoderError::UnsupportedCodec {
+                codec: AudioCodec::Aac
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "Audio codec AAC is not supported by the audio decoder factory"
+        );
+    }
+
+    #[test]
+    fn trait_object_path_preserves_decoder_properties() {
+        let mut decoder: Box<dyn AudioDecoder> = Box::new(FakeAudioDecoder {
+            sample_rate: 44_100,
+            channels: 2,
+        });
+
+        assert_eq!(decoder.sample_rate(), 44_100);
+        assert_eq!(decoder.channels(), 2);
+        assert_eq!(decoder.decode(&[1, 2, 3]).expect("fake decode"), vec![3.0]);
+        decoder.reset().expect("fake reset");
     }
 }

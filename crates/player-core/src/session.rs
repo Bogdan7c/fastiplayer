@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use capability_core::{SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection};
 use codec_core::{
-    VideoCodec, VideoDecodeRequirement, VideoMetadataSource, resolve_video_metadata,
+    AudioCodec, VideoCodec, VideoDecodeRequirement, VideoMetadataSource, resolve_video_metadata,
     unsupported_requirement_can_be_refined_by_packet_probe as codec_requirement_can_be_refined_by_packet_probe,
     video_requirement_needs_packet_refinement,
 };
@@ -2498,7 +2498,7 @@ impl PlayerSession {
         {
             let player_error = PlayerError::new(
                 PlayerErrorKind::RuntimeError,
-                format!("Opus decoder reset failed during seek: {error}"),
+                format!("Audio decoder reset failed during seek: {error}"),
             );
             self.record_recoverable_error(player_error);
         }
@@ -2912,12 +2912,23 @@ impl PlayerSession {
             "Инициализация audio pipeline"
         );
 
-        match audio::OpusDecoder::new(sample_rate, channels) {
+        let Some(codec) = AudioCodec::from_container_codec_id(&track.codec_id) else {
+            let error_message = format!("Unsupported audio codec id: {}", track.codec_id);
+            warn!(
+                track_id = %track.id,
+                codec = %track.codec_id,
+                "Audio codec не поддержан текущей codec model"
+            );
+            self.set_runtime_error(format!("Audio error: {error_message}"));
+            return;
+        };
+
+        match audio::create_audio_decoder(codec, sample_rate, channels) {
             Ok(decoder) => {
                 self.pipeline.audio_decoder = Some(decoder);
             }
             Err(error) => {
-                warn!(error = %error, "Не удалось создать Opus decoder");
+                warn!(error = %error, codec = %codec, "Не удалось создать audio decoder");
                 self.set_runtime_error(format!("Audio error: {error}"));
                 return;
             }

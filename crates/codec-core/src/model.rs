@@ -73,6 +73,37 @@ pub enum AudioCodec {
     Vorbis,
 }
 
+impl AudioCodec {
+    /// Нормализует container codec id в общий audio codec enum.
+    #[must_use]
+    pub fn from_container_codec_id(codec_id: &str) -> Option<Self> {
+        let normalized_codec_id = codec_id.trim().to_ascii_uppercase();
+        match normalized_codec_id.as_str() {
+            "A_OPUS" | "OPUS" => Some(Self::Opus),
+            "A_AAC" | "A_AAC/MPEG2/LC" | "A_AAC/MPEG4/LC" | "AAC" => Some(Self::Aac),
+            "A_VORBIS" | "VORBIS" => Some(Self::Vorbis),
+            _ => None,
+        }
+    }
+
+    /// Возвращает стабильное имя codec для UI/report/errors.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Opus => "Opus",
+            Self::Aac => "AAC",
+            Self::Vorbis => "Vorbis",
+        }
+    }
+}
+
+impl fmt::Display for AudioCodec {
+    /// Печатает человекочитаемое имя audio codec.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.display_name())
+    }
+}
+
 /// Bit depth luma/chroma плоскостей.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -984,6 +1015,23 @@ mod tests {
             Some(VideoCodec::H264)
         );
         assert_eq!(VideoCodec::from_container_codec_id("unknown"), None);
+    }
+
+    #[test]
+    fn audio_container_codec_id_normalizes_common_names() {
+        assert_eq!(
+            AudioCodec::from_container_codec_id("A_OPUS"),
+            Some(AudioCodec::Opus)
+        );
+        assert_eq!(
+            AudioCodec::from_container_codec_id("a_aac/mpeg4/lc"),
+            Some(AudioCodec::Aac)
+        );
+        assert_eq!(
+            AudioCodec::from_container_codec_id("A_VORBIS"),
+            Some(AudioCodec::Vorbis)
+        );
+        assert_eq!(AudioCodec::from_container_codec_id("unknown"), None);
     }
 
     #[test]

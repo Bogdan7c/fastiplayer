@@ -10,5 +10,6 @@ cpal = "0.15"
 ringbuf = "0.4"
 opus = "0.3"
 anyhow = { workspace = true }
+codec-core = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
