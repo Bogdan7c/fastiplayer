@@ -50,6 +50,19 @@ pub(crate) enum VideoTextureReleaseEffect {
     ReleaseNow,
 }
 
+/// Успешный результат audio decode вместе с параметрами decoder-а для clock trimming.
+#[derive(Debug)]
+pub(crate) struct DecodedAudioPacket {
+    /// Interleaved PCM samples, которые вернул codec-neutral decoder.
+    pub(crate) samples: Vec<f32>,
+
+    /// Sample rate decoded PCM на момент decode.
+    pub(crate) sample_rate: u32,
+
+    /// Количество interleaved audio channels на момент decode.
+    pub(crate) channels: u32,
+}
+
 /// Anchor внутреннего monotonic media clock для media без audio clock.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MonotonicMediaClockAnchor {
@@ -168,10 +181,10 @@ pub(crate) struct PlaybackPipeline {
     source_label: Option<String>,
 
     /// Codec-neutral audio decoder для выбранного audio трека.
-    pub(crate) audio_decoder: Option<audio::AudioDecoderHandle>,
+    audio_decoder: Option<audio::AudioDecoderHandle>,
 
     /// Audio output: CPAL stream и ring buffer.
-    pub(crate) audio_output: Option<audio::AudioOutput>,
+    audio_output: Option<audio::AudioOutput>,
 
     /// Track ID выбранного audio трека.
     audio_track_id: Option<TrackId>,
@@ -244,7 +257,7 @@ pub(crate) struct PlaybackPipeline {
     seek_generation: u64,
 
     /// Последнее поколение, для которого audio output подтвердил очистку buffer.
-    pub(crate) audio_buffer_clear_generation: u64,
+    audio_buffer_clear_generation: u64,
 
     /// Последнее значение audio clock для обнаружения stalled audio.
     pub(crate) last_audio_clock: Duration,
@@ -260,6 +273,128 @@ pub(crate) struct PlaybackPipeline {
 }
 
 impl PlaybackPipeline {
+    /// Устанавливает codec-neutral audio decoder, созданный session policy слоем.
+    pub(crate) fn install_audio_decoder(&mut self, decoder: audio::AudioDecoderHandle) {
+        self.audio_decoder = Some(decoder);
+    }
+
+    /// Удаляет audio decoder runtime slot без side effects на output/track selection.
+    pub(crate) fn clear_audio_decoder(&mut self) {
+        self.audio_decoder = None;
+    }
+
+    /// Проверяет наличие audio decoder-а без раскрытия `Option` storage.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn has_audio_decoder(&self) -> bool {
+        self.audio_decoder.is_some()
+    }
+
+    /// Декодирует audio packet через установленный decoder.
+    ///
+    /// `None` означает absent decoder и сохраняет прежний no-op path. `Err`
+    /// остаётся отдельным состоянием, чтобы session могла выставить runtime error.
+    pub(crate) fn decode_audio_packet(
+        &mut self,
+        encoded_audio_bytes: &[u8],
+    ) -> Option<anyhow::Result<DecodedAudioPacket>> {
+        let decoder = self.audio_decoder.as_mut()?;
+        let decode_result = decoder.decode(encoded_audio_bytes);
+        Some(decode_result.map(|samples| DecodedAudioPacket {
+            samples,
+            sample_rate: decoder.sample_rate(),
+            channels: decoder.channels(),
+        }))
+    }
+
+    /// Сбрасывает codec state установленного audio decoder-а после seek/discontinuity.
+    ///
+    /// `None` означает absent decoder, а `Some(Err(_))` сохраняет reset error для session.
+    pub(crate) fn reset_audio_decoder(&mut self) -> Option<anyhow::Result<()>> {
+        self.audio_decoder.as_mut().map(|decoder| decoder.reset())
+    }
+
+    /// Устанавливает CPAL-backed audio output, созданный session policy слоем.
+    pub(crate) fn install_audio_output(&mut self, output: audio::AudioOutput) {
+        self.audio_output = Some(output);
+    }
+
+    /// Удаляет audio output runtime slot без изменения decoder/track selection.
+    pub(crate) fn clear_audio_output(&mut self) {
+        self.audio_output = None;
+    }
+
+    /// Проверяет наличие audio output-а без доступа к concrete CPAL handle.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn has_audio_output(&self) -> bool {
+        self.audio_output.is_some()
+    }
+
+    /// Записывает samples в output ring buffer, если output установлен.
+    ///
+    /// Возвращает `None` для absent output и `Some(written_samples)` для активного output.
+    pub(crate) fn write_audio_output_samples(&mut self, samples: &[f32]) -> Option<u64> {
+        self.audio_output
+            .as_mut()
+            .map(|output| output.write_samples(samples))
+    }
+
+    /// Запускает audio output stream без смешивания absent output и CPAL error.
+    pub(crate) fn play_audio_output(&mut self) -> Option<anyhow::Result<()>> {
+        self.audio_output.as_mut().map(audio::AudioOutput::play)
+    }
+
+    /// Ставит audio output stream на паузу без изменения high-level playback state.
+    pub(crate) fn pause_audio_output(&mut self) -> Option<anyhow::Result<()>> {
+        self.audio_output.as_mut().map(audio::AudioOutput::pause)
+    }
+
+    /// Очищает audio output buffer для seek и возвращает sync ack generation.
+    pub(crate) fn clear_audio_output_for_seek(
+        &mut self,
+        generation: u64,
+    ) -> Option<anyhow::Result<u64>> {
+        self.audio_output
+            .as_mut()
+            .map(|output| output.clear_buffer_for_seek(generation))
+    }
+
+    /// Устанавливает громкость output-а, если runtime output уже существует.
+    pub(crate) fn set_audio_output_volume(&mut self, volume: f32) -> bool {
+        let Some(output) = self.audio_output.as_mut() else {
+            return false;
+        };
+
+        output.set_volume(volume);
+        true
+    }
+
+    /// Возвращает уровень audio buffer через output boundary.
+    #[must_use]
+    pub(crate) fn audio_output_buffer_level_ms(&self) -> Option<f64> {
+        self.audio_output
+            .as_ref()
+            .map(audio::AudioOutput::buffer_level_ms)
+    }
+
+    /// Возвращает clock handle output-а без раскрытия самого output slot-а.
+    #[must_use]
+    pub(crate) fn audio_output_clock(&self) -> Option<&Arc<audio::clock::AudioClock>> {
+        self.audio_output.as_ref().map(audio::AudioOutput::clock)
+    }
+
+    /// Возвращает последнее поколение, для которого audio buffer clear был подтверждён.
+    #[must_use]
+    pub(crate) const fn audio_buffer_clear_generation(&self) -> u64 {
+        self.audio_buffer_clear_generation
+    }
+
+    /// Отмечает синхронное подтверждение очистки audio buffer для seek generation.
+    pub(crate) fn mark_audio_buffer_clear_ack(&mut self, generation: u64) {
+        self.audio_buffer_clear_generation = generation;
+    }
+
     /// Возвращает выбранный video track id без раскрытия storage поля.
     #[must_use]
     pub(crate) fn selected_video_track_id(&self) -> Option<TrackId> {
@@ -638,8 +773,8 @@ impl PlaybackPipeline {
     /// Сбрасывает все media-specific поля после того, как session освободила video frames.
     pub(crate) fn reset_media_slots(&mut self) {
         self.clear_media_source_slots();
-        self.audio_decoder = None;
-        self.audio_output = None;
+        self.clear_audio_decoder();
+        self.clear_audio_output();
         self.clear_selected_tracks();
         self.clear_pending_audio_packets();
         self.clear_pending_video_packets();
@@ -654,7 +789,7 @@ impl PlaybackPipeline {
         self.media_clock_base = Duration::ZERO;
         self.monotonic_media_clock_anchor = None;
         self.seek_generation = 0;
-        self.audio_buffer_clear_generation = 0;
+        self.mark_audio_buffer_clear_ack(0);
         self.reset_video_frame_timing_estimator();
         self.last_audio_clock = Duration::ZERO;
         self.last_audio_clock_change_at = Instant::now();
@@ -1053,6 +1188,90 @@ mod tests {
         }
     }
 
+    /// Управляемый fake decoder для проверки audio boundary без CPAL и codec side effects.
+    struct FakeAudioDecoder {
+        /// Результат, который fake вернёт из `decode`.
+        decode_outcome: FakeAudioDecodeOutcome,
+
+        /// Ошибка, которую fake вернёт из `reset`, если она задана.
+        reset_error: Option<&'static str>,
+
+        /// Sample rate, который boundary должен вернуть вместе с decoded samples.
+        sample_rate: u32,
+
+        /// Channel count, который boundary должен вернуть вместе с decoded samples.
+        channels: u32,
+    }
+
+    impl FakeAudioDecoder {
+        /// Создаёт fake decoder, который успешно возвращает заданные PCM samples.
+        fn with_samples(samples: Vec<f32>, sample_rate: u32, channels: u32) -> Self {
+            Self {
+                decode_outcome: FakeAudioDecodeOutcome::Samples(samples),
+                reset_error: None,
+                sample_rate,
+                channels,
+            }
+        }
+
+        /// Создаёт fake decoder, который падает на decode и успешно reset-ится.
+        fn with_decode_error(error: &'static str) -> Self {
+            Self {
+                decode_outcome: FakeAudioDecodeOutcome::Error(error),
+                reset_error: None,
+                sample_rate: 48_000,
+                channels: 2,
+            }
+        }
+
+        /// Создаёт fake decoder, который decode-ит пустой packet и падает на reset.
+        fn with_reset_error(error: &'static str) -> Self {
+            Self {
+                decode_outcome: FakeAudioDecodeOutcome::Samples(Vec::new()),
+                reset_error: Some(error),
+                sample_rate: 48_000,
+                channels: 2,
+            }
+        }
+    }
+
+    /// Явный сценарий fake decode, чтобы тесты не полагались на magic flags.
+    enum FakeAudioDecodeOutcome {
+        /// Успешный decode с предсказуемыми samples.
+        Samples(Vec<f32>),
+
+        /// Ошибка decode с предсказуемым текстом.
+        Error(&'static str),
+    }
+
+    impl audio::AudioDecoder for FakeAudioDecoder {
+        /// Возвращает заранее заданный результат decode.
+        fn decode(&mut self, _packet_data: &[u8]) -> anyhow::Result<Vec<f32>> {
+            match &self.decode_outcome {
+                FakeAudioDecodeOutcome::Samples(samples) => Ok(samples.clone()),
+                FakeAudioDecodeOutcome::Error(error) => Err(anyhow::anyhow!(*error)),
+            }
+        }
+
+        /// Возвращает reset error только если тест явно его сконфигурировал.
+        fn reset(&mut self) -> anyhow::Result<()> {
+            match self.reset_error {
+                Some(error) => Err(anyhow::anyhow!(error)),
+                None => Ok(()),
+            }
+        }
+
+        /// Возвращает sample rate fake decoder-а.
+        fn sample_rate(&self) -> u32 {
+            self.sample_rate
+        }
+
+        /// Возвращает channel count fake decoder-а.
+        fn channels(&self) -> u32 {
+            self.channels
+        }
+    }
+
     #[test]
     fn queued_video_frame_methods_preserve_fifo_order_and_len() {
         let mut pipeline = PlaybackPipeline::default();
@@ -1150,6 +1369,79 @@ mod tests {
         assert_eq!(pipeline.track_count(), 2);
         assert_eq!(pipeline.tracks()[0].id, TrackId::new(1));
         assert_eq!(pipeline.tracks()[1].kind, TrackKind::Audio);
+    }
+
+    #[test]
+    fn audio_decoder_boundaries_preserve_absent_success_and_error_states() {
+        let mut pipeline = PlaybackPipeline::default();
+
+        assert!(!pipeline.has_audio_decoder());
+        assert!(pipeline.decode_audio_packet(b"packet").is_none());
+        assert!(pipeline.reset_audio_decoder().is_none());
+
+        pipeline.install_audio_decoder(Box::new(FakeAudioDecoder::with_samples(
+            vec![0.25, -0.25],
+            44_100,
+            2,
+        )));
+
+        let decoded_audio = pipeline
+            .decode_audio_packet(b"packet")
+            .expect("installed decoder должен вернуть decode result")
+            .expect("successful fake decoder не должен падать");
+        assert_eq!(decoded_audio.samples, vec![0.25, -0.25]);
+        assert_eq!(decoded_audio.sample_rate, 44_100);
+        assert_eq!(decoded_audio.channels, 2);
+
+        pipeline.clear_audio_decoder();
+        assert!(!pipeline.has_audio_decoder());
+
+        pipeline.install_audio_decoder(Box::new(FakeAudioDecoder::with_decode_error(
+            "decode failed",
+        )));
+
+        let decode_error = pipeline
+            .decode_audio_packet(b"bad packet")
+            .expect("installed decoder должен сохранить decode error")
+            .expect_err("decode error должен дойти до session boundary");
+        assert_eq!(decode_error.to_string(), "decode failed");
+
+        pipeline.clear_audio_decoder();
+        pipeline
+            .install_audio_decoder(Box::new(FakeAudioDecoder::with_reset_error("reset failed")));
+
+        let reset_error = pipeline
+            .reset_audio_decoder()
+            .expect("installed decoder должен вернуть reset result")
+            .expect_err("reset error должен дойти до session boundary");
+        assert_eq!(reset_error.to_string(), "reset failed");
+    }
+
+    #[test]
+    fn absent_audio_output_boundaries_are_noop_without_losing_absent_state() {
+        let mut pipeline = PlaybackPipeline::default();
+
+        assert!(!pipeline.has_audio_output());
+        assert_eq!(pipeline.write_audio_output_samples(&[0.0, 0.1]), None);
+        assert!(pipeline.play_audio_output().is_none());
+        assert!(pipeline.pause_audio_output().is_none());
+        assert!(pipeline.clear_audio_output_for_seek(1).is_none());
+        assert!(pipeline.audio_output_buffer_level_ms().is_none());
+        assert!(pipeline.audio_output_clock().is_none());
+
+        pipeline.clear_audio_output();
+        assert!(!pipeline.has_audio_output());
+    }
+
+    #[test]
+    fn audio_buffer_clear_generation_boundary_records_ack_generation() {
+        let mut pipeline = PlaybackPipeline::default();
+
+        assert_eq!(pipeline.audio_buffer_clear_generation(), 0);
+
+        pipeline.mark_audio_buffer_clear_ack(7);
+
+        assert_eq!(pipeline.audio_buffer_clear_generation(), 7);
     }
 
     #[test]

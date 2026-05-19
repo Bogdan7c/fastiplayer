@@ -672,25 +672,21 @@ impl PlayerSession {
             return;
         }
 
-        if let Some(ref mut decoder) = self.pipeline.audio_decoder {
-            match decoder.decode(encoded_audio_bytes) {
-                Ok(samples) if !samples.is_empty() => {
-                    let sample_rate = decoder.sample_rate();
-                    let channels = decoder.channels();
+        if let Some(decode_result) = self.pipeline.decode_audio_packet(encoded_audio_bytes) {
+            match decode_result {
+                Ok(decoded_audio) if !decoded_audio.samples.is_empty() => {
                     let samples = trim_decoded_audio_to_clock_base(
-                        &samples,
+                        &decoded_audio.samples,
                         packet_pts,
                         self.pipeline.media_clock_base,
-                        sample_rate,
-                        channels,
+                        decoded_audio.sample_rate,
+                        decoded_audio.channels,
                     );
                     if samples.is_empty() {
                         return;
                     }
 
-                    if let Some(ref mut output) = self.pipeline.audio_output {
-                        output.write_samples(samples);
-                    }
+                    let _written_samples = self.pipeline.write_audio_output_samples(samples);
                 }
                 Ok(_) => {}
                 Err(error) => {
@@ -712,18 +708,14 @@ impl PlayerSession {
     #[must_use]
     pub fn audio_clock_secs(&self) -> Option<f64> {
         self.pipeline
-            .audio_output
-            .as_ref()
-            .map(|output| output.clock().now_secs())
+            .audio_output_clock()
+            .map(|clock| clock.now_secs())
     }
 
     /// Возвращает уровень audio buffer в миллисекундах.
     #[must_use]
     pub fn audio_buffer_level_ms(&self) -> Option<f64> {
-        self.pipeline
-            .audio_output
-            .as_ref()
-            .map(|output| output.buffer_level_ms())
+        self.pipeline.audio_output_buffer_level_ms()
     }
 
     /// Возвращает текущее время audio clock.
@@ -1060,7 +1052,7 @@ impl PlayerSession {
         }
 
         if self.pipeline.has_selected_audio_track()
-            && self.pipeline.audio_buffer_clear_generation < seek_commit.generation
+            && self.pipeline.audio_buffer_clear_generation() < seek_commit.generation
         {
             return SeekProgressBlocker::WaitingForAudioClear;
         }
@@ -1190,7 +1182,7 @@ impl PlayerSession {
             return true;
         }
 
-        if self.pipeline.audio_buffer_clear_generation < seek_commit.generation {
+        if self.pipeline.audio_buffer_clear_generation() < seek_commit.generation {
             return false;
         }
 
@@ -1247,9 +1239,7 @@ impl PlayerSession {
                 self.set_playback_state(PlaybackState::Paused);
             }
             PlaybackResumeIntent::Play => {
-                if let Some(ref mut output) = self.pipeline.audio_output
-                    && let Err(error) = output.play()
-                {
+                if let Some(Err(error)) = self.pipeline.play_audio_output() {
                     warn!(error = %error, "Не удалось запустить audio после seek");
                     self.set_runtime_error(format!("Audio play after seek error: {error}"));
                 }
@@ -1386,8 +1376,8 @@ impl PlayerSession {
 
         self.set_playback_state(PlaybackState::Playing);
 
-        if let Some(ref mut output) = self.pipeline.audio_output {
-            if let Err(error) = output.play() {
+        if let Some(play_result) = self.pipeline.play_audio_output() {
+            if let Err(error) = play_result {
                 warn!(error = %error, "Не удалось запустить audio");
                 self.set_runtime_error(format!("Audio play error: {error}"));
             }
@@ -1485,9 +1475,7 @@ impl PlayerSession {
         self.set_playback_state(PlaybackState::Paused);
         self.clear_queued_video_frames();
 
-        if let Some(ref mut output) = self.pipeline.audio_output
-            && let Err(error) = output.pause()
-        {
+        if let Some(Err(error)) = self.pipeline.pause_audio_output() {
             warn!(error = %error, "Не удалось остановить audio");
             self.set_runtime_error(format!("Audio pause error: {error}"));
         }
@@ -1947,9 +1935,7 @@ impl PlayerSession {
             SeekCommitKind::Preview => TimelinePreviewState::Pending,
         };
 
-        if let Some(ref mut decoder) = self.pipeline.audio_decoder
-            && let Err(error) = decoder.reset()
-        {
+        if let Some(Err(error)) = self.pipeline.reset_audio_decoder() {
             let player_error = PlayerError::new(
                 PlayerErrorKind::RuntimeError,
                 format!("Audio decoder reset failed during seek: {error}"),
@@ -1957,10 +1943,10 @@ impl PlayerSession {
             self.record_recoverable_error(player_error);
         }
 
-        if let Some(ref mut output) = self.pipeline.audio_output {
-            match output.clear_buffer_for_seek(generation) {
+        if let Some(clear_result) = self.pipeline.clear_audio_output_for_seek(generation) {
+            match clear_result {
                 Ok(ack_generation) => {
-                    self.pipeline.audio_buffer_clear_generation = ack_generation;
+                    self.pipeline.mark_audio_buffer_clear_ack(ack_generation);
                 }
                 Err(error) => {
                     let player_error = PlayerError::new(
@@ -1971,7 +1957,7 @@ impl PlayerSession {
                 }
             }
         } else {
-            self.pipeline.audio_buffer_clear_generation = generation;
+            self.pipeline.mark_audio_buffer_clear_ack(generation);
             if let Some(ref clock) = self.pipeline.audio_clock {
                 clock.reset();
             }
@@ -2037,9 +2023,7 @@ impl PlayerSession {
 
     /// Останавливает audio stream для seek, не меняя high-level playback state.
     fn pause_audio_output_for_seek(&mut self) {
-        if let Some(ref mut output) = self.pipeline.audio_output
-            && let Err(error) = output.pause()
-        {
+        if let Some(Err(error)) = self.pipeline.pause_audio_output() {
             warn!(error = %error, "Не удалось остановить audio перед seek");
             self.set_runtime_error(format!("Audio pause before seek error: {error}"));
         }
@@ -2067,9 +2051,7 @@ impl PlayerSession {
 
         self.snapshot.volume = volume;
         self.snapshot.muted = volume <= f32::EPSILON;
-        if let Some(ref mut output) = self.pipeline.audio_output {
-            output.set_volume(volume);
-        }
+        let _output_was_present = self.pipeline.set_audio_output_volume(volume);
         Ok(())
     }
 
@@ -2366,7 +2348,7 @@ impl PlayerSession {
             init_spec.channels,
         ) {
             Ok(decoder) => {
-                self.pipeline.audio_decoder = Some(decoder);
+                self.pipeline.install_audio_decoder(decoder);
             }
             Err(error) => {
                 let player_error = player_error_from_audio_decoder_factory_error(error);
@@ -2383,7 +2365,7 @@ impl PlayerSession {
         match audio::AudioOutput::new(init_spec.sample_rate, init_spec.channels) {
             Ok(mut output) => {
                 output.set_volume(self.snapshot.volume);
-                self.pipeline.audio_output = Some(output);
+                self.pipeline.install_audio_output(output);
             }
             Err(error) => {
                 warn!(error = %error, "Не удалось создать AudioOutput");
@@ -2395,8 +2377,8 @@ impl PlayerSession {
         self.pipeline.select_audio_track(init_spec.track_id);
         self.snapshot.selected_tracks.audio_track = Some(init_spec.track_id);
 
-        if let Some(ref output) = self.pipeline.audio_output {
-            self.pipeline.audio_clock = Some(output.clock().clone());
+        if let Some(clock) = self.pipeline.audio_output_clock().cloned() {
+            self.pipeline.audio_clock = Some(clock);
         }
 
         info!(
@@ -3253,8 +3235,8 @@ mod tests {
 
         session.init_audio_pipeline(&tracks);
 
-        assert!(session.pipeline.audio_decoder.is_none());
-        assert!(session.pipeline.audio_output.is_none());
+        assert!(!session.pipeline.has_audio_decoder());
+        assert!(!session.pipeline.has_audio_output());
         assert!(session.pipeline.selected_audio_track_id().is_none());
         assert!(session.take_events().iter().any(|event| matches!(
             event,
