@@ -19,6 +19,7 @@ use player_core::{
 use render_core::RenderDiagnostics;
 use rustiplayer_config::AppConfig;
 use tracing::{debug, instrument, warn};
+use video_vaapi::VaapiWgpuVideoBackendFactory;
 use winit::window::Window;
 
 use crate::local_media;
@@ -623,10 +624,16 @@ impl AppState {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
-        if let Err(error) = self
-            .player_worker
-            .init_video_pipeline(instance, adapter, device, queue)
-        {
+        let decoder_thread_config = self.player_worker.decoder_thread_config();
+        let backend_factory = VaapiWgpuVideoBackendFactory::new_with_decoder_config(
+            instance,
+            adapter,
+            device,
+            queue,
+            decoder_thread_config,
+        );
+
+        if let Err(error) = self.player_worker.init_video_pipeline(backend_factory) {
             warn!(error = %error, "Не удалось отправить init video pipeline в worker");
             return;
         }

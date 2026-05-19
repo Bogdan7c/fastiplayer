@@ -4,6 +4,7 @@ pub mod dma_buf_import;
 pub mod dma_heap;
 pub mod frame_pool;
 pub mod internal_vaapi_frame;
+pub mod player_core_adapter;
 pub mod probe;
 pub mod texture_cache;
 pub mod zero_copy_surface_pool;
@@ -21,4 +22,7 @@ pub use decoder_thread::{
     VideoTextureViewLockDiagnostics, VideoTextureViewLookup, VideoTextureViewProvider,
     VideoTextureViews,
 };
+pub use player_core_adapter::VaapiWgpuVideoBackendFactory;
+#[allow(deprecated)]
+pub use player_core_adapter::WgpuVideoBackendFactory;
 pub use probe::{VaapiCapabilityProvider, probe_vaapi_capabilities};

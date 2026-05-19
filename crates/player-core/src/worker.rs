@@ -34,7 +34,7 @@ use crate::{
     PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
     PlayerVideoDecoderThreadConfig, PreparedMedia, QualitySelection, ScrubCommitIntent,
     ScrubCommitPolicy, ScrubGeneration, ScrubUpdateIntent, SeekRequest, SessionScrubCommand,
-    WgpuVideoBackendFactory,
+    VideoBackendFactory,
 };
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
@@ -118,6 +118,14 @@ impl PlayerWorkerConfig {
             live_scrub_preview_interval: Duration::from_millis(config.player.seek.live_interval_ms),
             decoder_thread_config: decoder_thread_config_from_app_config(config),
         }
+    }
+
+    /// Возвращает decoder-thread limits из validated app config для shell-owned backend factory.
+    #[must_use]
+    pub fn decoder_thread_config_from_app_config(
+        config: &rustiplayer_config::AppConfig,
+    ) -> PlayerVideoDecoderThreadConfig {
+        decoder_thread_config_from_app_config(config)
     }
 }
 
@@ -634,6 +642,9 @@ pub struct PlayerWorker {
     /// Render-side handle для прежнего public API acquire/timing без доступа к runtime loop.
     render_bridge_client: RenderLeaseBridgeClient,
 
+    /// Decoder-thread limits, которые shell должен передать concrete backend factory.
+    decoder_thread_config: PlayerVideoDecoderThreadConfig,
+
     /// Аварийный shutdown signal, если command queue недоступна.
     shutdown_tx: Sender<()>,
 
@@ -651,6 +662,7 @@ impl PlayerWorker {
         let (render_bridge, render_bridge_client) = RenderLeaseBridge::new();
         let (shutdown_tx, shutdown_rx) = bounded(1);
         let scrub_coalescer = Arc::new(ScrubUpdateCoalescer::new(scrub_wake_tx));
+        let decoder_thread_config = config.decoder_thread_config;
 
         let command_sender = PlayerCommandSender {
             command_tx,
@@ -698,6 +710,7 @@ impl PlayerWorker {
             cached_snapshot: PlayerSnapshot::empty(),
             event_rx,
             render_bridge_client,
+            decoder_thread_config,
             shutdown_tx,
             join_handle: Some(join_handle),
         })
@@ -707,6 +720,12 @@ impl PlayerWorker {
     #[must_use]
     pub fn command_sender(&self) -> PlayerCommandSender {
         self.command_sender.clone()
+    }
+
+    /// Возвращает decoder-thread limits, которые shell использует при сборке backend factory.
+    #[must_use]
+    pub const fn decoder_thread_config(&self) -> PlayerVideoDecoderThreadConfig {
+        self.decoder_thread_config
     }
 
     /// Отправляет обычную player command без блокировки.
@@ -752,21 +771,15 @@ impl PlayerWorker {
             .map_err(PlayerWorkerSendError::from)
     }
 
-    /// Инициализирует video decoder pipeline внутри worker-owned session.
+    /// Инициализирует video decoder pipeline через factory, созданную shell composition root.
     pub fn init_video_pipeline(
         &self,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        backend_factory: impl VideoBackendFactory + 'static,
     ) -> Result<(), PlayerWorkerSendError> {
         self.command_sender
             .command_tx
             .try_send(WorkerCommand::InitVideoPipeline {
-                instance: instance.clone(),
-                adapter: adapter.clone(),
-                device: device.clone(),
-                queue: queue.clone(),
+                backend_factory: Box::new(backend_factory),
             })
             .map_err(PlayerWorkerSendError::from)
     }
@@ -894,19 +907,10 @@ enum WorkerCommand {
         error: PlayerError,
     },
 
-    /// Инициализация video backend с GPU handles shell-а.
+    /// Инициализация video backend через concrete factory, созданную shell layer.
     InitVideoPipeline {
-        /// WGPU instance для zero-copy import path.
-        instance: wgpu::Instance,
-
-        /// WGPU adapter для backend capability matching.
-        adapter: wgpu::Adapter,
-
-        /// WGPU device для texture allocation.
-        device: wgpu::Device,
-
-        /// WGPU queue для texture upload/release callbacks.
-        queue: wgpu::Queue,
+        /// Concrete backend factory уже содержит GPU handles и startup config.
+        backend_factory: Box<dyn VideoBackendFactory>,
     },
 
     /// Capability report из shell/backend layer.
@@ -1279,20 +1283,8 @@ impl PlayerWorkerRuntime {
                 self.interrupt_scrub_for_external_boundary();
                 self.session.fail_media_open_with_error(request, error);
             }
-            WorkerCommand::InitVideoPipeline {
-                instance,
-                adapter,
-                device,
-                queue,
-            } => {
-                let backend_factory = WgpuVideoBackendFactory::new_with_decoder_config(
-                    &instance,
-                    &adapter,
-                    &device,
-                    &queue,
-                    self.config.decoder_thread_config,
-                );
-                self.session.init_video_pipeline(&backend_factory);
+            WorkerCommand::InitVideoPipeline { backend_factory } => {
+                self.session.init_video_pipeline(backend_factory.as_ref());
             }
             WorkerCommand::SetSystemCapabilities(capabilities) => {
                 self.session.set_system_capabilities(capabilities);
@@ -2168,6 +2160,7 @@ mod tests {
                 cached_snapshot: PlayerSnapshot::empty(),
                 event_rx,
                 render_bridge_client,
+                decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
                 shutdown_tx,
                 join_handle: None,
             },
@@ -2187,6 +2180,26 @@ mod tests {
         });
 
         assert_eq!(snapshot.playback_state, PlaybackState::Playing);
+        worker.shutdown().unwrap();
+    }
+
+    #[test]
+    fn player_worker_exposes_decoder_thread_config_for_backend_factory() {
+        let decoder_thread_config = PlayerVideoDecoderThreadConfig {
+            packet_channel_frames: 2,
+            frame_channel_frames: 3,
+            control_channel_frames: 4,
+            decoder_ready_queue_frames: 5,
+            decoder_surface_pool_frames: 6,
+            zero_copy_surface_pool_slots: 7,
+            flush_timeout: Duration::from_millis(75),
+        };
+        let mut config = worker_config_for_tests();
+        config.decoder_thread_config = decoder_thread_config;
+
+        let mut worker = PlayerWorker::spawn(config).unwrap();
+
+        assert_eq!(worker.decoder_thread_config(), decoder_thread_config);
         worker.shutdown().unwrap();
     }
 

@@ -2896,7 +2896,6 @@ dependencies = [
  "rustiplayer-config",
  "tracing",
  "video-core",
- "video-vaapi",
  "wgpu",
 ]
 
@@ -4520,6 +4519,7 @@ dependencies = [
  "gbm-sys",
  "media-core",
  "nix 0.29.0",
+ "player-core",
  "tracing",
  "video-core",
  "wgpu",

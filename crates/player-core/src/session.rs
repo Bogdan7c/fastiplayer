@@ -1903,7 +1903,7 @@ impl PlayerSession {
     }
 
     /// Инициализирует video pipeline через backend factory boundary.
-    pub fn init_video_pipeline(&mut self, backend_factory: &impl VideoBackendFactory) {
+    pub fn init_video_pipeline(&mut self, backend_factory: &dyn VideoBackendFactory) {
         match backend_factory.start_video_backend() {
             Ok(started_backend) => {
                 self.pipeline

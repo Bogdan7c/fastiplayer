@@ -1,21 +1,8 @@
-mod config;
-mod selector;
-mod vaapi;
-
-use crate::{
-    PlayerVideoDecoderThreadConfig, PlayerVideoDecoderThreadHandle, WgpuRenderTextureProviderHandle,
-};
-use config::{VideoBackendStartupConfig, VideoBackendStartupRequest};
-use selector::ProductionVideoBackendSelector;
+use crate::{PlayerVideoDecoderThreadHandle, WgpuRenderTextureProviderHandle};
 use video_core::VideoDecoderThreadHandle;
 
-mod private {
-    /// Sealed marker: внешние crates не должны создавать backend wrapper напрямую.
-    pub trait Sealed {}
-}
-
 /// Фабрика video backend-а, которую session вызывает без знания деталей конкретного backend init.
-pub trait VideoBackendFactory: private::Sealed {
+pub trait VideoBackendFactory: Send {
     /// Стартует backend и возвращает уже готовый decoder thread wrapper.
     fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend>;
 }
@@ -28,7 +15,7 @@ pub struct StartedVideoBackend {
 
 impl StartedVideoBackend {
     /// Создаёт backend wrapper вокруг decoder thread, который уже прошёл init handshake.
-    fn from_decoder_thread(
+    pub fn from_decoder_thread(
         decoder_thread: impl VideoDecoderThreadHandle<
             TextureViewProvider = WgpuRenderTextureProviderHandle,
         > + 'static,
@@ -41,82 +28,6 @@ impl StartedVideoBackend {
     /// Передаёт decoder handle pipeline-у без раскрытия concrete backend type.
     pub(crate) fn into_decoder_thread(self) -> Box<PlayerVideoDecoderThreadHandle> {
         self.decoder_thread
-    }
-}
-
-/// WGPU-backed factory для текущего hardware decode backend-а.
-///
-/// Название намеренно не содержит конкретный decoder backend: public caller
-/// передаёт GPU handles, а production selection остаётся внутри player-core.
-pub struct WgpuVideoBackendFactory<'a> {
-    /// WGPU instance для zero-copy import path.
-    instance: &'a wgpu::Instance,
-
-    /// WGPU adapter для backend capability matching.
-    adapter: &'a wgpu::Adapter,
-
-    /// WGPU device для texture allocation.
-    device: &'a wgpu::Device,
-
-    /// WGPU queue для texture upload/release callbacks.
-    queue: &'a wgpu::Queue,
-
-    /// Backend-neutral startup config для production selector-а.
-    startup_config: VideoBackendStartupConfig,
-}
-
-impl<'a> WgpuVideoBackendFactory<'a> {
-    /// Создаёт factory из GPU handles, которыми владеет shell/render layer.
-    #[must_use]
-    pub fn new(
-        instance: &'a wgpu::Instance,
-        adapter: &'a wgpu::Adapter,
-        device: &'a wgpu::Device,
-        queue: &'a wgpu::Queue,
-    ) -> Self {
-        Self::new_with_decoder_config(
-            instance,
-            adapter,
-            device,
-            queue,
-            PlayerVideoDecoderThreadConfig::default(),
-        )
-    }
-
-    /// Создаёт factory с явным decoder-thread config из validated app config.
-    #[must_use]
-    pub fn new_with_decoder_config(
-        instance: &'a wgpu::Instance,
-        adapter: &'a wgpu::Adapter,
-        device: &'a wgpu::Device,
-        queue: &'a wgpu::Queue,
-        decoder_thread_config: impl Into<PlayerVideoDecoderThreadConfig>,
-    ) -> Self {
-        Self {
-            instance,
-            adapter,
-            device,
-            queue,
-            startup_config: VideoBackendStartupConfig::new(decoder_thread_config),
-        }
-    }
-}
-
-impl private::Sealed for WgpuVideoBackendFactory<'_> {}
-
-impl VideoBackendFactory for WgpuVideoBackendFactory<'_> {
-    /// Формирует neutral startup request и делегирует backend selection selector-у.
-    fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend> {
-        let startup_request = VideoBackendStartupRequest::new(
-            self.instance,
-            self.adapter,
-            self.device,
-            self.queue,
-            self.startup_config,
-        );
-        let backend_selector = ProductionVideoBackendSelector::production_default();
-
-        backend_selector.start_video_backend(&startup_request)
     }
 }
 

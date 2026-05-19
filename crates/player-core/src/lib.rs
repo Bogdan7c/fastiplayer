@@ -32,10 +32,13 @@ pub use command::{
 pub(crate) use command::{ScrubCommitIntent, ScrubUpdateIntent, SessionScrubCommand};
 #[cfg(test)]
 pub(crate) use decoder_boundary::DecodeBackpressureReason;
-pub use decoder_boundary::PlayerVideoDecoderThreadConfig;
 pub(crate) use decoder_boundary::{
     DecodeSendError, DecodeThreadError, DecoderResourceSnapshot, PlayerDecodePacket,
-    PlayerVideoDecoderThreadHandle, WgpuRenderTextureProviderHandle,
+    PlayerVideoDecoderThreadHandle,
+};
+pub use decoder_boundary::{
+    PlayerVideoDecoderThreadConfig, WgpuRenderTextureProvider, WgpuRenderTextureProviderHandle,
+    WgpuRenderTextureViewLookup, WgpuRenderTextureViews,
 };
 pub(crate) use diagnostics::{
     ActiveSeekDiagnosticsSnapshot, PlaybackDiagnostics, SeekProgressBlocker,
@@ -74,7 +77,7 @@ pub use tick::{
     PlayerPipelinePause, PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult,
     PlayerVideoDropReason, PlayerVideoFrameDrop,
 };
-pub use video_backend::{StartedVideoBackend, VideoBackendFactory, WgpuVideoBackendFactory};
+pub use video_backend::{StartedVideoBackend, VideoBackendFactory};
 pub use worker::{
     PlayerCommandSender, PlayerRenderError, PlayerRenderErrorKind, PlayerWorker,
     PlayerWorkerConfig, PlayerWorkerEvent, PlayerWorkerJoinError, PlayerWorkerSendError,
