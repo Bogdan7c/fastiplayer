@@ -3,8 +3,7 @@ use std::time::{Duration, Instant};
 
 use capability_core::{SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection};
 use codec_core::{
-    ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction, VideoCodec,
-    VideoDecodeRequirement, VideoMetadataSource, resolve_video_metadata,
+    VideoCodec, VideoDecodeRequirement, VideoMetadataSource, resolve_video_metadata,
     unsupported_requirement_can_be_refined_by_packet_probe as codec_requirement_can_be_refined_by_packet_probe,
     video_requirement_needs_packet_refinement,
 };
@@ -23,17 +22,17 @@ use crate::seek_state::{
     SeekCommitKind, SeekCommitState, SeekDemuxRequestError, demux_seek_request_for_transaction,
 };
 use crate::{
-    ActiveSeekDiagnosticsSnapshot, AudioBufferSnapshot, BackendSnapshot, FrameCounters,
-    MediaOpenRequest, MediaSource, MediaSummary, PipelineLatencyStage, PipelinePauseReason,
-    PipelineQueueDepthSnapshot, PlaybackDiagnostics, PlaybackDiagnosticsLogSummary,
-    PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent,
-    PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection, QueueSnapshot,
+    ActiveSeekDiagnosticsSnapshot, FrameCounters, MediaOpenRequest, MediaSource, MediaSummary,
+    PipelineLatencyStage, PipelinePauseReason, PipelineQueueDepthSnapshot, PlaybackDiagnostics,
+    PlaybackDiagnosticsLogSummary, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError,
+    PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection,
     RenderTextureProviderHandle, ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration,
     ScrubUpdateIntent, SeekMode, SeekProgressBlocker, SeekRequest, SessionScrubCommand,
-    TexturePoolSnapshot, TextureSlotPressureSnapshot, TrackId, TrackSelectionSnapshot,
-    TrackSummarySnapshot, VideoBackendFactory, VideoDropReason, VideoFrameSnapshot,
-    WorkerWakeupDiagnosticsSnapshot,
+    TextureSlotPressureSnapshot, TrackId, TrackSelectionSnapshot, VideoBackendFactory,
+    VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
 };
+
+mod snapshot_builder;
 
 /// Preview frame, который был реально показан в рамках конкретного scrub intent-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -524,23 +523,7 @@ impl PlayerSession {
     /// Собирает актуальный snapshot для UI, renderer и desktop integration.
     #[must_use]
     pub fn snapshot_with_frame_counters(&self, frame_counters: FrameCounters) -> PlayerSnapshot {
-        let mut snapshot = self.snapshot.clone();
-        snapshot.playback_state = self.playback_state();
-        snapshot.source_label = self.source_label();
-        snapshot.media_title = self.media_title();
-        snapshot.selected_tracks = self.track_selection_snapshot();
-        snapshot.tracks = self.track_summary_snapshot();
-        snapshot.active_backend = self.backend_snapshot();
-        snapshot.current_video_frame = self.current_video_frame_snapshot();
-        snapshot.render_generation = self.pipeline.render_generation;
-        snapshot.video_frame_duration_estimate = self.pipeline.video_frame_duration_estimate;
-        snapshot.audio_buffer = self.audio_buffer_snapshot();
-        snapshot.queues = self.queue_snapshot();
-        snapshot.frame_counters = frame_counters;
-        snapshot.diagnostics = self
-            .diagnostics
-            .snapshot_with_queues(self.diagnostic_queue_depths());
-        snapshot
+        snapshot_builder::build_snapshot(self, frame_counters)
     }
 
     /// Сообщает, что session уже получила shutdown-запрос.
@@ -2974,118 +2957,6 @@ impl PlayerSession {
         info!("Audio pipeline инициализирован");
     }
 
-    /// Формирует метку источника без раскрытия mutable demuxer state.
-    fn source_label(&self) -> Option<String> {
-        self.pipeline
-            .file_path
-            .as_ref()
-            .map(|file_path| file_path.display().to_string())
-            .or_else(|| self.pipeline.source_label.clone())
-            .or_else(|| self.snapshot.source_label.clone())
-    }
-
-    /// Возвращает имя файла или streaming label как текущий media title.
-    fn media_title(&self) -> Option<String> {
-        self.pipeline
-            .file_path
-            .as_ref()
-            .and_then(|file_path| file_path.file_name())
-            .map(|file_name| file_name.to_string_lossy().into_owned())
-            .or_else(|| self.snapshot.media_title.clone())
-    }
-
-    /// Собирает snapshot выбранных tracks.
-    fn track_selection_snapshot(&self) -> TrackSelectionSnapshot {
-        TrackSelectionSnapshot {
-            video_track: self.pipeline.video_track_id,
-            audio_track: self.pipeline.audio_track_id,
-            subtitle_track: self.snapshot.selected_tracks.subtitle_track,
-        }
-    }
-
-    /// Собирает compact track metadata для UI.
-    fn track_summary_snapshot(&self) -> Vec<TrackSummarySnapshot> {
-        self.pipeline
-            .tracks
-            .iter()
-            .map(|track| TrackSummarySnapshot {
-                id: track.id,
-                kind: track.kind,
-                codec_id: track.codec_id.clone(),
-                sample_rate: track.sample_rate,
-                channels: track.channels,
-                video_color_summary: video_color_summary(track),
-            })
-            .collect()
-    }
-
-    /// Собирает snapshot активного backend и texture pool.
-    fn backend_snapshot(&self) -> BackendSnapshot {
-        BackendSnapshot {
-            name: Some(self.pipeline.video_backend.to_string()),
-            texture_pool: self.texture_pool_snapshot(),
-        }
-    }
-
-    /// Конвертирует backend resource stats в core snapshot.
-    fn texture_pool_snapshot(&self) -> Option<TexturePoolSnapshot> {
-        self.pipeline
-            .video_decoder_resource_snapshot()
-            .map(|texture_stats| TexturePoolSnapshot {
-                capacity: texture_stats.capacity,
-                slots: texture_stats.slots,
-                in_use: texture_stats.in_use,
-                free_surfaces: texture_stats.free_surfaces,
-                waiting_gpu_completion: texture_stats.waiting_gpu_completion,
-                waiting_decoder_reuse: texture_stats.waiting_decoder_reuse,
-                import_failures: texture_stats.import_failures,
-                imports_created: texture_stats.imports_created,
-                imports_reused: texture_stats.imports_reused,
-                imports_replaced: texture_stats.imports_replaced,
-            })
-    }
-
-    /// Описывает текущий кадр без передачи renderer-owned ресурсов.
-    fn current_video_frame_snapshot(&self) -> Option<VideoFrameSnapshot> {
-        self.pipeline
-            .present_video_frame()
-            .map(|present_frame| VideoFrameSnapshot {
-                render_generation: self.pipeline.render_generation,
-                handle: present_frame.texture_handle.0,
-                pts: present_frame.pts,
-                width: present_frame.width,
-                height: present_frame.height,
-                render_width: present_frame.render_width,
-                render_height: present_frame.render_height,
-                format: present_frame.format,
-                memory_path: present_frame.memory_path,
-            })
-    }
-
-    /// Собирает snapshot audio buffer.
-    fn audio_buffer_snapshot(&self) -> AudioBufferSnapshot {
-        AudioBufferSnapshot {
-            level: self
-                .audio_buffer_level_ms()
-                .and_then(|level_ms| optional_duration_from_seconds(level_ms / 1000.0)),
-            underruns: self
-                .pipeline
-                .audio_clock
-                .as_ref()
-                .map(|audio_clock| audio_clock.underrun_callbacks())
-                .unwrap_or(0),
-        }
-    }
-
-    /// Собирает snapshot очередей без раскрытия их содержимого.
-    fn queue_snapshot(&self) -> QueueSnapshot {
-        QueueSnapshot {
-            pending_audio_packets: self.pipeline.pending_audio_packet_len(),
-            pending_video_packets: self.pipeline.pending_video_packet_len(),
-            decoded_video_frames: self.pipeline.video_present_queue_len(),
-        }
-    }
-
     /// Собирает codec/render-neutral queue depths для diagnostics aggregator.
     fn diagnostic_queue_depths(&self) -> PipelineQueueDepthSnapshot {
         let decoder_send_queue_depth = self
@@ -3102,20 +2973,21 @@ impl PlayerSession {
             decoder_ready_queue_depth: None,
             active_render_leases: self.pipeline.leased_video_textures.len(),
             deferred_render_releases: self.pipeline.deferred_video_texture_releases.len(),
-            texture_slots: self.texture_pool_snapshot().map(|texture_pool| {
-                TextureSlotPressureSnapshot {
-                    capacity: texture_pool.capacity,
-                    slots: texture_pool.slots,
-                    in_use: texture_pool.in_use,
-                    free_surfaces: texture_pool.free_surfaces,
-                    waiting_gpu_completion: texture_pool.waiting_gpu_completion,
-                    waiting_decoder_reuse: texture_pool.waiting_decoder_reuse,
-                    import_failures: texture_pool.import_failures,
-                    imports_created: texture_pool.imports_created,
-                    imports_reused: texture_pool.imports_reused,
-                    imports_replaced: texture_pool.imports_replaced,
-                }
-            }),
+            texture_slots: self
+                .pipeline
+                .video_decoder_resource_snapshot()
+                .map(|texture_stats| TextureSlotPressureSnapshot {
+                    capacity: texture_stats.capacity,
+                    slots: texture_stats.slots,
+                    in_use: texture_stats.in_use,
+                    free_surfaces: texture_stats.free_surfaces,
+                    waiting_gpu_completion: texture_stats.waiting_gpu_completion,
+                    waiting_decoder_reuse: texture_stats.waiting_decoder_reuse,
+                    import_failures: texture_stats.import_failures,
+                    imports_created: texture_stats.imports_created,
+                    imports_reused: texture_stats.imports_reused,
+                    imports_replaced: texture_stats.imports_replaced,
+                }),
         }
     }
 }
@@ -3184,59 +3056,6 @@ fn log_selected_video_track_metadata(
     );
 }
 
-/// Формирует compact color summary для media info panel.
-fn video_color_summary(track: &TrackInfo) -> Option<String> {
-    let color = track.video.as_ref()?.color.as_ref()?;
-    Some(format!(
-        "{} {} {} {}",
-        display_primaries(color.primaries),
-        display_transfer(color.transfer),
-        display_matrix(color.matrix),
-        display_range(color.range)
-    ))
-}
-
-/// Возвращает stable label для primaries.
-fn display_primaries(primaries: ColorPrimaries) -> &'static str {
-    match primaries {
-        ColorPrimaries::Bt709 => "BT.709",
-        ColorPrimaries::Bt2020 => "BT.2020",
-        ColorPrimaries::Smpte170m => "SMPTE 170M",
-        ColorPrimaries::Bt470Bg => "BT.470BG",
-        ColorPrimaries::Unknown => "primaries unknown",
-    }
-}
-
-/// Возвращает stable label для transfer function.
-fn display_transfer(transfer: TransferFunction) -> &'static str {
-    match transfer {
-        TransferFunction::Bt709 => "BT.709",
-        TransferFunction::Srgb => "sRGB",
-        TransferFunction::Pq => "PQ",
-        TransferFunction::Hlg => "HLG",
-        TransferFunction::Unknown => "transfer unknown",
-    }
-}
-
-/// Возвращает stable label для matrix coefficients.
-fn display_matrix(matrix: MatrixCoefficients) -> &'static str {
-    match matrix {
-        MatrixCoefficients::Bt601 => "BT.601",
-        MatrixCoefficients::Bt709 => "BT.709 matrix",
-        MatrixCoefficients::Bt2020 => "BT.2020 matrix",
-        MatrixCoefficients::Unknown => "matrix unknown",
-    }
-}
-
-/// Возвращает stable label для range.
-fn display_range(range: ColorRange) -> &'static str {
-    match range {
-        ColorRange::Limited => "limited",
-        ColorRange::Full => "full",
-        ColorRange::Unknown => "range unknown",
-    }
-}
-
 /// Переводит structured capability error в player error model.
 fn player_error_from_unsupported_requirement(error: UnsupportedVideoRequirement) -> PlayerError {
     let kind = match error.rejections.first() {
@@ -3296,11 +3115,6 @@ impl Default for PlayerSession {
             demuxer_options: DemuxerOptions::default(),
         }
     }
-}
-
-/// Безопасно создаёт `Duration` только из finite и неотрицательных секунд.
-fn optional_duration_from_seconds(seconds: f64) -> Option<Duration> {
-    Duration::try_from_secs_f64(seconds).ok()
 }
 
 /// Возвращает срез audio samples, который начинается не раньше текущей media clock base.
@@ -3396,6 +3210,8 @@ fn saturating_duration_add(timestamp: Duration, offset: Duration) -> Duration {
 mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
+
+    use codec_core::{ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction};
 
     use super::*;
     use crate::{
