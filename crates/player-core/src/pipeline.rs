@@ -198,14 +198,14 @@ pub(crate) struct PlaybackPipeline {
     pub(crate) video_decode_in_flight_packets: usize,
 
     /// Очередь декодированных видеокадров перед presentation.
-    pub(crate) video_frame_queue: VecDeque<video_core::DecodedFrame>,
+    video_frame_queue: VecDeque<video_core::DecodedFrame>,
 
     /// Последний свежедекодированный frame до final seek target для EOF fallback.
     ///
     /// При seek в самый конец файла requested target может оказаться позже
     /// последнего реального video PTS. Такой frame нельзя показывать сразу как
     /// точный target, но его нужно сохранить до EOF, чтобы не зависнуть в seek.
-    pub(crate) seek_preroll_fallback_video_frame: Option<video_core::DecodedFrame>,
+    seek_preroll_fallback_video_frame: Option<video_core::DecodedFrame>,
 
     /// Текущая оценка длительности одного video frame.
     pub(crate) video_frame_duration_estimate: Duration,
@@ -214,7 +214,7 @@ pub(crate) struct PlaybackPipeline {
     pub(crate) last_decoded_video_pts: Option<Duration>,
 
     /// Текущий кадр для отображения, выбранный scheduler.
-    pub(crate) present_video_frame: Option<video_core::DecodedFrame>,
+    present_video_frame: Option<video_core::DecodedFrame>,
 
     /// Поколение render resources текущего media pipeline.
     pub(crate) render_generation: u64,
@@ -850,5 +850,134 @@ impl Default for PlaybackPipeline {
             video_backend: "Synthetic (test)",
             active_video_requirement: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Создаёт decoded frame без реальных GPU resources для проверки pipeline storage.
+    fn decoded_frame_for_tests(pts: Duration, texture_handle: u64) -> video_core::DecodedFrame {
+        video_core::DecodedFrame {
+            pts,
+            format: video_core::DecodedPixelFormat::Nv12,
+            bit_depth: codec_core::BitDepth::Eight,
+            chroma: codec_core::ChromaSubsampling::Yuv420,
+            memory_path: video_core::FrameMemoryPath::DmaBufZeroCopy,
+            width: 640,
+            height: 360,
+            render_width: 640,
+            render_height: 360,
+            color: codec_core::VideoColorMetadata::sdr_bt709_limited(),
+            texture_handle: video_core::FrameTextureHandle(texture_handle),
+            diagnostics: video_core::VideoFrameDiagnostics::default(),
+        }
+    }
+
+    #[test]
+    fn queued_video_frame_methods_preserve_fifo_order_and_len() {
+        let mut pipeline = PlaybackPipeline::default();
+
+        assert!(pipeline.video_present_queue_is_empty());
+        assert_eq!(pipeline.video_present_queue_len(), 0);
+
+        pipeline.enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(16), 1));
+        pipeline.enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(33), 2));
+
+        assert_eq!(pipeline.video_present_queue_len(), 2);
+        assert_eq!(
+            pipeline.front_queued_video_frame().map(|frame| frame.pts),
+            Some(Duration::from_millis(16))
+        );
+        assert_eq!(
+            pipeline
+                .front_and_next_queued_video_frames()
+                .map(|(front_frame, next_frame)| (front_frame.pts, next_frame.pts)),
+            Some((Duration::from_millis(16), Duration::from_millis(33)))
+        );
+
+        assert_eq!(
+            pipeline
+                .pop_queued_video_frame_front()
+                .map(|frame| frame.texture_handle),
+            Some(video_core::FrameTextureHandle(1))
+        );
+        assert_eq!(
+            pipeline
+                .pop_queued_video_frame_front()
+                .map(|frame| frame.texture_handle),
+            Some(video_core::FrameTextureHandle(2))
+        );
+        assert!(pipeline.pop_queued_video_frame_front().is_none());
+        assert!(pipeline.video_present_queue_is_empty());
+    }
+
+    #[test]
+    fn present_video_frame_methods_keep_replacement_ownership_explicit() {
+        let mut pipeline = PlaybackPipeline::default();
+
+        assert!(!pipeline.has_present_video_frame());
+        assert!(pipeline.present_video_frame().is_none());
+        assert!(pipeline.take_present_video_frame().is_none());
+
+        pipeline.set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(10), 10));
+
+        assert!(pipeline.has_present_video_frame());
+        assert_eq!(
+            pipeline.present_video_frame().map(|frame| frame.pts),
+            Some(Duration::from_millis(10))
+        );
+
+        let replaced_frame = pipeline
+            .replace_present_video_frame(decoded_frame_for_tests(Duration::from_millis(20), 20));
+
+        assert_eq!(
+            replaced_frame.map(|frame| frame.texture_handle),
+            Some(video_core::FrameTextureHandle(10))
+        );
+        assert_eq!(
+            pipeline
+                .take_present_video_frame()
+                .map(|frame| frame.texture_handle),
+            Some(video_core::FrameTextureHandle(20))
+        );
+        assert!(!pipeline.has_present_video_frame());
+    }
+
+    #[test]
+    fn clear_video_queues_returns_only_queued_texture_handles() {
+        let mut pipeline = PlaybackPipeline::default();
+
+        pipeline.enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(16), 1));
+        pipeline.enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(33), 2));
+        pipeline.set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(50), 3));
+        pipeline.replace_seek_preroll_fallback_video_frame(decoded_frame_for_tests(
+            Duration::from_millis(40),
+            4,
+        ));
+
+        let released_texture_handles = pipeline.clear_video_queues();
+
+        assert_eq!(
+            released_texture_handles,
+            vec![
+                video_core::FrameTextureHandle(1),
+                video_core::FrameTextureHandle(2)
+            ]
+        );
+        assert!(pipeline.video_present_queue_is_empty());
+        assert_eq!(
+            pipeline
+                .present_video_frame()
+                .map(|frame| frame.texture_handle),
+            Some(video_core::FrameTextureHandle(3))
+        );
+        assert_eq!(
+            pipeline
+                .take_seek_preroll_fallback_video_frame()
+                .map(|frame| frame.texture_handle),
+            Some(video_core::FrameTextureHandle(4))
+        );
     }
 }

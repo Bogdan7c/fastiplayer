@@ -736,8 +736,7 @@ impl RenderLeaseBridge {
         session.pipeline.video_decoder_thread.as_ref()?;
         session
             .pipeline
-            .present_video_frame
-            .as_ref()
+            .present_video_frame()
             .map(|frame| PresentFrameLeaseIdentity {
                 render_generation: session.pipeline.render_generation(),
                 texture_handle: frame.texture_handle,

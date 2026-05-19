@@ -3864,7 +3864,7 @@ mod tests {
                 .map(|seek_commit| (seek_commit.kind, seek_commit.target_position)),
             Some((SeekCommitKind::Final, MediaTime::from_secs(12)))
         );
-        assert!(session.pipeline.present_video_frame.is_none());
+        assert!(session.pipeline.present_video_frame().is_none());
         assert_eq!(session.snapshot().current_position, Duration::ZERO);
         assert!(!session.snapshot().timeline.scrubbing);
         assert!(session.snapshot().timeline.seeking);
@@ -3919,8 +3919,9 @@ mod tests {
     fn preview_timeout_without_target_frame_marks_preview_expired() {
         let mut session = PlayerSession::new();
         install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
-        session.pipeline.present_video_frame =
-            Some(decoded_frame_for_tests(Duration::from_secs(1), 40));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(1), 40));
         let request = SeekRequest::absolute(MediaTime::from_secs(8));
 
         session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
@@ -4053,8 +4054,9 @@ mod tests {
         session
             .dispatch_command(PlayerCommand::PreviewScrub(request))
             .unwrap();
-        session.pipeline.present_video_frame =
-            Some(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
         session.note_presented_frame_for_seek(Duration::from_millis(7_900));
 
         let tick_now = session
@@ -4143,8 +4145,9 @@ mod tests {
         session
             .dispatch_command(PlayerCommand::PreviewScrub(request))
             .unwrap();
-        session.pipeline.present_video_frame =
-            Some(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
         session.note_presented_frame_for_seek(Duration::from_millis(7_900));
 
         session
@@ -4171,8 +4174,7 @@ mod tests {
         assert_eq!(
             session
                 .pipeline
-                .present_video_frame
-                .as_ref()
+                .present_video_frame()
                 .map(|frame| frame.pts),
             Some(Duration::from_secs(8))
         );
@@ -4194,8 +4196,9 @@ mod tests {
         session
             .dispatch_command(PlayerCommand::PreviewScrub(request))
             .unwrap();
-        session.pipeline.present_video_frame =
-            Some(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
         session.note_presented_frame_for_seek(Duration::from_millis(7_900));
 
         session
@@ -4238,8 +4241,9 @@ mod tests {
         session
             .dispatch_command(PlayerCommand::PreviewScrub(request))
             .unwrap();
-        session.pipeline.present_video_frame =
-            Some(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
         session.note_presented_frame_for_seek(Duration::from_millis(7_900));
 
         session
@@ -4282,8 +4286,9 @@ mod tests {
         session
             .dispatch_command(PlayerCommand::PreviewScrub(request))
             .unwrap();
-        session.pipeline.present_video_frame =
-            Some(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
         session.note_presented_frame_for_seek(Duration::from_millis(7_900));
 
         session
@@ -4325,8 +4330,9 @@ mod tests {
         session
             .dispatch_command(PlayerCommand::PreviewScrub(visible_request))
             .unwrap();
-        session.pipeline.present_video_frame =
-            Some(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
         session.note_presented_frame_for_seek(Duration::from_millis(7_900));
 
         session
@@ -4379,8 +4385,9 @@ mod tests {
         session
             .dispatch_command(PlayerCommand::PreviewScrub(visible_request))
             .unwrap();
-        session.pipeline.present_video_frame =
-            Some(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
         session.note_presented_frame_for_seek(Duration::from_millis(7_900));
 
         session
@@ -4444,8 +4451,9 @@ mod tests {
                 stale_request,
             )))
             .unwrap();
-        session.pipeline.present_video_frame =
-            Some(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
         session.note_presented_frame_for_seek(Duration::from_millis(7_900));
 
         session
@@ -4509,8 +4517,9 @@ mod tests {
         session
             .dispatch_command(PlayerCommand::PreviewScrub(visible_request))
             .unwrap();
-        session.pipeline.present_video_frame =
-            Some(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
         session.note_presented_frame_for_seek(Duration::from_millis(7_900));
 
         session
@@ -4540,8 +4549,7 @@ mod tests {
         assert_eq!(
             session
                 .pipeline
-                .present_video_frame
-                .as_ref()
+                .present_video_frame()
                 .map(|frame| frame.pts),
             Some(Duration::from_millis(7_900))
         );
@@ -4563,8 +4571,9 @@ mod tests {
         session
             .dispatch_command(PlayerCommand::PreviewScrub(request))
             .unwrap();
-        session.pipeline.present_video_frame =
-            Some(decoded_frame_for_tests(Duration::from_secs(8), 42));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(8), 42));
         session.note_presented_frame_for_seek(Duration::from_secs(8));
         session.finish_seek_commit_if_ready(
             Instant::now(),
@@ -5095,7 +5104,7 @@ mod tests {
             )))
             .unwrap();
         let target_frame = decoded_frame_for_tests(Duration::from_secs(6), 42);
-        session.pipeline.present_video_frame = Some(target_frame);
+        session.pipeline.set_present_video_frame(target_frame);
         session.note_presented_frame_for_seek(Duration::from_secs(6));
 
         session.finish_seek_commit_if_ready(
@@ -5140,8 +5149,7 @@ mod tests {
         assert_eq!(
             session
                 .pipeline
-                .present_video_frame
-                .as_ref()
+                .present_video_frame()
                 .map(|frame| frame.pts),
             Some(Duration::from_secs(6))
         );
@@ -5193,12 +5201,11 @@ mod tests {
         assert_eq!(
             session
                 .pipeline
-                .present_video_frame
-                .as_ref()
+                .present_video_frame()
                 .map(|frame| frame.pts),
             Some(Duration::from_secs(2))
         );
-        assert!(session.pipeline.seek_preroll_fallback_video_frame.is_none());
+        assert!(!session.pipeline.has_seek_preroll_fallback_video_frame());
     }
 
     #[test]
@@ -5209,8 +5216,9 @@ mod tests {
         session
             .pipeline
             .set_video_decoder_thread(fake_decoder.clone());
-        session.pipeline.present_video_frame =
-            Some(decoded_frame_for_tests(Duration::from_secs(1), 1));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(1), 1));
 
         session
             .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
@@ -5229,8 +5237,7 @@ mod tests {
         assert_eq!(
             session
                 .pipeline
-                .present_video_frame
-                .as_ref()
+                .present_video_frame()
                 .map(|frame| frame.pts),
             Some(Duration::from_secs(6))
         );
@@ -5275,8 +5282,7 @@ mod tests {
         assert_eq!(
             session
                 .pipeline
-                .present_video_frame
-                .as_ref()
+                .present_video_frame()
                 .map(|frame| frame.pts),
             Some(Duration::from_millis(6_016))
         );
@@ -5319,8 +5325,7 @@ mod tests {
         assert_eq!(
             session
                 .pipeline
-                .present_video_frame
-                .as_ref()
+                .present_video_frame()
                 .map(|frame| frame.pts),
             Some(Duration::from_secs(24))
         );
@@ -5374,8 +5379,7 @@ mod tests {
         assert_eq!(
             session
                 .pipeline
-                .present_video_frame
-                .as_ref()
+                .present_video_frame()
                 .map(|frame| frame.pts),
             Some(Duration::from_millis(29_950))
         );
@@ -5395,8 +5399,9 @@ mod tests {
                 MediaTime::from_secs(6),
             )))
             .unwrap();
-        session.pipeline.present_video_frame =
-            Some(decoded_frame_for_tests(Duration::from_secs(6), 42));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
         session.note_presented_frame_for_seek(Duration::from_secs(6));
 
         session.finish_seek_commit_if_ready(
@@ -5446,8 +5451,9 @@ mod tests {
                 MediaTime::from_secs(6),
             )))
             .unwrap();
-        session.pipeline.present_video_frame =
-            Some(decoded_frame_for_tests(Duration::from_secs(6), 42));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
         session.note_presented_frame_for_seek(Duration::from_secs(6));
 
         session.finish_seek_commit_if_ready(

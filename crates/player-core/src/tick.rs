@@ -2385,8 +2385,7 @@ mod tests {
         assert_eq!(
             session
                 .pipeline
-                .present_video_frame
-                .as_ref()
+                .present_video_frame()
                 .map(|frame| frame.pts),
             Some(Duration::ZERO)
         );
@@ -2404,7 +2403,7 @@ mod tests {
         let tick_result = session.tick(PlayerTickContext::new(Instant::now()));
 
         assert_eq!(tick_result.video_frames_presented, 0);
-        assert!(session.pipeline.present_video_frame.is_none());
+        assert!(session.pipeline.present_video_frame().is_none());
         assert_eq!(session.pipeline.video_present_queue_len(), 1);
     }
 
@@ -2423,8 +2422,7 @@ mod tests {
         assert_eq!(
             session
                 .pipeline
-                .present_video_frame
-                .as_ref()
+                .present_video_frame()
                 .map(|frame| frame.pts),
             Some(Duration::from_millis(16))
         );
@@ -2445,8 +2443,7 @@ mod tests {
         assert_eq!(
             session
                 .pipeline
-                .present_video_frame
-                .as_ref()
+                .present_video_frame()
                 .map(|frame| frame.pts),
             Some(Duration::from_millis(100))
         );
@@ -2671,7 +2668,9 @@ mod tests {
     fn scheduler_repeats_current_frame_when_queue_is_empty() {
         let mut session = PlayerSession::new();
         session.dispatch_command(PlayerCommand::Play).unwrap();
-        session.pipeline.present_video_frame = Some(decoded_frame(Duration::ZERO, 1));
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame(Duration::ZERO, 1));
 
         let tick_result = session.tick(PlayerTickContext::new(Instant::now()));
 
@@ -2679,8 +2678,7 @@ mod tests {
         assert_eq!(
             session
                 .pipeline
-                .present_video_frame
-                .as_ref()
+                .present_video_frame()
                 .map(|frame| frame.pts),
             Some(Duration::ZERO)
         );
@@ -2719,8 +2717,7 @@ mod tests {
         assert_eq!(
             session
                 .pipeline
-                .present_video_frame
-                .as_ref()
+                .present_video_frame()
                 .map(|frame| frame.format),
             Some(video_core::DecodedPixelFormat::P010)
         );
