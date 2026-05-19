@@ -14,9 +14,7 @@ use media_core::{
 use tracing::{debug, info, trace, warn};
 
 use crate::media_opening::PreparedMedia;
-use crate::pipeline::{
-    MAX_OBSERVED_VIDEO_FRAME_DURATION, MIN_OBSERVED_VIDEO_FRAME_DURATION, MonotonicMediaClockAnchor,
-};
+use crate::pipeline::MonotonicMediaClockAnchor;
 use crate::seek_controller::PlaybackResumeIntent;
 use crate::seek_state::{
     SeekCommitKind, SeekCommitState, SeekDemuxRequestError, demux_seek_request_for_transaction,
@@ -493,20 +491,7 @@ impl PlayerSession {
 
     /// Обновляет оценку длительности video frame по очередному decoded PTS.
     pub fn observe_video_frame_pts(&mut self, pts: Duration) {
-        if let Some(previous_pts) = self.pipeline.last_decoded_video_pts {
-            let observed_duration = pts.saturating_sub(previous_pts);
-            if (MIN_OBSERVED_VIDEO_FRAME_DURATION..=MAX_OBSERVED_VIDEO_FRAME_DURATION)
-                .contains(&observed_duration)
-            {
-                let old_micros = self.pipeline.video_frame_duration_estimate.as_micros() as u64;
-                let new_micros = observed_duration.as_micros() as u64;
-                let smoothed_micros = (old_micros.saturating_mul(7) + new_micros) / 8;
-                self.pipeline.video_frame_duration_estimate =
-                    Duration::from_micros(smoothed_micros.max(1));
-            }
-        }
-
-        self.pipeline.last_decoded_video_pts = Some(pts);
+        self.pipeline.observe_decoded_video_frame_pts(pts);
     }
 
     /// Очищает video frame queue и present frame, освобождая texture slots.

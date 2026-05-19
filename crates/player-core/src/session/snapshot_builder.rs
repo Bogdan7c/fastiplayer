@@ -48,7 +48,7 @@ impl<'session> PlayerSnapshotBuilder<'session> {
         snapshot.current_video_frame = self.current_video_frame_snapshot();
         snapshot.render_generation = self.session.pipeline.render_generation;
         snapshot.video_frame_duration_estimate =
-            self.session.pipeline.video_frame_duration_estimate;
+            self.session.pipeline.video_frame_duration_estimate();
         snapshot.audio_buffer = self.audio_buffer_snapshot();
         snapshot.queues = self.queue_snapshot();
         snapshot.frame_counters = self.frame_counters;

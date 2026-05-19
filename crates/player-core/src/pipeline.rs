@@ -208,10 +208,10 @@ pub(crate) struct PlaybackPipeline {
     seek_preroll_fallback_video_frame: Option<video_core::DecodedFrame>,
 
     /// Текущая оценка длительности одного video frame.
-    pub(crate) video_frame_duration_estimate: Duration,
+    video_frame_duration_estimate: Duration,
 
     /// PTS последнего decoded frame для обновления оценки frame duration.
-    pub(crate) last_decoded_video_pts: Option<Duration>,
+    last_decoded_video_pts: Option<Duration>,
 
     /// Текущий кадр для отображения, выбранный scheduler.
     present_video_frame: Option<video_core::DecodedFrame>,
@@ -347,6 +347,35 @@ impl PlaybackPipeline {
     #[must_use]
     pub(crate) const fn packet_generation_is_current(&self, generation: u64) -> bool {
         generation == self.seek_generation
+    }
+
+    /// Возвращает текущую оценку длительности video frame без раскрытия estimator state.
+    #[must_use]
+    pub(crate) const fn video_frame_duration_estimate(&self) -> Duration {
+        self.video_frame_duration_estimate
+    }
+
+    /// Обновляет estimator по очередному decoded PTS, сохраняя прежнюю smoothing formula.
+    pub(crate) fn observe_decoded_video_frame_pts(&mut self, pts: Duration) {
+        if let Some(previous_pts) = self.last_decoded_video_pts {
+            let observed_duration = pts.saturating_sub(previous_pts);
+            if (MIN_OBSERVED_VIDEO_FRAME_DURATION..=MAX_OBSERVED_VIDEO_FRAME_DURATION)
+                .contains(&observed_duration)
+            {
+                let old_micros = self.video_frame_duration_estimate.as_micros() as u64;
+                let new_micros = observed_duration.as_micros() as u64;
+                let smoothed_micros = (old_micros.saturating_mul(7) + new_micros) / 8;
+                self.video_frame_duration_estimate = Duration::from_micros(smoothed_micros.max(1));
+            }
+        }
+
+        self.last_decoded_video_pts = Some(pts);
+    }
+
+    /// Возвращает estimator к bootstrap duration и забывает предыдущий decoded PTS.
+    pub(crate) fn reset_video_frame_timing_estimator(&mut self) {
+        self.video_frame_duration_estimate = DEFAULT_VIDEO_FRAME_DURATION;
+        self.last_decoded_video_pts = None;
     }
 
     /// Устанавливает generation для edge-case тестов saturation без обхода boundary чтения.
@@ -626,8 +655,7 @@ impl PlaybackPipeline {
         self.monotonic_media_clock_anchor = None;
         self.seek_generation = 0;
         self.audio_buffer_clear_generation = 0;
-        self.video_frame_duration_estimate = DEFAULT_VIDEO_FRAME_DURATION;
-        self.last_decoded_video_pts = None;
+        self.reset_video_frame_timing_estimator();
         self.last_audio_clock = Duration::ZERO;
         self.last_audio_clock_change_at = Instant::now();
     }
@@ -1211,6 +1239,75 @@ mod tests {
         assert_eq!(pipeline.pending_video_packet_len(), 1);
         assert!(pipeline.has_demuxer());
         assert_eq!(pipeline.track_count(), 2);
+    }
+
+    #[test]
+    fn video_frame_timing_first_observation_only_records_pts() {
+        let mut pipeline = PlaybackPipeline::default();
+
+        pipeline.observe_decoded_video_frame_pts(Duration::from_secs(10));
+
+        assert_eq!(
+            pipeline.video_frame_duration_estimate(),
+            DEFAULT_VIDEO_FRAME_DURATION
+        );
+    }
+
+    #[test]
+    fn video_frame_timing_valid_delta_updates_estimate_with_legacy_smoothing() {
+        let mut pipeline = PlaybackPipeline::default();
+        let observed_frame_duration = Duration::from_millis(20);
+
+        pipeline.observe_decoded_video_frame_pts(Duration::from_secs(10));
+        pipeline.observe_decoded_video_frame_pts(Duration::from_secs(10) + observed_frame_duration);
+
+        let old_micros = DEFAULT_VIDEO_FRAME_DURATION.as_micros() as u64;
+        let observed_micros = observed_frame_duration.as_micros() as u64;
+        let expected_micros = (old_micros.saturating_mul(7) + observed_micros) / 8;
+
+        assert_eq!(
+            pipeline.video_frame_duration_estimate(),
+            Duration::from_micros(expected_micros.max(1))
+        );
+    }
+
+    #[test]
+    fn video_frame_timing_ignores_out_of_range_deltas() {
+        let mut pipeline = PlaybackPipeline::default();
+        let first_pts = Duration::from_secs(10);
+        let too_small_pts = first_pts + MIN_OBSERVED_VIDEO_FRAME_DURATION / 2;
+        let too_large_pts = too_small_pts + MAX_OBSERVED_VIDEO_FRAME_DURATION * 2;
+
+        pipeline.observe_decoded_video_frame_pts(first_pts);
+        pipeline.observe_decoded_video_frame_pts(too_small_pts);
+        pipeline.observe_decoded_video_frame_pts(too_large_pts);
+
+        assert_eq!(
+            pipeline.video_frame_duration_estimate(),
+            DEFAULT_VIDEO_FRAME_DURATION
+        );
+    }
+
+    #[test]
+    fn video_frame_timing_reset_restores_default_and_clears_previous_pts() {
+        let mut pipeline = PlaybackPipeline::default();
+        let observed_frame_duration = Duration::from_millis(20);
+
+        pipeline.observe_decoded_video_frame_pts(Duration::from_secs(10));
+        pipeline.observe_decoded_video_frame_pts(Duration::from_secs(10) + observed_frame_duration);
+        assert_ne!(
+            pipeline.video_frame_duration_estimate(),
+            DEFAULT_VIDEO_FRAME_DURATION
+        );
+
+        pipeline.reset_video_frame_timing_estimator();
+        pipeline
+            .observe_decoded_video_frame_pts(Duration::from_secs(10) + observed_frame_duration * 2);
+
+        assert_eq!(
+            pipeline.video_frame_duration_estimate(),
+            DEFAULT_VIDEO_FRAME_DURATION
+        );
     }
 
     #[test]

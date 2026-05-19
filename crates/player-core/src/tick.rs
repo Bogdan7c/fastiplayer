@@ -1493,7 +1493,7 @@ fn video_present_lead(session: &PlayerSession, tick_config: &PlayerTickConfig) -
     );
     let present_lead = session
         .pipeline
-        .video_frame_duration_estimate
+        .video_frame_duration_estimate()
         .mul_f64(lead_frames);
 
     present_lead
@@ -1713,7 +1713,7 @@ fn video_present_window(session: &PlayerSession, tick_config: &PlayerTickConfig)
 
     session
         .pipeline
-        .video_frame_duration_estimate
+        .video_frame_duration_estimate()
         .mul_f64(window_frames)
 }
 
@@ -1726,7 +1726,7 @@ fn video_late_drop_grace(session: &PlayerSession, tick_config: &PlayerTickConfig
 
     session
         .pipeline
-        .video_frame_duration_estimate
+        .video_frame_duration_estimate()
         .mul_f64(grace_frames)
 }
 
@@ -1947,7 +1947,7 @@ fn delayed_frame_count(session: &PlayerSession, tick_late_by: Duration) -> usize
 
     let frame_nanos = session
         .pipeline
-        .video_frame_duration_estimate
+        .video_frame_duration_estimate()
         .as_nanos()
         .max(1);
     let late_nanos = tick_late_by.as_nanos();
@@ -2832,7 +2832,7 @@ mod tests {
         let mut session = PlayerSession::new();
         session.dispatch_command(PlayerCommand::Play).unwrap();
         let tick_config = PlayerTickConfig::default();
-        let frame_duration = session.pipeline.video_frame_duration_estimate;
+        let frame_duration = session.pipeline.video_frame_duration_estimate();
 
         for frame_index in 0..video_present_queue_target(&tick_config) {
             session.pipeline.enqueue_queued_video_frame(decoded_frame(
@@ -2867,7 +2867,7 @@ mod tests {
         let budget = adaptive_catch_up_budget(
             &session,
             &tick_config,
-            session.pipeline.video_frame_duration_estimate,
+            session.pipeline.video_frame_duration_estimate(),
         );
 
         assert!(budget.decoded_frames > tick_config.max_decoded_video_frames_drained_per_tick);
@@ -2920,7 +2920,7 @@ mod tests {
         assert!(!adaptive_catch_up_needed(
             &session,
             &tick_config,
-            session.pipeline.video_frame_duration_estimate
+            session.pipeline.video_frame_duration_estimate()
         ));
     }
 
