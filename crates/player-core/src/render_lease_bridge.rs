@@ -739,7 +739,7 @@ impl RenderLeaseBridge {
             .present_video_frame
             .as_ref()
             .map(|frame| PresentFrameLeaseIdentity {
-                render_generation: session.pipeline.render_generation,
+                render_generation: session.pipeline.render_generation(),
                 texture_handle: frame.texture_handle,
             })
     }

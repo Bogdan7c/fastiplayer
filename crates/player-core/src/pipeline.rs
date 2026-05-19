@@ -24,6 +24,32 @@ pub(crate) const MIN_OBSERVED_VIDEO_FRAME_DURATION: Duration = Duration::from_mi
 /// Максимальная разумная длительность кадра для оценки FPS.
 pub(crate) const MAX_OBSERVED_VIDEO_FRAME_DURATION: Duration = Duration::from_millis(100);
 
+/// Результат снятия render lease-а из accounting map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RenderLeaseReleaseEffect {
+    /// Drop-ack пришёл для lease-а, которого pipeline уже не учитывает.
+    UnknownLease,
+
+    /// Lease count уменьшен, но другие clone-ы всё ещё держат texture handle.
+    LeaseStillActive,
+
+    /// Последний lease снят, deferred texture release для handle не был запрошен.
+    ReleasedWithoutDeferredTexture,
+
+    /// Последний lease снят, и ранее отложенный texture release можно выполнить.
+    DeferredTextureReady,
+}
+
+/// Решение pipeline accounting при запросе release texture handle-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VideoTextureReleaseEffect {
+    /// Texture handle удерживается renderer-ом и должен быть освобождён после drop-ack.
+    DeferredUntilRenderLeaseDrop,
+
+    /// Активных render leases нет, texture handle можно сразу вернуть decoder-у.
+    ReleaseNow,
+}
+
 /// Anchor внутреннего monotonic media clock для media без audio clock.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MonotonicMediaClockAnchor {
@@ -488,6 +514,12 @@ impl PlaybackPipeline {
         self.render_generation = self.render_generation.wrapping_add(1);
     }
 
+    /// Возвращает текущее поколение render resources без доступа к полю accounting-а.
+    #[must_use]
+    pub(crate) const fn render_generation(&self) -> u64 {
+        self.render_generation
+    }
+
     /// Сбрасывает все media-specific поля после того, как session освободила video frames.
     pub(crate) fn reset_media_slots(&mut self) {
         self.demuxer = None;
@@ -704,10 +736,64 @@ impl PlaybackPipeline {
         self.video_decode_in_flight_packets
     }
 
-    /// Возвращает количество активных render leases для тестов lease/release контракта.
-    #[cfg(test)]
+    /// Регистрирует render lease только для актуального поколения renderer resources.
+    pub(crate) fn try_register_render_lease(
+        &mut self,
+        render_generation: u64,
+        texture_handle: video_core::FrameTextureHandle,
+    ) -> bool {
+        if render_generation != self.render_generation {
+            return false;
+        }
+
+        let lease_key = (render_generation, texture_handle.0);
+        let lease_count = self.leased_video_textures.entry(lease_key).or_insert(0);
+        *lease_count = lease_count.saturating_add(1);
+        true
+    }
+
+    /// Снимает один render lease и возвращает точный accounting outcome.
+    pub(crate) fn release_render_lease_accounting(
+        &mut self,
+        render_generation: u64,
+        texture_handle: video_core::FrameTextureHandle,
+    ) -> RenderLeaseReleaseEffect {
+        let lease_key = (render_generation, texture_handle.0);
+
+        let Some(lease_count) = self.leased_video_textures.get_mut(&lease_key) else {
+            return RenderLeaseReleaseEffect::UnknownLease;
+        };
+
+        if *lease_count > 1 {
+            *lease_count -= 1;
+            return RenderLeaseReleaseEffect::LeaseStillActive;
+        }
+
+        self.leased_video_textures.remove(&lease_key);
+        if self.deferred_video_texture_releases.remove(&lease_key) {
+            RenderLeaseReleaseEffect::DeferredTextureReady
+        } else {
+            RenderLeaseReleaseEffect::ReleasedWithoutDeferredTexture
+        }
+    }
+
+    /// Помечает texture handle текущего поколения как deferred, если renderer держит lease.
+    pub(crate) fn request_video_texture_release(
+        &mut self,
+        texture_handle: video_core::FrameTextureHandle,
+    ) -> VideoTextureReleaseEffect {
+        let lease_key = (self.render_generation, texture_handle.0);
+        if self.leased_video_textures.contains_key(&lease_key) {
+            self.deferred_video_texture_releases.insert(lease_key);
+            return VideoTextureReleaseEffect::DeferredUntilRenderLeaseDrop;
+        }
+
+        VideoTextureReleaseEffect::ReleaseNow
+    }
+
+    /// Возвращает количество texture handles, удерживаемых render leases.
     #[must_use]
-    pub(crate) fn render_lease_count(&self) -> usize {
+    pub(crate) fn active_render_lease_count(&self) -> usize {
         self.leased_video_textures.len()
     }
 
@@ -722,10 +808,9 @@ impl PlaybackPipeline {
             .contains(&(self.render_generation, texture_handle.0))
     }
 
-    /// Возвращает количество отложенных texture releases для тестов render boundary.
-    #[cfg(test)]
+    /// Возвращает количество отложенных texture releases.
     #[must_use]
-    pub(crate) fn deferred_video_texture_release_count(&self) -> usize {
+    pub(crate) fn deferred_render_release_count(&self) -> usize {
         self.deferred_video_texture_releases.len()
     }
 }

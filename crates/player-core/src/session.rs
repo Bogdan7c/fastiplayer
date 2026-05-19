@@ -28,16 +28,18 @@ use crate::{
     PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection,
     ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration, ScrubUpdateIntent, SeekMode,
     SeekProgressBlocker, SeekRequest, SessionScrubCommand, TextureSlotPressureSnapshot, TrackId,
-    TrackSelectionSnapshot, VideoBackendFactory, VideoDropReason, WgpuRenderTextureProviderHandle,
-    WorkerWakeupDiagnosticsSnapshot,
+    TrackSelectionSnapshot, VideoBackendFactory, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
 };
 
 use self::scrub_state::{
     SessionScrubFinishDecision, SessionScrubState, SessionScrubUpdateAcceptance,
 };
 
+mod render_leases;
 mod scrub_state;
 mod snapshot_builder;
+
+pub(crate) use self::render_leases::LeasedPresentFrame;
 
 /// Чистый план запуска audio decoder-а без CPAL/output side effects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,21 +94,6 @@ pub struct PlayerSession {
 
     /// Final seek near EOF завершился свежим frame-ом до requested target.
     seek_eof_fallback_video_position: Option<MediaTime>,
-}
-
-/// Данные present frame, которые worker превращает в render lease без доступа к pipeline.
-pub(crate) struct LeasedPresentFrame {
-    /// Поколение render resources, в котором был создан frame/texture handle.
-    pub render_generation: u64,
-
-    /// Декодированный кадр, выбранный scheduler-ом для presentation.
-    pub frame: video_core::DecodedFrame,
-
-    /// `true`, если кадр ещё относится к старой позиции во время seek/scrub.
-    pub stale: bool,
-
-    /// WGPU provider texture views из backend-а, создавшего кадр.
-    pub texture_provider: WgpuRenderTextureProviderHandle,
 }
 
 impl PlayerSession {
@@ -183,51 +170,6 @@ impl PlayerSession {
     #[must_use]
     pub fn current_file_path(&self) -> Option<&Path> {
         self.pipeline.file_path.as_deref()
-    }
-
-    /// Резервирует текущий present frame для render thread без раскрытия `PlaybackPipeline`.
-    #[must_use]
-    pub(crate) fn lease_present_video_frame(&mut self) -> Option<LeasedPresentFrame> {
-        let texture_provider = self.pipeline.video_decoder_texture_view_provider()?;
-        let frame = self.pipeline.present_video_frame()?.clone();
-        let render_generation = self.pipeline.render_generation;
-        let stale = self.snapshot.timeline.stale_frame;
-
-        if !self.register_render_lease(render_generation, frame.texture_handle) {
-            return None;
-        }
-
-        Some(LeasedPresentFrame {
-            render_generation,
-            frame,
-            stale,
-            texture_provider,
-        })
-    }
-
-    /// Возвращает количество активных render leases без доступа тестов к pipeline fields.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn render_lease_count(&self) -> usize {
-        self.pipeline.render_lease_count()
-    }
-
-    /// Проверяет, что release texture handle отложен до drop render lease.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn has_deferred_video_texture_release(
-        &self,
-        texture_handle: video_core::FrameTextureHandle,
-    ) -> bool {
-        self.pipeline
-            .has_deferred_video_texture_release(texture_handle)
-    }
-
-    /// Возвращает количество отложенных texture releases без раскрытия HashSet.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn deferred_video_texture_release_count(&self) -> usize {
-        self.pipeline.deferred_video_texture_release_count()
     }
 
     /// Применяет команду к state machine.
@@ -599,70 +541,6 @@ impl PlayerSession {
         }
     }
 
-    /// Регистрирует render lease для texture handle текущего поколения.
-    pub(crate) fn register_render_lease(
-        &mut self,
-        render_generation: u64,
-        texture_handle: video_core::FrameTextureHandle,
-    ) -> bool {
-        if render_generation != self.pipeline.render_generation {
-            return false;
-        }
-
-        let lease_key = (render_generation, texture_handle.0);
-        let lease_count = self
-            .pipeline
-            .leased_video_textures
-            .entry(lease_key)
-            .or_insert(0);
-        *lease_count = lease_count.saturating_add(1);
-        true
-    }
-
-    /// Снимает render lease и применяет отложенный texture release, если он уже был запрошен.
-    #[cfg(test)]
-    pub(crate) fn release_render_lease(
-        &mut self,
-        render_generation: u64,
-        texture_handle: video_core::FrameTextureHandle,
-    ) {
-        self.release_render_lease_with_provider(render_generation, texture_handle, None);
-    }
-
-    /// Снимает render lease и релизит texture через provider поколения, создавшего кадр.
-    pub(crate) fn release_render_lease_with_provider(
-        &mut self,
-        render_generation: u64,
-        texture_handle: video_core::FrameTextureHandle,
-        texture_provider: Option<&WgpuRenderTextureProviderHandle>,
-    ) {
-        let lease_key = (render_generation, texture_handle.0);
-
-        let Some(lease_count) = self.pipeline.leased_video_textures.get_mut(&lease_key) else {
-            return;
-        };
-
-        if *lease_count > 1 {
-            *lease_count -= 1;
-            return;
-        }
-
-        self.pipeline.leased_video_textures.remove(&lease_key);
-        let release_was_deferred = self
-            .pipeline
-            .deferred_video_texture_releases
-            .remove(&lease_key);
-        if !release_was_deferred {
-            return;
-        }
-
-        if let Some(texture_provider) = texture_provider {
-            texture_provider.release_frame(texture_handle);
-        } else if render_generation == self.pipeline.render_generation {
-            self.release_video_texture_now(texture_handle);
-        }
-    }
-
     /// Записывает latency sample с актуальными queue depths.
     pub(crate) fn record_pipeline_latency(
         &mut self,
@@ -796,24 +674,6 @@ impl PlayerSession {
     #[must_use]
     pub(crate) fn diagnostics_log_summary(&self) -> PlaybackDiagnosticsLogSummary {
         self.diagnostics.log_summary(self.diagnostic_queue_depths())
-    }
-
-    /// Освобождает texture handle сразу или откладывает release до завершения render lease.
-    pub(crate) fn release_video_texture(&mut self, texture_handle: video_core::FrameTextureHandle) {
-        let lease_key = (self.pipeline.render_generation, texture_handle.0);
-        if self.pipeline.leased_video_textures.contains_key(&lease_key) {
-            self.pipeline
-                .deferred_video_texture_releases
-                .insert(lease_key);
-            return;
-        }
-
-        self.release_video_texture_now(texture_handle);
-    }
-
-    /// Непосредственно отдаёт texture slot обратно decoder thread.
-    fn release_video_texture_now(&mut self, texture_handle: video_core::FrameTextureHandle) {
-        self.pipeline.release_frame_to_video_decoder(texture_handle);
     }
 
     /// Обрабатывает audio packet: decode -> write to AudioOutput.
@@ -2582,8 +2442,8 @@ impl PlayerSession {
             decoder_send_queue_depth,
             decoder_in_flight_packets: self.pipeline.video_decode_in_flight_packets(),
             decoder_ready_queue_depth: None,
-            active_render_leases: self.pipeline.leased_video_textures.len(),
-            deferred_render_releases: self.pipeline.deferred_video_texture_releases.len(),
+            active_render_leases: self.pipeline.active_render_lease_count(),
+            deferred_render_releases: self.pipeline.deferred_render_release_count(),
             texture_slots: decoder_resource_snapshot.map(|texture_stats| {
                 TextureSlotPressureSnapshot {
                     capacity: texture_stats.capacity,
@@ -2911,6 +2771,7 @@ mod tests {
         DecoderControlChannelPressureSnapshot, DecoderResourceSnapshot, MediaSource,
         PendingAudioPacket, PendingVideoPacket, PlayerCommand, PlayerDecodePacket,
         PlayerTickConfig, PlayerTickContext, ScrubCommitPolicy, SeekMode, SeekTarget,
+        WgpuRenderTextureProviderHandle,
     };
     use bytes::Bytes;
     use capability_core::{
@@ -5679,19 +5540,19 @@ mod tests {
     #[test]
     fn old_generation_render_release_does_not_touch_current_generation() {
         let mut session = PlayerSession::new();
-        let old_generation = session.pipeline.render_generation;
+        let old_generation = session.pipeline.render_generation();
         let old_handle = video_core::FrameTextureHandle(5);
 
         assert!(session.register_render_lease(old_generation, old_handle));
         session.release_video_texture(old_handle);
         session.reset_media_state();
-        let new_generation = session.pipeline.render_generation;
+        let new_generation = session.pipeline.render_generation();
 
         session.release_render_lease(old_generation, old_handle);
 
         assert!(new_generation > old_generation);
-        assert!(session.pipeline.leased_video_textures.is_empty());
-        assert!(session.pipeline.deferred_video_texture_releases.is_empty());
+        assert_eq!(session.render_lease_count(), 0);
+        assert_eq!(session.deferred_video_texture_release_count(), 0);
     }
 
     #[test]
