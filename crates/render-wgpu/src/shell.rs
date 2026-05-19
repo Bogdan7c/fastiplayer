@@ -17,14 +17,19 @@
 /// 3. Рендерим egui overlay поверх видео
 /// 4. Present на экран
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use render_core::{ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics};
 use tracing::{debug, info, instrument};
 use winit::window::Window;
 
-use crate::{WgpuRenderableFrame, WgpuVideoRenderer};
+use crate::egui_compositor::EguiCompositor;
+use crate::frame::{
+    RenderFrameDropReason, RenderFrameFailure, RenderFrameInput, RenderFrameOutcome,
+    RenderFrameTiming,
+};
+use crate::video::WgpuVideoRenderer;
 use video_vulkan::UnifiedVulkanInstance;
 
 /// Выбирает формат swapchain для SDR-видео.
@@ -211,92 +216,6 @@ impl GpuContext {
     }
 }
 
-/// Итог одного render-frame вызова.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RenderFrameOutcome {
-    /// Кадр был отправлен в swapchain и представлен.
-    Presented(RenderFrameTiming),
-
-    /// Кадр был пропущен из-за состояния surface/window.
-    Dropped(RenderFrameDropReason),
-
-    /// Video render path failed; caller must treat this as fatal media error.
-    Failed(RenderFrameFailure),
-}
-
-/// Timing одного успешного submit/present участка render loop-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RenderFrameTiming {
-    /// Время от отправки command buffer-а до возврата из `surface_texture.present()`.
-    pub submit_present_elapsed: Duration,
-}
-
-/// Размер target-а и UI scale без раскрытия egui-wgpu типа наружу.
-pub struct RenderScreenDescriptor {
-    /// Размер swapchain target-а в пикселях.
-    pub size_in_pixels: [u32; 2],
-
-    /// UI scale, полученный от egui context.
-    pub pixels_per_point: f32,
-}
-
-/// Входные данные одного полного кадра shell renderer-а.
-///
-/// App layer отвечает за egui tessellation и сбор video frame lease, а shell layer
-/// получает уже готовый пакет данных для записи swapchain кадра.
-pub struct RenderFrameInput<'frame> {
-    /// Окно, для которого выполняется present notification.
-    pub window: &'frame Window,
-
-    /// Video frame boundary; `None` означает, что target нужно очистить в чёрный.
-    pub video_frame: Option<&'frame WgpuRenderableFrame<'frame>>,
-
-    /// Уже tessellated egui primitives.
-    pub egui_paint_jobs: Vec<egui::epaint::ClippedPrimitive>,
-
-    /// Изменения egui textures для текущего кадра.
-    pub egui_textures_delta: egui::TexturesDelta,
-
-    /// Размер target-а и UI scale для egui-wgpu.
-    pub screen: RenderScreenDescriptor,
-}
-
-/// Ошибка video render path, которую app/player layer не должен превращать в fallback.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RenderFrameFailure {
-    /// Сообщение renderer-а для логов и UI.
-    pub message: String,
-}
-
-impl RenderFrameFailure {
-    /// Создаёт failure из renderer error.
-    #[must_use]
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-}
-
-/// Причина пропуска кадра renderer backend-ом.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenderFrameDropReason {
-    /// Surface acquisition не успел завершиться.
-    SurfaceTimeout,
-
-    /// Окно occluded, compositor не принимает кадр.
-    SurfaceOccluded,
-
-    /// Surface потерян; renderer выполнил reconfigure и ждёт следующий redraw.
-    SurfaceLost,
-
-    /// Surface validation error при acquisition.
-    SurfaceValidation,
-
-    /// Повторный acquisition после Outdated/Reconfigure тоже не дал frame.
-    SurfaceOutdatedRecoveryFailed,
-}
-
 /// Полный рендерер: GPU контекст + видеопайплайн + egui рендерер.
 ///
 /// Координирует рендеринг видео и UI overlay в каждом кадре.
@@ -304,8 +223,8 @@ pub struct Renderer {
     /// GPU ресурсы (device, queue, surface).
     gpu: GpuContext,
 
-    /// Рендерер egui для отрисовки UI поверх видео.
-    egui_renderer: egui_wgpu::Renderer,
+    /// Композитор egui overlay поверх video pass-а.
+    egui_compositor: EguiCompositor,
 
     /// Video renderer facade — скрывает конкретный NV12 shader/backend детали.
     video_renderer: WgpuVideoRenderer,
@@ -322,23 +241,14 @@ impl Renderer {
     pub fn new(window: Arc<Window>) -> Result<Self> {
         let gpu = pollster::block_on(GpuContext::new(window.clone()))?;
 
-        let egui_renderer = egui_wgpu::Renderer::new(
-            &gpu.device,
-            gpu.surface_format,
-            egui_wgpu::RendererOptions {
-                depth_stencil_format: None,
-                msaa_samples: 1,
-                ..Default::default()
-            },
-        );
-
+        let egui_compositor = EguiCompositor::new(&gpu.device, gpu.surface_format);
         let video_renderer = WgpuVideoRenderer::new(&gpu.device, gpu.surface_format);
 
         info!("Рендерер полностью инициализирован");
 
         Ok(Self {
             gpu,
-            egui_renderer,
+            egui_compositor,
             video_renderer,
         })
     }
@@ -415,14 +325,12 @@ impl Renderer {
             pixels_per_point: screen.pixels_per_point,
         };
 
-        // Обновляем egui текстуры (новые и удалённые)
-        for (id, image_delta) in &egui_textures_delta.set {
-            self.egui_renderer
-                .update_texture(&self.gpu.device, &self.gpu.queue, *id, image_delta);
-        }
-        for id in &egui_textures_delta.free {
-            self.egui_renderer.free_texture(id);
-        }
+        // Обновляем egui текстуры (новые и удалённые).
+        self.egui_compositor.update_textures(
+            &self.gpu.device,
+            &self.gpu.queue,
+            &egui_textures_delta,
+        );
 
         // Создаём command encoder для этого кадра
         let mut encoder = self
@@ -433,7 +341,7 @@ impl Renderer {
             });
 
         // Обновляем egui буферы (vertex/index) перед рендерингом
-        self.egui_renderer.update_buffers(
+        self.egui_compositor.update_buffers(
             &self.gpu.device,
             &self.gpu.queue,
             &mut encoder,
@@ -513,31 +421,13 @@ impl Renderer {
             }
         }
 
-        // Рендерим egui поверх видео
-        {
-            let egui_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("egui overlay pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &surface_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load, // Сохраняем видео, рисуем поверх
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-
-            self.egui_renderer.render(
-                &mut egui_pass.forget_lifetime(),
-                &egui_paint_jobs,
-                &screen_descriptor,
-            );
-        }
+        // Рендерим egui поверх видео.
+        self.egui_compositor.render_overlay(
+            &mut encoder,
+            &surface_view,
+            &egui_paint_jobs,
+            &screen_descriptor,
+        );
 
         let submit_present_started_at = Instant::now();
 

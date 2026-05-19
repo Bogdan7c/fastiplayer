@@ -12,10 +12,10 @@ use render_core::{
     VideoFrameFormat,
 };
 
-use crate::VideoRenderPassContext;
+use super::VideoRenderPassContext;
 
 /// WGSL source dedicated to P010 rendering.
-pub(crate) const P010_SHADER_SOURCE: &str = include_str!("../shaders/p010_bt2446c_to_sdr.wgsl");
+pub(crate) const P010_SHADER_SOURCE: &str = include_str!("../../shaders/p010_bt2446c_to_sdr.wgsl");
 
 /// Размер HDR/P010 uniform buffer-а, который должен совпадать с WGSL layout.
 const HDR_COLOR_PIPELINE_UNIFORM_SIZE: u64 = std::mem::size_of::<HdrColorPipelineUniforms>() as u64;
@@ -1152,7 +1152,7 @@ mod tests {
 
     #[test]
     fn p010_shader_source_is_dedicated_file() {
-        let nv12_shader_source = include_str!("../shaders/nv12_to_rgba.wgsl");
+        let nv12_shader_source = include_str!("../../shaders/nv12_to_rgba.wgsl");
 
         assert!(!P010_SHADER_SOURCE.trim().is_empty());
         assert_ne!(P010_SHADER_SOURCE, nv12_shader_source);

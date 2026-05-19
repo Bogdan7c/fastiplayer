@@ -3,8 +3,9 @@ use std::num::NonZeroU64;
 
 use render_core::{ActiveColorPath, ColorPipelineSettings, RenderableFrame};
 
-use crate::VideoRenderPassContext;
 use crate::color_pipeline::{COLOR_PIPELINE_UNIFORM_SIZE, prepare_nv12_color_pipeline};
+
+use super::VideoRenderPassContext;
 
 /// Приватный renderer для NV12 decoded frames с YUV->RGB conversion.
 pub(crate) struct Nv12VideoRenderer {
@@ -28,7 +29,9 @@ impl Nv12VideoRenderer {
     pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nv12 to rgba shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/nv12_to_rgba.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("../../shaders/nv12_to_rgba.wgsl").into(),
+            ),
         });
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -262,7 +265,7 @@ mod tests {
     /// Проверяем контракт NV12: первый байт chroma-пары — U, второй — V.
     #[test]
     fn nv12_shader_reads_uv_channels_in_nv12_order() {
-        let shader_source = include_str!("../shaders/nv12_to_rgba.wgsl");
+        let shader_source = include_str!("../../shaders/nv12_to_rgba.wgsl");
 
         assert!(
             shader_source.contains("let sampled_u = sampled_uv.r;"),
@@ -277,7 +280,7 @@ mod tests {
     /// Проверяем, что shader contract больше не завязан на hardcoded BT.709 helper.
     #[test]
     fn nv12_shader_uses_uniform_color_pipeline_contract() {
-        let shader_source = include_str!("../shaders/nv12_to_rgba.wgsl");
+        let shader_source = include_str!("../../shaders/nv12_to_rgba.wgsl");
 
         assert!(
             !shader_source.contains("fn nv12_to_rgb"),
