@@ -13,7 +13,7 @@ use bytes::Bytes;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
 use source_core::{ByteSource, CachedByteSource, HttpHeader, SourceRuntimeConfig};
-use webm_demux::DemuxerOptions;
+use symphonia_demux::DemuxerOptions;
 
 /// Размер HTTP chunk, который fetcher передаёт demuxer-у.
 const HTTP_READ_CHUNK_SIZE: usize = 64 * 1024;
@@ -113,7 +113,7 @@ fn build_demuxer_from_direct_streams(
     source_config: SourceRuntimeConfig,
     resolver: Arc<dyn YoutubeDirectStreamResolver>,
     demuxer_options: DemuxerOptions,
-) -> Result<Box<dyn webm_demux::Demuxer + Send>> {
+) -> Result<Box<dyn symphonia_demux::Demuxer + Send>> {
     if direct_streams.live {
         tracing::info!("YouTube live stream открыт как not seekable streaming source");
         return open_unseekable_streaming_demuxer(direct_streams, &source_config, demuxer_options);
@@ -138,7 +138,7 @@ fn open_range_backed_demuxer(
     source_config: SourceRuntimeConfig,
     resolver: Arc<dyn YoutubeDirectStreamResolver>,
     demuxer_options: DemuxerOptions,
-) -> Result<Option<Box<dyn webm_demux::Demuxer + Send>>> {
+) -> Result<Option<Box<dyn symphonia_demux::Demuxer + Send>>> {
     let video_source = match YoutubeRefreshingRangeSource::open(
         direct_streams.video.clone(),
         source_config.clone(),
@@ -186,21 +186,21 @@ fn open_range_backed_demuxer(
 
     let video_source = CachedByteSource::new(video_source, &source_config);
     let audio_source = CachedByteSource::new(audio_source, &source_config);
-    let video_demuxer = webm_demux::SymphoniaDemuxer::from_byte_source_with_options(
+    let video_demuxer = symphonia_demux::SymphoniaDemuxer::from_byte_source_with_options(
         video_source,
         "webm",
         "youtube-video",
         demuxer_options,
     )
     .context("Не удалось открыть Range-backed video WebM")?;
-    let audio_demuxer = webm_demux::SymphoniaDemuxer::from_byte_source_with_options(
+    let audio_demuxer = symphonia_demux::SymphoniaDemuxer::from_byte_source_with_options(
         audio_source,
         "webm",
         "youtube-audio",
         demuxer_options,
     )
     .context("Не удалось открыть Range-backed audio WebM")?;
-    let demuxer = webm_demux::DualStreamDemuxer::new(video_demuxer, audio_demuxer)
+    let demuxer = symphonia_demux::DualStreamDemuxer::new(video_demuxer, audio_demuxer)
         .context("Не удалось объединить Range-backed video/audio demuxer-ы")?;
 
     Ok(Some(Box::new(demuxer)))
@@ -211,9 +211,9 @@ fn open_unseekable_streaming_demuxer(
     direct_streams: &YoutubeDirectStreams,
     source_config: &SourceRuntimeConfig,
     demuxer_options: DemuxerOptions,
-) -> Result<Box<dyn webm_demux::Demuxer + Send>> {
-    let (video_writer, video_reader) = webm_demux::StreamingByteReader::channel();
-    let (audio_writer, audio_reader) = webm_demux::StreamingByteReader::channel();
+) -> Result<Box<dyn symphonia_demux::Demuxer + Send>> {
+    let (video_writer, video_reader) = symphonia_demux::StreamingByteReader::channel();
+    let (audio_writer, audio_reader) = symphonia_demux::StreamingByteReader::channel();
 
     spawn_http_fetcher(
         "youtube-video",
@@ -228,14 +228,14 @@ fn open_unseekable_streaming_demuxer(
         audio_writer,
     )?;
 
-    let video_demuxer = webm_demux::SymphoniaDemuxer::from_stream_with_options(
+    let video_demuxer = symphonia_demux::SymphoniaDemuxer::from_stream_with_options(
         video_reader,
         "webm",
         "youtube-video",
         demuxer_options,
     )
     .context("Не удалось открыть streaming video WebM")?;
-    let audio_demuxer = webm_demux::SymphoniaDemuxer::from_stream_with_options(
+    let audio_demuxer = symphonia_demux::SymphoniaDemuxer::from_stream_with_options(
         audio_reader,
         "webm",
         "youtube-audio",
@@ -243,7 +243,7 @@ fn open_unseekable_streaming_demuxer(
     )
     .context("Не удалось открыть streaming audio WebM")?;
 
-    let demuxer = webm_demux::DualStreamDemuxer::new(video_demuxer, audio_demuxer)
+    let demuxer = symphonia_demux::DualStreamDemuxer::new(video_demuxer, audio_demuxer)
         .context("Не удалось объединить streaming video/audio demuxer-ы")?;
 
     Ok(Box::new(demuxer))
@@ -260,7 +260,7 @@ fn spawn_http_fetcher(
     thread_name: &'static str,
     stream: YoutubeDirectStreamDescriptor,
     source_config: SourceRuntimeConfig,
-    writer: webm_demux::StreamingByteWriter,
+    writer: symphonia_demux::StreamingByteWriter,
 ) -> Result<()> {
     thread::Builder::new()
         .name(thread_name.to_string())
@@ -284,7 +284,7 @@ fn spawn_http_fetcher(
 fn fetch_stream_to_writer(
     stream: &YoutubeDirectStreamDescriptor,
     source_config: &SourceRuntimeConfig,
-    writer: &webm_demux::StreamingByteWriter,
+    writer: &symphonia_demux::StreamingByteWriter,
 ) -> Result<()> {
     tracing::info!(description = %stream.description, "HTTP streaming fetch started");
 
@@ -357,7 +357,7 @@ mod tests {
 
     use media_core::TimelineNotSeekableReason;
     use source_core::ByteSource;
-    use webm_demux::DemuxSeekability;
+    use symphonia_demux::DemuxSeekability;
 
     use super::*;
 

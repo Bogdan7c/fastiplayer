@@ -1,0 +1,15 @@
+[package]
+name = "symphonia-demux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+symphonia = { workspace = true }
+bytes = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+media-core = { workspace = true }
+codec-core = { workspace = true }
+source-core = { workspace = true }

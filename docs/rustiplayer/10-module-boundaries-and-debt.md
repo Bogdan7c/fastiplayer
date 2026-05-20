@@ -5,7 +5,7 @@
 
 ## Текущие временные exceptions
 
-После последних refactor PR прямые зависимости `player-core -> webm-demux` и
+После последних refactor PR прямые зависимости `player-core -> symphonia-demux/webm-demux` и
 `player-core -> video-vaapi` закрыты. Оставшийся Cargo/source-level долг:
 
 - `player-core -> audio`: playback session всё ещё использует concrete Opus/CPAL
@@ -41,7 +41,7 @@
 устойчивые поддомены с тестами: media opening, seek transaction, diagnostics sink,
 video backend binding.
 
-Media opening уже вынесен из прямой зависимости `player-core -> webm-demux`:
+Media opening уже вынесен из прямой зависимости `player-core -> symphonia-demux/webm-demux`:
 `player-core` принимает `PreparedMedia`. Оставшаяся работа здесь не в том, чтобы
 вернуть concrete opener внутрь session, а в том, чтобы уменьшить orchestration
 surface самого `PlayerSession`.
@@ -130,7 +130,13 @@ SDR-safe selector и возвращает уже открытый demuxer для
 Следующий шаг: service candidates -> capability selection -> demux open без
 изменения HTTP refresh/range boundary.
 
-## `webm-demux`
+## `symphonia-demux`
+
+`symphonia-demux` владеет concrete adapter-ом поверх Symphonia и открывает
+audio containers, которые поддерживает текущая Cargo feature set Symphonia. Старый
+crate `webm-demux` оставлен только как compatibility re-export на transition PR,
+чтобы внешние call sites могли мигрировать без одновременного изменения
+поведения demux/seek/decode.
 
 `infer_track_kind()` пока считает всё non-audio видео. Unknown video codec уже не
 маскируется под VP9, но определение kind всё ещё грубое.

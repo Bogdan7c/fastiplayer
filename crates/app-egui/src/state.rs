@@ -602,7 +602,7 @@ impl AppState {
     pub fn load_youtube_demuxer(
         &mut self,
         label: String,
-        demuxer: Box<dyn webm_demux::Demuxer + Send>,
+        demuxer: Box<dyn symphonia_demux::Demuxer + Send>,
     ) {
         let autoplay = !self.app_config.player.start_paused;
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);

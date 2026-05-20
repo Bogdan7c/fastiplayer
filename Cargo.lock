@@ -142,12 +142,12 @@ dependencies = [
  "rustiplayer-config",
  "service-youtube",
  "source-core",
+ "symphonia-demux",
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
  "video-core",
  "video-vaapi",
- "webm-demux",
  "wgpu",
  "winit",
 ]
@@ -3632,8 +3632,8 @@ dependencies = [
  "serde",
  "serde_json",
  "source-core",
+ "symphonia-demux",
  "tracing",
- "webm-demux",
 ]
 
 [[package]]
@@ -3970,6 +3970,20 @@ dependencies = [
  "num-complex",
  "rustfft",
  "smallvec",
+]
+
+[[package]]
+name = "symphonia-demux"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "codec-core",
+ "media-core",
+ "source-core",
+ "symphonia",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -4928,14 +4942,7 @@ dependencies = [
 name = "webm-demux"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "bytes",
- "codec-core",
- "media-core",
- "source-core",
- "symphonia",
- "thiserror 2.0.18",
- "tracing",
+ "symphonia-demux",
 ]
 
 [[package]]

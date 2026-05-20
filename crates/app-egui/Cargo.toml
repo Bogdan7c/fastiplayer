@@ -26,7 +26,7 @@ desktop-integration.workspace = true
 # Новые зависимости для Этапа 2a
 player-core.workspace = true
 media-core.workspace = true
-webm-demux = { path = "../webm-demux" }
+symphonia-demux.workspace = true
 rfd = "0.15"
 
 # Этап 2b: audio pipeline

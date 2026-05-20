@@ -8,6 +8,7 @@ members = [
     "crates/source-core",
     "crates/player-core",
     "crates/media-core",
+    "crates/symphonia-demux",
     "crates/webm-demux",
     "crates/audio",
     "crates/vp9-parser",
@@ -62,5 +63,6 @@ render-wgpu = { path = "crates/render-wgpu" }
 player-core = { path = "crates/player-core" }
 desktop-integration = { path = "crates/desktop-integration" }
 media-core = { path = "crates/media-core" }
+symphonia-demux = { path = "crates/symphonia-demux" }
 service-youtube = { path = "crates/service-youtube" }
 source-core = { path = "crates/source-core" }

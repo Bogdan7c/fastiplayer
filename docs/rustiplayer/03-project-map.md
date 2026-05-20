@@ -10,7 +10,8 @@ crates/codec-core            codec/profile/color/surface/memory contracts
 crates/capability-core       backend reports, render reports, stream selection
 crates/config                TOML schema v2, defaults, validation, paths
 crates/source-core           local files, HTTP Range, RAM byte-range cache
-crates/webm-demux            Symphonia WebM/Matroska demuxer
+crates/symphonia-demux       Symphonia audio container demux adapter
+crates/webm-demux            compatibility re-export for old demux crate path
 crates/service-youtube       yt-dlp adapter, stream candidates, YouTube demux open
 crates/audio                 Opus decoder, CPAL output, audio clock
 crates/video-core            decoded frame and video diagnostics contracts
@@ -28,7 +29,7 @@ third_party/symphonia-*      retired Symphonia patches, kept for cleanup PR
 ## Владение
 
 `app-egui` owns UI state, window lifecycle, renderer lifetime and current
-production composition. It opens local files through `webm-demux`, receives
+production composition. It opens local files through `symphonia-demux`, receives
 YouTube demuxers from `service-youtube`, creates the VA-API/WGPU backend factory
 and forwards prepared boundaries into `player-core`. It must not own playback
 queues, A/V scheduling or `PlayerSession` state.
@@ -66,14 +67,15 @@ reference dependency.
 
 ```text
 app-egui -> player-core/service-youtube/desktop-integration
-app-egui -> webm-demux/audio/video-vaapi/render-wgpu/source-core
+app-egui -> symphonia-demux/audio/video-vaapi/render-wgpu/source-core
 app-egui -> media-core/codec-core/capability-core/video-core/render-core/rustiplayer-config
 app-egui -> wgpu/winit/egui/egui-winit
 player-core -> media-core/codec-core/capability-core/video-core/rustiplayer-config/audio/wgpu
 desktop-integration -> player-core/media-core
-service-youtube -> source-core/webm-demux/rustiplayer-config/capability-core/codec-core
+service-youtube -> source-core/symphonia-demux/rustiplayer-config/capability-core/codec-core
 source-core -> rustiplayer-config
-webm-demux -> media-core/codec-core/source-core
+symphonia-demux -> media-core/codec-core/source-core
+webm-demux -> symphonia-demux
 audio -> codec-core
 capability-core -> codec-core/render-core
 video-core -> media-core/codec-core
@@ -96,14 +98,14 @@ Before:
   render-wgpu -> egui/winit/video-vulkan
 
 After:
-  app-egui -> webm-demux
+  app-egui -> symphonia-demux
   app-egui -> video-vaapi
   video-vaapi -> player-core (adapter for VideoBackendFactory)
   player-core -> wgpu remains temporary
   render-wgpu -> egui/egui-wgpu/winit/video-vulkan remains temporary
 ```
 
-Закрытые связи `player-core -> webm-demux` и `player-core -> video-vaapi` не
+Закрытые связи `player-core -> symphonia-demux/webm-demux` и `player-core -> video-vaapi` не
 должны возвращаться. Текущий production path всё ещё WGPU/VA-API specific, потому
 что zero-copy texture lookup и concrete backend factory завязаны на эти API.
 

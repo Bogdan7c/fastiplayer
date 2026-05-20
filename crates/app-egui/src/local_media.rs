@@ -19,7 +19,7 @@ pub fn prepare_local_file(
     demux_config: &PlayerDemuxConfig,
 ) -> anyhow::Result<PreparedMedia> {
     let demuxer_options = demuxer_options_from_config(demux_config);
-    let demuxer = webm_demux::SymphoniaDemuxer::from_file_with_options(path, demuxer_options)?;
+    let demuxer = symphonia_demux::SymphoniaDemuxer::from_file_with_options(path, demuxer_options)?;
 
     Ok(PreparedMedia::from_local_file(
         path.to_path_buf(),
@@ -27,9 +27,9 @@ pub fn prepare_local_file(
     ))
 }
 
-/// Конвертирует validated TOML config приложения в backend-specific WebM options.
-fn demuxer_options_from_config(config: &PlayerDemuxConfig) -> webm_demux::DemuxerOptions {
-    webm_demux::DemuxerOptions::from_max_consecutive_corrupted_packets(
+/// Конвертирует validated TOML config приложения в options Symphonia demux adapter-а.
+fn demuxer_options_from_config(config: &PlayerDemuxConfig) -> symphonia_demux::DemuxerOptions {
+    symphonia_demux::DemuxerOptions::from_max_consecutive_corrupted_packets(
         config.max_consecutive_corrupted_packets,
     )
     .expect("validated AppConfig must provide positive demux corrupted packet limit")
