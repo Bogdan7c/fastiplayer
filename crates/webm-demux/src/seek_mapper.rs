@@ -88,14 +88,16 @@ mod tests {
     use std::collections::HashMap;
     use std::time::Duration;
 
-    use media_core::{DemuxSeekMode, MediaDemuxError, TrackId, TrackInfo, TrackKind};
+    use media_core::{
+        DemuxSeekMode, DemuxSeekRequest, MediaDemuxError, TrackId, TrackInfo, TrackKind,
+    };
     use symphonia::core::errors::{Error as SymphoniaError, SeekErrorKind};
-    use symphonia::core::formats::{SeekMode as SymphoniaSeekMode, SeekedTo};
+    use symphonia::core::formats::{SeekMode as SymphoniaSeekMode, SeekTo, SeekedTo};
     use symphonia::core::units::{TimeBase, Timestamp};
 
     use super::{
         preferred_seek_track_id, seeked_to_timeline_result, symphonia_seek_error_to_demux_error,
-        symphonia_seek_mode,
+        symphonia_seek_mode, symphonia_seek_target,
     };
     use crate::track_mapper::{TrackEntry, TrackEntryKind};
 
@@ -134,6 +136,13 @@ mod tests {
     }
 
     #[test]
+    fn preferred_seek_track_falls_back_to_audio_when_video_is_absent() {
+        let tracks = vec![track_info(7, TrackKind::Audio)];
+
+        assert_eq!(preferred_seek_track_id(&tracks), Some(TrackId::new(7)));
+    }
+
+    #[test]
     fn seek_modes_preserve_existing_policy() {
         assert_eq!(
             symphonia_seek_mode(DemuxSeekMode::Accurate),
@@ -147,6 +156,24 @@ mod tests {
             symphonia_seek_mode(DemuxSeekMode::Preview),
             SymphoniaSeekMode::Coarse
         );
+    }
+
+    #[test]
+    fn seek_target_keeps_selected_track_id_inside_symphonia_boundary() {
+        let seek_target = symphonia_seek_target(
+            DemuxSeekRequest::preview(Duration::from_millis(420)),
+            Some(TrackId::new(9)),
+        );
+
+        match seek_target {
+            SeekTo::Time { time, track_id } => {
+                assert_eq!(time.as_millis(), 420);
+                assert_eq!(track_id, Some(9));
+            }
+            SeekTo::Timestamp { .. } => {
+                panic!("seek mapper должен строить time-based seek target")
+            }
+        }
     }
 
     #[test]
@@ -182,9 +209,43 @@ mod tests {
     }
 
     #[test]
+    fn seek_result_keeps_signed_actual_timestamp_and_normalizes_ui_position() {
+        let track_map = HashMap::from([(1, track_entry(TrackKind::Video))]);
+
+        let result = seeked_to_timeline_result(
+            Duration::from_secs(1),
+            SeekedTo {
+                track_id: 1,
+                required_ts: Timestamp::new(1_000),
+                actual_ts: Timestamp::new(-25),
+            },
+            &track_map,
+        );
+
+        let actual_track_timestamp = result
+            .actual_track_timestamp
+            .expect("signed actual timestamp должен сохраняться для diagnostics");
+
+        assert_eq!(actual_track_timestamp.units.get(), -25);
+        assert_eq!(result.actual_position, media_core::MediaTime::ZERO);
+    }
+
+    #[test]
     fn unseekable_symphonia_error_maps_to_media_demux_error() {
         let error = symphonia_seek_error_to_demux_error(SymphoniaError::SeekError(
             SeekErrorKind::Unseekable,
+        ));
+
+        assert!(matches!(
+            error.downcast_ref::<MediaDemuxError>(),
+            Some(MediaDemuxError::SeekUnavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn forward_only_symphonia_error_maps_to_neutral_seek_unavailable() {
+        let error = symphonia_seek_error_to_demux_error(SymphoniaError::SeekError(
+            SeekErrorKind::ForwardOnly,
         ));
 
         assert!(matches!(
