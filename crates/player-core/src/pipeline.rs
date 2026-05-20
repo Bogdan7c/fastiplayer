@@ -100,6 +100,12 @@ pub(crate) struct PendingAudioPacket {
     /// Presentation timestamp packet-а на абсолютной media timeline.
     pub(crate) pts: Duration,
 
+    /// Decode timestamp, если container сообщил DTS отдельно от PTS.
+    pub(crate) dts: Option<Duration>,
+
+    /// Packet duration, если demuxer смог сохранить container duration.
+    pub(crate) duration: Option<Duration>,
+
     /// Seek generation, в котором packet был прочитан из demuxer.
     pub(crate) generation: u64,
 
@@ -113,12 +119,16 @@ impl PendingAudioPacket {
     pub(crate) fn new(
         track_id: TrackId,
         pts: Duration,
+        dts: Option<Duration>,
+        duration: Option<Duration>,
         generation: u64,
         encoded_bytes: Bytes,
     ) -> Self {
         Self {
             track_id,
             pts,
+            dts,
+            duration,
             generation,
             encoded_bytes,
         }
@@ -297,10 +307,10 @@ impl PlaybackPipeline {
     /// остаётся отдельным состоянием, чтобы session могла выставить runtime error.
     pub(crate) fn decode_audio_packet(
         &mut self,
-        encoded_audio_bytes: &[u8],
+        encoded_audio_packet: &audio::EncodedAudioPacket<'_>,
     ) -> Option<anyhow::Result<DecodedAudioPacket>> {
         let decoder = self.audio_decoder.as_mut()?;
-        let decode_result = decoder.decode(encoded_audio_bytes);
+        let decode_result = decoder.decode(encoded_audio_packet);
         Some(decode_result.map(|samples| DecodedAudioPacket {
             samples,
             sample_rate: decoder.sample_rate(),
@@ -1351,7 +1361,7 @@ mod tests {
 
     impl audio::AudioDecoder for FakeAudioDecoder {
         /// Возвращает заранее заданный результат decode.
-        fn decode(&mut self, _packet_data: &[u8]) -> anyhow::Result<Vec<f32>> {
+        fn decode(&mut self, _packet: &audio::EncodedAudioPacket<'_>) -> anyhow::Result<Vec<f32>> {
             match &self.decode_outcome {
                 FakeAudioDecodeOutcome::Samples(samples) => Ok(samples.clone()),
                 FakeAudioDecodeOutcome::Error(error) => Err(anyhow::anyhow!(*error)),
@@ -1479,9 +1489,23 @@ mod tests {
     #[test]
     fn audio_decoder_boundaries_preserve_absent_success_and_error_states() {
         let mut pipeline = PlaybackPipeline::default();
+        let packet = audio::EncodedAudioPacket::new(
+            TrackId::new(2).get(),
+            Duration::ZERO,
+            None,
+            None,
+            b"packet",
+        );
+        let bad_packet = audio::EncodedAudioPacket::new(
+            TrackId::new(2).get(),
+            Duration::ZERO,
+            None,
+            None,
+            b"bad packet",
+        );
 
         assert!(!pipeline.has_audio_decoder());
-        assert!(pipeline.decode_audio_packet(b"packet").is_none());
+        assert!(pipeline.decode_audio_packet(&packet).is_none());
         assert!(pipeline.reset_audio_decoder().is_none());
 
         pipeline.install_audio_decoder(Box::new(FakeAudioDecoder::with_samples(
@@ -1491,7 +1515,7 @@ mod tests {
         )));
 
         let decoded_audio = pipeline
-            .decode_audio_packet(b"packet")
+            .decode_audio_packet(&packet)
             .expect("installed decoder должен вернуть decode result")
             .expect("successful fake decoder не должен падать");
         assert_eq!(decoded_audio.samples, vec![0.25, -0.25]);
@@ -1506,7 +1530,7 @@ mod tests {
         )));
 
         let decode_error = pipeline
-            .decode_audio_packet(b"bad packet")
+            .decode_audio_packet(&bad_packet)
             .expect("installed decoder должен сохранить decode error")
             .expect_err("decode error должен дойти до session boundary");
         assert_eq!(decode_error.to_string(), "decode failed");
@@ -1661,6 +1685,8 @@ mod tests {
         pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
             audio_track_id,
             Duration::from_millis(1),
+            None,
+            None,
             pipeline.seek_generation(),
             Bytes::from_static(b"audio"),
         ));
@@ -1788,12 +1814,16 @@ mod tests {
         pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
             audio_track_id,
             Duration::from_millis(10),
+            None,
+            None,
             generation,
             Bytes::from_static(b"audio-10"),
         ));
         pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
             audio_track_id,
             Duration::from_millis(20),
+            None,
+            None,
             generation,
             Bytes::from_static(b"audio-20"),
         ));
@@ -1877,6 +1907,8 @@ mod tests {
         pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
             audio_track_id,
             Duration::from_millis(10),
+            None,
+            None,
             generation,
             Bytes::from_static(b"audio"),
         ));

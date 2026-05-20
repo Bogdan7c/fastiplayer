@@ -334,6 +334,8 @@ mod tests {
             .enqueue_pending_audio_packet(PendingAudioPacket::new(
                 TrackId::new(1),
                 Duration::from_millis(10),
+                None,
+                None,
                 generation,
                 Bytes::new(),
             ));

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use capability_core::{SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection};
 use codec_core::{
-    AudioCodec, VideoCodec, VideoDecodeRequirement, VideoMetadataSource, resolve_video_metadata,
+    VideoCodec, VideoDecodeRequirement, VideoMetadataSource, resolve_video_metadata,
     unsupported_requirement_can_be_refined_by_packet_probe as codec_requirement_can_be_refined_by_packet_probe,
     video_requirement_needs_packet_refinement,
 };
@@ -39,13 +39,16 @@ mod snapshot_builder;
 pub(crate) use self::render_leases::LeasedPresentFrame;
 
 /// Чистый план запуска audio decoder-а без CPAL/output side effects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct AudioDecoderInitSpec {
     /// Track ID выбранного audio трека.
     track_id: TrackId,
 
-    /// Нормализованный codec из общей codec model.
-    codec: AudioCodec,
+    /// Container codec id, который audio crate мапит на Symphonia codec id.
+    codec_id: String,
+
+    /// Codec private / extra data из container metadata.
+    codec_private: Option<Vec<u8>>,
 
     /// Sample rate, который demuxer сообщил для decoder/output init.
     sample_rate: u32,
@@ -658,6 +661,8 @@ impl PlayerSession {
         &mut self,
         track_id: TrackId,
         packet_pts: Duration,
+        packet_dts: Option<Duration>,
+        packet_duration: Option<Duration>,
         generation: u64,
         encoded_audio_bytes: &[u8],
     ) {
@@ -669,7 +674,15 @@ impl PlayerSession {
             return;
         }
 
-        if let Some(decode_result) = self.pipeline.decode_audio_packet(encoded_audio_bytes) {
+        let encoded_audio_packet = audio::EncodedAudioPacket::new(
+            track_id.get(),
+            packet_pts,
+            packet_dts,
+            packet_duration,
+            encoded_audio_bytes,
+        );
+
+        if let Some(decode_result) = self.pipeline.decode_audio_packet(&encoded_audio_packet) {
             match decode_result {
                 Ok(decoded_audio) if !decoded_audio.samples.is_empty() => {
                     let samples = trim_decoded_audio_to_clock_base(
@@ -2334,17 +2347,21 @@ impl PlayerSession {
 
         info!(
             track_id = %init_spec.track_id,
-            codec = %init_spec.codec,
+            codec_id = %init_spec.codec_id,
             sample_rate = init_spec.sample_rate,
             channels = init_spec.channels,
             "Инициализация audio pipeline"
         );
 
-        match audio::create_audio_decoder(
-            init_spec.codec,
+        let decoder_config = audio::AudioDecoderConfig::new(
+            init_spec.track_id.get(),
+            init_spec.codec_id.clone(),
             init_spec.sample_rate,
             init_spec.channels,
-        ) {
+        )
+        .with_codec_private(init_spec.codec_private.clone());
+
+        match audio::create_audio_decoder(decoder_config) {
             Ok(decoder) => {
                 self.pipeline.install_audio_decoder(decoder);
             }
@@ -2352,7 +2369,7 @@ impl PlayerSession {
                 let player_error = player_error_from_audio_decoder_factory_error(error);
                 warn!(
                     error = %player_error,
-                    codec = %init_spec.codec,
+                    codec_id = %init_spec.codec_id,
                     "Не удалось создать audio decoder"
                 );
                 self.record_recoverable_error(player_error);
@@ -2452,13 +2469,10 @@ fn audio_decoder_init_spec_from_track(track: &TrackInfo) -> PlayerResult<AudioDe
         ));
     };
 
-    let Some(codec) = AudioCodec::from_container_codec_id(&track.codec_id) else {
-        return Err(unsupported_audio_codec_id_error(track));
-    };
-
     Ok(AudioDecoderInitSpec {
         track_id: track.id,
-        codec,
+        codec_id: track.codec_id.clone(),
+        codec_private: track.codec_private.as_ref().map(|bytes| bytes.to_vec()),
         sample_rate,
         channels,
     })
@@ -2473,17 +2487,6 @@ fn audio_decoder_init_spec_from_tracks(
     };
 
     audio_decoder_init_spec_from_track(track).map(Some)
-}
-
-/// Создаёт typed player error для codec id, которого нет в общей audio model.
-fn unsupported_audio_codec_id_error(track: &TrackInfo) -> PlayerError {
-    PlayerError::new(
-        PlayerErrorKind::UnsupportedAudioCodec,
-        format!(
-            "Audio error: Unsupported audio codec id: {}",
-            track.codec_id
-        ),
-    )
 }
 
 /// Сохраняет typed unsupported-codec ошибку factory, не меняя остальные init errors.
@@ -2716,7 +2719,10 @@ fn playback_resume_intent_name(intent: PlaybackResumeIntent) -> &'static str {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use codec_core::{ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction};
 
@@ -2944,6 +2950,42 @@ mod tests {
         }
     }
 
+    /// Fake audio decoder считает reset-вызовы без CPAL и codec side effects.
+    struct CountingAudioDecoder {
+        /// Shared counter reset-вызовов.
+        reset_count: Arc<AtomicUsize>,
+    }
+
+    impl CountingAudioDecoder {
+        /// Создаёт fake decoder с внешним счётчиком.
+        fn new(reset_count: Arc<AtomicUsize>) -> Self {
+            Self { reset_count }
+        }
+    }
+
+    impl audio::AudioDecoder for CountingAudioDecoder {
+        /// Decode в этом fake path-е не используется.
+        fn decode(&mut self, _packet: &audio::EncodedAudioPacket<'_>) -> anyhow::Result<Vec<f32>> {
+            Ok(Vec::new())
+        }
+
+        /// Отмечает reset после seek.
+        fn reset(&mut self) -> anyhow::Result<()> {
+            self.reset_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        /// Возвращает стабильный sample rate для boundary contract-а.
+        fn sample_rate(&self) -> u32 {
+            48_000
+        }
+
+        /// Возвращает стабильный channel count для boundary contract-а.
+        fn channels(&self) -> u32 {
+            2
+        }
+    }
+
     /// Shared fake decoder для seek/tick тестов без production decoder и renderer resources.
     #[derive(Clone)]
     struct SharedFakeVideoDecoderThread {
@@ -3166,7 +3208,8 @@ mod tests {
             init_spec,
             AudioDecoderInitSpec {
                 track_id: TrackId::new(2),
-                codec: AudioCodec::Opus,
+                codec_id: "A_OPUS".to_string(),
+                codec_private: None,
                 sample_rate: 48_000,
                 channels: 2,
             }
@@ -3174,19 +3217,17 @@ mod tests {
     }
 
     #[test]
-    fn audio_decoder_init_spec_maps_known_unsupported_codecs_without_cpal_device() {
-        let codec_cases = [
-            ("A_AAC/MPEG4/LC", AudioCodec::Aac),
-            ("A_VORBIS", AudioCodec::Vorbis),
-        ];
+    fn audio_decoder_init_spec_preserves_symphonia_candidate_codec_ids_without_cpal_device() {
+        let codec_ids = ["A_AAC/MPEG4/LC", "A_VORBIS", "A_FLAC"];
 
-        for (codec_id, expected_codec) in codec_cases {
+        for codec_id in codec_ids {
             let tracks = vec![fake_audio_track_with_codec(2, codec_id)];
             let init_spec = audio_decoder_init_spec_from_tracks(&tracks)
-                .expect("known audio codec id should map through codec-core")
+                .expect("audio init spec should not create decoder/output resources")
                 .expect("audio init spec should exist");
 
-            assert_eq!(init_spec.codec, expected_codec);
+            assert_eq!(init_spec.codec_id, codec_id);
+            assert_eq!(init_spec.codec_private, None);
             assert_eq!(init_spec.track_id, TrackId::new(2));
             assert_eq!(init_spec.sample_rate, 48_000);
             assert_eq!(init_spec.channels, 2);
@@ -3208,23 +3249,20 @@ mod tests {
     }
 
     #[test]
-    fn audio_decoder_init_spec_rejects_unknown_codec_with_typed_error_without_cpal_device() {
-        let tracks = vec![fake_audio_track_with_codec(2, "A_FLAC")];
+    fn audio_decoder_init_spec_preserves_unknown_codec_for_factory_typed_error() {
+        let tracks = vec![fake_audio_track_with_codec(2, "A_NOT_REAL")];
 
-        let error = audio_decoder_init_spec_from_tracks(&tracks)
-            .expect_err("unknown audio codec should be rejected before output init");
+        let init_spec = audio_decoder_init_spec_from_tracks(&tracks)
+            .expect("unknown audio codec should be deferred to audio factory")
+            .expect("audio init spec should exist");
 
-        assert_eq!(error.kind, PlayerErrorKind::UnsupportedAudioCodec);
-        assert_eq!(
-            error.message,
-            "Audio error: Unsupported audio codec id: A_FLAC"
-        );
+        assert_eq!(init_spec.codec_id, "A_NOT_REAL");
     }
 
     #[test]
     fn init_audio_pipeline_reports_unsupported_factory_codec_without_cpal_device() {
         let mut session = PlayerSession::new();
-        let tracks = vec![fake_audio_track_with_codec(2, "A_AAC")];
+        let tracks = vec![fake_audio_track_with_codec(2, "A_NOT_REAL")];
 
         session.init_audio_pipeline(&tracks);
 
@@ -4806,6 +4844,8 @@ mod tests {
             .enqueue_pending_audio_packet(PendingAudioPacket::new(
                 TrackId::new(2),
                 Duration::ZERO,
+                None,
+                None,
                 session.pipeline.seek_generation(),
                 Bytes::from_static(&[1, 2, 3]),
             ));
@@ -4840,6 +4880,34 @@ mod tests {
         assert!(session.pipeline.video_decoder_needs_keyframe());
         assert_eq!(session.pipeline.video_decode_in_flight_packets(), 0);
         assert!(session.seek_commit().is_some());
+    }
+
+    #[test]
+    fn seek_transaction_resets_installed_audio_decoder() {
+        let mut session = PlayerSession::new();
+        let reset_count = Arc::new(AtomicUsize::new(0));
+        let _seek_log = install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+
+        session.pipeline.select_audio_track(TrackId::new(2));
+        session
+            .pipeline
+            .install_audio_decoder(Box::new(CountingAudioDecoder::new(Arc::clone(
+                &reset_count,
+            ))));
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(5),
+            )))
+            .unwrap();
+
+        assert_eq!(reset_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]

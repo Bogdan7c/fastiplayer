@@ -1674,6 +1674,7 @@ fn decode_queued_packet(
         kind: TrackKind::Video,
         pts,
         dts: None,
+        duration: None,
         keyframe,
         byte_offset: None,
         data: encoded_bytes,

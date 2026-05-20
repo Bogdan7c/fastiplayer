@@ -538,6 +538,8 @@ impl PlayerSession {
             self.process_audio_packet(
                 packet.track_id,
                 packet.pts,
+                packet.dts,
+                packet.duration,
                 packet.generation,
                 &packet.encoded_bytes,
             );
@@ -699,8 +701,14 @@ fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet)
 
     match packet.kind {
         TrackKind::Audio => {
-            let pending_packet =
-                PendingAudioPacket::new(packet.track_id, packet.pts, generation, packet.data);
+            let pending_packet = PendingAudioPacket::new(
+                packet.track_id,
+                packet.pts,
+                packet.dts,
+                packet.duration,
+                generation,
+                packet.data,
+            );
             session
                 .pipeline
                 .enqueue_pending_audio_packet(pending_packet);

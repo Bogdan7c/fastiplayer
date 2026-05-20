@@ -19,6 +19,9 @@ pub struct Packet {
     /// Decode timestamp, если контейнер сообщает DTS отдельно от PTS.
     pub dts: Option<Duration>,
 
+    /// Длительность packet-а, если контейнер смог её сообщить.
+    pub duration: Option<Duration>,
+
     /// Безопасная container/source byte-позиция для повторного demux seek-а.
     pub byte_offset: Option<u64>,
 
@@ -45,10 +48,18 @@ impl Packet {
             kind,
             pts,
             dts,
+            duration: None,
             byte_offset: None,
             keyframe,
             data,
         }
+    }
+
+    /// Создаёт копию packet-а с container duration.
+    #[must_use]
+    pub const fn with_duration(mut self, duration: Duration) -> Self {
+        self.duration = Some(duration);
+        self
     }
 
     /// Создаёт копию packet-а с безопасной byte-позицией контейнера.
@@ -81,7 +92,23 @@ mod tests {
         assert_eq!(packet.track_id, TrackId::new(7));
         assert_eq!(packet.byte_offset, None);
         assert_eq!(packet.pts, Duration::from_millis(42));
+        assert_eq!(packet.duration, None);
         assert!(packet.keyframe);
         assert_eq!(&packet.data[..], b"vp9");
+    }
+
+    #[test]
+    fn packet_can_keep_container_duration() {
+        let packet = Packet::new(
+            TrackId::new(7),
+            TrackKind::Audio,
+            Duration::from_millis(42),
+            None,
+            false,
+            Bytes::from_static(b"audio"),
+        )
+        .with_duration(Duration::from_millis(20));
+
+        assert_eq!(packet.duration, Some(Duration::from_millis(20)));
     }
 }

@@ -2,9 +2,9 @@
 //!
 //! Архитектура:
 //! ```text
-//! Demuxer::next_packet() → media_core::Packet { kind: Audio, data: raw Opus }
+//! Demuxer::next_packet() → media_core::Packet { kind: Audio, data: encoded audio }
 //!     ↓
-//! AudioDecoder::decode() → Vec<f32> (PCM interleaved)
+//! AudioDecoder::decode(EncodedAudioPacket) → Vec<f32> (PCM interleaved)
 //!     ↓
 //! AudioOutput::write_samples() → RingBuffer Producer
 //!     ↓
@@ -19,6 +19,7 @@ pub mod output;
 
 pub use clock::AudioClock;
 pub use decoder::{
-    AudioDecoder, AudioDecoderError, AudioDecoderHandle, OpusDecoder, create_audio_decoder,
+    AudioDecoder, AudioDecoderConfig, AudioDecoderError, AudioDecoderHandle, EncodedAudioPacket,
+    SymphoniaAudioDecoder, create_audio_decoder,
 };
 pub use output::AudioOutput;

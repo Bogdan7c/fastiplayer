@@ -7,7 +7,7 @@ use media_core::{Packet as MediaPacket, TrackId, TrackKind};
 use symphonia::core::packet::Packet as SymphoniaPacket;
 use symphonia::core::units::{TimeBase as SymphoniaTimeBase, Timestamp};
 
-use crate::symphonia_api::symphonia_timestamp_to_duration;
+use crate::symphonia_api::{symphonia_duration_to_duration, symphonia_timestamp_to_duration};
 use crate::track_mapper::TrackEntry;
 
 /// Результат packet-level validation до отдачи packet-а в player pipeline.
@@ -60,6 +60,7 @@ pub(crate) fn convert_packet(
     };
     let pts = packet_presentation_timestamp(track_entry.time_base, packet.pts);
     let dts = packet_decode_timestamp(track_entry.time_base, packet.pts, packet.dts);
+    let duration = packet_duration(track_entry.time_base, packet.dur);
     let keyframe = packet_keyframe(track_entry, track_kind, packet_track_id, &packet.data)?;
 
     Ok(MediaPacket {
@@ -67,6 +68,7 @@ pub(crate) fn convert_packet(
         kind: track_kind,
         pts,
         dts,
+        duration,
         byte_offset: None,
         keyframe,
         data: Bytes::from(packet.data),
@@ -94,6 +96,14 @@ fn packet_decode_timestamp(
     }
 
     Some(packet_timestamp_to_duration(time_base, dts_timestamp))
+}
+
+/// Нормализует Symphonia packet duration в media-core duration.
+fn packet_duration(
+    time_base: Option<SymphoniaTimeBase>,
+    duration: symphonia::core::units::Duration,
+) -> Option<Duration> {
+    time_base.map(|time_base| symphonia_duration_to_duration(time_base, duration))
 }
 
 /// Переводит signed Symphonia timestamp через media-core helpers без потери знака до clamp-а.
@@ -245,6 +255,7 @@ mod tests {
         assert_eq!(packet.kind, TrackKind::Audio);
         assert_eq!(packet.pts, Duration::from_secs(1));
         assert_eq!(packet.dts, None);
+        assert_eq!(packet.duration, Some(Duration::from_nanos(20_833)));
         assert_eq!(&packet.data[..], b"opus");
         assert!(!packet.keyframe);
     }
@@ -257,6 +268,16 @@ mod tests {
             .expect("packet PTS должен стать media-core PTS");
 
         assert_eq!(packet.pts, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn converts_packet_duration_from_packet_dur() {
+        let track_map = HashMap::from([(7, track_entry(TrackKind::Audio, "A_OPUS"))]);
+
+        let packet = convert_packet(packet(7, 96_000, b"opus"), &track_map)
+            .expect("packet duration должен стать media-core duration");
+
+        assert_eq!(packet.duration, Some(Duration::from_nanos(20_833)));
     }
 
     #[test]
