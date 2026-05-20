@@ -165,8 +165,9 @@ impl PendingVideoPacket {
 
 /// Внутреннее владение media pipeline для текущей player session.
 ///
-/// Поля остаются видимыми только внутри `player-core`, пока tick/scheduler
-/// живут отдельным модулем. Наружный API работает через методы `PlayerSession`.
+/// Поля намеренно закрыты: `session`, `tick`, `worker` и render bridge обращаются
+/// к pipeline через intent methods, которые сохраняют lifecycle, generation,
+/// queue accounting и release-инварианты.
 pub(crate) struct PlaybackPipeline {
     /// Demuxer текущего media source через нейтральный media-core contract.
     demuxer: Option<Box<dyn media_core::Demuxer + Send>>,
@@ -539,6 +540,9 @@ impl PlaybackPipeline {
     }
 
     /// Меняет selected video track, сохраняя текущий active requirement как legacy command path.
+    ///
+    /// TODO(pipeline-boundary): убрать transitional path, когда команда выбора video track
+    /// будет всегда передавать заново проверенный `VideoDecodeRequirement`.
     pub(crate) fn select_video_track_preserving_active_requirement(&mut self, track_id: TrackId) {
         self.video_track_id = Some(track_id);
     }

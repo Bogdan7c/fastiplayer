@@ -23,12 +23,35 @@ video backend binding.
 
 ## `player-core::PlaybackPipeline`
 
-`PlaybackPipeline` остаётся `pub(crate)` хранилищем runtime slots. Это лучше, чем
-доступ из `app-egui`, но граница внутри `player-core` ещё широкая: `session.rs`
-и `tick.rs` зависят от конкретных полей.
+`PlaybackPipeline` больше не является широким `pub(crate)` хранилищем runtime
+slots. Struct остаётся crate-visible как внутренний владелец состояния
+`player-core`, но его поля закрыты. `session.rs`, `tick.rs`, `worker.rs`,
+`render_lease_bridge.rs` и snapshot builder должны обращаться к pipeline через
+intent methods, описанные в
+[09. Контракты и Internal API](09-contracts-and-internal-api.md), а не через
+конкретное устройство storage.
 
-Следующий шаг: закрывать поля методами там, где есть инварианты lifetime,
-generation, in-flight packet accounting и release.
+Закрытые домены уже включают media source/demux, track selection, active video
+requirement, seek generation, audio runtime/clock, packet queues, presentation
+queues, video decoder I/O, in-flight packet accounting, render generation и
+render lease accounting.
+
+Оставшийся долг:
+
+- surface area boundary methods всё ещё широкий, потому что `PlayerSession` и
+  tick/scheduler пока разделяют orchestration внутри одного crate;
+- `select_video_track_preserving_active_requirement()` является transitional
+  legacy command path. TODO хранится рядом с методом: удалить его, когда выбор
+  video track будет всегда передавать заново проверенный
+  `VideoDecodeRequirement`;
+- helper packet records `DecodedAudioPacket`, `PendingAudioPacket` и
+  `PendingVideoPacket` всё ещё имеют `pub(crate)` поля. Это отдельный transport
+  scope, не полевая граница `PlaybackPipeline`.
+
+Следующий безопасный шаг: сужать не поля, а слишком крупные orchestration
+домены: media opening, seek transaction, decoder I/O scheduler и diagnostics.
+Каждое сужение должно идти с focused tests на absent resource, active fake/stub,
+typed error/no-op и accounting edge cases.
 
 ## `app-egui::AppState::player_snapshot()`
 

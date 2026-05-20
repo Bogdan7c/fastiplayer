@@ -96,6 +96,9 @@ production decode path для `PlayerWorker`.
 - `player-core` не добавляет новые direct dependencies на UI/shell/service или
   дополнительные concrete backend crates сверх временно описанных нарушений.
 - `render-wgpu` не начинает знать demux/source/audio/player/session crates.
+- Новые обращения к `PlaybackPipeline` внутри `player-core` проходят через
+  intent methods. Возвращать `pub(crate)` поля в сам `PlaybackPipeline`
+  запрещено без отдельного архитектурного решения и focused tests.
 - Новое исключение в dependency graph сначала документируется здесь с причиной,
   владельцем состояния, планом удаления и focused проверкой.
 - Удаление временного нарушения разрешено без сохранения compatibility debt,
