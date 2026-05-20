@@ -12,7 +12,7 @@ use media_core::{
 use source_core::{
     ByteSource, CancellationToken, Seekability as SourceSeekability, SourceError, SourceResult,
 };
-use tracing::{info, warn};
+use tracing::{info, trace, warn};
 
 use crate::byte_source::ByteSourceMediaSource;
 use crate::error::DemuxError;
@@ -28,7 +28,7 @@ use crate::seek_mapper::{
 use crate::symphonia_api::{
     self, FormatReaderBox, MediaSourceStream, ReadOnlySource, SymphoniaError,
 };
-use crate::track_mapper::{TrackEntry, map_tracks};
+use crate::track_mapper::{TrackEntry, map_tracks, tracks_may_need_matroska_video_metadata};
 
 /// Верхняя граница prefix scan-а для seekable byte source-ов.
 const MATROSKA_BYTE_SOURCE_SCAN_LIMIT_BYTES: usize = 4 * 1024 * 1024;
@@ -60,22 +60,11 @@ impl SymphoniaDemuxer {
             return Err(DemuxError::FileNotFound(path.to_path_buf()));
         }
 
-        let video_tracks_by_track = match extract_video_tracks_from_file(path) {
-            Ok(video_tracks_by_track) => video_tracks_by_track,
-            Err(error) => {
-                warn!(
-                    error = %error,
-                    path = %path.display(),
-                    "Matroska video track pre-scan failed"
-                );
-                HashMap::new()
-            }
-        };
-
         let file = File::open(path)?;
         let media_source_stream = MediaSourceStream::new(Box::new(file), Default::default());
         let hint = symphonia_api::hint_from_path(path);
         let format = symphonia_api::probe_format_reader(&hint, media_source_stream)?;
+        let video_tracks_by_track = extract_video_tracks_from_file_if_needed(path, format.tracks());
 
         Self::from_format_reader(
             format,
@@ -104,14 +93,23 @@ impl SymphoniaDemuxer {
     where
         R: Read + Send + Sync + 'static,
     {
-        let mut reader = reader;
-        let (stream_prefix, video_tracks_by_track) = read_stream_prefix(&mut reader)?;
-        let reader = io::Cursor::new(stream_prefix).chain(reader);
-
-        // ReadOnlySource объявляет источник как unseekable для Symphonia.
-        let media_source = ReadOnlySource::new(reader);
-        let media_source_stream =
-            MediaSourceStream::new(Box::new(media_source), Default::default());
+        let (media_source_stream, video_tracks_by_track) =
+            if extension_may_have_matroska_video_metadata(extension_hint) {
+                let mut reader = reader;
+                let (stream_prefix, video_tracks_by_track) = read_stream_prefix(&mut reader)?;
+                let reader = io::Cursor::new(stream_prefix).chain(reader);
+                let media_source = ReadOnlySource::new(reader);
+                (
+                    MediaSourceStream::new(Box::new(media_source), Default::default()),
+                    video_tracks_by_track,
+                )
+            } else {
+                let media_source = ReadOnlySource::new(reader);
+                (
+                    MediaSourceStream::new(Box::new(media_source), Default::default()),
+                    HashMap::new(),
+                )
+            };
 
         let hint = symphonia_api::hint_from_extension(extension_hint);
         let format = symphonia_api::probe_format_reader(&hint, media_source_stream)?;
@@ -156,7 +154,11 @@ impl SymphoniaDemuxer {
     {
         let source_seekability = source.seekability();
         let demux_seekability = source_seekability_to_demux_seekability(source_seekability);
-        let video_tracks_by_track = extract_video_tracks_from_byte_source(&mut source, label)?;
+        let video_tracks_by_track = if extension_may_have_matroska_video_metadata(extension_hint) {
+            extract_video_tracks_from_byte_source(&mut source, label)?
+        } else {
+            HashMap::new()
+        };
         let media_source = ByteSourceMediaSource::new(Box::new(source));
         let media_source_stream =
             MediaSourceStream::new(Box::new(media_source), Default::default());
@@ -262,6 +264,14 @@ impl Demuxer for SymphoniaDemuxer {
                     Err(PacketConvertError::UnknownTrack { track_id }) => {
                         return Err(DemuxError::UnknownPacketTrack { track_id }.into());
                     }
+                    Err(PacketConvertError::UnsupportedTrack { track_id, reason }) => {
+                        trace!(
+                            track_id = %track_id,
+                            reason,
+                            "Packet unsupported track-а пропущен"
+                        );
+                        continue;
+                    }
                     Err(PacketConvertError::CorruptedPacket { track_id, reason }) => {
                         self.record_corrupted_packet(Some(track_id), reason)?;
                         continue;
@@ -331,6 +341,40 @@ fn source_seekability_to_demux_seekability(seekability: SourceSeekability) -> De
             },
         },
     }
+}
+
+/// Запускает Matroska pre-scan только когда Symphonia tracks показывают video/unknown track.
+fn extract_video_tracks_from_file_if_needed(
+    path: &Path,
+    tracks: &[symphonia::core::formats::Track],
+) -> HashMap<TrackId, MatroskaVideoTrack> {
+    if !tracks_may_need_matroska_video_metadata(tracks) {
+        return HashMap::new();
+    }
+
+    match extract_video_tracks_from_file(path) {
+        Ok(video_tracks_by_track) => video_tracks_by_track,
+        Err(error) => {
+            warn!(
+                error = %error,
+                path = %path.display(),
+                "Matroska video track pre-scan failed"
+            );
+            HashMap::new()
+        }
+    }
+}
+
+/// Возвращает `true` для контейнеров, где Matroska prefix scan может дать video metadata.
+fn extension_may_have_matroska_video_metadata(extension_hint: &str) -> bool {
+    matches!(
+        extension_hint
+            .trim()
+            .trim_start_matches('.')
+            .to_ascii_lowercase()
+            .as_str(),
+        "mkv" | "webm"
+    )
 }
 
 /// Читает Matroska prefix из seekable byte source-а и возвращает source cursor назад.
@@ -442,6 +486,11 @@ mod tests {
     use std::time::Duration;
 
     use media_core::{DemuxSeekRequest, DemuxSeekability, Demuxer, TrackId, TrackKind};
+    use symphonia::core::codecs::CodecParameters;
+    use symphonia::core::codecs::subtitle::SubtitleCodecParameters;
+    use symphonia::core::codecs::subtitle::well_known as subtitle_codec;
+    use symphonia::core::codecs::video::VideoCodecParameters;
+    use symphonia::core::codecs::video::well_known as video_codec;
     use symphonia::core::errors::Error as SymphoniaError;
     use symphonia::core::formats::{
         FORMAT_ID_NULL, FormatInfo, FormatReader, MediaInfo, SeekMode, SeekTo, SeekedTo, Track,
@@ -551,8 +600,28 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/test.webm")
     }
 
-    fn null_video_track(track_id: u32) -> Track {
+    fn vp9_video_track(track_id: u32) -> Track {
+        let mut video_params = VideoCodecParameters::default();
+        video_params.for_codec(video_codec::CODEC_ID_VP9);
+
         let mut track = Track::new(track_id);
+        track.with_codec_params(CodecParameters::Video(video_params));
+        track.with_time_base(TimeBase::try_new(1, 1_000).expect("valid time base"));
+        track
+    }
+
+    fn unknown_track(track_id: u32) -> Track {
+        let mut track = Track::new(track_id);
+        track.with_time_base(TimeBase::try_new(1, 1_000).expect("valid time base"));
+        track
+    }
+
+    fn subtitle_track(track_id: u32) -> Track {
+        let mut subtitle_params = SubtitleCodecParameters::new();
+        subtitle_params.for_codec(subtitle_codec::CODEC_ID_WEBVTT);
+
+        let mut track = Track::new(track_id);
+        track.with_codec_params(CodecParameters::Subtitle(subtitle_params));
         track.with_time_base(TimeBase::try_new(1, 1_000).expect("valid time base"));
         track
     }
@@ -618,7 +687,7 @@ mod tests {
         matroska_tracks: HashMap<TrackId, MatroskaVideoTrack>,
         options: DemuxerOptions,
     ) -> SymphoniaDemuxer {
-        let reader = FakeFormatReader::new(vec![null_video_track(1)], packets);
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], packets);
         SymphoniaDemuxer::from_format_reader(
             Box::new(reader),
             "fake",
@@ -631,7 +700,7 @@ mod tests {
 
     fn fake_demuxer_with_seek_mode_log() -> (SymphoniaDemuxer, Arc<Mutex<Vec<SeekMode>>>) {
         let seek_mode_log = Arc::new(Mutex::new(Vec::new()));
-        let reader = FakeFormatReader::new(vec![null_video_track(1)], Vec::new())
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
             .with_seek_mode_log(Arc::clone(&seek_mode_log));
         let demuxer = SymphoniaDemuxer::from_format_reader(
             Box::new(reader),
@@ -711,6 +780,43 @@ mod tests {
     }
 
     #[test]
+    fn unknown_track_does_not_break_open() {
+        let reader = FakeFormatReader::new(vec![unknown_track(9)], Vec::new());
+        let demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "fake",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("unknown track не должен ломать open");
+
+        assert!(demuxer.tracks().is_empty());
+    }
+
+    #[test]
+    fn subtitle_packets_are_skipped_without_unknown_track_error() {
+        let reader = FakeFormatReader::new(
+            vec![subtitle_track(9)],
+            vec![Ok(fake_packet(9, 0, b"subtitle".to_vec()))],
+        );
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "fake",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("subtitle track не должен ломать open");
+
+        let packet = demuxer
+            .next_packet()
+            .expect("subtitle packet должен быть пропущен без fatal ошибки");
+
+        assert!(packet.is_none());
+    }
+
+    #[test]
     fn unexpected_eof_error_is_kept_as_defensive_eof_fallback() {
         let mut demuxer = fake_demuxer_with_options(
             vec![Err(SymphoniaError::IoError(io::Error::new(
@@ -767,10 +873,10 @@ mod tests {
             vec![
                 Err(SymphoniaError::DecodeError("bad packet 1")),
                 Err(SymphoniaError::DecodeError("bad packet 2")),
-                Ok(fake_packet(1, 10, b"\x00".to_vec())),
+                Ok(small_vp9_keyframe_packet(1, 10)),
                 Err(SymphoniaError::DecodeError("bad packet 3")),
                 Err(SymphoniaError::DecodeError("bad packet 4")),
-                Ok(fake_packet(1, 20, b"\x00".to_vec())),
+                Ok(small_vp9_keyframe_packet(1, 20)),
             ],
             HashMap::new(),
             options,

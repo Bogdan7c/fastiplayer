@@ -97,7 +97,7 @@ mod tests {
         preferred_seek_track_id, seeked_to_timeline_result, symphonia_seek_error_to_demux_error,
         symphonia_seek_mode,
     };
-    use crate::track_mapper::TrackEntry;
+    use crate::track_mapper::{TrackEntry, TrackEntryKind};
 
     fn track_info(track_id: u32, kind: TrackKind) -> TrackInfo {
         TrackInfo {
@@ -115,7 +115,7 @@ mod tests {
 
     fn track_entry(kind: TrackKind) -> TrackEntry {
         TrackEntry {
-            kind,
+            kind: TrackEntryKind::Supported(kind),
             codec_id: "test".to_string(),
             time_base: Some(TimeBase::try_new(1, 1_000).expect("valid time base")),
             sample_rate: None,

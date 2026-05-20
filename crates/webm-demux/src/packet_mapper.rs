@@ -25,6 +25,15 @@ pub(crate) enum PacketConvertError {
         /// Человекочитаемая причина для logs/fatal error.
         reason: String,
     },
+
+    /// Packet принадлежит track-у, который demuxer увидел при open, но намеренно не экспортировал.
+    UnsupportedTrack {
+        /// Track, к которому относится пропускаемый packet.
+        track_id: TrackId,
+
+        /// Человекочитаемая причина для trace diagnostics.
+        reason: &'static str,
+    },
 }
 
 /// Конвертирует Symphonia packet в neutral media-core packet.
@@ -38,15 +47,24 @@ pub(crate) fn convert_packet(
         .ok_or(PacketConvertError::UnknownTrack {
             track_id: packet_track_id,
         })?;
+    let Some(track_kind) = track_entry.supported_kind() else {
+        let unsupported_kind = track_entry
+            .unsupported_kind()
+            .expect("unsupported TrackEntry kind должен иметь причину");
+        return Err(PacketConvertError::UnsupportedTrack {
+            track_id: TrackId::new(packet_track_id),
+            reason: unsupported_kind.diagnostic_reason(),
+        });
+    };
     let pts = track_entry
         .time_base
         .map(|time_base| symphonia_timestamp_to_duration(time_base, packet.pts))
         .unwrap_or_default();
-    let keyframe = packet_keyframe(track_entry, packet_track_id, &packet.data)?;
+    let keyframe = packet_keyframe(track_entry, track_kind, packet_track_id, &packet.data)?;
 
     Ok(MediaPacket {
         track_id: TrackId::new(packet_track_id),
-        kind: track_entry.kind,
+        kind: track_kind,
         pts,
         dts: None,
         byte_offset: None,
@@ -58,10 +76,11 @@ pub(crate) fn convert_packet(
 /// Определяет keyframe только через codec-aware probe, потому что Symphonia 0.6 Packet не несёт flag.
 fn packet_keyframe(
     track_entry: &TrackEntry,
+    track_kind: TrackKind,
     packet_track_id: u32,
     packet_data: &[u8],
 ) -> Result<bool, PacketConvertError> {
-    if track_entry.kind != TrackKind::Video {
+    if track_kind != TrackKind::Video {
         return Ok(false);
     }
 
@@ -89,11 +108,21 @@ mod tests {
     use symphonia::core::units::{Duration as SymphoniaDuration, TimeBase, Timestamp};
 
     use super::{PacketConvertError, convert_packet};
-    use crate::track_mapper::TrackEntry;
+    use crate::track_mapper::{TrackEntry, TrackEntryKind, UnsupportedTrackKind};
 
     fn track_entry(kind: TrackKind, codec_id: &str) -> TrackEntry {
         TrackEntry {
-            kind,
+            kind: TrackEntryKind::Supported(kind),
+            codec_id: codec_id.to_string(),
+            time_base: Some(TimeBase::try_new(1, 48_000).expect("valid time base")),
+            sample_rate: None,
+            channels: None,
+        }
+    }
+
+    fn unsupported_track_entry(kind: UnsupportedTrackKind, codec_id: &str) -> TrackEntry {
+        TrackEntry {
+            kind: TrackEntryKind::Unsupported(kind),
             codec_id: codec_id.to_string(),
             time_base: Some(TimeBase::try_new(1, 48_000).expect("valid time base")),
             sample_rate: None,
@@ -187,6 +216,25 @@ mod tests {
     }
 
     #[test]
+    fn packet_for_unsupported_track_is_skipped_mapping_error() {
+        let track_map = HashMap::from([(
+            9,
+            unsupported_track_entry(UnsupportedTrackKind::Subtitle, "S_TEXT/WEBVTT"),
+        )]);
+
+        let error = convert_packet(packet(9, 0, b"subtitle"), &track_map)
+            .expect_err("unsupported track packet должен быть skip signal");
+
+        assert_eq!(
+            error,
+            PacketConvertError::UnsupportedTrack {
+                track_id: TrackId::new(9),
+                reason: UnsupportedTrackKind::Subtitle.diagnostic_reason(),
+            }
+        );
+    }
+
+    #[test]
     fn invalid_vp9_packet_is_recoverable_corruption() {
         let track_map = HashMap::from([(1, track_entry(TrackKind::Video, "V_VP9"))]);
 
@@ -199,6 +247,9 @@ mod tests {
             }
             PacketConvertError::UnknownTrack { .. } => {
                 panic!("ожидалась recoverable corruption, а не unknown track");
+            }
+            PacketConvertError::UnsupportedTrack { .. } => {
+                panic!("ожидалась recoverable corruption, а не unsupported track skip");
             }
         }
     }
