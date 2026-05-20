@@ -12,7 +12,7 @@ use media_core::{
 use source_core::{
     ByteSource, CancellationToken, Seekability as SourceSeekability, SourceError, SourceResult,
 };
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::byte_source::ByteSourceMediaSource;
 use crate::error::DemuxError;
@@ -36,7 +36,7 @@ const MATROSKA_BYTE_SOURCE_SCAN_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 /// Более короткая граница для unseekable stream, чтобы open не ждал большой network prefix.
 const MATROSKA_STREAM_SCAN_LIMIT_BYTES: usize = 256 * 1024;
 
-/// Demuxer на базе symphonia для WebM/MKV файлов.
+/// Demuxer на базе Symphonia для media containers, которые поддерживает workspace dependency.
 pub struct SymphoniaDemuxer {
     format: FormatReaderBox<'static>,
     tracks: Vec<TrackInfo>,
@@ -75,7 +75,7 @@ impl SymphoniaDemuxer {
         )
     }
 
-    /// Открывает WebM/MKV из потокового reader-а без seek.
+    /// Открывает media stream из потокового reader-а без seek.
     pub fn from_stream<R>(reader: R, extension_hint: &str, label: &str) -> Result<Self, DemuxError>
     where
         R: Read + Send + Sync + 'static,
@@ -83,7 +83,7 @@ impl SymphoniaDemuxer {
         Self::from_stream_with_options(reader, extension_hint, label, DemuxerOptions::default())
     }
 
-    /// Открывает WebM/MKV из потокового reader-а без seek с явной fail-safe политикой.
+    /// Открывает media stream из потокового reader-а без seek с явной fail-safe политикой.
     pub fn from_stream_with_options<R>(
         reader: R,
         extension_hint: &str,
@@ -104,6 +104,11 @@ impl SymphoniaDemuxer {
                     video_tracks_by_track,
                 )
             } else {
+                trace!(
+                    source = %label,
+                    extension_hint,
+                    "Matroska video metadata pre-scan skipped for non-Matroska stream"
+                );
                 let media_source = ReadOnlySource::new(reader);
                 (
                     MediaSourceStream::new(Box::new(media_source), Default::default()),
@@ -125,7 +130,7 @@ impl SymphoniaDemuxer {
         )
     }
 
-    /// Открывает WebM/MKV из нейтрального seekable byte source-а.
+    /// Открывает media container из нейтрального seekable byte source-а.
     pub fn from_byte_source<S>(
         source: S,
         extension_hint: &str,
@@ -142,7 +147,7 @@ impl SymphoniaDemuxer {
         )
     }
 
-    /// Открывает WebM/MKV из нейтрального byte source-а с явной fail-safe политикой.
+    /// Открывает media container из нейтрального byte source-а с явной fail-safe политикой.
     pub fn from_byte_source_with_options<S>(
         mut source: S,
         extension_hint: &str,
@@ -157,6 +162,11 @@ impl SymphoniaDemuxer {
         let video_tracks_by_track = if extension_may_have_matroska_video_metadata(extension_hint) {
             extract_video_tracks_from_byte_source(&mut source, label)?
         } else {
+            trace!(
+                source = %label,
+                extension_hint,
+                "Matroska video metadata pre-scan skipped for non-Matroska byte source"
+            );
             HashMap::new()
         };
         let media_source = ByteSourceMediaSource::new(Box::new(source));
@@ -177,19 +187,23 @@ impl SymphoniaDemuxer {
 
     /// Собирает metadata и track map из готового Symphonia format reader.
     fn from_format_reader(
-        format: FormatReaderBox<'static>,
+        mut format: FormatReaderBox<'static>,
         label: &str,
         mut video_tracks_by_track: HashMap<TrackId, MatroskaVideoTrack>,
         seekability: DemuxSeekability,
         options: DemuxerOptions,
     ) -> Result<Self, DemuxError> {
+        let symphonia_metadata = summarize_symphonia_format_metadata(&mut format);
         let track_mapping = map_tracks(format.tracks(), &mut video_tracks_by_track);
 
         info!(
             source = %label,
             tracks = track_mapping.tracks.len(),
             duration = ?track_mapping.duration,
-            "WebM source открыт"
+            attachments = symphonia_metadata.attachments,
+            chapters = symphonia_metadata.has_chapters,
+            metadata_revision = symphonia_metadata.has_metadata_revision,
+            "Symphonia media source открыт"
         );
 
         Ok(Self {
@@ -237,6 +251,34 @@ impl SymphoniaDemuxer {
             last_error: reason,
         }
         .into())
+    }
+}
+
+/// Короткая сводка того, что Symphonia 0.6 уже принесла на format-level boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SymphoniaFormatMetadataSummary {
+    /// Количество attachments, которые Symphonia отдаёт через `FormatReader`.
+    attachments: usize,
+
+    /// Есть ли chapters в Symphonia `FormatReader`.
+    has_chapters: bool,
+
+    /// Есть ли текущая metadata revision в Symphonia metadata log.
+    has_metadata_revision: bool,
+}
+
+/// Снимает format-level diagnostics до построения neutral track model.
+fn summarize_symphonia_format_metadata(
+    format: &mut FormatReaderBox<'static>,
+) -> SymphoniaFormatMetadataSummary {
+    let attachments = format.attachments().len();
+    let has_chapters = format.chapters().is_some();
+    let has_metadata_revision = format.metadata().current().is_some();
+
+    SymphoniaFormatMetadataSummary {
+        attachments,
+        has_chapters,
+        has_metadata_revision,
     }
 }
 
@@ -343,12 +385,22 @@ fn source_seekability_to_demux_seekability(seekability: SourceSeekability) -> De
     }
 }
 
-/// Запускает Matroska pre-scan только когда Symphonia tracks показывают video/unknown track.
+/// Запускает Matroska pre-scan только для Matroska/WebM video/unknown кандидатов.
 fn extract_video_tracks_from_file_if_needed(
     path: &Path,
     tracks: &[symphonia::core::formats::Track],
 ) -> HashMap<TrackId, MatroskaVideoTrack> {
-    if !tracks_may_need_matroska_video_metadata(tracks) {
+    let extension_hint = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+    let decision = decide_matroska_video_metadata_scan(extension_hint, tracks);
+    if decision != MatroskaVideoMetadataScanDecision::Scan {
+        trace!(
+            path = %path.display(),
+            reason = decision.reason(),
+            "Matroska video metadata pre-scan skipped for file"
+        );
         return HashMap::new();
     }
 
@@ -363,6 +415,46 @@ fn extract_video_tracks_from_file_if_needed(
             HashMap::new()
         }
     }
+}
+
+/// Решение о запуске Matroska/WebM scan после того, как Symphonia уже отдала track list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MatroskaVideoMetadataScanDecision {
+    /// Нужно читать bounded Matroska prefix для video/HDR fallback-а.
+    Scan,
+
+    /// Расширение не относится к Matroska/WebM, scan был бы контейнерным костылём.
+    SkipNonMatroskaContainer,
+
+    /// Symphonia не показала video/unknown кандидатов, значит video fallback не нужен.
+    SkipNoVideoCandidates,
+}
+
+impl MatroskaVideoMetadataScanDecision {
+    /// Стабильная причина для diagnostics.
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::Scan => "scan",
+            Self::SkipNonMatroskaContainer => "non_matroska_container",
+            Self::SkipNoVideoCandidates => "no_video_or_unknown_tracks",
+        }
+    }
+}
+
+/// Решает, нужен ли Matroska fallback для уже распробованного Symphonia reader-а.
+fn decide_matroska_video_metadata_scan(
+    extension_hint: &str,
+    tracks: &[symphonia::core::formats::Track],
+) -> MatroskaVideoMetadataScanDecision {
+    if !extension_may_have_matroska_video_metadata(extension_hint) {
+        return MatroskaVideoMetadataScanDecision::SkipNonMatroskaContainer;
+    }
+
+    if !tracks_may_need_matroska_video_metadata(tracks) {
+        return MatroskaVideoMetadataScanDecision::SkipNoVideoCandidates;
+    }
+
+    MatroskaVideoMetadataScanDecision::Scan
 }
 
 /// Возвращает `true` для контейнеров, где Matroska prefix scan может дать video metadata.
@@ -386,6 +478,10 @@ where
     S: ByteSource,
 {
     if !source.seekability().is_seekable() {
+        debug!(
+            source = %label,
+            "Matroska video metadata byte-source pre-scan skipped for unseekable source"
+        );
         return Ok(HashMap::new());
     }
 
@@ -503,7 +599,10 @@ mod tests {
     use symphonia::core::packet::Packet;
     use symphonia::core::units::{Duration as SymphoniaDuration, TimeBase, Timestamp};
 
-    use super::SymphoniaDemuxer;
+    use super::{
+        MATROSKA_STREAM_SCAN_LIMIT_BYTES, MatroskaVideoMetadataScanDecision, SymphoniaDemuxer,
+        decide_matroska_video_metadata_scan, read_stream_prefix,
+    };
     use crate::error::DemuxError;
     use crate::matroska_metadata::MatroskaVideoTrack;
     use crate::options::DemuxerOptions;
@@ -757,6 +856,69 @@ mod tests {
                 return packet;
             }
         }
+    }
+
+    struct BoundedPrefixReader {
+        bytes_remaining: usize,
+        bytes_read: usize,
+    }
+
+    impl BoundedPrefixReader {
+        fn new(bytes_remaining: usize) -> Self {
+            Self {
+                bytes_remaining,
+                bytes_read: 0,
+            }
+        }
+    }
+
+    impl std::io::Read for BoundedPrefixReader {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            let bytes_to_read = self.bytes_remaining.min(output.len());
+            if bytes_to_read == 0 {
+                return Ok(0);
+            }
+
+            output[..bytes_to_read].fill(0);
+            self.bytes_remaining -= bytes_to_read;
+            self.bytes_read += bytes_to_read;
+            Ok(bytes_to_read)
+        }
+    }
+
+    #[test]
+    fn non_matroska_audio_extensions_skip_matroska_video_scan() {
+        let audio_track = aac_audio_track_with_timing(2, SymphoniaDuration::new(30_000));
+
+        for extension in ["ogg", "mp3", "wav"] {
+            assert_eq!(
+                decide_matroska_video_metadata_scan(extension, std::slice::from_ref(&audio_track)),
+                MatroskaVideoMetadataScanDecision::SkipNonMatroskaContainer
+            );
+        }
+    }
+
+    #[test]
+    fn audio_only_webm_skips_matroska_video_scan_after_symphonia_probe() {
+        let audio_track = aac_audio_track_with_timing(2, SymphoniaDuration::new(30_000));
+
+        assert_eq!(
+            decide_matroska_video_metadata_scan("webm", &[audio_track]),
+            MatroskaVideoMetadataScanDecision::SkipNoVideoCandidates
+        );
+    }
+
+    #[test]
+    fn stream_prefix_scan_limit_stays_bounded() {
+        assert_eq!(MATROSKA_STREAM_SCAN_LIMIT_BYTES, 256 * 1024);
+
+        let mut reader = BoundedPrefixReader::new(MATROSKA_STREAM_SCAN_LIMIT_BYTES * 2);
+        let (prefix, video_tracks_by_track) =
+            read_stream_prefix(&mut reader).expect("bounded prefix read works");
+
+        assert_eq!(prefix.len(), MATROSKA_STREAM_SCAN_LIMIT_BYTES);
+        assert_eq!(reader.bytes_read, MATROSKA_STREAM_SCAN_LIMIT_BYTES);
+        assert!(video_tracks_by_track.is_empty());
     }
 
     #[test]

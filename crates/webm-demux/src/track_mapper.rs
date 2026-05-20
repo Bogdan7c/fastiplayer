@@ -2,17 +2,19 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use bytes::Bytes;
-use media_core::{TrackId, TrackInfo, TrackKind};
-use symphonia::core::codecs::CodecParameters;
+use codec_core::{Av1Profile, H264Profile, H265Profile, VideoProfile, Vp9Profile};
+use media_core::{TrackId, TrackInfo, TrackKind, VideoTrackMetadata};
 use symphonia::core::codecs::audio::well_known as audio_codec;
 use symphonia::core::codecs::audio::{AudioCodecId, CODEC_ID_NULL_AUDIO};
 use symphonia::core::codecs::subtitle::well_known as subtitle_codec;
 use symphonia::core::codecs::subtitle::{CODEC_ID_NULL_SUBTITLE, SubtitleCodecId};
 use symphonia::core::codecs::video::well_known as video_codec;
-use symphonia::core::codecs::video::{CODEC_ID_NULL_VIDEO, VideoCodecId};
+use symphonia::core::codecs::video::well_known::profiles as video_profile;
+use symphonia::core::codecs::video::{CODEC_ID_NULL_VIDEO, VideoCodecId, VideoCodecParameters};
+use symphonia::core::codecs::{CodecParameters, CodecProfile};
 use symphonia::core::formats::{Track, TrackType};
 use symphonia::core::units::TimeBase as SymphoniaTimeBase;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::matroska_metadata::MatroskaVideoTrack;
 use crate::symphonia_api::{media_time_base_from_symphonia, symphonia_duration_to_duration};
@@ -132,8 +134,10 @@ pub(crate) fn map_tracks(
             video_fallback_candidate_count,
             video_tracks_by_track,
         );
+        let video_metadata_source = video_metadata_source(track, matroska_video_track.as_ref());
         let track_entry = build_track_entry(track, matroska_video_track.as_ref());
         if let Some(track_info) = build_track_info(track, &track_entry, matroska_video_track) {
+            log_supported_track_metadata(track, &track_entry, &track_info, video_metadata_source);
             tracks.push(track_info);
         } else {
             log_unsupported_track(track, &track_entry);
@@ -306,7 +310,12 @@ fn build_track_info(
         .as_ref()
         .and_then(codec_private_from_codec_params);
     let video = (kind == TrackKind::Video)
-        .then(|| matroska_video_track.and_then(|video_track| video_track.metadata))
+        .then(|| {
+            merge_video_metadata(
+                video_metadata_from_symphonia_track(track),
+                matroska_video_track.and_then(|video_track| video_track.metadata),
+            )
+        })
         .flatten();
 
     Some(TrackInfo {
@@ -320,6 +329,171 @@ fn build_track_info(
         channels: track_entry.channels,
         video,
     })
+}
+
+/// Источник video metadata, который полезен в diagnostics при разборе startup path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VideoMetadataSource {
+    /// Для track-а нет video metadata в neutral model.
+    None,
+
+    /// Track-level поля пришли только из Symphonia codec params.
+    Symphonia,
+
+    /// Video metadata пришла только из bounded Matroska/WebM fallback-а.
+    MatroskaFallback,
+
+    /// Symphonia дала базовые поля, а Matroska fallback добавил отсутствующие HDR/color hints.
+    SymphoniaAndMatroskaFallback,
+}
+
+impl VideoMetadataSource {
+    /// Стабильная строка для structured logs.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Symphonia => "symphonia_codec_params",
+            Self::MatroskaFallback => "matroska_fallback",
+            Self::SymphoniaAndMatroskaFallback => "symphonia_codec_params+matroska_fallback",
+        }
+    }
+}
+
+/// Вычисляет источник video metadata без изменения mapping state.
+fn video_metadata_source(
+    track: &Track,
+    matroska_video_track: Option<&MatroskaVideoTrack>,
+) -> VideoMetadataSource {
+    let has_symphonia_metadata = video_metadata_from_symphonia_track(track).is_some();
+    let has_matroska_metadata = matroska_video_track
+        .and_then(|video_track| video_track.metadata.as_ref())
+        .is_some();
+
+    match (has_symphonia_metadata, has_matroska_metadata) {
+        (false, false) => VideoMetadataSource::None,
+        (true, false) => VideoMetadataSource::Symphonia,
+        (false, true) => VideoMetadataSource::MatroskaFallback,
+        (true, true) => VideoMetadataSource::SymphoniaAndMatroskaFallback,
+    }
+}
+
+/// Объединяет Symphonia metadata как primary source с Matroska fallback-ом для отсутствующих полей.
+fn merge_video_metadata(
+    symphonia_metadata: Option<VideoTrackMetadata>,
+    matroska_metadata: Option<VideoTrackMetadata>,
+) -> Option<VideoTrackMetadata> {
+    match (symphonia_metadata, matroska_metadata) {
+        (Some(mut primary_metadata), Some(fallback_metadata)) => {
+            primary_metadata.coded_width = primary_metadata
+                .coded_width
+                .or(fallback_metadata.coded_width);
+            primary_metadata.coded_height = primary_metadata
+                .coded_height
+                .or(fallback_metadata.coded_height);
+            primary_metadata.profile = primary_metadata.profile.or(fallback_metadata.profile);
+            primary_metadata.bit_depth = primary_metadata.bit_depth.or(fallback_metadata.bit_depth);
+            primary_metadata.chroma = primary_metadata.chroma.or(fallback_metadata.chroma);
+            primary_metadata.color = primary_metadata.color.or(fallback_metadata.color);
+            primary_metadata.into_option()
+        }
+        (Some(primary_metadata), None) => primary_metadata.into_option(),
+        (None, Some(fallback_metadata)) => fallback_metadata.into_option(),
+        (None, None) => None,
+    }
+}
+
+/// Достаёт video track-level metadata, которую Symphonia 0.6 уже отдаёт без Matroska pre-scan-а.
+fn video_metadata_from_symphonia_track(track: &Track) -> Option<VideoTrackMetadata> {
+    let Some(CodecParameters::Video(video_params)) = track.codec_params.as_ref() else {
+        return None;
+    };
+
+    VideoTrackMetadata {
+        coded_width: video_params.width.map(u32::from),
+        coded_height: video_params.height.map(u32::from),
+        profile: video_params
+            .profile
+            .and_then(|profile| video_profile_from_symphonia(video_params, profile)),
+        bit_depth: None,
+        chroma: None,
+        color: None,
+    }
+    .into_option()
+}
+
+/// Мапит Symphonia codec-specific profile в существующую neutral profile model.
+fn video_profile_from_symphonia(
+    video_params: &VideoCodecParameters,
+    profile: CodecProfile,
+) -> Option<VideoProfile> {
+    match video_params.codec {
+        video_codec::CODEC_ID_AV1 => av1_profile_from_symphonia(profile).map(VideoProfile::Av1),
+        video_codec::CODEC_ID_H264 => h264_profile_from_symphonia(profile).map(VideoProfile::H264),
+        video_codec::CODEC_ID_HEVC => h265_profile_from_symphonia(profile).map(VideoProfile::H265),
+        video_codec::CODEC_ID_VP9 => vp9_profile_from_symphonia(profile).map(VideoProfile::Vp9),
+        _ => None,
+    }
+}
+
+/// Мапит AV1 profile codes из Symphonia.
+fn av1_profile_from_symphonia(profile: CodecProfile) -> Option<Av1Profile> {
+    match profile {
+        video_profile::CODEC_PROFILE_AV1_MAIN => Some(Av1Profile::Main),
+        video_profile::CODEC_PROFILE_AV1_HIGH => Some(Av1Profile::High),
+        video_profile::CODEC_PROFILE_AV1_PROFESSIONAL => Some(Av1Profile::Professional),
+        _ => None,
+    }
+}
+
+/// Мапит subset H.264 profiles, который уже представлен в codec-core.
+fn h264_profile_from_symphonia(profile: CodecProfile) -> Option<H264Profile> {
+    match profile {
+        video_profile::CODEC_PROFILE_H264_CONSTRAINED_BASELINE => {
+            Some(H264Profile::ConstrainedBaseline)
+        }
+        video_profile::CODEC_PROFILE_H264_MAIN => Some(H264Profile::Main),
+        video_profile::CODEC_PROFILE_H264_HIGH => Some(H264Profile::High),
+        _ => None,
+    }
+}
+
+/// Мапит subset HEVC profiles, который уже представлен в codec-core.
+fn h265_profile_from_symphonia(profile: CodecProfile) -> Option<H265Profile> {
+    match profile {
+        video_profile::CODEC_PROFILE_HEVC_MAIN => Some(H265Profile::Main),
+        video_profile::CODEC_PROFILE_HEVC_MAIN_10 => Some(H265Profile::Main10),
+        _ => None,
+    }
+}
+
+/// Мапит VP9 profile codes из Symphonia.
+fn vp9_profile_from_symphonia(profile: CodecProfile) -> Option<Vp9Profile> {
+    match profile {
+        video_profile::CODEC_PROFILE_VP9_0 => Some(Vp9Profile::Profile0),
+        video_profile::CODEC_PROFILE_VP9_1 => Some(Vp9Profile::Profile1),
+        video_profile::CODEC_PROFILE_VP9_2 => Some(Vp9Profile::Profile2),
+        video_profile::CODEC_PROFILE_VP9_3 => Some(Vp9Profile::Profile3),
+        _ => None,
+    }
+}
+
+/// Логирует, какие поля теперь закрывает Symphonia, а где включился Matroska fallback.
+fn log_supported_track_metadata(
+    track: &Track,
+    track_entry: &TrackEntry,
+    track_info: &TrackInfo,
+    video_metadata_source: VideoMetadataSource,
+) {
+    debug!(
+        track_id = track.id,
+        kind = ?track_info.kind,
+        codec_id = %track_entry.codec_id,
+        track_type = ?track.track_type(),
+        time_base = ?track.time_base,
+        duration = ?track.duration,
+        video_metadata_source = video_metadata_source.as_str(),
+        "Symphonia track metadata mapped"
+    );
 }
 
 /// Логирует unsupported track один раз на open, а не для каждого packet-а.
@@ -625,6 +799,10 @@ fn parse_opus_head(codec_private_bytes: &[u8]) -> Option<(u32, u32)> {
 mod tests {
     use std::collections::HashMap;
 
+    use codec_core::{
+        ColorPrimaries, ColorRange, HdrMetadata, MatrixCoefficients, TransferFunction,
+        VideoColorMetadata, VideoProfile, Vp9Profile,
+    };
     use media_core::{TrackId, TrackKind, VideoTrackMetadata};
     use symphonia::core::codecs::CodecParameters;
     use symphonia::core::codecs::audio::AudioCodecParameters;
@@ -673,6 +851,14 @@ mod tests {
         track
     }
 
+    fn audio_track_with_unknown_codec(track_id: u32) -> Track {
+        let audio_params = AudioCodecParameters::new();
+
+        let mut track = Track::new(track_id);
+        track.with_codec_params(CodecParameters::Audio(audio_params));
+        track
+    }
+
     fn subtitle_track(track_id: u32) -> Track {
         let mut subtitle_params = SubtitleCodecParameters::new();
         subtitle_params.for_codec(subtitle_codec::CODEC_ID_WEBVTT);
@@ -685,6 +871,30 @@ mod tests {
     fn vp9_video_track(track_id: u32) -> Track {
         let mut video_params = VideoCodecParameters::default();
         video_params.for_codec(symphonia::core::codecs::video::well_known::CODEC_ID_VP9);
+
+        let mut track = Track::new(track_id);
+        track.with_codec_params(CodecParameters::Video(video_params));
+        track.with_time_base(TimeBase::try_new(1, 1_000).expect("valid time base"));
+        track
+    }
+
+    fn video_track_with_unknown_codec(track_id: u32) -> Track {
+        let video_params = VideoCodecParameters::default();
+
+        let mut track = Track::new(track_id);
+        track.with_codec_params(CodecParameters::Video(video_params));
+        track.with_time_base(TimeBase::try_new(1, 1_000).expect("valid time base"));
+        track
+    }
+
+    fn vp9_video_track_with_dimensions(track_id: u32, width: u16, height: u16) -> Track {
+        let mut video_params = VideoCodecParameters::default();
+        video_params.for_codec(symphonia::core::codecs::video::well_known::CODEC_ID_VP9);
+        video_params.with_width(width);
+        video_params.with_height(height);
+        video_params.with_profile(
+            symphonia::core::codecs::video::well_known::profiles::CODEC_PROFILE_VP9_2,
+        );
 
         let mut track = Track::new(track_id);
         track.with_codec_params(CodecParameters::Video(video_params));
@@ -722,6 +932,30 @@ mod tests {
         MatroskaVideoTrack {
             codec_id: Some("V_VP9".to_string()),
             metadata: Some(metadata),
+        }
+    }
+
+    fn hdr_video_track_metadata() -> VideoTrackMetadata {
+        VideoTrackMetadata {
+            coded_width: None,
+            coded_height: None,
+            profile: None,
+            bit_depth: None,
+            chroma: None,
+            color: Some(VideoColorMetadata::container(
+                ColorRange::Limited,
+                MatrixCoefficients::Bt2020,
+                ColorPrimaries::Bt2020,
+                TransferFunction::Pq,
+                Some(HdrMetadata {
+                    color_primaries: ColorPrimaries::Bt2020,
+                    transfer_function: TransferFunction::Pq,
+                    max_luminance_nits: Some(1_000.0),
+                    min_luminance_nits: Some(0.001),
+                    max_content_light_level_nits: Some(1_000),
+                    max_frame_average_light_level_nits: Some(400),
+                }),
+            )),
         }
     }
 
@@ -800,6 +1034,26 @@ mod tests {
 
         assert_eq!(entry.supported_kind(), Some(TrackKind::Video));
         assert_eq!(entry.codec_id, "V_VP9");
+    }
+
+    #[test]
+    fn unknown_audio_codec_is_not_masked_as_opus() {
+        let track = audio_track_with_unknown_codec(2);
+
+        let entry = build_track_entry(&track, None);
+
+        assert_eq!(entry.supported_kind(), Some(TrackKind::Audio));
+        assert_eq!(entry.codec_id, "unknown_audio");
+    }
+
+    #[test]
+    fn unknown_video_codec_is_not_masked_as_vp9() {
+        let track = video_track_with_unknown_codec(1);
+
+        let entry = build_track_entry(&track, None);
+
+        assert_eq!(entry.supported_kind(), Some(TrackKind::Video));
+        assert_eq!(entry.codec_id, "unknown_video");
     }
 
     #[test]
@@ -896,6 +1150,55 @@ mod tests {
             Some(1080)
         );
         assert!(mapping.track_map.contains_key(&1));
+    }
+
+    #[test]
+    fn symphonia_video_dimensions_are_used_without_matroska_metadata() {
+        let mut metadata_by_track = HashMap::new();
+        let track = vp9_video_track_with_dimensions(1, 1920, 1080);
+
+        let mapping = map_tracks(&[track], &mut metadata_by_track);
+        let video_metadata = mapping.tracks[0]
+            .video
+            .as_ref()
+            .expect("Symphonia video metadata должна попасть в neutral model");
+
+        assert_eq!(video_metadata.coded_width, Some(1920));
+        assert_eq!(video_metadata.coded_height, Some(1080));
+        assert_eq!(
+            video_metadata.profile,
+            Some(VideoProfile::Vp9(Vp9Profile::Profile2))
+        );
+    }
+
+    #[test]
+    fn matroska_hdr_fallback_is_merged_with_symphonia_video_metadata() {
+        let mut metadata_by_track = HashMap::from([(
+            TrackId::new(1),
+            matroska_video_track(hdr_video_track_metadata()),
+        )]);
+        let track = vp9_video_track_with_dimensions(1, 1920, 1080);
+
+        let mapping = map_tracks(&[track], &mut metadata_by_track);
+        let video_metadata = mapping.tracks[0]
+            .video
+            .as_ref()
+            .expect("video metadata должна быть объединена");
+        let color = video_metadata
+            .color
+            .as_ref()
+            .expect("Matroska HDR fallback должен сохранить color metadata");
+
+        assert_eq!(video_metadata.coded_width, Some(1920));
+        assert_eq!(video_metadata.coded_height, Some(1080));
+        assert_eq!(color.transfer, TransferFunction::Pq);
+        assert_eq!(
+            color
+                .hdr_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.max_content_light_level_nits),
+            Some(1_000)
+        );
     }
 
     #[test]

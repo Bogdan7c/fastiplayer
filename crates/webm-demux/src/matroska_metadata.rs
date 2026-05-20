@@ -1,7 +1,8 @@
-//! Минимальный extractor Matroska/WebM track metadata, которых Symphonia 0.5 не отдаёт публично.
+//! Минимальный extractor Matroska/WebM video metadata, которую Symphonia 0.6 не отдаёт
+//! в текущую neutral model.
 //!
 //! Этот модуль не заменяет demuxer. Он читает только metadata-дерево `Tracks` до decode,
-//! чтобы сохранить Colour elements для VP9 resolver-а.
+//! чтобы сохранить `Colour`/HDR elements для раннего выбора video path.
 
 use std::collections::HashMap;
 use std::fs::File;
