@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::time::Duration;
 
 use crate::TrackId;
@@ -181,6 +182,12 @@ impl TimeBase {
     #[must_use]
     pub fn timestamp_to_duration(self, units: u64) -> Duration {
         self.positive_units_to_duration(u128::from(units))
+    }
+
+    /// Конвертирует unsigned duration units track-а в [`Duration`].
+    #[must_use]
+    pub fn duration_units_to_duration(self, units: TrackDurationUnits) -> Duration {
+        self.positive_units_to_duration(u128::from(units.get()))
     }
 
     /// Конвертирует signed track units в неотрицательную [`Duration`].
@@ -382,6 +389,12 @@ impl TrackTimestamp {
         }
     }
 
+    /// Создаёт тот же timestamp для другого внешнего track id после remap-а demuxer-а.
+    #[must_use]
+    pub const fn with_track_id(self, track_id: TrackId) -> Self {
+        Self { track_id, ..self }
+    }
+
     /// Создаёт typed timestamp из старого unsigned backend contract-а.
     #[must_use]
     pub const fn from_unsigned_units(track_id: TrackId, units: u64, time_base: TimeBase) -> Self {
@@ -396,6 +409,94 @@ impl TrackTimestamp {
     #[must_use]
     pub fn to_media_time(self) -> MediaTime {
         self.time_base.track_units_to_media_time(self.units)
+    }
+
+    /// Сравнивает signed timestamp-ы на общей timeline без насыщения отрицательных units в ноль.
+    #[must_use]
+    pub fn cmp_timeline_position(self, other: Self) -> Ordering {
+        let left_position = i128::from(self.units.get())
+            * i128::from(self.time_base.numer)
+            * i128::from(other.time_base.denom);
+        let right_position = i128::from(other.units.get())
+            * i128::from(other.time_base.numer)
+            * i128::from(self.time_base.denom);
+
+        left_position.cmp(&right_position)
+    }
+}
+
+/// Сырые duration units одного track-а в container/backend временной базе.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TrackDurationUnits(u64);
+
+impl TrackDurationUnits {
+    /// Нулевая длительность в track time base.
+    pub const ZERO: Self = Self(0);
+
+    /// Максимальная длительность, которую можно хранить без расширения типа.
+    pub const MAX: Self = Self(u64::MAX);
+
+    /// Создаёт raw unsigned duration units без нормализации.
+    #[must_use]
+    pub const fn new(units: u64) -> Self {
+        Self(units)
+    }
+
+    /// Возвращает raw unsigned units без изменения масштаба.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for TrackDurationUnits {
+    /// Создаёт raw unsigned duration units из container duration-а.
+    fn from(units: u64) -> Self {
+        Self::new(units)
+    }
+}
+
+impl From<TrackDurationUnits> for u64 {
+    /// Возвращает raw unsigned duration units для backend adapters и diagnostics.
+    fn from(units: TrackDurationUnits) -> Self {
+        units.get()
+    }
+}
+
+/// Duration одного track-а в исходной container/backend временной базе.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TrackDuration {
+    /// Track, к которому относится duration.
+    pub track_id: TrackId,
+
+    /// Сырые unsigned duration units в `time_base`.
+    pub units: TrackDurationUnits,
+
+    /// Временная база исходного track-а.
+    pub time_base: TimeBase,
+}
+
+impl TrackDuration {
+    /// Создаёт typed unsigned duration для конкретного track-а.
+    #[must_use]
+    pub const fn new(track_id: TrackId, units: u64, time_base: TimeBase) -> Self {
+        Self {
+            track_id,
+            units: TrackDurationUnits::new(units),
+            time_base,
+        }
+    }
+
+    /// Создаёт ту же duration для другого внешнего track id после remap-а demuxer-а.
+    #[must_use]
+    pub const fn with_track_id(self, track_id: TrackId) -> Self {
+        Self { track_id, ..self }
+    }
+
+    /// Переводит track duration в нормализованную media-длительность.
+    #[must_use]
+    pub fn to_media_duration(self) -> MediaDuration {
+        MediaDuration::from_duration(self.time_base.duration_units_to_duration(self.units))
     }
 }
 
@@ -583,7 +684,8 @@ mod tests {
     use crate::TrackId;
 
     use super::{
-        MediaDuration, MediaTime, TimeBase, TimelineRange, TrackTimestamp, TrackTimestampUnits,
+        MediaDuration, MediaTime, TimeBase, TimelineRange, TrackDuration, TrackDurationUnits,
+        TrackTimestamp, TrackTimestampUnits,
     };
 
     #[test]
@@ -668,6 +770,43 @@ mod tests {
     }
 
     #[test]
+    fn track_duration_converts_through_timebase() {
+        let time_base = TimeBase::new(1, 48_000).expect("valid audio time base");
+        let duration = TrackDuration::new(TrackId::new(3), 960, time_base);
+
+        let media_duration = duration.to_media_duration();
+
+        assert_eq!(duration.track_id, TrackId::new(3));
+        assert_eq!(duration.units.get(), 960);
+        assert_eq!(media_duration.as_duration(), Duration::from_millis(20));
+    }
+
+    #[test]
+    fn track_timestamp_remap_keeps_units_and_timebase() {
+        let time_base = TimeBase::new(1, 1_000).expect("valid time base");
+        let timestamp = TrackTimestamp::new(TrackId::new(1), -125, time_base);
+
+        let remapped_timestamp = timestamp.with_track_id(TrackId::new(2));
+
+        assert_eq!(remapped_timestamp.track_id, TrackId::new(2));
+        assert_eq!(remapped_timestamp.units, timestamp.units);
+        assert_eq!(remapped_timestamp.time_base, timestamp.time_base);
+    }
+
+    #[test]
+    fn track_timestamp_timeline_cmp_keeps_negative_order() {
+        let millisecond_time_base = TimeBase::new(1, 1_000).expect("valid ms time base");
+        let sample_time_base = TimeBase::new(1, 48_000).expect("valid sample time base");
+        let earlier_timestamp = TrackTimestamp::new(TrackId::new(1), -24_000, sample_time_base);
+        let later_timestamp = TrackTimestamp::new(TrackId::new(2), -250, millisecond_time_base);
+
+        assert_eq!(
+            earlier_timestamp.cmp_timeline_position(later_timestamp),
+            std::cmp::Ordering::Less
+        );
+    }
+
+    #[test]
     fn negative_track_timestamp_clamps_to_zero_but_keeps_raw_units() {
         let time_base = TimeBase::new(1, 1_000).expect("valid time base");
         let timestamp = TrackTimestamp::new(TrackId::new(5), -250, time_base);
@@ -713,5 +852,13 @@ mod tests {
             TrackTimestampUnits::new(i64::MIN).saturating_sub(1),
             TrackTimestampUnits::MIN
         );
+    }
+
+    #[test]
+    fn duration_units_keep_unsigned_container_value() {
+        let units = TrackDurationUnits::new(u64::MAX);
+
+        assert_eq!(units.get(), u64::MAX);
+        assert_eq!(TrackDurationUnits::from(u64::MAX), TrackDurationUnits::MAX);
     }
 }

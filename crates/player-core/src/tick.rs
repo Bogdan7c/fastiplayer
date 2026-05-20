@@ -12,7 +12,7 @@ use codec_core::{
     probe_video_packet_requirement, resolve_video_metadata,
     video_requirement_needs_packet_refinement,
 };
-use media_core::{TrackId, TrackKind};
+use media_core::{DemuxReadEvent, TrackId, TrackKind, TrackTimestamp};
 use rustiplayer_config::AppConfig;
 use tracing::{trace, warn};
 
@@ -271,6 +271,8 @@ impl PlayerTickResult {
             track_id: packet.track_id,
             kind: packet.kind,
             pts: packet.pts,
+            track_pts: packet.track_pts,
+            track_dts: packet.track_dts,
             size: packet.data.len(),
             byte_offset: packet.byte_offset,
             keyframe: packet.keyframe,
@@ -315,6 +317,12 @@ pub struct PlayerTickPacket {
 
     /// Presentation timestamp packet-а.
     pub pts: Duration,
+
+    /// Исходный signed PTS demuxer-а в track time base, если доступен.
+    pub track_pts: Option<TrackTimestamp>,
+
+    /// Исходный signed DTS demuxer-а в track time base, если доступен.
+    pub track_dts: Option<TrackTimestamp>,
 
     /// Размер codec payload в bytes.
     pub size: usize,
@@ -535,11 +543,12 @@ impl PlayerSession {
                 break;
             }
 
-            self.process_audio_packet(
+            self.process_audio_packet_with_timing(
                 packet.track_id,
                 packet.pts,
                 packet.dts,
                 packet.duration,
+                packet.timing,
                 packet.generation,
                 &packet.encoded_bytes,
             );
@@ -661,7 +670,7 @@ fn read_demux_packets(
         }
 
         let demux_read_started_at = Instant::now();
-        let Some(packet_result) = session.pipeline.demux_next_packet() else {
+        let Some(event_result) = session.pipeline.demux_next_event() else {
             break;
         };
         session.record_pipeline_latency(
@@ -671,15 +680,21 @@ fn read_demux_packets(
             None,
         );
 
-        match packet_result {
-            Ok(Some(packet)) => {
+        match event_result {
+            Ok(DemuxReadEvent::Packet(packet)) => {
                 tick_result.record_demuxed_packet(&packet);
                 route_demuxed_packet(session, packet);
                 packets_read += 1;
             }
-            Ok(None) => {
+            Ok(DemuxReadEvent::EndOfStream) => {
                 session.enter_eof_drain();
                 break;
+            }
+            Ok(DemuxReadEvent::TracksChanged(track_update)) => {
+                session.handle_demux_track_list_update(track_update);
+                if session.playback_state() == PlaybackState::Failed {
+                    break;
+                }
             }
             Err(error) => {
                 tracing::warn!(error = %error, "Ошибка чтения packet");
@@ -701,11 +716,13 @@ fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet)
 
     match packet.kind {
         TrackKind::Audio => {
-            let pending_packet = PendingAudioPacket::new(
+            let packet_timing = audio_packet_timing_from_media_packet(&packet);
+            let pending_packet = PendingAudioPacket::with_timing(
                 packet.track_id,
                 packet.pts,
                 packet.dts,
                 packet.duration,
+                packet_timing,
                 generation,
                 packet.data,
             );
@@ -726,6 +743,88 @@ fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet)
                 .enqueue_pending_video_packet(pending_packet);
         }
     }
+}
+
+/// Собирает audio decoder timing из raw metadata, которую demuxer сохранил рядом с media time.
+fn audio_packet_timing_from_media_packet(packet: &media_core::Packet) -> audio::AudioPacketTiming {
+    let Some(track_pts) = packet.track_pts else {
+        return audio::AudioPacketTiming::unknown();
+    };
+
+    if track_pts.track_id != packet.track_id {
+        warn!(
+            packet_track_id = %packet.track_id,
+            timing_track_id = %track_pts.track_id,
+            "Audio packet raw PTS принадлежит другому track; decoder timing помечен unknown"
+        );
+        return audio::AudioPacketTiming::unknown();
+    }
+
+    let Some(time_base) = audio_time_base_from_media_time_base(track_pts.time_base) else {
+        warn!(
+            packet_track_id = %packet.track_id,
+            time_base = ?track_pts.time_base,
+            "Audio packet raw PTS имеет некорректную time base; decoder timing помечен unknown"
+        );
+        return audio::AudioPacketTiming::unknown();
+    };
+
+    let dts_units = audio_packet_dts_units(packet, track_pts);
+    let duration_units = audio_packet_duration_units(packet, track_pts);
+
+    audio::AudioPacketTiming::from_track_units(
+        time_base,
+        track_pts.units.get(),
+        dts_units,
+        duration_units,
+    )
+}
+
+/// Конвертирует media-core time base в audio boundary time base без Symphonia types.
+fn audio_time_base_from_media_time_base(
+    time_base: media_core::TimeBase,
+) -> Option<audio::AudioPacketTimeBase> {
+    audio::AudioPacketTimeBase::new(time_base.numer, time_base.denom)
+}
+
+/// Возвращает raw DTS units только если DTS согласован с PTS track owner/timebase.
+fn audio_packet_dts_units(packet: &media_core::Packet, track_pts: TrackTimestamp) -> Option<i64> {
+    let track_dts = packet.track_dts?;
+
+    if track_dts.track_id != packet.track_id || track_dts.time_base != track_pts.time_base {
+        warn!(
+            packet_track_id = %packet.track_id,
+            dts_track_id = %track_dts.track_id,
+            pts_time_base = ?track_pts.time_base,
+            dts_time_base = ?track_dts.time_base,
+            "Audio packet raw DTS не согласован с PTS; DTS не передан decoder boundary"
+        );
+        return None;
+    }
+
+    Some(track_dts.units.get())
+}
+
+/// Возвращает raw duration units только если duration согласована с PTS track owner/timebase.
+fn audio_packet_duration_units(
+    packet: &media_core::Packet,
+    track_pts: TrackTimestamp,
+) -> Option<u64> {
+    let track_duration = packet.track_duration?;
+
+    if track_duration.track_id != packet.track_id || track_duration.time_base != track_pts.time_base
+    {
+        warn!(
+            packet_track_id = %packet.track_id,
+            duration_track_id = %track_duration.track_id,
+            pts_time_base = ?track_pts.time_base,
+            duration_time_base = ?track_duration.time_base,
+            "Audio packet raw duration не согласована с PTS; duration не передана decoder boundary"
+        );
+        return None;
+    }
+
+    Some(track_duration.units.get())
 }
 
 /// Проверяет demux admission с явно переданным audio-priority флагом.
@@ -3083,6 +3182,7 @@ mod tests {
         let mut session = PlayerSession::new();
         let payload = Bytes::from(vec![0x4f, 0x70, 0x75, 0x73]);
         let payload_ptr = payload.as_ptr();
+        let time_base = media_core::TimeBase::new(1, 48_000).expect("valid audio time base");
         let packet = media_core::Packet::new(
             TrackId::new(2),
             TrackKind::Audio,
@@ -3090,7 +3190,24 @@ mod tests {
             None,
             false,
             payload.clone(),
-        );
+        )
+        .with_track_timestamps(
+            Some(media_core::TrackTimestamp::new(
+                TrackId::new(2),
+                2_016,
+                time_base,
+            )),
+            Some(media_core::TrackTimestamp::new(
+                TrackId::new(2),
+                1_920,
+                time_base,
+            )),
+        )
+        .with_track_duration(media_core::TrackDuration::new(
+            TrackId::new(2),
+            960,
+            time_base,
+        ));
 
         route_demuxed_packet(&mut session, packet);
 
@@ -3104,6 +3221,17 @@ mod tests {
         assert_eq!(
             pending_packet.generation,
             session.pipeline.seek_generation()
+        );
+        assert_eq!(pending_packet.timing.pts_units(), 2_016);
+        assert_eq!(pending_packet.timing.dts_units(), Some(1_920));
+        assert_eq!(pending_packet.timing.duration_units(), Some(960));
+        assert_eq!(
+            pending_packet
+                .timing
+                .time_base()
+                .expect("audio pending packet должен сохранить raw time base")
+                .denom(),
+            48_000
         );
         assert_eq!(pending_packet.encoded_bytes.as_ptr(), payload_ptr);
         assert_eq!(&pending_packet.encoded_bytes[..], b"Opus");

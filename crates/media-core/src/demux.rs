@@ -112,6 +112,40 @@ impl MediaDemuxError {
     }
 }
 
+/// Обновлённый список tracks после container-level discontinuity.
+///
+/// Demuxer отдаёт это как lifecycle event, когда backend сообщил, что старые
+/// decoder configs больше нельзя считать валидными.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DemuxTrackListUpdate {
+    /// Новый public track list, который consumer должен использовать для выбора decoder configs.
+    pub tracks: Vec<TrackInfo>,
+
+    /// Новая длительность media timeline, если container смог её определить.
+    pub duration: Option<Duration>,
+}
+
+impl DemuxTrackListUpdate {
+    /// Создаёт явный update без раскрытия внутреннего storage demuxer-а.
+    #[must_use]
+    pub fn new(tracks: Vec<TrackInfo>, duration: Option<Duration>) -> Self {
+        Self { tracks, duration }
+    }
+}
+
+/// Событие чтения из demuxer-а без привязки к конкретному container backend-у.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DemuxReadEvent {
+    /// Demuxer прочитал следующий encoded media packet.
+    Packet(Packet),
+
+    /// Demuxer дошёл до конца stream-а.
+    EndOfStream,
+
+    /// Container изменил track list, и decoder configs нужно построить заново.
+    TracksChanged(DemuxTrackListUpdate),
+}
+
 /// Trait, абстрагирующий источник media packets.
 ///
 /// Позволяет заменить контейнерную реализацию без изменения consumer code,
@@ -137,6 +171,17 @@ pub trait Demuxer: Send {
     /// Возвращает следующий packet или `None`, если demuxer дошёл до EOF.
     fn next_packet(&mut self) -> anyhow::Result<Option<Packet>>;
 
+    /// Возвращает следующий packet-level или lifecycle event из demuxer-а.
+    ///
+    /// Default сохраняет legacy contract для demuxer-ов, которые не имеют
+    /// lifecycle событий: packet остаётся packet-ом, `None` становится EOF.
+    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        match self.next_packet()? {
+            Some(packet) => Ok(DemuxReadEvent::Packet(packet)),
+            None => Ok(DemuxReadEvent::EndOfStream),
+        }
+    }
+
     /// Выполняет legacy accurate seek к позиции на media timeline.
     ///
     /// Реализация возвращает фактическую container-позицию, потому что точный
@@ -161,6 +206,7 @@ pub trait Demuxer: Send {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
 
     struct AccurateOnlyDemuxer {
         seek_log: Vec<Duration>,
@@ -197,6 +243,66 @@ mod tests {
                 actual_track_timestamp: None,
             })
         }
+    }
+
+    struct PacketThenEofDemuxer {
+        packet: Option<Packet>,
+    }
+
+    impl PacketThenEofDemuxer {
+        fn new(packet: Packet) -> Self {
+            Self {
+                packet: Some(packet),
+            }
+        }
+    }
+
+    impl Demuxer for PacketThenEofDemuxer {
+        fn tracks(&self) -> &[TrackInfo] {
+            &[]
+        }
+
+        fn duration(&self) -> Option<Duration> {
+            None
+        }
+
+        fn next_packet(&mut self) -> anyhow::Result<Option<Packet>> {
+            Ok(self.packet.take())
+        }
+
+        fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+            Ok(DemuxSeekResult {
+                requested_position: MediaTime::from_duration(timestamp),
+                actual_position: MediaTime::from_duration(timestamp),
+                actual_track_timestamp: None,
+            })
+        }
+    }
+
+    fn test_packet() -> Packet {
+        Packet::new(
+            crate::TrackId::new(7),
+            crate::TrackKind::Audio,
+            Duration::from_millis(25),
+            None,
+            false,
+            Bytes::from_static(b"packet"),
+        )
+    }
+
+    #[test]
+    fn default_next_event_maps_legacy_packet_and_eof() {
+        let mut demuxer = PacketThenEofDemuxer::new(test_packet());
+
+        let first_event = demuxer
+            .next_event()
+            .expect("legacy packet должен стать read event");
+        assert!(matches!(first_event, DemuxReadEvent::Packet(_)));
+
+        let second_event = demuxer
+            .next_event()
+            .expect("legacy EOF должен стать read event");
+        assert_eq!(second_event, DemuxReadEvent::EndOfStream);
     }
 
     #[test]

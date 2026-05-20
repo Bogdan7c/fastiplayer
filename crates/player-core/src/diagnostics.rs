@@ -505,8 +505,14 @@ pub enum SeekProgressBlocker {
     /// Audio output ещё не подтвердил очистку buffer-а для текущего seek generation.
     WaitingForAudioClear,
 
-    /// Audio-only resume ждёт минимальный audio buffer.
+    /// Final resume ждёт минимальный post-seek audio buffer.
     WaitingForAudioPreroll,
+
+    /// Seek ждёт создания decoder-а для выбранного audio track-а.
+    WaitingForAudioDecoder,
+
+    /// Seek ждёт создания output-а для выбранного audio track-а.
+    WaitingForAudioOutput,
 
     /// Decoder/demux не может получить surface/import slot.
     WaitingForFreeSurface,
@@ -544,6 +550,8 @@ impl SeekProgressBlocker {
             Self::ReadyToCommit => "ready_to_commit",
             Self::WaitingForAudioClear => "audio_clear",
             Self::WaitingForAudioPreroll => "audio_preroll",
+            Self::WaitingForAudioDecoder => "audio_decoder",
+            Self::WaitingForAudioOutput => "audio_output",
             Self::WaitingForFreeSurface => "free_surface",
             Self::WaitingForGpuRelease => "gpu_release",
             Self::WaitingForDecoderInput => "decoder_input",

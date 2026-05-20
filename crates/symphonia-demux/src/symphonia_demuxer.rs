@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use media_core::{
-    DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, Packet as OurPacket,
-    TimelineNotSeekableReason, TrackId, TrackInfo,
+    DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
+    DemuxTrackListUpdate, Demuxer, Packet as OurPacket, TimelineNotSeekableReason, TrackId,
+    TrackInfo,
 };
 use source_core::{
     ByteSource, CancellationToken, Seekability as SourceSeekability, SourceError, SourceResult,
@@ -36,12 +37,19 @@ const MATROSKA_BYTE_SOURCE_SCAN_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 /// Более короткая граница для unseekable stream, чтобы open не ждал большой network prefix.
 const MATROSKA_STREAM_SCAN_LIMIT_BYTES: usize = 256 * 1024;
 
+/// Лимит повторов для восстановления before-or-at-target semantics после backend overshoot.
+const DECODE_POINT_BEFORE_MAX_RETRIES: usize = 6;
+
+/// Минимальный отступ назад, чтобы retry не попал в ту же after-target packet boundary.
+const DECODE_POINT_BEFORE_RETRY_MARGIN: Duration = Duration::from_millis(1);
+
 /// Demuxer на базе Symphonia для media containers, которые поддерживает workspace dependency.
 pub struct SymphoniaDemuxer {
     format: FormatReaderBox<'static>,
     tracks: Vec<TrackInfo>,
     duration: Option<Duration>,
     track_map: HashMap<u32, TrackEntry>,
+    matroska_video_tracks_by_track: HashMap<TrackId, MatroskaVideoTrack>,
     seekability: DemuxSeekability,
     options: DemuxerOptions,
     consecutive_corrupted_packets: usize,
@@ -189,12 +197,13 @@ impl SymphoniaDemuxer {
     fn from_format_reader(
         mut format: FormatReaderBox<'static>,
         label: &str,
-        mut video_tracks_by_track: HashMap<TrackId, MatroskaVideoTrack>,
+        video_tracks_by_track: HashMap<TrackId, MatroskaVideoTrack>,
         seekability: DemuxSeekability,
         options: DemuxerOptions,
     ) -> Result<Self, DemuxError> {
         let symphonia_metadata = summarize_symphonia_format_metadata(&mut format);
-        let track_mapping = map_tracks(format.tracks(), &mut video_tracks_by_track);
+        let mut video_tracks_for_mapping = video_tracks_by_track.clone();
+        let track_mapping = map_tracks(format.tracks(), &mut video_tracks_for_mapping);
 
         info!(
             source = %label,
@@ -211,10 +220,22 @@ impl SymphoniaDemuxer {
             tracks: track_mapping.tracks,
             duration: track_mapping.duration,
             track_map: track_mapping.track_map,
+            matroska_video_tracks_by_track: video_tracks_by_track,
             seekability,
             options,
             consecutive_corrupted_packets: 0,
         })
+    }
+
+    /// Test-only constructor для проверок composite demuxer-ов поверх настоящей Symphonia boundary.
+    #[cfg(test)]
+    pub(crate) fn from_test_format_reader(
+        format: FormatReaderBox<'static>,
+        label: &str,
+        seekability: DemuxSeekability,
+        options: DemuxerOptions,
+    ) -> Result<Self, DemuxError> {
+        Self::from_format_reader(format, label, HashMap::new(), seekability, options)
     }
 
     /// Сбрасывает счётчик corrupted packets после доказанного нормального продвижения.
@@ -251,6 +272,24 @@ impl SymphoniaDemuxer {
             last_error: reason,
         }
         .into())
+    }
+
+    /// Перечитывает Symphonia track list после `ResetRequired` и обновляет demux boundary state.
+    fn refresh_track_list_after_reset(&mut self) -> DemuxTrackListUpdate {
+        let mut video_tracks_for_mapping = self.matroska_video_tracks_by_track.clone();
+        let track_mapping = map_tracks(self.format.tracks(), &mut video_tracks_for_mapping);
+        self.tracks = track_mapping.tracks;
+        self.duration = track_mapping.duration;
+        self.track_map = track_mapping.track_map;
+        self.consecutive_corrupted_packets = 0;
+
+        info!(
+            tracks = self.tracks.len(),
+            duration = ?self.duration,
+            "Symphonia ResetRequired обработан как обновление track list"
+        );
+
+        DemuxTrackListUpdate::new(self.tracks.clone(), self.duration)
     }
 }
 
@@ -297,11 +336,21 @@ impl Demuxer for SymphoniaDemuxer {
 
     fn next_packet(&mut self) -> Result<Option<OurPacket>> {
         loop {
+            match self.next_event()? {
+                DemuxReadEvent::Packet(packet) => return Ok(Some(packet)),
+                DemuxReadEvent::EndOfStream => return Ok(None),
+                DemuxReadEvent::TracksChanged(_) => continue,
+            }
+        }
+    }
+
+    fn next_event(&mut self) -> Result<DemuxReadEvent> {
+        loop {
             match self.format.next_packet() {
                 Ok(Some(packet)) => match convert_packet(packet, &self.track_map) {
                     Ok(our_packet) => {
                         self.record_successful_packet();
-                        return Ok(Some(our_packet));
+                        return Ok(DemuxReadEvent::Packet(our_packet));
                     }
                     Err(PacketConvertError::UnknownTrack { track_id }) => {
                         return Err(DemuxError::UnknownPacketTrack { track_id }.into());
@@ -320,12 +369,12 @@ impl Demuxer for SymphoniaDemuxer {
                     }
                 },
                 Ok(None) => {
-                    return Ok(None);
+                    return Ok(DemuxReadEvent::EndOfStream);
                 }
                 Err(SymphoniaError::IoError(ref e))
                     if e.kind() == std::io::ErrorKind::UnexpectedEof =>
                 {
-                    return Ok(None);
+                    return Ok(DemuxReadEvent::EndOfStream);
                 }
                 Err(SymphoniaError::DecodeError(reason)) => {
                     self.record_corrupted_packet(None, reason)?;
@@ -335,7 +384,8 @@ impl Demuxer for SymphoniaDemuxer {
                     return Err(DemuxError::Io(error).into());
                 }
                 Err(SymphoniaError::ResetRequired) => {
-                    return Err(DemuxError::ResetRequired.into());
+                    let track_update = self.refresh_track_list_after_reset();
+                    return Ok(DemuxReadEvent::TracksChanged(track_update));
                 }
                 Err(e) => {
                     return Err(DemuxError::Parse(e).into());
@@ -349,23 +399,147 @@ impl Demuxer for SymphoniaDemuxer {
     }
 
     fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
-        let timestamp = request.timestamp;
         let seek_track_id = preferred_seek_track_id(&self.tracks);
+        let seek_result = match request.mode {
+            DemuxSeekMode::DecodePointBefore => {
+                self.seek_decode_point_before(request, seek_track_id)?
+            }
+            DemuxSeekMode::Accurate | DemuxSeekMode::Preview => {
+                self.seek_symphonia_once(request, seek_track_id, request.timestamp)?
+            }
+        };
+
+        self.consecutive_corrupted_packets = 0;
+
+        Ok(seek_result)
+    }
+}
+
+impl SymphoniaDemuxer {
+    /// Выполняет один backend seek и возвращает result относительно исходной пользовательской цели.
+    fn seek_symphonia_once(
+        &mut self,
+        request: DemuxSeekRequest,
+        seek_track_id: Option<TrackId>,
+        backend_timestamp: Duration,
+    ) -> Result<DemuxSeekResult> {
+        let backend_request = DemuxSeekRequest {
+            timestamp: backend_timestamp,
+            mode: request.mode,
+        };
         let seek_mode = symphonia_seek_mode(request.mode);
-        let seek_target = symphonia_seek_target(request, seek_track_id);
+        let seek_target = symphonia_seek_target(backend_request, seek_track_id);
         let seeked_to = self
             .format
             .seek(seek_mode, seek_target)
             .map_err(symphonia_seek_error_to_demux_error)?;
 
-        self.consecutive_corrupted_packets = 0;
-
         Ok(seeked_to_timeline_result(
-            timestamp,
+            request.timestamp,
             seeked_to,
             &self.track_map,
         ))
     }
+
+    /// Восстанавливает `DecodePointBefore`: успешный result не должен быть после requested target.
+    fn seek_decode_point_before(
+        &mut self,
+        request: DemuxSeekRequest,
+        seek_track_id: Option<TrackId>,
+    ) -> Result<DemuxSeekResult> {
+        let requested_timestamp = request.timestamp;
+        let mut backend_timestamp = decode_point_before_initial_timestamp(
+            requested_timestamp,
+            self.options.decode_point_before_preroll(),
+        );
+
+        for retry_index in 0..=DECODE_POINT_BEFORE_MAX_RETRIES {
+            let seek_result =
+                self.seek_symphonia_once(request, seek_track_id, backend_timestamp)?;
+            let actual_timestamp = seek_result.actual_position.as_duration();
+
+            if actual_timestamp <= requested_timestamp {
+                return Ok(seek_result);
+            }
+
+            let Some(retry_timestamp) = decode_point_before_retry_timestamp(
+                backend_timestamp,
+                requested_timestamp,
+                actual_timestamp,
+                retry_index,
+            ) else {
+                return Err(decode_point_before_after_target_error(
+                    requested_timestamp,
+                    actual_timestamp,
+                    retry_index,
+                ));
+            };
+
+            if retry_index == DECODE_POINT_BEFORE_MAX_RETRIES
+                || retry_timestamp == backend_timestamp
+            {
+                return Err(decode_point_before_after_target_error(
+                    requested_timestamp,
+                    actual_timestamp,
+                    retry_index,
+                ));
+            }
+
+            debug!(
+                target_ms = requested_timestamp.as_millis(),
+                actual_ms = actual_timestamp.as_millis(),
+                retry_ms = retry_timestamp.as_millis(),
+                retry_index,
+                "Symphonia seek returned after target; retrying DecodePointBefore earlier"
+            );
+
+            backend_timestamp = retry_timestamp;
+        }
+
+        unreachable!("bounded DecodePointBefore retry loop always returns")
+    }
+}
+
+/// Выбирает первую backend-цель с pre-roll запасом, чтобы не стартовать после requested target.
+fn decode_point_before_initial_timestamp(
+    requested_timestamp: Duration,
+    preroll: Duration,
+) -> Duration {
+    requested_timestamp.saturating_sub(preroll)
+}
+
+/// Считает следующую backend-цель по величине overshoot относительно исходного target-а.
+fn decode_point_before_retry_timestamp(
+    backend_timestamp: Duration,
+    requested_timestamp: Duration,
+    actual_timestamp: Duration,
+    retry_index: usize,
+) -> Option<Duration> {
+    let overshoot = actual_timestamp.checked_sub(requested_timestamp)?;
+    let base_backoff = overshoot
+        .checked_add(DECODE_POINT_BEFORE_RETRY_MARGIN)
+        .unwrap_or(Duration::MAX);
+    let retry_multiplier = 1_u32
+        .checked_shl(retry_index.min(31) as u32)
+        .unwrap_or(u32::MAX);
+    let retry_backoff = base_backoff
+        .checked_mul(retry_multiplier)
+        .unwrap_or(Duration::MAX);
+
+    Some(backend_timestamp.saturating_sub(retry_backoff))
+}
+
+/// Создаёт ошибку, если backend не смог честно выполнить before-or-at-target seek.
+fn decode_point_before_after_target_error(
+    requested_timestamp: Duration,
+    actual_timestamp: Duration,
+    retry_index: usize,
+) -> anyhow::Error {
+    DemuxError::SeekFailed(format!(
+        "DecodePointBefore вернул actual {actual_timestamp:?} после requested {requested_timestamp:?} после {attempts} попыток",
+        attempts = retry_index + 1
+    ))
+    .into()
 }
 
 /// Конвертирует source seekability в neutral demux seekability.
@@ -581,7 +755,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use media_core::{DemuxSeekRequest, DemuxSeekability, Demuxer, TrackId, TrackKind};
+    use media_core::{
+        DemuxReadEvent, DemuxSeekRequest, DemuxSeekability, Demuxer, TrackId, TrackKind,
+    };
     use symphonia::core::audio::{Channels, Position};
     use symphonia::core::codecs::CodecParameters;
     use symphonia::core::codecs::audio::AudioCodecParameters;
@@ -611,9 +787,18 @@ mod tests {
         format_info: FormatInfo,
         media_info: MediaInfo,
         tracks: Vec<Track>,
+        reset_track_updates: VecDeque<Vec<Track>>,
         metadata: MetadataLog,
         packets: VecDeque<std::result::Result<Packet, SymphoniaError>>,
         seek_mode_log: Option<Arc<Mutex<Vec<SeekMode>>>>,
+        seek_response_policy: FakeSeekResponsePolicy,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum FakeSeekResponsePolicy {
+        Zero,
+        CoarseAfterTargetAccurateBefore,
+        AlwaysAfterBackendTargetBySixSeconds,
     }
 
     impl FakeFormatReader {
@@ -629,15 +814,52 @@ mod tests {
                 },
                 media_info: MediaInfo::default(),
                 tracks,
+                reset_track_updates: VecDeque::new(),
                 metadata: MetadataLog::default(),
                 packets: VecDeque::from(packets),
                 seek_mode_log: None,
+                seek_response_policy: FakeSeekResponsePolicy::Zero,
             }
         }
 
         fn with_seek_mode_log(mut self, seek_mode_log: Arc<Mutex<Vec<SeekMode>>>) -> Self {
             self.seek_mode_log = Some(seek_mode_log);
             self
+        }
+
+        fn with_seek_response_policy(mut self, policy: FakeSeekResponsePolicy) -> Self {
+            self.seek_response_policy = policy;
+            self
+        }
+
+        fn with_reset_track_update(mut self, tracks: Vec<Track>) -> Self {
+            self.reset_track_updates.push_back(tracks);
+            self
+        }
+
+        fn seek_response(&self, mode: SeekMode, target: SeekTo) -> SeekedTo {
+            let track_id = self
+                .tracks
+                .first()
+                .map(|track| track.id)
+                .unwrap_or_default();
+            let required_ts = required_seek_timestamp(&self.tracks, target);
+            let actual_ts = match self.seek_response_policy {
+                FakeSeekResponsePolicy::Zero => Timestamp::ZERO,
+                FakeSeekResponsePolicy::CoarseAfterTargetAccurateBefore => match mode {
+                    SeekMode::Coarse => required_ts.saturating_add(SymphoniaDuration::new(250)),
+                    SeekMode::Accurate => required_ts.saturating_sub(SymphoniaDuration::new(250)),
+                },
+                FakeSeekResponsePolicy::AlwaysAfterBackendTargetBySixSeconds => {
+                    required_ts.saturating_add(SymphoniaDuration::new(6_000))
+                }
+            };
+
+            SeekedTo {
+                track_id,
+                required_ts,
+                actual_ts,
+            }
         }
     }
 
@@ -657,7 +879,7 @@ mod tests {
         fn seek(
             &mut self,
             mode: SeekMode,
-            _to: SeekTo,
+            target: SeekTo,
         ) -> symphonia::core::errors::Result<SeekedTo> {
             if let Some(ref seek_mode_log) = self.seek_mode_log {
                 seek_mode_log
@@ -666,16 +888,7 @@ mod tests {
                     .push(mode);
             }
 
-            let track_id = self
-                .tracks
-                .first()
-                .map(|track| track.id)
-                .unwrap_or_default();
-            Ok(SeekedTo {
-                track_id,
-                required_ts: Timestamp::ZERO,
-                actual_ts: Timestamp::ZERO,
-            })
+            Ok(self.seek_response(mode, target))
         }
 
         fn tracks(&self) -> &[Track] {
@@ -685,6 +898,12 @@ mod tests {
         fn next_packet(&mut self) -> symphonia::core::errors::Result<Option<Packet>> {
             match self.packets.pop_front() {
                 Some(Ok(packet)) => Ok(Some(packet)),
+                Some(Err(SymphoniaError::ResetRequired)) => {
+                    if let Some(next_tracks) = self.reset_track_updates.pop_front() {
+                        self.tracks = next_tracks;
+                    }
+                    Err(SymphoniaError::ResetRequired)
+                }
                 Some(Err(error)) => Err(error),
                 None => Ok(None),
             }
@@ -695,6 +914,18 @@ mod tests {
             Self: 'source,
         {
             unreachable!("tests не возвращают MediaSourceStream из FakeFormatReader");
+        }
+    }
+
+    fn required_seek_timestamp(tracks: &[Track], target: SeekTo) -> Timestamp {
+        match target {
+            SeekTo::Time { time, track_id } => track_id
+                .and_then(|id| tracks.iter().find(|track| track.id == id))
+                .or_else(|| tracks.first())
+                .and_then(|track| track.time_base)
+                .and_then(|time_base| time_base.calc_timestamp(time))
+                .unwrap_or(Timestamp::ZERO),
+            SeekTo::Timestamp { ts, .. } => ts,
         }
     }
 
@@ -950,6 +1181,78 @@ mod tests {
     }
 
     #[test]
+    fn reset_required_refreshes_track_list_as_lifecycle_event() {
+        let reader = FakeFormatReader::new(
+            vec![aac_audio_track_with_timing(
+                2,
+                SymphoniaDuration::new(30_000),
+            )],
+            vec![Err(SymphoniaError::ResetRequired)],
+        )
+        .with_reset_track_update(vec![aac_audio_track_with_timing(
+            3,
+            SymphoniaDuration::new(42_000),
+        )]);
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "reset-event",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+
+        let event = demuxer
+            .next_event()
+            .expect("ResetRequired должен стать lifecycle event");
+
+        match event {
+            DemuxReadEvent::TracksChanged(track_update) => {
+                assert_eq!(track_update.tracks.len(), 1);
+                assert_eq!(track_update.tracks[0].id, TrackId::new(3));
+                assert_eq!(track_update.duration, Some(Duration::from_secs(42)));
+            }
+            unexpected_event => panic!("ожидали TracksChanged, получили {unexpected_event:?}"),
+        }
+        assert_eq!(demuxer.tracks()[0].id, TrackId::new(3));
+        assert_eq!(demuxer.duration(), Some(Duration::from_secs(42)));
+    }
+
+    #[test]
+    fn next_packet_compatibility_skips_reset_lifecycle_event() {
+        let reader = FakeFormatReader::new(
+            vec![aac_audio_track_with_timing(
+                2,
+                SymphoniaDuration::new(30_000),
+            )],
+            vec![
+                Err(SymphoniaError::ResetRequired),
+                Ok(fake_packet(3, 5, b"audio".to_vec())),
+            ],
+        )
+        .with_reset_track_update(vec![aac_audio_track_with_timing(
+            3,
+            SymphoniaDuration::new(42_000),
+        )]);
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "reset-next-packet",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+
+        let packet = demuxer
+            .next_packet()
+            .expect("compat next_packet не должен считать ResetRequired ошибкой")
+            .expect("следующий packet нового track-а должен быть доступен");
+
+        assert_eq!(packet.track_id, TrackId::new(3));
+        assert_eq!(packet.kind, TrackKind::Audio);
+    }
+
+    #[test]
     fn accurate_demux_seek_uses_symphonia_accurate_mode() {
         assert_symphonia_seek_mode(
             DemuxSeekRequest::accurate(Duration::from_millis(500)),
@@ -958,10 +1261,10 @@ mod tests {
     }
 
     #[test]
-    fn decode_point_before_demux_seek_uses_symphonia_coarse_mode() {
+    fn decode_point_before_demux_seek_uses_symphonia_accurate_mode() {
         assert_symphonia_seek_mode(
             DemuxSeekRequest::decode_point_before(Duration::from_millis(500)),
-            SeekMode::Coarse,
+            SeekMode::Accurate,
         );
     }
 
@@ -970,6 +1273,63 @@ mod tests {
         assert_symphonia_seek_mode(
             DemuxSeekRequest::preview(Duration::from_millis(500)),
             SeekMode::Coarse,
+        );
+    }
+
+    #[test]
+    fn decode_point_before_seek_rejects_coarse_after_target_position() {
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_seek_response_policy(FakeSeekResponsePolicy::CoarseAfterTargetAccurateBefore);
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "coarse-after-target",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+        let target = Duration::from_millis(100);
+
+        let seek_result = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(target))
+            .expect("decode-point seek должен завершиться без ошибки");
+
+        assert!(
+            seek_result.actual_position.as_duration() <= target,
+            "DecodePointBefore не должен принимать backend-позицию после target"
+        );
+    }
+
+    #[test]
+    fn decode_point_before_seek_retries_when_accurate_backend_overshoots_target() {
+        let seek_mode_log = Arc::new(Mutex::new(Vec::new()));
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_seek_response_policy(FakeSeekResponsePolicy::AlwaysAfterBackendTargetBySixSeconds)
+            .with_seek_mode_log(Arc::clone(&seek_mode_log));
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "accurate-after-target",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+        let target = Duration::from_secs(10);
+
+        let seek_result = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(target))
+            .expect("decode-point seek должен retry-нуться до позиции перед target");
+
+        assert!(
+            seek_result.actual_position.as_duration() <= target,
+            "retry должен вернуть actual demux position не позже target"
+        );
+        assert_eq!(
+            seek_mode_log
+                .lock()
+                .expect("seek mode log mutex should not be poisoned")
+                .as_slice(),
+            &[SeekMode::Accurate, SeekMode::Accurate]
         );
     }
 
@@ -1176,5 +1536,30 @@ mod tests {
         );
         // Keyframe flag теперь восстанавливается только codec-aware packet mapper-ом:
         // Symphonia 0.6 больше не отдаёт container keyframe flag в public Packet.
+    }
+
+    #[test]
+    fn decode_point_before_seek_actual_position_stays_before_video_targets() {
+        let targets = [
+            Duration::ZERO,
+            Duration::from_secs(106),
+            Duration::from_millis(212_500),
+        ];
+
+        for target in targets {
+            let mut demuxer =
+                SymphoniaDemuxer::from_file(&test_webm_path()).expect("test webm должен открыться");
+
+            let seek_result = demuxer
+                .seek_with_request(DemuxSeekRequest::decode_point_before(target))
+                .expect("decode-point seek должен завершиться без ошибки");
+
+            assert!(
+                seek_result.actual_position.as_duration() <= target,
+                "actual demux position {:?} не должна быть после requested target {:?}",
+                seek_result.actual_position.as_duration(),
+                target
+            );
+        }
     }
 }

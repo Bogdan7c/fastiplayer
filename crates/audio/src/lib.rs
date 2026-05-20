@@ -19,7 +19,7 @@ pub mod output;
 
 pub use clock::AudioClock;
 pub use decoder::{
-    AudioDecoder, AudioDecoderConfig, AudioDecoderError, AudioDecoderHandle, EncodedAudioPacket,
-    SymphoniaAudioDecoder, create_audio_decoder,
+    AudioDecoder, AudioDecoderConfig, AudioDecoderError, AudioDecoderHandle, AudioPacketTimeBase,
+    AudioPacketTiming, EncodedAudioPacket, SymphoniaAudioDecoder, create_audio_decoder,
 };
 pub use output::AudioOutput;

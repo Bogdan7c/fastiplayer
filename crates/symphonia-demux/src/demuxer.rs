@@ -4,5 +4,6 @@
 //! остаётся concrete adapter-ом поверх Symphonia и этого contract-а.
 
 pub use media_core::{
-    DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaDemuxError,
+    DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
+    DemuxTrackListUpdate, Demuxer, MediaDemuxError,
 };

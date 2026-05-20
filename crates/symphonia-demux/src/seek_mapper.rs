@@ -21,11 +21,11 @@ pub(crate) fn preferred_seek_track_id(tracks: &[TrackInfo]) -> Option<TrackId> {
         .map(|track| track.id)
 }
 
-/// Мапит neutral seek mode в Symphonia mode без изменения существующей policy.
+/// Мапит neutral seek mode в Symphonia mode с сохранением demux contract-а.
 pub(crate) fn symphonia_seek_mode(mode: DemuxSeekMode) -> SymphoniaSeekMode {
     match mode {
-        DemuxSeekMode::Accurate => SymphoniaSeekMode::Accurate,
-        DemuxSeekMode::DecodePointBefore | DemuxSeekMode::Preview => SymphoniaSeekMode::Coarse,
+        DemuxSeekMode::Accurate | DemuxSeekMode::DecodePointBefore => SymphoniaSeekMode::Accurate,
+        DemuxSeekMode::Preview => SymphoniaSeekMode::Coarse,
     }
 }
 
@@ -143,14 +143,14 @@ mod tests {
     }
 
     #[test]
-    fn seek_modes_preserve_existing_policy() {
+    fn seek_modes_preserve_decode_before_contract_and_preview_speed() {
         assert_eq!(
             symphonia_seek_mode(DemuxSeekMode::Accurate),
             SymphoniaSeekMode::Accurate
         );
         assert_eq!(
             symphonia_seek_mode(DemuxSeekMode::DecodePointBefore),
-            SymphoniaSeekMode::Coarse
+            SymphoniaSeekMode::Accurate
         );
         assert_eq!(
             symphonia_seek_mode(DemuxSeekMode::Preview),

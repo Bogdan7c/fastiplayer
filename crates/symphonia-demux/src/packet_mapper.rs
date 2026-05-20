@@ -3,11 +3,13 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use codec_core::{VideoCodec, VideoPacketKeyframeProbe, probe_video_packet_keyframe};
-use media_core::{Packet as MediaPacket, TrackId, TrackKind};
+use media_core::{Packet as MediaPacket, TrackDuration, TrackId, TrackKind, TrackTimestamp};
 use symphonia::core::packet::Packet as SymphoniaPacket;
 use symphonia::core::units::{TimeBase as SymphoniaTimeBase, Timestamp};
 
-use crate::symphonia_api::{symphonia_duration_to_duration, symphonia_timestamp_to_duration};
+use crate::symphonia_api::{
+    media_time_base_from_symphonia, symphonia_duration_to_duration, symphonia_timestamp_to_duration,
+};
 use crate::track_mapper::TrackEntry;
 
 /// Результат packet-level validation до отдачи packet-а в player pipeline.
@@ -58,21 +60,39 @@ pub(crate) fn convert_packet(
             reason: unsupported_kind.diagnostic_reason(),
         });
     };
+    let track_id = TrackId::new(packet_track_id);
+    let track_pts = packet_track_timestamp(track_id, track_entry.time_base, packet.pts);
+    let track_dts = packet_track_timestamp(track_id, track_entry.time_base, packet.dts);
     let pts = packet_presentation_timestamp(track_entry.time_base, packet.pts);
     let dts = packet_decode_timestamp(track_entry.time_base, packet.pts, packet.dts);
     let duration = packet_duration(track_entry.time_base, packet.dur);
+    let track_duration = packet_track_duration(track_id, track_entry.time_base, packet.dur);
     let keyframe = packet_keyframe(track_entry, track_kind, packet_track_id, &packet.data)?;
 
     Ok(MediaPacket {
-        track_id: TrackId::new(packet_track_id),
+        track_id,
         kind: track_kind,
         pts,
+        track_pts,
         dts,
+        track_dts,
         duration,
+        track_duration,
         byte_offset: None,
         keyframe,
         data: Bytes::from(packet.data),
     })
+}
+
+/// Сохраняет packet timestamp в signed units исходного track-а, если metadata дала time base.
+fn packet_track_timestamp(
+    track_id: TrackId,
+    time_base: Option<SymphoniaTimeBase>,
+    timestamp: Timestamp,
+) -> Option<TrackTimestamp> {
+    time_base
+        .and_then(media_time_base_from_symphonia)
+        .map(|time_base| TrackTimestamp::new(track_id, timestamp.get(), time_base))
 }
 
 /// Нормализует presentation timestamp packet-а в неотрицательную media timeline.
@@ -104,6 +124,17 @@ fn packet_duration(
     duration: symphonia::core::units::Duration,
 ) -> Option<Duration> {
     time_base.map(|time_base| symphonia_duration_to_duration(time_base, duration))
+}
+
+/// Сохраняет packet duration в unsigned units исходного track-а, если metadata дала time base.
+fn packet_track_duration(
+    track_id: TrackId,
+    time_base: Option<SymphoniaTimeBase>,
+    duration: symphonia::core::units::Duration,
+) -> Option<TrackDuration> {
+    time_base
+        .and_then(media_time_base_from_symphonia)
+        .map(|time_base| TrackDuration::new(track_id, duration.get(), time_base))
 }
 
 /// Переводит signed Symphonia timestamp через media-core helpers без потери знака до clamp-а.
@@ -158,6 +189,16 @@ mod tests {
             kind: TrackEntryKind::Supported(kind),
             codec_id: codec_id.to_string(),
             time_base: Some(TimeBase::try_new(1, 48_000).expect("valid time base")),
+            sample_rate: None,
+            channels: None,
+        }
+    }
+
+    fn track_entry_without_time_base(kind: TrackKind, codec_id: &str) -> TrackEntry {
+        TrackEntry {
+            kind: TrackEntryKind::Supported(kind),
+            codec_id: codec_id.to_string(),
+            time_base: None,
             sample_rate: None,
             channels: None,
         }
@@ -254,8 +295,32 @@ mod tests {
         assert_eq!(packet.track_id, TrackId::new(7));
         assert_eq!(packet.kind, TrackKind::Audio);
         assert_eq!(packet.pts, Duration::from_secs(1));
+        assert_eq!(
+            packet
+                .track_pts
+                .expect("raw PTS должен сохраняться")
+                .units
+                .get(),
+            48_000
+        );
         assert_eq!(packet.dts, None);
+        assert_eq!(
+            packet
+                .track_dts
+                .expect("Symphonia raw DTS должен сохраняться даже при DTS == PTS")
+                .units
+                .get(),
+            48_000
+        );
         assert_eq!(packet.duration, Some(Duration::from_nanos(20_833)));
+        assert_eq!(
+            packet
+                .track_duration
+                .expect("raw duration должен сохраняться")
+                .units
+                .get(),
+            1
+        );
         assert_eq!(&packet.data[..], b"opus");
         assert!(!packet.keyframe);
     }
@@ -278,6 +343,14 @@ mod tests {
             .expect("packet duration должен стать media-core duration");
 
         assert_eq!(packet.duration, Some(Duration::from_nanos(20_833)));
+        assert_eq!(
+            packet
+                .track_duration
+                .expect("raw duration должен остаться в container units")
+                .units
+                .get(),
+            1
+        );
     }
 
     #[test]
@@ -289,6 +362,14 @@ mod tests {
 
         assert_eq!(packet.pts, Duration::from_secs(2));
         assert_eq!(packet.dts, Some(Duration::from_secs(1)));
+        assert_eq!(
+            packet
+                .track_dts
+                .expect("raw DTS должен сохранять container units")
+                .units
+                .get(),
+            48_000
+        );
     }
 
     #[test]
@@ -299,7 +380,27 @@ mod tests {
             .expect("negative PTS должен нормализоваться без ошибки");
 
         assert_eq!(packet.pts, Duration::ZERO);
+        let raw_pts = packet
+            .track_pts
+            .expect("negative raw PTS должен сохраниться");
+        assert_eq!(raw_pts.units.get(), -24_000);
+        assert!(raw_pts.units.is_negative());
         assert_eq!(packet.dts, None);
+    }
+
+    #[test]
+    fn packet_without_track_time_base_keeps_no_raw_timestamp() {
+        let track_map =
+            HashMap::from([(7, track_entry_without_time_base(TrackKind::Audio, "A_OPUS"))]);
+
+        let packet = convert_packet(packet(7, 48_000, b"opus"), &track_map)
+            .expect("packet без time base должен оставаться readable");
+
+        assert_eq!(packet.pts, Duration::ZERO);
+        assert_eq!(packet.track_pts, None);
+        assert_eq!(packet.track_dts, None);
+        assert_eq!(packet.duration, None);
+        assert_eq!(packet.track_duration, None);
     }
 
     #[test]

@@ -12,11 +12,13 @@ mod time;
 mod track;
 
 pub use demux::{
-    DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaDemuxError,
+    DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
+    DemuxTrackListUpdate, Demuxer, MediaDemuxError,
 };
 pub use packet::Packet;
 pub use time::{
     MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason, TimelinePreviewState,
-    TimelineRange, TimelineSnapshot, TrackTimestamp, TrackTimestampUnits,
+    TimelineRange, TimelineSnapshot, TrackDuration, TrackDurationUnits, TrackTimestamp,
+    TrackTimestampUnits,
 };
 pub use track::{TrackId, TrackInfo, TrackKind, VideoTrackMetadata};

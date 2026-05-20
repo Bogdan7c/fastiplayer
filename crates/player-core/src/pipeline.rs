@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use codec_core::VideoDecodeRequirement;
-use media_core::{DemuxSeekRequest, DemuxSeekResult, Demuxer, TrackId, TrackInfo};
+use media_core::{DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, Demuxer, TrackId, TrackInfo};
 
 use crate::{
     DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
@@ -48,6 +48,22 @@ pub(crate) enum VideoTextureReleaseEffect {
 
     /// Активных render leases нет, texture handle можно сразу вернуть decoder-у.
     ReleaseNow,
+}
+
+/// Runtime-готовность выбранного audio path-а для final seek resume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AudioSeekRuntimeState {
+    /// Audio track не выбран: media video-only или audio path уже явно отключён policy-слоем.
+    NoSelectedAudio,
+
+    /// Track выбран, но decoder ещё не установлен или deferred config ждёт первого packet-а.
+    WaitingForDecoder,
+
+    /// Decoder уже есть, но output ещё не создан из первого decoded AudioSpec.
+    WaitingForOutput,
+
+    /// Decoder и output готовы; seek gate может проверять buffer preroll.
+    Ready,
 }
 
 /// Успешный результат audio decode вместе с параметрами decoder-а для clock trimming.
@@ -106,6 +122,9 @@ pub(crate) struct PendingAudioPacket {
     /// Packet duration, если demuxer смог сохранить container duration.
     pub(crate) duration: Option<Duration>,
 
+    /// Raw packet timing в container units для decoder boundary.
+    pub(crate) timing: audio::AudioPacketTiming,
+
     /// Seek generation, в котором packet был прочитан из demuxer.
     pub(crate) generation: u64,
 
@@ -116,6 +135,7 @@ pub(crate) struct PendingAudioPacket {
 impl PendingAudioPacket {
     /// Создаёт ожидающий audio packet с явным track id и codec bytes.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn new(
         track_id: TrackId,
         pts: Duration,
@@ -129,6 +149,29 @@ impl PendingAudioPacket {
             pts,
             dts,
             duration,
+            timing: audio::AudioPacketTiming::unknown(),
+            generation,
+            encoded_bytes,
+        }
+    }
+
+    /// Создаёт ожидающий audio packet с raw container timing для decoder-а.
+    #[must_use]
+    pub(crate) fn with_timing(
+        track_id: TrackId,
+        pts: Duration,
+        dts: Option<Duration>,
+        duration: Option<Duration>,
+        timing: audio::AudioPacketTiming,
+        generation: u64,
+        encoded_bytes: Bytes,
+    ) -> Self {
+        Self {
+            track_id,
+            pts,
+            dts,
+            duration,
+            timing,
             generation,
             encoded_bytes,
         }
@@ -193,6 +236,9 @@ pub(crate) struct PlaybackPipeline {
 
     /// Codec-neutral audio decoder для выбранного audio трека.
     audio_decoder: Option<audio::AudioDecoderHandle>,
+
+    /// Deferred config для audio decoder-а, пока первый packet не потребовал decode.
+    deferred_audio_decoder_config: Option<audio::AudioDecoderConfig>,
 
     /// Audio output: CPAL stream и ring buffer.
     audio_output: Option<audio::AudioOutput>,
@@ -287,6 +333,7 @@ impl PlaybackPipeline {
     /// Устанавливает codec-neutral audio decoder, созданный session policy слоем.
     pub(crate) fn install_audio_decoder(&mut self, decoder: audio::AudioDecoderHandle) {
         self.audio_decoder = Some(decoder);
+        self.deferred_audio_decoder_config = None;
     }
 
     /// Удаляет audio decoder runtime slot без side effects на output/track selection.
@@ -295,10 +342,42 @@ impl PlaybackPipeline {
     }
 
     /// Проверяет наличие audio decoder-а без раскрытия `Option` storage.
-    #[cfg(test)]
     #[must_use]
     pub(crate) fn has_audio_decoder(&self) -> bool {
         self.audio_decoder.is_some()
+    }
+
+    /// Сохраняет decoder config до первого selected audio packet-а.
+    pub(crate) fn install_deferred_audio_decoder_config(
+        &mut self,
+        config: audio::AudioDecoderConfig,
+    ) {
+        self.deferred_audio_decoder_config = Some(config);
+    }
+
+    /// Проверяет наличие deferred decoder config без раскрытия `Option` storage.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn has_deferred_audio_decoder_config(&self) -> bool {
+        self.deferred_audio_decoder_config.is_some()
+    }
+
+    /// Забирает deferred decoder config только для выбранного track-а.
+    pub(crate) fn take_deferred_audio_decoder_config(
+        &mut self,
+        track_id: TrackId,
+    ) -> Option<audio::AudioDecoderConfig> {
+        let config = self.deferred_audio_decoder_config.as_ref()?;
+        if config.track_id() != track_id.get() {
+            return None;
+        }
+
+        self.deferred_audio_decoder_config.take()
+    }
+
+    /// Удаляет deferred decoder config при сбросе media или отключении audio path.
+    pub(crate) fn clear_deferred_audio_decoder_config(&mut self) {
+        self.deferred_audio_decoder_config = None;
     }
 
     /// Декодирует audio packet через установленный decoder.
@@ -336,7 +415,6 @@ impl PlaybackPipeline {
     }
 
     /// Проверяет наличие audio output-а без доступа к concrete CPAL handle.
-    #[cfg(test)]
     #[must_use]
     pub(crate) fn has_audio_output(&self) -> bool {
         self.audio_output.is_some()
@@ -533,6 +611,16 @@ impl PlaybackPipeline {
         self.audio_track_id.is_some()
     }
 
+    /// Классифицирует audio runtime slots для seek gate без раскрытия storage полей.
+    #[must_use]
+    pub(crate) fn audio_seek_runtime_state(&self) -> AudioSeekRuntimeState {
+        audio_seek_runtime_state_from_slots(
+            self.audio_track_id.is_some(),
+            self.audio_decoder.is_some(),
+            self.audio_output.is_some(),
+        )
+    }
+
     /// Проверяет, относится ли video packet к активному video track.
     #[must_use]
     pub(crate) fn video_packet_belongs_to_selected_track(&self, track_id: TrackId) -> bool {
@@ -560,6 +648,12 @@ impl PlaybackPipeline {
     /// Выбирает audio track id без side effects для decoder/output ownership.
     pub(crate) fn select_audio_track(&mut self, track_id: TrackId) {
         self.audio_track_id = Some(track_id);
+    }
+
+    /// Очищает только выбранный audio track и связанный deferred decoder plan.
+    pub(crate) fn clear_selected_audio_track(&mut self) {
+        self.audio_track_id = None;
+        self.clear_deferred_audio_decoder_config();
     }
 
     /// Очищает выбранные tracks и requirement, не трогая queues/decoder/source slots.
@@ -890,6 +984,7 @@ impl PlaybackPipeline {
     pub(crate) fn reset_media_slots(&mut self) {
         self.clear_media_source_slots();
         self.clear_audio_decoder();
+        self.clear_deferred_audio_decoder_config();
         self.clear_audio_output();
         self.clear_selected_tracks();
         self.clear_pending_audio_packets();
@@ -932,6 +1027,28 @@ impl PlaybackPipeline {
         self.tracks = tracks;
     }
 
+    /// Применяет новый track list после demux lifecycle reset.
+    ///
+    /// Demuxer остаётся тем же владельцем source-а, но decoder-dependent state
+    /// должен быть пересоздан, потому что старые configs могли ссылаться на уже
+    /// неактуальные track ids, codec params или audio spec.
+    pub(crate) fn apply_demux_track_list_update(&mut self, tracks: Vec<TrackInfo>) {
+        let has_video_track = tracks
+            .iter()
+            .any(|track| track.kind == media_core::TrackKind::Video);
+
+        self.tracks = tracks;
+        self.clear_audio_decoder();
+        self.clear_deferred_audio_decoder_config();
+        self.clear_audio_output();
+        self.clear_audio_clock();
+        self.clear_selected_tracks();
+        self.clear_pending_audio_packets();
+        self.clear_pending_video_packets();
+        self.mark_audio_buffer_clear_ack(self.seek_generation);
+        self.reset_decoder_state_for_seek(has_video_track);
+    }
+
     /// Проверяет, установлен ли demuxer текущего media source.
     #[must_use]
     pub(crate) fn has_demuxer(&self) -> bool {
@@ -963,10 +1080,16 @@ impl PlaybackPipeline {
     }
 
     /// Читает следующий packet через demux boundary, сохраняя absent-demuxer как no-op.
+    #[cfg(test)]
     pub(crate) fn demux_next_packet(
         &mut self,
     ) -> Option<anyhow::Result<Option<media_core::Packet>>> {
         self.demuxer.as_mut().map(|demuxer| demuxer.next_packet())
+    }
+
+    /// Читает следующий demux event, сохраняя absent-demuxer как no-op.
+    pub(crate) fn demux_next_event(&mut self) -> Option<anyhow::Result<DemuxReadEvent>> {
+        self.demuxer.as_mut().map(|demuxer| demuxer.next_event())
     }
 
     /// Выполняет seek текущего demuxer-а, не раскрывая место хранения demux handle.
@@ -1241,6 +1364,28 @@ impl PlaybackPipeline {
     }
 }
 
+/// Чистая часть классификации audio slots для тестов без CPAL output.
+#[must_use]
+fn audio_seek_runtime_state_from_slots(
+    audio_track_selected: bool,
+    audio_decoder_installed: bool,
+    audio_output_installed: bool,
+) -> AudioSeekRuntimeState {
+    if !audio_track_selected {
+        return AudioSeekRuntimeState::NoSelectedAudio;
+    }
+
+    if !audio_decoder_installed {
+        return AudioSeekRuntimeState::WaitingForDecoder;
+    }
+
+    if !audio_output_installed {
+        return AudioSeekRuntimeState::WaitingForOutput;
+    }
+
+    AudioSeekRuntimeState::Ready
+}
+
 impl Default for PlaybackPipeline {
     /// Возвращает начальные значения pipeline без decoder/demuxer/audio ресурсов.
     fn default() -> Self {
@@ -1250,6 +1395,7 @@ impl Default for PlaybackPipeline {
             tracks: Vec::new(),
             source_label: None,
             audio_decoder: None,
+            deferred_audio_decoder_config: None,
             audio_output: None,
             audio_track_id: None,
             pending_audio_packets: VecDeque::new(),
@@ -1487,22 +1633,81 @@ mod tests {
     }
 
     #[test]
+    fn demux_track_list_update_invalidates_decoder_dependent_state() {
+        let mut pipeline = PlaybackPipeline::default();
+        let old_video_track = TrackId::new(1);
+        let old_audio_track = TrackId::new(2);
+        let new_audio_track = TrackId::new(3);
+        let initial_tracks = vec![
+            source_slot_track(old_video_track, TrackKind::Video, "V_VP9"),
+            source_slot_track(old_audio_track, TrackKind::Audio, "A_OPUS"),
+        ];
+
+        pipeline.install_opened_media(
+            Box::new(SourceSlotFakeDemuxer::new(initial_tracks.clone())),
+            None,
+            None,
+            initial_tracks,
+        );
+        pipeline.select_video_track(
+            old_video_track,
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        pipeline.select_audio_track(old_audio_track);
+        pipeline.install_deferred_audio_decoder_config(
+            audio::AudioDecoderConfig::from_track_metadata(
+                old_audio_track.get(),
+                "A_OPUS",
+                Some(48_000),
+                Some(2),
+            ),
+        );
+        pipeline.install_audio_decoder(Box::new(FakeAudioDecoder::with_samples(
+            vec![0.0],
+            48_000,
+            2,
+        )));
+        pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
+            old_audio_track,
+            Duration::ZERO,
+            None,
+            None,
+            pipeline.seek_generation(),
+            Bytes::from_static(b"old audio"),
+        ));
+        pipeline.enqueue_pending_video_packet(PendingVideoPacket::new(
+            old_video_track,
+            Duration::ZERO,
+            pipeline.seek_generation(),
+            Bytes::from_static(b"old video"),
+            true,
+        ));
+        pipeline.mark_video_decoder_bootstrapped();
+        pipeline.note_video_packet_sent_to_decoder();
+
+        pipeline.apply_demux_track_list_update(vec![source_slot_track(
+            new_audio_track,
+            TrackKind::Audio,
+            "A_AAC",
+        )]);
+
+        assert_eq!(pipeline.tracks()[0].id, new_audio_track);
+        assert!(pipeline.selected_audio_track_id().is_none());
+        assert!(pipeline.selected_video_track_id().is_none());
+        assert!(!pipeline.has_audio_decoder());
+        assert!(!pipeline.has_deferred_audio_decoder_config());
+        assert_eq!(pipeline.pending_audio_packet_len(), 0);
+        assert_eq!(pipeline.pending_video_packet_len(), 0);
+        assert!(!pipeline.video_decoder_needs_keyframe());
+        assert_eq!(pipeline.video_decode_in_flight_packets(), 0);
+    }
+
+    #[test]
     fn audio_decoder_boundaries_preserve_absent_success_and_error_states() {
         let mut pipeline = PlaybackPipeline::default();
-        let packet = audio::EncodedAudioPacket::new(
-            TrackId::new(2).get(),
-            Duration::ZERO,
-            None,
-            None,
-            b"packet",
-        );
-        let bad_packet = audio::EncodedAudioPacket::new(
-            TrackId::new(2).get(),
-            Duration::ZERO,
-            None,
-            None,
-            b"bad packet",
-        );
+        let packet = audio::EncodedAudioPacket::without_timing(TrackId::new(2).get(), b"packet");
+        let bad_packet =
+            audio::EncodedAudioPacket::without_timing(TrackId::new(2).get(), b"bad packet");
 
         assert!(!pipeline.has_audio_decoder());
         assert!(pipeline.decode_audio_packet(&packet).is_none());
@@ -1544,6 +1749,96 @@ mod tests {
             .expect("installed decoder должен вернуть reset result")
             .expect_err("reset error должен дойти до session boundary");
         assert_eq!(reset_error.to_string(), "reset failed");
+    }
+
+    #[test]
+    fn deferred_audio_decoder_config_boundary_preserves_absent_match_and_mismatch() {
+        let mut pipeline = PlaybackPipeline::default();
+        let config = audio::AudioDecoderConfig::from_track_metadata(
+            TrackId::new(2).get(),
+            "A_AAC",
+            None,
+            None,
+        );
+
+        assert!(!pipeline.has_deferred_audio_decoder_config());
+        assert!(
+            pipeline
+                .take_deferred_audio_decoder_config(TrackId::new(2))
+                .is_none()
+        );
+
+        pipeline.install_deferred_audio_decoder_config(config.clone());
+        assert!(pipeline.has_deferred_audio_decoder_config());
+        assert!(
+            pipeline
+                .take_deferred_audio_decoder_config(TrackId::new(3))
+                .is_none()
+        );
+        assert!(pipeline.has_deferred_audio_decoder_config());
+
+        let taken_config = pipeline
+            .take_deferred_audio_decoder_config(TrackId::new(2))
+            .expect("matching track should consume deferred decoder config");
+        assert_eq!(taken_config, config);
+        assert!(!pipeline.has_deferred_audio_decoder_config());
+    }
+
+    #[test]
+    fn audio_seek_runtime_state_classifies_slots_without_cpal_output() {
+        assert_eq!(
+            audio_seek_runtime_state_from_slots(false, false, false),
+            AudioSeekRuntimeState::NoSelectedAudio
+        );
+        assert_eq!(
+            audio_seek_runtime_state_from_slots(true, false, false),
+            AudioSeekRuntimeState::WaitingForDecoder
+        );
+        assert_eq!(
+            audio_seek_runtime_state_from_slots(true, true, false),
+            AudioSeekRuntimeState::WaitingForOutput
+        );
+        assert_eq!(
+            audio_seek_runtime_state_from_slots(true, true, true),
+            AudioSeekRuntimeState::Ready
+        );
+    }
+
+    #[test]
+    fn audio_seek_runtime_state_boundary_keeps_selection_ownership() {
+        let mut pipeline = PlaybackPipeline::default();
+        let track_id = TrackId::new(2);
+        let decoder_config =
+            audio::AudioDecoderConfig::from_track_metadata(track_id.get(), "A_OPUS", None, None);
+
+        assert_eq!(
+            pipeline.audio_seek_runtime_state(),
+            AudioSeekRuntimeState::NoSelectedAudio
+        );
+
+        pipeline.select_audio_track(track_id);
+        assert_eq!(
+            pipeline.audio_seek_runtime_state(),
+            AudioSeekRuntimeState::WaitingForDecoder
+        );
+
+        pipeline.install_deferred_audio_decoder_config(decoder_config);
+        assert_eq!(
+            pipeline.audio_seek_runtime_state(),
+            AudioSeekRuntimeState::WaitingForDecoder
+        );
+        assert_eq!(pipeline.selected_audio_track_id(), Some(track_id));
+
+        pipeline.install_audio_decoder(Box::new(FakeAudioDecoder::with_samples(
+            vec![0.0, 0.0],
+            48_000,
+            2,
+        )));
+        assert_eq!(
+            pipeline.audio_seek_runtime_state(),
+            AudioSeekRuntimeState::WaitingForOutput
+        );
+        assert_eq!(pipeline.selected_audio_track_id(), Some(track_id));
     }
 
     #[test]

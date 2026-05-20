@@ -151,6 +151,8 @@ fn record_player_tick_result(telemetry: &Telemetry, tick_result: &PlayerTickResu
                 track_id = %packet.track_id,
                 kind = ?packet.kind,
                 pts_ms = packet.pts.as_millis(),
+                raw_pts_units = ?packet.track_pts.map(|timestamp| timestamp.units.get()),
+                raw_dts_units = ?packet.track_dts.map(|timestamp| timestamp.units.get()),
                 size = packet.size,
                 keyframe = packet.keyframe,
                 "Packet"
