@@ -1,0 +1,215 @@
+use std::collections::HashMap;
+
+use bytes::Bytes;
+use codec_core::{VideoCodec, VideoPacketKeyframeProbe, probe_video_packet_keyframe};
+use media_core::{Packet as MediaPacket, TrackId, TrackKind};
+use symphonia::core::packet::Packet as SymphoniaPacket;
+
+use crate::symphonia_api::symphonia_timestamp_to_duration;
+use crate::track_mapper::TrackEntry;
+
+/// Результат packet-level validation до отдачи packet-а в player pipeline.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PacketConvertError {
+    /// Container отдал packet для track-а, которого не было в metadata.
+    UnknownTrack {
+        /// Сырой Symphonia/container track id.
+        track_id: u32,
+    },
+
+    /// Packet можно пропустить, если fail-safe лимит ещё не исчерпан.
+    CorruptedPacket {
+        /// Track, к которому относится повреждённый packet.
+        track_id: TrackId,
+
+        /// Человекочитаемая причина для logs/fatal error.
+        reason: String,
+    },
+}
+
+/// Конвертирует Symphonia packet в neutral media-core packet.
+pub(crate) fn convert_packet(
+    packet: SymphoniaPacket,
+    track_map: &HashMap<u32, TrackEntry>,
+) -> Result<MediaPacket, PacketConvertError> {
+    let packet_track_id = packet.track_id;
+    let track_entry = track_map
+        .get(&packet_track_id)
+        .ok_or(PacketConvertError::UnknownTrack {
+            track_id: packet_track_id,
+        })?;
+    let pts = track_entry
+        .time_base
+        .map(|time_base| symphonia_timestamp_to_duration(time_base, packet.pts))
+        .unwrap_or_default();
+    let keyframe = packet_keyframe(track_entry, packet_track_id, &packet.data)?;
+
+    Ok(MediaPacket {
+        track_id: TrackId::new(packet_track_id),
+        kind: track_entry.kind,
+        pts,
+        dts: None,
+        byte_offset: None,
+        keyframe,
+        data: Bytes::from(Vec::from(packet.data)),
+    })
+}
+
+/// Определяет keyframe только через codec-aware probe, потому что Symphonia 0.6 Packet не несёт flag.
+fn packet_keyframe(
+    track_entry: &TrackEntry,
+    packet_track_id: u32,
+    packet_data: &[u8],
+) -> Result<bool, PacketConvertError> {
+    if track_entry.kind != TrackKind::Video {
+        return Ok(false);
+    }
+
+    match VideoCodec::from_container_codec_id(&track_entry.codec_id)
+        .map(|codec| probe_video_packet_keyframe(codec, packet_data))
+    {
+        Some(VideoPacketKeyframeProbe::Keyframe(keyframe)) => Ok(keyframe),
+        Some(VideoPacketKeyframeProbe::Uncertain(uncertainty)) => {
+            Err(PacketConvertError::CorruptedPacket {
+                track_id: TrackId::new(packet_track_id),
+                reason: format!("video packet keyframe probe failed: {uncertainty:?}"),
+            })
+        }
+        Some(VideoPacketKeyframeProbe::AdapterUnavailable { .. }) | None => Ok(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use media_core::{TrackId, TrackKind};
+    use symphonia::core::packet::Packet as SymphoniaPacket;
+    use symphonia::core::units::{Duration as SymphoniaDuration, TimeBase, Timestamp};
+
+    use super::{PacketConvertError, convert_packet};
+    use crate::track_mapper::TrackEntry;
+
+    fn track_entry(kind: TrackKind, codec_id: &str) -> TrackEntry {
+        TrackEntry {
+            kind,
+            codec_id: codec_id.to_string(),
+            time_base: Some(TimeBase::try_new(1, 48_000).expect("valid time base")),
+            sample_rate: None,
+            channels: None,
+        }
+    }
+
+    fn packet(track_id: u32, pts: i64, bytes: &'static [u8]) -> SymphoniaPacket {
+        SymphoniaPacket::new(
+            track_id,
+            Timestamp::new(pts),
+            SymphoniaDuration::new(1),
+            bytes.to_vec(),
+        )
+    }
+
+    fn owned_packet(track_id: u32, pts: i64, bytes: Vec<u8>) -> SymphoniaPacket {
+        SymphoniaPacket::new(
+            track_id,
+            Timestamp::new(pts),
+            SymphoniaDuration::new(1),
+            bytes,
+        )
+    }
+
+    fn build_vp9_keyframe() -> Vec<u8> {
+        let mut bits = Vec::new();
+        push_bits(&mut bits, 0b10, 2);
+        push_profile(&mut bits, 0);
+        bits.push(0);
+        bits.push(0);
+        bits.push(1);
+        bits.push(0);
+        push_bits(&mut bits, 0x498342, 24);
+        push_bits(&mut bits, 1, 3);
+        bits.push(0);
+        push_bits(&mut bits, 63, 16);
+        push_bits(&mut bits, 63, 16);
+        bits.push(0);
+        bits_to_bytes(&bits)
+    }
+
+    fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
+        bits.chunks(8)
+            .map(|chunk| {
+                let mut byte = 0_u8;
+                for (index, bit) in chunk.iter().enumerate() {
+                    byte |= bit << (7 - index);
+                }
+                byte
+            })
+            .collect()
+    }
+
+    fn push_bits(bits: &mut Vec<u8>, value: u32, width: u8) {
+        for shift in (0..width).rev() {
+            bits.push(((value >> shift) & 1) as u8);
+        }
+    }
+
+    fn push_profile(bits: &mut Vec<u8>, profile: u8) {
+        bits.push(profile & 1);
+        bits.push((profile >> 1) & 1);
+        if profile == 3 {
+            bits.push(0);
+        }
+    }
+
+    #[test]
+    fn converts_audio_packet_to_media_packet() {
+        let track_map = HashMap::from([(7, track_entry(TrackKind::Audio, "A_OPUS"))]);
+
+        let packet = convert_packet(packet(7, 48_000, b"opus"), &track_map)
+            .expect("audio packet должен конвертироваться");
+
+        assert_eq!(packet.track_id, TrackId::new(7));
+        assert_eq!(packet.kind, TrackKind::Audio);
+        assert_eq!(packet.pts, Duration::from_secs(1));
+        assert_eq!(&packet.data[..], b"opus");
+        assert!(!packet.keyframe);
+    }
+
+    #[test]
+    fn packet_for_unknown_track_is_fatal_mapping_error() {
+        let track_map = HashMap::new();
+
+        let error = convert_packet(packet(99, 0, b"data"), &track_map)
+            .expect_err("unknown track должен быть fatal");
+
+        assert_eq!(error, PacketConvertError::UnknownTrack { track_id: 99 });
+    }
+
+    #[test]
+    fn invalid_vp9_packet_is_recoverable_corruption() {
+        let track_map = HashMap::from([(1, track_entry(TrackKind::Video, "V_VP9"))]);
+
+        let error = convert_packet(packet(1, 0, b"\x00"), &track_map)
+            .expect_err("битый VP9 packet должен быть recoverable corruption");
+
+        match error {
+            PacketConvertError::CorruptedPacket { track_id, .. } => {
+                assert_eq!(track_id, TrackId::new(1));
+            }
+            PacketConvertError::UnknownTrack { .. } => {
+                panic!("ожидалась recoverable corruption, а не unknown track");
+            }
+        }
+    }
+
+    #[test]
+    fn valid_vp9_keyframe_packet_sets_keyframe_flag() {
+        let track_map = HashMap::from([(1, track_entry(TrackKind::Video, "V_VP9"))]);
+
+        let packet = convert_packet(owned_packet(1, 0, build_vp9_keyframe()), &track_map)
+            .expect("валидный VP9 keyframe должен конвертироваться");
+
+        assert!(packet.keyframe);
+    }
+}

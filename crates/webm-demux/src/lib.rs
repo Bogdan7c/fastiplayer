@@ -4,8 +4,12 @@ pub mod dual_stream_demuxer;
 pub mod error;
 mod matroska_metadata;
 mod options;
+mod packet_mapper;
+mod seek_mapper;
 pub mod streaming_source;
+mod symphonia_api;
 pub mod symphonia_demuxer;
+mod track_mapper;
 
 pub use demuxer::{
     DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaDemuxError,
