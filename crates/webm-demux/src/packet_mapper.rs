@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use bytes::Bytes;
 use codec_core::{VideoCodec, VideoPacketKeyframeProbe, probe_video_packet_keyframe};
 use media_core::{Packet as MediaPacket, TrackId, TrackKind};
 use symphonia::core::packet::Packet as SymphoniaPacket;
+use symphonia::core::units::{TimeBase as SymphoniaTimeBase, Timestamp};
 
 use crate::symphonia_api::symphonia_timestamp_to_duration;
 use crate::track_mapper::TrackEntry;
@@ -56,21 +58,52 @@ pub(crate) fn convert_packet(
             reason: unsupported_kind.diagnostic_reason(),
         });
     };
-    let pts = track_entry
-        .time_base
-        .map(|time_base| symphonia_timestamp_to_duration(time_base, packet.pts))
-        .unwrap_or_default();
+    let pts = packet_presentation_timestamp(track_entry.time_base, packet.pts);
+    let dts = packet_decode_timestamp(track_entry.time_base, packet.pts, packet.dts);
     let keyframe = packet_keyframe(track_entry, track_kind, packet_track_id, &packet.data)?;
 
     Ok(MediaPacket {
         track_id: TrackId::new(packet_track_id),
         kind: track_kind,
         pts,
-        dts: None,
+        dts,
         byte_offset: None,
         keyframe,
-        data: Bytes::from(Vec::from(packet.data)),
+        data: Bytes::from(packet.data),
     })
+}
+
+/// Нормализует presentation timestamp packet-а в неотрицательную media timeline.
+fn packet_presentation_timestamp(
+    time_base: Option<SymphoniaTimeBase>,
+    timestamp: Timestamp,
+) -> Duration {
+    packet_timestamp_to_duration(time_base, timestamp)
+}
+
+/// Нормализует DTS только когда Symphonia сообщает его отдельно от PTS.
+fn packet_decode_timestamp(
+    time_base: Option<SymphoniaTimeBase>,
+    pts_timestamp: Timestamp,
+    dts_timestamp: Timestamp,
+) -> Option<Duration> {
+    // Symphonia 0.6 хранит DTS обязательным полем и default-ит его в PTS,
+    // поэтому public Packet не позволяет отличить явно равный DTS от отсутствующего.
+    if dts_timestamp == pts_timestamp {
+        return None;
+    }
+
+    Some(packet_timestamp_to_duration(time_base, dts_timestamp))
+}
+
+/// Переводит signed Symphonia timestamp через media-core helpers без потери знака до clamp-а.
+fn packet_timestamp_to_duration(
+    time_base: Option<SymphoniaTimeBase>,
+    timestamp: Timestamp,
+) -> Duration {
+    time_base
+        .map(|time_base| symphonia_timestamp_to_duration(time_base, timestamp))
+        .unwrap_or_default()
 }
 
 /// Определяет keyframe только через codec-aware probe, потому что Symphonia 0.6 Packet не несёт flag.
@@ -104,7 +137,7 @@ mod tests {
     use std::time::Duration;
 
     use media_core::{TrackId, TrackKind};
-    use symphonia::core::packet::Packet as SymphoniaPacket;
+    use symphonia::core::packet::{Packet as SymphoniaPacket, PacketBuilder};
     use symphonia::core::units::{Duration as SymphoniaDuration, TimeBase, Timestamp};
 
     use super::{PacketConvertError, convert_packet};
@@ -137,6 +170,16 @@ mod tests {
             SymphoniaDuration::new(1),
             bytes.to_vec(),
         )
+    }
+
+    fn packet_with_dts(track_id: u32, pts: i64, dts: i64, bytes: &'static [u8]) -> SymphoniaPacket {
+        PacketBuilder::new()
+            .track_id(track_id)
+            .pts(Timestamp::new(pts))
+            .dts(Timestamp::new(dts))
+            .dur(SymphoniaDuration::new(1))
+            .data(bytes.to_vec())
+            .build()
     }
 
     fn owned_packet(track_id: u32, pts: i64, bytes: Vec<u8>) -> SymphoniaPacket {
@@ -201,8 +244,41 @@ mod tests {
         assert_eq!(packet.track_id, TrackId::new(7));
         assert_eq!(packet.kind, TrackKind::Audio);
         assert_eq!(packet.pts, Duration::from_secs(1));
+        assert_eq!(packet.dts, None);
         assert_eq!(&packet.data[..], b"opus");
         assert!(!packet.keyframe);
+    }
+
+    #[test]
+    fn converts_presentation_timestamp_from_packet_pts() {
+        let track_map = HashMap::from([(7, track_entry(TrackKind::Audio, "A_OPUS"))]);
+
+        let packet = convert_packet(packet(7, 96_000, b"opus"), &track_map)
+            .expect("packet PTS должен стать media-core PTS");
+
+        assert_eq!(packet.pts, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn converts_decode_timestamp_when_dts_differs_from_pts() {
+        let track_map = HashMap::from([(7, track_entry(TrackKind::Audio, "A_OPUS"))]);
+
+        let packet = convert_packet(packet_with_dts(7, 96_000, 48_000, b"opus"), &track_map)
+            .expect("packet DTS должен стать media-core DTS");
+
+        assert_eq!(packet.pts, Duration::from_secs(2));
+        assert_eq!(packet.dts, Some(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn negative_presentation_timestamp_clamps_to_zero() {
+        let track_map = HashMap::from([(7, track_entry(TrackKind::Audio, "A_OPUS"))]);
+
+        let packet = convert_packet(packet(7, -24_000, b"opus"), &track_map)
+            .expect("negative PTS должен нормализоваться без ошибки");
+
+        assert_eq!(packet.pts, Duration::ZERO);
+        assert_eq!(packet.dts, None);
     }
 
     #[test]
