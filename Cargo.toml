@@ -26,12 +26,6 @@ resolver = "2"
 [replace]
 "cros-libva:0.0.12" = { path = "crates/cros-libva-patch" }
 "cros-codecs:0.0.6" = { path = "crates/cros-codecs-patch" }
-"symphonia-core:0.5.5" = { path = "third_party/symphonia-core-patch" }
-"symphonia-bundle-flac:0.5.5" = { path = "third_party/symphonia-bundle-flac-patch" }
-"symphonia-bundle-mp3:0.5.5" = { path = "third_party/symphonia-bundle-mp3-patch" }
-"symphonia-format-mkv:0.5.5" = { path = "third_party/symphonia-format-mkv-patch" }
-"symphonia-format-ogg:0.5.5" = { path = "third_party/symphonia-format-ogg-patch" }
-"symphonia-format-riff:0.5.5" = { path = "third_party/symphonia-format-riff-patch" }
 
 [workspace.package]
 version = "0.1.0"
@@ -55,7 +49,7 @@ thiserror = "2.0"
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-symphonia = "0.5"
+symphonia = { version = "0.6", features = ["all-formats", "all-codecs", "all-meta"] }
 bytes = "1.0"
 crossbeam-channel = "0.5"
 ringbuf = "0.4"

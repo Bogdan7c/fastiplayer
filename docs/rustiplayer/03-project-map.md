@@ -22,7 +22,7 @@ crates/vp9-parser            VP9 header parser used by codec adapter
 crates/video-vulkan          reference/experimental Vulkan Video code
 crates/cros-codecs-patch     local patched cros-codecs dependency
 crates/cros-libva-patch      local patched cros-libva dependency
-third_party/symphonia-*      local patched Symphonia crates
+third_party/symphonia-*      retired Symphonia patches, kept for cleanup PR
 ```
 
 ## Владение

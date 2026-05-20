@@ -147,8 +147,9 @@ WGPU-specific детали.
 
 ## Patched dependencies
 
-`cros-codecs`, `cros-libva` и Symphonia crates patched локально. Это технический
-долг поддержки совместимости.
+`cros-codecs` и `cros-libva` patched локально. Symphonia patch уже выведен из
+активной Cargo graph, но каталоги `third_party/symphonia-*` оставлены до
+отдельного cleanup PR. Это технический долг поддержки совместимости.
 
 Следующий шаг: периодически проверять upstream и удалять patches только после
 прохождения zero-copy/HDR regression matrix.

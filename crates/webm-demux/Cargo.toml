@@ -5,9 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-# mkv включает поддержку WebM/MKV контейнеров (default)
-# all-codecs включает Opus и другие кодеки
-symphonia = { workspace = true, features = ["mkv", "all-codecs"] }
+symphonia = { workspace = true }
 bytes = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
