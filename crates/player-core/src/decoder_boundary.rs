@@ -76,6 +76,10 @@ impl WgpuRenderTextureViewLookup {
 }
 
 /// WGPU-specific render-side provider для texture views и renderer-owned release.
+///
+/// TODO(renderer-neutral): OpenGL ES 2 / DX9 backend должен иметь собственную
+/// materialization boundary от neutral present-frame resource handle-а, а не
+/// реализовывать этот WGPU compatibility provider.
 pub trait WgpuRenderTextureProvider: Send + Sync {
     /// Получает WGPU views и lock diagnostics для frame handle на render thread.
     fn texture_view_lookup(

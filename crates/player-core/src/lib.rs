@@ -60,8 +60,9 @@ pub use media_core::TrackId;
 pub use media_opening::{PreparedMedia, PreparedMediaSource};
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
 pub use render_lease_bridge::{
-    PlayerPresentFrame, PresentFrameLease, PresentFrameTextureViewLookup, PresentFrameTextureViews,
-    PresentFrameWgpuTextureViews,
+    PlayerPresentFrame, PresentFrameLease, PresentFrameResourceDescriptor,
+    PresentFrameResourceKind, PresentFrameResourceLookup, PresentFrameTextureViewLookup,
+    PresentFrameTextureViews, PresentFrameWgpuTextureViews,
 };
 pub use seek_controller::{
     PlaybackResumeIntent, SeekController, SeekControllerDiagnostics, SeekControllerMode,

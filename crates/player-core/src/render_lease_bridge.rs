@@ -28,6 +28,97 @@ const RENDER_TEXTURE_VIEW_REUSE_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
 /// Короткий backpressure budget для Drop path render lease-а.
 const RENDER_RELEASE_SEND_TIMEOUT: Duration = Duration::from_millis(2);
 
+/// Renderer-neutral тип ресурса, который стоит за present frame lease-ом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentFrameResourceKind {
+    /// Decoder-owned DMA-BUF доступен renderer-у как zero-copy GPU resource.
+    DmaBufZeroCopy,
+
+    /// Opaque backend texture скрыта за `FrameTextureHandle` без public WGPU view-ов.
+    OpaqueBackendTexture,
+
+    /// Future external GPU handle, который backend материализует самостоятельно.
+    ExternalGpuHandle,
+}
+
+impl PresentFrameResourceKind {
+    /// Мапит decoded memory path в neutral render resource kind без знания renderer-а.
+    const fn from_memory_path(memory_path: video_core::FrameMemoryPath) -> Self {
+        match memory_path {
+            video_core::FrameMemoryPath::DmaBufZeroCopy => Self::DmaBufZeroCopy,
+            video_core::FrameMemoryPath::CpuUpload => Self::OpaqueBackendTexture,
+        }
+    }
+}
+
+/// Renderer-neutral descriptor present frame resource-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PresentFrameResourceDescriptor {
+    /// Тип backend resource-а без привязки к WGPU texture view API.
+    kind: PresentFrameResourceKind,
+
+    /// Поколение render resources, где был выдан opaque handle.
+    render_generation: u64,
+
+    /// Opaque handle decoded frame-а внутри backend-owned resource table.
+    texture_handle: video_core::FrameTextureHandle,
+
+    /// Memory path сохраняет distinction zero-copy/upload для diagnostics и backend policy.
+    memory_path: video_core::FrameMemoryPath,
+}
+
+impl PresentFrameResourceDescriptor {
+    /// Собирает neutral descriptor из decoded frame metadata без materialization в renderer-е.
+    const fn from_decoded_frame(render_generation: u64, frame: &video_core::DecodedFrame) -> Self {
+        Self {
+            kind: PresentFrameResourceKind::from_memory_path(frame.memory_path),
+            render_generation,
+            texture_handle: frame.texture_handle,
+            memory_path: frame.memory_path,
+        }
+    }
+
+    /// Возвращает renderer-neutral kind ресурса для выбора backend materialization path-а.
+    #[must_use]
+    pub const fn kind(&self) -> PresentFrameResourceKind {
+        self.kind
+    }
+
+    /// Возвращает render generation, которому принадлежит opaque resource handle.
+    #[must_use]
+    pub const fn render_generation(&self) -> u64 {
+        self.render_generation
+    }
+
+    /// Возвращает opaque frame texture handle без раскрытия backend storage-а.
+    #[must_use]
+    pub const fn texture_handle(&self) -> video_core::FrameTextureHandle {
+        self.texture_handle
+    }
+
+    /// Возвращает decoded memory path для diagnostics и backend policy decisions.
+    #[must_use]
+    pub const fn memory_path(&self) -> video_core::FrameMemoryPath {
+        self.memory_path
+    }
+}
+
+/// Renderer-neutral результат lookup-а present frame resource-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentFrameResourceLookup {
+    /// Resource доступен, backend может материализовать его через свой renderer-specific путь.
+    Ready(PresentFrameResourceDescriptor),
+
+    /// Backend resource table занят, caller должен использовать safe fallback без stall-а.
+    Busy,
+
+    /// Resource отсутствует при доступном backend table-е.
+    Missing,
+
+    /// Backend сообщил poisoned/fatal lookup state.
+    Error,
+}
+
 /// WGPU texture views, полученные render thread-ом по opaque frame handle.
 #[derive(Clone)]
 pub struct PresentFrameWgpuTextureViews {
@@ -38,12 +129,10 @@ pub struct PresentFrameWgpuTextureViews {
     pub uv_view: wgpu::TextureView,
 }
 
-/// TODO(renderer-neutral): extract renderer-neutral resource lookup later.
-///
 /// Backward-compatible имя public WGPU texture views для текущих callers.
 pub type PresentFrameTextureViews = PresentFrameWgpuTextureViews;
 
-/// Typed результат WGPU render-side lookup-а texture views для present frame lease-а.
+/// Compatibility результат WGPU render-side lookup-а texture views для present frame lease-а.
 pub enum PresentFrameTextureViewLookup {
     /// WGPU texture views готовы, renderer может строить `WgpuRenderableFrame`.
     Ready(PresentFrameWgpuTextureViews),
@@ -144,7 +233,31 @@ impl PresentFrameLease {
         self.stale || self.render_generation != current_render_generation
     }
 
+    /// Возвращает neutral descriptor без попытки материализовать backend resource.
+    #[must_use]
+    pub const fn resource_descriptor(&self) -> PresentFrameResourceDescriptor {
+        PresentFrameResourceDescriptor::from_decoded_frame(self.render_generation, &self.frame)
+    }
+
+    /// Пытается проверить доступность present resource-а без WGPU-specific public resource-а.
+    ///
+    /// TODO(renderer-neutral): OpenGL ES 2 / DX9 backend должен материализовать resource
+    /// из `PresentFrameResourceDescriptor` своим backend layer-ом. Эти backend-ы не должны
+    /// использовать WGPU texture views как public render lease resource.
+    #[must_use]
+    pub fn try_resource_lookup(&self) -> PresentFrameResourceLookup {
+        let Some(provider) = self.texture_provider.as_ref() else {
+            return PresentFrameResourceLookup::Missing;
+        };
+        let lookup = provider.try_texture_view_lookup(self.texture_handle());
+
+        self.present_resource_lookup_from_boundary(lookup)
+    }
+
     /// Получает WGPU views на render thread через render-side provider.
+    ///
+    /// Compatibility method для текущего `render-wgpu` path-а. Новые renderer backend-ы
+    /// должны использовать neutral resource lookup и собственную materialization boundary.
     #[must_use]
     pub fn texture_views(&self) -> Option<PresentFrameWgpuTextureViews> {
         let provider = self.texture_provider.as_ref()?;
@@ -159,6 +272,8 @@ impl PresentFrameLease {
     }
 
     /// Пытается получить WGPU views без ожидания backend texture pool mutex-а.
+    ///
+    /// Compatibility method для `render-wgpu`; GLES/DX9 не должны зависеть от WGPU views.
     #[must_use]
     pub fn try_texture_view_lookup(&self) -> PresentFrameTextureViewLookup {
         let Some(provider) = self.texture_provider.as_ref() else {
@@ -169,14 +284,29 @@ impl PresentFrameLease {
         self.present_texture_view_lookup_from_boundary(lookup)
     }
 
+    /// Конвертирует backend lookup в neutral public outcome и сохраняет diagnostics.
+    fn present_resource_lookup_from_boundary(
+        &self,
+        lookup: WgpuRenderTextureViewLookup,
+    ) -> PresentFrameResourceLookup {
+        self.report_wgpu_lookup_sample(&lookup);
+
+        match lookup {
+            WgpuRenderTextureViewLookup::Ready { .. } => {
+                PresentFrameResourceLookup::Ready(self.resource_descriptor())
+            }
+            WgpuRenderTextureViewLookup::Busy { .. } => PresentFrameResourceLookup::Busy,
+            WgpuRenderTextureViewLookup::Missing { .. } => PresentFrameResourceLookup::Missing,
+            WgpuRenderTextureViewLookup::Error { .. } => PresentFrameResourceLookup::Error,
+        }
+    }
+
     /// Конвертирует WGPU-specific lookup в public lease outcome и diagnostics.
     fn present_texture_view_lookup_from_boundary(
         &self,
         lookup: WgpuRenderTextureViewLookup,
     ) -> PresentFrameTextureViewLookup {
-        let texture_pool_lock_wait = lookup.texture_pool_lock_wait();
-        let lookup_was_busy = matches!(lookup, WgpuRenderTextureViewLookup::Busy { .. });
-        self.report_texture_view_lock_sample(texture_pool_lock_wait, lookup_was_busy);
+        self.report_wgpu_lookup_sample(&lookup);
 
         match lookup {
             WgpuRenderTextureViewLookup::Ready { views, .. } => {
@@ -189,6 +319,13 @@ impl PresentFrameLease {
             WgpuRenderTextureViewLookup::Missing { .. } => PresentFrameTextureViewLookup::Missing,
             WgpuRenderTextureViewLookup::Error { .. } => PresentFrameTextureViewLookup::Error,
         }
+    }
+
+    /// Записывает diagnostics sample для lookup-а, пока текущий provider остаётся WGPU-backed.
+    fn report_wgpu_lookup_sample(&self, lookup: &WgpuRenderTextureViewLookup) {
+        let texture_pool_lock_wait = lookup.texture_pool_lock_wait();
+        let lookup_was_busy = matches!(lookup, WgpuRenderTextureViewLookup::Busy { .. });
+        self.report_texture_view_lock_sample(texture_pool_lock_wait, lookup_was_busy);
     }
 
     /// Отправляет lock-wait sample в worker diagnostics без ожидания worker thread-а.
@@ -944,29 +1081,131 @@ mod tests {
         }
     }
 
-    #[test]
-    fn texture_views_reports_lock_wait_sample_when_views_are_missing() {
-        let texture_handle = FrameTextureHandle(77);
-        let lock_wait = Duration::from_micros(250);
-        let (release_tx, _release_rx) = bounded(1);
-        let (sample_tx, sample_rx) = bounded(1);
-        let frame = decoded_frame_for_tests(texture_handle);
-        let lease = PresentFrameLease {
-            render_generation: 9,
-            frame,
+    /// Собирает lease с fake WGPU provider-ом, сохраняя production RAII drop-ack contract.
+    fn lease_with_texture_provider_for_tests(
+        render_generation: u64,
+        texture_handle: FrameTextureHandle,
+        release_tx: Sender<RenderLeaseRelease>,
+        sample_tx: Sender<RenderTextureViewLockSample>,
+        texture_provider: impl WgpuRenderTextureProvider + 'static,
+    ) -> PresentFrameLease {
+        PresentFrameLease {
+            render_generation,
+            frame: decoded_frame_for_tests(texture_handle),
             stale: false,
-            texture_provider: Some(WgpuRenderTextureProviderHandle::new(MissingViewsProvider {
-                expected_handle: texture_handle,
-                lock_wait,
-            })),
+            texture_provider: Some(WgpuRenderTextureProviderHandle::new(texture_provider)),
             texture_view_lock_sample_tx: Some(sample_tx),
             _drop_ack: Arc::new(PresentFrameDropAck {
-                render_generation: 9,
+                render_generation,
                 texture_handle,
                 texture_provider: None,
                 release_tx,
             }),
-        };
+        }
+    }
+
+    #[test]
+    fn resource_descriptor_exposes_renderer_neutral_dma_buf_handle() {
+        let texture_handle = FrameTextureHandle(76);
+        let (release_tx, _release_rx) = bounded(1);
+        let frame = decoded_frame_for_tests(texture_handle);
+        let lease = PresentFrameLease::new_for_tests(8, frame, false, release_tx);
+
+        let descriptor = lease.resource_descriptor();
+
+        assert_eq!(descriptor.kind(), PresentFrameResourceKind::DmaBufZeroCopy);
+        assert_eq!(descriptor.render_generation(), 8);
+        assert_eq!(descriptor.texture_handle(), texture_handle);
+        assert_eq!(descriptor.memory_path(), FrameMemoryPath::DmaBufZeroCopy);
+    }
+
+    #[test]
+    fn try_resource_lookup_reports_missing_without_provider() {
+        let texture_handle = FrameTextureHandle(77);
+        let (release_tx, _release_rx) = bounded(1);
+        let frame = decoded_frame_for_tests(texture_handle);
+        let lease = PresentFrameLease::new_for_tests(9, frame, false, release_tx);
+
+        assert!(matches!(
+            lease.try_resource_lookup(),
+            PresentFrameResourceLookup::Missing
+        ));
+    }
+
+    #[test]
+    fn try_resource_lookup_reports_busy_without_wgpu_ready_resource() {
+        let texture_handle = FrameTextureHandle(78);
+        let lock_wait = Duration::from_micros(70);
+        let (release_tx, _release_rx) = bounded(1);
+        let (sample_tx, sample_rx) = bounded(1);
+        let lease = lease_with_texture_provider_for_tests(
+            9,
+            texture_handle,
+            release_tx,
+            sample_tx,
+            BusyViewsProvider {
+                expected_handle: texture_handle,
+                lock_wait,
+            },
+        );
+
+        assert!(matches!(
+            lease.try_resource_lookup(),
+            PresentFrameResourceLookup::Busy
+        ));
+
+        let sample = sample_rx
+            .try_recv()
+            .expect("busy resource lookup sample should be queued");
+        assert_eq!(sample.wait, lock_wait);
+        assert!(sample.lookup_was_busy);
+    }
+
+    #[test]
+    fn try_resource_lookup_reports_error_without_collapsing_to_missing() {
+        let texture_handle = FrameTextureHandle(79);
+        let lock_wait = Duration::from_micros(120);
+        let (release_tx, _release_rx) = bounded(1);
+        let (sample_tx, sample_rx) = bounded(1);
+        let lease = lease_with_texture_provider_for_tests(
+            9,
+            texture_handle,
+            release_tx,
+            sample_tx,
+            ErrorViewsProvider {
+                expected_handle: texture_handle,
+                lock_wait,
+            },
+        );
+
+        assert!(matches!(
+            lease.try_resource_lookup(),
+            PresentFrameResourceLookup::Error
+        ));
+
+        let sample = sample_rx
+            .try_recv()
+            .expect("error resource lookup sample should be queued");
+        assert_eq!(sample.wait, lock_wait);
+        assert!(!sample.lookup_was_busy);
+    }
+
+    #[test]
+    fn texture_views_reports_lock_wait_sample_when_views_are_missing() {
+        let texture_handle = FrameTextureHandle(80);
+        let lock_wait = Duration::from_micros(250);
+        let (release_tx, _release_rx) = bounded(1);
+        let (sample_tx, sample_rx) = bounded(1);
+        let lease = lease_with_texture_provider_for_tests(
+            9,
+            texture_handle,
+            release_tx,
+            sample_tx,
+            MissingViewsProvider {
+                expected_handle: texture_handle,
+                lock_wait,
+            },
+        );
 
         assert!(lease.texture_views().is_none());
 
@@ -981,27 +1220,20 @@ mod tests {
 
     #[test]
     fn try_texture_view_lookup_reports_busy_without_missing_views_error() {
-        let texture_handle = FrameTextureHandle(78);
+        let texture_handle = FrameTextureHandle(81);
         let lock_wait = Duration::from_micros(75);
-        let (release_tx, _release_rx) = bounded(1);
+        let (release_tx, release_rx) = bounded(1);
         let (sample_tx, sample_rx) = bounded(1);
-        let frame = decoded_frame_for_tests(texture_handle);
-        let lease = PresentFrameLease {
-            render_generation: 9,
-            frame,
-            stale: false,
-            texture_provider: Some(WgpuRenderTextureProviderHandle::new(BusyViewsProvider {
+        let lease = lease_with_texture_provider_for_tests(
+            9,
+            texture_handle,
+            release_tx,
+            sample_tx,
+            BusyViewsProvider {
                 expected_handle: texture_handle,
                 lock_wait,
-            })),
-            texture_view_lock_sample_tx: Some(sample_tx),
-            _drop_ack: Arc::new(PresentFrameDropAck {
-                render_generation: 9,
-                texture_handle,
-                texture_provider: None,
-                release_tx,
-            }),
-        };
+            },
+        );
 
         assert!(matches!(
             lease.try_texture_view_lookup(),
@@ -1013,31 +1245,33 @@ mod tests {
             .expect("busy texture view lookup sample should be queued");
         assert_eq!(sample.wait, lock_wait);
         assert!(sample.lookup_was_busy);
+
+        drop(lease);
+
+        let release = release_rx
+            .try_recv()
+            .expect("dropping WGPU compatibility lease should queue release ack");
+        assert_eq!(release.render_generation, 9);
+        assert_eq!(release.texture_handle, texture_handle);
+        assert!(release.texture_provider.is_none());
     }
 
     #[test]
     fn try_texture_view_lookup_reports_error_separately_from_busy_and_missing() {
-        let texture_handle = FrameTextureHandle(79);
+        let texture_handle = FrameTextureHandle(82);
         let lock_wait = Duration::from_micros(125);
         let (release_tx, _release_rx) = bounded(1);
         let (sample_tx, sample_rx) = bounded(1);
-        let frame = decoded_frame_for_tests(texture_handle);
-        let lease = PresentFrameLease {
-            render_generation: 9,
-            frame,
-            stale: false,
-            texture_provider: Some(WgpuRenderTextureProviderHandle::new(ErrorViewsProvider {
+        let lease = lease_with_texture_provider_for_tests(
+            9,
+            texture_handle,
+            release_tx,
+            sample_tx,
+            ErrorViewsProvider {
                 expected_handle: texture_handle,
                 lock_wait,
-            })),
-            texture_view_lock_sample_tx: Some(sample_tx),
-            _drop_ack: Arc::new(PresentFrameDropAck {
-                render_generation: 9,
-                texture_handle,
-                texture_provider: None,
-                release_tx,
-            }),
-        };
+            },
+        );
 
         assert!(matches!(
             lease.try_texture_view_lookup(),
