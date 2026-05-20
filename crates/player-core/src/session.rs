@@ -3412,6 +3412,95 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn audio_only_prepared_media_opens_without_missing_video_fatal() {
+        let mut session = PlayerSession::new();
+        let tracks = vec![fake_audio_track_with_codec(2, "A_FLAC")];
+        let seek_log = Arc::new(Mutex::new(Vec::new()));
+        let demuxer =
+            FakeDemuxer::new(tracks, Some(Duration::from_secs(30)), Arc::clone(&seek_log));
+        let media_path = std::path::PathBuf::from("/tmp/song.flac");
+        let prepared_media = PreparedMedia::from_local_file(media_path.clone(), Box::new(demuxer));
+
+        session.load_prepared_media_with_autoplay(prepared_media, false);
+
+        let snapshot = session.snapshot_with_frame_counters(FrameCounters::default());
+        assert_eq!(snapshot.playback_state, PlaybackState::Paused);
+        assert_eq!(snapshot.source_label.as_deref(), Some("/tmp/song.flac"));
+        assert_eq!(snapshot.media_title.as_deref(), Some("song.flac"));
+        assert_eq!(snapshot.duration, Some(Duration::from_secs(30)));
+        assert_eq!(snapshot.selected_tracks.video_track, None);
+        assert_eq!(snapshot.current_video_frame, None);
+        assert!(snapshot.last_error.is_none());
+        assert!(session.pipeline.has_demuxer());
+
+        let events = session.take_events();
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                PlayerEvent::MediaOpenRequested(request)
+                    if request.source == MediaSource::LocalFile(media_path.clone())
+                        && !request.autoplay
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                PlayerEvent::MediaOpened(summary)
+                    if summary.source_label == "/tmp/song.flac"
+                        && summary.title.as_deref() == Some("song")
+                        && summary.duration == Some(Duration::from_secs(30))
+            )
+        }));
+    }
+
+    #[test]
+    fn audio_only_play_and_tick_do_not_require_video_decoder() {
+        let mut session = PlayerSession::new();
+        let tracks = vec![fake_track(2, TrackKind::Audio)];
+        let seek_log = Arc::new(Mutex::new(Vec::new()));
+        let mut demuxer = FakeDemuxer::new(
+            tracks.clone(),
+            Some(Duration::from_secs(30)),
+            Arc::clone(&seek_log),
+        );
+        demuxer.packets.push_back(media_core::Packet::new(
+            TrackId::new(2),
+            TrackKind::Audio,
+            Duration::from_millis(10),
+            None,
+            false,
+            Bytes::from_static(b"audio-packet"),
+        ));
+        session
+            .pipeline
+            .install_opened_media(Box::new(demuxer), None, None, tracks);
+        session.pipeline.select_audio_track(TrackId::new(2));
+        session.set_snapshot_duration(Some(Duration::from_secs(30)));
+        session.set_playback_state(PlaybackState::Paused);
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+
+        let tick_result = session.tick(PlayerTickContext::with_config(
+            Instant::now(),
+            PlayerTickConfig {
+                max_demux_packets_per_tick: 1,
+                ..PlayerTickConfig::default()
+            },
+        ));
+
+        assert!(!session.pipeline.has_active_video_decoder());
+        assert!(matches!(
+            session.snapshot().playback_state,
+            PlaybackState::Playing | PlaybackState::Draining
+        ));
+        assert_eq!(tick_result.demuxed_packets.len(), 1);
+        assert_eq!(tick_result.video_frames_presented, 0);
+        assert!(tick_result.dropped_video_frames.is_empty());
+        assert!(session.snapshot().last_error.is_none());
+    }
+
     /// Создаёт decoded frame без реальных GPU resources.
     fn decoded_frame_for_tests(pts: Duration, handle: u64) -> video_core::DecodedFrame {
         video_core::DecodedFrame {
@@ -4715,6 +4804,7 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].timestamp, Duration::from_secs(8));
         assert_eq!(requests[0].mode, DemuxSeekMode::Accurate);
     }
 

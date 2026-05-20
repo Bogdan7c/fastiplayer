@@ -1055,11 +1055,14 @@ impl AppState {
         }
     }
 
-    /// Открывает WebM/MKV файл через file dialog.
+    /// Открывает локальный media-файл через file dialog.
     pub fn open_file(&mut self) {
         let file = rfd::FileDialog::new()
-            .add_filter("WebM Video", &["webm"])
-            .add_filter("Matroska Video", &["mkv"])
+            .add_filter(
+                "Supported Media",
+                local_media::SUPPORTED_LOCAL_MEDIA_EXTENSIONS,
+            )
+            .add_filter("WebM / Matroska", &["webm", "mkv"])
             .add_filter("All Files", &["*"])
             .pick_file();
 

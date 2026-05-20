@@ -637,7 +637,7 @@ mod tests {
 
     use super::{
         TrackEntryKind, UnsupportedTrackKind, build_track_entry, map_tracks,
-        take_matroska_video_track_for_mapping,
+        take_matroska_video_track_for_mapping, tracks_may_need_matroska_video_metadata,
     };
     use crate::matroska_metadata::MatroskaVideoTrack;
 
@@ -757,6 +757,13 @@ mod tests {
                 .and_then(|entry| entry.supported_kind()),
             Some(TrackKind::Audio)
         );
+    }
+
+    #[test]
+    fn audio_only_tracks_do_not_request_matroska_video_pre_scan() {
+        let audio_track = audio_track_with_codec(2, audio_codec::CODEC_ID_AAC);
+
+        assert!(!tracks_may_need_matroska_video_metadata(&[audio_track]));
     }
 
     #[test]

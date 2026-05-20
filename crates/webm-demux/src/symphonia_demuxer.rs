@@ -486,7 +486,10 @@ mod tests {
     use std::time::Duration;
 
     use media_core::{DemuxSeekRequest, DemuxSeekability, Demuxer, TrackId, TrackKind};
+    use symphonia::core::audio::{Channels, Position};
     use symphonia::core::codecs::CodecParameters;
+    use symphonia::core::codecs::audio::AudioCodecParameters;
+    use symphonia::core::codecs::audio::well_known as audio_codec;
     use symphonia::core::codecs::subtitle::SubtitleCodecParameters;
     use symphonia::core::codecs::subtitle::well_known as subtitle_codec;
     use symphonia::core::codecs::video::VideoCodecParameters;
@@ -607,6 +610,19 @@ mod tests {
         let mut track = Track::new(track_id);
         track.with_codec_params(CodecParameters::Video(video_params));
         track.with_time_base(TimeBase::try_new(1, 1_000).expect("valid time base"));
+        track
+    }
+
+    fn aac_audio_track_with_timing(track_id: u32, duration: SymphoniaDuration) -> Track {
+        let mut audio_params = AudioCodecParameters::new();
+        audio_params.for_codec(audio_codec::CODEC_ID_AAC);
+        audio_params.with_sample_rate(48_000);
+        audio_params.with_channels(Channels::from(Position::FRONT_LEFT | Position::FRONT_RIGHT));
+
+        let mut track = Track::new(track_id);
+        track.with_codec_params(CodecParameters::Audio(audio_params));
+        track.with_time_base(TimeBase::try_new(1, 1_000).expect("valid time base"));
+        track.with_duration(duration);
         track
     }
 
@@ -741,6 +757,34 @@ mod tests {
                 return packet;
             }
         }
+    }
+
+    #[test]
+    fn audio_only_demuxer_opens_and_uses_track_duration_metadata() {
+        let reader = FakeFormatReader::new(
+            vec![aac_audio_track_with_timing(
+                2,
+                SymphoniaDuration::new(30_000),
+            )],
+            Vec::new(),
+        );
+
+        let demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "audio-only",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("audio-only demuxer должен открыться без video track-а");
+
+        assert_eq!(demuxer.tracks().len(), 1);
+        assert_eq!(demuxer.tracks()[0].kind, TrackKind::Audio);
+        assert_eq!(demuxer.tracks()[0].codec_id, "A_AAC");
+        assert_eq!(demuxer.tracks()[0].sample_rate, Some(48_000));
+        assert_eq!(demuxer.tracks()[0].channels, Some(2));
+        assert_eq!(demuxer.duration(), Some(Duration::from_secs(30)));
+        assert_eq!(demuxer.seekability(), DemuxSeekability::Seekable);
     }
 
     #[test]
