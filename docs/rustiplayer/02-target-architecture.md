@@ -4,39 +4,39 @@
 
 ```text
 app-egui
-  window, egui, input, redraw pacing, renderer wiring
+  window, egui, input, redraw pacing, local/YouTube media opening,
+  WGPU surface, VA-API/WGPU backend wiring
         |
-        v
-player-core
-  PlayerWorker, PlayerSession, commands, events, snapshots, scheduler
-        |
-        +------------------+------------------+------------------+
-        |                  |                  |                  |
-        v                  v                  v                  v
-source-core          webm-demux          audio              video-vaapi
-local/http/cache     packets/tracks      Opus/CPAL         VA-API decode thread
-        |                  |                  |                  |
-        v                  v                  v                  v
-service-youtube      media-core          codec-core         video-core
-yt-dlp adapter       neutral media       codec/color        decoded frame contract
-                                           |
-                                           v
-capability-core ----------------------> render-core
-decode/render intersection              renderer-neutral contracts
-                                           |
-                                           v
-render-wgpu
-WGPU shell, NV12 renderer, P010 HDR-to-SDR renderer
+        +--------------------+--------------------+--------------------+
+        |                    |                    |                    |
+        v                    v                    v                    v
+player-core          service-youtube      video-vaapi          render-wgpu
+  worker/session      yt-dlp adapter,     VA-API decode,       WGPU shell,
+  commands/events     HTTP refresh,       DMA-BUF export,      egui/winit
+  scheduler/state     WebM demux open     WGPU import          composition
+        |                    |                    |                    |
+        v                    v                    v                    v
+media-core           source-core          video-core           render-core
+  packets/tracks      local/http/cache    decoded frame        render/color
+        |                    |            contract             contract
+        v                    v                    |                    |
+codec-core <--------- webm-demux <--------+       |                    |
+  codec/color         packets/tracks              |                    |
+        |                                           v                    v
+        +------------------------------------> capability-core <---------+
+                                              decode/render selection
 ```
 
 ## Runtime flow
 
 ```text
 UI/CLI/media URL
-  -> PlayerCommand или shell startup job
+  -> app-egui local opener или service-youtube startup job
+  -> PreparedMedia или already-opened streaming demuxer
+  -> PlayerCommand / PlayerWorker command
   -> PlayerWorker bounded channels
   -> PlayerSession state machine
-  -> source/demux/audio/video scheduler
+  -> demux/audio/video scheduler
   -> PlayerSnapshot + PlayerWorkerEvent
   -> egui, renderer, desktop integration
 ```
@@ -45,6 +45,12 @@ UI/CLI/media URL
 команды, читает latest snapshot/events и не вызывает `PlayerSession::tick()`
 напрямую.
 
+Текущий production composition не является полностью backend-neutral:
+`app-egui` создаёт WGPU context, регистрирует VA-API capability probe, открывает
+локальный WebM через `webm-demux` и передаёт в `player-core` уже подготовленный
+`PreparedMedia`. YouTube startup остаётся service-level открытием demuxer-а через
+`service-youtube`.
+
 ## Video flow
 
 ```text
@@ -52,6 +58,8 @@ Demuxer::next_packet()
   -> media_core::Packet { Bytes payload, TrackId, PTS, keyframe }
   -> codec-core requirement/refinement
   -> capability-core intersection
+  -> app-egui VaapiWgpuVideoBackendFactory
+  -> player-core VideoBackendFactory boundary
   -> video-vaapi::VideoDecodeThread
   -> video_core::DecodedFrame
   -> PlayerWorker PresentFrameLease
@@ -59,7 +67,9 @@ Demuxer::next_packet()
   -> WGPU swapchain
 ```
 
-Production frame memory path: `FrameMemoryPath::DmaBufZeroCopy`.
+Production frame memory path: `FrameMemoryPath::DmaBufZeroCopy`. Production
+decode/render path: VA-API decode, DMA-BUF export, WGPU texture import,
+`render-wgpu` NV12/P010 rendering.
 
 ## Color flow
 
@@ -86,6 +96,13 @@ Capability selection проходит четыре проверки:
 
 Typed reject лучше позднего decoder/render crash. Recoverable или неполный probe
 не должен блокировать потенциально воспроизводимый stream.
+
+Capability report собирается shell/backend слоем: `app-egui` запускает
+`CapabilityScanner`, регистрирует VA-API provider и render capabilities, затем
+передаёт `SystemCapabilities` в worker. `service-youtube` уже умеет строить
+capability-aware stream candidates из manifest metadata, но текущий startup path
+ещё открывает demuxer напрямую через SDR-safe selector. Поздний выбор YouTube
+candidate-а через `capability-core` остаётся extension point.
 
 ## Render lease flow
 

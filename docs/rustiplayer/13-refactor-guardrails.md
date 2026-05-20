@@ -1,8 +1,8 @@
 # 13. Refactor Guardrails
 
-Этот документ фиксирует проверяемые границы перед серией refactoring PR.
-Он описывает целевую карту зависимостей, текущие временные нарушения и правило,
-что каждый последующий PR обязан сохранять behavior parity.
+Этот документ фиксирует проверяемые границы после серии refactoring PR.
+Он описывает фактическую карту зависимостей, оставшиеся временные exceptions и
+правило, что каждый следующий PR обязан сохранять behavior parity.
 
 ## Главный инвариант
 
@@ -49,7 +49,8 @@ playback state или scheduling обратно из `player-core`.
 Текущий список app/shell crates:
 
 - `app-egui` - desktop process, winit lifecycle, egui UI, renderer wiring,
-  startup jobs, desktop integration wiring.
+  startup jobs, desktop integration wiring, local media opening и production
+  backend composition.
 - `render-wgpu` shell часть - WGPU surface/swapchain setup, `winit`/`egui`
   composition и shell-facing render frame assembly.
 
@@ -69,6 +70,43 @@ hardware decode или GPU render path. Они могут зависеть от 
 `video-vulkan` остаётся experimental/reference crate в workspace и не является
 production decode path для `PlayerWorker`.
 
+## Current dependency map
+
+Фактическая карта direct normal-dependencies, важная для архитектурных границ:
+
+```text
+app-egui -> player-core/service-youtube/desktop-integration
+app-egui -> webm-demux/audio/video-vaapi/render-wgpu/source-core
+app-egui -> wgpu/winit/egui/egui-winit/rustiplayer-config
+player-core -> media-core/codec-core/capability-core/video-core/rustiplayer-config/audio/wgpu
+service-youtube -> source-core/webm-demux/rustiplayer-config/capability-core/codec-core
+source-core -> rustiplayer-config
+webm-demux -> source-core/media-core/codec-core
+video-vaapi -> player-core/video-core/media-core/codec-core/capability-core/wgpu
+render-wgpu -> render-core/video-core/codec-core/video-vulkan/wgpu/egui/egui-wgpu/winit
+```
+
+Карта намеренно отражает current production path, а не идеальную нейтральность:
+VA-API и WGPU остаются частью production boundary.
+
+## Before/after refactor map
+
+```text
+Before:
+  player-core -> webm-demux
+  player-core -> video-vaapi
+  player-core -> wgpu
+  render-wgpu -> egui/winit/video-vulkan
+
+After:
+  player-core -> webm-demux closed
+  player-core -> video-vaapi closed
+  app-egui -> webm-demux/video-vaapi owns production composition
+  video-vaapi -> player-core adapter remains
+  player-core -> wgpu remains
+  render-wgpu -> egui/egui-wgpu/winit/video-vulkan remains
+```
+
 ## Временные нарушения
 
 Эти связи описывают текущий долг. Они допустимы только как compatibility debt и
@@ -76,14 +114,18 @@ production decode path для `PlayerWorker`.
 
 | Связь | Почему сейчас существует | Целевое направление |
 | --- | --- | --- |
-| `player-core -> webm-demux` | `player-core` пока открывает локальный WebM/Matroska через concrete demuxer. | Перенести neutral `Demuxer` contract в `media-core`, затем открывать prepared media за пределами `player-core`. |
 | `player-core -> audio::OpusDecoder` | Audio pipeline пока хранит concrete Opus decoder вместо codec-neutral boundary. | Ввести `audio::AudioDecoder`/factory и оставить Opus только concrete implementation. |
-| `player-core -> video-vaapi` | Production backend startup пока создаётся из player factory. | Оставить в `player-core` только neutral video backend factory/handle contract. |
-| `player-core -> wgpu` | Zero-copy interop сейчас протаскивает WGPU handles через startup boundary. | Выделить GPU interop boundary, чтобы player не зависел от конкретного graphics API. |
+| `player-core -> wgpu` | Zero-copy render lease сейчас материализует WGPU texture views через `WgpuRenderTextureProviderHandle`. | Выделить renderer-neutral resource materialization boundary, чтобы player не зависел от конкретного graphics API. |
+| `video-vaapi -> player-core` | Concrete VA-API backend реализует `VideoBackendFactory`, который пока объявлен в `player-core`. | Перенести backend startup/decoder-handle contract в `video-core` или отдельный backend API при появлении второго production decoder-а. |
 | `render-wgpu -> egui/winit/video-vulkan` | Crate одновременно содержит shell composition, WGPU renderer и reference Vulkan linkage. | Разделить shell/winit/egui wiring и production WGPU video backend; убрать reference dependency из production renderer path. |
 
 `render-wgpu -> egui-wgpu` считается частью той же shell-composition проблемы,
 хотя краткая debt-метка выше записана как `egui/winit`.
+
+Закрытые нарушения `player-core -> webm-demux` и `player-core -> video-vaapi`
+не должны возвращаться. Local/YouTube opening остаётся за shell/service layer и
+за `PreparedMedia`, а production backend startup остаётся в `video-vaapi`
+adapter-е.
 
 ## Dependency guardrails
 
@@ -93,9 +135,14 @@ production decode path для `PlayerWorker`.
   `webm-demux`, `audio`, `video-vaapi`, `render-wgpu`, `video-vulkan`,
   `service-youtube`, `desktop-integration`, `wgpu`, `winit`, `egui`,
   `egui-winit` или `egui-wgpu`.
-- `player-core` не добавляет новые direct dependencies на UI/shell/service или
-  дополнительные concrete backend crates сверх временно описанных нарушений.
+- `player-core` не добавляет новые direct dependencies на UI/shell/service,
+  `webm-demux`, `video-vaapi`, `render-wgpu`, `video-vulkan` или другие concrete
+  backend crates. Текущие exceptions для `audio` и `wgpu` не расширяются без
+  отдельного архитектурного решения.
 - `render-wgpu` не начинает знать demux/source/audio/player/session crates.
+- `video-vaapi -> player-core` допускается только для adapter-а
+  `VideoBackendFactory`; decoder internals не должны читать session/pipeline
+  state напрямую.
 - Новые обращения к `PlaybackPipeline` внутри `player-core` проходят через
   intent methods. Возвращать `pub(crate)` поля в сам `PlaybackPipeline`
   запрещено без отдельного архитектурного решения и focused tests.
@@ -120,6 +167,10 @@ production decode path для `PlayerWorker`.
   соседними слоями, кроме текущего temporary debt allowlist;
 - печатает найденные временные нарушения как долг, но не считает их ошибкой.
 
+Скрипт пока не покрывает весь документ: `video-vaapi -> player-core` и запрет
+повторного появления уже закрытых `player-core -> webm-demux/video-vaapi`
+зафиксированы здесь как policy и вынесены в TODO для будущего расширения check-а.
+
 ## TODO для будущих dependency checks
 
 - Подключить `scripts/check-refactor-guardrails.py` в локальный pre-PR/CI путь.
@@ -127,9 +178,13 @@ production decode path для `PlayerWorker`.
   когда появится стабильная policy для dev/build dependencies.
 - Проверять source-level debt `player-core -> audio::OpusDecoder`, потому что
   manifest видит только `player-core -> audio`.
-- Проверять удаление `player-core -> webm-demux` после prepared-media boundary.
-- Проверять удаление `player-core -> video-vaapi` и `player-core -> wgpu` после
-  neutral video backend/GPU interop boundary.
+- Запретить повторное появление `player-core -> webm-demux` и
+  `player-core -> video-vaapi`, потому что prepared-media и backend-factory
+  boundaries уже вынесены за `player-core`.
+- Проверять удаление `player-core -> wgpu` после renderer-neutral resource
+  materialization boundary.
+- Проверять удаление `video-vaapi -> player-core` после переноса
+  backend startup/decoder-handle contract в neutral crate.
 - Проверять split `render-wgpu` shell и video backend частей, включая
   `egui`, `egui-wgpu`, `winit` и `video-vulkan`.
 - Сравнивать новые public/internal boundary methods с tests на absent resource,

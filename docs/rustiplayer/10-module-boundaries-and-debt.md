@@ -3,6 +3,26 @@
 Этот файл фиксирует места, где код уже работает, но границы ещё не полностью
 разделены. Это не баг-лист для немедленного переписывания, а карта рисков.
 
+## Текущие временные exceptions
+
+После последних refactor PR прямые зависимости `player-core -> webm-demux` и
+`player-core -> video-vaapi` закрыты. Оставшийся Cargo/source-level долг:
+
+- `player-core -> audio`: playback session всё ещё использует concrete Opus/CPAL
+  audio path, а не neutral audio decoder/output factory.
+- `player-core -> wgpu`: render lease и decoder boundary возвращают WGPU texture
+  views для текущего zero-copy path.
+- `video-vaapi -> player-core`: concrete backend crate реализует
+  `VideoBackendFactory`, который пока объявлен в `player-core`.
+- `render-wgpu -> egui/egui-wgpu/winit`: crate совмещает WGPU video renderer и
+  shell composition.
+- `render-wgpu -> video-vulkan`: reference/experimental Vulkan code всё ещё
+  подключён к production renderer crate.
+
+Эти exceptions не делают контрактные crates backend-specific: `media-core`,
+`codec-core`, `video-core`, `render-core` и `capability-core` остаются
+нейтральными contract boundaries.
+
 ## `player-core::PlayerSession`
 
 `PlayerSession` всё ещё крупный объект. Часть обязанностей уже вынесена в
@@ -20,6 +40,11 @@
 Следующий безопасный шаг: выделять не новые абстракции ради размера файла, а
 устойчивые поддомены с тестами: media opening, seek transaction, diagnostics sink,
 video backend binding.
+
+Media opening уже вынесен из прямой зависимости `player-core -> webm-demux`:
+`player-core` принимает `PreparedMedia`. Оставшаяся работа здесь не в том, чтобы
+вернуть concrete opener внутрь session, а в том, чтобы уменьшить orchestration
+surface самого `PlayerSession`.
 
 ## `player-core::PlaybackPipeline`
 
@@ -69,13 +94,30 @@ redraw pacing и error mapping. Это shell-level код, но файл ост�
 
 Следующий шаг: выделить shell runtime module без переноса player logic обратно в UI.
 
-## `player-core::WgpuVideoBackendFactory`
+## WGPU texture bridge в `player-core`
 
-Название factory связано с WGPU handles, но фактически запускает текущий VA-API
-decode backend. Это отражает zero-copy import reality, но имя может запутывать.
+`player-core` больше не содержит `WgpuVideoBackendFactory` и не зависит от
+`video-vaapi`, но WGPU-specific boundary ещё не закрыт полностью.
+`WgpuRenderTextureProviderHandle`, `WgpuRenderTextureViewLookup` и
+`WgpuRenderTextureViews` находятся в `player-core`, потому что current production
+lease flow материализует WGPU texture views из decoder-owned DMA-BUF resources.
 
-Следующий шаг: переименовать boundary вокруг "GPU interop video backend factory"
-или добавить отдельный VA-API factory, не ломая public call sites.
+Следующий шаг: выделить renderer-neutral resource materialization contract
+между `player-core`, decoder backend-ом и render backend-ом. Это должно
+сохранить различие между absent resource, busy texture pool, missing handle,
+fatal backend error и нормальным release path.
+
+## `video-vaapi` adapter boundary
+
+`VaapiWgpuVideoBackendFactory` теперь живёт в `video-vaapi` и реализует
+`player-core::VideoBackendFactory`. Это закрывает прежний долг
+`player-core -> video-vaapi`, но создаёт обратную adapter-зависимость
+`video-vaapi -> player-core`.
+
+Следующий шаг: когда появится второй production decoder backend, перенести
+startup/decoder-handle contract из `player-core` в более нейтральный crate
+(`video-core` или отдельный backend API). До этого dependency допустима как
+adapter debt, потому что ownership decoder thread-а остаётся у `video-vaapi`.
 
 ## `service-youtube`
 

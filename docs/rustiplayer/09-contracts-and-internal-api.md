@@ -11,7 +11,9 @@
 - render lease: `PresentFrameLease`, `PlayerPresentFrame`, `PresentFrameTextureViews`;
 - render errors: `PlayerRenderError`, `PlayerRenderErrorKind`;
 - seek: `SeekRequest`, `SeekTarget`, `SeekMode`, `ScrubCommitPolicy`;
-- backend init boundary: `VideoBackendFactory`, `WgpuVideoBackendFactory`.
+- backend init boundary: `VideoBackendFactory`, `StartedVideoBackend`;
+- current WGPU texture bridge: `WgpuRenderTextureProviderHandle`,
+  `WgpuRenderTextureViewLookup`, `WgpuRenderTextureViews`.
 
 Контракт:
 
@@ -19,6 +21,11 @@
 - Worker владеет `PlayerSession`.
 - Render thread получает frame leases, а не ссылки на pipeline.
 - Частые scrub updates схлопываются по latest-wins семантике.
+- Concrete production backend создаётся вне `player-core`.
+  `video-vaapi::VaapiWgpuVideoBackendFactory` реализует `VideoBackendFactory` и
+  возвращает decoder handle через `StartedVideoBackend`.
+- Renderer-neutrality здесь ещё неполная: texture view provider в `player-core`
+  WGPU-specific, потому что production zero-copy path материализует WGPU views.
 
 ## `PlaybackPipeline` internal boundary
 
@@ -118,6 +125,11 @@ Transitional method:
 Payload хранится как `Bytes`, поэтому clone означает shared ownership, а не копию
 payload.
 
+`player-core::PreparedMedia` является границей открытия media. Shell или service
+layer открывает concrete demuxer, снимает tracks/duration/seekability и передаёт
+в worker уже готовый `Box<dyn media_core::Demuxer + Send>`. `player-core` после
+refactor не должен напрямую зависеть от `webm-demux` ради локального открытия.
+
 `webm-demux::Demuxer` returns packets and supports timeline seek through
 `DemuxSeekRequest`. Demuxer seek gives a decode-safe or approximate container
 position; `player-core` owns final pre-roll/drop/commit.
@@ -152,6 +164,12 @@ Selection должна учитывать:
 
 `video-vaapi::VideoDecodeThread` owns backend threading and queues. It accepts
 `DecodePacket` and publishes `video_core::DecodedFrame`.
+
+`VideoBackendFactory` lives in `player-core`, while the production implementation
+`VaapiWgpuVideoBackendFactory` lives in `video-vaapi`. This keeps
+`player-core -> video-vaapi` closed, but leaves `video-vaapi -> player-core` as a
+current adapter dependency until the backend startup contract moves to a more
+neutral crate.
 
 Decoded frame contract:
 
