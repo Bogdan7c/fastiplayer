@@ -118,6 +118,35 @@ pub(crate) fn resolve_youtube_metadata(
     serde_json::from_str(&stdout_text).context("Не удалось разобрать JSON metadata от yt-dlp")
 }
 
+/// Получает manifest formats без применения текущего service default selector-а.
+pub(crate) fn resolve_youtube_candidate_metadata(
+    video_url: &str,
+    process_config: &YtDlpProcessConfig,
+) -> Result<YtDlpMetadata> {
+    let command_arguments = [
+        "--quiet",
+        "--no-warnings",
+        "--simulate",
+        "--dump-single-json",
+        "--no-playlist",
+        video_url,
+    ];
+
+    let command_output = run_process_with_timeout(
+        process_config.executable.as_str(),
+        &command_arguments,
+        process_config.timeout,
+    )
+    .context("Не удалось выполнить yt-dlp для получения YouTube stream candidates")?;
+
+    ensure_yt_dlp_candidate_success(command_output.status, &command_output.stderr)?;
+
+    let stdout_text = String::from_utf8(command_output.stdout)
+        .context("yt-dlp вернул candidates stdout не в UTF-8")?;
+
+    serde_json::from_str(&stdout_text).context("Не удалось разобрать JSON candidates от yt-dlp")
+}
+
 /// Запускает внешний процесс, читает stdout/stderr параллельно и ограничивает ожидание.
 fn run_process_with_timeout(
     executable: &str,
@@ -269,6 +298,20 @@ fn ensure_yt_dlp_success(status: ExitStatus, stderr_bytes: &[u8]) -> Result<()> 
 
     anyhow::bail!(
         "yt-dlp не смог выбрать поддерживаемый SDR VP9/Opus WebM поток (4K60, 4K30, 1080p60 или 1080p): {}",
+        stderr_text.trim()
+    );
+}
+
+/// Преобразует ошибку metadata-only candidates command в читаемую ошибку.
+fn ensure_yt_dlp_candidate_success(status: ExitStatus, stderr_bytes: &[u8]) -> Result<()> {
+    if status.success() {
+        return Ok(());
+    }
+
+    let stderr_text = String::from_utf8_lossy(stderr_bytes);
+
+    anyhow::bail!(
+        "yt-dlp не смог получить YouTube stream candidates: {}",
         stderr_text.trim()
     );
 }

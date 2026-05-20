@@ -3587,6 +3587,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "capability-core",
+ "codec-core",
  "media-core",
  "reqwest",
  "rustiplayer-config",

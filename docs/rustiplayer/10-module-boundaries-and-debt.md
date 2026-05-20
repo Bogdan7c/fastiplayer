@@ -79,11 +79,14 @@ decode backend. Это отражает zero-copy import reality, но имя м
 
 ## `service-youtube`
 
-`service-youtube` стал модульнее, но public API всё ещё возвращает уже выбранный
-demuxer, а не набор capability-aware stream candidates. Поэтому default selector
-остаётся SDR-safe, а HDR YouTube проверки требуют explicit override.
+`service-youtube` теперь умеет отдавать capability-aware stream candidates из
+manifest metadata, но основной startup/playback path всё ещё использует старый
+SDR-safe selector и возвращает уже открытый demuxer для совместимости. Поэтому
+интеграция `capability-core` в реальный YouTube startup остаётся отдельным
+архитектурным шагом.
 
-Следующий шаг: service candidates -> capability selection -> demux open.
+Следующий шаг: service candidates -> capability selection -> demux open без
+изменения HTTP refresh/range boundary.
 
 ## `webm-demux`
 

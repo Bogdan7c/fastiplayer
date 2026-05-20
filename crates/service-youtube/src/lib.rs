@@ -24,9 +24,14 @@ mod process;
 mod resolver;
 
 pub use dto::{
-    YoutubeDirectStreamDescriptor, YoutubeDirectStreams, YoutubeStreamKind, YoutubeStreamingMedia,
+    YoutubeDirectStreamDescriptor, YoutubeDirectStreams, YoutubeInsufficientVideoMetadata,
+    YoutubeStreamCandidate, YoutubeStreamCandidates, YoutubeStreamKind, YoutubeStreamingMedia,
+    YoutubeVideoRequirement,
 };
-pub use resolver::resolve_youtube_direct_streams;
+pub use resolver::{
+    resolve_youtube_direct_streams, resolve_youtube_stream_candidates,
+    resolve_youtube_stream_candidates_with_config,
+};
 
 use http_refresh::{RefreshContext, YoutubeRefreshingRangeSource};
 use resolver::{
@@ -615,8 +620,13 @@ mod tests {
                         ext: Some("webm".to_string()),
                         vcodec: Some("vp9".to_string()),
                         acodec: Some("none".to_string()),
+                        width: Some(1920),
                         height: Some(1080),
                         fps: Some(60.0),
+                        tbr: Some(2_500.0),
+                        vbr: Some(2_500.0),
+                        abr: None,
+                        dynamic_range: Some("SDR".to_string()),
                         filesize: Some(10),
                         filesize_approx: None,
                         duration: None,
@@ -628,8 +638,13 @@ mod tests {
                         ext: Some("webm".to_string()),
                         vcodec: Some("none".to_string()),
                         acodec: Some("opus".to_string()),
+                        width: None,
                         height: None,
                         fps: None,
+                        tbr: Some(160.0),
+                        vbr: None,
+                        abr: Some(160.0),
+                        dynamic_range: None,
                         filesize: None,
                         filesize_approx: Some(5),
                         duration: Some(42.0),
@@ -638,6 +653,7 @@ mod tests {
                 ]),
             }]),
             requested_formats: None,
+            formats: None,
         };
 
         let streams = select_direct_media_streams(&metadata).expect("streams selected");

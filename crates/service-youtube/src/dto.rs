@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use capability_core::VideoStreamCandidate as CapabilityVideoStreamCandidate;
+use codec_core::VideoDecodeRequirement;
 use serde::Deserialize;
 use source_core::{HttpHeader, SourceValidators};
 
@@ -42,6 +44,9 @@ pub(crate) struct YtDlpMetadata {
 
     /// Fallback-поле: некоторые версии yt-dlp кладут выбранные streams сюда.
     pub(crate) requested_formats: Option<Vec<YtDlpFormat>>,
+
+    /// Полный manifest formats для capability-aware выбора без service default selector-а.
+    pub(crate) formats: Option<Vec<YtDlpFormat>>,
 }
 
 /// Один download candidate из `requested_downloads`.
@@ -69,11 +74,26 @@ pub(crate) struct YtDlpFormat {
     /// Audio codec или `none`.
     pub(crate) acodec: Option<String>,
 
+    /// Ширина video stream.
+    pub(crate) width: Option<u32>,
+
     /// Высота video stream.
     pub(crate) height: Option<u32>,
 
     /// FPS video stream.
     pub(crate) fps: Option<f64>,
+
+    /// Общий bitrate stream-а в Kbit/s, если yt-dlp его знает.
+    pub(crate) tbr: Option<f64>,
+
+    /// Video bitrate stream-а в Kbit/s, если yt-dlp его знает.
+    pub(crate) vbr: Option<f64>,
+
+    /// Audio bitrate stream-а в Kbit/s, если yt-dlp его знает.
+    pub(crate) abr: Option<f64>,
+
+    /// Текстовый dynamic range hint от yt-dlp, например `SDR` или `HDR`.
+    pub(crate) dynamic_range: Option<String>,
 
     /// Размер stream, если известен.
     pub(crate) filesize: Option<u64>,
@@ -183,6 +203,109 @@ pub struct YoutubeDirectStreams {
 
     /// Audio-only stream descriptor.
     pub audio: YoutubeDirectStreamDescriptor,
+}
+
+/// Набор YouTube stream candidates без открытия media bytes.
+#[derive(Debug, Clone)]
+pub struct YoutubeStreamCandidates {
+    /// Заголовок media, если extractor его сообщил.
+    pub title: Option<String>,
+
+    /// Opaque id media в сервисе.
+    pub service_media_id: Option<String>,
+
+    /// Общая длительность VOD, если известна.
+    pub duration: Option<Duration>,
+
+    /// Общий live-флаг media.
+    pub live: bool,
+
+    /// Нормализованные service candidates для будущего capability selection.
+    pub candidates: Vec<YoutubeStreamCandidate>,
+}
+
+/// Один service-level video candidate с direct descriptors для позднего открытия.
+#[derive(Debug, Clone)]
+pub struct YoutubeStreamCandidate {
+    /// Stable stream id внутри одного YouTube media manifest-а.
+    pub stream_id: String,
+
+    /// Composite format id пары video/audio, если yt-dlp сообщил format id.
+    pub format_id: Option<String>,
+
+    /// Video-only direct stream descriptor.
+    pub video: YoutubeDirectStreamDescriptor,
+
+    /// Audio-only direct stream descriptor, выбранный как service companion для video.
+    pub audio: Option<YoutubeDirectStreamDescriptor>,
+
+    /// Требование к capability-core или typed причина, почему metadata недостаточна.
+    pub video_requirement: YoutubeVideoRequirement,
+
+    /// Чем больше значение, тем предпочтительнее stream при равной поддержке.
+    pub quality_score: i64,
+}
+
+impl YoutubeStreamCandidate {
+    /// Возвращает capability-core candidate только при достаточной video metadata.
+    #[must_use]
+    pub fn to_capability_candidate(&self) -> Option<CapabilityVideoStreamCandidate> {
+        let YoutubeVideoRequirement::Ready(requirement) = &self.video_requirement else {
+            return None;
+        };
+
+        Some(CapabilityVideoStreamCandidate {
+            stream_id: self.stream_id.clone(),
+            requirement: requirement.clone(),
+            quality_score: self.quality_score,
+        })
+    }
+}
+
+/// Состояние конвертации service metadata в codec/capability requirement.
+#[derive(Debug, Clone)]
+pub enum YoutubeVideoRequirement {
+    /// Metadata достаточно точна для передачи в capability-core.
+    Ready(VideoDecodeRequirement),
+
+    /// Metadata распознана частично или отсутствует; guessing запрещён.
+    Insufficient(YoutubeInsufficientVideoMetadata),
+}
+
+impl YoutubeVideoRequirement {
+    /// Возвращает `true`, если candidate можно передать в capability-core.
+    #[must_use]
+    pub const fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready(_))
+    }
+
+    /// Возвращает requirement только для ready candidate-а.
+    #[must_use]
+    pub const fn as_requirement(&self) -> Option<&VideoDecodeRequirement> {
+        match self {
+            Self::Ready(requirement) => Some(requirement),
+            Self::Insufficient(_) => None,
+        }
+    }
+
+    /// Возвращает причину insufficiency без разворачивания enum-а вызывающим кодом.
+    #[must_use]
+    pub fn insufficient_reason(&self) -> Option<&str> {
+        match self {
+            Self::Ready(_) => None,
+            Self::Insufficient(metadata) => Some(metadata.reason.as_str()),
+        }
+    }
+}
+
+/// Диагностика candidate-а, который нельзя безопасно выбрать по capabilities.
+#[derive(Debug, Clone)]
+pub struct YoutubeInsufficientVideoMetadata {
+    /// Человекочитаемая причина, почему service не построил полный requirement.
+    pub reason: String,
+
+    /// Частично распознанное требование, если codec/profile уже удалось нормализовать.
+    pub partial_requirement: Option<VideoDecodeRequirement>,
 }
 
 /// Результат подготовки YouTube ролика к streaming playback.
