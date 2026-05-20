@@ -1,6 +1,6 @@
 # 12. План усиления seek/scrub
 
-Актуализировано: 2026-05-19.
+Актуализировано: 2026-05-20.
 
 Этот документ разбивает исправление seek/scrub на короткие сессии. Его можно
 прикладывать к каждой новой сессии вместе с названием нужного шага.
@@ -45,6 +45,15 @@ Seek уже хорошо отделён от UI и renderer:
 - EndScrub раньше имел неявную policy: часть веток тянулась к latest target,
   часть фактически коммитила последний видимый preview;
 - codec/backend extensibility ограничена VP9/VA-API и Opus path.
+
+## Заметка по миграции Symphonia 0.6, 2026-05-20
+
+Demux path теперь использует upstream `symphonia = 0.6` без локального fork-а.
+Конвертация packet-ов читает native `Packet.pts` и `Packet.dts`, поэтому DTS
+больше не теряется на границе Symphonia -> `media-core::Packet`, когда контейнер
+явно передаёт decode timestamp. Отрицательные raw timestamps по-прежнему
+clamp-ятся для UI timeline через существующий mapper, чтобы пользовательская
+позиция не уходила в negative duration.
 
 ## Сессия 1. Метрики и классификация seek-discard
 

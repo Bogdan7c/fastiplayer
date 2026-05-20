@@ -71,9 +71,9 @@ hardware decode или GPU render path. Они могут зависеть от 
 `video-vulkan` остаётся experimental/reference crate в workspace и не является
 production decode path для `PlayerWorker`.
 
-Symphonia migration закрыла active local fork debt: workspace использует upstream
-`symphonia = 0.6`, а `third_party/symphonia-*` больше не участвуют в Cargo graph
-и остаются только cleanup-only долгом.
+Миграция Symphonia закрыла активный долг локального fork-а: workspace использует
+upstream `symphonia = 0.6`, а устаревшие локальные каталоги патчей Symphonia
+удалены из workspace и больше не участвуют ни в Cargo graph, ни в source tree.
 
 ## Current dependency map
 
