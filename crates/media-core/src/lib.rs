@@ -17,6 +17,6 @@ pub use demux::{
 pub use packet::Packet;
 pub use time::{
     MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason, TimelinePreviewState,
-    TimelineRange, TimelineSnapshot, TrackTimestamp,
+    TimelineRange, TimelineSnapshot, TrackTimestamp, TrackTimestampUnits,
 };
 pub use track::{TrackId, TrackInfo, TrackKind, VideoTrackMetadata};

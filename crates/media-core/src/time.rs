@@ -174,10 +174,33 @@ impl TimeBase {
         }
     }
 
-    /// Конвертирует timestamp units в [`Duration`].
+    /// Конвертирует старый unsigned timestamp contract в [`Duration`].
+    ///
+    /// Метод оставлен для существующих backend-адаптеров: новые signed
+    /// timestamps должны идти через [`Self::track_units_to_duration`].
     #[must_use]
     pub fn timestamp_to_duration(self, units: u64) -> Duration {
-        let total_nanoseconds = u128::from(units)
+        self.positive_units_to_duration(u128::from(units))
+    }
+
+    /// Конвертирует signed track units в неотрицательную [`Duration`].
+    ///
+    /// Отрицательные container timestamps не выпускаются наружу на media
+    /// timeline и насыщаются до нуля. Raw signed value при этом остаётся в
+    /// [`TrackTimestamp`] для diagnostics и seek-result accounting.
+    #[must_use]
+    pub fn track_units_to_duration(self, units: TrackTimestampUnits) -> Duration {
+        let signed_units = units.get();
+        if signed_units <= 0 {
+            return Duration::ZERO;
+        }
+
+        self.positive_units_to_duration(signed_units as u128)
+    }
+
+    /// Переводит уже проверенные неотрицательные units в [`Duration`].
+    fn positive_units_to_duration(self, units: u128) -> Duration {
+        let total_nanoseconds = units
             .saturating_mul(u128::from(self.numer))
             .saturating_mul(1_000_000_000)
             / u128::from(self.denom);
@@ -185,10 +208,153 @@ impl TimeBase {
         Duration::from_nanos(clamped_nanoseconds as u64)
     }
 
-    /// Конвертирует timestamp units в нормализованную [`MediaTime`].
+    /// Конвертирует старый unsigned timestamp contract в нормализованную [`MediaTime`].
     #[must_use]
     pub fn timestamp_to_media_time(self, units: u64) -> MediaTime {
         MediaTime::from_duration(self.timestamp_to_duration(units))
+    }
+
+    /// Конвертирует signed track units в нормализованную [`MediaTime`].
+    #[must_use]
+    pub fn track_units_to_media_time(self, units: TrackTimestampUnits) -> MediaTime {
+        MediaTime::from_duration(self.track_units_to_duration(units))
+    }
+
+    /// Конвертирует normalized duration обратно в signed track units.
+    ///
+    /// `None` означает, что значение нельзя честно представить без
+    /// переполнения или что временная база не задаёт ненулевой шаг времени.
+    #[must_use]
+    pub fn duration_to_track_units_checked(
+        self,
+        duration: MediaDuration,
+    ) -> Option<TrackTimestampUnits> {
+        let duration = duration.as_duration();
+        if self.numer == 0 {
+            return duration.is_zero().then_some(TrackTimestampUnits::ZERO);
+        }
+
+        let duration_nanoseconds = u128::from(duration.as_secs())
+            .checked_mul(1_000_000_000)?
+            .checked_add(u128::from(duration.subsec_nanos()))?;
+        let units_numerator = duration_nanoseconds.checked_mul(u128::from(self.denom))?;
+        let units_denominator = u128::from(self.numer).checked_mul(1_000_000_000)?;
+        let unsigned_units = units_numerator / units_denominator;
+
+        if unsigned_units > i64::MAX as u128 {
+            None
+        } else {
+            Some(TrackTimestampUnits::new(unsigned_units as i64))
+        }
+    }
+
+    /// Конвертирует normalized duration обратно в signed track units с насыщением.
+    #[must_use]
+    pub fn duration_to_track_units_saturating(
+        self,
+        duration: MediaDuration,
+    ) -> TrackTimestampUnits {
+        self.duration_to_track_units_checked(duration)
+            .unwrap_or(TrackTimestampUnits::MAX)
+    }
+
+    /// Конвертирует normalized media time обратно в signed track units с насыщением.
+    #[must_use]
+    pub fn media_time_to_track_units_saturating(self, position: MediaTime) -> TrackTimestampUnits {
+        self.duration_to_track_units_saturating(MediaDuration::from_duration(
+            position.as_duration(),
+        ))
+    }
+}
+
+/// Сырые timestamp units одного track-а в container/backend временной базе.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TrackTimestampUnits(i64);
+
+impl TrackTimestampUnits {
+    /// Нулевой timestamp в track time base.
+    pub const ZERO: Self = Self(0);
+
+    /// Минимальный signed timestamp, который может прийти из container-а.
+    pub const MIN: Self = Self(i64::MIN);
+
+    /// Максимальный signed timestamp, который можно хранить без расширения типа.
+    pub const MAX: Self = Self(i64::MAX);
+
+    /// Создаёт raw signed timestamp units без нормализации.
+    #[must_use]
+    pub const fn new(units: i64) -> Self {
+        Self(units)
+    }
+
+    /// Пробует создать raw signed units из старого unsigned backend contract-а.
+    #[must_use]
+    pub const fn from_unsigned_checked(units: u64) -> Option<Self> {
+        if units > i64::MAX as u64 {
+            None
+        } else {
+            Some(Self(units as i64))
+        }
+    }
+
+    /// Создаёт raw signed units из старого unsigned backend contract-а с насыщением.
+    #[must_use]
+    pub const fn from_unsigned_saturating(units: u64) -> Self {
+        if units > i64::MAX as u64 {
+            Self::MAX
+        } else {
+            Self(units as i64)
+        }
+    }
+
+    /// Возвращает raw signed units без изменения знака или нормализации.
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+
+    /// Проверяет, что container timestamp находится раньше нулевой media timeline.
+    #[must_use]
+    pub const fn is_negative(self) -> bool {
+        self.0 < 0
+    }
+
+    /// Складывает timestamp units с проверкой переполнения.
+    #[must_use]
+    pub fn checked_add(self, rhs: i64) -> Option<Self> {
+        self.0.checked_add(rhs).map(Self)
+    }
+
+    /// Складывает timestamp units с насыщением вместо переполнения.
+    #[must_use]
+    pub fn saturating_add(self, rhs: i64) -> Self {
+        Self(self.0.saturating_add(rhs))
+    }
+
+    /// Вычитает timestamp units с проверкой переполнения.
+    #[must_use]
+    pub fn checked_sub(self, rhs: i64) -> Option<Self> {
+        self.0.checked_sub(rhs).map(Self)
+    }
+
+    /// Вычитает timestamp units с насыщением вместо переполнения.
+    #[must_use]
+    pub fn saturating_sub(self, rhs: i64) -> Self {
+        Self(self.0.saturating_sub(rhs))
+    }
+}
+
+impl From<i64> for TrackTimestampUnits {
+    /// Создаёт raw signed timestamp units из container timestamp-а.
+    fn from(units: i64) -> Self {
+        Self::new(units)
+    }
+}
+
+impl From<TrackTimestampUnits> for i64 {
+    /// Возвращает raw signed units для backend adapters и diagnostics.
+    fn from(units: TrackTimestampUnits) -> Self {
+        units.get()
     }
 }
 
@@ -198,20 +364,30 @@ pub struct TrackTimestamp {
     /// Track, к которому относится timestamp.
     pub track_id: TrackId,
 
-    /// Сырые timestamp units в `time_base`.
-    pub units: u64,
+    /// Сырые signed timestamp units в `time_base`.
+    pub units: TrackTimestampUnits,
 
     /// Временная база исходного track-а.
     pub time_base: TimeBase,
 }
 
 impl TrackTimestamp {
-    /// Создаёт typed timestamp для конкретного track-а.
+    /// Создаёт typed signed timestamp для конкретного track-а.
     #[must_use]
-    pub const fn new(track_id: TrackId, units: u64, time_base: TimeBase) -> Self {
+    pub const fn new(track_id: TrackId, units: i64, time_base: TimeBase) -> Self {
         Self {
             track_id,
-            units,
+            units: TrackTimestampUnits::new(units),
+            time_base,
+        }
+    }
+
+    /// Создаёт typed timestamp из старого unsigned backend contract-а.
+    #[must_use]
+    pub const fn from_unsigned_units(track_id: TrackId, units: u64, time_base: TimeBase) -> Self {
+        Self {
+            track_id,
+            units: TrackTimestampUnits::from_unsigned_saturating(units),
             time_base,
         }
     }
@@ -219,7 +395,7 @@ impl TrackTimestamp {
     /// Переводит track timestamp в нормализованную media-позицию.
     #[must_use]
     pub fn to_media_time(self) -> MediaTime {
-        self.time_base.timestamp_to_media_time(self.units)
+        self.time_base.track_units_to_media_time(self.units)
     }
 }
 
@@ -406,7 +582,9 @@ mod tests {
 
     use crate::TrackId;
 
-    use super::{MediaDuration, MediaTime, TimeBase, TimelineRange, TrackTimestamp};
+    use super::{
+        MediaDuration, MediaTime, TimeBase, TimelineRange, TrackTimestamp, TrackTimestampUnits,
+    };
 
     #[test]
     fn rejects_zero_denominator() {
@@ -420,6 +598,15 @@ mod tests {
         let duration = time_base.timestamp_to_duration(1_500);
 
         assert_eq!(duration.as_millis(), 1_500);
+    }
+
+    #[test]
+    fn legacy_unsigned_timestamp_keeps_large_u64_saturation() {
+        let time_base = TimeBase::new(1, 1_000_000_000).expect("valid nanosecond time base");
+
+        let duration = time_base.timestamp_to_duration(u64::MAX);
+
+        assert_eq!(duration, Duration::from_nanos(u64::MAX));
     }
 
     #[test]
@@ -476,6 +663,55 @@ mod tests {
         let media_time = timestamp.to_media_time();
 
         assert_eq!(timestamp.track_id, TrackId::new(3));
+        assert_eq!(timestamp.units.get(), 96_000);
         assert_eq!(media_time.as_duration(), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn negative_track_timestamp_clamps_to_zero_but_keeps_raw_units() {
+        let time_base = TimeBase::new(1, 1_000).expect("valid time base");
+        let timestamp = TrackTimestamp::new(TrackId::new(5), -250, time_base);
+
+        let media_time = timestamp.to_media_time();
+
+        assert_eq!(timestamp.units.get(), -250);
+        assert!(timestamp.units.is_negative());
+        assert_eq!(media_time, MediaTime::ZERO);
+    }
+
+    #[test]
+    fn large_signed_timestamp_saturates_without_panic() {
+        let time_base = TimeBase::new(u32::MAX, 1).expect("valid time base");
+        let timestamp = TrackTimestamp::new(TrackId::new(9), i64::MAX, time_base);
+
+        let media_time = timestamp.to_media_time();
+
+        assert_eq!(media_time.as_duration(), Duration::from_nanos(u64::MAX));
+    }
+
+    #[test]
+    fn duration_converts_back_to_track_units() {
+        let time_base = TimeBase::new(1, 1_000).expect("valid time base");
+
+        let units = time_base.media_time_to_track_units_saturating(MediaTime::from_millis(1_500));
+
+        assert_eq!(units, TrackTimestampUnits::new(1_500));
+    }
+
+    #[test]
+    fn timestamp_units_arithmetic_is_checked_and_saturating() {
+        let units = TrackTimestampUnits::new(i64::MAX);
+
+        assert_eq!(units.checked_add(1), None);
+        assert_eq!(units.saturating_add(1), TrackTimestampUnits::MAX);
+        assert_eq!(
+            TrackTimestampUnits::from_unsigned_checked(i64::MAX as u64),
+            Some(TrackTimestampUnits::MAX)
+        );
+        assert_eq!(TrackTimestampUnits::from_unsigned_checked(u64::MAX), None);
+        assert_eq!(
+            TrackTimestampUnits::new(i64::MIN).saturating_sub(1),
+            TrackTimestampUnits::MIN
+        );
     }
 }

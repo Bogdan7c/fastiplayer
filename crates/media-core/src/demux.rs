@@ -271,4 +271,23 @@ mod tests {
         ));
         assert!(demuxer.seek_log.is_empty());
     }
+
+    #[test]
+    fn demux_seek_result_can_keep_signed_actual_track_timestamp() {
+        let time_base = crate::TimeBase::new(1, 1_000).expect("valid time base");
+        let actual_track_timestamp = TrackTimestamp::new(crate::TrackId::new(11), -40, time_base);
+
+        let result = DemuxSeekResult {
+            requested_position: MediaTime::from_millis(10),
+            actual_position: actual_track_timestamp.to_media_time(),
+            actual_track_timestamp: Some(actual_track_timestamp),
+        };
+
+        let stored_timestamp = result
+            .actual_track_timestamp
+            .expect("seek result должен хранить raw track timestamp");
+
+        assert_eq!(stored_timestamp.units.get(), -40);
+        assert_eq!(result.actual_position, MediaTime::ZERO);
+    }
 }

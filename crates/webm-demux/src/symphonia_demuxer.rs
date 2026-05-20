@@ -419,7 +419,9 @@ impl SymphoniaDemuxer {
                     .time_base
                     .and_then(|time_base| OurTimeBase::new(time_base.numer, time_base.denom))
             })
-            .map(|time_base| TrackTimestamp::new(actual_track_id, seeked_to.actual_ts, time_base));
+            .map(|time_base| {
+                TrackTimestamp::from_unsigned_units(actual_track_id, seeked_to.actual_ts, time_base)
+            });
         let actual_position = actual_track_timestamp
             .map(TrackTimestamp::to_media_time)
             .unwrap_or_else(|| MediaTime::from_duration(requested_position));
