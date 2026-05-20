@@ -23,7 +23,7 @@ crates/vp9-parser            VP9 header parser used by codec adapter
 crates/video-vulkan          reference/experimental Vulkan Video code
 crates/cros-codecs-patch     local patched cros-codecs dependency
 crates/cros-libva-patch      local patched cros-libva dependency
-third_party/symphonia-*      retired Symphonia patches, kept for cleanup PR
+third_party/symphonia-*      retired local Symphonia patches, cleanup-only debt
 ```
 
 ## Владение
@@ -121,3 +121,6 @@ After:
   boundary.
 - `video-vulkan` remains in the workspace but is not the production decode path
   used by `PlayerWorker`; `render-wgpu` still depends on it as reference debt.
+- Symphonia migration closed the active local fork debt: the workspace now uses
+  upstream `symphonia` from Cargo, while `third_party/symphonia-*` directories are
+  retained only for a separate cleanup PR.

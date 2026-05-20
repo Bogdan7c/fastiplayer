@@ -62,7 +62,8 @@ hardware decode или GPU render path. Они могут зависеть от 
 
 Текущий список concrete backend crates:
 
-- `webm-demux` - Symphonia WebM/Matroska demuxer.
+- `symphonia-demux` - concrete adapter поверх upstream Symphonia для audio/container demux.
+- `webm-demux` - compatibility re-export старого crate path на время transition.
 - `audio` - текущий Opus decoder и CPAL output path.
 - `video-vaapi` - VA-API decoder thread, probe, DMA-BUF export/import.
 - `render-wgpu` video backend часть - NV12/P010 WGPU renderer и shader paths.
@@ -70,18 +71,23 @@ hardware decode или GPU render path. Они могут зависеть от 
 `video-vulkan` остаётся experimental/reference crate в workspace и не является
 production decode path для `PlayerWorker`.
 
+Symphonia migration закрыла active local fork debt: workspace использует upstream
+`symphonia = 0.6`, а `third_party/symphonia-*` больше не участвуют в Cargo graph
+и остаются только cleanup-only долгом.
+
 ## Current dependency map
 
 Фактическая карта direct normal-dependencies, важная для архитектурных границ:
 
 ```text
 app-egui -> player-core/service-youtube/desktop-integration
-app-egui -> webm-demux/audio/video-vaapi/render-wgpu/source-core
+app-egui -> symphonia-demux/audio/video-vaapi/render-wgpu/source-core
 app-egui -> wgpu/winit/egui/egui-winit/rustiplayer-config
 player-core -> media-core/codec-core/capability-core/video-core/rustiplayer-config/audio/wgpu
-service-youtube -> source-core/webm-demux/rustiplayer-config/capability-core/codec-core
+service-youtube -> source-core/symphonia-demux/rustiplayer-config/capability-core/codec-core
 source-core -> rustiplayer-config
-webm-demux -> source-core/media-core/codec-core
+symphonia-demux -> source-core/media-core/codec-core
+webm-demux -> symphonia-demux
 video-vaapi -> player-core/video-core/media-core/codec-core/capability-core/wgpu
 render-wgpu -> render-core/video-core/codec-core/video-vulkan/wgpu/egui/egui-wgpu/winit
 ```
@@ -99,9 +105,9 @@ Before:
   render-wgpu -> egui/winit/video-vulkan
 
 After:
-  player-core -> webm-demux closed
+  player-core -> symphonia-demux/webm-demux closed
   player-core -> video-vaapi closed
-  app-egui -> webm-demux/video-vaapi owns production composition
+  app-egui -> symphonia-demux/video-vaapi owns production composition
   video-vaapi -> player-core adapter remains
   player-core -> wgpu remains
   render-wgpu -> egui/egui-wgpu/winit/video-vulkan remains
@@ -122,23 +128,25 @@ After:
 `render-wgpu -> egui-wgpu` считается частью той же shell-composition проблемы,
 хотя краткая debt-метка выше записана как `egui/winit`.
 
-Закрытые нарушения `player-core -> webm-demux` и `player-core -> video-vaapi`
-не должны возвращаться. Local/YouTube opening остаётся за shell/service layer и
-за `PreparedMedia`, а production backend startup остаётся в `video-vaapi`
-adapter-е.
+Закрытые нарушения `player-core -> symphonia-demux/webm-demux` и
+`player-core -> video-vaapi` не должны возвращаться. Local/YouTube opening
+остаётся за shell/service layer и за `PreparedMedia`, а production backend
+startup остаётся в `video-vaapi` adapter-е.
 
 ## Dependency guardrails
 
 Новые refactoring PR должны соблюдать эти правила:
 
 - Contract crates не добавляют прямые зависимости на `app-egui`, `player-core`,
-  `webm-demux`, `audio`, `video-vaapi`, `render-wgpu`, `video-vulkan`,
-  `service-youtube`, `desktop-integration`, `wgpu`, `winit`, `egui`,
-  `egui-winit` или `egui-wgpu`.
+  `symphonia-demux`, `webm-demux`, `audio`, `video-vaapi`, `render-wgpu`,
+  `video-vulkan`, `service-youtube`, `desktop-integration`, `wgpu`, `winit`,
+  `egui`, `egui-winit` или `egui-wgpu`.
+- `media-core`, `codec-core`, `audio`, `symphonia-demux` и `webm-demux` не
+  добавляют прямые зависимости на `wgpu`, `video-vaapi` или `render-wgpu`.
 - `player-core` не добавляет новые direct dependencies на UI/shell/service,
-  `webm-demux`, `video-vaapi`, `render-wgpu`, `video-vulkan` или другие concrete
-  backend crates. Текущие exceptions для `audio` и `wgpu` не расширяются без
-  отдельного архитектурного решения.
+  `symphonia-demux`, `webm-demux`, `video-vaapi`, `render-wgpu`,
+  `video-vulkan` или другие concrete backend crates. Текущие exceptions для
+  `audio` и `wgpu` не расширяются без отдельного архитектурного решения.
 - `render-wgpu` не начинает знать demux/source/audio/player/session crates.
 - `video-vaapi -> player-core` допускается только для adapter-а
   `VideoBackendFactory`; decoder internals не должны читать session/pipeline
@@ -163,13 +171,18 @@ adapter-е.
 
 - проверяет наличие зафиксированных role crates в workspace;
 - запрещает прямые normal-dependencies из contract crates в shell/backend/player;
+- запрещает прямые `media-core`/`codec-core`/`audio`/demux dependencies на
+  `wgpu`, `video-vaapi` и `render-wgpu`;
+- запрещает возвращение `player-core -> symphonia-demux/webm-demux` и
+  `player-core -> video-vaapi`;
 - запрещает новые прямые связи `player-core` и `render-wgpu` с явно опасными
   соседними слоями, кроме текущего temporary debt allowlist;
 - печатает найденные временные нарушения как долг, но не считает их ошибкой.
 
-Скрипт пока не покрывает весь документ: `video-vaapi -> player-core` и запрет
-повторного появления уже закрытых `player-core -> webm-demux/video-vaapi`
-зафиксированы здесь как policy и вынесены в TODO для будущего расширения check-а.
+Скрипт пока не покрывает весь документ: `video-vaapi -> player-core` печатается
+как текущий adapter debt, но не проверяется на source-level ограничение
+`VideoBackendFactory`; это остаётся policy до переноса backend contract в
+neutral crate.
 
 ## TODO для будущих dependency checks
 
@@ -178,9 +191,6 @@ adapter-е.
   когда появится стабильная policy для dev/build dependencies.
 - Проверять source-level debt `player-core -> audio::OpusDecoder`, потому что
   manifest видит только `player-core -> audio`.
-- Запретить повторное появление `player-core -> webm-demux` и
-  `player-core -> video-vaapi`, потому что prepared-media и backend-factory
-  boundaries уже вынесены за `player-core`.
 - Проверять удаление `player-core -> wgpu` после renderer-neutral resource
   materialization boundary.
 - Проверять удаление `video-vaapi -> player-core` после переноса

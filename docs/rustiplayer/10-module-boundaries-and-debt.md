@@ -138,6 +138,11 @@ crate `webm-demux` оставлен только как compatibility re-export 
 чтобы внешние call sites могли мигрировать без одновременного изменения
 поведения demux/seek/decode.
 
+Symphonia migration закрыла активный local fork debt: workspace dependency теперь
+идёт в upstream `symphonia = 0.6`, а каталоги `third_party/symphonia-*` больше не
+участвуют в Cargo graph. Они остаются только как cleanup-only debt до отдельного
+удаляющего PR.
+
 `infer_track_kind()` пока считает всё non-audio видео. Unknown video codec уже не
 маскируется под VP9, но определение kind всё ещё грубое.
 
@@ -153,9 +158,10 @@ WGPU-specific детали.
 
 ## Patched dependencies
 
-`cros-codecs` и `cros-libva` patched локально. Symphonia patch уже выведен из
-активной Cargo graph, но каталоги `third_party/symphonia-*` оставлены до
-отдельного cleanup PR. Это технический долг поддержки совместимости.
+`cros-codecs` и `cros-libva` patched локально. Symphonia patch уже закрыт как
+активная dependency: остался только cleanup debt по удалению
+`third_party/symphonia-*`. Это технический долг поддержки совместимости, а не
+новая boundary между demux/audio и VA-API/WGPU.
 
 Следующий шаг: периодически проверять upstream и удалять patches только после
 прохождения zero-copy/HDR regression matrix.

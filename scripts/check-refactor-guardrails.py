@@ -29,6 +29,7 @@ APP_SHELL_CRATES = frozenset(
 
 CONCRETE_BACKEND_CRATES = frozenset(
     {
+        "symphonia-demux",
         "webm-demux",
         "audio",
         "video-vaapi",
@@ -38,12 +39,34 @@ CONCRETE_BACKEND_CRATES = frozenset(
 
 REQUIRED_ROLE_CRATES = CONTRACT_CRATES | APP_SHELL_CRATES | CONCRETE_BACKEND_CRATES
 
+DEMUX_ADAPTER_CRATES = frozenset(
+    {
+        "symphonia-demux",
+        "webm-demux",
+    }
+)
+
+ADAPTER_NEUTRAL_CRATES = CONTRACT_CRATES | frozenset(
+    {
+        "audio",
+        "symphonia-demux",
+        "webm-demux",
+    }
+)
+
+FORBIDDEN_GPU_BACKEND_DEPENDENCIES = frozenset(
+    {
+        "wgpu",
+        "video-vaapi",
+        "render-wgpu",
+    }
+)
+
 TEMPORARY_ALLOWED_EDGES = frozenset(
     {
-        ("player-core", "webm-demux"),
         ("player-core", "audio"),
-        ("player-core", "video-vaapi"),
         ("player-core", "wgpu"),
+        ("video-vaapi", "player-core"),
         ("render-wgpu", "egui"),
         ("render-wgpu", "egui-wgpu"),
         ("render-wgpu", "winit"),
@@ -55,6 +78,7 @@ FORBIDDEN_FOR_CONTRACT_CRATES = frozenset(
     {
         "app-egui",
         "player-core",
+        "symphonia-demux",
         "webm-demux",
         "audio",
         "video-vaapi",
@@ -76,6 +100,7 @@ PLAYER_CORE_FORBIDDEN_DIRECT_DEPENDENCIES = frozenset(
         "render-wgpu",
         "service-youtube",
         "desktop-integration",
+        "symphonia-demux",
         "webm-demux",
         "audio",
         "video-vaapi",
@@ -95,6 +120,7 @@ RENDER_WGPU_FORBIDDEN_DIRECT_DEPENDENCIES = frozenset(
         "service-youtube",
         "desktop-integration",
         "source-core",
+        "symphonia-demux",
         "webm-demux",
         "audio",
         "video-vaapi",
@@ -202,6 +228,23 @@ def contract_crate_violations(edges: Iterable[DependencyEdge]) -> list[str]:
     return violations
 
 
+def adapter_neutrality_violations(edges: Iterable[DependencyEdge]) -> list[str]:
+    """Не даёт demux/audio/contracts привязаться к WGPU или VA-API слоям."""
+
+    violations = []
+
+    for edge in edges:
+        if edge.package_name not in ADAPTER_NEUTRAL_CRATES:
+            continue
+
+        if edge.dependency_name in FORBIDDEN_GPU_BACKEND_DEPENDENCIES:
+            violations.append(
+                f"{edge.format()}: demux/audio/contract boundary должен оставаться adapter-neutral"
+            )
+
+    return violations
+
+
 def player_core_violations(edges: Iterable[DependencyEdge]) -> list[str]:
     """Проверяет новые опасные direct dependencies из player-core."""
 
@@ -212,6 +255,12 @@ def player_core_violations(edges: Iterable[DependencyEdge]) -> list[str]:
             continue
 
         if edge.as_pair() in TEMPORARY_ALLOWED_EDGES:
+            continue
+
+        if edge.dependency_name in DEMUX_ADAPTER_CRATES:
+            violations.append(
+                f"{edge.format()}: player-core не должен зависеть от concrete demux adapter"
+            )
             continue
 
         if edge.dependency_name in PLAYER_CORE_FORBIDDEN_DIRECT_DEPENDENCIES:
@@ -261,6 +310,7 @@ def main() -> int:
         violations.append(f"{missing_crate}: role crate отсутствует в workspace")
 
     violations.extend(contract_crate_violations(dependency_edges))
+    violations.extend(adapter_neutrality_violations(dependency_edges))
     violations.extend(player_core_violations(dependency_edges))
     violations.extend(render_wgpu_violations(dependency_edges))
 
