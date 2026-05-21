@@ -49,3 +49,15 @@ Software video fallback, CPU upload и CPU readback не являются нас
 - Config хранит пользовательские настройки, но не историю, cookies, bookmarks и durable cache metadata.
 - Capability selection обязана пройти decode backend, memory contract, renderer import и color pipeline.
 - Неуверенный bitstream probe не должен превращаться в fatal hardware failure.
+
+## Seek Diagnostics
+
+Минимальный локальный trace для baseline расследования seek/scrub:
+
+```bash
+RUST_LOG=player_core=debug,symphonia_demux=debug,app_egui=debug cargo run -p app-egui
+```
+
+В логах нужно смотреть цепочку `Starting demux seek transaction` ->
+`Demux seek transaction accepted` -> первые `Post-seek ...` markers ->
+`Active seek transaction is still waiting`, если seek не закрывается.

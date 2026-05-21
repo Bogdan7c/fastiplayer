@@ -204,11 +204,15 @@ impl SymphoniaDemuxer {
         let symphonia_metadata = summarize_symphonia_format_metadata(&mut format);
         let mut video_tracks_for_mapping = video_tracks_by_track.clone();
         let track_mapping = map_tracks(format.tracks(), &mut video_tracks_for_mapping);
+        let media_info_duration = media_info_duration(format.media_info());
+        let duration = track_mapping.duration.or(media_info_duration);
 
         info!(
             source = %label,
             tracks = track_mapping.tracks.len(),
-            duration = ?track_mapping.duration,
+            duration = ?duration,
+            track_duration = ?track_mapping.duration,
+            media_info_duration = ?media_info_duration,
             attachments = symphonia_metadata.attachments,
             chapters = symphonia_metadata.has_chapters,
             metadata_revision = symphonia_metadata.has_metadata_revision,
@@ -218,7 +222,7 @@ impl SymphoniaDemuxer {
         Ok(Self {
             format,
             tracks: track_mapping.tracks,
-            duration: track_mapping.duration,
+            duration,
             track_map: track_mapping.track_map,
             matroska_video_tracks_by_track: video_tracks_by_track,
             seekability,
@@ -278,19 +282,38 @@ impl SymphoniaDemuxer {
     fn refresh_track_list_after_reset(&mut self) -> DemuxTrackListUpdate {
         let mut video_tracks_for_mapping = self.matroska_video_tracks_by_track.clone();
         let track_mapping = map_tracks(self.format.tracks(), &mut video_tracks_for_mapping);
+        let media_info_duration = media_info_duration(self.format.media_info());
+        let duration = track_mapping.duration.or(media_info_duration);
         self.tracks = track_mapping.tracks;
-        self.duration = track_mapping.duration;
+        self.duration = duration;
         self.track_map = track_mapping.track_map;
         self.consecutive_corrupted_packets = 0;
 
         info!(
             tracks = self.tracks.len(),
             duration = ?self.duration,
+            track_duration = ?track_mapping.duration,
+            media_info_duration = ?media_info_duration,
             "Symphonia ResetRequired обработан как обновление track list"
         );
 
         DemuxTrackListUpdate::new(self.tracks.clone(), self.duration)
     }
+}
+
+/// Читает container-level duration из Symphonia `MediaInfo`.
+///
+/// Symphonia 0.6 может хранить duration на media-level, даже если отдельные
+/// tracks не несут `Track::duration`. Player timeline использует это только как
+/// fallback, чтобы не терять seekable VOD UI при валидном seekable source-е.
+fn media_info_duration(media_info: &symphonia::core::formats::MediaInfo) -> Option<Duration> {
+    media_info
+        .time_base
+        .zip(media_info.duration)
+        .map(|(time_base, duration)| {
+            symphonia_api::symphonia_duration_to_duration(time_base, duration)
+        })
+        .filter(|duration| !duration.is_zero())
 }
 
 /// Короткая сводка того, что Symphonia 0.6 уже принесла на format-level boundary.
@@ -829,6 +852,11 @@ mod tests {
             self
         }
 
+        fn with_media_info(mut self, media_info: MediaInfo) -> Self {
+            self.media_info = media_info;
+            self
+        }
+
         fn with_reset_track_update(mut self, tracks: Vec<Track>) -> Self {
             self.reset_track_updates.push_back(tracks);
             self
@@ -951,6 +979,13 @@ mod tests {
         track.with_time_base(TimeBase::try_new(1, 1_000).expect("valid time base"));
         track.with_duration(duration);
         track
+    }
+
+    fn media_info_with_duration(duration: SymphoniaDuration) -> MediaInfo {
+        let mut media_info = MediaInfo::default();
+        media_info.with_time_base(TimeBase::try_new(1, 1_000).expect("valid time base"));
+        media_info.with_duration(duration);
+        media_info
     }
 
     fn unknown_track(track_id: u32) -> Track {
@@ -1178,6 +1213,51 @@ mod tests {
     }
 
     #[test]
+    fn demuxer_uses_media_info_duration_when_tracks_do_not_have_duration() {
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_media_info(media_info_with_duration(SymphoniaDuration::new(12_000)));
+
+        let demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "media-info-duration",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться с container-level duration");
+
+        assert_eq!(demuxer.tracks().len(), 1);
+        assert_eq!(demuxer.tracks()[0].kind, TrackKind::Video);
+        assert_eq!(demuxer.tracks()[0].duration, None);
+        assert_eq!(demuxer.duration(), Some(Duration::from_secs(12)));
+        assert_eq!(demuxer.seekability(), DemuxSeekability::Seekable);
+    }
+
+    #[test]
+    fn demuxer_prefers_track_duration_over_media_info_duration() {
+        let reader = FakeFormatReader::new(
+            vec![aac_audio_track_with_timing(
+                2,
+                SymphoniaDuration::new(30_000),
+            )],
+            Vec::new(),
+        )
+        .with_media_info(media_info_with_duration(SymphoniaDuration::new(12_000)));
+
+        let demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "track-duration-wins",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен сохранить track-level duration");
+
+        assert_eq!(demuxer.duration(), Some(Duration::from_secs(30)));
+        assert_eq!(demuxer.tracks()[0].duration, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
     fn reset_required_refreshes_track_list_as_lifecycle_event() {
         let reader = FakeFormatReader::new(
             vec![aac_audio_track_with_timing(
@@ -1213,6 +1293,40 @@ mod tests {
         }
         assert_eq!(demuxer.tracks()[0].id, TrackId::new(3));
         assert_eq!(demuxer.duration(), Some(Duration::from_secs(42)));
+    }
+
+    #[test]
+    fn reset_required_keeps_media_info_duration_when_tracks_do_not_have_duration() {
+        let reader = FakeFormatReader::new(
+            vec![vp9_video_track(1)],
+            vec![Err(SymphoniaError::ResetRequired)],
+        )
+        .with_media_info(media_info_with_duration(SymphoniaDuration::new(18_000)))
+        .with_reset_track_update(vec![vp9_video_track(4)]);
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "reset-media-info-duration",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться с container-level duration");
+
+        let event = demuxer
+            .next_event()
+            .expect("ResetRequired должен обновить track list без потери media duration");
+
+        match event {
+            DemuxReadEvent::TracksChanged(track_update) => {
+                assert_eq!(track_update.tracks.len(), 1);
+                assert_eq!(track_update.tracks[0].id, TrackId::new(4));
+                assert_eq!(track_update.duration, Some(Duration::from_secs(18)));
+            }
+            unexpected_event => panic!("ожидали TracksChanged, получили {unexpected_event:?}"),
+        }
+        assert_eq!(demuxer.tracks()[0].id, TrackId::new(4));
+        assert_eq!(demuxer.tracks()[0].duration, None);
+        assert_eq!(demuxer.duration(), Some(Duration::from_secs(18)));
     }
 
     #[test]

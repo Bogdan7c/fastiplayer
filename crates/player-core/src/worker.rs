@@ -1844,7 +1844,9 @@ fn log_active_seek_stall(active_seek: ActiveSeekDiagnosticsSnapshot) {
     warn!(
         kind = active_seek.kind,
         blocker = %active_seek.blocker.metric_name(),
+        blocker_state = ?active_seek.blocker,
         generation = active_seek.generation,
+        pipeline_generation = active_seek.pipeline_generation,
         scrub_generation = ?active_seek.scrub_generation,
         age_ms = duration_to_millis(active_seek.age),
         target_ms = duration_to_millis(active_seek.target),
@@ -1860,6 +1862,7 @@ fn log_active_seek_stall(active_seek: ActiveSeekDiagnosticsSnapshot) {
         demuxing_active = active_seek.demuxing_active,
         draining_after_eof = active_seek.draining_after_eof,
         stale_frame = active_seek.stale_frame,
+        stale_generation_discards = active_seek.stale_generation_discards,
         last_pause_reason = ?active_seek.last_pause_reason,
         pending_audio_packets = queues.pending_audio_packets,
         pending_video_packets = queues.pending_video_packets,

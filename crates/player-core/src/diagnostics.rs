@@ -574,6 +574,9 @@ pub struct ActiveSeekDiagnosticsSnapshot {
     /// Packet/frame generation, которому принадлежит seek transaction.
     pub generation: u64,
 
+    /// Текущее pipeline generation около diagnostics snapshot-а.
+    pub pipeline_generation: u64,
+
     /// User scrub generation, если seek родился из interactive scrub.
     pub scrub_generation: Option<u64>,
 
@@ -621,6 +624,9 @@ pub struct ActiveSeekDiagnosticsSnapshot {
 
     /// Timeline всё ещё помечает картинку как stale.
     pub stale_frame: bool,
+
+    /// Сколько stale-generation drops уже накоплено в diagnostics.
+    pub stale_generation_discards: u64,
 
     /// Последняя typed pause-причина, если pipeline уже её зафиксировал.
     pub last_pause_reason: Option<PipelinePauseReason>,

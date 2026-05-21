@@ -713,6 +713,7 @@ fn read_demux_packets(
 /// Перекладывает packet из demuxer в соответствующую pending queue.
 fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet) {
     let generation = session.pipeline.seek_generation();
+    session.note_demux_packet_for_seek_trace(&packet, generation);
 
     match packet.kind {
         TrackKind::Audio => {
@@ -1183,6 +1184,7 @@ fn drain_decoded_video_frames(
 
     let drained_frame_count = decoded_frames.len();
     for frame in decoded_frames {
+        session.note_decoded_video_frame_for_seek_trace(frame.pts);
         tracing::debug!(
             pts_ms = frame.pts.as_millis(),
             format = %frame.format,
