@@ -943,6 +943,18 @@ impl PlaybackPipeline {
         self.video_frame_queue.is_empty()
     }
 
+    /// Проверяет, есть ли queued frame текущего seek generation-а для final target.
+    #[must_use]
+    pub(crate) fn queued_video_frame_covers_target_for_generation(
+        &self,
+        target: Duration,
+        generation: u64,
+    ) -> bool {
+        self.video_frame_queue
+            .iter()
+            .any(|frame| frame.generation == generation && frame.pts >= target)
+    }
+
     /// Возвращает глубину presentation queue без раскрытия поля очереди.
     #[must_use]
     pub(crate) fn video_present_queue_len(&self) -> usize {
@@ -1572,6 +1584,54 @@ mod tests {
         );
         assert!(pipeline.pop_queued_video_frame_front().is_none());
         assert!(pipeline.video_present_queue_is_empty());
+    }
+
+    #[test]
+    fn queued_video_frame_covers_target_for_generation_reports_only_matching_frames() {
+        let mut pipeline = PlaybackPipeline::default();
+        let target_position = Duration::from_millis(100);
+        let active_generation = 7;
+        let stale_generation = 6;
+
+        assert!(
+            !pipeline.queued_video_frame_covers_target_for_generation(
+                target_position,
+                active_generation
+            )
+        );
+
+        let mut pretarget_frame = decoded_frame_for_tests(Duration::from_millis(90), 1);
+        pretarget_frame.generation = active_generation;
+        pipeline.enqueue_queued_video_frame(pretarget_frame);
+
+        assert!(
+            !pipeline.queued_video_frame_covers_target_for_generation(
+                target_position,
+                active_generation
+            )
+        );
+
+        let mut stale_target_frame = decoded_frame_for_tests(Duration::from_millis(100), 2);
+        stale_target_frame.generation = stale_generation;
+        pipeline.enqueue_queued_video_frame(stale_target_frame);
+
+        assert!(
+            !pipeline.queued_video_frame_covers_target_for_generation(
+                target_position,
+                active_generation
+            )
+        );
+
+        let mut active_target_frame = decoded_frame_for_tests(Duration::from_millis(100), 3);
+        active_target_frame.generation = active_generation;
+        pipeline.enqueue_queued_video_frame(active_target_frame);
+
+        assert!(
+            pipeline.queued_video_frame_covers_target_for_generation(
+                target_position,
+                active_generation
+            )
+        );
     }
 
     #[test]
