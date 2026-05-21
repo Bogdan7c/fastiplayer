@@ -24,9 +24,10 @@ use crate::{
     PipelineLatencyStage, PipelinePauseReason, PipelineQueueDepthSnapshot, PlaybackDiagnostics,
     PlaybackDiagnosticsLogSummary, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError,
     PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection,
-    ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration, ScrubUpdateIntent, SeekMode,
-    SeekProgressBlocker, SeekRequest, SessionScrubCommand, TextureSlotPressureSnapshot, TrackId,
-    TrackSelectionSnapshot, VideoBackendFactory, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
+    ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration, ScrubUpdateIntent, SeekAudioResumeInfo,
+    SeekCommitInfo, SeekMode, SeekProgressBlocker, SeekRequest, SeekTargetFramePresentation,
+    SessionScrubCommand, TextureSlotPressureSnapshot, TrackId, TrackSelectionSnapshot,
+    VideoBackendFactory, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
 };
 
 use self::scrub_state::{
@@ -96,6 +97,14 @@ impl SeekAudioGateStatus {
             Self::WaitingForPreroll => Some(SeekProgressBlocker::WaitingForAudioPreroll),
         }
     }
+
+    /// Возвращает `true` только для blockers, которые можно отпустить soft fallback-ом.
+    const fn can_soft_fallback(self) -> bool {
+        matches!(
+            self,
+            Self::WaitingForDecoder | Self::WaitingForOutput | Self::WaitingForPreroll
+        )
+    }
 }
 
 /// Подтверждённость кадра, на котором можно закрывать live preview transaction.
@@ -139,6 +148,37 @@ struct SeekProgressGateSnapshot {
 
     /// Сколько video frames требуется текущей resume policy.
     required_video_frames: usize,
+}
+
+/// Решение commit gate policy без потери причины soft fallback-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeekCommitGateDecision {
+    /// Gates ещё не готовы, seek transaction остаётся открытым.
+    Waiting,
+
+    /// Video и audio gates штатно готовы.
+    Ready,
+
+    /// Video gate готов, а audio gate превысил разрешённый soft timeout.
+    AudioSoftFallback {
+        /// Последний typed status audio gate-а перед fallback commit-ом.
+        audio_gate_status: SeekAudioGateStatus,
+    },
+}
+
+impl SeekCommitGateDecision {
+    /// Возвращает `true`, если seek transaction можно закрывать сейчас.
+    const fn allows_commit(self) -> bool {
+        matches!(self, Self::Ready | Self::AudioSoftFallback { .. })
+    }
+
+    /// Возвращает audio blocker, если commit идёт через soft fallback.
+    const fn audio_soft_fallback_status(self) -> Option<SeekAudioGateStatus> {
+        match self {
+            Self::AudioSoftFallback { audio_gate_status } => Some(audio_gate_status),
+            Self::Waiting | Self::Ready => None,
+        }
+    }
 }
 
 /// Сколько первых demux packets после accepted seek попадает в debug trace.
@@ -1377,7 +1417,8 @@ impl PlayerSession {
             return;
         }
 
-        if self.seek_trace.record_first_presented_frame() {
+        let first_post_seek_presented_frame = self.seek_trace.record_first_presented_frame();
+        if first_post_seek_presented_frame {
             debug!(
                 kind = seek_commit_kind_name(seek_commit.kind),
                 target_ms = seek_commit.target_position.as_duration().as_millis(),
@@ -1402,7 +1443,8 @@ impl PlayerSession {
             return;
         };
 
-        if self.seek_trace.record_first_presented_frame() {
+        let first_post_seek_presented_frame = self.seek_trace.record_first_presented_frame();
+        if first_post_seek_presented_frame {
             debug!(
                 kind = seek_commit_kind_name(seek_commit.kind),
                 target_ms = seek_commit.target_position.as_duration().as_millis(),
@@ -1441,6 +1483,15 @@ impl PlayerSession {
             SeekCommitKind::Final if frame_pts >= seek_commit.target_position.as_duration() => {
                 self.seek_eof_fallback_video_position = None;
                 self.snapshot.timeline.stale_frame = false;
+                if first_post_seek_presented_frame {
+                    self.pending_events
+                        .push(PlayerEvent::SeekTargetFramePresented(
+                            SeekTargetFramePresentation {
+                                target_position: seek_commit.target_position.as_duration(),
+                                frame_pts,
+                            },
+                        ));
+                }
             }
             SeekCommitKind::Final => {}
         }
@@ -1453,6 +1504,7 @@ impl PlayerSession {
         commit_timeout: Duration,
         preview_timeout: Duration,
         resume_audio_min_buffer_ms: f64,
+        resume_audio_gate_timeout: Duration,
         resume_video_min_ready_frames: usize,
     ) {
         let Some(seek_commit) = self.seek_commit else {
@@ -1469,15 +1521,89 @@ impl PlayerSession {
             return;
         }
 
-        if !self.seek_commit_gates_ready(
+        let gate_decision = self.seek_commit_gate_decision(
             seek_commit,
+            now,
             resume_audio_min_buffer_ms,
+            resume_audio_gate_timeout,
             resume_video_min_ready_frames,
-        ) {
+        );
+        if !gate_decision.allows_commit() {
             return;
         }
 
+        if let Some(audio_gate_status) = gate_decision.audio_soft_fallback_status() {
+            warn!(
+                target_ms = seek_commit.target_position.as_duration().as_millis(),
+                actual_ms = seek_commit.actual_position.as_duration().as_millis(),
+                generation = seek_commit.generation,
+                audio_gate_status = ?audio_gate_status,
+                audio_gate_timeout_ms = resume_audio_gate_timeout.as_millis(),
+                "Final seek commit продолжен через audio gate soft fallback"
+            );
+        }
+
         self.complete_seek_commit(seek_commit);
+    }
+
+    /// Проверяет video/audio gates и возвращает причину, если commit разрешён soft fallback-ом.
+    fn seek_commit_gate_decision(
+        &self,
+        seek_commit: SeekCommitState,
+        now: Instant,
+        resume_audio_min_buffer_ms: f64,
+        resume_audio_gate_timeout: Duration,
+        resume_video_min_ready_frames: usize,
+    ) -> SeekCommitGateDecision {
+        if !self.seek_video_gate_ready(seek_commit, resume_video_min_ready_frames) {
+            return SeekCommitGateDecision::Waiting;
+        }
+
+        let audio_gate_status =
+            self.seek_audio_gate_status(seek_commit, resume_audio_min_buffer_ms);
+        if audio_gate_status.is_ready() {
+            return SeekCommitGateDecision::Ready;
+        }
+
+        if self.seek_audio_gate_soft_fallback_ready(
+            seek_commit,
+            now,
+            audio_gate_status,
+            resume_audio_gate_timeout,
+        ) {
+            return SeekCommitGateDecision::AudioSoftFallback { audio_gate_status };
+        }
+
+        SeekCommitGateDecision::Waiting
+    }
+
+    /// Возвращает `true`, если audio gate можно отпустить без бесконечного удержания seek-а.
+    fn seek_audio_gate_soft_fallback_ready(
+        &self,
+        seek_commit: SeekCommitState,
+        now: Instant,
+        audio_gate_status: SeekAudioGateStatus,
+        resume_audio_gate_timeout: Duration,
+    ) -> bool {
+        if seek_commit.kind != SeekCommitKind::Final
+            || seek_commit.resume_intent != PlaybackResumeIntent::Play
+        {
+            return false;
+        }
+
+        if !self.pipeline.has_selected_audio_track() {
+            return false;
+        }
+
+        if !self.pipeline.has_selected_video_track() {
+            return false;
+        }
+
+        if !audio_gate_status.can_soft_fallback() {
+            return false;
+        }
+
+        now.saturating_duration_since(seek_commit.started_at) >= resume_audio_gate_timeout
     }
 
     /// Переопределяет resume intent у уже запущенного seek transaction-а.
@@ -1501,17 +1627,6 @@ impl PlayerSession {
         }
 
         true
-    }
-
-    /// Проверяет video/audio gates для текущего seek commit-а.
-    fn seek_commit_gates_ready(
-        &self,
-        seek_commit: SeekCommitState,
-        resume_audio_min_buffer_ms: f64,
-        resume_video_min_ready_frames: usize,
-    ) -> bool {
-        self.seek_video_gate_ready(seek_commit, resume_video_min_ready_frames)
-            && self.seek_audio_gate_ready(seek_commit, resume_audio_min_buffer_ms)
     }
 
     /// Video gate готов, когда target frame показан и перед resume есть небольшой запас кадров.
@@ -1773,6 +1888,7 @@ impl PlayerSession {
     /// Preview и paused final seek не включают audio stream, поэтому после clear ack
     /// они не ждут decoder/output. Final resume в `Playing` ждёт selected audio path:
     /// unsupported/disabled audio должен быть явно снят с selection policy-слоем.
+    #[cfg(test)]
     fn seek_audio_gate_ready(
         &self,
         seek_commit: SeekCommitState,
@@ -1828,6 +1944,12 @@ impl PlayerSession {
         self.snapshot.timeline.stale_frame = false;
         self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
         self.publish_position_changed(seek_commit.target_position.as_duration());
+        self.pending_events
+            .push(PlayerEvent::SeekCommitted(SeekCommitInfo {
+                target_position: seek_commit.target_position.as_duration(),
+                actual_position: seek_commit.actual_position.as_duration(),
+                resume_intent: seek_commit.resume_intent,
+            }));
 
         match seek_commit.resume_intent {
             PlaybackResumeIntent::Pause => {
@@ -1835,9 +1957,20 @@ impl PlayerSession {
                 self.set_playback_state(PlaybackState::Paused);
             }
             PlaybackResumeIntent::Play => {
-                if let Some(Err(error)) = self.pipeline.play_audio_output() {
-                    warn!(error = %error, "Не удалось запустить audio после seek");
-                    self.set_runtime_error(format!("Audio play after seek error: {error}"));
+                if let Some(play_result) = self.pipeline.play_audio_output() {
+                    match play_result {
+                        Ok(()) => {
+                            self.pending_events.push(PlayerEvent::AudioResumedAfterSeek(
+                                SeekAudioResumeInfo {
+                                    target_position: seek_commit.target_position.as_duration(),
+                                },
+                            ));
+                        }
+                        Err(error) => {
+                            warn!(error = %error, "Не удалось запустить audio после seek");
+                            self.set_runtime_error(format!("Audio play after seek error: {error}"));
+                        }
+                    }
                 }
                 let observed_at = Instant::now();
                 let audio_now = self.audio_clock_now();
@@ -4949,6 +5082,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             1,
         );
 
@@ -4983,6 +5117,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             1,
         );
 
@@ -5058,6 +5193,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             1,
         );
 
@@ -5133,6 +5269,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             1,
         );
 
@@ -5172,6 +5309,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             1,
         );
 
@@ -5299,6 +5437,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             1,
         );
 
@@ -5375,6 +5514,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             1,
         );
 
@@ -5407,6 +5547,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             1,
         );
 
@@ -6046,6 +6187,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             1,
         );
         assert_eq!(
@@ -6439,6 +6581,18 @@ mod tests {
             SeekAudioGateStatus::WaitingForDecoder
         );
         assert!(!session.seek_audio_gate_ready(seek_commit, 50.0));
+
+        session.finish_seek_commit_if_ready(
+            seek_commit.started_at + Duration::from_millis(250),
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            Duration::from_millis(250),
+            1,
+        );
+
+        assert!(session.seek_commit().is_some());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Seeking);
     }
 
     #[test]
@@ -6651,6 +6805,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             1,
         );
 
@@ -6687,6 +6842,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             1,
         );
 
@@ -6719,6 +6875,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             1,
         );
 
@@ -6758,6 +6915,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             1,
         );
 
@@ -6785,9 +6943,53 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             1,
         );
 
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert!(!session.snapshot().timeline.seeking);
+    }
+
+    #[test]
+    fn deselected_audio_path_seek_resumes_after_target_video_frame() {
+        let mut session = PlayerSession::new();
+        install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+
+        session.disable_selected_audio_path();
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
+        session
+            .pipeline
+            .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(6_016), 43));
+        session
+            .pipeline
+            .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(6_033), 44));
+        session.note_presented_frame_for_seek(Duration::from_secs(6));
+
+        session.finish_seek_commit_if_ready(
+            Instant::now(),
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            Duration::from_millis(250),
+            3,
+        );
+
+        assert!(session.pipeline.selected_audio_track_id().is_none());
         assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
         assert!(!session.snapshot().timeline.seeking);
     }
@@ -7090,6 +7292,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             3,
         );
 
@@ -7108,6 +7311,7 @@ mod tests {
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             3,
         );
 
@@ -7137,11 +7341,17 @@ mod tests {
             .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
         session.note_presented_frame_for_seek(Duration::from_secs(6));
 
+        let before_audio_gate_timeout = session
+            .seek_commit()
+            .expect("seek должен быть активен до проверки audio gate")
+            .started_at
+            + Duration::from_millis(249);
         session.finish_seek_commit_if_ready(
-            Instant::now(),
+            before_audio_gate_timeout,
             Duration::from_secs(10),
             Duration::from_millis(100),
             50.0,
+            Duration::from_millis(250),
             3,
         );
 
@@ -7154,6 +7364,155 @@ mod tests {
         );
         assert_eq!(session.snapshot().playback_state, PlaybackState::Seeking);
         assert!(session.snapshot().timeline.seeking);
+    }
+
+    #[test]
+    fn final_play_seek_with_audio_requires_only_presented_target_video_frame() {
+        let mut session = PlayerSession::new();
+        install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+
+        let seek_commit = session
+            .seek_commit()
+            .expect("accepted seek должен открыть commit");
+
+        assert_eq!(
+            session.required_seek_resume_video_ready_frames(seek_commit, 3),
+            1
+        );
+    }
+
+    #[test]
+    fn active_seek_diagnostics_reports_audio_preroll_after_target_frame() {
+        let mut session = PlayerSession::new();
+        install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+        let gate_snapshot = SeekProgressGateSnapshot {
+            target_frame_presented: true,
+            video_gate_ready: true,
+            audio_gate_status: SeekAudioGateStatus::WaitingForPreroll,
+            ready_video_frames: 1,
+            required_video_frames: 1,
+        };
+
+        let blocker = session.seek_progress_blocker(
+            &PlayerTickConfig::default(),
+            PipelineQueueDepthSnapshot::default(),
+            gate_snapshot,
+        );
+
+        assert_eq!(blocker, SeekProgressBlocker::WaitingForAudioPreroll);
+    }
+
+    #[test]
+    fn playing_video_seek_with_audio_soft_fallback_commits_after_target_frame() {
+        let mut session = PlayerSession::new();
+        install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
+        session.note_presented_frame_for_seek(Duration::from_secs(6));
+
+        let seek_commit = session
+            .seek_commit()
+            .expect("seek должен ждать audio до soft fallback deadline");
+        session.finish_seek_commit_if_ready(
+            seek_commit.started_at + Duration::from_millis(250),
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            Duration::from_millis(250),
+            3,
+        );
+
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert!(!session.snapshot().timeline.seeking);
+        assert!(session.seek_commit().is_none());
+
+        let events = session.take_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::SeekTargetFramePresented(presentation)
+                if presentation.target_position == Duration::from_secs(6)
+                    && presentation.frame_pts == Duration::from_secs(6)
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::SeekCommitted(commit)
+                if commit.target_position == Duration::from_secs(6)
+                    && commit.actual_position == Duration::from_secs(6)
+                    && commit.resume_intent == PlaybackResumeIntent::Play
+        )));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, PlayerEvent::AudioResumedAfterSeek(_)))
+        );
+    }
+
+    #[test]
+    fn paused_video_audio_seek_does_not_wait_for_audio_runtime() {
+        let mut session = PlayerSession::new();
+        install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
+        session.note_presented_frame_for_seek(Duration::from_secs(6));
+
+        session.finish_seek_commit_if_ready(
+            Instant::now(),
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            Duration::from_millis(250),
+            3,
+        );
+
+        assert!(session.seek_commit().is_none());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
+        assert!(!session.snapshot().timeline.seeking);
     }
 
     #[test]

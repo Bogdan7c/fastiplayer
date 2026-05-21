@@ -139,6 +139,10 @@ fn validate_player_seek_config(seek: &PlayerSeekConfig) -> ConfigResult<()> {
         "player.seek.resume_audio_min_buffer_ms",
         seek.resume_audio_min_buffer_ms,
     )?;
+    validate_positive_u64(
+        "player.seek.resume_audio_gate_timeout_ms",
+        seek.resume_audio_gate_timeout_ms,
+    )?;
     validate_usize_range(
         "player.seek.resume_video_min_ready_frames",
         seek.resume_video_min_ready_frames,

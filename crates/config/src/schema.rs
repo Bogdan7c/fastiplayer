@@ -90,6 +90,11 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "resume_audio_gate_timeout_ms = 250",
+        "# Soft timeout audio gate-а после показанного target video frame.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "resume_video_min_ready_frames = 3",
         "# Минимальный запас готовых video frames перед resume после commit-а.",
     );
@@ -332,6 +337,9 @@ pub struct PlayerSeekConfig {
     /// Минимальный audio buffer перед resume после commit-а.
     pub resume_audio_min_buffer_ms: u64,
 
+    /// Soft timeout audio gate-а после показанного target video frame.
+    pub resume_audio_gate_timeout_ms: u64,
+
     /// Минимальный запас готовых video frames перед resume после commit-а.
     pub resume_video_min_ready_frames: usize,
 
@@ -353,6 +361,7 @@ impl Default for PlayerSeekConfig {
             live_preview_budget_ms: 100,
             commit_timeout_ms: 10_000,
             resume_audio_min_buffer_ms: 50,
+            resume_audio_gate_timeout_ms: 250,
             resume_video_min_ready_frames: 3,
             paused_commit_behavior: PausedCommitBehavior::StayPaused,
             hotkey_small_step_secs: 5,

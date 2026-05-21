@@ -189,6 +189,7 @@ mod tests {
         assert_eq!(config.player.seek.live_preview_budget_ms, 100);
         assert_eq!(config.player.seek.commit_timeout_ms, 10_000);
         assert_eq!(config.player.seek.resume_audio_min_buffer_ms, 50);
+        assert_eq!(config.player.seek.resume_audio_gate_timeout_ms, 250);
         assert_eq!(config.player.seek.resume_video_min_ready_frames, 3);
         assert_eq!(
             config.player.seek.paused_commit_behavior,
@@ -326,6 +327,7 @@ mod tests {
         assert!(created_toml.contains("[player.seek]"));
         assert!(created_toml.contains("# Настройки live seek"));
         assert!(created_toml.contains("live_interval_ms = 100"));
+        assert!(created_toml.contains("resume_audio_gate_timeout_ms = 250"));
         assert!(created_toml.contains("resume_video_min_ready_frames = 3"));
         assert!(created_toml.contains("[player.demux]"));
         assert!(created_toml.contains("# Fail-safe настройки demuxer-а."));
@@ -637,6 +639,31 @@ commit_timeout_ms = 0
         let error = load_from_path(&config_path).expect_err("invalid seek timeout rejected");
 
         assert!(error.to_string().contains("player.seek.commit_timeout_ms"));
+    }
+
+    /// Проверяет положительность soft timeout-а audio gate перед seek resume.
+    #[test]
+    fn invalid_seek_audio_gate_timeout_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[player.seek]
+resume_audio_gate_timeout_ms = 0
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid audio gate timeout rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("player.seek.resume_audio_gate_timeout_ms")
+        );
     }
 
     /// Проверяет положительность video preroll перед seek resume.

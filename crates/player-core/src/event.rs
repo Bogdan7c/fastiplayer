@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use crate::{MediaOpenRequest, PlaybackState, PlayerError, QualitySelection, SeekRequest, TrackId};
+use crate::{
+    MediaOpenRequest, PlaybackResumeIntent, PlaybackState, PlayerError, QualitySelection,
+    SeekRequest, TrackId,
+};
 
 /// Краткое описание media после успешного открытия.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +41,36 @@ pub struct BufferingState {
     pub reason: Option<String>,
 }
 
+/// Сведения о target frame, который уже стал текущим presented frame после seek.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeekTargetFramePresentation {
+    /// Пользовательская target-позиция seek transaction-а.
+    pub target_position: Duration,
+
+    /// PTS кадра, который реально показан после seek.
+    pub frame_pts: Duration,
+}
+
+/// Сведения о закрытом seek transaction-е.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeekCommitInfo {
+    /// Пользовательская target-позиция seek transaction-а.
+    pub target_position: Duration,
+
+    /// Фактическая container-позиция, на которую demuxer принял seek.
+    pub actual_position: Duration,
+
+    /// Playback intent, который session применила после закрытия gates.
+    pub resume_intent: PlaybackResumeIntent,
+}
+
+/// Сведения о restart-е audio output после seek.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeekAudioResumeInfo {
+    /// Target-позиция seek-а, для которого audio output был запущен.
+    pub target_position: Duration,
+}
+
 /// Краткая сводка возможностей системы.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilitySummary {
@@ -62,6 +95,15 @@ pub enum PlayerEvent {
 
     /// Seek-запрос принят state machine.
     SeekRequested(SeekRequest),
+
+    /// Target frame финального seek-а уже показан независимо от audio gate-а.
+    SeekTargetFramePresented(SeekTargetFramePresentation),
+
+    /// Seek transaction закрыт после готовых gates или разрешённого soft fallback-а.
+    SeekCommitted(SeekCommitInfo),
+
+    /// Audio output запущен после закрытия seek transaction-а.
+    AudioResumedAfterSeek(SeekAudioResumeInfo),
 
     /// Кадр готов к presentation.
     VideoFrameReady(FramePresentationInfo),

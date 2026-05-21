@@ -132,6 +132,9 @@ pub struct PlayerTickConfig {
     /// Минимальный audio buffer перед resume после seek.
     pub seek_resume_audio_min_buffer_ms: f64,
 
+    /// Soft timeout audio gate-а после того, как target video frame уже показан.
+    pub seek_resume_audio_gate_timeout: Duration,
+
     /// Минимальный запас готовых video frames перед resume после seek.
     pub seek_resume_video_min_ready_frames: usize,
 
@@ -174,6 +177,7 @@ impl Default for PlayerTickConfig {
             seek_commit_timeout: Duration::from_millis(10_000),
             seek_preview_timeout: Duration::from_millis(100),
             seek_resume_audio_min_buffer_ms: 50.0,
+            seek_resume_audio_gate_timeout: Duration::from_millis(250),
             seek_resume_video_min_ready_frames: 3,
             audio_stall_min_position: Duration::from_millis(100),
             audio_stall_timeout: Duration::from_millis(250),
@@ -223,6 +227,9 @@ impl From<&AppConfig> for PlayerTickConfig {
             seek_commit_timeout: Duration::from_millis(config.player.seek.commit_timeout_ms),
             seek_preview_timeout: Duration::from_millis(config.player.seek.live_preview_budget_ms),
             seek_resume_audio_min_buffer_ms: config.player.seek.resume_audio_min_buffer_ms as f64,
+            seek_resume_audio_gate_timeout: Duration::from_millis(
+                config.player.seek.resume_audio_gate_timeout_ms,
+            ),
             seek_resume_video_min_ready_frames: config.player.seek.resume_video_min_ready_frames,
             ..defaults
         }
@@ -515,6 +522,7 @@ impl PlayerSession {
             tick_context.config.seek_commit_timeout,
             tick_context.config.seek_preview_timeout,
             tick_context.config.seek_resume_audio_min_buffer_ms,
+            tick_context.config.seek_resume_audio_gate_timeout,
             effective_seek_resume_video_min_ready_frames(&tick_context.config),
         );
         if let Err(error) =
