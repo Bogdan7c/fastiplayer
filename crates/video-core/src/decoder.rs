@@ -37,6 +37,7 @@ impl fmt::Display for FrameMemoryPath {
 
 #[derive(Debug, Clone)]
 pub struct DecodedFrame {
+    pub generation: u64,
     pub pts: Duration,
     pub format: DecodedPixelFormat,
     pub bit_depth: BitDepth,
@@ -128,6 +129,7 @@ mod tests {
     /// Создаёт test frame без реальных GPU resources и без legacy `ColorSpace`.
     fn decoded_test_frame() -> DecodedFrame {
         DecodedFrame {
+            generation: 0,
             pts: Duration::ZERO,
             format: DecodedPixelFormat::Nv12,
             bit_depth: BitDepth::Eight,
@@ -166,6 +168,7 @@ mod tests {
     #[test]
     fn p010_boundary_frame_has_zero_copy_contract() {
         let frame = DecodedFrame {
+            generation: 0,
             pts: Duration::ZERO,
             format: DecodedPixelFormat::P010,
             bit_depth: BitDepth::Ten,
@@ -189,6 +192,7 @@ mod tests {
     #[test]
     fn nv12_cpu_upload_is_rejected_by_contract_validation() {
         let frame = DecodedFrame {
+            generation: 0,
             pts: Duration::ZERO,
             format: DecodedPixelFormat::Nv12,
             bit_depth: BitDepth::Eight,
@@ -216,6 +220,7 @@ mod tests {
     #[test]
     fn p010_cpu_upload_is_rejected_by_contract_validation() {
         let frame = DecodedFrame {
+            generation: 0,
             pts: Duration::ZERO,
             format: DecodedPixelFormat::P010,
             bit_depth: BitDepth::Ten,

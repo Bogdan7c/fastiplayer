@@ -74,7 +74,7 @@ const PREVIEW_SEEK_STALL_LOG_MAX_AFTER: Duration = Duration::from_millis(250);
 const SEEK_STALL_LOG_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Default throttle live preview seek-а, если worker создан без app config.
-const DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL: Duration = Duration::from_millis(100);
+const DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL: Duration = Duration::from_millis(33);
 
 /// Конфигурация playback worker.
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +91,9 @@ pub struct PlayerWorkerConfig {
     /// Минимальный интервал между live preview seek-ами во время scrub.
     pub live_scrub_preview_interval: Duration,
 
+    /// Возраст preview transaction-а, после которого latest target может заменить in-flight preview.
+    pub live_scrub_preview_replace_after: Duration,
+
     /// Bounded queue/runtime limits decoder thread-а.
     pub decoder_thread_config: PlayerVideoDecoderThreadConfig,
 }
@@ -104,6 +107,7 @@ impl PlayerWorkerConfig {
             decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config,
             live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
+            live_scrub_preview_replace_after: tick_config.seek_preview_timeout,
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
         }
     }
@@ -116,6 +120,9 @@ impl PlayerWorkerConfig {
             decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config: PlayerTickConfig::from(config),
             live_scrub_preview_interval: Duration::from_millis(config.player.seek.live_interval_ms),
+            live_scrub_preview_replace_after: Duration::from_millis(
+                config.player.seek.live_preview_budget_ms,
+            ),
             decoder_thread_config: decoder_thread_config_from_app_config(config),
         }
     }
@@ -677,7 +684,10 @@ impl PlayerWorker {
             .spawn(move || {
                 let runtime = PlayerWorkerRuntime {
                     session: PlayerSession::new(),
-                    scrub_driver: ScrubDriver::new(config.live_scrub_preview_interval),
+                    scrub_driver: ScrubDriver::with_preview_policy(
+                        config.live_scrub_preview_interval,
+                        config.live_scrub_preview_replace_after,
+                    ),
                     worker_scheduler: WorkerScheduler,
                     command_rx,
                     scrub_wake_rx,
@@ -1794,6 +1804,7 @@ impl PlayerWorkerRuntime {
     fn publish_session_outputs(&mut self) {
         self.render_bridge
             .publish_latest_present_frame(&mut self.session);
+        self.sync_scrub_preview_in_flight_state();
 
         let snapshot = self
             .session
@@ -1803,6 +1814,19 @@ impl PlayerWorkerRuntime {
         for event in self.session.take_events() {
             self.publish_worker_event(PlayerWorkerEvent::Player(event));
         }
+    }
+
+    /// Синхронизирует worker-side in-flight marker с фактической session transaction.
+    fn sync_scrub_preview_in_flight_state(&mut self) {
+        let Some(preview) = self.scrub_driver.in_flight_preview() else {
+            return;
+        };
+
+        if self.session.active_preview_matches(preview.intent) {
+            return;
+        }
+
+        self.scrub_driver.clear_in_flight_preview(preview.intent);
     }
 
     /// Публикует tick telemetry без блокировки worker-а.
@@ -1931,6 +1955,7 @@ mod tests {
             decoder_readiness_poll_interval: Duration::from_millis(2),
             tick_config: PlayerTickConfig::default(),
             live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
+            live_scrub_preview_replace_after: PlayerTickConfig::default().seek_preview_timeout,
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
         }
     }
@@ -2066,7 +2091,10 @@ mod tests {
         (
             PlayerWorkerRuntime {
                 session: PlayerSession::new(),
-                scrub_driver: ScrubDriver::new(config.live_scrub_preview_interval),
+                scrub_driver: ScrubDriver::with_preview_policy(
+                    config.live_scrub_preview_interval,
+                    config.live_scrub_preview_replace_after,
+                ),
                 worker_scheduler: WorkerScheduler,
                 command_rx,
                 scrub_wake_rx,
@@ -2112,6 +2140,7 @@ mod tests {
 
     fn decoded_frame_for_tests(texture_handle: FrameTextureHandle) -> DecodedFrame {
         DecodedFrame {
+            generation: 0,
             pts: Duration::ZERO,
             format: DecodedPixelFormat::Nv12,
             bit_depth: BitDepth::Eight,
@@ -2957,6 +2986,43 @@ mod tests {
         );
         assert_eq!(runtime.session.snapshot().current_position, Duration::ZERO);
         assert!(runtime.session.has_active_seek_commit());
+        assert!(!runtime.session.snapshot().timeline.scrubbing);
+    }
+
+    #[test]
+    fn thousand_rapid_scrub_updates_commit_only_latest_target() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
+        let demuxer = WorkerFakeDemuxer::empty_seekable(Arc::clone(&seek_request_log));
+        let generation = ScrubGeneration::default().next();
+
+        runtime.session.load_demuxer_with_autoplay(
+            "worker-fake".to_string(),
+            Box::new(demuxer),
+            false,
+        );
+        runtime.handle_begin_scrub_command(generation);
+        for step_index in 0..1_000u64 {
+            runtime
+                .scrub_coalescer
+                .submit_latest(scrub_update_intent(generation, step_index))
+                .unwrap();
+        }
+
+        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
+            generation,
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        ));
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(
+            requests.as_slice(),
+            &[DemuxSeekRequest::accurate(Duration::from_millis(999))]
+        );
+        assert_eq!(
+            runtime.session.snapshot().timeline.target_position,
+            Some(MediaTime::from_millis(999))
+        );
         assert!(!runtime.session.snapshot().timeline.scrubbing);
     }
 

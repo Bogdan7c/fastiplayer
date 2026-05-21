@@ -236,6 +236,7 @@ mod tests {
         let packet = video_core::DecodePacket {
             track_id: TrackId::new(7),
             pts: Duration::from_millis(42),
+            generation: 11,
             encoded_bytes: Bytes::from_static(b"encoded-vp9-packet"),
             keyframe: true,
             resolved_color: None,
@@ -246,6 +247,7 @@ mod tests {
 
         assert_eq!(neutral_packet.track_id, packet.track_id);
         assert_eq!(neutral_packet.pts, packet.pts);
+        assert_eq!(neutral_packet.generation, packet.generation);
         assert_eq!(neutral_packet.encoded_bytes, packet.encoded_bytes);
         assert_eq!(neutral_packet.keyframe, packet.keyframe);
         assert_eq!(neutral_packet.resolved_color, packet.resolved_color);

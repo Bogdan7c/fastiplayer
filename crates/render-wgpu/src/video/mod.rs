@@ -419,6 +419,7 @@ mod tests {
 
     fn decoded_nv12_test_frame(memory_path: FrameMemoryPath) -> DecodedFrame {
         DecodedFrame {
+            generation: 0,
             pts: Duration::ZERO,
             format: DecodedPixelFormat::Nv12,
             bit_depth: BitDepth::Eight,
@@ -436,6 +437,7 @@ mod tests {
 
     fn decoded_p010_test_frame(memory_path: FrameMemoryPath) -> DecodedFrame {
         DecodedFrame {
+            generation: 0,
             pts: Duration::ZERO,
             format: DecodedPixelFormat::P010,
             bit_depth: BitDepth::Ten,

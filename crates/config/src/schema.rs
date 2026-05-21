@@ -70,8 +70,8 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
-        "live_interval_ms = 100",
-        "# Минимальный интервал между live scrub update-командами.",
+        "live_interval_ms = 33",
+        "# Минимальный интервал между live scrub preview-командами.",
     );
     insert_default_config_comment(
         toml_text,
@@ -357,7 +357,7 @@ impl Default for PlayerSeekConfig {
     /// Возвращает documented defaults live seek плана.
     fn default() -> Self {
         Self {
-            live_interval_ms: 100,
+            live_interval_ms: 33,
             live_preview_budget_ms: 100,
             commit_timeout_ms: 10_000,
             resume_audio_min_buffer_ms: 50,

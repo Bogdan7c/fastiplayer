@@ -1436,6 +1436,7 @@ mod tests {
     /// Создаёт decoded frame без реальных GPU resources для проверки pipeline storage.
     fn decoded_frame_for_tests(pts: Duration, texture_handle: u64) -> video_core::DecodedFrame {
         video_core::DecodedFrame {
+            generation: 0,
             pts,
             format: video_core::DecodedPixelFormat::Nv12,
             bit_depth: codec_core::BitDepth::Eight,

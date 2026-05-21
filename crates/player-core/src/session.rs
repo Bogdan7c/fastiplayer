@@ -1267,6 +1267,21 @@ impl PlayerSession {
         self.seek_commit.is_some()
     }
 
+    /// Проверяет, что active seek всё ещё является preview для указанного scrub intent-а.
+    #[must_use]
+    pub(crate) fn active_preview_matches(&self, intent: ScrubUpdateIntent) -> bool {
+        let Some(seek_commit) = self.seek_commit else {
+            return false;
+        };
+        if seek_commit.kind != SeekCommitKind::Preview
+            || seek_commit.scrub_generation != Some(intent.generation)
+        {
+            return false;
+        }
+
+        seek_commit.target_position == self.resolve_seek_target(intent.request)
+    }
+
     /// Возвращает активный seek commit для scheduler/gate логики.
     #[must_use]
     #[cfg(test)]
@@ -1541,9 +1556,11 @@ impl PlayerSession {
         match seek_commit.kind {
             SeekCommitKind::Preview => {
                 if let Some(generation) = seek_commit.scrub_generation {
-                    let _visible_preview_decision = self
-                        .scrub_state
-                        .note_visible_preview(generation, MediaTime::from_duration(frame_pts));
+                    let _visible_preview_decision = self.scrub_state.note_visible_preview(
+                        generation,
+                        seek_commit.target_position,
+                        MediaTime::from_duration(frame_pts),
+                    );
                 }
                 self.snapshot.timeline.stale_frame = false;
                 let frame_readiness = self.preview_frame_readiness_for_seek_commit(seek_commit);
@@ -1769,7 +1786,10 @@ impl PlayerSession {
         let Some(scrub_generation) = self.current_preview_scrub_generation(seek_commit) else {
             return false;
         };
-        let Some(visible_preview) = self.scrub_state.visible_preview_for(scrub_generation) else {
+        let Some(visible_preview) = self
+            .scrub_state
+            .visible_preview_for_target(scrub_generation, seek_commit.target_position)
+        else {
             return false;
         };
 
@@ -2069,7 +2089,9 @@ impl PlayerSession {
         self.seek_commit = None;
         self.seek_trace.clear();
         if let Some(generation) = seek_commit.scrub_generation {
-            let _preview_completion = self.scrub_state.complete_preview(generation);
+            let _preview_completion = self
+                .scrub_state
+                .complete_preview(generation, seek_commit.target_position);
         }
         self.seek_eof_fallback_video_position = None;
         self.clear_seek_preroll_fallback_frame();
@@ -2602,7 +2624,9 @@ impl PlayerSession {
         self.seek_commit.is_none()
             && self.snapshot.timeline.scrubbing
             && self.snapshot.timeline.target_position == Some(target_position)
-            && self.scrub_state.completed_preview_for(generation)
+            && self
+                .scrub_state
+                .completed_preview_for(generation, target_position)
             && !self.snapshot.timeline.seeking
             && !self.snapshot.timeline.stale_frame
             && self.snapshot.timeline.preview_state == TimelinePreviewState::Ready
@@ -3987,7 +4011,19 @@ mod tests {
         }
 
         /// Публикует frame так, как production decoder thread сделал бы после seek decode.
-        fn push_decoded_frame(&self, frame: video_core::DecodedFrame) {
+        fn push_decoded_frame(&self, mut frame: video_core::DecodedFrame) {
+            if frame.generation == 0 {
+                if let Some(generation) = self
+                    .sent_packets
+                    .lock()
+                    .expect("fake decoder sent packet log lock")
+                    .last()
+                    .map(|packet| packet.generation)
+                {
+                    frame.generation = generation;
+                }
+            }
+
             self.decoded_frames
                 .lock()
                 .expect("fake decoder frame queue lock")
@@ -4464,7 +4500,11 @@ mod tests {
         );
         assert_ne!(seek_after_reset.generation, generation_after_demux_seek);
 
-        fake_decoder.push_decoded_frame(decoded_frame_for_tests(Duration::from_secs(6), 60));
+        fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_secs(6),
+            60,
+        ));
         let present_tick = session.tick(PlayerTickContext::with_config(
             Instant::now(),
             seek_admission_tick_config(2, 4),
@@ -4843,6 +4883,7 @@ mod tests {
     /// Создаёт decoded frame без реальных GPU resources.
     fn decoded_frame_for_tests(pts: Duration, handle: u64) -> video_core::DecodedFrame {
         video_core::DecodedFrame {
+            generation: 0,
             pts,
             format: video_core::DecodedPixelFormat::Nv12,
             bit_depth: BitDepth::Eight,
@@ -4856,6 +4897,17 @@ mod tests {
             texture_handle: video_core::FrameTextureHandle(handle),
             diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
+    }
+
+    /// Создаёт decoded frame, который принадлежит текущему seek generation session.
+    fn decoded_frame_for_current_seek_generation(
+        session: &PlayerSession,
+        pts: Duration,
+        handle: u64,
+    ) -> video_core::DecodedFrame {
+        let mut frame = decoded_frame_for_tests(pts, handle);
+        frame.generation = session.pipeline.seek_generation();
+        frame
     }
 
     /// Создаёт keyframe video packet для session-level demux/reset tests.
@@ -4875,6 +4927,7 @@ mod tests {
         PlayerDecodePacket {
             track_id: TrackId::new(1),
             pts,
+            generation: 0,
             encoded_bytes: Bytes::from_static(b"vp9-test-packet"),
             keyframe: true,
             resolved_color: None,
@@ -5879,7 +5932,11 @@ mod tests {
                 policy: ScrubCommitPolicy::CommitLatestTargetWithVisiblePreviewFallback,
             })
             .unwrap();
-        fake_decoder.push_decoded_frame(decoded_frame_for_tests(Duration::from_secs(8), 43));
+        fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_secs(8),
+            43,
+        ));
 
         let tick_result = session.tick(PlayerTickContext::with_config(
             Instant::now(),
@@ -7200,7 +7257,11 @@ mod tests {
         session
             .pipeline
             .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_secs(5), 5));
-        fake_decoder.push_decoded_frame(decoded_frame_for_tests(Duration::from_secs(6), 6));
+        fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_secs(6),
+            6,
+        ));
 
         let tick_result = session.tick(PlayerTickContext::with_config(
             Instant::now(),
@@ -7351,12 +7412,17 @@ mod tests {
             .unwrap();
 
         for frame_index in 0..32u64 {
-            fake_decoder.push_decoded_frame(decoded_frame_for_tests(
+            fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
+                &session,
                 Duration::from_millis(frame_index * 50),
                 100 + frame_index,
             ));
         }
-        fake_decoder.push_decoded_frame(decoded_frame_for_tests(Duration::from_secs(2), 200));
+        fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_secs(2),
+            200,
+        ));
 
         let tick_result = session.tick(PlayerTickContext::with_config(
             Instant::now(),
@@ -7390,8 +7456,16 @@ mod tests {
                 MediaTime::from_secs(2),
             )))
             .unwrap();
-        fake_decoder.push_decoded_frame(decoded_frame_for_tests(Duration::from_millis(1_500), 15));
-        fake_decoder.push_decoded_frame(decoded_frame_for_tests(Duration::from_millis(1_900), 19));
+        fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_millis(1_500),
+            15,
+        ));
+        fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_millis(1_900),
+            19,
+        ));
 
         let tick_result = session.tick(PlayerTickContext::with_config(
             Instant::now(),
@@ -7438,7 +7512,11 @@ mod tests {
                 MediaTime::from_secs(6),
             )))
             .unwrap();
-        fake_decoder.push_decoded_frame(decoded_frame_for_tests(Duration::from_secs(5), 50));
+        fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_secs(5),
+            50,
+        ));
 
         let tick_result = session.tick(PlayerTickContext::with_config(
             Instant::now(),
@@ -7476,7 +7554,11 @@ mod tests {
                 MediaTime::from_secs(6),
             )))
             .unwrap();
-        fake_decoder.push_decoded_frame(decoded_frame_for_tests(Duration::from_secs(6), 6));
+        fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_secs(6),
+            6,
+        ));
 
         let tick_result = session.tick(PlayerTickContext::with_config(
             Instant::now(),
@@ -7524,7 +7606,11 @@ mod tests {
                 MediaTime::from_secs(6),
             )))
             .unwrap();
-        fake_decoder.push_decoded_frame(decoded_frame_for_tests(Duration::from_millis(6_016), 16));
+        fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_millis(6_016),
+            16,
+        ));
 
         let tick_result = session.tick(PlayerTickContext::with_config(
             Instant::now(),

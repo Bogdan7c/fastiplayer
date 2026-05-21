@@ -931,6 +931,7 @@ impl VaapiVideoDecoder {
 
         // Шаг 6: Публикуем только zero-copy frame metadata.
         self.push_ready_frame(DecodedFrame {
+            generation: 0,
             pts: Duration::from_micros(timestamp),
             format: decoded_contract.format,
             bit_depth: decoded_contract.bit_depth,

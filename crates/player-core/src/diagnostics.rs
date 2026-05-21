@@ -1414,6 +1414,7 @@ mod tests {
     /// Создаёт decoded frame с diagnostics timings без GPU handles.
     fn decoded_frame_for_tests() -> DecodedFrame {
         DecodedFrame {
+            generation: 0,
             pts: Duration::from_millis(42),
             format: DecodedPixelFormat::Nv12,
             bit_depth: BitDepth::Eight,

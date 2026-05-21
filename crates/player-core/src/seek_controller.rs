@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use crate::{PlaybackState, ScrubCommitIntent, ScrubGeneration, ScrubUpdateIntent, SeekRequest};
 
 /// Режим seek/scrub state machine внутри playback worker.
@@ -143,6 +145,16 @@ pub(crate) enum DeferredPreviewStatus {
     Pending { intent: ScrubUpdateIntent },
 }
 
+/// Preview seek, который уже отправлен за worker/session boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InFlightScrubPreview {
+    /// Intent preview transaction-а; включает scrub generation и пользовательский target.
+    pub intent: ScrubUpdateIntent,
+
+    /// Монотонное время dispatch-а, от которого считается replace-stale threshold.
+    pub dispatched_at: Instant,
+}
+
 /// Причина, по которой preview dispatch не принят controller-ом.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PreviewDispatchRejection {
@@ -244,8 +256,8 @@ enum SeekOperation {
         /// Самая свежая цель, принятая от UI drag/update path.
         latest_target: Option<SeekRequest>,
 
-        /// Цель, уже отправленная за worker/session boundary как preview seek.
-        in_flight_target: Option<SeekRequest>,
+        /// Preview intent, уже отправленный за worker/session boundary.
+        in_flight_preview: Option<InFlightScrubPreview>,
 
         /// Current latest-цель, ожидающая worker throttle window для preview seek-а.
         deferred_preview_target: Option<SeekRequest>,
@@ -261,7 +273,7 @@ impl SeekOperation {
         Self::InteractiveScrub {
             generation,
             latest_target: None,
-            in_flight_target: None,
+            in_flight_preview: None,
             deferred_preview_target: None,
             resume_intent: PlaybackResumeIntent::from_playback_state(playback_state),
         }
@@ -293,8 +305,21 @@ impl SeekOperation {
         match self {
             Self::Idle => None,
             Self::InteractiveScrub {
-                in_flight_target, ..
-            } => *in_flight_target,
+                in_flight_preview, ..
+            } => match in_flight_preview {
+                Some(preview) => Some(preview.intent.request),
+                None => None,
+            },
+        }
+    }
+
+    /// Возвращает in-flight preview только из active scrub operation.
+    const fn in_flight_preview(&self) -> Option<InFlightScrubPreview> {
+        match self {
+            Self::Idle => None,
+            Self::InteractiveScrub {
+                in_flight_preview, ..
+            } => *in_flight_preview,
         }
     }
 
@@ -341,7 +366,7 @@ impl SeekOperation {
             Self::InteractiveScrub {
                 generation,
                 latest_target,
-                in_flight_target,
+                in_flight_preview,
                 deferred_preview_target,
                 ..
             } if controller_generation == intent.generation && *generation == intent.generation => {
@@ -350,7 +375,9 @@ impl SeekOperation {
 
                 let preview = match preview_intent {
                     ScrubUpdatePreviewIntent::QueueLatest
-                        if *in_flight_target == Some(intent.request) =>
+                        if in_flight_preview
+                            .as_ref()
+                            .is_some_and(|preview| preview.intent.request == intent.request) =>
                     {
                         PreviewQueueDecision::AlreadyInFlight { intent }
                     }
@@ -400,24 +427,31 @@ impl SeekOperation {
         &mut self,
         controller_generation: ScrubGeneration,
         intent: ScrubUpdateIntent,
+        dispatched_at: Instant,
     ) -> PreviewDispatchDecision {
         match self {
             Self::InteractiveScrub {
                 generation,
                 latest_target,
-                in_flight_target,
+                in_flight_preview,
                 deferred_preview_target,
                 ..
             } if controller_generation == intent.generation
                 && *generation == intent.generation
                 && *latest_target == Some(intent.request) =>
             {
-                let state = if *in_flight_target == Some(intent.request) {
+                let state = if in_flight_preview
+                    .as_ref()
+                    .is_some_and(|preview| preview.intent.request == intent.request)
+                {
                     PreviewDispatchState::AlreadyInFlight
                 } else {
                     PreviewDispatchState::NewInFlight
                 };
-                *in_flight_target = Some(intent.request);
+                *in_flight_preview = Some(InFlightScrubPreview {
+                    intent,
+                    dispatched_at,
+                });
                 if *deferred_preview_target == Some(intent.request) {
                     *deferred_preview_target = None;
                 }
@@ -440,6 +474,57 @@ impl SeekOperation {
                 intent,
                 reason: PreviewDispatchRejection::Inactive,
             },
+        }
+    }
+
+    /// Возвращает задержку до момента, когда in-flight preview можно заменить новым target-ом.
+    fn in_flight_replacement_delay(
+        &self,
+        controller_generation: ScrubGeneration,
+        intent: ScrubUpdateIntent,
+        now: Instant,
+        replace_after: Duration,
+    ) -> Option<Duration> {
+        match self {
+            Self::InteractiveScrub {
+                generation,
+                latest_target,
+                in_flight_preview,
+                ..
+            } if controller_generation == intent.generation
+                && *generation == intent.generation
+                && *latest_target == Some(intent.request) =>
+            {
+                let Some(preview) = in_flight_preview.as_ref() else {
+                    return Some(Duration::ZERO);
+                };
+                if preview.intent.request == intent.request {
+                    return Some(Duration::ZERO);
+                }
+
+                let preview_age = now.saturating_duration_since(preview.dispatched_at);
+                Some(replace_after.saturating_sub(preview_age))
+            }
+            Self::InteractiveScrub { .. } | Self::Idle => None,
+        }
+    }
+
+    /// Очищает in-flight marker, если session сообщила terminal state этого preview intent-а.
+    fn clear_in_flight_preview(&mut self, intent: ScrubUpdateIntent) -> bool {
+        match self {
+            Self::InteractiveScrub {
+                generation,
+                in_flight_preview,
+                ..
+            } if *generation == intent.generation
+                && in_flight_preview
+                    .as_ref()
+                    .is_some_and(|preview| preview.intent == intent) =>
+            {
+                *in_flight_preview = None;
+                true
+            }
+            Self::InteractiveScrub { .. } | Self::Idle => false,
         }
     }
 
@@ -539,6 +624,12 @@ impl SeekController {
         self.operation.in_flight_target()
     }
 
+    /// Возвращает in-flight preview intent с dispatch-временем для diagnostics/tests.
+    #[must_use]
+    pub(crate) const fn in_flight_preview(&self) -> Option<InFlightScrubPreview> {
+        self.operation.in_flight_preview()
+    }
+
     /// Возвращает typed status pending preview target-а для worker throttle logic.
     #[must_use]
     pub(crate) const fn deferred_preview_status(&self) -> DeferredPreviewStatus {
@@ -606,16 +697,37 @@ impl SeekController {
     pub(crate) fn mark_preview_seek_dispatched(
         &mut self,
         intent: ScrubUpdateIntent,
+        dispatched_at: Instant,
     ) -> PreviewDispatchDecision {
-        let decision = self
-            .operation
-            .mark_preview_seek_dispatched(self.generation_id, intent);
+        let decision =
+            self.operation
+                .mark_preview_seek_dispatched(self.generation_id, intent, dispatched_at);
 
         if let PreviewDispatchDecision::Rejected { .. } = decision {
             self.count_stale_or_ignored_command();
         }
 
         decision
+    }
+
+    /// Возвращает задержку до разрешённой замены текущего in-flight preview.
+    ///
+    /// `None` означает, что intent уже не принадлежит текущей operation и dispatch
+    /// должен пройти обычную rejection path, не меняя state заранее.
+    #[must_use]
+    pub(crate) fn in_flight_replacement_delay(
+        &self,
+        intent: ScrubUpdateIntent,
+        now: Instant,
+        replace_after: Duration,
+    ) -> Option<Duration> {
+        self.operation
+            .in_flight_replacement_delay(self.generation_id, intent, now, replace_after)
+    }
+
+    /// Очищает in-flight preview после terminal state на session side.
+    pub(crate) fn clear_in_flight_preview(&mut self, intent: ScrubUpdateIntent) -> bool {
+        self.operation.clear_in_flight_preview(intent)
     }
 
     /// Обрабатывает типизированную resume-команду во время scrub без изменения session state.
@@ -733,6 +845,13 @@ mod tests {
         intent: ScrubUpdateIntent,
     ) -> ScrubUpdateAcceptance {
         controller.accept_scrub_update(intent, ScrubUpdatePreviewIntent::SuppressForCommit)
+    }
+
+    fn mark_preview_dispatched(
+        controller: &mut SeekController,
+        intent: ScrubUpdateIntent,
+    ) -> PreviewDispatchDecision {
+        controller.mark_preview_seek_dispatched(intent, Instant::now())
     }
 
     #[test]
@@ -937,7 +1056,7 @@ mod tests {
             ScrubUpdateAcceptance::Accepted { .. }
         ));
         assert_eq!(
-            controller.mark_preview_seek_dispatched(intent),
+            mark_preview_dispatched(&mut controller, intent),
             PreviewDispatchDecision::Dispatch {
                 intent,
                 state: PreviewDispatchState::NewInFlight,
@@ -989,7 +1108,7 @@ mod tests {
             ScrubUpdateAcceptance::Accepted { .. }
         ));
         assert!(matches!(
-            controller.mark_preview_seek_dispatched(intent),
+            mark_preview_dispatched(&mut controller, intent),
             PreviewDispatchDecision::Dispatch { .. }
         ));
         assert_eq!(controller.in_flight_target(), Some(request));
@@ -1070,8 +1189,10 @@ mod tests {
         let stale_request = absolute_seek_request(4);
         controller.begin_scrub(PlaybackState::Paused);
 
-        let dispatched = controller
-            .mark_preview_seek_dispatched(ScrubUpdateIntent::new(first_generation, stale_request));
+        let dispatched = controller.mark_preview_seek_dispatched(
+            ScrubUpdateIntent::new(first_generation, stale_request),
+            Instant::now(),
+        );
 
         assert_eq!(
             dispatched,
@@ -1097,12 +1218,12 @@ mod tests {
             ScrubUpdateAcceptance::Accepted { .. }
         ));
         assert!(matches!(
-            controller.mark_preview_seek_dispatched(current_intent),
+            mark_preview_dispatched(&mut controller, current_intent),
             PreviewDispatchDecision::Dispatch { .. }
         ));
 
         assert_eq!(
-            controller.mark_preview_seek_dispatched(stale_intent),
+            mark_preview_dispatched(&mut controller, stale_intent),
             PreviewDispatchDecision::Rejected {
                 intent: stale_intent,
                 reason: PreviewDispatchRejection::StaleGeneration,
@@ -1169,7 +1290,7 @@ mod tests {
         ));
 
         assert_eq!(
-            controller.mark_preview_seek_dispatched(first_intent),
+            mark_preview_dispatched(&mut controller, first_intent),
             PreviewDispatchDecision::Rejected {
                 intent: first_intent,
                 reason: PreviewDispatchRejection::NotCurrentLatest,
@@ -1194,7 +1315,7 @@ mod tests {
             }
         ));
         assert!(matches!(
-            controller.mark_preview_seek_dispatched(intent),
+            mark_preview_dispatched(&mut controller, intent),
             PreviewDispatchDecision::Dispatch { .. }
         ));
 
@@ -1211,5 +1332,74 @@ mod tests {
             controller.deferred_preview_status(),
             DeferredPreviewStatus::Idle
         );
+    }
+
+    #[test]
+    fn in_flight_replacement_delay_tracks_stale_preview_threshold() {
+        let mut controller = SeekController::new();
+        let now = Instant::now();
+        let generation = controller.begin_scrub(PlaybackState::Paused);
+        let first_intent = ScrubUpdateIntent::new(generation, absolute_seek_request(53));
+        let second_intent = ScrubUpdateIntent::new(generation, absolute_seek_request(57));
+
+        assert!(matches!(
+            accept_update_with_preview(&mut controller, first_intent),
+            ScrubUpdateAcceptance::Accepted { .. }
+        ));
+        assert!(matches!(
+            controller.mark_preview_seek_dispatched(first_intent, now),
+            PreviewDispatchDecision::Dispatch { .. }
+        ));
+        assert!(matches!(
+            accept_update_with_preview(&mut controller, second_intent),
+            ScrubUpdateAcceptance::Accepted { .. }
+        ));
+
+        assert_eq!(
+            controller.in_flight_replacement_delay(
+                second_intent,
+                now + Duration::from_millis(25),
+                Duration::from_millis(100),
+            ),
+            Some(Duration::from_millis(75))
+        );
+        assert_eq!(
+            controller.in_flight_replacement_delay(
+                second_intent,
+                now + Duration::from_millis(100),
+                Duration::from_millis(100),
+            ),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn clear_in_flight_preview_does_not_clear_newer_preview_intent() {
+        let mut controller = SeekController::new();
+        let generation = controller.begin_scrub(PlaybackState::Paused);
+        let first_intent = ScrubUpdateIntent::new(generation, absolute_seek_request(53));
+        let second_intent = ScrubUpdateIntent::new(generation, absolute_seek_request(57));
+
+        assert!(matches!(
+            accept_update_with_preview(&mut controller, first_intent),
+            ScrubUpdateAcceptance::Accepted { .. }
+        ));
+        assert!(matches!(
+            mark_preview_dispatched(&mut controller, first_intent),
+            PreviewDispatchDecision::Dispatch { .. }
+        ));
+        assert!(matches!(
+            accept_update_with_preview(&mut controller, second_intent),
+            ScrubUpdateAcceptance::Accepted { .. }
+        ));
+        assert!(matches!(
+            mark_preview_dispatched(&mut controller, second_intent),
+            PreviewDispatchDecision::Dispatch { .. }
+        ));
+
+        assert!(!controller.clear_in_flight_preview(first_intent));
+        assert_eq!(controller.in_flight_target(), Some(second_intent.request));
+        assert!(controller.clear_in_flight_preview(second_intent));
+        assert_eq!(controller.in_flight_target(), None);
     }
 }

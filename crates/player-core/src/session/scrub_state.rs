@@ -8,6 +8,9 @@ pub(super) struct VisibleScrubPreview {
     /// Поколение пользовательского scrub, которому принадлежит preview frame.
     generation: ScrubGeneration,
 
+    /// Цель preview transaction-а, в рамках которой frame стал visible.
+    pub(super) target_position: MediaTime,
+
     /// Позиция уже показанного frame-а на media timeline.
     pub(super) position: MediaTime,
 }
@@ -166,6 +169,11 @@ pub(super) enum SessionScrubFinishDecision {
 }
 
 /// Session-side scrub state, который группирует данные только активного пользовательского scrub-а.
+///
+/// State machine хранит media-level preview facts: latest request, visible preview
+/// frame, completed target preview и terminal invalidation. Preview facts
+/// привязаны к target текущей transaction, чтобы старый preview внутри того же
+/// scrub generation не мог закрыть новый target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SessionScrubState {
     /// Приватное состояние, чтобы `PlayerSession` не зависел от layout-а state machine.
@@ -189,8 +197,8 @@ enum SessionScrubStateInner {
         /// Последний preview-кадр этого generation, который уже реально показан.
         visible_preview: Option<VisibleScrubPreview>,
 
-        /// Preview transaction, который уже завершился для текущего generation.
-        completed_preview_generation: Option<ScrubGeneration>,
+        /// Target preview transaction-а, который уже завершился для текущего generation.
+        completed_preview_target: Option<MediaTime>,
     },
 }
 
@@ -201,7 +209,7 @@ impl SessionScrubState {
             generation,
             latest_request: None,
             visible_preview: None,
-            completed_preview_generation: None,
+            completed_preview_target: None,
         };
     }
 
@@ -234,6 +242,7 @@ impl SessionScrubState {
     pub(super) fn note_visible_preview(
         &mut self,
         generation: ScrubGeneration,
+        target_position: MediaTime,
         position: MediaTime,
     ) -> VisiblePreviewDecision {
         match &mut self.inner {
@@ -244,6 +253,7 @@ impl SessionScrubState {
             } if *active_generation == generation => {
                 let preview = VisibleScrubPreview {
                     generation,
+                    target_position,
                     position,
                 };
                 *visible_preview = Some(preview);
@@ -266,14 +276,15 @@ impl SessionScrubState {
     pub(super) fn complete_preview(
         &mut self,
         generation: ScrubGeneration,
+        target_position: MediaTime,
     ) -> PreviewCompletionDecision {
         match &mut self.inner {
             SessionScrubStateInner::Active {
                 generation: active_generation,
-                completed_preview_generation,
+                completed_preview_target,
                 ..
             } if *active_generation == generation => {
-                *completed_preview_generation = Some(generation);
+                *completed_preview_target = Some(target_position);
                 PreviewCompletionDecision::Completed { generation }
             }
             SessionScrubStateInner::Active { .. } => PreviewCompletionDecision::Rejected {
@@ -376,15 +387,29 @@ impl SessionScrubState {
         }
     }
 
+    /// Возвращает visible preview только если он был показан для указанного target-а.
+    pub(super) fn visible_preview_for_target(
+        &self,
+        generation: ScrubGeneration,
+        target_position: MediaTime,
+    ) -> Option<VisibleScrubPreview> {
+        self.visible_preview_for(generation)
+            .filter(|preview| preview.target_position == target_position)
+    }
+
     /// Проверяет, что completed preview относится к текущему active generation.
-    pub(super) fn completed_preview_for(&self, generation: ScrubGeneration) -> bool {
+    pub(super) fn completed_preview_for(
+        &self,
+        generation: ScrubGeneration,
+        target_position: MediaTime,
+    ) -> bool {
         matches!(
             &self.inner,
             SessionScrubStateInner::Active {
                 generation: active_generation,
-                completed_preview_generation: Some(completed_generation),
+                completed_preview_target: Some(completed_target),
                 ..
-            } if *active_generation == generation && *completed_generation == generation
+            } if *active_generation == generation && *completed_target == target_position
         )
     }
 
@@ -396,10 +421,10 @@ impl SessionScrubState {
         match &mut self.inner {
             SessionScrubStateInner::Active {
                 generation: active_generation,
-                completed_preview_generation,
+                completed_preview_target,
                 ..
             } if *active_generation == generation => {
-                *completed_preview_generation = None;
+                *completed_preview_target = None;
                 CompletedPreviewInvalidationDecision::Invalidated { generation }
             }
             SessionScrubStateInner::Active { .. } => {
@@ -419,12 +444,12 @@ impl SessionScrubState {
     pub(super) fn prepare_final_commit(&mut self) {
         if let SessionScrubStateInner::Active {
             visible_preview,
-            completed_preview_generation,
+            completed_preview_target,
             ..
         } = &mut self.inner
         {
             *visible_preview = None;
-            *completed_preview_generation = None;
+            *completed_preview_target = None;
         }
     }
 }
@@ -485,16 +510,21 @@ mod tests {
             }
         );
         assert_eq!(
-            scrub_state.note_visible_preview(first_generation, MediaTime::from_secs(6)),
+            scrub_state.note_visible_preview(
+                first_generation,
+                MediaTime::from_secs(7),
+                MediaTime::from_secs(6),
+            ),
             VisiblePreviewDecision::Recorded {
                 preview: VisibleScrubPreview {
                     generation: first_generation,
+                    target_position: MediaTime::from_secs(7),
                     position: MediaTime::from_secs(6),
                 },
             }
         );
         assert_eq!(
-            scrub_state.complete_preview(first_generation),
+            scrub_state.complete_preview(first_generation, MediaTime::from_secs(7)),
             PreviewCompletionDecision::Completed {
                 generation: first_generation,
             }
@@ -506,8 +536,8 @@ mod tests {
         assert_eq!(scrub_state.latest_request_for(first_generation), None);
         assert_eq!(scrub_state.latest_request_for(second_generation), None);
         assert_eq!(scrub_state.visible_preview_for(first_generation), None);
-        assert!(!scrub_state.completed_preview_for(first_generation));
-        assert!(!scrub_state.completed_preview_for(second_generation));
+        assert!(!scrub_state.completed_preview_for(first_generation, MediaTime::from_secs(7)));
+        assert!(!scrub_state.completed_preview_for(second_generation, MediaTime::from_secs(7)));
     }
 
     #[test]
@@ -558,7 +588,7 @@ mod tests {
         );
         assert_eq!(scrub_state.latest_request_for(stale_generation), None);
         assert_eq!(scrub_state.visible_preview_for(stale_generation), None);
-        assert!(!scrub_state.completed_preview_for(stale_generation));
+        assert!(!scrub_state.completed_preview_for(stale_generation, MediaTime::from_secs(9)));
         assert_eq!(scrub_state.current_generation(), Some(current_generation));
     }
 
@@ -589,17 +619,26 @@ mod tests {
 
         scrub_state.begin(current_generation);
         assert_eq!(
-            scrub_state.note_visible_preview(current_generation, MediaTime::from_secs(3)),
+            scrub_state.note_visible_preview(
+                current_generation,
+                MediaTime::from_secs(5),
+                MediaTime::from_secs(3),
+            ),
             VisiblePreviewDecision::Recorded {
                 preview: VisibleScrubPreview {
                     generation: current_generation,
+                    target_position: MediaTime::from_secs(5),
                     position: MediaTime::from_secs(3),
                 },
             }
         );
 
         assert_eq!(
-            scrub_state.note_visible_preview(stale_generation, MediaTime::from_secs(13)),
+            scrub_state.note_visible_preview(
+                stale_generation,
+                MediaTime::from_secs(15),
+                MediaTime::from_secs(13),
+            ),
             VisiblePreviewDecision::Rejected {
                 generation: stale_generation,
                 position: MediaTime::from_secs(13),
@@ -611,6 +650,7 @@ mod tests {
             scrub_state.visible_preview_for(current_generation),
             Some(VisibleScrubPreview {
                 generation: current_generation,
+                target_position: MediaTime::from_secs(5),
                 position: MediaTime::from_secs(3),
             })
         );
@@ -625,10 +665,15 @@ mod tests {
 
         scrub_state.begin(current_generation);
         assert_eq!(
-            scrub_state.note_visible_preview(current_generation, MediaTime::from_secs(3)),
+            scrub_state.note_visible_preview(
+                current_generation,
+                MediaTime::from_secs(5),
+                MediaTime::from_secs(3),
+            ),
             VisiblePreviewDecision::Recorded {
                 preview: VisibleScrubPreview {
                     generation: current_generation,
+                    target_position: MediaTime::from_secs(5),
                     position: MediaTime::from_secs(3),
                 },
             }
@@ -649,20 +694,20 @@ mod tests {
         scrub_state.begin(current_generation);
 
         assert_eq!(
-            scrub_state.complete_preview(current_generation),
+            scrub_state.complete_preview(current_generation, MediaTime::from_secs(5)),
             PreviewCompletionDecision::Completed {
                 generation: current_generation,
             }
         );
         assert_eq!(
-            scrub_state.complete_preview(stale_generation),
+            scrub_state.complete_preview(stale_generation, MediaTime::from_secs(7)),
             PreviewCompletionDecision::Rejected {
                 generation: stale_generation,
                 reason: PreviewCompletionRejection::StaleGeneration,
             }
         );
-        assert!(scrub_state.completed_preview_for(current_generation));
-        assert!(!scrub_state.completed_preview_for(stale_generation));
+        assert!(scrub_state.completed_preview_for(current_generation, MediaTime::from_secs(5)));
+        assert!(!scrub_state.completed_preview_for(stale_generation, MediaTime::from_secs(7)));
     }
 
     #[test]
@@ -674,17 +719,32 @@ mod tests {
         scrub_state.begin(current_generation);
 
         assert_eq!(
-            scrub_state.complete_preview(current_generation),
+            scrub_state.complete_preview(current_generation, MediaTime::from_secs(5)),
             PreviewCompletionDecision::Completed {
                 generation: current_generation,
             }
         );
-        assert!(scrub_state.completed_preview_for(current_generation));
+        assert!(scrub_state.completed_preview_for(current_generation, MediaTime::from_secs(5)));
 
         scrub_state.begin(stale_generation);
 
-        assert!(!scrub_state.completed_preview_for(current_generation));
-        assert!(!scrub_state.completed_preview_for(stale_generation));
+        assert!(!scrub_state.completed_preview_for(current_generation, MediaTime::from_secs(5)));
+        assert!(!scrub_state.completed_preview_for(stale_generation, MediaTime::from_secs(5)));
+    }
+
+    #[test]
+    fn completed_preview_belongs_to_exact_target_position() {
+        let generation = ScrubGeneration::default().next();
+        let mut scrub_state = SessionScrubState::default();
+
+        scrub_state.begin(generation);
+        assert_eq!(
+            scrub_state.complete_preview(generation, MediaTime::from_secs(5)),
+            PreviewCompletionDecision::Completed { generation }
+        );
+
+        assert!(scrub_state.completed_preview_for(generation, MediaTime::from_secs(5)));
+        assert!(!scrub_state.completed_preview_for(generation, MediaTime::from_secs(6)));
     }
 
     #[test]
@@ -736,6 +796,7 @@ mod tests {
         let intent = session_scrub_intent(generation, 17, SeekMode::KeyframeBefore);
         let visible_preview = VisibleScrubPreview {
             generation,
+            target_position: MediaTime::from_secs(17),
             position: MediaTime::from_secs(16),
         };
         let mut scrub_state = SessionScrubState::default();
@@ -746,13 +807,17 @@ mod tests {
             SessionScrubUpdateAcceptance::Accepted { intent }
         );
         assert_eq!(
-            scrub_state.note_visible_preview(generation, visible_preview.position),
+            scrub_state.note_visible_preview(
+                generation,
+                visible_preview.target_position,
+                visible_preview.position,
+            ),
             VisiblePreviewDecision::Recorded {
                 preview: visible_preview,
             }
         );
         assert_eq!(
-            scrub_state.complete_preview(generation),
+            scrub_state.complete_preview(generation, MediaTime::from_secs(17)),
             PreviewCompletionDecision::Completed { generation }
         );
 
@@ -767,7 +832,7 @@ mod tests {
             scrub_state.visible_preview_for(generation),
             Some(visible_preview)
         );
-        assert!(!scrub_state.completed_preview_for(generation));
+        assert!(!scrub_state.completed_preview_for(generation, MediaTime::from_secs(17)));
     }
 
     #[test]
@@ -778,7 +843,7 @@ mod tests {
 
         scrub_state.begin(current_generation);
         assert_eq!(
-            scrub_state.complete_preview(current_generation),
+            scrub_state.complete_preview(current_generation, MediaTime::from_secs(5)),
             PreviewCompletionDecision::Completed {
                 generation: current_generation,
             }
@@ -793,7 +858,7 @@ mod tests {
         );
 
         assert_eq!(scrub_state.current_generation(), Some(current_generation));
-        assert!(scrub_state.completed_preview_for(current_generation));
+        assert!(scrub_state.completed_preview_for(current_generation, MediaTime::from_secs(5)));
     }
 
     #[test]
@@ -808,16 +873,21 @@ mod tests {
             SessionScrubUpdateAcceptance::Accepted { intent }
         );
         assert_eq!(
-            scrub_state.note_visible_preview(generation, MediaTime::from_secs(18)),
+            scrub_state.note_visible_preview(
+                generation,
+                MediaTime::from_secs(19),
+                MediaTime::from_secs(18),
+            ),
             VisiblePreviewDecision::Recorded {
                 preview: VisibleScrubPreview {
                     generation,
+                    target_position: MediaTime::from_secs(19),
                     position: MediaTime::from_secs(18),
                 },
             }
         );
         assert_eq!(
-            scrub_state.complete_preview(generation),
+            scrub_state.complete_preview(generation, MediaTime::from_secs(19)),
             PreviewCompletionDecision::Completed { generation }
         );
 
@@ -826,6 +896,6 @@ mod tests {
         assert_eq!(scrub_state.current_generation(), None);
         assert_eq!(scrub_state.latest_request_for(generation), None);
         assert_eq!(scrub_state.visible_preview_for(generation), None);
-        assert!(!scrub_state.completed_preview_for(generation));
+        assert!(!scrub_state.completed_preview_for(generation, MediaTime::from_secs(19)));
     }
 }

@@ -13,6 +13,9 @@ pub struct DecodePacket {
     /// Presentation timestamp packet-а на media timeline.
     pub pts: Duration,
 
+    /// Seek generation player pipeline-а, которому принадлежит packet.
+    pub generation: u64,
+
     /// Encoded bytes без привязки к конкретному hardware backend-у.
     pub encoded_bytes: Bytes,
 

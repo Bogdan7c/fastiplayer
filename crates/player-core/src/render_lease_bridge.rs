@@ -1066,6 +1066,7 @@ mod tests {
     /// Создаёт decoded frame без GPU handles для проверки render lease boundary.
     fn decoded_frame_for_tests(texture_handle: FrameTextureHandle) -> video_core::DecodedFrame {
         video_core::DecodedFrame {
+            generation: 0,
             pts: Duration::from_millis(42),
             format: DecodedPixelFormat::Nv12,
             bit_depth: BitDepth::Eight,

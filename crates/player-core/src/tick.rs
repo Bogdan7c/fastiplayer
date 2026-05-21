@@ -1192,8 +1192,29 @@ fn drain_decoded_video_frames(
 
     let drained_frame_count = decoded_frames.len();
     for frame in decoded_frames {
+        if !session
+            .pipeline
+            .packet_generation_is_current(frame.generation)
+        {
+            release_video_texture(session, frame.texture_handle);
+            record_video_drop(
+                session,
+                tick_result,
+                frame.pts,
+                PlayerVideoDropReason::StaleGeneration,
+            );
+            tracing::debug!(
+                frame_generation = frame.generation,
+                pipeline_generation = session.pipeline.seek_generation(),
+                pts_ms = frame.pts.as_millis(),
+                "Dropping decoded video frame from stale seek generation"
+            );
+            continue;
+        }
+
         session.note_decoded_video_frame_for_seek_trace(frame.pts);
         tracing::debug!(
+            generation = frame.generation,
             pts_ms = frame.pts.as_millis(),
             format = %frame.format,
             bit_depth = %frame.bit_depth,
@@ -1366,6 +1387,7 @@ fn send_pending_video_packets_to_decoder(
         let decode_packet = PlayerDecodePacket {
             track_id: packet_track_id,
             pts: packet_pts,
+            generation: packet_generation,
             encoded_bytes: packet_probe.encoded_bytes,
             keyframe: decode_packet_keyframe_hint,
             resolved_color,
@@ -2505,6 +2527,7 @@ mod tests {
         };
 
         video_core::DecodedFrame {
+            generation: 0,
             pts,
             format,
             bit_depth,
@@ -2530,6 +2553,9 @@ mod tests {
     struct RecordingVideoDecoderThread {
         /// Packet log нужен тесту, чтобы отличить drop от отправки в decoder.
         sent_packets: Arc<Mutex<Vec<PlayerDecodePacket>>>,
+
+        /// Очередь decoded frames для проверки decoder receive boundary.
+        decoded_frames: Arc<Mutex<VecDeque<video_core::DecodedFrame>>>,
     }
 
     impl RecordingVideoDecoderThread {
@@ -2544,6 +2570,14 @@ mod tests {
                 .lock()
                 .expect("recording decoder packet log lock")
                 .clone()
+        }
+
+        /// Кладёт synthetic decoded frame в receive queue fake decoder-а.
+        fn push_decoded_frame(&self, frame: video_core::DecodedFrame) {
+            self.decoded_frames
+                .lock()
+                .expect("recording decoder frame queue lock")
+                .push_back(frame);
         }
     }
 
@@ -2565,7 +2599,10 @@ mod tests {
         fn release_frame(&self, _handle: video_core::FrameTextureHandle) {}
 
         fn try_recv_frame(&self) -> Option<video_core::DecodedFrame> {
-            None
+            self.decoded_frames
+                .lock()
+                .expect("recording decoder frame queue lock")
+                .pop_front()
         }
 
         fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent> {
@@ -3394,6 +3431,44 @@ mod tests {
         assert_eq!(sent_packets, 0);
         assert!(session.pipeline.pending_video_packet_is_empty());
         assert!(decoder_thread.sent_packets().is_empty());
+        assert_eq!(
+            tick_result.dropped_video_frames,
+            vec![PlayerVideoFrameDrop {
+                pts: Duration::from_millis(120),
+                reason: PlayerVideoDropReason::StaleGeneration,
+            }]
+        );
+    }
+
+    #[test]
+    fn stale_decoded_video_frame_is_dropped_before_presentation_queue() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+        let stale_generation = session.pipeline.seek_generation();
+
+        session
+            .pipeline
+            .set_video_decoder_thread(decoder_thread.clone());
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        session.pipeline.begin_seek_generation();
+        let mut stale_frame = decoded_frame(Duration::from_millis(120), 77);
+        stale_frame.generation = stale_generation;
+        decoder_thread.push_decoded_frame(stale_frame);
+
+        let drained_frames = drain_decoded_video_frames(
+            &mut session,
+            &PlayerTickConfig::default(),
+            &mut tick_result,
+            1,
+            None,
+        );
+
+        assert_eq!(drained_frames, 1);
+        assert!(session.pipeline.video_present_queue_is_empty());
         assert_eq!(
             tick_result.dropped_video_frames,
             vec![PlayerVideoFrameDrop {

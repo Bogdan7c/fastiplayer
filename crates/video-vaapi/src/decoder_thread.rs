@@ -737,6 +737,9 @@ pub struct DecodePacket {
     /// Presentation timestamp packet-а.
     pub pts: Duration,
 
+    /// Seek generation player pipeline-а, которому принадлежит packet.
+    pub generation: u64,
+
     /// Encoded VP9 bytes, которые decoder thread передаёт hardware backend-у без повторной копии.
     pub encoded_bytes: Bytes,
 
@@ -753,6 +756,7 @@ impl From<video_core::DecodePacket> for DecodePacket {
         Self {
             track_id: packet.track_id,
             pts: packet.pts,
+            generation: packet.generation,
             encoded_bytes: packet.encoded_bytes,
             keyframe: packet.keyframe,
             resolved_color: packet.resolved_color,
@@ -766,6 +770,7 @@ impl From<DecodePacket> for video_core::DecodePacket {
         Self {
             track_id: packet.track_id,
             pts: packet.pts,
+            generation: packet.generation,
             encoded_bytes: packet.encoded_bytes,
             keyframe: packet.keyframe,
             resolved_color: packet.resolved_color,
@@ -1663,6 +1668,7 @@ fn decode_queued_packet(
     let DecodePacket {
         track_id,
         pts,
+        generation,
         encoded_bytes,
         keyframe,
         resolved_color,
@@ -1688,6 +1694,7 @@ fn decode_queued_packet(
 
     match decode_result {
         Ok(Some(mut frame)) => {
+            frame.generation = generation;
             if let Some(color_metadata) = &resolved_color {
                 frame.color = color_metadata.clone();
             }
@@ -1819,6 +1826,7 @@ mod tests {
     /// Создаёт decoded frame без реальных GPU resources для channel-level тестов.
     fn decoded_frame_for_tests(handle_id: u64) -> DecodedFrame {
         DecodedFrame {
+            generation: 0,
             pts: Duration::ZERO,
             format: DecodedPixelFormat::Nv12,
             bit_depth: BitDepth::Eight,
@@ -2105,6 +2113,7 @@ mod tests {
                     packet: DecodePacket {
                         track_id: media_core::TrackId::new(1),
                         pts: Duration::from_millis(packet_index),
+                        generation: packet_index,
                         encoded_bytes: Bytes::from_static(b"vp9"),
                         keyframe: packet_index == 0,
                         resolved_color: None,

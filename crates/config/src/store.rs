@@ -185,7 +185,7 @@ mod tests {
 
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(CURRENT_SCHEMA_VERSION, 2);
-        assert_eq!(config.player.seek.live_interval_ms, 100);
+        assert_eq!(config.player.seek.live_interval_ms, 33);
         assert_eq!(config.player.seek.live_preview_budget_ms, 100);
         assert_eq!(config.player.seek.commit_timeout_ms, 10_000);
         assert_eq!(config.player.seek.resume_audio_min_buffer_ms, 50);
@@ -326,7 +326,7 @@ mod tests {
         assert!(created_toml.contains("schema_version = 2"));
         assert!(created_toml.contains("[player.seek]"));
         assert!(created_toml.contains("# Настройки live seek"));
-        assert!(created_toml.contains("live_interval_ms = 100"));
+        assert!(created_toml.contains("live_interval_ms = 33"));
         assert!(created_toml.contains("resume_audio_gate_timeout_ms = 250"));
         assert!(created_toml.contains("resume_video_min_ready_frames = 3"));
         assert!(created_toml.contains("[player.demux]"));
@@ -616,6 +616,27 @@ live_interval_ms = 0
         .expect("invalid config written");
 
         let error = load_from_path(&config_path).expect_err("invalid seek interval rejected");
+
+        assert!(error.to_string().contains("player.seek.live_interval_ms"));
+    }
+
+    /// Проверяет верхнюю границу seek preview interval, чтобы drag не стал фактически offline.
+    #[test]
+    fn excessive_seek_interval_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[player.seek]
+live_interval_ms = 1001
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("excessive seek interval rejected");
 
         assert!(error.to_string().contains("player.seek.live_interval_ms"));
     }

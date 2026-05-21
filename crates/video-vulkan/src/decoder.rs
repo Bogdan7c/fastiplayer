@@ -242,6 +242,7 @@ impl VideoDecoder for VulkanVideoDecoder {
         // Если есть ожидающие кадры — возвращаем самый старый.
         if let Some(completed) = self.pending_frames.pop_front() {
             return Ok(Some(DecodedFrame {
+                generation: 0,
                 pts: completed.pts,
                 format: DecodedPixelFormat::Nv12,
                 bit_depth: BitDepth::Eight,
@@ -271,6 +272,7 @@ impl VideoDecoder for VulkanVideoDecoder {
             if let Some(ref dpb) = self.dpb {
                 if let Some(slot) = dpb.get_existing_frame(frame_info.ref_frame_idx[0]) {
                     return Ok(Some(DecodedFrame {
+                        generation: 0,
                         pts: packet.pts,
                         format: DecodedPixelFormat::Nv12,
                         bit_depth: BitDepth::Eight,
