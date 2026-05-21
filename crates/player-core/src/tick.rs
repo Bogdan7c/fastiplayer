@@ -2286,6 +2286,10 @@ fn process_pending_video_packets(
 ) {
     let tick_config = &tick_context.config;
 
+    session.release_stale_present_frame_for_final_seek_texture_pressure(
+        texture_slot_min_watermark(tick_config),
+    );
+
     let base_drain_budget = if session.can_present_video() {
         tick_config.max_decoded_video_frames_drained_per_tick
     } else {
