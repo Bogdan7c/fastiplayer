@@ -1959,11 +1959,14 @@ mod tests {
 
     use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
     use crossbeam_channel::unbounded;
-    use media_core::{DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer};
+    use media_core::{
+        DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, TrackInfo, TrackKind,
+    };
     use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
 
     use super::*;
-    use crate::{MediaSource, PlaybackState, SeekTarget};
+    use crate::seek_state::SeekCommitKind;
+    use crate::{MediaSource, PlaybackState, ScrubReleaseCommitSource, SeekTarget};
 
     fn worker_config_for_tests() -> PlayerWorkerConfig {
         PlayerWorkerConfig {
@@ -2006,6 +2009,18 @@ mod tests {
             }
         }
 
+        /// Создаёт seekable fake media с tracks для scrub preview/present тестов.
+        fn seekable_with_tracks(
+            tracks: Vec<TrackInfo>,
+            seek_request_log: Arc<Mutex<Vec<DemuxSeekRequest>>>,
+        ) -> Self {
+            Self {
+                tracks,
+                duration: Some(Duration::from_secs(30)),
+                seek_request_log,
+            }
+        }
+
         /// Записывает seek request и возвращает нейтральный successful seek result.
         fn record_seek_request(
             &mut self,
@@ -2021,6 +2036,24 @@ mod tests {
                 actual_position: MediaTime::from_duration(request.timestamp),
                 actual_track_timestamp: None,
             })
+        }
+    }
+
+    /// Создаёт минимальный track для worker runtime tests без реального media backend.
+    fn worker_fake_track(track_id: u32, kind: TrackKind) -> TrackInfo {
+        TrackInfo {
+            id: TrackId::new(track_id),
+            kind,
+            codec_id: match kind {
+                TrackKind::Video => "V_VP9".to_string(),
+                TrackKind::Audio => "A_OPUS".to_string(),
+            },
+            codec_private: None,
+            time_base: media_core::TimeBase::new(1, 1_000),
+            duration: Some(Duration::from_secs(30)),
+            sample_rate: (kind == TrackKind::Audio).then_some(48_000),
+            channels: (kind == TrackKind::Audio).then_some(2),
+            video: None,
         }
     }
 
@@ -2129,6 +2162,43 @@ mod tests {
         )
     }
 
+    /// Устанавливает seekable fake media с video track для worker scrub release tests.
+    fn install_worker_video_media(
+        runtime: &mut PlayerWorkerRuntime,
+        seek_request_log: Arc<Mutex<Vec<DemuxSeekRequest>>>,
+    ) {
+        let tracks = vec![worker_fake_track(1, TrackKind::Video)];
+        let demuxer = WorkerFakeDemuxer::seekable_with_tracks(tracks, seek_request_log);
+        runtime.session.load_demuxer_with_autoplay(
+            "worker-fake".to_string(),
+            Box::new(demuxer),
+            false,
+        );
+    }
+
+    /// Проверяет release diagnostic в worker runtime без зависимости от соседних events.
+    fn assert_worker_scrub_release_event(
+        events: &[PlayerEvent],
+        release_policy: ScrubCommitPolicy,
+        committed_from: ScrubReleaseCommitSource,
+        committed_position: Duration,
+        latest_target: Duration,
+    ) {
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    PlayerEvent::ScrubReleaseCommitted(info)
+                        if info.release_policy == release_policy
+                            && info.committed_from == committed_from
+                            && info.committed_position == committed_position
+                            && info.latest_target == latest_target
+                )
+            }),
+            "worker scrub release diagnostic event is missing: {events:?}"
+        );
+    }
+
     fn command_sender_for_scrub_path_tests() -> (
         PlayerCommandSender,
         Receiver<WorkerCommand>,
@@ -2155,9 +2225,17 @@ mod tests {
     }
 
     fn decoded_frame_for_tests(texture_handle: FrameTextureHandle) -> DecodedFrame {
+        decoded_frame_with_pts_for_tests(Duration::ZERO, texture_handle)
+    }
+
+    /// Создаёт decoded frame с заданным PTS для session present-frame simulation.
+    fn decoded_frame_with_pts_for_tests(
+        pts: Duration,
+        texture_handle: FrameTextureHandle,
+    ) -> DecodedFrame {
         DecodedFrame {
             generation: 0,
-            pts: Duration::ZERO,
+            pts,
             format: DecodedPixelFormat::Nv12,
             bit_depth: BitDepth::Eight,
             chroma: ChromaSubsampling::Yuv420,
@@ -2962,6 +3040,180 @@ mod tests {
         );
         assert!(runtime.session.has_active_seek_commit());
         assert!(!runtime.session.snapshot().timeline.scrubbing);
+    }
+
+    #[test]
+    fn playing_scrub_release_commits_last_visible_frame_and_resumes_playback() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
+        let generation = ScrubGeneration::default().next();
+
+        install_worker_video_media(&mut runtime, Arc::clone(&seek_request_log));
+        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
+        assert_eq!(
+            runtime.session.snapshot().playback_state,
+            PlaybackState::Playing
+        );
+
+        runtime.handle_begin_scrub_command(generation);
+        runtime.apply_scrub_update(scrub_update_intent(generation, 12_000));
+        runtime
+            .session
+            .pipeline
+            .set_present_video_frame(decoded_frame_with_pts_for_tests(
+                Duration::from_secs(12),
+                FrameTextureHandle(120),
+            ));
+        runtime
+            .session
+            .note_presented_frame_for_seek(Duration::from_secs(12));
+        runtime
+            .scrub_coalescer
+            .submit_latest(scrub_update_intent(generation, 20_000))
+            .unwrap();
+
+        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
+            generation,
+            ScrubCommitPolicy::CommitVisiblePreview,
+        ));
+
+        assert!(runtime.session.seek_commit().is_none());
+        assert_eq!(
+            runtime.session.snapshot().current_position,
+            Duration::from_secs(12)
+        );
+        assert_eq!(
+            runtime.session.snapshot().playback_state,
+            PlaybackState::Playing
+        );
+        assert!(!runtime.session.snapshot().timeline.scrubbing);
+        assert!(!runtime.session.snapshot().timeline.seeking);
+        assert_eq!(
+            seek_request_log
+                .lock()
+                .expect("seek request log lock")
+                .as_slice(),
+            &[DemuxSeekRequest::preview(Duration::from_secs(12))]
+        );
+        let events = runtime.session.take_events();
+        assert_worker_scrub_release_event(
+            &events,
+            ScrubCommitPolicy::CommitVisiblePreview,
+            ScrubReleaseCommitSource::VisiblePreview,
+            Duration::from_secs(12),
+            Duration::from_secs(20),
+        );
+    }
+
+    #[test]
+    fn paused_scrub_release_commits_last_visible_frame_and_stays_paused() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
+        let generation = ScrubGeneration::default().next();
+
+        install_worker_video_media(&mut runtime, Arc::clone(&seek_request_log));
+        assert_eq!(
+            runtime.session.snapshot().playback_state,
+            PlaybackState::Paused
+        );
+
+        runtime.handle_begin_scrub_command(generation);
+        runtime.apply_scrub_update(scrub_update_intent(generation, 12_000));
+        runtime
+            .session
+            .pipeline
+            .set_present_video_frame(decoded_frame_with_pts_for_tests(
+                Duration::from_secs(12),
+                FrameTextureHandle(121),
+            ));
+        runtime
+            .session
+            .note_presented_frame_for_seek(Duration::from_secs(12));
+        runtime
+            .scrub_coalescer
+            .submit_latest(scrub_update_intent(generation, 20_000))
+            .unwrap();
+
+        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
+            generation,
+            ScrubCommitPolicy::CommitVisiblePreview,
+        ));
+
+        assert!(runtime.session.seek_commit().is_none());
+        assert_eq!(
+            runtime.session.snapshot().current_position,
+            Duration::from_secs(12)
+        );
+        assert_eq!(
+            runtime.session.snapshot().playback_state,
+            PlaybackState::Paused
+        );
+        assert!(!runtime.session.snapshot().timeline.scrubbing);
+        assert!(!runtime.session.snapshot().timeline.seeking);
+        assert_eq!(
+            seek_request_log
+                .lock()
+                .expect("seek request log lock")
+                .as_slice(),
+            &[DemuxSeekRequest::preview(Duration::from_secs(12))]
+        );
+        let events = runtime.session.take_events();
+        assert_worker_scrub_release_event(
+            &events,
+            ScrubCommitPolicy::CommitVisiblePreview,
+            ScrubReleaseCommitSource::VisiblePreview,
+            Duration::from_secs(12),
+            Duration::from_secs(20),
+        );
+    }
+
+    #[test]
+    fn playing_scrub_release_stores_resume_intent_on_active_latest_target_seek() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
+        let generation = ScrubGeneration::default().next();
+
+        install_worker_video_media(&mut runtime, Arc::clone(&seek_request_log));
+        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
+        runtime.handle_begin_scrub_command(generation);
+        runtime
+            .scrub_coalescer
+            .submit_latest(scrub_update_intent(generation, 20_000))
+            .unwrap();
+
+        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
+            generation,
+            ScrubCommitPolicy::CommitVisiblePreview,
+        ));
+
+        let seek_commit = runtime
+            .session
+            .seek_commit()
+            .expect("latest-target fallback должен оставить active final seek");
+        assert_eq!(seek_commit.kind, SeekCommitKind::Final);
+        assert_eq!(seek_commit.target_position, MediaTime::from_secs(20));
+        assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
+        assert_eq!(
+            runtime.session.snapshot().playback_state,
+            PlaybackState::Seeking
+        );
+        assert_eq!(
+            seek_request_log
+                .lock()
+                .expect("seek request log lock")
+                .as_slice(),
+            &[DemuxSeekRequest::decode_point_before(Duration::from_secs(
+                20
+            ))]
+        );
+        let events = runtime.session.take_events();
+        assert_worker_scrub_release_event(
+            &events,
+            ScrubCommitPolicy::CommitVisiblePreview,
+            ScrubReleaseCommitSource::LatestTarget,
+            Duration::from_secs(20),
+            Duration::from_secs(20),
+        );
     }
 
     /// Фиксирует latest-wins contract для плотного scrub burst перед release.

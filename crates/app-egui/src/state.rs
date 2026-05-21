@@ -239,6 +239,7 @@ fn cached_present_frame_discard_reason_for_player_event(
         | PlayerEvent::SeekTargetFramePresented(_)
         | PlayerEvent::SeekCommitted(_)
         | PlayerEvent::AudioResumedAfterSeek(_)
+        | PlayerEvent::ScrubReleaseCommitted(_)
         | PlayerEvent::VideoFrameReady(_)
         | PlayerEvent::BufferingStateChanged(_)
         | PlayerEvent::CapabilityScanCompleted(_)
@@ -1523,10 +1524,12 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
     use player_core::{
         MediaOpenRequest, MediaSource, MediaSummary, PlaybackState, PlayerError, PlayerErrorKind,
-        PlayerEvent, ScrubCommitPolicy,
+        PlayerEvent, ScrubCommitPolicy, ScrubReleaseCommitInfo, ScrubReleaseCommitSource,
     };
     use render_core::{
         ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
@@ -1686,6 +1689,17 @@ mod tests {
         assert_eq!(
             cached_present_frame_discard_reason_for_player_event(
                 &PlayerEvent::PlaybackStateChanged(PlaybackState::Paused)
+            ),
+            None
+        );
+        assert_eq!(
+            cached_present_frame_discard_reason_for_player_event(
+                &PlayerEvent::ScrubReleaseCommitted(ScrubReleaseCommitInfo {
+                    release_policy: ScrubCommitPolicy::CommitVisiblePreview,
+                    committed_from: ScrubReleaseCommitSource::VisiblePreview,
+                    committed_position: Duration::from_secs(12),
+                    latest_target: Duration::from_secs(20),
+                })
             ),
             None
         );

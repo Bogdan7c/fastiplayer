@@ -24,7 +24,8 @@ use crate::{
     PipelineLatencyStage, PipelinePauseReason, PipelineQueueDepthSnapshot, PlaybackDiagnostics,
     PlaybackDiagnosticsLogSummary, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError,
     PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection,
-    ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration, ScrubUpdateIntent, SeekAudioResumeInfo,
+    ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration, ScrubReleaseCommitInfo,
+    ScrubReleaseCommitSource, ScrubUpdateIntent, SeekAudioResumeInfo,
     SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo, SeekMode, SeekProgressBlocker, SeekRequest,
     SeekTargetFramePresentation, SessionScrubCommand, TextureSlotPressureSnapshot, TrackId,
     TrackSelectionSnapshot, VideoBackendFactory, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
@@ -129,6 +130,64 @@ impl PreviewFrameReadiness {
             Self::Missing => TimelinePreviewState::Pending,
         }
     }
+}
+
+/// Итог выбора release position внутри session boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScrubReleaseSelection {
+    /// Источник выбранной позиции для диагностики release policy.
+    committed_from: ScrubReleaseCommitSource,
+
+    /// Позиция, которую session выбрала как final commit target.
+    committed_position: MediaTime,
+}
+
+impl ScrubReleaseSelection {
+    /// Собирает typed selection без смешивания source и position в tuple.
+    const fn new(committed_from: ScrubReleaseCommitSource, committed_position: MediaTime) -> Self {
+        Self {
+            committed_from,
+            committed_position,
+        }
+    }
+}
+
+/// Причина, по которой `CommitVisiblePreview` не может закрыть shown frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisiblePreviewCommitFallback {
+    /// `EndScrub` пришёл без active scrub state в timeline snapshot.
+    NotScrubbing,
+
+    /// Scrub generation уже не является текущим владельцем preview facts.
+    StaleGeneration,
+
+    /// Active seek относится к другому transition-у и не может быть безопасно заменён.
+    ActiveSeekConflict,
+
+    /// Session не видела ни одного реально показанного preview frame-а.
+    NoVisiblePreview,
+
+    /// Timeline пометил текущий video frame stale, поэтому marker нельзя считать fresh.
+    StaleFrame,
+
+    /// Render-present frame уже не совпадает с recorded visible preview.
+    PresentFrameMismatch,
+}
+
+/// Typed результат попытки закрыть release с последнего shown preview frame-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisiblePreviewCommitDecision {
+    /// Visible preview прошёл все проверки и был синхронно зафиксирован как final position.
+    Committed {
+        /// Позиция реально показанного frame-а.
+        position: MediaTime,
+    },
+
+    /// Visible preview непригоден; caller должен явно выбрать fallback path.
+    Fallback {
+        /// Диагностическая причина fallback-а.
+        reason: VisiblePreviewCommitFallback,
+    },
 }
 
 /// Read-only срез gate-состояния, нужный только для диагностики active seek-а.
@@ -2624,17 +2683,20 @@ impl PlayerSession {
             stale_frame = self.snapshot.timeline.stale_frame,
             "Session выбирает EndScrub commit policy"
         );
-        match intent.policy {
+        let release_selection = match intent.policy {
             ScrubCommitPolicy::CommitLatestTarget => {
-                self.commit_latest_target_as_final(target_position, seek_mode, intent.generation)
+                self.commit_latest_target_as_final(target_position, seek_mode, intent.generation)?
             }
             ScrubCommitPolicy::CommitVisiblePreview => self
                 .commit_visible_preview_or_latest_target(
                     target_position,
                     seek_mode,
                     intent.generation,
-                ),
-        }
+                )?,
+        };
+
+        self.publish_scrub_release_commit(intent.policy, release_selection, target_position);
+        Ok(())
     }
 
     /// Коммитит latest target, переиспользуя уже запущенный preview decode path.
@@ -2643,13 +2705,19 @@ impl PlayerSession {
         target_position: MediaTime,
         seek_mode: crate::SeekMode,
         generation: ScrubGeneration,
-    ) -> PlayerResult<()> {
+    ) -> PlayerResult<ScrubReleaseSelection> {
         if self.complete_ready_preview_seek_as_final(target_position, generation) {
-            return Ok(());
+            return Ok(ScrubReleaseSelection::new(
+                ScrubReleaseCommitSource::PromotedPreview,
+                target_position,
+            ));
         }
 
         if self.promote_active_preview_seek_to_final(target_position, generation) {
-            return Ok(());
+            return Ok(ScrubReleaseSelection::new(
+                ScrubReleaseCommitSource::PromotedPreview,
+                target_position,
+            ));
         }
 
         self.start_seek_transaction(
@@ -2657,7 +2725,11 @@ impl PlayerSession {
             seek_mode,
             SeekCommitKind::Final,
             Some(generation),
-        )
+        )?;
+        Ok(ScrubReleaseSelection::new(
+            ScrubReleaseCommitSource::LatestTarget,
+            target_position,
+        ))
     }
 
     /// CommitVisiblePreview предпочитает уже показанный кадр, но без него закрывает latest target.
@@ -2666,33 +2738,69 @@ impl PlayerSession {
         target_position: MediaTime,
         seek_mode: crate::SeekMode,
         generation: ScrubGeneration,
-    ) -> PlayerResult<()> {
-        if self.commit_visible_preview_as_final(generation) {
-            return Ok(());
+    ) -> PlayerResult<ScrubReleaseSelection> {
+        match self.commit_visible_preview_as_final(generation) {
+            VisiblePreviewCommitDecision::Committed { position } => {
+                return Ok(ScrubReleaseSelection::new(
+                    ScrubReleaseCommitSource::VisiblePreview,
+                    position,
+                ));
+            }
+            VisiblePreviewCommitDecision::Fallback { reason } => {
+                debug!(
+                    generation = generation.as_u64(),
+                    reason = ?reason,
+                    latest_target_ms = target_position.as_duration().as_millis(),
+                    "CommitVisiblePreview использует latest-target fallback"
+                );
+            }
         }
 
         self.commit_latest_target_as_final(target_position, seek_mode, generation)
     }
 
     /// CommitVisiblePreview фиксирует именно frame, который уже был реально показан.
-    fn commit_visible_preview_as_final(&mut self, generation: ScrubGeneration) -> bool {
+    fn commit_visible_preview_as_final(
+        &mut self,
+        generation: ScrubGeneration,
+    ) -> VisiblePreviewCommitDecision {
         if !self.snapshot.timeline.scrubbing {
-            return false;
+            return VisiblePreviewCommitDecision::Fallback {
+                reason: VisiblePreviewCommitFallback::NotScrubbing,
+            };
+        }
+
+        if self.scrub_state.current_generation() != Some(generation) {
+            return VisiblePreviewCommitDecision::Fallback {
+                reason: VisiblePreviewCommitFallback::StaleGeneration,
+            };
         }
 
         if self.seek_commit.is_some_and(|seek_commit| {
             seek_commit.kind != SeekCommitKind::Preview
                 || seek_commit.scrub_generation != Some(generation)
         }) {
-            return false;
+            return VisiblePreviewCommitDecision::Fallback {
+                reason: VisiblePreviewCommitFallback::ActiveSeekConflict,
+            };
         }
 
         let Some(visible_preview) = self.scrub_state.visible_preview_for(generation) else {
-            return false;
+            return VisiblePreviewCommitDecision::Fallback {
+                reason: VisiblePreviewCommitFallback::NoVisiblePreview,
+            };
         };
 
+        if self.pipeline.has_selected_video_track() && self.snapshot.timeline.stale_frame {
+            return VisiblePreviewCommitDecision::Fallback {
+                reason: VisiblePreviewCommitFallback::StaleFrame,
+            };
+        }
+
         if !self.present_frame_matches_position(visible_preview.position.as_duration()) {
-            return false;
+            return VisiblePreviewCommitDecision::Fallback {
+                reason: VisiblePreviewCommitFallback::PresentFrameMismatch,
+            };
         }
 
         let packet_generation = self
@@ -2713,7 +2821,35 @@ impl PlayerSession {
             kind: SeekCommitKind::Final,
         };
         self.complete_final_seek_commit(promoted_seek_commit);
-        true
+        VisiblePreviewCommitDecision::Committed {
+            position: visible_preview.position,
+        }
+    }
+
+    /// Публикует explainable release diagnostic после успешного выбора commit path.
+    fn publish_scrub_release_commit(
+        &mut self,
+        release_policy: ScrubCommitPolicy,
+        release_selection: ScrubReleaseSelection,
+        latest_target: MediaTime,
+    ) {
+        info!(
+            release_policy = scrub_commit_policy_name(release_policy),
+            committed_from = scrub_release_commit_source_name(release_selection.committed_from),
+            committed_position_ms = release_selection
+                .committed_position
+                .as_duration()
+                .as_millis(),
+            latest_target_ms = latest_target.as_duration().as_millis(),
+            "Scrub release commit выбран"
+        );
+        self.pending_events
+            .push(PlayerEvent::ScrubReleaseCommitted(ScrubReleaseCommitInfo {
+                release_policy,
+                committed_from: release_selection.committed_from,
+                committed_position: release_selection.committed_position.as_duration(),
+                latest_target: latest_target.as_duration(),
+            }));
     }
 
     /// Активный preview latest target-а становится final transaction-ом без restart seek-а.
@@ -3802,6 +3938,23 @@ fn seek_commit_kind_name(kind: SeekCommitKind) -> &'static str {
     }
 }
 
+/// Возвращает stable label для scrub release policy.
+fn scrub_commit_policy_name(policy: ScrubCommitPolicy) -> &'static str {
+    match policy {
+        ScrubCommitPolicy::CommitLatestTarget => "latest-target",
+        ScrubCommitPolicy::CommitVisiblePreview => "visible-preview",
+    }
+}
+
+/// Возвращает stable label для источника release commit-а.
+fn scrub_release_commit_source_name(source: ScrubReleaseCommitSource) -> &'static str {
+    match source {
+        ScrubReleaseCommitSource::VisiblePreview => "visible-preview",
+        ScrubReleaseCommitSource::LatestTarget => "latest-target",
+        ScrubReleaseCommitSource::PromotedPreview => "promoted-preview",
+    }
+}
+
 /// Возвращает stable label для resume intent-а после seek.
 fn playback_resume_intent_name(intent: PlaybackResumeIntent) -> &'static str {
     match intent {
@@ -3826,7 +3979,7 @@ mod tests {
         DecoderControlChannelPressureSnapshot, DecoderResourceSnapshot, MediaSource,
         PendingAudioPacket, PendingVideoPacket, PlayerCommand, PlayerDecodePacket,
         PlayerTickConfig, PlayerTickContext, PlayerTickResult, PlayerVideoDropReason,
-        PlayerVideoFrameDrop, ScrubCommitPolicy, SeekMode, SeekTarget,
+        PlayerVideoFrameDrop, ScrubCommitPolicy, ScrubReleaseCommitSource, SeekMode, SeekTarget,
         WgpuRenderTextureProviderHandle,
     };
     use bytes::Bytes;
@@ -4937,6 +5090,29 @@ mod tests {
         seek_request_log
     }
 
+    /// Проверяет public release diagnostic без привязки к порядку соседних seek events.
+    fn assert_scrub_release_event(
+        events: &[PlayerEvent],
+        release_policy: ScrubCommitPolicy,
+        committed_from: ScrubReleaseCommitSource,
+        committed_position: Duration,
+        latest_target: Duration,
+    ) {
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    PlayerEvent::ScrubReleaseCommitted(info)
+                        if info.release_policy == release_policy
+                            && info.committed_from == committed_from
+                            && info.committed_position == committed_position
+                            && info.latest_target == latest_target
+                )
+            }),
+            "scrub release diagnostic event is missing: {events:?}"
+        );
+    }
+
     #[test]
     fn prepared_media_install_publishes_open_snapshot_and_events() {
         let mut session = PlayerSession::new();
@@ -5751,6 +5927,14 @@ mod tests {
             session.snapshot().timeline.preview_state,
             TimelinePreviewState::Inactive
         );
+        let events = session.take_events();
+        assert_scrub_release_event(
+            &events,
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+            ScrubReleaseCommitSource::LatestTarget,
+            Duration::from_secs(9),
+            Duration::from_secs(9),
+        );
     }
 
     #[test]
@@ -6403,6 +6587,14 @@ mod tests {
         assert_eq!(
             session.snapshot().timeline.preview_state,
             TimelinePreviewState::Inactive
+        );
+        let events = session.take_events();
+        assert_scrub_release_event(
+            &events,
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+            ScrubReleaseCommitSource::LatestTarget,
+            Duration::from_secs(12),
+            Duration::from_secs(12),
         );
     }
 
@@ -7442,6 +7634,14 @@ mod tests {
         );
         assert!(!session.snapshot().timeline.scrubbing);
         assert!(!session.snapshot().timeline.seeking);
+        let events = session.take_events();
+        assert_scrub_release_event(
+            &events,
+            ScrubCommitPolicy::CommitVisiblePreview,
+            ScrubReleaseCommitSource::VisiblePreview,
+            Duration::from_millis(7_900),
+            Duration::from_secs(10),
+        );
     }
 
     #[test]
@@ -7604,6 +7804,75 @@ mod tests {
         assert!(!session.snapshot().timeline.scrubbing);
         assert!(session.snapshot().timeline.seeking);
         assert!(session.snapshot().timeline.stale_frame);
+        let events = session.take_events();
+        assert_scrub_release_event(
+            &events,
+            ScrubCommitPolicy::CommitVisiblePreview,
+            ScrubReleaseCommitSource::LatestTarget,
+            Duration::from_secs(9),
+            Duration::from_secs(9),
+        );
+    }
+
+    #[test]
+    fn commit_visible_preview_policy_rejects_stale_visible_marker_even_when_present_frame_matches()
+    {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(1, TrackKind::Video)],
+        );
+        let visible_request = SeekRequest::absolute(MediaTime::from_secs(8));
+        let latest_request = SeekRequest::absolute(MediaTime::from_secs(9));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(visible_request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(visible_request))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
+        session.note_presented_frame_for_seek(Duration::from_millis(7_900));
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(latest_request))
+            .unwrap();
+        session.snapshot.timeline.stale_frame = true;
+
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitVisiblePreview,
+            })
+            .unwrap();
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[0],
+            DemuxSeekRequest::preview(Duration::from_secs(8))
+        );
+        assert_eq!(requests[1].timestamp, Duration::from_secs(9));
+        assert_eq!(requests[1].mode, DemuxSeekMode::DecodePointBefore);
+        assert_eq!(
+            session
+                .seek_commit()
+                .map(|seek_commit| (seek_commit.kind, seek_commit.target_position)),
+            Some((SeekCommitKind::Final, MediaTime::from_secs(9)))
+        );
+        assert_eq!(session.snapshot().current_position, Duration::ZERO);
+        assert!(!session.snapshot().timeline.scrubbing);
+        assert!(session.snapshot().timeline.seeking);
+        assert!(session.snapshot().timeline.stale_frame);
+        let events = session.take_events();
+        assert_scrub_release_event(
+            &events,
+            ScrubCommitPolicy::CommitVisiblePreview,
+            ScrubReleaseCommitSource::LatestTarget,
+            Duration::from_secs(9),
+            Duration::from_secs(9),
+        );
     }
 
     /// Фиксирует, что visible preview старого scrub generation не может закрыть новый scrub.
@@ -7785,6 +8054,54 @@ mod tests {
         assert!(!session.snapshot().timeline.scrubbing);
         assert!(!session.snapshot().timeline.seeking);
         assert!(session.seek_commit().is_none());
+    }
+
+    #[test]
+    fn commit_latest_target_policy_reports_promoted_preview_when_ready_preview_is_current() {
+        let mut session = PlayerSession::new();
+        install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(1, TrackKind::Video)],
+        );
+        let request = SeekRequest::absolute(MediaTime::from_secs(8));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(request))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(8), 42));
+        session.note_presented_frame_for_seek(Duration::from_secs(8));
+        session.finish_seek_commit_if_ready_for_tests(
+            Instant::now(),
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            Duration::from_millis(250),
+            1,
+        );
+        let _events_before_release = session.take_events();
+
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitLatestTarget,
+            })
+            .unwrap();
+
+        assert!(session.seek_commit().is_none());
+        assert_eq!(session.snapshot().current_position, Duration::from_secs(8));
+        let events = session.take_events();
+        assert_scrub_release_event(
+            &events,
+            ScrubCommitPolicy::CommitLatestTarget,
+            ScrubReleaseCommitSource::PromotedPreview,
+            Duration::from_secs(8),
+            Duration::from_secs(8),
+        );
     }
 
     #[test]

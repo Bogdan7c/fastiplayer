@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::{
     MediaOpenRequest, PlaybackResumeIntent, PlaybackState, PlayerError, QualitySelection,
-    SeekRequest, TrackId,
+    ScrubCommitPolicy, SeekRequest, TrackId,
 };
 
 /// Краткое описание media после успешного открытия.
@@ -71,6 +71,35 @@ pub struct SeekAudioResumeInfo {
     pub target_position: Duration,
 }
 
+/// Источник позиции, выбранной при release interactive scrub-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrubReleaseCommitSource {
+    /// Коммитится последний preview frame, который реально был показан.
+    VisiblePreview,
+
+    /// Коммитится последняя pointer target-позиция, потому что visible frame непригоден.
+    LatestTarget,
+
+    /// Уже существующий preview transaction переиспользован как final commit.
+    PromotedPreview,
+}
+
+/// Диагностика release policy для одного `EndScrub`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrubReleaseCommitInfo {
+    /// Release policy, выбранная UI/config-слоем.
+    pub release_policy: ScrubCommitPolicy,
+
+    /// Откуда взята финальная release-позиция.
+    pub committed_from: ScrubReleaseCommitSource,
+
+    /// Позиция, которую release path выбрал как commit target.
+    pub committed_position: Duration,
+
+    /// Последняя pointer target-позиция на момент release.
+    pub latest_target: Duration,
+}
+
 /// Краткая сводка возможностей системы.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilitySummary {
@@ -104,6 +133,9 @@ pub enum PlayerEvent {
 
     /// Audio output запущен после закрытия seek transaction-а.
     AudioResumedAfterSeek(SeekAudioResumeInfo),
+
+    /// Interactive scrub release выбрал объяснимую commit-позицию.
+    ScrubReleaseCommitted(ScrubReleaseCommitInfo),
 
     /// Кадр готов к presentation.
     VideoFrameReady(FramePresentationInfo),
