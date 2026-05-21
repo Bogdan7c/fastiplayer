@@ -48,9 +48,9 @@ pub use diagnostics::{
     LatencyCounterSnapshot, PipelineLatencyCountersSnapshot, PipelineLatencySampleSnapshot,
     PipelineLatencyStage, PipelinePauseCountersSnapshot, PipelinePauseReason,
     PipelinePauseSnapshot, PipelineQueueDepthSnapshot, PlaybackDiagnosticsLogSummary,
-    PlaybackDiagnosticsSnapshot, TextureSlotPressureSnapshot, VideoDropAttributionSnapshot,
-    VideoDropCountersSnapshot, VideoDropReason, WorkerFrameTimingSnapshot,
-    WorkerWakeupDiagnosticsSnapshot, WorkerWakeupReason,
+    PlaybackDiagnosticsSnapshot, SeekBootstrapDiagnosticsSnapshot, TextureSlotPressureSnapshot,
+    VideoDropAttributionSnapshot, VideoDropCountersSnapshot, VideoDropReason,
+    WorkerFrameTimingSnapshot, WorkerWakeupDiagnosticsSnapshot, WorkerWakeupReason,
 };
 pub use error::{PlayerError, PlayerErrorKind, PlayerResult};
 pub use event::{

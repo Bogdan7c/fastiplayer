@@ -9,7 +9,7 @@ use codec_core::{
 };
 use media_core::{
     DemuxSeekability, DemuxTrackListUpdate, MediaDemuxError, MediaDuration, MediaTime,
-    TimelineNotSeekableReason, TimelinePreviewState, TrackInfo, TrackKind,
+    PacketKeyframe, TimelineNotSeekableReason, TimelinePreviewState, TrackInfo, TrackKind,
 };
 use tracing::{debug, info, trace, warn};
 
@@ -25,9 +25,9 @@ use crate::{
     PlaybackDiagnosticsLogSummary, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError,
     PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection,
     ScrubCommitIntent, ScrubCommitPolicy, ScrubGeneration, ScrubUpdateIntent, SeekAudioResumeInfo,
-    SeekCommitInfo, SeekMode, SeekProgressBlocker, SeekRequest, SeekTargetFramePresentation,
-    SessionScrubCommand, TextureSlotPressureSnapshot, TrackId, TrackSelectionSnapshot,
-    VideoBackendFactory, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
+    SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo, SeekMode, SeekProgressBlocker, SeekRequest,
+    SeekTargetFramePresentation, SessionScrubCommand, TextureSlotPressureSnapshot, TrackId,
+    TrackSelectionSnapshot, VideoBackendFactory, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
 };
 
 use self::scrub_state::{
@@ -939,6 +939,31 @@ impl PlayerSession {
         self.diagnostics.record_drop(pts, reason, queues);
     }
 
+    /// Начинает новое diagnostics окно ожидания decode-start packet-а после seek/flush.
+    pub(crate) fn record_video_decoder_bootstrap_started(&mut self) {
+        let queues = self.diagnostic_queue_depths();
+        self.diagnostics.start_seek_bootstrap(queues);
+    }
+
+    /// Записывает packet, отброшенный из-за ожидания post-flush keyframe/decode-start.
+    pub(crate) fn record_video_packet_dropped_until_keyframe(
+        &mut self,
+    ) -> SeekBootstrapDiagnosticsSnapshot {
+        let queues = self.diagnostic_queue_depths();
+        self.diagnostics
+            .record_seek_bootstrap_drop_until_keyframe(queues)
+    }
+
+    /// Записывает первый packet, который decoder bootstrap принимает как decode-start.
+    pub(crate) fn record_video_decoder_bootstrap_accepted(
+        &mut self,
+        keyframe: PacketKeyframe,
+    ) -> SeekBootstrapDiagnosticsSnapshot {
+        let queues = self.diagnostic_queue_depths();
+        self.diagnostics
+            .record_seek_bootstrap_first_accepted(keyframe, queues)
+    }
+
     /// Записывает typed pipeline pause с текущими queue depths.
     pub(crate) fn record_pipeline_pause(&mut self, reason: PipelinePauseReason) {
         let queues = self.diagnostic_queue_depths();
@@ -1277,7 +1302,12 @@ impl PlayerSession {
             ready_video_frames,
             required_video_frames,
         };
-        let blocker = self.seek_progress_blocker(tick_config, queues, gate_snapshot);
+        let blocker = self.seek_progress_blocker(
+            tick_config,
+            queues,
+            gate_snapshot,
+            diagnostics_snapshot.seek_bootstrap,
+        );
 
         Some(ActiveSeekDiagnosticsSnapshot {
             kind: seek_commit_kind_name(seek_commit.kind),
@@ -1303,6 +1333,7 @@ impl PlayerSession {
             draining_after_eof: self.draining_after_eof,
             stale_frame: self.snapshot.timeline.stale_frame,
             stale_generation_discards: diagnostics_snapshot.drops.stale_generation,
+            seek_bootstrap: diagnostics_snapshot.seek_bootstrap,
             last_pause_reason: diagnostics_snapshot.pauses.last.map(|pause| pause.reason),
             queues,
         })
@@ -1794,6 +1825,7 @@ impl PlayerSession {
         tick_config: &PlayerTickConfig,
         queues: PipelineQueueDepthSnapshot,
         gate_snapshot: SeekProgressGateSnapshot,
+        seek_bootstrap: SeekBootstrapDiagnosticsSnapshot,
     ) -> SeekProgressBlocker {
         let audio_gate_ready = gate_snapshot.audio_gate_status.is_ready();
         if gate_snapshot.video_gate_ready && audio_gate_ready {
@@ -1828,7 +1860,7 @@ impl PlayerSession {
         }
 
         if !gate_snapshot.target_frame_presented {
-            return self.video_target_frame_blocker(queues);
+            return self.video_target_frame_blocker(queues, seek_bootstrap);
         }
 
         if gate_snapshot.ready_video_frames < gate_snapshot.required_video_frames {
@@ -1849,7 +1881,15 @@ impl PlayerSession {
     fn video_target_frame_blocker(
         &self,
         queues: PipelineQueueDepthSnapshot,
+        seek_bootstrap: SeekBootstrapDiagnosticsSnapshot,
     ) -> SeekProgressBlocker {
+        let waiting_for_decode_start_after_drops = self.pipeline.video_decoder_needs_keyframe()
+            && seek_bootstrap.dropped_until_keyframe > 0;
+
+        if waiting_for_decode_start_after_drops {
+            return SeekProgressBlocker::WaitingForPostFlushKeyframe;
+        }
+
         if queues.decoder_send_queue_depth > 0 || queues.decoder_in_flight_packets > 0 {
             return SeekProgressBlocker::WaitingForDecoderOutput;
         }
@@ -2715,6 +2755,9 @@ impl PlayerSession {
 
         self.pipeline.clear_pending_packets_for_seek();
         self.pipeline.reset_decoder_state_for_seek(has_video);
+        if has_video {
+            self.record_video_decoder_bootstrap_started();
+        }
         self.seek_eof_fallback_video_position = None;
         self.clear_seek_preroll_fallback_frame();
         self.clear_queued_video_frames();
@@ -6833,6 +6876,24 @@ mod tests {
     }
 
     #[test]
+    fn seek_progress_blocker_reports_post_flush_keyframe_drops() {
+        let mut session = PlayerSession::new();
+
+        session.pipeline.require_video_decoder_keyframe();
+        session.record_video_decoder_bootstrap_started();
+        session.record_video_packet_dropped_until_keyframe();
+
+        let queues = PipelineQueueDepthSnapshot::default();
+        let seek_bootstrap = session
+            .diagnostics
+            .snapshot_with_queues(queues)
+            .seek_bootstrap;
+        let blocker = session.video_target_frame_blocker(queues, seek_bootstrap);
+
+        assert_eq!(blocker, SeekProgressBlocker::WaitingForPostFlushKeyframe);
+    }
+
+    #[test]
     fn seek_flush_failure_does_not_call_demux_seek_or_advance_generation() {
         let mut session = PlayerSession::new();
         let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
@@ -7757,6 +7818,7 @@ mod tests {
             &PlayerTickConfig::default(),
             PipelineQueueDepthSnapshot::default(),
             gate_snapshot,
+            SeekBootstrapDiagnosticsSnapshot::default(),
         );
 
         assert_eq!(blocker, SeekProgressBlocker::WaitingForAudioPreroll);

@@ -1732,6 +1732,10 @@ impl PlayerWorkerRuntime {
             drops_stale_generation = summary.drops.stale_generation,
             drops_seek_preroll = summary.drops.seek_preroll,
             drops_decoder_starvation = summary.drops.decoder_starvation,
+            seek_bootstrap_dropped_until_keyframe = summary.seek_bootstrap.dropped_until_keyframe,
+            seek_bootstrap_first_accepted_keyframe = ?summary
+                .seek_bootstrap
+                .first_accepted_keyframe,
             pauses = summary.pauses_total,
             pauses_sync_waiting = summary.pauses.sync_waiting,
             pauses_present_queue = summary.pauses.waiting_for_present_queue,
@@ -1863,6 +1867,12 @@ fn log_active_seek_stall(active_seek: ActiveSeekDiagnosticsSnapshot) {
         draining_after_eof = active_seek.draining_after_eof,
         stale_frame = active_seek.stale_frame,
         stale_generation_discards = active_seek.stale_generation_discards,
+        seek_bootstrap_dropped_until_keyframe = active_seek
+            .seek_bootstrap
+            .dropped_until_keyframe,
+        seek_bootstrap_first_accepted_keyframe = ?active_seek
+            .seek_bootstrap
+            .first_accepted_keyframe,
         last_pause_reason = ?active_seek.last_pause_reason,
         pending_audio_packets = queues.pending_audio_packets,
         pending_video_packets = queues.pending_video_packets,

@@ -466,6 +466,18 @@ mod tests {
     }
 
     #[test]
+    fn video_codecs_without_keyframe_adapter_convert_with_unknown_keyframe() {
+        for codec_id in ["V_AV1", "V_MPEG4/ISO/AVC", "V_MPEGH/ISO/HEVC"] {
+            let track_map = HashMap::from([(1, track_entry(TrackKind::Video, codec_id))]);
+
+            let packet = convert_packet(packet(1, 0, b"opaque video packet"), &track_map)
+                .expect("codec без keyframe adapter-а не должен блокировать bootstrap");
+
+            assert_eq!(packet.keyframe, PacketKeyframe::Unknown);
+        }
+    }
+
+    #[test]
     fn valid_vp9_keyframe_packet_sets_keyframe_flag() {
         let track_map = HashMap::from([(1, track_entry(TrackKind::Video, "V_VP9"))]);
 

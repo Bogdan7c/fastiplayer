@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
+use media_core::PacketKeyframe;
 use video_core::{DecodedFrame, FrameMemoryPath, VideoFramePublishPressureDiagnostics};
 
 /// Максимум latency samples, которые diagnostics держит в памяти.
@@ -341,6 +342,16 @@ pub struct VideoDropAttributionSnapshot {
     pub queues: PipelineQueueDepthSnapshot,
 }
 
+/// Diagnostics текущего decoder bootstrap окна после seek/flush.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SeekBootstrapDiagnosticsSnapshot {
+    /// Сколько video packets были точно inter-frame и отброшены до decode-start packet-а.
+    pub dropped_until_keyframe: u64,
+
+    /// Keyframe-состояние первого packet-а, который завершил ожидание decoder bootstrap.
+    pub first_accepted_keyframe: Option<PacketKeyframe>,
+}
+
 /// Counters временных pipeline pauses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PipelinePauseCountersSnapshot {
@@ -523,6 +534,9 @@ pub enum SeekProgressBlocker {
     /// Video packet ждёт отправки в decoder thread.
     WaitingForDecoderInput,
 
+    /// Decoder после flush всё ещё ждёт packet, который можно использовать как decode-start.
+    WaitingForPostFlushKeyframe,
+
     /// Packet уже ушёл в decoder, но decoded frame ещё не вернулся.
     WaitingForDecoderOutput,
 
@@ -555,6 +569,7 @@ impl SeekProgressBlocker {
             Self::WaitingForFreeSurface => "free_surface",
             Self::WaitingForGpuRelease => "gpu_release",
             Self::WaitingForDecoderInput => "decoder_input",
+            Self::WaitingForPostFlushKeyframe => "post_flush_keyframe",
             Self::WaitingForDecoderOutput => "decoder_output",
             Self::WaitingForDemux => "demux",
             Self::WaitingForScheduler => "scheduler",
@@ -628,6 +643,9 @@ pub struct ActiveSeekDiagnosticsSnapshot {
     /// Сколько stale-generation drops уже накоплено в diagnostics.
     pub stale_generation_discards: u64,
 
+    /// Diagnostics текущего decoder bootstrap окна после seek/flush.
+    pub seek_bootstrap: SeekBootstrapDiagnosticsSnapshot,
+
     /// Последняя typed pause-причина, если pipeline уже её зафиксировал.
     pub last_pause_reason: Option<PipelinePauseReason>,
 
@@ -646,6 +664,9 @@ pub struct PlaybackDiagnosticsSnapshot {
 
     /// Typed drop counters.
     pub drops: VideoDropCountersSnapshot,
+
+    /// Diagnostics decoder bootstrap окна после seek/flush.
+    pub seek_bootstrap: SeekBootstrapDiagnosticsSnapshot,
 
     /// Typed pipeline pause counters.
     pub pauses: PipelinePauseCountersSnapshot,
@@ -682,6 +703,7 @@ impl Default for PlaybackDiagnosticsSnapshot {
             zero_copy_memory_path: None,
             queues: PipelineQueueDepthSnapshot::default(),
             drops: VideoDropCountersSnapshot::default(),
+            seek_bootstrap: SeekBootstrapDiagnosticsSnapshot::default(),
             pauses: PipelinePauseCountersSnapshot::default(),
             worst_latencies: PipelineLatencyCountersSnapshot::default(),
             recent_worst_samples: Vec::new(),
@@ -703,6 +725,9 @@ pub struct PlaybackDiagnosticsLogSummary {
 
     /// Drop counters по причинам.
     pub drops: VideoDropCountersSnapshot,
+
+    /// Diagnostics decoder bootstrap окна после seek/flush.
+    pub seek_bootstrap: SeekBootstrapDiagnosticsSnapshot,
 
     /// Все typed pauses.
     pub pauses_total: u64,
@@ -747,6 +772,8 @@ impl PlaybackDiagnosticsLogSummary {
     pub const fn has_activity(self) -> bool {
         self.drops_total > 0
             || self.pauses_total > 0
+            || self.seek_bootstrap.dropped_until_keyframe > 0
+            || self.seek_bootstrap.first_accepted_keyframe.is_some()
             || self.texture_view_lock_busy_count > 0
             || self.texture_view_previous_frame_reuse_count > 0
             || self
@@ -797,6 +824,45 @@ impl PlaybackDiagnostics {
     /// Сбрасывает media-specific diagnostics.
     pub(crate) fn reset(&mut self) {
         *self = Self::new();
+    }
+
+    /// Начинает новое post-flush decoder bootstrap окно и сбрасывает per-window counters.
+    pub(crate) fn start_seek_bootstrap(&mut self, queues: PipelineQueueDepthSnapshot) {
+        self.snapshot.seek_bootstrap = SeekBootstrapDiagnosticsSnapshot::default();
+        self.snapshot.queues = queues;
+    }
+
+    /// Учитывает packet, отброшенный потому, что decoder после flush ждёт decode-start.
+    pub(crate) fn record_seek_bootstrap_drop_until_keyframe(
+        &mut self,
+        queues: PipelineQueueDepthSnapshot,
+    ) -> SeekBootstrapDiagnosticsSnapshot {
+        self.snapshot.seek_bootstrap.dropped_until_keyframe = self
+            .snapshot
+            .seek_bootstrap
+            .dropped_until_keyframe
+            .saturating_add(1);
+        self.snapshot.queues = queues;
+        self.snapshot.seek_bootstrap
+    }
+
+    /// Запоминает первый packet, который завершил ожидание post-flush decode-start.
+    pub(crate) fn record_seek_bootstrap_first_accepted(
+        &mut self,
+        keyframe: PacketKeyframe,
+        queues: PipelineQueueDepthSnapshot,
+    ) -> SeekBootstrapDiagnosticsSnapshot {
+        if self
+            .snapshot
+            .seek_bootstrap
+            .first_accepted_keyframe
+            .is_none()
+        {
+            self.snapshot.seek_bootstrap.first_accepted_keyframe = Some(keyframe);
+        }
+
+        self.snapshot.queues = queues;
+        self.snapshot.seek_bootstrap
     }
 
     /// Записывает decoded frame и его backend-provided timings.
@@ -1074,6 +1140,7 @@ impl PlaybackDiagnostics {
         PlaybackDiagnosticsLogSummary {
             drops_total: self.snapshot.drops.total,
             drops: self.snapshot.drops,
+            seek_bootstrap: self.snapshot.seek_bootstrap,
             pauses_total: self.snapshot.pauses.total,
             pauses: self.snapshot.pauses,
             zero_copy_memory_path: self.snapshot.zero_copy_memory_path,
@@ -1394,6 +1461,32 @@ mod tests {
         assert_eq!(
             snapshot.drops.last.map(|drop| drop.reason),
             Some(VideoDropReason::RenderAcquisitionTimeout)
+        );
+    }
+
+    #[test]
+    fn aggregation_tracks_seek_bootstrap_window() {
+        let mut diagnostics = PlaybackDiagnostics::new();
+        let queues = queue_depths_for_tests(2);
+
+        diagnostics.start_seek_bootstrap(queues);
+        diagnostics.record_seek_bootstrap_drop_until_keyframe(queues);
+        diagnostics.record_seek_bootstrap_drop_until_keyframe(queues);
+        diagnostics.record_seek_bootstrap_first_accepted(PacketKeyframe::Unknown, queues);
+
+        let snapshot = diagnostics.snapshot_with_queues(queues);
+
+        assert_eq!(snapshot.seek_bootstrap.dropped_until_keyframe, 2);
+        assert_eq!(
+            snapshot.seek_bootstrap.first_accepted_keyframe,
+            Some(PacketKeyframe::Unknown)
+        );
+
+        diagnostics.start_seek_bootstrap(queues);
+
+        assert_eq!(
+            diagnostics.snapshot_with_queues(queues).seek_bootstrap,
+            SeekBootstrapDiagnosticsSnapshot::default()
         );
     }
 

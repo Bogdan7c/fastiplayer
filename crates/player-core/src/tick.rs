@@ -14,7 +14,7 @@ use codec_core::{
 };
 use media_core::{DemuxReadEvent, PacketKeyframe, TrackId, TrackKind, TrackTimestamp};
 use rustiplayer_config::AppConfig;
-use tracing::{trace, warn};
+use tracing::{debug, trace, warn};
 
 use crate::{
     DecodeSendError, DecodeThreadError, PendingAudioPacket, PendingVideoPacket,
@@ -1414,19 +1414,31 @@ fn accept_video_packet_for_decoder_bootstrap(
 
     match packet_keyframe {
         PacketKeyframe::Keyframe => {
+            let bootstrap = session.record_video_decoder_bootstrap_accepted(packet_keyframe);
+            debug!(
+                pts_ms = packet_pts.as_millis(),
+                dropped_until_keyframe = bootstrap.dropped_until_keyframe,
+                first_accepted_keyframe = ?bootstrap.first_accepted_keyframe,
+                "Accepted post-flush video decoder bootstrap packet"
+            );
             session.pipeline.mark_video_decoder_bootstrapped();
             true
         }
         PacketKeyframe::NotKeyframe => {
-            trace!(
+            let bootstrap = session.record_video_packet_dropped_until_keyframe();
+            debug!(
                 pts_ms = packet_pts.as_millis(),
+                dropped_until_keyframe = bootstrap.dropped_until_keyframe,
                 "Dropping video packet until decoder receives post-flush keyframe"
             );
             false
         }
         PacketKeyframe::Unknown => {
+            let bootstrap = session.record_video_decoder_bootstrap_accepted(packet_keyframe);
             warn!(
                 pts_ms = packet_pts.as_millis(),
+                dropped_until_keyframe = bootstrap.dropped_until_keyframe,
+                first_accepted_keyframe = ?bootstrap.first_accepted_keyframe,
                 "Accepting video packet with unknown keyframe state as post-flush decode start"
             );
             session.pipeline.mark_video_decoder_bootstrapped();
@@ -2470,7 +2482,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{PlayerCommand, PlayerSession, WgpuRenderTextureProviderHandle};
+    use crate::{FrameCounters, PlayerCommand, PlayerSession, WgpuRenderTextureProviderHandle};
 
     /// Создаёт test frame без реальных GPU resources с явным decoded contract.
     fn decoded_frame_with_format(
@@ -3429,6 +3441,15 @@ mod tests {
         assert_eq!(decoder_packets.len(), 1);
         assert!(decoder_packets[0].keyframe);
         assert!(!session.pipeline.video_decoder_needs_keyframe());
+        let diagnostics = session
+            .snapshot_with_frame_counters(FrameCounters::default())
+            .diagnostics
+            .seek_bootstrap;
+        assert_eq!(diagnostics.dropped_until_keyframe, 0);
+        assert_eq!(
+            diagnostics.first_accepted_keyframe,
+            Some(PacketKeyframe::Unknown)
+        );
     }
 
     #[test]
@@ -3442,6 +3463,14 @@ mod tests {
             Duration::from_millis(10)
         ));
         assert!(session.pipeline.video_decoder_needs_keyframe());
+        assert_eq!(
+            session
+                .snapshot_with_frame_counters(FrameCounters::default())
+                .diagnostics
+                .seek_bootstrap
+                .dropped_until_keyframe,
+            1
+        );
 
         assert!(accept_video_packet_for_decoder_bootstrap(
             &mut session,
@@ -3449,6 +3478,15 @@ mod tests {
             Duration::from_millis(20)
         ));
         assert!(!session.pipeline.video_decoder_needs_keyframe());
+        let diagnostics = session
+            .snapshot_with_frame_counters(FrameCounters::default())
+            .diagnostics
+            .seek_bootstrap;
+        assert_eq!(diagnostics.dropped_until_keyframe, 1);
+        assert_eq!(
+            diagnostics.first_accepted_keyframe,
+            Some(PacketKeyframe::Keyframe)
+        );
 
         assert!(accept_video_packet_for_decoder_bootstrap(
             &mut session,
