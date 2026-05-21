@@ -374,6 +374,36 @@ pub(crate) struct PlayerWorkerWakeupPlan {
     pub(crate) frame_timing: Option<WorkerFrameTimingSnapshot>,
 }
 
+/// Read-only snapshot scheduler clocks для active seek stall diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SchedulerTimingDiagnosticsSnapshot {
+    /// Текущее значение audio clock без media base.
+    pub(crate) audio_clock: Duration,
+
+    /// Абсолютная media position, которую scheduler считает "сейчас".
+    pub(crate) presentation_clock_position: Duration,
+
+    /// Media target с учётом scheduler lead перед ближайшим present.
+    pub(crate) target_media_time_for_present: Duration,
+}
+
+/// Собирает scheduler timing без изменения очередей и clock state.
+pub(crate) fn scheduler_timing_diagnostics(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+    now: Instant,
+) -> SchedulerTimingDiagnosticsSnapshot {
+    let presentation_clock_position = session.presentation_clock_position_at(now);
+    let target_media_time_for_present =
+        target_media_time_for_present(session, tick_config, presentation_clock_position);
+
+    SchedulerTimingDiagnosticsSnapshot {
+        audio_clock: session.audio_clock_now(),
+        presentation_clock_position,
+        target_media_time_for_present,
+    }
+}
+
 impl PlayerWorkerWakeupPlan {
     /// Планирует ожидание только внешнего события.
     #[must_use]
@@ -1075,7 +1105,10 @@ fn enqueue_decoded_video_frame(
         );
     }
 
+    let frame_pts = frame.pts;
+    let frame_generation = frame.generation;
     session.pipeline.enqueue_queued_video_frame(frame);
+    session.note_queued_video_frame_for_seek_trace(frame_pts, frame_generation);
 }
 
 /// Забирает fatal decoder-thread error и переводит его в состояние player session.
@@ -1212,7 +1245,7 @@ fn drain_decoded_video_frames(
             continue;
         }
 
-        session.note_decoded_video_frame_for_seek_trace(frame.pts);
+        session.note_decoded_video_frame_for_seek_trace(frame.pts, frame.generation);
         tracing::debug!(
             generation = frame.generation,
             pts_ms = frame.pts.as_millis(),

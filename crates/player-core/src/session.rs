@@ -212,6 +212,9 @@ struct SeekTraceState {
     /// Был ли уже зафиксирован первый decoded frame после seek.
     first_decoded_frame_logged: bool,
 
+    /// Был ли уже зафиксирован первый queued frame после seek.
+    first_queued_frame_logged: bool,
+
     /// Был ли уже зафиксирован первый presented frame после seek.
     first_presented_frame_logged: bool,
 
@@ -266,6 +269,16 @@ impl SeekTraceState {
         }
 
         self.first_decoded_frame_logged = true;
+        true
+    }
+
+    /// Возвращает `true` только для первого queued frame текущего seek trace-а.
+    fn record_first_queued_frame(&mut self) -> bool {
+        if self.active_generation.is_none() || self.first_queued_frame_logged {
+            return false;
+        }
+
+        self.first_queued_frame_logged = true;
         true
     }
 
@@ -1329,6 +1342,8 @@ impl PlayerSession {
             generation: seek_commit.generation,
             pipeline_generation: self.pipeline.seek_generation(),
             scrub_generation: seek_commit.scrub_generation.map(ScrubGeneration::as_u64),
+            selected_video_track_id: self.pipeline.selected_video_track_id(),
+            selected_audio_track_id: self.pipeline.selected_audio_track_id(),
             age: now.saturating_duration_since(seek_commit.started_at),
             target: target_position,
             actual: seek_commit.actual_position.as_duration(),
@@ -1347,6 +1362,7 @@ impl PlayerSession {
             demuxing_active: self.is_demuxing_active(),
             draining_after_eof: self.draining_after_eof,
             stale_frame: self.snapshot.timeline.stale_frame,
+            preview_state: self.snapshot.timeline.preview_state,
             stale_generation_discards: diagnostics_snapshot.drops.stale_generation,
             seek_bootstrap: diagnostics_snapshot.seek_bootstrap,
             last_pause_reason: diagnostics_snapshot.pauses.last.map(|pause| pause.reason),
@@ -1408,7 +1424,11 @@ impl PlayerSession {
     }
 
     /// Пишет marker первого decoded frame-а после accepted seek.
-    pub(crate) fn note_decoded_video_frame_for_seek_trace(&mut self, frame_pts: Duration) {
+    pub(crate) fn note_decoded_video_frame_for_seek_trace(
+        &mut self,
+        frame_pts: Duration,
+        frame_generation: u64,
+    ) {
         let Some(seek_commit) = self.seek_commit else {
             return;
         };
@@ -1425,7 +1445,36 @@ impl PlayerSession {
             pipeline_generation = self.pipeline.seek_generation(),
             scrub_generation = ?seek_commit.scrub_generation.map(ScrubGeneration::as_u64),
             frame_pts_ms = frame_pts.as_millis(),
+            frame_generation,
             "First post-seek decoded frame observed"
+        );
+    }
+
+    /// Пишет marker первого decoded frame-а, который дошёл до presentation queue.
+    pub(crate) fn note_queued_video_frame_for_seek_trace(
+        &mut self,
+        frame_pts: Duration,
+        frame_generation: u64,
+    ) {
+        let Some(seek_commit) = self.seek_commit else {
+            return;
+        };
+
+        if !self.seek_trace.record_first_queued_frame() {
+            return;
+        }
+
+        debug!(
+            kind = seek_commit_kind_name(seek_commit.kind),
+            target_ms = seek_commit.target_position.as_duration().as_millis(),
+            actual_ms = seek_commit.actual_position.as_duration().as_millis(),
+            active_seek_generation = seek_commit.generation,
+            pipeline_generation = self.pipeline.seek_generation(),
+            scrub_generation = ?seek_commit.scrub_generation.map(ScrubGeneration::as_u64),
+            frame_pts_ms = frame_pts.as_millis(),
+            frame_generation,
+            present_queue_depth = self.pipeline.video_present_queue_len(),
+            "First post-seek queued frame observed"
         );
     }
 
@@ -1504,6 +1553,10 @@ impl PlayerSession {
         }
 
         let first_post_seek_presented_frame = self.seek_trace.record_first_presented_frame();
+        let present_frame_generation = self
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.generation);
         if first_post_seek_presented_frame {
             debug!(
                 kind = seek_commit_kind_name(seek_commit.kind),
@@ -1513,6 +1566,7 @@ impl PlayerSession {
                 pipeline_generation = self.pipeline.seek_generation(),
                 scrub_generation = ?seek_commit.scrub_generation.map(ScrubGeneration::as_u64),
                 frame_pts_ms = frame_pts.as_millis(),
+                frame_generation = ?present_frame_generation,
                 eof_fallback = true,
                 stale_frame = self.snapshot.timeline.stale_frame,
                 "First post-seek presented frame observed"
@@ -1530,6 +1584,10 @@ impl PlayerSession {
         };
 
         let first_post_seek_presented_frame = self.seek_trace.record_first_presented_frame();
+        let present_frame_generation = self
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.generation);
         if first_post_seek_presented_frame {
             debug!(
                 kind = seek_commit_kind_name(seek_commit.kind),
@@ -1539,6 +1597,7 @@ impl PlayerSession {
                 pipeline_generation = self.pipeline.seek_generation(),
                 scrub_generation = ?seek_commit.scrub_generation.map(ScrubGeneration::as_u64),
                 frame_pts_ms = frame_pts.as_millis(),
+                frame_generation = ?present_frame_generation,
                 stale_frame = self.snapshot.timeline.stale_frame,
                 "First post-seek presented frame observed"
             );
@@ -1918,13 +1977,13 @@ impl PlayerSession {
             return SeekProgressBlocker::WaitingForDecoderInput;
         }
 
-        if self.is_demuxing_active() && !self.draining_after_eof {
-            return SeekProgressBlocker::WaitingForDemux;
-        }
-
         if self.pipeline.has_present_video_frame() || !self.pipeline.video_present_queue_is_empty()
         {
             return SeekProgressBlocker::WaitingForScheduler;
+        }
+
+        if self.is_demuxing_active() && !self.draining_after_eof {
+            return SeekProgressBlocker::WaitingForDemux;
         }
 
         SeekProgressBlocker::WaitingForVideoTargetFrame
@@ -2024,9 +2083,11 @@ impl PlayerSession {
     /// Закрывает финальный seek и публикует новую playback позицию.
     fn complete_final_seek_commit(&mut self, seek_commit: SeekCommitState) {
         debug!(
+            kind = seek_commit_kind_name(seek_commit.kind),
             target_ms = seek_commit.target_position.as_duration().as_millis(),
             actual_ms = seek_commit.actual_position.as_duration().as_millis(),
             generation = seek_commit.generation,
+            pipeline_generation = self.pipeline.seek_generation(),
             resume_intent = ?seek_commit.resume_intent,
             "Final seek commit завершён"
         );
@@ -2080,6 +2141,17 @@ impl PlayerSession {
                 self.anchor_monotonic_media_clock_if_needed(observed_at);
             }
         }
+
+        debug!(
+            kind = seek_commit_kind_name(seek_commit.kind),
+            target_ms = seek_commit.target_position.as_duration().as_millis(),
+            actual_ms = seek_commit.actual_position.as_duration().as_millis(),
+            generation = seek_commit.generation,
+            pipeline_generation = self.pipeline.seek_generation(),
+            resume_intent = ?seek_commit.resume_intent,
+            playback_state = ?self.snapshot.playback_state,
+            "Final seek resume intent applied"
+        );
     }
 
     /// Закрывает live preview seek, оставляя interactive scrub активным.
@@ -2102,6 +2174,17 @@ impl PlayerSession {
         self.snapshot.timeline.preview_state = frame_readiness.timeline_preview_state();
         self.pause_audio_output_for_seek();
         self.set_playback_state(PlaybackState::Paused);
+        debug!(
+            kind = seek_commit_kind_name(seek_commit.kind),
+            target_ms = seek_commit.target_position.as_duration().as_millis(),
+            actual_ms = seek_commit.actual_position.as_duration().as_millis(),
+            generation = seek_commit.generation,
+            pipeline_generation = self.pipeline.seek_generation(),
+            scrub_generation = ?seek_commit.scrub_generation.map(ScrubGeneration::as_u64),
+            stale_frame = self.snapshot.timeline.stale_frame,
+            preview_state = ?self.snapshot.timeline.preview_state,
+            "Preview seek commit завершён"
+        );
     }
 
     /// Прерывает seek transaction по timeout как recoverable error и оставляет media paused.
@@ -3666,12 +3749,15 @@ mod tests {
     fn seek_trace_frame_and_track_markers_are_one_shot_per_generation() {
         let mut seek_trace = SeekTraceState::default();
         assert!(!seek_trace.record_first_decoded_frame());
+        assert!(!seek_trace.record_first_queued_frame());
         assert!(!seek_trace.record_first_presented_frame());
         assert!(!seek_trace.record_first_track_list_update());
 
         seek_trace.begin(3);
         assert!(seek_trace.record_first_decoded_frame());
         assert!(!seek_trace.record_first_decoded_frame());
+        assert!(seek_trace.record_first_queued_frame());
+        assert!(!seek_trace.record_first_queued_frame());
         assert!(seek_trace.record_first_presented_frame());
         assert!(!seek_trace.record_first_presented_frame());
         assert!(seek_trace.record_first_track_list_update());
@@ -3679,11 +3765,13 @@ mod tests {
 
         seek_trace.begin(4);
         assert!(seek_trace.record_first_decoded_frame());
+        assert!(seek_trace.record_first_queued_frame());
         assert!(seek_trace.record_first_presented_frame());
         assert!(seek_trace.record_first_track_list_update());
 
         seek_trace.clear();
         assert!(!seek_trace.record_first_decoded_frame());
+        assert!(!seek_trace.record_first_queued_frame());
     }
 
     /// Создаёт минимальный seek commit для чистых audio-gate тестов.
@@ -6388,6 +6476,186 @@ mod tests {
             session.snapshot().timeline.target_position,
             Some(MediaTime::from_secs(8))
         );
+    }
+
+    #[test]
+    fn slow_drag_produces_multiple_fresh_visible_previews() {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(1, TrackKind::Video)],
+        );
+        let first_request = SeekRequest::absolute(MediaTime::from_secs(8));
+        let second_request = SeekRequest::absolute(MediaTime::from_secs(10));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(first_request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(first_request))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_current_seek_generation(
+                &session,
+                Duration::from_millis(7_900),
+                79,
+            ));
+        session.note_presented_frame_for_seek(Duration::from_millis(7_900));
+
+        let first_preview_started_at = session
+            .seek_commit()
+            .expect("first slow-drag preview должен быть active")
+            .started_at;
+        session.finish_seek_commit_if_ready(
+            first_preview_started_at + Duration::from_millis(1),
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+            50.0,
+            Duration::from_millis(250),
+            1,
+        );
+
+        assert!(session.seek_commit().is_none());
+        assert_eq!(
+            session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Visible
+        );
+        assert!(!session.snapshot().timeline.stale_frame);
+        assert_eq!(
+            session
+                .pipeline
+                .present_video_frame()
+                .map(|frame| frame.pts),
+            Some(Duration::from_millis(7_900))
+        );
+
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(second_request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(second_request))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_current_seek_generation(
+                &session,
+                Duration::from_millis(9_900),
+                99,
+            ));
+        session.note_presented_frame_for_seek(Duration::from_millis(9_900));
+
+        let second_preview_started_at = session
+            .seek_commit()
+            .expect("second slow-drag preview должен быть active")
+            .started_at;
+        session.finish_seek_commit_if_ready(
+            second_preview_started_at + Duration::from_millis(1),
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+            50.0,
+            Duration::from_millis(250),
+            1,
+        );
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(
+            requests.as_slice(),
+            &[
+                DemuxSeekRequest::preview(Duration::from_secs(8)),
+                DemuxSeekRequest::preview(Duration::from_secs(10)),
+            ]
+        );
+        assert!(session.seek_commit().is_none());
+        assert_eq!(session.snapshot().current_position, Duration::ZERO);
+        assert!(session.snapshot().timeline.scrubbing);
+        assert!(!session.snapshot().timeline.seeking);
+        assert!(!session.snapshot().timeline.stale_frame);
+        assert_eq!(
+            session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Visible
+        );
+        assert_eq!(
+            session
+                .pipeline
+                .present_video_frame()
+                .map(|frame| frame.pts),
+            Some(Duration::from_millis(9_900))
+        );
+    }
+
+    #[test]
+    fn active_preview_with_old_audio_clock_waits_for_scheduler_instead_of_force_presenting() {
+        let mut session = PlayerSession::new();
+        install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+        let preview_request = SeekRequest::absolute(MediaTime::from_secs(8));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(preview_request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(preview_request))
+            .unwrap();
+
+        let audio_clock = Arc::new(audio::AudioClock::new(48_000, 2));
+        let scheduler_now = Instant::now();
+        session.pipeline.install_audio_clock(audio_clock);
+        session.pipeline.set_media_clock_base(Duration::ZERO);
+        session
+            .pipeline
+            .reset_audio_clock_sample(Duration::ZERO, scheduler_now);
+        session
+            .pipeline
+            .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
+                &session,
+                Duration::from_secs(8),
+                80,
+            ));
+
+        let tick_config = PlayerTickConfig {
+            max_demux_packets_per_tick: 0,
+            ..PlayerTickConfig::default()
+        };
+        let tick_result = session.tick(PlayerTickContext::with_config(scheduler_now, tick_config));
+
+        assert_eq!(tick_result.video_frames_presented, 0);
+        assert_eq!(
+            tick_result.pipeline_pauses.last().map(|pause| pause.reason),
+            Some(PipelinePauseReason::SyncWaiting)
+        );
+        assert_eq!(
+            session
+                .pipeline
+                .front_queued_video_frame()
+                .map(|frame| frame.pts),
+            Some(Duration::from_secs(8))
+        );
+        assert!(session.pipeline.present_video_frame().is_none());
+
+        let diagnostics = session
+            .active_seek_diagnostics(scheduler_now, &tick_config)
+            .expect("preview seek должен оставаться активным, пока scheduler ждёт audio clock");
+        assert_eq!(diagnostics.kind, "preview");
+        assert_eq!(
+            diagnostics.blocker,
+            SeekProgressBlocker::WaitingForScheduler
+        );
+        assert_eq!(
+            diagnostics.front_queued_frame_pts,
+            Some(Duration::from_secs(8))
+        );
+        assert_eq!(diagnostics.selected_video_track_id, Some(TrackId::new(1)));
+        assert_eq!(diagnostics.selected_audio_track_id, Some(TrackId::new(2)));
+        assert_eq!(diagnostics.preview_state, TimelinePreviewState::Pending);
+        assert!(!diagnostics.target_frame_presented);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use media_core::PacketKeyframe;
+use media_core::{PacketKeyframe, TimelinePreviewState, TrackId};
 use video_core::{DecodedFrame, FrameMemoryPath, VideoFramePublishPressureDiagnostics};
 
 /// Максимум latency samples, которые diagnostics держит в памяти.
@@ -595,6 +595,12 @@ pub struct ActiveSeekDiagnosticsSnapshot {
     /// User scrub generation, если seek родился из interactive scrub.
     pub scrub_generation: Option<u64>,
 
+    /// Выбранный video track на момент stall snapshot-а.
+    pub selected_video_track_id: Option<TrackId>,
+
+    /// Выбранный audio track на момент stall snapshot-а.
+    pub selected_audio_track_id: Option<TrackId>,
+
     /// Сколько активен seek transaction.
     pub age: Duration,
 
@@ -639,6 +645,9 @@ pub struct ActiveSeekDiagnosticsSnapshot {
 
     /// Timeline всё ещё помечает картинку как stale.
     pub stale_frame: bool,
+
+    /// Текущее состояние live preview на timeline.
+    pub preview_state: TimelinePreviewState,
 
     /// Сколько stale-generation drops уже накоплено в diagnostics.
     pub stale_generation_discards: u64,

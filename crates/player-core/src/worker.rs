@@ -26,7 +26,9 @@ use crate::scrub_driver::{
     ScrubInterruptDecision, ScrubPreviewDecision, ScrubPreviewDispatch, ScrubUpdateDecision,
 };
 use crate::seek_controller::{PlaybackResumeCommand, PlaybackResumeIntent};
-use crate::tick::PlayerWorkerWakeupPlan;
+use crate::tick::{
+    PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,
+};
 use crate::worker_scheduler::{PlannedWorkerWakeup, WorkerScheduler, WorkerWakeupDeadline};
 use crate::{
     ActiveSeekDiagnosticsSnapshot, FrameCounters, LatencyCounterSnapshot, MediaOpenRequest,
@@ -1690,7 +1692,9 @@ impl PlayerWorkerRuntime {
         }
 
         self.last_seek_stall_log_at = Some(now);
-        log_active_seek_stall(active_seek);
+        let scheduler_timing =
+            scheduler_timing_diagnostics(&self.session, &self.config.tick_config, now);
+        log_active_seek_stall(active_seek, scheduler_timing);
     }
 
     /// Пишет короткую diagnostics summary только при включённом debug tracing.
@@ -1865,7 +1869,10 @@ fn seek_stall_log_after(
 }
 
 /// Пишет один structured event, достаточный для локализации active seek blocker-а.
-fn log_active_seek_stall(active_seek: ActiveSeekDiagnosticsSnapshot) {
+fn log_active_seek_stall(
+    active_seek: ActiveSeekDiagnosticsSnapshot,
+    scheduler_timing: SchedulerTimingDiagnosticsSnapshot,
+) {
     let queues = active_seek.queues;
     let texture_slots = queues.texture_slots;
 
@@ -1876,9 +1883,16 @@ fn log_active_seek_stall(active_seek: ActiveSeekDiagnosticsSnapshot) {
         generation = active_seek.generation,
         pipeline_generation = active_seek.pipeline_generation,
         scrub_generation = ?active_seek.scrub_generation,
+        selected_video_track_id = ?active_seek.selected_video_track_id,
+        selected_audio_track_id = ?active_seek.selected_audio_track_id,
         age_ms = duration_to_millis(active_seek.age),
         target_ms = duration_to_millis(active_seek.target),
         actual_ms = duration_to_millis(active_seek.actual),
+        audio_clock_ms = duration_to_millis(scheduler_timing.audio_clock),
+        presentation_clock_position_ms =
+            duration_to_millis(scheduler_timing.presentation_clock_position),
+        target_media_time_for_present_ms =
+            duration_to_millis(scheduler_timing.target_media_time_for_present),
         resume_intent = active_seek.resume_intent,
         video_gate_ready = active_seek.video_gate_ready,
         audio_gate_ready = active_seek.audio_gate_ready,
@@ -1890,6 +1904,7 @@ fn log_active_seek_stall(active_seek: ActiveSeekDiagnosticsSnapshot) {
         demuxing_active = active_seek.demuxing_active,
         draining_after_eof = active_seek.draining_after_eof,
         stale_frame = active_seek.stale_frame,
+        preview_state = ?active_seek.preview_state,
         stale_generation_discards = active_seek.stale_generation_discards,
         seek_bootstrap_dropped_until_keyframe = active_seek
             .seek_bootstrap
