@@ -1681,7 +1681,11 @@ impl PlayerSession {
     }
 
     /// Завершает seek commit, когда video/audio gates готовы, или применяет timeout.
-    pub(crate) fn finish_seek_commit_if_ready(
+    ///
+    /// Timeout защищает только реально ожидающие transition-ы: если gates уже
+    /// готовы на этом tick-е, commit должен победить даже после истечения budget.
+    #[cfg(test)]
+    fn finish_seek_commit_if_ready_for_tests(
         &mut self,
         now: Instant,
         commit_timeout: Duration,
@@ -1690,43 +1694,64 @@ impl PlayerSession {
         resume_audio_gate_timeout: Duration,
         resume_video_min_ready_frames: usize,
     ) {
+        let tick_config = PlayerTickConfig {
+            seek_commit_timeout: commit_timeout,
+            seek_preview_timeout: preview_timeout,
+            seek_resume_audio_min_buffer_ms: resume_audio_min_buffer_ms,
+            seek_resume_audio_gate_timeout: resume_audio_gate_timeout,
+            seek_resume_video_min_ready_frames: resume_video_min_ready_frames,
+            ..PlayerTickConfig::default()
+        };
+
+        self.finish_seek_commit_if_ready(now, &tick_config);
+    }
+
+    /// Завершает seek commit по фактическому tick config, чтобы diagnostics и gates
+    /// видели один и тот же набор scheduler/backpressure knobs.
+    pub(crate) fn finish_seek_commit_if_ready(
+        &mut self,
+        now: Instant,
+        tick_config: &PlayerTickConfig,
+    ) {
         let Some(seek_commit) = self.seek_commit else {
             return;
         };
 
-        let active_timeout = match seek_commit.kind {
-            SeekCommitKind::Final => commit_timeout,
-            SeekCommitKind::Preview => preview_timeout,
-        };
-
-        if now.saturating_duration_since(seek_commit.started_at) >= active_timeout {
-            self.fail_seek_commit_on_timeout(seek_commit);
-            return;
-        }
-
+        let resume_video_min_ready_frames =
+            tick_config.effective_seek_resume_video_min_ready_frames();
         let gate_decision = self.seek_commit_gate_decision(
             seek_commit,
             now,
-            resume_audio_min_buffer_ms,
-            resume_audio_gate_timeout,
+            tick_config.seek_resume_audio_min_buffer_ms,
+            tick_config.seek_resume_audio_gate_timeout,
             resume_video_min_ready_frames,
         );
-        if !gate_decision.allows_commit() {
+        if gate_decision.allows_commit() {
+            if let Some(audio_gate_status) = gate_decision.audio_soft_fallback_status() {
+                warn!(
+                    target_ms = seek_commit.target_position.as_duration().as_millis(),
+                    actual_ms = seek_commit.actual_position.as_duration().as_millis(),
+                    generation = seek_commit.generation,
+                    audio_gate_status = ?audio_gate_status,
+                    audio_gate_timeout_ms = tick_config.seek_resume_audio_gate_timeout.as_millis(),
+                    "Final seek commit продолжен через audio gate soft fallback"
+                );
+            }
+
+            self.complete_seek_commit(seek_commit);
             return;
         }
 
-        if let Some(audio_gate_status) = gate_decision.audio_soft_fallback_status() {
-            warn!(
-                target_ms = seek_commit.target_position.as_duration().as_millis(),
-                actual_ms = seek_commit.actual_position.as_duration().as_millis(),
-                generation = seek_commit.generation,
-                audio_gate_status = ?audio_gate_status,
-                audio_gate_timeout_ms = resume_audio_gate_timeout.as_millis(),
-                "Final seek commit продолжен через audio gate soft fallback"
-            );
+        let active_timeout = match seek_commit.kind {
+            SeekCommitKind::Final => tick_config.seek_commit_timeout,
+            SeekCommitKind::Preview => tick_config.seek_preview_timeout,
+        };
+        if now.saturating_duration_since(seek_commit.started_at) < active_timeout {
+            return;
         }
 
-        self.complete_seek_commit(seek_commit);
+        let timeout_blocker = self.seek_timeout_blocker_from_active_diagnostics(now, tick_config);
+        self.fail_seek_commit_on_timeout(seek_commit, timeout_blocker);
     }
 
     /// Проверяет video/audio gates и возвращает причину, если commit разрешён soft fallback-ом.
@@ -1758,6 +1783,17 @@ impl PlayerSession {
         }
 
         SeekCommitGateDecision::Waiting
+    }
+
+    /// Берёт текущий blocker из active seek diagnostics до очистки timeout-состояния.
+    fn seek_timeout_blocker_from_active_diagnostics(
+        &self,
+        now: Instant,
+        tick_config: &PlayerTickConfig,
+    ) -> SeekProgressBlocker {
+        self.active_seek_diagnostics(now, tick_config)
+            .map(|diagnostics| diagnostics.blocker)
+            .unwrap_or(SeekProgressBlocker::Unknown)
     }
 
     /// Возвращает `true`, если audio gate можно отпустить без бесконечного удержания seek-а.
@@ -2232,15 +2268,27 @@ impl PlayerSession {
     }
 
     /// Прерывает seek transaction по timeout как recoverable error и оставляет media paused.
-    fn fail_seek_commit_on_timeout(&mut self, seek_commit: SeekCommitState) {
+    fn fail_seek_commit_on_timeout(
+        &mut self,
+        seek_commit: SeekCommitState,
+        timeout_blocker: SeekProgressBlocker,
+    ) {
         match seek_commit.kind {
-            SeekCommitKind::Final => self.fail_final_seek_commit_on_timeout(seek_commit),
-            SeekCommitKind::Preview => self.fail_preview_seek_commit_on_timeout(seek_commit),
+            SeekCommitKind::Final => {
+                self.fail_final_seek_commit_on_timeout(seek_commit, timeout_blocker);
+            }
+            SeekCommitKind::Preview => {
+                self.fail_preview_seek_commit_on_timeout(seek_commit, timeout_blocker);
+            }
         }
     }
 
     /// Прерывает финальный seek transaction по timeout как recoverable error.
-    fn fail_final_seek_commit_on_timeout(&mut self, seek_commit: SeekCommitState) {
+    fn fail_final_seek_commit_on_timeout(
+        &mut self,
+        seek_commit: SeekCommitState,
+        timeout_blocker: SeekProgressBlocker,
+    ) {
         self.seek_commit = None;
         self.seek_trace.clear();
         self.scrub_state.clear();
@@ -2254,19 +2302,33 @@ impl PlayerSession {
         self.pause_audio_output_for_seek();
         self.set_playback_state(PlaybackState::Paused);
 
+        warn!(
+            target_ms = seek_commit.target_position.as_duration().as_millis(),
+            actual_ms = seek_commit.actual_position.as_duration().as_millis(),
+            generation = seek_commit.generation,
+            blocker = timeout_blocker.metric_name(),
+            blocker_kind = ?timeout_blocker,
+            "Final seek commit остановлен по timeout"
+        );
+
         let error = PlayerError::new(
             PlayerErrorKind::SeekTimeout,
             format!(
-                "Seek commit timeout after target={} ms, actual demux={} ms",
+                "Seek commit timeout after target={} ms, actual demux={} ms, blocker={}",
                 seek_commit.target_position.as_duration().as_millis(),
-                seek_commit.actual_position.as_duration().as_millis()
+                seek_commit.actual_position.as_duration().as_millis(),
+                timeout_blocker.metric_name()
             ),
         );
         self.record_recoverable_error(error);
     }
 
     /// Прерывает только live preview: scrub остаётся живым, финальный commit ещё возможен.
-    fn fail_preview_seek_commit_on_timeout(&mut self, seek_commit: SeekCommitState) {
+    fn fail_preview_seek_commit_on_timeout(
+        &mut self,
+        seek_commit: SeekCommitState,
+        timeout_blocker: SeekProgressBlocker,
+    ) {
         self.seek_commit = None;
         self.seek_trace.clear();
         if let Some(generation) = seek_commit.scrub_generation {
@@ -2283,6 +2345,10 @@ impl PlayerSession {
         self.set_playback_state(PlaybackState::Paused);
         debug!(
             target_ms = seek_commit.target_position.as_duration().as_millis(),
+            actual_ms = seek_commit.actual_position.as_duration().as_millis(),
+            generation = seek_commit.generation,
+            blocker = timeout_blocker.metric_name(),
+            blocker_kind = ?timeout_blocker,
             "Live scrub preview seek timed out"
         );
     }
@@ -5540,7 +5606,7 @@ mod tests {
             session.pipeline.seek_generation()
         );
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             preview_commit.started_at + Duration::from_millis(1),
             Duration::from_secs(10),
             Duration::from_secs(10),
@@ -5769,7 +5835,7 @@ mod tests {
             .seek_commit()
             .expect("audio gate должен удерживать seek после target frame");
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             seek_commit.started_at + Duration::from_millis(1),
             Duration::from_secs(10),
             Duration::from_secs(10),
@@ -6144,7 +6210,7 @@ mod tests {
         );
         assert!(session.snapshot().timeline.seeking);
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -6179,7 +6245,7 @@ mod tests {
         session
             .dispatch_command(PlayerCommand::Seek(request))
             .unwrap();
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -6255,7 +6321,7 @@ mod tests {
         assert!(!session.snapshot().timeline.scrubbing);
         assert_eq!(session.snapshot().current_position, Duration::ZERO);
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -6331,7 +6397,7 @@ mod tests {
             Some(SeekCommitKind::Preview)
         );
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -6371,7 +6437,7 @@ mod tests {
             .started_at
             + Duration::from_millis(101);
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             timeout_now,
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -6393,6 +6459,53 @@ mod tests {
             Some(MediaTime::from_secs(8))
         );
         assert_eq!(session.snapshot().current_position, Duration::ZERO);
+    }
+
+    #[test]
+    fn preview_visible_frame_after_budget_completes_instead_of_expiring() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+        let request = SeekRequest::absolute(MediaTime::from_secs(8));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(request))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(7_900), 42));
+        session.note_presented_frame_for_seek(Duration::from_millis(7_900));
+        let late_tick_now = session
+            .seek_commit()
+            .expect("preview seek должен быть активен до late tick")
+            .started_at
+            + Duration::from_millis(101);
+
+        session.finish_seek_commit_if_ready_for_tests(
+            late_tick_now,
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            Duration::from_millis(250),
+            1,
+        );
+
+        assert!(session.seek_commit().is_none());
+        assert!(session.snapshot().timeline.scrubbing);
+        assert!(!session.snapshot().timeline.seeking);
+        assert!(!session.snapshot().timeline.stale_frame);
+        assert_eq!(
+            session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Visible
+        );
+        assert_eq!(
+            session.snapshot().timeline.target_position,
+            Some(MediaTime::from_secs(8))
+        );
+        assert!(session.snapshot().last_error.is_none());
     }
 
     #[test]
@@ -6499,7 +6612,7 @@ mod tests {
             .expect("preview seek должен быть активен")
             .started_at
             + Duration::from_millis(1);
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             tick_now,
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -6552,7 +6665,7 @@ mod tests {
             .seek_commit()
             .expect("first slow-drag preview должен быть active")
             .started_at;
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             first_preview_started_at + Duration::from_millis(1),
             Duration::from_secs(10),
             Duration::from_secs(10),
@@ -6594,7 +6707,7 @@ mod tests {
             .seek_commit()
             .expect("second slow-drag preview должен быть active")
             .started_at;
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             second_preview_started_at + Duration::from_millis(1),
             Duration::from_secs(10),
             Duration::from_secs(10),
@@ -6770,7 +6883,7 @@ mod tests {
             .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(8), 42));
         session.note_presented_frame_for_seek(Duration::from_secs(8));
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -6803,7 +6916,7 @@ mod tests {
             .dispatch_command(PlayerCommand::PreviewScrub(request))
             .unwrap();
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -7447,7 +7560,7 @@ mod tests {
             .pipeline
             .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(8), 42));
         session.note_presented_frame_for_seek(Duration::from_secs(8));
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -7847,7 +7960,7 @@ mod tests {
         );
         assert!(!session.seek_audio_gate_ready(seek_commit, 50.0));
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             seek_commit.started_at + Duration::from_millis(250),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -8081,9 +8194,21 @@ mod tests {
                 MediaTime::from_secs(5),
             )))
             .unwrap();
-        let timeout_now = Instant::now() + Duration::from_secs(11);
+        let timeout_now = session
+            .seek_commit()
+            .expect("final seek должен быть активен до timeout")
+            .started_at
+            + Duration::from_secs(11);
+        let timeout_diagnostics = session
+            .active_seek_diagnostics(timeout_now, &PlayerTickConfig::default())
+            .expect("active seek diagnostics должны быть доступны до timeout");
 
-        session.finish_seek_commit_if_ready(
+        assert_eq!(
+            timeout_diagnostics.blocker,
+            SeekProgressBlocker::WaitingForDemux
+        );
+
+        session.finish_seek_commit_if_ready_for_tests(
             timeout_now,
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -8101,6 +8226,69 @@ mod tests {
                 .map(|error| &error.kind),
             Some(PlayerErrorKind::SeekTimeout)
         ));
+        let timeout_error = session
+            .snapshot()
+            .last_error
+            .as_ref()
+            .expect("timeout должен записать recoverable error");
+        assert!(
+            timeout_error
+                .message
+                .contains(timeout_diagnostics.blocker.metric_name())
+        );
+    }
+
+    #[test]
+    fn final_ready_gates_after_budget_commit_instead_of_timeout() {
+        let mut session = PlayerSession::new();
+        install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
+        session.note_presented_frame_for_seek(Duration::from_secs(6));
+        let seek_commit = session
+            .seek_commit()
+            .expect("final seek должен быть активен до late tick");
+        let late_tick_now = seek_commit.started_at + Duration::from_secs(11);
+
+        assert_eq!(
+            session.seek_audio_gate_status(seek_commit, 50.0),
+            SeekAudioGateStatus::Ready
+        );
+
+        session.finish_seek_commit_if_ready_for_tests(
+            late_tick_now,
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            Duration::from_millis(250),
+            1,
+        );
+
+        assert!(session.seek_commit().is_none());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
+        assert!(!session.snapshot().timeline.seeking);
+        assert!(session.snapshot().last_error.is_none());
+        let events = session.take_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::SeekCommitted(commit)
+                if commit.target_position == Duration::from_secs(6)
+                    && commit.actual_position == Duration::from_secs(6)
+                    && commit.resume_intent == PlaybackResumeIntent::Pause
+        )));
     }
 
     #[test]
@@ -8120,7 +8308,7 @@ mod tests {
             })
             .unwrap();
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -8153,7 +8341,7 @@ mod tests {
             .unwrap();
         session.dispatch_command(PlayerCommand::Play).unwrap();
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -8193,7 +8381,7 @@ mod tests {
         );
         assert!(session.override_active_seek_resume_intent(PlaybackResumeIntent::Play));
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -8221,7 +8409,7 @@ mod tests {
         session.pipeline.set_present_video_frame(target_frame);
         session.note_presented_frame_for_seek(Duration::from_secs(6));
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -8263,7 +8451,7 @@ mod tests {
             .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(6_033), 44));
         session.note_presented_frame_for_seek(Duration::from_secs(6));
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -8812,7 +9000,7 @@ mod tests {
             .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
         session.note_presented_frame_for_seek(Duration::from_secs(6));
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -8831,7 +9019,7 @@ mod tests {
             .pipeline
             .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(6_033), 44));
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -8871,7 +9059,7 @@ mod tests {
             .expect("seek должен быть активен до проверки audio gate")
             .started_at
             + Duration::from_millis(249);
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             before_audio_gate_timeout,
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -8972,7 +9160,7 @@ mod tests {
         let seek_commit = session
             .seek_commit()
             .expect("seek должен ждать audio до soft fallback deadline");
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             seek_commit.started_at + Duration::from_millis(250),
             Duration::from_secs(10),
             Duration::from_millis(100),
@@ -9027,7 +9215,7 @@ mod tests {
             .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
         session.note_presented_frame_for_seek(Duration::from_secs(6));
 
-        session.finish_seek_commit_if_ready(
+        session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
             Duration::from_secs(10),
             Duration::from_millis(100),

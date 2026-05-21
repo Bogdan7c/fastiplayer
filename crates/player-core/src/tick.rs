@@ -547,14 +547,7 @@ impl PlayerSession {
         }
 
         process_pending_video_packets(self, tick_context, &mut tick_result);
-        self.finish_seek_commit_if_ready(
-            tick_context.now,
-            tick_context.config.seek_commit_timeout,
-            tick_context.config.seek_preview_timeout,
-            tick_context.config.seek_resume_audio_min_buffer_ms,
-            tick_context.config.seek_resume_audio_gate_timeout,
-            effective_seek_resume_video_min_ready_frames(&tick_context.config),
-        );
+        self.finish_seek_commit_if_ready(tick_context.now, &tick_context.config);
         if let Err(error) =
             self.finish_autoplay_preroll_if_ready(tick_context.config.audio_preroll_target_ms)
         {
@@ -1073,6 +1066,7 @@ fn texture_slot_target_watermark(tick_config: &PlayerTickConfig) -> usize {
 }
 
 /// Возвращает достижимый video preroll для seek resume с учётом размера presentation queue.
+#[cfg(test)]
 fn effective_seek_resume_video_min_ready_frames(tick_config: &PlayerTickConfig) -> usize {
     tick_config.effective_seek_resume_video_min_ready_frames()
 }
