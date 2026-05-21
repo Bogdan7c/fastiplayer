@@ -40,6 +40,17 @@ pub(crate) struct SeekCommitState {
     pub kind: SeekCommitKind,
 }
 
+impl SeekCommitState {
+    /// Перепривязывает active seek к новому packet generation после container reset.
+    ///
+    /// `TracksChanged` не является новым пользовательским seek-ом: target, actual,
+    /// scrub intent, timeout и resume policy остаются частью той же transaction.
+    #[must_use]
+    pub(crate) const fn rebased_to_generation(self, generation: u64) -> Self {
+        Self { generation, ..self }
+    }
+}
+
 /// Ошибка выбора container-level seek request-а до изменения runtime pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SeekDemuxRequestError {
