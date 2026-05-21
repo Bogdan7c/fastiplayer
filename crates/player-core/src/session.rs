@@ -1323,6 +1323,12 @@ impl PlayerSession {
             self.seek_audio_gate_status(seek_commit, tick_config.seek_resume_audio_min_buffer_ms);
         let audio_gate_ready = audio_gate_status.is_ready();
         let diagnostics_snapshot = self.diagnostics.snapshot_with_queues(queues);
+        let force_present_for_preview_seek =
+            self.pipeline
+                .front_queued_video_frame()
+                .is_some_and(|frame| {
+                    self.active_preview_frame_ready_for_scheduler(seek_commit, frame.pts)
+                });
         let gate_snapshot = SeekProgressGateSnapshot {
             target_frame_presented,
             video_gate_ready,
@@ -1352,6 +1358,7 @@ impl PlayerSession {
             video_gate_ready,
             audio_gate_ready,
             target_frame_presented,
+            force_present_for_preview_seek,
             ready_video_frames,
             required_video_frames,
             present_frame_pts: self.pipeline.present_video_frame_pts(),
@@ -1512,6 +1519,35 @@ impl PlayerSession {
             (seek_commit.kind == SeekCommitKind::Final)
                 .then_some(seek_commit.target_position.as_duration())
         })
+    }
+
+    /// Проверяет, может ли active seek обойти обычное A/V scheduler window для queued frame-а.
+    ///
+    /// Final seek остаётся exact: scheduler может показать только frame на/после target.
+    /// Preview seek работает как live feedback: первый fresh frame текущего scrub
+    /// generation-а показывается сразу, даже если audio clock стоит на старой позиции.
+    #[must_use]
+    pub(crate) fn active_seek_frame_ready_for_scheduler(&self, frame_pts: Duration) -> bool {
+        let Some(seek_commit) = self.seek_commit else {
+            return false;
+        };
+
+        match seek_commit.kind {
+            SeekCommitKind::Final => frame_pts >= seek_commit.target_position.as_duration(),
+            SeekCommitKind::Preview => {
+                self.active_preview_frame_ready_for_scheduler(seek_commit, frame_pts)
+            }
+        }
+    }
+
+    /// Проверяет preview часть scheduler readiness без раскрытия scrub state за пределы session.
+    fn active_preview_frame_ready_for_scheduler(
+        &self,
+        seek_commit: SeekCommitState,
+        _frame_pts: Duration,
+    ) -> bool {
+        seek_commit.kind == SeekCommitKind::Preview
+            && self.current_preview_scrub_generation(seek_commit).is_some()
     }
 
     /// Проверяет, можно ли сохранить pre-target frame как EOF fallback текущего seek-а.
@@ -1975,6 +2011,14 @@ impl PlayerSession {
 
         if queues.pending_video_packets > 0 {
             return SeekProgressBlocker::WaitingForDecoderInput;
+        }
+
+        if self
+            .pipeline
+            .front_queued_video_frame()
+            .is_some_and(|frame| self.active_seek_frame_ready_for_scheduler(frame.pts))
+        {
+            return SeekProgressBlocker::ReadyForScheduler;
         }
 
         if self.pipeline.has_present_video_frame() || !self.pipeline.video_present_queue_is_empty()
@@ -6586,7 +6630,7 @@ mod tests {
     }
 
     #[test]
-    fn active_preview_with_old_audio_clock_waits_for_scheduler_instead_of_force_presenting() {
+    fn active_preview_with_old_audio_clock_force_presents_front_frame() {
         let mut session = PlayerSession::new();
         install_fake_media(
             &mut session,
@@ -6624,38 +6668,52 @@ mod tests {
             max_demux_packets_per_tick: 0,
             ..PlayerTickConfig::default()
         };
+
+        let diagnostics_before_tick = session
+            .active_seek_diagnostics(scheduler_now, &tick_config)
+            .expect("preview seek должен быть active до scheduler pass-а");
+        assert_eq!(diagnostics_before_tick.kind, "preview");
+        assert!(diagnostics_before_tick.force_present_for_preview_seek);
+        assert_eq!(
+            diagnostics_before_tick.blocker,
+            SeekProgressBlocker::ReadyForScheduler
+        );
+        assert_eq!(
+            diagnostics_before_tick.front_queued_frame_pts,
+            Some(Duration::from_secs(8))
+        );
+        assert_eq!(
+            diagnostics_before_tick.selected_video_track_id,
+            Some(TrackId::new(1))
+        );
+        assert_eq!(
+            diagnostics_before_tick.selected_audio_track_id,
+            Some(TrackId::new(2))
+        );
+
         let tick_result = session.tick(PlayerTickContext::with_config(scheduler_now, tick_config));
 
-        assert_eq!(tick_result.video_frames_presented, 0);
-        assert_eq!(
-            tick_result.pipeline_pauses.last().map(|pause| pause.reason),
-            Some(PipelinePauseReason::SyncWaiting)
+        assert_eq!(tick_result.video_frames_presented, 1);
+        assert!(
+            !tick_result
+                .pipeline_pauses
+                .iter()
+                .any(|pause| pause.reason == PipelinePauseReason::SyncWaiting)
         );
         assert_eq!(
             session
                 .pipeline
-                .front_queued_video_frame()
+                .present_video_frame()
                 .map(|frame| frame.pts),
             Some(Duration::from_secs(8))
         );
-        assert!(session.pipeline.present_video_frame().is_none());
-
-        let diagnostics = session
-            .active_seek_diagnostics(scheduler_now, &tick_config)
-            .expect("preview seek должен оставаться активным, пока scheduler ждёт audio clock");
-        assert_eq!(diagnostics.kind, "preview");
+        assert!(session.pipeline.video_present_queue_is_empty());
+        assert!(session.seek_commit().is_none());
+        assert!(!session.snapshot().timeline.stale_frame);
         assert_eq!(
-            diagnostics.blocker,
-            SeekProgressBlocker::WaitingForScheduler
+            session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Ready
         );
-        assert_eq!(
-            diagnostics.front_queued_frame_pts,
-            Some(Duration::from_secs(8))
-        );
-        assert_eq!(diagnostics.selected_video_track_id, Some(TrackId::new(1)));
-        assert_eq!(diagnostics.selected_audio_track_id, Some(TrackId::new(2)));
-        assert_eq!(diagnostics.preview_state, TimelinePreviewState::Pending);
-        assert!(!diagnostics.target_frame_presented);
     }
 
     #[test]

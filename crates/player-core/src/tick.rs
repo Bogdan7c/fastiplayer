@@ -1733,7 +1733,7 @@ fn front_frame_ready_for_scheduler(
         return false;
     };
 
-    if active_final_seek_frame_ready(session, front_frame.pts) {
+    if session.active_seek_frame_ready_for_scheduler(front_frame.pts) {
         return true;
     }
 
@@ -1747,13 +1747,6 @@ fn front_frame_ready_for_scheduler(
         target_media_time,
         late_drop_grace,
     ) || !should_wait_for_front_frame(front_frame.pts, target_media_time, present_window)
-}
-
-/// Проверяет, что первый queued frame уже может закрыть active final seek.
-fn active_final_seek_frame_ready(session: &PlayerSession, frame_pts: Duration) -> bool {
-    session
-        .active_final_seek_target()
-        .is_some_and(|target_position| frame_pts >= target_position)
 }
 
 /// Возвращает задержку до момента, когда scheduler должен подготовить первый queued frame.
@@ -2444,6 +2437,14 @@ fn process_pending_video_packets(
         target_media_time,
         late_drop_grace,
     ) {
+        if session
+            .pipeline
+            .front_queued_video_frame()
+            .is_some_and(|frame| session.active_seek_frame_ready_for_scheduler(frame.pts))
+        {
+            break;
+        }
+
         if !drop_front_queued_video_frame(session, tick_result, PlayerVideoDropReason::Late) {
             break;
         }
@@ -2465,8 +2466,8 @@ fn process_pending_video_packets(
     };
 
     let diff_ms = frame.pts.as_secs_f64() * 1000.0 - target_media_time.as_secs_f64() * 1000.0;
-    let force_present_for_final_seek = active_final_seek_frame_ready(session, frame.pts);
-    if !force_present_for_final_seek
+    let force_present_for_seek = session.active_seek_frame_ready_for_scheduler(frame.pts);
+    if !force_present_for_seek
         && should_wait_for_front_frame(frame.pts, target_media_time, present_window)
     {
         trace!(
@@ -2494,7 +2495,7 @@ fn process_pending_video_packets(
         target_ms = target_media_time.as_millis(),
         diff_ms,
         window_ms = present_window.as_millis(),
-        force_present_for_final_seek,
+        force_present_for_seek,
         "A/V scheduler: frame selected"
     );
     present_front_queued_video_frame(session, tick_result);

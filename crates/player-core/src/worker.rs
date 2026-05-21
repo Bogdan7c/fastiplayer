@@ -1897,6 +1897,7 @@ fn log_active_seek_stall(
         video_gate_ready = active_seek.video_gate_ready,
         audio_gate_ready = active_seek.audio_gate_ready,
         target_frame_presented = active_seek.target_frame_presented,
+        force_present_for_preview_seek = active_seek.force_present_for_preview_seek,
         ready_video_frames = active_seek.ready_video_frames,
         required_video_frames = active_seek.required_video_frames,
         present_frame_pts_ms = ?active_seek.present_frame_pts.map(duration_to_millis),

@@ -546,6 +546,9 @@ pub enum SeekProgressBlocker {
     /// Нужный decoded frame уже около scheduler-а, но ещё не стал present frame.
     WaitingForScheduler,
 
+    /// Первый queued frame уже можно показать без ожидания media clock window.
+    ReadyForScheduler,
+
     /// Target frame ещё не был показан.
     WaitingForVideoTargetFrame,
 
@@ -573,6 +576,7 @@ impl SeekProgressBlocker {
             Self::WaitingForDecoderOutput => "decoder_output",
             Self::WaitingForDemux => "demux",
             Self::WaitingForScheduler => "scheduler",
+            Self::ReadyForScheduler => "ready_for_scheduler",
             Self::WaitingForVideoTargetFrame => "video_target_frame",
             Self::WaitingForVideoResumePreroll => "video_resume_preroll",
             Self::Unknown => "unknown",
@@ -624,6 +628,9 @@ pub struct ActiveSeekDiagnosticsSnapshot {
 
     /// Был ли уже показан frame на/после target.
     pub target_frame_presented: bool,
+
+    /// Первый queued frame активного preview можно показать сразу, не ожидая audio clock.
+    pub force_present_for_preview_seek: bool,
 
     /// Сколько target/future video frames уже готовы для resume.
     pub ready_video_frames: usize,
