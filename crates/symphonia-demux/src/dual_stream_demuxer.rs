@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use media_core::{
-    DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
-    Demuxer, MediaTime, Packet, TrackId, TrackInfo, TrackKind, TrackTimestamp,
+    DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
+    DemuxTrackListUpdate, Demuxer, MediaTime, Packet, TrackId, TrackInfo, TrackKind,
+    TrackTimestamp,
 };
 use tracing::debug;
 
@@ -199,7 +200,12 @@ impl DualStreamDemuxer {
     ) -> DemuxSeekResult {
         let video_seek = remap_seek_result_track(video_seek, TrackId::new(REMAPPED_VIDEO_TRACK_ID));
         let audio_seek = remap_seek_result_track(audio_seek, TrackId::new(REMAPPED_AUDIO_TRACK_ID));
-        let composite_seek = earliest_stream_seek_result(video_seek, audio_seek);
+        let composite_seek = match request.mode {
+            DemuxSeekMode::DecodePointBefore => video_seek,
+            DemuxSeekMode::Accurate | DemuxSeekMode::Preview => {
+                earliest_stream_seek_result(video_seek, audio_seek)
+            }
+        };
 
         if video_seek.actual_position != audio_seek.actual_position {
             debug!(
@@ -339,6 +345,7 @@ impl Demuxer for DualStreamDemuxer {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -366,21 +373,22 @@ mod tests {
         required_timestamp_units: i64,
     }
 
+    type FakeSeekLog = Arc<Mutex<Vec<FakeSeekCall>>>;
+    type FakeDualStreamDemuxer = (DualStreamDemuxer, FakeSeekLog, FakeSeekLog);
+
     struct FakeSeekReader {
         format_info: FormatInfo,
         media_info: MediaInfo,
         tracks: Vec<Track>,
         metadata: MetadataLog,
         actual_timestamp_units: i64,
-        seek_log: Arc<Mutex<Vec<FakeSeekCall>>>,
+        post_seek_packet_timestamp_units: Option<i64>,
+        packets: VecDeque<symphonia::core::packet::Packet>,
+        seek_log: FakeSeekLog,
     }
 
     impl FakeSeekReader {
-        fn new(
-            tracks: Vec<Track>,
-            actual_timestamp_units: i64,
-            seek_log: Arc<Mutex<Vec<FakeSeekCall>>>,
-        ) -> Self {
+        fn new(tracks: Vec<Track>, actual_timestamp_units: i64, seek_log: FakeSeekLog) -> Self {
             Self {
                 format_info: FormatInfo {
                     format: FORMAT_ID_NULL,
@@ -391,8 +399,18 @@ mod tests {
                 tracks,
                 metadata: MetadataLog::default(),
                 actual_timestamp_units,
+                post_seek_packet_timestamp_units: Some(actual_timestamp_units),
+                packets: VecDeque::new(),
                 seek_log,
             }
+        }
+
+        fn with_post_seek_packet_timestamp_units(
+            mut self,
+            post_seek_packet_timestamp_units: Option<i64>,
+        ) -> Self {
+            self.post_seek_packet_timestamp_units = post_seek_packet_timestamp_units;
+            self
         }
     }
 
@@ -422,6 +440,11 @@ mod tests {
                     mode,
                     required_timestamp_units: required_timestamp.get(),
                 });
+            self.packets = self
+                .post_seek_packet_timestamp_units
+                .map(|timestamp_units| post_seek_packet(&self.tracks, timestamp_units))
+                .into_iter()
+                .collect();
 
             Ok(SeekedTo {
                 track_id: self
@@ -441,7 +464,7 @@ mod tests {
         fn next_packet(
             &mut self,
         ) -> symphonia::core::errors::Result<Option<symphonia::core::packet::Packet>> {
-            Ok(None)
+            Ok(self.packets.pop_front())
         }
 
         fn into_inner<'source>(self: Box<Self>) -> symphonia::core::io::MediaSourceStream<'source>
@@ -508,6 +531,17 @@ mod tests {
         }
     }
 
+    fn post_seek_packet(tracks: &[Track], timestamp_units: i64) -> symphonia::core::packet::Packet {
+        let track_id = tracks.first().map(|track| track.id).unwrap_or_default();
+
+        symphonia::core::packet::Packet::new(
+            track_id,
+            Timestamp::new(timestamp_units),
+            SymphoniaDuration::new(1),
+            b"\x00".to_vec(),
+        )
+    }
+
     fn vp9_video_track(track_id: u32) -> Track {
         let mut video_params = VideoCodecParameters::default();
         video_params.for_codec(video_codec::CODEC_ID_VP9);
@@ -535,10 +569,27 @@ mod tests {
     fn fake_stream_demuxer(
         track: Track,
         actual_timestamp_units: i64,
-        seek_log: Arc<Mutex<Vec<FakeSeekCall>>>,
+        seek_log: FakeSeekLog,
         label: &str,
     ) -> SymphoniaDemuxer {
-        let reader = FakeSeekReader::new(vec![track], actual_timestamp_units, seek_log);
+        fake_stream_demuxer_with_post_seek_packet(
+            track,
+            actual_timestamp_units,
+            Some(actual_timestamp_units),
+            seek_log,
+            label,
+        )
+    }
+
+    fn fake_stream_demuxer_with_post_seek_packet(
+        track: Track,
+        actual_timestamp_units: i64,
+        post_seek_packet_timestamp_units: Option<i64>,
+        seek_log: FakeSeekLog,
+        label: &str,
+    ) -> SymphoniaDemuxer {
+        let reader = FakeSeekReader::new(vec![track], actual_timestamp_units, seek_log)
+            .with_post_seek_packet_timestamp_units(post_seek_packet_timestamp_units);
 
         SymphoniaDemuxer::from_test_format_reader(
             Box::new(reader),
@@ -552,11 +603,7 @@ mod tests {
     fn fake_dual_stream_demuxer(
         video_actual_timestamp_units: i64,
         audio_actual_timestamp_units: i64,
-    ) -> (
-        DualStreamDemuxer,
-        Arc<Mutex<Vec<FakeSeekCall>>>,
-        Arc<Mutex<Vec<FakeSeekCall>>>,
-    ) {
+    ) -> FakeDualStreamDemuxer {
         let video_seek_log = Arc::new(Mutex::new(Vec::new()));
         let audio_seek_log = Arc::new(Mutex::new(Vec::new()));
         let video_demuxer = fake_stream_demuxer(
@@ -644,7 +691,27 @@ mod tests {
     }
 
     #[test]
-    fn seek_returns_earliest_actual_position_when_streams_differ() {
+    fn preview_seek_returns_earliest_actual_position_when_streams_differ() {
+        let (mut demuxer, _video_seek_log, _audio_seek_log) =
+            fake_dual_stream_demuxer(9_000, 7_000);
+
+        let result = demuxer
+            .seek_with_request(DemuxSeekRequest::preview(Duration::from_secs(10)))
+            .expect("dual preview seek succeeds");
+
+        assert_eq!(result.requested_position, MediaTime::from_secs(10));
+        assert_eq!(result.actual_position, MediaTime::from_secs(7));
+        assert_eq!(
+            result
+                .actual_track_timestamp
+                .expect("composite seek должен сохранить raw timestamp")
+                .track_id,
+            TrackId::new(REMAPPED_AUDIO_TRACK_ID)
+        );
+    }
+
+    #[test]
+    fn decode_point_before_seek_result_reports_video_actual_when_audio_is_earlier() {
         let (mut demuxer, _video_seek_log, _audio_seek_log) =
             fake_dual_stream_demuxer(9_000, 7_000);
 
@@ -655,13 +722,54 @@ mod tests {
             .expect("dual decode-point seek succeeds");
 
         assert_eq!(result.requested_position, MediaTime::from_secs(10));
-        assert_eq!(result.actual_position, MediaTime::from_secs(7));
+        assert_eq!(result.actual_position, MediaTime::from_secs(9));
         assert_eq!(
             result
                 .actual_track_timestamp
-                .expect("composite seek должен сохранить raw timestamp")
+                .expect("decode-point composite actual должен быть video timestamp")
                 .track_id,
-            TrackId::new(REMAPPED_AUDIO_TRACK_ID)
+            TrackId::new(REMAPPED_VIDEO_TRACK_ID)
+        );
+    }
+
+    #[test]
+    fn decode_point_before_video_failure_is_not_masked_by_audio_success() {
+        let video_seek_log = Arc::new(Mutex::new(Vec::new()));
+        let audio_seek_log = Arc::new(Mutex::new(Vec::new()));
+        let video_demuxer = fake_stream_demuxer_with_post_seek_packet(
+            vp9_video_track(10),
+            4_000,
+            Some(11_000),
+            Arc::clone(&video_seek_log),
+            "fake-video-after-target",
+        );
+        let audio_demuxer = fake_stream_demuxer(
+            aac_audio_track(20),
+            4_000,
+            Arc::clone(&audio_seek_log),
+            "fake-audio-success",
+        );
+        let mut demuxer =
+            DualStreamDemuxer::new(video_demuxer, audio_demuxer).expect("dual demuxer opens");
+
+        let error = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::from_secs(
+                10,
+            )))
+            .expect_err("video DecodePointBefore failure должен прервать composite seek");
+
+        assert!(format!("{error}").contains("DecodePointBefore verification failed"));
+        assert!(
+            audio_seek_log
+                .lock()
+                .expect("audio seek log mutex should not be poisoned")
+                .is_empty()
+        );
+        assert!(
+            !video_seek_log
+                .lock()
+                .expect("video seek log mutex should not be poisoned")
+                .is_empty()
         );
     }
 }

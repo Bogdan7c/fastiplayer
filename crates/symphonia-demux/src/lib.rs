@@ -19,7 +19,8 @@ pub use dual_stream_demuxer::DualStreamDemuxer;
 pub use error::DemuxError;
 pub use media_core::{Packet, TimeBase, TrackId, TrackInfo, TrackKind};
 pub use options::{
-    DEFAULT_DECODE_POINT_BEFORE_PREROLL, DEFAULT_MAX_CONSECUTIVE_CORRUPTED_PACKETS, DemuxerOptions,
+    DEFAULT_DECODE_POINT_BEFORE_PREROLL, DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT,
+    DEFAULT_MAX_CONSECUTIVE_CORRUPTED_PACKETS, DemuxerOptions,
 };
 pub use streaming_source::{StreamingByteReader, StreamingByteWriter};
 pub use symphonia_demuxer::SymphoniaDemuxer;

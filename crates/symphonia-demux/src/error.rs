@@ -1,6 +1,7 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
-use media_core::DemuxSeekMode;
+use media_core::{DemuxSeekMode, PacketKeyframe};
 
 /// Ошибки demuxer.
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +58,29 @@ pub enum DemuxError {
 
     #[error("Ошибка seek: {0}")]
     SeekFailed(String),
+
+    #[error(
+        "DecodePointBefore verification failed: reason={reason}, requested={requested_position:?}, attempts={attempts}, packets_checked={packets_checked}, first_video_pts={first_video_pts:?}, first_video_keyframe={first_video_keyframe:?}"
+    )]
+    DecodePointBeforeVerificationFailed {
+        /// Краткая стабильная причина для diagnostics и тестов.
+        reason: &'static str,
+
+        /// Исходная позиция, которую запросил player.
+        requested_position: Duration,
+
+        /// Сколько backend seek попыток было сделано.
+        attempts: usize,
+
+        /// Сколько supported packets было проверено в последней попытке.
+        packets_checked: usize,
+
+        /// PTS первого selected video packet-а, если demuxer успел его увидеть.
+        first_video_pts: Option<Duration>,
+
+        /// Keyframe-классификация первого selected video packet-а, если он был найден.
+        first_video_keyframe: Option<PacketKeyframe>,
+    },
 }
 
 impl DemuxError {

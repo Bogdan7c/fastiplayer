@@ -7,6 +7,9 @@ pub const DEFAULT_MAX_CONSECUTIVE_CORRUPTED_PACKETS: usize = 64;
 /// Дефолтное окно pre-roll для `DecodePointBefore` перед requested target-ом.
 pub const DEFAULT_DECODE_POINT_BEFORE_PREROLL: Duration = Duration::from_secs(5);
 
+/// Сколько post-seek packets можно прочитать для доказательства video decode point.
+pub const DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT: usize = 64;
+
 /// Runtime-настройки demuxer-а, независимые от TOML schema приложения.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DemuxerOptions {
@@ -15,6 +18,9 @@ pub struct DemuxerOptions {
 
     /// Насколько раньше requested target-а начинать backend seek для decode-safe final video seek.
     decode_point_before_preroll: Duration,
+
+    /// Сколько packets после seek можно prebuffer-нуть для проверки selected video track.
+    decode_point_before_verification_packet_limit: usize,
 }
 
 impl DemuxerOptions {
@@ -24,6 +30,8 @@ impl DemuxerOptions {
         Self {
             max_consecutive_corrupted_packets,
             decode_point_before_preroll: DEFAULT_DECODE_POINT_BEFORE_PREROLL,
+            decode_point_before_verification_packet_limit:
+                DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT,
         }
     }
 
@@ -47,6 +55,12 @@ impl DemuxerOptions {
         self.decode_point_before_preroll
     }
 
+    /// Возвращает лимит post-seek packets для packet-level проверки `DecodePointBefore`.
+    #[must_use]
+    pub const fn decode_point_before_verification_packet_limit(self) -> usize {
+        self.decode_point_before_verification_packet_limit
+    }
+
     /// Задаёт pre-roll окно для `DecodePointBefore` без изменения остальных demux options.
     #[must_use]
     pub const fn with_decode_point_before_preroll(
@@ -55,6 +69,20 @@ impl DemuxerOptions {
     ) -> Self {
         self.decode_point_before_preroll = decode_point_before_preroll;
         self
+    }
+
+    /// Задаёт bounded лимит packet-level проверки `DecodePointBefore`.
+    #[must_use]
+    pub const fn with_decode_point_before_verification_packet_limit(
+        mut self,
+        packet_limit: usize,
+    ) -> Option<Self> {
+        if packet_limit == 0 {
+            return None;
+        }
+
+        self.decode_point_before_verification_packet_limit = packet_limit;
+        Some(self)
     }
 }
 
@@ -67,6 +95,8 @@ impl Default for DemuxerOptions {
             )
             .expect("default corrupted packet limit must be non-zero"),
             decode_point_before_preroll: DEFAULT_DECODE_POINT_BEFORE_PREROLL,
+            decode_point_before_verification_packet_limit:
+                DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT,
         }
     }
 }
