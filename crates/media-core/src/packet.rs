@@ -4,6 +4,54 @@ use bytes::Bytes;
 
 use crate::{TrackDuration, TrackId, TrackKind, TrackTimestamp};
 
+/// Keyframe-классификация video packet-а на границе demux -> player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketKeyframe {
+    /// Packet точно является keyframe/decode-start.
+    Keyframe,
+
+    /// Packet точно не является keyframe и требует предыдущих reference frames.
+    NotKeyframe,
+
+    /// Demuxer не смог надёжно классифицировать packet.
+    Unknown,
+}
+
+impl PacketKeyframe {
+    /// Строит typed состояние из старого container/probe bool, когда он известен.
+    #[must_use]
+    pub const fn from_known(is_keyframe: bool) -> Self {
+        if is_keyframe {
+            Self::Keyframe
+        } else {
+            Self::NotKeyframe
+        }
+    }
+
+    /// Возвращает `Some(bool)` только для надёжно классифицированного packet-а.
+    #[must_use]
+    pub const fn as_known_bool(self) -> Option<bool> {
+        match self {
+            Self::Keyframe => Some(true),
+            Self::NotKeyframe => Some(false),
+            Self::Unknown => None,
+        }
+    }
+
+    /// Проверяет, что packet точно является keyframe.
+    #[must_use]
+    pub const fn is_known_keyframe(self) -> bool {
+        matches!(self, Self::Keyframe)
+    }
+}
+
+impl From<bool> for PacketKeyframe {
+    /// Сохраняет compatibility с call-site-ами, где keyframe уже точно известен.
+    fn from(is_keyframe: bool) -> Self {
+        Self::from_known(is_keyframe)
+    }
+}
+
 /// Минимальная единица codec data, которую demuxer передаёт pipeline-у.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Packet {
@@ -34,8 +82,8 @@ pub struct Packet {
     /// Безопасная container/source byte-позиция для повторного demux seek-а.
     pub byte_offset: Option<u64>,
 
-    /// Признак ключевого кадра для video packets.
-    pub keyframe: bool,
+    /// Явная keyframe-классификация для video packets.
+    pub keyframe: PacketKeyframe,
 
     /// Сырые codec bytes: VP9 frame, Opus packet и т.д.
     pub data: Bytes,
@@ -50,6 +98,31 @@ impl Packet {
         pts: Duration,
         dts: Option<Duration>,
         keyframe: bool,
+        data: Bytes,
+    ) -> Self {
+        Self {
+            track_id,
+            kind,
+            pts,
+            track_pts: None,
+            dts,
+            track_dts: None,
+            duration: None,
+            track_duration: None,
+            byte_offset: None,
+            keyframe: PacketKeyframe::from_known(keyframe),
+            data,
+        }
+    }
+
+    /// Создаёт packet с явной трёхсостоянийной keyframe-классификацией.
+    #[must_use]
+    pub const fn new_with_keyframe(
+        track_id: TrackId,
+        kind: TrackKind,
+        pts: Duration,
+        dts: Option<Duration>,
+        keyframe: PacketKeyframe,
         data: Bytes,
     ) -> Self {
         Self {
@@ -144,7 +217,9 @@ mod tests {
 
     use bytes::Bytes;
 
-    use crate::{Packet, TimeBase, TrackDuration, TrackId, TrackKind, TrackTimestamp};
+    use crate::{
+        Packet, PacketKeyframe, TimeBase, TrackDuration, TrackId, TrackKind, TrackTimestamp,
+    };
 
     #[test]
     fn packet_keeps_track_timestamp_and_payload() {
@@ -163,8 +238,23 @@ mod tests {
         assert_eq!(packet.track_pts, None);
         assert_eq!(packet.duration, None);
         assert_eq!(packet.track_duration, None);
-        assert!(packet.keyframe);
+        assert_eq!(packet.keyframe, PacketKeyframe::Keyframe);
         assert_eq!(&packet.data[..], b"vp9");
+    }
+
+    #[test]
+    fn packet_can_keep_unknown_keyframe_classification() {
+        let packet = Packet::new_with_keyframe(
+            TrackId::new(7),
+            TrackKind::Video,
+            Duration::from_millis(42),
+            None,
+            PacketKeyframe::Unknown,
+            Bytes::from_static(b"vp9"),
+        );
+
+        assert_eq!(packet.keyframe, PacketKeyframe::Unknown);
+        assert_eq!(packet.keyframe.as_known_bool(), None);
     }
 
     #[test]

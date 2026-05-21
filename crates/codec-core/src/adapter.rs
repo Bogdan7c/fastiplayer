@@ -636,6 +636,30 @@ mod tests {
         assert_eq!(probe, VideoPacketKeyframeProbe::Keyframe(true));
     }
 
+    /// Проверяет, что VP9 inter-frame не становится ложным keyframe.
+    #[test]
+    fn vp9_keyframe_probe_distinguishes_inter_frame() {
+        let packet_bytes = build_vp9_inter_frame();
+
+        let probe = probe_video_packet_keyframe(VideoCodec::Vp9, &packet_bytes);
+
+        assert_eq!(probe, VideoPacketKeyframeProbe::Keyframe(false));
+    }
+
+    /// Проверяет, что parser uncertainty остаётся typed keyframe uncertainty.
+    #[test]
+    fn vp9_keyframe_probe_reports_uncertain_parse_result() {
+        let probe = probe_video_packet_keyframe(VideoCodec::Vp9, b"\x00");
+
+        assert!(matches!(
+            probe,
+            VideoPacketKeyframeProbe::Uncertain(VideoRequirementUncertainty::ParseError {
+                codec: VideoCodec::Vp9,
+                ..
+            })
+        ));
+    }
+
     /// Минимальный набор VP9 header полей для adapter-level regression tests.
     struct Vp9HeaderFixture {
         /// VP9 profile id из uncompressed header.
@@ -679,6 +703,32 @@ mod tests {
         }
         push_bits(&mut bits, fixture.width - 1, 16);
         push_bits(&mut bits, fixture.height - 1, 16);
+        bits.push(0);
+        bits_to_bytes(&bits)
+    }
+
+    /// Собирает VP9 inter-frame, который parser может уверенно классифицировать.
+    fn build_vp9_inter_frame() -> Vec<u8> {
+        let mut bits = Vec::new();
+        push_bits(&mut bits, 0b10, 2);
+        push_profile(&mut bits, 0);
+        bits.push(0);
+        bits.push(1);
+        bits.push(1);
+        bits.push(0);
+        push_bits(&mut bits, 0, 2);
+        push_bits(&mut bits, 0x01, 8);
+        push_bits(&mut bits, 1, 3);
+        bits.push(1);
+        push_bits(&mut bits, 2, 3);
+        bits.push(0);
+        push_bits(&mut bits, 3, 3);
+        bits.push(1);
+        bits.push(0);
+        bits.push(0);
+        bits.push(0);
+        push_bits(&mut bits, 63, 16);
+        push_bits(&mut bits, 63, 16);
         bits.push(0);
         bits_to_bytes(&bits)
     }

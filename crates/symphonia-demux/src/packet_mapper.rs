@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use codec_core::{VideoCodec, VideoPacketKeyframeProbe, probe_video_packet_keyframe};
-use media_core::{Packet as MediaPacket, TrackDuration, TrackId, TrackKind, TrackTimestamp};
+use media_core::{
+    Packet as MediaPacket, PacketKeyframe, TrackDuration, TrackId, TrackKind, TrackTimestamp,
+};
 use symphonia::core::packet::Packet as SymphoniaPacket;
 use symphonia::core::units::{TimeBase as SymphoniaTimeBase, Timestamp};
 
@@ -19,15 +21,6 @@ pub(crate) enum PacketConvertError {
     UnknownTrack {
         /// Сырой Symphonia/container track id.
         track_id: u32,
-    },
-
-    /// Packet можно пропустить, если fail-safe лимит ещё не исчерпан.
-    CorruptedPacket {
-        /// Track, к которому относится повреждённый packet.
-        track_id: TrackId,
-
-        /// Человекочитаемая причина для logs/fatal error.
-        reason: String,
     },
 
     /// Packet принадлежит track-у, который demuxer увидел при open, но намеренно не экспортировал.
@@ -67,7 +60,7 @@ pub(crate) fn convert_packet(
     let dts = packet_decode_timestamp(track_entry.time_base, packet.pts, packet.dts);
     let duration = packet_duration(track_entry.time_base, packet.dur);
     let track_duration = packet_track_duration(track_id, track_entry.time_base, packet.dur);
-    let keyframe = packet_keyframe(track_entry, track_kind, packet_track_id, &packet.data)?;
+    let keyframe = packet_keyframe(track_entry, track_kind, &packet.data);
 
     Ok(MediaPacket {
         track_id,
@@ -151,24 +144,19 @@ fn packet_timestamp_to_duration(
 fn packet_keyframe(
     track_entry: &TrackEntry,
     track_kind: TrackKind,
-    packet_track_id: u32,
     packet_data: &[u8],
-) -> Result<bool, PacketConvertError> {
+) -> PacketKeyframe {
     if track_kind != TrackKind::Video {
-        return Ok(false);
+        return PacketKeyframe::NotKeyframe;
     }
 
     match VideoCodec::from_container_codec_id(&track_entry.codec_id)
         .map(|codec| probe_video_packet_keyframe(codec, packet_data))
     {
-        Some(VideoPacketKeyframeProbe::Keyframe(keyframe)) => Ok(keyframe),
-        Some(VideoPacketKeyframeProbe::Uncertain(uncertainty)) => {
-            Err(PacketConvertError::CorruptedPacket {
-                track_id: TrackId::new(packet_track_id),
-                reason: format!("video packet keyframe probe failed: {uncertainty:?}"),
-            })
-        }
-        Some(VideoPacketKeyframeProbe::AdapterUnavailable { .. }) | None => Ok(false),
+        Some(VideoPacketKeyframeProbe::Keyframe(keyframe)) => PacketKeyframe::from_known(keyframe),
+        Some(VideoPacketKeyframeProbe::Uncertain(_))
+        | Some(VideoPacketKeyframeProbe::AdapterUnavailable { .. })
+        | None => PacketKeyframe::Unknown,
     }
 }
 
@@ -177,7 +165,7 @@ mod tests {
     use std::collections::HashMap;
     use std::time::Duration;
 
-    use media_core::{TrackId, TrackKind};
+    use media_core::{PacketKeyframe, TrackId, TrackKind};
     use symphonia::core::packet::{Packet as SymphoniaPacket, PacketBuilder};
     use symphonia::core::units::{Duration as SymphoniaDuration, TimeBase, Timestamp};
 
@@ -259,6 +247,31 @@ mod tests {
         bits_to_bytes(&bits)
     }
 
+    fn build_vp9_inter_frame() -> Vec<u8> {
+        let mut bits = Vec::new();
+        push_bits(&mut bits, 0b10, 2);
+        push_profile(&mut bits, 0);
+        bits.push(0);
+        bits.push(1);
+        bits.push(1);
+        bits.push(0);
+        push_bits(&mut bits, 0, 2);
+        push_bits(&mut bits, 0x01, 8);
+        push_bits(&mut bits, 1, 3);
+        bits.push(1);
+        push_bits(&mut bits, 2, 3);
+        bits.push(0);
+        push_bits(&mut bits, 3, 3);
+        bits.push(1);
+        bits.push(0);
+        bits.push(0);
+        bits.push(0);
+        push_bits(&mut bits, 63, 16);
+        push_bits(&mut bits, 63, 16);
+        bits.push(0);
+        bits_to_bytes(&bits)
+    }
+
     fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
         bits.chunks(8)
             .map(|chunk| {
@@ -322,7 +335,7 @@ mod tests {
             1
         );
         assert_eq!(&packet.data[..], b"opus");
-        assert!(!packet.keyframe);
+        assert_eq!(packet.keyframe, PacketKeyframe::NotKeyframe);
     }
 
     #[test]
@@ -433,23 +446,23 @@ mod tests {
     }
 
     #[test]
-    fn invalid_vp9_packet_is_recoverable_corruption() {
+    fn uncertain_vp9_keyframe_probe_converts_with_unknown_keyframe() {
         let track_map = HashMap::from([(1, track_entry(TrackKind::Video, "V_VP9"))]);
 
-        let error = convert_packet(packet(1, 0, b"\x00"), &track_map)
-            .expect_err("битый VP9 packet должен быть recoverable corruption");
+        let packet = convert_packet(packet(1, 0, b"\x00"), &track_map)
+            .expect("неуверенная keyframe-проба не должна ломать demux-конвертацию");
 
-        match error {
-            PacketConvertError::CorruptedPacket { track_id, .. } => {
-                assert_eq!(track_id, TrackId::new(1));
-            }
-            PacketConvertError::UnknownTrack { .. } => {
-                panic!("ожидалась recoverable corruption, а не unknown track");
-            }
-            PacketConvertError::UnsupportedTrack { .. } => {
-                panic!("ожидалась recoverable corruption, а не unsupported track skip");
-            }
-        }
+        assert_eq!(packet.keyframe, PacketKeyframe::Unknown);
+    }
+
+    #[test]
+    fn unavailable_keyframe_adapter_converts_with_unknown_keyframe() {
+        let track_map = HashMap::from([(1, track_entry(TrackKind::Video, "V_AV1"))]);
+
+        let packet = convert_packet(packet(1, 0, b"av1"), &track_map)
+            .expect("packet без keyframe adapter-а не должен молча становиться non-keyframe");
+
+        assert_eq!(packet.keyframe, PacketKeyframe::Unknown);
     }
 
     #[test]
@@ -459,6 +472,16 @@ mod tests {
         let packet = convert_packet(owned_packet(1, 0, build_vp9_keyframe()), &track_map)
             .expect("валидный VP9 keyframe должен конвертироваться");
 
-        assert!(packet.keyframe);
+        assert_eq!(packet.keyframe, PacketKeyframe::Keyframe);
+    }
+
+    #[test]
+    fn valid_vp9_inter_frame_packet_sets_non_keyframe_flag() {
+        let track_map = HashMap::from([(1, track_entry(TrackKind::Video, "V_VP9"))]);
+
+        let packet = convert_packet(owned_packet(1, 0, build_vp9_inter_frame()), &track_map)
+            .expect("валидный VP9 inter-frame должен конвертироваться");
+
+        assert_eq!(packet.keyframe, PacketKeyframe::NotKeyframe);
     }
 }

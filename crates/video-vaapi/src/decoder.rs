@@ -1080,7 +1080,7 @@ impl VideoDecoder for VaapiVideoDecoder {
         trace!(
             timestamp_us = timestamp_us,
             pts_ms = packet.pts.as_millis(),
-            keyframe = packet.keyframe,
+            keyframe = ?packet.keyframe,
             data_len = packet.data.len(),
             "decode() called"
         );
@@ -1088,8 +1088,12 @@ impl VideoDecoder for VaapiVideoDecoder {
         // Шаг 1-2: submit packet и drain pending events.
         // При `CheckEvents` тот же packet отправляется повторно после drain,
         // потому что нижний decoder ещё не обязан был consume-ить bitstream.
-        let loop_report =
-            run_decode_with_event_retry(self, timestamp_us, &packet.data, packet.keyframe)?;
+        let loop_report = run_decode_with_event_retry(
+            self,
+            timestamp_us,
+            &packet.data,
+            packet.keyframe.is_known_keyframe(),
+        )?;
         if loop_report.skipped_packet {
             return Ok(None);
         }

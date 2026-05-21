@@ -154,7 +154,7 @@ fn record_player_tick_result(telemetry: &Telemetry, tick_result: &PlayerTickResu
                 raw_pts_units = ?packet.track_pts.map(|timestamp| timestamp.units.get()),
                 raw_dts_units = ?packet.track_dts.map(|timestamp| timestamp.units.get()),
                 size = packet.size,
-                keyframe = packet.keyframe,
+                keyframe = ?packet.keyframe,
                 "Packet"
             );
         }

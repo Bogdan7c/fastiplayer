@@ -12,7 +12,7 @@ use codec_core::{
     probe_video_packet_requirement, resolve_video_metadata,
     video_requirement_needs_packet_refinement,
 };
-use media_core::{DemuxReadEvent, TrackId, TrackKind, TrackTimestamp};
+use media_core::{DemuxReadEvent, PacketKeyframe, TrackId, TrackKind, TrackTimestamp};
 use rustiplayer_config::AppConfig;
 use tracing::{trace, warn};
 
@@ -330,8 +330,8 @@ pub struct PlayerTickPacket {
     /// Safe source byte offset для demux seek, если container adapter его сообщил.
     pub byte_offset: Option<u64>,
 
-    /// Признак keyframe для video packets.
-    pub keyframe: bool,
+    /// Keyframe-классификация для video packets.
+    pub keyframe: PacketKeyframe,
 }
 
 /// Public compatibility имя причины удаления video frame.
@@ -1303,6 +1303,7 @@ fn send_pending_video_packets_to_decoder(
             continue;
         }
 
+        let decoder_was_waiting_for_keyframe = session.pipeline.video_decoder_needs_keyframe();
         if !accept_video_packet_for_decoder_bootstrap(session, packet_keyframe, packet_pts) {
             session.pipeline.pop_pending_video_packet_front();
             record_video_drop(
@@ -1338,10 +1339,13 @@ fn send_pending_video_packets_to_decoder(
             break;
         }
 
+        let decode_packet_keyframe_hint =
+            video_decode_packet_keyframe_hint(packet_keyframe, decoder_was_waiting_for_keyframe);
         trace!(
             pts_ms = packet_pts.as_millis(),
             encoded_len = packet_probe.encoded_bytes.len(),
-            keyframe = packet_keyframe,
+            keyframe = ?packet_keyframe,
+            decode_keyframe_hint = decode_packet_keyframe_hint,
             "Sending video packet to decoder thread"
         );
 
@@ -1353,7 +1357,7 @@ fn send_pending_video_packets_to_decoder(
             track_id: packet_track_id,
             pts: packet_pts,
             encoded_bytes: packet_probe.encoded_bytes,
-            keyframe: packet_keyframe,
+            keyframe: decode_packet_keyframe_hint,
             resolved_color,
         };
 
@@ -1391,23 +1395,43 @@ fn send_pending_video_packets_to_decoder(
 /// Пропускает inter-frames, пока decoder после flush ждёт новый keyframe.
 fn accept_video_packet_for_decoder_bootstrap(
     session: &mut PlayerSession,
-    packet_keyframe: bool,
+    packet_keyframe: PacketKeyframe,
     packet_pts: Duration,
 ) -> bool {
     if !session.pipeline.video_decoder_needs_keyframe() {
         return true;
     }
 
-    if !packet_keyframe {
-        trace!(
-            pts_ms = packet_pts.as_millis(),
-            "Dropping video packet until decoder receives post-flush keyframe"
-        );
-        return false;
+    match packet_keyframe {
+        PacketKeyframe::Keyframe => {
+            session.pipeline.mark_video_decoder_bootstrapped();
+            true
+        }
+        PacketKeyframe::NotKeyframe => {
+            trace!(
+                pts_ms = packet_pts.as_millis(),
+                "Dropping video packet until decoder receives post-flush keyframe"
+            );
+            false
+        }
+        PacketKeyframe::Unknown => {
+            warn!(
+                pts_ms = packet_pts.as_millis(),
+                "Accepting video packet with unknown keyframe state as post-flush decode start"
+            );
+            session.pipeline.mark_video_decoder_bootstrapped();
+            true
+        }
     }
+}
 
-    session.pipeline.mark_video_decoder_bootstrapped();
-    true
+/// Переводит typed demux-классификацию в текущий bool contract decoder-а.
+fn video_decode_packet_keyframe_hint(
+    packet_keyframe: PacketKeyframe,
+    accepted_as_decode_start: bool,
+) -> bool {
+    matches!(packet_keyframe, PacketKeyframe::Keyframe)
+        || (accepted_as_decode_start && packet_keyframe == PacketKeyframe::Unknown)
 }
 
 /// Отделяет stale seek generation от late-drop policy.
@@ -3264,7 +3288,7 @@ mod tests {
             pending_packet.generation,
             session.pipeline.seek_generation()
         );
-        assert!(pending_packet.keyframe);
+        assert_eq!(pending_packet.keyframe, PacketKeyframe::Keyframe);
         assert_eq!(pending_packet.encoded_bytes.as_ptr(), payload_ptr);
         assert_eq!(&pending_packet.encoded_bytes[..], &[0x82, 0x49, 0x83, 0x42]);
     }
@@ -3354,28 +3378,81 @@ mod tests {
     }
 
     #[test]
+    fn unknown_keyframe_bootstrap_packet_is_sent_as_decoder_decode_start() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+
+        session
+            .pipeline
+            .set_video_decoder_thread(decoder_thread.clone());
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        session.pipeline.require_video_decoder_keyframe();
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                TrackId::new(1),
+                Duration::from_millis(120),
+                session.pipeline.seek_generation(),
+                Bytes::from_static(b"unknown-keyframe"),
+                PacketKeyframe::Unknown,
+            ));
+
+        let sent_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &PlayerTickConfig::default(),
+            &mut tick_result,
+            1,
+            Duration::from_millis(250),
+            None,
+        );
+        let decoder_packets = decoder_thread.sent_packets();
+
+        assert_eq!(sent_packets, 1);
+        assert_eq!(decoder_packets.len(), 1);
+        assert!(decoder_packets[0].keyframe);
+        assert!(!session.pipeline.video_decoder_needs_keyframe());
+    }
+
+    #[test]
     fn decoder_bootstrap_drops_interframes_until_keyframe() {
         let mut session = PlayerSession::new();
         session.pipeline.require_video_decoder_keyframe();
 
         assert!(!accept_video_packet_for_decoder_bootstrap(
             &mut session,
-            false,
+            PacketKeyframe::NotKeyframe,
             Duration::from_millis(10)
         ));
         assert!(session.pipeline.video_decoder_needs_keyframe());
 
         assert!(accept_video_packet_for_decoder_bootstrap(
             &mut session,
-            true,
+            PacketKeyframe::Keyframe,
             Duration::from_millis(20)
         ));
         assert!(!session.pipeline.video_decoder_needs_keyframe());
 
         assert!(accept_video_packet_for_decoder_bootstrap(
             &mut session,
-            false,
+            PacketKeyframe::NotKeyframe,
             Duration::from_millis(30)
         ));
+    }
+
+    #[test]
+    fn decoder_bootstrap_accepts_unknown_keyframe_as_decode_start() {
+        let mut session = PlayerSession::new();
+        session.pipeline.require_video_decoder_keyframe();
+
+        assert!(accept_video_packet_for_decoder_bootstrap(
+            &mut session,
+            PacketKeyframe::Unknown,
+            Duration::from_millis(10)
+        ));
+        assert!(!session.pipeline.video_decoder_needs_keyframe());
     }
 }

@@ -15,7 +15,7 @@ pub use demux::{
     DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
     DemuxTrackListUpdate, Demuxer, MediaDemuxError,
 };
-pub use packet::Packet;
+pub use packet::{Packet, PacketKeyframe};
 pub use time::{
     MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason, TimelinePreviewState,
     TimelineRange, TimelineSnapshot, TrackDuration, TrackDurationUnits, TrackTimestamp,

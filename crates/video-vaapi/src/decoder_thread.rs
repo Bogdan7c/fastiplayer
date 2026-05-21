@@ -1678,7 +1678,7 @@ fn decode_queued_packet(
         track_dts: None,
         duration: None,
         track_duration: None,
-        keyframe,
+        keyframe: keyframe.into(),
         byte_offset: None,
         data: encoded_bytes,
     };

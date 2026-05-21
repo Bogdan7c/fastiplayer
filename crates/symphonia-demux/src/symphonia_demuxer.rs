@@ -363,10 +363,6 @@ impl Demuxer for SymphoniaDemuxer {
                         );
                         continue;
                     }
-                    Err(PacketConvertError::CorruptedPacket { track_id, reason }) => {
-                        self.record_corrupted_packet(Some(track_id), reason)?;
-                        continue;
-                    }
                 },
                 Ok(None) => {
                     return Ok(DemuxReadEvent::EndOfStream);
@@ -756,7 +752,8 @@ mod tests {
     use std::time::Duration;
 
     use media_core::{
-        DemuxReadEvent, DemuxSeekRequest, DemuxSeekability, Demuxer, TrackId, TrackKind,
+        DemuxReadEvent, DemuxSeekRequest, DemuxSeekability, Demuxer, PacketKeyframe, TrackId,
+        TrackKind,
     };
     use symphonia::core::audio::{Channels, Position};
     use symphonia::core::codecs::CodecParameters;
@@ -1483,7 +1480,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_vp9_header_is_counted_as_corrupted_packet() {
+    fn uncertain_vp9_keyframe_probe_is_returned_without_corruption_accounting() {
         let options = DemuxerOptions::from_max_consecutive_corrupted_packets(1)
             .expect("test limit ненулевой");
         let matroska_tracks = HashMap::from([(
@@ -1496,19 +1493,27 @@ mod tests {
         let mut demuxer = fake_demuxer_with_options(
             vec![
                 Ok(fake_packet(1, 0, b"\x00".to_vec())),
-                Ok(small_vp9_keyframe_packet(1, 10)),
+                Ok(fake_packet(1, 10, b"\x00".to_vec())),
+                Ok(small_vp9_keyframe_packet(1, 20)),
             ],
             matroska_tracks,
             options,
         );
 
-        let packet = demuxer
+        let first_packet = demuxer
             .next_packet()
-            .expect("один битый VP9 packet можно пропустить")
-            .expect("следующий packet должен быть возвращён");
+            .expect("неуверенная keyframe-проба не должна становиться fatal corruption")
+            .expect("packet с неизвестным keyframe должен быть возвращён");
+        let second_packet = demuxer
+            .next_packet()
+            .expect("повторная неуверенная keyframe-проба не должна копить corruption counter")
+            .expect("второй packet с неизвестным keyframe должен быть возвращён");
 
-        assert_eq!(packet.pts, Duration::from_millis(10));
-        assert!(packet.keyframe);
+        assert_eq!(first_packet.pts, Duration::ZERO);
+        assert_eq!(first_packet.keyframe, PacketKeyframe::Unknown);
+        assert_eq!(second_packet.pts, Duration::from_millis(10));
+        assert_eq!(second_packet.keyframe, PacketKeyframe::Unknown);
+        assert_eq!(demuxer.consecutive_corrupted_packets, 0);
     }
 
     #[test]

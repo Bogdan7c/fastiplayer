@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use codec_core::VideoDecodeRequirement;
-use media_core::{DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, Demuxer, TrackId, TrackInfo};
+use media_core::{
+    DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, Demuxer, PacketKeyframe, TrackId, TrackInfo,
+};
 
 use crate::{
     DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
@@ -192,8 +194,8 @@ pub(crate) struct PendingVideoPacket {
     /// Encoded video bytes владеют shared payload-ом без копии до decoder thread.
     pub(crate) encoded_bytes: Bytes,
 
-    /// Keyframe flag пробрасывается в hardware decoder.
-    pub(crate) keyframe: bool,
+    /// Keyframe-классификация, полученная на demux boundary.
+    pub(crate) keyframe: PacketKeyframe,
 }
 
 impl PendingVideoPacket {
@@ -204,14 +206,14 @@ impl PendingVideoPacket {
         pts: Duration,
         generation: u64,
         encoded_bytes: Bytes,
-        keyframe: bool,
+        keyframe: impl Into<PacketKeyframe>,
     ) -> Self {
         Self {
             track_id,
             pts,
             generation,
             encoded_bytes,
-            keyframe,
+            keyframe: keyframe.into(),
         }
     }
 }
