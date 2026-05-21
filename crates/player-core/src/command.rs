@@ -174,9 +174,6 @@ pub enum ScrubCommitPolicy {
 
     /// UX smooth pointer release: зафиксировать последний реально видимый preview.
     CommitVisiblePreview,
-
-    /// Hybrid: оставить visible preview как stale feedback и финально доехать до latest target.
-    CommitLatestTargetWithVisiblePreviewFallback,
 }
 
 impl ScrubCommitPolicy {
@@ -185,9 +182,9 @@ impl ScrubCommitPolicy {
     /// Текущее поведение latency-first: release не ждёт exact seek, если пользователь уже
     /// видел preview frame.
     ///
-    /// TODO(config): когда появится runtime config, `app-egui` должен выбирать policy из
-    /// `player.seek.timeline_release_policy = visible-preview/latest-target/hybrid`, а этот
-    /// default должен остаться совместимым fallback-ом.
+    /// `app-egui` выбирает runtime policy из
+    /// `player.seek.timeline_release_policy = visible-preview/latest-target`, а этот default
+    /// остаётся совместимым значением при отсутствии runtime config.
     pub const DEFAULT_TIMELINE_RELEASE: Self = Self::CommitVisiblePreview;
 }
 

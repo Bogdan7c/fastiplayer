@@ -2439,12 +2439,6 @@ impl PlayerSession {
                     seek_mode,
                     intent.generation,
                 ),
-            ScrubCommitPolicy::CommitLatestTargetWithVisiblePreviewFallback => self
-                .commit_latest_target_with_visible_preview_fallback(
-                    target_position,
-                    seek_mode,
-                    intent.generation,
-                ),
         }
     }
 
@@ -2482,16 +2476,6 @@ impl PlayerSession {
             return Ok(());
         }
 
-        self.commit_latest_target_as_final(target_position, seek_mode, generation)
-    }
-
-    /// Hybrid оставляет текущий frame stale-feedback-ом и финально доезжает до latest target.
-    fn commit_latest_target_with_visible_preview_fallback(
-        &mut self,
-        target_position: MediaTime,
-        seek_mode: crate::SeekMode,
-        generation: ScrubGeneration,
-    ) -> PlayerResult<()> {
         self.commit_latest_target_as_final(target_position, seek_mode, generation)
     }
 
@@ -5903,7 +5887,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_release_finishes_when_latest_target_frame_is_presented() {
+    fn commit_latest_target_policy_finishes_when_latest_target_frame_is_presented() {
         let mut session = PlayerSession::new();
         let seek_request_log = install_fake_media_with_seek_request_log(
             &mut session,
@@ -5929,7 +5913,7 @@ mod tests {
 
         session
             .dispatch_command(PlayerCommand::EndScrub {
-                policy: ScrubCommitPolicy::CommitLatestTargetWithVisiblePreviewFallback,
+                policy: ScrubCommitPolicy::CommitLatestTarget,
             })
             .unwrap();
         fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
@@ -6052,7 +6036,7 @@ mod tests {
     }
 
     #[test]
-    fn end_scrub_hybrid_marks_visible_preview_stale_until_latest_target_is_presented() {
+    fn commit_latest_target_policy_marks_visible_preview_stale_until_latest_target_is_presented() {
         let mut session = PlayerSession::new();
         let seek_request_log = install_fake_media_with_seek_request_log(
             &mut session,
@@ -6074,7 +6058,7 @@ mod tests {
 
         session
             .dispatch_command(PlayerCommand::EndScrub {
-                policy: ScrubCommitPolicy::CommitLatestTargetWithVisiblePreviewFallback,
+                policy: ScrubCommitPolicy::CommitLatestTarget,
             })
             .unwrap();
 
@@ -6336,7 +6320,7 @@ mod tests {
     }
 
     #[test]
-    fn end_scrub_hybrid_keeps_visible_preview_stale_and_commits_latest_target() {
+    fn commit_latest_target_policy_keeps_visible_preview_stale_and_commits_latest_target() {
         let mut session = PlayerSession::new();
         let seek_request_log = install_fake_media_with_seek_request_log(
             &mut session,
@@ -6362,7 +6346,7 @@ mod tests {
             .unwrap();
         session
             .dispatch_command(PlayerCommand::EndScrub {
-                policy: ScrubCommitPolicy::CommitLatestTargetWithVisiblePreviewFallback,
+                policy: ScrubCommitPolicy::CommitLatestTarget,
             })
             .unwrap();
 

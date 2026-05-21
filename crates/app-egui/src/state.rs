@@ -17,7 +17,7 @@ use player_core::{
     ScrubCommitPolicy, SeekRequest,
 };
 use render_core::RenderDiagnostics;
-use rustiplayer_config::AppConfig;
+use rustiplayer_config::{AppConfig, TimelineReleasePolicy};
 use tracing::{debug, instrument, warn};
 use video_vaapi::VaapiWgpuVideoBackendFactory;
 use winit::window::Window;
@@ -51,6 +51,14 @@ struct TelemetryPanelState<'panel> {
 
     /// Оценка длительности video frame в миллисекундах.
     frame_duration_estimate_ms: f64,
+}
+
+/// Переводит пользовательскую TOML policy в runtime enum player-core.
+fn timeline_release_policy_from_config(app_config: &AppConfig) -> ScrubCommitPolicy {
+    match app_config.player.seek.timeline_release_policy {
+        TimelineReleasePolicy::VisiblePreview => ScrubCommitPolicy::CommitVisiblePreview,
+        TimelineReleasePolicy::LatestTarget => ScrubCommitPolicy::CommitLatestTarget,
+    }
 }
 
 /// Immutable данные, зафиксированные один раз для текущего render frame-а.
@@ -980,8 +988,9 @@ impl AppState {
     /// Конвертирует pointer timeline action в typed player command.
     ///
     /// Здесь находится единственный app-egui route, который применяет
-    /// `ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE`. Exact seek-команды должны отправлять
-    /// `PlayerCommand::Seek`, чтобы сохранять accurate final target semantics.
+    /// `player.seek.timeline_release_policy`. Exact seek-команды должны отправлять
+    /// `PlayerCommand::Seek`, чтобы сохранять accurate final target semantics и не смешивать
+    /// click-to-seek route с timeline scrub release policy.
     fn send_timeline_action(&mut self, action: TimelineAction) {
         debug!(action = ?action, "Timeline action отправлен в player worker");
         let command = match action {
@@ -990,9 +999,7 @@ impl AppState {
                 PlayerCommand::UpdateScrub(SeekRequest::absolute(position))
             }
             TimelineAction::EndScrubCommitDefault => PlayerCommand::EndScrub {
-                // TODO(config): выбирать policy из
-                // `player.seek.timeline_release_policy = visible-preview/latest-target/hybrid`.
-                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+                policy: timeline_release_policy_from_config(&self.app_config),
             },
         };
 
@@ -1519,19 +1526,44 @@ mod tests {
     use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
     use player_core::{
         MediaOpenRequest, MediaSource, MediaSummary, PlaybackState, PlayerError, PlayerErrorKind,
-        PlayerEvent,
+        PlayerEvent, ScrubCommitPolicy,
     };
     use render_core::{
         ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
         HdrReferenceDefaultDiagnostics, RenderDiagnostics, VideoFrameFormat,
     };
+    use rustiplayer_config::{AppConfig, TimelineReleasePolicy};
 
     use super::{
         AppState, CachedPresentFrameDiscardReason, CachedPresentFrameValidationState,
         TextureBusyFallbackRejectReason, TextureBusyFallbackReuseState,
         cached_present_frame_discard_reason_for_player_event, cached_present_frame_stale_reason,
         texture_busy_fallback_can_reuse_previous_frame, texture_busy_fallback_reject_reason,
+        timeline_release_policy_from_config,
     };
+
+    /// Проверяет, что app-egui default release остаётся latency-first visible-preview.
+    #[test]
+    fn app_egui_timeline_release_default_uses_visible_preview() {
+        let default_config = AppConfig::default();
+
+        assert_eq!(
+            timeline_release_policy_from_config(&default_config),
+            ScrubCommitPolicy::CommitVisiblePreview
+        );
+    }
+
+    /// Проверяет, что app-egui config hook может выбрать точный latest-target release.
+    #[test]
+    fn app_egui_timeline_release_config_can_select_latest_target() {
+        let mut app_config = AppConfig::default();
+        app_config.player.seek.timeline_release_policy = TimelineReleasePolicy::LatestTarget;
+
+        assert_eq!(
+            timeline_release_policy_from_config(&app_config),
+            ScrubCommitPolicy::CommitLatestTarget
+        );
+    }
 
     /// Проверяет, что UI diagnostics получает active path как renderer-neutral данные.
     #[test]

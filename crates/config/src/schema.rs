@@ -80,6 +80,11 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "timeline_release_policy = \"visible-preview\"",
+        "# Политика отпускания timeline: visible-preview быстрее, latest-target точнее.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "commit_timeout_ms = 10000",
         "# Timeout финального seek/scrub commit-а.",
     );
@@ -331,6 +336,9 @@ pub struct PlayerSeekConfig {
     /// Бюджет preview work на один live scrub update.
     pub live_preview_budget_ms: u64,
 
+    /// Политика commit-а при отпускании pointer-а на timeline.
+    pub timeline_release_policy: TimelineReleasePolicy,
+
     /// Timeout финального commit-а seek/scrub.
     pub commit_timeout_ms: u64,
 
@@ -359,6 +367,7 @@ impl Default for PlayerSeekConfig {
         Self {
             live_interval_ms: 33,
             live_preview_budget_ms: 100,
+            timeline_release_policy: TimelineReleasePolicy::VisiblePreview,
             commit_timeout_ms: 10_000,
             resume_audio_min_buffer_ms: 50,
             resume_audio_gate_timeout_ms: 250,
@@ -367,6 +376,24 @@ impl Default for PlayerSeekConfig {
             hotkey_small_step_secs: 5,
             hotkey_large_step_secs: 30,
         }
+    }
+}
+
+/// Политика отпускания timeline pointer-а, сохранённая в TOML config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TimelineReleasePolicy {
+    /// Быстрый UX: продолжить playback с последнего реально показанного preview frame.
+    VisiblePreview,
+
+    /// Точный UX: всегда завершить seek в последнюю target-позицию scrub-а.
+    LatestTarget,
+}
+
+impl Default for TimelineReleasePolicy {
+    /// По умолчанию timeline release остаётся latency-first.
+    fn default() -> Self {
+        Self::VisiblePreview
     }
 }
 
