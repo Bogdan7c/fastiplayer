@@ -1,6 +1,6 @@
 # Документация rustiplayer
 
-Актуализировано: 2026-05-19.
+Актуализировано: 2026-05-21.
 
 Этот каталог описывает текущее состояние `rustiplayer`, а не историю фаз
 рефакторинга. Исторические session-планы удалены из рабочей навигации: если
@@ -21,6 +21,7 @@
 - [11. Аудит документации](11-documentation-audit.md) - что было неточным, устаревшим или логически неверным.
 - [12. План усиления seek/scrub](12-seek-reliability-plan.md) - сессионный план фикса reliability проблем перемотки.
 - [13. Refactor Guardrails](13-refactor-guardrails.md) - проверяемые границы crates перед refactoring PR.
+- [14. Manual Seek/Scrub Acceptance](14-manual-seek-acceptance.md) - ручная media matrix и parser для seek diagnostics.
 
 ## Короткая карта
 
