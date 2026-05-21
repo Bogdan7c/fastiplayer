@@ -3600,8 +3600,9 @@ mod tests {
         DecodeBackpressureReason, DecodeSendError, DecodeThreadError,
         DecoderControlChannelPressureSnapshot, DecoderResourceSnapshot, MediaSource,
         PendingAudioPacket, PendingVideoPacket, PlayerCommand, PlayerDecodePacket,
-        PlayerTickConfig, PlayerTickContext, PlayerVideoDropReason, PlayerVideoFrameDrop,
-        ScrubCommitPolicy, SeekMode, SeekTarget, WgpuRenderTextureProviderHandle,
+        PlayerTickConfig, PlayerTickContext, PlayerTickResult, PlayerVideoDropReason,
+        PlayerVideoFrameDrop, ScrubCommitPolicy, SeekMode, SeekTarget,
+        WgpuRenderTextureProviderHandle,
     };
     use bytes::Bytes;
     use capability_core::{
@@ -3748,6 +3749,7 @@ mod tests {
         events: VecDeque<DemuxReadEvent>,
         seek_log: Arc<Mutex<Vec<Duration>>>,
         seek_request_log: Option<Arc<Mutex<Vec<DemuxSeekRequest>>>>,
+        seek_results: VecDeque<DemuxSeekResult>,
         seekability: DemuxSeekability,
     }
 
@@ -3765,6 +3767,7 @@ mod tests {
                 events: VecDeque::new(),
                 seek_log,
                 seek_request_log: None,
+                seek_results: VecDeque::new(),
                 seekability: DemuxSeekability::Seekable,
             }
         }
@@ -3782,6 +3785,17 @@ mod tests {
         ) -> Self {
             self.seek_request_log = Some(seek_request_log);
             self
+        }
+
+        /// Добавляет scripted seek result, чтобы тест мог отделить requested target от actual demux point.
+        fn with_seek_result(mut self, seek_result: DemuxSeekResult) -> Self {
+            self.seek_results.push_back(seek_result);
+            self
+        }
+
+        /// Добавляет packet в fake demux stream без раскрытия внутренней очереди тестам.
+        fn push_packet(&mut self, packet: media_core::Packet) {
+            self.packets.push_back(packet);
         }
 
         /// Добавляет lifecycle/packet event в fake demux stream.
@@ -3828,11 +3842,12 @@ mod tests {
                 .lock()
                 .expect("seek log mutex should not be poisoned")
                 .push(timestamp);
-            Ok(DemuxSeekResult {
+
+            Ok(self.seek_results.pop_front().unwrap_or(DemuxSeekResult {
                 requested_position: MediaTime::from_duration(timestamp),
                 actual_position: MediaTime::from_duration(timestamp),
                 actual_track_timestamp: None,
-            })
+            }))
         }
 
         fn seek_with_request(
@@ -4906,6 +4921,22 @@ mod tests {
         )
     }
 
+    /// Создаёт video packet с явной keyframe-классификацией для seek regression scripts.
+    fn fake_video_packet_with_keyframe(
+        track_id: TrackId,
+        pts: Duration,
+        keyframe: PacketKeyframe,
+    ) -> media_core::Packet {
+        media_core::Packet::new_with_keyframe(
+            track_id,
+            TrackKind::Video,
+            pts,
+            None,
+            keyframe,
+            Bytes::from_static(b"video-packet"),
+        )
+    }
+
     /// Создаёт минимальный decode packet для проверки worker -> decoder boundary.
     fn decode_packet_for_tests(pts: Duration) -> PlayerDecodePacket {
         PlayerDecodePacket {
@@ -4931,6 +4962,702 @@ mod tests {
             seek_resume_video_min_ready_frames: 1,
             ..PlayerTickConfig::default()
         }
+    }
+
+    /// Собирает seek result, где container actual может быть раньше requested target.
+    fn scripted_seek_result(requested: Duration, actual: Duration) -> DemuxSeekResult {
+        DemuxSeekResult {
+            requested_position: MediaTime::from_duration(requested),
+            actual_position: MediaTime::from_duration(actual),
+            actual_track_timestamp: None,
+        }
+    }
+
+    /// Integration-style harness для seek/scrub regression tests без реальных media файлов.
+    struct SeekRegressionHarness {
+        /// Session остаётся владельцем seek state и pipeline инвариантов.
+        session: PlayerSession,
+
+        /// Fake decoder boundary отдаёт decoded frames по явному сценарию теста.
+        decoder: SharedFakeVideoDecoderThread,
+
+        /// Полные demux seek requests нужны для проверки mode/target без доступа к demuxer fields.
+        seek_request_log: Arc<Mutex<Vec<DemuxSeekRequest>>>,
+    }
+
+    impl SeekRegressionHarness {
+        /// Подключает scripted demuxer и выбирает default audio/video tracks как media opening path.
+        fn new(tracks: Vec<TrackInfo>, demuxer: FakeDemuxer) -> Self {
+            let mut session = PlayerSession::new();
+            let decoder = SharedFakeVideoDecoderThread::new();
+            let seek_request_log = demuxer
+                .seek_request_log
+                .as_ref()
+                .expect("seek regression demuxer должен писать full request log")
+                .clone();
+
+            session
+                .pipeline
+                .install_opened_media(Box::new(demuxer), None, None, tracks.clone());
+            if let Some(video_track_id) = tracks
+                .iter()
+                .find(|track| track.kind == TrackKind::Video)
+                .map(|track| track.id)
+            {
+                session
+                    .pipeline
+                    .select_video_track_preserving_active_requirement(video_track_id);
+                session.pipeline.set_video_decoder_thread(decoder.clone());
+            }
+            if let Some(audio_track_id) = tracks
+                .iter()
+                .find(|track| track.kind == TrackKind::Audio)
+                .map(|track| track.id)
+            {
+                session.pipeline.select_audio_track(audio_track_id);
+            }
+            session.set_snapshot_duration(Some(Duration::from_secs(30)));
+            session.apply_demux_seekability(DemuxSeekability::Seekable);
+            session.set_playback_state(PlaybackState::Paused);
+
+            Self {
+                session,
+                decoder,
+                seek_request_log,
+            }
+        }
+
+        /// Выполняет один deterministic tick с маленькими бюджетами, чтобы сценарий шёл пошагово.
+        fn tick_once(&mut self) -> PlayerTickResult {
+            self.session.tick(PlayerTickContext::with_config(
+                Instant::now(),
+                seek_regression_tick_config(),
+            ))
+        }
+
+        /// Запускает final seek к absolute target через public command boundary.
+        fn start_final_seek(&mut self, target: MediaTime) {
+            self.session
+                .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(target)))
+                .expect("final seek command должен пройти session boundary");
+        }
+
+        /// Публикует decoded frame текущего packet generation и optionally закрывает in-flight packet.
+        fn push_decoded_frame(&self, pts: Duration, handle: u64, completed_packets: usize) {
+            self.decoder
+                .push_decoded_frame(decoded_frame_for_current_seek_generation(
+                    &self.session,
+                    pts,
+                    handle,
+                ));
+            if completed_packets > 0 {
+                self.decoder.add_completed_packet_count(completed_packets);
+            }
+        }
+
+        /// Возвращает активный seek и проверяет главный invariant generation alignment.
+        fn aligned_seek_commit(&self) -> SeekCommitState {
+            let seek_commit = self
+                .session
+                .seek_commit()
+                .expect("regression scenario должен иметь active seek commit");
+            assert_eq!(
+                seek_commit.generation,
+                self.session.pipeline.seek_generation()
+            );
+            seek_commit
+        }
+
+        /// Возвращает packets, реально принятые decoder boundary.
+        fn sent_packets(&self) -> Vec<PlayerDecodePacket> {
+            self.decoder.sent_packets()
+        }
+
+        /// Возвращает demux seek requests, реально отправленные session.
+        fn seek_requests(&self) -> Vec<DemuxSeekRequest> {
+            self.seek_request_log
+                .lock()
+                .expect("seek regression request log lock")
+                .clone()
+        }
+    }
+
+    /// Конфиг tick-а для regression harness: один demux packet и один decoder send за шаг.
+    fn seek_regression_tick_config() -> PlayerTickConfig {
+        PlayerTickConfig {
+            max_demux_packets_per_tick: 1,
+            max_video_packets_sent_per_tick: 1,
+            max_decoded_video_frames_drained_per_tick: 4,
+            adaptive_catch_up_time_budget: Duration::ZERO,
+            seek_commit_timeout: Duration::from_secs(10),
+            seek_preview_timeout: Duration::from_secs(10),
+            ..seek_admission_tick_config(4, 4)
+        }
+    }
+
+    /// Создаёт scripted fake demuxer с request log, actual seek point и post-seek packets.
+    fn scripted_seek_demuxer(
+        tracks: Vec<TrackInfo>,
+        target: Duration,
+        actual: Duration,
+        packets: Vec<media_core::Packet>,
+    ) -> FakeDemuxer {
+        let seek_log = Arc::new(Mutex::new(Vec::new()));
+        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
+        let mut demuxer = FakeDemuxer::new(tracks, Some(Duration::from_secs(30)), seek_log)
+            .with_seek_request_log(seek_request_log)
+            .with_seek_result(scripted_seek_result(target, actual));
+
+        for packet in packets {
+            demuxer.push_packet(packet);
+        }
+
+        demuxer
+    }
+
+    #[test]
+    fn regression_ordinary_final_seek_closes_after_target_frame_from_scripted_demux() {
+        let video_track = fake_track(1, TrackKind::Video);
+        let target = Duration::from_secs(8);
+        let actual = Duration::from_millis(7_900);
+        let demuxer = scripted_seek_demuxer(
+            vec![video_track.clone()],
+            target,
+            actual,
+            vec![
+                fake_video_packet_with_keyframe(video_track.id, actual, PacketKeyframe::Keyframe),
+                fake_video_packet_with_keyframe(
+                    video_track.id,
+                    target,
+                    PacketKeyframe::NotKeyframe,
+                ),
+            ],
+        );
+        let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+
+        harness.start_final_seek(MediaTime::from_duration(target));
+        let accepted_seek = harness.aligned_seek_commit();
+        assert_eq!(
+            accepted_seek.target_position,
+            MediaTime::from_duration(target)
+        );
+        assert_eq!(
+            accepted_seek.actual_position,
+            MediaTime::from_duration(actual)
+        );
+        assert_eq!(accepted_seek.kind, SeekCommitKind::Final);
+        assert!(harness.session.snapshot().timeline.seeking);
+        assert!(!harness.session.snapshot().timeline.scrubbing);
+
+        let first_tick = harness.tick_once();
+        assert_eq!(first_tick.demuxed_packets.len(), 1);
+        assert_eq!(harness.sent_packets().len(), 1);
+        assert_eq!(harness.sent_packets()[0].pts, actual);
+        assert_eq!(
+            harness.sent_packets()[0].generation,
+            accepted_seek.generation
+        );
+
+        harness.push_decoded_frame(actual, 79, 1);
+        let preroll_tick = harness.tick_once();
+        assert_eq!(preroll_tick.demuxed_packets.len(), 1);
+        assert_eq!(preroll_tick.video_frames_presented, 0);
+        assert_eq!(
+            harness
+                .session
+                .pipeline
+                .present_video_frame()
+                .map(|frame| frame.pts),
+            None
+        );
+        assert!(harness.session.seek_commit().is_some());
+
+        harness.push_decoded_frame(target, 80, 1);
+        let target_tick = harness.tick_once();
+
+        assert_eq!(target_tick.video_frames_presented, 1);
+        assert!(harness.session.seek_commit().is_none());
+        assert_eq!(harness.session.snapshot().current_position, target);
+        assert_eq!(
+            harness.session.snapshot().timeline.current_position,
+            MediaTime::from_duration(target)
+        );
+        assert!(!harness.session.snapshot().timeline.seeking);
+        assert!(!harness.session.snapshot().timeline.scrubbing);
+        assert!(!harness.session.snapshot().timeline.stale_frame);
+        assert_eq!(
+            harness.session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Inactive
+        );
+        assert_eq!(
+            harness
+                .session
+                .pipeline
+                .present_video_frame()
+                .map(|frame| frame.pts),
+            Some(target)
+        );
+        assert_eq!(
+            harness.session.snapshot().playback_state,
+            PlaybackState::Paused
+        );
+        assert_eq!(harness.seek_requests()[0].timestamp, target);
+        assert_eq!(
+            harness.seek_requests()[0].mode,
+            DemuxSeekMode::DecodePointBefore
+        );
+    }
+
+    #[test]
+    fn regression_symphonia_reset_required_event_rebases_generation_and_seek_completes() {
+        let initial_track = fake_track(1, TrackKind::Video);
+        let reset_track = fake_track(3, TrackKind::Video);
+        let target = Duration::from_secs(8);
+        let actual = Duration::from_millis(7_900);
+        let seek_log = Arc::new(Mutex::new(Vec::new()));
+        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
+        let mut demuxer = FakeDemuxer::new(
+            vec![initial_track.clone()],
+            Some(Duration::from_secs(30)),
+            seek_log,
+        )
+        .with_seek_request_log(Arc::clone(&seek_request_log))
+        .with_seek_result(scripted_seek_result(target, actual));
+        demuxer.push_event(DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(
+            vec![reset_track.clone()],
+            Some(Duration::from_secs(30)),
+        )));
+        demuxer.push_event(DemuxReadEvent::Packet(fake_video_packet_with_keyframe(
+            reset_track.id,
+            actual,
+            PacketKeyframe::Keyframe,
+        )));
+        demuxer.push_event(DemuxReadEvent::Packet(fake_video_packet_with_keyframe(
+            reset_track.id,
+            target,
+            PacketKeyframe::NotKeyframe,
+        )));
+        let mut harness = SeekRegressionHarness::new(vec![initial_track], demuxer);
+
+        harness.start_final_seek(MediaTime::from_duration(target));
+        let generation_before_reset = harness.aligned_seek_commit().generation;
+
+        let reset_tick = harness.tick_once();
+        let seek_after_reset = harness.aligned_seek_commit();
+        assert_eq!(reset_tick.demuxed_packets.len(), 0);
+        assert_ne!(seek_after_reset.generation, generation_before_reset);
+        assert!(harness.sent_packets().is_empty());
+        assert_eq!(
+            seek_after_reset.target_position,
+            MediaTime::from_duration(target)
+        );
+        assert_eq!(
+            seek_after_reset.actual_position,
+            MediaTime::from_duration(actual)
+        );
+
+        let post_reset_packet_tick = harness.tick_once();
+        let sent_after_reset = harness.sent_packets();
+        assert_eq!(post_reset_packet_tick.demuxed_packets.len(), 1);
+        assert_eq!(sent_after_reset.len(), 1);
+        assert_eq!(sent_after_reset[0].track_id, reset_track.id);
+        assert_eq!(sent_after_reset[0].generation, seek_after_reset.generation);
+
+        harness.push_decoded_frame(actual, 179, 1);
+        harness.tick_once();
+        assert!(harness.session.seek_commit().is_some());
+
+        harness.push_decoded_frame(target, 180, 1);
+        let target_tick = harness.tick_once();
+
+        assert_eq!(target_tick.video_frames_presented, 1);
+        assert!(harness.session.seek_commit().is_none());
+        assert_eq!(harness.session.snapshot().current_position, target);
+        assert!(!harness.session.snapshot().timeline.seeking);
+        assert!(!harness.session.snapshot().timeline.stale_frame);
+        assert_eq!(
+            harness
+                .session
+                .pipeline
+                .present_video_frame()
+                .map(|frame| frame.pts),
+            Some(target)
+        );
+        assert_eq!(
+            seek_request_log
+                .lock()
+                .expect("reset request log lock")
+                .as_slice(),
+            &[DemuxSeekRequest::decode_point_before(target)]
+        );
+    }
+
+    #[test]
+    fn regression_seek_near_eof_presents_preroll_fallback_only_after_decoder_drains() {
+        let video_track = fake_track(1, TrackKind::Video);
+        let target = Duration::from_millis(29_500);
+        let actual = Duration::from_secs(29);
+        let demuxer = scripted_seek_demuxer(
+            vec![video_track.clone()],
+            target,
+            actual,
+            vec![fake_video_packet_with_keyframe(
+                video_track.id,
+                actual,
+                PacketKeyframe::Keyframe,
+            )],
+        );
+        let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+
+        harness.start_final_seek(MediaTime::from_duration(target));
+        harness.tick_once();
+        harness
+            .decoder
+            .push_decoded_frame(decoded_frame_for_current_seek_generation(
+                &harness.session,
+                actual,
+                290,
+            ));
+
+        let eof_tick_before_ack = harness.tick_once();
+        assert_eq!(eof_tick_before_ack.video_frames_presented, 0);
+        assert!(harness.session.draining_after_eof);
+        assert!(
+            harness
+                .session
+                .pipeline
+                .has_seek_preroll_fallback_video_frame()
+        );
+        assert!(harness.session.seek_commit().is_some());
+        assert_eq!(
+            harness
+                .session
+                .pipeline
+                .present_video_frame()
+                .map(|frame| frame.pts),
+            None
+        );
+
+        harness.decoder.add_completed_packet_count(1);
+        let fallback_tick = harness.tick_once();
+
+        assert_eq!(fallback_tick.video_frames_presented, 1);
+        assert!(harness.session.seek_commit().is_none());
+        assert_eq!(harness.session.snapshot().current_position, target);
+        assert!(!harness.session.snapshot().timeline.seeking);
+        assert!(!harness.session.snapshot().timeline.stale_frame);
+        assert_eq!(
+            harness
+                .session
+                .pipeline
+                .present_video_frame()
+                .map(|frame| frame.pts),
+            Some(actual)
+        );
+    }
+
+    #[test]
+    fn regression_active_preview_marks_pre_target_visible_then_target_ready() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+        let request = SeekRequest::absolute(MediaTime::from_secs(8));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(request))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_current_seek_generation(
+                &session,
+                Duration::from_millis(7_900),
+                790,
+            ));
+        session.note_presented_frame_for_seek(Duration::from_millis(7_900));
+
+        assert!(session.seek_commit().is_some());
+        assert!(session.snapshot().timeline.scrubbing);
+        assert!(session.snapshot().timeline.seeking);
+        assert!(!session.snapshot().timeline.stale_frame);
+        assert_eq!(
+            session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Visible
+        );
+
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_current_seek_generation(
+                &session,
+                Duration::from_secs(8),
+                800,
+            ));
+        session.note_presented_frame_for_seek(Duration::from_secs(8));
+        let preview_commit = session
+            .seek_commit()
+            .expect("target preview должен оставаться активным до gate finish");
+
+        assert_eq!(
+            session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Ready
+        );
+        assert_eq!(
+            preview_commit.generation,
+            session.pipeline.seek_generation()
+        );
+
+        session.finish_seek_commit_if_ready(
+            preview_commit.started_at + Duration::from_millis(1),
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+            50.0,
+            Duration::from_millis(250),
+            1,
+        );
+
+        assert!(session.seek_commit().is_none());
+        assert!(session.snapshot().timeline.scrubbing);
+        assert!(!session.snapshot().timeline.seeking);
+        assert_eq!(
+            session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Ready
+        );
+    }
+
+    #[test]
+    fn regression_drag_release_commits_visible_preview_without_second_demux_seek() {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(1, TrackKind::Video)],
+        );
+        let request = SeekRequest::absolute(MediaTime::from_secs(8));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(request))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_current_seek_generation(
+                &session,
+                Duration::from_millis(7_900),
+                790,
+            ));
+        session.note_presented_frame_for_seek(Duration::from_millis(7_900));
+
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+            })
+            .unwrap();
+
+        assert_eq!(
+            seek_request_log
+                .lock()
+                .expect("visible preview request log lock")
+                .as_slice(),
+            &[DemuxSeekRequest::preview(Duration::from_secs(8))]
+        );
+        assert!(session.seek_commit().is_none());
+        assert_eq!(
+            session.snapshot().current_position,
+            Duration::from_millis(7_900)
+        );
+        assert!(!session.snapshot().timeline.scrubbing);
+        assert!(!session.snapshot().timeline.seeking);
+        assert!(!session.snapshot().timeline.stale_frame);
+        assert_eq!(
+            session
+                .pipeline
+                .present_video_frame()
+                .map(|frame| frame.pts),
+            Some(Duration::from_millis(7_900))
+        );
+    }
+
+    #[test]
+    fn regression_drag_release_uses_latest_target_when_no_preview_is_visible() {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(1, TrackKind::Video)],
+        );
+        let request = SeekRequest::absolute(MediaTime::from_secs(9));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+            })
+            .unwrap();
+
+        let seek_commit = session
+            .seek_commit()
+            .expect("release без visible preview должен открыть final seek");
+        assert_eq!(seek_commit.kind, SeekCommitKind::Final);
+        assert_eq!(seek_commit.target_position, MediaTime::from_secs(9));
+        assert_eq!(seek_commit.generation, session.pipeline.seek_generation());
+        assert_eq!(
+            seek_request_log
+                .lock()
+                .expect("latest target request log lock")
+                .as_slice(),
+            &[DemuxSeekRequest::decode_point_before(Duration::from_secs(
+                9
+            ))]
+        );
+        assert!(!session.snapshot().timeline.scrubbing);
+        assert!(session.snapshot().timeline.seeking);
+        assert_eq!(
+            session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Inactive
+        );
+    }
+
+    #[test]
+    fn regression_audio_gate_blockers_keep_distinct_status_and_diagnostics() {
+        let seek_commit = audio_gate_seek_commit(SeekCommitKind::Final, PlaybackResumeIntent::Play);
+        let gate_cases = [
+            (
+                AudioSeekRuntimeState::NoSelectedAudio,
+                seek_commit.generation,
+                Some(0.0),
+                SeekAudioGateStatus::Ready,
+                None,
+            ),
+            (
+                AudioSeekRuntimeState::WaitingForDecoder,
+                seek_commit.generation,
+                Some(100.0),
+                SeekAudioGateStatus::WaitingForDecoder,
+                Some(SeekProgressBlocker::WaitingForAudioDecoder),
+            ),
+            (
+                AudioSeekRuntimeState::WaitingForOutput,
+                seek_commit.generation,
+                Some(100.0),
+                SeekAudioGateStatus::WaitingForOutput,
+                Some(SeekProgressBlocker::WaitingForAudioOutput),
+            ),
+            (
+                AudioSeekRuntimeState::Ready,
+                seek_commit.generation,
+                Some(49.0),
+                SeekAudioGateStatus::WaitingForPreroll,
+                Some(SeekProgressBlocker::WaitingForAudioPreroll),
+            ),
+            (
+                AudioSeekRuntimeState::Ready,
+                seek_commit.generation - 1,
+                Some(100.0),
+                SeekAudioGateStatus::WaitingForClear,
+                Some(SeekProgressBlocker::WaitingForAudioClear),
+            ),
+        ];
+
+        for (runtime_state, clear_generation, buffered_ms, expected_status, expected_blocker) in
+            gate_cases
+        {
+            let gate_status = classify_seek_audio_gate(
+                seek_commit,
+                runtime_state,
+                clear_generation,
+                buffered_ms,
+                50.0,
+            );
+            assert_eq!(gate_status, expected_status);
+            assert_eq!(gate_status.blocker(), expected_blocker);
+        }
+
+        let disabled_after_error_status = classify_seek_audio_gate(
+            seek_commit,
+            AudioSeekRuntimeState::NoSelectedAudio,
+            seek_commit.generation,
+            None,
+            50.0,
+        );
+        assert_eq!(disabled_after_error_status, SeekAudioGateStatus::Ready);
+        assert_eq!(disabled_after_error_status.blocker(), None);
+
+        let mut disabled_audio_session = PlayerSession::new();
+        install_fake_media(
+            &mut disabled_audio_session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+        disabled_audio_session.disable_selected_audio_path();
+
+        assert_eq!(
+            disabled_audio_session.pipeline.audio_seek_runtime_state(),
+            AudioSeekRuntimeState::NoSelectedAudio
+        );
+        assert_eq!(
+            disabled_audio_session.seek_audio_gate_status(seek_commit, 50.0),
+            SeekAudioGateStatus::Ready
+        );
+    }
+
+    #[test]
+    fn regression_active_seek_diagnostics_reports_audio_blocker_when_video_is_ready() {
+        let mut session = PlayerSession::new();
+        install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(5),
+            )))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_current_seek_generation(
+                &session,
+                Duration::from_secs(5),
+                500,
+            ));
+        session.note_presented_frame_for_seek(Duration::from_secs(5));
+        let seek_commit = session
+            .seek_commit()
+            .expect("audio gate должен удерживать seek после target frame");
+
+        session.finish_seek_commit_if_ready(
+            seek_commit.started_at + Duration::from_millis(1),
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+            50.0,
+            Duration::from_millis(250),
+            1,
+        );
+        let diagnostics = session
+            .active_seek_diagnostics(Instant::now(), &seek_regression_tick_config())
+            .expect("active seek diagnostics должны быть доступны пока audio gate блокирует");
+
+        assert!(session.seek_commit().is_some());
+        assert_eq!(
+            diagnostics.blocker,
+            SeekProgressBlocker::WaitingForAudioDecoder
+        );
+        assert_eq!(diagnostics.generation, session.pipeline.seek_generation());
+        assert!(diagnostics.target_frame_presented);
+        assert!(diagnostics.video_gate_ready);
+        assert!(!diagnostics.audio_gate_ready);
     }
 
     /// Создаёт backend-neutral texture pressure snapshot для seek admission тестов.
