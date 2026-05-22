@@ -1664,10 +1664,12 @@ impl PlayerSession {
 
     /// Проверяет, нужно ли выбросить decoded frame как pre-roll до seek target.
     ///
-    /// Обычный final seek теперь минимизирует задержку: первый свежий кадр текущего
-    /// generation-а должен попасть в scheduler и стать playback position. Interactive scrub
-    /// preview, наоборот, обязан показывать target frame, иначе visible preview перестаёт
-    /// соответствовать фактической позиции pointer-а.
+    /// Обычный click/command seek минимизирует задержку: первый свежий кадр текущего
+    /// generation-а должен попасть в scheduler и стать playback position.
+    ///
+    /// Interactive scrub preview тоже latency-first: он показывает свежий кадр
+    /// текущего preview generation-а сразу, а exact target requirement остаётся
+    /// только за final scrub commit-ом после release.
     #[must_use]
     pub(crate) fn should_drop_decoded_frame_for_seek(&self, frame_pts: Duration) -> bool {
         self.seek_commit.is_some_and(|seek_commit| {
@@ -1689,7 +1691,7 @@ impl PlayerSession {
     ///
     /// Обычный final seek показывает первый свежий frame, а explicit scrub latest-target остаётся exact.
     /// Preview seek работает как live feedback: scheduler обходит старый audio clock
-    /// только для frame-а, который уже покрывает target под курсором.
+    /// для первого свежего frame-а текущего preview generation-а.
     #[must_use]
     pub(crate) fn active_seek_frame_ready_for_scheduler(&self, frame_pts: Duration) -> bool {
         let Some(seek_commit) = self.seek_commit else {
@@ -1715,7 +1717,7 @@ impl PlayerSession {
     fn seek_commit_requires_target_frame(&self, seek_commit: SeekCommitState) -> bool {
         match seek_commit.kind {
             SeekCommitKind::Final => self.final_seek_requires_exact_target_frame(seek_commit),
-            SeekCommitKind::Preview => true,
+            SeekCommitKind::Preview => false,
         }
     }
 
@@ -1737,11 +1739,11 @@ impl PlayerSession {
     fn active_preview_frame_ready_for_scheduler(
         &self,
         seek_commit: SeekCommitState,
-        frame_pts: Duration,
+        _frame_pts: Duration,
     ) -> bool {
         seek_commit.kind == SeekCommitKind::Preview
             && self.current_preview_scrub_generation(seek_commit).is_some()
-            && frame_pts >= seek_commit.target_position.as_duration()
+            && !self.seek_preview_visible_frame_ready(seek_commit)
     }
 
     /// Проверяет, можно ли сохранить pre-target frame как EOF fallback текущего seek-а.
@@ -3286,25 +3288,17 @@ impl PlayerSession {
             && self.pipeline.present_video_frame_matches(position)
     }
 
-    /// Выбирает actual_position для synthetic commit-а без смешивания разных preview transaction-ов.
+    /// Выбирает actual_position для synthetic visible-preview commit-а.
+    ///
+    /// В этом policy source of truth — уже показанный кадр. Demux actual point может
+    /// быть только decode/coarse anchor-ом preview request-а, поэтому release не
+    /// должен подменять им frame position, который пользователь видит на экране.
     fn actual_position_for_visible_preview_commit(
         &self,
-        generation: ScrubGeneration,
+        _generation: ScrubGeneration,
         visible_preview: VisibleScrubPreview,
     ) -> MediaTime {
-        let Some(seek_commit) = self.seek_commit else {
-            return visible_preview.position;
-        };
-
-        let active_seek_matches_visible_preview = seek_commit.kind == SeekCommitKind::Preview
-            && seek_commit.scrub_generation == Some(generation)
-            && seek_commit.target_position == visible_preview.target_position;
-
-        if active_seek_matches_visible_preview {
-            seek_commit.actual_position
-        } else {
-            visible_preview.position
-        }
+        visible_preview.position
     }
 
     /// Проверяет, что последний recorded preview текущего scrub-а всё ещё реально visible.
@@ -6555,8 +6549,7 @@ mod tests {
             })
             .unwrap();
 
-        let expected_preview_request =
-            DemuxSeekRequest::decode_point_before(Duration::from_secs(8));
+        let expected_preview_request = DemuxSeekRequest::preview(Duration::from_secs(8));
         assert_eq!(
             seek_request_log
                 .lock()
@@ -7526,7 +7519,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_seek_drops_pre_target_frames_for_cursor_exact_feedback() {
+    fn preview_seek_keeps_pre_target_frames_for_live_feedback() {
         let mut session = PlayerSession::new();
         install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
         let request = SeekRequest::absolute(MediaTime::from_secs(8));
@@ -7539,7 +7532,7 @@ mod tests {
             .dispatch_command(PlayerCommand::PreviewScrub(request))
             .unwrap();
 
-        assert!(session.should_drop_decoded_frame_for_seek(Duration::from_millis(7_900)));
+        assert!(!session.should_drop_decoded_frame_for_seek(Duration::from_millis(7_900)));
         assert!(!session.should_drop_decoded_frame_for_seek(Duration::from_secs(8)));
 
         session
@@ -7682,8 +7675,8 @@ mod tests {
         assert_eq!(
             requests.as_slice(),
             &[
-                DemuxSeekRequest::decode_point_before(Duration::from_secs(8)),
-                DemuxSeekRequest::decode_point_before(Duration::from_secs(10)),
+                DemuxSeekRequest::preview(Duration::from_secs(8)),
+                DemuxSeekRequest::preview(Duration::from_secs(10)),
             ]
         );
         assert!(session.seek_commit().is_none());
@@ -7828,8 +7821,8 @@ mod tests {
         assert_eq!(
             requests.as_slice(),
             &[
-                DemuxSeekRequest::decode_point_before(Duration::from_secs(8)),
-                DemuxSeekRequest::decode_point_before(Duration::from_secs(10)),
+                DemuxSeekRequest::preview(Duration::from_secs(8)),
+                DemuxSeekRequest::preview(Duration::from_secs(10)),
             ]
         );
         assert!(session.seek_commit().is_none());
@@ -8262,7 +8255,7 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert_eq!(
             session
                 .seek_commit()
@@ -8590,7 +8583,7 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert_eq!(requests[1].mode, DemuxSeekMode::DecodePointBefore);
         assert_eq!(
             session
@@ -8630,7 +8623,7 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert_eq!(requests[1].mode, DemuxSeekMode::DecodePointBefore);
         assert_eq!(
             session
@@ -8685,7 +8678,7 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert_eq!(tick_result.decoded_video_frames, 1);
         assert_eq!(tick_result.video_frames_presented, 1);
         assert!(session.seek_commit().is_none());
@@ -8731,13 +8724,62 @@ mod tests {
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].timestamp, Duration::from_secs(8));
-        assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert!(session.seek_commit().is_none());
         assert_eq!(session.snapshot().current_position, Duration::from_secs(8));
         assert_eq!(session.pipeline.media_clock_base(), Duration::from_secs(8));
         assert!(!session.snapshot().timeline.scrubbing);
         assert!(!session.snapshot().timeline.seeking);
         assert!(!session.should_drop_decoded_frame_for_seek(Duration::from_millis(7_916)));
+    }
+
+    #[test]
+    fn default_release_commits_visible_preview_at_shown_preroll_frame() {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(1, TrackKind::Video)],
+        );
+        let request = SeekRequest::absolute(MediaTime::from_secs(8));
+        let shown_frame_position = Duration::from_millis(7_900);
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(request))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(shown_frame_position, 42));
+        session.note_presented_frame_for_seek(shown_frame_position);
+
+        session
+            .dispatch_command(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+            })
+            .unwrap();
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].timestamp, Duration::from_secs(8));
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
+        assert!(session.seek_commit().is_none());
+        assert_eq!(session.snapshot().current_position, shown_frame_position);
+        assert_eq!(session.pipeline.media_clock_base(), shown_frame_position);
+        assert!(!session.snapshot().timeline.scrubbing);
+        assert!(!session.snapshot().timeline.seeking);
+        assert!(!session.snapshot().timeline.stale_frame);
+
+        let events = session.take_events();
+        assert_scrub_release_event(
+            &events,
+            ScrubCommitPolicy::CommitVisiblePreview,
+            ScrubReleaseCommitSource::VisiblePreview,
+            shown_frame_position,
+            Duration::from_secs(8),
+        );
     }
 
     #[test]
@@ -8770,7 +8812,7 @@ mod tests {
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].timestamp, Duration::from_secs(8));
-        assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert!(session.seek_commit().is_none());
         assert_eq!(session.snapshot().current_position, Duration::from_secs(8));
         assert_eq!(session.pipeline.media_clock_base(), Duration::from_secs(8));
@@ -8808,7 +8850,7 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert_eq!(
             session
                 .seek_commit()
@@ -8923,7 +8965,7 @@ mod tests {
         assert_eq!(
             requests.as_slice(),
             &[
-                DemuxSeekRequest::decode_point_before(Duration::from_secs(8)),
+                DemuxSeekRequest::preview(Duration::from_secs(8)),
                 DemuxSeekRequest::decode_point_before(Duration::from_secs(10)),
             ]
         );
@@ -9134,7 +9176,7 @@ mod tests {
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].timestamp, Duration::from_secs(8));
-        assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert!(session.seek_commit().is_none());
         assert_eq!(session.snapshot().current_position, Duration::from_secs(8));
         assert!(!session.snapshot().timeline.scrubbing);
@@ -9229,7 +9271,7 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(
             requests[0],
-            DemuxSeekRequest::decode_point_before(Duration::from_secs(8))
+            DemuxSeekRequest::preview(Duration::from_secs(8))
         );
         assert_eq!(requests[1].timestamp, Duration::from_secs(9));
         assert_eq!(requests[1].mode, DemuxSeekMode::DecodePointBefore);
@@ -9290,7 +9332,7 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(
             requests[0],
-            DemuxSeekRequest::decode_point_before(Duration::from_secs(8))
+            DemuxSeekRequest::preview(Duration::from_secs(8))
         );
         assert_eq!(requests[1].timestamp, Duration::from_secs(9));
         assert_eq!(requests[1].mode, DemuxSeekMode::DecodePointBefore);
@@ -9377,7 +9419,7 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(
             requests[0],
-            DemuxSeekRequest::decode_point_before(Duration::from_secs(8))
+            DemuxSeekRequest::preview(Duration::from_secs(8))
         );
         assert_eq!(requests[1].timestamp, Duration::from_secs(9));
         assert_eq!(requests[1].mode, DemuxSeekMode::DecodePointBefore);
@@ -9426,7 +9468,7 @@ mod tests {
 
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
+        assert_eq!(requests[0].mode, DemuxSeekMode::Preview);
         assert_eq!(requests[1].timestamp, Duration::from_secs(9));
         assert_eq!(requests[1].mode, DemuxSeekMode::DecodePointBefore);
         assert_eq!(
@@ -10720,7 +10762,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_seek_drops_preroll_frame_until_target_feedback() {
+    fn preview_seek_presents_preroll_frame_as_live_feedback() {
         let mut session = PlayerSession::new();
         install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
         let fake_decoder = SharedFakeVideoDecoderThread::new();
@@ -10746,27 +10788,21 @@ mod tests {
         ));
 
         assert_eq!(tick_result.decoded_video_frames, 1);
-        assert_eq!(tick_result.video_frames_presented, 0);
-        assert_eq!(
-            tick_result.dropped_video_frames,
-            vec![PlayerVideoFrameDrop {
-                pts: Duration::from_secs(5),
-                reason: PlayerVideoDropReason::SeekPreroll,
-            }]
-        );
+        assert_eq!(tick_result.video_frames_presented, 1);
+        assert!(tick_result.dropped_video_frames.is_empty());
         assert_eq!(
             session
                 .pipeline
                 .present_video_frame()
                 .map(|frame| frame.pts),
-            None
+            Some(Duration::from_secs(5))
         );
         assert_eq!(
             session.snapshot().timeline.preview_state,
-            TimelinePreviewState::Pending
+            TimelinePreviewState::Visible
         );
-        assert!(session.snapshot().timeline.stale_frame);
-        assert!(session.seek_commit().is_some());
+        assert!(!session.snapshot().timeline.stale_frame);
+        assert!(session.seek_commit().is_none());
     }
 
     #[test]

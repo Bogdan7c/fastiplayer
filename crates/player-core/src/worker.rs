@@ -3086,7 +3086,7 @@ mod tests {
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(
             requests.as_slice(),
-            &[DemuxSeekRequest::accurate(Duration::from_millis(900))]
+            &[DemuxSeekRequest::preview(Duration::from_millis(900))]
         );
     }
 
@@ -3207,8 +3207,7 @@ mod tests {
         );
         assert!(!runtime.session.snapshot().timeline.scrubbing);
         assert!(!runtime.session.snapshot().timeline.seeking);
-        let expected_preview_request =
-            DemuxSeekRequest::decode_point_before(Duration::from_secs(12));
+        let expected_preview_request = DemuxSeekRequest::preview(Duration::from_secs(12));
         assert_eq!(
             seek_request_log
                 .lock()
@@ -3271,8 +3270,7 @@ mod tests {
         );
         assert!(!runtime.session.snapshot().timeline.scrubbing);
         assert!(!runtime.session.snapshot().timeline.seeking);
-        let expected_preview_request =
-            DemuxSeekRequest::decode_point_before(Duration::from_secs(12));
+        let expected_preview_request = DemuxSeekRequest::preview(Duration::from_secs(12));
         assert_eq!(
             seek_request_log
                 .lock()
