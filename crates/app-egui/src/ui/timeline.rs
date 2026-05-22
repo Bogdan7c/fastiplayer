@@ -15,18 +15,18 @@ pub struct TimelineUiState {
 }
 
 impl TimelineUiState {
-    /// Возвращает `true`, если UI сейчас ведёт pointer scrub.
+    /// Возвращает `true`, если UI сейчас ведёт локальный pointer drag.
     #[must_use]
     pub const fn has_active_drag(&self) -> bool {
         self.transient_drag_position.is_some()
     }
 
-    /// Сбрасывает transient pointer state после завершения scrub.
+    /// Сбрасывает transient pointer state после завершения drag.
     pub fn clear_transient_drag(&mut self) {
         self.transient_drag_position = None;
     }
 
-    /// Возвращает позицию, которую нужно показывать во время live scrub.
+    /// Возвращает позицию, которую нужно показывать во время локального drag preview.
     #[must_use]
     pub fn display_position(&self, timeline: &TimelineSnapshot) -> MediaTime {
         self.transient_drag_position
@@ -37,20 +37,14 @@ impl TimelineUiState {
 
 /// Действие timeline, которое `AppState` конвертирует в `PlayerCommand`.
 ///
-/// Эти actions описывают pointer timeline UX без раскрытия worker-side scrub generation.
+/// Эти actions описывают pointer timeline UX без раскрытия worker-side drag state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimelineAction {
     /// Одиночный click-to-seek: точный final seek без interactive scrub release policy.
     ClickSeek(MediaTime),
 
-    /// Начало interactive scrub.
-    BeginScrub,
-
-    /// Обновление целевой позиции interactive scrub.
-    UpdateScrub(MediaTime),
-
-    /// Завершение pointer drag scrub с default commit policy timeline-а.
-    EndScrubCommitDefault,
+    /// Завершение pointer drag как обычный final seek в выбранную позицию.
+    CommitDragSeek(MediaTime),
 }
 
 /// Нормализованный input mapper-а без зависимости от `egui::Response` в тестах.
@@ -162,8 +156,11 @@ pub fn map_timeline_interaction(
         .map(|fraction| bounds.position_from_fraction(fraction));
 
     if input.lost_focus && state.has_active_drag() {
-        actions.push(TimelineAction::EndScrubCommitDefault);
+        let commit_position = pointer_position.or(state.transient_drag_position);
         state.clear_transient_drag();
+        if let Some(position) = commit_position {
+            actions.push(TimelineAction::CommitDragSeek(position));
+        }
         return TimelineInteraction {
             actions,
             display_position: state.display_position(timeline),
@@ -171,30 +168,18 @@ pub fn map_timeline_interaction(
     }
 
     let wants_drag_position = input.drag_started || input.dragged || input.drag_stopped;
-    let should_begin_scrub = !state.has_active_drag()
-        && (input.drag_started || input.dragged)
-        && pointer_position.is_some();
-
-    if should_begin_scrub {
-        actions.push(TimelineAction::BeginScrub);
-    }
-
-    if wants_drag_position
-        && (should_begin_scrub || state.has_active_drag())
-        && let Some(position) = pointer_position
-    {
-        let previous_position = state.transient_drag_position;
+    if wants_drag_position && let Some(position) = pointer_position {
         state.transient_drag_position = Some(position);
-        if should_begin_scrub || previous_position != Some(position) {
-            actions.push(TimelineAction::UpdateScrub(position));
-        }
     }
 
-    let should_finish_scrub = state.has_active_drag() && input.drag_stopped;
-    if should_finish_scrub {
-        actions.push(TimelineAction::EndScrubCommitDefault);
+    if input.drag_stopped {
+        let commit_position = state.transient_drag_position;
         state.clear_transient_drag();
+        if let Some(position) = commit_position {
+            actions.push(TimelineAction::CommitDragSeek(position));
+        }
     } else if input.clicked
+        && !state.has_active_drag()
         && let Some(position) = pointer_position
     {
         actions.push(TimelineAction::ClickSeek(position));
@@ -507,7 +492,7 @@ mod tests {
 
     /// Проверяет последовательность drag start, move и end.
     #[test]
-    fn drag_maps_to_begin_update_and_end() {
+    fn drag_keeps_transient_position_and_release_maps_to_single_seek() {
         let timeline = seekable_timeline();
         let mut state = TimelineUiState::default();
 
@@ -521,6 +506,10 @@ mod tests {
                 ..TimelinePointerInput::default()
             },
         );
+        assert!(start.actions.is_empty());
+        assert_eq!(start.display_position, MediaTime::from_secs(20));
+        assert!(state.has_active_drag());
+
         let update = map_timeline_interaction(
             &timeline,
             &mut state,
@@ -531,6 +520,10 @@ mod tests {
                 ..TimelinePointerInput::default()
             },
         );
+        assert!(update.actions.is_empty());
+        assert_eq!(update.display_position, MediaTime::from_secs(70));
+        assert!(state.has_active_drag());
+
         let end = map_timeline_interaction(
             &timeline,
             &mut state,
@@ -543,21 +536,13 @@ mod tests {
         );
 
         assert_eq!(
-            start.actions,
-            vec![
-                TimelineAction::BeginScrub,
-                TimelineAction::UpdateScrub(MediaTime::from_secs(20))
-            ]
+            end.actions,
+            vec![TimelineAction::CommitDragSeek(MediaTime::from_secs(70))]
         );
-        assert_eq!(
-            update.actions,
-            vec![TimelineAction::UpdateScrub(MediaTime::from_secs(70))]
-        );
-        assert_eq!(end.actions, vec![TimelineAction::EndScrubCommitDefault]);
         assert!(!state.has_active_drag());
     }
 
-    /// Проверяет, что disabled timeline не отправляет seek/scrub commands.
+    /// Проверяет, что disabled timeline не отправляет seek commands.
     #[test]
     fn disabled_timeline_does_not_emit_seek_commands() {
         let timeline = TimelineSnapshot::default();
@@ -582,9 +567,9 @@ mod tests {
         assert!(!state.has_active_drag());
     }
 
-    /// Проверяет, что focus loss закрывает worker-visible scrub lifecycle.
+    /// Проверяет, что focus loss commit-ит последнюю локальную drag-позицию.
     #[test]
-    fn focus_loss_ends_active_drag_scrub() {
+    fn focus_loss_commits_active_drag_as_single_seek() {
         let timeline = seekable_timeline();
         let mut state = TimelineUiState {
             transient_drag_position: Some(MediaTime::from_secs(40)),
@@ -602,14 +587,14 @@ mod tests {
 
         assert_eq!(
             interaction.actions,
-            vec![TimelineAction::EndScrubCommitDefault]
+            vec![TimelineAction::CommitDragSeek(MediaTime::from_secs(40))]
         );
         assert!(!state.has_active_drag());
     }
 
-    /// Проверяет, что focus loss и drag stop одного frame-а дают ровно один release.
+    /// Проверяет, что focus loss и drag stop одного frame-а дают ровно один seek.
     #[test]
-    fn focus_loss_with_drag_stop_ends_scrub_once() {
+    fn focus_loss_with_drag_stop_commits_final_pointer_once() {
         let timeline = seekable_timeline();
         let mut state = TimelineUiState {
             transient_drag_position: Some(MediaTime::from_secs(40)),
@@ -629,7 +614,7 @@ mod tests {
 
         assert_eq!(
             interaction.actions,
-            vec![TimelineAction::EndScrubCommitDefault]
+            vec![TimelineAction::CommitDragSeek(MediaTime::from_secs(90))]
         );
         assert!(!state.has_active_drag());
     }

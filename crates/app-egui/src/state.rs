@@ -13,11 +13,10 @@ use media_core::TrackKind;
 use player_core::{
     FrameCounters, MediaOpenRequest, MediaSource, PlaybackState, PlayerCommand, PlayerError,
     PlayerErrorKind, PlayerEvent, PlayerPresentFrame, PlayerRenderError, PlayerSnapshot,
-    PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PresentFrameWgpuTextureViews,
-    ScrubCommitPolicy, SeekRequest,
+    PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PresentFrameWgpuTextureViews, SeekRequest,
 };
 use render_core::RenderDiagnostics;
-use rustiplayer_config::{AppConfig, TimelineReleasePolicy};
+use rustiplayer_config::AppConfig;
 use tracing::{debug, instrument, warn};
 use video_vaapi::VaapiWgpuVideoBackendFactory;
 use winit::window::Window;
@@ -53,22 +52,14 @@ struct TelemetryPanelState<'panel> {
     frame_duration_estimate_ms: f64,
 }
 
-/// Переводит пользовательскую TOML policy в runtime enum player-core.
-fn timeline_release_policy_from_config(app_config: &AppConfig) -> ScrubCommitPolicy {
-    match app_config.player.seek.timeline_release_policy {
-        TimelineReleasePolicy::VisiblePreview => ScrubCommitPolicy::CommitVisiblePreview,
-        TimelineReleasePolicy::LatestTarget => ScrubCommitPolicy::CommitLatestTarget,
-    }
-}
-
 /// Diagnostic route пользовательского timeline intent-а на границе app-egui -> player-core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TimelineCommandRoute {
     /// Одиночный click ушёл в exact final seek без scrub generation.
     ClickSeek,
 
-    /// Pointer drag использует interactive scrub path и release policy из config.
-    DragScrubRelease,
+    /// Pointer drag release ушёл как exact final seek без scrub generation.
+    DragSeek,
 }
 
 impl TimelineCommandRoute {
@@ -76,34 +67,21 @@ impl TimelineCommandRoute {
     const fn as_str(self) -> &'static str {
         match self {
             Self::ClickSeek => "click-seek",
-            Self::DragScrubRelease => "drag-scrub-release",
+            Self::DragSeek => "drag-seek",
         }
     }
 }
 
 /// Конвертирует timeline action в player command и diagnostic route.
-fn timeline_command_from_action(
-    action: TimelineAction,
-    app_config: &AppConfig,
-) -> (PlayerCommand, TimelineCommandRoute) {
+fn timeline_command_from_action(action: TimelineAction) -> (PlayerCommand, TimelineCommandRoute) {
     match action {
         TimelineAction::ClickSeek(position) => (
             PlayerCommand::Seek(SeekRequest::absolute(position)),
             TimelineCommandRoute::ClickSeek,
         ),
-        TimelineAction::BeginScrub => (
-            PlayerCommand::BeginScrub,
-            TimelineCommandRoute::DragScrubRelease,
-        ),
-        TimelineAction::UpdateScrub(position) => (
-            PlayerCommand::UpdateScrub(SeekRequest::absolute(position)),
-            TimelineCommandRoute::DragScrubRelease,
-        ),
-        TimelineAction::EndScrubCommitDefault => (
-            PlayerCommand::EndScrub {
-                policy: timeline_release_policy_from_config(app_config),
-            },
-            TimelineCommandRoute::DragScrubRelease,
+        TimelineAction::CommitDragSeek(position) => (
+            PlayerCommand::Seek(SeekRequest::absolute(position)),
+            TimelineCommandRoute::DragSeek,
         ),
     }
 }
@@ -1066,12 +1044,11 @@ impl AppState {
 
     /// Конвертирует pointer timeline action в typed player command.
     ///
-    /// Здесь находится единственный app-egui route, который применяет
-    /// `player.seek.timeline_release_policy`. Exact seek-команды должны отправлять
-    /// `PlayerCommand::Seek`, чтобы сохранять accurate final target semantics и не смешивать
-    /// click-to-seek route с timeline scrub release policy.
+    /// Здесь находится единственный app-egui route, который переводит timeline intent
+    /// в worker command. Click и drag release отправляются как `PlayerCommand::Seek`,
+    /// чтобы UI не зависел от interactive scrub lifecycle внутри player-core.
     fn send_timeline_action(&mut self, action: TimelineAction) {
-        let (command, route) = timeline_command_from_action(action, &self.app_config);
+        let (command, route) = timeline_command_from_action(action);
         let command_for_diagnostics = command.clone();
 
         if let Err(error) = self.player_worker.try_send_command(command) {
@@ -1613,7 +1590,6 @@ mod tests {
         ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
         HdrReferenceDefaultDiagnostics, RenderDiagnostics, VideoFrameFormat,
     };
-    use rustiplayer_config::{AppConfig, TimelineReleasePolicy};
     use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
 
     use super::{
@@ -1621,7 +1597,7 @@ mod tests {
         PresentFrameIdentity, TextureBusyFallbackRejectReason, TextureBusyFallbackReuseState,
         cached_present_frame_discard_reason_for_player_event, cached_present_frame_stale_reason,
         texture_busy_fallback_can_reuse_previous_frame, texture_busy_fallback_reject_reason,
-        timeline_command_from_action, timeline_release_policy_from_config,
+        timeline_command_from_action,
     };
     use crate::ui::timeline::TimelineAction;
 
@@ -1648,38 +1624,13 @@ mod tests {
         }
     }
 
-    /// Проверяет, что app-egui default release остаётся latency-first visible-preview.
-    #[test]
-    fn app_egui_timeline_release_default_uses_visible_preview() {
-        let default_config = AppConfig::default();
-
-        assert_eq!(
-            timeline_release_policy_from_config(&default_config),
-            ScrubCommitPolicy::CommitVisiblePreview
-        );
-    }
-
-    /// Проверяет, что app-egui config hook может выбрать точный latest-target release.
-    #[test]
-    fn app_egui_timeline_release_config_can_select_latest_target() {
-        let mut app_config = AppConfig::default();
-        app_config.player.seek.timeline_release_policy = TimelineReleasePolicy::LatestTarget;
-
-        assert_eq!(
-            timeline_release_policy_from_config(&app_config),
-            ScrubCommitPolicy::CommitLatestTarget
-        );
-    }
-
     /// Проверяет, что click-to-seek уходит в exact seek route без scrub policy.
     #[test]
     fn timeline_click_seek_maps_to_exact_player_seek_route() {
-        let mut app_config = AppConfig::default();
-        app_config.player.seek.timeline_release_policy = TimelineReleasePolicy::VisiblePreview;
         let target_position = MediaTime::from_secs(42);
 
         let (command, route) =
-            timeline_command_from_action(TimelineAction::ClickSeek(target_position), &app_config);
+            timeline_command_from_action(TimelineAction::ClickSeek(target_position));
 
         assert_eq!(route.as_str(), "click-seek");
         assert_eq!(
@@ -1688,41 +1639,18 @@ mod tests {
         );
     }
 
-    /// Проверяет, что drag start/update остаются на interactive scrub route.
+    /// Проверяет, что drag release уходит в exact seek route без scrub policy.
     #[test]
-    fn timeline_drag_start_and_update_map_to_scrub_commands() {
-        let app_config = AppConfig::default();
+    fn timeline_drag_release_maps_to_exact_player_seek_route() {
         let target_position = MediaTime::from_secs(64);
 
-        let (begin_command, begin_route) =
-            timeline_command_from_action(TimelineAction::BeginScrub, &app_config);
-        let (update_command, update_route) =
-            timeline_command_from_action(TimelineAction::UpdateScrub(target_position), &app_config);
-
-        assert_eq!(begin_route.as_str(), "drag-scrub-release");
-        assert_eq!(begin_command, PlayerCommand::BeginScrub);
-        assert_eq!(update_route.as_str(), "drag-scrub-release");
-        assert_eq!(
-            update_command,
-            PlayerCommand::UpdateScrub(SeekRequest::absolute(target_position))
-        );
-    }
-
-    /// Проверяет, что drag release применяет только configured scrub commit policy.
-    #[test]
-    fn timeline_drag_release_maps_to_configured_scrub_policy_route() {
-        let mut app_config = AppConfig::default();
-        app_config.player.seek.timeline_release_policy = TimelineReleasePolicy::LatestTarget;
-
         let (command, route) =
-            timeline_command_from_action(TimelineAction::EndScrubCommitDefault, &app_config);
+            timeline_command_from_action(TimelineAction::CommitDragSeek(target_position));
 
-        assert_eq!(route.as_str(), "drag-scrub-release");
+        assert_eq!(route.as_str(), "drag-seek");
         assert_eq!(
             command,
-            PlayerCommand::EndScrub {
-                policy: ScrubCommitPolicy::CommitLatestTarget
-            }
+            PlayerCommand::Seek(SeekRequest::absolute(target_position))
         );
     }
 
