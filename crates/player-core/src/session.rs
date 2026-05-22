@@ -311,6 +311,9 @@ struct SeekTraceState {
     /// Был ли уже зафиксирован первый presented frame после seek.
     first_presented_frame_logged: bool,
 
+    /// PTS первого presented frame текущего seek trace-а.
+    first_presented_frame_position: Option<Duration>,
+
     /// Был ли уже зафиксирован первый TracksChanged marker после seek.
     first_track_list_update_logged: bool,
 }
@@ -376,13 +379,21 @@ impl SeekTraceState {
     }
 
     /// Возвращает `true` только для первого presented frame текущего seek trace-а.
-    fn record_first_presented_frame(&mut self) -> bool {
+    fn record_first_presented_frame(&mut self, frame_pts: Duration) -> bool {
         if self.active_generation.is_none() || self.first_presented_frame_logged {
             return false;
         }
 
         self.first_presented_frame_logged = true;
+        self.first_presented_frame_position = Some(frame_pts);
         true
+    }
+
+    /// Возвращает PTS первого presented frame только для текущего generation-а.
+    fn first_presented_frame_position_for_generation(&self, generation: u64) -> Option<Duration> {
+        (self.active_generation == Some(generation))
+            .then_some(self.first_presented_frame_position)
+            .flatten()
     }
 
     /// Возвращает `true` только для первого TracksChanged marker-а текущего seek trace-а.
@@ -1603,10 +1614,11 @@ impl PlayerSession {
         );
     }
 
-    /// Возвращает seek target как временный clock для scheduler-а, пока audio clock недоступен.
+    /// Возвращает accepted seek clock base как временный clock, пока audio clock недоступен.
     ///
-    /// Без этого video-only seek сравнивает decoded target frames со старой
-    /// `current_position` и может бесконечно ждать, считая кадр "слишком ранним".
+    /// Обычный final seek может стартовать с demux-safe actual позиции до target-а,
+    /// поэтому scheduler должен сравнивать post-seek frames с той же базой, которую
+    /// session применит к media/audio clocks после accepted demux point-а.
     #[must_use]
     pub(crate) fn seek_presentation_clock_override(&self) -> Option<Duration> {
         if self.pipeline.has_audio_clock() {
@@ -1614,7 +1626,40 @@ impl PlayerSession {
         }
 
         self.seek_commit
-            .map(|seek_commit| seek_commit.target_position.as_duration())
+            .map(|seek_commit| self.accepted_seek_clock_base(seek_commit))
+    }
+
+    /// Выбирает clock base, от которого audio/video должны идти во время accepted seek-а.
+    fn accepted_seek_clock_base(&self, seek_commit: SeekCommitState) -> Duration {
+        if self.final_seek_uses_decode_safe_clock_anchor(seek_commit) {
+            return seek_commit.actual_position.as_duration();
+        }
+
+        seek_commit.target_position.as_duration()
+    }
+
+    /// Проверяет, что final seek может стартовать playback от demux-safe actual frame-а.
+    fn final_seek_uses_decode_safe_clock_anchor(&self, seek_commit: SeekCommitState) -> bool {
+        seek_commit.kind == SeekCommitKind::Final
+            && !self.final_seek_requires_exact_target_frame(seek_commit)
+            && self.pipeline.has_selected_video_track()
+    }
+
+    /// Перепривязывает clocks после accepted seek, когда demuxer уже сообщил actual point.
+    fn reanchor_clocks_after_seek_accept(&mut self, seek_commit: SeekCommitState) {
+        let clock_base = self.accepted_seek_clock_base(seek_commit);
+        self.pipeline
+            .reanchor_media_clock_for_seek(clock_base, Instant::now());
+
+        debug!(
+            kind = seek_commit_kind_name(seek_commit.kind),
+            target_ms = seek_commit.target_position.as_duration().as_millis(),
+            actual_ms = seek_commit.actual_position.as_duration().as_millis(),
+            clock_base_ms = clock_base.as_millis(),
+            generation = seek_commit.generation,
+            pipeline_generation = self.pipeline.seek_generation(),
+            "Seek media clock перепривязан после accepted demux point"
+        );
     }
 
     /// Проверяет, нужно ли выбросить decoded frame как pre-roll до seek target.
@@ -1726,7 +1771,8 @@ impl PlayerSession {
             return;
         }
 
-        let first_post_seek_presented_frame = self.seek_trace.record_first_presented_frame();
+        let first_post_seek_presented_frame =
+            self.seek_trace.record_first_presented_frame(frame_pts);
         let present_frame_generation = self
             .pipeline
             .present_video_frame()
@@ -1763,7 +1809,8 @@ impl PlayerSession {
             return;
         }
 
-        let first_post_seek_presented_frame = self.seek_trace.record_first_presented_frame();
+        let first_post_seek_presented_frame =
+            self.seek_trace.record_first_presented_frame(frame_pts);
         let present_frame_generation = self
             .pipeline
             .present_video_frame()
@@ -2375,7 +2422,7 @@ impl PlayerSession {
         }
     }
 
-    /// Обычный video seek фиксирует первый реально показанный свежий frame.
+    /// Обычный video seek фиксирует первый реально показанный pre-target frame.
     fn final_seek_presented_frame_commit_position(
         &self,
         seek_commit: SeekCommitState,
@@ -2392,8 +2439,16 @@ impl PlayerSession {
             return None;
         }
 
-        self.pipeline
-            .present_video_frame_pts_for_generation(seek_commit.generation)
+        let frame_position = self
+            .seek_trace
+            .first_presented_frame_position_for_generation(seek_commit.generation)
+            .or_else(|| {
+                self.pipeline
+                    .present_video_frame_pts_for_generation(seek_commit.generation)
+            })?;
+        let target_position = seek_commit.target_position.as_duration();
+
+        (frame_position < target_position).then_some(frame_position)
     }
 
     /// EOF fallback считается committed position только если этот frame реально сейчас показан.
@@ -3475,7 +3530,7 @@ impl PlayerSession {
                     "Demux seek transaction accepted"
                 );
                 self.seek_trace.begin(generation);
-                self.seek_commit = Some(SeekCommitState {
+                let seek_commit = SeekCommitState {
                     generation,
                     scrub_generation,
                     target_position,
@@ -3483,7 +3538,9 @@ impl PlayerSession {
                     started_at: Instant::now(),
                     resume_intent,
                     kind: commit_kind,
-                });
+                };
+                self.reanchor_clocks_after_seek_accept(seek_commit);
+                self.seek_commit = Some(seek_commit);
                 Ok(())
             }
             Err(error) => {
@@ -4324,7 +4381,7 @@ mod tests {
         let mut seek_trace = SeekTraceState::default();
         assert!(!seek_trace.record_first_decoded_frame());
         assert!(!seek_trace.record_first_queued_frame());
-        assert!(!seek_trace.record_first_presented_frame());
+        assert!(!seek_trace.record_first_presented_frame(Duration::from_secs(1)));
         assert!(!seek_trace.record_first_track_list_update());
 
         seek_trace.begin(3);
@@ -4332,15 +4389,27 @@ mod tests {
         assert!(!seek_trace.record_first_decoded_frame());
         assert!(seek_trace.record_first_queued_frame());
         assert!(!seek_trace.record_first_queued_frame());
-        assert!(seek_trace.record_first_presented_frame());
-        assert!(!seek_trace.record_first_presented_frame());
+        assert!(seek_trace.record_first_presented_frame(Duration::from_secs(1)));
+        assert!(!seek_trace.record_first_presented_frame(Duration::from_secs(2)));
+        assert_eq!(
+            seek_trace.first_presented_frame_position_for_generation(3),
+            Some(Duration::from_secs(1))
+        );
         assert!(seek_trace.record_first_track_list_update());
         assert!(!seek_trace.record_first_track_list_update());
 
         seek_trace.begin(4);
         assert!(seek_trace.record_first_decoded_frame());
         assert!(seek_trace.record_first_queued_frame());
-        assert!(seek_trace.record_first_presented_frame());
+        assert!(seek_trace.record_first_presented_frame(Duration::from_secs(3)));
+        assert_eq!(
+            seek_trace.first_presented_frame_position_for_generation(3),
+            None
+        );
+        assert_eq!(
+            seek_trace.first_presented_frame_position_for_generation(4),
+            Some(Duration::from_secs(3))
+        );
         assert!(seek_trace.record_first_track_list_update());
 
         seek_trace.clear();
@@ -6060,6 +6129,181 @@ mod tests {
             harness.seek_requests()[0].mode,
             DemuxSeekMode::DecodePointBefore
         );
+    }
+
+    #[test]
+    fn ordinary_final_seek_reanchors_audio_clock_base_to_actual_demux_point() {
+        let video_track = fake_track(1, TrackKind::Video);
+        let audio_track = fake_track(2, TrackKind::Audio);
+        let target = Duration::from_secs(6);
+        let actual = Duration::from_secs(5);
+        let demuxer = scripted_seek_demuxer(
+            vec![video_track.clone(), audio_track.clone()],
+            target,
+            actual,
+            Vec::new(),
+        );
+        let mut harness = SeekRegressionHarness::new(vec![video_track, audio_track], demuxer);
+        let _audio_handle = install_ready_audio_runtime(&mut harness.session, 0.0, None);
+
+        harness
+            .session
+            .dispatch_command(PlayerCommand::Play)
+            .unwrap();
+        harness.start_final_seek(MediaTime::from_duration(target));
+
+        let accepted_seek = harness.aligned_seek_commit();
+        assert_eq!(
+            accepted_seek.actual_position,
+            MediaTime::from_duration(actual)
+        );
+        assert_eq!(harness.session.pipeline.media_clock_base(), actual);
+        assert_eq!(
+            harness
+                .session
+                .presentation_clock_position_at(Instant::now()),
+            actual
+        );
+    }
+
+    #[test]
+    fn final_seek_without_audio_clock_uses_actual_override_before_audio_gate() {
+        let video_track = fake_track(1, TrackKind::Video);
+        let audio_track = fake_track(2, TrackKind::Audio);
+        let target = Duration::from_secs(6);
+        let actual = Duration::from_secs(5);
+        let demuxer = scripted_seek_demuxer(
+            vec![video_track.clone(), audio_track.clone()],
+            target,
+            actual,
+            Vec::new(),
+        );
+        let mut harness = SeekRegressionHarness::new(vec![video_track, audio_track], demuxer);
+        let tick_config = PlayerTickConfig {
+            max_demux_packets_per_tick: 0,
+            max_decoded_video_frames_drained_per_tick: 3,
+            seek_resume_audio_gate_timeout: Duration::from_secs(10),
+            ..seek_admission_tick_config(4, 4)
+        };
+
+        harness
+            .session
+            .dispatch_command(PlayerCommand::Play)
+            .unwrap();
+        harness.start_final_seek(MediaTime::from_duration(target));
+
+        assert!(!harness.session.pipeline.has_audio_clock());
+        assert_eq!(
+            harness.session.seek_presentation_clock_override(),
+            Some(actual)
+        );
+        assert_eq!(
+            harness
+                .session
+                .presentation_clock_position_at(Instant::now()),
+            actual
+        );
+
+        harness.push_decoded_frame(actual, 500, 0);
+        harness.push_decoded_frame(actual + Duration::from_millis(16), 516, 0);
+        harness.push_decoded_frame(actual + Duration::from_millis(33), 533, 0);
+        let first_tick = harness
+            .session
+            .tick(PlayerTickContext::with_config(Instant::now(), tick_config));
+
+        assert_eq!(first_tick.video_frames_presented, 1);
+        assert!(first_tick.dropped_video_frames.is_empty());
+        assert_eq!(
+            harness
+                .session
+                .pipeline
+                .present_video_frame()
+                .map(|frame| frame.pts),
+            Some(actual)
+        );
+        assert_eq!(harness.session.pipeline.video_present_queue_len(), 2);
+        assert!(harness.session.seek_commit().is_some());
+    }
+
+    #[test]
+    fn final_seek_audio_gate_wait_keeps_preroll_frames_on_actual_clock_base() {
+        let video_track = fake_track(1, TrackKind::Video);
+        let audio_track = fake_track(2, TrackKind::Audio);
+        let target = Duration::from_secs(6);
+        let actual = Duration::from_secs(5);
+        let demuxer = scripted_seek_demuxer(
+            vec![video_track.clone(), audio_track.clone()],
+            target,
+            actual,
+            Vec::new(),
+        );
+        let mut harness = SeekRegressionHarness::new(vec![video_track, audio_track], demuxer);
+        let audio_handle = install_ready_audio_runtime(&mut harness.session, 0.0, None);
+        let tick_config = PlayerTickConfig {
+            max_demux_packets_per_tick: 0,
+            max_decoded_video_frames_drained_per_tick: 3,
+            seek_resume_audio_gate_timeout: Duration::from_secs(10),
+            ..seek_admission_tick_config(4, 4)
+        };
+
+        harness
+            .session
+            .dispatch_command(PlayerCommand::Play)
+            .unwrap();
+        harness.start_final_seek(MediaTime::from_duration(target));
+        assert_eq!(harness.session.pipeline.media_clock_base(), actual);
+
+        harness.push_decoded_frame(actual, 500, 0);
+        harness.push_decoded_frame(actual + Duration::from_millis(16), 516, 0);
+        harness.push_decoded_frame(actual + Duration::from_millis(33), 533, 0);
+        let first_tick = harness
+            .session
+            .tick(PlayerTickContext::with_config(Instant::now(), tick_config));
+
+        assert_eq!(first_tick.video_frames_presented, 1);
+        assert!(first_tick.dropped_video_frames.is_empty());
+        assert_eq!(
+            harness
+                .session
+                .pipeline
+                .present_video_frame()
+                .map(|frame| frame.pts),
+            Some(actual)
+        );
+        assert_eq!(harness.session.pipeline.video_present_queue_len(), 2);
+        assert!(harness.session.seek_commit().is_some());
+
+        audio_handle.clock.record_played(48_000 * 2 * 20 / 1_000);
+        let second_tick = harness
+            .session
+            .tick(PlayerTickContext::with_config(Instant::now(), tick_config));
+
+        assert_eq!(second_tick.video_frames_presented, 1);
+        assert!(second_tick.dropped_video_frames.is_empty());
+        assert_eq!(
+            harness
+                .session
+                .pipeline
+                .present_video_frame()
+                .map(|frame| frame.pts),
+            Some(actual + Duration::from_millis(16))
+        );
+        assert_eq!(harness.session.pipeline.video_present_queue_len(), 1);
+
+        let soft_fallback_tick = harness.session.tick(PlayerTickContext::with_config(
+            Instant::now(),
+            PlayerTickConfig {
+                max_demux_packets_per_tick: 0,
+                seek_resume_audio_gate_timeout: Duration::ZERO,
+                ..tick_config
+            },
+        ));
+
+        assert_eq!(soft_fallback_tick.video_frames_presented, 0);
+        assert!(soft_fallback_tick.dropped_video_frames.is_empty());
+        assert!(harness.session.seek_commit().is_none());
+        assert_eq!(harness.session.pipeline.media_clock_base(), actual);
+        assert_eq!(harness.session.snapshot().current_position, actual);
     }
 
     #[test]

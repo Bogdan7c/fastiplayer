@@ -811,9 +811,18 @@ impl PlaybackPipeline {
 
     /// Переставляет media clocks на целевую позицию seek.
     pub(crate) fn reset_clocks_for_seek(&mut self, target: Duration) {
-        self.set_media_clock_base(target);
+        self.reanchor_media_clock_for_seek(target, Instant::now());
+    }
+
+    /// Перепривязывает seek clock base без доступа к внутренним clock полям.
+    pub(crate) fn reanchor_media_clock_for_seek(
+        &mut self,
+        position: Duration,
+        observed_at: Instant,
+    ) {
+        self.set_media_clock_base(position);
         self.clear_monotonic_media_clock();
-        self.reset_audio_clock_sample(Duration::ZERO, Instant::now());
+        self.reset_audio_clock_sample(Duration::ZERO, observed_at);
     }
 
     /// Очищает очередь будущих video frames и возвращает texture handles для release.
