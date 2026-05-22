@@ -66,6 +66,10 @@ pub(crate) enum SeekDemuxRequestError {
 /// Для video `SeekMode::Accurate` остаётся режимом с минимальной задержкой:
 /// demuxer начинает с decode-safe точки до target, а session коммитит первый
 /// реально показанный свежий frame текущего seek generation-а.
+///
+/// Live preview использует тот же decode-safe вход, что и final video seek.
+/// Это дороже coarse/keyframe preview, зато visible frame соответствует
+/// фактической позиции pointer-а, а не ближайшему container keyframe.
 pub(crate) fn demux_seek_request_for_transaction(
     commit_kind: SeekCommitKind,
     has_video_track: bool,
@@ -77,7 +81,11 @@ pub(crate) fn demux_seek_request_for_transaction(
     }
 
     match commit_kind {
-        SeekCommitKind::Preview => Ok(DemuxSeekRequest::preview(target_duration)),
+        SeekCommitKind::Preview => Ok(final_demux_seek_request(
+            has_video_track,
+            target_duration,
+            seek_mode,
+        )),
         SeekCommitKind::Final => Ok(final_demux_seek_request(
             has_video_track,
             target_duration,
@@ -146,11 +154,19 @@ mod tests {
     }
 
     #[test]
-    fn preview_seek_uses_preview_demux_policy() {
+    fn accurate_video_preview_seek_uses_decode_safe_preroll_request() {
         let mode = request_mode(SeekCommitKind::Preview, true, SeekMode::Accurate)
             .expect("preview seek должен поддерживаться");
 
-        assert_eq!(mode, DemuxSeekMode::Preview);
+        assert_eq!(mode, DemuxSeekMode::DecodePointBefore);
+    }
+
+    #[test]
+    fn accurate_audio_only_preview_seek_stays_container_accurate() {
+        let mode = request_mode(SeekCommitKind::Preview, false, SeekMode::Accurate)
+            .expect("audio-only preview seek должен поддерживаться");
+
+        assert_eq!(mode, DemuxSeekMode::Accurate);
     }
 
     #[test]

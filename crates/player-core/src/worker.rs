@@ -3086,7 +3086,7 @@ mod tests {
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(
             requests.as_slice(),
-            &[DemuxSeekRequest::preview(Duration::from_millis(900))]
+            &[DemuxSeekRequest::accurate(Duration::from_millis(900))]
         );
     }
 
@@ -3207,12 +3207,14 @@ mod tests {
         );
         assert!(!runtime.session.snapshot().timeline.scrubbing);
         assert!(!runtime.session.snapshot().timeline.seeking);
+        let expected_preview_request =
+            DemuxSeekRequest::decode_point_before(Duration::from_secs(12));
         assert_eq!(
             seek_request_log
                 .lock()
                 .expect("seek request log lock")
                 .as_slice(),
-            &[DemuxSeekRequest::preview(Duration::from_secs(12))]
+            &[expected_preview_request]
         );
         let events = runtime.session.take_events();
         assert_worker_scrub_release_event(
@@ -3269,12 +3271,14 @@ mod tests {
         );
         assert!(!runtime.session.snapshot().timeline.scrubbing);
         assert!(!runtime.session.snapshot().timeline.seeking);
+        let expected_preview_request =
+            DemuxSeekRequest::decode_point_before(Duration::from_secs(12));
         assert_eq!(
             seek_request_log
                 .lock()
                 .expect("seek request log lock")
                 .as_slice(),
-            &[DemuxSeekRequest::preview(Duration::from_secs(12))]
+            &[expected_preview_request]
         );
         let events = runtime.session.take_events();
         assert_worker_scrub_release_event(
@@ -3316,14 +3320,14 @@ mod tests {
             runtime.session.snapshot().playback_state,
             PlaybackState::Seeking
         );
+        let expected_release_request =
+            DemuxSeekRequest::decode_point_before(Duration::from_secs(20));
         assert_eq!(
             seek_request_log
                 .lock()
                 .expect("seek request log lock")
                 .as_slice(),
-            &[DemuxSeekRequest::decode_point_before(Duration::from_secs(
-                20
-            ))]
+            &[expected_release_request]
         );
         let events = runtime.session.take_events();
         assert_worker_scrub_release_event(

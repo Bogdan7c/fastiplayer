@@ -109,6 +109,10 @@ pub fn render_timeline(
     let pointer_input = pointer_input_from_response(&response, bounds, style);
     let interaction = map_timeline_interaction(timeline, state, bounds, pointer_input);
 
+    if pointer_input.drag_started || pointer_input.dragged || state.has_active_drag() {
+        ui.ctx().request_repaint();
+    }
+
     paint_timeline(
         &painter,
         response.rect,
