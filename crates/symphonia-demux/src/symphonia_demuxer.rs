@@ -1230,12 +1230,8 @@ mod tests {
         }
 
         fn seek_response(&self, mode: SeekMode, target: SeekTo) -> SeekedTo {
-            let track_id = self
-                .tracks
-                .first()
-                .map(|track| track.id)
-                .unwrap_or_default();
-            let required_ts = required_seek_timestamp(&self.tracks, target);
+            let track_id = seek_target_track_id(&self.tracks, &target);
+            let required_ts = required_seek_timestamp(&self.tracks, &target);
             let actual_ts = match self.seek_response_policy {
                 FakeSeekResponsePolicy::Zero => Timestamp::ZERO,
                 FakeSeekResponsePolicy::CoarseAfterTargetAccurateBefore => match mode {
@@ -1309,15 +1305,26 @@ mod tests {
         }
     }
 
-    fn required_seek_timestamp(tracks: &[Track], target: SeekTo) -> Timestamp {
+    fn seek_target_track_id(tracks: &[Track], target: &SeekTo) -> u32 {
+        match target {
+            SeekTo::Time { track_id, .. } => track_id
+                .and_then(|id| tracks.iter().find(|track| track.id == id))
+                .or_else(|| tracks.first())
+                .map(|track| track.id)
+                .unwrap_or_default(),
+            SeekTo::Timestamp { track_id, .. } => *track_id,
+        }
+    }
+
+    fn required_seek_timestamp(tracks: &[Track], target: &SeekTo) -> Timestamp {
         match target {
             SeekTo::Time { time, track_id } => track_id
                 .and_then(|id| tracks.iter().find(|track| track.id == id))
                 .or_else(|| tracks.first())
                 .and_then(|track| track.time_base)
-                .and_then(|time_base| time_base.calc_timestamp(time))
+                .and_then(|time_base| time_base.calc_timestamp(*time))
                 .unwrap_or(Timestamp::ZERO),
-            SeekTo::Timestamp { ts, .. } => ts,
+            SeekTo::Timestamp { ts, .. } => *ts,
         }
     }
 
@@ -1785,6 +1792,78 @@ mod tests {
     }
 
     #[test]
+    fn preview_seek_clears_decode_point_prebuffer_without_verification() {
+        let seek_mode_log = Arc::new(Mutex::new(Vec::new()));
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_seek_packet_scripts(vec![
+                vec![Ok(small_vp9_keyframe_packet(1, 400))],
+                vec![Ok(small_vp9_keyframe_packet(1, 11_000))],
+            ])
+            .with_seek_mode_log(Arc::clone(&seek_mode_log));
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "preview-clears-prebuffer",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+
+        demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(
+                Duration::from_millis(500),
+            ))
+            .expect("первый seek должен создать verification prebuffer");
+        demuxer
+            .seek_with_request(DemuxSeekRequest::preview(Duration::from_secs(10)))
+            .expect("preview seek не должен запускать DecodePointBefore verification");
+        let packet = demuxer
+            .next_packet()
+            .expect("preview packet должен читаться после seek")
+            .expect("preview seek не должен съесть post-seek packet");
+
+        assert_eq!(packet.pts, Duration::from_secs(11));
+        assert_eq!(
+            seek_mode_log
+                .lock()
+                .expect("seek mode log mutex should not be poisoned")
+                .as_slice(),
+            &[SeekMode::Accurate, SeekMode::Coarse]
+        );
+    }
+
+    #[test]
+    fn seek_result_uses_selected_video_track_timestamp_when_audio_track_is_first() {
+        let reader = FakeFormatReader::new(
+            vec![
+                aac_audio_track_with_timing(2, SymphoniaDuration::new(30_000)),
+                vp9_video_track(1),
+            ],
+            Vec::new(),
+        );
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "selected-video-track-timestamp",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+
+        let seek_result = demuxer
+            .seek_with_request(DemuxSeekRequest::preview(Duration::from_secs(10)))
+            .expect("preview seek должен использовать selected video track");
+
+        assert_eq!(
+            seek_result
+                .actual_track_timestamp
+                .expect("seek result должен сохранить raw timestamp")
+                .track_id,
+            TrackId::new(1)
+        );
+    }
+
+    #[test]
     fn decode_point_before_seek_rejects_coarse_after_target_position() {
         let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
             .with_seek_packet_scripts(vec![vec![Ok(small_vp9_keyframe_packet(1, 0))]])
@@ -1928,6 +2007,95 @@ mod tests {
     }
 
     #[test]
+    fn decode_point_before_returns_verification_events_in_read_order() {
+        let reader = FakeFormatReader::new(
+            vec![
+                vp9_video_track(1),
+                aac_audio_track_with_timing(2, SymphoniaDuration::new(30_000)),
+            ],
+            Vec::new(),
+        )
+        .with_seek_packet_scripts(vec![vec![
+            Ok(fake_packet(2, 100, b"audio".to_vec())),
+            Ok(small_vp9_keyframe_packet(1, 400)),
+        ]]);
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "verification-order",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+
+        demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(
+                Duration::from_millis(500),
+            ))
+            .expect("verification должен принять selected video packet");
+
+        let first_event = demuxer
+            .next_event()
+            .expect("первый buffered event должен читаться");
+        let second_event = demuxer
+            .next_event()
+            .expect("второй buffered event должен читаться");
+
+        match first_event {
+            DemuxReadEvent::Packet(packet) => {
+                assert_eq!(packet.track_id, TrackId::new(2));
+                assert_eq!(packet.kind, TrackKind::Audio);
+                assert_eq!(packet.pts, Duration::from_millis(100));
+            }
+            unexpected_event => panic!("ожидали audio packet, получили {unexpected_event:?}"),
+        }
+        match second_event {
+            DemuxReadEvent::Packet(packet) => {
+                assert_eq!(packet.track_id, TrackId::new(1));
+                assert_eq!(packet.kind, TrackKind::Video);
+                assert_eq!(packet.pts, Duration::from_millis(400));
+            }
+            unexpected_event => panic!("ожидали video packet, получили {unexpected_event:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_point_before_verifies_selected_video_track_not_any_video_track() {
+        let reader =
+            FakeFormatReader::new(vec![vp9_video_track(1), vp9_video_track(2)], Vec::new())
+                .with_seek_packet_scripts(vec![vec![
+                    Ok(small_vp9_keyframe_packet(2, 11_000)),
+                    Ok(small_vp9_keyframe_packet(1, 400)),
+                ]]);
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "selected-video-verification",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+
+        let seek_result = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(
+                Duration::from_millis(500),
+            ))
+            .expect("unselected video packet не должен решать verification selected track-а");
+
+        assert_eq!(
+            seek_result.actual_position,
+            media_core::MediaTime::from_millis(400)
+        );
+        assert_eq!(
+            seek_result
+                .actual_track_timestamp
+                .expect("verified actual должен быть timestamp selected video track-а")
+                .track_id,
+            TrackId::new(1)
+        );
+    }
+
+    #[test]
     fn decode_point_before_seek_accepts_unknown_keyframe_before_target() {
         let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
             .with_seek_packet_scripts(vec![vec![Ok(fake_packet(1, 400, b"\x00".to_vec()))]]);
@@ -1955,6 +2123,97 @@ mod tests {
             media_core::MediaTime::from_millis(400)
         );
         assert_eq!(packet.keyframe, PacketKeyframe::Unknown);
+    }
+
+    #[test]
+    fn reset_required_after_preview_seek_is_returned_as_tracks_changed_event() {
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_seek_packet_scripts(vec![vec![
+                Err(SymphoniaError::ResetRequired),
+                Ok(small_vp9_keyframe_packet(4, 600)),
+            ]])
+            .with_reset_track_update(vec![vp9_video_track(4)]);
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "post-seek-reset",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+
+        demuxer
+            .seek_with_request(DemuxSeekRequest::preview(Duration::from_millis(500)))
+            .expect("preview seek должен завершиться до post-seek read");
+
+        let reset_event = demuxer
+            .next_event()
+            .expect("ResetRequired после seek должен стать lifecycle event");
+        let packet_event = demuxer
+            .next_event()
+            .expect("packet после TracksChanged должен остаться доступным");
+
+        match reset_event {
+            DemuxReadEvent::TracksChanged(track_update) => {
+                assert_eq!(track_update.tracks[0].id, TrackId::new(4));
+            }
+            unexpected_event => panic!("ожидали TracksChanged, получили {unexpected_event:?}"),
+        }
+        match packet_event {
+            DemuxReadEvent::Packet(packet) => {
+                assert_eq!(packet.track_id, TrackId::new(4));
+                assert_eq!(packet.pts, Duration::from_millis(600));
+            }
+            unexpected_event => {
+                panic!("ожидали packet нового track-а, получили {unexpected_event:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn reset_required_during_decode_point_verification_is_buffered_before_packet() {
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_seek_packet_scripts(vec![vec![
+                Err(SymphoniaError::ResetRequired),
+                Ok(small_vp9_keyframe_packet(4, 400)),
+            ]])
+            .with_reset_track_update(vec![vp9_video_track(4)]);
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "verification-reset",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+
+        let seek_result = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(
+                Duration::from_millis(500),
+            ))
+            .expect("verification должен пережить ResetRequired и принять новый video track");
+        let reset_event = demuxer
+            .next_event()
+            .expect("TracksChanged должен вернуться перед verified packet-ом");
+        let packet_event = demuxer
+            .next_event()
+            .expect("verified packet должен вернуться после TracksChanged");
+
+        assert_eq!(
+            seek_result
+                .actual_track_timestamp
+                .expect("verified actual должен принадлежать новому video track-у")
+                .track_id,
+            TrackId::new(4)
+        );
+        assert!(matches!(reset_event, DemuxReadEvent::TracksChanged(_)));
+        match packet_event {
+            DemuxReadEvent::Packet(packet) => {
+                assert_eq!(packet.track_id, TrackId::new(4));
+                assert_eq!(packet.pts, Duration::from_millis(400));
+            }
+            unexpected_event => panic!("ожидали verified packet, получили {unexpected_event:?}"),
+        }
     }
 
     #[test]
