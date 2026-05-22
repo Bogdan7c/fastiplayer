@@ -78,6 +78,12 @@ pub struct SeekControllerDiagnostics {
 
     /// Сколько активных scrub операций было отменено interrupt-командой.
     pub cancelled_operations: u64,
+
+    /// Сколько live preview transaction-ов были заменены более свежей scrub-целью.
+    pub replaced_in_flight_previews: u64,
+
+    /// Сколько terminal-событий от старых preview transaction-ов пришли после замены.
+    pub stale_preview_transactions: u64,
 }
 
 /// Намерение caller-а по preview queue после принятого scrub update-а.
@@ -176,6 +182,39 @@ pub(crate) enum PreviewDispatchState {
 
     /// Target уже был отправлен, но caller может сохранить старое поведение dispatch-а.
     AlreadyInFlight,
+
+    /// Более старая preview transaction заменена новым latest target-ом.
+    ReplacedInFlight {
+        /// Preview transaction, которую новый dispatch сделал stale.
+        replaced: InFlightScrubPreview,
+    },
+}
+
+/// Результат очистки worker-side in-flight preview marker-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InFlightPreviewClearDecision {
+    /// Terminal state относится к текущему in-flight preview и marker очищен.
+    Cleared { intent: ScrubUpdateIntent },
+
+    /// Terminal state относится к уже заменённому preview transaction-у.
+    StaleTransaction {
+        /// Старый preview intent, который больше не владеет in-flight slot-ом.
+        intent: ScrubUpdateIntent,
+
+        /// Текущий preview, которому теперь принадлежит in-flight slot.
+        current: InFlightScrubPreview,
+    },
+
+    /// Intent не относится к активному in-flight preview state.
+    Ignored { intent: ScrubUpdateIntent },
+}
+
+impl InFlightPreviewClearDecision {
+    /// Возвращает прежний bool-contract для callers, которым достаточно факта очистки.
+    #[must_use]
+    pub(crate) const fn cleared(self) -> bool {
+        matches!(self, Self::Cleared { .. })
+    }
 }
 
 /// Typed decision для preview dispatch boundary.
@@ -440,13 +479,12 @@ impl SeekOperation {
                 && *generation == intent.generation
                 && *latest_target == Some(intent.request) =>
             {
-                let state = if in_flight_preview
-                    .as_ref()
-                    .is_some_and(|preview| preview.intent.request == intent.request)
-                {
-                    PreviewDispatchState::AlreadyInFlight
-                } else {
-                    PreviewDispatchState::NewInFlight
+                let state = match in_flight_preview.as_ref().copied() {
+                    Some(preview) if preview.intent.request == intent.request => {
+                        PreviewDispatchState::AlreadyInFlight
+                    }
+                    Some(replaced) => PreviewDispatchState::ReplacedInFlight { replaced },
+                    None => PreviewDispatchState::NewInFlight,
                 };
                 *in_flight_preview = Some(InFlightScrubPreview {
                     intent,
@@ -510,7 +548,10 @@ impl SeekOperation {
     }
 
     /// Очищает in-flight marker, если session сообщила terminal state этого preview intent-а.
-    fn clear_in_flight_preview(&mut self, intent: ScrubUpdateIntent) -> bool {
+    fn clear_in_flight_preview(
+        &mut self,
+        intent: ScrubUpdateIntent,
+    ) -> InFlightPreviewClearDecision {
         match self {
             Self::InteractiveScrub {
                 generation,
@@ -522,9 +563,21 @@ impl SeekOperation {
                     .is_some_and(|preview| preview.intent == intent) =>
             {
                 *in_flight_preview = None;
-                true
+                InFlightPreviewClearDecision::Cleared { intent }
             }
-            Self::InteractiveScrub { .. } | Self::Idle => false,
+            Self::InteractiveScrub {
+                generation,
+                in_flight_preview: Some(current),
+                ..
+            } if *generation == intent.generation => {
+                InFlightPreviewClearDecision::StaleTransaction {
+                    intent,
+                    current: *current,
+                }
+            }
+            Self::InteractiveScrub { .. } | Self::Idle => {
+                InFlightPreviewClearDecision::Ignored { intent }
+            }
         }
     }
 
@@ -706,6 +759,15 @@ impl SeekController {
         if let PreviewDispatchDecision::Rejected { .. } = decision {
             self.count_stale_or_ignored_command();
         }
+        if matches!(
+            decision,
+            PreviewDispatchDecision::Dispatch {
+                state: PreviewDispatchState::ReplacedInFlight { .. },
+                ..
+            }
+        ) {
+            self.count_replaced_in_flight_preview();
+        }
 
         decision
     }
@@ -726,8 +788,20 @@ impl SeekController {
     }
 
     /// Очищает in-flight preview после terminal state на session side.
-    pub(crate) fn clear_in_flight_preview(&mut self, intent: ScrubUpdateIntent) -> bool {
-        self.operation.clear_in_flight_preview(intent)
+    pub(crate) fn clear_in_flight_preview(
+        &mut self,
+        intent: ScrubUpdateIntent,
+    ) -> InFlightPreviewClearDecision {
+        let decision = self.operation.clear_in_flight_preview(intent);
+
+        if matches!(
+            decision,
+            InFlightPreviewClearDecision::StaleTransaction { .. }
+        ) {
+            self.count_stale_preview_transaction();
+        }
+
+        decision
     }
 
     /// Обрабатывает типизированную resume-команду во время scrub без изменения session state.
@@ -799,6 +873,22 @@ impl SeekController {
     fn count_stale_or_ignored_command(&mut self) {
         self.diagnostics.stale_or_ignored_commands =
             self.diagnostics.stale_or_ignored_commands.saturating_add(1);
+    }
+
+    /// Единая точка инкремента diagnostics для заменённых preview transaction-ов.
+    fn count_replaced_in_flight_preview(&mut self) {
+        self.diagnostics.replaced_in_flight_previews = self
+            .diagnostics
+            .replaced_in_flight_previews
+            .saturating_add(1);
+    }
+
+    /// Единая точка инкремента diagnostics для terminal-событий старых preview.
+    fn count_stale_preview_transaction(&mut self) {
+        self.diagnostics.stale_preview_transactions = self
+            .diagnostics
+            .stale_preview_transactions
+            .saturating_add(1);
     }
 }
 
@@ -1064,6 +1154,48 @@ mod tests {
         );
 
         assert_eq!(controller.in_flight_target(), Some(request));
+    }
+
+    #[test]
+    fn preview_dispatch_counts_replaced_in_flight_transaction() {
+        let mut controller = SeekController::new();
+        let generation = controller.begin_scrub(PlaybackState::Paused);
+        let first_dispatched_at = Instant::now();
+        let second_dispatched_at = first_dispatched_at + Duration::from_millis(33);
+        let first_intent = ScrubUpdateIntent::new(generation, absolute_seek_request(9));
+        let second_intent = ScrubUpdateIntent::new(generation, absolute_seek_request(10));
+
+        assert!(matches!(
+            accept_update_with_preview(&mut controller, first_intent),
+            ScrubUpdateAcceptance::Accepted { .. }
+        ));
+        assert_eq!(
+            controller.mark_preview_seek_dispatched(first_intent, first_dispatched_at),
+            PreviewDispatchDecision::Dispatch {
+                intent: first_intent,
+                state: PreviewDispatchState::NewInFlight,
+            }
+        );
+        assert!(matches!(
+            accept_update_with_preview(&mut controller, second_intent),
+            ScrubUpdateAcceptance::Accepted { .. }
+        ));
+
+        assert_eq!(
+            controller.mark_preview_seek_dispatched(second_intent, second_dispatched_at),
+            PreviewDispatchDecision::Dispatch {
+                intent: second_intent,
+                state: PreviewDispatchState::ReplacedInFlight {
+                    replaced: InFlightScrubPreview {
+                        intent: first_intent,
+                        dispatched_at: first_dispatched_at,
+                    },
+                },
+            }
+        );
+        assert_eq!(controller.in_flight_target(), Some(second_intent.request));
+        assert_eq!(controller.diagnostics().replaced_in_flight_previews, 1);
+        assert_eq!(controller.diagnostics().stale_or_ignored_commands, 0);
     }
 
     #[test]
@@ -1396,10 +1528,25 @@ mod tests {
             mark_preview_dispatched(&mut controller, second_intent),
             PreviewDispatchDecision::Dispatch { .. }
         ));
+        let current_preview_before_stale_clear = controller
+            .in_flight_preview()
+            .expect("second preview должен быть in-flight");
 
-        assert!(!controller.clear_in_flight_preview(first_intent));
+        assert_eq!(
+            controller.clear_in_flight_preview(first_intent),
+            InFlightPreviewClearDecision::StaleTransaction {
+                intent: first_intent,
+                current: current_preview_before_stale_clear,
+            }
+        );
         assert_eq!(controller.in_flight_target(), Some(second_intent.request));
-        assert!(controller.clear_in_flight_preview(second_intent));
+        assert_eq!(controller.diagnostics().stale_preview_transactions, 1);
+        assert_eq!(
+            controller.clear_in_flight_preview(second_intent),
+            InFlightPreviewClearDecision::Cleared {
+                intent: second_intent,
+            }
+        );
         assert_eq!(controller.in_flight_target(), None);
     }
 }

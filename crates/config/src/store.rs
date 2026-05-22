@@ -188,6 +188,7 @@ mod tests {
         assert_eq!(CURRENT_SCHEMA_VERSION, 2);
         assert_eq!(config.player.seek.live_interval_ms, 33);
         assert_eq!(config.player.seek.live_preview_budget_ms, 100);
+        assert_eq!(config.player.seek.live_replace_in_flight_after_ms(), 33);
         assert_eq!(
             config.player.seek.timeline_release_policy,
             TimelineReleasePolicy::VisiblePreview
@@ -714,6 +715,32 @@ live_interval_ms = 1001
         let error = load_from_path(&config_path).expect_err("excessive seek interval rejected");
 
         assert!(error.to_string().contains("player.seek.live_interval_ms"));
+    }
+
+    /// Проверяет, что preview budget не может быть меньше окна replacement policy.
+    #[test]
+    fn preview_budget_below_live_interval_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[player.seek]
+live_interval_ms = 33
+live_preview_budget_ms = 16
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid preview budget rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("player.seek.live_preview_budget_ms")
+        );
     }
 
     /// Проверяет положительность seek commit timeout-а.

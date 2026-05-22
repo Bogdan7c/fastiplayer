@@ -6978,6 +6978,71 @@ mod tests {
     }
 
     #[test]
+    fn replaced_preview_old_generation_frame_cannot_become_visible() {
+        let mut session = PlayerSession::new();
+        let fake_decoder = SharedFakeVideoDecoderThread::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+        session
+            .pipeline
+            .set_video_decoder_thread(fake_decoder.clone());
+        let first_request = SeekRequest::absolute(MediaTime::from_secs(8));
+        let second_request = SeekRequest::absolute(MediaTime::from_secs(10));
+
+        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(first_request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(first_request))
+            .unwrap();
+        let first_preview_generation = session
+            .seek_commit()
+            .expect("first preview должен открыть seek transaction")
+            .generation;
+
+        session
+            .dispatch_command(PlayerCommand::UpdateScrub(second_request))
+            .unwrap();
+        session
+            .dispatch_command(PlayerCommand::PreviewScrub(second_request))
+            .unwrap();
+        let second_preview = session
+            .seek_commit()
+            .expect("second preview должен заменить active seek transaction");
+        assert_ne!(first_preview_generation, second_preview.generation);
+        assert_eq!(second_preview.target_position, MediaTime::from_secs(10));
+
+        let mut stale_frame = decoded_frame_for_tests(Duration::from_millis(7_900), 79);
+        stale_frame.generation = first_preview_generation;
+        fake_decoder.push_decoded_frame(stale_frame);
+
+        let tick_result = session.tick(PlayerTickContext::with_config(
+            Instant::now(),
+            seek_admission_tick_config(2, 4),
+        ));
+
+        assert_eq!(
+            tick_result.dropped_video_frames,
+            vec![PlayerVideoFrameDrop {
+                pts: Duration::from_millis(7_900),
+                reason: PlayerVideoDropReason::StaleGeneration,
+            }]
+        );
+        assert!(session.pipeline.video_present_queue_is_empty());
+        assert!(session.pipeline.present_video_frame().is_none());
+        assert_eq!(
+            session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Pending
+        );
+        assert_eq!(
+            session
+                .seek_commit()
+                .map(|seek_commit| seek_commit.target_position),
+            Some(MediaTime::from_secs(10))
+        );
+    }
+
+    #[test]
     fn active_preview_with_old_audio_clock_force_presents_front_frame() {
         let mut session = PlayerSession::new();
         install_fake_media(

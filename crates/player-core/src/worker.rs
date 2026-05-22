@@ -104,12 +104,15 @@ impl PlayerWorkerConfig {
     /// Создаёт worker config из runtime tick config приложения.
     #[must_use]
     pub fn new(tick_config: PlayerTickConfig) -> Self {
+        let live_scrub_preview_interval = DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL;
         Self {
             coarse_wakeup_interval: DEFAULT_WORKER_COARSE_WAKEUP_INTERVAL,
             decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config,
-            live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
-            live_scrub_preview_replace_after: tick_config.seek_preview_timeout,
+            live_scrub_preview_interval,
+            live_scrub_preview_replace_after: live_scrub_preview_replace_after(
+                live_scrub_preview_interval,
+            ),
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
         }
     }
@@ -117,14 +120,16 @@ impl PlayerWorkerConfig {
     /// Создаёт worker config напрямую из validated app config.
     #[must_use]
     pub fn from_app_config(config: &rustiplayer_config::AppConfig) -> Self {
+        let live_scrub_preview_interval =
+            Duration::from_millis(config.player.seek.live_interval_ms);
+        let live_scrub_preview_replace_after =
+            Duration::from_millis(config.player.seek.live_replace_in_flight_after_ms());
         Self {
             coarse_wakeup_interval: DEFAULT_WORKER_COARSE_WAKEUP_INTERVAL,
             decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config: PlayerTickConfig::from(config),
-            live_scrub_preview_interval: Duration::from_millis(config.player.seek.live_interval_ms),
-            live_scrub_preview_replace_after: Duration::from_millis(
-                config.player.seek.live_preview_budget_ms,
-            ),
+            live_scrub_preview_interval,
+            live_scrub_preview_replace_after,
             decoder_thread_config: decoder_thread_config_from_app_config(config),
         }
     }
@@ -136,6 +141,14 @@ impl PlayerWorkerConfig {
     ) -> PlayerVideoDecoderThreadConfig {
         decoder_thread_config_from_app_config(config)
     }
+}
+
+/// Выводит окно замены in-flight preview из частоты live dispatch-а.
+///
+/// Timeout preview остаётся отдельным fail-safe в `PlayerTickConfig`; эта policy
+/// решает только, когда новая scrub-цель может заменить старый in-flight preview.
+fn live_scrub_preview_replace_after(live_scrub_preview_interval: Duration) -> Duration {
+    live_scrub_preview_interval.max(Duration::from_millis(1))
 }
 
 impl Default for PlayerWorkerConfig {
@@ -1739,11 +1752,16 @@ impl PlayerWorkerRuntime {
         let latencies = summary.worst_latencies;
         let texture_view_lock_wait = latencies.texture_view_lock_wait;
         let publish_pressure = summary.decoder_frame_publish_pressure;
+        let scrub_diagnostics = self.scrub_driver.diagnostics();
         debug!(
             drops = summary.drops_total,
             drops_late = summary.drops.late,
             drops_queue = summary.drops.queue_overflow,
             drops_stale_generation = summary.drops.stale_generation,
+            scrub_stale_or_ignored_commands = scrub_diagnostics.stale_or_ignored_commands,
+            scrub_cancelled_operations = scrub_diagnostics.cancelled_operations,
+            scrub_replaced_in_flight_previews = scrub_diagnostics.replaced_in_flight_previews,
+            scrub_stale_preview_transactions = scrub_diagnostics.stale_preview_transactions,
             drops_seek_preroll = summary.drops.seek_preroll,
             drops_decoder_starvation = summary.drops.decoder_starvation,
             seek_bootstrap_dropped_until_keyframe = summary.seek_bootstrap.dropped_until_keyframe,
@@ -1969,18 +1987,40 @@ mod tests {
     use crate::{MediaSource, PlaybackState, ScrubReleaseCommitSource, SeekTarget};
 
     fn worker_config_for_tests() -> PlayerWorkerConfig {
+        let live_scrub_preview_interval = DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL;
         PlayerWorkerConfig {
             coarse_wakeup_interval: Duration::from_millis(10),
             decoder_readiness_poll_interval: Duration::from_millis(2),
             tick_config: PlayerTickConfig::default(),
-            live_scrub_preview_interval: DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL,
-            live_scrub_preview_replace_after: PlayerTickConfig::default().seek_preview_timeout,
+            live_scrub_preview_interval,
+            live_scrub_preview_replace_after: live_scrub_preview_replace_after(
+                live_scrub_preview_interval,
+            ),
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
         }
     }
 
     fn seek_to_millis(milliseconds: u64) -> SeekRequest {
         SeekRequest::absolute(MediaTime::from_millis(milliseconds))
+    }
+
+    #[test]
+    fn worker_config_derives_preview_replacement_from_live_interval() {
+        let app_config = rustiplayer_config::AppConfig::default();
+        let worker_config = PlayerWorkerConfig::from_app_config(&app_config);
+
+        assert_eq!(
+            worker_config.live_scrub_preview_interval,
+            Duration::from_millis(33)
+        );
+        assert_eq!(
+            worker_config.tick_config.seek_preview_timeout,
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            worker_config.live_scrub_preview_replace_after,
+            Duration::from_millis(33)
+        );
     }
 
     fn scrub_update_intent(generation: ScrubGeneration, milliseconds: u64) -> ScrubUpdateIntent {

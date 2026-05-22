@@ -145,6 +145,7 @@ fn validate_player_seek_config(seek: &PlayerSeekConfig) -> ConfigResult<()> {
         "player.seek.live_preview_budget_ms",
         seek.live_preview_budget_ms,
     )?;
+    validate_live_preview_replacement_policy(seek)?;
     validate_positive_u64("player.seek.commit_timeout_ms", seek.commit_timeout_ms)?;
     validate_positive_u64(
         "player.seek.resume_audio_min_buffer_ms",
@@ -168,6 +169,34 @@ fn validate_player_seek_config(seek: &PlayerSeekConfig) -> ConfigResult<()> {
         "player.seek.hotkey_large_step_secs",
         seek.hotkey_large_step_secs,
     )?;
+
+    Ok(())
+}
+
+/// Проверяет явную derived policy замены in-flight live preview.
+fn validate_live_preview_replacement_policy(seek: &PlayerSeekConfig) -> ConfigResult<()> {
+    let replacement_after_ms = seek.live_replace_in_flight_after_ms();
+    if replacement_after_ms < seek.live_interval_ms {
+        return Err(invalid_value(
+            "player.seek.live_preview_budget_ms",
+            format!(
+                "значение должно быть не меньше player.seek.live_interval_ms ({}), \
+                 чтобы replacement window ({replacement_after_ms}) не был меньше live cadence",
+                seek.live_interval_ms
+            ),
+        ));
+    }
+
+    if seek.live_preview_budget_ms < replacement_after_ms {
+        return Err(invalid_value(
+            "player.seek.live_preview_budget_ms",
+            format!(
+                "значение должно быть не меньше replacement window ({replacement_after_ms}), \
+                 получено {}",
+                seek.live_preview_budget_ms
+            ),
+        ));
+    }
 
     Ok(())
 }

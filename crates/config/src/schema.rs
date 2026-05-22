@@ -71,12 +71,12 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
         "live_interval_ms = 33",
-        "# Минимальный интервал между live scrub preview-командами.",
+        "# Минимальный интервал между live scrub preview-командами; он же окно замены in-flight preview.",
     );
     insert_default_config_comment(
         toml_text,
         "live_preview_budget_ms = 100",
-        "# Budget preview work на один live scrub update.",
+        "# Timeout/budget preview work; отдельно защищает зависшие preview transaction-ы.",
     );
     insert_default_config_comment(
         toml_text,
@@ -375,6 +375,21 @@ impl Default for PlayerSeekConfig {
             paused_commit_behavior: PausedCommitBehavior::StayPaused,
             hotkey_small_step_secs: 5,
             hotkey_large_step_secs: 30,
+        }
+    }
+}
+
+impl PlayerSeekConfig {
+    /// Возвращает derived окно, после которого latest target может заменить in-flight preview.
+    ///
+    /// Значение следует live cadence, а `live_preview_budget_ms` остаётся отдельным timeout-ом.
+    /// Validation гарантирует, что budget не меньше этого replacement window.
+    #[must_use]
+    pub const fn live_replace_in_flight_after_ms(&self) -> u64 {
+        if self.live_interval_ms <= self.live_preview_budget_ms {
+            self.live_interval_ms
+        } else {
+            self.live_preview_budget_ms
         }
     }
 }
