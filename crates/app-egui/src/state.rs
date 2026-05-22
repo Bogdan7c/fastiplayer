@@ -61,6 +61,53 @@ fn timeline_release_policy_from_config(app_config: &AppConfig) -> ScrubCommitPol
     }
 }
 
+/// Diagnostic route пользовательского timeline intent-а на границе app-egui -> player-core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimelineCommandRoute {
+    /// Одиночный click ушёл в exact final seek без scrub generation.
+    ClickSeek,
+
+    /// Pointer drag использует interactive scrub path и release policy из config.
+    DragScrubRelease,
+}
+
+impl TimelineCommandRoute {
+    /// Возвращает стабильное имя route-а для logs/diagnostics.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ClickSeek => "click-seek",
+            Self::DragScrubRelease => "drag-scrub-release",
+        }
+    }
+}
+
+/// Конвертирует timeline action в player command и diagnostic route.
+fn timeline_command_from_action(
+    action: TimelineAction,
+    app_config: &AppConfig,
+) -> (PlayerCommand, TimelineCommandRoute) {
+    match action {
+        TimelineAction::ClickSeek(position) => (
+            PlayerCommand::Seek(SeekRequest::absolute(position)),
+            TimelineCommandRoute::ClickSeek,
+        ),
+        TimelineAction::BeginScrub => (
+            PlayerCommand::BeginScrub,
+            TimelineCommandRoute::DragScrubRelease,
+        ),
+        TimelineAction::UpdateScrub(position) => (
+            PlayerCommand::UpdateScrub(SeekRequest::absolute(position)),
+            TimelineCommandRoute::DragScrubRelease,
+        ),
+        TimelineAction::EndScrubCommitDefault => (
+            PlayerCommand::EndScrub {
+                policy: timeline_release_policy_from_config(app_config),
+            },
+            TimelineCommandRoute::DragScrubRelease,
+        ),
+    }
+}
+
 /// Immutable данные, зафиксированные один раз для текущего render frame-а.
 pub struct AppFrameContext {
     /// Snapshot player-а, общий для UI, renderer boundary, desktop integration и pacing.
@@ -993,16 +1040,13 @@ impl AppState {
     /// `PlayerCommand::Seek`, чтобы сохранять accurate final target semantics и не смешивать
     /// click-to-seek route с timeline scrub release policy.
     fn send_timeline_action(&mut self, action: TimelineAction) {
-        debug!(action = ?action, "Timeline action отправлен в player worker");
-        let command = match action {
-            TimelineAction::BeginScrub => PlayerCommand::BeginScrub,
-            TimelineAction::UpdateScrub(position) => {
-                PlayerCommand::UpdateScrub(SeekRequest::absolute(position))
-            }
-            TimelineAction::EndScrubCommitDefault => PlayerCommand::EndScrub {
-                policy: timeline_release_policy_from_config(&self.app_config),
-            },
-        };
+        let (command, route) = timeline_command_from_action(action, &self.app_config);
+        debug!(
+            action = ?action,
+            command = ?command,
+            route = route.as_str(),
+            "Timeline action отправлен в player worker"
+        );
 
         if let Err(error) = self.player_worker.try_send_command(command) {
             warn!(error = %error, "Не удалось отправить timeline command");
@@ -1527,9 +1571,11 @@ mod tests {
     use std::time::Duration;
 
     use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
+    use media_core::MediaTime;
     use player_core::{
-        MediaOpenRequest, MediaSource, MediaSummary, PlaybackState, PlayerError, PlayerErrorKind,
-        PlayerEvent, ScrubCommitPolicy, ScrubReleaseCommitInfo, ScrubReleaseCommitSource,
+        MediaOpenRequest, MediaSource, MediaSummary, PlaybackState, PlayerCommand, PlayerError,
+        PlayerErrorKind, PlayerEvent, ScrubCommitPolicy, ScrubReleaseCommitInfo,
+        ScrubReleaseCommitSource, SeekRequest,
     };
     use render_core::{
         ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
@@ -1542,8 +1588,9 @@ mod tests {
         TextureBusyFallbackRejectReason, TextureBusyFallbackReuseState,
         cached_present_frame_discard_reason_for_player_event, cached_present_frame_stale_reason,
         texture_busy_fallback_can_reuse_previous_frame, texture_busy_fallback_reject_reason,
-        timeline_release_policy_from_config,
+        timeline_command_from_action, timeline_release_policy_from_config,
     };
+    use crate::ui::timeline::TimelineAction;
 
     /// Проверяет, что app-egui default release остаётся latency-first visible-preview.
     #[test]
@@ -1565,6 +1612,40 @@ mod tests {
         assert_eq!(
             timeline_release_policy_from_config(&app_config),
             ScrubCommitPolicy::CommitLatestTarget
+        );
+    }
+
+    /// Проверяет, что click-to-seek уходит в exact seek route без scrub policy.
+    #[test]
+    fn timeline_click_seek_maps_to_exact_player_seek_route() {
+        let app_config = AppConfig::default();
+        let target_position = MediaTime::from_secs(42);
+
+        let (command, route) =
+            timeline_command_from_action(TimelineAction::ClickSeek(target_position), &app_config);
+
+        assert_eq!(route.as_str(), "click-seek");
+        assert_eq!(
+            command,
+            PlayerCommand::Seek(SeekRequest::absolute(target_position))
+        );
+    }
+
+    /// Проверяет, что drag release применяет только configured scrub commit policy.
+    #[test]
+    fn timeline_drag_release_maps_to_configured_scrub_policy_route() {
+        let mut app_config = AppConfig::default();
+        app_config.player.seek.timeline_release_policy = TimelineReleasePolicy::LatestTarget;
+
+        let (command, route) =
+            timeline_command_from_action(TimelineAction::EndScrubCommitDefault, &app_config);
+
+        assert_eq!(route.as_str(), "drag-scrub-release");
+        assert_eq!(
+            command,
+            PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitLatestTarget
+            }
         );
     }
 

@@ -37,21 +37,19 @@ impl TimelineUiState {
 
 /// Действие timeline, которое `AppState` конвертирует в `PlayerCommand`.
 ///
-/// Эти actions описывают pointer timeline UX. Exact seek-команды должны иметь
-/// отдельный route через `PlayerCommand::Seek`, а не наследовать default scrub release policy.
+/// Эти actions описывают pointer timeline UX без раскрытия worker-side scrub generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimelineAction {
+    /// Одиночный click-to-seek: точный final seek без interactive scrub release policy.
+    ClickSeek(MediaTime),
+
     /// Начало interactive scrub.
     BeginScrub,
 
     /// Обновление целевой позиции interactive scrub.
     UpdateScrub(MediaTime),
 
-    /// Завершение pointer timeline scrub с default commit policy timeline-а.
-    ///
-    /// Сейчас одиночный click-to-seek остаётся в этом же pointer release flow для
-    /// совместимости поведения. Если click-to-seek отделяется в exact command, ему нужна
-    /// отдельная action/route, не меняющая semantics этого variant-а.
+    /// Завершение pointer drag scrub с default commit policy timeline-а.
     EndScrubCommitDefault,
 }
 
@@ -61,7 +59,7 @@ pub struct TimelinePointerInput {
     /// Click был завершён на timeline.
     pub clicked: bool,
 
-    /// Pointer удерживается на timeline; это срабатывает раньше, чем egui подтвердит drag.
+    /// Pointer удерживается на timeline, но это не начинает scrub до реального drag.
     pub pointer_down_on_timeline: bool,
 
     /// Drag начался на timeline.
@@ -159,20 +157,24 @@ pub fn map_timeline_interaction(
         .pointer_fraction
         .map(|fraction| bounds.position_from_fraction(fraction));
 
-    let wants_scrub_position = input.pointer_down_on_timeline
-        || input.drag_started
-        || input.dragged
-        || input.drag_stopped
-        || input.clicked;
-    let can_begin_scrub = input.pointer_down_on_timeline || input.drag_started || input.clicked;
-    let should_begin_scrub =
-        !state.has_active_drag() && can_begin_scrub && pointer_position.is_some();
+    if input.lost_focus && state.has_active_drag() {
+        state.clear_transient_drag();
+        return TimelineInteraction {
+            actions,
+            display_position: state.display_position(timeline),
+        };
+    }
+
+    let wants_drag_position = input.drag_started || input.dragged || input.drag_stopped;
+    let should_begin_scrub = !state.has_active_drag()
+        && (input.drag_started || input.dragged)
+        && pointer_position.is_some();
 
     if should_begin_scrub {
         actions.push(TimelineAction::BeginScrub);
     }
 
-    if wants_scrub_position
+    if wants_drag_position
         && (should_begin_scrub || state.has_active_drag())
         && let Some(position) = pointer_position
     {
@@ -183,15 +185,14 @@ pub fn map_timeline_interaction(
         }
     }
 
-    if input.lost_focus && state.has_active_drag() {
-        state.clear_transient_drag();
-    }
-
-    let should_finish_scrub = state.has_active_drag() && (input.clicked || input.drag_stopped);
+    let should_finish_scrub = state.has_active_drag() && input.drag_stopped;
     if should_finish_scrub {
-        // Click и drag release сейчас намеренно используют одну pointer timeline policy.
         actions.push(TimelineAction::EndScrubCommitDefault);
         state.clear_transient_drag();
+    } else if input.clicked
+        && let Some(position) = pointer_position
+    {
+        actions.push(TimelineAction::ClickSeek(position));
     }
 
     TimelineInteraction {
@@ -425,9 +426,9 @@ mod tests {
         .expect("test timeline is seekable")
     }
 
-    /// Проверяет, что pointer down сразу запускает preview scrub, а click только коммитит цель.
+    /// Проверяет, что pointer down сам по себе не создаёт scrub generation.
     #[test]
-    fn pointer_down_starts_scrub_and_click_commits_latest_target() {
+    fn pointer_down_before_click_does_not_create_scrub_generation() {
         let timeline = seekable_timeline();
         let mut state = TimelineUiState::default();
 
@@ -441,14 +442,8 @@ mod tests {
                 ..TimelinePointerInput::default()
             },
         );
-        assert_eq!(
-            pointer_down.actions,
-            vec![
-                TimelineAction::BeginScrub,
-                TimelineAction::UpdateScrub(MediaTime::from_secs(25))
-            ]
-        );
-        assert!(state.has_active_drag());
+        assert!(pointer_down.actions.is_empty());
+        assert!(!state.has_active_drag());
 
         let repeated_pointer_down = map_timeline_interaction(
             &timeline,
@@ -461,7 +456,7 @@ mod tests {
             },
         );
         assert!(repeated_pointer_down.actions.is_empty());
-        assert!(state.has_active_drag());
+        assert!(!state.has_active_drag());
 
         let click = map_timeline_interaction(
             &timeline,
@@ -474,13 +469,16 @@ mod tests {
             },
         );
 
-        assert_eq!(click.actions, vec![TimelineAction::EndScrubCommitDefault]);
+        assert_eq!(
+            click.actions,
+            vec![TimelineAction::ClickSeek(MediaTime::from_secs(25))]
+        );
         assert!(!state.has_active_drag());
     }
 
-    /// Проверяет fallback для очень быстрого клика, где down/up попали в один UI frame.
+    /// Проверяет, что простой click выдаёт только exact seek action.
     #[test]
-    fn click_without_prior_pointer_down_uses_scrub_commit_sequence() {
+    fn simple_click_maps_to_click_seek_only() {
         let timeline = seekable_timeline();
         let mut state = TimelineUiState::default();
 
@@ -497,11 +495,7 @@ mod tests {
 
         assert_eq!(
             interaction.actions,
-            vec![
-                TimelineAction::BeginScrub,
-                TimelineAction::UpdateScrub(MediaTime::from_secs(25)),
-                TimelineAction::EndScrubCommitDefault
-            ]
+            vec![TimelineAction::ClickSeek(MediaTime::from_secs(25))]
         );
         assert!(!state.has_active_drag());
     }
