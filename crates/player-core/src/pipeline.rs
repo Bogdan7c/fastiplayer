@@ -68,6 +68,60 @@ pub(crate) enum AudioSeekRuntimeState {
     Ready,
 }
 
+/// Узкая граница audio output-а, чтобы pipeline не раскрывал concrete CPAL slot.
+pub(crate) trait AudioOutputBoundary {
+    /// Записывает interleaved PCM samples в output buffer.
+    fn write_samples(&mut self, samples: &[f32]) -> u64;
+
+    /// Запускает output stream.
+    fn play(&mut self) -> anyhow::Result<()>;
+
+    /// Ставит output stream на паузу.
+    fn pause(&mut self) -> anyhow::Result<()>;
+
+    /// Очищает queued samples для seek generation и возвращает ack generation.
+    fn clear_buffer_for_seek(&mut self, generation: u64) -> anyhow::Result<u64>;
+
+    /// Применяет volume для последующих samples.
+    fn set_volume(&mut self, volume: f32);
+
+    /// Возвращает текущий уровень output buffer-а в миллисекундах.
+    fn buffer_level_ms(&self) -> f64;
+
+    /// Возвращает clock, которым output сообщает прогресс playback.
+    fn clock(&self) -> &Arc<audio::clock::AudioClock>;
+}
+
+impl AudioOutputBoundary for audio::AudioOutput {
+    fn write_samples(&mut self, samples: &[f32]) -> u64 {
+        audio::AudioOutput::write_samples(self, samples)
+    }
+
+    fn play(&mut self) -> anyhow::Result<()> {
+        audio::AudioOutput::play(self)
+    }
+
+    fn pause(&mut self) -> anyhow::Result<()> {
+        audio::AudioOutput::pause(self)
+    }
+
+    fn clear_buffer_for_seek(&mut self, generation: u64) -> anyhow::Result<u64> {
+        audio::AudioOutput::clear_buffer_for_seek(self, generation)
+    }
+
+    fn set_volume(&mut self, volume: f32) {
+        audio::AudioOutput::set_volume(self, volume);
+    }
+
+    fn buffer_level_ms(&self) -> f64 {
+        audio::AudioOutput::buffer_level_ms(self)
+    }
+
+    fn clock(&self) -> &Arc<audio::clock::AudioClock> {
+        audio::AudioOutput::clock(self)
+    }
+}
+
 /// Успешный результат audio decode вместе с параметрами decoder-а для clock trimming.
 #[derive(Debug)]
 pub(crate) struct DecodedAudioPacket {
@@ -242,8 +296,8 @@ pub(crate) struct PlaybackPipeline {
     /// Deferred config для audio decoder-а, пока первый packet не потребовал decode.
     deferred_audio_decoder_config: Option<audio::AudioDecoderConfig>,
 
-    /// Audio output: CPAL stream и ring buffer.
-    audio_output: Option<audio::AudioOutput>,
+    /// Audio output за boundary trait-ом: production CPAL или test fake.
+    audio_output: Option<Box<dyn AudioOutputBoundary>>,
 
     /// Track ID выбранного audio трека.
     audio_track_id: Option<TrackId>,
@@ -408,6 +462,12 @@ impl PlaybackPipeline {
 
     /// Устанавливает CPAL-backed audio output, созданный session policy слоем.
     pub(crate) fn install_audio_output(&mut self, output: audio::AudioOutput) {
+        self.audio_output = Some(Box::new(output));
+    }
+
+    /// Устанавливает fake/stub output для unit-тестов без CPAL device side effects.
+    #[cfg(test)]
+    pub(crate) fn install_audio_output_for_tests(&mut self, output: Box<dyn AudioOutputBoundary>) {
         self.audio_output = Some(output);
     }
 
@@ -433,12 +493,12 @@ impl PlaybackPipeline {
 
     /// Запускает audio output stream без смешивания absent output и CPAL error.
     pub(crate) fn play_audio_output(&mut self) -> Option<anyhow::Result<()>> {
-        self.audio_output.as_mut().map(audio::AudioOutput::play)
+        self.audio_output.as_mut().map(|output| output.play())
     }
 
     /// Ставит audio output stream на паузу без изменения high-level playback state.
     pub(crate) fn pause_audio_output(&mut self) -> Option<anyhow::Result<()>> {
-        self.audio_output.as_mut().map(audio::AudioOutput::pause)
+        self.audio_output.as_mut().map(|output| output.pause())
     }
 
     /// Очищает audio output buffer для seek и возвращает sync ack generation.
@@ -466,13 +526,13 @@ impl PlaybackPipeline {
     pub(crate) fn audio_output_buffer_level_ms(&self) -> Option<f64> {
         self.audio_output
             .as_ref()
-            .map(audio::AudioOutput::buffer_level_ms)
+            .map(|output| output.buffer_level_ms())
     }
 
     /// Возвращает clock handle output-а без раскрытия самого output slot-а.
     #[must_use]
     pub(crate) fn audio_output_clock(&self) -> Option<&Arc<audio::clock::AudioClock>> {
-        self.audio_output.as_ref().map(audio::AudioOutput::clock)
+        self.audio_output.as_ref().map(|output| output.clock())
     }
 
     /// Проверяет наличие audio clock без раскрытия `Option` storage.

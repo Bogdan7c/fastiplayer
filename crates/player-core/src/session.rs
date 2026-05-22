@@ -240,6 +240,33 @@ impl SeekCommitGateDecision {
     }
 }
 
+/// Политика выбора playback position при закрытии final seek-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinalSeekCommitPosition {
+    /// Обычный target или уже выбранный visible-preview target становится clock base.
+    Target { position: Duration },
+
+    /// Near-EOF fallback коммитит PTS реально показанного fallback frame-а.
+    EofFallbackFrame { position: Duration },
+}
+
+impl FinalSeekCommitPosition {
+    /// Возвращает позицию, которую нужно опубликовать как committed playback position.
+    const fn position(self) -> Duration {
+        match self {
+            Self::Target { position } | Self::EofFallbackFrame { position } => position,
+        }
+    }
+
+    /// Stable label для structured logs и focused regression tests.
+    const fn policy_name(self) -> &'static str {
+        match self {
+            Self::Target { .. } => "target",
+            Self::EofFallbackFrame { .. } => "eof-fallback-frame",
+        }
+    }
+}
+
 /// Сколько первых demux packets после accepted seek попадает в debug trace.
 const POST_SEEK_PACKET_TRACE_LIMIT: usize = 8;
 
@@ -1820,6 +1847,11 @@ impl PlayerSession {
                     audio_gate_timeout_ms = tick_config.seek_resume_audio_gate_timeout.as_millis(),
                     "Final seek commit продолжен через audio gate soft fallback"
                 );
+                self.record_seek_audio_soft_fallback(
+                    seek_commit,
+                    audio_gate_status,
+                    tick_config.seek_resume_audio_gate_timeout,
+                );
             }
 
             self.complete_seek_commit(seek_commit);
@@ -1836,6 +1868,29 @@ impl PlayerSession {
 
         let timeout_blocker = self.seek_timeout_blocker_from_active_diagnostics(now, tick_config);
         self.fail_seek_commit_on_timeout(seek_commit, timeout_blocker);
+    }
+
+    /// Публикует recoverable диагностику, когда final seek отпущен без готового audio gate-а.
+    fn record_seek_audio_soft_fallback(
+        &mut self,
+        seek_commit: SeekCommitState,
+        audio_gate_status: SeekAudioGateStatus,
+        resume_audio_gate_timeout: Duration,
+    ) {
+        let blocker = audio_gate_status
+            .blocker()
+            .unwrap_or(SeekProgressBlocker::WaitingForAudioPreroll);
+        let error = PlayerError::new(
+            PlayerErrorKind::RuntimeError,
+            format!(
+                "Final seek resumed without ready audio after {} ms: target={} ms, blocker={}",
+                resume_audio_gate_timeout.as_millis(),
+                seek_commit.target_position.as_duration().as_millis(),
+                blocker.metric_name()
+            ),
+        );
+
+        self.record_recoverable_error(error);
     }
 
     /// Проверяет video/audio gates и возвращает причину, если commit разрешён soft fallback-ом.
@@ -2244,12 +2299,51 @@ impl PlayerSession {
         }
     }
 
+    /// Выбирает committed position без смешивания requested target и EOF fallback frame-а.
+    fn final_seek_commit_position(&self, seek_commit: SeekCommitState) -> FinalSeekCommitPosition {
+        if let Some(position) = self.final_seek_eof_fallback_commit_position(seek_commit) {
+            return FinalSeekCommitPosition::EofFallbackFrame { position };
+        }
+
+        FinalSeekCommitPosition::Target {
+            position: seek_commit.target_position.as_duration(),
+        }
+    }
+
+    /// EOF fallback считается committed position только если этот frame реально сейчас показан.
+    fn final_seek_eof_fallback_commit_position(
+        &self,
+        seek_commit: SeekCommitState,
+    ) -> Option<Duration> {
+        if seek_commit.kind != SeekCommitKind::Final || !self.draining_after_eof {
+            return None;
+        }
+
+        if !self.pipeline.has_selected_video_track() || self.snapshot.timeline.stale_frame {
+            return None;
+        }
+
+        let fallback_position = self.seek_eof_fallback_video_position?.as_duration();
+        if fallback_position >= seek_commit.target_position.as_duration() {
+            return None;
+        }
+
+        self.pipeline
+            .present_video_frame_matches(fallback_position)
+            .then_some(fallback_position)
+    }
+
     /// Закрывает финальный seek и публикует новую playback позицию.
     fn complete_final_seek_commit(&mut self, seek_commit: SeekCommitState) {
+        let commit_position = self.final_seek_commit_position(seek_commit);
+        let playback_position = commit_position.position();
+
         debug!(
             kind = seek_commit_kind_name(seek_commit.kind),
             target_ms = seek_commit.target_position.as_duration().as_millis(),
             actual_ms = seek_commit.actual_position.as_duration().as_millis(),
+            committed_ms = playback_position.as_millis(),
+            commit_position_policy = commit_position.policy_name(),
             generation = seek_commit.generation,
             pipeline_generation = self.pipeline.seek_generation(),
             resume_intent = ?seek_commit.resume_intent,
@@ -2260,15 +2354,14 @@ impl PlayerSession {
         self.scrub_state.clear();
         self.seek_eof_fallback_video_position = None;
         self.clear_seek_preroll_fallback_frame();
-        self.pipeline
-            .set_media_clock_base(seek_commit.target_position.as_duration());
-        self.pipeline.clear_monotonic_media_clock();
         self.snapshot.timeline.target_position = None;
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.scrubbing = false;
         self.snapshot.timeline.stale_frame = false;
         self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
-        self.publish_position_changed(seek_commit.target_position.as_duration());
+        self.pipeline.set_media_clock_base(playback_position);
+        self.pipeline.clear_monotonic_media_clock();
+        self.publish_position_changed(playback_position);
         self.pending_events
             .push(PlayerEvent::SeekCommitted(SeekCommitInfo {
                 target_position: seek_commit.target_position.as_duration(),
@@ -2282,21 +2375,7 @@ impl PlayerSession {
                 self.set_playback_state(PlaybackState::Paused);
             }
             PlaybackResumeIntent::Play => {
-                if let Some(play_result) = self.pipeline.play_audio_output() {
-                    match play_result {
-                        Ok(()) => {
-                            self.pending_events.push(PlayerEvent::AudioResumedAfterSeek(
-                                SeekAudioResumeInfo {
-                                    target_position: seek_commit.target_position.as_duration(),
-                                },
-                            ));
-                        }
-                        Err(error) => {
-                            warn!(error = %error, "Не удалось запустить audio после seek");
-                            self.set_runtime_error(format!("Audio play after seek error: {error}"));
-                        }
-                    }
-                }
+                self.resume_audio_output_after_seek(seek_commit.target_position.as_duration());
                 let observed_at = Instant::now();
                 let audio_now = self.audio_clock_now();
                 self.pipeline
@@ -2310,12 +2389,38 @@ impl PlayerSession {
             kind = seek_commit_kind_name(seek_commit.kind),
             target_ms = seek_commit.target_position.as_duration().as_millis(),
             actual_ms = seek_commit.actual_position.as_duration().as_millis(),
+            committed_ms = playback_position.as_millis(),
+            commit_position_policy = commit_position.policy_name(),
             generation = seek_commit.generation,
             pipeline_generation = self.pipeline.seek_generation(),
             resume_intent = ?seek_commit.resume_intent,
             playback_state = ?self.snapshot.playback_state,
             "Final seek resume intent applied"
         );
+    }
+
+    /// Запускает audio output после seek и различает success/error/absent output.
+    fn resume_audio_output_after_seek(&mut self, target_position: Duration) {
+        let Some(play_result) = self.pipeline.play_audio_output() else {
+            return;
+        };
+
+        match play_result {
+            Ok(()) => {
+                self.pending_events
+                    .push(PlayerEvent::AudioResumedAfterSeek(SeekAudioResumeInfo {
+                        target_position,
+                    }));
+            }
+            Err(error) => {
+                warn!(error = %error, "Не удалось запустить audio после seek");
+                let player_error = PlayerError::new(
+                    PlayerErrorKind::AudioDeviceUnavailable,
+                    format!("Audio play after seek error: {error}"),
+                );
+                self.record_recoverable_error(player_error);
+            }
+        }
     }
 
     /// Закрывает live preview seek, оставляя interactive scrub активным.
@@ -4010,6 +4115,7 @@ mod tests {
     use codec_core::{ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction};
 
     use super::*;
+    use crate::pipeline::AudioOutputBoundary;
     use crate::{
         DecodeBackpressureReason, DecodeSendError, DecodeThreadError,
         DecoderControlChannelPressureSnapshot, DecoderResourceSnapshot, MediaSource,
@@ -4379,6 +4485,128 @@ mod tests {
         fn channels(&self) -> u32 {
             2
         }
+    }
+
+    /// Shared handle fake audio output-а для assertions после передачи output-а в pipeline.
+    #[derive(Clone)]
+    struct ScriptedAudioOutputHandle {
+        /// Clock fake output-а, который session может установить в pipeline.
+        clock: Arc<audio::AudioClock>,
+
+        /// Сколько раз session попросила запустить stream.
+        play_count: Arc<AtomicUsize>,
+
+        /// Сколько раз session попросила поставить stream на паузу.
+        pause_count: Arc<AtomicUsize>,
+
+        /// Сколько раз session очистила audio buffer для seek.
+        clear_count: Arc<AtomicUsize>,
+    }
+
+    impl ScriptedAudioOutputHandle {
+        /// Создаёт empty counters и clock с production-like sample layout.
+        fn new() -> Self {
+            Self {
+                clock: Arc::new(audio::AudioClock::new(48_000, 2)),
+                play_count: Arc::new(AtomicUsize::new(0)),
+                pause_count: Arc::new(AtomicUsize::new(0)),
+                clear_count: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    /// Fake audio output для seek resume тестов без CPAL/device side effects.
+    struct ScriptedAudioOutput {
+        /// Shared counters и clock, доступные тесту после move в pipeline.
+        handle: ScriptedAudioOutputHandle,
+
+        /// Уровень buffer-а, который audio gate видит через pipeline boundary.
+        buffer_level_ms: f64,
+
+        /// Ошибка, которую fake вернёт из play, если сценарий её задаёт.
+        play_error: Option<&'static str>,
+    }
+
+    impl ScriptedAudioOutput {
+        /// Создаёт fake output с фиксированным buffer level и scripted play result.
+        fn new(buffer_level_ms: f64, play_error: Option<&'static str>) -> Self {
+            Self {
+                handle: ScriptedAudioOutputHandle::new(),
+                buffer_level_ms,
+                play_error,
+            }
+        }
+
+        /// Разделяет output и assertion handle перед установкой в pipeline.
+        fn into_parts(self) -> (Box<dyn AudioOutputBoundary>, ScriptedAudioOutputHandle) {
+            let handle = self.handle.clone();
+
+            (Box::new(self), handle)
+        }
+    }
+
+    impl AudioOutputBoundary for ScriptedAudioOutput {
+        /// Fake принимает все samples и возвращает их количество как written count.
+        fn write_samples(&mut self, samples: &[f32]) -> u64 {
+            samples.len() as u64
+        }
+
+        /// Записывает play attempt и возвращает scripted success/error.
+        fn play(&mut self) -> anyhow::Result<()> {
+            self.handle.play_count.fetch_add(1, Ordering::Relaxed);
+            match self.play_error {
+                Some(error) => Err(anyhow::anyhow!(error)),
+                None => Ok(()),
+            }
+        }
+
+        /// Записывает pause attempt; seek pause в этих тестах всегда успешен.
+        fn pause(&mut self) -> anyhow::Result<()> {
+            self.handle.pause_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        /// Подтверждает очистку buffer-а ровно тем generation, который запросила session.
+        fn clear_buffer_for_seek(&mut self, generation: u64) -> anyhow::Result<u64> {
+            self.handle.clear_count.fetch_add(1, Ordering::Relaxed);
+            Ok(generation)
+        }
+
+        /// Volume не влияет на seek gate, поэтому fake только принимает boundary call.
+        fn set_volume(&mut self, _volume: f32) {}
+
+        /// Возвращает scripted buffer level для audio preroll gate.
+        fn buffer_level_ms(&self) -> f64 {
+            self.buffer_level_ms
+        }
+
+        /// Возвращает fake clock с production AudioClock contract-ом.
+        fn clock(&self) -> &Arc<audio::AudioClock> {
+            &self.handle.clock
+        }
+    }
+
+    /// Устанавливает decoder/output/clock так, чтобы audio gate мог быть Ready.
+    fn install_ready_audio_runtime(
+        session: &mut PlayerSession,
+        buffer_level_ms: f64,
+        play_error: Option<&'static str>,
+    ) -> ScriptedAudioOutputHandle {
+        let reset_count = Arc::new(AtomicUsize::new(0));
+        session
+            .pipeline
+            .install_audio_decoder(Box::new(CountingAudioDecoder::new(reset_count)));
+
+        let (audio_output, handle) =
+            ScriptedAudioOutput::new(buffer_level_ms, play_error).into_parts();
+        session
+            .pipeline
+            .install_audio_output_for_tests(audio_output);
+        session
+            .pipeline
+            .install_audio_clock(Arc::clone(&handle.clock));
+
+        handle
     }
 
     /// Shared fake decoder для seek/tick тестов без production decoder и renderer resources.
@@ -5176,6 +5404,18 @@ mod tests {
         );
     }
 
+    /// Возвращает индекс первого event-а, который подходит под проверку теста.
+    fn event_index(
+        events: &[PlayerEvent],
+        matches_event: impl Fn(&PlayerEvent) -> bool,
+        missing_message: &str,
+    ) -> usize {
+        events
+            .iter()
+            .position(matches_event)
+            .unwrap_or_else(|| panic!("{missing_message}: {events:?}"))
+    }
+
     #[test]
     fn prepared_media_install_publishes_open_snapshot_and_events() {
         let mut session = PlayerSession::new();
@@ -5826,7 +6066,8 @@ mod tests {
 
         assert_eq!(fallback_tick.video_frames_presented, 1);
         assert!(harness.session.seek_commit().is_none());
-        assert_eq!(harness.session.snapshot().current_position, target);
+        assert_eq!(harness.session.snapshot().current_position, actual);
+        assert_eq!(harness.session.pipeline.media_clock_base(), actual);
         assert!(!harness.session.snapshot().timeline.seeking);
         assert!(!harness.session.snapshot().timeline.stale_frame);
         assert_eq!(
@@ -10017,6 +10258,22 @@ mod tests {
         assert!(!session.snapshot().timeline.stale_frame);
         assert!(session.seek_commit().is_none());
         assert_eq!(session.playback_state(), PlaybackState::Playing);
+        assert_eq!(
+            session.snapshot().current_position,
+            Duration::from_millis(29_950)
+        );
+        assert_eq!(
+            session.pipeline.media_clock_base(),
+            Duration::from_millis(29_950)
+        );
+
+        let events = session.take_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::SeekCommitted(commit)
+                if commit.target_position == Duration::from_secs(30)
+                    && commit.resume_intent == PlaybackResumeIntent::Play
+        )));
     }
 
     #[test]
@@ -10115,6 +10372,219 @@ mod tests {
     }
 
     #[test]
+    fn playing_final_seek_commits_after_target_frame_and_ready_audio() {
+        let mut session = PlayerSession::new();
+        install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+        let audio_output = install_ready_audio_runtime(&mut session, 80.0, None);
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        let _events_before_seek = session.take_events();
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(6_016), 42));
+        session.note_presented_frame_for_seek(Duration::from_millis(6_016));
+        let seek_commit = session
+            .seek_commit()
+            .expect("seek должен быть активен до ready audio commit");
+
+        assert_eq!(
+            session.seek_audio_gate_status(seek_commit, 50.0),
+            SeekAudioGateStatus::Ready
+        );
+
+        session.finish_seek_commit_if_ready_for_tests(
+            seek_commit.started_at,
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            Duration::from_millis(250),
+            3,
+        );
+
+        assert!(session.seek_commit().is_none());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert_eq!(session.snapshot().current_position, Duration::from_secs(6));
+        assert_eq!(session.pipeline.media_clock_base(), Duration::from_secs(6));
+        assert!(!session.snapshot().timeline.seeking);
+        assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 2);
+        assert_eq!(audio_output.pause_count.load(Ordering::Relaxed), 1);
+        assert_eq!(audio_output.clear_count.load(Ordering::Relaxed), 1);
+
+        let events = session.take_events();
+        let target_frame_event_index = event_index(
+            &events,
+            |event| {
+                matches!(
+                    event,
+                    PlayerEvent::SeekTargetFramePresented(presentation)
+                        if presentation.target_position == Duration::from_secs(6)
+                            && presentation.frame_pts == Duration::from_millis(6_016)
+                )
+            },
+            "target frame event должен быть опубликован",
+        );
+        let commit_event_index = event_index(
+            &events,
+            |event| {
+                matches!(
+                    event,
+                    PlayerEvent::SeekCommitted(commit)
+                        if commit.target_position == Duration::from_secs(6)
+                            && commit.actual_position == Duration::from_secs(6)
+                            && commit.resume_intent == PlaybackResumeIntent::Play
+                )
+            },
+            "seek commit event должен быть опубликован",
+        );
+        let audio_resume_event_index = event_index(
+            &events,
+            |event| {
+                matches!(
+                    event,
+                    PlayerEvent::AudioResumedAfterSeek(info)
+                        if info.target_position == Duration::from_secs(6)
+                )
+            },
+            "audio resume event должен быть опубликован после успешного play",
+        );
+
+        assert!(target_frame_event_index < commit_event_index);
+        assert!(commit_event_index < audio_resume_event_index);
+    }
+
+    #[test]
+    fn final_seek_audio_play_error_closes_seek_and_reports_visible_error() {
+        let mut session = PlayerSession::new();
+        install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        let _events_before_seek = session.take_events();
+        let audio_output =
+            install_ready_audio_runtime(&mut session, 80.0, Some("fake audio play failed"));
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
+        session.note_presented_frame_for_seek(Duration::from_secs(6));
+        let seek_commit = session
+            .seek_commit()
+            .expect("seek должен быть активен до audio play error");
+
+        session.finish_seek_commit_if_ready_for_tests(
+            seek_commit.started_at,
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            Duration::from_millis(250),
+            1,
+        );
+
+        assert!(session.seek_commit().is_none());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert!(!session.snapshot().timeline.seeking);
+        assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 1);
+        assert!(matches!(
+            session
+                .snapshot()
+                .last_error
+                .as_ref()
+                .map(|error| &error.kind),
+            Some(PlayerErrorKind::AudioDeviceUnavailable)
+        ));
+
+        let events = session.take_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::RecoverableError(error)
+                if error.kind == PlayerErrorKind::AudioDeviceUnavailable
+                    && error.message.contains("fake audio play failed")
+        )));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, PlayerEvent::AudioResumedAfterSeek(_)))
+        );
+    }
+
+    #[test]
+    fn audio_only_final_seek_commits_when_audio_ready_without_video_gate() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(2, TrackKind::Audio)]);
+        let audio_output = install_ready_audio_runtime(&mut session, 80.0, None);
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        let _events_before_seek = session.take_events();
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(5),
+            )))
+            .unwrap();
+        let seek_commit = session
+            .seek_commit()
+            .expect("audio-only seek должен быть активен до audio gate");
+
+        assert!(session.seek_video_gate_ready(seek_commit, 3));
+        assert_eq!(
+            session.seek_audio_gate_status(seek_commit, 50.0),
+            SeekAudioGateStatus::Ready
+        );
+
+        session.finish_seek_commit_if_ready_for_tests(
+            seek_commit.started_at,
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            50.0,
+            Duration::from_millis(250),
+            3,
+        );
+
+        assert!(session.seek_commit().is_none());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert_eq!(session.snapshot().current_position, Duration::from_secs(5));
+        assert_eq!(session.pipeline.media_clock_base(), Duration::from_secs(5));
+        assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 2);
+
+        let events = session.take_events();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, PlayerEvent::SeekTargetFramePresented(_)))
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::SeekCommitted(commit)
+                if commit.target_position == Duration::from_secs(5)
+                    && commit.resume_intent == PlaybackResumeIntent::Play
+        )));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, PlayerEvent::AudioResumedAfterSeek(_)))
+        );
+    }
+
+    #[test]
     fn final_play_seek_with_audio_requires_only_presented_target_video_frame() {
         let mut session = PlayerSession::new();
         install_fake_media(
@@ -10207,20 +10677,47 @@ mod tests {
         assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
         assert!(!session.snapshot().timeline.seeking);
         assert!(session.seek_commit().is_none());
+        assert!(matches!(
+            session
+                .snapshot()
+                .last_error
+                .as_ref()
+                .map(|error| &error.kind),
+            Some(PlayerErrorKind::RuntimeError)
+        ));
 
         let events = session.take_events();
+        let target_frame_event_index = event_index(
+            &events,
+            |event| {
+                matches!(
+                    event,
+                    PlayerEvent::SeekTargetFramePresented(presentation)
+                        if presentation.target_position == Duration::from_secs(6)
+                            && presentation.frame_pts == Duration::from_secs(6)
+                )
+            },
+            "target frame event должен быть опубликован до soft fallback commit",
+        );
+        let commit_event_index = event_index(
+            &events,
+            |event| {
+                matches!(
+                    event,
+                    PlayerEvent::SeekCommitted(commit)
+                        if commit.target_position == Duration::from_secs(6)
+                            && commit.actual_position == Duration::from_secs(6)
+                            && commit.resume_intent == PlaybackResumeIntent::Play
+                )
+            },
+            "seek commit event должен быть опубликован после soft fallback",
+        );
+        assert!(target_frame_event_index < commit_event_index);
         assert!(events.iter().any(|event| matches!(
             event,
-            PlayerEvent::SeekTargetFramePresented(presentation)
-                if presentation.target_position == Duration::from_secs(6)
-                    && presentation.frame_pts == Duration::from_secs(6)
-        )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            PlayerEvent::SeekCommitted(commit)
-                if commit.target_position == Duration::from_secs(6)
-                    && commit.actual_position == Duration::from_secs(6)
-                    && commit.resume_intent == PlaybackResumeIntent::Play
+            PlayerEvent::RecoverableError(error)
+                if error.kind == PlayerErrorKind::RuntimeError
+                    && error.message.contains("blocker=audio_decoder")
         )));
         assert!(
             !events
@@ -10261,7 +10758,35 @@ mod tests {
 
         assert!(session.seek_commit().is_none());
         assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
+        assert_eq!(session.snapshot().current_position, Duration::from_secs(6));
         assert!(!session.snapshot().timeline.seeking);
+
+        let events = session.take_events();
+        let target_frame_event_index = event_index(
+            &events,
+            |event| {
+                matches!(
+                    event,
+                    PlayerEvent::SeekTargetFramePresented(presentation)
+                        if presentation.target_position == Duration::from_secs(6)
+                            && presentation.frame_pts == Duration::from_secs(6)
+                )
+            },
+            "paused seek должен опубликовать target frame event",
+        );
+        let commit_event_index = event_index(
+            &events,
+            |event| {
+                matches!(
+                    event,
+                    PlayerEvent::SeekCommitted(commit)
+                        if commit.target_position == Duration::from_secs(6)
+                            && commit.resume_intent == PlaybackResumeIntent::Pause
+                )
+            },
+            "paused seek должен опубликовать commit event",
+        );
+        assert!(target_frame_event_index < commit_event_index);
     }
 
     #[test]
