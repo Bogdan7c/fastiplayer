@@ -180,6 +180,34 @@ struct CachedRenderablePresentFrame {
     source_label: Option<String>,
 }
 
+/// Стабильная identity decoded кадра на renderer boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PresentFrameIdentity {
+    /// Поколение render resources, которому принадлежит texture handle.
+    render_generation: u64,
+
+    /// Opaque handle backend texture resource.
+    texture_handle: video_core::FrameTextureHandle,
+
+    /// Поколение decoded frame внутри текущего seek/decode lifecycle.
+    decoded_generation: u64,
+
+    /// Presentation timestamp decoded frame-а.
+    pts: Duration,
+}
+
+impl PresentFrameIdentity {
+    /// Создаёт identity из public lease fields без доступа к player pipeline.
+    fn from_decoded_frame(render_generation: u64, frame: &video_core::DecodedFrame) -> Self {
+        Self {
+            render_generation,
+            texture_handle: frame.texture_handle,
+            decoded_generation: frame.generation,
+            pts: frame.pts,
+        }
+    }
+}
+
 /// Причина явного освобождения cached present frame-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CachedPresentFrameDiscardReason {
@@ -797,10 +825,10 @@ impl AppState {
     }
 
     /// Возвращает identity frame-а, достаточную для отличия нового lease-а от reuse.
-    fn present_frame_identity(present_frame: &PlayerPresentFrame) -> (u64, u64) {
-        (
+    fn present_frame_identity(present_frame: &PlayerPresentFrame) -> PresentFrameIdentity {
+        PresentFrameIdentity::from_decoded_frame(
             present_frame.render_generation,
-            present_frame.frame.texture_handle.0,
+            &present_frame.frame,
         )
     }
 
@@ -1044,18 +1072,19 @@ impl AppState {
     /// click-to-seek route с timeline scrub release policy.
     fn send_timeline_action(&mut self, action: TimelineAction) {
         let (command, route) = timeline_command_from_action(action, &self.app_config);
-        debug!(
-            action = ?action,
-            command = ?command,
-            route = route.as_str(),
-            "Timeline action отправлен в player worker"
-        );
+        let command_for_diagnostics = command.clone();
 
         if let Err(error) = self.player_worker.try_send_command(command) {
             warn!(error = %error, "Не удалось отправить timeline command");
             return;
         }
 
+        debug!(
+            action = ?action,
+            command = ?command_for_diagnostics,
+            route = route.as_str(),
+            "Timeline action отправлен в player worker"
+        );
         self.mark_pending_worker_redraw();
     }
 
@@ -1585,15 +1614,39 @@ mod tests {
         HdrReferenceDefaultDiagnostics, RenderDiagnostics, VideoFrameFormat,
     };
     use rustiplayer_config::{AppConfig, TimelineReleasePolicy};
+    use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
 
     use super::{
         AppState, CachedPresentFrameDiscardReason, CachedPresentFrameValidationState,
-        TextureBusyFallbackRejectReason, TextureBusyFallbackReuseState,
+        PresentFrameIdentity, TextureBusyFallbackRejectReason, TextureBusyFallbackReuseState,
         cached_present_frame_discard_reason_for_player_event, cached_present_frame_stale_reason,
         texture_busy_fallback_can_reuse_previous_frame, texture_busy_fallback_reject_reason,
         timeline_command_from_action, timeline_release_policy_from_config,
     };
     use crate::ui::timeline::TimelineAction;
+
+    /// Создаёт decoded frame для pure identity tests без GPU lease-а.
+    fn decoded_frame_for_identity_tests(
+        generation: u64,
+        pts: Duration,
+        texture_handle: u64,
+    ) -> DecodedFrame {
+        DecodedFrame {
+            generation,
+            pts,
+            format: DecodedPixelFormat::Nv12,
+            bit_depth: BitDepth::Eight,
+            chroma: ChromaSubsampling::Yuv420,
+            memory_path: FrameMemoryPath::DmaBufZeroCopy,
+            width: 640,
+            height: 360,
+            render_width: 640,
+            render_height: 360,
+            color: VideoColorMetadata::sdr_bt709_limited(),
+            texture_handle: FrameTextureHandle(texture_handle),
+            diagnostics: video_core::VideoFrameDiagnostics::default(),
+        }
+    }
 
     /// Проверяет, что app-egui default release остаётся latency-first visible-preview.
     #[test]
@@ -1621,7 +1674,8 @@ mod tests {
     /// Проверяет, что click-to-seek уходит в exact seek route без scrub policy.
     #[test]
     fn timeline_click_seek_maps_to_exact_player_seek_route() {
-        let app_config = AppConfig::default();
+        let mut app_config = AppConfig::default();
+        app_config.player.seek.timeline_release_policy = TimelineReleasePolicy::VisiblePreview;
         let target_position = MediaTime::from_secs(42);
 
         let (command, route) =
@@ -1631,6 +1685,26 @@ mod tests {
         assert_eq!(
             command,
             PlayerCommand::Seek(SeekRequest::absolute(target_position))
+        );
+    }
+
+    /// Проверяет, что drag start/update остаются на interactive scrub route.
+    #[test]
+    fn timeline_drag_start_and_update_map_to_scrub_commands() {
+        let app_config = AppConfig::default();
+        let target_position = MediaTime::from_secs(64);
+
+        let (begin_command, begin_route) =
+            timeline_command_from_action(TimelineAction::BeginScrub, &app_config);
+        let (update_command, update_route) =
+            timeline_command_from_action(TimelineAction::UpdateScrub(target_position), &app_config);
+
+        assert_eq!(begin_route.as_str(), "drag-scrub-release");
+        assert_eq!(begin_command, PlayerCommand::BeginScrub);
+        assert_eq!(update_route.as_str(), "drag-scrub-release");
+        assert_eq!(
+            update_command,
+            PlayerCommand::UpdateScrub(SeekRequest::absolute(target_position))
         );
     }
 
@@ -1786,6 +1860,26 @@ mod tests {
                 })
             ),
             None
+        );
+    }
+
+    /// Проверяет, что reuse identity различает новый decoded frame на той же texture.
+    #[test]
+    fn present_frame_identity_distinguishes_decoded_generation_and_pts() {
+        let previous_frame = decoded_frame_for_identity_tests(10, Duration::from_millis(1_000), 42);
+        let next_generation_frame =
+            decoded_frame_for_identity_tests(11, Duration::from_millis(1_000), 42);
+        let next_pts_frame = decoded_frame_for_identity_tests(10, Duration::from_millis(1_033), 42);
+
+        let previous_identity = PresentFrameIdentity::from_decoded_frame(7, &previous_frame);
+
+        assert_ne!(
+            previous_identity,
+            PresentFrameIdentity::from_decoded_frame(7, &next_generation_frame)
+        );
+        assert_ne!(
+            previous_identity,
+            PresentFrameIdentity::from_decoded_frame(7, &next_pts_frame)
         );
     }
 

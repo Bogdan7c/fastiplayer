@@ -281,6 +281,11 @@ pub enum PlayerCommand {
     UpdateScrub(SeekRequest),
 
     /// Запустить preview seek для активного interactive scrub без финального commit-а позиции.
+    ///
+    /// Обычный UI timeline path должен отправлять `UpdateScrub`: worker сам применит
+    /// latest-wins/throttle policy. Этот command остаётся explicit boundary для тестов,
+    /// diagnostics и специальных callers; после `EndScrub` sender-side sequencer его
+    /// отбрасывает без нового public lifecycle contract-а.
     PreviewScrub(SeekRequest),
 
     /// Завершить interactive scrub выбранной commit-политикой.

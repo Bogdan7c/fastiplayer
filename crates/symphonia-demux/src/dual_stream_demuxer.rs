@@ -31,6 +31,33 @@ enum PendingFillOutcome {
     TracksChanged(DemuxTrackListUpdate),
 }
 
+/// Одноразовая post-seek policy для вывода audio после video-safe seek-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PostSeekAudioBootstrap {
+    /// Обычный interleave по PTS без специальных правил.
+    Inactive,
+
+    /// После `DecodePointBefore` один готовый audio packet можно отдать раньше video preroll.
+    DecodePointBeforePending,
+}
+
+impl PostSeekAudioBootstrap {
+    /// Возвращает policy, которую нужно включить после успешного seek-а двух stream-ов.
+    fn for_seek_results(
+        request: DemuxSeekRequest,
+        video_seek: DemuxSeekResult,
+        audio_seek: DemuxSeekResult,
+    ) -> Self {
+        if request.mode == DemuxSeekMode::DecodePointBefore
+            && audio_seek.actual_position > video_seek.actual_position
+        {
+            Self::DecodePointBeforePending
+        } else {
+            Self::Inactive
+        }
+    }
+}
+
 /// Demuxer, который интерливит packets из отдельных video/audio demuxer-ов по PTS.
 pub struct DualStreamDemuxer {
     /// Demuxer video-only WebM.
@@ -56,6 +83,9 @@ pub struct DualStreamDemuxer {
 
     /// Audio stream дошёл до EOF.
     audio_eof: bool,
+
+    /// Bounded policy, которая не даёт первому audio после seek-а застрять за video preroll.
+    post_seek_audio_bootstrap: PostSeekAudioBootstrap,
 }
 
 impl DualStreamDemuxer {
@@ -99,7 +129,17 @@ impl DualStreamDemuxer {
             pending_audio_packet: None,
             video_eof: false,
             audio_eof: false,
+            post_seek_audio_bootstrap: PostSeekAudioBootstrap::Inactive,
         })
+    }
+
+    /// Сбрасывает local read-state перед новой попыткой seek-а.
+    fn clear_post_seek_read_state(&mut self) {
+        self.pending_video_packet = None;
+        self.pending_audio_packet = None;
+        self.video_eof = false;
+        self.audio_eof = false;
+        self.post_seek_audio_bootstrap = PostSeekAudioBootstrap::Inactive;
     }
 
     /// Читает следующий video packet или возвращает lifecycle update внутреннего stream-а.
@@ -186,10 +226,21 @@ impl DualStreamDemuxer {
         self.tracks = vec![remapped_video_track, remapped_audio_track];
         self.pending_video_packet = None;
         self.pending_audio_packet = None;
+        self.post_seek_audio_bootstrap = PostSeekAudioBootstrap::Inactive;
 
         Ok(PendingFillOutcome::TracksChanged(
             DemuxTrackListUpdate::new(self.tracks.clone(), self.duration),
         ))
+    }
+
+    /// Забирает первый post-seek audio packet раньше PTS-interleave-а, если policy arm-нута.
+    fn take_post_seek_audio_bootstrap_packet(&mut self) -> Option<Packet> {
+        if self.post_seek_audio_bootstrap == PostSeekAudioBootstrap::Inactive {
+            return None;
+        }
+
+        self.post_seek_audio_bootstrap = PostSeekAudioBootstrap::Inactive;
+        self.pending_audio_packet.take()
     }
 
     /// Собирает seek result двух stream-ов в один результат merged timeline.
@@ -296,6 +347,10 @@ impl Demuxer for DualStreamDemuxer {
             return Ok(DemuxReadEvent::TracksChanged(track_update));
         }
 
+        if let Some(audio_packet) = self.take_post_seek_audio_bootstrap_packet() {
+            return Ok(DemuxReadEvent::Packet(audio_packet));
+        }
+
         match (&self.pending_video_packet, &self.pending_audio_packet) {
             (Some(video_packet), Some(audio_packet)) => {
                 if video_packet.presentation_order_cmp(audio_packet) != Ordering::Greater {
@@ -331,13 +386,12 @@ impl Demuxer for DualStreamDemuxer {
     }
 
     fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
+        self.clear_post_seek_read_state();
+
         let video_seek = self.video_demuxer.seek_with_request(request)?;
         let audio_seek = self.audio_demuxer.seek_with_request(request)?;
-
-        self.pending_video_packet = None;
-        self.pending_audio_packet = None;
-        self.video_eof = false;
-        self.audio_eof = false;
+        self.post_seek_audio_bootstrap =
+            PostSeekAudioBootstrap::for_seek_results(request, video_seek, audio_seek);
 
         Ok(Self::composite_seek_result(request, video_seek, audio_seek))
     }
@@ -358,6 +412,7 @@ mod tests {
     use symphonia::core::codecs::audio::well_known as audio_codec;
     use symphonia::core::codecs::video::VideoCodecParameters;
     use symphonia::core::codecs::video::well_known as video_codec;
+    use symphonia::core::errors::Error as SymphoniaError;
     use symphonia::core::formats::{
         FORMAT_ID_NULL, FormatInfo, FormatReader, MediaInfo, SeekMode, SeekTo, SeekedTo, Track,
     };
@@ -382,9 +437,10 @@ mod tests {
         tracks: Vec<Track>,
         metadata: MetadataLog,
         actual_timestamp_units: i64,
-        post_seek_packet_timestamp_units: Option<i64>,
+        post_seek_packet_timestamp_units: Vec<i64>,
         packets: VecDeque<symphonia::core::packet::Packet>,
         seek_log: FakeSeekLog,
+        seek_error: Option<SymphoniaError>,
     }
 
     impl FakeSeekReader {
@@ -399,17 +455,23 @@ mod tests {
                 tracks,
                 metadata: MetadataLog::default(),
                 actual_timestamp_units,
-                post_seek_packet_timestamp_units: Some(actual_timestamp_units),
+                post_seek_packet_timestamp_units: vec![actual_timestamp_units],
                 packets: VecDeque::new(),
                 seek_log,
+                seek_error: None,
             }
         }
 
-        fn with_post_seek_packet_timestamp_units(
+        fn with_post_seek_packet_timestamp_sequence(
             mut self,
-            post_seek_packet_timestamp_units: Option<i64>,
+            post_seek_packet_timestamp_units: Vec<i64>,
         ) -> Self {
             self.post_seek_packet_timestamp_units = post_seek_packet_timestamp_units;
+            self
+        }
+
+        fn with_seek_error(mut self, seek_error: SymphoniaError) -> Self {
+            self.seek_error = Some(seek_error);
             self
         }
     }
@@ -440,10 +502,14 @@ mod tests {
                     mode,
                     required_timestamp_units: required_timestamp.get(),
                 });
+            if let Some(error) = self.seek_error.take() {
+                return Err(error);
+            }
             self.packets = self
                 .post_seek_packet_timestamp_units
+                .iter()
+                .copied()
                 .map(|timestamp_units| post_seek_packet(&self.tracks, timestamp_units))
-                .into_iter()
                 .collect();
 
             Ok(SeekedTo {
@@ -588,14 +654,51 @@ mod tests {
         seek_log: FakeSeekLog,
         label: &str,
     ) -> SymphoniaDemuxer {
+        let post_seek_packet_timestamp_units =
+            post_seek_packet_timestamp_units.into_iter().collect();
+
+        fake_stream_demuxer_with_post_seek_packet_sequence(
+            track,
+            actual_timestamp_units,
+            post_seek_packet_timestamp_units,
+            seek_log,
+            label,
+        )
+    }
+
+    fn fake_stream_demuxer_with_post_seek_packet_sequence(
+        track: Track,
+        actual_timestamp_units: i64,
+        post_seek_packet_timestamp_units: Vec<i64>,
+        seek_log: FakeSeekLog,
+        label: &str,
+    ) -> SymphoniaDemuxer {
+        fake_stream_demuxer_with_post_seek_packet_sequence_and_options(
+            track,
+            actual_timestamp_units,
+            post_seek_packet_timestamp_units,
+            seek_log,
+            label,
+            DemuxerOptions::default(),
+        )
+    }
+
+    fn fake_stream_demuxer_with_post_seek_packet_sequence_and_options(
+        track: Track,
+        actual_timestamp_units: i64,
+        post_seek_packet_timestamp_units: Vec<i64>,
+        seek_log: FakeSeekLog,
+        label: &str,
+        options: DemuxerOptions,
+    ) -> SymphoniaDemuxer {
         let reader = FakeSeekReader::new(vec![track], actual_timestamp_units, seek_log)
-            .with_post_seek_packet_timestamp_units(post_seek_packet_timestamp_units);
+            .with_post_seek_packet_timestamp_sequence(post_seek_packet_timestamp_units);
 
         SymphoniaDemuxer::from_test_format_reader(
             Box::new(reader),
             label,
             DemuxSeekability::Seekable,
-            DemuxerOptions::default(),
+            options,
         )
         .expect("fake stream demuxer должен открыться")
     }
@@ -644,6 +747,62 @@ mod tests {
         assert!(demuxer.pending_audio_packet.is_none());
         assert!(!demuxer.video_eof);
         assert!(!demuxer.audio_eof);
+    }
+
+    #[test]
+    fn failed_audio_seek_after_video_success_clears_composite_pending_state() {
+        let video_seek_log = Arc::new(Mutex::new(Vec::new()));
+        let audio_seek_log = Arc::new(Mutex::new(Vec::new()));
+        let video_demuxer = fake_stream_demuxer(
+            vp9_video_track(10),
+            4_000,
+            Arc::clone(&video_seek_log),
+            "fake-video-success",
+        );
+        let audio_reader = FakeSeekReader::new(
+            vec![aac_audio_track(20)],
+            4_000,
+            Arc::clone(&audio_seek_log),
+        )
+        .with_seek_error(SymphoniaError::Unsupported("fake audio seek failure"));
+        let audio_demuxer = SymphoniaDemuxer::from_test_format_reader(
+            Box::new(audio_reader),
+            "fake-audio-failure",
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake audio demuxer должен открыться");
+        let mut demuxer =
+            DualStreamDemuxer::new(video_demuxer, audio_demuxer).expect("dual demuxer opens");
+
+        demuxer.pending_video_packet = Some(marker_packet(TrackKind::Video));
+        demuxer.pending_audio_packet = Some(marker_packet(TrackKind::Audio));
+        demuxer.video_eof = true;
+        demuxer.audio_eof = true;
+
+        let error = demuxer
+            .seek_with_request(DemuxSeekRequest::preview(Duration::from_secs(10)))
+            .expect_err("audio seek failure должен прервать composite seek");
+
+        assert!(format!("{error}").contains("fake audio seek failure"));
+        assert!(demuxer.pending_video_packet.is_none());
+        assert!(demuxer.pending_audio_packet.is_none());
+        assert!(!demuxer.video_eof);
+        assert!(!demuxer.audio_eof);
+        assert_eq!(
+            video_seek_log
+                .lock()
+                .expect("video seek log mutex should not be poisoned")
+                .len(),
+            1
+        );
+        assert_eq!(
+            audio_seek_log
+                .lock()
+                .expect("audio seek log mutex should not be poisoned")
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -730,6 +889,96 @@ mod tests {
                 .track_id,
             TrackId::new(REMAPPED_VIDEO_TRACK_ID)
         );
+    }
+
+    #[test]
+    fn decode_point_before_bootstraps_audio_before_long_video_preroll() {
+        let video_seek_log = Arc::new(Mutex::new(Vec::new()));
+        let audio_seek_log = Arc::new(Mutex::new(Vec::new()));
+        let early_video_packet_timestamps = (0_i64..240_i64)
+            .map(|packet_index| packet_index * 400)
+            .collect();
+        let video_demuxer_options = DemuxerOptions::default()
+            .with_decode_point_before_max_accepted_preroll(Duration::from_secs(120));
+        let video_demuxer = fake_stream_demuxer_with_post_seek_packet_sequence_and_options(
+            vp9_video_track(10),
+            0,
+            early_video_packet_timestamps,
+            Arc::clone(&video_seek_log),
+            "fake-video-long-preroll",
+            video_demuxer_options,
+        );
+        let audio_demuxer = fake_stream_demuxer(
+            aac_audio_track(20),
+            96_000,
+            Arc::clone(&audio_seek_log),
+            "fake-audio-near-target",
+        );
+        let mut demuxer =
+            DualStreamDemuxer::new(video_demuxer, audio_demuxer).expect("dual demuxer opens");
+
+        let seek_result = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(
+                Duration::from_millis(96_784),
+            ))
+            .expect("dual DecodePointBefore seek succeeds");
+
+        assert_eq!(
+            seek_result.actual_position,
+            MediaTime::from_duration(Duration::ZERO)
+        );
+        assert_eq!(
+            seek_result
+                .actual_track_timestamp
+                .expect("DecodePointBefore actual должен остаться video timestamp")
+                .track_id,
+            TrackId::new(REMAPPED_VIDEO_TRACK_ID)
+        );
+
+        let mut video_packets_before_audio = 0_usize;
+        let mut audio_packet_seen = false;
+
+        for _ in 0..8 {
+            match demuxer
+                .next_event()
+                .expect("post-seek packet read should not fail")
+            {
+                DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Audio => {
+                    audio_packet_seen = true;
+                    break;
+                }
+                DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Video => {
+                    video_packets_before_audio = video_packets_before_audio.saturating_add(1);
+                }
+                DemuxReadEvent::Packet(packet) => {
+                    panic!("unexpected packet kind after seek: {:?}", packet.kind);
+                }
+                DemuxReadEvent::TracksChanged(_) => continue,
+                DemuxReadEvent::EndOfStream => panic!("audio bootstrap ended before audio packet"),
+            }
+        }
+
+        assert!(audio_packet_seen);
+        assert_eq!(video_packets_before_audio, 0);
+    }
+
+    #[test]
+    fn decode_point_before_keeps_normal_interleave_when_audio_is_not_after_video() {
+        let (mut demuxer, _video_seek_log, _audio_seek_log) =
+            fake_dual_stream_demuxer(4_000, 4_000);
+
+        demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::from_secs(
+                10,
+            )))
+            .expect("dual DecodePointBefore seek succeeds");
+        let packet = demuxer
+            .next_packet()
+            .expect("post-seek packet read should not fail")
+            .expect("post-seek packet should exist");
+
+        assert_eq!(packet.kind, TrackKind::Video);
+        assert_eq!(packet.pts, Duration::from_secs(4));
     }
 
     #[test]

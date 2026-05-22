@@ -431,12 +431,10 @@ impl Demuxer for SymphoniaDemuxer {
     fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
         self.pending_events.clear();
 
-        let seek_track_id = preferred_seek_track_id(&self.tracks);
         let seek_result = match request.mode {
-            DemuxSeekMode::DecodePointBefore => {
-                self.seek_decode_point_before(request, seek_track_id)?
-            }
+            DemuxSeekMode::DecodePointBefore => self.seek_decode_point_before(request)?,
             DemuxSeekMode::Accurate | DemuxSeekMode::Preview => {
+                let seek_track_id = preferred_seek_track_id(&self.tracks);
                 self.seek_symphonia_once(request, seek_track_id, request.timestamp)?
             }
         };
@@ -474,18 +472,16 @@ impl SymphoniaDemuxer {
     }
 
     /// Восстанавливает `DecodePointBefore`: успешный result не должен быть после requested target.
-    fn seek_decode_point_before(
-        &mut self,
-        request: DemuxSeekRequest,
-        seek_track_id: Option<TrackId>,
-    ) -> Result<DemuxSeekResult> {
+    fn seek_decode_point_before(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
         let requested_timestamp = request.timestamp;
         let mut backend_timestamp = decode_point_before_initial_timestamp(
             requested_timestamp,
             self.options.decode_point_before_preroll(),
         );
+        let mut retained_lifecycle_events = VecDeque::new();
 
         for retry_index in 0..=DECODE_POINT_BEFORE_MAX_RETRIES {
+            let seek_track_id = preferred_seek_track_id(&self.tracks);
             let seek_result =
                 self.seek_symphonia_once(request, seek_track_id, backend_timestamp)?;
 
@@ -531,20 +527,30 @@ impl SymphoniaDemuxer {
                         "Post-seek verification rejected DecodePointBefore; retrying earlier"
                     );
 
+                    retain_tracks_changed_events_from_failed_verification(
+                        &mut retained_lifecycle_events,
+                        verification.buffered_events,
+                    );
                     backend_timestamp = retry_timestamp;
                     continue;
                 }
 
                 if let Some(first_video_packet) = verification.first_video_packet {
                     log_decode_point_before_uncertainty(requested_timestamp, first_video_packet);
-                    self.pending_events = verification.buffered_events;
+                    self.pending_events = prepend_retained_lifecycle_events(
+                        retained_lifecycle_events,
+                        verification.buffered_events,
+                    );
                     return Ok(seek_result_with_verified_video_packet(
                         seek_result,
                         first_video_packet,
                     ));
                 }
 
-                self.pending_events = verification.buffered_events;
+                self.pending_events = prepend_retained_lifecycle_events(
+                    retained_lifecycle_events,
+                    verification.buffered_events,
+                );
                 return Ok(seek_result);
             }
 
@@ -589,6 +595,27 @@ impl SymphoniaDemuxer {
 
         unreachable!("bounded DecodePointBefore retry loop always returns")
     }
+}
+
+/// Оставляет только lifecycle-события из rejected verification prefix-а.
+fn retain_tracks_changed_events_from_failed_verification(
+    retained_lifecycle_events: &mut VecDeque<DemuxReadEvent>,
+    rejected_buffered_events: VecDeque<DemuxReadEvent>,
+) {
+    for event in rejected_buffered_events {
+        if matches!(event, DemuxReadEvent::TracksChanged(_)) {
+            retained_lifecycle_events.push_back(event);
+        }
+    }
+}
+
+/// Возвращает успешный verification prefix после lifecycle событий прошлых retry.
+fn prepend_retained_lifecycle_events(
+    mut retained_lifecycle_events: VecDeque<DemuxReadEvent>,
+    successful_buffered_events: VecDeque<DemuxReadEvent>,
+) -> VecDeque<DemuxReadEvent> {
+    retained_lifecycle_events.extend(successful_buffered_events);
+    retained_lifecycle_events
 }
 
 /// Packet-level наблюдение первого selected video packet-а после backend seek-а.
@@ -650,6 +677,12 @@ enum DecodePointBeforeVerificationIssue {
         /// Сколько supported packets уже пришлось prebuffer-нуть.
         packets_checked: usize,
     },
+
+    /// Первый selected video packet слишком далеко до пользовательской цели.
+    FirstVideoTooFarBeforeTarget {
+        /// Metadata первого selected video packet-а.
+        packet: DecodePointBeforeVideoPacket,
+    },
 }
 
 impl DecodePointBeforeVerificationIssue {
@@ -659,6 +692,7 @@ impl DecodePointBeforeVerificationIssue {
             Self::FirstVideoAfterTarget { .. } => "first_video_after_target",
             Self::FirstVideoNotKeyframe { .. } => "first_video_not_keyframe",
             Self::NoVideoPacket { .. } => "no_video_packet_in_verification_window",
+            Self::FirstVideoTooFarBeforeTarget { .. } => "first_video_too_far_before_target",
         }
     }
 
@@ -668,6 +702,7 @@ impl DecodePointBeforeVerificationIssue {
             Self::FirstVideoAfterTarget { packet } | Self::FirstVideoNotKeyframe { packet } => {
                 Some(packet.pts)
             }
+            Self::FirstVideoTooFarBeforeTarget { packet } => Some(packet.pts),
             Self::NoVideoPacket { .. } => None,
         }
     }
@@ -678,6 +713,7 @@ impl DecodePointBeforeVerificationIssue {
             Self::FirstVideoAfterTarget { packet } | Self::FirstVideoNotKeyframe { packet } => {
                 Some(packet.keyframe)
             }
+            Self::FirstVideoTooFarBeforeTarget { packet } => Some(packet.keyframe),
             Self::NoVideoPacket { .. } => None,
         }
     }
@@ -707,6 +743,7 @@ impl SymphoniaDemuxer {
                         let issue = decode_point_before_packet_issue(
                             requested_timestamp,
                             first_video_packet,
+                            self.options.decode_point_before_max_accepted_preroll(),
                         );
 
                         buffered_events.push_back(event);
@@ -791,9 +828,14 @@ fn selected_video_track_id(tracks: &[TrackInfo]) -> Option<TrackId> {
 fn decode_point_before_packet_issue(
     requested_timestamp: Duration,
     packet: DecodePointBeforeVideoPacket,
+    max_accepted_preroll: Duration,
 ) -> Option<DecodePointBeforeVerificationIssue> {
     if packet.pts > requested_timestamp {
         return Some(DecodePointBeforeVerificationIssue::FirstVideoAfterTarget { packet });
+    }
+
+    if requested_timestamp.saturating_sub(packet.pts) > max_accepted_preroll {
+        return Some(DecodePointBeforeVerificationIssue::FirstVideoTooFarBeforeTarget { packet });
     }
 
     if packet.keyframe == PacketKeyframe::NotKeyframe {
@@ -820,11 +862,22 @@ fn decode_point_before_retry_timestamp_for_issue(
                 retry_index,
             )
         }
+        DecodePointBeforeVerificationIssue::FirstVideoTooFarBeforeTarget { .. } => {
+            decode_point_before_rescue_retry_timestamp(backend_timestamp, requested_timestamp)
+        }
         DecodePointBeforeVerificationIssue::FirstVideoNotKeyframe { .. }
         | DecodePointBeforeVerificationIssue::NoVideoPacket { .. } => Some(
             decode_point_before_expanding_retry_timestamp(backend_timestamp, retry_index, preroll),
         ),
     }
+}
+
+/// Пробует rescue seek ближе к target, если backend прыгнул слишком далеко назад.
+fn decode_point_before_rescue_retry_timestamp(
+    backend_timestamp: Duration,
+    requested_timestamp: Duration,
+) -> Option<Duration> {
+    (backend_timestamp < requested_timestamp).then_some(requested_timestamp)
 }
 
 /// Отодвигает backend target назад, когда packet prefix не дал usable video decode-start.
@@ -1167,6 +1220,7 @@ mod tests {
         packets: VecDeque<std::result::Result<Packet, SymphoniaError>>,
         seek_packet_scripts: VecDeque<VecDeque<std::result::Result<Packet, SymphoniaError>>>,
         seek_mode_log: Option<Arc<Mutex<Vec<SeekMode>>>>,
+        seek_track_log: Option<Arc<Mutex<Vec<u32>>>>,
         seek_response_policy: FakeSeekResponsePolicy,
     }
 
@@ -1194,12 +1248,18 @@ mod tests {
                 packets: VecDeque::from(packets),
                 seek_packet_scripts: VecDeque::new(),
                 seek_mode_log: None,
+                seek_track_log: None,
                 seek_response_policy: FakeSeekResponsePolicy::Zero,
             }
         }
 
         fn with_seek_mode_log(mut self, seek_mode_log: Arc<Mutex<Vec<SeekMode>>>) -> Self {
             self.seek_mode_log = Some(seek_mode_log);
+            self
+        }
+
+        fn with_seek_track_log(mut self, seek_track_log: Arc<Mutex<Vec<u32>>>) -> Self {
+            self.seek_track_log = Some(seek_track_log);
             self
         }
 
@@ -1271,6 +1331,12 @@ mod tests {
                     .lock()
                     .expect("seek mode log mutex should not be poisoned")
                     .push(mode);
+            }
+            if let Some(ref seek_track_log) = self.seek_track_log {
+                seek_track_log
+                    .lock()
+                    .expect("seek track log mutex should not be poisoned")
+                    .push(seek_target_track_id(&self.tracks, &target));
             }
             if let Some(packets) = self.seek_packet_scripts.pop_front() {
                 self.packets = packets;
@@ -2217,6 +2283,75 @@ mod tests {
     }
 
     #[test]
+    fn tracks_changed_from_failed_decode_point_verification_survives_retry() {
+        let seek_track_log = Arc::new(Mutex::new(Vec::new()));
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_seek_packet_scripts(vec![
+                vec![
+                    Err(SymphoniaError::ResetRequired),
+                    Ok(small_vp9_inter_frame_packet(4, 400)),
+                ],
+                vec![Ok(small_vp9_keyframe_packet(4, 300))],
+            ])
+            .with_reset_track_update(vec![
+                aac_audio_track_with_timing(2, SymphoniaDuration::new(30_000)),
+                vp9_video_track(4),
+            ])
+            .with_seek_track_log(Arc::clone(&seek_track_log));
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "verification-reset-before-retry",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+
+        let seek_result = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(
+                Duration::from_millis(10_000),
+            ))
+            .expect("retry должен найти keyframe после ResetRequired");
+        let reset_event = demuxer
+            .next_event()
+            .expect("TracksChanged из rejected attempt должен сохраниться");
+        let packet_event = demuxer
+            .next_event()
+            .expect("verified packet успешной retry-попытки должен остаться доступен");
+
+        match reset_event {
+            DemuxReadEvent::TracksChanged(track_update) => {
+                assert!(
+                    track_update
+                        .tracks
+                        .iter()
+                        .any(|track| track.kind == TrackKind::Video && track.id == TrackId::new(4))
+                );
+            }
+            unexpected_event => panic!("ожидали TracksChanged, получили {unexpected_event:?}"),
+        }
+        match packet_event {
+            DemuxReadEvent::Packet(packet) => {
+                assert_eq!(packet.track_id, TrackId::new(4));
+                assert_eq!(packet.pts, Duration::from_millis(300));
+                assert_eq!(packet.keyframe, PacketKeyframe::Keyframe);
+            }
+            unexpected_event => panic!("ожидали verified packet, получили {unexpected_event:?}"),
+        }
+        assert_eq!(
+            seek_result.actual_position,
+            media_core::MediaTime::from_millis(300)
+        );
+        assert_eq!(
+            seek_track_log
+                .lock()
+                .expect("seek track log mutex should not be poisoned")
+                .as_slice(),
+            &[1, 4]
+        );
+    }
+
+    #[test]
     fn decode_point_before_seek_retries_when_first_video_packet_is_not_keyframe() {
         let seek_mode_log = Arc::new(Mutex::new(Vec::new()));
         let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
@@ -2251,6 +2386,77 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn decode_point_before_retries_when_first_video_packet_is_too_far_before_target() {
+        let seek_mode_log = Arc::new(Mutex::new(Vec::new()));
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_seek_packet_scripts(vec![
+                vec![Ok(small_vp9_keyframe_packet(1, 0))],
+                vec![Ok(small_vp9_keyframe_packet(1, 96_000))],
+            ])
+            .with_seek_mode_log(Arc::clone(&seek_mode_log));
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "too-far-before-target-rescue",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+
+        let seek_result = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(
+                Duration::from_millis(96_784),
+            ))
+            .expect("too-far decode point должен retry-нуться ближе к target");
+
+        assert_eq!(
+            seek_result.actual_position,
+            media_core::MediaTime::from_millis(96_000)
+        );
+        assert_eq!(
+            seek_mode_log
+                .lock()
+                .expect("seek mode log mutex should not be poisoned")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn decode_point_before_fails_instead_of_accepting_start_of_file_for_middle_seek() {
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_seek_packet_scripts(vec![
+                vec![Ok(small_vp9_keyframe_packet(1, 0))],
+                vec![Ok(small_vp9_keyframe_packet(1, 0))],
+            ]);
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "too-far-before-target-failure",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+
+        let error = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(
+                Duration::from_millis(96_784),
+            ))
+            .expect_err("seek в середину файла не должен принимать packet с начала файла");
+        let demux_error = error
+            .downcast_ref::<DemuxError>()
+            .expect("too-far verification failure должен быть typed DemuxError");
+
+        assert!(matches!(
+            demux_error,
+            DemuxError::DecodePointBeforeVerificationFailed {
+                reason: "first_video_too_far_before_target",
+                ..
+            }
+        ));
     }
 
     #[test]

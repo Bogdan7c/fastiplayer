@@ -1269,7 +1269,17 @@ impl PlayerWorkerRuntime {
         wake_result: Result<(), crossbeam_channel::RecvError>,
     ) -> bool {
         if wake_result.is_ok() {
-            self.apply_latest_scrub_update();
+            // `select!` может выбрать scrub wake, хотя `EndScrub` уже ждёт в command queue.
+            // Сначала обслуживаем command boundary: release path обязан забрать latest update
+            // через `SuppressForCommit`, иначе final pointer-up случайно породит live preview.
+            let processed_commands = self.drain_pending_command_batch();
+            if processed_commands > 0 {
+                if !self.session.is_shutdown_requested() {
+                    self.service_worker_fairness_checkpoint(processed_commands);
+                }
+            } else {
+                self.apply_latest_scrub_update();
+            }
             self.publish_session_outputs();
         }
 
@@ -2586,6 +2596,40 @@ mod tests {
     }
 
     #[test]
+    fn preview_scrub_after_end_scrub_is_rejected_on_sender_boundary() {
+        let (command_sender, command_rx, _scrub_wake_rx, _scrub_coalescer) =
+            command_sender_for_scrub_path_tests();
+
+        command_sender.try_send(PlayerCommand::BeginScrub).unwrap();
+        let active_generation = match command_rx.try_recv().unwrap() {
+            WorkerCommand::BeginScrub { generation } => generation,
+            _ => panic!("BeginScrub must use typed worker command"),
+        };
+
+        command_sender
+            .try_send(PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+            })
+            .unwrap();
+        match command_rx.try_recv().unwrap() {
+            WorkerCommand::EndScrub(intent) => {
+                assert_eq!(intent.generation, active_generation);
+                assert_eq!(intent.policy, ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE);
+            }
+            _ => panic!("EndScrub must use typed worker command"),
+        }
+
+        command_sender
+            .try_send(PlayerCommand::PreviewScrub(seek_to_millis(900)))
+            .unwrap();
+
+        assert!(
+            command_rx.try_recv().is_err(),
+            "PreviewScrub после EndScrub не должен открывать новую public lifecycle-семантику"
+        );
+    }
+
+    #[test]
     fn update_scrub_coalesces_to_latest_target() {
         let mut worker = PlayerWorker::spawn(worker_config_for_tests()).unwrap();
 
@@ -3079,6 +3123,41 @@ mod tests {
             Some(MediaTime::from_millis(900))
         );
         assert!(runtime.session.has_active_seek_commit());
+        assert!(!runtime.session.snapshot().timeline.scrubbing);
+    }
+
+    #[test]
+    fn scrub_wake_does_not_dispatch_preview_when_end_scrub_is_already_pending() {
+        let (mut runtime, command_tx) = runtime_for_tests_with_command_sender(Instant::now());
+        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
+        let demuxer = WorkerFakeDemuxer::empty_seekable(Arc::clone(&seek_request_log));
+        let generation = ScrubGeneration::default().next();
+
+        runtime.session.load_demuxer_with_autoplay(
+            "worker-fake".to_string(),
+            Box::new(demuxer),
+            false,
+        );
+        runtime.handle_begin_scrub_command(generation);
+        runtime
+            .scrub_coalescer
+            .submit_latest(scrub_update_intent(generation, 900))
+            .unwrap();
+        command_tx
+            .try_send(WorkerCommand::EndScrub(ScrubCommitIntent::new(
+                generation,
+                ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+            )))
+            .unwrap();
+
+        runtime.handle_scrub_wakeup(Ok(()));
+
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(
+            requests.as_slice(),
+            &[DemuxSeekRequest::accurate(Duration::from_millis(900))]
+        );
+        assert_eq!(runtime.command_rx.len(), 0);
         assert!(!runtime.session.snapshot().timeline.scrubbing);
     }
 

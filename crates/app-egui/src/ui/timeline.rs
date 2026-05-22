@@ -158,6 +158,7 @@ pub fn map_timeline_interaction(
         .map(|fraction| bounds.position_from_fraction(fraction));
 
     if input.lost_focus && state.has_active_drag() {
+        actions.push(TimelineAction::EndScrubCommitDefault);
         state.clear_transient_drag();
         return TimelineInteraction {
             actions,
@@ -577,9 +578,9 @@ mod tests {
         assert!(!state.has_active_drag());
     }
 
-    /// Проверяет, что focus loss очищает только локальный drag state без скрытого commit-а.
+    /// Проверяет, что focus loss закрывает worker-visible scrub lifecycle.
     #[test]
-    fn focus_loss_clears_transient_drag_without_commit() {
+    fn focus_loss_ends_active_drag_scrub() {
         let timeline = seekable_timeline();
         let mut state = TimelineUiState {
             transient_drag_position: Some(MediaTime::from_secs(40)),
@@ -595,7 +596,37 @@ mod tests {
             },
         );
 
-        assert!(interaction.actions.is_empty());
+        assert_eq!(
+            interaction.actions,
+            vec![TimelineAction::EndScrubCommitDefault]
+        );
+        assert!(!state.has_active_drag());
+    }
+
+    /// Проверяет, что focus loss и drag stop одного frame-а дают ровно один release.
+    #[test]
+    fn focus_loss_with_drag_stop_ends_scrub_once() {
+        let timeline = seekable_timeline();
+        let mut state = TimelineUiState {
+            transient_drag_position: Some(MediaTime::from_secs(40)),
+        };
+
+        let interaction = map_timeline_interaction(
+            &timeline,
+            &mut state,
+            Some(seekable_bounds()),
+            TimelinePointerInput {
+                drag_stopped: true,
+                lost_focus: true,
+                pointer_fraction: Some(0.90),
+                ..TimelinePointerInput::default()
+            },
+        );
+
+        assert_eq!(
+            interaction.actions,
+            vec![TimelineAction::EndScrubCommitDefault]
+        );
         assert!(!state.has_active_drag());
     }
 
