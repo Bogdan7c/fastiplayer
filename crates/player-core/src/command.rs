@@ -274,21 +274,22 @@ pub enum PlayerCommand {
     /// external/MPRIS seek, будущего chapter seek и любого отделённого exact click-to-seek.
     Seek(SeekRequest),
 
-    /// Начать interactive scrub без немедленного commit-а playback позиции.
+    /// Начать compatibility scrub без немедленного seek-а.
     BeginScrub,
 
-    /// Обновить цель interactive scrub.
+    /// Запомнить latest target compatibility scrub-а без запуска demux seek-а.
     UpdateScrub(SeekRequest),
 
-    /// Запустить preview seek для активного interactive scrub без финального commit-а позиции.
+    /// Запомнить latest target compatibility scrub-а без запуска live preview seek-а.
     ///
-    /// Обычный UI timeline path должен отправлять `UpdateScrub`: worker сам применит
-    /// latest-wins/throttle policy. Этот command остаётся explicit boundary для тестов,
-    /// diagnostics и специальных callers; после `EndScrub` sender-side sequencer его
-    /// отбрасывает без нового public lifecycle contract-а.
+    /// Временный fallback трактует preview как `UpdateScrub`: target сохраняется
+    /// для `EndScrub`, но `SeekCommitKind::Preview` и demux preview не стартуют.
     PreviewScrub(SeekRequest),
 
-    /// Завершить interactive scrub выбранной commit-политикой.
+    /// Завершить compatibility scrub обычным final seek-ом в latest target.
+    ///
+    /// `policy` пока сохраняется только для совместимости public API и не влияет
+    /// на выбор target-а: session всегда берёт последний `UpdateScrub`/`PreviewScrub`.
     EndScrub { policy: ScrubCommitPolicy },
 
     /// Остановить текущий media без завершения всей session.
