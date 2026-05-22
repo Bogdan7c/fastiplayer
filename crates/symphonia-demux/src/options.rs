@@ -11,7 +11,10 @@ pub const DEFAULT_DECODE_POINT_BEFORE_PREROLL: Duration = Duration::from_secs(5)
 pub const DEFAULT_DECODE_POINT_BEFORE_MAX_ACCEPTED_PREROLL: Duration = Duration::from_secs(10);
 
 /// Сколько post-seek packets можно прочитать для доказательства video decode point.
-pub const DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT: usize = 64;
+///
+/// Лимит должен покрывать несколько секунд 60 fps video плюс interleaved audio packets,
+/// иначе verification не доходит до ближайшего keyframe и откатывается к слишком раннему GOP.
+pub const DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT: usize = 1024;
 
 /// Runtime-настройки demuxer-а, независимые от TOML schema приложения.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

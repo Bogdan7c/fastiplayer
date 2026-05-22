@@ -1645,7 +1645,10 @@ impl PlayerSession {
         };
 
         match seek_commit.kind {
-            SeekCommitKind::Final => frame_pts >= seek_commit.target_position.as_duration(),
+            SeekCommitKind::Final => {
+                let target_position = seek_commit.target_position.as_duration();
+                frame_pts >= target_position && !self.seek_target_frame_presented(target_position)
+            }
             SeekCommitKind::Preview => {
                 self.active_preview_frame_ready_for_scheduler(seek_commit, frame_pts)
             }
@@ -10763,6 +10766,51 @@ mod tests {
 
         assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
         assert!(!session.snapshot().timeline.seeking);
+    }
+
+    #[test]
+    fn playing_seek_holds_future_frames_while_building_video_preroll() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(6),
+            )))
+            .unwrap();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
+        session.note_presented_frame_for_seek(Duration::from_secs(6));
+        session
+            .pipeline
+            .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(6_016), 43));
+        session
+            .pipeline
+            .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(6_033), 44));
+
+        let tick_result = session.tick(PlayerTickContext::with_config(
+            Instant::now(),
+            PlayerTickConfig {
+                max_demux_packets_per_tick: 0,
+                seek_resume_video_min_ready_frames: 3,
+                ..PlayerTickConfig::default()
+            },
+        ));
+
+        assert_eq!(tick_result.video_frames_presented, 0);
+        assert!(session.seek_commit().is_none());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert!(!session.snapshot().timeline.seeking);
+        assert_eq!(
+            session
+                .pipeline
+                .present_video_frame()
+                .map(|frame| frame.pts),
+            Some(Duration::from_secs(6))
+        );
+        assert_eq!(session.pipeline.video_present_queue_len(), 2);
     }
 
     #[test]
