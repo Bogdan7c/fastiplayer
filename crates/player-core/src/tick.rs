@@ -19,7 +19,7 @@ use tracing::{debug, trace, warn};
 use crate::{
     DecodeSendError, DecodeThreadError, PendingAudioPacket, PendingVideoPacket,
     PipelineLatencyStage, PipelinePauseReason, PlaybackPipeline, PlaybackState, PlayerDecodePacket,
-    PlayerError, PlayerErrorKind, PlayerSession, WorkerFrameTimingSnapshot,
+    PlayerError, PlayerErrorKind, PlayerSession, SeekProgressBlocker, WorkerFrameTimingSnapshot,
     WorkerWakeupDiagnosticsSnapshot, WorkerWakeupReason,
 };
 
@@ -114,6 +114,9 @@ pub struct PlayerTickConfig {
     /// Дополнительное bounded окно catch-up work после базового tick.
     pub adaptive_catch_up_time_budget: Duration,
 
+    /// Малое bounded окно fast-lane для active preview seek внутри одного tick.
+    pub active_seek_pump_time_budget: Duration,
+
     /// Уровень audio buffer, выше которого audio packets временно не декодируются.
     pub audio_buffer_high_water_mark_ms: f64,
 
@@ -171,6 +174,7 @@ impl Default for PlayerTickConfig {
             max_video_decode_ahead: Duration::from_millis(500),
             target_video_decode_ahead: Duration::from_millis(250),
             adaptive_catch_up_time_budget: Duration::from_millis(4),
+            active_seek_pump_time_budget: Duration::from_millis(4),
             audio_buffer_high_water_mark_ms: 200.0,
             audio_demux_low_water_mark_ms: 100.0,
             audio_preroll_target_ms: 50.0,
@@ -218,6 +222,9 @@ impl From<&AppConfig> for PlayerTickConfig {
                 config.video.scheduler.decode_ahead_target_ms,
             ),
             adaptive_catch_up_time_budget: Duration::from_millis(
+                config.video.scheduler.catch_up_budget_ms,
+            ),
+            active_seek_pump_time_budget: Duration::from_millis(
                 config.video.scheduler.catch_up_budget_ms,
             ),
             audio_buffer_high_water_mark_ms: config.audio.buffer_target_ms as f64,
@@ -269,6 +276,15 @@ pub struct PlayerTickResult {
 
     /// `true`, если demux чтение остановилось из-за backpressure.
     pub demux_backpressured: bool,
+
+    /// Сколько bounded active-seek pump passes выполнено внутри tick-а.
+    pub seek_pump_iterations: u64,
+
+    /// Был ли хотя бы один полезный шаг внутри active-seek pump.
+    pub seek_pump_made_progress: bool,
+
+    /// Почему active-seek pump остановился, если он был запущен или явно заблокирован.
+    pub seek_pump_stop_reason: Option<PlayerSeekPumpStopReason>,
 }
 
 impl PlayerTickResult {
@@ -311,6 +327,49 @@ impl PlayerTickResult {
     fn record_pipeline_pause(&mut self, reason: PipelinePauseReason) {
         self.pipeline_pauses.push(PlayerPipelinePause { reason });
     }
+
+    /// Учитывает один bounded pass active-seek pump-а.
+    fn record_seek_pump_iteration(&mut self) {
+        self.seek_pump_iterations = self.seek_pump_iterations.saturating_add(1);
+    }
+
+    /// Запоминает, что active-seek pump реально сдвинул pipeline.
+    fn record_seek_pump_progress(&mut self) {
+        self.seek_pump_made_progress = true;
+    }
+
+    /// Фиксирует typed причину остановки active-seek pump-а.
+    fn record_seek_pump_stop_reason(&mut self, reason: PlayerSeekPumpStopReason) {
+        self.seek_pump_stop_reason = Some(reason);
+    }
+}
+
+/// Причина остановки bounded active-seek pump-а внутри tick-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerSeekPumpStopReason {
+    /// Pump выключен нулевым time budget-ом.
+    BudgetDisabled,
+
+    /// Pump исчерпал счётные лимиты demux/send/drain.
+    BudgetExhausted,
+
+    /// Pump дошёл до временного deadline-а.
+    TimeBudgetExceeded,
+
+    /// Preview уже получил fresh frame или active preview transaction закрылся.
+    PreviewFramePresented,
+
+    /// На момент проверки active preview seek уже не требовал fast-lane.
+    NoActivePreviewSeek,
+
+    /// Очередь/resource pressure не дал продолжить fast-lane.
+    Backpressure,
+
+    /// Packet уже ушёл в decoder, но decoder пока не вернул frame.
+    DecoderNoOutput,
+
+    /// Ни один этап pump-а не сдвинул pipeline.
+    NoProgress,
 }
 
 /// Packet summary для shell-телеметрии.
@@ -547,6 +606,7 @@ impl PlayerSession {
         }
 
         process_pending_video_packets(self, tick_context, &mut tick_result);
+        run_active_seek_pump(self, &tick_context.config, &mut tick_result);
         self.finish_seek_commit_if_ready(tick_context.now, &tick_context.config);
         if let Err(error) =
             self.finish_autoplay_preroll_if_ready(tick_context.config.audio_preroll_target_ms)
@@ -2103,6 +2163,45 @@ fn repeat_present_video_frame(
     }
 }
 
+/// Остаток дополнительной fast-lane работы для active preview seek.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ActiveSeekPumpBudget {
+    /// Сколько demux packets pump ещё может прочитать.
+    demux_packets: usize,
+
+    /// Сколько video packets pump ещё может отправить decoder thread-у.
+    video_packets: usize,
+
+    /// Сколько decoded frames pump ещё может принять из decoder thread-а.
+    decoded_frames: usize,
+}
+
+impl ActiveSeekPumpBudget {
+    /// Создаёт счётные лимиты из обычных per-tick лимитов без нового unbounded work.
+    fn from_tick_config(tick_config: &PlayerTickConfig) -> Self {
+        Self {
+            demux_packets: tick_config.max_demux_packets_per_tick,
+            video_packets: tick_config.max_video_packets_sent_per_tick,
+            decoded_frames: tick_config.max_decoded_video_frames_drained_per_tick,
+        }
+    }
+
+    /// Проверяет, может ли pump ещё выполнить хоть один I/O этап.
+    const fn has_work(self) -> bool {
+        self.demux_packets > 0 || self.video_packets > 0 || self.decoded_frames > 0
+    }
+}
+
+/// Итог одного pass-а active-seek pump-а.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ActiveSeekPumpPassOutcome {
+    /// Были ли прочитаны packets, отправлены packets, приняты frames или показан frame.
+    made_progress: bool,
+
+    /// Уперся ли pass в queue/resource pressure.
+    blocked_by_backpressure: bool,
+}
+
 /// Остаток bounded adaptive work внутри одного tick.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct AdaptiveCatchUpBudget {
@@ -2131,6 +2230,15 @@ fn adaptive_catch_up_deadline(now: Instant, tick_config: &PlayerTickConfig) -> O
     }
 
     now.checked_add(tick_config.adaptive_catch_up_time_budget)
+}
+
+/// Возвращает deadline active-seek pump-а от фактического момента старта pump-а.
+fn active_seek_pump_deadline(tick_config: &PlayerTickConfig) -> Option<Instant> {
+    if tick_config.active_seek_pump_time_budget.is_zero() {
+        return None;
+    }
+
+    Instant::now().checked_add(tick_config.active_seek_pump_time_budget)
 }
 
 /// Считает, сколько frame intervals worker потерял из-за задержки tick-а.
@@ -2329,6 +2437,217 @@ fn run_adaptive_catch_up(
         if !made_progress {
             break;
         }
+    }
+}
+
+/// Выполняет bounded fast-lane только для active preview seek до первого fresh frame-а.
+fn run_active_seek_pump(
+    session: &mut PlayerSession,
+    tick_config: &PlayerTickConfig,
+    tick_result: &mut PlayerTickResult,
+) {
+    if !session.active_preview_seek_needs_first_frame_pump() {
+        return;
+    }
+
+    let Some(deadline) = active_seek_pump_deadline(tick_config) else {
+        tick_result.record_seek_pump_stop_reason(PlayerSeekPumpStopReason::BudgetDisabled);
+        return;
+    };
+
+    let mut budget = ActiveSeekPumpBudget::from_tick_config(tick_config);
+    if !budget.has_work() {
+        tick_result.record_seek_pump_stop_reason(PlayerSeekPumpStopReason::BudgetExhausted);
+        return;
+    }
+
+    loop {
+        if !session.active_preview_seek_needs_first_frame_pump() {
+            tick_result.record_seek_pump_stop_reason(PlayerSeekPumpStopReason::NoActivePreviewSeek);
+            break;
+        }
+
+        if catch_up_deadline_reached(Some(deadline)) {
+            tick_result.record_seek_pump_stop_reason(PlayerSeekPumpStopReason::TimeBudgetExceeded);
+            break;
+        }
+
+        if !budget.has_work() {
+            tick_result.record_seek_pump_stop_reason(PlayerSeekPumpStopReason::BudgetExhausted);
+            break;
+        }
+
+        tick_result.record_seek_pump_iteration();
+        let pass_outcome =
+            run_active_seek_pump_pass(session, tick_config, tick_result, &mut budget, deadline);
+
+        if pass_outcome.made_progress {
+            tick_result.record_seek_pump_progress();
+        }
+
+        if !session.active_preview_seek_needs_first_frame_pump() {
+            tick_result
+                .record_seek_pump_stop_reason(PlayerSeekPumpStopReason::PreviewFramePresented);
+            break;
+        }
+
+        if catch_up_deadline_reached(Some(deadline)) {
+            tick_result.record_seek_pump_stop_reason(PlayerSeekPumpStopReason::TimeBudgetExceeded);
+            break;
+        }
+
+        if !pass_outcome.made_progress {
+            let stop_reason = active_seek_pump_no_progress_reason(
+                session,
+                tick_config,
+                pass_outcome.blocked_by_backpressure,
+            );
+            tick_result.record_seek_pump_stop_reason(stop_reason);
+            break;
+        }
+    }
+}
+
+/// Выполняет один проход active-seek pump-а в порядке demux -> send -> drain -> present.
+fn run_active_seek_pump_pass(
+    session: &mut PlayerSession,
+    tick_config: &PlayerTickConfig,
+    tick_result: &mut PlayerTickResult,
+    budget: &mut ActiveSeekPumpBudget,
+    deadline: Instant,
+) -> ActiveSeekPumpPassOutcome {
+    let pauses_before_pass = tick_result.pipeline_pauses.len();
+    let mut made_progress = false;
+
+    if budget.demux_packets > 0 && session.is_demuxing_active() && session.pipeline.has_demuxer() {
+        let demux_budget = budget
+            .demux_packets
+            .min(tick_config.max_demux_packets_per_tick);
+        let demuxed_packets = read_demux_packets(
+            session,
+            tick_config,
+            tick_result,
+            demux_budget,
+            Some(deadline),
+        );
+        budget.demux_packets = budget.demux_packets.saturating_sub(demuxed_packets);
+        made_progress |= demuxed_packets > 0;
+
+        if demuxed_packets > 0 {
+            session.process_pending_audio_packets_with_buffer_limit(
+                tick_config.audio_buffer_high_water_mark_ms,
+            );
+        }
+    }
+
+    if budget.video_packets > 0 && session.is_demuxing_active() {
+        let send_budget = budget
+            .video_packets
+            .min(tick_config.max_video_packets_sent_per_tick);
+        let sent_packets = send_pending_video_packets_to_decoder(
+            session,
+            tick_config,
+            tick_result,
+            send_budget,
+            video_decode_ahead_limit(tick_config),
+            Some(deadline),
+        );
+        budget.video_packets = budget.video_packets.saturating_sub(sent_packets);
+        made_progress |= sent_packets > 0;
+    }
+
+    if budget.decoded_frames > 0 && session.pipeline.can_receive_decoded_video_frames() {
+        let drain_budget = budget
+            .decoded_frames
+            .min(tick_config.max_decoded_video_frames_drained_per_tick);
+        let drained_frames = drain_decoded_video_frames(
+            session,
+            tick_config,
+            tick_result,
+            drain_budget,
+            Some(deadline),
+        );
+        budget.decoded_frames = budget.decoded_frames.saturating_sub(drained_frames);
+        made_progress |= drained_frames > 0;
+    }
+
+    made_progress |= try_present_active_seek_frame(session, tick_result);
+    let blocked_by_backpressure = tick_result.pipeline_pauses[pauses_before_pass..]
+        .iter()
+        .any(|pause| active_seek_pump_backpressure_pause(pause.reason));
+
+    ActiveSeekPumpPassOutcome {
+        made_progress,
+        blocked_by_backpressure,
+    }
+}
+
+/// Пробует показать ready frame активного seek-а без обычного repeat/busy-loop поведения.
+fn try_present_active_seek_frame(
+    session: &mut PlayerSession,
+    tick_result: &mut PlayerTickResult,
+) -> bool {
+    let Some(frame_pts) = session
+        .pipeline
+        .front_queued_video_frame()
+        .map(|frame| frame.pts)
+    else {
+        return false;
+    };
+
+    if !session.active_seek_frame_ready_for_scheduler(frame_pts) {
+        return false;
+    }
+
+    let scheduler_started_at = Instant::now();
+    let frame_presented = present_front_queued_video_frame(session, tick_result);
+    if frame_presented {
+        session.record_pipeline_latency(
+            PipelineLatencyStage::WorkerScheduler,
+            scheduler_started_at.elapsed(),
+            None,
+            None,
+        );
+    }
+
+    frame_presented
+}
+
+/// Классифицирует queue/resource pauses, которые должны остановить pump как backpressure.
+const fn active_seek_pump_backpressure_pause(reason: PipelinePauseReason) -> bool {
+    matches!(
+        reason,
+        PipelinePauseReason::DemuxBackpressure
+            | PipelinePauseReason::WaitingForFreeSurface
+            | PipelinePauseReason::WaitingForPresentQueue
+            | PipelinePauseReason::WaitingForGpuRelease
+            | PipelinePauseReason::WaitingForDemuxAudioPriority
+            | PipelinePauseReason::DecoderPacketQueueFull
+    )
+}
+
+/// Выбирает точную stop reason, когда pass не сделал progress.
+fn active_seek_pump_no_progress_reason(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+    blocked_by_backpressure: bool,
+) -> PlayerSeekPumpStopReason {
+    if blocked_by_backpressure {
+        return PlayerSeekPumpStopReason::Backpressure;
+    }
+
+    match session
+        .active_seek_diagnostics(Instant::now(), tick_config)
+        .map(|diagnostics| diagnostics.blocker)
+    {
+        Some(SeekProgressBlocker::WaitingForDecoderOutput) => {
+            PlayerSeekPumpStopReason::DecoderNoOutput
+        }
+        Some(
+            SeekProgressBlocker::WaitingForFreeSurface | SeekProgressBlocker::WaitingForGpuRelease,
+        ) => PlayerSeekPumpStopReason::Backpressure,
+        Some(_) => PlayerSeekPumpStopReason::NoProgress,
+        None => PlayerSeekPumpStopReason::NoActivePreviewSeek,
     }
 }
 

@@ -1339,6 +1339,31 @@ impl PlayerSession {
         self.seek_commit.is_some()
     }
 
+    /// Проверяет, что active preview seek ещё ждёт первый fresh video frame.
+    ///
+    /// Tick использует этот boundary для bounded fast-lane, не читая напрямую
+    /// `SeekCommitState`, `SessionScrubState` или timeline stale flags.
+    #[must_use]
+    pub(crate) fn active_preview_seek_needs_first_frame_pump(&self) -> bool {
+        let Some(seek_commit) = self.seek_commit else {
+            return false;
+        };
+
+        if seek_commit.kind != SeekCommitKind::Preview {
+            return false;
+        }
+
+        if self.current_preview_scrub_generation(seek_commit).is_none() {
+            return false;
+        }
+
+        if !self.pipeline.has_selected_video_track() {
+            return false;
+        }
+
+        !self.seek_video_gate_ready(seek_commit, 1)
+    }
+
     /// Проверяет, что active seek всё ещё является preview для указанного scrub intent-а.
     #[must_use]
     pub(crate) fn active_preview_matches(&self, intent: ScrubUpdateIntent) -> bool {
@@ -3989,9 +4014,9 @@ mod tests {
         DecodeBackpressureReason, DecodeSendError, DecodeThreadError,
         DecoderControlChannelPressureSnapshot, DecoderResourceSnapshot, MediaSource,
         PendingAudioPacket, PendingVideoPacket, PlayerCommand, PlayerDecodePacket,
-        PlayerTickConfig, PlayerTickContext, PlayerTickResult, PlayerVideoDropReason,
-        PlayerVideoFrameDrop, ScrubCommitPolicy, ScrubReleaseCommitSource, SeekMode, SeekTarget,
-        WgpuRenderTextureProviderHandle,
+        PlayerSeekPumpStopReason, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
+        PlayerVideoDropReason, PlayerVideoFrameDrop, ScrubCommitPolicy, ScrubReleaseCommitSource,
+        SeekMode, SeekTarget, WgpuRenderTextureProviderHandle,
     };
     use bytes::Bytes;
     use capability_core::{
@@ -4371,6 +4396,9 @@ mod tests {
         /// Накопленные packet ack-и, которые fake decoder отдаёт одним drain-вызовом.
         completed_packet_count: Arc<Mutex<usize>>,
 
+        /// Scripted frames, которые fake decoder публикует сразу после успешной отправки packet-а.
+        decode_on_send_frames: Arc<Mutex<VecDeque<(Duration, u64)>>>,
+
         /// Diagnostics events, которые fake decoder отдаёт через boundary drain.
         diagnostic_events: Arc<Mutex<VecDeque<video_core::VideoDecoderDiagnosticEvent>>>,
 
@@ -4395,6 +4423,7 @@ mod tests {
                 send_results: Arc::new(Mutex::new(VecDeque::new())),
                 sent_packets: Arc::new(Mutex::new(Vec::new())),
                 completed_packet_count: Arc::new(Mutex::new(0)),
+                decode_on_send_frames: Arc::new(Mutex::new(VecDeque::new())),
                 diagnostic_events: Arc::new(Mutex::new(VecDeque::new())),
                 flush_error_message: Arc::new(Mutex::new(None)),
                 released_handles: Arc::new(Mutex::new(Vec::new())),
@@ -4446,6 +4475,14 @@ mod tests {
                 .lock()
                 .expect("fake decoder ack counter lock");
             *completed_packet_count = completed_packet_count.saturating_add(packet_count);
+        }
+
+        /// Просит fake decoder опубликовать decoded frame сразу после следующего `send_packet`.
+        fn push_decoded_frame_on_next_send(&self, pts: Duration, handle: u64) {
+            self.decode_on_send_frames
+                .lock()
+                .expect("fake decoder decode-on-send queue lock")
+                .push_back((pts, handle));
         }
 
         /// Публикует diagnostics event так, как production decoder boundary сделал бы.
@@ -4505,10 +4542,25 @@ mod tests {
                 .unwrap_or(Ok(()));
 
             if send_result.is_ok() {
+                let packet_generation = packet.generation;
                 self.sent_packets
                     .lock()
                     .expect("fake decoder sent packet log lock")
                     .push(packet);
+                if let Some((frame_pts, frame_handle)) = self
+                    .decode_on_send_frames
+                    .lock()
+                    .expect("fake decoder decode-on-send queue lock")
+                    .pop_front()
+                {
+                    let mut decoded_frame = decoded_frame_for_tests(frame_pts, frame_handle);
+                    decoded_frame.generation = packet_generation;
+                    self.decoded_frames
+                        .lock()
+                        .expect("fake decoder frame queue lock")
+                        .push_back(decoded_frame);
+                    self.add_completed_packet_count(1);
+                }
             }
 
             send_result
@@ -5506,6 +5558,20 @@ mod tests {
             max_video_packets_sent_per_tick: 1,
             max_decoded_video_frames_drained_per_tick: 4,
             adaptive_catch_up_time_budget: Duration::ZERO,
+            seek_commit_timeout: Duration::from_secs(10),
+            seek_preview_timeout: Duration::from_secs(10),
+            ..seek_admission_tick_config(4, 4)
+        }
+    }
+
+    /// Конфиг для active preview pump тестов: adaptive catch-up выключен, pump оставлен включённым.
+    fn active_seek_pump_tick_config() -> PlayerTickConfig {
+        PlayerTickConfig {
+            max_demux_packets_per_tick: 1,
+            max_video_packets_sent_per_tick: 1,
+            max_decoded_video_frames_drained_per_tick: 1,
+            adaptive_catch_up_time_budget: Duration::ZERO,
+            active_seek_pump_time_budget: Duration::from_millis(2),
             seek_commit_timeout: Duration::from_secs(10),
             seek_preview_timeout: Duration::from_secs(10),
             ..seek_admission_tick_config(4, 4)
@@ -7127,6 +7193,176 @@ mod tests {
             session.snapshot().timeline.preview_state,
             TimelinePreviewState::Ready
         );
+    }
+
+    #[test]
+    fn active_seek_pump_closes_preview_when_decoder_output_is_immediate() {
+        let tracks = vec![fake_track(1, TrackKind::Video)];
+        let target = Duration::from_secs(8);
+        let demuxer = scripted_seek_demuxer(
+            tracks.clone(),
+            target,
+            target,
+            vec![fake_video_packet_with_keyframe(
+                TrackId::new(1),
+                target,
+                PacketKeyframe::Keyframe,
+            )],
+        );
+        let mut harness = SeekRegressionHarness::new(tracks, demuxer);
+        let tick_config = active_seek_pump_tick_config();
+        let request = SeekRequest::absolute(MediaTime::from_duration(target));
+
+        harness
+            .session
+            .dispatch_command(PlayerCommand::BeginScrub)
+            .unwrap();
+        harness
+            .session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        harness
+            .session
+            .dispatch_command(PlayerCommand::PreviewScrub(request))
+            .unwrap();
+        let diagnostics_before_tick = harness
+            .session
+            .active_seek_diagnostics(Instant::now(), &tick_config)
+            .expect("preview seek должен быть active до pump tick-а");
+        assert_eq!(diagnostics_before_tick.kind, "preview");
+        assert_eq!(
+            diagnostics_before_tick.blocker,
+            SeekProgressBlocker::WaitingForDemux
+        );
+
+        harness.decoder.push_decoded_frame_on_next_send(target, 80);
+        let tick_result = harness
+            .session
+            .tick(PlayerTickContext::with_config(Instant::now(), tick_config));
+
+        assert_eq!(tick_result.demuxed_packets.len(), 1);
+        assert_eq!(harness.sent_packets().len(), 1);
+        assert_eq!(tick_result.decoded_video_frames, 1);
+        assert_eq!(tick_result.video_frames_presented, 1);
+        assert_eq!(tick_result.seek_pump_iterations, 1);
+        assert!(tick_result.seek_pump_made_progress);
+        assert_eq!(
+            tick_result.seek_pump_stop_reason,
+            Some(PlayerSeekPumpStopReason::PreviewFramePresented)
+        );
+        assert!(harness.session.seek_commit().is_none());
+        assert_eq!(
+            harness
+                .session
+                .pipeline
+                .present_video_frame()
+                .map(|frame| frame.pts),
+            Some(target)
+        );
+        assert_eq!(
+            harness.session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Ready
+        );
+    }
+
+    #[test]
+    fn active_seek_pump_stops_when_decoder_produces_no_output() {
+        let tracks = vec![fake_track(1, TrackKind::Video)];
+        let target = Duration::from_secs(8);
+        let demuxer = scripted_seek_demuxer(
+            tracks.clone(),
+            target,
+            target,
+            vec![fake_video_packet_with_keyframe(
+                TrackId::new(1),
+                target,
+                PacketKeyframe::Keyframe,
+            )],
+        );
+        let mut harness = SeekRegressionHarness::new(tracks, demuxer);
+        let tick_config = active_seek_pump_tick_config();
+        let request = SeekRequest::absolute(MediaTime::from_duration(target));
+
+        harness
+            .session
+            .dispatch_command(PlayerCommand::BeginScrub)
+            .unwrap();
+        harness
+            .session
+            .dispatch_command(PlayerCommand::UpdateScrub(request))
+            .unwrap();
+        harness
+            .session
+            .dispatch_command(PlayerCommand::PreviewScrub(request))
+            .unwrap();
+
+        let tick_result = harness
+            .session
+            .tick(PlayerTickContext::with_config(Instant::now(), tick_config));
+        let diagnostics_after_tick = harness
+            .session
+            .active_seek_diagnostics(Instant::now(), &tick_config)
+            .expect("preview seek должен ждать decoder output");
+
+        assert_eq!(tick_result.demuxed_packets.len(), 1);
+        assert_eq!(harness.sent_packets().len(), 1);
+        assert_eq!(tick_result.decoded_video_frames, 0);
+        assert_eq!(tick_result.video_frames_presented, 0);
+        assert_eq!(tick_result.seek_pump_iterations, 1);
+        assert!(!tick_result.seek_pump_made_progress);
+        assert_eq!(
+            tick_result.seek_pump_stop_reason,
+            Some(PlayerSeekPumpStopReason::DecoderNoOutput)
+        );
+        assert_eq!(
+            diagnostics_after_tick.blocker,
+            SeekProgressBlocker::WaitingForDecoderOutput
+        );
+        assert!(harness.session.seek_commit().is_some());
+    }
+
+    #[test]
+    fn active_seek_pump_does_not_change_normal_playback_budget() {
+        let mut session = PlayerSession::new();
+        let tracks = vec![fake_track(1, TrackKind::Video)];
+        let mut demuxer = FakeDemuxer::new(
+            tracks.clone(),
+            Some(Duration::from_secs(30)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        demuxer.push_packet(fake_video_packet_with_keyframe(
+            TrackId::new(1),
+            Duration::from_secs(1),
+            PacketKeyframe::Keyframe,
+        ));
+        let fake_decoder = SharedFakeVideoDecoderThread::new();
+        fake_decoder.push_decoded_frame_on_next_send(Duration::from_secs(1), 10);
+
+        session
+            .pipeline
+            .install_opened_media(Box::new(demuxer), None, None, tracks);
+        session
+            .pipeline
+            .select_video_track_preserving_active_requirement(TrackId::new(1));
+        session
+            .pipeline
+            .set_video_decoder_thread(fake_decoder.clone());
+        session.set_snapshot_duration(Some(Duration::from_secs(30)));
+        session.apply_demux_seekability(DemuxSeekability::Seekable);
+        session.set_playback_state(PlaybackState::Playing);
+
+        let tick_result = session.tick(PlayerTickContext::with_config(
+            Instant::now(),
+            active_seek_pump_tick_config(),
+        ));
+
+        assert_eq!(tick_result.demuxed_packets.len(), 1);
+        assert_eq!(fake_decoder.sent_packets().len(), 1);
+        assert_eq!(tick_result.decoded_video_frames, 0);
+        assert_eq!(tick_result.video_frames_presented, 0);
+        assert_eq!(tick_result.seek_pump_iterations, 0);
+        assert!(!tick_result.seek_pump_made_progress);
+        assert_eq!(tick_result.seek_pump_stop_reason, None);
     }
 
     #[test]
