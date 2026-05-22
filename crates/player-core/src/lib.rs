@@ -55,8 +55,7 @@ pub use diagnostics::{
 pub use error::{PlayerError, PlayerErrorKind, PlayerResult};
 pub use event::{
     BufferingState, CapabilitySummary, FramePresentationInfo, MediaSummary, PlayerEvent,
-    ScrubReleaseCommitInfo, ScrubReleaseCommitSource, SeekAudioResumeInfo, SeekCommitInfo,
-    SeekTargetFramePresentation,
+    SeekAudioResumeInfo, SeekCommitInfo, SeekTargetFramePresentation,
 };
 pub use media_core::TrackId;
 pub use media_opening::{PreparedMedia, PreparedMediaSource};

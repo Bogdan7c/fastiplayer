@@ -1988,13 +1988,14 @@ mod tests {
     use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
     use crossbeam_channel::unbounded;
     use media_core::{
-        DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, TrackInfo, TrackKind,
+        DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, TimelinePreviewState,
+        TrackInfo, TrackKind,
     };
     use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
 
     use super::*;
     use crate::seek_state::SeekCommitKind;
-    use crate::{MediaSource, PlaybackState, ScrubReleaseCommitSource, SeekTarget};
+    use crate::{MediaSource, PlaybackState, SeekTarget};
 
     fn worker_config_for_tests() -> PlayerWorkerConfig {
         let live_scrub_preview_interval = DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL;
@@ -2223,29 +2224,6 @@ mod tests {
             "worker-fake".to_string(),
             Box::new(demuxer),
             false,
-        );
-    }
-
-    /// Проверяет release diagnostic в worker runtime без зависимости от соседних events.
-    fn assert_worker_scrub_release_event(
-        events: &[PlayerEvent],
-        release_policy: ScrubCommitPolicy,
-        committed_from: ScrubReleaseCommitSource,
-        committed_position: Duration,
-        latest_target: Duration,
-    ) {
-        assert!(
-            events.iter().any(|event| {
-                matches!(
-                    event,
-                    PlayerEvent::ScrubReleaseCommitted(info)
-                        if info.release_policy == release_policy
-                            && info.committed_from == committed_from
-                            && info.committed_position == committed_position
-                            && info.latest_target == latest_target
-                )
-            }),
-            "worker scrub release diagnostic event is missing: {events:?}"
         );
     }
 
@@ -3064,7 +3042,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_scrub_update_dispatches_preview_before_release() {
+    fn latest_scrub_update_updates_session_without_preview_seek() {
         let mut runtime = runtime_for_tests(Instant::now());
         let seek_request_log = Arc::new(Mutex::new(Vec::new()));
         let demuxer = WorkerFakeDemuxer::empty_seekable(Arc::clone(&seek_request_log));
@@ -3084,9 +3062,14 @@ mod tests {
         runtime.apply_latest_scrub_update();
 
         let requests = seek_request_log.lock().expect("seek request log lock");
+        assert!(requests.is_empty());
         assert_eq!(
-            requests.as_slice(),
-            &[DemuxSeekRequest::preview(Duration::from_millis(900))]
+            runtime.session.snapshot().timeline.target_position,
+            Some(MediaTime::from_millis(900))
+        );
+        assert_eq!(
+            runtime.session.snapshot().timeline.preview_state,
+            TimelinePreviewState::Inactive
         );
     }
 
@@ -3162,7 +3145,7 @@ mod tests {
     }
 
     #[test]
-    fn playing_scrub_release_commits_last_visible_frame_and_resumes_playback() {
+    fn playing_scrub_release_commits_latest_target_and_preserves_resume_intent() {
         let mut runtime = runtime_for_tests(Instant::now());
         let seek_request_log = Arc::new(Mutex::new(Vec::new()));
         let generation = ScrubGeneration::default().next();
@@ -3196,37 +3179,32 @@ mod tests {
             ScrubCommitPolicy::CommitVisiblePreview,
         ));
 
-        assert!(runtime.session.seek_commit().is_none());
-        assert_eq!(
-            runtime.session.snapshot().current_position,
-            Duration::from_secs(12)
-        );
+        let seek_commit = runtime
+            .session
+            .seek_commit()
+            .expect("release должен открыть ordinary final seek");
+        assert_eq!(seek_commit.kind, SeekCommitKind::Final);
+        assert_eq!(seek_commit.target_position, MediaTime::from_secs(20));
+        assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
         assert_eq!(
             runtime.session.snapshot().playback_state,
-            PlaybackState::Playing
+            PlaybackState::Seeking
         );
         assert!(!runtime.session.snapshot().timeline.scrubbing);
-        assert!(!runtime.session.snapshot().timeline.seeking);
-        let expected_preview_request = DemuxSeekRequest::preview(Duration::from_secs(12));
+        assert!(runtime.session.snapshot().timeline.seeking);
+        let expected_release_request =
+            DemuxSeekRequest::decode_point_before(Duration::from_secs(20));
         assert_eq!(
             seek_request_log
                 .lock()
                 .expect("seek request log lock")
                 .as_slice(),
-            &[expected_preview_request]
-        );
-        let events = runtime.session.take_events();
-        assert_worker_scrub_release_event(
-            &events,
-            ScrubCommitPolicy::CommitVisiblePreview,
-            ScrubReleaseCommitSource::VisiblePreview,
-            Duration::from_secs(12),
-            Duration::from_secs(20),
+            &[expected_release_request]
         );
     }
 
     #[test]
-    fn paused_scrub_release_commits_last_visible_frame_and_stays_paused() {
+    fn paused_scrub_release_commits_latest_target_and_stores_pause_resume_intent() {
         let mut runtime = runtime_for_tests(Instant::now());
         let seek_request_log = Arc::new(Mutex::new(Vec::new()));
         let generation = ScrubGeneration::default().next();
@@ -3259,32 +3237,27 @@ mod tests {
             ScrubCommitPolicy::CommitVisiblePreview,
         ));
 
-        assert!(runtime.session.seek_commit().is_none());
-        assert_eq!(
-            runtime.session.snapshot().current_position,
-            Duration::from_secs(12)
-        );
+        let seek_commit = runtime
+            .session
+            .seek_commit()
+            .expect("release должен открыть ordinary final seek");
+        assert_eq!(seek_commit.kind, SeekCommitKind::Final);
+        assert_eq!(seek_commit.target_position, MediaTime::from_secs(20));
+        assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Pause);
         assert_eq!(
             runtime.session.snapshot().playback_state,
-            PlaybackState::Paused
+            PlaybackState::Seeking
         );
         assert!(!runtime.session.snapshot().timeline.scrubbing);
-        assert!(!runtime.session.snapshot().timeline.seeking);
-        let expected_preview_request = DemuxSeekRequest::preview(Duration::from_secs(12));
+        assert!(runtime.session.snapshot().timeline.seeking);
+        let expected_release_request =
+            DemuxSeekRequest::decode_point_before(Duration::from_secs(20));
         assert_eq!(
             seek_request_log
                 .lock()
                 .expect("seek request log lock")
                 .as_slice(),
-            &[expected_preview_request]
-        );
-        let events = runtime.session.take_events();
-        assert_worker_scrub_release_event(
-            &events,
-            ScrubCommitPolicy::CommitVisiblePreview,
-            ScrubReleaseCommitSource::VisiblePreview,
-            Duration::from_secs(12),
-            Duration::from_secs(20),
+            &[expected_release_request]
         );
     }
 
@@ -3326,14 +3299,6 @@ mod tests {
                 .expect("seek request log lock")
                 .as_slice(),
             &[expected_release_request]
-        );
-        let events = runtime.session.take_events();
-        assert_worker_scrub_release_event(
-            &events,
-            ScrubCommitPolicy::CommitVisiblePreview,
-            ScrubReleaseCommitSource::LatestTarget,
-            Duration::from_secs(20),
-            Duration::from_secs(20),
         );
     }
 
