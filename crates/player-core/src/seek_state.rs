@@ -63,9 +63,9 @@ pub(crate) enum SeekDemuxRequestError {
 
 /// Выбирает demux seek mode для текущего seek transaction-а.
 ///
-/// Для video `SeekMode::Accurate` остаётся точным на уровне player-core:
-/// demuxer начинает с decode-safe точки до target, а pre-roll/drop доводит
-/// commit до исходной пользовательской позиции.
+/// Для video `SeekMode::Accurate` остаётся режимом с минимальной задержкой:
+/// demuxer начинает с decode-safe точки до target, а session коммитит первый
+/// реально показанный свежий frame текущего seek generation-а.
 pub(crate) fn demux_seek_request_for_transaction(
     commit_kind: SeekCommitKind,
     has_video_track: bool,

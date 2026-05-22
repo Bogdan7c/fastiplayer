@@ -837,6 +837,17 @@ impl PlaybackPipeline {
         self.present_video_frame().map(|frame| frame.pts)
     }
 
+    /// Возвращает PTS текущего presented frame-а только если он принадлежит нужному seek generation.
+    #[must_use]
+    pub(crate) fn present_video_frame_pts_for_generation(
+        &self,
+        generation: u64,
+    ) -> Option<Duration> {
+        self.present_video_frame()
+            .filter(|frame| frame.generation == generation)
+            .map(|frame| frame.pts)
+    }
+
     /// Проверяет, что текущий present frame покрывает целевую media-позицию.
     #[must_use]
     pub(crate) fn present_video_frame_covers(&self, target: Duration) -> bool {

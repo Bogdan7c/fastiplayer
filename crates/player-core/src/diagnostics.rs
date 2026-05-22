@@ -626,16 +626,16 @@ pub struct ActiveSeekDiagnosticsSnapshot {
     /// Готов ли audio gate.
     pub audio_gate_ready: bool,
 
-    /// Был ли уже показан frame на/после target.
+    /// Был ли уже показан frame, который закрывает video gate текущего seek-а.
     pub target_frame_presented: bool,
 
     /// Первый queued frame активного preview можно показать сразу, не ожидая audio clock.
     pub force_present_for_preview_seek: bool,
 
-    /// Сколько target/future video frames уже готовы для resume.
+    /// Сколько video frames уже готовы для resume текущей seek policy.
     pub ready_video_frames: usize,
 
-    /// Сколько target/future video frames требуется текущей policy.
+    /// Сколько video frames требуется текущей seek policy.
     pub required_video_frames: usize,
 
     /// PTS текущего present frame.

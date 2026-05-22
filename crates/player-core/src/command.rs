@@ -82,10 +82,10 @@ impl MediaOpenRequest {
     }
 }
 
-/// Точность seek-операции, которую должен выбрать будущий scheduler.
+/// Политика seek-операции, которую должен выбрать scheduler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeekMode {
-    /// Точный seek на уровне player-core: video может стартовать с pre-roll до target.
+    /// Seek с минимальной задержкой: demuxer стартует до target, а playback продолжается с первого свежего кадра.
     Accurate,
 
     /// Seek к ближайшему ключевому кадру до указанной позиции.

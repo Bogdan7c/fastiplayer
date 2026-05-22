@@ -247,6 +247,9 @@ enum FinalSeekCommitPosition {
     /// Обычный target или уже выбранный visible-preview target становится clock base.
     Target { position: Duration },
 
+    /// Обычный video seek коммитит первый свежий frame текущего seek generation-а.
+    PresentedFrame { position: Duration },
+
     /// Near-EOF fallback коммитит PTS реально показанного fallback frame-а.
     EofFallbackFrame { position: Duration },
 }
@@ -255,7 +258,9 @@ impl FinalSeekCommitPosition {
     /// Возвращает позицию, которую нужно опубликовать как committed playback position.
     const fn position(self) -> Duration {
         match self {
-            Self::Target { position } | Self::EofFallbackFrame { position } => position,
+            Self::Target { position }
+            | Self::PresentedFrame { position }
+            | Self::EofFallbackFrame { position } => position,
         }
     }
 
@@ -263,6 +268,7 @@ impl FinalSeekCommitPosition {
     const fn policy_name(self) -> &'static str {
         match self {
             Self::Target { .. } => "target",
+            Self::PresentedFrame { .. } => "presented-frame",
             Self::EofFallbackFrame { .. } => "eof-fallback-frame",
         }
     }
@@ -1428,8 +1434,8 @@ impl PlayerSession {
             seek_commit,
             tick_config.effective_seek_resume_video_min_ready_frames(),
         );
-        let ready_video_frames = self.seek_ready_video_frame_count(target_position);
-        let target_frame_presented = self.seek_target_frame_presented(target_position);
+        let ready_video_frames = self.seek_ready_video_frame_count(seek_commit);
+        let target_frame_presented = self.seek_presented_frame_ready(seek_commit);
         let video_gate_ready = self.seek_video_gate_ready(seek_commit, required_video_frames);
         let audio_gate_status =
             self.seek_audio_gate_status(seek_commit, tick_config.seek_resume_audio_min_buffer_ms);
@@ -1613,13 +1619,12 @@ impl PlayerSession {
 
     /// Проверяет, нужно ли выбросить decoded frame как pre-roll до seek target.
     ///
-    /// Final seek остаётся точным: кадры до пользовательской позиции не попадают
-    /// в presentation queue. Preview seek, наоборот, может показывать такие
-    /// кадры как live feedback во время scrub, пока decoder догоняет target.
+    /// Обычный final seek теперь минимизирует задержку: первый свежий кадр текущего
+    /// generation-а должен попасть в scheduler и стать playback position.
     #[must_use]
     pub(crate) fn should_drop_decoded_frame_for_seek(&self, frame_pts: Duration) -> bool {
         self.seek_commit.is_some_and(|seek_commit| {
-            seek_commit.kind == SeekCommitKind::Final
+            self.final_seek_requires_exact_target_frame(seek_commit)
                 && frame_pts < seek_commit.target_position.as_duration()
         })
     }
@@ -1635,8 +1640,8 @@ impl PlayerSession {
 
     /// Проверяет, может ли active seek обойти обычное A/V scheduler window для queued frame-а.
     ///
-    /// Final seek остаётся exact: scheduler может показать только frame на/после target.
-    /// Preview seek работает как live feedback: первый fresh frame текущего scrub
+    /// Обычный final seek показывает первый свежий frame, а explicit scrub latest-target остаётся exact.
+    /// Preview seek работает как live feedback: первый свежий frame текущего scrub
     /// generation-а показывается сразу, даже если audio clock стоит на старой позиции.
     #[must_use]
     pub(crate) fn active_seek_frame_ready_for_scheduler(&self, frame_pts: Duration) -> bool {
@@ -1646,13 +1651,31 @@ impl PlayerSession {
 
         match seek_commit.kind {
             SeekCommitKind::Final => {
-                let target_position = seek_commit.target_position.as_duration();
-                frame_pts >= target_position && !self.seek_target_frame_presented(target_position)
+                self.final_seek_frame_ready_for_scheduler(seek_commit, frame_pts)
             }
             SeekCommitKind::Preview => {
                 self.active_preview_frame_ready_for_scheduler(seek_commit, frame_pts)
             }
         }
+    }
+
+    /// Обычный click/command seek закрывается по первому свежему кадру, а scrub latest-target остаётся exact.
+    fn final_seek_requires_exact_target_frame(&self, seek_commit: SeekCommitState) -> bool {
+        seek_commit.kind == SeekCommitKind::Final && seek_commit.scrub_generation.is_some()
+    }
+
+    /// Проверяет, может ли final seek показать queued frame в обход обычного scheduler window.
+    fn final_seek_frame_ready_for_scheduler(
+        &self,
+        seek_commit: SeekCommitState,
+        frame_pts: Duration,
+    ) -> bool {
+        if self.final_seek_requires_exact_target_frame(seek_commit) {
+            let target_position = seek_commit.target_position.as_duration();
+            return frame_pts >= target_position && !self.seek_presented_frame_ready(seek_commit);
+        }
+
+        !self.final_seek_visible_frame_ready(seek_commit)
     }
 
     /// Проверяет preview часть scheduler readiness без раскрытия scrub state за пределы session.
@@ -1728,11 +1751,17 @@ impl PlayerSession {
         self.snapshot.timeline.stale_frame = false;
     }
 
-    /// Отмечает, что target video frame уже стал текущим кадром presentation.
+    /// Отмечает, что свежий video frame текущего seek-а уже стал текущим кадром presentation.
     pub(crate) fn note_presented_frame_for_seek(&mut self, frame_pts: Duration) {
         let Some(seek_commit) = self.seek_commit else {
             return;
         };
+
+        if self.final_seek_requires_exact_target_frame(seek_commit)
+            && frame_pts < seek_commit.target_position.as_duration()
+        {
+            return;
+        }
 
         let first_post_seek_presented_frame = self.seek_trace.record_first_presented_frame();
         let present_frame_generation = self
@@ -1778,7 +1807,7 @@ impl PlayerSession {
                     self.preview_stale_frame_after_completion(frame_readiness);
                 self.snapshot.timeline.preview_state = frame_readiness.timeline_preview_state();
             }
-            SeekCommitKind::Final if frame_pts >= seek_commit.target_position.as_duration() => {
+            SeekCommitKind::Final => {
                 self.seek_eof_fallback_video_position = None;
                 self.snapshot.timeline.stale_frame = false;
                 if first_post_seek_presented_frame {
@@ -1791,7 +1820,6 @@ impl PlayerSession {
                         ));
                 }
             }
-            SeekCommitKind::Final => {}
         }
     }
 
@@ -1991,7 +2019,7 @@ impl PlayerSession {
         true
     }
 
-    /// Video gate готов, когда target frame показан и перед resume есть небольшой запас кадров.
+    /// Video gate готов, когда текущая seek policy увидела нужный frame.
     fn seek_video_gate_ready(
         &self,
         seek_commit: SeekCommitState,
@@ -2007,11 +2035,15 @@ impl PlayerSession {
             return true;
         }
 
-        let target_position = seek_commit.target_position.as_duration();
         if self.seek_preview_visible_frame_ready(seek_commit) {
             return true;
         }
 
+        if self.final_seek_visible_frame_ready(seek_commit) {
+            return true;
+        }
+
+        let target_position = seek_commit.target_position.as_duration();
         let target_frame_presented = self.pipeline.present_video_frame_covers(target_position)
             && !self.snapshot.timeline.stale_frame;
         let eof_fallback_presented =
@@ -2028,13 +2060,38 @@ impl PlayerSession {
         let required_ready_frames = self
             .required_seek_resume_video_ready_frames(seek_commit, resume_video_min_ready_frames);
 
-        self.seek_ready_video_frame_count(target_position) >= required_ready_frames
+        self.seek_ready_video_frame_count(seek_commit) >= required_ready_frames
     }
 
-    /// Проверяет, что target frame уже стал текущим non-stale present frame.
-    fn seek_target_frame_presented(&self, target_position: Duration) -> bool {
+    /// Проверяет, что текущая seek policy уже получила non-stale present frame.
+    fn seek_presented_frame_ready(&self, seek_commit: SeekCommitState) -> bool {
+        if self.final_seek_visible_frame_ready(seek_commit) {
+            return true;
+        }
+
+        let target_position = seek_commit.target_position.as_duration();
         self.pipeline.present_video_frame_covers(target_position)
             && !self.snapshot.timeline.stale_frame
+    }
+
+    /// Проверяет, что обычный final seek уже показал свежий frame текущего generation-а.
+    fn final_seek_visible_frame_ready(&self, seek_commit: SeekCommitState) -> bool {
+        if seek_commit.kind != SeekCommitKind::Final
+            || self.snapshot.timeline.stale_frame
+            || !self.pipeline.has_selected_video_track()
+        {
+            return false;
+        }
+
+        let Some(frame_pts) = self
+            .pipeline
+            .present_video_frame_pts_for_generation(seek_commit.generation)
+        else {
+            return false;
+        };
+
+        !self.final_seek_requires_exact_target_frame(seek_commit)
+            || frame_pts >= seek_commit.target_position.as_duration()
     }
 
     /// Возвращает preview generation только если active seek ещё принадлежит текущему scrub.
@@ -2231,10 +2288,10 @@ impl PlayerSession {
         }
     }
 
-    /// Считает target/current frame и уже декодированные future frames для seek resume.
-    fn seek_ready_video_frame_count(&self, target_position: Duration) -> usize {
-        let current_frame_ready = self.pipeline.present_video_frame_covers(target_position)
-            && !self.snapshot.timeline.stale_frame;
+    /// Считает current frame и уже декодированные future frames для seek resume.
+    fn seek_ready_video_frame_count(&self, seek_commit: SeekCommitState) -> usize {
+        let target_position = seek_commit.target_position.as_duration();
+        let current_frame_ready = self.seek_presented_frame_ready(seek_commit);
         let queued_ready_frames = self
             .pipeline
             .queued_video_frames()
@@ -2309,9 +2366,34 @@ impl PlayerSession {
             return FinalSeekCommitPosition::EofFallbackFrame { position };
         }
 
+        if let Some(position) = self.final_seek_presented_frame_commit_position(seek_commit) {
+            return FinalSeekCommitPosition::PresentedFrame { position };
+        }
+
         FinalSeekCommitPosition::Target {
             position: seek_commit.target_position.as_duration(),
         }
+    }
+
+    /// Обычный video seek фиксирует первый реально показанный свежий frame.
+    fn final_seek_presented_frame_commit_position(
+        &self,
+        seek_commit: SeekCommitState,
+    ) -> Option<Duration> {
+        if seek_commit.kind != SeekCommitKind::Final || self.snapshot.timeline.stale_frame {
+            return None;
+        }
+
+        if self.final_seek_requires_exact_target_frame(seek_commit) {
+            return None;
+        }
+
+        if !self.pipeline.has_selected_video_track() {
+            return None;
+        }
+
+        self.pipeline
+            .present_video_frame_pts_for_generation(seek_commit.generation)
     }
 
     /// EOF fallback считается committed position только если этот frame реально сейчас показан.
@@ -2379,7 +2461,7 @@ impl PlayerSession {
                 self.set_playback_state(PlaybackState::Paused);
             }
             PlaybackResumeIntent::Play => {
-                self.resume_audio_output_after_seek(seek_commit.target_position.as_duration());
+                self.resume_audio_output_after_seek(playback_position);
                 let observed_at = Instant::now();
                 let audio_now = self.audio_clock_now();
                 self.pipeline
@@ -5894,7 +5976,7 @@ mod tests {
     }
 
     #[test]
-    fn regression_ordinary_final_seek_closes_after_target_frame_from_scripted_demux() {
+    fn regression_ordinary_final_seek_closes_after_first_decode_safe_frame_from_scripted_demux() {
         let video_track = fake_track(1, TrackKind::Video);
         let target = Duration::from_secs(8);
         let actual = Duration::from_millis(7_900);
@@ -5937,28 +6019,22 @@ mod tests {
         );
 
         harness.push_decoded_frame(actual, 79, 1);
-        let preroll_tick = harness.tick_once();
-        assert_eq!(preroll_tick.demuxed_packets.len(), 1);
-        assert_eq!(preroll_tick.video_frames_presented, 0);
+        let instant_tick = harness.tick_once();
+        assert_eq!(instant_tick.demuxed_packets.len(), 1);
+        assert_eq!(instant_tick.video_frames_presented, 1);
         assert_eq!(
             harness
                 .session
                 .pipeline
                 .present_video_frame()
                 .map(|frame| frame.pts),
-            None
+            Some(actual)
         );
-        assert!(harness.session.seek_commit().is_some());
-
-        harness.push_decoded_frame(target, 80, 1);
-        let target_tick = harness.tick_once();
-
-        assert_eq!(target_tick.video_frames_presented, 1);
         assert!(harness.session.seek_commit().is_none());
-        assert_eq!(harness.session.snapshot().current_position, target);
+        assert_eq!(harness.session.snapshot().current_position, actual);
         assert_eq!(
             harness.session.snapshot().timeline.current_position,
-            MediaTime::from_duration(target)
+            MediaTime::from_duration(actual)
         );
         assert!(!harness.session.snapshot().timeline.seeking);
         assert!(!harness.session.snapshot().timeline.scrubbing);
@@ -5973,7 +6049,7 @@ mod tests {
                 .pipeline
                 .present_video_frame()
                 .map(|frame| frame.pts),
-            Some(target)
+            Some(actual)
         );
         assert_eq!(
             harness.session.snapshot().playback_state,
@@ -6042,15 +6118,11 @@ mod tests {
         assert_eq!(sent_after_reset[0].generation, seek_after_reset.generation);
 
         harness.push_decoded_frame(actual, 179, 1);
-        harness.tick_once();
-        assert!(harness.session.seek_commit().is_some());
+        let instant_tick = harness.tick_once();
 
-        harness.push_decoded_frame(target, 180, 1);
-        let target_tick = harness.tick_once();
-
-        assert_eq!(target_tick.video_frames_presented, 1);
+        assert_eq!(instant_tick.video_frames_presented, 1);
         assert!(harness.session.seek_commit().is_none());
-        assert_eq!(harness.session.snapshot().current_position, target);
+        assert_eq!(harness.session.snapshot().current_position, actual);
         assert!(!harness.session.snapshot().timeline.seeking);
         assert!(!harness.session.snapshot().timeline.stale_frame);
         assert_eq!(
@@ -6059,7 +6131,7 @@ mod tests {
                 .pipeline
                 .present_video_frame()
                 .map(|frame| frame.pts),
-            Some(target)
+            Some(actual)
         );
         assert_eq!(
             seek_request_log
@@ -6071,7 +6143,7 @@ mod tests {
     }
 
     #[test]
-    fn regression_seek_near_eof_presents_preroll_fallback_only_after_decoder_drains() {
+    fn regression_seek_near_eof_commits_first_decode_safe_frame_without_eof_wait() {
         let video_track = fake_track(1, TrackKind::Video);
         let target = Duration::from_millis(29_500);
         let actual = Duration::from_secs(29);
@@ -6097,30 +6169,23 @@ mod tests {
                 290,
             ));
 
-        let eof_tick_before_ack = harness.tick_once();
-        assert_eq!(eof_tick_before_ack.video_frames_presented, 0);
-        assert!(harness.session.draining_after_eof);
+        let instant_tick = harness.tick_once();
+        assert_eq!(instant_tick.video_frames_presented, 1);
         assert!(
-            harness
+            !harness
                 .session
                 .pipeline
                 .has_seek_preroll_fallback_video_frame()
         );
-        assert!(harness.session.seek_commit().is_some());
+        assert!(harness.session.seek_commit().is_none());
         assert_eq!(
             harness
                 .session
                 .pipeline
                 .present_video_frame()
                 .map(|frame| frame.pts),
-            None
+            Some(actual)
         );
-
-        harness.decoder.add_completed_packet_count(1);
-        let fallback_tick = harness.tick_once();
-
-        assert_eq!(fallback_tick.video_frames_presented, 1);
-        assert!(harness.session.seek_commit().is_none());
         assert_eq!(harness.session.snapshot().current_position, actual);
         assert_eq!(harness.session.pipeline.media_clock_base(), actual);
         assert!(!harness.session.snapshot().timeline.seeking);
@@ -10377,18 +10442,17 @@ mod tests {
         assert_eq!(tick_result.decoded_video_frames, 33);
         assert!(session.seek_commit().is_none());
         assert!(session.pipeline.video_present_queue_len() <= 2);
-        assert_eq!(
-            session
-                .pipeline
-                .present_video_frame()
-                .map(|frame| frame.pts),
-            Some(Duration::from_secs(2))
-        );
+        let presented_frame_pts = session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts)
+            .expect("seek с минимальной задержкой должен показать свежий frame");
+        assert!(presented_frame_pts < Duration::from_secs(2));
         assert!(!session.pipeline.has_seek_preroll_fallback_video_frame());
     }
 
     #[test]
-    fn final_seek_drops_preroll_frames_and_presents_latest_eof_fallback() {
+    fn final_seek_presents_preroll_frame_without_eof_fallback_wait() {
         let mut session = PlayerSession::new();
         install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
         let fake_decoder = SharedFakeVideoDecoderThread::new();
@@ -10419,25 +10483,16 @@ mod tests {
 
         assert_eq!(tick_result.decoded_video_frames, 2);
         assert_eq!(tick_result.video_frames_presented, 1);
-        assert_eq!(
-            tick_result.dropped_video_frames,
-            vec![PlayerVideoFrameDrop {
-                pts: Duration::from_millis(1_500),
-                reason: PlayerVideoDropReason::SeekPreroll,
-            }]
-        );
-        assert_eq!(
-            fake_decoder.released_handles(),
-            vec![video_core::FrameTextureHandle(15)]
-        );
+        assert!(tick_result.dropped_video_frames.is_empty());
+        assert!(fake_decoder.released_handles().is_empty());
         assert_eq!(
             session
                 .pipeline
                 .present_video_frame()
                 .map(|frame| frame.pts),
-            Some(Duration::from_millis(1_900))
+            Some(Duration::from_millis(1_500))
         );
-        assert!(session.pipeline.video_present_queue_is_empty());
+        assert_eq!(session.pipeline.video_present_queue_len(), 1);
         assert!(!session.snapshot().timeline.stale_frame);
         assert!(session.seek_commit().is_none());
     }
@@ -10769,7 +10824,7 @@ mod tests {
     }
 
     #[test]
-    fn playing_seek_holds_future_frames_while_building_video_preroll() {
+    fn playing_seek_resumes_without_waiting_for_configured_video_preroll() {
         let mut session = PlayerSession::new();
         install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
 
@@ -10781,14 +10836,26 @@ mod tests {
             .unwrap();
         session
             .pipeline
-            .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
+            .set_present_video_frame(decoded_frame_for_current_seek_generation(
+                &session,
+                Duration::from_secs(6),
+                42,
+            ));
         session.note_presented_frame_for_seek(Duration::from_secs(6));
         session
             .pipeline
-            .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(6_016), 43));
+            .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
+                &session,
+                Duration::from_millis(6_016),
+                43,
+            ));
         session
             .pipeline
-            .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(6_033), 44));
+            .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
+                &session,
+                Duration::from_millis(6_033),
+                44,
+            ));
 
         let tick_result = session.tick(PlayerTickContext::with_config(
             Instant::now(),
@@ -11279,7 +11346,7 @@ mod tests {
     }
 
     #[test]
-    fn seek_generation_drops_pre_roll_frames_before_target() {
+    fn ordinary_seek_generation_keeps_pre_roll_frames_for_instant_resume() {
         let mut session = PlayerSession::new();
         install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
 
@@ -11289,7 +11356,7 @@ mod tests {
             )))
             .unwrap();
 
-        assert!(session.should_drop_decoded_frame_for_seek(Duration::from_millis(5_999)));
+        assert!(!session.should_drop_decoded_frame_for_seek(Duration::from_millis(5_999)));
         assert!(!session.should_drop_decoded_frame_for_seek(Duration::from_secs(6)));
     }
 
