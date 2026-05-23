@@ -587,7 +587,7 @@ impl SeekProgressBlocker {
 /// Snapshot активного seek transition-а для throttled worker log-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActiveSeekDiagnosticsSnapshot {
-    /// `final` или `preview`, без раскрытия внутреннего enum-а session.
+    /// Тип активного seek transition-а без раскрытия внутреннего enum-а session.
     pub kind: &'static str,
 
     /// Packet/frame generation, которому принадлежит seek transaction.

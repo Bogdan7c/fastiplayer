@@ -734,7 +734,7 @@ impl PlayerWorkerRuntime {
         }
     }
 
-    /// Блокируется до события или ближайшего tick/preview deadline-а.
+    /// Блокируется до события или ближайшего playback deadline-а.
     fn wait_for_worker_wakeup_with_timeout(&mut self, wakeup: PlannedWorkerWakeup) -> bool {
         crossbeam_channel::select! {
             recv(self.command_rx) -> command_result => {
@@ -776,7 +776,7 @@ impl PlayerWorkerRuntime {
         }
     }
 
-    /// Блокируется без timeout, когда playback idle и нет preview deadline-а.
+    /// Блокируется без timeout, когда playback idle.
     fn wait_for_worker_wakeup_until_event(&mut self) -> bool {
         crossbeam_channel::select! {
             recv(self.command_rx) -> command_result => {

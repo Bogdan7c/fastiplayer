@@ -70,8 +70,8 @@ pub use snapshot::{
 };
 pub use state::PlaybackState;
 pub use tick::{
-    PlayerPipelinePause, PlayerSeekPumpStopReason, PlayerTickConfig, PlayerTickContext,
-    PlayerTickPacket, PlayerTickResult, PlayerVideoDropReason, PlayerVideoFrameDrop,
+    PlayerPipelinePause, PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult,
+    PlayerVideoDropReason, PlayerVideoFrameDrop,
 };
 pub use video_backend::{StartedVideoBackend, VideoBackendFactory};
 pub use worker::{

@@ -1258,15 +1258,6 @@ impl PlayerSession {
         self.seek_commit
     }
 
-    /// Preview fast-lane больше не активен в player-core.
-    ///
-    /// Метод оставлен как tick boundary до отдельного cleanup-а scheduler-а:
-    /// final seek должен идти обычным tick path без дополнительного pump-а.
-    #[must_use]
-    pub(crate) fn active_seek_needs_first_frame_pump(&self) -> bool {
-        false
-    }
-
     /// Собирает подробный snapshot активного seek-а для throttled stall logs.
     #[must_use]
     pub(crate) fn active_seek_diagnostics(
