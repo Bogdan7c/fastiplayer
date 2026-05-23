@@ -1,11 +1,20 @@
 # 14. Manual Seek/Scrub Acceptance
 
-Дата: 2026-05-21.
+Дата: 2026-05-23.
 
 Документ описывает ручную acceptance-проверку реального playback после работ по
 seek/scrub recovery. Проверка намеренно живёт вне runtime-кода: `player-core`
 продолжает владеть state machine и structured diagnostics, а checklist и parser
 только читают опубликованные log markers.
+
+Текущий статус seek/scrub:
+
+- ordinary click seek остаётся активным сценарием и должен закрываться обычным
+  final seek commit-ом;
+- drag release временно работает как простой final seek в позицию release через
+  тот же normal seek path;
+- live drag preview удалён из текущего runtime и будет переписан позже с нуля,
+  поэтому acceptance больше не требует preview transaction markers.
 
 ## Архитектура Проверки
 
@@ -15,11 +24,12 @@ seek/scrub recovery. Проверка намеренно живёт вне runti
   audio/video gates, drop counters и `ActiveSeekDiagnosticsSnapshot`.
 - `symphonia-demux` владеет container seek и `TracksChanged` после
   `ResetRequired`.
-- `app-egui` владеет UI-сценарием: click seek, drag, release и пауза.
+- `app-egui` владеет UI-сценарием: click seek, локальный transient drag state,
+  release-to-final-seek и пауза.
 - `scripts/parse-seek-diagnostics.py` не принимает playback-решений и не
   читает private fields. Он связывает строки логов в одну таблицу по уже
   опубликованным fields: `generation`, `target_ms`, `kind`, `blocker`,
-  `*_pts_ms`, drop taxonomy.
+  `*_pts_ms`, drop taxonomy. Parser не ищет старые preview-only markers.
 
 Boundary markers, которые нельзя молча переименовывать без обновления этого
 документа и parser-а:
@@ -39,8 +49,9 @@ Boundary markers, которые нельзя молча переименовы�
 
 - Final seek закрывается событием `Final seek commit завершён`; если нет commit,
   parser должен показать текущий `blocker`.
-- Preview seek не считается fresh без `First post-seek presented frame observed`
-  или визуально подтверждённого live preview.
+- Drag release закрывается тем же final seek contract-ом, что и click seek:
+  demux accepted -> packet -> decoded/presented frame для video media -> final
+  commit.
 - `late` и `queue_overflow` во время seek считаются normal playback drops и
   требуют расследования. `seek_preroll` и `stale_generation` считаются отдельно.
 - `TracksChanged` внутри active seek допустим только если следом есть rebase
@@ -93,18 +104,25 @@ scripts/parse-seek-diagnostics.py --format json /tmp/rustiplayer-seek.log
 проверяет несколько сценариев, parser всё равно выводит одну строку на каждый
 seek transaction.
 
-| ID | Сценарий | Обязательные media | Действие | Acceptance |
-| --- | --- | --- | --- | --- |
-| S1 | Ordinary final seek | M1, M2, M3, M5 | Click-to-seek в середину timeline | Есть demux accepted, packet, decoded frame, presented frame, final commit |
-| S2 | Seek near EOF | M1, M2, M3, M5 | Seek в последние секунды media | Нет indefinite `Seeking`; EOF fallback допустим только как свежий fallback |
-| S3 | Seek near beginning | M1, M2, M3, M5 | Seek в первые секунды media | Generation не orphan-ится, playback продолжает работу |
-| S4 | Multiple rapid seeks | M1, M3, M5 | Быстро выполнить 3-5 click seeks | Latest target wins; старые generations не становятся visible |
-| S5 | Slow drag | M1, M2, M3 | Медленно вести pointer по timeline | На каждое заметное движение появляется fresh preview |
-| S6 | Fast drag | M1, M3, M5 | Быстро провести pointer по timeline | Worker не забивается; нет normal playback drops |
-| S7 | Release immediately after drag start | M1, M3 | Begin drag и сразу release | Если preview не был виден, final seek идёт в latest target |
-| S8 | Pause -> seek -> remains paused | M1, M3, M4 | Pause, затем seek | Commit закрывается, итоговый state остаётся paused |
-| S9 | Playing -> seek -> resumes playing | M1, M2, M3, M5 | Playback playing, затем seek | Commit закрывается, итоговый state возвращается playing |
-| S10 | Audio-only seek | M4 | Seek в середину audio-only | Video gate не блокирует; audio gate даёт понятный blocker или commit |
+| ID | Статус | Сценарий | Обязательные media | Действие | Acceptance |
+| --- | --- | --- | --- | --- | --- |
+| S1 | Active | Ordinary click final seek | M1, M2, M3, M5 | Click-to-seek в середину timeline | Есть demux accepted, packet, decoded frame, presented frame, final commit |
+| S2 | Active | Seek near EOF | M1, M2, M3, M5 | Seek в последние секунды media | Нет indefinite `Seeking`; EOF fallback допустим только как свежий fallback |
+| S3 | Active | Seek near beginning | M1, M2, M3, M5 | Seek в первые секунды media | Generation не orphan-ится, playback продолжает работу |
+| S4 | Active | Multiple rapid click seeks | M1, M3, M5 | Быстро выполнить 3-5 click seeks | Latest final target wins; старые generations не становятся visible |
+| S5 | Removed / pending rewrite | Slow drag live preview | M1, M2, M3 | Медленно вести pointer по timeline | Не входит в текущий PASS; live preview удалён и не должен требовать preview markers |
+| S6 | Removed / pending rewrite | Fast drag live preview | M1, M3, M5 | Быстро провести pointer по timeline | Не входит в текущий PASS; replacement/in-flight preview behavior будет проектироваться заново |
+| S7 | Active | Drag release simple final seek | M1, M2, M3, M5 | Begin drag, вести pointer, release | На release отправляется normal final seek в latest pointer target; acceptance как у S1 |
+| S8 | Active | Release immediately after drag start | M1, M3 | Begin drag и сразу release | Final seek идёт в latest release target без preview precondition |
+| S9 | Active | Pause -> seek -> remains paused | M1, M3, M4 | Pause, затем seek | Commit закрывается, итоговый state остаётся paused |
+| S10 | Active | Playing -> seek -> resumes playing | M1, M2, M3, M5 | Playback playing, затем seek | Commit закрывается, итоговый state возвращается playing |
+| S11 | Active | Audio-only seek | M4 | Seek в середину audio-only | Video gate не блокирует; audio gate даёт понятный blocker или commit |
+
+## Future Scenarios
+
+S5/S6 сохраняют номера как зарезервированные сценарии будущего live preview
+rewrite. До новой архитектуры они не являются acceptance PASS/FAIL критериями и
+не должны добавлять требования к parser-у или текущим runtime log markers.
 
 ## Results Table
 
@@ -114,7 +132,7 @@ seek transaction.
 
 Минимальные правила verdict:
 
-- `PASS`: final/preview цель достигнута, нет stale frame after commit, нет
+- `PASS`: final цель достигнута, нет stale frame after commit, нет
   `late`/`queue_overflow` во время seek.
 - `WARN`: commit есть, но были `stale_generation`, audio soft fallback или
   blocker дольше 250 ms.
@@ -143,6 +161,7 @@ seek transaction.
 `FAIL` и последним известным blocker-ом. Это нужно для зависаний, где именно
 отсутствующее событие является результатом проверки.
 
-Parser не доказывает визуальный UX drag сам по себе. Для slow drag нужно
-сравнить количество preview seek строк с фактическими pointer movements и
-убедиться, что свежий кадр был виден глазами.
+Parser проверяет только текущий final seek contract. Он намеренно не ищет
+preview transaction markers, stale preview replacement, visible-preview
+promotion или in-flight preview replacement, потому что старый live preview core
+удалён.

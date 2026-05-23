@@ -1,12 +1,23 @@
 # 12. План усиления seek/scrub
 
-Актуализировано: 2026-05-20.
+Актуализировано: 2026-05-23.
 
 Этот документ разбивает исправление seek/scrub на короткие сессии. Его можно
 прикладывать к каждой новой сессии вместе с названием нужного шага.
 
 Цель: сохранить уже хорошую плавность текущего механизма и убрать редкие
 залипания, ложные дропы и слабые места расширяемости без переписывания рендера.
+
+## Текущий статус, 2026-05-23
+
+Старый live drag/preview core удалён из текущего runtime. Документ ниже остаётся
+историческим планом и источником технического контекста, но active acceptance
+теперь такая:
+
+- ordinary click seek идёт через normal final seek;
+- drag release временно коммитит latest pointer target через normal final seek;
+- slow/fast live preview не является текущей фичей и не входит в PASS/FAIL
+  критерии до будущей переписи с новой архитектурой.
 
 ## Общие правила для каждой сессии
 
@@ -167,6 +178,11 @@ seek.
 
 ## Сессия 4. Generation token для scrub intent
 
+Статус 2026-05-23: исторический пункт старого live preview plan. В текущем
+runtime aggressive drag не создаёт preview/final intent sequence; release
+коммитится как один normal final seek. Раздел ниже не использовать как active
+prompt без новой архитектурной переписи live preview.
+
 ### Задача
 
 Защитить preview/final seek от устаревших пользовательских intent при агрессивном
@@ -200,6 +216,11 @@ scrub.
 - Устаревшие preview events не могут снять stale state новой операции.
 
 ## Сессия 5. Preview timeout и UI stale semantics
+
+Статус 2026-05-23: исторический пункт старого live preview plan. Текущий active
+contract не использует preview timeout как acceptance-критерий, потому что live
+preview transaction удалён. Раздел ниже не использовать как active prompt без
+новой архитектурной переписи live preview.
 
 ### Задача
 
@@ -279,6 +300,11 @@ scrub.
 
 ## Сессия 7. EndScrub commit policy
 
+Статус 2026-05-23: исторический пункт. Текущий drag release не выбирает
+visible-preview policy; он временно коммитит latest pointer target через normal
+final seek. Раздел ниже не использовать как active prompt без новой
+архитектурной переписи live preview.
+
 ### Задача
 
 Сделать политику завершения scrub явной и тестируемой.
@@ -315,11 +341,13 @@ scrub.
 
 - Поведение release описано одним enum/policy, а не спрятано в ветках session.
 
-### Итог 7-й сессии, 2026-05-15
+### Исторический итог 7-й сессии, 2026-05-15
 
-Статус на конец сессии: перемотка стала рабочей для целевого UX - без обычных
-frame drops, без залипания seek state и без заметной задержки при отпускании
-timeline после уже показанного preview.
+Статус на конец сессии был таким: перемотка стала рабочей для целевого UX - без
+обычных frame drops, без залипания seek state и без заметной задержки при
+отпускании timeline после уже показанного preview. Этот блок оставлен как
+история принятого тогда решения; он не описывает текущий runtime после удаления
+live preview core.
 
 Выбранная по умолчанию policy для timeline release:
 
@@ -346,75 +374,33 @@ policy и честно ждала target frame, но для timeline release э�
 - `CommitLatestTargetWithVisiblePreviewFallback`: hybrid/exact policy для
   сценариев, где важнее exact target, чем мгновенный release.
 
-### Контракт seek semantics, 2026-05-19
+### Текущий контракт seek semantics, 2026-05-23
 
-Этот блок фиксирует routing без изменения runtime behavior. Главная граница:
-`ScrubCommitPolicy` относится только к `EndScrub`, а exact seek commands идут
-через `PlayerCommand::Seek(SeekRequest)`.
+Этот блок заменяет старый visible-preview release contract. Главная граница:
+текущий pointer drag не создаёт live preview transaction, а release коммитит
+latest target через normal final seek.
 
-- Pointer timeline scrub release: `TimelineAction::EndScrubCommitDefault` ->
-  `PlayerCommand::EndScrub { policy: DEFAULT_TIMELINE_RELEASE }`. На текущий
-  момент `DEFAULT_TIMELINE_RELEASE = CommitVisiblePreview`, то есть release
-  latency-first фиксирует последний реально видимый preview.
-- Click-to-seek: текущий `app-egui` mapper оставляет click в том же pointer
-  timeline flow (`BeginScrub` -> `UpdateScrub` -> `EndScrubCommitDefault`) для
-  совместимости поведения. Если click-to-seek будет отделён как exact command,
-  он должен получить отдельный route через `PlayerCommand::Seek` или явную
-  policy `CommitLatestTarget`, а не молча наследовать `CommitVisiblePreview`.
-- Keyboard seek: должен идти через `PlayerCommand::Seek`. Это exact/accurate
-  final target semantics; `ScrubCommitPolicy` здесь не участвует.
-- External/MPRIS seek: `desktop-integration` мапит `Seek`/`SetPosition` в
-  `PlayerCommand::Seek(SeekRequest::absolute(...))`. Это external exact route,
-  не pointer release policy.
-- Future chapter seek: должен использовать `PlayerCommand::Seek` как exact
-  chapter target route. Если понадобится отдельная chapter-specific policy, её
-  нужно добавлять явно, не переиспользуя timeline release default.
+- Pointer timeline drag release: UI хранит transient pointer position локально,
+  а на release отправляет simple final seek в latest pointer target.
+- Compatibility `BeginScrub`/`UpdateScrub`/`PreviewScrub`/`EndScrub` API может
+  сохраняться для публичной формы команд, но не должен стартовать live preview
+  transaction или visible-preview promotion.
+- Click-to-seek остаётся active final seek сценарием. Он не должен зависеть от
+  last visible preview или timeline release policy.
+- Keyboard seek, External/MPRIS seek и future chapter seek используют
+  `PlayerCommand::Seek(SeekRequest)` как exact/final route.
 
-Документированный future config hook без реализации config:
+Зафиксированные текущие edge cases:
 
-- `player.seek.timeline_release_policy = visible-preview/latest-target/hybrid`.
-- Текущее значение fallback-а: `visible-preview`
-  (`ScrubCommitPolicy::CommitVisiblePreview`).
-- Значение config должно влиять только на pointer timeline release route и не
-  менять semantics `PlayerCommand::Seek`.
+- Release immediately after update: normal final seek идёт в latest release
+  target без preview precondition.
+- Release while old preview transaction would have been active: такого active
+  preview transaction в текущем runtime быть не должно.
+- Release after drag movement: acceptance проверяет demux accepted, packets,
+  decoded/presented frame для video media и `Final seek commit завершён`.
 
-Зафиксированные edge cases:
-
-- Release immediately after update: если visible preview ещё нет, default
-  fallback-ится в latest target, чтобы click/очень быстрый release не терялся.
-- Release while preview transaction active: active preview latest target-а
-  promoted to final без второго demux seek.
-- Release after visible preview: default commit закрывается сразу на visible
-  frame, а не ждёт latest target.
-- Worker при `EndScrub` не стартует дополнительный release-preview seek поверх
-  coalesced latest update.
-- Final seek с замороженным audio clock не должен залипать: seek-time scheduler
-  обязан выпустить первый frame на/после target, даже если обычная playback
-  синхронизация ещё не готова.
-
-Проверки, которые подтвердили итог:
-
-- `cargo test -p player-core` - 126 passed.
-- `cargo test -p player-core scrub` - 25 passed.
-- `cargo test -p app-egui timeline` - 8 passed.
-- `cargo check -p player-core -p app-egui`.
-- Ручной GUI-прогон на `test-assets/hdr/LXb3EKWsInQ_2160p60_hdr_vp9_profile2.webm`:
-  в логе `EndScrub policy=CommitVisiblePreview` и `Final seek commit завершён`
-  идут в один timestamp; diagnostics показывали `drops=0`.
-
-Если в будущих сессиях появится расхождение с этим выводом, сначала сверять
-timestamp между `Worker принял EndScrub`, `Session выбирает EndScrub commit policy`
-и `Final seek commit завершён`. Если снова появится задержка, важно отличить:
-
-- задержку preview до release;
-- задержку exact final seek после release;
-- renderer/GPU backpressure;
-- обычный playback drop;
-- ожидаемый seek-discard.
-
-Этот блок фиксирует именно итог 7-й сессии, а не вечную гарантию. Если будущие
-изменения codec/backend, scheduler или render lease path снова поменяют поведение
-scrub, этот итог нужно поправить по фактическим логам.
+Если будущая live preview rewrite вернёт S5/S6, она должна добавить новый явный
+contract, diagnostics markers и tests отдельным архитектурным изменением.
 
 ## Сессия 8. Codec/backend readiness boundary
 
@@ -454,7 +440,8 @@ scrub, этот итог нужно поправить по фактически
 
 ### Задача
 
-Закрепить все изменения тестами, которые имитируют aggressive scrub.
+Закрепить текущий final-seek behavior тестами, которые имитируют aggressive
+drag/release без live preview transaction.
 
 ### Основные файлы
 
@@ -465,9 +452,9 @@ scrub, этот итог нужно поправить по фактически
 
 ### Automated tests
 
-- 1000 coalesced scrub updates, затем commit.
-- Preview interval быстрее, чем decoder target frame arrival.
-- EndScrub во время active preview transaction.
+- 1000 drag updates, затем release commit как normal final seek.
+- Compatibility preview commands сохраняют latest target без demux preview seek.
+- EndScrub без latest target очищает lightweight scrub state без seek-а.
 - Flush fail во время final seek.
 - Present queue full во время seek.
 - EOF fallback после seek около конца файла.
@@ -479,8 +466,10 @@ scrub, этот итог нужно поправить по фактически
 - Local VP9 SDR WebM.
 - Local VP9 HDR/P010 WebM.
 - YouTube VOD через текущий service path.
-- Drag timeline медленно.
-- Drag timeline рывками.
+- Drag timeline медленно: до release виден только transient UI state, на release
+  выполняется final seek.
+- Drag timeline рывками: worker не получает live preview stream, на release
+  выполняется один latest-target final seek.
 - Click-to-seek.
 - Release immediately after drag.
 - Escape during drag according to chosen policy.
@@ -491,7 +480,7 @@ scrub, этот итог нужно поправить по фактически
 
 - В diagnostics нет обычных playback/render drops после seek.
 - Seek-discard виден отдельно и не считается проблемой плавности.
-- UI не зависает в stale или false-fresh состоянии.
+- UI не зависает в stale или false-fresh состоянии и не обещает live preview.
 - Все session-level и smoke tests проходят.
 
 ## Рекомендуемый порядок
