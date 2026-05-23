@@ -2,27 +2,14 @@ use std::time::{Duration, Instant};
 
 use media_core::{DemuxSeekRequest, MediaTime};
 
+use crate::SeekMode;
 use crate::seek_controller::PlaybackResumeIntent;
-use crate::{ScrubGeneration, SeekMode};
-
-/// Тип seek transaction-а: финальный commit меняет playback position, preview только показывает кадр.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SeekCommitKind {
-    /// Обычный seek или завершение scrub-а с фиксацией позиции.
-    Final,
-
-    /// Live preview во время активного scrub-а без закрытия scrub state.
-    Preview,
-}
 
 /// Runtime state одного commit seek-а внутри playback pipeline.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SeekCommitState {
     /// Поколение packets/frames, валидное для этой операции.
     pub generation: u64,
-
-    /// Пользовательский scrub intent, если transaction родился из interactive scrub.
-    pub scrub_generation: Option<ScrubGeneration>,
 
     /// Цель commit-а на нормализованной media timeline.
     pub target_position: MediaTime,
@@ -35,9 +22,6 @@ pub(crate) struct SeekCommitState {
 
     /// Playback-состояние, которое нужно применить после прохождения gates.
     pub resume_intent: PlaybackResumeIntent,
-
-    /// Поведение завершения commit-а.
-    pub kind: SeekCommitKind,
 }
 
 impl SeekCommitState {
@@ -61,17 +45,12 @@ pub(crate) enum SeekDemuxRequestError {
     },
 }
 
-/// Выбирает demux seek mode для текущего seek transaction-а.
+/// Выбирает final demux seek request для текущего seek transaction-а.
 ///
-/// Final seek сохраняет точный decode-safe contract: demuxer начинает до target,
-/// а session сама решает, какой свежий frame можно считать завершением transition-а.
-///
-/// Live preview является latency-first boundary: во время drag важнее быстро
-/// получить новый frame текущего generation-а, чем ждать exact target frame.
-/// Release остаётся отдельным final transition-ом и не наследует эту грубую
-/// container-level семантику.
+/// Video accurate seek остаётся decode-safe: demuxer начинает до target,
+/// а session закрывает transition по первому свежему frame-у текущего generation-а.
+/// Audio-only accurate seek сохраняет container-accurate contract без video preroll.
 pub(crate) fn demux_seek_request_for_transaction(
-    commit_kind: SeekCommitKind,
     has_video_track: bool,
     target_duration: Duration,
     seek_mode: SeekMode,
@@ -80,14 +59,11 @@ pub(crate) fn demux_seek_request_for_transaction(
         return Err(SeekDemuxRequestError::UnsupportedSeekMode { mode: seek_mode });
     }
 
-    match commit_kind {
-        SeekCommitKind::Preview => Ok(DemuxSeekRequest::preview(target_duration)),
-        SeekCommitKind::Final => Ok(final_demux_seek_request(
-            has_video_track,
-            target_duration,
-            seek_mode,
-        )),
-    }
+    Ok(final_demux_seek_request(
+        has_video_track,
+        target_duration,
+        seek_mode,
+    ))
 }
 
 /// Строит финальный demux request без потери public `SeekMode`.
@@ -112,22 +88,16 @@ mod tests {
     use media_core::DemuxSeekMode;
 
     fn request_mode(
-        commit_kind: SeekCommitKind,
         has_video_track: bool,
         seek_mode: SeekMode,
     ) -> Result<DemuxSeekMode, SeekDemuxRequestError> {
-        demux_seek_request_for_transaction(
-            commit_kind,
-            has_video_track,
-            Duration::from_millis(1_500),
-            seek_mode,
-        )
-        .map(|request| request.mode)
+        demux_seek_request_for_transaction(has_video_track, Duration::from_millis(1_500), seek_mode)
+            .map(|request| request.mode)
     }
 
     #[test]
     fn accurate_audio_only_final_seek_stays_container_accurate() {
-        let mode = request_mode(SeekCommitKind::Final, false, SeekMode::Accurate)
+        let mode = request_mode(false, SeekMode::Accurate)
             .expect("audio-only accurate seek должен поддерживаться");
 
         assert_eq!(mode, DemuxSeekMode::Accurate);
@@ -135,7 +105,7 @@ mod tests {
 
     #[test]
     fn accurate_video_final_seek_uses_decode_safe_preroll_request() {
-        let mode = request_mode(SeekCommitKind::Final, true, SeekMode::Accurate)
+        let mode = request_mode(true, SeekMode::Accurate)
             .expect("video accurate seek должен поддерживаться через preroll");
 
         assert_eq!(mode, DemuxSeekMode::DecodePointBefore);
@@ -143,31 +113,15 @@ mod tests {
 
     #[test]
     fn keyframe_before_final_seek_maps_to_decode_point_before() {
-        let mode = request_mode(SeekCommitKind::Final, true, SeekMode::KeyframeBefore)
+        let mode = request_mode(true, SeekMode::KeyframeBefore)
             .expect("keyframe-before seek должен поддерживаться");
 
         assert_eq!(mode, DemuxSeekMode::DecodePointBefore);
     }
 
     #[test]
-    fn preview_seek_uses_fast_preview_demux_policy() {
-        let mode = request_mode(SeekCommitKind::Preview, true, SeekMode::Accurate)
-            .expect("preview seek должен поддерживаться");
-
-        assert_eq!(mode, DemuxSeekMode::Preview);
-    }
-
-    #[test]
-    fn audio_only_preview_seek_uses_same_fast_preview_policy() {
-        let mode = request_mode(SeekCommitKind::Preview, false, SeekMode::Accurate)
-            .expect("audio-only preview seek должен поддерживаться");
-
-        assert_eq!(mode, DemuxSeekMode::Preview);
-    }
-
-    #[test]
     fn keyframe_after_is_explicitly_unsupported() {
-        let error = request_mode(SeekCommitKind::Final, true, SeekMode::KeyframeAfter)
+        let error = request_mode(true, SeekMode::KeyframeAfter)
             .expect_err("keyframe-after пока должен отклоняться явно");
 
         assert_eq!(

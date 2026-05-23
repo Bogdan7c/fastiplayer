@@ -129,9 +129,6 @@ pub struct PlayerTickConfig {
     /// Максимальное время ожидания seek commit gates.
     pub seek_commit_timeout: Duration,
 
-    /// Максимальное время ожидания live preview seek gates.
-    pub seek_preview_timeout: Duration,
-
     /// Минимальный audio buffer перед resume после seek.
     pub seek_resume_audio_min_buffer_ms: f64,
 
@@ -179,7 +176,6 @@ impl Default for PlayerTickConfig {
             audio_demux_low_water_mark_ms: 100.0,
             audio_preroll_target_ms: 50.0,
             seek_commit_timeout: Duration::from_millis(10_000),
-            seek_preview_timeout: Duration::from_millis(100),
             seek_resume_audio_min_buffer_ms: 50.0,
             seek_resume_audio_gate_timeout: Duration::from_millis(250),
             seek_resume_video_min_ready_frames: 3,
@@ -232,7 +228,6 @@ impl From<&AppConfig> for PlayerTickConfig {
                 .max(config.player.seek.resume_audio_min_buffer_ms as f64),
             audio_preroll_target_ms: config.player.seek.resume_audio_min_buffer_ms as f64,
             seek_commit_timeout: Duration::from_millis(config.player.seek.commit_timeout_ms),
-            seek_preview_timeout: Duration::from_millis(config.player.seek.live_preview_budget_ms),
             seek_resume_audio_min_buffer_ms: config.player.seek.resume_audio_min_buffer_ms as f64,
             seek_resume_audio_gate_timeout: Duration::from_millis(
                 config.player.seek.resume_audio_gate_timeout_ms,
@@ -2440,13 +2435,13 @@ fn run_adaptive_catch_up(
     }
 }
 
-/// Выполняет bounded fast-lane только для active preview seek до первого fresh frame-а.
+/// Сохраняет legacy hook bounded pump-а до отдельного scheduler cleanup-а.
 fn run_active_seek_pump(
     session: &mut PlayerSession,
     tick_config: &PlayerTickConfig,
     tick_result: &mut PlayerTickResult,
 ) {
-    if !session.active_preview_seek_needs_first_frame_pump() {
+    if !session.active_seek_needs_first_frame_pump() {
         return;
     }
 
@@ -2462,7 +2457,7 @@ fn run_active_seek_pump(
     }
 
     loop {
-        if !session.active_preview_seek_needs_first_frame_pump() {
+        if !session.active_seek_needs_first_frame_pump() {
             tick_result.record_seek_pump_stop_reason(PlayerSeekPumpStopReason::NoActivePreviewSeek);
             break;
         }
@@ -2485,7 +2480,7 @@ fn run_active_seek_pump(
             tick_result.record_seek_pump_progress();
         }
 
-        if !session.active_preview_seek_needs_first_frame_pump() {
+        if !session.active_seek_needs_first_frame_pump() {
             tick_result
                 .record_seek_pump_stop_reason(PlayerSeekPumpStopReason::PreviewFramePresented);
             break;

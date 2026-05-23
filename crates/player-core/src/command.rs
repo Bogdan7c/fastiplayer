@@ -283,7 +283,7 @@ pub enum PlayerCommand {
     /// Запомнить latest target compatibility scrub-а без запуска live preview seek-а.
     ///
     /// Временный fallback трактует preview как `UpdateScrub`: target сохраняется
-    /// для `EndScrub`, но `SeekCommitKind::Preview` и demux preview не стартуют.
+    /// для `EndScrub`, но player-core preview transaction не стартует.
     PreviewScrub(SeekRequest),
 
     /// Завершить compatibility scrub обычным final seek-ом в latest target.

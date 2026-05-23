@@ -1025,6 +1025,7 @@ impl PlaybackPipeline {
 
     /// Проверяет, есть ли queued frame текущего seek generation-а для final target.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn queued_video_frame_covers_target_for_generation(
         &self,
         target: Duration,

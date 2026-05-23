@@ -69,9 +69,6 @@ const FINAL_SEEK_STALL_LOG_MIN_AFTER: Duration = Duration::from_millis(250);
 /// Максимальный возраст final seek-а перед первым stall log-ом.
 const FINAL_SEEK_STALL_LOG_MAX_AFTER: Duration = Duration::from_millis(1_000);
 
-/// Максимальный возраст preview seek-а перед stall log-ом.
-const PREVIEW_SEEK_STALL_LOG_MAX_AFTER: Duration = Duration::from_millis(250);
-
 /// Минимальный интервал между повторными active seek stall logs.
 const SEEK_STALL_LOG_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -438,7 +435,7 @@ impl TryFrom<PlayerCommand> for WorkerPlayerCommand {
 
 impl WorkerPlayerCommand {
     /// Возвращает `true` для external boundary команд, которые закрывают active scrub lifecycle.
-    fn invalidates_sender_scrub_generation(&self) -> bool {
+    fn invalidates_sender_scrub_token(&self) -> bool {
         matches!(self, Self::OpenMedia(_) | Self::Stop | Self::Shutdown)
     }
 
@@ -502,14 +499,14 @@ impl PlayerCommandSender {
         &self,
         command: WorkerPlayerCommand,
     ) -> Result<(), PlayerWorkerSendError> {
-        let invalidates_scrub_generation = command.invalidates_sender_scrub_generation();
+        let invalidates_scrub_token = command.invalidates_sender_scrub_token();
 
         self.command_tx
             .try_send(WorkerCommand::Player(command))
             .map_err(PlayerWorkerSendError::from)?;
 
-        if invalidates_scrub_generation {
-            self.invalidate_sender_scrub_generation();
+        if invalidates_scrub_token {
+            self.invalidate_sender_scrub_token();
         }
 
         Ok(())
@@ -607,8 +604,8 @@ impl PlayerCommandSender {
         Ok(())
     }
 
-    /// Инвалидирует sender-side scrub generation после внешней boundary-команды.
-    fn invalidate_sender_scrub_generation(&self) {
+    /// Инвалидирует sender-side scrub token после внешней boundary-команды.
+    fn invalidate_sender_scrub_token(&self) {
         match self.scrub_command_sequencer_guard().interrupt_scrub() {
             ScrubSequencerInterruptDecision::Interrupted {
                 previous,
@@ -617,7 +614,7 @@ impl PlayerCommandSender {
                 debug!(
                     previous_generation = previous.as_u64(),
                     generation = generation.as_u64(),
-                    "Sender interrupted active scrub generation"
+                    "Sender interrupted active scrub token"
                 );
             }
             ScrubSequencerInterruptDecision::Idle {
@@ -629,7 +626,7 @@ impl PlayerCommandSender {
                     previous_generation = previous.as_u64(),
                     generation = generation.as_u64(),
                     reason = ?reason,
-                    "Sender advanced idle scrub generation for external boundary"
+                    "Sender advanced idle scrub token for external boundary"
                 );
             }
         }
@@ -1854,10 +1851,8 @@ impl PlayerWorkerRuntime {
             return;
         };
 
-        if self.session.active_preview_matches(preview.intent) {
-            return;
-        }
-
+        // PlayerSession больше не создаёт preview seek transaction, поэтому marker
+        // не может подтверждаться через active seek и должен закрываться сразу.
         self.scrub_driver.clear_in_flight_preview(preview.intent);
     }
 
@@ -1879,15 +1874,9 @@ impl PlayerWorkerRuntime {
 
 /// Возвращает возраст seek-а, после которого diagnostics warning становится полезным.
 fn seek_stall_log_after(
-    active_seek: ActiveSeekDiagnosticsSnapshot,
+    _active_seek: ActiveSeekDiagnosticsSnapshot,
     tick_config: PlayerTickConfig,
 ) -> Duration {
-    if active_seek.kind == "preview" {
-        return tick_config
-            .seek_preview_timeout
-            .min(PREVIEW_SEEK_STALL_LOG_MAX_AFTER);
-    }
-
     tick_config
         .seek_commit_timeout
         .mul_f64(0.05)
@@ -1910,7 +1899,6 @@ fn log_active_seek_stall(
         blocker_state = ?active_seek.blocker,
         generation = active_seek.generation,
         pipeline_generation = active_seek.pipeline_generation,
-        scrub_generation = ?active_seek.scrub_generation,
         selected_video_track_id = ?active_seek.selected_video_track_id,
         selected_audio_track_id = ?active_seek.selected_audio_track_id,
         age_ms = duration_to_millis(active_seek.age),
@@ -1925,7 +1913,6 @@ fn log_active_seek_stall(
         video_gate_ready = active_seek.video_gate_ready,
         audio_gate_ready = active_seek.audio_gate_ready,
         target_frame_presented = active_seek.target_frame_presented,
-        force_present_for_preview_seek = active_seek.force_present_for_preview_seek,
         ready_video_frames = active_seek.ready_video_frames,
         required_video_frames = active_seek.required_video_frames,
         present_frame_pts_ms = ?active_seek.present_frame_pts.map(duration_to_millis),
@@ -1933,7 +1920,6 @@ fn log_active_seek_stall(
         demuxing_active = active_seek.demuxing_active,
         draining_after_eof = active_seek.draining_after_eof,
         stale_frame = active_seek.stale_frame,
-        preview_state = ?active_seek.preview_state,
         stale_generation_discards = active_seek.stale_generation_discards,
         seek_bootstrap_dropped_until_keyframe = active_seek
             .seek_bootstrap
@@ -1994,7 +1980,6 @@ mod tests {
     use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
 
     use super::*;
-    use crate::seek_state::SeekCommitKind;
     use crate::{MediaSource, PlaybackState, SeekTarget};
 
     fn worker_config_for_tests() -> PlayerWorkerConfig {
@@ -2023,10 +2008,6 @@ mod tests {
         assert_eq!(
             worker_config.live_scrub_preview_interval,
             Duration::from_millis(33)
-        );
-        assert_eq!(
-            worker_config.tick_config.seek_preview_timeout,
-            Duration::from_millis(100)
         );
         assert_eq!(
             worker_config.live_scrub_preview_replace_after,
@@ -2838,7 +2819,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_preview_scrub_generation_is_ignored_before_session() {
+    fn stale_preview_scrub_token_is_ignored_before_session() {
         let mut runtime = runtime_for_tests(Instant::now());
         let first_generation = ScrubGeneration::default().next();
         let second_generation = first_generation.next();
@@ -2868,7 +2849,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_end_scrub_generation_does_not_commit_new_timeline() {
+    fn stale_end_scrub_token_does_not_commit_new_timeline() {
         let mut runtime = runtime_for_tests(Instant::now());
         let first_generation = ScrubGeneration::default().next();
         let second_generation = first_generation.next();
@@ -3183,7 +3164,6 @@ mod tests {
             .session
             .seek_commit()
             .expect("release должен открыть ordinary final seek");
-        assert_eq!(seek_commit.kind, SeekCommitKind::Final);
         assert_eq!(seek_commit.target_position, MediaTime::from_secs(20));
         assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
         assert_eq!(
@@ -3241,7 +3221,6 @@ mod tests {
             .session
             .seek_commit()
             .expect("release должен открыть ordinary final seek");
-        assert_eq!(seek_commit.kind, SeekCommitKind::Final);
         assert_eq!(seek_commit.target_position, MediaTime::from_secs(20));
         assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Pause);
         assert_eq!(
@@ -3284,7 +3263,6 @@ mod tests {
             .session
             .seek_commit()
             .expect("latest-target fallback должен оставить active final seek");
-        assert_eq!(seek_commit.kind, SeekCommitKind::Final);
         assert_eq!(seek_commit.target_position, MediaTime::from_secs(20));
         assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
         assert_eq!(
