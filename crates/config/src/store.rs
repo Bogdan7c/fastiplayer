@@ -388,7 +388,7 @@ schema_version = 2
 
     /// Проверяет, что старые preview-настройки seek не остаются молча принятыми.
     #[test]
-    fn legacy_seek_preview_config_fields_are_rejected() {
+    fn legacy_scrub_config_fields_are_rejected() {
         for legacy_field in [
             format!("{} = 33", concat!("live", "_interval_ms")),
             format!("{} = 100", concat!("live", "_preview_budget_ms")),

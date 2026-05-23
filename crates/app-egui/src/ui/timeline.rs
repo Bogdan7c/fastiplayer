@@ -416,9 +416,9 @@ mod tests {
         .expect("test timeline is seekable")
     }
 
-    /// Проверяет, что pointer down сам по себе не создаёт scrub generation.
+    /// Проверяет, что pointer down сам по себе не создаёт drag/seek action.
     #[test]
-    fn pointer_down_before_click_does_not_create_scrub_generation() {
+    fn pointer_down_before_click_does_not_create_drag_or_seek_action() {
         let timeline = seekable_timeline();
         let mut state = TimelineUiState::default();
 
