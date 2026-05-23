@@ -1697,7 +1697,7 @@ mod tests {
     }
 
     #[test]
-    fn public_scrub_commands_use_session_fallback_final_seek() {
+    fn public_scrub_api_uses_session_fallback_final_seek() {
         let mut runtime = runtime_for_tests(Instant::now());
         let seek_request_log = Arc::new(Mutex::new(Vec::new()));
 

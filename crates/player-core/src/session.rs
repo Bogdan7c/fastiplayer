@@ -15,19 +15,18 @@ use tracing::{debug, info, trace, warn};
 
 use crate::media_opening::PreparedMedia;
 use crate::pipeline::AudioSeekRuntimeState;
-use crate::seek_controller::PlaybackResumeIntent;
 use crate::seek_state::{
-    SeekCommitState, SeekDemuxRequestError, demux_seek_request_for_transaction,
+    PlaybackResumeIntent, SeekCommitState, SeekDemuxRequestError,
+    demux_seek_request_for_transaction,
 };
 use crate::{
     ActiveSeekDiagnosticsSnapshot, FrameCounters, MediaOpenRequest, MediaSource, MediaSummary,
     PipelineLatencyStage, PipelinePauseReason, PipelineQueueDepthSnapshot, PlaybackDiagnostics,
     PlaybackDiagnosticsLogSummary, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError,
     PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection,
-    ScrubCommitIntent, ScrubGeneration, ScrubUpdateIntent, SeekAudioResumeInfo,
-    SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo, SeekProgressBlocker, SeekRequest,
-    SeekTargetFramePresentation, TextureSlotPressureSnapshot, TrackId, TrackSelectionSnapshot,
-    VideoBackendFactory, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
+    SeekAudioResumeInfo, SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo, SeekProgressBlocker,
+    SeekRequest, SeekTargetFramePresentation, TextureSlotPressureSnapshot, TrackId,
+    TrackSelectionSnapshot, VideoBackendFactory, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
 };
 
 mod render_leases;
@@ -350,14 +349,11 @@ pub struct PlayerSession {
     /// Одноразовые markers baseline seek diagnostics без влияния на playback.
     seek_trace: SeekTraceState,
 
-    /// Active token lightweight scrub-а; latest target хранится отдельно как `SeekRequest`.
-    active_scrub_token: Option<ScrubGeneration>,
+    /// Активен ли compatibility scrub без live-preview transaction.
+    simple_scrub_active: bool,
 
     /// Последний request compatibility scrub API без live-preview transaction-а.
     simple_scrub_latest_request: Option<SeekRequest>,
-
-    /// Локальный token seed для прямых unit-test вызовов `dispatch_command`.
-    direct_scrub_token_seed: ScrubGeneration,
 
     /// Final seek near EOF завершился свежим frame-ом до requested target.
     seek_eof_fallback_video_position: Option<MediaTime>,
@@ -447,22 +443,10 @@ impl PlayerSession {
             PlayerCommand::Pause => self.pause(),
             PlayerCommand::TogglePlayback => self.toggle_playback(),
             PlayerCommand::Seek(request) => self.seek(request),
-            PlayerCommand::BeginScrub => {
-                let generation = self.next_direct_scrub_token();
-                self.begin_scrub(generation)
-            }
-            PlayerCommand::UpdateScrub(request) => {
-                let generation = self.current_or_next_direct_scrub_token();
-                self.update_scrub(ScrubUpdateIntent::new(generation, request))
-            }
-            PlayerCommand::PreviewScrub(request) => {
-                let generation = self.current_or_next_direct_scrub_token();
-                self.preview_scrub(ScrubUpdateIntent::new(generation, request))
-            }
-            PlayerCommand::EndScrub { policy } => {
-                let generation = self.active_scrub_token.unwrap_or_default();
-                self.end_scrub(ScrubCommitIntent::new(generation, policy))
-            }
+            PlayerCommand::BeginScrub => self.begin_scrub(),
+            PlayerCommand::UpdateScrub(request) => self.update_scrub(request),
+            PlayerCommand::PreviewScrub(request) => self.preview_scrub(request),
+            PlayerCommand::EndScrub { policy: _ } => self.end_scrub(),
             PlayerCommand::Stop => self.stop(),
             PlayerCommand::SetVolume(volume) => self.set_volume(volume),
             PlayerCommand::SelectVideoTrack(track_id) => self.select_video_track(track_id),
@@ -471,24 +455,6 @@ impl PlayerSession {
             PlayerCommand::SelectQuality(selection) => self.select_quality(selection),
             PlayerCommand::ReloadConfig => self.reload_config(),
             PlayerCommand::Shutdown => self.shutdown(),
-        }
-    }
-
-    /// Выдаёт token для прямого `PlayerSession::dispatch_command` в unit tests.
-    fn next_direct_scrub_token(&mut self) -> ScrubGeneration {
-        self.direct_scrub_token_seed = self.direct_scrub_token_seed.next();
-        self.direct_scrub_token_seed
-    }
-
-    /// Возвращает текущий direct scrub token или начинает legacy direct scrub.
-    fn current_or_next_direct_scrub_token(&mut self) -> ScrubGeneration {
-        match self.active_scrub_token {
-            Some(generation) => generation,
-            None => {
-                let generation = self.next_direct_scrub_token();
-                self.active_scrub_token = Some(generation);
-                generation
-            }
         }
     }
 
@@ -817,7 +783,7 @@ impl PlayerSession {
         self.pending_autoplay = false;
         self.seek_commit = None;
         self.seek_trace.clear();
-        self.active_scrub_token = None;
+        self.simple_scrub_active = false;
         self.simple_scrub_latest_request = None;
         self.seek_eof_fallback_video_position = None;
         self.snapshot.source_label = None;
@@ -2144,7 +2110,7 @@ impl PlayerSession {
         );
         self.seek_commit = None;
         self.seek_trace.clear();
-        self.active_scrub_token = None;
+        self.simple_scrub_active = false;
         self.simple_scrub_latest_request = None;
         self.seek_eof_fallback_video_position = None;
         self.clear_seek_preroll_fallback_frame();
@@ -2234,7 +2200,7 @@ impl PlayerSession {
     ) {
         self.seek_commit = None;
         self.seek_trace.clear();
-        self.active_scrub_token = None;
+        self.simple_scrub_active = false;
         self.simple_scrub_latest_request = None;
         self.seek_eof_fallback_video_position = None;
         self.clear_seek_preroll_fallback_frame();
@@ -2429,7 +2395,7 @@ impl PlayerSession {
         let target_position = self.resolve_seek_target(request);
         self.pending_events
             .push(PlayerEvent::SeekRequested(request));
-        self.active_scrub_token = None;
+        self.simple_scrub_active = false;
         self.simple_scrub_latest_request = None;
         self.snapshot.timeline.scrubbing = false;
 
@@ -2446,9 +2412,9 @@ impl PlayerSession {
     }
 
     /// Начинает compatibility scrub на уровне контракта без запуска demux seek.
-    fn begin_scrub(&mut self, generation: ScrubGeneration) -> PlayerResult<()> {
+    fn begin_scrub(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        self.active_scrub_token = Some(generation);
+        self.simple_scrub_active = true;
         self.simple_scrub_latest_request = None;
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = false;
@@ -2458,24 +2424,18 @@ impl PlayerSession {
     }
 
     /// Запоминает последнюю цель scrub без изменения текущей playback позиции.
-    fn update_scrub(&mut self, intent: ScrubUpdateIntent) -> PlayerResult<()> {
+    fn update_scrub(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        if self.active_scrub_token != Some(intent.generation) {
-            return Ok(());
-        }
-
-        self.store_simple_scrub_request(intent.request);
+        self.simple_scrub_active = true;
+        self.store_simple_scrub_request(request);
         Ok(())
     }
 
     /// Сохраняет preview request как latest target без запуска live preview seek-а.
-    fn preview_scrub(&mut self, intent: ScrubUpdateIntent) -> PlayerResult<()> {
+    fn preview_scrub(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        if self.active_scrub_token != Some(intent.generation) {
-            return Ok(());
-        }
-
-        self.store_simple_scrub_request(intent.request);
+        self.simple_scrub_active = true;
+        self.store_simple_scrub_request(request);
         Ok(())
     }
 
@@ -2492,18 +2452,15 @@ impl PlayerSession {
     }
 
     /// Завершает compatibility scrub и превращает latest target в обычный final seek.
-    fn end_scrub(&mut self, intent: ScrubCommitIntent) -> PlayerResult<()> {
+    fn end_scrub(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        let Some(active_generation) = self.active_scrub_token else {
+        if !self.simple_scrub_active {
             self.finish_simple_scrub_without_seek();
-            return Ok(());
-        };
-        if active_generation != intent.generation {
             return Ok(());
         }
 
         let latest_request = self.simple_scrub_latest_request.take();
-        self.active_scrub_token = None;
+        self.simple_scrub_active = false;
         self.finish_simple_scrub_without_seek();
         if let Some(request) = latest_request {
             self.seek(request)?;
@@ -2513,6 +2470,7 @@ impl PlayerSession {
 
     /// Сбрасывает только lightweight scrub-флаги, не трогая текущий active seek.
     fn finish_simple_scrub_without_seek(&mut self) {
+        self.simple_scrub_active = false;
         self.simple_scrub_latest_request = None;
         self.snapshot.timeline.scrubbing = false;
         self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
@@ -2548,7 +2506,7 @@ impl PlayerSession {
         self.snapshot.timeline.stale_frame = true;
         self.snapshot.timeline.target_position = None;
         self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
-        self.active_scrub_token = None;
+        self.simple_scrub_active = false;
         self.simple_scrub_latest_request = None;
         self.snapshot.timeline.scrubbing = false;
         self.set_playback_state(PlaybackState::Paused);
@@ -2696,7 +2654,7 @@ impl PlayerSession {
             Err(error) => {
                 self.seek_commit = None;
                 self.seek_trace.clear();
-                self.active_scrub_token = None;
+                self.simple_scrub_active = false;
                 self.simple_scrub_latest_request = None;
                 self.snapshot.timeline.scrubbing = false;
                 self.snapshot.timeline.seeking = false;
@@ -3327,9 +3285,8 @@ impl Default for PlayerSession {
             capabilities: None,
             seek_commit: None,
             seek_trace: SeekTraceState::default(),
-            active_scrub_token: None,
+            simple_scrub_active: false,
             simple_scrub_latest_request: None,
-            direct_scrub_token_seed: ScrubGeneration::default(),
             seek_eof_fallback_video_position: None,
         }
     }
@@ -3533,14 +3490,11 @@ mod tests {
     }
 
     #[test]
-    fn stale_scrub_end_keeps_active_state_without_resetting_unrelated_seek_state() {
-        let generation = ScrubGeneration::default().next();
-        let stale_generation = generation.next();
+    fn inactive_end_scrub_clears_simple_state_without_resetting_unrelated_seek_state() {
         let mut session = PlayerSession::new();
 
-        session.direct_scrub_token_seed = stale_generation.next();
         session.seek_eof_fallback_video_position = Some(MediaTime::from_secs(29));
-        session.active_scrub_token = Some(generation);
+        session.simple_scrub_active = false;
         session.simple_scrub_latest_request = Some(session_scrub_request(17, SeekMode::Accurate));
         session.seek_commit = Some(SeekCommitState {
             generation: 77,
@@ -3550,19 +3504,10 @@ mod tests {
             resume_intent: PlaybackResumeIntent::Pause,
         });
 
-        session
-            .end_scrub(ScrubCommitIntent::new(
-                stale_generation,
-                ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-            ))
-            .unwrap();
+        session.end_scrub().unwrap();
 
-        assert_eq!(session.active_scrub_token, Some(generation));
-        assert_eq!(
-            session.simple_scrub_latest_request,
-            Some(session_scrub_request(17, SeekMode::Accurate))
-        );
-        assert_eq!(session.direct_scrub_token_seed, stale_generation.next());
+        assert!(!session.simple_scrub_active);
+        assert_eq!(session.simple_scrub_latest_request, None);
         assert_eq!(
             session.seek_eof_fallback_video_position,
             Some(MediaTime::from_secs(29))
@@ -6092,16 +6037,13 @@ mod tests {
     }
 
     #[test]
-    fn direct_dispatch_scrub_commands_remain_session_compatibility_path() {
+    fn direct_dispatch_scrub_api_remains_session_compatibility_path() {
         let mut session = PlayerSession::new();
         install_fake_media(&mut session, Vec::new());
         let request = SeekRequest::absolute(MediaTime::from_secs(3));
 
         session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
-        assert_eq!(
-            session.active_scrub_token,
-            Some(ScrubGeneration::default().next())
-        );
+        assert!(session.simple_scrub_active);
 
         session
             .dispatch_command(PlayerCommand::UpdateScrub(request))
