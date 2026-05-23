@@ -26,8 +26,8 @@ use crate::{
     PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection,
     ScrubCommitIntent, ScrubGeneration, ScrubUpdateIntent, SeekAudioResumeInfo,
     SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo, SeekProgressBlocker, SeekRequest,
-    SeekTargetFramePresentation, SessionScrubCommand, TextureSlotPressureSnapshot, TrackId,
-    TrackSelectionSnapshot, VideoBackendFactory, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
+    SeekTargetFramePresentation, TextureSlotPressureSnapshot, TrackId, TrackSelectionSnapshot,
+    VideoBackendFactory, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
 };
 
 mod render_leases;
@@ -471,19 +471,6 @@ impl PlayerSession {
             PlayerCommand::SelectQuality(selection) => self.select_quality(selection),
             PlayerCommand::ReloadConfig => self.reload_config(),
             PlayerCommand::Shutdown => self.shutdown(),
-        }
-    }
-
-    /// Применяет scrub-команду с generation, выданным worker boundary.
-    pub(crate) fn dispatch_scrub_command(
-        &mut self,
-        command: SessionScrubCommand,
-    ) -> PlayerResult<()> {
-        match command {
-            SessionScrubCommand::Begin { generation } => self.begin_scrub(generation),
-            SessionScrubCommand::Update(intent) => self.update_scrub(intent),
-            SessionScrubCommand::Preview(intent) => self.preview_scrub(intent),
-            SessionScrubCommand::End(intent) => self.end_scrub(intent),
         }
     }
 
@@ -1837,29 +1824,6 @@ impl PlayerSession {
         }
 
         now.saturating_duration_since(seek_commit.started_at) >= resume_audio_gate_timeout
-    }
-
-    /// Переопределяет resume intent у уже запущенного seek transaction-а.
-    ///
-    /// Worker использует это после `EndScrub`: сама session видит временную
-    /// pause-команду, которой scrub заглушил audio, а исходное желание
-    /// пользователя продолжить playback хранится выше, в `SeekController`.
-    pub(crate) fn override_active_seek_resume_intent(
-        &mut self,
-        resume_intent: PlaybackResumeIntent,
-    ) -> bool {
-        let Some(seek_commit) = self.seek_commit.as_mut() else {
-            return false;
-        };
-
-        seek_commit.resume_intent = resume_intent;
-        self.set_playback_state(PlaybackState::Seeking);
-
-        if resume_intent == PlaybackResumeIntent::Pause {
-            self.pause_audio_output_for_seek();
-        }
-
-        true
     }
 
     /// Video gate готов, когда текущая seek policy увидела нужный frame.
@@ -7254,7 +7218,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_scrub_resume_intent_survives_temporary_pause() {
+    fn direct_scrub_pause_command_sets_pause_resume_intent() {
         let mut session = PlayerSession::new();
         install_fake_media(&mut session, Vec::new());
 
@@ -7278,7 +7242,6 @@ mod tests {
                 .map(|seek_commit| seek_commit.resume_intent),
             Some(PlaybackResumeIntent::Pause)
         );
-        assert!(session.override_active_seek_resume_intent(PlaybackResumeIntent::Play));
 
         session.finish_seek_commit_if_ready_for_tests(
             Instant::now(),
@@ -7288,7 +7251,7 @@ mod tests {
             1,
         );
 
-        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
         assert!(!session.snapshot().timeline.seeking);
     }
 

@@ -13,8 +13,6 @@ mod event;
 mod media_opening;
 mod pipeline;
 mod render_lease_bridge;
-mod scrub_command;
-mod scrub_driver;
 mod seek_controller;
 mod seek_state;
 mod session;
@@ -29,7 +27,7 @@ pub use command::{
     MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, ScrubCommitPolicy,
     ScrubGeneration, SeekMode, SeekRequest, SeekTarget,
 };
-pub(crate) use command::{ScrubCommitIntent, ScrubUpdateIntent, SessionScrubCommand};
+pub(crate) use command::{ScrubCommitIntent, ScrubUpdateIntent};
 #[cfg(test)]
 pub(crate) use decoder_boundary::DecodeBackpressureReason;
 pub(crate) use decoder_boundary::{
@@ -65,9 +63,7 @@ pub use render_lease_bridge::{
     PresentFrameResourceKind, PresentFrameResourceLookup, PresentFrameTextureViewLookup,
     PresentFrameTextureViews, PresentFrameWgpuTextureViews,
 };
-pub use seek_controller::{
-    PlaybackResumeIntent, SeekController, SeekControllerDiagnostics, SeekControllerMode,
-};
+pub use seek_controller::PlaybackResumeIntent;
 pub use session::PlayerSession;
 pub use snapshot::{
     AudioBufferSnapshot, BackendSnapshot, FrameCounters, PlayerSnapshot, QualitySummary,

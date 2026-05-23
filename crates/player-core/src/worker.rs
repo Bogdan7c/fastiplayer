@@ -1,11 +1,9 @@
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
-use media_core::{MediaTime, TrackId};
 use tracing::{debug, warn};
 
 #[cfg(test)]
@@ -16,16 +14,6 @@ use crate::render_lease_bridge::{
 use crate::render_lease_bridge::{
     PlayerPresentFrame, PresentFrameLease, RenderLeaseBridge, RenderLeaseBridgeClient,
 };
-use crate::scrub_command::{
-    ScrubCoalescedUpdateDecision, ScrubCoalescerSubmitError, ScrubCommandSequencer,
-    ScrubSequencerBeginDecision, ScrubSequencerEndDecision, ScrubSequencerInterruptDecision,
-    ScrubSequencerUpdateDecision, ScrubUpdateCoalescer,
-};
-use crate::scrub_driver::{
-    ScrubBeginDecision, ScrubBeginPlaybackAction, ScrubDriver, ScrubEndDecision,
-    ScrubInterruptDecision, ScrubPreviewDecision, ScrubPreviewDispatch, ScrubUpdateDecision,
-};
-use crate::seek_controller::{PlaybackResumeCommand, PlaybackResumeIntent};
 use crate::tick::{
     PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,
 };
@@ -34,9 +22,7 @@ use crate::{
     ActiveSeekDiagnosticsSnapshot, FrameCounters, LatencyCounterSnapshot, MediaOpenRequest,
     MediaSource, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult,
     PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
-    PlayerVideoDecoderThreadConfig, PreparedMedia, QualitySelection, ScrubCommitIntent,
-    ScrubCommitPolicy, ScrubGeneration, ScrubUpdateIntent, SeekRequest, SessionScrubCommand,
-    VideoBackendFactory,
+    PlayerVideoDecoderThreadConfig, PreparedMedia, VideoBackendFactory,
 };
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
@@ -50,9 +36,6 @@ const COMMAND_CHANNEL_CAPACITY: usize = 128;
 
 /// Максимум ordinary worker command-ов перед обязательной проверкой render/scrub/tick.
 const MAX_COMMANDS_PER_LOOP: usize = 8;
-
-/// Ёмкость wake-очереди scrub updates; сами координаты лежат в latest-slot.
-const SCRUB_WAKE_CHANNEL_CAPACITY: usize = 1;
 
 /// Ёмкость latest snapshot stream; worker публикует только актуальное состояние.
 const SNAPSHOT_CHANNEL_CAPACITY: usize = 1;
@@ -72,9 +55,6 @@ const FINAL_SEEK_STALL_LOG_MAX_AFTER: Duration = Duration::from_millis(1_000);
 /// Минимальный интервал между повторными active seek stall logs.
 const SEEK_STALL_LOG_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Default throttle live preview seek-а, если worker создан без app config.
-const DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL: Duration = Duration::from_millis(33);
-
 /// Конфигурация playback worker.
 #[derive(Debug, Clone, Copy)]
 pub struct PlayerWorkerConfig {
@@ -87,12 +67,6 @@ pub struct PlayerWorkerConfig {
     /// Scheduler/backpressure лимиты, передаваемые в `PlayerSession::tick`.
     pub tick_config: PlayerTickConfig,
 
-    /// Минимальный интервал между live preview seek-ами во время scrub.
-    pub live_scrub_preview_interval: Duration,
-
-    /// Возраст preview transaction-а, после которого latest target может заменить in-flight preview.
-    pub live_scrub_preview_replace_after: Duration,
-
     /// Bounded queue/runtime limits decoder thread-а.
     pub decoder_thread_config: PlayerVideoDecoderThreadConfig,
 }
@@ -101,15 +75,10 @@ impl PlayerWorkerConfig {
     /// Создаёт worker config из runtime tick config приложения.
     #[must_use]
     pub fn new(tick_config: PlayerTickConfig) -> Self {
-        let live_scrub_preview_interval = DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL;
         Self {
             coarse_wakeup_interval: DEFAULT_WORKER_COARSE_WAKEUP_INTERVAL,
             decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config,
-            live_scrub_preview_interval,
-            live_scrub_preview_replace_after: live_scrub_preview_replace_after(
-                live_scrub_preview_interval,
-            ),
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
         }
     }
@@ -117,16 +86,10 @@ impl PlayerWorkerConfig {
     /// Создаёт worker config напрямую из validated app config.
     #[must_use]
     pub fn from_app_config(config: &rustiplayer_config::AppConfig) -> Self {
-        let live_scrub_preview_interval =
-            Duration::from_millis(config.player.seek.live_interval_ms);
-        let live_scrub_preview_replace_after =
-            Duration::from_millis(config.player.seek.live_replace_in_flight_after_ms());
         Self {
             coarse_wakeup_interval: DEFAULT_WORKER_COARSE_WAKEUP_INTERVAL,
             decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config: PlayerTickConfig::from(config),
-            live_scrub_preview_interval,
-            live_scrub_preview_replace_after,
             decoder_thread_config: decoder_thread_config_from_app_config(config),
         }
     }
@@ -138,14 +101,6 @@ impl PlayerWorkerConfig {
     ) -> PlayerVideoDecoderThreadConfig {
         decoder_thread_config_from_app_config(config)
     }
-}
-
-/// Выводит окно замены in-flight preview из частоты live dispatch-а.
-///
-/// Timeout preview остаётся отдельным fail-safe в `PlayerTickConfig`; эта policy
-/// решает только, когда новая scrub-цель может заменить старый in-flight preview.
-fn live_scrub_preview_replace_after(live_scrub_preview_interval: Duration) -> Duration {
-    live_scrub_preview_interval.max(Duration::from_millis(1))
 }
 
 impl Default for PlayerWorkerConfig {
@@ -198,15 +153,6 @@ impl<T> From<TrySendError<T>> for PlayerWorkerSendError {
         match error {
             TrySendError::Full(_) => Self::Full,
             TrySendError::Disconnected(_) => Self::Disconnected,
-        }
-    }
-}
-
-impl From<ScrubCoalescerSubmitError> for PlayerWorkerSendError {
-    /// Сохраняет public sender error contract для coalesced scrub wake boundary.
-    fn from(error: ScrubCoalescerSubmitError) -> Self {
-        match error {
-            ScrubCoalescerSubmitError::Disconnected => Self::Disconnected,
         }
     }
 }
@@ -343,304 +289,19 @@ impl PlayerRenderError {
     }
 }
 
-/// Public scrub command, который sender должен маршрутизировать вне обычной worker queue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PlayerCommandScrubRoute {
-    /// Начать sender-sequenced scrub operation.
-    Begin,
-
-    /// Сохранить latest scrub target в coalesced update slot.
-    Update(SeekRequest),
-
-    /// Отправить explicit preview command с текущим generation token-ом.
-    Preview(SeekRequest),
-
-    /// Завершить active scrub operation выбранной policy.
-    End(ScrubCommitPolicy),
-}
-
-/// Worker-side player command без scrub variants.
-///
-/// Этот тип является внутренней границей: `WorkerCommand::Player` больше не
-/// принимает raw `PlayerCommand`, поэтому interactive scrub не может попасть
-/// в ordinary worker path без sender-side sequencer/coalescer.
-#[derive(Debug, Clone, PartialEq)]
-enum WorkerPlayerCommand {
-    /// Открыть новый media-источник.
-    OpenMedia(MediaOpenRequest),
-
-    /// Начать или продолжить воспроизведение.
-    Play,
-
-    /// Приостановить воспроизведение.
-    Pause,
-
-    /// Переключить состояние между play и pause.
-    TogglePlayback,
-
-    /// Перемотать текущий media.
-    Seek(SeekRequest),
-
-    /// Остановить текущий media без завершения всей session.
-    Stop,
-
-    /// Установить громкость в диапазоне `0.0..=1.0`.
-    SetVolume(f32),
-
-    /// Выбрать активный video track.
-    SelectVideoTrack(TrackId),
-
-    /// Выбрать активный audio track.
-    SelectAudioTrack(TrackId),
-
-    /// Выбрать subtitle track или отключить субтитры через `None`.
-    SelectSubtitleTrack(Option<TrackId>),
-
-    /// Выбрать качество потока.
-    SelectQuality(QualitySelection),
-
-    /// Перечитать runtime config.
-    ReloadConfig,
-
-    /// Завершить player session.
-    Shutdown,
-}
-
-impl TryFrom<PlayerCommand> for WorkerPlayerCommand {
-    type Error = PlayerCommandScrubRoute;
-
-    /// Классифицирует public command на sender boundary.
-    fn try_from(command: PlayerCommand) -> Result<Self, Self::Error> {
-        match command {
-            PlayerCommand::OpenMedia(request) => Ok(Self::OpenMedia(request)),
-            PlayerCommand::Play => Ok(Self::Play),
-            PlayerCommand::Pause => Ok(Self::Pause),
-            PlayerCommand::TogglePlayback => Ok(Self::TogglePlayback),
-            PlayerCommand::Seek(request) => Ok(Self::Seek(request)),
-            PlayerCommand::BeginScrub => Err(PlayerCommandScrubRoute::Begin),
-            PlayerCommand::UpdateScrub(request) => Err(PlayerCommandScrubRoute::Update(request)),
-            PlayerCommand::PreviewScrub(request) => Err(PlayerCommandScrubRoute::Preview(request)),
-            PlayerCommand::EndScrub { policy } => Err(PlayerCommandScrubRoute::End(policy)),
-            PlayerCommand::Stop => Ok(Self::Stop),
-            PlayerCommand::SetVolume(volume) => Ok(Self::SetVolume(volume)),
-            PlayerCommand::SelectVideoTrack(track_id) => Ok(Self::SelectVideoTrack(track_id)),
-            PlayerCommand::SelectAudioTrack(track_id) => Ok(Self::SelectAudioTrack(track_id)),
-            PlayerCommand::SelectSubtitleTrack(track_id) => Ok(Self::SelectSubtitleTrack(track_id)),
-            PlayerCommand::SelectQuality(selection) => Ok(Self::SelectQuality(selection)),
-            PlayerCommand::ReloadConfig => Ok(Self::ReloadConfig),
-            PlayerCommand::Shutdown => Ok(Self::Shutdown),
-        }
-    }
-}
-
-impl WorkerPlayerCommand {
-    /// Возвращает `true` для external boundary команд, которые закрывают active scrub lifecycle.
-    fn invalidates_sender_scrub_token(&self) -> bool {
-        matches!(self, Self::OpenMedia(_) | Self::Stop | Self::Shutdown)
-    }
-
-    /// Классифицирует playback-команду в operation-level resume intent boundary.
-    fn playback_resume_command(&self) -> Option<PlaybackResumeCommand> {
-        match self {
-            Self::Play => Some(PlaybackResumeCommand::Play),
-            Self::Pause => Some(PlaybackResumeCommand::Pause),
-            Self::TogglePlayback => Some(PlaybackResumeCommand::TogglePlayback),
-            _ => None,
-        }
-    }
-
-    /// Восстанавливает public session command после worker-side policy decisions.
-    fn into_player_command(self) -> PlayerCommand {
-        match self {
-            Self::OpenMedia(request) => PlayerCommand::OpenMedia(request),
-            Self::Play => PlayerCommand::Play,
-            Self::Pause => PlayerCommand::Pause,
-            Self::TogglePlayback => PlayerCommand::TogglePlayback,
-            Self::Seek(request) => PlayerCommand::Seek(request),
-            Self::Stop => PlayerCommand::Stop,
-            Self::SetVolume(volume) => PlayerCommand::SetVolume(volume),
-            Self::SelectVideoTrack(track_id) => PlayerCommand::SelectVideoTrack(track_id),
-            Self::SelectAudioTrack(track_id) => PlayerCommand::SelectAudioTrack(track_id),
-            Self::SelectSubtitleTrack(track_id) => PlayerCommand::SelectSubtitleTrack(track_id),
-            Self::SelectQuality(selection) => PlayerCommand::SelectQuality(selection),
-            Self::ReloadConfig => PlayerCommand::ReloadConfig,
-            Self::Shutdown => PlayerCommand::Shutdown,
-        }
-    }
-}
-
 /// Cloneable sender для команд player worker.
 #[derive(Clone)]
 pub struct PlayerCommandSender {
-    /// Основная очередь low-frequency команд.
+    /// Единственная bounded очередь команд worker-а.
     command_tx: Sender<WorkerCommand>,
-
-    /// Явный latest-slot для high-frequency scrub updates.
-    scrub_coalescer: Arc<ScrubUpdateCoalescer>,
-
-    /// Общий generation sequencer для всех clone-сендеров UI/integration слоя.
-    scrub_command_sequencer: Arc<Mutex<ScrubCommandSequencer>>,
 }
 
 impl PlayerCommandSender {
     /// Отправляет команду без блокировки render/UI thread.
     pub fn try_send(&self, command: PlayerCommand) -> Result<(), PlayerWorkerSendError> {
-        match WorkerPlayerCommand::try_from(command) {
-            Ok(worker_command) => self.try_send_worker_player_command(worker_command),
-            Err(PlayerCommandScrubRoute::Begin) => self.try_send_begin_scrub(),
-            Err(PlayerCommandScrubRoute::Update(request)) => self.try_send_scrub_update(request),
-            Err(PlayerCommandScrubRoute::Preview(request)) => self.try_send_preview_scrub(request),
-            Err(PlayerCommandScrubRoute::End(policy)) => self.try_send_end_scrub(policy),
-        }
-    }
-
-    /// Отправляет ordinary command в worker queue и обновляет sender-side scrub lifecycle.
-    fn try_send_worker_player_command(
-        &self,
-        command: WorkerPlayerCommand,
-    ) -> Result<(), PlayerWorkerSendError> {
-        let invalidates_scrub_token = command.invalidates_sender_scrub_token();
-
         self.command_tx
             .try_send(WorkerCommand::Player(command))
-            .map_err(PlayerWorkerSendError::from)?;
-
-        if invalidates_scrub_token {
-            self.invalidate_sender_scrub_token();
-        }
-
-        Ok(())
-    }
-
-    /// Отправляет начало scrub-а с новым generation token-ом.
-    fn try_send_begin_scrub(&self) -> Result<(), PlayerWorkerSendError> {
-        let mut sequencer = self.scrub_command_sequencer_guard();
-        let decision = sequencer.dispatch_begin_scrub(|generation| {
-            self.command_tx
-                .try_send(WorkerCommand::BeginScrub { generation })
-                .map_err(PlayerWorkerSendError::from)
-        })?;
-        match decision {
-            ScrubSequencerBeginDecision::Started { generation } => {
-                debug!(
-                    generation = generation.as_u64(),
-                    "Sender sequenced BeginScrub"
-                );
-            }
-            ScrubSequencerBeginDecision::ReplacedActive {
-                previous,
-                generation,
-            } => {
-                debug!(
-                    previous_generation = previous.as_u64(),
-                    generation = generation.as_u64(),
-                    "Sender sequenced BeginScrub over active scrub"
-                );
-            }
-        }
-        Ok(())
-    }
-
-    /// Отправляет latest scrub target без доступа sender-а к receiver side.
-    fn try_send_scrub_update(&self, request: SeekRequest) -> Result<(), PlayerWorkerSendError> {
-        match self.scrub_command_sequencer_guard().update_intent(request) {
-            ScrubSequencerUpdateDecision::Accepted { intent } => self
-                .scrub_coalescer
-                .submit_latest(intent)
-                .map_err(PlayerWorkerSendError::from),
-            ScrubSequencerUpdateDecision::Rejected { request, reason } => {
-                debug!(
-                    request = ?request,
-                    reason = ?reason,
-                    "Sender rejected UpdateScrub before worker wakeup"
-                );
-                Ok(())
-            }
-        }
-    }
-
-    /// Отправляет explicit preview scrub command с текущим generation token-ом.
-    fn try_send_preview_scrub(&self, request: SeekRequest) -> Result<(), PlayerWorkerSendError> {
-        match self.scrub_command_sequencer_guard().update_intent(request) {
-            ScrubSequencerUpdateDecision::Accepted { intent } => self
-                .command_tx
-                .try_send(WorkerCommand::PreviewScrub(intent))
-                .map_err(PlayerWorkerSendError::from),
-            ScrubSequencerUpdateDecision::Rejected { request, reason } => {
-                debug!(
-                    request = ?request,
-                    reason = ?reason,
-                    "Sender rejected PreviewScrub before worker command"
-                );
-                Ok(())
-            }
-        }
-    }
-
-    /// Отправляет завершение scrub-а и инвалидирует поздние updates старого intent-а.
-    fn try_send_end_scrub(&self, policy: ScrubCommitPolicy) -> Result<(), PlayerWorkerSendError> {
-        let mut sequencer = self.scrub_command_sequencer_guard();
-        let decision = sequencer.dispatch_end_scrub(policy, |intent| {
-            self.command_tx
-                .try_send(WorkerCommand::EndScrub(intent))
-                .map_err(PlayerWorkerSendError::from)
-        })?;
-        match decision {
-            ScrubSequencerEndDecision::Accepted { intent } => {
-                debug!(
-                    generation = intent.generation.as_u64(),
-                    policy = ?intent.policy,
-                    "Sender sequenced EndScrub"
-                );
-            }
-            ScrubSequencerEndDecision::Rejected { policy, reason } => {
-                debug!(
-                    policy = ?policy,
-                    reason = ?reason,
-                    "Sender rejected EndScrub before worker command"
-                );
-            }
-        }
-        Ok(())
-    }
-
-    /// Инвалидирует sender-side scrub token после внешней boundary-команды.
-    fn invalidate_sender_scrub_token(&self) {
-        match self.scrub_command_sequencer_guard().interrupt_scrub() {
-            ScrubSequencerInterruptDecision::Interrupted {
-                previous,
-                generation,
-            } => {
-                debug!(
-                    previous_generation = previous.as_u64(),
-                    generation = generation.as_u64(),
-                    "Sender interrupted active scrub token"
-                );
-            }
-            ScrubSequencerInterruptDecision::Idle {
-                previous,
-                generation,
-                reason,
-            } => {
-                debug!(
-                    previous_generation = previous.as_u64(),
-                    generation = generation.as_u64(),
-                    reason = ?reason,
-                    "Sender advanced idle scrub token for external boundary"
-                );
-            }
-        }
-    }
-
-    /// Возвращает sequencer guard и восстанавливается после poison без потери команд.
-    fn scrub_command_sequencer_guard(&self) -> MutexGuard<'_, ScrubCommandSequencer> {
-        match self.scrub_command_sequencer.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                warn!("Scrub command sequencer mutex was poisoned; recovering generation state");
-                poisoned.into_inner()
-            }
-        }
+            .map_err(PlayerWorkerSendError::from)
     }
 }
 
@@ -675,19 +336,13 @@ impl PlayerWorker {
     /// Запускает worker thread и сразу публикует empty snapshot.
     pub fn spawn(config: PlayerWorkerConfig) -> PlayerResult<Self> {
         let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
-        let (scrub_wake_tx, scrub_wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
         let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
         let (event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
         let (render_bridge, render_bridge_client) = RenderLeaseBridge::new();
         let (shutdown_tx, shutdown_rx) = bounded(1);
-        let scrub_coalescer = Arc::new(ScrubUpdateCoalescer::new(scrub_wake_tx));
         let decoder_thread_config = config.decoder_thread_config;
 
-        let command_sender = PlayerCommandSender {
-            command_tx,
-            scrub_coalescer: Arc::clone(&scrub_coalescer),
-            scrub_command_sequencer: Arc::new(Mutex::new(ScrubCommandSequencer::new())),
-        };
+        let command_sender = PlayerCommandSender { command_tx };
         let snapshot_rx_for_worker = snapshot_rx.clone();
 
         let worker_started_at = Instant::now();
@@ -696,14 +351,8 @@ impl PlayerWorker {
             .spawn(move || {
                 let runtime = PlayerWorkerRuntime {
                     session: PlayerSession::new(),
-                    scrub_driver: ScrubDriver::with_preview_policy(
-                        config.live_scrub_preview_interval,
-                        config.live_scrub_preview_replace_after,
-                    ),
                     worker_scheduler: WorkerScheduler,
                     command_rx,
-                    scrub_wake_rx,
-                    scrub_coalescer,
                     snapshot_publisher: LatestSnapshotPublisher::new(
                         snapshot_tx,
                         snapshot_rx_for_worker,
@@ -896,20 +545,8 @@ impl Drop for PlayerWorker {
 
 /// Внутренние команды worker boundary.
 enum WorkerCommand {
-    /// Обычная worker-side команда без interactive scrub variants.
-    Player(WorkerPlayerCommand),
-
-    /// Начать scrub с generation, выданным sender boundary.
-    BeginScrub {
-        /// User intent generation, общий для дальнейших update/preview/end.
-        generation: ScrubGeneration,
-    },
-
-    /// Explicit preview command с generation token-ом.
-    PreviewScrub(ScrubUpdateIntent),
-
-    /// Завершить scrub с generation token-ом.
-    EndScrub(ScrubCommitIntent),
+    /// Обычная public-команда, которую worker передаст в `PlayerSession`.
+    Player(PlayerCommand),
 
     /// Подключить уже подготовленный media к worker-owned session.
     LoadPreparedMedia {
@@ -983,20 +620,11 @@ struct PlayerWorkerRuntime {
     /// Worker-owned player session и весь playback pipeline.
     session: PlayerSession,
 
-    /// Worker-side coordinator seek/scrub orchestration.
-    scrub_driver: ScrubDriver,
-
     /// Чистый planner ближайшего worker wakeup-а без владения session/scrub state.
     worker_scheduler: WorkerScheduler,
 
     /// Receiver основной очереди команд.
     command_rx: Receiver<WorkerCommand>,
-
-    /// Receiver bounded wake-token-ов для latest scrub slot-а.
-    scrub_wake_rx: Receiver<()>,
-
-    /// Shared latest-slot, в котором sender явно заменяет scrub target.
-    scrub_coalescer: Arc<ScrubUpdateCoalescer>,
 
     /// Latest snapshot publisher.
     snapshot_publisher: LatestSnapshotPublisher,
@@ -1089,8 +717,6 @@ impl PlayerWorkerRuntime {
     /// Обязательная fairness-точка после command batch-а.
     fn service_worker_fairness_checkpoint(&mut self, processed_commands: usize) {
         self.drain_render_feedback();
-        self.apply_latest_scrub_update();
-        self.dispatch_due_preview_scrub_seek();
         if processed_commands > 0 {
             self.run_overdue_playback_tick();
         }
@@ -1139,9 +765,6 @@ impl PlayerWorkerRuntime {
                     .handle_texture_view_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
                 false
             }
-            recv(self.scrub_wake_rx) -> wake_result => {
-                self.handle_scrub_wakeup(wake_result)
-            }
             recv(self.shutdown_rx) -> _ => {
                 self.handle_shutdown_request();
                 true
@@ -1184,9 +807,6 @@ impl PlayerWorkerRuntime {
                     .handle_texture_view_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
                 false
             }
-            recv(self.scrub_wake_rx) -> wake_result => {
-                self.handle_scrub_wakeup(wake_result)
-            }
             recv(self.shutdown_rx) -> _ => {
                 self.handle_shutdown_request();
                 true
@@ -1210,7 +830,6 @@ impl PlayerWorkerRuntime {
                     coarse_wakeup_interval,
                 )
             },
-            |now| self.scrub_driver.next_preview_scrub_timeout(now),
         )
     }
 
@@ -1237,9 +856,8 @@ impl PlayerWorkerRuntime {
             return;
         }
 
-        if let WorkerWakeupDeadline::Playback { plan, deadline } = wakeup.deadline() {
-            self.run_tick_for_wakeup_plan(plan, deadline);
-        }
+        let WorkerWakeupDeadline::Playback { plan, deadline } = wakeup.deadline();
+        self.run_tick_for_wakeup_plan(plan, deadline);
     }
 
     /// Обрабатывает wakeup от основной очереди команд.
@@ -1260,37 +878,12 @@ impl PlayerWorkerRuntime {
         }
     }
 
-    /// Обрабатывает wake-token scrub coalescer-а.
-    fn handle_scrub_wakeup(
-        &mut self,
-        wake_result: Result<(), crossbeam_channel::RecvError>,
-    ) -> bool {
-        if wake_result.is_ok() {
-            // `select!` может выбрать scrub wake, хотя `EndScrub` уже ждёт в command queue.
-            // Сначала обслуживаем command boundary: release path обязан забрать latest update
-            // через `SuppressForCommit`, иначе final pointer-up случайно породит live preview.
-            let processed_commands = self.drain_pending_command_batch();
-            if processed_commands > 0 {
-                if !self.session.is_shutdown_requested() {
-                    self.service_worker_fairness_checkpoint(processed_commands);
-                }
-            } else {
-                self.apply_latest_scrub_update();
-            }
-            self.publish_session_outputs();
-        }
-
-        self.session.is_shutdown_requested()
-    }
-
-    /// Забирает команду без блокировки, чтобы render/scrub/tick не starvation-ились.
+    /// Забирает команду без блокировки, чтобы render/tick не starvation-ились.
     fn receive_next_command(&self) -> Option<WorkerCommand> {
         match self.command_rx.try_recv() {
             Ok(command) => Some(command),
             Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => {
-                Some(WorkerCommand::Player(WorkerPlayerCommand::Shutdown))
-            }
+            Err(TryRecvError::Disconnected) => Some(WorkerCommand::Player(PlayerCommand::Shutdown)),
         }
     }
 
@@ -1298,21 +891,14 @@ impl PlayerWorkerRuntime {
     fn handle_worker_command(&mut self, command: WorkerCommand) {
         match command {
             WorkerCommand::Player(player_command) => self.handle_player_command(player_command),
-            WorkerCommand::BeginScrub { generation } => self.handle_begin_scrub_command(generation),
-            WorkerCommand::PreviewScrub(intent) => {
-                self.handle_preview_scrub_command(intent);
-            }
-            WorkerCommand::EndScrub(intent) => self.handle_end_scrub_command(intent),
             WorkerCommand::LoadPreparedMedia {
                 prepared_media,
                 autoplay,
             } => {
-                self.interrupt_scrub_for_external_boundary();
                 self.session
                     .load_prepared_media_with_autoplay(prepared_media, autoplay);
             }
             WorkerCommand::MediaOpenFailed { request, error } => {
-                self.interrupt_scrub_for_external_boundary();
                 self.session.fail_media_open_with_error(request, error);
             }
             WorkerCommand::InitVideoPipeline { backend_factory } => {
@@ -1336,35 +922,18 @@ impl PlayerWorkerRuntime {
         self.session.mark_fatal_error(error.to_player_error());
     }
 
-    /// Применяет ordinary worker command с worker-level seek/scrub priority policy.
-    fn handle_player_command(&mut self, command: WorkerPlayerCommand) {
-        if self.consume_scrub_resume_intent_command(&command) {
-            return;
-        }
-
+    /// Применяет public player command с сохранением worker-owned load/shutdown boundary.
+    fn handle_player_command(&mut self, command: PlayerCommand) {
         match command {
-            WorkerPlayerCommand::OpenMedia(request) => self.handle_open_media_request(request),
-            WorkerPlayerCommand::Stop => self.handle_stop_command(),
-            WorkerPlayerCommand::Shutdown => self.handle_shutdown_request(),
-            WorkerPlayerCommand::Seek(request) => self.handle_seek_command(request),
-            other_command => self.dispatch_player_command(other_command.into_player_command()),
+            PlayerCommand::OpenMedia(request) => self.handle_open_media_request(request),
+            PlayerCommand::Stop => self.handle_stop_command(),
+            PlayerCommand::Shutdown => self.handle_shutdown_request(),
+            other_command => self.dispatch_player_command(other_command),
         }
-    }
-
-    /// Обновляет сохранённый resume intent для Play/Pause/Toggle во время active scrub.
-    fn consume_scrub_resume_intent_command(&mut self, command: &WorkerPlayerCommand) -> bool {
-        let Some(resume_command) = command.playback_resume_command() else {
-            return false;
-        };
-
-        self.scrub_driver
-            .consume_resume_intent_command(resume_command)
     }
 
     /// Открывает media request без знания concrete container adapter-а.
     fn handle_open_media_request(&mut self, request: MediaOpenRequest) {
-        self.interrupt_scrub_for_external_boundary();
-
         match request.source.clone() {
             MediaSource::LocalFile(_) => {
                 self.session.fail_media_open_with_error(
@@ -1381,259 +950,14 @@ impl PlayerWorkerRuntime {
         }
     }
 
-    /// Stop во время scrub сначала просит pause + seek zero, затем сбрасывает media.
+    /// Stop закрывает текущий media через обычный public command без worker-side seek-а.
     fn handle_stop_command(&mut self) {
-        if matches!(
-            self.scrub_driver.interrupt_scrub(),
-            ScrubInterruptDecision::Interrupted
-        ) {
-            self.dispatch_player_command(PlayerCommand::Pause);
-            self.dispatch_player_command(PlayerCommand::Seek(SeekRequest::absolute(
-                MediaTime::ZERO,
-            )));
-        }
-
         self.dispatch_player_command(PlayerCommand::Stop);
     }
 
-    /// Shutdown прерывает scrub и закрывает session.
+    /// Shutdown закрывает session через обычный public command.
     fn handle_shutdown_request(&mut self) {
-        self.interrupt_scrub_for_external_boundary();
         self.dispatch_player_command(PlayerCommand::Shutdown);
-    }
-
-    /// BeginScrub сохраняет resume intent и временно ставит playback на паузу.
-    fn handle_begin_scrub_command(&mut self, generation: ScrubGeneration) {
-        debug!(
-            generation = generation.as_u64(),
-            playback_state = ?self.session.playback_state(),
-            "Worker принял BeginScrub"
-        );
-        let decision = self
-            .scrub_driver
-            .begin_scrub(generation, self.session.playback_state());
-        self.dispatch_begin_scrub_decision(decision);
-    }
-
-    /// Отправляет begin decision в session и pause command.
-    fn dispatch_begin_scrub_decision(&mut self, decision: ScrubBeginDecision) {
-        self.dispatch_scrub_command(decision.session_command);
-        self.dispatch_begin_scrub_playback_action(decision.playback_action);
-    }
-
-    /// Конвертирует internal begin-scrub playback action в существующий session command.
-    fn dispatch_begin_scrub_playback_action(&mut self, action: ScrubBeginPlaybackAction) {
-        match action {
-            ScrubBeginPlaybackAction::Pause => self.dispatch_player_command(PlayerCommand::Pause),
-        }
-    }
-
-    /// EndScrub применяет выбранную commit policy и сохранённый resume intent.
-    fn handle_end_scrub_command(&mut self, intent: ScrubCommitIntent) {
-        debug!(
-            generation = intent.generation.as_u64(),
-            policy = ?intent.policy,
-            latest_target = ?self.scrub_driver.latest_scrub_target(),
-            in_flight_target = ?self.scrub_driver.in_flight_target(),
-            "Worker принял EndScrub"
-        );
-        self.apply_latest_scrub_update_for_commit();
-
-        let decision = self.scrub_driver.end_scrub(intent);
-        self.dispatch_end_scrub_decision(decision);
-    }
-
-    /// Отправляет end decision в session и применяет resume intent.
-    fn dispatch_end_scrub_decision(&mut self, decision: ScrubEndDecision) {
-        match decision {
-            ScrubEndDecision::Accepted {
-                intent: accepted_intent,
-                session_command,
-                resume_intent,
-            } => {
-                self.dispatch_scrub_command(session_command);
-                debug!(
-                    generation = accepted_intent.generation.as_u64(),
-                    resume_intent = ?resume_intent,
-                    has_active_seek_commit = self.session.has_active_seek_commit(),
-                    timeline = ?self.session.snapshot().timeline,
-                    "Worker применил EndScrub к session"
-                );
-                self.apply_end_scrub_resume_intent(resume_intent);
-                self.scrub_driver.reset_preview_scrub_state();
-            }
-            ScrubEndDecision::Rejected {
-                intent: rejected_intent,
-                reason,
-            } => {
-                debug!(
-                    generation = rejected_intent.generation.as_u64(),
-                    reason = ?reason,
-                    "EndScrub rejected before PlayerSession"
-                );
-            }
-        }
-    }
-
-    /// PreviewScrub проходит в session только если generation и latest target всё ещё актуальны.
-    fn handle_preview_scrub_command(&mut self, intent: ScrubUpdateIntent) -> bool {
-        let decision = self.scrub_driver.preview_scrub(intent);
-        self.dispatch_preview_scrub_decision(decision)
-    }
-
-    /// Отправляет preview decision в session и логирует rejected preview intent-ы.
-    fn dispatch_preview_scrub_decision(&mut self, decision: ScrubPreviewDecision) -> bool {
-        match decision {
-            ScrubPreviewDecision::Idle => false,
-            ScrubPreviewDecision::Dispatch {
-                intent,
-                session_command,
-            } => {
-                debug!(
-                    generation = intent.generation.as_u64(),
-                    request = ?intent.request,
-                    "Worker dispatches PreviewScrub"
-                );
-                self.dispatch_scrub_command(session_command);
-                true
-            }
-            ScrubPreviewDecision::Rejected { intent, reason } => {
-                debug!(
-                    generation = intent.generation.as_u64(),
-                    request = ?intent.request,
-                    reason = ?reason,
-                    "PreviewScrub rejected before PlayerSession"
-                );
-                false
-            }
-        }
-    }
-
-    /// Применяет сохранённый worker resume intent к финальному seek transaction-у.
-    fn apply_end_scrub_resume_intent(&mut self, resume_intent: PlaybackResumeIntent) {
-        if self
-            .session
-            .override_active_seek_resume_intent(resume_intent)
-        {
-            return;
-        }
-
-        match resume_intent {
-            PlaybackResumeIntent::Pause => self.dispatch_player_command(PlayerCommand::Pause),
-            PlaybackResumeIntent::Play => self.dispatch_player_command(PlayerCommand::Play),
-        }
-    }
-
-    /// Внешний Seek игнорируется, пока активен scrub.
-    fn handle_seek_command(&mut self, request: SeekRequest) {
-        if self.scrub_driver.should_ignore_external_seek() {
-            debug!("External seek ignored during active scrub");
-            return;
-        }
-
-        self.dispatch_player_command(PlayerCommand::Seek(request));
-    }
-
-    /// Применяет один scrub update после coalescing.
-    #[cfg(test)]
-    fn apply_scrub_update(&mut self, intent: ScrubUpdateIntent) {
-        let decision = self.scrub_driver.apply_scrub_update(intent);
-        self.dispatch_scrub_update_decision(ScrubPreviewDispatch::Allow, decision);
-    }
-
-    /// Отправляет принятое driver-ом scrub update решение в session.
-    fn dispatch_scrub_update_decision(
-        &mut self,
-        preview_dispatch: ScrubPreviewDispatch,
-        decision: ScrubUpdateDecision,
-    ) {
-        match decision {
-            ScrubUpdateDecision::Accepted {
-                intent,
-                session_command,
-                due_preview,
-            } => {
-                debug!(
-                    generation = intent.generation.as_u64(),
-                    request = ?intent.request,
-                    preview_dispatch = ?preview_dispatch,
-                    "Worker применяет scrub update"
-                );
-                self.dispatch_scrub_command(session_command);
-                if let Some(due_preview) = due_preview {
-                    let preview_decision = self.scrub_driver.preview_due_scrub(due_preview);
-                    self.dispatch_preview_scrub_decision(preview_decision);
-                }
-            }
-            ScrubUpdateDecision::Rejected { intent, reason } => {
-                debug!(
-                    generation = intent.generation.as_u64(),
-                    request = ?intent.request,
-                    preview_dispatch = ?preview_dispatch,
-                    reason = ?reason,
-                    "Scrub update rejected before PlayerSession"
-                );
-            }
-        }
-    }
-
-    /// Забирает latest scrub update из bounded канала и применяет только последнюю цель.
-    fn apply_latest_scrub_update(&mut self) {
-        self.drain_latest_scrub_update_with_preview_dispatch(ScrubPreviewDispatch::Allow);
-    }
-
-    /// Забирает latest scrub update перед EndScrub, не создавая новый preview transaction.
-    fn apply_latest_scrub_update_for_commit(&mut self) {
-        self.drain_latest_scrub_update_with_preview_dispatch(
-            ScrubPreviewDispatch::SuppressForCommit,
-        );
-    }
-
-    /// Общий latest-wins drain для обычного scrub-а и release commit-а.
-    fn drain_latest_scrub_update_with_preview_dispatch(
-        &mut self,
-        preview_dispatch: ScrubPreviewDispatch,
-    ) {
-        drain_receiver_without_blocking(&self.scrub_wake_rx);
-
-        match self
-            .scrub_coalescer
-            .take_for_generation(self.scrub_driver.current_generation())
-        {
-            ScrubCoalescedUpdateDecision::Empty => {}
-            ScrubCoalescedUpdateDecision::FutureGeneration { intent } => {
-                debug!(
-                    generation = intent.generation.as_u64(),
-                    request = ?intent.request,
-                    preview_dispatch = ?preview_dispatch,
-                    "Coalesced scrub update deferred until matching BeginScrub"
-                );
-            }
-            ScrubCoalescedUpdateDecision::Ready { intent } => {
-                let decision = match preview_dispatch {
-                    ScrubPreviewDispatch::Allow => {
-                        self.scrub_driver.apply_latest_scrub_update_for_drag(intent)
-                    }
-                    ScrubPreviewDispatch::SuppressForCommit => self
-                        .scrub_driver
-                        .apply_latest_scrub_update_for_commit(intent),
-                };
-                self.dispatch_scrub_update_decision(preview_dispatch, decision);
-                self.publish_session_outputs();
-            }
-        }
-    }
-
-    /// Прерывает scrub для Open/Shutdown/load boundary команд.
-    fn interrupt_scrub_for_external_boundary(&mut self) {
-        self.scrub_driver.interrupt_scrub();
-    }
-
-    /// Отправляет preview seek, когда прошёл throttle interval live scrub-а.
-    fn dispatch_due_preview_scrub_seek(&mut self) {
-        let now = Instant::now();
-        let decision = self.scrub_driver.dispatch_due_preview_scrub_seek(now);
-        self.dispatch_preview_scrub_decision(decision);
     }
 
     /// Безопасно вызывает `PlayerSession::dispatch_command` и сохраняет ошибку в session.
@@ -1644,25 +968,10 @@ impl PlayerWorkerRuntime {
         }
     }
 
-    /// Безопасно вызывает typed scrub boundary на session.
-    fn dispatch_scrub_command(&mut self, command: SessionScrubCommand) {
-        if let Err(error) = self.session.dispatch_scrub_command(command) {
-            warn!(error = %error, "Player worker scrub command failed");
-            self.session.mark_fatal_error(error);
-        }
-    }
-
-    /// Обрабатывает timeout, который не был command/render/scrub event-ом.
+    /// Обрабатывает timeout, который не был command/render event-ом.
     fn handle_worker_timeout(&mut self, deadline: WorkerWakeupDeadline) {
-        match deadline {
-            WorkerWakeupDeadline::Playback { plan, deadline } => {
-                self.run_tick_for_wakeup_plan(plan, deadline);
-            }
-            WorkerWakeupDeadline::PreviewScrub => {
-                self.dispatch_due_preview_scrub_seek();
-                self.publish_session_outputs();
-            }
-        }
+        let WorkerWakeupDeadline::Playback { plan, deadline } = deadline;
+        self.run_tick_for_wakeup_plan(plan, deadline);
     }
 
     /// Выполняет playback tick по media-clock-driven wakeup plan.
@@ -1759,16 +1068,11 @@ impl PlayerWorkerRuntime {
         let latencies = summary.worst_latencies;
         let texture_view_lock_wait = latencies.texture_view_lock_wait;
         let publish_pressure = summary.decoder_frame_publish_pressure;
-        let scrub_diagnostics = self.scrub_driver.diagnostics();
         debug!(
             drops = summary.drops_total,
             drops_late = summary.drops.late,
             drops_queue = summary.drops.queue_overflow,
             drops_stale_generation = summary.drops.stale_generation,
-            scrub_stale_or_ignored_commands = scrub_diagnostics.stale_or_ignored_commands,
-            scrub_cancelled_operations = scrub_diagnostics.cancelled_operations,
-            scrub_replaced_in_flight_previews = scrub_diagnostics.replaced_in_flight_previews,
-            scrub_stale_preview_transactions = scrub_diagnostics.stale_preview_transactions,
             drops_seek_preroll = summary.drops.seek_preroll,
             drops_decoder_starvation = summary.drops.decoder_starvation,
             seek_bootstrap_dropped_until_keyframe = summary.seek_bootstrap.dropped_until_keyframe,
@@ -1833,7 +1137,6 @@ impl PlayerWorkerRuntime {
     fn publish_session_outputs(&mut self) {
         self.render_bridge
             .publish_latest_present_frame(&mut self.session);
-        self.sync_scrub_preview_in_flight_state();
 
         let snapshot = self
             .session
@@ -1843,17 +1146,6 @@ impl PlayerWorkerRuntime {
         for event in self.session.take_events() {
             self.publish_worker_event(PlayerWorkerEvent::Player(event));
         }
-    }
-
-    /// Синхронизирует worker-side in-flight marker с фактической session transaction.
-    fn sync_scrub_preview_in_flight_state(&mut self) {
-        let Some(preview) = self.scrub_driver.in_flight_preview() else {
-            return;
-        };
-
-        // PlayerSession больше не создаёт preview seek transaction, поэтому marker
-        // не может подтверждаться через active seek и должен закрываться сразу.
-        self.scrub_driver.clear_in_flight_preview(preview.intent);
     }
 
     /// Публикует tick telemetry без блокировки worker-а.
@@ -1974,49 +1266,25 @@ mod tests {
     use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
     use crossbeam_channel::unbounded;
     use media_core::{
-        DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, TimelinePreviewState,
+        DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaTime, TrackId,
         TrackInfo, TrackKind,
     };
     use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
 
     use super::*;
-    use crate::{MediaSource, PlaybackState, SeekTarget};
+    use crate::{MediaSource, PlaybackState, ScrubCommitPolicy, SeekRequest};
 
     fn worker_config_for_tests() -> PlayerWorkerConfig {
-        let live_scrub_preview_interval = DEFAULT_LIVE_SCRUB_PREVIEW_INTERVAL;
         PlayerWorkerConfig {
             coarse_wakeup_interval: Duration::from_millis(10),
             decoder_readiness_poll_interval: Duration::from_millis(2),
             tick_config: PlayerTickConfig::default(),
-            live_scrub_preview_interval,
-            live_scrub_preview_replace_after: live_scrub_preview_replace_after(
-                live_scrub_preview_interval,
-            ),
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
         }
     }
 
     fn seek_to_millis(milliseconds: u64) -> SeekRequest {
         SeekRequest::absolute(MediaTime::from_millis(milliseconds))
-    }
-
-    #[test]
-    fn worker_config_derives_preview_replacement_from_live_interval() {
-        let app_config = rustiplayer_config::AppConfig::default();
-        let worker_config = PlayerWorkerConfig::from_app_config(&app_config);
-
-        assert_eq!(
-            worker_config.live_scrub_preview_interval,
-            Duration::from_millis(33)
-        );
-        assert_eq!(
-            worker_config.live_scrub_preview_replace_after,
-            Duration::from_millis(33)
-        );
-    }
-
-    fn scrub_update_intent(generation: ScrubGeneration, milliseconds: u64) -> ScrubUpdateIntent {
-        ScrubUpdateIntent::new(generation, seek_to_millis(milliseconds))
     }
 
     /// Fake demuxer для worker-level scrub tests без реального файла и backend resources.
@@ -2032,16 +1300,7 @@ mod tests {
     }
 
     impl WorkerFakeDemuxer {
-        /// Создаёт seekable fake media без tracks, чтобы тестировать только command flow.
-        fn empty_seekable(seek_request_log: Arc<Mutex<Vec<DemuxSeekRequest>>>) -> Self {
-            Self {
-                tracks: Vec::new(),
-                duration: Some(Duration::from_secs(30)),
-                seek_request_log,
-            }
-        }
-
-        /// Создаёт seekable fake media с tracks для scrub preview/present тестов.
+        /// Создаёт seekable fake media с tracks для worker/session boundary tests.
         fn seekable_with_tracks(
             tracks: Vec<TrackInfo>,
             seek_request_log: Arc<Mutex<Vec<DemuxSeekRequest>>>,
@@ -2161,25 +1420,17 @@ mod tests {
         last_tick_at: Instant,
     ) -> (PlayerWorkerRuntime, Sender<WorkerCommand>) {
         let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
-        let (scrub_wake_tx, scrub_wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
         let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
         let (event_tx, _event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
         let (render_bridge, _render_bridge_client) = RenderLeaseBridge::new();
         let (_shutdown_tx, shutdown_rx) = bounded(1);
         let config = worker_config_for_tests();
-        let scrub_coalescer = Arc::new(ScrubUpdateCoalescer::new(scrub_wake_tx));
 
         (
             PlayerWorkerRuntime {
                 session: PlayerSession::new(),
-                scrub_driver: ScrubDriver::with_preview_policy(
-                    config.live_scrub_preview_interval,
-                    config.live_scrub_preview_replace_after,
-                ),
                 worker_scheduler: WorkerScheduler,
                 command_rx,
-                scrub_wake_rx,
-                scrub_coalescer,
                 snapshot_publisher: LatestSnapshotPublisher::new(snapshot_tx, snapshot_rx),
                 event_tx,
                 render_bridge,
@@ -2194,7 +1445,7 @@ mod tests {
         )
     }
 
-    /// Устанавливает seekable fake media с video track для worker scrub release tests.
+    /// Устанавливает seekable fake media с video track для worker/session seek tests.
     fn install_worker_video_media(
         runtime: &mut PlayerWorkerRuntime,
         seek_request_log: Arc<Mutex<Vec<DemuxSeekRequest>>>,
@@ -2208,28 +1459,17 @@ mod tests {
         );
     }
 
-    fn command_sender_for_scrub_path_tests() -> (
-        PlayerCommandSender,
-        Receiver<WorkerCommand>,
-        Receiver<()>,
-        Arc<ScrubUpdateCoalescer>,
-    ) {
+    fn command_sender_for_tests() -> (PlayerCommandSender, Receiver<WorkerCommand>) {
         let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
-        let (scrub_wake_tx, scrub_wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
-        let scrub_coalescer = Arc::new(ScrubUpdateCoalescer::new(scrub_wake_tx));
-        let command_sender = PlayerCommandSender {
-            command_tx,
-            scrub_coalescer: Arc::clone(&scrub_coalescer),
-            scrub_command_sequencer: Arc::new(Mutex::new(ScrubCommandSequencer::new())),
-        };
+        let command_sender = PlayerCommandSender { command_tx };
 
-        (command_sender, command_rx, scrub_wake_rx, scrub_coalescer)
+        (command_sender, command_rx)
     }
 
-    fn receive_worker_player_command(command_rx: &Receiver<WorkerCommand>) -> WorkerPlayerCommand {
+    fn receive_player_command(command_rx: &Receiver<WorkerCommand>) -> PlayerCommand {
         match command_rx.try_recv().unwrap() {
             WorkerCommand::Player(command) => command,
-            _ => panic!("ordinary PlayerCommand must use WorkerCommand::Player"),
+            _ => panic!("PlayerCommand must use WorkerCommand::Player"),
         }
     }
 
@@ -2282,7 +1522,6 @@ mod tests {
         Receiver<RenderTextureViewPreviousFrameReuseSample>,
     ) {
         let (command_tx, _command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
-        let (scrub_wake_tx, _scrub_wake_rx) = bounded(SCRUB_WAKE_CHANNEL_CAPACITY);
         let (_snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
         let (_event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
         let (
@@ -2292,11 +1531,7 @@ mod tests {
             texture_view_previous_frame_reuse_sample_rx,
         ) = RenderLeaseBridgeClient::with_handoff_for_tests(latest_present_frame_handoff);
         let (shutdown_tx, _shutdown_rx) = bounded(1);
-        let command_sender = PlayerCommandSender {
-            command_tx,
-            scrub_coalescer: Arc::new(ScrubUpdateCoalescer::new(scrub_wake_tx)),
-            scrub_command_sequencer: Arc::new(Mutex::new(ScrubCommandSequencer::new())),
-        };
+        let command_sender = PlayerCommandSender { command_tx };
 
         (
             PlayerWorker {
@@ -2417,982 +1652,100 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_player_commands_classify_as_internal_worker_commands() {
-        let open_request =
-            MediaOpenRequest::new(MediaSource::ExternalLabel("sample".into()), false);
-        let seek_request = seek_to_millis(250);
-
-        assert_eq!(
-            WorkerPlayerCommand::try_from(PlayerCommand::Play).unwrap(),
-            WorkerPlayerCommand::Play
-        );
-        assert_eq!(
-            WorkerPlayerCommand::try_from(PlayerCommand::Seek(seek_request)).unwrap(),
-            WorkerPlayerCommand::Seek(seek_request)
-        );
-        assert_eq!(
-            WorkerPlayerCommand::try_from(PlayerCommand::OpenMedia(open_request.clone())).unwrap(),
-            WorkerPlayerCommand::OpenMedia(open_request)
-        );
-    }
-
-    #[test]
-    fn begin_scrub_does_not_classify_as_internal_worker_command() {
-        assert_eq!(
-            WorkerPlayerCommand::try_from(PlayerCommand::BeginScrub),
-            Err(PlayerCommandScrubRoute::Begin)
-        );
-    }
-
-    #[test]
-    fn update_scrub_does_not_classify_as_internal_worker_command() {
-        let request = seek_to_millis(300);
-
-        assert_eq!(
-            WorkerPlayerCommand::try_from(PlayerCommand::UpdateScrub(request)),
-            Err(PlayerCommandScrubRoute::Update(request))
-        );
-    }
-
-    #[test]
-    fn preview_scrub_does_not_classify_as_internal_worker_command() {
-        let request = seek_to_millis(400);
-
-        assert_eq!(
-            WorkerPlayerCommand::try_from(PlayerCommand::PreviewScrub(request)),
-            Err(PlayerCommandScrubRoute::Preview(request))
-        );
-    }
-
-    #[test]
-    fn end_scrub_does_not_classify_as_internal_worker_command() {
-        assert_eq!(
-            WorkerPlayerCommand::try_from(PlayerCommand::EndScrub {
-                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-            }),
-            Err(PlayerCommandScrubRoute::End(
-                ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE
-            ))
-        );
-    }
-
-    #[test]
-    fn command_sender_routes_ordinary_commands_as_internal_worker_player_commands() {
-        let (command_sender, command_rx, _scrub_wake_rx, _scrub_coalescer) =
-            command_sender_for_scrub_path_tests();
+    fn command_sender_routes_player_commands_through_worker_queue() {
+        let (command_sender, command_rx) = command_sender_for_tests();
         let open_request =
             MediaOpenRequest::new(MediaSource::ExternalLabel("sample".into()), false);
         let seek_request = seek_to_millis(500);
 
         command_sender.try_send(PlayerCommand::Play).unwrap();
-        assert_eq!(
-            receive_worker_player_command(&command_rx),
-            WorkerPlayerCommand::Play
-        );
-
-        command_sender
-            .try_send(PlayerCommand::Seek(seek_request))
-            .unwrap();
-        assert_eq!(
-            receive_worker_player_command(&command_rx),
-            WorkerPlayerCommand::Seek(seek_request)
-        );
+        assert_eq!(receive_player_command(&command_rx), PlayerCommand::Play);
 
         command_sender
             .try_send(PlayerCommand::OpenMedia(open_request.clone()))
             .unwrap();
         assert_eq!(
-            receive_worker_player_command(&command_rx),
-            WorkerPlayerCommand::OpenMedia(open_request)
+            receive_player_command(&command_rx),
+            PlayerCommand::OpenMedia(open_request)
         );
-    }
-
-    #[test]
-    fn command_sender_routes_scrub_commands_through_typed_path() {
-        let (command_sender, command_rx, scrub_wake_rx, scrub_coalescer) =
-            command_sender_for_scrub_path_tests();
 
         command_sender.try_send(PlayerCommand::BeginScrub).unwrap();
-        let active_generation = match command_rx.try_recv().unwrap() {
-            WorkerCommand::BeginScrub { generation } => generation,
-            _ => panic!("BeginScrub must use typed worker command"),
-        };
-
-        command_sender
-            .try_send(PlayerCommand::UpdateScrub(seek_to_millis(250)))
-            .unwrap();
-        assert!(command_rx.try_recv().is_err());
-        assert_eq!(scrub_wake_rx.len(), 1);
         assert_eq!(
-            scrub_coalescer.take_for_generation(active_generation),
-            ScrubCoalescedUpdateDecision::Ready {
-                intent: scrub_update_intent(active_generation, 250),
-            }
+            receive_player_command(&command_rx),
+            PlayerCommand::BeginScrub
         );
 
         command_sender
-            .try_send(PlayerCommand::PreviewScrub(seek_to_millis(250)))
+            .try_send(PlayerCommand::UpdateScrub(seek_request))
             .unwrap();
-        match command_rx.try_recv().unwrap() {
-            WorkerCommand::PreviewScrub(intent) => {
-                assert_eq!(intent, scrub_update_intent(active_generation, 250));
-            }
-            _ => panic!("PreviewScrub must use typed worker command"),
-        }
+        assert_eq!(
+            receive_player_command(&command_rx),
+            PlayerCommand::UpdateScrub(seek_request)
+        );
 
         command_sender
             .try_send(PlayerCommand::EndScrub {
-                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+                policy: ScrubCommitPolicy::CommitLatestTarget,
             })
             .unwrap();
-        match command_rx.try_recv().unwrap() {
-            WorkerCommand::EndScrub(intent) => {
-                assert_eq!(intent.generation, active_generation);
-                assert_eq!(intent.policy, ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE);
-            }
-            _ => panic!("EndScrub must use typed worker command"),
-        }
-    }
-
-    #[test]
-    fn preview_scrub_after_end_scrub_is_rejected_on_sender_boundary() {
-        let (command_sender, command_rx, _scrub_wake_rx, _scrub_coalescer) =
-            command_sender_for_scrub_path_tests();
-
-        command_sender.try_send(PlayerCommand::BeginScrub).unwrap();
-        let active_generation = match command_rx.try_recv().unwrap() {
-            WorkerCommand::BeginScrub { generation } => generation,
-            _ => panic!("BeginScrub must use typed worker command"),
-        };
-
-        command_sender
-            .try_send(PlayerCommand::EndScrub {
-                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-            })
-            .unwrap();
-        match command_rx.try_recv().unwrap() {
-            WorkerCommand::EndScrub(intent) => {
-                assert_eq!(intent.generation, active_generation);
-                assert_eq!(intent.policy, ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE);
-            }
-            _ => panic!("EndScrub must use typed worker command"),
-        }
-
-        command_sender
-            .try_send(PlayerCommand::PreviewScrub(seek_to_millis(900)))
-            .unwrap();
-
-        assert!(
-            command_rx.try_recv().is_err(),
-            "PreviewScrub после EndScrub не должен открывать новую public lifecycle-семантику"
-        );
-    }
-
-    #[test]
-    fn update_scrub_coalesces_to_latest_target() {
-        let mut worker = PlayerWorker::spawn(worker_config_for_tests()).unwrap();
-
-        worker.try_send_command(PlayerCommand::BeginScrub).unwrap();
-        for milliseconds in [100, 250, 500, 750] {
-            worker
-                .try_send_command(PlayerCommand::UpdateScrub(seek_to_millis(milliseconds)))
-                .unwrap();
-        }
-        worker
-            .try_send_command(PlayerCommand::EndScrub {
-                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-            })
-            .unwrap();
-
-        let snapshot = wait_for_snapshot(&mut worker, |snapshot| {
-            matches!(
-                snapshot.last_error.as_ref().map(|error| &error.kind),
-                Some(PlayerErrorKind::SeekUnavailable)
-            )
-        });
-        let events = drain_events_until(&worker, |events| {
-            events.iter().any(|event| {
-                matches!(
-                    event,
-                    PlayerWorkerEvent::Player(PlayerEvent::SeekRequested(request))
-                        if request.target == SeekTarget::Absolute(MediaTime::from_millis(750))
-                )
-            })
-        });
-
-        assert_eq!(snapshot.current_position, Duration::ZERO);
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                PlayerWorkerEvent::Player(PlayerEvent::SeekRequested(request))
-                    if request.target == SeekTarget::Absolute(MediaTime::from_millis(750))
-            )
-        }));
-        worker.shutdown().unwrap();
-    }
-
-    #[test]
-    fn external_seek_is_ignored_during_active_scrub() {
-        let mut worker = PlayerWorker::spawn(worker_config_for_tests()).unwrap();
-
-        worker.try_send_command(PlayerCommand::BeginScrub).unwrap();
-        worker
-            .try_send_command(PlayerCommand::UpdateScrub(seek_to_millis(500)))
-            .unwrap();
-        worker
-            .try_send_command(PlayerCommand::Seek(seek_to_millis(900)))
-            .unwrap();
-        worker
-            .try_send_command(PlayerCommand::EndScrub {
-                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-            })
-            .unwrap();
-
-        let snapshot = wait_for_snapshot(&mut worker, |snapshot| {
-            matches!(
-                snapshot.last_error.as_ref().map(|error| &error.kind),
-                Some(PlayerErrorKind::SeekUnavailable)
-            )
-        });
-        let events = drain_events_until(&worker, |events| {
-            events.iter().any(|event| {
-                matches!(
-                    event,
-                    PlayerWorkerEvent::Player(PlayerEvent::SeekRequested(request))
-                        if request.target == SeekTarget::Absolute(MediaTime::from_millis(500))
-                )
-            })
-        });
-
-        assert_eq!(snapshot.current_position, Duration::ZERO);
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                PlayerWorkerEvent::Player(PlayerEvent::SeekRequested(request))
-                    if request.target == SeekTarget::Absolute(MediaTime::from_millis(500))
-            )
-        }));
-        assert!(!events.iter().any(|event| {
-            matches!(
-                event,
-                PlayerWorkerEvent::Player(PlayerEvent::SeekRequested(request))
-                    if request.target == SeekTarget::Absolute(MediaTime::from_millis(900))
-            )
-        }));
-        worker.shutdown().unwrap();
-    }
-
-    #[test]
-    fn begin_scrub_playback_action_still_pauses_session() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let generation = ScrubGeneration::default().next();
-
-        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
         assert_eq!(
-            runtime.session.snapshot().playback_state,
-            PlaybackState::Playing
-        );
-
-        runtime.handle_begin_scrub_command(generation);
-
-        assert_eq!(
-            runtime.session.snapshot().playback_state,
-            PlaybackState::Paused
-        );
-        assert!(runtime.session.snapshot().timeline.scrubbing);
-        assert_eq!(
-            runtime.scrub_driver.resume_intent(),
-            PlaybackResumeIntent::Play
-        );
-    }
-
-    #[test]
-    fn active_scrub_consumes_resume_commands_without_session_dispatch() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let generation = ScrubGeneration::default().next();
-
-        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
-        runtime.handle_begin_scrub_command(generation);
-
-        assert_eq!(
-            runtime.session.snapshot().playback_state,
-            PlaybackState::Paused
-        );
-        assert_eq!(
-            runtime.scrub_driver.resume_intent(),
-            PlaybackResumeIntent::Play
-        );
-
-        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Pause));
-        assert_eq!(
-            runtime.session.snapshot().playback_state,
-            PlaybackState::Paused
-        );
-        assert_eq!(
-            runtime.scrub_driver.resume_intent(),
-            PlaybackResumeIntent::Pause
-        );
-
-        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
-        assert_eq!(
-            runtime.session.snapshot().playback_state,
-            PlaybackState::Paused
-        );
-        assert_eq!(
-            runtime.scrub_driver.resume_intent(),
-            PlaybackResumeIntent::Play
-        );
-
-        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::TogglePlayback));
-        assert_eq!(
-            runtime.session.snapshot().playback_state,
-            PlaybackState::Paused
-        );
-        assert_eq!(
-            runtime.scrub_driver.resume_intent(),
-            PlaybackResumeIntent::Pause
-        );
-        assert!(runtime.scrub_driver.is_scrubbing());
-    }
-
-    #[test]
-    fn ordinary_non_resume_command_dispatches_to_session_during_active_scrub() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let generation = ScrubGeneration::default().next();
-
-        runtime.handle_begin_scrub_command(generation);
-        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::SetVolume(0.25)));
-
-        assert_eq!(runtime.session.snapshot().volume, 0.25);
-        assert!(runtime.scrub_driver.is_scrubbing());
-    }
-
-    #[test]
-    fn stale_scrub_update_generation_is_ignored_before_session() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let first_generation = ScrubGeneration::default().next();
-        let second_generation = first_generation.next();
-
-        runtime.handle_begin_scrub_command(first_generation);
-        runtime
-            .scrub_driver
-            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
-        runtime.apply_scrub_update(scrub_update_intent(first_generation, 100));
-        runtime.handle_begin_scrub_command(second_generation);
-        runtime
-            .scrub_driver
-            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
-        runtime.apply_scrub_update(scrub_update_intent(second_generation, 250));
-        runtime.apply_scrub_update(scrub_update_intent(first_generation, 900));
-
-        assert_eq!(
-            runtime.session.snapshot().timeline.target_position,
-            Some(MediaTime::from_millis(250))
-        );
-        assert!(runtime.session.snapshot().timeline.scrubbing);
-        assert!(runtime.session.snapshot().last_error.is_none());
-        assert_eq!(
-            runtime.scrub_driver.diagnostics().stale_or_ignored_commands,
-            1
-        );
-    }
-
-    #[test]
-    fn idle_due_preview_scrub_does_not_count_stale_or_dispatch_to_session() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let generation = ScrubGeneration::default().next();
-
-        runtime.handle_begin_scrub_command(generation);
-        let target_before_idle_preview = runtime.session.snapshot().timeline.target_position;
-        runtime.dispatch_due_preview_scrub_seek();
-
-        assert_eq!(
-            runtime.session.snapshot().timeline.target_position,
-            target_before_idle_preview
-        );
-        assert!(runtime.session.snapshot().timeline.scrubbing);
-        assert!(runtime.session.snapshot().last_error.is_none());
-        assert_eq!(
-            runtime.scrub_driver.diagnostics().stale_or_ignored_commands,
-            0
-        );
-    }
-
-    #[test]
-    fn stale_preview_scrub_token_is_ignored_before_session() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let first_generation = ScrubGeneration::default().next();
-        let second_generation = first_generation.next();
-
-        runtime.handle_begin_scrub_command(first_generation);
-        runtime
-            .scrub_driver
-            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
-        runtime.apply_scrub_update(scrub_update_intent(first_generation, 100));
-        runtime.handle_begin_scrub_command(second_generation);
-        runtime
-            .scrub_driver
-            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
-        runtime.apply_scrub_update(scrub_update_intent(second_generation, 250));
-        runtime.handle_preview_scrub_command(scrub_update_intent(first_generation, 100));
-
-        assert_eq!(
-            runtime.session.snapshot().timeline.target_position,
-            Some(MediaTime::from_millis(250))
-        );
-        assert!(runtime.session.snapshot().timeline.scrubbing);
-        assert!(runtime.session.snapshot().last_error.is_none());
-        assert_eq!(
-            runtime.scrub_driver.diagnostics().stale_or_ignored_commands,
-            1
-        );
-    }
-
-    #[test]
-    fn stale_end_scrub_token_does_not_commit_new_timeline() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let first_generation = ScrubGeneration::default().next();
-        let second_generation = first_generation.next();
-
-        runtime.handle_begin_scrub_command(first_generation);
-        runtime
-            .scrub_driver
-            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
-        runtime.apply_scrub_update(scrub_update_intent(first_generation, 100));
-        runtime.handle_begin_scrub_command(second_generation);
-        runtime
-            .scrub_driver
-            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
-        runtime.apply_scrub_update(scrub_update_intent(second_generation, 250));
-        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
-            first_generation,
-            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        ));
-
-        assert_eq!(
-            runtime.session.snapshot().timeline.target_position,
-            Some(MediaTime::from_millis(250))
-        );
-        assert!(runtime.session.snapshot().timeline.scrubbing);
-        assert_eq!(runtime.session.snapshot().current_position, Duration::ZERO);
-        assert!(runtime.session.snapshot().last_error.is_none());
-        assert_eq!(
-            runtime.scrub_driver.diagnostics().stale_or_ignored_commands,
-            1
-        );
-    }
-
-    #[test]
-    fn end_scrub_does_not_drop_coalesced_update_for_queued_new_generation() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let first_generation = ScrubGeneration::default().next();
-        let second_generation = first_generation.next();
-
-        runtime.handle_begin_scrub_command(first_generation);
-        runtime
-            .scrub_driver
-            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
-        runtime.apply_scrub_update(scrub_update_intent(first_generation, 100));
-        runtime
-            .scrub_coalescer
-            .submit_latest(scrub_update_intent(second_generation, 250))
-            .unwrap();
-
-        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
-            first_generation,
-            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        ));
-        assert_eq!(
-            runtime.scrub_driver.diagnostics().stale_or_ignored_commands,
-            0
-        );
-        runtime.handle_begin_scrub_command(second_generation);
-        runtime
-            .scrub_driver
-            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
-        runtime.apply_latest_scrub_update();
-
-        assert_eq!(
-            runtime.session.snapshot().timeline.target_position,
-            Some(MediaTime::from_millis(250))
-        );
-        assert!(runtime.session.snapshot().timeline.scrubbing);
-    }
-
-    #[test]
-    fn stale_generation_coalesced_update_is_rejected_before_session() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let first_generation = ScrubGeneration::default().next();
-        let second_generation = first_generation.next();
-
-        runtime.handle_begin_scrub_command(first_generation);
-        runtime
-            .scrub_driver
-            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
-        runtime.apply_scrub_update(scrub_update_intent(first_generation, 100));
-        runtime.handle_begin_scrub_command(second_generation);
-        runtime
-            .scrub_driver
-            .set_last_preview_scrub_seek_at_for_tests(Some(Instant::now()));
-        runtime.apply_scrub_update(scrub_update_intent(second_generation, 250));
-        runtime
-            .scrub_coalescer
-            .submit_latest(scrub_update_intent(first_generation, 900))
-            .unwrap();
-
-        runtime.apply_latest_scrub_update();
-        runtime.apply_latest_scrub_update();
-
-        assert_eq!(
-            runtime.session.snapshot().timeline.target_position,
-            Some(MediaTime::from_millis(250))
-        );
-        assert!(runtime.session.snapshot().timeline.scrubbing);
-        assert_eq!(
-            runtime.scrub_driver.diagnostics().stale_or_ignored_commands,
-            1
-        );
-    }
-
-    #[test]
-    fn interrupt_invalidates_active_generation_before_coalesced_update_reaches_session() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let generation = ScrubGeneration::default().next();
-
-        runtime.handle_begin_scrub_command(generation);
-        let target_before_stale_update = runtime.session.snapshot().timeline.target_position;
-        runtime
-            .scrub_coalescer
-            .submit_latest(scrub_update_intent(generation, 900))
-            .unwrap();
-
-        runtime.interrupt_scrub_for_external_boundary();
-        runtime.apply_latest_scrub_update();
-
-        assert_eq!(
-            runtime.session.snapshot().timeline.target_position,
-            target_before_stale_update
-        );
-        assert_eq!(
-            runtime.scrub_driver.diagnostics().stale_or_ignored_commands,
-            1
-        );
-    }
-
-    #[test]
-    fn scrub_classifier_rejection_has_no_worker_runtime_side_effects() {
-        let runtime = runtime_for_tests(Instant::now());
-        let queued_intent = scrub_update_intent(ScrubGeneration::default().next(), 333);
-
-        runtime
-            .scrub_coalescer
-            .submit_latest(queued_intent)
-            .unwrap();
-
-        assert!(WorkerPlayerCommand::try_from(PlayerCommand::BeginScrub).is_err());
-        assert!(
-            WorkerPlayerCommand::try_from(PlayerCommand::UpdateScrub(seek_to_millis(100))).is_err()
-        );
-        assert!(
-            WorkerPlayerCommand::try_from(PlayerCommand::PreviewScrub(seek_to_millis(100)))
-                .is_err()
-        );
-        assert!(
-            WorkerPlayerCommand::try_from(PlayerCommand::EndScrub {
-                policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-            })
-            .is_err()
-        );
-
-        assert!(!runtime.scrub_driver.is_scrubbing());
-        assert!(!runtime.session.snapshot().timeline.scrubbing);
-        assert_eq!(runtime.session.snapshot().timeline.target_position, None);
-        assert!(runtime.session.snapshot().last_error.is_none());
-        assert_eq!(
-            runtime.scrub_driver.diagnostics().stale_or_ignored_commands,
-            0
-        );
-        assert_eq!(
-            runtime
-                .scrub_coalescer
-                .take_for_generation(queued_intent.generation),
-            ScrubCoalescedUpdateDecision::Ready {
-                intent: queued_intent,
+            receive_player_command(&command_rx),
+            PlayerCommand::EndScrub {
+                policy: ScrubCommitPolicy::CommitLatestTarget,
             }
         );
     }
 
     #[test]
-    fn latest_scrub_update_updates_session_without_preview_seek() {
+    fn public_scrub_commands_use_session_fallback_final_seek() {
         let mut runtime = runtime_for_tests(Instant::now());
         let seek_request_log = Arc::new(Mutex::new(Vec::new()));
-        let demuxer = WorkerFakeDemuxer::empty_seekable(Arc::clone(&seek_request_log));
-        let generation = ScrubGeneration::default().next();
 
-        runtime.session.load_demuxer_with_autoplay(
-            "worker-fake".to_string(),
-            Box::new(demuxer),
-            false,
-        );
-        runtime.handle_begin_scrub_command(generation);
-        runtime
-            .scrub_coalescer
-            .submit_latest(scrub_update_intent(generation, 900))
-            .unwrap();
+        install_worker_video_media(&mut runtime, Arc::clone(&seek_request_log));
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::BeginScrub));
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::UpdateScrub(
+            seek_to_millis(20_000),
+        )));
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::EndScrub {
+            policy: ScrubCommitPolicy::CommitLatestTarget,
+        }));
 
-        runtime.apply_latest_scrub_update();
-
-        let requests = seek_request_log.lock().expect("seek request log lock");
-        assert!(requests.is_empty());
+        let expected_request = DemuxSeekRequest::decode_point_before(Duration::from_secs(20));
         assert_eq!(
-            runtime.session.snapshot().timeline.target_position,
-            Some(MediaTime::from_millis(900))
-        );
-        assert_eq!(
-            runtime.session.snapshot().timeline.preview_state,
-            TimelinePreviewState::Inactive
-        );
-    }
-
-    #[test]
-    fn end_scrub_applies_coalesced_update_without_starting_release_preview_seek() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
-        let demuxer = WorkerFakeDemuxer::empty_seekable(Arc::clone(&seek_request_log));
-        let generation = ScrubGeneration::default().next();
-
-        runtime.session.load_demuxer_with_autoplay(
-            "worker-fake".to_string(),
-            Box::new(demuxer),
-            false,
-        );
-        runtime.handle_begin_scrub_command(generation);
-        runtime
-            .scrub_coalescer
-            .submit_latest(scrub_update_intent(generation, 900))
-            .unwrap();
-
-        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
-            generation,
-            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        ));
-
-        let requests = seek_request_log.lock().expect("seek request log lock");
-        assert_eq!(
-            requests.as_slice(),
-            &[DemuxSeekRequest::accurate(Duration::from_millis(900))]
-        );
-        assert_eq!(
-            runtime.session.snapshot().timeline.target_position,
-            Some(MediaTime::from_millis(900))
+            seek_request_log
+                .lock()
+                .expect("seek request log lock")
+                .as_slice(),
+            &[expected_request]
         );
         assert!(runtime.session.has_active_seek_commit());
-        assert!(!runtime.session.snapshot().timeline.scrubbing);
-    }
-
-    #[test]
-    fn scrub_wake_does_not_dispatch_preview_when_end_scrub_is_already_pending() {
-        let (mut runtime, command_tx) = runtime_for_tests_with_command_sender(Instant::now());
-        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
-        let demuxer = WorkerFakeDemuxer::empty_seekable(Arc::clone(&seek_request_log));
-        let generation = ScrubGeneration::default().next();
-
-        runtime.session.load_demuxer_with_autoplay(
-            "worker-fake".to_string(),
-            Box::new(demuxer),
-            false,
-        );
-        runtime.handle_begin_scrub_command(generation);
-        runtime
-            .scrub_coalescer
-            .submit_latest(scrub_update_intent(generation, 900))
-            .unwrap();
-        command_tx
-            .try_send(WorkerCommand::EndScrub(ScrubCommitIntent::new(
-                generation,
-                ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-            )))
-            .unwrap();
-
-        runtime.handle_scrub_wakeup(Ok(()));
-
-        let requests = seek_request_log.lock().expect("seek request log lock");
-        assert_eq!(
-            requests.as_slice(),
-            &[DemuxSeekRequest::accurate(Duration::from_millis(900))]
-        );
-        assert_eq!(runtime.command_rx.len(), 0);
-        assert!(!runtime.session.snapshot().timeline.scrubbing);
-    }
-
-    #[test]
-    fn playing_scrub_release_commits_latest_target_and_preserves_resume_intent() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
-        let generation = ScrubGeneration::default().next();
-
-        install_worker_video_media(&mut runtime, Arc::clone(&seek_request_log));
-        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
-        assert_eq!(
-            runtime.session.snapshot().playback_state,
-            PlaybackState::Playing
-        );
-
-        runtime.handle_begin_scrub_command(generation);
-        runtime.apply_scrub_update(scrub_update_intent(generation, 12_000));
-        runtime
-            .session
-            .pipeline
-            .set_present_video_frame(decoded_frame_with_pts_for_tests(
-                Duration::from_secs(12),
-                FrameTextureHandle(120),
-            ));
-        runtime
-            .session
-            .note_presented_frame_for_seek(Duration::from_secs(12));
-        runtime
-            .scrub_coalescer
-            .submit_latest(scrub_update_intent(generation, 20_000))
-            .unwrap();
-
-        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
-            generation,
-            ScrubCommitPolicy::CommitVisiblePreview,
-        ));
-
-        let seek_commit = runtime
-            .session
-            .seek_commit()
-            .expect("release должен открыть ordinary final seek");
-        assert_eq!(seek_commit.target_position, MediaTime::from_secs(20));
-        assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
-        assert_eq!(
-            runtime.session.snapshot().playback_state,
-            PlaybackState::Seeking
-        );
-        assert!(!runtime.session.snapshot().timeline.scrubbing);
         assert!(runtime.session.snapshot().timeline.seeking);
-        let expected_release_request =
-            DemuxSeekRequest::decode_point_before(Duration::from_secs(20));
-        assert_eq!(
-            seek_request_log
-                .lock()
-                .expect("seek request log lock")
-                .as_slice(),
-            &[expected_release_request]
-        );
+        assert!(!runtime.session.snapshot().timeline.scrubbing);
     }
 
     #[test]
-    fn paused_scrub_release_commits_latest_target_and_stores_pause_resume_intent() {
+    fn stop_during_direct_scrub_is_plain_session_stop() {
         let mut runtime = runtime_for_tests(Instant::now());
         let seek_request_log = Arc::new(Mutex::new(Vec::new()));
-        let generation = ScrubGeneration::default().next();
 
         install_worker_video_media(&mut runtime, Arc::clone(&seek_request_log));
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::BeginScrub));
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::UpdateScrub(
+            seek_to_millis(900),
+        )));
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Stop));
+
         assert_eq!(
             runtime.session.snapshot().playback_state,
-            PlaybackState::Paused
-        );
-
-        runtime.handle_begin_scrub_command(generation);
-        runtime.apply_scrub_update(scrub_update_intent(generation, 12_000));
-        runtime
-            .session
-            .pipeline
-            .set_present_video_frame(decoded_frame_with_pts_for_tests(
-                Duration::from_secs(12),
-                FrameTextureHandle(121),
-            ));
-        runtime
-            .session
-            .note_presented_frame_for_seek(Duration::from_secs(12));
-        runtime
-            .scrub_coalescer
-            .submit_latest(scrub_update_intent(generation, 20_000))
-            .unwrap();
-
-        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
-            generation,
-            ScrubCommitPolicy::CommitVisiblePreview,
-        ));
-
-        let seek_commit = runtime
-            .session
-            .seek_commit()
-            .expect("release должен открыть ordinary final seek");
-        assert_eq!(seek_commit.target_position, MediaTime::from_secs(20));
-        assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Pause);
-        assert_eq!(
-            runtime.session.snapshot().playback_state,
-            PlaybackState::Seeking
+            PlaybackState::Stopped
         );
         assert!(!runtime.session.snapshot().timeline.scrubbing);
-        assert!(runtime.session.snapshot().timeline.seeking);
-        let expected_release_request =
-            DemuxSeekRequest::decode_point_before(Duration::from_secs(20));
-        assert_eq!(
+        assert!(
             seek_request_log
                 .lock()
                 .expect("seek request log lock")
-                .as_slice(),
-            &[expected_release_request]
+                .is_empty()
         );
-    }
-
-    #[test]
-    fn playing_scrub_release_stores_resume_intent_on_active_latest_target_seek() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
-        let generation = ScrubGeneration::default().next();
-
-        install_worker_video_media(&mut runtime, Arc::clone(&seek_request_log));
-        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
-        runtime.handle_begin_scrub_command(generation);
-        runtime
-            .scrub_coalescer
-            .submit_latest(scrub_update_intent(generation, 20_000))
-            .unwrap();
-
-        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
-            generation,
-            ScrubCommitPolicy::CommitVisiblePreview,
-        ));
-
-        let seek_commit = runtime
-            .session
-            .seek_commit()
-            .expect("latest-target fallback должен оставить active final seek");
-        assert_eq!(seek_commit.target_position, MediaTime::from_secs(20));
-        assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
-        assert_eq!(
-            runtime.session.snapshot().playback_state,
-            PlaybackState::Seeking
-        );
-        let expected_release_request =
-            DemuxSeekRequest::decode_point_before(Duration::from_secs(20));
-        assert_eq!(
-            seek_request_log
-                .lock()
-                .expect("seek request log lock")
-                .as_slice(),
-            &[expected_release_request]
-        );
-    }
-
-    /// Фиксирует latest-wins contract для плотного scrub burst перед release.
-    #[test]
-    fn aggressive_scrub_release_commits_only_latest_update() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
-        let demuxer = WorkerFakeDemuxer::empty_seekable(Arc::clone(&seek_request_log));
-        let generation = ScrubGeneration::default().next();
-
-        runtime.session.load_demuxer_with_autoplay(
-            "worker-fake".to_string(),
-            Box::new(demuxer),
-            false,
-        );
-        runtime.handle_begin_scrub_command(generation);
-        for step_index in 0..64u64 {
-            let target_millis = 100 + step_index * 25;
-            runtime
-                .scrub_coalescer
-                .submit_latest(scrub_update_intent(generation, target_millis))
-                .unwrap();
-        }
-
-        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
-            generation,
-            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        ));
-
-        let requests = seek_request_log.lock().expect("seek request log lock");
-        assert_eq!(
-            requests.as_slice(),
-            &[DemuxSeekRequest::accurate(Duration::from_millis(1_675))]
-        );
-        assert_eq!(
-            runtime.session.snapshot().timeline.target_position,
-            Some(MediaTime::from_millis(1_675))
-        );
-        assert_eq!(runtime.session.snapshot().current_position, Duration::ZERO);
-        assert!(runtime.session.has_active_seek_commit());
-        assert!(!runtime.session.snapshot().timeline.scrubbing);
-    }
-
-    #[test]
-    fn thousand_rapid_scrub_updates_commit_only_latest_target() {
-        let mut runtime = runtime_for_tests(Instant::now());
-        let seek_request_log = Arc::new(Mutex::new(Vec::new()));
-        let demuxer = WorkerFakeDemuxer::empty_seekable(Arc::clone(&seek_request_log));
-        let generation = ScrubGeneration::default().next();
-
-        runtime.session.load_demuxer_with_autoplay(
-            "worker-fake".to_string(),
-            Box::new(demuxer),
-            false,
-        );
-        runtime.handle_begin_scrub_command(generation);
-        for step_index in 0..1_000u64 {
-            runtime
-                .scrub_coalescer
-                .submit_latest(scrub_update_intent(generation, step_index))
-                .unwrap();
-        }
-
-        runtime.handle_end_scrub_command(ScrubCommitIntent::new(
-            generation,
-            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        ));
-
-        let requests = seek_request_log.lock().expect("seek request log lock");
-        assert_eq!(
-            requests.as_slice(),
-            &[DemuxSeekRequest::accurate(Duration::from_millis(999))]
-        );
-        assert_eq!(
-            runtime.session.snapshot().timeline.target_position,
-            Some(MediaTime::from_millis(999))
-        );
-        assert!(!runtime.session.snapshot().timeline.scrubbing);
-    }
-
-    #[test]
-    fn stop_interrupts_scrub_and_requests_pause_then_seek_zero() {
-        let mut worker = PlayerWorker::spawn(worker_config_for_tests()).unwrap();
-
-        worker.try_send_command(PlayerCommand::Play).unwrap();
-        worker.try_send_command(PlayerCommand::BeginScrub).unwrap();
-        worker
-            .try_send_command(PlayerCommand::UpdateScrub(seek_to_millis(900)))
-            .unwrap();
-        worker.try_send_command(PlayerCommand::Stop).unwrap();
-
-        let snapshot = wait_for_snapshot(&mut worker, |snapshot| {
-            snapshot.playback_state == PlaybackState::Stopped
-        });
-        let events = drain_events_until(&worker, |events| {
-            events.iter().any(|event| {
-                matches!(
-                    event,
-                    PlayerWorkerEvent::Player(PlayerEvent::SeekRequested(request))
-                        if request.target == SeekTarget::Absolute(MediaTime::ZERO)
-                )
-            })
-        });
-
-        assert_eq!(snapshot.playback_state, PlaybackState::Stopped);
-        assert_eq!(snapshot.current_position, Duration::ZERO);
-        assert!(!snapshot.timeline.scrubbing);
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                PlayerWorkerEvent::Player(PlayerEvent::SeekRequested(request))
-                    if request.target == SeekTarget::Absolute(MediaTime::ZERO)
-            )
-        }));
-        worker.shutdown().unwrap();
     }
 
     #[test]
@@ -3417,7 +1770,7 @@ mod tests {
     fn active_worker_uses_media_plan_as_wakeup_timeout() {
         let mut runtime = runtime_for_tests(Instant::now());
 
-        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
 
         assert!(runtime.plan_next_worker_wakeup().is_some());
     }
@@ -3426,7 +1779,7 @@ mod tests {
     fn command_batch_yields_to_overdue_tick_during_command_storm() {
         let (mut runtime, command_tx) = runtime_for_tests_with_command_sender(Instant::now());
         runtime.config.coarse_wakeup_interval = Duration::ZERO;
-        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
 
         for command_index in 0..MAX_COMMANDS_PER_LOOP * 2 {
             command_tx
@@ -3443,35 +1796,6 @@ mod tests {
         assert_eq!(processed_commands, MAX_COMMANDS_PER_LOOP);
         assert_eq!(runtime.command_rx.len(), MAX_COMMANDS_PER_LOOP);
         assert!(runtime.last_tick_at > previous_tick_at);
-    }
-
-    #[test]
-    fn command_batch_yields_to_latest_scrub_update_during_command_storm() {
-        let (mut runtime, command_tx) = runtime_for_tests_with_command_sender(Instant::now());
-        let generation = runtime.scrub_driver.next_begin_generation();
-        runtime.handle_worker_command(WorkerCommand::BeginScrub { generation });
-        runtime
-            .scrub_coalescer
-            .submit_latest(scrub_update_intent(generation, 750))
-            .unwrap();
-
-        for command_index in 0..MAX_COMMANDS_PER_LOOP * 2 {
-            command_tx
-                .try_send(WorkerCommand::SetSystemCapabilities(
-                    SystemCapabilities::empty(command_index as u64),
-                ))
-                .unwrap();
-        }
-
-        let processed_commands = runtime.drain_pending_command_batch();
-        runtime.service_worker_fairness_checkpoint(processed_commands);
-
-        assert_eq!(processed_commands, MAX_COMMANDS_PER_LOOP);
-        assert_eq!(runtime.command_rx.len(), MAX_COMMANDS_PER_LOOP);
-        assert_eq!(
-            runtime.scrub_driver.latest_scrub_target(),
-            Some(seek_to_millis(750))
-        );
     }
 
     #[test]
@@ -3623,7 +1947,7 @@ mod tests {
         runtime
             .session
             .register_render_lease(0, video_core::FrameTextureHandle(11));
-        runtime.handle_worker_command(WorkerCommand::Player(WorkerPlayerCommand::Play));
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
         let previous_tick_at = runtime.last_tick_at;
         let plan = runtime.session.worker_wakeup_plan(
             Instant::now(),

@@ -227,22 +227,6 @@ impl ScrubCommitIntent {
     }
 }
 
-/// Internal scrub command, уже защищённая worker generation token-ом.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SessionScrubCommand {
-    /// Начать новый scrub intent в session.
-    Begin { generation: ScrubGeneration },
-
-    /// Обновить latest target активного scrub intent-а.
-    Update(ScrubUpdateIntent),
-
-    /// Запустить live preview seek для активного scrub intent-а.
-    Preview(ScrubUpdateIntent),
-
-    /// Завершить active scrub intent выбранной commit-политикой.
-    End(ScrubCommitIntent),
-}
-
 /// Выбор качества потока для локального файла или сетевого сервиса.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QualitySelection {
