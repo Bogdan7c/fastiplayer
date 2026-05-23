@@ -1,0 +1,12 @@
+# Player Core
+
+- `player-core` modules from `src/lib.rs`: `command`, `decoder_boundary`, `diagnostics`, `error`, `event`, `media_opening`, `pipeline`, `render_lease_bridge`, `seek_state`, `session`, `snapshot`, `state`, `tick`, `video_backend`, `worker`, `worker_scheduler`.
+- Public/internal player boundary exports include `PlayerCommand`, `PlayerCommandSender`, `PlayerSnapshot`, `PlaybackState`, `PlayerEvent`, `PlayerWorkerEvent`, `PlayerWorker`, `PlayerWorkerConfig`, `PresentFrameLease`, `PlayerPresentFrame`, `PlayerRenderError`, seek types, `VideoBackendFactory`, and `StartedVideoBackend`.
+- `PlayerWorker` owns `PlayerSession` on a worker thread. UI sends commands and reads latest snapshot/events; UI must not call `PlayerSession::tick()` directly.
+- `PreparedMedia` is the media-opening boundary. Shell/service opens concrete demuxers and hands `Box<dyn media_core::Demuxer + Send>` plus tracks/duration/seekability to worker.
+- `PlaybackPipeline` owns runtime session slots but is not a data bag. Fields are private; cross-module access inside `player-core` goes through intent methods.
+- Key pipeline domains: opened media/demux slots, selected tracks/active video requirement, seek generation/timing, audio decoder/output/clock, packet queues, present queue, present frame/fallback frame, decoder I/O/accounting, render generation/lease accounting.
+- Keep `clear_pending_packets_for_seek`, decoder resets, clock resets, render lease accounting, and texture releases as explicit ownership/lifecycle decisions; do not bury them in unrelated helpers.
+- Current debt: `player-core -> wgpu` remains for WGPU texture view bridge; `player-core -> audio` remains for concrete Opus audio path. Do not expand these without architecture discussion.
+- Closed dependency violations must stay closed: no direct `player-core -> symphonia-demux/webm-demux` opening path and no direct `player-core -> video-vaapi` concrete backend internals.
+- Pipeline tests already cover many boundary methods for absent resource/no-op/error/accounting behavior; extend those focused tests when adding new boundary methods.

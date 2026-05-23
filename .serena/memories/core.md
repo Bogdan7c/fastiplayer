@@ -1,0 +1,14 @@
+# Core
+
+- Rust desktop video player workspace `rustiplayer`; source of truth for architecture docs starts at `docs/rustiplayer/README.md`.
+- Read these focused memories when needed: stack/deps in `mem:tech_stack`, local commands in `mem:suggested_commands`, code/architecture rules in `mem:conventions`, completion checks in `mem:task_completion`.
+- Module maps: playback/session boundaries in `mem:player-core/core`, media/services/source flow in `mem:media-services/core`, render/video backend flow in `mem:render-video/core`.
+- Workspace split: `app-egui` shell; `player-core` worker/session/scheduler; `media-core`/`codec-core`/`video-core`/`render-core`/`capability-core` contract crates; `source-core` byte access; `symphonia-demux` concrete demux; `service-youtube` yt-dlp adapter; `video-vaapi` VA-API decode; `render-wgpu` WGPU render; `audio` Opus/CPAL; `desktop-integration` desktop controls adapter.
+- Production video path is hardware-only zero-copy: VP9 Profile 0 SDR -> VA-API -> NV12 -> WGPU SDR; VP9 Profile 2 HDR 10-bit -> VA-API -> P010 -> WGPU BT.2446-C HDR-to-SDR.
+- No software video fallback, CPU upload fallback, CPU readback fallback, or native HDR output as user/runtime config switches.
+- Capability selection must intersect stream requirement, decode backend report, mandatory DMA-BUF memory contract, renderer support, and strict color/HDR policy before opening/using video.
+- `app-egui` owns window/UI/lifecycle/backend composition, but not playback queues, scheduling, demux state, audio/video decoder state, or `PlayerSession`.
+- `player-core` owns playback state and consumes already-opened `PreparedMedia`; it must not reintroduce direct deps on `symphonia-demux`/`webm-demux` for opening or on `video-vaapi` for concrete backend internals.
+- Renderer receives frames through `PresentFrameLease`; UI/actions communicate through `PlayerCommand`, `PlayerSnapshot`, and worker events.
+- Config is user TOML only; cookies, history, bookmarks, durable cache metadata, and service sessions are not config responsibilities.
+- Documentation is partly Russian/English; AGENTS.md rules are in Russian and are project-local operating instructions.
