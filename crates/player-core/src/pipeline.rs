@@ -52,7 +52,7 @@ pub(crate) enum VideoTextureReleaseEffect {
     ReleaseNow,
 }
 
-/// Runtime-готовность выбранного audio path-а для final seek resume.
+/// Runtime-готовность выбранного audio path-а для session-level audio gates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AudioSeekRuntimeState {
     /// Audio track не выбран: media video-only или audio path уже явно отключён policy-слоем.
@@ -64,7 +64,7 @@ pub(crate) enum AudioSeekRuntimeState {
     /// Decoder уже есть, но output ещё не создан из первого decoded AudioSpec.
     WaitingForOutput,
 
-    /// Decoder и output готовы; seek gate может проверять buffer preroll.
+    /// Decoder и output готовы; session policy может проверять buffer preroll.
     Ready,
 }
 
@@ -673,7 +673,7 @@ impl PlaybackPipeline {
         self.audio_track_id.is_some()
     }
 
-    /// Классифицирует audio runtime slots для seek gate без раскрытия storage полей.
+    /// Классифицирует audio runtime slots для session gate-ов без раскрытия storage полей.
     #[must_use]
     pub(crate) fn audio_seek_runtime_state(&self) -> AudioSeekRuntimeState {
         audio_seek_runtime_state_from_slots(

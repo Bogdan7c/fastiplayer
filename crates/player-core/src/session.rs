@@ -56,6 +56,35 @@ struct AudioDecoderInitSpec {
 /// Минимальный защитный preroll, ниже которого seek resume не должен считать audio готовым.
 const MIN_SEEK_AUDIO_PREROLL_MS: f64 = 1.0;
 
+/// Минимальный audio preroll для autoplay, защищающий старт от пустого output buffer-а.
+const MIN_AUTOPLAY_AUDIO_PREROLL_MS: f64 = 1.0;
+
+/// Typed результат проверки audio readiness для autoplay preroll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioAutoplayReadiness {
+    /// Audio track не выбран: video-only или отключённый audio path не блокируют autoplay.
+    NoSelectedAudio,
+
+    /// Audio track выбран, но decoder ещё не установлен.
+    WaitingForDecoder,
+
+    /// Decoder установлен, но output ещё не создан из decoded audio spec.
+    WaitingForOutput,
+
+    /// Output готов, но buffer ещё не набрал целевой preroll.
+    WaitingForPreroll,
+
+    /// Decoder/output готовы, а buffer достиг целевого preroll.
+    Ready,
+}
+
+impl AudioAutoplayReadiness {
+    /// Возвращает `true` только для состояний, которые не блокируют autoplay.
+    const fn is_ready(self) -> bool {
+        matches!(self, Self::NoSelectedAudio | Self::Ready)
+    }
+}
+
 /// Typed результат проверки audio gate-а для seek commit-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SeekAudioGateStatus {
@@ -2346,13 +2375,21 @@ impl PlayerSession {
     /// Проверяет минимальный readiness для перехода из `Buffering` в `Playing`.
     fn autoplay_preroll_ready(&self, audio_preroll_target_ms: f64) -> bool {
         let audio_ready = self
-            .audio_buffer_level_ms()
-            .map(|level_ms| level_ms >= audio_preroll_target_ms.max(1.0))
-            .unwrap_or(true);
+            .autoplay_audio_readiness(audio_preroll_target_ms)
+            .is_ready();
         let video_ready =
             !self.pipeline.has_selected_video_track() || self.pipeline.has_present_video_frame();
 
         audio_ready && video_ready
+    }
+
+    /// Возвращает typed audio readiness для autoplay без раскрытия pipeline storage.
+    fn autoplay_audio_readiness(&self, audio_preroll_target_ms: f64) -> AudioAutoplayReadiness {
+        classify_autoplay_audio_readiness(
+            self.pipeline.audio_seek_runtime_state(),
+            self.audio_buffer_level_ms(),
+            audio_preroll_target_ms,
+        )
     }
 
     /// Переводит playback в `Paused` и останавливает audio output.
@@ -3025,6 +3062,37 @@ impl PlayerSession {
             decoder_control_channel: self.pipeline.video_decoder_control_channel_pressure(),
         }
     }
+}
+
+/// Чистая политика audio gate-а для autoplay preroll.
+fn classify_autoplay_audio_readiness(
+    audio_runtime_state: AudioSeekRuntimeState,
+    audio_buffer_level_ms: Option<f64>,
+    audio_preroll_target_ms: f64,
+) -> AudioAutoplayReadiness {
+    match audio_runtime_state {
+        AudioSeekRuntimeState::NoSelectedAudio => AudioAutoplayReadiness::NoSelectedAudio,
+        AudioSeekRuntimeState::WaitingForDecoder => AudioAutoplayReadiness::WaitingForDecoder,
+        AudioSeekRuntimeState::WaitingForOutput => AudioAutoplayReadiness::WaitingForOutput,
+        AudioSeekRuntimeState::Ready => {
+            if autoplay_audio_preroll_ready(audio_buffer_level_ms, audio_preroll_target_ms) {
+                AudioAutoplayReadiness::Ready
+            } else {
+                AudioAutoplayReadiness::WaitingForPreroll
+            }
+        }
+    }
+}
+
+/// Проверяет, набрал ли output buffer минимальный audio preroll для autoplay.
+fn autoplay_audio_preroll_ready(
+    audio_buffer_level_ms: Option<f64>,
+    audio_preroll_target_ms: f64,
+) -> bool {
+    let required_preroll_ms = audio_preroll_target_ms.max(MIN_AUTOPLAY_AUDIO_PREROLL_MS);
+
+    audio_buffer_level_ms
+        .is_some_and(|level_ms| level_ms.is_finite() && level_ms >= required_preroll_ms)
 }
 
 /// Чистая политика audio gate-а для seek commit-а.
@@ -3723,6 +3791,9 @@ mod tests {
         /// Clock fake output-а, который session может установить в pipeline.
         clock: Arc<audio::AudioClock>,
 
+        /// Shared уровень buffer-а, видимый через output boundary.
+        buffer_level_ms: Arc<Mutex<f64>>,
+
         /// Сколько раз session попросила запустить stream.
         play_count: Arc<AtomicUsize>,
 
@@ -3734,14 +3805,31 @@ mod tests {
     }
 
     impl ScriptedAudioOutputHandle {
-        /// Создаёт empty counters и clock с production-like sample layout.
-        fn new() -> Self {
+        /// Создаёт shared buffer level, empty counters и clock с production-like sample layout.
+        fn new(buffer_level_ms: f64) -> Self {
             Self {
                 clock: Arc::new(audio::AudioClock::new(48_000, 2)),
+                buffer_level_ms: Arc::new(Mutex::new(buffer_level_ms)),
                 play_count: Arc::new(AtomicUsize::new(0)),
                 pause_count: Arc::new(AtomicUsize::new(0)),
                 clear_count: Arc::new(AtomicUsize::new(0)),
             }
+        }
+
+        /// Обновляет scripted buffer level, имитируя заполнение audio output-а.
+        fn set_buffer_level_ms(&self, buffer_level_ms: f64) {
+            *self
+                .buffer_level_ms
+                .lock()
+                .expect("audio buffer level mutex should not be poisoned") = buffer_level_ms;
+        }
+
+        /// Возвращает scripted buffer level без раскрытия mutex-а тестам.
+        fn buffer_level_ms(&self) -> f64 {
+            *self
+                .buffer_level_ms
+                .lock()
+                .expect("audio buffer level mutex should not be poisoned")
         }
     }
 
@@ -3749,9 +3837,6 @@ mod tests {
     struct ScriptedAudioOutput {
         /// Shared counters и clock, доступные тесту после move в pipeline.
         handle: ScriptedAudioOutputHandle,
-
-        /// Уровень buffer-а, который audio gate видит через pipeline boundary.
-        buffer_level_ms: f64,
 
         /// Ошибка, которую fake вернёт из play, если сценарий её задаёт.
         play_error: Option<&'static str>,
@@ -3761,8 +3846,7 @@ mod tests {
         /// Создаёт fake output с фиксированным buffer level и scripted play result.
         fn new(buffer_level_ms: f64, play_error: Option<&'static str>) -> Self {
             Self {
-                handle: ScriptedAudioOutputHandle::new(),
-                buffer_level_ms,
+                handle: ScriptedAudioOutputHandle::new(buffer_level_ms),
                 play_error,
             }
         }
@@ -3807,7 +3891,7 @@ mod tests {
 
         /// Возвращает scripted buffer level для audio preroll gate.
         fn buffer_level_ms(&self) -> f64 {
-            self.buffer_level_ms
+            self.handle.buffer_level_ms()
         }
 
         /// Возвращает fake clock с production AudioClock contract-ом.
@@ -8351,6 +8435,169 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, PlayerEvent::RecoverableError(_)))
         );
+    }
+
+    #[test]
+    fn autoplay_audio_readiness_policy_preserves_slot_blockers() {
+        assert_eq!(
+            classify_autoplay_audio_readiness(AudioSeekRuntimeState::NoSelectedAudio, None, 50.0),
+            AudioAutoplayReadiness::NoSelectedAudio
+        );
+        assert!(AudioAutoplayReadiness::NoSelectedAudio.is_ready());
+        assert_eq!(
+            classify_autoplay_audio_readiness(AudioSeekRuntimeState::WaitingForDecoder, None, 50.0),
+            AudioAutoplayReadiness::WaitingForDecoder
+        );
+        assert_eq!(
+            classify_autoplay_audio_readiness(AudioSeekRuntimeState::WaitingForOutput, None, 50.0),
+            AudioAutoplayReadiness::WaitingForOutput
+        );
+        assert_eq!(
+            classify_autoplay_audio_readiness(AudioSeekRuntimeState::Ready, Some(49.0), 50.0),
+            AudioAutoplayReadiness::WaitingForPreroll
+        );
+        assert_eq!(
+            classify_autoplay_audio_readiness(AudioSeekRuntimeState::Ready, Some(50.0), 50.0),
+            AudioAutoplayReadiness::Ready
+        );
+    }
+
+    #[test]
+    fn audio_only_autoplay_waits_for_decoder_output_and_buffer() {
+        let mut session = PlayerSession::new();
+        let audio_track_id = TrackId::new(2);
+
+        session.pipeline.select_audio_track(audio_track_id);
+        session.snapshot.selected_tracks.audio_track = Some(audio_track_id);
+        session.begin_autoplay_preroll().unwrap();
+
+        assert_eq!(
+            session.autoplay_audio_readiness(50.0),
+            AudioAutoplayReadiness::WaitingForDecoder
+        );
+        assert!(!session.finish_autoplay_preroll_if_ready(50.0).unwrap());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Buffering);
+
+        session
+            .pipeline
+            .install_audio_decoder(Box::new(CountingAudioDecoder::new(Arc::new(
+                AtomicUsize::new(0),
+            ))));
+
+        assert_eq!(
+            session.autoplay_audio_readiness(50.0),
+            AudioAutoplayReadiness::WaitingForOutput
+        );
+        assert!(!session.finish_autoplay_preroll_if_ready(50.0).unwrap());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Buffering);
+
+        let (audio_output, audio_output_handle) = ScriptedAudioOutput::new(10.0, None).into_parts();
+        session
+            .pipeline
+            .install_audio_output_for_tests(audio_output);
+        session
+            .pipeline
+            .install_audio_clock(Arc::clone(&audio_output_handle.clock));
+
+        assert_eq!(
+            session.autoplay_audio_readiness(50.0),
+            AudioAutoplayReadiness::WaitingForPreroll
+        );
+        assert!(!session.finish_autoplay_preroll_if_ready(50.0).unwrap());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Buffering);
+
+        audio_output_handle.set_buffer_level_ms(50.0);
+
+        assert_eq!(
+            session.autoplay_audio_readiness(50.0),
+            AudioAutoplayReadiness::Ready
+        );
+        assert!(session.finish_autoplay_preroll_if_ready(50.0).unwrap());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert_eq!(audio_output_handle.play_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn unsupported_audio_path_does_not_block_autoplay_after_disable() {
+        let mut session = PlayerSession::new();
+        let audio_track_id = TrackId::new(2);
+        let tracks = vec![fake_audio_track_with_codec(
+            audio_track_id.get(),
+            "A_NOT_REAL",
+        )];
+
+        session.init_audio_pipeline(&tracks);
+        session.begin_autoplay_preroll().unwrap();
+
+        assert_eq!(
+            session.autoplay_audio_readiness(50.0),
+            AudioAutoplayReadiness::WaitingForDecoder
+        );
+
+        session.process_audio_packet(audio_track_id, Duration::ZERO, None, None, 0, b"encoded");
+
+        assert_eq!(session.pipeline.selected_audio_track_id(), None);
+        assert_eq!(
+            session.autoplay_audio_readiness(50.0),
+            AudioAutoplayReadiness::NoSelectedAudio
+        );
+        assert!(session.finish_autoplay_preroll_if_ready(50.0).unwrap());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+        assert!(session.take_events().iter().any(|event| matches!(
+            event,
+            PlayerEvent::RecoverableError(error)
+                if error.kind == PlayerErrorKind::UnsupportedAudioCodec
+        )));
+    }
+
+    #[test]
+    fn video_only_autoplay_keeps_present_frame_gate() {
+        let mut session = PlayerSession::new();
+        let video_track = fake_track(1, TrackKind::Video);
+        let video_requirement =
+            video_requirement_from_track(&video_track).expect("fake video track should be VP9");
+
+        session
+            .pipeline
+            .select_video_track(video_track.id, video_requirement);
+        session.snapshot.selected_tracks.video_track = Some(video_track.id);
+        session.begin_autoplay_preroll().unwrap();
+
+        assert_eq!(
+            session.autoplay_audio_readiness(50.0),
+            AudioAutoplayReadiness::NoSelectedAudio
+        );
+        assert!(!session.finish_autoplay_preroll_if_ready(50.0).unwrap());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Buffering);
+
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(Duration::ZERO, 7));
+
+        assert!(session.finish_autoplay_preroll_if_ready(50.0).unwrap());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+    }
+
+    #[test]
+    fn selected_audio_without_output_does_not_satisfy_autoplay() {
+        let mut session = PlayerSession::new();
+        let audio_track_id = TrackId::new(2);
+
+        session.pipeline.select_audio_track(audio_track_id);
+        session.snapshot.selected_tracks.audio_track = Some(audio_track_id);
+        session
+            .pipeline
+            .install_audio_decoder(Box::new(CountingAudioDecoder::new(Arc::new(
+                AtomicUsize::new(0),
+            ))));
+        session.begin_autoplay_preroll().unwrap();
+
+        assert_eq!(
+            session.autoplay_audio_readiness(50.0),
+            AudioAutoplayReadiness::WaitingForOutput
+        );
+        assert!(!session.finish_autoplay_preroll_if_ready(50.0).unwrap());
+        assert_eq!(session.snapshot().playback_state, PlaybackState::Buffering);
     }
 
     #[test]
