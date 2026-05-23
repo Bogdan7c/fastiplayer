@@ -3977,6 +3977,7 @@ name = "symphonia-demux"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "audio",
  "bytes",
  "codec-core",
  "media-core",

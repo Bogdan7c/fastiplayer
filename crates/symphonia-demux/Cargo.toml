@@ -13,3 +13,6 @@ tracing = { workspace = true }
 media-core = { workspace = true }
 codec-core = { workspace = true }
 source-core = { workspace = true }
+
+[dev-dependencies]
+audio = { path = "../audio" }
