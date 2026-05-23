@@ -6054,7 +6054,7 @@ mod tests {
     }
 
     #[test]
-    fn default_timeline_release_policy_remains_commit_visible_preview() {
+    fn default_timeline_release_remains_commit_visible_preview() {
         assert_eq!(
             ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
             ScrubCommitPolicy::CommitVisiblePreview

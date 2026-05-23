@@ -138,8 +138,7 @@ fn parse_config_text(path: &Path, toml_text: &str) -> ConfigResult<AppConfig> {
 mod tests {
     use super::*;
     use crate::{
-        CURRENT_SCHEMA_VERSION, HdrToSdrOperatorConfig, PausedCommitBehavior,
-        TimelineReleasePolicy, ToneMappingMode,
+        CURRENT_SCHEMA_VERSION, HdrToSdrOperatorConfig, PausedCommitBehavior, ToneMappingMode,
     };
 
     /// Проверяет, что default schema остаётся самосогласованной.
@@ -186,13 +185,6 @@ mod tests {
 
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(CURRENT_SCHEMA_VERSION, 2);
-        assert_eq!(config.player.seek.live_interval_ms, 33);
-        assert_eq!(config.player.seek.live_preview_budget_ms, 100);
-        assert_eq!(config.player.seek.live_replace_in_flight_after_ms(), 33);
-        assert_eq!(
-            config.player.seek.timeline_release_policy,
-            TimelineReleasePolicy::VisiblePreview
-        );
         assert_eq!(config.player.seek.commit_timeout_ms, 10_000);
         assert_eq!(config.player.seek.resume_audio_min_buffer_ms, 50);
         assert_eq!(config.player.seek.resume_audio_gate_timeout_ms, 250);
@@ -331,10 +323,8 @@ mod tests {
         let created_toml = fs::read_to_string(&loaded.path).expect("created config readable");
         assert!(created_toml.contains("schema_version = 2"));
         assert!(created_toml.contains("[player.seek]"));
-        assert!(created_toml.contains("# Настройки live seek"));
-        assert!(created_toml.contains("live_interval_ms = 33"));
-        assert!(created_toml.contains("# Политика отпускания timeline"));
-        assert!(created_toml.contains("timeline_release_policy = \"visible-preview\""));
+        assert!(created_toml.contains("# Настройки seek commit"));
+        assert!(created_toml.contains("commit_timeout_ms = 10000"));
         assert!(created_toml.contains("resume_audio_gate_timeout_ms = 250"));
         assert!(created_toml.contains("resume_video_min_ready_frames = 3"));
         assert!(created_toml.contains("[player.demux]"));
@@ -364,74 +354,6 @@ mod tests {
         assert_eq!(reparsed, AppConfig::default());
     }
 
-    /// Проверяет, что старый config без нового поля получает latency-first default.
-    #[test]
-    fn missing_timeline_release_policy_defaults_to_visible_preview() {
-        let temp_dir = tempfile::tempdir().expect("temp dir created");
-        let config_path = temp_dir.path().join("config.toml");
-        fs::write(
-            &config_path,
-            r#"
-schema_version = 2
-
-[player.seek]
-"#,
-        )
-        .expect("config without timeline release policy written");
-
-        let loaded = load_from_path(&config_path).expect("missing timeline policy defaults");
-
-        assert_eq!(
-            loaded.config.player.seek.timeline_release_policy,
-            TimelineReleasePolicy::VisiblePreview
-        );
-    }
-
-    /// Проверяет, что config hook принимает точную timeline release policy.
-    #[test]
-    fn timeline_release_policy_latest_target_is_parsed() {
-        let temp_dir = tempfile::tempdir().expect("temp dir created");
-        let config_path = temp_dir.path().join("config.toml");
-        fs::write(
-            &config_path,
-            r#"
-schema_version = 2
-
-[player.seek]
-timeline_release_policy = "latest-target"
-"#,
-        )
-        .expect("latest-target config written");
-
-        let loaded = load_from_path(&config_path).expect("latest-target policy parsed");
-
-        assert_eq!(
-            loaded.config.player.seek.timeline_release_policy,
-            TimelineReleasePolicy::LatestTarget
-        );
-    }
-
-    /// Проверяет, что удалённая hybrid policy больше не проходит через config.
-    #[test]
-    fn timeline_release_policy_hybrid_is_rejected() {
-        let temp_dir = tempfile::tempdir().expect("temp dir created");
-        let config_path = temp_dir.path().join("config.toml");
-        fs::write(
-            &config_path,
-            r#"
-schema_version = 2
-
-[player.seek]
-timeline_release_policy = "hybrid"
-"#,
-        )
-        .expect("hybrid config written");
-
-        let error = load_from_path(&config_path).expect_err("hybrid policy rejected");
-
-        assert!(error.to_string().contains("timeline_release_policy"));
-    }
-
     /// Проверяет, что старые index-only network поля больше не принимаются.
     #[test]
     fn legacy_index_only_network_config_fields_are_rejected() {
@@ -448,6 +370,42 @@ timeline_release_policy = "hybrid"
 schema_version = 2
 
 [network]
+{legacy_field}
+"#
+                ),
+            )
+            .expect("legacy config written");
+
+            let error = load_from_path(&config_path).expect_err("legacy config rejected");
+            let field_name = legacy_field
+                .split_once(" = ")
+                .expect("test legacy field format")
+                .0;
+
+            assert!(error.to_string().contains(field_name));
+        }
+    }
+
+    /// Проверяет, что старые preview-настройки seek не остаются молча принятыми.
+    #[test]
+    fn legacy_seek_preview_config_fields_are_rejected() {
+        for legacy_field in [
+            format!("{} = 33", concat!("live", "_interval_ms")),
+            format!("{} = 100", concat!("live", "_preview_budget_ms")),
+            format!(
+                "{} = \"visible-preview\"",
+                concat!("timeline", "_release_policy")
+            ),
+        ] {
+            let temp_dir = tempfile::tempdir().expect("temp dir created");
+            let config_path = temp_dir.path().join("config.toml");
+            fs::write(
+                &config_path,
+                format!(
+                    r#"
+schema_version = 2
+
+[player.seek]
 {legacy_field}
 "#
                 ),
@@ -673,74 +631,6 @@ resolve_timeout_ms = 0
         let error = load_from_path(&config_path).expect_err("invalid timeout rejected");
 
         assert!(error.to_string().contains("youtube.resolve_timeout_ms"));
-    }
-
-    /// Проверяет положительность seek interval/budget.
-    #[test]
-    fn invalid_seek_interval_fails_validation() {
-        let temp_dir = tempfile::tempdir().expect("temp dir created");
-        let config_path = temp_dir.path().join("config.toml");
-        fs::write(
-            &config_path,
-            r#"
-schema_version = 2
-
-[player.seek]
-live_interval_ms = 0
-"#,
-        )
-        .expect("invalid config written");
-
-        let error = load_from_path(&config_path).expect_err("invalid seek interval rejected");
-
-        assert!(error.to_string().contains("player.seek.live_interval_ms"));
-    }
-
-    /// Проверяет верхнюю границу seek preview interval, чтобы drag не стал фактически offline.
-    #[test]
-    fn excessive_seek_interval_fails_validation() {
-        let temp_dir = tempfile::tempdir().expect("temp dir created");
-        let config_path = temp_dir.path().join("config.toml");
-        fs::write(
-            &config_path,
-            r#"
-schema_version = 2
-
-[player.seek]
-live_interval_ms = 1001
-"#,
-        )
-        .expect("invalid config written");
-
-        let error = load_from_path(&config_path).expect_err("excessive seek interval rejected");
-
-        assert!(error.to_string().contains("player.seek.live_interval_ms"));
-    }
-
-    /// Проверяет, что preview budget не может быть меньше окна replacement policy.
-    #[test]
-    fn preview_budget_below_live_interval_fails_validation() {
-        let temp_dir = tempfile::tempdir().expect("temp dir created");
-        let config_path = temp_dir.path().join("config.toml");
-        fs::write(
-            &config_path,
-            r#"
-schema_version = 2
-
-[player.seek]
-live_interval_ms = 33
-live_preview_budget_ms = 16
-"#,
-        )
-        .expect("invalid config written");
-
-        let error = load_from_path(&config_path).expect_err("invalid preview budget rejected");
-
-        assert!(
-            error
-                .to_string()
-                .contains("player.seek.live_preview_budget_ms")
-        );
     }
 
     /// Проверяет положительность seek commit timeout-а.

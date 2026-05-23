@@ -292,7 +292,6 @@ fn cached_present_frame_discard_reason_for_player_event(
         | PlayerEvent::SeekTargetFramePresented(_)
         | PlayerEvent::SeekCommitted(_)
         | PlayerEvent::AudioResumedAfterSeek(_)
-        | PlayerEvent::ScrubReleaseCommitted(_)
         | PlayerEvent::VideoFrameReady(_)
         | PlayerEvent::BufferingStateChanged(_)
         | PlayerEvent::CapabilityScanCompleted(_)
@@ -1582,9 +1581,8 @@ mod tests {
     use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
     use media_core::MediaTime;
     use player_core::{
-        MediaOpenRequest, MediaSource, MediaSummary, PlaybackState, PlayerCommand, PlayerError,
-        PlayerErrorKind, PlayerEvent, ScrubCommitPolicy, ScrubReleaseCommitInfo,
-        ScrubReleaseCommitSource, SeekRequest,
+        MediaOpenRequest, MediaSource, MediaSummary, PlaybackResumeIntent, PlaybackState,
+        PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, SeekCommitInfo, SeekRequest,
     };
     use render_core::{
         ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
@@ -1779,14 +1777,13 @@ mod tests {
             None
         );
         assert_eq!(
-            cached_present_frame_discard_reason_for_player_event(
-                &PlayerEvent::ScrubReleaseCommitted(ScrubReleaseCommitInfo {
-                    release_policy: ScrubCommitPolicy::CommitVisiblePreview,
-                    committed_from: ScrubReleaseCommitSource::VisiblePreview,
-                    committed_position: Duration::from_secs(12),
-                    latest_target: Duration::from_secs(20),
-                })
-            ),
+            cached_present_frame_discard_reason_for_player_event(&PlayerEvent::SeekCommitted(
+                SeekCommitInfo {
+                    target_position: Duration::from_secs(12),
+                    actual_position: Duration::from_secs(12),
+                    resume_intent: PlaybackResumeIntent::Pause,
+                }
+            )),
             None
         );
     }

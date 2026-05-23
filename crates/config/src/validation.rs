@@ -51,12 +51,6 @@ const MAX_AUDIO_BUFFER_TARGET_MS: u64 = 10_000;
 /// Верхний предел video preroll перед seek resume, чтобы config не удерживал лишние GPU frames.
 const MAX_SEEK_RESUME_VIDEO_READY_FRAMES: usize = MAX_PRESENT_QUEUE_FRAMES + 1;
 
-/// Нижняя граница preview throttle: ноль превращает scheduler wakeup в busy loop.
-const MIN_LIVE_SCRUB_PREVIEW_INTERVAL_MS: u64 = 1;
-
-/// Верхняя граница preview throttle: выше секунды live scrub перестаёт быть live.
-const MAX_LIVE_SCRUB_PREVIEW_INTERVAL_MS: u64 = 1_000;
-
 /// Верхний предел demux skip-window, чтобы повреждённый stream не держал worker слишком долго.
 const MAX_CONSECUTIVE_CORRUPTED_PACKETS: usize = 4096;
 
@@ -135,17 +129,6 @@ fn validate_player_section(config: &AppConfig) -> ConfigResult<()> {
 
 /// Проверяет seek/scrub параметры до использования scheduler-ом.
 fn validate_player_seek_config(seek: &PlayerSeekConfig) -> ConfigResult<()> {
-    validate_u64_range(
-        "player.seek.live_interval_ms",
-        seek.live_interval_ms,
-        MIN_LIVE_SCRUB_PREVIEW_INTERVAL_MS,
-        MAX_LIVE_SCRUB_PREVIEW_INTERVAL_MS,
-    )?;
-    validate_positive_u64(
-        "player.seek.live_preview_budget_ms",
-        seek.live_preview_budget_ms,
-    )?;
-    validate_live_preview_replacement_policy(seek)?;
     validate_positive_u64("player.seek.commit_timeout_ms", seek.commit_timeout_ms)?;
     validate_positive_u64(
         "player.seek.resume_audio_min_buffer_ms",
@@ -169,34 +152,6 @@ fn validate_player_seek_config(seek: &PlayerSeekConfig) -> ConfigResult<()> {
         "player.seek.hotkey_large_step_secs",
         seek.hotkey_large_step_secs,
     )?;
-
-    Ok(())
-}
-
-/// Проверяет явную derived policy замены in-flight live preview.
-fn validate_live_preview_replacement_policy(seek: &PlayerSeekConfig) -> ConfigResult<()> {
-    let replacement_after_ms = seek.live_replace_in_flight_after_ms();
-    if replacement_after_ms < seek.live_interval_ms {
-        return Err(invalid_value(
-            "player.seek.live_preview_budget_ms",
-            format!(
-                "значение должно быть не меньше player.seek.live_interval_ms ({}), \
-                 чтобы replacement window ({replacement_after_ms}) не был меньше live cadence",
-                seek.live_interval_ms
-            ),
-        ));
-    }
-
-    if seek.live_preview_budget_ms < replacement_after_ms {
-        return Err(invalid_value(
-            "player.seek.live_preview_budget_ms",
-            format!(
-                "значение должно быть не меньше replacement window ({replacement_after_ms}), \
-                 получено {}",
-                seek.live_preview_budget_ms
-            ),
-        ));
-    }
 
     Ok(())
 }
