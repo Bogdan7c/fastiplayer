@@ -611,7 +611,7 @@ pub struct ActiveSeekDiagnosticsSnapshot {
     /// Фактическая container position после demux seek.
     pub actual: Duration,
 
-    /// Resume intent, сохранённый на момент старта или release scrub-а.
+    /// Resume intent, сохранённый на момент старта seek transaction-а.
     pub resume_intent: &'static str,
 
     /// Главный текущий blocker seek progress.

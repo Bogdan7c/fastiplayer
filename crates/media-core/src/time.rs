@@ -576,7 +576,10 @@ pub enum TimelineNotSeekableReason {
     IndexUnavailable,
 }
 
-/// Состояние live preview внутри interactive scrub.
+/// Compatibility-состояние preview внутри interactive scrub.
+///
+/// Player-core после удаления live preview release pipeline публикует только `Inactive`.
+/// Остальные варианты оставлены для внешних интеграций, которые уже зависят от public API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TimelinePreviewState {
     /// Preview seek сейчас не активен и не ожидает результата.
@@ -635,7 +638,7 @@ pub struct TimelineSnapshot {
     /// Показываемый кадр относится к старой позиции во время seek/scrub.
     pub stale_frame: bool,
 
-    /// Явный статус live preview, независимый от визуального stale-флага.
+    /// Compatibility-статус preview, независимый от визуального stale-флага.
     pub preview_state: TimelinePreviewState,
 }
 

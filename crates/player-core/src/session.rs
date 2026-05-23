@@ -9,7 +9,7 @@ use codec_core::{
 };
 use media_core::{
     DemuxSeekability, DemuxTrackListUpdate, MediaDemuxError, MediaDuration, MediaTime,
-    PacketKeyframe, TimelineNotSeekableReason, TimelinePreviewState, TrackInfo, TrackKind,
+    PacketKeyframe, TimelineNotSeekableReason, TrackInfo, TrackKind,
 };
 use tracing::{debug, info, trace, warn};
 
@@ -727,7 +727,6 @@ impl PlayerSession {
         self.snapshot.timeline.seeking = timeline_before_update.seeking;
         self.snapshot.timeline.scrubbing = timeline_before_update.scrubbing;
         self.snapshot.timeline.stale_frame = timeline_before_update.stale_frame;
-        self.snapshot.timeline.preview_state = timeline_before_update.preview_state;
     }
 
     /// Отмечает успешное открытие media внешним demux/source слоем.
@@ -2109,7 +2108,6 @@ impl PlayerSession {
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.scrubbing = false;
         self.snapshot.timeline.stale_frame = false;
-        self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
         self.pipeline.set_media_clock_base(playback_position);
         self.pipeline.clear_monotonic_media_clock();
         self.publish_position_changed(playback_position);
@@ -2203,7 +2201,6 @@ impl PlayerSession {
         // действительно покрывает target завершённой transaction.
         self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame()
             && !self.present_frame_covers_target(seek_commit.target_position.as_duration());
-        self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
         self.pause_audio_output_for_seek();
         self.set_playback_state(PlaybackState::Paused);
 
@@ -2410,7 +2407,6 @@ impl PlayerSession {
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = false;
         self.snapshot.timeline.target_position = Some(self.snapshot.timeline.current_position);
-        self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
         Ok(())
     }
 
@@ -2436,7 +2432,6 @@ impl PlayerSession {
         self.simple_scrub_latest_request = Some(request);
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.target_position = Some(target_position);
-        self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
         if !self.snapshot.timeline.seeking {
             self.snapshot.timeline.stale_frame = false;
         }
@@ -2464,7 +2459,6 @@ impl PlayerSession {
         self.simple_scrub_active = false;
         self.simple_scrub_latest_request = None;
         self.snapshot.timeline.scrubbing = false;
-        self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
         if !self.snapshot.timeline.seeking {
             self.snapshot.timeline.target_position = None;
             self.snapshot.timeline.stale_frame = false;
@@ -2496,7 +2490,6 @@ impl PlayerSession {
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.stale_frame = true;
         self.snapshot.timeline.target_position = None;
-        self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
         self.simple_scrub_active = false;
         self.simple_scrub_latest_request = None;
         self.snapshot.timeline.scrubbing = false;
@@ -2546,7 +2539,6 @@ impl PlayerSession {
             }
         };
 
-        self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
         let resume_intent = PlaybackResumeIntent::from_playback_state(self.playback_state());
 
         self.pause_audio_output_for_seek();
@@ -2571,7 +2563,6 @@ impl PlayerSession {
         self.snapshot.timeline.target_position = Some(target_position);
         self.snapshot.timeline.seeking = true;
         self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame();
-        self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
 
         if let Some(Err(error)) = self.pipeline.reset_audio_decoder() {
             let player_error = PlayerError::new(
@@ -2652,7 +2643,6 @@ impl PlayerSession {
                 self.snapshot.timeline.stale_frame = false;
                 self.set_playback_state(PlaybackState::Paused);
                 self.snapshot.timeline.target_position = None;
-                self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
                 let player_error = player_error_from_demux_seek_error(error);
                 self.record_recoverable_error(player_error);
                 Ok(())
@@ -4502,10 +4492,6 @@ mod tests {
 
         assert!(session.seek_commit().is_none());
         assert!(!session.snapshot().timeline.scrubbing);
-        assert_eq!(
-            session.snapshot().timeline.preview_state,
-            TimelinePreviewState::Inactive
-        );
         assert_eq!(session.simple_scrub_latest_request, Some(request));
     }
 
@@ -5076,10 +5062,6 @@ mod tests {
         assert!(!harness.session.snapshot().timeline.scrubbing);
         assert!(!harness.session.snapshot().timeline.stale_frame);
         assert_eq!(
-            harness.session.snapshot().timeline.preview_state,
-            TimelinePreviewState::Inactive
-        );
-        assert_eq!(
             harness
                 .session
                 .pipeline
@@ -5449,10 +5431,6 @@ mod tests {
         assert!(session.seek_commit().is_none());
         assert!(session.snapshot().timeline.scrubbing);
         assert!(!session.snapshot().timeline.seeking);
-        assert_eq!(
-            session.snapshot().timeline.preview_state,
-            TimelinePreviewState::Inactive
-        );
         assert_eq!(session.snapshot().current_position, Duration::ZERO);
     }
 
@@ -6083,10 +6061,6 @@ mod tests {
             session.snapshot().timeline.target_position,
             Some(MediaTime::from_secs(7))
         );
-        assert_eq!(
-            session.snapshot().timeline.preview_state,
-            TimelinePreviewState::Inactive
-        );
         assert!(
             seek_request_log
                 .lock()
@@ -6152,10 +6126,6 @@ mod tests {
         assert_eq!(
             session.snapshot().timeline.target_position,
             Some(MediaTime::from_secs(8))
-        );
-        assert_eq!(
-            session.snapshot().timeline.preview_state,
-            TimelinePreviewState::Inactive
         );
         assert!(!session.snapshot().timeline.stale_frame);
         let events = session.take_events();
@@ -6232,10 +6202,6 @@ mod tests {
         assert!(session.seek_commit().is_none());
         assert!(!session.snapshot().timeline.scrubbing);
         assert_eq!(session.snapshot().timeline.target_position, None);
-        assert_eq!(
-            session.snapshot().timeline.preview_state,
-            TimelinePreviewState::Inactive
-        );
         let events = session.take_events();
         assert!(
             events
@@ -7538,10 +7504,6 @@ mod tests {
         assert_eq!(tick_result.video_frames_presented, 0);
         assert!(tick_result.dropped_video_frames.is_empty());
         assert!(session.pipeline.present_video_frame().is_none());
-        assert_eq!(
-            session.snapshot().timeline.preview_state,
-            TimelinePreviewState::Inactive
-        );
         assert!(!session.snapshot().timeline.stale_frame);
         assert!(session.seek_commit().is_none());
     }

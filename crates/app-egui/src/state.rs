@@ -322,10 +322,10 @@ struct TextureBusyFallbackReuseState {
     /// Был ли cached frame уже помечен stale при публикации lease-а.
     cached_frame_is_stale: bool,
 
-    /// Помечает ли session текущую visible-картинку stale относительно seek/scrub состояния.
+    /// Помечает ли session текущую картинку stale относительно seek/scrub состояния.
     ///
-    /// Pending scrub target сам по себе не выставляет этот флаг, если на экране всё ещё стоит
-    /// валидный preview frame текущего scrub generation-а.
+    /// Pending scrub target сам по себе не выставляет этот флаг, пока cached frame остаётся
+    /// валидным относительно source и render generation.
     timeline_marks_frame_stale: bool,
 }
 
@@ -344,7 +344,7 @@ enum TextureBusyFallbackRejectReason {
     /// Cached lease уже был помечен stale на render boundary.
     CachedFrameStale,
 
-    /// Timeline сейчас считает видимый кадр stale относительно seek/scrub.
+    /// Timeline сейчас считает текущий кадр stale относительно seek/scrub.
     TimelineFrameStale,
 }
 
@@ -1829,10 +1829,10 @@ mod tests {
         );
     }
 
-    /// Проверяет, что новый pending scrub target не скрывает последний visible preview.
+    /// Проверяет, что новый pending scrub target не запрещает reuse валидного previous frame-а.
     #[test]
-    fn texture_busy_fallback_reuses_visible_preview_while_target_is_pending() {
-        let visible_preview_with_pending_target = TextureBusyFallbackReuseState {
+    fn texture_busy_fallback_reuses_previous_frame_while_target_is_pending() {
+        let valid_previous_frame_with_pending_target = TextureBusyFallbackReuseState {
             cached_generation: 5,
             current_generation: 5,
             source_matches: true,
@@ -1842,10 +1842,10 @@ mod tests {
         };
 
         assert!(texture_busy_fallback_can_reuse_previous_frame(
-            visible_preview_with_pending_target
+            valid_previous_frame_with_pending_target
         ));
         assert_eq!(
-            texture_busy_fallback_reject_reason(visible_preview_with_pending_target),
+            texture_busy_fallback_reject_reason(valid_previous_frame_with_pending_target),
             None
         );
     }
