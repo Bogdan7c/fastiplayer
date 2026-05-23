@@ -1937,11 +1937,11 @@ mod tests {
             .expect("первый seek должен создать verification prebuffer");
         demuxer
             .seek_with_request(DemuxSeekRequest::preview(Duration::from_secs(10)))
-            .expect("preview seek не должен запускать DecodePointBefore verification");
+            .expect("preview-mode seek не должен запускать DecodePointBefore verification");
         let packet = demuxer
             .next_packet()
             .expect("preview packet должен читаться после seek")
-            .expect("preview seek не должен съесть post-seek packet");
+            .expect("preview-mode seek не должен съесть post-seek packet");
 
         assert_eq!(packet.pts, Duration::from_secs(11));
         assert_eq!(
@@ -1973,7 +1973,7 @@ mod tests {
 
         let seek_result = demuxer
             .seek_with_request(DemuxSeekRequest::preview(Duration::from_secs(10)))
-            .expect("preview seek должен использовать selected video track");
+            .expect("preview-mode seek должен использовать selected video track");
 
         assert_eq!(
             seek_result
@@ -2265,7 +2265,7 @@ mod tests {
 
         demuxer
             .seek_with_request(DemuxSeekRequest::preview(Duration::from_millis(500)))
-            .expect("preview seek должен завершиться до post-seek read");
+            .expect("preview-mode seek должен завершиться до post-seek read");
 
         let reset_event = demuxer
             .next_event()

@@ -2418,7 +2418,7 @@ impl PlayerSession {
         Ok(())
     }
 
-    /// Сохраняет preview request как latest target без запуска live preview seek-а.
+    /// Сохраняет preview request как latest target без запуска demux preview-mode seek-а.
     fn preview_scrub(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         self.simple_scrub_active = true;

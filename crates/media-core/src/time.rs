@@ -576,13 +576,13 @@ pub enum TimelineNotSeekableReason {
     IndexUnavailable,
 }
 
-/// Compatibility-состояние preview внутри interactive scrub.
+/// Compatibility-состояние исторического preview-контракта внутри interactive scrub.
 ///
-/// Player-core после удаления live preview release pipeline публикует только `Inactive`.
-/// Остальные варианты оставлены для внешних интеграций, которые уже зависят от public API.
+/// Текущий player-core публикует только `Inactive`; остальные варианты оставлены для
+/// внешних интеграций и будущей переписи preview-пайплайна.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TimelinePreviewState {
-    /// Preview seek сейчас не активен и не ожидает результата.
+    /// Preview-пайплайн сейчас не активен и не ожидает результата.
     Inactive,
 
     /// Для текущей scrub-цели ещё нет показанного preview frame-а.
@@ -594,15 +594,15 @@ pub enum TimelinePreviewState {
     /// Целевой preview frame был показан и может считаться готовым.
     Ready,
 
-    /// Preview seek не успел дойти до целевого frame-а за отведённый бюджет.
+    /// Preview-пайплайн не успел дойти до целевого frame-а за отведённый бюджет.
     Expired,
 
-    /// Preview seek был прерван ошибкой до готового preview frame-а.
+    /// Preview-пайплайн был прерван ошибкой до готового preview frame-а.
     Failed,
 }
 
 impl Default for TimelinePreviewState {
-    /// По умолчанию preview transaction отсутствует.
+    /// По умолчанию compatibility preview-состояние отсутствует.
     fn default() -> Self {
         Self::Inactive
     }

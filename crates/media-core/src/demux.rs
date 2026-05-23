@@ -24,7 +24,10 @@ pub enum DemuxSeekMode {
     /// Seek к безопасной decode-точке не позже target для decoder-а после flush.
     DecodePointBefore,
 
-    /// Preview seek: допустим более грубый, но быстрый прыжок к пригодной decode-точке.
+    /// Preview mode: низкоуровневый demux-примитив для будущего preview-пайплайна.
+    ///
+    /// Текущий player-core не использует этот режим для timeline drag: отпускание pointer-а
+    /// выполняет обычный final seek.
     Preview,
 }
 
@@ -57,7 +60,9 @@ impl DemuxSeekRequest {
         }
     }
 
-    /// Создаёт быстрый preview seek-запрос.
+    /// Создаёт низкоуровневый `Preview` demux-запрос для будущего preview-пайплайна.
+    ///
+    /// Этот helper не означает, что player-core сейчас запускает preview при timeline drag.
     #[must_use]
     pub const fn preview(timestamp: Duration) -> Self {
         Self {

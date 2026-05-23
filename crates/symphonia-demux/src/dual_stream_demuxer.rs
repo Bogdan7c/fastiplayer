@@ -850,13 +850,13 @@ mod tests {
     }
 
     #[test]
-    fn preview_seek_returns_earliest_actual_position_when_streams_differ() {
+    fn preview_mode_returns_earliest_actual_position_when_streams_differ() {
         let (mut demuxer, _video_seek_log, _audio_seek_log) =
             fake_dual_stream_demuxer(9_000, 7_000);
 
         let result = demuxer
             .seek_with_request(DemuxSeekRequest::preview(Duration::from_secs(10)))
-            .expect("dual preview seek succeeds");
+            .expect("dual preview-mode seek succeeds");
 
         assert_eq!(result.requested_position, MediaTime::from_secs(10));
         assert_eq!(result.actual_position, MediaTime::from_secs(7));

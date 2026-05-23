@@ -147,7 +147,8 @@ impl SeekRequest {
 /// Совместимый параметр завершения interactive scrub.
 ///
 /// Текущий player-core временно игнорирует значение policy: `EndScrub` сохраняет
-/// форму public API до нового live preview core, но завершает drag обычным final seek-ом.
+/// форму public API до будущей переписи preview-пайплайна, но завершает drag обычным
+/// final seek-ом.
 /// Обычные exact seek-команды должны идти через `PlayerCommand::Seek`, чтобы не
 /// наследовать будущую UX policy timeline-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,7 +164,7 @@ impl ScrubCommitPolicy {
     /// UX policy по умолчанию для отпускания pointer-а на timeline.
     ///
     /// Значение сохранено только для source/binary compatibility существующих callers.
-    /// До нового live preview core session трактует оба enum-варианта одинаково.
+    /// До будущей переписи preview-пайплайна session трактует оба enum-варианта одинаково.
     pub const DEFAULT_TIMELINE_RELEASE: Self = Self::CommitVisiblePreview;
 }
 
@@ -204,10 +205,10 @@ pub enum PlayerCommand {
     /// Запомнить latest target compatibility scrub-а без запуска demux seek-а.
     UpdateScrub(SeekRequest),
 
-    /// Запомнить latest target compatibility scrub-а без запуска live preview seek-а.
+    /// Запомнить latest target compatibility scrub-а без запуска demux preview-mode seek-а.
     ///
     /// Временный fallback трактует preview как `UpdateScrub`: target сохраняется
-    /// для `EndScrub`, но player-core preview transaction не стартует.
+    /// для `EndScrub`, но player-core preview-пайплайн не стартует.
     PreviewScrub(SeekRequest),
 
     /// Завершить compatibility scrub обычным final seek-ом в latest target.
