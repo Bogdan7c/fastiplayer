@@ -643,6 +643,41 @@ fn audio_demux_catchup_needed_for_level(
         && audio_buffer_level_ms < sanitize_audio_demux_low_water_mark(low_water_mark_ms)
 }
 
+/// Проверяет bootstrap-фазу, когда audio track уже выбран, но output ещё не создан.
+fn selected_audio_bootstrap_needs_demux(session: &PlayerSession) -> bool {
+    session.pipeline.has_selected_audio_track()
+        && session.audio_buffer_level_ms().is_none()
+        && session.pipeline.pending_audio_packet_is_empty()
+}
+
+/// Проверяет, не должен ли demux остановиться до обработки уже найденного audio packet-а.
+fn pending_audio_queue_blocks_demux(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+) -> bool {
+    if !session.pipeline.has_selected_audio_track()
+        || session.pipeline.pending_audio_packet_is_empty()
+    {
+        return false;
+    }
+
+    let Some(audio_buffer_level_ms) = session.audio_buffer_level_ms() else {
+        return true;
+    };
+
+    !audio_buffer_level_ms.is_finite()
+        || audio_buffer_level_ms
+            > sanitize_audio_high_water_mark(tick_config.audio_buffer_high_water_mark_ms)
+}
+
+/// Проверяет bounded video backlog, который разрешён audio bootstrap/catch-up режимам.
+fn audio_priority_pending_video_limit_allows_demux(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+) -> bool {
+    session.pipeline.pending_video_packet_len() < audio_catchup_pending_video_limit(tick_config)
+}
+
 /// Проверяет, исчерпано ли bounded окно adaptive catch-up.
 fn catch_up_deadline_reached(deadline: Option<Instant>) -> bool {
     deadline.is_some_and(|deadline| Instant::now() >= deadline)
@@ -860,9 +895,12 @@ fn can_read_next_demux_packet_with_audio_priority(
     tick_config: &PlayerTickConfig,
     prioritize_audio_catchup: bool,
 ) -> bool {
-    if prioritize_audio_catchup {
-        return session.pipeline.pending_video_packet_len()
-            < audio_catchup_pending_video_limit(tick_config);
+    if pending_audio_queue_blocks_demux(session, tick_config) {
+        return false;
+    }
+
+    if prioritize_audio_catchup || selected_audio_bootstrap_needs_demux(session) {
+        return audio_priority_pending_video_limit_allows_demux(session, tick_config);
     }
 
     if !has_texture_capacity_for_decode(session, tick_config) {
@@ -882,10 +920,13 @@ fn demux_backpressure_reason(
     tick_config: &PlayerTickConfig,
     prioritize_audio_catchup: bool,
 ) -> Option<PipelinePauseReason> {
-    if prioritize_audio_catchup {
-        return (session.pipeline.pending_video_packet_len()
-            >= audio_catchup_pending_video_limit(tick_config))
-        .then_some(PipelinePauseReason::WaitingForDemuxAudioPriority);
+    if pending_audio_queue_blocks_demux(session, tick_config) {
+        return Some(PipelinePauseReason::DemuxBackpressure);
+    }
+
+    if prioritize_audio_catchup || selected_audio_bootstrap_needs_demux(session) {
+        return (!audio_priority_pending_video_limit_allows_demux(session, tick_config))
+            .then_some(PipelinePauseReason::WaitingForDemuxAudioPriority);
     }
 
     if let Some(reason) = texture_capacity_backpressure_reason(session, tick_config) {
@@ -1762,22 +1803,24 @@ fn immediate_pipeline_work_available(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> bool {
+    if pending_audio_work_available(session, tick_config) {
+        return true;
+    }
+
+    let demux_available = demux_work_available(session, tick_config);
     if !seek_admission_active(session)
         && session.can_present_video()
         && session.pipeline.video_present_queue_len() >= video_present_queue_target(tick_config)
+        && !demux_available
     {
         return false;
-    }
-
-    if pending_audio_work_available(session, tick_config) {
-        return true;
     }
 
     if pending_video_work_available(session, tick_config) {
         return true;
     }
 
-    demux_work_available(session, tick_config)
+    demux_available
 }
 
 /// Проверяет, может ли worker прямо сейчас протолкнуть audio packets.
@@ -1819,9 +1862,11 @@ fn demux_work_available(session: &PlayerSession, tick_config: &PlayerTickConfig)
     }
 
     let prioritize_audio_catchup = audio_demux_catchup_needed(session, tick_config);
+    let selected_audio_bootstrap = selected_audio_bootstrap_needs_demux(session);
     if session.pipeline.has_selected_video_track()
         && session.pipeline.video_present_queue_len() >= video_present_queue_target(tick_config)
         && !prioritize_audio_catchup
+        && !selected_audio_bootstrap
         && !seek_admission_active(session)
     {
         return false;
@@ -2527,7 +2572,133 @@ mod tests {
     };
 
     use super::*;
+    use crate::pipeline::AudioOutputBoundary;
     use crate::{FrameCounters, PlayerCommand, PlayerSession, WgpuRenderTextureProviderHandle};
+
+    /// Empty demuxer для проверки admission без реального container backend-а.
+    struct EmptyDemuxer {
+        /// Track list хранится внутри fake, чтобы выполнить `Demuxer::tracks` contract.
+        tracks: Vec<media_core::TrackInfo>,
+    }
+
+    impl EmptyDemuxer {
+        /// Создаёт demuxer без packets: admission tests не читают из него данные.
+        fn new() -> Self {
+            Self { tracks: Vec::new() }
+        }
+    }
+
+    impl media_core::Demuxer for EmptyDemuxer {
+        /// Возвращает стабильный track list для boundary contract-а.
+        fn tracks(&self) -> &[media_core::TrackInfo] {
+            &self.tracks
+        }
+
+        /// Duration в этих тестах не участвует в admission policy.
+        fn duration(&self) -> Option<Duration> {
+            None
+        }
+
+        /// Packet-ов нет: тесты проверяют только `demux_work_available`.
+        fn next_packet(&mut self) -> anyhow::Result<Option<media_core::Packet>> {
+            Ok(None)
+        }
+
+        /// Seek возвращает requested point, чтобы fake оставался честным `Demuxer`.
+        fn seek(&mut self, timestamp: Duration) -> anyhow::Result<media_core::DemuxSeekResult> {
+            Ok(media_core::DemuxSeekResult {
+                requested_position: media_core::MediaTime::from_duration(timestamp),
+                actual_position: media_core::MediaTime::from_duration(timestamp),
+                actual_track_timestamp: None,
+            })
+        }
+    }
+
+    /// Fake audio output с фиксированным buffer level для high-water admission tests.
+    struct FixedAudioOutput {
+        /// Clock нужен output boundary, хотя demux admission его не читает.
+        clock: Arc<audio::AudioClock>,
+
+        /// Уровень audio buffer, который видит `PlayerSession::audio_buffer_level_ms`.
+        buffer_level_ms: f64,
+    }
+
+    impl FixedAudioOutput {
+        /// Создаёт output с заданным buffer level.
+        fn new(buffer_level_ms: f64) -> Self {
+            Self {
+                clock: Arc::new(audio::AudioClock::new(48_000, 2)),
+                buffer_level_ms,
+            }
+        }
+    }
+
+    impl AudioOutputBoundary for FixedAudioOutput {
+        /// Тестовый output принимает samples и сообщает количество записанных значений.
+        fn write_samples(&mut self, samples: &[f32]) -> u64 {
+            samples.len() as u64
+        }
+
+        /// Запуск stream-а в admission tests не имеет side effects.
+        fn play(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        /// Pause в admission tests не имеет side effects.
+        fn pause(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        /// Clear подтверждает ровно тот generation, который попросил caller.
+        fn clear_buffer_for_seek(&mut self, generation: u64) -> anyhow::Result<u64> {
+            Ok(generation)
+        }
+
+        /// Volume не влияет на demux admission.
+        fn set_volume(&mut self, _volume: f32) {}
+
+        /// Возвращает scripted buffer level.
+        fn buffer_level_ms(&self) -> f64 {
+            self.buffer_level_ms
+        }
+
+        /// Возвращает fake clock для соблюдения audio output boundary.
+        fn clock(&self) -> &Arc<audio::AudioClock> {
+            &self.clock
+        }
+    }
+
+    /// Подключает empty demuxer и оставляет track selection под контролем теста.
+    fn install_empty_demuxer(session: &mut PlayerSession) {
+        session.pipeline.install_opened_media(
+            Box::new(EmptyDemuxer::new()),
+            None,
+            None,
+            Vec::new(),
+        );
+    }
+
+    /// Подключает fake output с явно заданным buffer level.
+    fn install_fixed_audio_output(session: &mut PlayerSession, buffer_level_ms: f64) {
+        session
+            .pipeline
+            .install_audio_output_for_tests(Box::new(FixedAudioOutput::new(buffer_level_ms)));
+    }
+
+    /// Добавляет один pending audio packet на выбранной generation.
+    fn enqueue_pending_audio_packet(session: &mut PlayerSession, track_id: TrackId) {
+        let generation = session.pipeline.seek_generation();
+        session
+            .pipeline
+            .enqueue_pending_audio_packet(PendingAudioPacket::new(
+                track_id,
+                Duration::ZERO,
+                None,
+                None,
+                generation,
+                Bytes::from_static(b"audio"),
+            ));
+    }
 
     /// Создаёт test frame без реальных GPU resources с явным decoded contract.
     fn decoded_frame_with_format(
@@ -3218,6 +3389,127 @@ mod tests {
             &tick_config,
             true
         ));
+    }
+
+    #[test]
+    fn selected_audio_without_output_allows_demux_until_first_audio_packet() {
+        let mut session = PlayerSession::new();
+        let audio_track_id = TrackId::new(2);
+        let tick_config = PlayerTickConfig {
+            max_pending_video_packets: 1,
+            max_pending_video_packets_during_audio_catchup: 2,
+            ..PlayerTickConfig::default()
+        };
+
+        session.pipeline.select_audio_track(audio_track_id);
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                TrackId::new(1),
+                Duration::ZERO,
+                session.pipeline.seek_generation(),
+                Bytes::new(),
+                true,
+            ));
+
+        assert!(can_read_next_demux_packet_with_audio_priority(
+            &session,
+            &tick_config,
+            false
+        ));
+
+        enqueue_pending_audio_packet(&mut session, audio_track_id);
+
+        assert!(!can_read_next_demux_packet_with_audio_priority(
+            &session,
+            &tick_config,
+            false
+        ));
+    }
+
+    #[test]
+    fn high_water_audio_blocks_more_demux_when_pending_audio_waits() {
+        let mut session = PlayerSession::new();
+        let audio_track_id = TrackId::new(2);
+        let tick_config = PlayerTickConfig {
+            audio_buffer_high_water_mark_ms: 100.0,
+            ..PlayerTickConfig::default()
+        };
+
+        install_empty_demuxer(&mut session);
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.pipeline.select_audio_track(audio_track_id);
+        install_fixed_audio_output(&mut session, 250.0);
+        enqueue_pending_audio_packet(&mut session, audio_track_id);
+
+        assert!(!can_read_next_demux_packet_with_audio_priority(
+            &session,
+            &tick_config,
+            false
+        ));
+        assert!(!demux_work_available(&session, &tick_config));
+        assert_eq!(
+            demux_backpressure_reason(&session, &tick_config, false),
+            Some(PipelinePauseReason::DemuxBackpressure)
+        );
+    }
+
+    #[test]
+    fn video_queue_pressure_does_not_block_selected_audio_bootstrap() {
+        let mut session = PlayerSession::new();
+        let tick_config = PlayerTickConfig {
+            max_video_present_queue: 1,
+            min_video_present_queue: 1,
+            target_video_present_queue: 1,
+            ..PlayerTickConfig::default()
+        };
+
+        install_empty_demuxer(&mut session);
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.pipeline.select_audio_track(TrackId::new(2));
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        session
+            .pipeline
+            .enqueue_queued_video_frame(decoded_frame(Duration::ZERO, 1));
+
+        assert!(demux_work_available(&session, &tick_config));
+        assert!(immediate_pipeline_work_available(&session, &tick_config));
+    }
+
+    #[test]
+    fn video_only_demux_admission_still_waits_for_present_queue() {
+        let mut session = PlayerSession::new();
+        let tick_config = PlayerTickConfig {
+            max_video_present_queue: 1,
+            min_video_present_queue: 1,
+            target_video_present_queue: 1,
+            ..PlayerTickConfig::default()
+        };
+
+        install_empty_demuxer(&mut session);
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        session
+            .pipeline
+            .enqueue_queued_video_frame(decoded_frame(Duration::ZERO, 1));
+
+        assert!(!can_read_next_demux_packet_with_audio_priority(
+            &session,
+            &tick_config,
+            false
+        ));
+        assert!(!demux_work_available(&session, &tick_config));
+        assert!(!immediate_pipeline_work_available(&session, &tick_config));
+        assert_eq!(
+            demux_backpressure_reason(&session, &tick_config, false),
+            Some(PipelinePauseReason::WaitingForPresentQueue)
+        );
     }
 
     #[test]

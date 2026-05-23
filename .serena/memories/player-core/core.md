@@ -10,3 +10,4 @@
 - Current debt: `player-core -> wgpu` remains for WGPU texture view bridge; `player-core -> audio` remains for concrete Opus audio path. Do not expand these without architecture discussion.
 - Closed dependency violations must stay closed: no direct `player-core -> symphonia-demux/webm-demux` opening path and no direct `player-core -> video-vaapi` concrete backend internals.
 - Pipeline tests already cover many boundary methods for absent resource/no-op/error/accounting behavior; extend those focused tests when adding new boundary methods.
+- `tick.rs` demux admission distinguishes video capacity from selected-audio bootstrap/catch-up: selected audio without output may demux until the first pending audio packet, audio high-water with pending audio blocks more demux, and video-only present queue backpressure remains unchanged.
