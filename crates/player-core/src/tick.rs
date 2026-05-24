@@ -504,6 +504,14 @@ impl PlayerSession {
             );
         }
 
+        if self.eof_drain_needs_progress() {
+            return PlayerWorkerWakeupPlan::after(
+                coarse_progress_interval,
+                WorkerWakeupReason::CoarseProgress,
+                frame_timing,
+            );
+        }
+
         if active_pipeline_needs_coarse_progress(self) {
             return PlayerWorkerWakeupPlan::after(
                 coarse_progress_interval,
@@ -536,9 +544,13 @@ impl PlayerSession {
                 tick_context.config.max_demux_packets_per_tick,
                 None,
             );
+        }
+
+        if self.is_demuxing_active() || self.draining_after_eof {
             self.process_pending_audio_packets_with_buffer_limit(
                 tick_context.config.audio_buffer_high_water_mark_ms,
             );
+            self.start_eof_audio_tail_if_needed();
         }
 
         process_pending_video_packets(self, tick_context, &mut tick_result);
@@ -548,6 +560,7 @@ impl PlayerSession {
         {
             self.mark_fatal_error(error);
         }
+        self.finish_eof_drain_if_ready(tick_context.now);
 
         tick_result
     }
@@ -583,7 +596,9 @@ impl PlayerSession {
 
     /// Обновляет playback position один раз за tick.
     fn update_position_for_tick(&mut self, now: Instant) {
-        if self.playback_state() != PlaybackState::Playing {
+        let eof_audio_tail_drain_without_seek =
+            self.draining_after_eof && !self.has_active_seek_commit();
+        if self.playback_state() != PlaybackState::Playing && !eof_audio_tail_drain_without_seek {
             return;
         }
 

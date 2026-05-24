@@ -14,7 +14,7 @@ use media_core::{
 use tracing::{debug, info, trace, warn};
 
 use crate::media_opening::PreparedMedia;
-use crate::pipeline::AudioSeekRuntimeState;
+use crate::pipeline::{AudioEofDrainState, AudioSeekRuntimeState};
 use crate::seek_state::{
     PlaybackResumeIntent, SeekCommitState, SeekDemuxRequestError,
     demux_seek_request_for_transaction,
@@ -785,7 +785,86 @@ impl PlayerSession {
 
     /// Переводит session в EOF-drain, сохраняя demuxer открытым для replay/seek.
     pub fn enter_eof_drain(&mut self) {
+        let previous_state = self.playback_state();
         self.set_playback_state(PlaybackState::Draining);
+
+        if matches!(
+            previous_state,
+            PlaybackState::Playing | PlaybackState::Buffering
+        ) {
+            self.start_eof_audio_tail_if_needed();
+        }
+    }
+
+    /// Проверяет, должен ли worker продолжать bounded wakeup для EOF-drain state machine.
+    #[must_use]
+    pub(crate) fn eof_drain_needs_progress(&self) -> bool {
+        self.draining_after_eof && self.seek_commit.is_none()
+    }
+
+    /// Запускает audio output для EOF tail-а, который был накоплен до завершения autoplay preroll.
+    pub(crate) fn start_eof_audio_tail_if_needed(&mut self) {
+        if !self.draining_after_eof || self.seek_commit.is_some() {
+            return;
+        }
+
+        let AudioEofDrainState::DrainingOutput {
+            playback_requested: false,
+            ..
+        } = self.pipeline.audio_eof_drain_state()
+        else {
+            return;
+        };
+
+        if let Some(play_result) = self.pipeline.play_audio_output() {
+            if let Err(error) = play_result {
+                warn!(error = %error, "Не удалось запустить audio tail после EOF");
+                self.set_runtime_error(format!("Audio EOF drain play error: {error}"));
+                self.pipeline.clear_audio_output();
+                self.pipeline.clear_audio_clock();
+                return;
+            }
+
+            let observed_at = Instant::now();
+            let audio_now = self.audio_clock_now();
+            self.pipeline
+                .reset_audio_clock_sample(audio_now, observed_at);
+        }
+    }
+
+    /// Завершает EOF-drain, когда audio/video очереди полностью отдали buffered tail.
+    pub(crate) fn finish_eof_drain_if_ready(&mut self, now: Instant) -> bool {
+        if !self.draining_after_eof || !self.eof_drain_ready_to_end() {
+            return false;
+        }
+
+        let end_position = self
+            .snapshot
+            .duration
+            .unwrap_or_else(|| self.presentation_clock_position_at(now));
+        self.update_current_position(end_position);
+        self.set_playback_state(PlaybackState::Ended);
+        true
+    }
+
+    /// Проверяет только условия завершения drain; сам state меняет `finish_eof_drain_if_ready`.
+    fn eof_drain_ready_to_end(&self) -> bool {
+        if self.seek_commit.is_some() || self.seek_eof_fallback_video_position.is_some() {
+            return false;
+        }
+
+        if self.pipeline.has_seek_preroll_fallback_video_frame()
+            || !self.pipeline.pending_video_packet_is_empty()
+            || !self.pipeline.video_present_queue_is_empty()
+            || self.pipeline.video_decode_in_flight_packets() > 0
+        {
+            return false;
+        }
+
+        !matches!(
+            self.pipeline.audio_eof_drain_state(),
+            AudioEofDrainState::PendingPackets { .. } | AudioEofDrainState::DrainingOutput { .. }
+        )
     }
 
     /// Забирает накопленные события и очищает внутреннюю очередь.
@@ -2294,7 +2373,7 @@ impl PlayerSession {
             return Ok(());
         }
 
-        if self.draining_after_eof {
+        if self.draining_after_eof || self.snapshot.playback_state == PlaybackState::Ended {
             return self.restart_playback_after_eof();
         }
 
@@ -2340,7 +2419,11 @@ impl PlayerSession {
             return Ok(());
         }
 
-        self.start_seek_transaction(MediaTime::ZERO, crate::SeekMode::Accurate)
+        self.start_seek_transaction(
+            MediaTime::ZERO,
+            crate::SeekMode::Accurate,
+            PlaybackResumeIntent::Play,
+        )
     }
 
     /// Запускает preroll перед autoplay, не включая audio stream раньше заполнения buffer.
@@ -2433,7 +2516,8 @@ impl PlayerSession {
             return Ok(());
         }
 
-        self.start_seek_transaction(target_position, request.mode)
+        let resume_intent = PlaybackResumeIntent::from_playback_state(self.playback_state());
+        self.start_seek_transaction(target_position, request.mode, resume_intent)
     }
 
     /// Начинает compatibility scrub на уровне контракта без запуска demux seek.
@@ -2539,6 +2623,7 @@ impl PlayerSession {
         &mut self,
         target_position: MediaTime,
         seek_mode: crate::SeekMode,
+        resume_intent: PlaybackResumeIntent,
     ) -> PlayerResult<()> {
         if !self.snapshot.timeline.seekable {
             let reason = self
@@ -2575,8 +2660,6 @@ impl PlayerSession {
                 return Ok(());
             }
         };
-
-        let resume_intent = PlaybackResumeIntent::from_playback_state(self.playback_state());
 
         self.pause_audio_output_for_seek();
         if let Err(error) = self.reset_video_decoder_for_seek() {
@@ -4821,10 +4904,14 @@ mod tests {
         ));
 
         assert!(!session.pipeline.has_active_video_decoder());
-        assert!(matches!(
-            session.snapshot().playback_state,
-            PlaybackState::Playing | PlaybackState::Draining
-        ));
+        assert!(
+            matches!(
+                session.snapshot().playback_state,
+                PlaybackState::Playing | PlaybackState::Draining | PlaybackState::Ended
+            ),
+            "audio-only tick должен сохранить playback lifecycle без video decoder, actual state: {:?}",
+            session.snapshot().playback_state
+        );
         assert_eq!(tick_result.demuxed_packets.len(), 1);
         assert_eq!(tick_result.video_frames_presented, 0);
         assert!(tick_result.dropped_video_frames.is_empty());
@@ -8659,6 +8746,105 @@ mod tests {
     }
 
     #[test]
+    fn audio_only_eof_after_buffered_samples_keeps_bounded_wakeup_until_drain() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(2, TrackKind::Audio)]);
+        let audio_output = install_ready_audio_runtime(&mut session, 35.0, None);
+        session.begin_autoplay_preroll().unwrap();
+
+        session.enter_eof_drain();
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &PlayerTickConfig::default(),
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+        assert_eq!(plan.reason, crate::WorkerWakeupReason::CoarseProgress);
+        assert_eq!(plan.delay, Some(Duration::from_millis(250)));
+        assert_eq!(session.playback_state(), PlaybackState::Draining);
+
+        audio_output.set_buffer_level_ms(0.0);
+        let _tick_result = session.tick(PlayerTickContext::new(Instant::now()));
+
+        assert_eq!(session.playback_state(), PlaybackState::Ended);
+        assert!(session.pipeline.has_demuxer());
+    }
+
+    #[test]
+    fn eof_during_buffering_starts_buffered_audio_tail_once() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(2, TrackKind::Audio)]);
+        let audio_output = install_ready_audio_runtime(&mut session, 20.0, None);
+        session.begin_autoplay_preroll().unwrap();
+        assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 0);
+
+        session.enter_eof_drain();
+        session.start_eof_audio_tail_if_needed();
+
+        assert_eq!(session.playback_state(), PlaybackState::Draining);
+        assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 1);
+        assert!(session.snapshot().last_error.is_none());
+    }
+
+    #[test]
+    fn eof_audio_tail_play_error_does_not_leave_drain_stuck() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(2, TrackKind::Audio)]);
+        let audio_output = install_ready_audio_runtime(&mut session, 20.0, Some("play failed"));
+        session.begin_autoplay_preroll().unwrap();
+
+        session.enter_eof_drain();
+        let _tick_result = session.tick(PlayerTickContext::new(Instant::now()));
+
+        assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 1);
+        assert!(!session.pipeline.has_audio_output());
+        assert_eq!(session.playback_state(), PlaybackState::Ended);
+        assert!(session.snapshot().last_error.is_some());
+    }
+
+    #[test]
+    fn eof_drain_transitions_to_ended_after_audio_tail_drains() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(2, TrackKind::Audio)]);
+        let audio_output = install_ready_audio_runtime(&mut session, 15.0, None);
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+
+        session.enter_eof_drain();
+        let _tick_result = session.tick(PlayerTickContext::new(Instant::now()));
+        assert_eq!(session.playback_state(), PlaybackState::Draining);
+
+        audio_output.set_buffer_level_ms(0.0);
+        let _tick_result = session.tick(PlayerTickContext::new(Instant::now()));
+
+        assert_eq!(session.playback_state(), PlaybackState::Ended);
+        assert!(session.pipeline.has_demuxer());
+    }
+
+    #[test]
+    fn audio_only_eof_drain_processes_pending_audio_before_ending() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(2, TrackKind::Audio)]);
+        install_ready_audio_runtime(&mut session, 0.0, None);
+        session
+            .pipeline
+            .enqueue_pending_audio_packet(PendingAudioPacket::new(
+                TrackId::new(2),
+                Duration::ZERO,
+                None,
+                Some(Duration::from_millis(20)),
+                session.pipeline.seek_generation(),
+                Bytes::from_static(b"audio-tail"),
+            ));
+
+        session.enter_eof_drain();
+        let _tick_result = session.tick(PlayerTickContext::new(Instant::now()));
+
+        assert!(session.pipeline.pending_audio_packet_is_empty());
+        assert_eq!(session.playback_state(), PlaybackState::Ended);
+    }
+
+    #[test]
     fn eof_drain_keeps_demuxer_open_for_seek() {
         let mut session = PlayerSession::new();
         let seek_log = install_fake_media(
@@ -8685,6 +8871,65 @@ mod tests {
         assert_eq!(session.playback_state(), PlaybackState::Seeking);
         assert!(!session.draining_after_eof);
         assert!(session.snapshot().last_error.is_none());
+    }
+
+    #[test]
+    fn replay_and_seek_from_ended_keep_demuxer_contract() {
+        let mut seek_session = PlayerSession::new();
+        let seek_log = install_fake_media(
+            &mut seek_session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+        seek_session.enter_eof_drain();
+        let _tick_result = seek_session.tick(PlayerTickContext::new(Instant::now()));
+        assert_eq!(seek_session.playback_state(), PlaybackState::Ended);
+
+        seek_session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(5),
+            )))
+            .unwrap();
+
+        assert_eq!(
+            seek_log.lock().expect("seek log lock").as_slice(),
+            &[Duration::from_secs(5)]
+        );
+        assert_eq!(seek_session.playback_state(), PlaybackState::Seeking);
+        assert!(!seek_session.draining_after_eof);
+        assert!(seek_session.snapshot().last_error.is_none());
+
+        let mut replay_session = PlayerSession::new();
+        let replay_log = install_fake_media(
+            &mut replay_session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+        replay_session.update_current_position(Duration::from_secs(30));
+        replay_session.enter_eof_drain();
+        let _tick_result = replay_session.tick(PlayerTickContext::new(Instant::now()));
+        assert_eq!(replay_session.playback_state(), PlaybackState::Ended);
+
+        replay_session
+            .dispatch_command(PlayerCommand::Play)
+            .unwrap();
+
+        let seek_commit = replay_session
+            .seek_commit()
+            .expect("play after Ended should start a seek transaction");
+        assert_eq!(
+            replay_log.lock().expect("seek log lock").as_slice(),
+            &[Duration::ZERO]
+        );
+        assert_eq!(seek_commit.target_position, MediaTime::ZERO);
+        assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
+        assert_eq!(replay_session.playback_state(), PlaybackState::Seeking);
+        assert!(!replay_session.draining_after_eof);
+        assert!(replay_session.snapshot().last_error.is_none());
     }
 
     #[test]

@@ -68,6 +68,37 @@ pub(crate) enum AudioSeekRuntimeState {
     Ready,
 }
 
+/// Состояние audio tail-а после EOF без раскрытия очередей и concrete output-а.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum AudioEofDrainState {
+    /// Audio track не выбран, поэтому audio tail отсутствует.
+    NoSelectedAudio,
+
+    /// Есть encoded audio packets, которые session ещё должна декодировать/записать в output.
+    PendingPackets {
+        /// Количество packets в audio pending queue.
+        queued_packets: usize,
+    },
+
+    /// Audio track выбран, но output так и не был создан до EOF.
+    NoOutput,
+
+    /// Output существует и его buffer ещё содержит слышимый tail.
+    DrainingOutput {
+        /// Текущий уровень output buffer-а в миллисекундах.
+        buffer_level_ms: f64,
+
+        /// Был ли уже успешно запрошен запуск stream-а.
+        playback_requested: bool,
+    },
+
+    /// Output существует, но его buffer уже пуст.
+    DrainedOutput {
+        /// Был ли уже успешно запрошен запуск stream-а.
+        playback_requested: bool,
+    },
+}
+
 /// Узкая граница audio output-а, чтобы pipeline не раскрывал concrete CPAL slot.
 pub(crate) trait AudioOutputBoundary {
     /// Записывает interleaved PCM samples в output buffer.
@@ -299,6 +330,9 @@ pub(crate) struct PlaybackPipeline {
     /// Audio output за boundary trait-ом: production CPAL или test fake.
     audio_output: Option<Box<dyn AudioOutputBoundary>>,
 
+    /// Был ли текущий audio output успешно запущен через boundary `play`.
+    audio_output_play_requested: bool,
+
     /// Track ID выбранного audio трека.
     audio_track_id: Option<TrackId>,
 
@@ -463,17 +497,20 @@ impl PlaybackPipeline {
     /// Устанавливает CPAL-backed audio output, созданный session policy слоем.
     pub(crate) fn install_audio_output(&mut self, output: audio::AudioOutput) {
         self.audio_output = Some(Box::new(output));
+        self.audio_output_play_requested = false;
     }
 
     /// Устанавливает fake/stub output для unit-тестов без CPAL device side effects.
     #[cfg(test)]
     pub(crate) fn install_audio_output_for_tests(&mut self, output: Box<dyn AudioOutputBoundary>) {
         self.audio_output = Some(output);
+        self.audio_output_play_requested = false;
     }
 
     /// Удаляет audio output runtime slot без изменения decoder/track selection.
     pub(crate) fn clear_audio_output(&mut self) {
         self.audio_output = None;
+        self.audio_output_play_requested = false;
     }
 
     /// Проверяет наличие audio output-а без доступа к concrete CPAL handle.
@@ -493,12 +530,22 @@ impl PlaybackPipeline {
 
     /// Запускает audio output stream без смешивания absent output и CPAL error.
     pub(crate) fn play_audio_output(&mut self) -> Option<anyhow::Result<()>> {
-        self.audio_output.as_mut().map(|output| output.play())
+        let output = self.audio_output.as_mut()?;
+        let play_result = output.play();
+        if play_result.is_ok() {
+            self.audio_output_play_requested = true;
+        }
+        Some(play_result)
     }
 
     /// Ставит audio output stream на паузу без изменения high-level playback state.
     pub(crate) fn pause_audio_output(&mut self) -> Option<anyhow::Result<()>> {
-        self.audio_output.as_mut().map(|output| output.pause())
+        let output = self.audio_output.as_mut()?;
+        let pause_result = output.pause();
+        if pause_result.is_ok() {
+            self.audio_output_play_requested = false;
+        }
+        Some(pause_result)
     }
 
     /// Очищает audio output buffer для seek и возвращает sync ack generation.
@@ -527,6 +574,35 @@ impl PlaybackPipeline {
         self.audio_output
             .as_ref()
             .map(|output| output.buffer_level_ms())
+    }
+
+    /// Возвращает EOF-drain состояние audio tail-а без доступа к queue/output storage.
+    #[must_use]
+    pub(crate) fn audio_eof_drain_state(&self) -> AudioEofDrainState {
+        if self.audio_track_id.is_none() {
+            return AudioEofDrainState::NoSelectedAudio;
+        }
+
+        let queued_packets = self.pending_audio_packets.len();
+        if queued_packets > 0 {
+            return AudioEofDrainState::PendingPackets { queued_packets };
+        }
+
+        let Some(output) = self.audio_output.as_ref() else {
+            return AudioEofDrainState::NoOutput;
+        };
+
+        let buffer_level_ms = output.buffer_level_ms();
+        if buffer_level_ms.is_finite() && buffer_level_ms > 0.0 {
+            return AudioEofDrainState::DrainingOutput {
+                buffer_level_ms,
+                playback_requested: self.audio_output_play_requested,
+            };
+        }
+
+        AudioEofDrainState::DrainedOutput {
+            playback_requested: self.audio_output_play_requested,
+        }
     }
 
     /// Возвращает clock handle output-а без раскрытия самого output slot-а.
@@ -1492,6 +1568,7 @@ impl Default for PlaybackPipeline {
             audio_decoder: None,
             deferred_audio_decoder_config: None,
             audio_output: None,
+            audio_output_play_requested: false,
             audio_track_id: None,
             pending_audio_packets: VecDeque::new(),
             video_decoder_thread: None,
@@ -1626,6 +1703,60 @@ mod tests {
         /// Возвращает channel count fake decoder-а.
         fn channels(&self) -> u32 {
             self.channels
+        }
+    }
+
+    /// Fake output с управляемым buffer level для проверки EOF-drain boundary.
+    struct FixedAudioOutput {
+        /// Clock нужен trait-у, но тесты управляют drain state через buffer level.
+        clock: Arc<audio::AudioClock>,
+
+        /// Уровень buffer-а, который вернёт output boundary.
+        buffer_level_ms: f64,
+    }
+
+    impl FixedAudioOutput {
+        /// Создаёт fake output с заданным уровнем buffer-а.
+        fn new(buffer_level_ms: f64) -> Self {
+            Self {
+                clock: Arc::new(audio::AudioClock::new(48_000, 2)),
+                buffer_level_ms,
+            }
+        }
+    }
+
+    impl AudioOutputBoundary for FixedAudioOutput {
+        /// Записывает все samples как успешно принятые.
+        fn write_samples(&mut self, samples: &[f32]) -> u64 {
+            samples.len() as u64
+        }
+
+        /// Fake stream всегда успешно стартует.
+        fn play(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        /// Fake stream всегда успешно ставится на паузу.
+        fn pause(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        /// Возвращает тот же generation, который запросил caller.
+        fn clear_buffer_for_seek(&mut self, generation: u64) -> anyhow::Result<u64> {
+            Ok(generation)
+        }
+
+        /// Volume не влияет на EOF-drain state.
+        fn set_volume(&mut self, _volume: f32) {}
+
+        /// Возвращает scripted buffer level.
+        fn buffer_level_ms(&self) -> f64 {
+            self.buffer_level_ms
+        }
+
+        /// Возвращает fake clock для соблюдения output contract-а.
+        fn clock(&self) -> &Arc<audio::AudioClock> {
+            &self.clock
         }
     }
 
@@ -1996,9 +2127,68 @@ mod tests {
         assert!(pipeline.clear_audio_output_for_seek(1).is_none());
         assert!(pipeline.audio_output_buffer_level_ms().is_none());
         assert!(pipeline.audio_output_clock().is_none());
+        assert_eq!(
+            pipeline.audio_eof_drain_state(),
+            AudioEofDrainState::NoSelectedAudio
+        );
 
         pipeline.clear_audio_output();
         assert!(!pipeline.has_audio_output());
+    }
+
+    #[test]
+    fn audio_eof_drain_state_preserves_queue_output_and_playback_distinctions() {
+        let mut pipeline = PlaybackPipeline::default();
+        let audio_track_id = TrackId::new(2);
+
+        pipeline.select_audio_track(audio_track_id);
+        assert_eq!(
+            pipeline.audio_eof_drain_state(),
+            AudioEofDrainState::NoOutput
+        );
+
+        pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
+            audio_track_id,
+            Duration::ZERO,
+            None,
+            Some(Duration::from_millis(20)),
+            pipeline.seek_generation(),
+            Bytes::from_static(b"encoded-audio"),
+        ));
+        assert_eq!(
+            pipeline.audio_eof_drain_state(),
+            AudioEofDrainState::PendingPackets { queued_packets: 1 }
+        );
+
+        let _pending_packet = pipeline.pop_pending_audio_packet_front();
+        pipeline.install_audio_output_for_tests(Box::new(FixedAudioOutput::new(24.0)));
+        assert_eq!(
+            pipeline.audio_eof_drain_state(),
+            AudioEofDrainState::DrainingOutput {
+                buffer_level_ms: 24.0,
+                playback_requested: false,
+            }
+        );
+
+        pipeline
+            .play_audio_output()
+            .expect("installed output должен вернуть play result")
+            .expect("fake output play должен быть успешным");
+        assert_eq!(
+            pipeline.audio_eof_drain_state(),
+            AudioEofDrainState::DrainingOutput {
+                buffer_level_ms: 24.0,
+                playback_requested: true,
+            }
+        );
+
+        pipeline.install_audio_output_for_tests(Box::new(FixedAudioOutput::new(0.0)));
+        assert_eq!(
+            pipeline.audio_eof_drain_state(),
+            AudioEofDrainState::DrainedOutput {
+                playback_requested: false,
+            }
+        );
     }
 
     #[test]
