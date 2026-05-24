@@ -12,11 +12,13 @@
 //! в 48kHz, поэтому мы делаем простой linear resample если device
 //! использует другой rate.
 
+use std::cmp::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tracing::{info, warn};
@@ -76,6 +78,24 @@ struct LinearResampler {
 
     /// Последний frame предыдущего input chunk для интерполяции через boundary.
     previous_source_frame: Vec<f32>,
+}
+
+/// Результат низкоуровневой попытки остановить CPAL stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PauseStreamOutcome {
+    /// Backend подтвердил физическую pause операцию.
+    Paused,
+    /// Backend не умеет hardware pause; для player-а это штатный logical pause.
+    UnsupportedByBackend,
+}
+
+/// Политика обработки ошибки `StreamTrait::pause`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PauseErrorPolicy {
+    /// Ошибка означает, что backend не поддерживает pause, но stream остаётся usable.
+    NonFatalUnsupportedOperation,
+    /// Ошибка означает реальную проблему stream/device и должна выйти наружу.
+    Fatal,
 }
 
 impl LinearResampler {
@@ -162,6 +182,232 @@ impl LinearResampler {
     }
 }
 
+/// Проверяет, что sample format можно отдать в typed CPAL output callback.
+///
+/// CPAL 0.15.3 объявляет `SampleFormat` как `non_exhaustive`, поэтому wildcard
+/// остаётся явной защитой от будущих форматов, которые нельзя silently принять.
+fn output_sample_format_is_supported(sample_format: SampleFormat) -> bool {
+    matches!(
+        sample_format,
+        SampleFormat::I8
+            | SampleFormat::I16
+            | SampleFormat::I32
+            | SampleFormat::I64
+            | SampleFormat::U8
+            | SampleFormat::U16
+            | SampleFormat::U32
+            | SampleFormat::U64
+            | SampleFormat::F32
+            | SampleFormat::F64
+    )
+}
+
+/// Даёт стабильный приоритет fallback-формату, когда default config unusable.
+///
+/// Обычно используется `default_output_config`; этот порядок нужен только для
+/// редкого fallback path-а через `supported_output_configs`.
+fn sample_format_priority(sample_format: SampleFormat) -> u8 {
+    match sample_format {
+        SampleFormat::F64 => 100,
+        SampleFormat::F32 => 95,
+        SampleFormat::I64 => 90,
+        SampleFormat::I32 => 80,
+        SampleFormat::I16 => 70,
+        SampleFormat::I8 => 60,
+        SampleFormat::U64 => 50,
+        SampleFormat::U32 => 40,
+        SampleFormat::U16 => 30,
+        SampleFormat::U8 => 20,
+        _ => 0,
+    }
+}
+
+/// Проверяет, попадает ли желаемая частота в range CPAL config-а.
+fn sample_rate_is_supported(
+    config_range: &cpal::SupportedStreamConfigRange,
+    sample_rate: cpal::SampleRate,
+) -> bool {
+    config_range.min_sample_rate() <= sample_rate && sample_rate <= config_range.max_sample_rate()
+}
+
+/// Сравнивает два supported ranges для fallback config selection.
+fn compare_output_config_ranges(
+    left: &cpal::SupportedStreamConfigRange,
+    right: &cpal::SupportedStreamConfigRange,
+    preferred_sample_rate: Option<cpal::SampleRate>,
+) -> Ordering {
+    let stereo_order = (left.channels() == 2).cmp(&(right.channels() == 2));
+    if stereo_order != Ordering::Equal {
+        return stereo_order;
+    }
+
+    let mono_order = (left.channels() == 1).cmp(&(right.channels() == 1));
+    if mono_order != Ordering::Equal {
+        return mono_order;
+    }
+
+    let channel_order = left.channels().cmp(&right.channels());
+    if channel_order != Ordering::Equal {
+        return channel_order;
+    }
+
+    let format_order = sample_format_priority(left.sample_format())
+        .cmp(&sample_format_priority(right.sample_format()));
+    if format_order != Ordering::Equal {
+        return format_order;
+    }
+
+    let preferred_rate_order = preferred_sample_rate
+        .map(|sample_rate| {
+            sample_rate_is_supported(left, sample_rate)
+                .cmp(&sample_rate_is_supported(right, sample_rate))
+        })
+        .unwrap_or(Ordering::Equal);
+    if preferred_rate_order != Ordering::Equal {
+        return preferred_rate_order;
+    }
+
+    left.max_sample_rate().cmp(&right.max_sample_rate())
+}
+
+/// Превращает supported range в concrete config без panic на sample rate.
+fn config_from_supported_range(
+    config_range: cpal::SupportedStreamConfigRange,
+    preferred_sample_rate: Option<cpal::SampleRate>,
+) -> cpal::SupportedStreamConfig {
+    if let Some(sample_rate) = preferred_sample_rate {
+        if let Some(config) = config_range.try_with_sample_rate(sample_rate) {
+            return config;
+        }
+    }
+
+    config_range.with_max_sample_rate()
+}
+
+/// Выбирает fallback output config только из форматов, которые умеет `AudioOutput`.
+fn select_supported_output_config<I>(
+    supported_ranges: I,
+    preferred_sample_rate: Option<cpal::SampleRate>,
+) -> Option<cpal::SupportedStreamConfig>
+where
+    I: IntoIterator<Item = cpal::SupportedStreamConfigRange>,
+{
+    supported_ranges
+        .into_iter()
+        .filter(|config_range| output_sample_format_is_supported(config_range.sample_format()))
+        .max_by(|left, right| compare_output_config_ranges(left, right, preferred_sample_rate))
+        .map(|config_range| config_from_supported_range(config_range, preferred_sample_rate))
+}
+
+/// Возвращает default output config или безопасный supported fallback.
+fn choose_supported_output_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig> {
+    let default_config = match device.default_output_config() {
+        Ok(config) => Some(config),
+        Err(error) => {
+            warn!(error = %error, "CPAL default output config недоступен, пробуем supported list");
+            None
+        }
+    };
+
+    if let Some(config) = default_config
+        .as_ref()
+        .filter(|config| output_sample_format_is_supported(config.sample_format()))
+    {
+        return Ok(config.clone());
+    }
+
+    let preferred_sample_rate = default_config.as_ref().map(|config| config.sample_rate());
+    let supported_ranges = device
+        .supported_output_configs()
+        .context("Не удалось получить supported output configs")?;
+    let fallback_error_context = match default_config.as_ref() {
+        Some(config) => format!(
+            "Default CPAL output format {:?} не поддерживается AudioOutput, fallback не найден",
+            config.sample_format()
+        ),
+        None => "CPAL не вернул ни одного поддерживаемого output config".to_string(),
+    };
+    let fallback_config = select_supported_output_config(supported_ranges, preferred_sample_rate)
+        .context(fallback_error_context)?;
+
+    if let Some(config) = default_config {
+        warn!(
+            default_format = ?config.sample_format(),
+            fallback_format = ?fallback_config.sample_format(),
+            fallback_rate = fallback_config.sample_rate().0,
+            fallback_channels = fallback_config.channels(),
+            "Default CPAL output config заменён supported fallback"
+        );
+    } else {
+        info!(
+            format = ?fallback_config.sample_format(),
+            rate = fallback_config.sample_rate().0,
+            channels = fallback_config.channels(),
+            "Выбран CPAL output config из supported list"
+        );
+    }
+
+    Ok(fallback_config)
+}
+
+/// Нормализует decoder sample перед CPAL conversion.
+fn normalize_decoder_sample(sample: f32) -> f32 {
+    if sample.is_finite() {
+        sample.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// Конвертирует внутренний f32 sample в concrete CPAL stream sample.
+fn convert_sample_for_output<T>(sample: f32) -> T
+where
+    T: Sample + FromSample<f32>,
+{
+    T::from_sample(normalize_decoder_sample(sample))
+}
+
+/// Классифицирует pause error по CPAL 0.15 contract.
+///
+/// В 0.15.3 нет отдельного typed `UnsupportedOperation`, поэтому backend может
+/// спрятать такую причину в `BackendSpecific.description`.
+fn classify_pause_error(error: &cpal::PauseStreamError) -> PauseErrorPolicy {
+    match error {
+        cpal::PauseStreamError::DeviceNotAvailable => PauseErrorPolicy::Fatal,
+        cpal::PauseStreamError::BackendSpecific { err } => {
+            if backend_pause_error_is_unsupported_operation(&err.description) {
+                PauseErrorPolicy::NonFatalUnsupportedOperation
+            } else {
+                PauseErrorPolicy::Fatal
+            }
+        }
+    }
+}
+
+/// Распознаёт распространённые backend descriptions для неподдерживаемой pause.
+fn backend_pause_error_is_unsupported_operation(description: &str) -> bool {
+    let normalized_description = description.to_ascii_lowercase();
+
+    normalized_description.contains("unsupportedoperation")
+        || normalized_description.contains("unsupported operation")
+        || normalized_description.contains("operation is not supported")
+        || normalized_description.contains("operation not supported")
+        || normalized_description.contains("not supported")
+}
+
+/// Останавливает CPAL stream с non-fatal policy для unsupported pause.
+fn pause_stream_with_policy(stream: &cpal::Stream) -> Result<PauseStreamOutcome> {
+    match stream.pause() {
+        Ok(()) => Ok(PauseStreamOutcome::Paused),
+        Err(error)
+            if classify_pause_error(&error) == PauseErrorPolicy::NonFatalUnsupportedOperation =>
+        {
+            Ok(PauseStreamOutcome::UnsupportedByBackend)
+        }
+        Err(error) => Err(error).context("Не удалось остановить audio stream"),
+    }
+}
+
 impl AudioOutput {
     /// Создаёт audio output.
     ///
@@ -177,24 +423,22 @@ impl AudioOutput {
             .default_output_device()
             .context("No default audio output device found")?;
 
-        let default_config = device
-            .default_output_config()
-            .context("Не удалось получить default output config")?;
+        let output_config = choose_supported_output_config(&device)?;
 
         let device_name = device.name().unwrap_or_else(|_| "unknown".to_string());
         info!(
             device = %device_name,
-            default_rate = default_config.sample_rate().0,
-            default_channels = default_config.channels(),
-            format = ?default_config.sample_format(),
+            stream_rate = output_config.sample_rate().0,
+            stream_channels = output_config.channels(),
+            format = ?output_config.sample_format(),
             "Audio output device"
         );
 
         // Определяем stream rate и channels.
-        // Берём default rate устройства — это гарантирует что ALSA/PipeWire
-        // не будет делать свой ресемплинг.
-        let stream_rate = default_config.sample_rate().0;
-        let stream_channels = default_config.channels() as usize;
+        // Обычно это default config устройства; fallback берётся только если
+        // default format не подходит под typed CPAL callback-и AudioOutput.
+        let stream_rate = output_config.sample_rate().0;
+        let stream_channels = output_config.channels() as usize;
         let decoder_channels = decoder_channels as usize;
 
         // Если rate декодера отличается от stream rate, нужен ресемплинг.
@@ -206,7 +450,7 @@ impl AudioOutput {
         info!(
             rate = stream_rate,
             channels = stream_channels,
-            format = ?default_config.sample_format(),
+            format = ?output_config.sample_format(),
             "CPAL stream config"
         );
 
@@ -220,36 +464,18 @@ impl AudioOutput {
         let clock_for_callback = Arc::clone(&clock);
 
         // Получаем sample format и StreamConfig.
-        let sample_format = default_config.sample_format();
-        let stream_config: cpal::StreamConfig = default_config.into();
+        let sample_format = output_config.sample_format();
+        let stream_config = output_config.config();
 
         // Создаём stream в зависимости от sample format.
-        let stream = match sample_format {
-            cpal::SampleFormat::F32 => Self::build_stream_f32(
-                &device,
-                &stream_config,
-                Arc::clone(&consumer),
-                clock_for_callback,
-                stream_channels,
-            )?,
-            cpal::SampleFormat::I16 => Self::build_stream_i16(
-                &device,
-                &stream_config,
-                Arc::clone(&consumer),
-                clock_for_callback,
-                stream_channels,
-            )?,
-            cpal::SampleFormat::U16 => Self::build_stream_u16(
-                &device,
-                &stream_config,
-                Arc::clone(&consumer),
-                clock_for_callback,
-                stream_channels,
-            )?,
-            other => {
-                anyhow::bail!("Unsupported sample format: {:?}", other);
-            }
-        };
+        let stream = Self::build_stream_for_sample_format(
+            &device,
+            &stream_config,
+            sample_format,
+            Arc::clone(&consumer),
+            clock_for_callback,
+            stream_channels,
+        )?;
 
         info!(buffer_capacity, "AudioOutput создан");
 
@@ -352,11 +578,16 @@ impl AudioOutput {
         if !self.is_playing {
             return Ok(());
         }
-        self.stream
-            .pause()
-            .context("Не удалось остановить audio stream")?;
+        let pause_outcome = pause_stream_with_policy(&self.stream)?;
         self.is_playing = false;
-        info!("Audio stream paused");
+        match pause_outcome {
+            PauseStreamOutcome::Paused => {
+                info!("Audio stream paused");
+            }
+            PauseStreamOutcome::UnsupportedByBackend => {
+                warn!("CPAL backend не поддерживает pause; AudioOutput переходит в logical pause");
+            }
+        }
         Ok(())
     }
 
@@ -399,22 +630,65 @@ impl AudioOutput {
         stream_samples
     }
 
-    /// Создаёт CPAL stream для f32 sample format.
-    fn build_stream_f32(
+    /// Создаёт typed CPAL stream для выбранного runtime sample format.
+    fn build_stream_for_sample_format(
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        sample_format: SampleFormat,
+        consumer: Arc<Mutex<HeapCons<f32>>>,
+        clock: Arc<AudioClock>,
+        channels: usize,
+    ) -> Result<cpal::Stream> {
+        match sample_format {
+            SampleFormat::I8 => Self::build_stream::<i8>(device, config, consumer, clock, channels),
+            SampleFormat::I16 => {
+                Self::build_stream::<i16>(device, config, consumer, clock, channels)
+            }
+            SampleFormat::I32 => {
+                Self::build_stream::<i32>(device, config, consumer, clock, channels)
+            }
+            SampleFormat::I64 => {
+                Self::build_stream::<i64>(device, config, consumer, clock, channels)
+            }
+            SampleFormat::U8 => Self::build_stream::<u8>(device, config, consumer, clock, channels),
+            SampleFormat::U16 => {
+                Self::build_stream::<u16>(device, config, consumer, clock, channels)
+            }
+            SampleFormat::U32 => {
+                Self::build_stream::<u32>(device, config, consumer, clock, channels)
+            }
+            SampleFormat::U64 => {
+                Self::build_stream::<u64>(device, config, consumer, clock, channels)
+            }
+            SampleFormat::F32 => {
+                Self::build_stream::<f32>(device, config, consumer, clock, channels)
+            }
+            SampleFormat::F64 => {
+                Self::build_stream::<f64>(device, config, consumer, clock, channels)
+            }
+            other => anyhow::bail!("Unsupported sample format: {:?}", other),
+        }
+    }
+
+    /// Создаёт CPAL stream для конкретного Rust sample type.
+    fn build_stream<T>(
         device: &cpal::Device,
         config: &cpal::StreamConfig,
         consumer: Arc<Mutex<HeapCons<f32>>>,
         clock: Arc<AudioClock>,
         channels: usize,
-    ) -> Result<cpal::Stream> {
+    ) -> Result<cpal::Stream>
+    where
+        T: SizedSample + Sample + FromSample<f32> + Send + 'static,
+    {
         let err_callback = move |err| {
             warn!("CPAL error: {}", err);
         };
 
         let stream = device.build_output_stream(
             config,
-            move |data: &mut [f32], callback_info: &cpal::OutputCallbackInfo| {
-                Self::fill_buffer_f32(
+            move |data: &mut [T], callback_info: &cpal::OutputCallbackInfo| {
+                Self::fill_buffer(
                     data,
                     &consumer,
                     &clock,
@@ -430,77 +704,17 @@ impl AudioOutput {
         Ok(stream)
     }
 
-    /// Создаёт CPAL stream для i16 sample format.
-    fn build_stream_i16(
-        device: &cpal::Device,
-        config: &cpal::StreamConfig,
-        consumer: Arc<Mutex<HeapCons<f32>>>,
-        clock: Arc<AudioClock>,
-        channels: usize,
-    ) -> Result<cpal::Stream> {
-        let err_callback = move |err| {
-            warn!("CPAL error: {}", err);
-        };
-
-        let stream = device.build_output_stream(
-            config,
-            move |data: &mut [i16], callback_info: &cpal::OutputCallbackInfo| {
-                Self::fill_buffer_i16(
-                    data,
-                    &consumer,
-                    &clock,
-                    channels,
-                    callback_info,
-                    Instant::now(),
-                );
-            },
-            err_callback,
-            None,
-        )?;
-
-        Ok(stream)
-    }
-
-    /// Создаёт CPAL stream для u16 sample format.
-    fn build_stream_u16(
-        device: &cpal::Device,
-        config: &cpal::StreamConfig,
-        consumer: Arc<Mutex<HeapCons<f32>>>,
-        clock: Arc<AudioClock>,
-        channels: usize,
-    ) -> Result<cpal::Stream> {
-        let err_callback = move |err| {
-            warn!("CPAL error: {}", err);
-        };
-
-        let stream = device.build_output_stream(
-            config,
-            move |data: &mut [u16], callback_info: &cpal::OutputCallbackInfo| {
-                Self::fill_buffer_u16(
-                    data,
-                    &consumer,
-                    &clock,
-                    channels,
-                    callback_info,
-                    Instant::now(),
-                );
-            },
-            err_callback,
-            None,
-        )?;
-
-        Ok(stream)
-    }
-
-    /// Заполняет output buffer из ring buffer (f32).
-    fn fill_buffer_f32(
-        data: &mut [f32],
+    /// Заполняет output buffer из ring buffer для любого CPAL sample type.
+    fn fill_buffer<T>(
+        data: &mut [T],
         consumer: &Arc<Mutex<HeapCons<f32>>>,
         clock: &AudioClock,
         _channels: usize,
         callback_info: &cpal::OutputCallbackInfo,
         callback_observed_at: Instant,
-    ) {
+    ) where
+        T: Sample + FromSample<f32>,
+    {
         let mut filled = 0u64;
         let mut silence = 0u64;
 
@@ -509,18 +723,18 @@ impl AudioOutput {
                 for sample in data.iter_mut() {
                     match consumer.try_pop() {
                         Some(value) => {
-                            *sample = value;
+                            *sample = convert_sample_for_output(value);
                             filled += 1;
                         }
                         None => {
-                            *sample = 0.0;
+                            *sample = T::EQUILIBRIUM;
                             silence += 1;
                         }
                     }
                 }
             }
             Err(_) => {
-                data.fill(0.0);
+                data.fill(T::EQUILIBRIUM);
                 silence = data.len() as u64;
             }
         }
@@ -534,88 +748,24 @@ impl AudioOutput {
             );
         }
     }
-
-    /// Заполняет output buffer из ring buffer (i16).
-    fn fill_buffer_i16(
-        data: &mut [i16],
-        consumer: &Arc<Mutex<HeapCons<f32>>>,
-        clock: &AudioClock,
-        _channels: usize,
-        callback_info: &cpal::OutputCallbackInfo,
-        callback_observed_at: Instant,
-    ) {
-        let mut filled = 0u64;
-        let mut silence = 0u64;
-
-        match consumer.lock() {
-            Ok(mut consumer) => {
-                for sample in data.iter_mut() {
-                    match consumer.try_pop() {
-                        Some(value) => {
-                            let value_f64: f64 = value as f64;
-                            *sample = (value_f64 * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                            filled += 1;
-                        }
-                        None => {
-                            *sample = 0;
-                            silence += 1;
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                data.fill(0);
-                silence = data.len() as u64;
-            }
-        }
-
-        clock.record_output_callback(filled, silence, callback_info, callback_observed_at);
-    }
-
-    /// Заполняет output buffer из ring buffer (u16).
-    fn fill_buffer_u16(
-        data: &mut [u16],
-        consumer: &Arc<Mutex<HeapCons<f32>>>,
-        clock: &AudioClock,
-        _channels: usize,
-        callback_info: &cpal::OutputCallbackInfo,
-        callback_observed_at: Instant,
-    ) {
-        let mut filled = 0u64;
-        let mut silence = 0u64;
-
-        match consumer.lock() {
-            Ok(mut consumer) => {
-                for sample in data.iter_mut() {
-                    match consumer.try_pop() {
-                        Some(value) => {
-                            let value_f64: f64 = value as f64;
-                            *sample =
-                                ((value_f64 * 0.5 + 0.5) * 65535.0).clamp(0.0, 65535.0) as u16;
-                            filled += 1;
-                        }
-                        None => {
-                            *sample = 32768;
-                            silence += 1;
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                data.fill(32768);
-                silence = data.len() as u64;
-            }
-        }
-
-        clock.record_output_callback(filled, silence, callback_info, callback_observed_at);
-    }
 }
 
 /// Корректная остановка stream перед уничтожением.
 impl Drop for AudioOutput {
     fn drop(&mut self) {
-        if let Err(e) = self.stream.pause() {
-            warn!("AudioOutput::drop — не удалось остановить stream: {}", e);
+        match pause_stream_with_policy(&self.stream) {
+            Ok(PauseStreamOutcome::Paused) => {}
+            Ok(PauseStreamOutcome::UnsupportedByBackend) => {
+                tracing::debug!(
+                    "AudioOutput::drop — CPAL backend не поддерживает pause, stream будет остановлен drop-ом"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    "AudioOutput::drop — не удалось остановить stream: {}",
+                    error
+                );
+            }
         }
         info!("AudioOutput остановлен (drop)");
     }
@@ -623,7 +773,17 @@ impl Drop for AudioOutput {
 
 #[cfg(test)]
 mod tests {
-    use super::LinearResampler;
+    use std::fmt::Debug;
+
+    use cpal::{
+        BackendSpecificError, FromSample, PauseStreamError, Sample, SampleFormat, SampleRate,
+        SupportedBufferSize, SupportedStreamConfigRange,
+    };
+
+    use super::{
+        LinearResampler, PauseErrorPolicy, classify_pause_error, convert_sample_for_output,
+        output_sample_format_is_supported, sample_format_priority, select_supported_output_config,
+    };
 
     /// Проверяет floating-point samples с небольшим допуском.
     fn assert_samples_close(actual_samples: &[f32], expected_samples: &[f32]) {
@@ -636,6 +796,134 @@ mod tests {
                 "sample mismatch: actual={actual_sample}, expected={expected_sample}"
             );
         }
+    }
+
+    /// Создаёт CPAL range без обращения к реальному audio device.
+    fn output_config_range(
+        sample_format: SampleFormat,
+        channels: u16,
+        min_sample_rate: u32,
+        max_sample_rate: u32,
+    ) -> SupportedStreamConfigRange {
+        SupportedStreamConfigRange::new(
+            channels,
+            SampleRate(min_sample_rate),
+            SampleRate(max_sample_rate),
+            SupportedBufferSize::Unknown,
+            sample_format,
+        )
+    }
+
+    /// Проверяет conversion helper для конкретного target sample type.
+    fn assert_converted_sample<T>(source_sample: f32, expected_sample: T)
+    where
+        T: Sample + FromSample<f32> + Debug,
+    {
+        assert_eq!(
+            convert_sample_for_output::<T>(source_sample),
+            expected_sample
+        );
+    }
+
+    #[test]
+    fn cpal_015_sample_formats_are_supported_by_output() {
+        let cpal_015_sample_formats = [
+            SampleFormat::I8,
+            SampleFormat::I16,
+            SampleFormat::I32,
+            SampleFormat::I64,
+            SampleFormat::U8,
+            SampleFormat::U16,
+            SampleFormat::U32,
+            SampleFormat::U64,
+            SampleFormat::F32,
+            SampleFormat::F64,
+        ];
+
+        for sample_format in cpal_015_sample_formats {
+            assert!(
+                output_sample_format_is_supported(sample_format),
+                "{sample_format:?} должен поддерживаться AudioOutput"
+            );
+            assert!(
+                sample_format_priority(sample_format) > 0,
+                "{sample_format:?} должен иметь fallback priority"
+            );
+        }
+    }
+
+    #[test]
+    fn sample_conversion_clips_all_cpal_015_formats() {
+        assert_converted_sample::<i8>(-1.0, i8::MIN);
+        assert_converted_sample::<i8>(1.0, i8::MAX);
+        assert_converted_sample::<i16>(-1.0, i16::MIN);
+        assert_converted_sample::<i16>(1.0, i16::MAX);
+        assert_converted_sample::<i32>(-1.0, i32::MIN);
+        assert_converted_sample::<i32>(1.0, i32::MAX);
+        assert_converted_sample::<i64>(-1.0, i64::MIN);
+        assert_converted_sample::<i64>(1.0, i64::MAX);
+
+        assert_converted_sample::<u8>(-1.0, u8::MIN);
+        assert_converted_sample::<u8>(0.0, 1u8 << 7);
+        assert_converted_sample::<u8>(1.0, u8::MAX);
+        assert_converted_sample::<u16>(-1.0, u16::MIN);
+        assert_converted_sample::<u16>(0.0, 1u16 << 15);
+        assert_converted_sample::<u16>(1.0, u16::MAX);
+        assert_converted_sample::<u32>(-1.0, u32::MIN);
+        assert_converted_sample::<u32>(0.0, 1u32 << 31);
+        assert_converted_sample::<u32>(1.0, u32::MAX);
+        assert_converted_sample::<u64>(-1.0, u64::MIN);
+        assert_converted_sample::<u64>(0.0, 1u64 << 63);
+        assert_converted_sample::<u64>(1.0, u64::MAX);
+
+        assert_converted_sample::<f32>(-2.0, -1.0);
+        assert_converted_sample::<f32>(f32::NAN, 0.0);
+        assert_converted_sample::<f64>(2.0, 1.0);
+        assert_converted_sample::<f64>(f32::INFINITY, 0.0);
+    }
+
+    #[test]
+    fn fallback_output_config_uses_supported_non_legacy_formats() {
+        let selected_config = select_supported_output_config(
+            [
+                output_config_range(SampleFormat::U8, 2, 44_100, 96_000),
+                output_config_range(SampleFormat::I32, 2, 44_100, 96_000),
+            ],
+            Some(SampleRate(48_000)),
+        )
+        .expect("supported fallback config");
+
+        assert_eq!(selected_config.sample_format(), SampleFormat::I32);
+        assert_eq!(selected_config.sample_rate(), SampleRate(48_000));
+        assert_eq!(selected_config.channels(), 2);
+    }
+
+    #[test]
+    fn fallback_output_config_uses_max_rate_when_preferred_rate_is_outside_range() {
+        let selected_config = select_supported_output_config(
+            [output_config_range(SampleFormat::F32, 2, 44_100, 48_000)],
+            Some(SampleRate(96_000)),
+        )
+        .expect("supported fallback config");
+
+        assert_eq!(selected_config.sample_format(), SampleFormat::F32);
+        assert_eq!(selected_config.sample_rate(), SampleRate(48_000));
+    }
+
+    #[test]
+    fn pause_unsupported_operation_is_non_fatal_policy() {
+        let unsupported_error = PauseStreamError::BackendSpecific {
+            err: BackendSpecificError {
+                description: "UnsupportedOperation: pause is not supported".to_string(),
+            },
+        };
+        let device_error = PauseStreamError::DeviceNotAvailable;
+
+        assert_eq!(
+            classify_pause_error(&unsupported_error),
+            PauseErrorPolicy::NonFatalUnsupportedOperation
+        );
+        assert_eq!(classify_pause_error(&device_error), PauseErrorPolicy::Fatal);
     }
 
     #[test]
