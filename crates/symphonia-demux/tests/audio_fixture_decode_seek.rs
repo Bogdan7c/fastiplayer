@@ -99,6 +99,12 @@ const EOF_REPLAY_FIXTURE_CASES: &[AudioEofReplayFixtureCase] = &[
     AudioEofReplayFixtureCase::new("maple leaf rag ogg", "source_maple_leaf_rag.ogg"),
 ];
 
+/// Matroska/WebM Opus fixtures покрывают поздние seek-и после последней рабочей cue-точки.
+const MATROSKA_OPUS_END_SEEK_FIXTURE_CASES: &[AudioEofReplayFixtureCase] = &[
+    AudioEofReplayFixtureCase::new("mkv", "music_sample.mkv"),
+    AudioEofReplayFixtureCase::new("webm", "music_sample.webm"),
+];
+
 impl AudioFixtureCase {
     const fn decode_seek(label: &'static str, file_name: &'static str) -> Self {
         Self {
@@ -147,6 +153,60 @@ fn audio_fixtures_replay_after_real_eof_returns_first_audio_packet() -> Result<(
     ensure!(
         fixture_failures.is_empty(),
         "EOF/replay regression failures:\n{}",
+        fixture_failures.join("\n\n")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn matroska_opus_fixtures_seek_to_public_duration_returns_audio_packet() -> Result<()> {
+    let mut fixture_failures = Vec::new();
+
+    for fixture_case in MATROSKA_OPUS_END_SEEK_FIXTURE_CASES {
+        let fixture_result =
+            assert_fixture_seeks_to_public_duration(*fixture_case).with_context(|| {
+                format!(
+                    "Matroska Opus end-seek fixture '{}' ({}) failed",
+                    fixture_case.label, fixture_case.file_name
+                )
+            });
+
+        if let Err(error) = fixture_result {
+            fixture_failures.push(format!("{error:?}"));
+        }
+    }
+
+    ensure!(
+        fixture_failures.is_empty(),
+        "Matroska Opus end-seek regressions:\n{}",
+        fixture_failures.join("\n\n")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn matroska_opus_fixtures_aggressive_late_seeks_reach_target_audio_packets() -> Result<()> {
+    let mut fixture_failures = Vec::new();
+
+    for fixture_case in MATROSKA_OPUS_END_SEEK_FIXTURE_CASES {
+        let fixture_result = assert_fixture_handles_aggressive_late_seeks(*fixture_case)
+            .with_context(|| {
+                format!(
+                    "Matroska Opus aggressive seek fixture '{}' ({}) failed",
+                    fixture_case.label, fixture_case.file_name
+                )
+            });
+
+        if let Err(error) = fixture_result {
+            fixture_failures.push(format!("{error:?}"));
+        }
+    }
+
+    ensure!(
+        fixture_failures.is_empty(),
+        "Matroska Opus aggressive seek regressions:\n{}",
         fixture_failures.join("\n\n")
     );
 
@@ -220,6 +280,142 @@ fn assert_fixture_replays_after_eof(fixture_case: AudioEofReplayFixtureCase) -> 
     );
 
     Ok(())
+}
+
+fn assert_fixture_seeks_to_public_duration(fixture_case: AudioEofReplayFixtureCase) -> Result<()> {
+    let fixture_path = audio_fixture_path(fixture_case.file_name);
+    let mut demuxer = SymphoniaDemuxer::from_file(&fixture_path).with_context(|| {
+        format!(
+            "{}: open through SymphoniaDemuxer::from_file",
+            fixture_case.file_name
+        )
+    })?;
+    let audio_track = first_audio_track(&demuxer)
+        .with_context(|| format!("{}: find selected audio track", fixture_case.file_name))?;
+    let seek_target = demuxer
+        .duration()
+        .or(audio_track.duration)
+        .with_context(|| format!("{}: public duration is required", fixture_case.file_name))?;
+
+    ensure!(
+        !seek_target.is_zero(),
+        "{}: public duration must be non-zero",
+        fixture_case.file_name
+    );
+
+    let seek_result = demuxer
+        .seek_with_request(DemuxSeekRequest::accurate(seek_target))
+        .with_context(|| {
+            format!(
+                "{}: accurate seek to public duration {:?}",
+                fixture_case.file_name, seek_target
+            )
+        })?;
+
+    ensure!(
+        seek_result.requested_position.as_duration() == seek_target,
+        "{}: demuxer must preserve requested public duration",
+        fixture_case.file_name
+    );
+
+    let packet = first_selected_audio_packet_after_replay(
+        &mut demuxer,
+        audio_track.id,
+        fixture_case.file_name,
+    )?;
+
+    ensure!(
+        packet.pts <= seek_target,
+        "{}: first packet after end seek must not be after requested duration",
+        fixture_case.file_name
+    );
+
+    Ok(())
+}
+
+fn assert_fixture_handles_aggressive_late_seeks(
+    fixture_case: AudioEofReplayFixtureCase,
+) -> Result<()> {
+    let fixture_path = audio_fixture_path(fixture_case.file_name);
+    let mut demuxer = SymphoniaDemuxer::from_file(&fixture_path).with_context(|| {
+        format!(
+            "{}: open through SymphoniaDemuxer::from_file",
+            fixture_case.file_name
+        )
+    })?;
+    let audio_track = first_audio_track(&demuxer)
+        .with_context(|| format!("{}: find selected audio track", fixture_case.file_name))?;
+
+    for seek_target in [
+        Duration::from_secs(6),
+        Duration::from_secs(2),
+        Duration::from_secs(7),
+        Duration::from_secs(1),
+        Duration::from_millis(7_900),
+        Duration::from_secs(4),
+    ] {
+        demuxer
+            .seek_with_request(DemuxSeekRequest::accurate(seek_target))
+            .with_context(|| {
+                format!(
+                    "{}: accurate seek to {:?}",
+                    fixture_case.file_name, seek_target
+                )
+            })?;
+
+        let packet = first_selected_audio_packet_covering_target(
+            &mut demuxer,
+            audio_track.id,
+            seek_target,
+            fixture_case.file_name,
+        )?;
+        let packet_late_by = packet.pts.saturating_sub(seek_target);
+
+        ensure!(
+            packet_late_by <= Duration::from_millis(25),
+            "{}: first packet after seek is too far after target ({:?})",
+            fixture_case.file_name,
+            packet_late_by
+        );
+    }
+
+    Ok(())
+}
+
+fn first_selected_audio_packet_covering_target(
+    demuxer: &mut SymphoniaDemuxer,
+    selected_audio_track_id: TrackId,
+    seek_target: Duration,
+    file_name: &str,
+) -> Result<Packet> {
+    for event_index in 0..MAX_EVENTS_AFTER_REPLAY_SEEK {
+        match demuxer.next_event().with_context(|| {
+            format!("{file_name}: target packet after seek: read demux event #{event_index}")
+        })? {
+            DemuxReadEvent::Packet(packet)
+                if is_selected_audio_packet(&packet, selected_audio_track_id) =>
+            {
+                let packet_end = packet
+                    .duration
+                    .map(|duration| packet.pts + duration)
+                    .unwrap_or(packet.pts);
+
+                if packet_end >= seek_target {
+                    return Ok(packet);
+                }
+            }
+            DemuxReadEvent::Packet(_) | DemuxReadEvent::TracksChanged(_) => {}
+            DemuxReadEvent::EndOfStream => {
+                bail!("{file_name}: target packet after seek: EOF before target audio packet");
+            }
+        }
+    }
+
+    bail!(
+        "{file_name}: target packet after seek: target {:?} not reached in {} events",
+        seek_target,
+        MAX_EVENTS_AFTER_REPLAY_SEEK
+    )
 }
 
 fn assert_fixture_decodes_and_seeks(fixture_path: &Path) -> Result<()> {

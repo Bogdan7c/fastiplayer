@@ -27,7 +27,8 @@ use crate::seek_mapper::{
     symphonia_seek_mode, symphonia_seek_target,
 };
 use crate::symphonia_api::{
-    self, FormatReaderBox, Hint, MediaSourceStream, ReadOnlySource, SymphoniaError,
+    self, FormatReaderBox, Hint, MediaSourceStream, ReadOnlySource, SeekErrorKind, SeekedTo,
+    SymphoniaError, SymphoniaSeekMode,
 };
 use crate::track_mapper::{TrackEntry, map_tracks, tracks_may_need_matroska_video_metadata};
 
@@ -42,6 +43,18 @@ const DECODE_POINT_BEFORE_MAX_RETRIES: usize = 6;
 
 /// Минимальный отступ назад, чтобы retry не попал в ту же after-target packet boundary.
 const DECODE_POINT_BEFORE_RETRY_MARGIN: Duration = Duration::from_millis(1);
+
+/// Первый шаг назад для поиска рабочей позиции, когда Symphonia считает in-range цель концом stream-а.
+const IN_RANGE_OUT_OF_RANGE_SEEK_INITIAL_RETRY_OFFSET: Duration = Duration::from_millis(10);
+
+/// Ограничивает число дорогих reprobe/seek попыток при повреждённых или неполных Matroska cues.
+const IN_RANGE_OUT_OF_RANGE_SEEK_MAX_EXPONENTIAL_RETRIES: usize = 32;
+
+/// Уточнение ближе миллисекунды не даёт практической пользы для текущих container timebase-ов.
+const IN_RANGE_OUT_OF_RANGE_SEEK_REFINEMENT_EPSILON: Duration = Duration::from_millis(1);
+
+/// Ограничивает binary refinement после того, как найден первый рабочий timestamp перед целью.
+const IN_RANGE_OUT_OF_RANGE_SEEK_MAX_REFINEMENT_RETRIES: usize = 10;
 
 /// Demuxer на базе Symphonia для media containers, которые поддерживает workspace dependency.
 pub struct SymphoniaDemuxer {
@@ -604,12 +617,12 @@ impl SymphoniaDemuxer {
             rebuilt_before_seek = true;
         }
 
-        let seek_target = symphonia_seek_target(backend_request, seek_track_id);
-        let seeked_to = match self
-            .format_mut("seek")?
-            .seek(seek_mode, seek_target)
-            .map_err(symphonia_seek_error_to_demux_error)
-        {
+        let seeked_to = match self.seek_symphonia_with_in_range_retry(
+            seek_mode,
+            backend_request,
+            seek_track_id,
+            "seek",
+        ) {
             Ok(seeked_to) => seeked_to,
             Err(error)
                 if reprobe_before_seek
@@ -622,10 +635,12 @@ impl SymphoniaDemuxer {
                     "Symphonia seek failed; rebuilding FormatReader and retrying once"
                 );
                 self.rebuild_format_reader_from_source_start()?;
-                let retry_seek_target = symphonia_seek_target(backend_request, seek_track_id);
-                self.format_mut("seek_after_reprobe")?
-                    .seek(seek_mode, retry_seek_target)
-                    .map_err(symphonia_seek_error_to_demux_error)?
+                self.seek_symphonia_with_in_range_retry(
+                    seek_mode,
+                    backend_request,
+                    seek_track_id,
+                    "seek_after_reprobe",
+                )?
             }
             Err(error) => return Err(error),
         };
@@ -635,6 +650,190 @@ impl SymphoniaDemuxer {
             seeked_to,
             &self.track_map,
         ))
+    }
+
+    /// Выполняет Symphonia seek и чинит in-range цели, которые backend считает концом stream-а.
+    fn seek_symphonia_with_in_range_retry(
+        &mut self,
+        seek_mode: SymphoniaSeekMode,
+        backend_request: DemuxSeekRequest,
+        seek_track_id: Option<TrackId>,
+        operation: &'static str,
+    ) -> Result<SeekedTo> {
+        match self.seek_symphonia_raw(seek_mode, backend_request, seek_track_id, operation)? {
+            Ok(seeked_to) => Ok(seeked_to),
+            Err(error)
+                if is_symphonia_out_of_range_seek_error(&error)
+                    && self.can_reprobe_current_source()
+                    && in_range_out_of_range_seek_can_retry(
+                        backend_request.timestamp,
+                        self.duration,
+                    ) =>
+            {
+                self.retry_in_range_out_of_range_seek(
+                    seek_mode,
+                    backend_request,
+                    seek_track_id,
+                    error,
+                )
+            }
+            Err(error) => Err(symphonia_seek_error_to_demux_error(error)),
+        }
+    }
+
+    /// Один raw seek без адаптации ошибок; нужен, чтобы не потерять `SeekErrorKind`.
+    fn seek_symphonia_raw(
+        &mut self,
+        seek_mode: SymphoniaSeekMode,
+        backend_request: DemuxSeekRequest,
+        seek_track_id: Option<TrackId>,
+        operation: &'static str,
+    ) -> Result<std::result::Result<SeekedTo, SymphoniaError>> {
+        let seek_target = symphonia_seek_target(backend_request, seek_track_id);
+
+        Ok(self.format_mut(operation)?.seek(seek_mode, seek_target))
+    }
+
+    /// Для целей внутри public duration пробует ближайшие packet-safe позиции перед концом stream-а.
+    fn retry_in_range_out_of_range_seek(
+        &mut self,
+        seek_mode: SymphoniaSeekMode,
+        backend_request: DemuxSeekRequest,
+        seek_track_id: Option<TrackId>,
+        original_error: SymphoniaError,
+    ) -> Result<SeekedTo> {
+        let mut failed_timestamp = backend_request.timestamp;
+        let mut retry_offset = IN_RANGE_OUT_OF_RANGE_SEEK_INITIAL_RETRY_OFFSET;
+
+        for retry_index in 0..IN_RANGE_OUT_OF_RANGE_SEEK_MAX_EXPONENTIAL_RETRIES {
+            let retry_timestamp = backend_request.timestamp.saturating_sub(retry_offset);
+
+            if retry_timestamp == failed_timestamp {
+                break;
+            }
+
+            match self.attempt_in_range_out_of_range_retry(
+                seek_mode,
+                backend_request,
+                seek_track_id,
+                retry_timestamp,
+                retry_index,
+            )? {
+                Ok(_) => {
+                    return self.refine_in_range_out_of_range_seek(
+                        seek_mode,
+                        backend_request,
+                        seek_track_id,
+                        retry_timestamp,
+                        failed_timestamp,
+                    );
+                }
+                Err(error) if is_symphonia_out_of_range_seek_error(&error) => {
+                    failed_timestamp = retry_timestamp;
+
+                    if retry_timestamp.is_zero() {
+                        break;
+                    }
+
+                    retry_offset = retry_offset
+                        .checked_mul(2)
+                        .unwrap_or(backend_request.timestamp);
+                }
+                Err(error) => return Err(symphonia_seek_error_to_demux_error(error)),
+            }
+        }
+
+        Err(symphonia_seek_error_to_demux_error(original_error))
+    }
+
+    /// Уточняет найденный working timestamp вверх, чтобы не делать лишний audio/video pre-roll.
+    fn refine_in_range_out_of_range_seek(
+        &mut self,
+        seek_mode: SymphoniaSeekMode,
+        backend_request: DemuxSeekRequest,
+        seek_track_id: Option<TrackId>,
+        mut accepted_timestamp: Duration,
+        mut failed_timestamp: Duration,
+    ) -> Result<SeekedTo> {
+        for retry_index in 0..IN_RANGE_OUT_OF_RANGE_SEEK_MAX_REFINEMENT_RETRIES {
+            let search_window = failed_timestamp.saturating_sub(accepted_timestamp);
+            if search_window <= IN_RANGE_OUT_OF_RANGE_SEEK_REFINEMENT_EPSILON {
+                break;
+            }
+
+            let retry_timestamp = accepted_timestamp + search_window / 2;
+
+            match self.attempt_in_range_out_of_range_retry(
+                seek_mode,
+                backend_request,
+                seek_track_id,
+                retry_timestamp,
+                retry_index,
+            )? {
+                Ok(_) => {
+                    accepted_timestamp = retry_timestamp;
+                }
+                Err(error) if is_symphonia_out_of_range_seek_error(&error) => {
+                    failed_timestamp = retry_timestamp;
+                }
+                Err(error) => return Err(symphonia_seek_error_to_demux_error(error)),
+            }
+        }
+
+        match self.attempt_in_range_out_of_range_retry(
+            seek_mode,
+            backend_request,
+            seek_track_id,
+            accepted_timestamp,
+            IN_RANGE_OUT_OF_RANGE_SEEK_MAX_REFINEMENT_RETRIES,
+        )? {
+            Ok(seeked_to) => Ok(seeked_to),
+            Err(error) => {
+                warn!(
+                    source = %self.source_label,
+                    accepted_retry_ms = accepted_timestamp.as_millis(),
+                    error = %error,
+                    "Принятый fallback seek Symphonia не удалось повторить после уточнения"
+                );
+                Err(symphonia_seek_error_to_demux_error(error))
+            }
+        }
+    }
+
+    /// Делает одну retry-попытку из чистого reader-а, если source позволяет reprobe.
+    fn attempt_in_range_out_of_range_retry(
+        &mut self,
+        seek_mode: SymphoniaSeekMode,
+        backend_request: DemuxSeekRequest,
+        seek_track_id: Option<TrackId>,
+        retry_timestamp: Duration,
+        retry_index: usize,
+    ) -> Result<std::result::Result<SeekedTo, SymphoniaError>> {
+        if self.can_reprobe_current_source() {
+            self.rebuild_format_reader_from_source_start()?;
+        }
+
+        debug!(
+            source = %self.source_label,
+            target_ms = backend_request.timestamp.as_millis(),
+            retry_ms = retry_timestamp.as_millis(),
+            retry_index,
+            demux_mode = ?backend_request.mode,
+            seek_track_id = ?seek_track_id,
+            "Цель seek внутри public duration, но вне выбранного Symphonia stream; пробуем раньше"
+        );
+
+        let retry_request = DemuxSeekRequest {
+            timestamp: retry_timestamp,
+            mode: backend_request.mode,
+        };
+
+        self.seek_symphonia_raw(
+            seek_mode,
+            retry_request,
+            seek_track_id,
+            "seek_in_range_out_of_range_retry",
+        )
     }
 
     /// Восстанавливает `DecodePointBefore`: успешный result не должен быть после requested target.
@@ -1051,6 +1250,19 @@ fn selected_video_track_id(tracks: &[TrackInfo]) -> Option<TrackId> {
         .iter()
         .find(|track| track.kind == TrackKind::Video)
         .map(|track| track.id)
+}
+
+/// Отличает конец конкретного Symphonia stream-а от других seek failures.
+fn is_symphonia_out_of_range_seek_error(error: &SymphoniaError) -> bool {
+    matches!(error, SymphoniaError::SeekError(SeekErrorKind::OutOfRange))
+}
+
+/// Retry допустим только для цели, которую public timeline уже объявил достижимой.
+fn in_range_out_of_range_seek_can_retry(
+    backend_timestamp: Duration,
+    duration: Option<Duration>,
+) -> bool {
+    duration.is_some_and(|duration| !backend_timestamp.is_zero() && backend_timestamp <= duration)
 }
 
 /// Классифицирует первый selected video packet относительно `DecodePointBefore` contract-а.

@@ -2,9 +2,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use media_core::{TimeBase as MediaTimeBase, TrackTimestampUnits};
-pub(crate) use symphonia::core::errors::Error as SymphoniaError;
+pub(crate) use symphonia::core::errors::{Error as SymphoniaError, SeekErrorKind};
 pub(crate) use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader};
+pub(crate) use symphonia::core::formats::{SeekMode as SymphoniaSeekMode, SeekedTo};
 pub(crate) use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{Time, TimeBase, Timestamp};
