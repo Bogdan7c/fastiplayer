@@ -487,12 +487,14 @@ impl PlayerSession {
         }
     }
 
-    /// Переключает playback между `Playing` и `Paused`.
+    /// Переключает playback между пользовательскими смыслами "сейчас слышно/идёт" и "пауза".
     pub fn toggle_playback(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        match self.snapshot.playback_state {
-            PlaybackState::Playing => self.pause(),
-            _ => self.play(),
+        if self.playback_state().is_playback_active() {
+            // EOF drain тоже active: audio tail ещё может звучать, поэтому toggle обязан ставить pause.
+            self.pause()
+        } else {
+            self.play()
         }
     }
 
@@ -8930,6 +8932,61 @@ mod tests {
         assert_eq!(replay_session.playback_state(), PlaybackState::Seeking);
         assert!(!replay_session.draining_after_eof);
         assert!(replay_session.snapshot().last_error.is_none());
+    }
+
+    #[test]
+    fn play_pause_toggle_pauses_eof_drain_audio_tail_without_replay_seek() {
+        let mut session = PlayerSession::new();
+        let seek_log = install_fake_media(&mut session, vec![fake_track(2, TrackKind::Audio)]);
+        let audio_output = install_ready_audio_runtime(&mut session, 25.0, None);
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.enter_eof_drain();
+        assert_eq!(session.playback_state(), PlaybackState::Draining);
+
+        session
+            .dispatch_command(PlayerCommand::TogglePlayback)
+            .unwrap();
+
+        assert_eq!(session.playback_state(), PlaybackState::Paused);
+        assert_eq!(audio_output.pause_count.load(Ordering::Relaxed), 1);
+        assert!(session.seek_commit().is_none());
+        assert!(!session.snapshot().timeline.seeking);
+        assert_eq!(seek_log.lock().expect("seek log lock").as_slice(), &[]);
+        assert!(session.snapshot().last_error.is_none());
+    }
+
+    #[test]
+    fn play_pause_toggle_from_ended_after_eof_replays_with_seek_to_zero() {
+        let mut session = PlayerSession::new();
+        let seek_log = install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+        session.update_current_position(Duration::from_secs(30));
+        session.enter_eof_drain();
+        let _tick_result = session.tick(PlayerTickContext::new(Instant::now()));
+        assert_eq!(session.playback_state(), PlaybackState::Ended);
+
+        session
+            .dispatch_command(PlayerCommand::TogglePlayback)
+            .unwrap();
+
+        let seek_commit = session
+            .seek_commit()
+            .expect("toggle after Ended should start replay seek");
+        assert_eq!(
+            seek_log.lock().expect("seek log lock").as_slice(),
+            &[Duration::ZERO]
+        );
+        assert_eq!(seek_commit.target_position, MediaTime::ZERO);
+        assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
+        assert_eq!(session.playback_state(), PlaybackState::Seeking);
+        assert!(!session.draining_after_eof);
+        assert!(session.snapshot().last_error.is_none());
     }
 
     #[test]

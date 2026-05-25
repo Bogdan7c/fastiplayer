@@ -82,12 +82,7 @@ fn render_button_row(
     actions: &mut Vec<ControlAction>,
 ) {
     let controls_style = skin.controls_style();
-    let is_playing = player_snapshot.playback_state == PlaybackState::Playing;
-    let play_icon = if is_playing {
-        IconId::Pause
-    } else {
-        IconId::Play
-    };
+    let play_icon = playback_toggle_icon(player_snapshot.playback_state);
     let mut volume_value = player_snapshot.volume;
 
     ui.horizontal_wrapped(|ui| {
@@ -117,6 +112,16 @@ fn render_button_row(
             actions.push(ControlAction::ToggleFullscreen);
         }
     });
+}
+
+/// Выбирает иконку toggle через player-side active semantics, а не через один `Playing`.
+fn playback_toggle_icon(playback_state: PlaybackState) -> IconId {
+    if playback_state.is_playback_active() {
+        // Active состояния, включая EOF drain, пользователь воспринимает как pauseable playback.
+        IconId::Pause
+    } else {
+        IconId::Play
+    }
 }
 
 /// Рисует кнопку для asset-backed иконки.
@@ -151,5 +156,22 @@ fn top_panel_id(skin_id: SkinId) -> &'static str {
 fn bottom_panel_id(skin_id: SkinId) -> &'static str {
     match skin_id {
         SkinId::Minimal => "controls_minimal",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Проверяет regression: audible EOF tail в `Draining` должен выглядеть как pause.
+    #[test]
+    fn player_controls_show_pause_icon_for_draining_toggle() {
+        assert_eq!(playback_toggle_icon(PlaybackState::Draining), IconId::Pause);
+    }
+
+    /// Проверяет replay affordance: полностью завершённый media должен выглядеть как play.
+    #[test]
+    fn player_controls_show_play_icon_for_ended_toggle() {
+        assert_eq!(playback_toggle_icon(PlaybackState::Ended), IconId::Play);
     }
 }
