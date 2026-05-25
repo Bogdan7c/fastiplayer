@@ -27,6 +27,7 @@ desktop-integration.workspace = true
 player-core.workspace = true
 media-core.workspace = true
 symphonia-demux.workspace = true
+pollster.workspace = true
 rfd = "0.15"
 
 # Этап 2b: audio pipeline

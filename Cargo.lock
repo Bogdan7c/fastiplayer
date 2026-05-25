@@ -136,6 +136,7 @@ dependencies = [
  "egui-winit",
  "media-core",
  "player-core",
+ "pollster",
  "render-core",
  "render-wgpu",
  "rfd",

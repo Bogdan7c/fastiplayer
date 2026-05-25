@@ -17,6 +17,7 @@
 /// - события: Resumed (создание окна), Suspended (уничтожение), WindowEvent
 /// - RedrawRequested — основной hook для рендеринга каждого кадра
 mod frame_prepare;
+mod local_file_open;
 mod local_media;
 mod redraw_pacing;
 mod startup_media;
@@ -25,7 +26,7 @@ mod telemetry;
 mod ui;
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use capability_core::CapabilityScanner;
@@ -52,6 +53,9 @@ use crate::startup_media::{
 };
 use crate::state::AppState;
 use crate::telemetry::Telemetry;
+
+/// Единый интервал polling-а shell background jobs, когда playback не даёт continuous redraw.
+const BACKGROUND_JOB_POLL_INTERVAL: Duration = YOUTUBE_STARTUP_POLL_INTERVAL;
 
 /// Главное приложение — реализует ApplicationHandler для winit.
 ///
@@ -86,8 +90,8 @@ struct App {
     /// Валидированная пользовательская конфигурация.
     app_config: AppConfig,
 
-    /// Ближайшее время, когда нужно снова проверить background YouTube job.
-    next_youtube_startup_poll_at: Option<Instant>,
+    /// Ближайшее время, когда нужно снова проверить shell background jobs.
+    next_background_job_poll_at: Option<Instant>,
 }
 
 impl App {
@@ -108,7 +112,7 @@ impl App {
             youtube_startup_job: None,
             startup_error,
             app_config,
-            next_youtube_startup_poll_at: None,
+            next_background_job_poll_at: None,
         }
     }
 
@@ -188,7 +192,8 @@ impl App {
             &mut app_state,
             &mut self.startup_error,
         );
-        self.refresh_youtube_startup_poll_deadline();
+        app_state.poll_local_file_open_job();
+        self.refresh_background_job_poll_deadline(false);
 
         // Shell получает read-only snapshot без доступа к mutable playback internals.
         let _player_snapshot = app_state.player_snapshot();
@@ -216,7 +221,7 @@ impl App {
     /// Запускает background resolve для CLI YouTube URL и сразу обновляет UI state.
     fn start_youtube_startup_job(&mut self, source_url: String, app_state: &mut AppState) {
         app_state.set_startup_pending("Подготовка YouTube stream...".to_string());
-        self.next_youtube_startup_poll_at = None;
+        self.next_background_job_poll_at = None;
         match YoutubeStartupJob::spawn(source_url, self.app_config.clone()) {
             Ok(job) => {
                 self.startup_error = None;
@@ -227,15 +232,15 @@ impl App {
                 let startup_error = format!("NetworkError: YouTube error: {error}");
                 self.startup_error = Some(startup_error.clone());
                 app_state.set_startup_error(startup_error);
-                self.next_youtube_startup_poll_at = None;
+                self.next_background_job_poll_at = None;
             }
         }
     }
 
-    /// Сбрасывает deadline polling-а, когда background startup job уже завершён.
-    fn refresh_youtube_startup_poll_deadline(&mut self) {
-        if self.youtube_startup_job.is_none() {
-            self.next_youtube_startup_poll_at = None;
+    /// Сбрасывает deadline polling-а, когда shell background jobs уже завершены.
+    fn refresh_background_job_poll_deadline(&mut self, has_pending_local_file_open: bool) {
+        if self.youtube_startup_job.is_none() && !has_pending_local_file_open {
+            self.next_background_job_poll_at = None;
         }
     }
 
@@ -261,18 +266,18 @@ impl App {
         self.configure_idle_control_flow(event_loop);
     }
 
-    /// Настраивает idle ожидание: обычный Wait или timed wakeup для background startup.
+    /// Настраивает idle ожидание: обычный Wait или timed wakeup для background jobs.
     fn configure_idle_control_flow(&mut self, event_loop: &ActiveEventLoop) {
-        if self.youtube_startup_job.is_none() {
-            self.next_youtube_startup_poll_at = None;
+        if !self.has_pending_background_job() {
+            self.next_background_job_poll_at = None;
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
         }
 
         let deadline = self
-            .next_youtube_startup_poll_at
-            .unwrap_or_else(|| Instant::now() + YOUTUBE_STARTUP_POLL_INTERVAL);
-        self.next_youtube_startup_poll_at = Some(deadline);
+            .next_background_job_poll_at
+            .unwrap_or_else(|| Instant::now() + BACKGROUND_JOB_POLL_INTERVAL);
+        self.next_background_job_poll_at = Some(deadline);
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
 
@@ -281,6 +286,15 @@ impl App {
         self.app_state
             .as_ref()
             .is_some_and(AppState::wants_continuous_redraw)
+    }
+
+    /// Возвращает `true`, если idle loop должен просыпаться для polling-а background jobs.
+    fn has_pending_background_job(&self) -> bool {
+        self.youtube_startup_job.is_some()
+            || self
+                .app_state
+                .as_ref()
+                .is_some_and(AppState::has_pending_local_file_open)
     }
 }
 
@@ -403,8 +417,12 @@ impl ApplicationHandler for App {
                     app_state,
                     &mut self.startup_error,
                 );
+                app_state.poll_local_file_open_job();
                 let pacing = render_frame(&self.telemetry, &window, renderer, app_state);
-                self.refresh_youtube_startup_poll_deadline();
+                let has_pending_local_file_open = app_state.has_pending_local_file_open();
+                if self.youtube_startup_job.is_none() && !has_pending_local_file_open {
+                    self.next_background_job_poll_at = None;
+                }
                 self.apply_redraw_pacing(event_loop, &window, pacing);
                 return;
             }
@@ -424,22 +442,22 @@ impl ApplicationHandler for App {
             return;
         }
 
-        if self.youtube_startup_job.is_none() {
-            self.next_youtube_startup_poll_at = None;
+        if !self.has_pending_background_job() {
+            self.next_background_job_poll_at = None;
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
         }
 
         let now = Instant::now();
-        let deadline = self.next_youtube_startup_poll_at.unwrap_or(now);
+        let deadline = self.next_background_job_poll_at.unwrap_or(now);
         if now >= deadline {
             if let Some(window) = &self.window {
                 window.request_redraw();
             }
-            self.next_youtube_startup_poll_at = Some(now + YOUTUBE_STARTUP_POLL_INTERVAL);
+            self.next_background_job_poll_at = Some(now + BACKGROUND_JOB_POLL_INTERVAL);
         }
 
-        if let Some(next_deadline) = self.next_youtube_startup_poll_at {
+        if let Some(next_deadline) = self.next_background_job_poll_at {
             event_loop.set_control_flow(ControlFlow::WaitUntil(next_deadline));
         }
     }

@@ -8,6 +8,8 @@
 - No software video fallback, CPU upload fallback, CPU readback fallback, or native HDR output as user/runtime config switches.
 - Capability selection must intersect stream requirement, decode backend report, mandatory DMA-BUF memory contract, renderer support, and strict color/HDR policy before opening/using video.
 - `app-egui` owns window/UI/lifecycle/backend composition, but not playback queues, scheduling, demux state, audio/video decoder state, or `PlayerSession`.
+- UI local-file opening is asynchronous inside `app-egui`: `rfd::AsyncFileDialog` and `local_media::prepare_local_file` run through a shell job, then only successful `PreparedMedia` is sent to `PlayerWorker::load_prepared_media`; cancel/prepare errors stay shell-level and must not reset current playback.
+- CLI/local restore `load_file(&Path)` may stay synchronous unless the UI file-dialog path is involved.
 - `player-core` owns playback state and consumes already-opened `PreparedMedia`; it must not reintroduce direct deps on `symphonia-demux`/`webm-demux` for opening or on `video-vaapi` for concrete backend internals.
 - Renderer receives frames through `PresentFrameLease`; UI/actions communicate through `PlayerCommand`, `PlayerSnapshot`, and worker events.
 - Config is user TOML only; cookies, history, bookmarks, durable cache metadata, and service sessions are not config responsibilities.

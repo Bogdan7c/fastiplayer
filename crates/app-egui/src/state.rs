@@ -13,7 +13,8 @@ use media_core::TrackKind;
 use player_core::{
     FrameCounters, MediaOpenRequest, MediaSource, PlaybackState, PlayerCommand, PlayerError,
     PlayerErrorKind, PlayerEvent, PlayerPresentFrame, PlayerRenderError, PlayerSnapshot,
-    PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PresentFrameWgpuTextureViews, SeekRequest,
+    PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PreparedMedia,
+    PresentFrameWgpuTextureViews, SeekRequest,
 };
 use render_core::RenderDiagnostics;
 use rustiplayer_config::AppConfig;
@@ -21,6 +22,10 @@ use tracing::{debug, instrument, warn};
 use video_vaapi::VaapiWgpuVideoBackendFactory;
 use winit::window::Window;
 
+use crate::local_file_open::{
+    LocalFileOpenEvent, LocalFileOpenJob, LocalFileOpenResult, local_file_prepare_error_message,
+    preparing_local_file_message,
+};
 use crate::local_media;
 use crate::telemetry::Telemetry;
 use crate::ui::animation::AnimationState;
@@ -451,6 +456,9 @@ pub struct AppState {
     /// Последний локальный файл, открытый shell-ом, для восстановления после suspend.
     current_local_file: Option<PathBuf>,
 
+    /// Активный async dialog/prepare job для локального файла.
+    local_file_open_job: Option<LocalFileOpenJob>,
+
     /// Transient pointer state timeline; player position здесь не хранится.
     timeline_ui_state: TimelineUiState,
 
@@ -509,6 +517,7 @@ impl AppState {
             pending_redraw_after_worker_command: false,
             cached_renderable_present_frame: None,
             current_local_file: None,
+            local_file_open_job: None,
             timeline_ui_state: TimelineUiState::default(),
             app_version: env!("CARGO_PKG_VERSION"),
         })
@@ -662,6 +671,28 @@ impl AppState {
             }
         }
 
+        self.mark_pending_worker_redraw();
+    }
+
+    /// Доставляет уже подготовленный локальный media в worker после async UI opening-а.
+    fn load_prepared_local_file(&mut self, path: PathBuf, prepared_media: PreparedMedia) {
+        let autoplay = !self.app_config.player.start_paused;
+
+        if let Err(error) = self
+            .player_worker
+            .load_prepared_media(prepared_media, autoplay)
+        {
+            warn!(error = %error, path = %path.display(), "Не удалось отправить подготовленный файл в worker");
+            self.set_startup_error(format!(
+                "Ошибка открытия media-файла {}: worker недоступен: {error}",
+                path.display()
+            ));
+            return;
+        }
+
+        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
+        self.clear_startup_status();
+        self.current_local_file = Some(path);
         self.mark_pending_worker_redraw();
     }
 
@@ -926,6 +957,72 @@ impl AppState {
         self.current_local_file.as_deref()
     }
 
+    /// Возвращает `true`, пока shell ждёт file dialog или подготовку локального media.
+    #[must_use]
+    pub fn has_pending_local_file_open(&self) -> bool {
+        self.local_file_open_job.is_some()
+    }
+
+    /// Неблокирующе забирает события async открытия локального файла.
+    pub fn poll_local_file_open_job(&mut self) {
+        let mut finished_result = None;
+
+        while let Some(event) = self
+            .local_file_open_job
+            .as_mut()
+            .and_then(LocalFileOpenJob::try_take_event)
+        {
+            match event {
+                LocalFileOpenEvent::Preparing { path } => {
+                    self.set_startup_pending(preparing_local_file_message(&path));
+                }
+                LocalFileOpenEvent::Finished(result) => {
+                    finished_result = Some(result);
+                    break;
+                }
+            }
+        }
+
+        let Some(mut result) = finished_result else {
+            return;
+        };
+
+        if let Some(join_error) = self
+            .local_file_open_job
+            .as_mut()
+            .and_then(LocalFileOpenJob::join_after_finished)
+        {
+            result = LocalFileOpenResult::JobFailed { error: join_error };
+        }
+        self.local_file_open_job = None;
+
+        self.apply_local_file_open_result(result);
+    }
+
+    /// Применяет финальный результат local open job-а к shell и worker boundary.
+    fn apply_local_file_open_result(&mut self, result: LocalFileOpenResult) {
+        match result {
+            LocalFileOpenResult::Cancelled => {
+                self.startup_pending = None;
+                self.mark_pending_worker_redraw();
+            }
+            LocalFileOpenResult::Prepared {
+                path,
+                prepared_media,
+            } => {
+                self.load_prepared_local_file(path, prepared_media);
+            }
+            LocalFileOpenResult::PrepareFailed { path, error } => {
+                warn!(path = %path.display(), error = %error, "Не удалось подготовить локальный файл");
+                self.set_startup_error(local_file_prepare_error_message(&path, &error));
+            }
+            LocalFileOpenResult::JobFailed { error } => {
+                warn!(error = %error, "Local file open job завершился ошибкой");
+                self.set_startup_error(format!("Ошибка открытия media-файла: {error}"));
+            }
+        }
+    }
+
     /// Рендерит egui UI поверх видео.
     ///
     /// UI читает только `PlayerSnapshot`, а действия после egui closure отправляет worker-у.
@@ -1022,7 +1119,7 @@ impl AppState {
         for action in actions {
             match action {
                 ControlAction::TogglePlayback => self.toggle_playback(),
-                ControlAction::OpenFile => self.open_file(),
+                ControlAction::OpenFile => self.open_file(window),
                 ControlAction::SetVolume(requested_volume) => {
                     if let Err(error) = self
                         .player_worker
@@ -1119,18 +1216,21 @@ impl AppState {
     }
 
     /// Открывает локальный media-файл через file dialog.
-    pub fn open_file(&mut self) {
-        let file = rfd::FileDialog::new()
-            .add_filter(
-                "Supported Media",
-                local_media::SUPPORTED_LOCAL_MEDIA_EXTENSIONS,
-            )
-            .add_filter("WebM / Matroska", &["webm", "mkv"])
-            .add_filter("All Files", &["*"])
-            .pick_file();
+    pub fn open_file(&mut self, window: &Window) {
+        if self.has_pending_local_file_open() {
+            debug!("Local file open job уже активен, повторный dialog не запускаем");
+            return;
+        }
 
-        if let Some(path) = file {
-            self.load_file(&path);
+        match LocalFileOpenJob::spawn(window, self.app_config.player.demux) {
+            Ok(job) => {
+                self.local_file_open_job = Some(job);
+                self.set_startup_pending("Выбор media-файла...".to_string());
+            }
+            Err(error) => {
+                warn!(error = %error, "Не удалось запустить local file open job");
+                self.set_startup_error(format!("Ошибка открытия media-файла: {error}"));
+            }
         }
     }
 
