@@ -665,24 +665,20 @@ fn selected_audio_bootstrap_needs_demux(session: &PlayerSession) -> bool {
         && session.pipeline.pending_audio_packet_is_empty()
 }
 
-/// Проверяет, не должен ли demux остановиться до обработки уже найденного audio packet-а.
-fn pending_audio_queue_blocks_demux(
-    session: &PlayerSession,
-    tick_config: &PlayerTickConfig,
-) -> bool {
-    if !session.pipeline.has_selected_audio_track()
-        || session.pipeline.pending_audio_packet_is_empty()
-    {
+/// Проверяет audio read-ahead policy перед чтением следующего demux packet-а.
+fn audio_read_ahead_blocks_demux(session: &PlayerSession, tick_config: &PlayerTickConfig) -> bool {
+    if !session.pipeline.has_selected_audio_track() {
         return false;
     }
 
-    let Some(audio_buffer_level_ms) = session.audio_buffer_level_ms() else {
-        return true;
-    };
-
-    !audio_buffer_level_ms.is_finite()
-        || audio_buffer_level_ms
-            > sanitize_audio_high_water_mark(tick_config.audio_buffer_high_water_mark_ms)
+    match session.audio_buffer_level_ms() {
+        Some(audio_buffer_level_ms) => {
+            !audio_buffer_level_ms.is_finite()
+                || audio_buffer_level_ms
+                    > sanitize_audio_high_water_mark(tick_config.audio_buffer_high_water_mark_ms)
+        }
+        None => !session.pipeline.pending_audio_packet_is_empty(),
+    }
 }
 
 /// Проверяет bounded video backlog, который разрешён audio bootstrap/catch-up режимам.
@@ -738,9 +734,12 @@ fn read_demux_packets(
                     .unwrap_or(PipelinePauseReason::DemuxBackpressure);
             record_pipeline_pause(session, tick_result, pause_reason);
             trace!(
+                pause_reason = ?pause_reason,
+                pending_audio_packets = session.pipeline.pending_audio_packet_len(),
                 pending_video_packets = session.pipeline.pending_video_packet_len(),
                 queued_video_frames = session.pipeline.video_present_queue_len(),
-                "Demux backpressure: waiting for decoder/presentation"
+                audio_buffer_ms = ?session.audio_buffer_level_ms(),
+                "Demux backpressure: waiting for downstream capacity"
             );
             break;
         }
@@ -910,7 +909,7 @@ fn can_read_next_demux_packet_with_audio_priority(
     tick_config: &PlayerTickConfig,
     prioritize_audio_catchup: bool,
 ) -> bool {
-    if pending_audio_queue_blocks_demux(session, tick_config) {
+    if audio_read_ahead_blocks_demux(session, tick_config) {
         return false;
     }
 
@@ -935,7 +934,7 @@ fn demux_backpressure_reason(
     tick_config: &PlayerTickConfig,
     prioritize_audio_catchup: bool,
 ) -> Option<PipelinePauseReason> {
-    if pending_audio_queue_blocks_demux(session, tick_config) {
+    if audio_read_ahead_blocks_demux(session, tick_config) {
         return Some(PipelinePauseReason::DemuxBackpressure);
     }
 
@@ -3416,6 +3415,8 @@ mod tests {
             ..PlayerTickConfig::default()
         };
 
+        install_empty_demuxer(&mut session);
+        session.dispatch_command(PlayerCommand::Play).unwrap();
         session.pipeline.select_audio_track(audio_track_id);
         session
             .pipeline
@@ -3432,6 +3433,7 @@ mod tests {
             &tick_config,
             false
         ));
+        assert!(demux_work_available(&session, &tick_config));
 
         enqueue_pending_audio_packet(&mut session, audio_track_id);
 
@@ -3440,6 +3442,7 @@ mod tests {
             &tick_config,
             false
         ));
+        assert!(!demux_work_available(&session, &tick_config));
     }
 
     #[test]
@@ -3467,6 +3470,73 @@ mod tests {
             demux_backpressure_reason(&session, &tick_config, false),
             Some(PipelinePauseReason::DemuxBackpressure)
         );
+    }
+
+    #[test]
+    fn audio_only_high_water_blocks_demux_when_pending_audio_is_empty() {
+        let mut session = PlayerSession::new();
+        let audio_track_id = TrackId::new(2);
+        let tick_config = PlayerTickConfig {
+            audio_buffer_high_water_mark_ms: 100.0,
+            ..PlayerTickConfig::default()
+        };
+
+        install_empty_demuxer(&mut session);
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.pipeline.select_audio_track(audio_track_id);
+        install_fixed_audio_output(&mut session, 250.0);
+
+        assert!(session.pipeline.pending_audio_packet_is_empty());
+        assert!(!can_read_next_demux_packet_with_audio_priority(
+            &session,
+            &tick_config,
+            false
+        ));
+        assert!(!demux_work_available(&session, &tick_config));
+        assert_eq!(
+            demux_backpressure_reason(&session, &tick_config, false),
+            Some(PipelinePauseReason::DemuxBackpressure)
+        );
+    }
+
+    #[test]
+    fn low_water_audio_catchup_still_allows_bounded_demux() {
+        let mut session = PlayerSession::new();
+        let audio_track_id = TrackId::new(2);
+        let tick_config = PlayerTickConfig {
+            max_pending_video_packets: 1,
+            max_pending_video_packets_during_audio_catchup: 2,
+            audio_buffer_high_water_mark_ms: 300.0,
+            audio_demux_low_water_mark_ms: 100.0,
+            ..PlayerTickConfig::default()
+        };
+
+        install_empty_demuxer(&mut session);
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.pipeline.select_audio_track(audio_track_id);
+        install_fixed_audio_output(&mut session, 40.0);
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                TrackId::new(1),
+                Duration::ZERO,
+                session.pipeline.seek_generation(),
+                Bytes::new(),
+                true,
+            ));
+
+        assert!(audio_demux_catchup_needed(&session, &tick_config));
+        assert!(!can_read_next_demux_packet_with_audio_priority(
+            &session,
+            &tick_config,
+            false
+        ));
+        assert!(can_read_next_demux_packet_with_audio_priority(
+            &session,
+            &tick_config,
+            true
+        ));
+        assert!(demux_work_available(&session, &tick_config));
     }
 
     #[test]
