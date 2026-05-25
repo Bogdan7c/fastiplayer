@@ -54,7 +54,6 @@ pub struct SymphoniaDemuxer {
     matroska_video_tracks_by_track: HashMap<TrackId, MatroskaVideoTrack>,
     seekability: DemuxSeekability,
     options: DemuxerOptions,
-    consecutive_corrupted_packets: usize,
     pending_events: VecDeque<DemuxReadEvent>,
     end_of_stream_reached: bool,
 }
@@ -262,7 +261,6 @@ impl SymphoniaDemuxer {
             matroska_video_tracks_by_track: video_tracks_by_track,
             seekability,
             options,
-            consecutive_corrupted_packets: 0,
             pending_events: VecDeque::new(),
             end_of_stream_reached: false,
         })
@@ -366,46 +364,13 @@ impl SymphoniaDemuxer {
         self.format = Some(rebuilt_format);
         self.track_map = track_state.track_map;
         self.end_of_stream_reached = false;
-        self.consecutive_corrupted_packets = 0;
 
         Ok(())
     }
 
-    /// Сбрасывает счётчик corrupted packets после доказанного нормального продвижения.
+    /// Фиксирует нормальное продвижение reader-а после успешного packet read.
     fn record_successful_packet(&mut self) {
-        self.consecutive_corrupted_packets = 0;
         self.end_of_stream_reached = false;
-    }
-
-    /// Учитывает recoverable corrupted packet и возвращает fatal после configured лимита.
-    fn record_corrupted_packet(
-        &mut self,
-        track_id: Option<TrackId>,
-        reason: impl Into<String>,
-    ) -> Result<()> {
-        let reason = reason.into();
-        self.consecutive_corrupted_packets = self.consecutive_corrupted_packets.saturating_add(1);
-        let skipped = self.consecutive_corrupted_packets;
-        let limit = self.options.max_consecutive_corrupted_packets();
-
-        warn!(
-            ?track_id,
-            skipped,
-            limit,
-            reason = %reason,
-            "Corrupted packet skipped"
-        );
-
-        if skipped <= limit {
-            return Ok(());
-        }
-
-        Err(DemuxError::TooManyCorruptedPackets {
-            limit,
-            skipped,
-            last_error: reason,
-        }
-        .into())
     }
 
     /// Перечитывает Symphonia track list после `ResetRequired` и обновляет demux boundary state.
@@ -417,7 +382,6 @@ impl SymphoniaDemuxer {
         self.tracks = track_state.tracks;
         self.duration = track_state.duration;
         self.track_map = track_state.track_map;
-        self.consecutive_corrupted_packets = 0;
         self.end_of_stream_reached = false;
 
         info!(
@@ -467,10 +431,6 @@ impl SymphoniaDemuxer {
                     self.end_of_stream_reached = true;
                     return Ok(DemuxReadEvent::EndOfStream);
                 }
-                Err(SymphoniaError::DecodeError(reason)) => {
-                    self.record_corrupted_packet(None, reason)?;
-                    continue;
-                }
                 Err(SymphoniaError::IoError(error)) => {
                     return Err(DemuxError::Io(error).into());
                 }
@@ -479,6 +439,8 @@ impl SymphoniaDemuxer {
                     return Ok(DemuxReadEvent::TracksChanged(track_update));
                 }
                 Err(e) => {
+                    // По контракту Symphonia ошибки `FormatReader::next_packet()`,
+                    // кроме `ResetRequired`, описывают structural state reader-а.
                     return Err(DemuxError::Parse(e).into());
                 }
             }
@@ -616,7 +578,6 @@ impl Demuxer for SymphoniaDemuxer {
 
         let seek_result = seek_result?;
 
-        self.consecutive_corrupted_packets = 0;
         self.end_of_stream_reached = false;
 
         Ok(seek_result)
@@ -1493,6 +1454,7 @@ mod tests {
         seek_packet_scripts: VecDeque<VecDeque<std::result::Result<Packet, SymphoniaError>>>,
         seek_mode_log: Option<Arc<Mutex<Vec<SeekMode>>>>,
         seek_track_log: Option<Arc<Mutex<Vec<u32>>>>,
+        next_packet_call_count: Option<Arc<Mutex<usize>>>,
         seek_response_policy: FakeSeekResponsePolicy,
     }
 
@@ -1521,6 +1483,7 @@ mod tests {
                 seek_packet_scripts: VecDeque::new(),
                 seek_mode_log: None,
                 seek_track_log: None,
+                next_packet_call_count: None,
                 seek_response_policy: FakeSeekResponsePolicy::Zero,
             }
         }
@@ -1532,6 +1495,11 @@ mod tests {
 
         fn with_seek_track_log(mut self, seek_track_log: Arc<Mutex<Vec<u32>>>) -> Self {
             self.seek_track_log = Some(seek_track_log);
+            self
+        }
+
+        fn with_next_packet_call_count(mut self, call_count: Arc<Mutex<usize>>) -> Self {
+            self.next_packet_call_count = Some(call_count);
             self
         }
 
@@ -1622,6 +1590,13 @@ mod tests {
         }
 
         fn next_packet(&mut self) -> symphonia::core::errors::Result<Option<Packet>> {
+            if let Some(ref call_count) = self.next_packet_call_count {
+                let mut call_count = call_count
+                    .lock()
+                    .expect("next_packet call count mutex should not be poisoned");
+                *call_count += 1;
+            }
+
             match self.packets.pop_front() {
                 Some(Ok(packet)) => Ok(Some(packet)),
                 Some(Err(SymphoniaError::ResetRequired)) => {
@@ -3106,64 +3081,47 @@ mod tests {
     }
 
     #[test]
-    fn demuxer_stops_after_configured_corrupted_packet_limit() {
+    fn decode_error_from_format_reader_is_parse_error_without_retry() {
         let options = DemuxerOptions::from_max_consecutive_corrupted_packets(2)
             .expect("test limit ненулевой");
-        let mut demuxer = fake_demuxer_with_options(
+        let next_packet_call_count = Arc::new(Mutex::new(0));
+        let reader = FakeFormatReader::new(
+            vec![vp9_video_track(1)],
             vec![
-                Err(SymphoniaError::DecodeError("bad packet 1")),
-                Err(SymphoniaError::DecodeError("bad packet 2")),
-                Err(SymphoniaError::DecodeError("bad packet 3")),
+                Err(SymphoniaError::DecodeError("isomp4: no atom pending read")),
+                Ok(small_vp9_keyframe_packet(1, 10)),
             ],
+        )
+        .with_next_packet_call_count(next_packet_call_count.clone());
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "fake",
             HashMap::new(),
+            DemuxSeekability::Seekable,
             options,
-        );
+        )
+        .expect("fake demuxer должен открыться");
 
         let error = demuxer
             .next_packet()
-            .expect_err("третья corrupted ошибка должна стать fatal");
+            .expect_err("structural DecodeError из next_packet должен быть fatal");
         let demux_error = error
             .downcast_ref::<DemuxError>()
-            .expect("fatal должен быть typed DemuxError");
+            .expect("fatal должен остаться typed DemuxError");
 
-        assert!(matches!(
-            demux_error,
-            DemuxError::TooManyCorruptedPackets {
-                limit: 2,
-                skipped: 3,
-                ..
+        match demux_error {
+            DemuxError::Parse(SymphoniaError::DecodeError(reason)) => {
+                assert_eq!(*reason, "isomp4: no atom pending read");
             }
-        ));
-    }
+            unexpected_error => panic!("ожидали Parse(DecodeError), получили {unexpected_error:?}"),
+        }
 
-    #[test]
-    fn successful_packet_resets_corrupted_packet_counter() {
-        let options = DemuxerOptions::from_max_consecutive_corrupted_packets(2)
-            .expect("test limit ненулевой");
-        let mut demuxer = fake_demuxer_with_options(
-            vec![
-                Err(SymphoniaError::DecodeError("bad packet 1")),
-                Err(SymphoniaError::DecodeError("bad packet 2")),
-                Ok(small_vp9_keyframe_packet(1, 10)),
-                Err(SymphoniaError::DecodeError("bad packet 3")),
-                Err(SymphoniaError::DecodeError("bad packet 4")),
-                Ok(small_vp9_keyframe_packet(1, 20)),
-            ],
-            HashMap::new(),
-            options,
+        assert_eq!(
+            *next_packet_call_count
+                .lock()
+                .expect("next_packet call count mutex should not be poisoned"),
+            1
         );
-
-        let first_packet = demuxer
-            .next_packet()
-            .expect("первое чтение должно пережить две corrupted ошибки")
-            .expect("успешный packet должен быть возвращён");
-        let second_packet = demuxer
-            .next_packet()
-            .expect("счётчик должен сброситься после первого packet")
-            .expect("второй успешный packet должен быть возвращён");
-
-        assert_eq!(first_packet.pts, Duration::from_millis(10));
-        assert_eq!(second_packet.pts, Duration::from_millis(20));
     }
 
     #[test]
@@ -3188,9 +3146,7 @@ mod tests {
     }
 
     #[test]
-    fn uncertain_vp9_keyframe_probe_is_returned_without_corruption_accounting() {
-        let options = DemuxerOptions::from_max_consecutive_corrupted_packets(1)
-            .expect("test limit ненулевой");
+    fn uncertain_vp9_keyframe_probe_is_returned_without_demux_error() {
         let matroska_tracks = HashMap::from([(
             TrackId::new(1),
             MatroskaVideoTrack {
@@ -3205,7 +3161,7 @@ mod tests {
                 Ok(small_vp9_keyframe_packet(1, 20)),
             ],
             matroska_tracks,
-            options,
+            DemuxerOptions::default(),
         );
 
         let first_packet = demuxer
@@ -3221,7 +3177,6 @@ mod tests {
         assert_eq!(first_packet.keyframe, PacketKeyframe::Unknown);
         assert_eq!(second_packet.pts, Duration::from_millis(10));
         assert_eq!(second_packet.keyframe, PacketKeyframe::Unknown);
-        assert_eq!(demuxer.consecutive_corrupted_packets, 0);
     }
 
     #[test]

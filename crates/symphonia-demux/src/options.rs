@@ -1,7 +1,10 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-/// Дефолтный лимит последовательных corrupted packets до fatal ошибки.
+/// Дефолтный лимит recoverable corrupted packets до fatal ошибки.
+///
+/// Structural ошибки `FormatReader::next_packet()` в Symphonia не относятся к
+/// таким packets и не проходят через этот лимит.
 pub const DEFAULT_MAX_CONSECUTIVE_CORRUPTED_PACKETS: usize = 64;
 
 /// Дефолтное окно pre-roll для `DecodePointBefore` перед requested target-ом.
@@ -19,7 +22,10 @@ pub const DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT: usize = 1024;
 /// Runtime-настройки demuxer-а, независимые от TOML schema приложения.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DemuxerOptions {
-    /// Сколько corrupted packets можно пропустить подряд до остановки demux loop.
+    /// Сколько recoverable corrupted packets можно пропустить подряд.
+    ///
+    /// Текущий `FormatReader` path не применяет этот лимит к structural
+    /// ошибкам reader-а: они возвращаются как fatal demux/parse ошибки.
     max_consecutive_corrupted_packets: NonZeroUsize,
 
     /// Насколько раньше requested target-а начинать backend seek для decode-safe final video seek.
@@ -46,7 +52,7 @@ impl DemuxerOptions {
         }
     }
 
-    /// Возвращает `None` для нулевого лимита, потому что ноль превращает любой сбой в fatal.
+    /// Возвращает `None` для нулевого лимита, потому что ноль превращает recoverable сбой в fatal.
     #[must_use]
     pub fn from_max_consecutive_corrupted_packets(
         max_consecutive_corrupted_packets: usize,
@@ -54,7 +60,7 @@ impl DemuxerOptions {
         NonZeroUsize::new(max_consecutive_corrupted_packets).map(Self::new)
     }
 
-    /// Возвращает лимит последовательных corrupted packets до fatal ошибки.
+    /// Возвращает лимит последовательных recoverable corrupted packets до fatal ошибки.
     #[must_use]
     pub const fn max_consecutive_corrupted_packets(self) -> usize {
         self.max_consecutive_corrupted_packets.get()
