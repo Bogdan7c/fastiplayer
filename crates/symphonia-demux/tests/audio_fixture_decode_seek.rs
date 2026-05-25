@@ -61,6 +61,44 @@ const AUDIO_FIXTURE_CASES: &[AudioFixtureCase] = &[
     AudioFixtureCase::unsupported("wv", "music_sample.wv"),
 ];
 
+/// Верхняя граница для полного чтения коротких audio fixtures до реального EOF.
+const MAX_EVENTS_BEFORE_EOF: usize = 16_384;
+
+/// Верхняя граница для поиска первого выбранного audio packet после replay seek.
+const MAX_EVENTS_AFTER_REPLAY_SEEK: usize = 256;
+
+/// Один fixture для focused EOF/replay regression matrix.
+#[derive(Debug, Clone, Copy)]
+struct AudioEofReplayFixtureCase {
+    /// Человеческая метка формата, которую показываем в diagnostics теста.
+    label: &'static str,
+
+    /// Реальный файл в `test-assets/audio`.
+    file_name: &'static str,
+}
+
+impl AudioEofReplayFixtureCase {
+    /// Создаёт fixture case для сценария `EOF -> seek(0) -> first audio packet`.
+    const fn new(label: &'static str, file_name: &'static str) -> Self {
+        Self { label, file_name }
+    }
+}
+
+/// Матрица целенаправленно покрывает known-bad containers и positive controls.
+const EOF_REPLAY_FIXTURE_CASES: &[AudioEofReplayFixtureCase] = &[
+    AudioEofReplayFixtureCase::new("alac m4a", "music_sample_alac.m4a"),
+    AudioEofReplayFixtureCase::new("m4a", "music_sample.m4a"),
+    AudioEofReplayFixtureCase::new("mp4", "music_sample.mp4"),
+    AudioEofReplayFixtureCase::new("mkv", "music_sample.mkv"),
+    AudioEofReplayFixtureCase::new("webm", "music_sample.webm"),
+    AudioEofReplayFixtureCase::new("wav", "music_sample.wav"),
+    AudioEofReplayFixtureCase::new("flac", "music_sample.flac"),
+    AudioEofReplayFixtureCase::new("mp3", "music_sample.mp3"),
+    AudioEofReplayFixtureCase::new("ogg", "music_sample.ogg"),
+    AudioEofReplayFixtureCase::new("opus", "music_sample.opus"),
+    AudioEofReplayFixtureCase::new("maple leaf rag ogg", "source_maple_leaf_rag.ogg"),
+];
+
 impl AudioFixtureCase {
     const fn decode_seek(label: &'static str, file_name: &'static str) -> Self {
         Self {
@@ -89,6 +127,32 @@ fn audio_fixtures_decode_before_and_after_accurate_middle_seek() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn audio_fixtures_replay_after_real_eof_returns_first_audio_packet() -> Result<()> {
+    let mut fixture_failures = Vec::new();
+
+    for fixture_case in EOF_REPLAY_FIXTURE_CASES {
+        let fixture_result = assert_fixture_replays_after_eof(*fixture_case).with_context(|| {
+            format!(
+                "audio EOF/replay fixture '{}' ({}) failed",
+                fixture_case.label, fixture_case.file_name
+            )
+        });
+
+        if let Err(error) = fixture_result {
+            fixture_failures.push(format!("{error:#}"));
+        }
+    }
+
+    ensure!(
+        fixture_failures.is_empty(),
+        "EOF/replay regression failures:\n{}",
+        fixture_failures.join("\n\n")
+    );
+
+    Ok(())
+}
+
 fn run_audio_fixture_case(fixture_case: AudioFixtureCase) -> Result<()> {
     let fixture_path = audio_fixture_path(fixture_case.file_name);
     ensure!(
@@ -104,6 +168,58 @@ fn run_audio_fixture_case(fixture_case: AudioFixtureCase) -> Result<()> {
             assert_fixture_stays_marked_unsupported(fixture_case, &fixture_path)
         }
     }
+}
+
+fn assert_fixture_replays_after_eof(fixture_case: AudioEofReplayFixtureCase) -> Result<()> {
+    let fixture_path = audio_fixture_path(fixture_case.file_name);
+    ensure!(
+        fixture_path.exists(),
+        "{}: before EOF: fixture должен существовать: {}",
+        fixture_case.file_name,
+        fixture_path.display()
+    );
+
+    let mut demuxer = SymphoniaDemuxer::from_file(&fixture_path).with_context(|| {
+        format!(
+            "{}: before EOF: open through SymphoniaDemuxer::from_file",
+            fixture_case.file_name
+        )
+    })?;
+    let audio_track = first_audio_track(&demuxer).with_context(|| {
+        format!(
+            "{}: before EOF: find selected audio track",
+            fixture_case.file_name
+        )
+    })?;
+
+    drain_demuxer_to_real_eof(&mut demuxer, audio_track.id, fixture_case.file_name)?;
+
+    let seek_result = demuxer
+        .seek_with_request(DemuxSeekRequest::accurate(Duration::ZERO))
+        .with_context(|| {
+            format!(
+                "{}: seek after EOF: accurate seek to zero",
+                fixture_case.file_name
+            )
+        })?;
+    ensure!(
+        seek_result.requested_position.as_duration() == Duration::ZERO,
+        "{}: seek after EOF: requested_position должен остаться zero",
+        fixture_case.file_name
+    );
+
+    let replay_packet = first_selected_audio_packet_after_replay(
+        &mut demuxer,
+        audio_track.id,
+        fixture_case.file_name,
+    )?;
+    ensure!(
+        is_selected_audio_packet(&replay_packet, audio_track.id),
+        "{}: first packet after replay: packet должен принадлежать выбранному audio track",
+        fixture_case.file_name
+    );
+
+    Ok(())
 }
 
 fn assert_fixture_decodes_and_seeks(fixture_path: &Path) -> Result<()> {
@@ -166,6 +282,69 @@ fn assert_fixture_decodes_and_seeks(fixture_path: &Path) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn drain_demuxer_to_real_eof(
+    demuxer: &mut SymphoniaDemuxer,
+    selected_audio_track_id: TrackId,
+    file_name: &str,
+) -> Result<()> {
+    let mut selected_audio_packets_before_eof = 0usize;
+
+    for event_index in 0..MAX_EVENTS_BEFORE_EOF {
+        match demuxer
+            .next_event()
+            .with_context(|| format!("{file_name}: before EOF: read demux event #{event_index}"))?
+        {
+            DemuxReadEvent::Packet(packet)
+                if is_selected_audio_packet(&packet, selected_audio_track_id) =>
+            {
+                selected_audio_packets_before_eof += 1;
+            }
+            DemuxReadEvent::Packet(_) | DemuxReadEvent::TracksChanged(_) => {}
+            DemuxReadEvent::EndOfStream => {
+                ensure!(
+                    selected_audio_packets_before_eof > 0,
+                    "{file_name}: before EOF: EOF пришёл до первого packet выбранного audio track"
+                );
+                return Ok(());
+            }
+        }
+    }
+
+    bail!(
+        "{file_name}: before EOF: demuxer не дошёл до EOF за {} events",
+        MAX_EVENTS_BEFORE_EOF
+    )
+}
+
+fn first_selected_audio_packet_after_replay(
+    demuxer: &mut SymphoniaDemuxer,
+    selected_audio_track_id: TrackId,
+    file_name: &str,
+) -> Result<Packet> {
+    for event_index in 0..MAX_EVENTS_AFTER_REPLAY_SEEK {
+        match demuxer.next_event().with_context(|| {
+            format!("{file_name}: first packet after replay: read demux event #{event_index}")
+        })? {
+            DemuxReadEvent::Packet(packet)
+                if is_selected_audio_packet(&packet, selected_audio_track_id) =>
+            {
+                return Ok(packet);
+            }
+            DemuxReadEvent::Packet(_) | DemuxReadEvent::TracksChanged(_) => {}
+            DemuxReadEvent::EndOfStream => {
+                bail!(
+                    "{file_name}: first packet after replay: EOF пришёл до packet выбранного audio track"
+                );
+            }
+        }
+    }
+
+    bail!(
+        "{file_name}: first packet after replay: не найден packet выбранного audio track за {} events",
+        MAX_EVENTS_AFTER_REPLAY_SEEK
+    )
 }
 
 fn assert_fixture_stays_marked_unsupported(

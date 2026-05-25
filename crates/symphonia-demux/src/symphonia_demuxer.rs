@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::Duration;
 
@@ -27,7 +27,7 @@ use crate::seek_mapper::{
     symphonia_seek_mode, symphonia_seek_target,
 };
 use crate::symphonia_api::{
-    self, FormatReaderBox, MediaSourceStream, ReadOnlySource, SymphoniaError,
+    self, FormatReaderBox, Hint, MediaSourceStream, ReadOnlySource, SymphoniaError,
 };
 use crate::track_mapper::{TrackEntry, map_tracks, tracks_may_need_matroska_video_metadata};
 
@@ -45,7 +45,9 @@ const DECODE_POINT_BEFORE_RETRY_MARGIN: Duration = Duration::from_millis(1);
 
 /// Demuxer на базе Symphonia для media containers, которые поддерживает workspace dependency.
 pub struct SymphoniaDemuxer {
-    format: FormatReaderBox<'static>,
+    format: Option<FormatReaderBox<'static>>,
+    probe_hint: Hint,
+    source_label: String,
     tracks: Vec<TrackInfo>,
     duration: Option<Duration>,
     track_map: HashMap<u32, TrackEntry>,
@@ -54,6 +56,16 @@ pub struct SymphoniaDemuxer {
     options: DemuxerOptions,
     consecutive_corrupted_packets: usize,
     pending_events: VecDeque<DemuxReadEvent>,
+    end_of_stream_reached: bool,
+}
+
+/// Снимок track state-а, который rebuild может проверить перед заменой reader-а.
+struct SymphoniaTrackState {
+    tracks: Vec<TrackInfo>,
+    duration: Option<Duration>,
+    track_map: HashMap<u32, TrackEntry>,
+    track_duration: Option<Duration>,
+    media_info_duration: Option<Duration>,
 }
 
 impl SymphoniaDemuxer {
@@ -75,8 +87,9 @@ impl SymphoniaDemuxer {
         let format = symphonia_api::probe_format_reader(&hint, media_source_stream)?;
         let video_tracks_by_track = extract_video_tracks_from_file_if_needed(path, format.tracks());
 
-        Self::from_format_reader(
+        Self::from_format_reader_with_probe_context(
             format,
+            hint,
             &path.display().to_string(),
             video_tracks_by_track,
             DemuxSeekability::Seekable,
@@ -128,8 +141,9 @@ impl SymphoniaDemuxer {
         let hint = symphonia_api::hint_from_extension(extension_hint);
         let format = symphonia_api::probe_format_reader(&hint, media_source_stream)?;
 
-        Self::from_format_reader(
+        Self::from_format_reader_with_probe_context(
             format,
+            hint,
             label,
             video_tracks_by_track,
             DemuxSeekability::NotSeekable {
@@ -185,8 +199,9 @@ impl SymphoniaDemuxer {
         let hint = symphonia_api::hint_from_extension(extension_hint);
         let format = symphonia_api::probe_format_reader(&hint, media_source_stream)?;
 
-        Self::from_format_reader(
+        Self::from_format_reader_with_probe_context(
             format,
+            hint,
             label,
             video_tracks_by_track,
             demux_seekability,
@@ -195,25 +210,42 @@ impl SymphoniaDemuxer {
     }
 
     /// Собирает metadata и track map из готового Symphonia format reader.
+    #[cfg(test)]
     fn from_format_reader(
+        format: FormatReaderBox<'static>,
+        label: &str,
+        video_tracks_by_track: HashMap<TrackId, MatroskaVideoTrack>,
+        seekability: DemuxSeekability,
+        options: DemuxerOptions,
+    ) -> Result<Self, DemuxError> {
+        Self::from_format_reader_with_probe_context(
+            format,
+            Hint::default(),
+            label,
+            video_tracks_by_track,
+            seekability,
+            options,
+        )
+    }
+
+    /// Собирает metadata и track map, сохраняя context для будущего controlled reprobe.
+    fn from_format_reader_with_probe_context(
         mut format: FormatReaderBox<'static>,
+        probe_hint: Hint,
         label: &str,
         video_tracks_by_track: HashMap<TrackId, MatroskaVideoTrack>,
         seekability: DemuxSeekability,
         options: DemuxerOptions,
     ) -> Result<Self, DemuxError> {
         let symphonia_metadata = summarize_symphonia_format_metadata(&mut format);
-        let mut video_tracks_for_mapping = video_tracks_by_track.clone();
-        let track_mapping = map_tracks(format.tracks(), &mut video_tracks_for_mapping);
-        let media_info_duration = media_info_duration(format.media_info());
-        let duration = track_mapping.duration.or(media_info_duration);
+        let track_state = track_state_from_format_reader(&format, &video_tracks_by_track);
 
         info!(
             source = %label,
-            tracks = track_mapping.tracks.len(),
-            duration = ?duration,
-            track_duration = ?track_mapping.duration,
-            media_info_duration = ?media_info_duration,
+            tracks = track_state.tracks.len(),
+            duration = ?track_state.duration,
+            track_duration = ?track_state.track_duration,
+            media_info_duration = ?track_state.media_info_duration,
             attachments = symphonia_metadata.attachments,
             chapters = symphonia_metadata.has_chapters,
             metadata_revision = symphonia_metadata.has_metadata_revision,
@@ -221,15 +253,18 @@ impl SymphoniaDemuxer {
         );
 
         Ok(Self {
-            format,
-            tracks: track_mapping.tracks,
-            duration,
-            track_map: track_mapping.track_map,
+            format: Some(format),
+            probe_hint,
+            source_label: label.to_owned(),
+            tracks: track_state.tracks,
+            duration: track_state.duration,
+            track_map: track_state.track_map,
             matroska_video_tracks_by_track: video_tracks_by_track,
             seekability,
             options,
             consecutive_corrupted_packets: 0,
             pending_events: VecDeque::new(),
+            end_of_stream_reached: false,
         })
     }
 
@@ -244,9 +279,102 @@ impl SymphoniaDemuxer {
         Self::from_format_reader(format, label, HashMap::new(), seekability, options)
     }
 
+    /// Возвращает активный Symphonia reader; `None` допустим только внутри consuming rebuild-а.
+    fn format_mut(&mut self, operation: &'static str) -> Result<&mut FormatReaderBox<'static>> {
+        self.format
+            .as_mut()
+            .ok_or(DemuxError::ReaderUnavailable { operation }.into())
+    }
+
+    /// Забирает reader для `FormatReader::into_inner()`, не раскрывая storage наружу.
+    fn take_format(
+        &mut self,
+        operation: &'static str,
+    ) -> Result<FormatReaderBox<'static>, DemuxError> {
+        self.format
+            .take()
+            .ok_or(DemuxError::ReaderUnavailable { operation })
+    }
+
+    /// Источник можно re-probe только если source/container stack честно объявлен seekable.
+    fn can_reprobe_current_source(&self) -> bool {
+        matches!(self.seekability, DemuxSeekability::Seekable)
+    }
+
+    /// Забирает только lifecycle pending events, очищая packet prebuffer после нового seek-а.
+    fn take_pending_lifecycle_events(&mut self) -> VecDeque<DemuxReadEvent> {
+        self.pending_events
+            .drain(..)
+            .filter(|event| matches!(event, DemuxReadEvent::TracksChanged(_)))
+            .collect()
+    }
+
+    /// Возвращает сохранённые lifecycle events перед уже существующим post-seek prebuffer-ом.
+    fn prepend_pending_events(&mut self, retained_events: VecDeque<DemuxReadEvent>) {
+        if retained_events.is_empty() {
+            return;
+        }
+
+        let current_pending_events = std::mem::take(&mut self.pending_events);
+        self.pending_events =
+            prepend_retained_lifecycle_events(retained_events, current_pending_events);
+    }
+
+    /// Полностью пересоздаёт Symphonia reader из прежнего `MediaSourceStream` после EOF/reset сбоя.
+    fn rebuild_format_reader_from_source_start(&mut self) -> Result<(), DemuxError> {
+        if !self.can_reprobe_current_source() {
+            return Err(DemuxError::SeekUnavailable(
+                "source не поддерживает seek, поэтому demuxer не может выполнить reprobe"
+                    .to_owned(),
+            ));
+        }
+
+        let previous_tracks = self.tracks.clone();
+        let previous_duration = self.duration;
+        let previous_snapshot = track_layout_snapshot(&previous_tracks, previous_duration);
+        let mut media_source_stream = self.take_format("reprobe")?.into_inner();
+
+        media_source_stream.seek(SeekFrom::Start(0))?;
+
+        let mut rebuilt_format =
+            symphonia_api::probe_format_reader(&self.probe_hint, media_source_stream)?;
+        let symphonia_metadata = summarize_symphonia_format_metadata(&mut rebuilt_format);
+        let track_state =
+            track_state_from_format_reader(&rebuilt_format, &self.matroska_video_tracks_by_track);
+        let rebuilt_snapshot = track_layout_snapshot(&track_state.tracks, track_state.duration);
+
+        if track_state.tracks != previous_tracks || track_state.duration != previous_duration {
+            return Err(DemuxError::ReprobeChangedTrackLayout {
+                label: self.source_label.clone(),
+                before_snapshot: previous_snapshot,
+                after_snapshot: rebuilt_snapshot,
+            });
+        }
+
+        info!(
+            source = %self.source_label,
+            tracks = track_state.tracks.len(),
+            duration = ?track_state.duration,
+            track_duration = ?track_state.track_duration,
+            media_info_duration = ?track_state.media_info_duration,
+            attachments = symphonia_metadata.attachments,
+            chapters = symphonia_metadata.has_chapters,
+            metadata_revision = symphonia_metadata.has_metadata_revision,
+            "Symphonia FormatReader пересоздан после EOF/container-state сбоя"
+        );
+
+        self.format = Some(rebuilt_format);
+        self.track_map = track_state.track_map;
+        self.end_of_stream_reached = false;
+        self.consecutive_corrupted_packets = 0;
+
+        Ok(())
+    }
+
     /// Сбрасывает счётчик corrupted packets после доказанного нормального продвижения.
     fn record_successful_packet(&mut self) {
         self.consecutive_corrupted_packets = 0;
+        self.end_of_stream_reached = false;
     }
 
     /// Учитывает recoverable corrupted packet и возвращает fatal после configured лимита.
@@ -281,31 +409,37 @@ impl SymphoniaDemuxer {
     }
 
     /// Перечитывает Symphonia track list после `ResetRequired` и обновляет demux boundary state.
-    fn refresh_track_list_after_reset(&mut self) -> DemuxTrackListUpdate {
-        let mut video_tracks_for_mapping = self.matroska_video_tracks_by_track.clone();
-        let track_mapping = map_tracks(self.format.tracks(), &mut video_tracks_for_mapping);
-        let media_info_duration = media_info_duration(self.format.media_info());
-        let duration = track_mapping.duration.or(media_info_duration);
-        self.tracks = track_mapping.tracks;
-        self.duration = duration;
-        self.track_map = track_mapping.track_map;
+    fn refresh_track_list_after_reset(&mut self) -> Result<DemuxTrackListUpdate> {
+        let matroska_video_tracks_by_track = self.matroska_video_tracks_by_track.clone();
+        let format = self.format_mut("refresh_track_list_after_reset")?;
+        let track_state = track_state_from_format_reader(format, &matroska_video_tracks_by_track);
+
+        self.tracks = track_state.tracks;
+        self.duration = track_state.duration;
+        self.track_map = track_state.track_map;
         self.consecutive_corrupted_packets = 0;
+        self.end_of_stream_reached = false;
 
         info!(
             tracks = self.tracks.len(),
             duration = ?self.duration,
-            track_duration = ?track_mapping.duration,
-            media_info_duration = ?media_info_duration,
+            track_duration = ?track_state.track_duration,
+            media_info_duration = ?track_state.media_info_duration,
             "Symphonia ResetRequired обработан как обновление track list"
         );
 
-        DemuxTrackListUpdate::new(self.tracks.clone(), self.duration)
+        Ok(DemuxTrackListUpdate::new(
+            self.tracks.clone(),
+            self.duration,
+        ))
     }
 
     /// Читает следующий event напрямую из Symphonia, не трогая prebuffered seek-prefix.
     fn read_next_event_from_format(&mut self) -> Result<DemuxReadEvent> {
         loop {
-            match self.format.next_packet() {
+            let next_packet_result = self.format_mut("next_packet")?.next_packet();
+
+            match next_packet_result {
                 Ok(Some(packet)) => match convert_packet(packet, &self.track_map) {
                     Ok(our_packet) => {
                         self.record_successful_packet();
@@ -324,11 +458,13 @@ impl SymphoniaDemuxer {
                     }
                 },
                 Ok(None) => {
+                    self.end_of_stream_reached = true;
                     return Ok(DemuxReadEvent::EndOfStream);
                 }
                 Err(SymphoniaError::IoError(ref e))
                     if e.kind() == std::io::ErrorKind::UnexpectedEof =>
                 {
+                    self.end_of_stream_reached = true;
                     return Ok(DemuxReadEvent::EndOfStream);
                 }
                 Err(SymphoniaError::DecodeError(reason)) => {
@@ -339,7 +475,7 @@ impl SymphoniaDemuxer {
                     return Err(DemuxError::Io(error).into());
                 }
                 Err(SymphoniaError::ResetRequired) => {
-                    let track_update = self.refresh_track_list_after_reset();
+                    let track_update = self.refresh_track_list_after_reset()?;
                     return Ok(DemuxReadEvent::TracksChanged(track_update));
                 }
                 Err(e) => {
@@ -393,6 +529,36 @@ fn summarize_symphonia_format_metadata(
     }
 }
 
+/// Строит neutral track state из текущего Symphonia reader-а без изменения public boundary.
+fn track_state_from_format_reader(
+    format: &FormatReaderBox<'static>,
+    video_tracks_by_track: &HashMap<TrackId, MatroskaVideoTrack>,
+) -> SymphoniaTrackState {
+    let mut video_tracks_for_mapping = video_tracks_by_track.clone();
+    let track_mapping = map_tracks(format.tracks(), &mut video_tracks_for_mapping);
+    let media_info_duration = media_info_duration(format.media_info());
+    let duration = track_mapping.duration.or(media_info_duration);
+
+    SymphoniaTrackState {
+        tracks: track_mapping.tracks,
+        duration,
+        track_map: track_mapping.track_map,
+        track_duration: track_mapping.duration,
+        media_info_duration,
+    }
+}
+
+/// Формирует компактный diagnostics snapshot для случая, когда reprobe меняет public identity.
+fn track_layout_snapshot(tracks: &[TrackInfo], duration: Option<Duration>) -> String {
+    let track_ids = tracks
+        .iter()
+        .map(|track| format!("{:?}:{:?}:{}", track.id, track.kind, track.codec_id))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    format!("duration={duration:?};tracks=[{track_ids}]")
+}
+
 impl Demuxer for SymphoniaDemuxer {
     fn tracks(&self) -> &[TrackInfo] {
         &self.tracks
@@ -429,17 +595,29 @@ impl Demuxer for SymphoniaDemuxer {
     }
 
     fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
-        self.pending_events.clear();
+        let retained_lifecycle_events = self.take_pending_lifecycle_events();
+        let was_at_end_of_stream = self.end_of_stream_reached;
 
         let seek_result = match request.mode {
-            DemuxSeekMode::DecodePointBefore => self.seek_decode_point_before(request)?,
+            DemuxSeekMode::DecodePointBefore => {
+                self.seek_decode_point_before(request, was_at_end_of_stream)
+            }
             DemuxSeekMode::Accurate | DemuxSeekMode::Preview => {
                 let seek_track_id = preferred_seek_track_id(&self.tracks);
-                self.seek_symphonia_once(request, seek_track_id, request.timestamp)?
+                self.seek_symphonia_once(
+                    request,
+                    seek_track_id,
+                    request.timestamp,
+                    was_at_end_of_stream,
+                )
             }
         };
+        self.prepend_pending_events(retained_lifecycle_events);
+
+        let seek_result = seek_result?;
 
         self.consecutive_corrupted_packets = 0;
+        self.end_of_stream_reached = false;
 
         Ok(seek_result)
     }
@@ -452,17 +630,44 @@ impl SymphoniaDemuxer {
         request: DemuxSeekRequest,
         seek_track_id: Option<TrackId>,
         backend_timestamp: Duration,
+        reprobe_before_seek: bool,
     ) -> Result<DemuxSeekResult> {
         let backend_request = DemuxSeekRequest {
             timestamp: backend_timestamp,
             mode: request.mode,
         };
         let seek_mode = symphonia_seek_mode(request.mode);
+        let mut rebuilt_before_seek = false;
+        if reprobe_before_seek && self.can_reprobe_current_source() {
+            self.rebuild_format_reader_from_source_start()?;
+            rebuilt_before_seek = true;
+        }
+
         let seek_target = symphonia_seek_target(backend_request, seek_track_id);
-        let seeked_to = self
-            .format
+        let seeked_to = match self
+            .format_mut("seek")?
             .seek(seek_mode, seek_target)
-            .map_err(symphonia_seek_error_to_demux_error)?;
+            .map_err(symphonia_seek_error_to_demux_error)
+        {
+            Ok(seeked_to) => seeked_to,
+            Err(error)
+                if reprobe_before_seek
+                    && self.can_reprobe_current_source()
+                    && !rebuilt_before_seek =>
+            {
+                warn!(
+                    source = %self.source_label,
+                    error = %error,
+                    "Symphonia seek failed; rebuilding FormatReader and retrying once"
+                );
+                self.rebuild_format_reader_from_source_start()?;
+                let retry_seek_target = symphonia_seek_target(backend_request, seek_track_id);
+                self.format_mut("seek_after_reprobe")?
+                    .seek(seek_mode, retry_seek_target)
+                    .map_err(symphonia_seek_error_to_demux_error)?
+            }
+            Err(error) => return Err(error),
+        };
 
         Ok(seeked_to_timeline_result(
             request.timestamp,
@@ -472,7 +677,11 @@ impl SymphoniaDemuxer {
     }
 
     /// Восстанавливает `DecodePointBefore`: успешный result не должен быть после requested target.
-    fn seek_decode_point_before(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
+    fn seek_decode_point_before(
+        &mut self,
+        request: DemuxSeekRequest,
+        reprobe_before_first_seek: bool,
+    ) -> Result<DemuxSeekResult> {
         let requested_timestamp = request.timestamp;
         let mut backend_timestamp = decode_point_before_initial_timestamp(
             requested_timestamp,
@@ -482,8 +691,12 @@ impl SymphoniaDemuxer {
 
         for retry_index in 0..=DECODE_POINT_BEFORE_MAX_RETRIES {
             let seek_track_id = preferred_seek_track_id(&self.tracks);
-            let seek_result =
-                self.seek_symphonia_once(request, seek_track_id, backend_timestamp)?;
+            let seek_result = self.seek_symphonia_once(
+                request,
+                seek_track_id,
+                backend_timestamp,
+                retry_index == 0 && reprobe_before_first_seek,
+            )?;
 
             if let Some(video_track_id) = selected_video_track_id(&self.tracks) {
                 let verification =
@@ -1231,14 +1444,15 @@ fn source_error_to_demux_error(error: SourceError) -> DemuxError {
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, VecDeque};
+    use std::fs::File;
     use std::io;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use media_core::{
-        DemuxReadEvent, DemuxSeekRequest, DemuxSeekability, Demuxer, PacketKeyframe, TrackId,
-        TrackKind,
+        DemuxReadEvent, DemuxSeekRequest, DemuxSeekability, DemuxTrackListUpdate, Demuxer,
+        MediaDemuxError, PacketKeyframe, TimelineNotSeekableReason, TrackId, TrackKind,
     };
     use symphonia::core::audio::{Channels, Position};
     use symphonia::core::codecs::CodecParameters;
@@ -1265,6 +1479,9 @@ mod tests {
     use crate::error::DemuxError;
     use crate::matroska_metadata::MatroskaVideoTrack;
     use crate::options::DemuxerOptions;
+
+    const MAX_UNIT_EVENTS_BEFORE_EOF: usize = 16_384;
+    const MAX_UNIT_EVENTS_AFTER_SEEK: usize = 512;
 
     struct FakeFormatReader {
         format_info: FormatInfo,
@@ -1451,6 +1668,44 @@ mod tests {
 
     fn test_webm_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/test.webm")
+    }
+
+    fn audio_fixture_path(file_name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-assets/audio")
+            .join(file_name)
+    }
+
+    fn drain_demuxer_to_eof_for_unit_test(demuxer: &mut SymphoniaDemuxer) {
+        for event_index in 0..MAX_UNIT_EVENTS_BEFORE_EOF {
+            match demuxer
+                .next_event()
+                .unwrap_or_else(|error| panic!("EOF drain event #{event_index} failed: {error}"))
+            {
+                DemuxReadEvent::EndOfStream => return,
+                DemuxReadEvent::Packet(_) | DemuxReadEvent::TracksChanged(_) => {}
+            }
+        }
+
+        panic!("demuxer did not reach EOF within {MAX_UNIT_EVENTS_BEFORE_EOF} events in unit test");
+    }
+
+    fn assert_first_packet_after_seek_for_unit_test(demuxer: &mut SymphoniaDemuxer) {
+        for event_index in 0..MAX_UNIT_EVENTS_AFTER_SEEK {
+            match demuxer.next_event().unwrap_or_else(|error| {
+                panic!("post-seek event #{event_index} failed in unit test: {error}")
+            }) {
+                DemuxReadEvent::Packet(_) => return,
+                DemuxReadEvent::TracksChanged(_) => {}
+                DemuxReadEvent::EndOfStream => {
+                    panic!("post-seek EOF arrived before any packet in unit test")
+                }
+            }
+        }
+
+        panic!(
+            "demuxer did not return a packet within {MAX_UNIT_EVENTS_AFTER_SEEK} post-seek events"
+        );
     }
 
     fn vp9_video_track(track_id: u32) -> Track {
@@ -2698,6 +2953,101 @@ mod tests {
             .expect("normal EOF не должен быть ошибкой");
 
         assert!(packet.is_none());
+    }
+
+    #[test]
+    fn seek_after_eof_rebuilds_seekable_reader_and_preserves_track_layout() {
+        let mut demuxer = SymphoniaDemuxer::from_file(&audio_fixture_path("music_sample.m4a"))
+            .expect("seekable m4a fixture должен открыться");
+        let tracks_before_eof = demuxer.tracks().to_vec();
+        let duration_before_eof = demuxer.duration();
+
+        drain_demuxer_to_eof_for_unit_test(&mut demuxer);
+
+        assert!(demuxer.end_of_stream_reached);
+        assert!(demuxer.format.is_some());
+
+        demuxer
+            .seek_with_request(DemuxSeekRequest::accurate(Duration::ZERO))
+            .expect("seek after EOF должен rebuild-ить seekable reader");
+
+        assert!(!demuxer.end_of_stream_reached);
+        assert_eq!(demuxer.tracks(), tracks_before_eof.as_slice());
+        assert_eq!(demuxer.duration(), duration_before_eof);
+        assert!(demuxer.format.is_some());
+
+        assert_first_packet_after_seek_for_unit_test(&mut demuxer);
+    }
+
+    #[test]
+    fn unseekable_stream_seek_after_eof_does_not_rebuild_or_become_seekable() {
+        let fixture_file = File::open(audio_fixture_path("music_sample.mp3"))
+            .expect("mp3 fixture должен открыться как reader");
+        let mut demuxer = SymphoniaDemuxer::from_stream(fixture_file, "mp3", "unit unseekable mp3")
+            .expect("unseekable stream fixture должен открыться");
+        let tracks_before_eof = demuxer.tracks().to_vec();
+        let duration_before_eof = demuxer.duration();
+
+        assert!(matches!(
+            demuxer.seekability(),
+            DemuxSeekability::NotSeekable {
+                reason: TimelineNotSeekableReason::SourceNotSeekable
+            }
+        ));
+
+        drain_demuxer_to_eof_for_unit_test(&mut demuxer);
+
+        let seek_error = demuxer
+            .seek_with_request(DemuxSeekRequest::accurate(Duration::ZERO))
+            .expect_err("unseekable stream не должен превращаться в seekable после EOF");
+
+        assert!(
+            seek_error.downcast_ref::<MediaDemuxError>().is_some()
+                || seek_error.downcast_ref::<DemuxError>().is_some(),
+            "seek failure должен остаться typed demux error: {seek_error}"
+        );
+        assert!(demuxer.end_of_stream_reached);
+        assert!(demuxer.format.is_some());
+        assert_eq!(demuxer.tracks(), tracks_before_eof.as_slice());
+        assert_eq!(demuxer.duration(), duration_before_eof);
+        assert!(matches!(
+            demuxer.seekability(),
+            DemuxSeekability::NotSeekable {
+                reason: TimelineNotSeekableReason::SourceNotSeekable
+            }
+        ));
+    }
+
+    #[test]
+    fn seek_reprobe_preserves_pending_tracks_changed_event() {
+        let mut demuxer = SymphoniaDemuxer::from_file(&audio_fixture_path("music_sample.m4a"))
+            .expect("seekable m4a fixture должен открыться");
+
+        drain_demuxer_to_eof_for_unit_test(&mut demuxer);
+
+        let retained_update =
+            DemuxTrackListUpdate::new(demuxer.tracks().to_vec(), demuxer.duration());
+        demuxer
+            .pending_events
+            .push_back(DemuxReadEvent::TracksChanged(retained_update.clone()));
+
+        demuxer
+            .seek_with_request(DemuxSeekRequest::accurate(Duration::ZERO))
+            .expect("seek after EOF должен сохранить pending lifecycle event");
+
+        match demuxer
+            .next_event()
+            .expect("retained TracksChanged должен читаться после seek")
+        {
+            DemuxReadEvent::TracksChanged(actual_update) => {
+                assert_eq!(actual_update, retained_update);
+            }
+            unexpected_event => {
+                panic!("ожидали retained TracksChanged, получили {unexpected_event:?}")
+            }
+        }
+
+        assert_first_packet_after_seek_for_unit_test(&mut demuxer);
     }
 
     #[test]

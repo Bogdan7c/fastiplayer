@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use media_core::{TimeBase as MediaTimeBase, TrackTimestampUnits};
 pub(crate) use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::probe::Hint;
+pub(crate) use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader};
 pub(crate) use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
 use symphonia::core::meta::MetadataOptions;

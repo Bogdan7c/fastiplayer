@@ -24,6 +24,26 @@ pub enum DemuxError {
     #[error("Ошибка парсинга: {0}")]
     Parse(#[from] symphonia::core::errors::Error),
 
+    #[error("Внутренний Symphonia reader недоступен во время операции {operation}")]
+    ReaderUnavailable {
+        /// Операция, для которой demuxer ожидал активный reader.
+        operation: &'static str,
+    },
+
+    #[error(
+        "Reprobe изменил public track layout для {label}: было {before_snapshot}, стало {after_snapshot}"
+    )]
+    ReprobeChangedTrackLayout {
+        /// Человекочитаемый label source-а для diagnostics.
+        label: String,
+
+        /// Снимок public tracks/duration до rebuild-а.
+        before_snapshot: String,
+
+        /// Снимок public tracks/duration после rebuild-а.
+        after_snapshot: String,
+    },
+
     #[error(
         "Слишком много corrupted packets подряд: пропущено {skipped}, лимит {limit}; последняя ошибка: {last_error}"
     )]
