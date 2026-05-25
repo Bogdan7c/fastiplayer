@@ -560,7 +560,7 @@ impl PlayerSession {
         {
             self.mark_fatal_error(error);
         }
-        self.finish_eof_drain_if_ready(tick_context.now);
+        self.finish_eof_drain_if_ready(tick_context.now, tick_context.config.audio_stall_timeout);
 
         tick_result
     }
@@ -602,7 +602,12 @@ impl PlayerSession {
             return;
         }
 
-        self.update_current_position(self.presentation_clock_position_at(now));
+        let playback_position = self.presentation_clock_position_at(now);
+        if self.pipeline.has_audio_clock() {
+            self.pipeline
+                .note_audio_clock_sample(self.audio_clock_now(), now);
+        }
+        self.update_current_position(playback_position);
     }
 }
 
@@ -762,6 +767,21 @@ fn read_demux_packets(
                 packets_read += 1;
             }
             Ok(DemuxReadEvent::EndOfStream) => {
+                debug!(
+                    current_position_ms =
+                        session.snapshot().current_position.as_secs_f64() * 1000.0,
+                    duration_ms = ?session
+                        .snapshot()
+                        .duration
+                        .map(|duration| duration.as_secs_f64() * 1000.0),
+                    pending_audio_packets = session.pipeline.pending_audio_packet_len(),
+                    pending_video_packets = session.pipeline.pending_video_packet_len(),
+                    queued_video_frames = session.pipeline.video_present_queue_len(),
+                    video_decode_in_flight = session.pipeline.video_decode_in_flight_packets(),
+                    audio_buffer_ms = ?session.audio_buffer_level_ms(),
+                    audio_clock_now_ms = session.audio_clock_now().as_secs_f64() * 1000.0,
+                    "Demux reported EOF; entering drain"
+                );
                 session.enter_eof_drain();
                 break;
             }
@@ -2410,7 +2430,8 @@ fn process_pending_video_packets(
         return;
     }
 
-    if session.is_demuxing_active() {
+    // EOF-drain больше не читает demuxer, но обязан дожать уже накопленный video tail.
+    if session.playback_state().is_playback_active() {
         send_pending_video_packets_to_decoder(
             session,
             tick_config,

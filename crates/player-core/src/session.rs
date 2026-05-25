@@ -78,6 +78,46 @@ enum AudioAutoplayReadiness {
     Ready,
 }
 
+/// Точная причина, по которой EOF-drain ещё не может перейти в `Ended`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum EofDrainBlocker {
+    /// Активный seek commit владеет текущим lifecycle, EOF не должен его перебивать.
+    SeekCommit,
+
+    /// Seek near EOF ждёт fallback video frame, которым владеет seek pipeline.
+    SeekEofFallbackVideo,
+
+    /// В pipeline ещё лежит preroll fallback frame, который должен быть обработан владельцем seek.
+    SeekPrerollFallbackFrame,
+
+    /// Уже считанные video packets ещё не отправлены или не отброшены decoder boundary.
+    PendingVideoPackets { queued_packets: usize },
+
+    /// Готовые video frames ещё ждут presentation/release.
+    VideoPresentQueue { queued_frames: usize },
+
+    /// Decoder thread ещё не подтвердил завершение ранее отправленных packets.
+    VideoDecodeInFlight { in_flight_packets: usize },
+
+    /// Уже считанные audio packets ещё не декодированы и не записаны в output.
+    PendingAudioPackets { queued_packets: usize },
+
+    /// Audio output ещё сообщает buffered tail.
+    DrainingAudioOutput {
+        /// Текущий уровень output buffer-а в миллисекундах.
+        buffer_level_ms: f64,
+
+        /// Был ли уже успешно запрошен запуск output stream-а.
+        playback_requested: bool,
+
+        /// Сколько времени audio clock не показывал нового progress-а.
+        stalled_for: Duration,
+
+        /// Порог, после которого stale output buffer считается зависшим.
+        stall_timeout: Duration,
+    },
+}
+
 impl AudioAutoplayReadiness {
     /// Возвращает `true` только для состояний, которые не блокируют autoplay.
     const fn is_ready(self) -> bool {
@@ -466,6 +506,18 @@ impl PlayerSession {
 
     /// Применяет команду к state machine.
     pub fn dispatch_command(&mut self, command: PlayerCommand) -> PlayerResult<()> {
+        debug!(
+            command = ?command,
+            playback_state = ?self.playback_state(),
+            draining_after_eof = self.draining_after_eof,
+            current_position_ms = self.snapshot.current_position.as_secs_f64() * 1000.0,
+            duration_ms = ?self
+                .snapshot
+                .duration
+                .map(|duration| duration.as_secs_f64() * 1000.0),
+            "Player command received"
+        );
+
         match command {
             PlayerCommand::OpenMedia(request) => self.open_media(request),
             PlayerCommand::Play => self.play(),
@@ -518,7 +570,7 @@ impl PlayerSession {
     /// Возвращает media clock position на monotonic момент `now`.
     ///
     /// Audio clock остаётся главным источником времени. Если audio clock отсутствует,
-    /// Playing-state использует внутренний monotonic anchor, а не частоту worker tick-а.
+    /// Playing/EOF-drain без audio используют внутренний monotonic anchor, а не частоту worker tick-а.
     #[must_use]
     pub(crate) fn presentation_clock_position_at(&self, now: Instant) -> Duration {
         if self.pipeline.has_audio_clock() {
@@ -529,13 +581,19 @@ impl PlayerSession {
             return seek_target_position;
         }
 
-        if self.snapshot.playback_state == PlaybackState::Playing
+        if self.monotonic_media_clock_drives_position()
             && let Some(position) = self.pipeline.monotonic_media_position(now)
         {
             return position;
         }
 
         self.snapshot.current_position
+    }
+
+    /// Проверяет, может ли no-audio monotonic clock сейчас двигать user-visible position.
+    fn monotonic_media_clock_drives_position(&self) -> bool {
+        self.snapshot.playback_state == PlaybackState::Playing
+            || (self.draining_after_eof && !self.has_active_seek_commit())
     }
 
     /// Синхронизирует snapshot position с monotonic fallback clock без изменения playback state.
@@ -788,6 +846,20 @@ impl PlayerSession {
     /// Переводит session в EOF-drain, сохраняя demuxer открытым для replay/seek.
     pub fn enter_eof_drain(&mut self) {
         let previous_state = self.playback_state();
+        debug!(
+            previous_state = ?previous_state,
+            current_position_ms = self.snapshot.current_position.as_secs_f64() * 1000.0,
+            duration_ms = ?self
+                .snapshot
+                .duration
+                .map(|duration| duration.as_secs_f64() * 1000.0),
+            pending_audio_packets = self.pipeline.pending_audio_packet_len(),
+            pending_video_packets = self.pipeline.pending_video_packet_len(),
+            queued_video_frames = self.pipeline.video_present_queue_len(),
+            video_decode_in_flight = self.pipeline.video_decode_in_flight_packets(),
+            audio_eof_drain_state = ?self.pipeline.audio_eof_drain_state(),
+            "Entering EOF drain"
+        );
         self.set_playback_state(PlaybackState::Draining);
 
         if matches!(
@@ -835,8 +907,37 @@ impl PlayerSession {
     }
 
     /// Завершает EOF-drain, когда audio/video очереди полностью отдали buffered tail.
-    pub(crate) fn finish_eof_drain_if_ready(&mut self, now: Instant) -> bool {
-        if !self.draining_after_eof || !self.eof_drain_ready_to_end() {
+    pub(crate) fn finish_eof_drain_if_ready(
+        &mut self,
+        now: Instant,
+        audio_stall_timeout: Duration,
+    ) -> bool {
+        if !self.draining_after_eof {
+            return false;
+        }
+
+        if !self.eof_drain_ready_to_end(now, audio_stall_timeout) {
+            let blocker = self.eof_drain_blocker(now, audio_stall_timeout);
+            trace!(
+                blocker = ?blocker,
+                playback_state = ?self.playback_state(),
+                current_position_ms = self.snapshot.current_position.as_secs_f64() * 1000.0,
+                duration_ms = ?self
+                    .snapshot
+                    .duration
+                    .map(|duration| duration.as_secs_f64() * 1000.0),
+                pending_audio_packets = self.pipeline.pending_audio_packet_len(),
+                pending_video_packets = self.pipeline.pending_video_packet_len(),
+                queued_video_frames = self.pipeline.video_present_queue_len(),
+                video_decode_in_flight = self.pipeline.video_decode_in_flight_packets(),
+                seek_commit_active = self.seek_commit.is_some(),
+                seek_eof_fallback_video = self.seek_eof_fallback_video_position.is_some(),
+                audio_eof_drain_state = ?self.pipeline.audio_eof_drain_state(),
+                audio_clock_now_ms = self.audio_clock_now().as_secs_f64() * 1000.0,
+                audio_clock_stalled_for_ms =
+                    self.pipeline.audio_clock_stalled_for(now).as_secs_f64() * 1000.0,
+                "EOF drain waiting"
+            );
             return false;
         }
 
@@ -844,29 +945,84 @@ impl PlayerSession {
             .snapshot
             .duration
             .unwrap_or_else(|| self.presentation_clock_position_at(now));
+        debug!(
+            end_position_ms = end_position.as_secs_f64() * 1000.0,
+            previous_position_ms = self.snapshot.current_position.as_secs_f64() * 1000.0,
+            audio_eof_drain_state = ?self.pipeline.audio_eof_drain_state(),
+            "EOF drain finished; entering Ended"
+        );
         self.update_current_position(end_position);
         self.set_playback_state(PlaybackState::Ended);
         true
     }
 
     /// Проверяет только условия завершения drain; сам state меняет `finish_eof_drain_if_ready`.
-    fn eof_drain_ready_to_end(&self) -> bool {
-        if self.seek_commit.is_some() || self.seek_eof_fallback_video_position.is_some() {
-            return false;
+    fn eof_drain_ready_to_end(&self, now: Instant, audio_stall_timeout: Duration) -> bool {
+        self.eof_drain_blocker(now, audio_stall_timeout).is_none()
+    }
+
+    /// Возвращает первый blocker EOF-drain в порядке ownership/lifecycle зависимостей.
+    fn eof_drain_blocker(
+        &self,
+        now: Instant,
+        audio_stall_timeout: Duration,
+    ) -> Option<EofDrainBlocker> {
+        if self.seek_commit.is_some() {
+            return Some(EofDrainBlocker::SeekCommit);
         }
 
-        if self.pipeline.has_seek_preroll_fallback_video_frame()
-            || !self.pipeline.pending_video_packet_is_empty()
-            || !self.pipeline.video_present_queue_is_empty()
-            || self.pipeline.video_decode_in_flight_packets() > 0
-        {
-            return false;
+        if self.seek_eof_fallback_video_position.is_some() {
+            return Some(EofDrainBlocker::SeekEofFallbackVideo);
         }
 
-        !matches!(
-            self.pipeline.audio_eof_drain_state(),
-            AudioEofDrainState::PendingPackets { .. } | AudioEofDrainState::DrainingOutput { .. }
-        )
+        if self.pipeline.has_seek_preroll_fallback_video_frame() {
+            return Some(EofDrainBlocker::SeekPrerollFallbackFrame);
+        }
+
+        let pending_video_packets = self.pipeline.pending_video_packet_len();
+        if pending_video_packets > 0 {
+            return Some(EofDrainBlocker::PendingVideoPackets {
+                queued_packets: pending_video_packets,
+            });
+        }
+
+        let queued_video_frames = self.pipeline.video_present_queue_len();
+        if queued_video_frames > 0 {
+            return Some(EofDrainBlocker::VideoPresentQueue {
+                queued_frames: queued_video_frames,
+            });
+        }
+
+        let in_flight_packets = self.pipeline.video_decode_in_flight_packets();
+        if in_flight_packets > 0 {
+            return Some(EofDrainBlocker::VideoDecodeInFlight { in_flight_packets });
+        }
+
+        match self.pipeline.audio_eof_drain_state() {
+            AudioEofDrainState::PendingPackets { queued_packets } => {
+                Some(EofDrainBlocker::PendingAudioPackets { queued_packets })
+            }
+            AudioEofDrainState::DrainingOutput {
+                buffer_level_ms,
+                playback_requested,
+            } if !self.eof_audio_output_stalled(now, audio_stall_timeout) => {
+                Some(EofDrainBlocker::DrainingAudioOutput {
+                    buffer_level_ms,
+                    playback_requested,
+                    stalled_for: self.pipeline.audio_clock_stalled_for(now),
+                    stall_timeout: audio_stall_timeout,
+                })
+            }
+            AudioEofDrainState::DrainingOutput { .. }
+            | AudioEofDrainState::NoSelectedAudio
+            | AudioEofDrainState::NoOutput
+            | AudioEofDrainState::DrainedOutput { .. } => None,
+        }
+    }
+
+    /// Проверяет зависший audio output после EOF без чтения concrete CPAL state-а.
+    fn eof_audio_output_stalled(&self, now: Instant, audio_stall_timeout: Duration) -> bool {
+        self.pipeline.audio_clock_stalled_for(now) >= audio_stall_timeout
     }
 
     /// Забирает накопленные события и очищает внутреннюю очередь.
@@ -2883,6 +3039,18 @@ impl PlayerSession {
             return;
         }
 
+        debug!(
+            previous_state = ?previous_state,
+            playback_state = ?playback_state,
+            draining_after_eof = self.draining_after_eof,
+            current_position_ms = self.snapshot.current_position.as_secs_f64() * 1000.0,
+            duration_ms = ?self
+                .snapshot
+                .duration
+                .map(|duration| duration.as_secs_f64() * 1000.0),
+            "Playback state changed"
+        );
+
         self.pending_events
             .push(PlayerEvent::PlaybackStateChanged(playback_state));
     }
@@ -4102,6 +4270,14 @@ mod tests {
                 .lock()
                 .expect("fake decoder ack counter lock");
             *completed_packet_count = completed_packet_count.saturating_add(packet_count);
+        }
+
+        /// Настраивает следующий успешно отправленный packet так, чтобы fake сразу отдал frame и ACK.
+        fn decode_next_packet_as_frame(&self, frame_pts: Duration, frame_handle: u64) {
+            self.decode_on_send_frames
+                .lock()
+                .expect("fake decoder decode-on-send queue lock")
+                .push_back((frame_pts, frame_handle));
         }
 
         /// Публикует diagnostics event так, как production decoder boundary сделал бы.
@@ -8824,6 +9000,84 @@ mod tests {
     }
 
     #[test]
+    fn eof_drain_keeps_moving_audio_tail_until_buffer_drains() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(2, TrackKind::Audio)]);
+        let audio_output = install_ready_audio_runtime(&mut session, 25.0, None);
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.enter_eof_drain();
+        assert_eq!(session.playback_state(), PlaybackState::Draining);
+
+        let now = Instant::now();
+        let last_audio_progress_at = now
+            .checked_sub(Duration::from_millis(500))
+            .expect("test clock must have enough monotonic headroom");
+        session
+            .pipeline
+            .reset_audio_clock_sample(Duration::ZERO, last_audio_progress_at);
+        audio_output.clock.record_played(4_800);
+        let tick_config = PlayerTickConfig {
+            audio_stall_timeout: Duration::from_millis(250),
+            ..PlayerTickConfig::default()
+        };
+
+        let _tick_result = session.tick(PlayerTickContext::with_config(now, tick_config));
+
+        assert_eq!(session.playback_state(), PlaybackState::Draining);
+        assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn eof_drain_finishes_when_audio_output_stalls_after_media_tail() {
+        let mut session = PlayerSession::new();
+        let seek_log = install_fake_media(
+            &mut session,
+            vec![
+                fake_track(1, TrackKind::Video),
+                fake_track(2, TrackKind::Audio),
+            ],
+        );
+        let audio_output = install_ready_audio_runtime(&mut session, 25.0, None);
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.enter_eof_drain();
+        assert_eq!(session.playback_state(), PlaybackState::Draining);
+
+        let now = Instant::now();
+        let last_audio_progress_at = now
+            .checked_sub(Duration::from_millis(500))
+            .expect("test clock must have enough monotonic headroom");
+        session
+            .pipeline
+            .reset_audio_clock_sample(Duration::ZERO, last_audio_progress_at);
+        let tick_config = PlayerTickConfig {
+            audio_stall_timeout: Duration::from_millis(250),
+            ..PlayerTickConfig::default()
+        };
+
+        let _tick_result = session.tick(PlayerTickContext::with_config(now, tick_config));
+
+        assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 1);
+        assert_eq!(session.playback_state(), PlaybackState::Ended);
+        assert_eq!(session.snapshot().current_position, Duration::from_secs(30));
+        assert!(session.pipeline.has_demuxer());
+
+        session
+            .dispatch_command(PlayerCommand::TogglePlayback)
+            .unwrap();
+
+        let seek_commit = session
+            .seek_commit()
+            .expect("toggle after stalled EOF drain should start replay seek");
+        assert_eq!(
+            seek_log.lock().expect("seek log lock").as_slice(),
+            &[Duration::ZERO]
+        );
+        assert_eq!(seek_commit.target_position, MediaTime::ZERO);
+        assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
+        assert_eq!(session.playback_state(), PlaybackState::Seeking);
+    }
+
+    #[test]
     fn audio_only_eof_drain_processes_pending_audio_before_ending() {
         let mut session = PlayerSession::new();
         install_fake_media(&mut session, vec![fake_track(2, TrackKind::Audio)]);
@@ -8844,6 +9098,102 @@ mod tests {
 
         assert!(session.pipeline.pending_audio_packet_is_empty());
         assert_eq!(session.playback_state(), PlaybackState::Ended);
+    }
+
+    #[test]
+    fn video_eof_drain_decodes_pending_video_tail_before_ending() {
+        let mut session = PlayerSession::new();
+        let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+        let video_track_id = TrackId::new(1);
+        let video_requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0))
+            .with_bit_depth(BitDepth::Eight)
+            .with_chroma(ChromaSubsampling::Yuv420)
+            .with_color(codec_core::VideoColorMetadata::sdr_bt709_limited());
+        let decoder = SharedFakeVideoDecoderThread::new();
+        decoder.decode_next_packet_as_frame(Duration::from_secs(30), 41);
+
+        session
+            .pipeline
+            .select_video_track(video_track_id, video_requirement);
+        session.pipeline.set_video_decoder_thread(decoder.clone());
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                video_track_id,
+                Duration::from_secs(30),
+                session.pipeline.seek_generation(),
+                Bytes::from_static(b"video-tail"),
+                PacketKeyframe::Keyframe,
+            ));
+        session.update_current_position(Duration::from_secs(30));
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.enter_eof_drain();
+
+        let tick_started_at = Instant::now();
+        for tick_index in 0..3 {
+            let tick_now = tick_started_at + Duration::from_millis(tick_index);
+            let _tick_result = session.tick(PlayerTickContext::new(tick_now));
+        }
+
+        assert_eq!(decoder.sent_packets().len(), 1);
+        assert!(session.pipeline.pending_video_packet_is_empty());
+        assert_eq!(session.pipeline.video_decode_in_flight_packets(), 0);
+        assert!(session.pipeline.video_present_queue_is_empty());
+        assert_eq!(session.playback_state(), PlaybackState::Ended);
+        assert_eq!(session.snapshot().current_position, Duration::from_secs(30));
+
+        session
+            .dispatch_command(PlayerCommand::TogglePlayback)
+            .unwrap();
+
+        let seek_commit = session
+            .seek_commit()
+            .expect("toggle after video EOF should start replay seek");
+        assert_eq!(
+            seek_log.lock().expect("seek log lock").as_slice(),
+            &[Duration::ZERO]
+        );
+        assert_eq!(seek_commit.target_position, MediaTime::ZERO);
+        assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
+        assert_eq!(session.playback_state(), PlaybackState::Seeking);
+    }
+
+    #[test]
+    fn video_only_eof_drain_advances_monotonic_clock_for_tail_frames() {
+        let mut session = PlayerSession::new();
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+        let video_track_id = TrackId::new(1);
+        let video_requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0))
+            .with_bit_depth(BitDepth::Eight)
+            .with_chroma(ChromaSubsampling::Yuv420)
+            .with_color(codec_core::VideoColorMetadata::sdr_bt709_limited());
+
+        session
+            .pipeline
+            .select_video_track(video_track_id, video_requirement);
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.update_current_position(Duration::from_millis(9_250));
+        session
+            .pipeline
+            .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(9_500), 50));
+        session.enter_eof_drain();
+
+        let tick_now = Instant::now() + Duration::from_millis(500);
+        let tick_result = session.tick(PlayerTickContext::new(tick_now));
+
+        assert_eq!(tick_result.video_frames_presented, 1);
+        assert!(session.pipeline.video_present_queue_is_empty());
+        assert_eq!(
+            session
+                .pipeline
+                .present_video_frame()
+                .map(|frame| frame.pts),
+            Some(Duration::from_millis(9_500))
+        );
+        assert_eq!(session.playback_state(), PlaybackState::Ended);
+        assert_eq!(session.snapshot().current_position, Duration::from_secs(30));
     }
 
     #[test]

@@ -736,43 +736,60 @@ impl PlayerWorkerRuntime {
 
     /// Блокируется до события или ближайшего playback deadline-а.
     fn wait_for_worker_wakeup_with_timeout(&mut self, wakeup: PlannedWorkerWakeup) -> bool {
-        crossbeam_channel::select! {
-            recv(self.command_rx) -> command_result => {
-                self.handle_command_wakeup(command_result)
-            }
-            recv(self.render_bridge.render_release_receiver()) -> release_result => {
-                self.render_bridge
-                    .handle_release_wakeup(&mut self.session, release_result);
-                false
-            }
-            recv(self.render_bridge.render_acquire_sample_receiver()) -> sample_result => {
-                self.render_bridge
-                    .handle_acquire_sample_wakeup(&mut self.session, sample_result);
-                false
-            }
-            recv(self.render_bridge.render_timing_sample_receiver()) -> sample_result => {
-                self.render_bridge
-                    .handle_timing_sample_wakeup(&mut self.session, sample_result);
-                false
-            }
-            recv(self.render_bridge.texture_view_lock_sample_receiver()) -> sample_result => {
-                self.render_bridge
-                    .handle_texture_view_lock_sample_wakeup(&mut self.session, sample_result);
-                false
-            }
-            recv(self.render_bridge.texture_view_previous_frame_reuse_sample_receiver()) -> sample_result => {
-                self.render_bridge
-                    .handle_texture_view_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
-                false
-            }
-            recv(self.shutdown_rx) -> _ => {
-                self.handle_shutdown_request();
-                true
-            }
-            default(wakeup.timeout()) => {
+        loop {
+            let timeout = Self::remaining_wakeup_timeout(wakeup);
+            if timeout.is_zero() {
                 self.handle_worker_timeout(wakeup.deadline());
-                false
-            },
+                return false;
+            }
+
+            crossbeam_channel::select! {
+                recv(self.command_rx) -> command_result => {
+                    return self.handle_command_wakeup(command_result);
+                }
+                recv(self.render_bridge.render_release_receiver()) -> release_result => {
+                    self.render_bridge
+                        .handle_release_wakeup(&mut self.session, release_result);
+                    self.drain_render_feedback();
+                }
+                recv(self.render_bridge.render_acquire_sample_receiver()) -> sample_result => {
+                    self.render_bridge
+                        .handle_acquire_sample_wakeup(&mut self.session, sample_result);
+                    self.drain_render_feedback();
+                }
+                recv(self.render_bridge.render_timing_sample_receiver()) -> sample_result => {
+                    self.render_bridge
+                        .handle_timing_sample_wakeup(&mut self.session, sample_result);
+                    self.drain_render_feedback();
+                }
+                recv(self.render_bridge.texture_view_lock_sample_receiver()) -> sample_result => {
+                    self.render_bridge
+                        .handle_texture_view_lock_sample_wakeup(&mut self.session, sample_result);
+                    self.drain_render_feedback();
+                }
+                recv(self.render_bridge.texture_view_previous_frame_reuse_sample_receiver()) -> sample_result => {
+                    self.render_bridge
+                        .handle_texture_view_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
+                    self.drain_render_feedback();
+                }
+                recv(self.shutdown_rx) -> _ => {
+                    self.handle_shutdown_request();
+                    return true;
+                }
+                default(timeout) => {
+                    self.handle_worker_timeout(wakeup.deadline());
+                    return false;
+                },
+            }
+        }
+    }
+
+    /// Считает оставшееся ожидание относительно уже выбранного абсолютного playback deadline-а.
+    fn remaining_wakeup_timeout(wakeup: PlannedWorkerWakeup) -> Duration {
+        match wakeup.deadline() {
+            WorkerWakeupDeadline::Playback { deadline, .. } => {
+                deadline.saturating_duration_since(Instant::now())
+            }
         }
     }
 
@@ -1445,6 +1462,42 @@ mod tests {
         )
     }
 
+    fn runtime_for_tests_with_wakeup_handles(
+        last_tick_at: Instant,
+    ) -> (
+        PlayerWorkerRuntime,
+        Sender<WorkerCommand>,
+        Sender<()>,
+        RenderLeaseBridgeClient,
+    ) {
+        let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
+        let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
+        let (event_tx, _event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
+        let (render_bridge, render_bridge_client) = RenderLeaseBridge::new();
+        let (shutdown_tx, shutdown_rx) = bounded(1);
+        let config = worker_config_for_tests();
+
+        (
+            PlayerWorkerRuntime {
+                session: PlayerSession::new(),
+                worker_scheduler: WorkerScheduler,
+                command_rx,
+                snapshot_publisher: LatestSnapshotPublisher::new(snapshot_tx, snapshot_rx),
+                event_tx,
+                render_bridge,
+                shutdown_rx,
+                config,
+                last_tick_at,
+                last_diagnostics_summary_at: last_tick_at,
+                last_seek_stall_log_key: None,
+                last_seek_stall_log_at: None,
+            },
+            command_tx,
+            shutdown_tx,
+            render_bridge_client,
+        )
+    }
+
     /// Устанавливает seekable fake media с video track для worker/session seek tests.
     fn install_worker_video_media(
         runtime: &mut PlayerWorkerRuntime,
@@ -1795,6 +1848,28 @@ mod tests {
 
         assert_eq!(processed_commands, MAX_COMMANDS_PER_LOOP);
         assert_eq!(runtime.command_rx.len(), MAX_COMMANDS_PER_LOOP);
+        assert!(runtime.last_tick_at > previous_tick_at);
+    }
+
+    #[test]
+    fn render_feedback_does_not_postpone_playback_timeout() {
+        let (mut runtime, _command_tx, _shutdown_tx, render_client) =
+            runtime_for_tests_with_wakeup_handles(Instant::now());
+        runtime.config.coarse_wakeup_interval = Duration::from_millis(5);
+        runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
+        let wakeup = runtime
+            .plan_next_worker_wakeup()
+            .expect("active playback should plan a worker wakeup");
+        assert!(
+            !wakeup.timeout().is_zero(),
+            "test must exercise a delayed playback deadline"
+        );
+        let previous_tick_at = runtime.last_tick_at;
+
+        render_client.report_gpu_submit_present_latency(Duration::from_millis(1));
+        let shutdown_requested = runtime.wait_for_worker_wakeup_with_timeout(wakeup);
+
+        assert!(!shutdown_requested);
         assert!(runtime.last_tick_at > previous_tick_at);
     }
 
