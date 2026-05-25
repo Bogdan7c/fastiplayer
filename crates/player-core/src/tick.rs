@@ -480,7 +480,18 @@ impl PlayerSession {
             return PlayerWorkerWakeupPlan::after(Duration::ZERO, reason, frame_timing);
         }
 
+        let audio_refill_delay = audio_buffer_refill_wakeup_delay(self, tick_config);
         if let Some(front_frame_delay) = front_frame_scheduler_delay(self, tick_config, now) {
+            if let Some(audio_refill_delay) =
+                audio_refill_delay.filter(|delay| *delay < front_frame_delay)
+            {
+                return PlayerWorkerWakeupPlan::after(
+                    audio_refill_delay,
+                    WorkerWakeupReason::PipelineWorkReady,
+                    frame_timing,
+                );
+            }
+
             return PlayerWorkerWakeupPlan::after(
                 front_frame_delay,
                 WorkerWakeupReason::FramePtsDeadline,
@@ -489,9 +500,27 @@ impl PlayerSession {
         }
 
         if decoder_readiness_poll_needed(self, tick_config) {
+            if let Some(audio_refill_delay) =
+                audio_refill_delay.filter(|delay| *delay < decoder_readiness_poll_interval)
+            {
+                return PlayerWorkerWakeupPlan::after(
+                    audio_refill_delay,
+                    WorkerWakeupReason::PipelineWorkReady,
+                    frame_timing,
+                );
+            }
+
             return PlayerWorkerWakeupPlan::after(
                 decoder_readiness_poll_interval,
                 WorkerWakeupReason::DecodeReadiness,
+                frame_timing,
+            );
+        }
+
+        if let Some(audio_refill_delay) = audio_refill_delay {
+            return PlayerWorkerWakeupPlan::after(
+                audio_refill_delay,
+                WorkerWakeupReason::PipelineWorkReady,
                 frame_timing,
             );
         }
@@ -627,6 +656,33 @@ fn sanitize_audio_demux_low_water_mark(low_water_mark_ms: f64) -> f64 {
     } else {
         PlayerTickConfig::default().audio_demux_low_water_mark_ms
     }
+}
+
+/// Возвращает delay до момента, когда audio buffer снова можно пополнять.
+fn audio_buffer_refill_wakeup_delay(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+) -> Option<Duration> {
+    if !session.is_demuxing_active()
+        || !session.pipeline.has_demuxer()
+        || !session.pipeline.has_selected_audio_track()
+    {
+        return None;
+    }
+
+    let audio_buffer_level_ms = session.audio_buffer_level_ms()?;
+    if !audio_buffer_level_ms.is_finite() {
+        return None;
+    }
+
+    let high_water_mark_ms =
+        sanitize_audio_high_water_mark(tick_config.audio_buffer_high_water_mark_ms);
+    if audio_buffer_level_ms <= high_water_mark_ms {
+        return None;
+    }
+
+    let delay_seconds = (audio_buffer_level_ms - high_water_mark_ms) / 1000.0;
+    Some(Duration::from_secs_f64(delay_seconds))
 }
 
 /// Возвращает bounded лимит video packets для audio catch-up режима.
@@ -3032,6 +3088,60 @@ mod tests {
 
         assert_eq!(plan.reason, WorkerWakeupReason::FramePtsDeadline);
         assert!(plan.delay.is_some_and(|delay| !delay.is_zero()));
+    }
+
+    #[test]
+    fn worker_wakeup_uses_audio_refill_deadline_before_coarse_progress() {
+        let mut session = PlayerSession::new();
+        let audio_track_id = TrackId::new(2);
+        let tick_config = PlayerTickConfig {
+            audio_buffer_high_water_mark_ms: 200.0,
+            ..PlayerTickConfig::default()
+        };
+
+        install_empty_demuxer(&mut session);
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.pipeline.select_audio_track(audio_track_id);
+        install_fixed_audio_output(&mut session, 250.0);
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &tick_config,
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+
+        assert_eq!(plan.reason, WorkerWakeupReason::PipelineWorkReady);
+        assert_eq!(plan.delay, Some(Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn worker_wakeup_prefers_audio_refill_deadline_over_later_video_frame() {
+        let mut session = PlayerSession::new();
+        let audio_track_id = TrackId::new(2);
+        let tick_config = PlayerTickConfig {
+            audio_buffer_high_water_mark_ms: 200.0,
+            ..PlayerTickConfig::default()
+        };
+
+        install_empty_demuxer(&mut session);
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.update_current_position(Duration::ZERO);
+        session.pipeline.select_audio_track(audio_track_id);
+        session
+            .pipeline
+            .enqueue_queued_video_frame(decoded_frame(Duration::from_millis(500), 1));
+        install_fixed_audio_output(&mut session, 250.0);
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &tick_config,
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+
+        assert_eq!(plan.reason, WorkerWakeupReason::PipelineWorkReady);
+        assert_eq!(plan.delay, Some(Duration::from_millis(50)));
     }
 
     #[test]
