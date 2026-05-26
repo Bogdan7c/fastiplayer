@@ -19,7 +19,6 @@ media-core = { workspace = true }
 rustiplayer-config = { workspace = true }
 tracing = { workspace = true }
 video-core = { path = "../video-core" }
-wgpu = { workspace = true }
 
 [dev-dependencies]
 render-core = { workspace = true }

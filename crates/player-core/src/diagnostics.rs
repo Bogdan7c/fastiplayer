@@ -40,8 +40,8 @@ pub enum PipelineLatencyStage {
     /// Ожидание render thread-а при запросе present frame.
     RenderAcquire,
 
-    /// Ожидание backend texture pool lock-а внутри render-side texture_views().
-    TextureViewLockWait,
+    /// Ожидание backend resource pool lock-а внутри renderer materialization boundary.
+    RenderResourceLockWait,
 
     /// Submit/present render work, если renderer сообщил timing.
     GpuSubmitPresent,
@@ -65,7 +65,7 @@ impl PipelineLatencyStage {
             Self::DecodedFramePublish => "decoder.frame_publish",
             Self::WorkerScheduler => "worker.scheduler",
             Self::RenderAcquire => "render.acquire",
-            Self::TextureViewLockWait => "render.texture_view_lock_wait",
+            Self::RenderResourceLockWait => "render.resource_lock_wait",
             Self::GpuSubmitPresent => "gpu.submit_present",
             Self::ReleaseAcknowledgement => "release.ack",
         }
@@ -288,8 +288,8 @@ pub struct PipelineLatencyCountersSnapshot {
     /// Render acquire wait latency.
     pub render_acquire: LatencyCounterSnapshot,
 
-    /// Wait time на mutex texture pool-а внутри render-side `texture_views()`.
-    pub texture_view_lock_wait: LatencyCounterSnapshot,
+    /// Wait time на mutex backend resource pool-а внутри renderer materialization boundary.
+    pub render_resource_lock_wait: LatencyCounterSnapshot,
 
     /// GPU submit/present timing, если доступен.
     pub gpu_submit_present: LatencyCounterSnapshot,
@@ -690,11 +690,11 @@ pub struct PlaybackDiagnosticsSnapshot {
     /// Количество повторов текущего present frame, не смешанное с media drops.
     pub repeated_video_frames: u64,
 
-    /// Сколько раз non-blocking texture view lookup встретил занятый backend lock.
-    pub texture_view_lock_busy_count: u64,
+    /// Сколько раз non-blocking renderer resource lookup встретил занятый backend lock.
+    pub render_resource_lock_busy_count: u64,
 
     /// Сколько раз renderer переиспользовал previous valid frame из-за busy lock-а.
-    pub texture_view_previous_frame_reuse_count: u64,
+    pub render_resource_previous_frame_reuse_count: u64,
 
     /// Давление на bounded decoder->worker decoded-frame publish channel.
     pub decoder_frame_publish_pressure: DecoderFramePublishPressureSnapshot,
@@ -716,8 +716,8 @@ impl Default for PlaybackDiagnosticsSnapshot {
             recent_worst_samples: Vec::new(),
             decoded_frames: 0,
             repeated_video_frames: 0,
-            texture_view_lock_busy_count: 0,
-            texture_view_previous_frame_reuse_count: 0,
+            render_resource_lock_busy_count: 0,
+            render_resource_previous_frame_reuse_count: 0,
             decoder_frame_publish_pressure: DecoderFramePublishPressureSnapshot::default(),
             worker_wakeup: WorkerWakeupDiagnosticsSnapshot::default(),
         }
@@ -748,11 +748,11 @@ pub struct PlaybackDiagnosticsLogSummary {
     /// Количество repeats, которые не являются media drops.
     pub repeated_video_frames: u64,
 
-    /// Сколько раз non-blocking texture view lookup встретил занятый backend lock.
-    pub texture_view_lock_busy_count: u64,
+    /// Сколько раз non-blocking renderer resource lookup встретил занятый backend lock.
+    pub render_resource_lock_busy_count: u64,
 
     /// Сколько раз renderer переиспользовал previous valid frame из-за busy lock-а.
-    pub texture_view_previous_frame_reuse_count: u64,
+    pub render_resource_previous_frame_reuse_count: u64,
 
     /// Давление на bounded decoder->worker decoded-frame publish channel.
     pub decoder_frame_publish_pressure: DecoderFramePublishPressureSnapshot,
@@ -781,8 +781,8 @@ impl PlaybackDiagnosticsLogSummary {
             || self.pauses_total > 0
             || self.seek_bootstrap.dropped_until_keyframe > 0
             || self.seek_bootstrap.first_accepted_keyframe.is_some()
-            || self.texture_view_lock_busy_count > 0
-            || self.texture_view_previous_frame_reuse_count > 0
+            || self.render_resource_lock_busy_count > 0
+            || self.render_resource_previous_frame_reuse_count > 0
             || self
                 .decoder_frame_publish_pressure
                 .frame_publish_channel_full_count
@@ -1096,21 +1096,23 @@ impl PlaybackDiagnostics {
         self.snapshot.queues = queues;
     }
 
-    /// Записывает busy outcome non-blocking texture view lookup-а.
-    pub(crate) fn record_texture_view_lock_busy(&mut self, queues: PipelineQueueDepthSnapshot) {
-        self.snapshot.texture_view_lock_busy_count =
-            self.snapshot.texture_view_lock_busy_count.saturating_add(1);
+    /// Записывает busy outcome non-blocking renderer resource lookup-а.
+    pub(crate) fn record_render_resource_lock_busy(&mut self, queues: PipelineQueueDepthSnapshot) {
+        self.snapshot.render_resource_lock_busy_count = self
+            .snapshot
+            .render_resource_lock_busy_count
+            .saturating_add(1);
         self.snapshot.queues = queues;
     }
 
-    /// Записывает reuse previous frame-а из-за busy texture view lock-а.
-    pub(crate) fn record_texture_view_previous_frame_reuse(
+    /// Записывает reuse previous frame-а из-за busy renderer resource lock-а.
+    pub(crate) fn record_render_resource_previous_frame_reuse(
         &mut self,
         queues: PipelineQueueDepthSnapshot,
     ) {
-        self.snapshot.texture_view_previous_frame_reuse_count = self
+        self.snapshot.render_resource_previous_frame_reuse_count = self
             .snapshot
-            .texture_view_previous_frame_reuse_count
+            .render_resource_previous_frame_reuse_count
             .saturating_add(1);
         self.snapshot.queues = queues;
     }
@@ -1152,10 +1154,10 @@ impl PlaybackDiagnostics {
             pauses: self.snapshot.pauses,
             zero_copy_memory_path: self.snapshot.zero_copy_memory_path,
             repeated_video_frames: self.snapshot.repeated_video_frames,
-            texture_view_lock_busy_count: self.snapshot.texture_view_lock_busy_count,
-            texture_view_previous_frame_reuse_count: self
+            render_resource_lock_busy_count: self.snapshot.render_resource_lock_busy_count,
+            render_resource_previous_frame_reuse_count: self
                 .snapshot
-                .texture_view_previous_frame_reuse_count,
+                .render_resource_previous_frame_reuse_count,
             decoder_frame_publish_pressure: self.snapshot.decoder_frame_publish_pressure,
             worker_wakeup: self.snapshot.worker_wakeup,
             worst_stage,
@@ -1228,8 +1230,8 @@ struct PipelineLatencyCounters {
     /// Render acquire.
     render_acquire: LatencyCounter,
 
-    /// Texture view mutex wait.
-    texture_view_lock_wait: LatencyCounter,
+    /// Renderer resource mutex wait.
+    render_resource_lock_wait: LatencyCounter,
 
     /// GPU submit/present.
     gpu_submit_present: LatencyCounter,
@@ -1257,7 +1259,7 @@ impl PipelineLatencyCounters {
             decoded_frame_publish: self.decoded_frame_publish.snapshot(),
             worker_scheduler: self.worker_scheduler.snapshot(),
             render_acquire: self.render_acquire.snapshot(),
-            texture_view_lock_wait: self.texture_view_lock_wait.snapshot(),
+            render_resource_lock_wait: self.render_resource_lock_wait.snapshot(),
             gpu_submit_present: self.gpu_submit_present.snapshot(),
             release_acknowledgement: self.release_acknowledgement.snapshot(),
         }
@@ -1294,7 +1296,7 @@ impl PipelineLatencyCounters {
             PipelineLatencyStage::DecodedFramePublish => &mut self.decoded_frame_publish,
             PipelineLatencyStage::WorkerScheduler => &mut self.worker_scheduler,
             PipelineLatencyStage::RenderAcquire => &mut self.render_acquire,
-            PipelineLatencyStage::TextureViewLockWait => &mut self.texture_view_lock_wait,
+            PipelineLatencyStage::RenderResourceLockWait => &mut self.render_resource_lock_wait,
             PipelineLatencyStage::GpuSubmitPresent => &mut self.gpu_submit_present,
             PipelineLatencyStage::ReleaseAcknowledgement => &mut self.release_acknowledgement,
         }
@@ -1326,8 +1328,8 @@ impl PipelineLatencyCounters {
             ),
             (PipelineLatencyStage::RenderAcquire, &self.render_acquire),
             (
-                PipelineLatencyStage::TextureViewLockWait,
-                &self.texture_view_lock_wait,
+                PipelineLatencyStage::RenderResourceLockWait,
+                &self.render_resource_lock_wait,
             ),
             (
                 PipelineLatencyStage::GpuSubmitPresent,
@@ -1616,19 +1618,19 @@ mod tests {
     }
 
     #[test]
-    fn texture_view_lock_wait_latency_has_count_average_and_worst() {
+    fn render_resource_lock_wait_latency_has_count_average_and_worst() {
         let mut diagnostics = PlaybackDiagnostics::new();
         let queues = queue_depths_for_tests(0);
 
         diagnostics.record_latency(
-            PipelineLatencyStage::TextureViewLockWait,
+            PipelineLatencyStage::RenderResourceLockWait,
             Duration::from_micros(100),
             Some(Duration::from_millis(40)),
             Some(FrameMemoryPath::DmaBufZeroCopy),
             queues,
         );
         diagnostics.record_latency(
-            PipelineLatencyStage::TextureViewLockWait,
+            PipelineLatencyStage::RenderResourceLockWait,
             Duration::from_micros(300),
             Some(Duration::from_millis(41)),
             Some(FrameMemoryPath::DmaBufZeroCopy),
@@ -1636,28 +1638,33 @@ mod tests {
         );
 
         let snapshot = diagnostics.snapshot_with_queues(queues);
-        let texture_view_lock_wait = snapshot.worst_latencies.texture_view_lock_wait;
+        let render_resource_lock_wait = snapshot.worst_latencies.render_resource_lock_wait;
 
-        assert_eq!(texture_view_lock_wait.samples, 2);
-        assert_eq!(texture_view_lock_wait.average, Duration::from_micros(200));
+        assert_eq!(render_resource_lock_wait.samples, 2);
         assert_eq!(
-            texture_view_lock_wait.worst.map(|sample| sample.duration),
+            render_resource_lock_wait.average,
+            Duration::from_micros(200)
+        );
+        assert_eq!(
+            render_resource_lock_wait
+                .worst
+                .map(|sample| sample.duration),
             Some(Duration::from_micros(300))
         );
     }
 
     #[test]
-    fn texture_view_busy_and_reuse_counters_are_aggregated_separately() {
+    fn render_resource_busy_and_reuse_counters_are_aggregated_separately() {
         let mut diagnostics = PlaybackDiagnostics::new();
         let queues = queue_depths_for_tests(0);
 
-        diagnostics.record_texture_view_lock_busy(queues);
-        diagnostics.record_texture_view_previous_frame_reuse(queues);
-        diagnostics.record_texture_view_previous_frame_reuse(queues);
+        diagnostics.record_render_resource_lock_busy(queues);
+        diagnostics.record_render_resource_previous_frame_reuse(queues);
+        diagnostics.record_render_resource_previous_frame_reuse(queues);
 
         let snapshot = diagnostics.snapshot_with_queues(queues);
 
-        assert_eq!(snapshot.texture_view_lock_busy_count, 1);
-        assert_eq!(snapshot.texture_view_previous_frame_reuse_count, 2);
+        assert_eq!(snapshot.render_resource_lock_busy_count, 1);
+        assert_eq!(snapshot.render_resource_previous_frame_reuse_count, 2);
     }
 }

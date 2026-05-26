@@ -304,13 +304,9 @@ impl Default for VideoDecoderThreadConfig {
 }
 
 /// Decoder-thread contract, который не зависит от конкретного hardware API.
-///
-/// `TextureViewProvider` остаётся associated type, чтобы `video-core` не тянул
-/// `wgpu`: player-core подставляет WGPU-specific provider, а будущий backend
-/// сможет использовать другой render/resource boundary.
 pub trait VideoDecoderThreadHandle: Send {
     /// Renderer/resource provider, который decoder отдаёт владельцу presentation path.
-    type TextureViewProvider: Clone + Send + Sync + 'static;
+    type ResourceProvider: Clone + Send + Sync + 'static;
 
     /// Возвращает человекочитаемое имя backend-а для snapshot/diagnostics.
     fn backend_name(&self) -> &'static str;
@@ -334,7 +330,7 @@ pub trait VideoDecoderThreadHandle: Send {
     fn flush(&self) -> anyhow::Result<()>;
 
     /// Возвращает provider для renderer-side resource lookup/release path.
-    fn texture_view_provider(&self) -> Self::TextureViewProvider;
+    fn resource_provider(&self) -> Self::ResourceProvider;
 
     /// Возвращает snapshot texture/resource pool-а для UI/backpressure diagnostics.
     fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot>;

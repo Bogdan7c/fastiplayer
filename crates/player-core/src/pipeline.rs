@@ -12,7 +12,7 @@ use media_core::{
 use crate::{
     DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
     DecoderResourceSnapshot, PlayerAudioClock, PlayerAudioOutput, PlayerDecodePacket,
-    PlayerVideoDecoderThreadHandle, WgpuRenderTextureProviderHandle,
+    PlayerVideoDecoderThreadHandle, PresentFrameResourceProviderHandle,
 };
 #[cfg(test)]
 use video_core::VideoDecoderThreadHandle;
@@ -43,10 +43,13 @@ pub(crate) enum RenderLeaseReleaseEffect {
 }
 
 /// Решение pipeline accounting при запросе release texture handle-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) enum VideoTextureReleaseEffect {
     /// Texture handle удерживается renderer-ом и должен быть освобождён после drop-ack.
     DeferredUntilRenderLeaseDrop,
+
+    /// Render lease уже dropped, но frame успел побывать в renderer-е.
+    ReleaseViaRenderProvider(PresentFrameResourceProviderHandle),
 
     /// Активных render leases нет, texture handle можно сразу вернуть decoder-у.
     ReleaseNow,
@@ -330,6 +333,10 @@ pub(crate) struct PlaybackPipeline {
 
     /// Texture handles, release которых отложен до drop-ack от render/UI thread.
     deferred_video_texture_releases: HashSet<(u64, u64)>,
+
+    /// Provider-ы кадров, у которых render lease уже dropped до player-owned release.
+    rendered_video_texture_release_providers:
+        HashMap<(u64, u64), PresentFrameResourceProviderHandle>,
 
     /// Track ID выбранного video трека.
     video_track_id: Option<TrackId>,
@@ -1088,6 +1095,7 @@ impl PlaybackPipeline {
 
     /// Переводит renderer resource ids в новое поколение после полной смены media.
     pub(crate) fn advance_render_generation(&mut self) {
+        self.rendered_video_texture_release_providers.clear();
         self.render_generation = self.render_generation.wrapping_add(1);
     }
 
@@ -1106,6 +1114,7 @@ impl PlaybackPipeline {
         self.clear_selected_tracks();
         self.clear_pending_audio_packets();
         self.clear_pending_video_packets();
+        self.rendered_video_texture_release_providers.clear();
         self.require_video_decoder_keyframe();
         self.reset_video_decode_in_flight();
         debug_assert!(
@@ -1224,7 +1233,7 @@ impl PlaybackPipeline {
     pub(crate) fn set_video_decoder_thread(
         &mut self,
         decoder_thread: impl VideoDecoderThreadHandle<
-            TextureViewProvider = WgpuRenderTextureProviderHandle,
+            ResourceProvider = PresentFrameResourceProviderHandle,
         > + 'static,
     ) {
         self.set_video_decoder_thread_handle(Box::new(decoder_thread));
@@ -1295,14 +1304,14 @@ impl PlaybackPipeline {
             .and_then(|decoder_thread| decoder_thread.decoder_control_channel_pressure())
     }
 
-    /// Возвращает WGPU provider для renderer-side texture views активного decoder thread-а.
+    /// Возвращает renderer-neutral provider активного decoder thread-а.
     #[must_use]
-    pub(crate) fn video_decoder_texture_view_provider(
+    pub(crate) fn video_decoder_resource_provider(
         &self,
-    ) -> Option<WgpuRenderTextureProviderHandle> {
+    ) -> Option<PresentFrameResourceProviderHandle> {
         self.video_decoder_thread
             .as_ref()
-            .map(|decoder_thread| decoder_thread.texture_view_provider())
+            .map(|decoder_thread| decoder_thread.resource_provider())
     }
 
     /// Немедленно отдаёт texture slot активному decoder thread-у.
@@ -1437,10 +1446,34 @@ impl PlaybackPipeline {
 
         self.leased_video_textures.remove(&lease_key);
         if self.deferred_video_texture_releases.remove(&lease_key) {
+            self.rendered_video_texture_release_providers
+                .remove(&lease_key);
             RenderLeaseReleaseEffect::DeferredTextureReady
         } else {
             RenderLeaseReleaseEffect::ReleasedWithoutDeferredTexture
         }
+    }
+
+    /// Запоминает release provider кадра, который renderer уже использовал и отпустил.
+    pub(crate) fn remember_rendered_texture_release_provider(
+        &mut self,
+        render_generation: u64,
+        texture_handle: video_core::FrameTextureHandle,
+        resource_provider: &PresentFrameResourceProviderHandle,
+    ) {
+        if render_generation != self.render_generation {
+            return;
+        }
+
+        let lease_key = (render_generation, texture_handle.0);
+        if self.leased_video_textures.contains_key(&lease_key)
+            || self.deferred_video_texture_releases.contains(&lease_key)
+        {
+            return;
+        }
+
+        self.rendered_video_texture_release_providers
+            .insert(lease_key, resource_provider.clone());
     }
 
     /// Помечает texture handle текущего поколения как deferred, если renderer держит lease.
@@ -1452,6 +1485,13 @@ impl PlaybackPipeline {
         if self.leased_video_textures.contains_key(&lease_key) {
             self.deferred_video_texture_releases.insert(lease_key);
             return VideoTextureReleaseEffect::DeferredUntilRenderLeaseDrop;
+        }
+
+        if let Some(resource_provider) = self
+            .rendered_video_texture_release_providers
+            .remove(&lease_key)
+        {
+            return VideoTextureReleaseEffect::ReleaseViaRenderProvider(resource_provider);
         }
 
         VideoTextureReleaseEffect::ReleaseNow
@@ -1528,6 +1568,7 @@ impl Default for PlaybackPipeline {
             render_generation: 0,
             leased_video_textures: HashMap::new(),
             deferred_video_texture_releases: HashSet::new(),
+            rendered_video_texture_release_providers: HashMap::new(),
             video_track_id: None,
             pending_video_packets: VecDeque::new(),
             audio_clock: None,

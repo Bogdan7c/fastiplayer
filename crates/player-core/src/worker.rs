@@ -11,7 +11,7 @@ use crate::audio_boundary::missing_audio_output_factory;
 #[cfg(test)]
 use crate::render_lease_bridge::{
     LatestPresentFrameAcquire, LatestPresentFrameHandoff, RenderAcquireSample, RenderLeaseRelease,
-    RenderTextureViewPreviousFrameReuseSample, RenderTimingSample,
+    RenderResourcePreviousFrameReuseSample, RenderTimingSample,
 };
 use crate::render_lease_bridge::{
     PlayerPresentFrame, PresentFrameLease, RenderLeaseBridge, RenderLeaseBridgeClient,
@@ -24,7 +24,7 @@ use crate::{
     ActiveSeekDiagnosticsSnapshot, AudioOutputFactory, FrameCounters, LatencyCounterSnapshot,
     MediaOpenRequest, MediaSource, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent,
     PlayerResult, PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext,
-    PlayerTickResult, PlayerVideoDecoderThreadConfig, PreparedMedia, VideoBackendFactory,
+    PlayerTickResult, PlayerVideoDecoderThreadConfig, PreparedMedia, StartedVideoBackend,
 };
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
@@ -220,16 +220,16 @@ pub enum PlayerWorkerEvent {
 /// Категория ошибки render bridge на границе shell -> worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayerRenderErrorKind {
-    /// Render thread не смог получить texture views по handle lease-а.
-    MissingTextureViews,
+    /// Render thread не смог получить renderer resource по handle lease-а.
+    MissingRenderResources,
 
-    /// Backend texture view lookup завершился poisoned/fatal состоянием.
-    TextureViewLookupFailed,
+    /// Backend resource lookup завершился poisoned/fatal состоянием.
+    RenderResourceLookupFailed,
 
     /// Renderer отказал decoded frame metadata или plane contract.
     UnsupportedFrameFormat,
 
-    /// WGPU device/surface не смог завершить render frame.
+    /// Renderer device/surface не смог завершить render frame.
     RenderDeviceLost,
 }
 
@@ -250,15 +250,15 @@ pub struct PlayerRenderError {
 }
 
 impl PlayerRenderError {
-    /// Создаёт ошибку отсутствующих texture views для конкретного lease-а.
+    /// Создаёт ошибку отсутствующего renderer resource для конкретного lease-а.
     #[must_use]
-    pub fn missing_texture_views(lease: &PresentFrameLease) -> Self {
+    pub fn missing_render_resources(lease: &PresentFrameLease) -> Self {
         Self {
-            kind: PlayerRenderErrorKind::MissingTextureViews,
+            kind: PlayerRenderErrorKind::MissingRenderResources,
             render_generation: Some(lease.render_generation),
             frame_handle: Some(lease.texture_handle().0),
             message: format!(
-                "Render texture views are missing for {} frame handle {} in generation {}",
+                "Render resources are missing for {} frame handle {} in generation {}",
                 lease.frame.format,
                 lease.texture_handle().0,
                 lease.render_generation
@@ -266,15 +266,15 @@ impl PlayerRenderError {
         }
     }
 
-    /// Создаёт ошибку fatal texture view lookup для конкретного lease-а.
+    /// Создаёт ошибку fatal renderer resource lookup для конкретного lease-а.
     #[must_use]
-    pub fn texture_view_lookup_failed(lease: &PresentFrameLease) -> Self {
+    pub fn render_resource_lookup_failed(lease: &PresentFrameLease) -> Self {
         Self {
-            kind: PlayerRenderErrorKind::TextureViewLookupFailed,
+            kind: PlayerRenderErrorKind::RenderResourceLookupFailed,
             render_generation: Some(lease.render_generation),
             frame_handle: Some(lease.texture_handle().0),
             message: format!(
-                "Render texture view lookup failed for {} frame handle {} in generation {}",
+                "Render resource lookup failed for {} frame handle {} in generation {}",
                 lease.frame.format,
                 lease.texture_handle().0,
                 lease.render_generation
@@ -308,8 +308,8 @@ impl PlayerRenderError {
     #[must_use]
     pub fn to_player_error(&self) -> PlayerError {
         let kind = match self.kind {
-            PlayerRenderErrorKind::MissingTextureViews
-            | PlayerRenderErrorKind::TextureViewLookupFailed
+            PlayerRenderErrorKind::MissingRenderResources
+            | PlayerRenderErrorKind::RenderResourceLookupFailed
             | PlayerRenderErrorKind::UnsupportedFrameFormat => {
                 PlayerErrorKind::UnsupportedRenderFormat
             }
@@ -477,16 +477,14 @@ impl PlayerWorker {
             .map_err(PlayerWorkerSendError::from)
     }
 
-    /// Инициализирует video decoder pipeline через factory, созданную shell composition root.
-    pub fn init_video_pipeline(
+    /// Устанавливает video decoder backend, уже запущенный shell composition root-ом.
+    pub fn set_video_backend(
         &self,
-        backend_factory: impl VideoBackendFactory + 'static,
+        started_backend: StartedVideoBackend,
     ) -> Result<(), PlayerWorkerSendError> {
         self.command_sender
             .command_tx
-            .try_send(WorkerCommand::InitVideoPipeline {
-                backend_factory: Box::new(backend_factory),
-            })
+            .try_send(WorkerCommand::SetVideoBackend { started_backend })
             .map_err(PlayerWorkerSendError::from)
     }
 
@@ -551,9 +549,9 @@ impl PlayerWorker {
     }
 
     /// Сообщает worker-у, что renderer повторил previous valid frame из-за busy texture lock-а.
-    pub fn report_texture_view_previous_frame_reuse(&self) {
+    pub fn report_render_resource_previous_frame_reuse(&self) {
         self.render_bridge_client
-            .report_texture_view_previous_frame_reuse();
+            .report_resource_previous_frame_reuse();
     }
 
     /// Запрашивает shutdown и ждёт завершения worker thread.
@@ -601,10 +599,10 @@ enum WorkerCommand {
         error: PlayerError,
     },
 
-    /// Инициализация video backend через concrete factory, созданную shell layer.
-    InitVideoPipeline {
-        /// Concrete backend factory уже содержит GPU handles и startup config.
-        backend_factory: Box<dyn VideoBackendFactory>,
+    /// Установка video backend-а, который уже прошёл concrete startup в shell layer.
+    SetVideoBackend {
+        /// Started backend содержит только playback-facing decoder handle.
+        started_backend: StartedVideoBackend,
     },
 
     /// Capability report из shell/backend layer.
@@ -797,14 +795,14 @@ impl PlayerWorkerRuntime {
                         .handle_timing_sample_wakeup(&mut self.session, sample_result);
                     self.drain_render_feedback();
                 }
-                recv(self.render_bridge.texture_view_lock_sample_receiver()) -> sample_result => {
+                recv(self.render_bridge.resource_lock_sample_receiver()) -> sample_result => {
                     self.render_bridge
-                        .handle_texture_view_lock_sample_wakeup(&mut self.session, sample_result);
+                        .handle_resource_lock_sample_wakeup(&mut self.session, sample_result);
                     self.drain_render_feedback();
                 }
-                recv(self.render_bridge.texture_view_previous_frame_reuse_sample_receiver()) -> sample_result => {
+                recv(self.render_bridge.resource_previous_frame_reuse_sample_receiver()) -> sample_result => {
                     self.render_bridge
-                        .handle_texture_view_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
+                        .handle_resource_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
                     self.drain_render_feedback();
                 }
                 recv(self.shutdown_rx) -> _ => {
@@ -849,14 +847,14 @@ impl PlayerWorkerRuntime {
                     .handle_timing_sample_wakeup(&mut self.session, sample_result);
                 false
             }
-            recv(self.render_bridge.texture_view_lock_sample_receiver()) -> sample_result => {
+            recv(self.render_bridge.resource_lock_sample_receiver()) -> sample_result => {
                 self.render_bridge
-                    .handle_texture_view_lock_sample_wakeup(&mut self.session, sample_result);
+                    .handle_resource_lock_sample_wakeup(&mut self.session, sample_result);
                 false
             }
-            recv(self.render_bridge.texture_view_previous_frame_reuse_sample_receiver()) -> sample_result => {
+            recv(self.render_bridge.resource_previous_frame_reuse_sample_receiver()) -> sample_result => {
                 self.render_bridge
-                    .handle_texture_view_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
+                    .handle_resource_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
                 false
             }
             recv(self.shutdown_rx) -> _ => {
@@ -953,8 +951,8 @@ impl PlayerWorkerRuntime {
             WorkerCommand::MediaOpenFailed { request, error } => {
                 self.session.fail_media_open_with_error(request, error);
             }
-            WorkerCommand::InitVideoPipeline { backend_factory } => {
-                self.session.init_video_pipeline(backend_factory.as_ref());
+            WorkerCommand::SetVideoBackend { started_backend } => {
+                self.session.set_video_backend(started_backend);
             }
             WorkerCommand::SetSystemCapabilities(capabilities) => {
                 self.session.set_system_capabilities(capabilities);
@@ -1118,7 +1116,7 @@ impl PlayerWorkerRuntime {
         let texture_slots = summary.queues.texture_slots;
         let control_channel = summary.queues.decoder_control_channel;
         let latencies = summary.worst_latencies;
-        let texture_view_lock_wait = latencies.texture_view_lock_wait;
+        let render_resource_lock_wait = latencies.render_resource_lock_wait;
         let publish_pressure = summary.decoder_frame_publish_pressure;
         debug!(
             drops = summary.drops_total,
@@ -1136,8 +1134,8 @@ impl PlayerWorkerRuntime {
             pauses_present_queue = summary.pauses.waiting_for_present_queue,
             pauses_gpu_release = summary.pauses.waiting_for_gpu_release,
             repeated_video_frames = summary.repeated_video_frames,
-            texture_view_lock_busy_count = summary.texture_view_lock_busy_count,
-            texture_view_previous_frame_reuse_count = summary.texture_view_previous_frame_reuse_count,
+            render_resource_lock_busy_count = summary.render_resource_lock_busy_count,
+            render_resource_previous_frame_reuse_count = summary.render_resource_previous_frame_reuse_count,
             decoder_publish_channel_full_count = publish_pressure.frame_publish_channel_full_count,
             decoder_publish_retry_count = publish_pressure.pending_publish_retry_count,
             decoder_publish_total_ms = duration_to_millis(
@@ -1155,9 +1153,9 @@ impl PlayerWorkerRuntime {
             import_worst_ms = ?worst_latency_millis(latencies.dma_buf_import),
             worker_worst_ms = ?worst_latency_millis(latencies.worker_scheduler),
             render_acquire_worst_ms = ?worst_latency_millis(latencies.render_acquire),
-            texture_view_lock_wait_count = texture_view_lock_wait.samples,
-            texture_view_lock_wait_avg_ms = duration_to_millis(texture_view_lock_wait.average),
-            texture_view_lock_wait_max_ms = ?worst_latency_millis(texture_view_lock_wait),
+            render_resource_lock_wait_count = render_resource_lock_wait.samples,
+            render_resource_lock_wait_avg_ms = duration_to_millis(render_resource_lock_wait.average),
+            render_resource_lock_wait_max_ms = ?worst_latency_millis(render_resource_lock_wait),
             gpu_submit_present_worst_ms = ?worst_latency_millis(latencies.gpu_submit_present),
             release_ack_worst_ms = ?worst_latency_millis(latencies.release_acknowledgement),
             wake_reason,
@@ -1608,7 +1606,7 @@ mod tests {
         PlayerWorker,
         Receiver<RenderAcquireSample>,
         Receiver<RenderTimingSample>,
-        Receiver<RenderTextureViewPreviousFrameReuseSample>,
+        Receiver<RenderResourcePreviousFrameReuseSample>,
     ) {
         let (command_tx, _command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
         let (_snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
@@ -1617,7 +1615,7 @@ mod tests {
             render_bridge_client,
             render_acquire_sample_rx,
             render_timing_sample_rx,
-            texture_view_previous_frame_reuse_sample_rx,
+            render_resource_previous_frame_reuse_sample_rx,
         ) = RenderLeaseBridgeClient::with_handoff_for_tests(latest_present_frame_handoff);
         let (shutdown_tx, _shutdown_rx) = bounded(1);
         let command_sender = PlayerCommandSender { command_tx };
@@ -1635,7 +1633,7 @@ mod tests {
             },
             render_acquire_sample_rx,
             render_timing_sample_rx,
-            texture_view_previous_frame_reuse_sample_rx,
+            render_resource_previous_frame_reuse_sample_rx,
         )
     }
 
@@ -1921,7 +1919,7 @@ mod tests {
             .try_send(RenderLeaseRelease {
                 render_generation: 0,
                 texture_handle: video_core::FrameTextureHandle(7),
-                texture_provider: None,
+                resource_provider: None,
                 released_at: Instant::now(),
             })
             .unwrap();
@@ -2007,7 +2005,7 @@ mod tests {
             worker,
             render_acquire_sample_rx,
             _render_timing_sample_rx,
-            _texture_view_previous_frame_reuse_sample_rx,
+            _render_resource_previous_frame_reuse_sample_rx,
         ) = worker_with_latest_handoff_for_tests(Arc::clone(&latest_present_frame_handoff));
 
         let acquired_frame = worker.try_acquire_present_frame().unwrap();
@@ -2024,7 +2022,7 @@ mod tests {
             worker,
             _render_acquire_sample_rx,
             render_timing_sample_rx,
-            _texture_view_previous_frame_reuse_sample_rx,
+            _render_resource_previous_frame_reuse_sample_rx,
         ) = worker_with_latest_handoff_for_tests(latest_present_frame_handoff);
 
         worker.report_gpu_submit_present_latency(Duration::from_millis(1));
@@ -2036,20 +2034,20 @@ mod tests {
     }
 
     #[test]
-    fn player_worker_reports_texture_view_previous_frame_reuse_without_command_queue() {
+    fn player_worker_reports_render_resource_previous_frame_reuse_without_command_queue() {
         let latest_present_frame_handoff = Arc::new(LatestPresentFrameHandoff::new());
         let (
             worker,
             _render_acquire_sample_rx,
             _render_timing_sample_rx,
-            texture_view_previous_frame_reuse_sample_rx,
+            render_resource_previous_frame_reuse_sample_rx,
         ) = worker_with_latest_handoff_for_tests(latest_present_frame_handoff);
 
-        worker.report_texture_view_previous_frame_reuse();
+        worker.report_render_resource_previous_frame_reuse();
 
-        texture_view_previous_frame_reuse_sample_rx
+        render_resource_previous_frame_reuse_sample_rx
             .try_recv()
-            .expect("texture view previous-frame reuse sample should be queued");
+            .expect("render resource previous-frame reuse sample should be queued");
     }
 
     #[test]
@@ -2097,7 +2095,7 @@ mod tests {
             .try_send(RenderLeaseRelease {
                 render_generation: 1,
                 texture_handle: FrameTextureHandle(1),
-                texture_provider: None,
+                resource_provider: None,
                 released_at: Instant::now(),
             })
             .unwrap();
@@ -2153,7 +2151,7 @@ mod tests {
     fn render_error_command_updates_player_error_snapshot() {
         let mut runtime = runtime_for_tests(Instant::now());
         let render_error = PlayerRenderError {
-            kind: PlayerRenderErrorKind::MissingTextureViews,
+            kind: PlayerRenderErrorKind::MissingRenderResources,
             render_generation: Some(6),
             frame_handle: Some(42),
             message: "missing Y/UV views for test frame".into(),

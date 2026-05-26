@@ -3,9 +3,10 @@ use std::time::Instant;
 use anyhow::Result;
 use player_core::{
     PlayerRenderError, PlayerSnapshot, PlayerTickResult, PlayerVideoDropReason, PlayerWorkerEvent,
-    PresentFrameTextureViewLookup,
 };
-use render_wgpu::{RenderFrameDropReason, RenderFrameOutcome, Renderer};
+use render_wgpu::{
+    RenderFrameDropReason, RenderFrameOutcome, Renderer, WgpuFrameTextureViewLookup,
+};
 use tracing::instrument;
 use video_core::DecodedPixelFormat;
 use winit::window::Window;
@@ -100,10 +101,10 @@ enum VideoFrameTexturePreparationAction {
     SkipVideoFrameForTextureBusy,
 
     /// Missing — это absent resource на render boundary, cache должен быть очищен.
-    ReportMissingTextureViews,
+    ReportMissingRenderResources,
 
     /// Error — fatal lookup на render boundary, cache должен быть очищен.
-    ReportTextureViewLookupFailure,
+    ReportRenderResourceLookupFailure,
 }
 
 impl VideoFrameTexturePreparationAction {
@@ -111,7 +112,7 @@ impl VideoFrameTexturePreparationAction {
     const fn clears_cached_renderable_frame(self) -> bool {
         matches!(
             self,
-            Self::ReportMissingTextureViews | Self::ReportTextureViewLookupFailure
+            Self::ReportMissingRenderResources | Self::ReportRenderResourceLookupFailure
         )
     }
 }
@@ -133,10 +134,10 @@ fn video_frame_texture_preparation_action(
             VideoFrameTexturePreparationAction::SkipVideoFrameForTextureBusy
         }
         TextureViewLookupKind::Missing => {
-            VideoFrameTexturePreparationAction::ReportMissingTextureViews
+            VideoFrameTexturePreparationAction::ReportMissingRenderResources
         }
         TextureViewLookupKind::Error => {
-            VideoFrameTexturePreparationAction::ReportTextureViewLookupFailure
+            VideoFrameTexturePreparationAction::ReportRenderResourceLookupFailure
         }
     }
 }
@@ -293,10 +294,25 @@ fn prepare_video_frame(
         return PreparedVideoFrame::empty(acquisition_state);
     };
 
+    let Some(texture_view_materializer) = app_state.wgpu_frame_materializer() else {
+        report_video_render_boundary_error(
+            app_state,
+            PlayerRenderError::missing_render_resources(&present_frame),
+        );
+        return PreparedVideoFrame::empty(acquisition_state);
+    };
+
+    let texture_view_lookup =
+        texture_view_materializer.try_texture_view_lookup(present_frame.texture_handle());
+    present_frame.report_resource_lookup_sample(
+        texture_view_lookup.texture_pool_lock_wait(),
+        texture_view_lookup.lookup_was_busy(),
+    );
+
     // Эта развилка остаётся до renderer/surface critical path: Busy не ждёт backend lock,
     // а Missing/Error не превращаются в silent fallback.
-    match present_frame.try_texture_view_lookup() {
-        PresentFrameTextureViewLookup::Ready(texture_views) => {
+    match texture_view_lookup {
+        WgpuFrameTextureViewLookup::Ready { views, .. } => {
             debug_assert_eq!(
                 video_frame_texture_preparation_action(
                     TextureViewLookupKind::Ready,
@@ -305,15 +321,14 @@ fn prepare_video_frame(
                 ),
                 VideoFrameTexturePreparationAction::RenderCurrentFrame
             );
-            let current_renderable_frame =
-                RenderablePresentFrame::new(present_frame, texture_views);
+            let current_renderable_frame = RenderablePresentFrame::new(present_frame, views);
             app_state.remember_renderable_present_frame(
                 current_renderable_frame.clone(),
                 player_snapshot,
             );
             PreparedVideoFrame::ready(current_renderable_frame, acquisition_state)
         }
-        PresentFrameTextureViewLookup::Busy => {
+        WgpuFrameTextureViewLookup::Busy { .. } => {
             let reusable_renderable_frame =
                 app_state.reusable_renderable_frame_for_texture_busy(player_snapshot);
             let preparation_action = video_frame_texture_preparation_action(
@@ -332,7 +347,7 @@ fn prepare_video_frame(
                     if record_repeated_frame {
                         telemetry.record_video_frame_repeated();
                     }
-                    app_state.report_texture_view_previous_frame_reuse();
+                    app_state.report_render_resource_previous_frame_reuse();
                     PreparedVideoFrame::ready(
                         reusable_renderable_frame,
                         "texture_view_busy_previous_frame_reuse",
@@ -355,7 +370,7 @@ fn prepare_video_frame(
                 _ => unreachable!("Busy lookup must only produce Busy preparation actions"),
             }
         }
-        PresentFrameTextureViewLookup::Missing => {
+        WgpuFrameTextureViewLookup::Missing { .. } => {
             let preparation_action = video_frame_texture_preparation_action(
                 TextureViewLookupKind::Missing,
                 false,
@@ -364,11 +379,11 @@ fn prepare_video_frame(
             debug_assert!(preparation_action.clears_cached_renderable_frame());
             report_video_render_boundary_error(
                 app_state,
-                PlayerRenderError::missing_texture_views(&present_frame),
+                PlayerRenderError::missing_render_resources(&present_frame),
             );
             PreparedVideoFrame::empty(acquisition_state)
         }
-        PresentFrameTextureViewLookup::Error => {
+        WgpuFrameTextureViewLookup::Error { .. } => {
             let preparation_action = video_frame_texture_preparation_action(
                 TextureViewLookupKind::Error,
                 false,
@@ -377,7 +392,7 @@ fn prepare_video_frame(
             debug_assert!(preparation_action.clears_cached_renderable_frame());
             report_video_render_boundary_error(
                 app_state,
-                PlayerRenderError::texture_view_lookup_failed(&present_frame),
+                PlayerRenderError::render_resource_lookup_failed(&present_frame),
             );
             PreparedVideoFrame::empty(acquisition_state)
         }
@@ -629,11 +644,11 @@ mod tests {
 
         assert_eq!(
             preparation_action,
-            VideoFrameTexturePreparationAction::ReportMissingTextureViews
+            VideoFrameTexturePreparationAction::ReportMissingRenderResources
         );
         assert!(preparation_action.clears_cached_renderable_frame());
         let render_error = PlayerRenderError {
-            kind: PlayerRenderErrorKind::MissingTextureViews,
+            kind: PlayerRenderErrorKind::MissingRenderResources,
             render_generation: Some(7),
             frame_handle: Some(42),
             message: "missing texture views".to_string(),
@@ -652,11 +667,11 @@ mod tests {
 
         assert_eq!(
             preparation_action,
-            VideoFrameTexturePreparationAction::ReportTextureViewLookupFailure
+            VideoFrameTexturePreparationAction::ReportRenderResourceLookupFailure
         );
         assert!(preparation_action.clears_cached_renderable_frame());
         let render_error = PlayerRenderError {
-            kind: PlayerRenderErrorKind::TextureViewLookupFailed,
+            kind: PlayerRenderErrorKind::RenderResourceLookupFailed,
             render_generation: Some(7),
             frame_handle: Some(42),
             message: "texture view lookup failed".to_string(),

@@ -13,13 +13,12 @@ use media_core::TrackKind;
 use player_core::{
     FrameCounters, MediaOpenRequest, MediaSource, PlaybackState, PlayerCommand, PlayerError,
     PlayerErrorKind, PlayerEvent, PlayerPresentFrame, PlayerRenderError, PlayerSnapshot,
-    PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PreparedMedia,
-    PresentFrameWgpuTextureViews, SeekRequest,
+    PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PreparedMedia, SeekRequest,
 };
 use render_core::RenderDiagnostics;
 use rustiplayer_config::AppConfig;
 use tracing::{debug, instrument, warn};
-use video_vaapi::VaapiWgpuVideoBackendFactory;
+use video_vaapi::{VaapiWgpuVideoBackendFactory, VideoTextureViewLookup, VideoTextureViewProvider};
 use winit::window::Window;
 
 use crate::audio_output_adapter::CpalAudioOutputFactory;
@@ -137,7 +136,7 @@ pub struct RenderablePresentFrame {
     pub present_frame: PlayerPresentFrame,
 
     /// WGPU texture views соответствуют `present_frame` и не используются без его lease-а.
-    pub texture_views: PresentFrameWgpuTextureViews,
+    pub texture_views: render_wgpu::WgpuFrameTextureViews,
 }
 
 impl RenderablePresentFrame {
@@ -145,11 +144,62 @@ impl RenderablePresentFrame {
     #[must_use]
     pub fn new(
         present_frame: PlayerPresentFrame,
-        texture_views: PresentFrameWgpuTextureViews,
+        texture_views: render_wgpu::WgpuFrameTextureViews,
     ) -> Self {
         Self {
             present_frame,
             texture_views,
+        }
+    }
+}
+
+/// Adapter app composition layer-а между VA-API provider-ом и `render-wgpu` API.
+struct VaapiWgpuFrameMaterializer {
+    /// Concrete provider остаётся вне `player-core` и materialize-ит только WGPU views.
+    texture_view_provider: VideoTextureViewProvider,
+}
+
+impl VaapiWgpuFrameMaterializer {
+    /// Создаёт materializer из provider-а, возвращённого concrete backend startup-ом.
+    fn new(texture_view_provider: VideoTextureViewProvider) -> Self {
+        Self {
+            texture_view_provider,
+        }
+    }
+}
+
+impl render_wgpu::WgpuFrameTextureViewMaterializer for VaapiWgpuFrameMaterializer {
+    /// Делегирует non-blocking materialization в VA-API/WGPU provider.
+    fn try_texture_view_lookup(
+        &self,
+        handle: video_core::FrameTextureHandle,
+    ) -> render_wgpu::WgpuFrameTextureViewLookup {
+        match self.texture_view_provider.try_texture_view_lookup(handle) {
+            VideoTextureViewLookup::Ready {
+                views,
+                lock_diagnostics,
+            } => render_wgpu::WgpuFrameTextureViewLookup::Ready {
+                views: render_wgpu::WgpuFrameTextureViews {
+                    y_view: views.y_view,
+                    uv_view: views.uv_view,
+                },
+                texture_pool_lock_wait: lock_diagnostics.wait,
+            },
+            VideoTextureViewLookup::Busy { lock_diagnostics } => {
+                render_wgpu::WgpuFrameTextureViewLookup::Busy {
+                    texture_pool_lock_wait: lock_diagnostics.wait,
+                }
+            }
+            VideoTextureViewLookup::Missing { lock_diagnostics } => {
+                render_wgpu::WgpuFrameTextureViewLookup::Missing {
+                    texture_pool_lock_wait: lock_diagnostics.wait,
+                }
+            }
+            VideoTextureViewLookup::Error { lock_diagnostics } => {
+                render_wgpu::WgpuFrameTextureViewLookup::Error {
+                    texture_pool_lock_wait: lock_diagnostics.wait,
+                }
+            }
         }
     }
 }
@@ -454,6 +504,9 @@ pub struct AppState {
     /// Последний кадр с уже полученными texture views для safe fallback на busy lock.
     cached_renderable_present_frame: Option<CachedRenderablePresentFrame>,
 
+    /// WGPU materializer concrete backend-а; `player-core` его не видит.
+    wgpu_frame_materializer: Option<Arc<dyn render_wgpu::WgpuFrameTextureViewMaterializer>>,
+
     /// Последний локальный файл, открытый shell-ом, для восстановления после suspend.
     current_local_file: Option<PathBuf>,
 
@@ -518,6 +571,7 @@ impl AppState {
             last_player_snapshot: PlayerSnapshot::empty(),
             pending_redraw_after_worker_command: false,
             cached_renderable_present_frame: None,
+            wgpu_frame_materializer: None,
             current_local_file: None,
             local_file_open_job: None,
             timeline_ui_state: TimelineUiState::default(),
@@ -716,7 +770,7 @@ impl AppState {
         self.mark_pending_worker_redraw();
     }
 
-    /// Инициализирует video pipeline в playback worker.
+    /// Инициализирует video pipeline и сохраняет WGPU materializer в shell layer-е.
     pub fn init_video_pipeline(
         &mut self,
         instance: &wgpu::Instance,
@@ -733,12 +787,32 @@ impl AppState {
             decoder_thread_config,
         );
 
-        if let Err(error) = self.player_worker.init_video_pipeline(backend_factory) {
-            warn!(error = %error, "Не удалось отправить init video pipeline в worker");
+        let started_backend = match backend_factory.start_for_composition() {
+            Ok(started_backend) => started_backend,
+            Err(error) => {
+                warn!(error = %error, "Video backend unavailable, no hardware decode");
+                return;
+            }
+        };
+        let (player_backend, texture_view_provider) = started_backend.into_parts();
+        self.wgpu_frame_materializer = Some(Arc::new(VaapiWgpuFrameMaterializer::new(
+            texture_view_provider,
+        )));
+
+        if let Err(error) = self.player_worker.set_video_backend(player_backend) {
+            self.wgpu_frame_materializer = None;
+            warn!(error = %error, "Не удалось отправить video backend в worker");
             return;
         }
 
         self.mark_pending_worker_redraw();
+    }
+
+    /// Возвращает WGPU materializer текущего concrete video backend-а.
+    pub(crate) fn wgpu_frame_materializer(
+        &self,
+    ) -> Option<Arc<dyn render_wgpu::WgpuFrameTextureViewMaterializer>> {
+        self.wgpu_frame_materializer.clone()
     }
 
     /// Передаёт capability report из shell/backend layer в playback worker.
@@ -941,10 +1015,10 @@ impl AppState {
             .report_gpu_submit_present_latency(submit_present_elapsed);
     }
 
-    /// Передаёт player diagnostics событие reuse previous frame-а из-за busy texture lock-а.
-    pub fn report_texture_view_previous_frame_reuse(&self) {
+    /// Передаёт player diagnostics событие reuse previous frame-а из-за busy resource lock-а.
+    pub fn report_render_resource_previous_frame_reuse(&self) {
         self.player_worker
-            .report_texture_view_previous_frame_reuse();
+            .report_render_resource_previous_frame_reuse();
     }
 
     /// Забирает worker events для shell telemetry.
@@ -1590,28 +1664,28 @@ impl AppState {
         if let Some(worst_render_acquire_ms) = worst_render_acquire {
             ui.monospace(format!("Worst acquire: {worst_render_acquire_ms:.3}ms"));
         }
-        let texture_view_lock_wait = player_snapshot
+        let render_resource_lock_wait = player_snapshot
             .diagnostics
             .worst_latencies
-            .texture_view_lock_wait;
-        if texture_view_lock_wait.samples > 0 {
-            let average_lock_wait_ms = texture_view_lock_wait.average.as_secs_f64() * 1000.0;
-            let worst_lock_wait_ms = texture_view_lock_wait
+            .render_resource_lock_wait;
+        if render_resource_lock_wait.samples > 0 {
+            let average_lock_wait_ms = render_resource_lock_wait.average.as_secs_f64() * 1000.0;
+            let worst_lock_wait_ms = render_resource_lock_wait
                 .worst
                 .map(|sample| sample.duration.as_secs_f64() * 1000.0)
                 .unwrap_or(0.0);
             ui.monospace(format!(
-                "Texture view lock: count={} avg={average_lock_wait_ms:.3}ms max={worst_lock_wait_ms:.3}ms",
-                texture_view_lock_wait.samples
+                "Render resource lock: count={} avg={average_lock_wait_ms:.3}ms max={worst_lock_wait_ms:.3}ms",
+                render_resource_lock_wait.samples
             ));
         }
-        if player_snapshot.diagnostics.texture_view_lock_busy_count > 0 {
+        if player_snapshot.diagnostics.render_resource_lock_busy_count > 0 {
             ui.monospace(format!(
-                "Texture view busy: count={} reuse={}",
-                player_snapshot.diagnostics.texture_view_lock_busy_count,
+                "Render resource busy: count={} reuse={}",
+                player_snapshot.diagnostics.render_resource_lock_busy_count,
                 player_snapshot
                     .diagnostics
-                    .texture_view_previous_frame_reuse_count
+                    .render_resource_previous_frame_reuse_count
             ));
         }
         ui.monospace(format!(

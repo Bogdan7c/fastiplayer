@@ -37,8 +37,8 @@ pub(crate) use decoder_boundary::{
     PlayerVideoDecoderThreadHandle,
 };
 pub use decoder_boundary::{
-    PlayerVideoDecoderThreadConfig, WgpuRenderTextureProvider, WgpuRenderTextureProviderHandle,
-    WgpuRenderTextureViewLookup, WgpuRenderTextureViews,
+    PlayerVideoDecoderThreadConfig, PresentFrameResourceProvider,
+    PresentFrameResourceProviderHandle, PresentFrameResourceProviderLookup,
 };
 pub(crate) use diagnostics::{
     ActiveSeekDiagnosticsSnapshot, PlaybackDiagnostics, SeekProgressBlocker,
@@ -62,8 +62,7 @@ pub use media_opening::{PreparedMedia, PreparedMediaSource};
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
 pub use render_lease_bridge::{
     PlayerPresentFrame, PresentFrameLease, PresentFrameResourceDescriptor,
-    PresentFrameResourceKind, PresentFrameResourceLookup, PresentFrameTextureViewLookup,
-    PresentFrameTextureViews, PresentFrameWgpuTextureViews,
+    PresentFrameResourceKind, PresentFrameResourceLookup,
 };
 pub use seek_state::PlaybackResumeIntent;
 pub use session::PlayerSession;
@@ -77,7 +76,7 @@ pub use tick::{
     PlayerPipelinePause, PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult,
     PlayerVideoDropReason, PlayerVideoFrameDrop,
 };
-pub use video_backend::{StartedVideoBackend, VideoBackendFactory};
+pub use video_backend::StartedVideoBackend;
 pub use worker::{
     PlayerCommandSender, PlayerRenderError, PlayerRenderErrorKind, PlayerWorker,
     PlayerWorkerConfig, PlayerWorkerEvent, PlayerWorkerJoinError, PlayerWorkerSendError,

@@ -28,8 +28,8 @@ use crate::{
     PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent,
     PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection, SeekAudioResumeInfo,
     SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo, SeekProgressBlocker, SeekRequest,
-    SeekTargetFramePresentation, TextureSlotPressureSnapshot, TrackId, TrackSelectionSnapshot,
-    VideoBackendFactory, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
+    SeekTargetFramePresentation, StartedVideoBackend, TextureSlotPressureSnapshot, TrackId,
+    TrackSelectionSnapshot, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
 };
 
 mod render_leases;
@@ -1251,32 +1251,32 @@ impl PlayerSession {
         self.record_pipeline_latency(PipelineLatencyStage::RenderAcquire, wait, None, None);
     }
 
-    /// Записывает ожидание texture pool lock-а внутри render-side `texture_views()`.
-    pub(crate) fn record_texture_view_lock_wait(
+    /// Записывает ожидание resource pool lock-а внутри renderer materialization boundary.
+    pub(crate) fn record_render_resource_lock_wait(
         &mut self,
         wait: Duration,
         pts: Option<Duration>,
         memory_path: Option<video_core::FrameMemoryPath>,
     ) {
         self.record_pipeline_latency(
-            PipelineLatencyStage::TextureViewLockWait,
+            PipelineLatencyStage::RenderResourceLockWait,
             wait,
             pts,
             memory_path,
         );
     }
 
-    /// Записывает busy outcome non-blocking texture view lookup-а.
-    pub(crate) fn record_texture_view_lock_busy(&mut self) {
+    /// Записывает busy outcome non-blocking renderer resource lookup-а.
+    pub(crate) fn record_render_resource_lock_busy(&mut self) {
         let queues = self.diagnostic_queue_depths();
-        self.diagnostics.record_texture_view_lock_busy(queues);
+        self.diagnostics.record_render_resource_lock_busy(queues);
     }
 
-    /// Записывает reuse предыдущего renderable frame-а из-за busy texture view lock-а.
-    pub(crate) fn record_texture_view_previous_frame_reuse(&mut self) {
+    /// Записывает reuse предыдущего renderable frame-а из-за busy resource lock-а.
+    pub(crate) fn record_render_resource_previous_frame_reuse(&mut self) {
         let queues = self.diagnostic_queue_depths();
         self.diagnostics
-            .record_texture_view_previous_frame_reuse(queues);
+            .record_render_resource_previous_frame_reuse(queues);
     }
 
     /// Записывает render acquire timeout как drop и pause attribution.
@@ -2513,21 +2513,14 @@ impl PlayerSession {
         self.record_recoverable_error(error);
     }
 
-    /// Инициализирует video pipeline через backend factory boundary.
-    pub fn init_video_pipeline(&mut self, backend_factory: &dyn VideoBackendFactory) {
-        match backend_factory.start_video_backend() {
-            Ok(started_backend) => {
-                self.pipeline
-                    .set_video_decoder_thread_handle(started_backend.into_decoder_thread());
-                info!(
-                    backend = self.pipeline.video_backend_name(),
-                    "Video backend started"
-                );
-            }
-            Err(error) => {
-                warn!(error = %error, "Video backend unavailable, no hardware decode");
-            }
-        }
+    /// Устанавливает video backend, уже запущенный shell composition root-ом.
+    pub fn set_video_backend(&mut self, started_backend: StartedVideoBackend) {
+        self.pipeline
+            .set_video_decoder_thread_handle(started_backend.into_decoder_thread());
+        info!(
+            backend = self.pipeline.video_backend_name(),
+            "Video backend started"
+        );
     }
 
     /// Принимает open request и переводит session в `Opening`.
@@ -3710,8 +3703,8 @@ mod tests {
         DecodeThreadError, DecoderControlChannelPressureSnapshot, DecoderResourceSnapshot,
         MediaSource, PendingAudioPacket, PendingVideoPacket, PlayerAudioClock, PlayerAudioOutput,
         PlayerCommand, PlayerDecodePacket, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
-        PlayerVideoFrameDrop, ScrubCommitPolicy, SeekMode, SeekTarget,
-        WgpuRenderTextureProviderHandle,
+        PlayerVideoFrameDrop, PresentFrameResourceProviderHandle, ScrubCommitPolicy, SeekMode,
+        SeekTarget,
     };
     use bytes::Bytes;
     use capability_core::{
@@ -3978,7 +3971,7 @@ mod tests {
     }
 
     impl video_core::VideoDecoderThreadHandle for FailingFlushVideoDecoderThread {
-        type TextureViewProvider = WgpuRenderTextureProviderHandle;
+        type ResourceProvider = PresentFrameResourceProviderHandle;
 
         fn backend_name(&self) -> &'static str {
             "Fake failing decoder"
@@ -4008,8 +4001,8 @@ mod tests {
             Err(anyhow::anyhow!("{}", self.error_message))
         }
 
-        fn texture_view_provider(&self) -> WgpuRenderTextureProviderHandle {
-            panic!("fake failing decoder does not provide renderer texture views")
+        fn resource_provider(&self) -> PresentFrameResourceProviderHandle {
+            panic!("fake failing decoder does not provide renderer resources")
         }
 
         fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {
@@ -4532,7 +4525,7 @@ mod tests {
     }
 
     impl video_core::VideoDecoderThreadHandle for SharedFakeVideoDecoderThread {
-        type TextureViewProvider = WgpuRenderTextureProviderHandle;
+        type ResourceProvider = PresentFrameResourceProviderHandle;
 
         fn backend_name(&self) -> &'static str {
             "Shared fake decoder"
@@ -4619,8 +4612,8 @@ mod tests {
             Ok(())
         }
 
-        fn texture_view_provider(&self) -> WgpuRenderTextureProviderHandle {
-            panic!("shared fake decoder does not provide renderer texture views")
+        fn resource_provider(&self) -> PresentFrameResourceProviderHandle {
+            panic!("shared fake decoder does not provide renderer resources")
         }
 
         fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {

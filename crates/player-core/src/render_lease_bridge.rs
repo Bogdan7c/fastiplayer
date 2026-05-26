@@ -4,10 +4,10 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvError, SendTimeoutError, Sender, TrySendError, bounded};
 use tracing::warn;
 
-use crate::WgpuRenderTextureProviderHandle;
+use crate::PresentFrameResourceProviderHandle;
 #[cfg(test)]
-use crate::decoder_boundary::WgpuRenderTextureProvider;
-use crate::decoder_boundary::WgpuRenderTextureViewLookup;
+use crate::decoder_boundary::PresentFrameResourceProvider;
+use crate::decoder_boundary::PresentFrameResourceProviderLookup;
 use crate::session::{LeasedPresentFrame, PlayerSession};
 
 /// Ёмкость release ack stream; защищает worker от бесконечного роста drop-ack очереди.
@@ -19,11 +19,11 @@ const RENDER_ACQUIRE_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
 /// Ёмкость неблокирующих GPU submit/present latency samples.
 const RENDER_TIMING_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
 
-/// Ёмкость samples ожидания texture view lock-а на render hot path.
-const RENDER_TEXTURE_VIEW_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
+/// Ёмкость samples ожидания backend resource lock-а на render hot path.
+const RENDER_RESOURCE_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
 
-/// Ёмкость samples reuse предыдущего renderable frame-а при busy texture pool lock-е.
-const RENDER_TEXTURE_VIEW_REUSE_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
+/// Ёмкость samples reuse предыдущего renderable frame-а при busy resource lock-е.
+const RENDER_RESOURCE_REUSE_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
 
 /// Короткий backpressure budget для Drop path render lease-а.
 const RENDER_RELEASE_SEND_TIMEOUT: Duration = Duration::from_millis(2);
@@ -34,7 +34,7 @@ pub enum PresentFrameResourceKind {
     /// Decoder-owned DMA-BUF доступен renderer-у как zero-copy GPU resource.
     DmaBufZeroCopy,
 
-    /// Opaque backend texture скрыта за `FrameTextureHandle` без public WGPU view-ов.
+    /// Opaque backend texture скрыта за `FrameTextureHandle` без public GPU handles.
     OpaqueBackendTexture,
 
     /// Future external GPU handle, который backend материализует самостоятельно.
@@ -54,7 +54,7 @@ impl PresentFrameResourceKind {
 /// Renderer-neutral descriptor present frame resource-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PresentFrameResourceDescriptor {
-    /// Тип backend resource-а без привязки к WGPU texture view API.
+    /// Тип backend resource-а без привязки к API конкретного renderer-а.
     kind: PresentFrameResourceKind,
 
     /// Поколение render resources, где был выдан opaque handle.
@@ -119,35 +119,7 @@ pub enum PresentFrameResourceLookup {
     Error,
 }
 
-/// WGPU texture views, полученные render thread-ом по opaque frame handle.
-#[derive(Clone)]
-pub struct PresentFrameWgpuTextureViews {
-    /// Texture view с luma/Y plane.
-    pub y_view: wgpu::TextureView,
-
-    /// Texture view с chroma/UV plane.
-    pub uv_view: wgpu::TextureView,
-}
-
-/// Backward-compatible имя public WGPU texture views для текущих callers.
-pub type PresentFrameTextureViews = PresentFrameWgpuTextureViews;
-
-/// Compatibility результат WGPU render-side lookup-а texture views для present frame lease-а.
-pub enum PresentFrameTextureViewLookup {
-    /// WGPU texture views готовы, renderer может строить `WgpuRenderableFrame`.
-    Ready(PresentFrameWgpuTextureViews),
-
-    /// Backend texture pool занят, caller должен использовать safe fallback без stall-а.
-    Busy,
-
-    /// Texture views отсутствуют при доступном backend pool-е.
-    Missing,
-
-    /// Backend сообщил poisoned/fatal lookup state.
-    Error,
-}
-
-/// Lease текущего кадра, который render thread может отдать `render-wgpu`.
+/// Lease текущего кадра, который render thread может отдать renderer backend-у.
 #[derive(Clone)]
 pub struct PresentFrameLease {
     /// Поколение render resources, которому принадлежит texture handle.
@@ -159,11 +131,11 @@ pub struct PresentFrameLease {
     /// Признак, что кадр является stale fallback для текущего timeline состояния.
     pub stale: bool,
 
-    /// WGPU render-side provider для ленивого получения views по frame handle.
-    texture_provider: Option<WgpuRenderTextureProviderHandle>,
+    /// Renderer-neutral provider для status lookup-а и release по frame handle.
+    resource_provider: Option<PresentFrameResourceProviderHandle>,
 
-    /// Неблокирующий канал sample-ов ожидания backend texture pool lock-а.
-    texture_view_lock_sample_tx: Option<Sender<RenderTextureViewLockSample>>,
+    /// Неблокирующий канал sample-ов ожидания backend resource pool lock-а.
+    resource_lock_sample_tx: Option<Sender<RenderResourceLockSample>>,
 
     /// Shared lease отправляет drop-ack, когда последний clone кадра освобождён.
     _drop_ack: Arc<PresentFrameDropAck>,
@@ -178,18 +150,18 @@ impl PresentFrameLease {
     fn from_leased_frame(
         leased_frame: LeasedPresentFrame,
         release_tx: Sender<RenderLeaseRelease>,
-        texture_view_lock_sample_tx: Sender<RenderTextureViewLockSample>,
+        resource_lock_sample_tx: Sender<RenderResourceLockSample>,
     ) -> Self {
         Self {
             render_generation: leased_frame.render_generation,
             frame: leased_frame.frame.clone(),
             stale: leased_frame.stale,
-            texture_provider: Some(leased_frame.texture_provider.clone()),
-            texture_view_lock_sample_tx: Some(texture_view_lock_sample_tx),
+            resource_provider: Some(leased_frame.resource_provider.clone()),
+            resource_lock_sample_tx: Some(resource_lock_sample_tx),
             _drop_ack: Arc::new(PresentFrameDropAck {
                 render_generation: leased_frame.render_generation,
                 texture_handle: leased_frame.frame.texture_handle,
-                texture_provider: Some(leased_frame.texture_provider),
+                resource_provider: Some(leased_frame.resource_provider),
                 release_tx,
             }),
         }
@@ -210,12 +182,12 @@ impl PresentFrameLease {
             render_generation,
             frame,
             stale,
-            texture_provider: None,
-            texture_view_lock_sample_tx: None,
+            resource_provider: None,
+            resource_lock_sample_tx: None,
             _drop_ack: Arc::new(PresentFrameDropAck {
                 render_generation,
                 texture_handle,
-                texture_provider: None,
+                resource_provider: None,
                 release_tx,
             }),
         }
@@ -239,102 +211,55 @@ impl PresentFrameLease {
         PresentFrameResourceDescriptor::from_decoded_frame(self.render_generation, &self.frame)
     }
 
-    /// Пытается проверить доступность present resource-а без WGPU-specific public resource-а.
-    ///
-    /// TODO(renderer-neutral): OpenGL ES 2 / DX9 backend должен материализовать resource
-    /// из `PresentFrameResourceDescriptor` своим backend layer-ом. Эти backend-ы не должны
-    /// использовать WGPU texture views как public render lease resource.
+    /// Пытается проверить доступность present resource-а без GPU handles.
     #[must_use]
     pub fn try_resource_lookup(&self) -> PresentFrameResourceLookup {
-        let Some(provider) = self.texture_provider.as_ref() else {
+        let Some(provider) = self.resource_provider.as_ref() else {
             return PresentFrameResourceLookup::Missing;
         };
-        let lookup = provider.try_texture_view_lookup(self.texture_handle());
+        let lookup = provider.try_resource_lookup(self.texture_handle());
 
         self.present_resource_lookup_from_boundary(lookup)
     }
 
-    /// Получает WGPU views на render thread через render-side provider.
-    ///
-    /// Compatibility method для текущего `render-wgpu` path-а. Новые renderer backend-ы
-    /// должны использовать neutral resource lookup и собственную materialization boundary.
-    #[must_use]
-    pub fn texture_views(&self) -> Option<PresentFrameWgpuTextureViews> {
-        let provider = self.texture_provider.as_ref()?;
-        let lookup = provider.texture_view_lookup(self.texture_handle());
-
-        match self.present_texture_view_lookup_from_boundary(lookup) {
-            PresentFrameTextureViewLookup::Ready(texture_views) => Some(texture_views),
-            PresentFrameTextureViewLookup::Busy
-            | PresentFrameTextureViewLookup::Missing
-            | PresentFrameTextureViewLookup::Error => None,
-        }
-    }
-
-    /// Пытается получить WGPU views без ожидания backend texture pool mutex-а.
-    ///
-    /// Compatibility method для `render-wgpu`; GLES/DX9 не должны зависеть от WGPU views.
-    #[must_use]
-    pub fn try_texture_view_lookup(&self) -> PresentFrameTextureViewLookup {
-        let Some(provider) = self.texture_provider.as_ref() else {
-            return PresentFrameTextureViewLookup::Missing;
-        };
-        let lookup = provider.try_texture_view_lookup(self.texture_handle());
-
-        self.present_texture_view_lookup_from_boundary(lookup)
+    /// Записывает diagnostics lookup-а, выполненного renderer-specific materializer-ом.
+    pub fn report_resource_lookup_sample(&self, wait: Duration, lookup_was_busy: bool) {
+        self.report_resource_lock_sample(wait, lookup_was_busy);
     }
 
     /// Конвертирует backend lookup в neutral public outcome и сохраняет diagnostics.
     fn present_resource_lookup_from_boundary(
         &self,
-        lookup: WgpuRenderTextureViewLookup,
+        lookup: PresentFrameResourceProviderLookup,
     ) -> PresentFrameResourceLookup {
-        self.report_wgpu_lookup_sample(&lookup);
+        self.report_resource_provider_lookup_sample(&lookup);
 
         match lookup {
-            WgpuRenderTextureViewLookup::Ready { .. } => {
+            PresentFrameResourceProviderLookup::Ready { .. } => {
                 PresentFrameResourceLookup::Ready(self.resource_descriptor())
             }
-            WgpuRenderTextureViewLookup::Busy { .. } => PresentFrameResourceLookup::Busy,
-            WgpuRenderTextureViewLookup::Missing { .. } => PresentFrameResourceLookup::Missing,
-            WgpuRenderTextureViewLookup::Error { .. } => PresentFrameResourceLookup::Error,
-        }
-    }
-
-    /// Конвертирует WGPU-specific lookup в public lease outcome и diagnostics.
-    fn present_texture_view_lookup_from_boundary(
-        &self,
-        lookup: WgpuRenderTextureViewLookup,
-    ) -> PresentFrameTextureViewLookup {
-        self.report_wgpu_lookup_sample(&lookup);
-
-        match lookup {
-            WgpuRenderTextureViewLookup::Ready { views, .. } => {
-                PresentFrameTextureViewLookup::Ready(PresentFrameWgpuTextureViews {
-                    y_view: views.y_view,
-                    uv_view: views.uv_view,
-                })
+            PresentFrameResourceProviderLookup::Busy { .. } => PresentFrameResourceLookup::Busy,
+            PresentFrameResourceProviderLookup::Missing { .. } => {
+                PresentFrameResourceLookup::Missing
             }
-            WgpuRenderTextureViewLookup::Busy { .. } => PresentFrameTextureViewLookup::Busy,
-            WgpuRenderTextureViewLookup::Missing { .. } => PresentFrameTextureViewLookup::Missing,
-            WgpuRenderTextureViewLookup::Error { .. } => PresentFrameTextureViewLookup::Error,
+            PresentFrameResourceProviderLookup::Error { .. } => PresentFrameResourceLookup::Error,
         }
     }
 
-    /// Записывает diagnostics sample для lookup-а, пока текущий provider остаётся WGPU-backed.
-    fn report_wgpu_lookup_sample(&self, lookup: &WgpuRenderTextureViewLookup) {
+    /// Записывает diagnostics sample для renderer-neutral provider lookup-а.
+    fn report_resource_provider_lookup_sample(&self, lookup: &PresentFrameResourceProviderLookup) {
         let texture_pool_lock_wait = lookup.texture_pool_lock_wait();
-        let lookup_was_busy = matches!(lookup, WgpuRenderTextureViewLookup::Busy { .. });
-        self.report_texture_view_lock_sample(texture_pool_lock_wait, lookup_was_busy);
+        let lookup_was_busy = matches!(lookup, PresentFrameResourceProviderLookup::Busy { .. });
+        self.report_resource_lock_sample(texture_pool_lock_wait, lookup_was_busy);
     }
 
     /// Отправляет lock-wait sample в worker diagnostics без ожидания worker thread-а.
-    fn report_texture_view_lock_sample(&self, wait: Duration, lookup_was_busy: bool) {
-        let Some(sample_tx) = &self.texture_view_lock_sample_tx else {
+    fn report_resource_lock_sample(&self, wait: Duration, lookup_was_busy: bool) {
+        let Some(sample_tx) = &self.resource_lock_sample_tx else {
             return;
         };
 
-        let _ = sample_tx.try_send(RenderTextureViewLockSample {
+        let _ = sample_tx.try_send(RenderResourceLockSample {
             wait,
             pts: Some(self.frame.pts),
             memory_path: Some(self.frame.memory_path),
@@ -465,23 +390,23 @@ pub(crate) struct RenderTimingSample {
     pub(crate) submit_present_elapsed: Duration,
 }
 
-/// Неблокирующий sample ожидания texture pool lock-а внутри `texture_views()`.
-pub(crate) struct RenderTextureViewLockSample {
-    /// Сколько render thread ждал mutex backend texture pool-а.
+/// Неблокирующий sample ожидания backend resource pool lock-а.
+pub(crate) struct RenderResourceLockSample {
+    /// Сколько render thread ждал mutex backend resource pool-а.
     pub(crate) wait: Duration,
 
-    /// Был ли lookup остановлен из-за занятого texture pool lock-а.
+    /// Был ли lookup остановлен из-за занятого resource pool lock-а.
     pub(crate) lookup_was_busy: bool,
 
-    /// PTS кадра, для которого renderer запросил texture views.
+    /// PTS кадра, для которого renderer запросил resource materialization.
     pub(crate) pts: Option<Duration>,
 
     /// Memory path кадра для сопоставления zero-copy/upload path-ов.
     pub(crate) memory_path: Option<video_core::FrameMemoryPath>,
 }
 
-/// Неблокирующий sample reuse предыдущего renderable frame-а при busy texture pool lock-е.
-pub(crate) struct RenderTextureViewPreviousFrameReuseSample;
+/// Неблокирующий sample reuse предыдущего renderable frame-а при busy resource lock-е.
+pub(crate) struct RenderResourcePreviousFrameReuseSample;
 
 /// Drop-ack от render-side frame lease.
 pub(crate) struct RenderLeaseRelease {
@@ -491,8 +416,8 @@ pub(crate) struct RenderLeaseRelease {
     /// Texture handle, который больше не удерживает render/UI side.
     pub(crate) texture_handle: video_core::FrameTextureHandle,
 
-    /// Provider исходного decoder texture pool для release после смены поколения.
-    pub(crate) texture_provider: Option<WgpuRenderTextureProviderHandle>,
+    /// Provider исходного decoder resource pool для release после смены поколения.
+    pub(crate) resource_provider: Option<PresentFrameResourceProviderHandle>,
 
     /// Монотонный момент drop-а render lease на render/UI side.
     pub(crate) released_at: Instant,
@@ -507,7 +432,7 @@ struct PresentFrameDropAck {
     texture_handle: video_core::FrameTextureHandle,
 
     /// Provider исходного frame-а; нужен, если ack пришёл после смены поколения.
-    texture_provider: Option<WgpuRenderTextureProviderHandle>,
+    resource_provider: Option<PresentFrameResourceProviderHandle>,
 
     /// Канал drop-ack обратно в playback worker.
     release_tx: Sender<RenderLeaseRelease>,
@@ -519,7 +444,7 @@ impl Drop for PresentFrameDropAck {
         let release = RenderLeaseRelease {
             render_generation: self.render_generation,
             texture_handle: self.texture_handle,
-            texture_provider: self.texture_provider.clone(),
+            resource_provider: self.resource_provider.clone(),
             released_at: Instant::now(),
         };
 
@@ -564,16 +489,16 @@ impl PresentFrameDropAck {
 
     /// Последний шанс освободить backend resource, когда worker уже недоступен или перегружен.
     fn release_without_worker(release: RenderLeaseRelease) {
-        let Some(texture_provider) = release.texture_provider else {
+        let Some(resource_provider) = release.resource_provider else {
             warn!(
                 generation = release.render_generation,
                 texture_handle = release.texture_handle.0,
-                "Render release ack could not reach worker and has no texture provider fallback"
+                "Render release ack could not reach worker and has no resource provider fallback"
             );
             return;
         };
 
-        texture_provider.release_frame(release.texture_handle);
+        resource_provider.release_frame(release.texture_handle);
     }
 }
 
@@ -589,7 +514,7 @@ pub(crate) struct RenderLeaseBridgeClient {
     render_timing_sample_tx: Sender<RenderTimingSample>,
 
     /// Неблокирующий канал samples reuse предыдущего renderable frame-а.
-    texture_view_previous_frame_reuse_sample_tx: Sender<RenderTextureViewPreviousFrameReuseSample>,
+    resource_previous_frame_reuse_sample_tx: Sender<RenderResourcePreviousFrameReuseSample>,
 }
 
 impl RenderLeaseBridgeClient {
@@ -598,15 +523,13 @@ impl RenderLeaseBridgeClient {
         latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
         render_acquire_sample_tx: Sender<RenderAcquireSample>,
         render_timing_sample_tx: Sender<RenderTimingSample>,
-        texture_view_previous_frame_reuse_sample_tx: Sender<
-            RenderTextureViewPreviousFrameReuseSample,
-        >,
+        resource_previous_frame_reuse_sample_tx: Sender<RenderResourcePreviousFrameReuseSample>,
     ) -> Self {
         Self {
             latest_present_frame_handoff,
             render_acquire_sample_tx,
             render_timing_sample_tx,
-            texture_view_previous_frame_reuse_sample_tx,
+            resource_previous_frame_reuse_sample_tx,
         }
     }
 
@@ -638,10 +561,10 @@ impl RenderLeaseBridgeClient {
     }
 
     /// Сообщает worker-у, что render path переиспользовал previous valid frame из-за busy lock-а.
-    pub(crate) fn report_texture_view_previous_frame_reuse(&self) {
+    pub(crate) fn report_resource_previous_frame_reuse(&self) {
         let _ = self
-            .texture_view_previous_frame_reuse_sample_tx
-            .try_send(RenderTextureViewPreviousFrameReuseSample);
+            .resource_previous_frame_reuse_sample_tx
+            .try_send(RenderResourcePreviousFrameReuseSample);
     }
 
     /// Создаёт test client с внешним latest-slot-ом для проверки public worker API.
@@ -652,27 +575,25 @@ impl RenderLeaseBridgeClient {
         Self,
         Receiver<RenderAcquireSample>,
         Receiver<RenderTimingSample>,
-        Receiver<RenderTextureViewPreviousFrameReuseSample>,
+        Receiver<RenderResourcePreviousFrameReuseSample>,
     ) {
         let (render_acquire_sample_tx, render_acquire_sample_rx) =
             bounded(RENDER_ACQUIRE_DIAGNOSTIC_CHANNEL_CAPACITY);
         let (render_timing_sample_tx, render_timing_sample_rx) =
             bounded(RENDER_TIMING_DIAGNOSTIC_CHANNEL_CAPACITY);
-        let (
-            texture_view_previous_frame_reuse_sample_tx,
-            texture_view_previous_frame_reuse_sample_rx,
-        ) = bounded(RENDER_TEXTURE_VIEW_REUSE_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let (resource_previous_frame_reuse_sample_tx, resource_previous_frame_reuse_sample_rx) =
+            bounded(RENDER_RESOURCE_REUSE_DIAGNOSTIC_CHANNEL_CAPACITY);
 
         (
             Self::new(
                 latest_present_frame_handoff,
                 render_acquire_sample_tx,
                 render_timing_sample_tx,
-                texture_view_previous_frame_reuse_sample_tx,
+                resource_previous_frame_reuse_sample_tx,
             ),
             render_acquire_sample_rx,
             render_timing_sample_rx,
-            texture_view_previous_frame_reuse_sample_rx,
+            resource_previous_frame_reuse_sample_rx,
         )
     }
 }
@@ -694,15 +615,14 @@ pub(crate) struct RenderLeaseBridge {
     /// Receiver неблокирующих GPU submit/present timing samples от render thread.
     render_timing_sample_rx: Receiver<RenderTimingSample>,
 
-    /// Sender samples ожидания texture view lock-а для leases, которые публикует worker.
-    texture_view_lock_sample_tx: Sender<RenderTextureViewLockSample>,
+    /// Sender samples ожидания resource lock-а для leases, которые публикует worker.
+    resource_lock_sample_tx: Sender<RenderResourceLockSample>,
 
-    /// Receiver samples ожидания texture view lock-а от render thread.
-    texture_view_lock_sample_rx: Receiver<RenderTextureViewLockSample>,
+    /// Receiver samples ожидания resource lock-а от render thread.
+    resource_lock_sample_rx: Receiver<RenderResourceLockSample>,
 
-    /// Receiver samples reuse previous frame из-за busy texture view lock-а.
-    texture_view_previous_frame_reuse_sample_rx:
-        Receiver<RenderTextureViewPreviousFrameReuseSample>,
+    /// Receiver samples reuse previous frame из-за busy resource lock-а.
+    resource_previous_frame_reuse_sample_rx: Receiver<RenderResourcePreviousFrameReuseSample>,
 }
 
 impl RenderLeaseBridge {
@@ -713,18 +633,16 @@ impl RenderLeaseBridge {
             bounded(RENDER_ACQUIRE_DIAGNOSTIC_CHANNEL_CAPACITY);
         let (render_timing_sample_tx, render_timing_sample_rx) =
             bounded(RENDER_TIMING_DIAGNOSTIC_CHANNEL_CAPACITY);
-        let (texture_view_lock_sample_tx, texture_view_lock_sample_rx) =
-            bounded(RENDER_TEXTURE_VIEW_DIAGNOSTIC_CHANNEL_CAPACITY);
-        let (
-            texture_view_previous_frame_reuse_sample_tx,
-            texture_view_previous_frame_reuse_sample_rx,
-        ) = bounded(RENDER_TEXTURE_VIEW_REUSE_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let (resource_lock_sample_tx, resource_lock_sample_rx) =
+            bounded(RENDER_RESOURCE_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let (resource_previous_frame_reuse_sample_tx, resource_previous_frame_reuse_sample_rx) =
+            bounded(RENDER_RESOURCE_REUSE_DIAGNOSTIC_CHANNEL_CAPACITY);
         let latest_present_frame_handoff = Arc::new(LatestPresentFrameHandoff::new());
         let client = RenderLeaseBridgeClient::new(
             Arc::clone(&latest_present_frame_handoff),
             render_acquire_sample_tx,
             render_timing_sample_tx,
-            texture_view_previous_frame_reuse_sample_tx,
+            resource_previous_frame_reuse_sample_tx,
         );
 
         (
@@ -734,9 +652,9 @@ impl RenderLeaseBridge {
                 render_release_rx,
                 render_acquire_sample_rx,
                 render_timing_sample_rx,
-                texture_view_lock_sample_tx,
-                texture_view_lock_sample_rx,
-                texture_view_previous_frame_reuse_sample_rx,
+                resource_lock_sample_tx,
+                resource_lock_sample_rx,
+                resource_previous_frame_reuse_sample_rx,
             },
             client,
         )
@@ -760,20 +678,18 @@ impl RenderLeaseBridge {
         self.render_timing_sample_rx.clone()
     }
 
-    /// Возвращает receiver clone для `select!`, не отдавая владение texture-view diagnostics.
+    /// Возвращает receiver clone для `select!`, не отдавая владение resource diagnostics.
     #[must_use]
-    pub(crate) fn texture_view_lock_sample_receiver(
-        &self,
-    ) -> Receiver<RenderTextureViewLockSample> {
-        self.texture_view_lock_sample_rx.clone()
+    pub(crate) fn resource_lock_sample_receiver(&self) -> Receiver<RenderResourceLockSample> {
+        self.resource_lock_sample_rx.clone()
     }
 
     /// Возвращает receiver clone для reuse diagnostics, не отдавая владение очередью.
     #[must_use]
-    pub(crate) fn texture_view_previous_frame_reuse_sample_receiver(
+    pub(crate) fn resource_previous_frame_reuse_sample_receiver(
         &self,
-    ) -> Receiver<RenderTextureViewPreviousFrameReuseSample> {
-        self.texture_view_previous_frame_reuse_sample_rx.clone()
+    ) -> Receiver<RenderResourcePreviousFrameReuseSample> {
+        self.resource_previous_frame_reuse_sample_rx.clone()
     }
 
     /// Обрабатывает wakeup от bounded release ack queue.
@@ -811,27 +727,27 @@ impl RenderLeaseBridge {
         }
     }
 
-    /// Обрабатывает wakeup от texture-view lock diagnostics stream.
-    pub(crate) fn handle_texture_view_lock_sample_wakeup(
+    /// Обрабатывает wakeup от resource lock diagnostics stream.
+    pub(crate) fn handle_resource_lock_sample_wakeup(
         &mut self,
         session: &mut PlayerSession,
-        sample_result: Result<RenderTextureViewLockSample, RecvError>,
+        sample_result: Result<RenderResourceLockSample, RecvError>,
     ) {
         if let Ok(sample) = sample_result {
-            Self::record_texture_view_lock_sample(session, sample);
-            self.drain_texture_view_lock_samples(session);
+            Self::record_resource_lock_sample(session, sample);
+            self.drain_resource_lock_samples(session);
         }
     }
 
-    /// Обрабатывает wakeup от texture-view previous-frame reuse diagnostics stream.
-    pub(crate) fn handle_texture_view_previous_frame_reuse_sample_wakeup(
+    /// Обрабатывает wakeup от resource previous-frame reuse diagnostics stream.
+    pub(crate) fn handle_resource_previous_frame_reuse_sample_wakeup(
         &mut self,
         session: &mut PlayerSession,
-        sample_result: Result<RenderTextureViewPreviousFrameReuseSample, RecvError>,
+        sample_result: Result<RenderResourcePreviousFrameReuseSample, RecvError>,
     ) {
         if sample_result.is_ok() {
-            Self::record_texture_view_previous_frame_reuse_sample(session);
-            self.drain_texture_view_previous_frame_reuse_samples(session);
+            Self::record_resource_previous_frame_reuse_sample(session);
+            self.drain_resource_previous_frame_reuse_samples(session);
         }
     }
 
@@ -846,8 +762,8 @@ impl RenderLeaseBridge {
     pub(crate) fn drain_diagnostics(&mut self, session: &mut PlayerSession) {
         self.drain_render_acquire_samples(session);
         self.drain_render_timing_samples(session);
-        self.drain_texture_view_lock_samples(session);
-        self.drain_texture_view_previous_frame_reuse_samples(session);
+        self.drain_resource_lock_samples(session);
+        self.drain_resource_previous_frame_reuse_samples(session);
     }
 
     /// Публикует latest present frame lease, если worker-side frame identity изменилась.
@@ -889,7 +805,7 @@ impl RenderLeaseBridge {
         Some(PlayerPresentFrame::from_leased_frame(
             leased_frame,
             self.render_release_tx.clone(),
-            self.texture_view_lock_sample_tx.clone(),
+            self.resource_lock_sample_tx.clone(),
         ))
     }
 
@@ -907,21 +823,21 @@ impl RenderLeaseBridge {
         }
     }
 
-    /// Снимает samples ожидания texture pool lock-а без блокировки worker-а.
-    fn drain_texture_view_lock_samples(&mut self, session: &mut PlayerSession) {
-        while let Ok(sample) = self.texture_view_lock_sample_rx.try_recv() {
-            Self::record_texture_view_lock_sample(session, sample);
+    /// Снимает samples ожидания resource pool lock-а без блокировки worker-а.
+    fn drain_resource_lock_samples(&mut self, session: &mut PlayerSession) {
+        while let Ok(sample) = self.resource_lock_sample_rx.try_recv() {
+            Self::record_resource_lock_sample(session, sample);
         }
     }
 
     /// Снимает samples previous-frame reuse без блокировки worker-а.
-    fn drain_texture_view_previous_frame_reuse_samples(&mut self, session: &mut PlayerSession) {
+    fn drain_resource_previous_frame_reuse_samples(&mut self, session: &mut PlayerSession) {
         while self
-            .texture_view_previous_frame_reuse_sample_rx
+            .resource_previous_frame_reuse_sample_rx
             .try_recv()
             .is_ok()
         {
-            Self::record_texture_view_previous_frame_reuse_sample(session);
+            Self::record_resource_previous_frame_reuse_sample(session);
         }
     }
 
@@ -931,7 +847,7 @@ impl RenderLeaseBridge {
         session.release_render_lease_with_provider(
             release.render_generation,
             release.texture_handle,
-            release.texture_provider.as_ref(),
+            release.resource_provider.as_ref(),
         );
     }
 
@@ -945,20 +861,17 @@ impl RenderLeaseBridge {
         session.record_gpu_submit_present_latency(sample.submit_present_elapsed);
     }
 
-    /// Записывает texture-view lock wait sample в session diagnostics.
-    fn record_texture_view_lock_sample(
-        session: &mut PlayerSession,
-        sample: RenderTextureViewLockSample,
-    ) {
-        session.record_texture_view_lock_wait(sample.wait, sample.pts, sample.memory_path);
+    /// Записывает resource lock wait sample в session diagnostics.
+    fn record_resource_lock_sample(session: &mut PlayerSession, sample: RenderResourceLockSample) {
+        session.record_render_resource_lock_wait(sample.wait, sample.pts, sample.memory_path);
         if sample.lookup_was_busy {
-            session.record_texture_view_lock_busy();
+            session.record_render_resource_lock_busy();
         }
     }
 
-    /// Записывает reuse previous frame из-за busy texture view lock-а.
-    fn record_texture_view_previous_frame_reuse_sample(session: &mut PlayerSession) {
-        session.record_texture_view_previous_frame_reuse();
+    /// Записывает reuse previous frame из-за busy resource lock-а.
+    fn record_resource_previous_frame_reuse_sample(session: &mut PlayerSession) {
+        session.record_render_resource_previous_frame_reuse();
     }
 
     /// Возвращает release sender для unit-тестов bridge wakeup/drain поведения.
@@ -982,19 +895,22 @@ mod tests {
     use video_core::{DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
 
     /// Provider, который не создаёт GPU handles, но возвращает измеренный lock wait.
-    struct MissingViewsProvider {
+    struct MissingResourceProvider {
         /// Handle, который должен запросить render lease.
         expected_handle: FrameTextureHandle,
 
-        /// Synthetic wait, имитирующий ожидание texture pool mutex-а.
+        /// Synthetic wait, имитирующий ожидание resource pool mutex-а.
         lock_wait: Duration,
     }
 
-    impl WgpuRenderTextureProvider for MissingViewsProvider {
-        /// Возвращает missing views, сохраняя lock wait diagnostics.
-        fn texture_view_lookup(&self, handle: FrameTextureHandle) -> WgpuRenderTextureViewLookup {
+    impl PresentFrameResourceProvider for MissingResourceProvider {
+        /// Возвращает missing resource, сохраняя lock wait diagnostics.
+        fn resource_lookup(
+            &self,
+            handle: FrameTextureHandle,
+        ) -> PresentFrameResourceProviderLookup {
             assert_eq!(handle, self.expected_handle);
-            WgpuRenderTextureViewLookup::Missing {
+            PresentFrameResourceProviderLookup::Missing {
                 texture_pool_lock_wait: self.lock_wait,
             }
         }
@@ -1003,8 +919,8 @@ mod tests {
         fn release_frame(&self, _handle: FrameTextureHandle) {}
     }
 
-    /// Provider, который имитирует занятый backend texture pool.
-    struct BusyViewsProvider {
+    /// Provider, который имитирует занятый backend resource pool.
+    struct BusyResourceProvider {
         /// Handle, который должен запросить render lease.
         expected_handle: FrameTextureHandle,
 
@@ -1012,19 +928,22 @@ mod tests {
         lock_wait: Duration,
     }
 
-    impl WgpuRenderTextureProvider for BusyViewsProvider {
+    impl PresentFrameResourceProvider for BusyResourceProvider {
         /// Blocking compatibility path в этом тесте не используется.
-        fn texture_view_lookup(&self, handle: FrameTextureHandle) -> WgpuRenderTextureViewLookup {
-            self.try_texture_view_lookup(handle)
-        }
-
-        /// Возвращает busy lookup, не смешивая его с missing views.
-        fn try_texture_view_lookup(
+        fn resource_lookup(
             &self,
             handle: FrameTextureHandle,
-        ) -> WgpuRenderTextureViewLookup {
+        ) -> PresentFrameResourceProviderLookup {
+            self.try_resource_lookup(handle)
+        }
+
+        /// Возвращает busy lookup, не смешивая его с missing resource.
+        fn try_resource_lookup(
+            &self,
+            handle: FrameTextureHandle,
+        ) -> PresentFrameResourceProviderLookup {
             assert_eq!(handle, self.expected_handle);
-            WgpuRenderTextureViewLookup::Busy {
+            PresentFrameResourceProviderLookup::Busy {
                 texture_pool_lock_wait: self.lock_wait,
             }
         }
@@ -1034,7 +953,7 @@ mod tests {
     }
 
     /// Provider, который имитирует fatal/poisoned lookup state.
-    struct ErrorViewsProvider {
+    struct ErrorResourceProvider {
         /// Handle, который должен запросить render lease.
         expected_handle: FrameTextureHandle,
 
@@ -1042,21 +961,24 @@ mod tests {
         lock_wait: Duration,
     }
 
-    impl WgpuRenderTextureProvider for ErrorViewsProvider {
+    impl PresentFrameResourceProvider for ErrorResourceProvider {
         /// Возвращает error lookup для проверки typed boundary.
-        fn texture_view_lookup(&self, handle: FrameTextureHandle) -> WgpuRenderTextureViewLookup {
+        fn resource_lookup(
+            &self,
+            handle: FrameTextureHandle,
+        ) -> PresentFrameResourceProviderLookup {
             assert_eq!(handle, self.expected_handle);
-            WgpuRenderTextureViewLookup::Error {
+            PresentFrameResourceProviderLookup::Error {
                 texture_pool_lock_wait: self.lock_wait,
             }
         }
 
         /// Non-blocking path сохраняет тот же fatal outcome.
-        fn try_texture_view_lookup(
+        fn try_resource_lookup(
             &self,
             handle: FrameTextureHandle,
-        ) -> WgpuRenderTextureViewLookup {
-            self.texture_view_lookup(handle)
+        ) -> PresentFrameResourceProviderLookup {
+            self.resource_lookup(handle)
         }
 
         /// Release в этом тесте не должен доходить до backend provider-а.
@@ -1082,24 +1004,25 @@ mod tests {
         }
     }
 
-    /// Собирает lease с fake WGPU provider-ом, сохраняя production RAII drop-ack contract.
-    fn lease_with_texture_provider_for_tests(
+    /// Собирает lease с fake resource provider-ом, сохраняя production RAII drop-ack contract.
+    fn lease_with_resource_provider_for_tests(
         render_generation: u64,
         texture_handle: FrameTextureHandle,
         release_tx: Sender<RenderLeaseRelease>,
-        sample_tx: Sender<RenderTextureViewLockSample>,
-        texture_provider: impl WgpuRenderTextureProvider + 'static,
+        sample_tx: Sender<RenderResourceLockSample>,
+        resource_provider: impl PresentFrameResourceProvider + 'static,
     ) -> PresentFrameLease {
+        let resource_provider = PresentFrameResourceProviderHandle::new(resource_provider);
         PresentFrameLease {
             render_generation,
             frame: decoded_frame_for_tests(texture_handle),
             stale: false,
-            texture_provider: Some(WgpuRenderTextureProviderHandle::new(texture_provider)),
-            texture_view_lock_sample_tx: Some(sample_tx),
+            resource_provider: Some(resource_provider.clone()),
+            resource_lock_sample_tx: Some(sample_tx),
             _drop_ack: Arc::new(PresentFrameDropAck {
                 render_generation,
                 texture_handle,
-                texture_provider: None,
+                resource_provider: Some(resource_provider),
                 release_tx,
             }),
         }
@@ -1134,17 +1057,17 @@ mod tests {
     }
 
     #[test]
-    fn try_resource_lookup_reports_busy_without_wgpu_ready_resource() {
+    fn try_resource_lookup_reports_busy_without_ready_resource() {
         let texture_handle = FrameTextureHandle(78);
         let lock_wait = Duration::from_micros(70);
         let (release_tx, _release_rx) = bounded(1);
         let (sample_tx, sample_rx) = bounded(1);
-        let lease = lease_with_texture_provider_for_tests(
+        let lease = lease_with_resource_provider_for_tests(
             9,
             texture_handle,
             release_tx,
             sample_tx,
-            BusyViewsProvider {
+            BusyResourceProvider {
                 expected_handle: texture_handle,
                 lock_wait,
             },
@@ -1168,12 +1091,12 @@ mod tests {
         let lock_wait = Duration::from_micros(120);
         let (release_tx, _release_rx) = bounded(1);
         let (sample_tx, sample_rx) = bounded(1);
-        let lease = lease_with_texture_provider_for_tests(
+        let lease = lease_with_resource_provider_for_tests(
             9,
             texture_handle,
             release_tx,
             sample_tx,
-            ErrorViewsProvider {
+            ErrorResourceProvider {
                 expected_handle: texture_handle,
                 lock_wait,
             },
@@ -1192,27 +1115,30 @@ mod tests {
     }
 
     #[test]
-    fn texture_views_reports_lock_wait_sample_when_views_are_missing() {
+    fn try_resource_lookup_reports_missing_with_lock_wait_sample() {
         let texture_handle = FrameTextureHandle(80);
         let lock_wait = Duration::from_micros(250);
         let (release_tx, _release_rx) = bounded(1);
         let (sample_tx, sample_rx) = bounded(1);
-        let lease = lease_with_texture_provider_for_tests(
+        let lease = lease_with_resource_provider_for_tests(
             9,
             texture_handle,
             release_tx,
             sample_tx,
-            MissingViewsProvider {
+            MissingResourceProvider {
                 expected_handle: texture_handle,
                 lock_wait,
             },
         );
 
-        assert!(lease.texture_views().is_none());
+        assert!(matches!(
+            lease.try_resource_lookup(),
+            PresentFrameResourceLookup::Missing
+        ));
 
         let sample = sample_rx
             .try_recv()
-            .expect("texture view lock wait sample should be queued");
+            .expect("resource lock wait sample should be queued");
         assert_eq!(sample.wait, lock_wait);
         assert!(!sample.lookup_was_busy);
         assert_eq!(sample.pts, Some(Duration::from_millis(42)));
@@ -1220,30 +1146,30 @@ mod tests {
     }
 
     #[test]
-    fn try_texture_view_lookup_reports_busy_without_missing_views_error() {
+    fn drop_ack_keeps_renderer_owned_release_path_renderer_neutral() {
         let texture_handle = FrameTextureHandle(81);
         let lock_wait = Duration::from_micros(75);
         let (release_tx, release_rx) = bounded(1);
         let (sample_tx, sample_rx) = bounded(1);
-        let lease = lease_with_texture_provider_for_tests(
+        let lease = lease_with_resource_provider_for_tests(
             9,
             texture_handle,
             release_tx,
             sample_tx,
-            BusyViewsProvider {
+            BusyResourceProvider {
                 expected_handle: texture_handle,
                 lock_wait,
             },
         );
 
         assert!(matches!(
-            lease.try_texture_view_lookup(),
-            PresentFrameTextureViewLookup::Busy
+            lease.try_resource_lookup(),
+            PresentFrameResourceLookup::Busy
         ));
 
         let sample = sample_rx
             .try_recv()
-            .expect("busy texture view lookup sample should be queued");
+            .expect("busy resource lookup sample should be queued");
         assert_eq!(sample.wait, lock_wait);
         assert!(sample.lookup_was_busy);
 
@@ -1251,37 +1177,30 @@ mod tests {
 
         let release = release_rx
             .try_recv()
-            .expect("dropping WGPU compatibility lease should queue release ack");
+            .expect("dropping resource lease should queue release ack");
         assert_eq!(release.render_generation, 9);
         assert_eq!(release.texture_handle, texture_handle);
-        assert!(release.texture_provider.is_none());
+        assert!(release.resource_provider.is_some());
     }
 
     #[test]
-    fn try_texture_view_lookup_reports_error_separately_from_busy_and_missing() {
+    fn renderer_materializer_can_report_resource_lookup_diagnostics() {
         let texture_handle = FrameTextureHandle(82);
         let lock_wait = Duration::from_micros(125);
         let (release_tx, _release_rx) = bounded(1);
         let (sample_tx, sample_rx) = bounded(1);
-        let lease = lease_with_texture_provider_for_tests(
+        let mut lease = PresentFrameLease::new_for_tests(
             9,
-            texture_handle,
+            decoded_frame_for_tests(texture_handle),
+            false,
             release_tx,
-            sample_tx,
-            ErrorViewsProvider {
-                expected_handle: texture_handle,
-                lock_wait,
-            },
         );
-
-        assert!(matches!(
-            lease.try_texture_view_lookup(),
-            PresentFrameTextureViewLookup::Error
-        ));
+        lease.resource_lock_sample_tx = Some(sample_tx);
+        lease.report_resource_lookup_sample(lock_wait, false);
 
         let sample = sample_rx
             .try_recv()
-            .expect("error texture view lookup sample should be queued");
+            .expect("renderer materializer lookup sample should be queued");
         assert_eq!(sample.wait, lock_wait);
         assert!(!sample.lookup_was_busy);
     }

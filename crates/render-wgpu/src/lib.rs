@@ -23,4 +23,7 @@ pub use frame::{
     RenderScreenDescriptor,
 };
 pub use shell::{GpuContext, Renderer};
-pub use video::{WgpuFramePlanes, WgpuRenderableFrame, WgpuVideoRenderer, clear_to_black};
+pub use video::{
+    WgpuFramePlanes, WgpuFrameTextureViewLookup, WgpuFrameTextureViewMaterializer,
+    WgpuFrameTextureViews, WgpuRenderableFrame, WgpuVideoRenderer, clear_to_black,
+};

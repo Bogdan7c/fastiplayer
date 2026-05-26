@@ -1,13 +1,7 @@
-use crate::{PlayerVideoDecoderThreadHandle, WgpuRenderTextureProviderHandle};
+use crate::{PlayerVideoDecoderThreadHandle, PresentFrameResourceProviderHandle};
 use video_core::VideoDecoderThreadHandle;
 
-/// Фабрика video backend-а, которую session вызывает без знания деталей конкретного backend init.
-pub trait VideoBackendFactory: Send {
-    /// Стартует backend и возвращает уже готовый decoder thread wrapper.
-    fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend>;
-}
-
-/// Запущенный video backend, подготовленный фабрикой для установки в playback pipeline.
+/// Запущенный video backend, подготовленный composition layer-ом для playback pipeline.
 pub struct StartedVideoBackend {
     /// Decoder thread остаётся за neutral handle boundary.
     decoder_thread: Box<PlayerVideoDecoderThreadHandle>,
@@ -17,7 +11,7 @@ impl StartedVideoBackend {
     /// Создаёт backend wrapper вокруг decoder thread, который уже прошёл init handshake.
     pub fn from_decoder_thread(
         decoder_thread: impl VideoDecoderThreadHandle<
-            TextureViewProvider = WgpuRenderTextureProviderHandle,
+            ResourceProvider = PresentFrameResourceProviderHandle,
         > + 'static,
     ) -> Self {
         Self {
@@ -36,14 +30,14 @@ mod tests {
     use super::*;
     use crate::{
         DecodeSendError, DecodeThreadError, DecoderResourceSnapshot, PlayerDecodePacket,
-        WgpuRenderTextureProviderHandle,
+        PresentFrameResourceProviderHandle,
     };
 
     /// Minimal fake decoder для проверки startup wrapper-а без production backend resources.
     struct StartupFakeDecoderThread;
 
     impl VideoDecoderThreadHandle for StartupFakeDecoderThread {
-        type TextureViewProvider = WgpuRenderTextureProviderHandle;
+        type ResourceProvider = PresentFrameResourceProviderHandle;
 
         fn backend_name(&self) -> &'static str {
             "startup fake decoder"
@@ -73,8 +67,8 @@ mod tests {
             Ok(())
         }
 
-        fn texture_view_provider(&self) -> WgpuRenderTextureProviderHandle {
-            panic!("startup fake decoder does not provide renderer texture views")
+        fn resource_provider(&self) -> PresentFrameResourceProviderHandle {
+            panic!("startup fake decoder does not provide renderer resources")
         }
 
         fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {

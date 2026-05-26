@@ -1,9 +1,11 @@
+use std::time::Duration;
+
 use anyhow::{Result, bail, ensure};
 use render_core::{
     ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics,
     RenderableFrame, VideoFrameFormat,
 };
-use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath};
+use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
 
 use crate::capabilities::wgpu_capabilities_from_features;
 
@@ -12,6 +14,80 @@ use self::p010_renderer::P010VideoRenderer;
 
 mod nv12_renderer;
 mod p010_renderer;
+
+/// WGPU texture views, полученные renderer materializer-ом по opaque frame handle.
+#[derive(Clone)]
+pub struct WgpuFrameTextureViews {
+    /// Texture view с luma/Y plane.
+    pub y_view: wgpu::TextureView,
+
+    /// Texture view с chroma/UV plane.
+    pub uv_view: wgpu::TextureView,
+}
+
+/// Результат WGPU materialization без участия playback core.
+pub enum WgpuFrameTextureViewLookup {
+    /// Backend вернул валидные plane views для renderer-а.
+    Ready {
+        /// Views, которые можно передать WGPU render backend-у.
+        views: WgpuFrameTextureViews,
+
+        /// Сколько render thread ждал lock texture pool-а внутри backend provider-а.
+        texture_pool_lock_wait: Duration,
+    },
+
+    /// Backend texture pool занят, render hot path должен выбрать fallback без ожидания.
+    Busy {
+        /// Сколько заняла non-blocking попытка получить lock.
+        texture_pool_lock_wait: Duration,
+    },
+
+    /// Backend доступен, но views для handle отсутствуют.
+    Missing {
+        /// Сколько render thread ждал lock texture pool-а внутри backend provider-а.
+        texture_pool_lock_wait: Duration,
+    },
+
+    /// Backend обнаружил poisoned/fatal state при lookup-е.
+    Error {
+        /// Сколько render thread ждал lock texture pool-а внутри backend provider-а.
+        texture_pool_lock_wait: Duration,
+    },
+}
+
+impl WgpuFrameTextureViewLookup {
+    /// Возвращает lock wait sample независимо от lookup outcome.
+    #[must_use]
+    pub const fn texture_pool_lock_wait(&self) -> Duration {
+        match self {
+            Self::Ready {
+                texture_pool_lock_wait,
+                ..
+            }
+            | Self::Busy {
+                texture_pool_lock_wait,
+            }
+            | Self::Missing {
+                texture_pool_lock_wait,
+            }
+            | Self::Error {
+                texture_pool_lock_wait,
+            } => *texture_pool_lock_wait,
+        }
+    }
+
+    /// Возвращает `true`, если materialization не стала ждать занятый backend lock.
+    #[must_use]
+    pub const fn lookup_was_busy(&self) -> bool {
+        matches!(self, Self::Busy { .. })
+    }
+}
+
+/// WGPU-side materializer plane views из backend-owned opaque frame resource-а.
+pub trait WgpuFrameTextureViewMaterializer: Send + Sync {
+    /// Пытается materialize frame resource без ожидания backend texture pool mutex-а.
+    fn try_texture_view_lookup(&self, handle: FrameTextureHandle) -> WgpuFrameTextureViewLookup;
+}
 
 /// GPU context одного video render pass-а.
 ///

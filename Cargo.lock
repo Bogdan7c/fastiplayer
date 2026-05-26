@@ -2905,7 +2905,6 @@ dependencies = [
  "rustiplayer-config",
  "tracing",
  "video-core",
- "wgpu",
 ]
 
 [[package]]

@@ -2665,7 +2665,7 @@ mod tests {
     use super::*;
     use crate::{
         FrameCounters, PlayerAudioClock, PlayerAudioOutput, PlayerCommand, PlayerSession,
-        WgpuRenderTextureProviderHandle,
+        PresentFrameResourceProviderHandle,
     };
 
     /// Empty demuxer для проверки admission без реального container backend-а.
@@ -2888,7 +2888,7 @@ mod tests {
     }
 
     impl video_core::VideoDecoderThreadHandle for RecordingVideoDecoderThread {
-        type TextureViewProvider = WgpuRenderTextureProviderHandle;
+        type ResourceProvider = PresentFrameResourceProviderHandle;
 
         fn backend_name(&self) -> &'static str {
             "Recording fake decoder"
@@ -2923,8 +2923,8 @@ mod tests {
             Ok(())
         }
 
-        fn texture_view_provider(&self) -> WgpuRenderTextureProviderHandle {
-            panic!("recording fake decoder does not provide renderer texture views")
+        fn resource_provider(&self) -> PresentFrameResourceProviderHandle {
+            panic!("recording fake decoder does not provide renderer resources")
         }
 
         fn decoder_resource_snapshot(&self) -> Option<crate::DecoderResourceSnapshot> {

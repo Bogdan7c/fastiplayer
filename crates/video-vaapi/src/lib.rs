@@ -22,7 +22,7 @@ pub use decoder_thread::{
     VideoTextureViewLockDiagnostics, VideoTextureViewLookup, VideoTextureViewProvider,
     VideoTextureViews,
 };
-pub use player_core_adapter::VaapiWgpuVideoBackendFactory;
 #[allow(deprecated)]
 pub use player_core_adapter::WgpuVideoBackendFactory;
+pub use player_core_adapter::{StartedVaapiWgpuVideoBackend, VaapiWgpuVideoBackendFactory};
 pub use probe::{VaapiCapabilityProvider, probe_vaapi_capabilities};

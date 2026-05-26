@@ -1,4 +1,4 @@
-use crate::WgpuRenderTextureProviderHandle;
+use crate::PresentFrameResourceProviderHandle;
 use crate::pipeline::{RenderLeaseReleaseEffect, VideoTextureReleaseEffect};
 
 use super::PlayerSession;
@@ -14,15 +14,15 @@ pub(crate) struct LeasedPresentFrame {
     /// `true`, если кадр ещё относится к старой позиции во время seek/scrub.
     pub stale: bool,
 
-    /// WGPU provider texture views из backend-а, создавшего кадр.
-    pub texture_provider: WgpuRenderTextureProviderHandle,
+    /// Renderer-neutral provider resource-а из backend-а, создавшего кадр.
+    pub resource_provider: PresentFrameResourceProviderHandle,
 }
 
 impl PlayerSession {
     /// Резервирует текущий present frame для render thread без раскрытия `PlaybackPipeline`.
     #[must_use]
     pub(crate) fn lease_present_video_frame(&mut self) -> Option<LeasedPresentFrame> {
-        let texture_provider = self.pipeline.video_decoder_texture_view_provider()?;
+        let resource_provider = self.pipeline.video_decoder_resource_provider()?;
         let frame = self.pipeline.present_video_frame()?.clone();
         let render_generation = self.pipeline.render_generation();
         let stale = self.snapshot.timeline.stale_frame;
@@ -35,7 +35,7 @@ impl PlayerSession {
             render_generation,
             frame,
             stale,
-            texture_provider,
+            resource_provider,
         })
     }
 
@@ -89,20 +89,28 @@ impl PlayerSession {
         &mut self,
         render_generation: u64,
         texture_handle: video_core::FrameTextureHandle,
-        texture_provider: Option<&WgpuRenderTextureProviderHandle>,
+        resource_provider: Option<&PresentFrameResourceProviderHandle>,
     ) {
         match self
             .pipeline
             .release_render_lease_accounting(render_generation, texture_handle)
         {
-            RenderLeaseReleaseEffect::UnknownLease
-            | RenderLeaseReleaseEffect::LeaseStillActive
-            | RenderLeaseReleaseEffect::ReleasedWithoutDeferredTexture => {}
+            RenderLeaseReleaseEffect::UnknownLease | RenderLeaseReleaseEffect::LeaseStillActive => {
+            }
+            RenderLeaseReleaseEffect::ReleasedWithoutDeferredTexture => {
+                if let Some(resource_provider) = resource_provider {
+                    self.pipeline.remember_rendered_texture_release_provider(
+                        render_generation,
+                        texture_handle,
+                        resource_provider,
+                    );
+                }
+            }
             RenderLeaseReleaseEffect::DeferredTextureReady => {
                 self.release_deferred_video_texture(
                     render_generation,
                     texture_handle,
-                    texture_provider,
+                    resource_provider,
                 );
             }
         }
@@ -112,6 +120,9 @@ impl PlayerSession {
     pub(crate) fn release_video_texture(&mut self, texture_handle: video_core::FrameTextureHandle) {
         match self.pipeline.request_video_texture_release(texture_handle) {
             VideoTextureReleaseEffect::DeferredUntilRenderLeaseDrop => {}
+            VideoTextureReleaseEffect::ReleaseViaRenderProvider(resource_provider) => {
+                resource_provider.release_frame(texture_handle);
+            }
             VideoTextureReleaseEffect::ReleaseNow => self.release_video_texture_now(texture_handle),
         }
     }
@@ -121,10 +132,10 @@ impl PlayerSession {
         &mut self,
         render_generation: u64,
         texture_handle: video_core::FrameTextureHandle,
-        texture_provider: Option<&WgpuRenderTextureProviderHandle>,
+        resource_provider: Option<&PresentFrameResourceProviderHandle>,
     ) {
-        if let Some(texture_provider) = texture_provider {
-            texture_provider.release_frame(texture_handle);
+        if let Some(resource_provider) = resource_provider {
+            resource_provider.release_frame(texture_handle);
         } else if render_generation == self.pipeline.render_generation() {
             self.release_video_texture_now(texture_handle);
         }
@@ -139,6 +150,36 @@ impl PlayerSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    use crate::{PresentFrameResourceProvider, PresentFrameResourceProviderLookup};
+
+    /// Fake provider, который показывает, каким release path-ом ушёл rendered frame.
+    #[derive(Clone)]
+    struct RecordingResourceProvider {
+        /// Texture handles, освобождённые через renderer-owned provider.
+        released_handles: Arc<Mutex<Vec<video_core::FrameTextureHandle>>>,
+    }
+
+    impl PresentFrameResourceProvider for RecordingResourceProvider {
+        /// Lookup в этих тестах не используется: проверяется только release lifecycle.
+        fn resource_lookup(
+            &self,
+            _handle: video_core::FrameTextureHandle,
+        ) -> PresentFrameResourceProviderLookup {
+            PresentFrameResourceProviderLookup::Ready {
+                texture_pool_lock_wait: std::time::Duration::ZERO,
+            }
+        }
+
+        /// Запоминает release, который должен пройти через renderer-owned boundary.
+        fn release_frame(&self, handle: video_core::FrameTextureHandle) {
+            self.released_handles
+                .lock()
+                .expect("recording provider release log lock")
+                .push(handle);
+        }
+    }
 
     #[test]
     fn register_render_lease_rejects_stale_generation_without_accounting() {
@@ -187,5 +228,43 @@ mod tests {
 
         assert_eq!(session.render_lease_count(), 1);
         assert!(session.has_deferred_video_texture_release(leased_handle));
+    }
+
+    #[test]
+    fn rendered_release_provider_survives_when_lease_drops_before_texture_release() {
+        let mut session = PlayerSession::new();
+        let render_generation = session.pipeline.render_generation();
+        let texture_handle = video_core::FrameTextureHandle(45);
+        let released_handles = Arc::new(Mutex::new(Vec::new()));
+        let resource_provider =
+            PresentFrameResourceProviderHandle::new(RecordingResourceProvider {
+                released_handles: Arc::clone(&released_handles),
+            });
+
+        assert!(session.register_render_lease(render_generation, texture_handle));
+        session.release_render_lease_with_provider(
+            render_generation,
+            texture_handle,
+            Some(&resource_provider),
+        );
+
+        assert_eq!(session.render_lease_count(), 0);
+        assert_eq!(
+            released_handles
+                .lock()
+                .expect("recorded releases lock before player release")
+                .as_slice(),
+            &[]
+        );
+
+        session.release_video_texture(texture_handle);
+
+        assert_eq!(
+            released_handles
+                .lock()
+                .expect("recorded releases lock after player release")
+                .as_slice(),
+            &[texture_handle]
+        );
     }
 }
