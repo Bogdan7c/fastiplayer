@@ -1296,12 +1296,24 @@ fn decode_point_before_retry_timestamp_for_issue(
 ) -> Option<Duration> {
     match issue {
         DecodePointBeforeVerificationIssue::FirstVideoAfterTarget { packet } => {
-            decode_point_before_retry_timestamp(
-                backend_timestamp,
-                requested_timestamp,
-                packet.pts,
-                retry_index,
-            )
+            if backend_timestamp < requested_timestamp {
+                // Если backend уже искал раньше requested, но первый video packet всё равно
+                // оказался после target, маленький отступ на величину packet overshoot-а
+                // обычно остаётся внутри того же cue/cluster. Расширяем pre-roll окно, чтобы
+                // действительно перейти к предыдущей decode-точке.
+                Some(decode_point_before_expanding_retry_timestamp(
+                    backend_timestamp,
+                    retry_index,
+                    preroll,
+                ))
+            } else {
+                decode_point_before_retry_timestamp(
+                    backend_timestamp,
+                    requested_timestamp,
+                    packet.pts,
+                    retry_index,
+                )
+            }
         }
         DecodePointBeforeVerificationIssue::FirstVideoTooFarBeforeTarget { .. } => {
             decode_point_before_rescue_retry_timestamp(backend_timestamp, requested_timestamp)
@@ -1645,9 +1657,10 @@ mod tests {
     use symphonia::core::units::{Duration as SymphoniaDuration, TimeBase, Timestamp};
 
     use super::{
-        DECODE_POINT_BEFORE_MAX_RETRIES, MATROSKA_STREAM_SCAN_LIMIT_BYTES,
+        DECODE_POINT_BEFORE_MAX_RETRIES, DecodePointBeforeVerificationIssue,
+        DecodePointBeforeVideoPacket, MATROSKA_STREAM_SCAN_LIMIT_BYTES,
         MatroskaVideoMetadataScanDecision, SymphoniaDemuxer, decide_matroska_video_metadata_scan,
-        read_stream_prefix,
+        decode_point_before_retry_timestamp_for_issue, read_stream_prefix,
     };
     use crate::error::DemuxError;
     use crate::matroska_metadata::MatroskaVideoTrack;
@@ -2484,6 +2497,32 @@ mod tests {
                 .expect("seek mode log mutex should not be poisoned")
                 .as_slice(),
             &[SeekMode::Accurate, SeekMode::Accurate]
+        );
+    }
+
+    #[test]
+    fn decode_point_before_after_target_retry_expands_existing_preroll() {
+        let issue = DecodePointBeforeVerificationIssue::FirstVideoAfterTarget {
+            packet: DecodePointBeforeVideoPacket {
+                pts: Duration::from_millis(29_233),
+                track_pts: None,
+                keyframe: PacketKeyframe::Keyframe,
+            },
+        };
+
+        let retry_timestamp = decode_point_before_retry_timestamp_for_issue(
+            Duration::from_millis(24_225),
+            Duration::from_millis(29_225),
+            issue,
+            0,
+            Duration::from_secs(5),
+        )
+        .expect("after-target packet должен дать retry timestamp");
+
+        assert_eq!(
+            retry_timestamp,
+            Duration::from_millis(19_225),
+            "retry должен расширить pre-roll, а не отступить только на маленький overshoot"
         );
     }
 
