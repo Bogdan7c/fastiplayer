@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::sync::{
+    Arc, Mutex, MutexGuard, TryLockError,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvError, SendTimeoutError, Sender, TrySendError, bounded};
@@ -162,6 +165,7 @@ impl PresentFrameLease {
                 render_generation: leased_frame.render_generation,
                 texture_handle: leased_frame.frame.texture_handle,
                 resource_provider: Some(leased_frame.resource_provider),
+                submitted_to_renderer: AtomicBool::new(false),
                 release_tx,
             }),
         }
@@ -188,6 +192,7 @@ impl PresentFrameLease {
                 render_generation,
                 texture_handle,
                 resource_provider: None,
+                submitted_to_renderer: AtomicBool::new(false),
                 release_tx,
             }),
         }
@@ -197,6 +202,17 @@ impl PresentFrameLease {
     #[must_use]
     pub const fn texture_handle(&self) -> video_core::FrameTextureHandle {
         self.frame.texture_handle
+    }
+
+    /// Отмечает, что renderer действительно включил этот lease в GPU submit.
+    ///
+    /// Lookup или clone lease-а сами по себе не означают, что frame был использован
+    /// GPU. Этот флаг нужен release accounting-у, чтобы не отправлять
+    /// неиспользованные frames в GPU-completion path.
+    pub fn mark_submitted_to_renderer(&self) {
+        self._drop_ack
+            .submitted_to_renderer
+            .store(true, Ordering::Release);
     }
 
     /// Возвращает `true`, если lease устарел относительно актуального render generation.
@@ -419,6 +435,9 @@ pub(crate) struct RenderLeaseRelease {
     /// Provider исходного decoder resource pool для release после смены поколения.
     pub(crate) resource_provider: Option<PresentFrameResourceProviderHandle>,
 
+    /// Был ли lease реально включён в renderer submit.
+    pub(crate) submitted_to_renderer: bool,
+
     /// Монотонный момент drop-а render lease на render/UI side.
     pub(crate) released_at: Instant,
 }
@@ -434,6 +453,9 @@ struct PresentFrameDropAck {
     /// Provider исходного frame-а; нужен, если ack пришёл после смены поколения.
     resource_provider: Option<PresentFrameResourceProviderHandle>,
 
+    /// Shared флаг: хотя бы один clone lease-а был отправлен в renderer submit.
+    submitted_to_renderer: AtomicBool,
+
     /// Канал drop-ack обратно в playback worker.
     release_tx: Sender<RenderLeaseRelease>,
 }
@@ -445,6 +467,7 @@ impl Drop for PresentFrameDropAck {
             render_generation: self.render_generation,
             texture_handle: self.texture_handle,
             resource_provider: self.resource_provider.clone(),
+            submitted_to_renderer: self.submitted_to_renderer.load(Ordering::Acquire),
             released_at: Instant::now(),
         };
 
@@ -848,6 +871,7 @@ impl RenderLeaseBridge {
             release.render_generation,
             release.texture_handle,
             release.resource_provider.as_ref(),
+            release.submitted_to_renderer,
         );
     }
 
@@ -1023,6 +1047,7 @@ mod tests {
                 render_generation,
                 texture_handle,
                 resource_provider: Some(resource_provider),
+                submitted_to_renderer: AtomicBool::new(false),
                 release_tx,
             }),
         }
@@ -1181,6 +1206,34 @@ mod tests {
         assert_eq!(release.render_generation, 9);
         assert_eq!(release.texture_handle, texture_handle);
         assert!(release.resource_provider.is_some());
+        assert!(!release.submitted_to_renderer);
+    }
+
+    #[test]
+    fn submitted_lease_drop_ack_records_renderer_usage() {
+        let texture_handle = FrameTextureHandle(83);
+        let lock_wait = Duration::from_micros(80);
+        let (release_tx, release_rx) = bounded(1);
+        let (sample_tx, _sample_rx) = bounded(1);
+        let lease = lease_with_resource_provider_for_tests(
+            9,
+            texture_handle,
+            release_tx,
+            sample_tx,
+            BusyResourceProvider {
+                expected_handle: texture_handle,
+                lock_wait,
+            },
+        );
+
+        lease.mark_submitted_to_renderer();
+        drop(lease);
+
+        let release = release_rx
+            .try_recv()
+            .expect("dropping submitted lease should queue release ack");
+        assert_eq!(release.texture_handle, texture_handle);
+        assert!(release.submitted_to_renderer);
     }
 
     #[test]

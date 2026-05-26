@@ -1942,6 +1942,7 @@ mod tests {
                 render_generation: 0,
                 texture_handle: video_core::FrameTextureHandle(7),
                 resource_provider: None,
+                submitted_to_renderer: false,
                 released_at: Instant::now(),
             })
             .unwrap();
@@ -2118,6 +2119,7 @@ mod tests {
                 render_generation: 1,
                 texture_handle: FrameTextureHandle(1),
                 resource_provider: None,
+                submitted_to_renderer: false,
                 released_at: Instant::now(),
             })
             .unwrap();

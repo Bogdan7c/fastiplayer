@@ -81,7 +81,7 @@ impl PlayerSession {
         render_generation: u64,
         texture_handle: video_core::FrameTextureHandle,
     ) {
-        self.release_render_lease_with_provider(render_generation, texture_handle, None);
+        self.release_render_lease_with_provider(render_generation, texture_handle, None, false);
     }
 
     /// Снимает render lease и релизит texture через provider поколения, создавшего кадр.
@@ -90,6 +90,7 @@ impl PlayerSession {
         render_generation: u64,
         texture_handle: video_core::FrameTextureHandle,
         resource_provider: Option<&PresentFrameResourceProviderHandle>,
+        submitted_to_renderer: bool,
     ) {
         match self
             .pipeline
@@ -98,7 +99,7 @@ impl PlayerSession {
             RenderLeaseReleaseEffect::UnknownLease | RenderLeaseReleaseEffect::LeaseStillActive => {
             }
             RenderLeaseReleaseEffect::ReleasedWithoutDeferredTexture => {
-                if let Some(resource_provider) = resource_provider {
+                if submitted_to_renderer && let Some(resource_provider) = resource_provider {
                     self.pipeline.remember_rendered_texture_release_provider(
                         render_generation,
                         texture_handle,
@@ -111,6 +112,7 @@ impl PlayerSession {
                     render_generation,
                     texture_handle,
                     resource_provider,
+                    submitted_to_renderer,
                 );
             }
         }
@@ -133,8 +135,9 @@ impl PlayerSession {
         render_generation: u64,
         texture_handle: video_core::FrameTextureHandle,
         resource_provider: Option<&PresentFrameResourceProviderHandle>,
+        submitted_to_renderer: bool,
     ) {
-        if let Some(resource_provider) = resource_provider {
+        if submitted_to_renderer && let Some(resource_provider) = resource_provider {
             resource_provider.release_frame(texture_handle);
         } else if render_generation == self.pipeline.render_generation() {
             self.release_video_texture_now(texture_handle);
@@ -231,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn rendered_release_provider_survives_when_lease_drops_before_texture_release() {
+    fn submitted_release_provider_survives_when_lease_drops_before_texture_release() {
         let mut session = PlayerSession::new();
         let render_generation = session.pipeline.render_generation();
         let texture_handle = video_core::FrameTextureHandle(45);
@@ -246,6 +249,7 @@ mod tests {
             render_generation,
             texture_handle,
             Some(&resource_provider),
+            true,
         );
 
         assert_eq!(session.render_lease_count(), 0);
@@ -265,6 +269,36 @@ mod tests {
                 .expect("recorded releases lock after player release")
                 .as_slice(),
             &[texture_handle]
+        );
+    }
+
+    #[test]
+    fn unsubmitted_release_provider_is_not_used_for_later_texture_release() {
+        let mut session = PlayerSession::new();
+        let render_generation = session.pipeline.render_generation();
+        let texture_handle = video_core::FrameTextureHandle(46);
+        let released_handles = Arc::new(Mutex::new(Vec::new()));
+        let resource_provider =
+            PresentFrameResourceProviderHandle::new(RecordingResourceProvider {
+                released_handles: Arc::clone(&released_handles),
+            });
+
+        assert!(session.register_render_lease(render_generation, texture_handle));
+        session.release_render_lease_with_provider(
+            render_generation,
+            texture_handle,
+            Some(&resource_provider),
+            false,
+        );
+
+        session.release_video_texture(texture_handle);
+
+        assert_eq!(
+            released_handles
+                .lock()
+                .expect("recorded releases lock after unsubmitted player release")
+                .as_slice(),
+            &[]
         );
     }
 }

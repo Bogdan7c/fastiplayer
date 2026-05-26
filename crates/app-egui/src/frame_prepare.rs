@@ -67,6 +67,13 @@ impl PreparedVideoFrame {
             })
             .transpose()
     }
+
+    /// Отмечает, что подготовленный video frame реально попал в renderer submit.
+    fn mark_submitted_to_renderer(&self) {
+        if let Some(renderable_frame) = &self.renderable_frame {
+            renderable_frame.present_frame.mark_submitted_to_renderer();
+        }
+    }
 }
 
 /// Typed форма texture-view lookup-а без GPU handles для проверки app-level контракта.
@@ -474,6 +481,7 @@ fn submit_render_frame(
             None
         }
     };
+    let submitted_video_frame = video_frame.is_some();
 
     match renderer.render_frame(render_wgpu::RenderFrameInput {
         window,
@@ -483,6 +491,9 @@ fn submit_render_frame(
         screen: prepared_ui_frame.screen,
     }) {
         RenderFrameOutcome::Presented(timing) => {
+            if submitted_video_frame {
+                prepared_video_frame.mark_submitted_to_renderer();
+            }
             telemetry.record_frame_presented_to_surface();
             app_state.report_gpu_submit_present_latency(timing.submit_present_elapsed);
         }
