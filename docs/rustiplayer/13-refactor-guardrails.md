@@ -184,9 +184,17 @@ startup остаётся в `video-vaapi` adapter-е.
 `VideoBackendFactory`; это остаётся policy до переноса backend contract в
 neutral crate.
 
+Локальный pre-PR путь находится в `scripts/pre-pr-checks.sh`. Он последовательно
+запускает:
+
+- `cargo metadata --no-deps --format-version 1`;
+- `scripts/check-refactor-guardrails.py`;
+- `cargo fmt --all --check`;
+- `cargo check --workspace`;
+- `cargo clippy --workspace --all-targets`.
+
 ## TODO для будущих dependency checks
 
-- Подключить `scripts/check-refactor-guardrails.py` в локальный pre-PR/CI путь.
 - Добавить transitive graph проверку через `cargo metadata` без `--no-deps`,
   когда появится стабильная policy для dev/build dependencies.
 - Проверять source-level debt `player-core -> audio::OpusDecoder`, потому что

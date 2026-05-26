@@ -5,6 +5,7 @@
 - Run `cargo check --workspace` after Rust changes that affect public types, features, workspace deps, or multiple crates.
 - Run `cargo clippy --workspace --all-targets` before considering broad quality/Sonar-related work done; for small isolated edits, explain if skipped.
 - Run `cargo fmt --all --check`; apply `cargo fmt --all` if formatting fails.
+- For broad pre-PR validation, run `scripts/pre-pr-checks.sh`; it includes Cargo metadata sanity, refactor guardrails, fmt, workspace check, and workspace Clippy.
 - For playback/seek/render changes, verify relevant behavior path: unit tests plus manual command/log scenario where automated coverage is insufficient.
 - For Sonar tasks only on explicit request: run `SONAR_USER_HOME=/tmp/rustiplayer-sonar-user-home scripts/sonar-local-analysis.sh` with `SONAR_TOKEN` only in env, wait for CE background task, group issues by rule/severity/file, fix root cause, rerun relevant tests/clippy/Sonar.
 - Before final response, self-review the diff for accidental boundary violations, behavior changes, broad refactors, missing error handling, and tests that only assert symptoms.
