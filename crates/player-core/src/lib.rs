@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+mod audio_boundary;
 mod command;
 mod decoder_boundary;
 mod diagnostics;
@@ -22,6 +23,9 @@ mod video_backend;
 mod worker;
 mod worker_scheduler;
 
+pub use audio_boundary::{
+    AudioOutputFactory, AudioOutputSpec, PlayerAudioClock, PlayerAudioOutput,
+};
 pub use command::{
     MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, ScrubCommitPolicy,
     SeekMode, SeekRequest, SeekTarget,

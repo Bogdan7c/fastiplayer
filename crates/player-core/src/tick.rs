@@ -2663,8 +2663,10 @@ mod tests {
     };
 
     use super::*;
-    use crate::pipeline::AudioOutputBoundary;
-    use crate::{FrameCounters, PlayerCommand, PlayerSession, WgpuRenderTextureProviderHandle};
+    use crate::{
+        FrameCounters, PlayerAudioClock, PlayerAudioOutput, PlayerCommand, PlayerSession,
+        WgpuRenderTextureProviderHandle,
+    };
 
     /// Empty demuxer для проверки admission без реального container backend-а.
     struct EmptyDemuxer {
@@ -2705,10 +2707,28 @@ mod tests {
         }
     }
 
+    /// Fake clock для output boundary; admission tests читают только buffer level.
+    struct FixedAudioClock;
+
+    impl PlayerAudioClock for FixedAudioClock {
+        /// Clock position в этих тестах не участвует.
+        fn now(&self) -> Duration {
+            Duration::ZERO
+        }
+
+        /// Reset не имеет side effects для admission policy.
+        fn reset(&self) {}
+
+        /// Underrun diagnostics в этих тестах не участвуют.
+        fn underrun_callbacks(&self) -> u64 {
+            0
+        }
+    }
+
     /// Fake audio output с фиксированным buffer level для high-water admission tests.
     struct FixedAudioOutput {
         /// Clock нужен output boundary, хотя demux admission его не читает.
-        clock: Arc<audio::AudioClock>,
+        clock: Arc<FixedAudioClock>,
 
         /// Уровень audio buffer, который видит `PlayerSession::audio_buffer_level_ms`.
         buffer_level_ms: f64,
@@ -2718,13 +2738,13 @@ mod tests {
         /// Создаёт output с заданным buffer level.
         fn new(buffer_level_ms: f64) -> Self {
             Self {
-                clock: Arc::new(audio::AudioClock::new(48_000, 2)),
+                clock: Arc::new(FixedAudioClock),
                 buffer_level_ms,
             }
         }
     }
 
-    impl AudioOutputBoundary for FixedAudioOutput {
+    impl PlayerAudioOutput for FixedAudioOutput {
         /// Тестовый output принимает samples и сообщает количество записанных значений.
         fn write_samples(&mut self, samples: &[f32]) -> u64 {
             samples.len() as u64
@@ -2754,8 +2774,9 @@ mod tests {
         }
 
         /// Возвращает fake clock для соблюдения audio output boundary.
-        fn clock(&self) -> &Arc<audio::AudioClock> {
-            &self.clock
+        fn clock(&self) -> Arc<dyn PlayerAudioClock> {
+            let clock: Arc<dyn PlayerAudioClock> = self.clock.clone();
+            clock
         }
     }
 

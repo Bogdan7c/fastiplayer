@@ -16,6 +16,7 @@
 /// - winit 0.30 использует ApplicationHandler trait
 /// - события: Resumed (создание окна), Suspended (уничтожение), WindowEvent
 /// - RedrawRequested — основной hook для рендеринга каждого кадра
+mod audio_output_adapter;
 mod frame_prepare;
 mod local_file_open;
 mod local_media;

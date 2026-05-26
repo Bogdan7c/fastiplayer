@@ -11,8 +11,8 @@ use media_core::{
 
 use crate::{
     DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
-    DecoderResourceSnapshot, PlayerDecodePacket, PlayerVideoDecoderThreadHandle,
-    WgpuRenderTextureProviderHandle,
+    DecoderResourceSnapshot, PlayerAudioClock, PlayerAudioOutput, PlayerDecodePacket,
+    PlayerVideoDecoderThreadHandle, WgpuRenderTextureProviderHandle,
 };
 #[cfg(test)]
 use video_core::VideoDecoderThreadHandle;
@@ -97,60 +97,6 @@ pub(crate) enum AudioEofDrainState {
         /// Был ли уже успешно запрошен запуск stream-а.
         playback_requested: bool,
     },
-}
-
-/// Узкая граница audio output-а, чтобы pipeline не раскрывал concrete CPAL slot.
-pub(crate) trait AudioOutputBoundary {
-    /// Записывает interleaved PCM samples в output buffer.
-    fn write_samples(&mut self, samples: &[f32]) -> u64;
-
-    /// Запускает output stream.
-    fn play(&mut self) -> anyhow::Result<()>;
-
-    /// Ставит output stream на паузу.
-    fn pause(&mut self) -> anyhow::Result<()>;
-
-    /// Очищает queued samples для seek generation и возвращает ack generation.
-    fn clear_buffer_for_seek(&mut self, generation: u64) -> anyhow::Result<u64>;
-
-    /// Применяет volume для последующих samples.
-    fn set_volume(&mut self, volume: f32);
-
-    /// Возвращает текущий уровень output buffer-а в миллисекундах.
-    fn buffer_level_ms(&self) -> f64;
-
-    /// Возвращает clock, которым output сообщает прогресс playback.
-    fn clock(&self) -> &Arc<audio::clock::AudioClock>;
-}
-
-impl AudioOutputBoundary for audio::AudioOutput {
-    fn write_samples(&mut self, samples: &[f32]) -> u64 {
-        audio::AudioOutput::write_samples(self, samples)
-    }
-
-    fn play(&mut self) -> anyhow::Result<()> {
-        audio::AudioOutput::play(self)
-    }
-
-    fn pause(&mut self) -> anyhow::Result<()> {
-        audio::AudioOutput::pause(self)
-    }
-
-    fn clear_buffer_for_seek(&mut self, generation: u64) -> anyhow::Result<u64> {
-        audio::AudioOutput::clear_buffer_for_seek(self, generation)
-    }
-
-    fn set_volume(&mut self, volume: f32) {
-        audio::AudioOutput::set_volume(self, volume);
-    }
-
-    fn buffer_level_ms(&self) -> f64 {
-        audio::AudioOutput::buffer_level_ms(self)
-    }
-
-    fn clock(&self) -> &Arc<audio::clock::AudioClock> {
-        audio::AudioOutput::clock(self)
-    }
 }
 
 /// Успешный результат audio decode вместе с параметрами decoder-а для clock trimming.
@@ -327,8 +273,8 @@ pub(crate) struct PlaybackPipeline {
     /// Deferred config для audio decoder-а, пока первый packet не потребовал decode.
     deferred_audio_decoder_config: Option<audio::AudioDecoderConfig>,
 
-    /// Audio output за boundary trait-ом: production CPAL или test fake.
-    audio_output: Option<Box<dyn AudioOutputBoundary>>,
+    /// Audio output за нейтральным boundary trait-ом: production adapter или test fake.
+    audio_output: Option<Box<dyn PlayerAudioOutput>>,
 
     /// Был ли текущий audio output успешно запущен через boundary `play`.
     audio_output_play_requested: bool,
@@ -391,8 +337,8 @@ pub(crate) struct PlaybackPipeline {
     /// Очередь сырых video packets для decode.
     pending_video_packets: VecDeque<PendingVideoPacket>,
 
-    /// Audio clock для A/V sync.
-    audio_clock: Option<Arc<audio::clock::AudioClock>>,
+    /// Нейтральный audio clock для A/V sync.
+    audio_clock: Option<Arc<dyn PlayerAudioClock>>,
 
     /// Абсолютная media-позиция, соответствующая нулю текущего audio clock.
     media_clock_base: Duration,
@@ -494,15 +440,15 @@ impl PlaybackPipeline {
         self.audio_decoder.as_mut().map(|decoder| decoder.reset())
     }
 
-    /// Устанавливает CPAL-backed audio output, созданный session policy слоем.
-    pub(crate) fn install_audio_output(&mut self, output: audio::AudioOutput) {
-        self.audio_output = Some(Box::new(output));
+    /// Устанавливает audio output, созданный composition/session boundary.
+    pub(crate) fn install_audio_output(&mut self, output: Box<dyn PlayerAudioOutput>) {
+        self.audio_output = Some(output);
         self.audio_output_play_requested = false;
     }
 
     /// Устанавливает fake/stub output для unit-тестов без CPAL device side effects.
     #[cfg(test)]
-    pub(crate) fn install_audio_output_for_tests(&mut self, output: Box<dyn AudioOutputBoundary>) {
+    pub(crate) fn install_audio_output_for_tests(&mut self, output: Box<dyn PlayerAudioOutput>) {
         self.audio_output = Some(output);
         self.audio_output_play_requested = false;
     }
@@ -607,7 +553,7 @@ impl PlaybackPipeline {
 
     /// Возвращает clock handle output-а без раскрытия самого output slot-а.
     #[must_use]
-    pub(crate) fn audio_output_clock(&self) -> Option<&Arc<audio::clock::AudioClock>> {
+    pub(crate) fn audio_output_clock(&self) -> Option<Arc<dyn PlayerAudioClock>> {
         self.audio_output.as_ref().map(|output| output.clock())
     }
 
@@ -618,7 +564,7 @@ impl PlaybackPipeline {
     }
 
     /// Устанавливает audio clock handle и отключает no-audio monotonic fallback.
-    pub(crate) fn install_audio_clock(&mut self, clock: Arc<audio::clock::AudioClock>) {
+    pub(crate) fn install_audio_clock(&mut self, clock: Arc<dyn PlayerAudioClock>) {
         self.audio_clock = Some(clock);
         self.clear_monotonic_media_clock();
     }
@@ -1599,6 +1545,11 @@ impl Default for PlaybackPipeline {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    };
+
     use super::*;
     use codec_core::VideoCodec;
     use media_core::{MediaTime, TrackKind};
@@ -1706,26 +1657,112 @@ mod tests {
         }
     }
 
+    /// Fake clock для проверки нейтрального audio clock boundary без concrete audio crate clock.
+    struct FixedAudioClock {
+        /// Текущее значение, которое clock отдаёт pipeline.
+        now: Mutex<Duration>,
+
+        /// Счётчик reset-вызовов, чтобы тест видел side effect boundary.
+        reset_count: AtomicUsize,
+
+        /// Scripted счётчик underrun callbacks.
+        underrun_callbacks: AtomicU64,
+    }
+
+    impl FixedAudioClock {
+        /// Создаёт clock с заданными observable значениями.
+        fn new(now: Duration, underrun_callbacks: u64) -> Self {
+            Self {
+                now: Mutex::new(now),
+                reset_count: AtomicUsize::new(0),
+                underrun_callbacks: AtomicU64::new(underrun_callbacks),
+            }
+        }
+
+        /// Возвращает количество reset-вызовов.
+        fn reset_count(&self) -> usize {
+            self.reset_count.load(Ordering::Relaxed)
+        }
+    }
+
+    impl PlayerAudioClock for FixedAudioClock {
+        /// Возвращает scripted playback позицию.
+        fn now(&self) -> Duration {
+            *self
+                .now
+                .lock()
+                .expect("fake clock mutex не должен ломаться")
+        }
+
+        /// Сбрасывает позицию и отмечает reset-вызов.
+        fn reset(&self) {
+            self.reset_count.fetch_add(1, Ordering::Relaxed);
+            *self
+                .now
+                .lock()
+                .expect("fake clock mutex не должен ломаться") = Duration::ZERO;
+        }
+
+        /// Возвращает scripted underrun count.
+        fn underrun_callbacks(&self) -> u64 {
+            self.underrun_callbacks.load(Ordering::Relaxed)
+        }
+    }
+
     /// Fake output с управляемым buffer level для проверки EOF-drain boundary.
     struct FixedAudioOutput {
-        /// Clock нужен trait-у, но тесты управляют drain state через buffer level.
-        clock: Arc<audio::AudioClock>,
+        /// Нейтральный fake clock output-а.
+        clock: Arc<FixedAudioClock>,
 
         /// Уровень buffer-а, который вернёт output boundary.
         buffer_level_ms: f64,
+
+        /// Ошибка play, если сценарий проверяет propagation.
+        play_error: Option<&'static str>,
+
+        /// Ошибка pause, если сценарий проверяет propagation.
+        pause_error: Option<&'static str>,
+
+        /// Последний volume, который pipeline передал output boundary.
+        last_volume: Arc<Mutex<Option<f32>>>,
     }
 
     impl FixedAudioOutput {
         /// Создаёт fake output с заданным уровнем buffer-а.
         fn new(buffer_level_ms: f64) -> Self {
             Self {
-                clock: Arc::new(audio::AudioClock::new(48_000, 2)),
+                clock: Arc::new(FixedAudioClock::new(Duration::ZERO, 0)),
                 buffer_level_ms,
+                play_error: None,
+                pause_error: None,
+                last_volume: Arc::new(Mutex::new(None)),
             }
+        }
+
+        /// Создаёт fake output с scripted play/pause errors.
+        fn with_errors(
+            play_error: Option<&'static str>,
+            pause_error: Option<&'static str>,
+        ) -> Self {
+            Self {
+                play_error,
+                pause_error,
+                ..Self::new(0.0)
+            }
+        }
+
+        /// Возвращает clock handle до передачи output-а в pipeline.
+        fn clock_handle(&self) -> Arc<FixedAudioClock> {
+            Arc::clone(&self.clock)
+        }
+
+        /// Возвращает volume log handle до передачи output-а в pipeline.
+        fn volume_handle(&self) -> Arc<Mutex<Option<f32>>> {
+            Arc::clone(&self.last_volume)
         }
     }
 
-    impl AudioOutputBoundary for FixedAudioOutput {
+    impl PlayerAudioOutput for FixedAudioOutput {
         /// Записывает все samples как успешно принятые.
         fn write_samples(&mut self, samples: &[f32]) -> u64 {
             samples.len() as u64
@@ -1733,12 +1770,18 @@ mod tests {
 
         /// Fake stream всегда успешно стартует.
         fn play(&mut self) -> anyhow::Result<()> {
-            Ok(())
+            match self.play_error {
+                Some(error) => Err(anyhow::anyhow!(error)),
+                None => Ok(()),
+            }
         }
 
         /// Fake stream всегда успешно ставится на паузу.
         fn pause(&mut self) -> anyhow::Result<()> {
-            Ok(())
+            match self.pause_error {
+                Some(error) => Err(anyhow::anyhow!(error)),
+                None => Ok(()),
+            }
         }
 
         /// Возвращает тот же generation, который запросил caller.
@@ -1747,7 +1790,12 @@ mod tests {
         }
 
         /// Volume не влияет на EOF-drain state.
-        fn set_volume(&mut self, _volume: f32) {}
+        fn set_volume(&mut self, volume: f32) {
+            *self
+                .last_volume
+                .lock()
+                .expect("fake volume mutex не должен ломаться") = Some(volume);
+        }
 
         /// Возвращает scripted buffer level.
         fn buffer_level_ms(&self) -> f64 {
@@ -1755,8 +1803,9 @@ mod tests {
         }
 
         /// Возвращает fake clock для соблюдения output contract-а.
-        fn clock(&self) -> &Arc<audio::AudioClock> {
-            &self.clock
+        fn clock(&self) -> Arc<dyn PlayerAudioClock> {
+            let clock: Arc<dyn PlayerAudioClock> = self.clock.clone();
+            clock
         }
     }
 
@@ -2137,6 +2186,58 @@ mod tests {
     }
 
     #[test]
+    fn installed_audio_output_boundary_forwards_calls_and_neutral_clock() {
+        let mut pipeline = PlaybackPipeline::default();
+        let output = FixedAudioOutput::new(42.0);
+        let clock = output.clock_handle();
+        let volume = output.volume_handle();
+
+        pipeline.install_audio_output_for_tests(Box::new(output));
+
+        assert!(pipeline.has_audio_output());
+        assert!(pipeline.audio_output_clock().is_some());
+        assert_eq!(pipeline.write_audio_output_samples(&[0.1, -0.1]), Some(2));
+        assert_eq!(pipeline.audio_output_buffer_level_ms(), Some(42.0));
+        assert_eq!(
+            pipeline
+                .clear_audio_output_for_seek(7)
+                .expect("installed output должен вернуть clear result")
+                .expect("fake clear должен быть успешным"),
+            7
+        );
+        assert!(pipeline.set_audio_output_volume(0.25));
+        assert_eq!(
+            *volume.lock().expect("fake volume mutex не должен ломаться"),
+            Some(0.25)
+        );
+
+        pipeline.install_audio_clock(clock);
+        assert!(pipeline.reset_audio_clock());
+    }
+
+    #[test]
+    fn audio_output_boundary_preserves_play_pause_errors() {
+        let mut pipeline = PlaybackPipeline::default();
+
+        pipeline.install_audio_output_for_tests(Box::new(FixedAudioOutput::with_errors(
+            Some("play failed"),
+            Some("pause failed"),
+        )));
+
+        let play_error = pipeline
+            .play_audio_output()
+            .expect("installed output должен вернуть play result")
+            .expect_err("play error должен пройти через boundary");
+        assert_eq!(play_error.to_string(), "play failed");
+
+        let pause_error = pipeline
+            .pause_audio_output()
+            .expect("installed output должен вернуть pause result")
+            .expect_err("pause error должен пройти через boundary");
+        assert_eq!(pause_error.to_string(), "pause failed");
+    }
+
+    #[test]
     fn audio_eof_drain_state_preserves_queue_output_and_playback_distinctions() {
         let mut pipeline = PlaybackPipeline::default();
         let audio_track_id = TrackId::new(2);
@@ -2220,14 +2321,20 @@ mod tests {
     fn installing_audio_clock_clears_monotonic_fallback_anchor() {
         let mut pipeline = PlaybackPipeline::default();
         let anchored_at = Instant::now();
+        let clock = Arc::new(FixedAudioClock::new(Duration::from_millis(12), 3));
 
         pipeline.start_monotonic_media_clock(Duration::from_secs(3), anchored_at);
         assert!(pipeline.monotonic_media_position(anchored_at).is_some());
 
-        pipeline.install_audio_clock(Arc::new(audio::AudioClock::new(48_000, 2)));
+        pipeline.install_audio_clock(Arc::clone(&clock) as Arc<dyn PlayerAudioClock>);
 
         assert!(pipeline.has_audio_clock());
+        assert_eq!(pipeline.audio_clock_now(), Duration::from_millis(12));
+        assert_eq!(pipeline.audio_clock_underrun_callbacks(), 3);
         assert!(pipeline.monotonic_media_position(anchored_at).is_none());
+        assert!(pipeline.reset_audio_clock());
+        assert_eq!(clock.reset_count(), 1);
+        assert_eq!(pipeline.audio_clock_now(), Duration::ZERO);
     }
 
     #[test]

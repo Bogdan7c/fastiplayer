@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use capability_core::{SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection};
@@ -13,6 +14,7 @@ use media_core::{
 };
 use tracing::{debug, info, trace, warn};
 
+use crate::audio_boundary::missing_audio_output_factory;
 use crate::media_opening::PreparedMedia;
 use crate::pipeline::{AudioEofDrainState, AudioSeekRuntimeState};
 use crate::seek_state::{
@@ -20,13 +22,14 @@ use crate::seek_state::{
     demux_seek_request_for_transaction,
 };
 use crate::{
-    ActiveSeekDiagnosticsSnapshot, FrameCounters, MediaOpenRequest, MediaSource, MediaSummary,
-    PipelineLatencyStage, PipelinePauseReason, PipelineQueueDepthSnapshot, PlaybackDiagnostics,
-    PlaybackDiagnosticsLogSummary, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError,
-    PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection,
-    SeekAudioResumeInfo, SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo, SeekProgressBlocker,
-    SeekRequest, SeekTargetFramePresentation, TextureSlotPressureSnapshot, TrackId,
-    TrackSelectionSnapshot, VideoBackendFactory, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
+    ActiveSeekDiagnosticsSnapshot, AudioOutputFactory, AudioOutputSpec, FrameCounters,
+    MediaOpenRequest, MediaSource, MediaSummary, PipelineLatencyStage, PipelinePauseReason,
+    PipelineQueueDepthSnapshot, PlaybackDiagnostics, PlaybackDiagnosticsLogSummary,
+    PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent,
+    PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection, SeekAudioResumeInfo,
+    SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo, SeekProgressBlocker, SeekRequest,
+    SeekTargetFramePresentation, TextureSlotPressureSnapshot, TrackId, TrackSelectionSnapshot,
+    VideoBackendFactory, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
 };
 
 mod render_leases;
@@ -394,6 +397,9 @@ pub struct PlayerSession {
     /// Media pipeline, перенесённый из `AppState` в Phase 3.
     pub(crate) pipeline: PlaybackPipeline,
 
+    /// Factory, через которую session лениво создаёт audio output после decoded spec.
+    audio_output_factory: Arc<dyn AudioOutputFactory>,
+
     /// Codec/render-neutral diagnostics aggregator для текущего media pipeline.
     pub(crate) diagnostics: PlaybackDiagnostics,
 
@@ -433,6 +439,15 @@ impl PlayerSession {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Создаёт session с audio output factory, переданной composition layer-ом.
+    #[must_use]
+    pub fn with_audio_output_factory(audio_output_factory: Arc<dyn AudioOutputFactory>) -> Self {
+        Self {
+            audio_output_factory,
+            ..Self::default()
+        }
     }
 
     /// Возвращает последний базовый immutable snapshot.
@@ -1418,7 +1433,7 @@ impl PlayerSession {
         }
     }
 
-    /// Создаёт CPAL output только после того, как decoder сообщил реальный decoded spec.
+    /// Создаёт audio output только после того, как decoder сообщил реальный decoded spec.
     fn ensure_audio_output_for_decoded_spec(
         &mut self,
         sample_rate: u32,
@@ -1437,17 +1452,24 @@ impl PlayerSession {
             ));
         }
 
-        let mut output = audio::AudioOutput::new(sample_rate, channels).map_err(|error| {
-            PlayerError::new(
-                PlayerErrorKind::AudioDeviceUnavailable,
-                format!("Audio output init failed: {error}"),
-            )
-        })?;
+        let output_spec = AudioOutputSpec {
+            sample_rate,
+            channels,
+        };
+        let mut output = self
+            .audio_output_factory
+            .create_output(output_spec)
+            .map_err(|error| {
+                PlayerError::new(
+                    PlayerErrorKind::AudioDeviceUnavailable,
+                    format!("Audio output init failed: {error}"),
+                )
+            })?;
 
         output.set_volume(self.snapshot.volume);
         self.pipeline.install_audio_output(output);
 
-        if let Some(clock) = self.pipeline.audio_output_clock().cloned() {
+        if let Some(clock) = self.pipeline.audio_output_clock() {
             self.pipeline.install_audio_clock(clock);
         }
 
@@ -1495,7 +1517,7 @@ impl PlayerSession {
     pub fn audio_clock_secs(&self) -> Option<f64> {
         self.pipeline
             .audio_output_clock()
-            .map(|clock| clock.now_secs())
+            .map(|clock| clock.now().as_secs_f64())
     }
 
     /// Возвращает уровень audio buffer в миллисекундах.
@@ -3579,6 +3601,7 @@ impl Default for PlayerSession {
         Self {
             snapshot: PlayerSnapshot::default(),
             pipeline: PlaybackPipeline::default(),
+            audio_output_factory: missing_audio_output_factory(),
             diagnostics: PlaybackDiagnostics::default(),
             pending_events: Vec::new(),
             pending_autoplay: false,
@@ -3675,20 +3698,20 @@ fn playback_resume_intent_name(intent: PlaybackResumeIntent) -> &'static str {
 mod tests {
     use std::collections::VecDeque;
     use std::sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     };
 
     use codec_core::{ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction};
 
     use super::*;
-    use crate::pipeline::AudioOutputBoundary;
     use crate::{
-        DecodeBackpressureReason, DecodeSendError, DecodeThreadError,
-        DecoderControlChannelPressureSnapshot, DecoderResourceSnapshot, MediaSource,
-        PendingAudioPacket, PendingVideoPacket, PlayerCommand, PlayerDecodePacket,
-        PlayerTickConfig, PlayerTickContext, PlayerTickResult, PlayerVideoFrameDrop,
-        ScrubCommitPolicy, SeekMode, SeekTarget, WgpuRenderTextureProviderHandle,
+        AudioOutputFactory, AudioOutputSpec, DecodeBackpressureReason, DecodeSendError,
+        DecodeThreadError, DecoderControlChannelPressureSnapshot, DecoderResourceSnapshot,
+        MediaSource, PendingAudioPacket, PendingVideoPacket, PlayerAudioClock, PlayerAudioOutput,
+        PlayerCommand, PlayerDecodePacket, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
+        PlayerVideoFrameDrop, ScrubCommitPolicy, SeekMode, SeekTarget,
+        WgpuRenderTextureProviderHandle,
     };
     use bytes::Bytes;
     use capability_core::{
@@ -4038,11 +4061,74 @@ mod tests {
         }
     }
 
+    /// Fake clock для session tests без concrete audio crate clock.
+    struct ScriptedAudioClock {
+        /// Текущая playback позиция, которую увидит session.
+        now: Mutex<Duration>,
+
+        /// Количество reset-вызовов через neutral boundary.
+        reset_count: AtomicUsize,
+
+        /// Scripted underrun callbacks для diagnostics path.
+        underrun_callbacks: AtomicU64,
+    }
+
+    impl ScriptedAudioClock {
+        /// Создаёт clock с нулевой позицией и без underrun callbacks.
+        fn new() -> Self {
+            Self {
+                now: Mutex::new(Duration::ZERO),
+                reset_count: AtomicUsize::new(0),
+                underrun_callbacks: AtomicU64::new(0),
+            }
+        }
+
+        /// Возвращает trait-object handle для установки в pipeline.
+        fn as_player_clock(self: &Arc<Self>) -> Arc<dyn PlayerAudioClock> {
+            let clock: Arc<dyn PlayerAudioClock> = self.clone();
+            clock
+        }
+
+        /// Имитирует progress production clock-а для тестов seek/EOF gates.
+        fn record_played(&self, samples: u64) {
+            let frames = samples / 2;
+            let nanos = frames.saturating_mul(1_000_000_000) / 48_000;
+            *self
+                .now
+                .lock()
+                .expect("fake clock mutex не должен ломаться") = Duration::from_nanos(nanos);
+        }
+    }
+
+    impl PlayerAudioClock for ScriptedAudioClock {
+        /// Возвращает scripted playback позицию.
+        fn now(&self) -> Duration {
+            *self
+                .now
+                .lock()
+                .expect("fake clock mutex не должен ломаться")
+        }
+
+        /// Сбрасывает позицию и отмечает reset.
+        fn reset(&self) {
+            self.reset_count.fetch_add(1, Ordering::Relaxed);
+            *self
+                .now
+                .lock()
+                .expect("fake clock mutex не должен ломаться") = Duration::ZERO;
+        }
+
+        /// Возвращает scripted underrun callbacks.
+        fn underrun_callbacks(&self) -> u64 {
+            self.underrun_callbacks.load(Ordering::Relaxed)
+        }
+    }
+
     /// Shared handle fake audio output-а для assertions после передачи output-а в pipeline.
     #[derive(Clone)]
     struct ScriptedAudioOutputHandle {
         /// Clock fake output-а, который session может установить в pipeline.
-        clock: Arc<audio::AudioClock>,
+        clock: Arc<ScriptedAudioClock>,
 
         /// Shared уровень buffer-а, видимый через output boundary.
         buffer_level_ms: Arc<Mutex<f64>>,
@@ -4061,7 +4147,7 @@ mod tests {
         /// Создаёт shared buffer level, empty counters и clock с production-like sample layout.
         fn new(buffer_level_ms: f64) -> Self {
             Self {
-                clock: Arc::new(audio::AudioClock::new(48_000, 2)),
+                clock: Arc::new(ScriptedAudioClock::new()),
                 buffer_level_ms: Arc::new(Mutex::new(buffer_level_ms)),
                 play_count: Arc::new(AtomicUsize::new(0)),
                 pause_count: Arc::new(AtomicUsize::new(0)),
@@ -4084,6 +4170,11 @@ mod tests {
                 .lock()
                 .expect("audio buffer level mutex should not be poisoned")
         }
+
+        /// Возвращает neutral clock handle для установки в pipeline/assertions.
+        fn clock(&self) -> Arc<dyn PlayerAudioClock> {
+            self.clock.as_player_clock()
+        }
     }
 
     /// Fake audio output для seek resume тестов без CPAL/device side effects.
@@ -4105,14 +4196,14 @@ mod tests {
         }
 
         /// Разделяет output и assertion handle перед установкой в pipeline.
-        fn into_parts(self) -> (Box<dyn AudioOutputBoundary>, ScriptedAudioOutputHandle) {
+        fn into_parts(self) -> (Box<dyn PlayerAudioOutput>, ScriptedAudioOutputHandle) {
             let handle = self.handle.clone();
 
             (Box::new(self), handle)
         }
     }
 
-    impl AudioOutputBoundary for ScriptedAudioOutput {
+    impl PlayerAudioOutput for ScriptedAudioOutput {
         /// Fake принимает все samples и возвращает их количество как written count.
         fn write_samples(&mut self, samples: &[f32]) -> u64 {
             samples.len() as u64
@@ -4147,9 +4238,130 @@ mod tests {
             self.handle.buffer_level_ms()
         }
 
-        /// Возвращает fake clock с production AudioClock contract-ом.
-        fn clock(&self) -> &Arc<audio::AudioClock> {
-            &self.handle.clock
+        /// Возвращает fake clock через neutral contract.
+        fn clock(&self) -> Arc<dyn PlayerAudioClock> {
+            self.handle.clock()
+        }
+    }
+
+    /// Shared state factory fake-а для проверок lazy output init.
+    #[derive(Clone)]
+    struct ScriptedAudioOutputFactoryHandle {
+        /// Сколько раз session вызвала factory.
+        create_count: Arc<AtomicUsize>,
+
+        /// Specs, с которыми session просила создать output.
+        created_specs: Arc<Mutex<Vec<AudioOutputSpec>>>,
+
+        /// Последний output handle, созданный factory.
+        last_output_handle: Arc<Mutex<Option<ScriptedAudioOutputHandle>>>,
+    }
+
+    impl ScriptedAudioOutputFactoryHandle {
+        /// Создаёт пустой assertion handle для factory.
+        fn new() -> Self {
+            Self {
+                create_count: Arc::new(AtomicUsize::new(0)),
+                created_specs: Arc::new(Mutex::new(Vec::new())),
+                last_output_handle: Arc::new(Mutex::new(None)),
+            }
+        }
+
+        /// Возвращает количество create-вызовов.
+        fn create_count(&self) -> usize {
+            self.create_count.load(Ordering::Relaxed)
+        }
+
+        /// Возвращает specs, полученные fake factory.
+        fn created_specs(&self) -> Vec<AudioOutputSpec> {
+            self.created_specs
+                .lock()
+                .expect("factory specs mutex не должен ломаться")
+                .clone()
+        }
+
+        /// Возвращает handle последнего output-а, если factory создала output.
+        fn last_output_handle(&self) -> Option<ScriptedAudioOutputHandle> {
+            self.last_output_handle
+                .lock()
+                .expect("factory output mutex не должен ломаться")
+                .clone()
+        }
+    }
+
+    /// Fake factory, возвращающая scripted output или creation error без CPAL.
+    struct ScriptedAudioOutputFactory {
+        /// Shared assertions factory-а.
+        handle: ScriptedAudioOutputFactoryHandle,
+
+        /// Ошибка создания output-а, если сценарий проверяет failure path.
+        creation_error: Option<&'static str>,
+
+        /// Scripted buffer level создаваемого output-а.
+        buffer_level_ms: f64,
+
+        /// Scripted play error создаваемого output-а.
+        play_error: Option<&'static str>,
+    }
+
+    impl ScriptedAudioOutputFactory {
+        /// Создаёт successful factory с заданным output behavior.
+        fn success(
+            buffer_level_ms: f64,
+            play_error: Option<&'static str>,
+        ) -> (Arc<Self>, ScriptedAudioOutputFactoryHandle) {
+            Self::new(buffer_level_ms, play_error, None)
+        }
+
+        /// Создаёт failing factory, имитирующую ошибку устройства.
+        fn failure(error: &'static str) -> (Arc<Self>, ScriptedAudioOutputFactoryHandle) {
+            Self::new(0.0, None, Some(error))
+        }
+
+        /// Общий constructor для success/failure сценариев.
+        fn new(
+            buffer_level_ms: f64,
+            play_error: Option<&'static str>,
+            creation_error: Option<&'static str>,
+        ) -> (Arc<Self>, ScriptedAudioOutputFactoryHandle) {
+            let handle = ScriptedAudioOutputFactoryHandle::new();
+            let factory = Arc::new(Self {
+                handle: handle.clone(),
+                creation_error,
+                buffer_level_ms,
+                play_error,
+            });
+
+            (factory, handle)
+        }
+    }
+
+    impl AudioOutputFactory for ScriptedAudioOutputFactory {
+        /// Создаёт scripted output и записывает spec, чтобы тест проверил lazy boundary call.
+        fn create_output(
+            &self,
+            spec: AudioOutputSpec,
+        ) -> anyhow::Result<Box<dyn PlayerAudioOutput>> {
+            self.handle.create_count.fetch_add(1, Ordering::Relaxed);
+            self.handle
+                .created_specs
+                .lock()
+                .expect("factory specs mutex не должен ломаться")
+                .push(spec);
+
+            if let Some(error) = self.creation_error {
+                anyhow::bail!(error);
+            }
+
+            let output = ScriptedAudioOutput::new(self.buffer_level_ms, self.play_error);
+            let (output, output_handle) = output.into_parts();
+            *self
+                .handle
+                .last_output_handle
+                .lock()
+                .expect("factory output mutex не должен ломаться") = Some(output_handle);
+
+            Ok(output)
         }
     }
 
@@ -4169,9 +4381,7 @@ mod tests {
         session
             .pipeline
             .install_audio_output_for_tests(audio_output);
-        session
-            .pipeline
-            .install_audio_clock(Arc::clone(&handle.clock));
+        session.pipeline.install_audio_clock(handle.clock());
 
         handle
     }
@@ -4585,6 +4795,98 @@ mod tests {
             PlayerEvent::RecoverableError(error)
                 if error.kind == PlayerErrorKind::UnsupportedAudioCodec
         )));
+    }
+
+    #[test]
+    fn audio_output_factory_is_not_called_before_decoded_spec() {
+        let (factory, factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
+        let mut session = PlayerSession::with_audio_output_factory(factory);
+        let audio_track_id = TrackId::new(2);
+
+        session.pipeline.select_audio_track(audio_track_id);
+        session
+            .pipeline
+            .install_audio_decoder(Box::new(CountingAudioDecoder::new(Arc::new(
+                AtomicUsize::new(0),
+            ))));
+        session.process_audio_packet(audio_track_id, Duration::ZERO, None, None, 0, b"encoded");
+
+        assert_eq!(factory_handle.create_count(), 0);
+        assert!(!session.pipeline.has_audio_output());
+        assert!(!session.pipeline.has_audio_clock());
+    }
+
+    #[test]
+    fn audio_output_factory_success_installs_output_and_clock() {
+        let (factory, factory_handle) = ScriptedAudioOutputFactory::success(25.0, None);
+        let mut session = PlayerSession::with_audio_output_factory(factory);
+
+        session
+            .ensure_audio_output_for_decoded_spec(48_000, 2)
+            .expect("successful factory должен установить output");
+
+        assert!(session.pipeline.has_audio_output());
+        assert!(session.pipeline.has_audio_clock());
+        assert_eq!(
+            factory_handle.created_specs(),
+            vec![AudioOutputSpec {
+                sample_rate: 48_000,
+                channels: 2,
+            }]
+        );
+        assert_eq!(session.audio_buffer_level_ms(), Some(25.0));
+    }
+
+    #[test]
+    fn audio_output_factory_creation_error_becomes_audio_device_unavailable() {
+        let (factory, factory_handle) = ScriptedAudioOutputFactory::failure("device missing");
+        let mut session = PlayerSession::with_audio_output_factory(factory);
+
+        let error = session
+            .ensure_audio_output_for_decoded_spec(48_000, 2)
+            .expect_err("factory error должен стать player error");
+
+        assert_eq!(error.kind, PlayerErrorKind::AudioDeviceUnavailable);
+        assert!(error.message.contains("device missing"));
+        assert_eq!(factory_handle.create_count(), 1);
+        assert!(!session.pipeline.has_audio_output());
+        assert!(!session.pipeline.has_audio_clock());
+    }
+
+    #[test]
+    fn lazy_audio_output_init_while_playing_calls_play() {
+        let (factory, factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
+        let mut session = PlayerSession::with_audio_output_factory(factory);
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session
+            .ensure_audio_output_for_decoded_spec(48_000, 2)
+            .expect("lazy init during Playing должен запустить output");
+
+        let output_handle = factory_handle
+            .last_output_handle()
+            .expect("factory должен создать output handle");
+        assert_eq!(session.playback_state(), PlaybackState::Playing);
+        assert_eq!(output_handle.play_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn lazy_audio_output_play_error_stays_audio_device_unavailable() {
+        let (factory, factory_handle) =
+            ScriptedAudioOutputFactory::success(0.0, Some("fake audio play failed"));
+        let mut session = PlayerSession::with_audio_output_factory(factory);
+
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        let error = session
+            .ensure_audio_output_for_decoded_spec(48_000, 2)
+            .expect_err("play error после lazy init должен быть видимым");
+
+        let output_handle = factory_handle
+            .last_output_handle()
+            .expect("factory должен успеть установить output до play error");
+        assert_eq!(error.kind, PlayerErrorKind::AudioDeviceUnavailable);
+        assert!(error.message.contains("fake audio play failed"));
+        assert_eq!(output_handle.play_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -7916,9 +8218,10 @@ mod tests {
         session
             .pipeline
             .set_video_decoder_thread(fake_decoder.clone());
+        let frozen_clock = Arc::new(ScriptedAudioClock::new());
         session
             .pipeline
-            .install_audio_clock(Arc::new(audio::AudioClock::new(48_000, 2)));
+            .install_audio_clock(frozen_clock.as_player_clock());
 
         session.dispatch_command(PlayerCommand::Play).unwrap();
         session
@@ -8762,7 +9065,7 @@ mod tests {
             .install_audio_output_for_tests(audio_output);
         session
             .pipeline
-            .install_audio_clock(Arc::clone(&audio_output_handle.clock));
+            .install_audio_clock(audio_output_handle.clock());
 
         assert_eq!(
             session.autoplay_audio_readiness(50.0),
