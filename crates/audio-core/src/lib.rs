@@ -337,7 +337,11 @@ pub trait AudioOutputFactory: Send + Sync {
 }
 
 /// Нейтральный output contract, которым управляет playback pipeline.
-pub trait PlayerAudioOutput: Send {
+///
+/// Output создаётся внутри playback worker-а и дальше остаётся thread-local.
+/// Этот contract поэтому не требует `Send`: concrete backend вроде CPAL может
+/// владеть `!Send` stream-ом, не добавляя proxy thread в горячий путь записи PCM.
+pub trait PlayerAudioOutput {
     /// Записывает interleaved PCM samples в output buffer.
     fn write_samples(&mut self, samples: &[f32]) -> u64;
 

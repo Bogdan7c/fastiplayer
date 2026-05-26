@@ -663,10 +663,7 @@ fn audio_buffer_refill_wakeup_delay(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> Option<Duration> {
-    if !session.is_demuxing_active()
-        || !session.pipeline.has_demuxer()
-        || !session.pipeline.has_selected_audio_track()
-    {
+    if !audio_refill_work_can_be_scheduled(session) {
         return None;
     }
 
@@ -683,6 +680,19 @@ fn audio_buffer_refill_wakeup_delay(
 
     let delay_seconds = (audio_buffer_level_ms - high_water_mark_ms) / 1000.0;
     Some(Duration::from_secs_f64(delay_seconds))
+}
+
+/// Проверяет, есть ли audio work, которое станет runnable после снижения buffer level.
+fn audio_refill_work_can_be_scheduled(session: &PlayerSession) -> bool {
+    if !session.pipeline.has_selected_audio_track() {
+        return false;
+    }
+
+    if session.is_demuxing_active() && session.pipeline.has_demuxer() {
+        return true;
+    }
+
+    session.eof_drain_needs_progress() && !session.pipeline.pending_audio_packet_is_empty()
 }
 
 /// Возвращает bounded лимит video packets для audio catch-up режима.
@@ -3155,6 +3165,33 @@ mod tests {
             .pipeline
             .enqueue_queued_video_frame(decoded_frame(Duration::from_millis(500), 1));
         install_fixed_audio_output(&mut session, 250.0);
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &tick_config,
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+
+        assert_eq!(plan.reason, WorkerWakeupReason::PipelineWorkReady);
+        assert_eq!(plan.delay, Some(Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn worker_wakeup_uses_audio_refill_deadline_while_draining_pending_audio_tail() {
+        let mut session = PlayerSession::new();
+        let audio_track_id = TrackId::new(2);
+        let tick_config = PlayerTickConfig {
+            audio_buffer_high_water_mark_ms: 200.0,
+            ..PlayerTickConfig::default()
+        };
+
+        install_empty_demuxer(&mut session);
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.pipeline.select_audio_track(audio_track_id);
+        enqueue_pending_audio_packet(&mut session, audio_track_id);
+        install_fixed_audio_output(&mut session, 250.0);
+        session.enter_eof_drain();
 
         let plan = session.worker_wakeup_plan(
             Instant::now(),

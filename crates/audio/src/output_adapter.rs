@@ -1,19 +1,13 @@
-//! CPAL-backed implementation of neutral audio output contracts.
+//! CPAL-backed реализация нейтральных audio output contracts.
 //!
-//! `AudioOutput` owns a concrete CPAL stream and is not moved through
-//! `player-core`. This adapter keeps the stream on a dedicated owner thread and
-//! exposes only `audio-core` trait objects to playback orchestration.
+//! `audio` владеет concrete CPAL output implementation. Playback worker
+//! получает только trait objects из `audio-core`, но PCM-запись остаётся прямой
+//! и не проходит через дополнительный command thread в real-time refill path.
 
-use std::sync::{
-    Arc,
-    mpsc::{self, Sender, SyncSender},
-};
-use std::thread::{self, JoinHandle};
+use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, anyhow};
 use audio_core::{AudioOutputFactory, AudioOutputSpec, PlayerAudioClock, PlayerAudioOutput};
-use tracing::warn;
 
 use crate::{AudioClock, AudioOutput};
 
@@ -22,259 +16,65 @@ use crate::{AudioClock, AudioOutput};
 pub struct CpalAudioOutputFactory;
 
 impl AudioOutputFactory for CpalAudioOutputFactory {
-    /// Создаёт Send-handle, а concrete CPAL output оставляет на dedicated audio thread.
+    /// Создаёт concrete output и отдаёт его как neutral trait object.
     fn create_output(&self, spec: AudioOutputSpec) -> anyhow::Result<Box<dyn PlayerAudioOutput>> {
-        CpalPlayerAudioOutput::spawn(spec)
-            .map(|output| Box::new(output) as Box<dyn PlayerAudioOutput>)
+        let output = AudioOutput::new(spec.sample_rate, spec.channels)?;
+        Ok(Box::new(output))
     }
 }
 
-/// Команды, которые player-core handle синхронно отправляет владельцу CPAL output-а.
-enum AudioOutputThreadCommand {
-    /// Записать PCM samples в ring buffer.
-    WriteSamples {
-        /// Owned samples, потому что команда пересекает thread boundary.
-        samples: Vec<f32>,
-
-        /// Ответ с количеством фактически записанных samples.
-        reply: SyncSender<u64>,
-    },
-
-    /// Запустить CPAL stream.
-    Play {
-        /// Ответ с ошибкой backend-а, если stream не стартовал.
-        reply: SyncSender<anyhow::Result<()>>,
-    },
-
-    /// Поставить CPAL stream на паузу.
-    Pause {
-        /// Ответ с ошибкой backend-а, если pause не удался.
-        reply: SyncSender<anyhow::Result<()>>,
-    },
-
-    /// Очистить buffer/resampler state для seek generation.
-    ClearBufferForSeek {
-        /// Seek generation, которую должен подтвердить output.
-        generation: u64,
-
-        /// Ответ с ack generation или ошибкой очистки.
-        reply: SyncSender<anyhow::Result<u64>>,
-    },
-
-    /// Обновить volume на owner thread-е.
-    SetVolume {
-        /// Volume уже валидируется/clamp-ится concrete output-ом.
-        volume: f32,
-
-        /// Ack нужен, чтобы caller не терял ordering относительно следующих samples.
-        reply: SyncSender<()>,
-    },
-
-    /// Прочитать текущий уровень audio buffer-а.
-    BufferLevelMs {
-        /// Ответ с buffer level в миллисекундах.
-        reply: SyncSender<f64>,
-    },
-
-    /// Завершить owner thread и drop-нуть concrete output на том же thread-е.
-    Shutdown,
-}
-
-/// Send adapter, который не перемещает concrete `AudioOutput` между потоками.
-struct CpalPlayerAudioOutput {
-    /// Канал команд к thread-у, владеющему CPAL stream.
-    command_tx: Sender<AudioOutputThreadCommand>,
-
-    /// Нейтральный clock handle, безопасный для чтения из player worker-а.
-    clock: Arc<dyn PlayerAudioClock>,
-
-    /// JoinHandle нужен, чтобы drop дождался освобождения CPAL stream.
-    join_handle: Option<JoinHandle<()>>,
-}
-
-impl CpalPlayerAudioOutput {
-    /// Создаёт owner thread, строит concrete output на нём и возвращает Send adapter.
-    fn spawn(spec: AudioOutputSpec) -> anyhow::Result<Self> {
-        let (command_tx, command_rx) = mpsc::channel();
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-
-        let join_handle = thread::Builder::new()
-            .name("audio-output".into())
-            .spawn(move || run_audio_output_thread(spec, command_rx, ready_tx))
-            .context("failed to spawn audio output thread")?;
-
-        let concrete_clock = match ready_rx.recv() {
-            Ok(Ok(clock)) => clock,
-            Ok(Err(error)) => {
-                join_audio_output_thread(join_handle);
-                return Err(error);
-            }
-            Err(error) => {
-                join_audio_output_thread(join_handle);
-                return Err(anyhow!("audio output thread stopped before init: {error}"));
-            }
-        };
-
-        let clock: Arc<dyn PlayerAudioClock> = Arc::new(CpalPlayerAudioClock {
-            clock: concrete_clock,
-        });
-
-        Ok(Self {
-            command_tx,
-            clock,
-            join_handle: Some(join_handle),
-        })
-    }
-
-    /// Отправляет command с one-shot reply и возвращает ошибку, если owner thread уже остановлен.
-    fn request<Reply>(
-        &self,
-        build_command: impl FnOnce(SyncSender<Reply>) -> AudioOutputThreadCommand,
-    ) -> anyhow::Result<Reply> {
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        self.command_tx
-            .send(build_command(reply_tx))
-            .context("audio output thread is stopped")?;
-        reply_rx
-            .recv()
-            .context("audio output thread dropped command response")
-    }
-}
-
-impl PlayerAudioOutput for CpalPlayerAudioOutput {
-    /// Делегирует запись PCM в concrete ring buffer на owner thread-е.
+impl PlayerAudioOutput for AudioOutput {
+    /// Записывает PCM samples напрямую в concrete ring buffer output-а.
     fn write_samples(&mut self, samples: &[f32]) -> u64 {
-        self.request(|reply| AudioOutputThreadCommand::WriteSamples {
-            samples: samples.to_vec(),
-            reply,
-        })
-        .unwrap_or_else(|error| {
-            warn!(error = %error, "Не удалось записать samples в audio output");
-            0
-        })
+        AudioOutput::write_samples(self, samples)
     }
 
-    /// Делегирует запуск stream-а и сохраняет ошибку видимой для session policy.
+    /// Запускает CPAL stream и возвращает backend error без сокрытия.
     fn play(&mut self) -> anyhow::Result<()> {
-        self.request(|reply| AudioOutputThreadCommand::Play { reply })?
+        AudioOutput::play(self)
     }
 
-    /// Делегирует pause stream-а и сохраняет ошибку видимой для session policy.
+    /// Ставит CPAL stream на паузу и возвращает backend error без сокрытия.
     fn pause(&mut self) -> anyhow::Result<()> {
-        self.request(|reply| AudioOutputThreadCommand::Pause { reply })?
+        AudioOutput::pause(self)
     }
 
-    /// Делегирует seek-clear в concrete output, который владеет buffer/resampler state.
+    /// Очищает buffer/resampler state на владельце concrete output-а.
     fn clear_buffer_for_seek(&mut self, generation: u64) -> anyhow::Result<u64> {
-        self.request(|reply| AudioOutputThreadCommand::ClearBufferForSeek { generation, reply })?
+        AudioOutput::clear_buffer_for_seek(self, generation)
     }
 
-    /// Делегирует volume update и логирует thread failure, потому что contract не возвращает error.
+    /// Обновляет volume для следующих записываемых samples.
     fn set_volume(&mut self, volume: f32) {
-        if let Err(error) =
-            self.request(|reply| AudioOutputThreadCommand::SetVolume { volume, reply })
-        {
-            warn!(error = %error, "Не удалось применить volume к audio output");
-        }
+        AudioOutput::set_volume(self, volume);
     }
 
-    /// Возвращает concrete buffer level через neutral boundary.
+    /// Возвращает текущий уровень concrete output buffer-а.
     fn buffer_level_ms(&self) -> f64 {
-        self.request(|reply| AudioOutputThreadCommand::BufferLevelMs { reply })
-            .unwrap_or_else(|error| {
-                warn!(error = %error, "Не удалось прочитать audio buffer level");
-                0.0
-            })
+        AudioOutput::buffer_level_ms(self)
     }
 
-    /// Возвращает neutral shared clock handle.
+    /// Возвращает concrete clock как neutral shared handle.
     fn clock(&self) -> Arc<dyn PlayerAudioClock> {
-        Arc::clone(&self.clock)
+        let clock: Arc<dyn PlayerAudioClock> = self.clock().clone();
+        clock
     }
 }
 
-impl Drop for CpalPlayerAudioOutput {
-    /// Останавливает owner thread, чтобы concrete CPAL stream drop случился на thread-е владельца.
-    fn drop(&mut self) {
-        let _ = self.command_tx.send(AudioOutputThreadCommand::Shutdown);
-        if let Some(join_handle) = self.join_handle.take() {
-            join_audio_output_thread(join_handle);
-        }
-    }
-}
-
-/// Adapter над concrete `AudioClock`, чтобы player-core не зависел от CPAL/audio crate type.
-struct CpalPlayerAudioClock {
-    /// Concrete audio clock остаётся owned/shared внутри audio crate.
-    clock: Arc<AudioClock>,
-}
-
-impl PlayerAudioClock for CpalPlayerAudioClock {
-    /// Делегирует чтение playback позиции concrete clock-у.
+impl PlayerAudioClock for AudioClock {
+    /// Возвращает playback позицию concrete clock-а.
     fn now(&self) -> Duration {
-        self.clock.now()
+        AudioClock::now(self)
     }
 
-    /// Делегирует reset concrete clock-у.
+    /// Сбрасывает concrete clock при seek/reset playback.
     fn reset(&self) {
-        self.clock.reset();
+        AudioClock::reset(self);
     }
 
-    /// Делегирует underrun diagnostics concrete clock-у.
+    /// Возвращает число CPAL callbacks, где output писал silence из-за underrun-а.
     fn underrun_callbacks(&self) -> u64 {
-        self.clock.underrun_callbacks()
-    }
-}
-
-/// Создаёт concrete output и обслуживает команды до shutdown/drop handle-а.
-fn run_audio_output_thread(
-    spec: AudioOutputSpec,
-    command_rx: mpsc::Receiver<AudioOutputThreadCommand>,
-    ready_tx: SyncSender<anyhow::Result<Arc<AudioClock>>>,
-) {
-    let mut output = match AudioOutput::new(spec.sample_rate, spec.channels) {
-        Ok(output) => output,
-        Err(error) => {
-            let _ = ready_tx.send(Err(error));
-            return;
-        }
-    };
-
-    let clock = Arc::clone(output.clock());
-    if ready_tx.send(Ok(clock)).is_err() {
-        return;
-    }
-
-    while let Ok(command) = command_rx.recv() {
-        match command {
-            AudioOutputThreadCommand::WriteSamples { samples, reply } => {
-                let _ = reply.send(output.write_samples(&samples));
-            }
-            AudioOutputThreadCommand::Play { reply } => {
-                let _ = reply.send(output.play());
-            }
-            AudioOutputThreadCommand::Pause { reply } => {
-                let _ = reply.send(output.pause());
-            }
-            AudioOutputThreadCommand::ClearBufferForSeek { generation, reply } => {
-                let _ = reply.send(output.clear_buffer_for_seek(generation));
-            }
-            AudioOutputThreadCommand::SetVolume { volume, reply } => {
-                output.set_volume(volume);
-                let _ = reply.send(());
-            }
-            AudioOutputThreadCommand::BufferLevelMs { reply } => {
-                let _ = reply.send(output.buffer_level_ms());
-            }
-            AudioOutputThreadCommand::Shutdown => break,
-        }
-    }
-}
-
-/// Ждёт owner thread и логирует panic без влияния на player-core error contract.
-fn join_audio_output_thread(join_handle: JoinHandle<()>) {
-    if join_handle.join().is_err() {
-        warn!("audio output thread завершился panic-ом");
+        AudioClock::underrun_callbacks(self)
     }
 }
 
@@ -282,12 +82,26 @@ fn join_audio_output_thread(join_handle: JoinHandle<()>) {
 mod tests {
     use std::sync::Arc;
 
-    use audio_core::AudioOutputFactory;
+    use audio_core::{AudioOutputFactory, PlayerAudioClock, PlayerAudioOutput};
 
-    use super::CpalAudioOutputFactory;
+    use super::{AudioClock, AudioOutput, CpalAudioOutputFactory};
 
     #[test]
     fn cpal_output_factory_is_exposed_as_neutral_contract_object() {
         let _factory: Arc<dyn AudioOutputFactory> = Arc::new(CpalAudioOutputFactory);
+    }
+
+    #[test]
+    fn concrete_audio_output_satisfies_neutral_output_contract() {
+        fn assert_output_contract<T: PlayerAudioOutput>() {}
+
+        assert_output_contract::<AudioOutput>();
+    }
+
+    #[test]
+    fn concrete_audio_clock_satisfies_neutral_clock_contract() {
+        fn assert_clock_contract<T: PlayerAudioClock + Send + Sync>() {}
+
+        assert_clock_contract::<AudioClock>();
     }
 }
