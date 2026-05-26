@@ -898,9 +898,11 @@ fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet)
 }
 
 /// Собирает audio decoder timing из raw metadata, которую demuxer сохранил рядом с media time.
-fn audio_packet_timing_from_media_packet(packet: &media_core::Packet) -> audio::AudioPacketTiming {
+fn audio_packet_timing_from_media_packet(
+    packet: &media_core::Packet,
+) -> audio_core::AudioPacketTiming {
     let Some(track_pts) = packet.track_pts else {
-        return audio::AudioPacketTiming::unknown();
+        return audio_core::AudioPacketTiming::unknown();
     };
 
     if track_pts.track_id != packet.track_id {
@@ -909,7 +911,7 @@ fn audio_packet_timing_from_media_packet(packet: &media_core::Packet) -> audio::
             timing_track_id = %track_pts.track_id,
             "Audio packet raw PTS принадлежит другому track; decoder timing помечен unknown"
         );
-        return audio::AudioPacketTiming::unknown();
+        return audio_core::AudioPacketTiming::unknown();
     }
 
     let Some(time_base) = audio_time_base_from_media_time_base(track_pts.time_base) else {
@@ -918,13 +920,13 @@ fn audio_packet_timing_from_media_packet(packet: &media_core::Packet) -> audio::
             time_base = ?track_pts.time_base,
             "Audio packet raw PTS имеет некорректную time base; decoder timing помечен unknown"
         );
-        return audio::AudioPacketTiming::unknown();
+        return audio_core::AudioPacketTiming::unknown();
     };
 
     let dts_units = audio_packet_dts_units(packet, track_pts);
     let duration_units = audio_packet_duration_units(packet, track_pts);
 
-    audio::AudioPacketTiming::from_track_units(
+    audio_core::AudioPacketTiming::from_track_units(
         time_base,
         track_pts.units.get(),
         dts_units,
@@ -935,8 +937,8 @@ fn audio_packet_timing_from_media_packet(packet: &media_core::Packet) -> audio::
 /// Конвертирует media-core time base в audio boundary time base без Symphonia types.
 fn audio_time_base_from_media_time_base(
     time_base: media_core::TimeBase,
-) -> Option<audio::AudioPacketTimeBase> {
-    audio::AudioPacketTimeBase::new(time_base.numer, time_base.denom)
+) -> Option<audio_core::AudioPacketTimeBase> {
+    audio_core::AudioPacketTimeBase::new(time_base.numer, time_base.denom)
 }
 
 /// Возвращает raw DTS units только если DTS согласован с PTS track owner/timebase.

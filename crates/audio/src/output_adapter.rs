@@ -1,3 +1,9 @@
+//! CPAL-backed implementation of neutral audio output contracts.
+//!
+//! `AudioOutput` owns a concrete CPAL stream and is not moved through
+//! `player-core`. This adapter keeps the stream on a dedicated owner thread and
+//! exposes only `audio-core` trait objects to playback orchestration.
+
 use std::sync::{
     Arc,
     mpsc::{self, Sender, SyncSender},
@@ -6,12 +12,14 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use player_core::{AudioOutputFactory, AudioOutputSpec, PlayerAudioClock, PlayerAudioOutput};
+use audio_core::{AudioOutputFactory, AudioOutputSpec, PlayerAudioClock, PlayerAudioOutput};
 use tracing::warn;
 
-/// Production factory, создающая concrete CPAL output внутри composition layer-а.
+use crate::{AudioClock, AudioOutput};
+
+/// Production factory, создающая concrete CPAL output за neutral boundary.
 #[derive(Debug, Default)]
-pub(crate) struct CpalAudioOutputFactory;
+pub struct CpalAudioOutputFactory;
 
 impl AudioOutputFactory for CpalAudioOutputFactory {
     /// Создаёт Send-handle, а concrete CPAL output оставляет на dedicated audio thread.
@@ -72,7 +80,7 @@ enum AudioOutputThreadCommand {
     Shutdown,
 }
 
-/// Send adapter, который не перемещает concrete `audio::AudioOutput` между потоками.
+/// Send adapter, который не перемещает concrete `AudioOutput` между потоками.
 struct CpalPlayerAudioOutput {
     /// Канал команд к thread-у, владеющему CPAL stream.
     command_tx: Sender<AudioOutputThreadCommand>,
@@ -195,10 +203,10 @@ impl Drop for CpalPlayerAudioOutput {
     }
 }
 
-/// Adapter над `audio::AudioClock`, чтобы player-core не зависел от concrete clock type.
+/// Adapter над concrete `AudioClock`, чтобы player-core не зависел от CPAL/audio crate type.
 struct CpalPlayerAudioClock {
     /// Concrete audio clock остаётся owned/shared внутри audio crate.
-    clock: Arc<audio::AudioClock>,
+    clock: Arc<AudioClock>,
 }
 
 impl PlayerAudioClock for CpalPlayerAudioClock {
@@ -222,9 +230,9 @@ impl PlayerAudioClock for CpalPlayerAudioClock {
 fn run_audio_output_thread(
     spec: AudioOutputSpec,
     command_rx: mpsc::Receiver<AudioOutputThreadCommand>,
-    ready_tx: SyncSender<anyhow::Result<Arc<audio::AudioClock>>>,
+    ready_tx: SyncSender<anyhow::Result<Arc<AudioClock>>>,
 ) {
-    let mut output = match audio::AudioOutput::new(spec.sample_rate, spec.channels) {
+    let mut output = match AudioOutput::new(spec.sample_rate, spec.channels) {
         Ok(output) => output,
         Err(error) => {
             let _ = ready_tx.send(Err(error));
@@ -267,5 +275,19 @@ fn run_audio_output_thread(
 fn join_audio_output_thread(join_handle: JoinHandle<()>) {
     if join_handle.join().is_err() {
         warn!("audio output thread завершился panic-ом");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use audio_core::AudioOutputFactory;
+
+    use super::CpalAudioOutputFactory;
+
+    #[test]
+    fn cpal_output_factory_is_exposed_as_neutral_contract_object() {
+        let _factory: Arc<dyn AudioOutputFactory> = Arc::new(CpalAudioOutputFactory);
     }
 }

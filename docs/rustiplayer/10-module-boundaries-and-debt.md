@@ -5,11 +5,10 @@
 
 ## Текущие временные exceptions
 
-После последних refactor PR прямые зависимости `player-core -> symphonia-demux/webm-demux` и
-`player-core -> video-vaapi` закрыты. Оставшийся Cargo/source-level долг:
+После последних refactor PR прямые зависимости `player-core -> symphonia-demux/webm-demux`,
+`player-core -> video-vaapi` и `player-core -> audio` закрыты. Оставшийся
+Cargo/source-level долг:
 
-- `player-core -> audio`: playback session всё ещё использует concrete Opus/CPAL
-  audio path, а не neutral audio decoder/output factory.
 - `player-core -> wgpu`: render lease и decoder boundary возвращают WGPU texture
   views для текущего zero-copy path.
 - `video-vaapi -> player-core`: concrete backend crate реализует
@@ -20,7 +19,7 @@
   подключён к production renderer crate.
 
 Эти exceptions не делают контрактные crates backend-specific: `media-core`,
-`codec-core`, `video-core`, `render-core` и `capability-core` остаются
+`codec-core`, `audio-core`, `video-core`, `render-core` и `capability-core` остаются
 нейтральными contract boundaries.
 
 ## `player-core::PlayerSession`

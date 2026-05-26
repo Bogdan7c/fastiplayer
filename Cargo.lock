@@ -386,12 +386,20 @@ name = "audio"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "audio-core",
  "cpal",
  "opus",
  "ringbuf",
  "symphonia",
- "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "audio-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2895,7 +2903,7 @@ name = "player-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "audio",
+ "audio-core",
  "bytes",
  "capability-core",
  "codec-core",

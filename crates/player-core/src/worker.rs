@@ -7,7 +7,7 @@ use capability_core::SystemCapabilities;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
 use tracing::{debug, warn};
 
-use crate::audio_boundary::missing_audio_output_factory;
+use crate::audio_boundary::{missing_audio_decoder_factory, missing_audio_output_factory};
 #[cfg(test)]
 use crate::render_lease_bridge::{
     LatestPresentFrameAcquire, LatestPresentFrameHandoff, RenderAcquireSample, RenderLeaseRelease,
@@ -21,10 +21,11 @@ use crate::tick::{
 };
 use crate::worker_scheduler::{PlannedWorkerWakeup, WorkerScheduler, WorkerWakeupDeadline};
 use crate::{
-    ActiveSeekDiagnosticsSnapshot, AudioOutputFactory, FrameCounters, LatencyCounterSnapshot,
-    MediaOpenRequest, MediaSource, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent,
-    PlayerResult, PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext,
-    PlayerTickResult, PlayerVideoDecoderThreadConfig, PreparedMedia, StartedVideoBackend,
+    ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory, FrameCounters,
+    LatencyCounterSnapshot, MediaOpenRequest, MediaSource, PlayerCommand, PlayerError,
+    PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSession, PlayerSnapshot, PlayerTickConfig,
+    PlayerTickContext, PlayerTickResult, PlayerVideoDecoderThreadConfig, PreparedMedia,
+    StartedVideoBackend,
 };
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
@@ -72,6 +73,9 @@ pub struct PlayerWorkerConfig {
     /// Bounded queue/runtime limits decoder thread-а.
     pub decoder_thread_config: PlayerVideoDecoderThreadConfig,
 
+    /// Factory audio decoder-а, которую composition layer устанавливает без backend deps в core.
+    pub audio_decoder_factory: Arc<dyn AudioDecoderFactory>,
+
     /// Factory audio output-а, которую composition layer устанавливает без CPAL deps в core.
     pub audio_output_factory: Arc<dyn AudioOutputFactory>,
 }
@@ -88,6 +92,7 @@ impl fmt::Debug for PlayerWorkerConfig {
             )
             .field("tick_config", &self.tick_config)
             .field("decoder_thread_config", &self.decoder_thread_config)
+            .field("audio_decoder_factory", &"<dyn AudioDecoderFactory>")
             .field("audio_output_factory", &"<dyn AudioOutputFactory>")
             .finish()
     }
@@ -102,6 +107,7 @@ impl PlayerWorkerConfig {
             decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config,
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
+            audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
         }
     }
@@ -114,8 +120,19 @@ impl PlayerWorkerConfig {
             decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config: PlayerTickConfig::from(config),
             decoder_thread_config: decoder_thread_config_from_app_config(config),
+            audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
         }
+    }
+
+    /// Подставляет audio decoder factory, которой владеет composition layer.
+    #[must_use]
+    pub fn with_audio_decoder_factory(
+        mut self,
+        audio_decoder_factory: Arc<dyn AudioDecoderFactory>,
+    ) -> Self {
+        self.audio_decoder_factory = audio_decoder_factory;
+        self
     }
 
     /// Подставляет audio output factory, которой владеет composition layer.
@@ -375,6 +392,7 @@ impl PlayerWorker {
         let (render_bridge, render_bridge_client) = RenderLeaseBridge::new();
         let (shutdown_tx, shutdown_rx) = bounded(1);
         let decoder_thread_config = config.decoder_thread_config;
+        let audio_decoder_factory = Arc::clone(&config.audio_decoder_factory);
         let audio_output_factory = Arc::clone(&config.audio_output_factory);
 
         let command_sender = PlayerCommandSender { command_tx };
@@ -385,7 +403,10 @@ impl PlayerWorker {
             .name("player-worker".into())
             .spawn(move || {
                 let runtime = PlayerWorkerRuntime {
-                    session: PlayerSession::with_audio_output_factory(audio_output_factory),
+                    session: PlayerSession::with_audio_factories(
+                        audio_decoder_factory,
+                        audio_output_factory,
+                    ),
                     worker_scheduler: WorkerScheduler,
                     command_rx,
                     snapshot_publisher: LatestSnapshotPublisher::new(
@@ -1330,6 +1351,7 @@ mod tests {
             decoder_readiness_poll_interval: Duration::from_millis(2),
             tick_config: PlayerTickConfig::default(),
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
+            audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
         }
     }

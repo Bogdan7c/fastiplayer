@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/app-egui",
+    "crates/audio-core",
     "crates/capability-core",
     "crates/codec-core",
     "crates/config",
@@ -43,6 +44,7 @@ pollster = "0.4"
 anyhow = "1.0"
 directories = "6.0"
 rustiplayer-config = { path = "crates/config" }
+audio-core = { path = "crates/audio-core" }
 capability-core = { path = "crates/capability-core" }
 codec-core = { path = "crates/codec-core" }
 serde = { version = "1.0", features = ["derive"] }

@@ -16,10 +16,14 @@
 pub mod clock;
 pub mod decoder;
 pub mod output;
+mod output_adapter;
 
-pub use clock::AudioClock;
-pub use decoder::{
-    AudioDecoder, AudioDecoderConfig, AudioDecoderError, AudioDecoderHandle, AudioPacketTimeBase,
-    AudioPacketTiming, EncodedAudioPacket, SymphoniaAudioDecoder, create_audio_decoder,
+pub use audio_core::{
+    AudioDecoder, AudioDecoderConfig, AudioDecoderError, AudioDecoderFactory, AudioDecoderHandle,
+    AudioOutputFactory, AudioOutputSpec, AudioPacketTimeBase, AudioPacketTiming,
+    EncodedAudioPacket, PlayerAudioClock, PlayerAudioOutput,
 };
+pub use clock::AudioClock;
+pub use decoder::{ProductionAudioDecoderFactory, SymphoniaAudioDecoder, create_audio_decoder};
 pub use output::AudioOutput;
+pub use output_adapter::CpalAudioOutputFactory;

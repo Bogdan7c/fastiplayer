@@ -23,8 +23,10 @@ mod video_backend;
 mod worker;
 mod worker_scheduler;
 
-pub use audio_boundary::{
-    AudioOutputFactory, AudioOutputSpec, PlayerAudioClock, PlayerAudioOutput,
+pub use audio_core::{
+    AudioDecoder, AudioDecoderConfig, AudioDecoderError, AudioDecoderFactory, AudioDecoderHandle,
+    AudioOutputFactory, AudioOutputSpec, AudioPacketTimeBase, AudioPacketTiming,
+    EncodedAudioPacket, PlayerAudioClock, PlayerAudioOutput,
 };
 pub use command::{
     MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, ScrubCommitPolicy,

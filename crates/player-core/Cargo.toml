@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-audio = { path = "../audio" }
+audio-core = { workspace = true }
 bytes = { workspace = true }
 capability-core = { workspace = true }
 codec-core = { workspace = true }

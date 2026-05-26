@@ -159,7 +159,7 @@ pub(crate) struct PendingAudioPacket {
     pub(crate) duration: Option<Duration>,
 
     /// Raw packet timing в container units для decoder boundary.
-    pub(crate) timing: audio::AudioPacketTiming,
+    pub(crate) timing: audio_core::AudioPacketTiming,
 
     /// Seek generation, в котором packet был прочитан из demuxer.
     pub(crate) generation: u64,
@@ -185,7 +185,7 @@ impl PendingAudioPacket {
             pts,
             dts,
             duration,
-            timing: audio::AudioPacketTiming::unknown(),
+            timing: audio_core::AudioPacketTiming::unknown(),
             generation,
             encoded_bytes,
         }
@@ -198,7 +198,7 @@ impl PendingAudioPacket {
         pts: Duration,
         dts: Option<Duration>,
         duration: Option<Duration>,
-        timing: audio::AudioPacketTiming,
+        timing: audio_core::AudioPacketTiming,
         generation: u64,
         encoded_bytes: Bytes,
     ) -> Self {
@@ -271,10 +271,10 @@ pub(crate) struct PlaybackPipeline {
     source_label: Option<String>,
 
     /// Codec-neutral audio decoder для выбранного audio трека.
-    audio_decoder: Option<audio::AudioDecoderHandle>,
+    audio_decoder: Option<audio_core::AudioDecoderHandle>,
 
     /// Deferred config для audio decoder-а, пока первый packet не потребовал decode.
-    deferred_audio_decoder_config: Option<audio::AudioDecoderConfig>,
+    deferred_audio_decoder_config: Option<audio_core::AudioDecoderConfig>,
 
     /// Audio output за нейтральным boundary trait-ом: production adapter или test fake.
     audio_output: Option<Box<dyn PlayerAudioOutput>>,
@@ -374,7 +374,7 @@ pub(crate) struct PlaybackPipeline {
 
 impl PlaybackPipeline {
     /// Устанавливает codec-neutral audio decoder, созданный session policy слоем.
-    pub(crate) fn install_audio_decoder(&mut self, decoder: audio::AudioDecoderHandle) {
+    pub(crate) fn install_audio_decoder(&mut self, decoder: audio_core::AudioDecoderHandle) {
         self.audio_decoder = Some(decoder);
         self.deferred_audio_decoder_config = None;
     }
@@ -393,7 +393,7 @@ impl PlaybackPipeline {
     /// Сохраняет decoder config до первого selected audio packet-а.
     pub(crate) fn install_deferred_audio_decoder_config(
         &mut self,
-        config: audio::AudioDecoderConfig,
+        config: audio_core::AudioDecoderConfig,
     ) {
         self.deferred_audio_decoder_config = Some(config);
     }
@@ -409,7 +409,7 @@ impl PlaybackPipeline {
     pub(crate) fn take_deferred_audio_decoder_config(
         &mut self,
         track_id: TrackId,
-    ) -> Option<audio::AudioDecoderConfig> {
+    ) -> Option<audio_core::AudioDecoderConfig> {
         let config = self.deferred_audio_decoder_config.as_ref()?;
         if config.track_id() != track_id.get() {
             return None;
@@ -429,7 +429,7 @@ impl PlaybackPipeline {
     /// остаётся отдельным состоянием, чтобы session могла выставить runtime error.
     pub(crate) fn decode_audio_packet(
         &mut self,
-        encoded_audio_packet: &audio::EncodedAudioPacket<'_>,
+        encoded_audio_packet: &audio_core::EncodedAudioPacket<'_>,
     ) -> Option<anyhow::Result<DecodedAudioPacket>> {
         let decoder = self.audio_decoder.as_mut()?;
         let decode_result = decoder.decode(encoded_audio_packet);
@@ -1670,9 +1670,12 @@ mod tests {
         Error(&'static str),
     }
 
-    impl audio::AudioDecoder for FakeAudioDecoder {
+    impl audio_core::AudioDecoder for FakeAudioDecoder {
         /// Возвращает заранее заданный результат decode.
-        fn decode(&mut self, _packet: &audio::EncodedAudioPacket<'_>) -> anyhow::Result<Vec<f32>> {
+        fn decode(
+            &mut self,
+            _packet: &audio_core::EncodedAudioPacket<'_>,
+        ) -> anyhow::Result<Vec<f32>> {
             match &self.decode_outcome {
                 FakeAudioDecodeOutcome::Samples(samples) => Ok(samples.clone()),
                 FakeAudioDecodeOutcome::Error(error) => Err(anyhow::anyhow!(*error)),
@@ -2020,7 +2023,7 @@ mod tests {
         );
         pipeline.select_audio_track(old_audio_track);
         pipeline.install_deferred_audio_decoder_config(
-            audio::AudioDecoderConfig::from_track_metadata(
+            audio_core::AudioDecoderConfig::from_track_metadata(
                 old_audio_track.get(),
                 "A_OPUS",
                 Some(48_000),
@@ -2070,9 +2073,10 @@ mod tests {
     #[test]
     fn audio_decoder_boundaries_preserve_absent_success_and_error_states() {
         let mut pipeline = PlaybackPipeline::default();
-        let packet = audio::EncodedAudioPacket::without_timing(TrackId::new(2).get(), b"packet");
+        let packet =
+            audio_core::EncodedAudioPacket::without_timing(TrackId::new(2).get(), b"packet");
         let bad_packet =
-            audio::EncodedAudioPacket::without_timing(TrackId::new(2).get(), b"bad packet");
+            audio_core::EncodedAudioPacket::without_timing(TrackId::new(2).get(), b"bad packet");
 
         assert!(!pipeline.has_audio_decoder());
         assert!(pipeline.decode_audio_packet(&packet).is_none());
@@ -2119,7 +2123,7 @@ mod tests {
     #[test]
     fn deferred_audio_decoder_config_boundary_preserves_absent_match_and_mismatch() {
         let mut pipeline = PlaybackPipeline::default();
-        let config = audio::AudioDecoderConfig::from_track_metadata(
+        let config = audio_core::AudioDecoderConfig::from_track_metadata(
             TrackId::new(2).get(),
             "A_AAC",
             None,
@@ -2173,8 +2177,12 @@ mod tests {
     fn audio_seek_runtime_state_boundary_keeps_selection_ownership() {
         let mut pipeline = PlaybackPipeline::default();
         let track_id = TrackId::new(2);
-        let decoder_config =
-            audio::AudioDecoderConfig::from_track_metadata(track_id.get(), "A_OPUS", None, None);
+        let decoder_config = audio_core::AudioDecoderConfig::from_track_metadata(
+            track_id.get(),
+            "A_OPUS",
+            None,
+            None,
+        );
 
         assert_eq!(
             pipeline.audio_seek_runtime_state(),

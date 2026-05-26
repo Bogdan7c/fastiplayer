@@ -5,10 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+audio-core = { workspace = true }
 symphonia = { workspace = true }
 cpal = "0.15"
 ringbuf = "0.4"
 opus = "0.3"
 anyhow = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }

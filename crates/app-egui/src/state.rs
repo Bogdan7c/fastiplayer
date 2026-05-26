@@ -21,7 +21,6 @@ use tracing::{debug, instrument, warn};
 use video_vaapi::{VaapiWgpuVideoBackendFactory, VideoTextureViewLookup, VideoTextureViewProvider};
 use winit::window::Window;
 
-use crate::audio_output_adapter::CpalAudioOutputFactory;
 use crate::local_file_open::{
     LocalFileOpenEvent, LocalFileOpenJob, LocalFileOpenResult, local_file_prepare_error_message,
     preparing_local_file_message,
@@ -542,7 +541,8 @@ impl AppState {
             None,
         );
         let worker_config = PlayerWorkerConfig::from_app_config(&app_config)
-            .with_audio_output_factory(Arc::new(CpalAudioOutputFactory));
+            .with_audio_decoder_factory(Arc::new(audio::ProductionAudioDecoderFactory))
+            .with_audio_output_factory(Arc::new(audio::CpalAudioOutputFactory));
         let player_worker = PlayerWorker::spawn(worker_config)?;
         let desktop_integration = match DesktopIntegration::spawn(player_worker.command_sender()) {
             Ok(desktop_integration) => Some(desktop_integration),

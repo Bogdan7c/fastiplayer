@@ -64,7 +64,7 @@ hardware decode или GPU render path. Они могут зависеть от 
 
 - `symphonia-demux` - concrete adapter поверх upstream Symphonia для audio/container demux.
 - `webm-demux` - compatibility re-export старого crate path на время transition.
-- `audio` - текущий Opus decoder и CPAL output path.
+- `audio` - concrete Symphonia/Opus decoder factory и CPAL output backend.
 - `video-vaapi` - VA-API decoder thread, probe, DMA-BUF export/import.
 - `render-wgpu` video backend часть - NV12/P010 WGPU renderer и shader paths.
 
@@ -83,11 +83,12 @@ upstream `symphonia = 0.6`, а устаревшие локальные ката�
 app-egui -> player-core/service-youtube/desktop-integration
 app-egui -> symphonia-demux/audio/video-vaapi/render-wgpu/source-core
 app-egui -> wgpu/winit/egui/egui-winit/rustiplayer-config
-player-core -> media-core/codec-core/capability-core/video-core/rustiplayer-config/audio/wgpu
+player-core -> media-core/codec-core/capability-core/video-core/rustiplayer-config/audio-core/wgpu
 service-youtube -> source-core/symphonia-demux/rustiplayer-config/capability-core/codec-core
 source-core -> rustiplayer-config
 symphonia-demux -> source-core/media-core/codec-core
 webm-demux -> symphonia-demux
+audio -> audio-core
 video-vaapi -> player-core/video-core/media-core/codec-core/capability-core/wgpu
 render-wgpu -> render-core/video-core/codec-core/video-vulkan/wgpu/egui/egui-wgpu/winit
 ```
@@ -101,13 +102,16 @@ VA-API и WGPU остаются частью production boundary.
 Before:
   player-core -> webm-demux
   player-core -> video-vaapi
+  player-core -> audio
   player-core -> wgpu
   render-wgpu -> egui/winit/video-vulkan
 
 After:
   player-core -> symphonia-demux/webm-demux closed
   player-core -> video-vaapi closed
+  player-core -> audio closed; player-core -> audio-core remains
   app-egui -> symphonia-demux/video-vaapi owns production composition
+  app-egui -> audio wires production audio factories
   video-vaapi -> player-core adapter remains
   player-core -> wgpu remains
   render-wgpu -> egui/egui-wgpu/winit/video-vulkan remains
@@ -120,7 +124,6 @@ After:
 
 | Связь | Почему сейчас существует | Целевое направление |
 | --- | --- | --- |
-| `player-core -> audio::OpusDecoder` | Audio pipeline пока хранит concrete Opus decoder вместо codec-neutral boundary. | Ввести `audio::AudioDecoder`/factory и оставить Opus только concrete implementation. |
 | `player-core -> wgpu` | Zero-copy render lease сейчас материализует WGPU texture views через `WgpuRenderTextureProviderHandle`. | Выделить renderer-neutral resource materialization boundary, чтобы player не зависел от конкретного graphics API. |
 | `video-vaapi -> player-core` | Concrete VA-API backend реализует `VideoBackendFactory`, который пока объявлен в `player-core`. | Перенести backend startup/decoder-handle contract в `video-core` или отдельный backend API при появлении второго production decoder-а. |
 | `render-wgpu -> egui/winit/video-vulkan` | Crate одновременно содержит shell composition, WGPU renderer и reference Vulkan linkage. | Разделить shell/winit/egui wiring и production WGPU video backend; убрать reference dependency из production renderer path. |
@@ -128,10 +131,11 @@ After:
 `render-wgpu -> egui-wgpu` считается частью той же shell-composition проблемы,
 хотя краткая debt-метка выше записана как `egui/winit`.
 
-Закрытые нарушения `player-core -> symphonia-demux/webm-demux` и
-`player-core -> video-vaapi` не должны возвращаться. Local/YouTube opening
+Закрытые нарушения `player-core -> symphonia-demux/webm-demux`,
+`player-core -> video-vaapi` и `player-core -> audio` не должны возвращаться. Local/YouTube opening
 остаётся за shell/service layer и за `PreparedMedia`, а production backend
-startup остаётся в `video-vaapi` adapter-е.
+startup остаётся в `video-vaapi` adapter-е, а production audio factories остаются
+в `audio` и передаются через `audio-core` contracts.
 
 ## Dependency guardrails
 
@@ -141,12 +145,12 @@ startup остаётся в `video-vaapi` adapter-е.
   `symphonia-demux`, `webm-demux`, `audio`, `video-vaapi`, `render-wgpu`,
   `video-vulkan`, `service-youtube`, `desktop-integration`, `wgpu`, `winit`,
   `egui`, `egui-winit` или `egui-wgpu`.
-- `media-core`, `codec-core`, `audio`, `symphonia-demux` и `webm-demux` не
+- `media-core`, `codec-core`, `audio-core`, `audio`, `symphonia-demux` и `webm-demux` не
   добавляют прямые зависимости на `wgpu`, `video-vaapi` или `render-wgpu`.
 - `player-core` не добавляет новые direct dependencies на UI/shell/service,
   `symphonia-demux`, `webm-demux`, `video-vaapi`, `render-wgpu`,
-  `video-vulkan` или другие concrete backend crates. Текущие exceptions для
-  `audio` и `wgpu` не расширяются без отдельного архитектурного решения.
+  `video-vulkan`, `audio` или другие concrete backend crates. Текущая exception
+  для `wgpu` не расширяется без отдельного архитектурного решения.
 - `render-wgpu` не начинает знать demux/source/audio/player/session crates.
 - `video-vaapi -> player-core` допускается только для adapter-а
   `VideoBackendFactory`; decoder internals не должны читать session/pipeline
@@ -173,8 +177,8 @@ startup остаётся в `video-vaapi` adapter-е.
 - запрещает прямые normal-dependencies из contract crates в shell/backend/player;
 - запрещает прямые `media-core`/`codec-core`/`audio`/demux dependencies на
   `wgpu`, `video-vaapi` и `render-wgpu`;
-- запрещает возвращение `player-core -> symphonia-demux/webm-demux` и
-  `player-core -> video-vaapi`;
+- запрещает возвращение `player-core -> symphonia-demux/webm-demux`,
+  `player-core -> video-vaapi` и `player-core -> audio`;
 - запрещает новые прямые связи `player-core` и `render-wgpu` с явно опасными
   соседними слоями, кроме текущего temporary debt allowlist;
 - печатает найденные временные нарушения как долг, но не считает их ошибкой.
@@ -197,8 +201,8 @@ neutral crate.
 
 - Добавить transitive graph проверку через `cargo metadata` без `--no-deps`,
   когда появится стабильная policy для dev/build dependencies.
-- Проверять source-level debt `player-core -> audio::OpusDecoder`, потому что
-  manifest видит только `player-core -> audio`.
+- Проверять, что `player-core -> audio` не возвращается после переноса neutral
+  decoder/output/clock contracts в `audio-core`.
 - Проверять удаление `player-core -> wgpu` после renderer-neutral resource
   materialization boundary.
 - Проверять удаление `video-vaapi -> player-core` после переноса

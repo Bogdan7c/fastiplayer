@@ -14,7 +14,7 @@ use media_core::{
 };
 use tracing::{debug, info, trace, warn};
 
-use crate::audio_boundary::missing_audio_output_factory;
+use crate::audio_boundary::{missing_audio_decoder_factory, missing_audio_output_factory};
 use crate::media_opening::PreparedMedia;
 use crate::pipeline::{AudioEofDrainState, AudioSeekRuntimeState};
 use crate::seek_state::{
@@ -22,14 +22,14 @@ use crate::seek_state::{
     demux_seek_request_for_transaction,
 };
 use crate::{
-    ActiveSeekDiagnosticsSnapshot, AudioOutputFactory, AudioOutputSpec, FrameCounters,
-    MediaOpenRequest, MediaSource, MediaSummary, PipelineLatencyStage, PipelinePauseReason,
-    PipelineQueueDepthSnapshot, PlaybackDiagnostics, PlaybackDiagnosticsLogSummary,
-    PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent,
-    PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection, SeekAudioResumeInfo,
-    SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo, SeekProgressBlocker, SeekRequest,
-    SeekTargetFramePresentation, StartedVideoBackend, TextureSlotPressureSnapshot, TrackId,
-    TrackSelectionSnapshot, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
+    ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory, AudioOutputSpec,
+    FrameCounters, MediaOpenRequest, MediaSource, MediaSummary, PipelineLatencyStage,
+    PipelinePauseReason, PipelineQueueDepthSnapshot, PlaybackDiagnostics,
+    PlaybackDiagnosticsLogSummary, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError,
+    PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection,
+    SeekAudioResumeInfo, SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo, SeekProgressBlocker,
+    SeekRequest, SeekTargetFramePresentation, StartedVideoBackend, TextureSlotPressureSnapshot,
+    TrackId, TrackSelectionSnapshot, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
 };
 
 mod render_leases;
@@ -397,6 +397,9 @@ pub struct PlayerSession {
     /// Media pipeline, перенесённый из `AppState` в Phase 3.
     pub(crate) pipeline: PlaybackPipeline,
 
+    /// Factory, через которую session лениво создаёт audio decoder по первому selected packet-у.
+    audio_decoder_factory: Arc<dyn AudioDecoderFactory>,
+
     /// Factory, через которую session лениво создаёт audio output после decoded spec.
     audio_output_factory: Arc<dyn AudioOutputFactory>,
 
@@ -445,6 +448,28 @@ impl PlayerSession {
     #[must_use]
     pub fn with_audio_output_factory(audio_output_factory: Arc<dyn AudioOutputFactory>) -> Self {
         Self {
+            audio_output_factory,
+            ..Self::default()
+        }
+    }
+
+    /// Создаёт session с audio decoder factory, переданной composition layer-ом.
+    #[must_use]
+    pub fn with_audio_decoder_factory(audio_decoder_factory: Arc<dyn AudioDecoderFactory>) -> Self {
+        Self {
+            audio_decoder_factory,
+            ..Self::default()
+        }
+    }
+
+    /// Создаёт session с обеими production audio factories без concrete deps в core.
+    #[must_use]
+    pub fn with_audio_factories(
+        audio_decoder_factory: Arc<dyn AudioDecoderFactory>,
+        audio_output_factory: Arc<dyn AudioOutputFactory>,
+    ) -> Self {
+        Self {
+            audio_decoder_factory,
             audio_output_factory,
             ..Self::default()
         }
@@ -1326,7 +1351,7 @@ impl PlayerSession {
             packet_pts,
             packet_dts,
             packet_duration,
-            audio::AudioPacketTiming::unknown(),
+            audio_core::AudioPacketTiming::unknown(),
             generation,
             encoded_audio_bytes,
         );
@@ -1339,7 +1364,7 @@ impl PlayerSession {
         packet_pts: Duration,
         _packet_dts: Option<Duration>,
         _packet_duration: Option<Duration>,
-        packet_timing: audio::AudioPacketTiming,
+        packet_timing: audio_core::AudioPacketTiming,
         generation: u64,
         encoded_audio_bytes: &[u8],
     ) {
@@ -1361,7 +1386,7 @@ impl PlayerSession {
         }
 
         let encoded_audio_packet =
-            audio::EncodedAudioPacket::new(track_id.get(), packet_timing, encoded_audio_bytes);
+            audio_core::EncodedAudioPacket::new(track_id.get(), packet_timing, encoded_audio_bytes);
 
         if let Some(decode_result) = self.pipeline.decode_audio_packet(&encoded_audio_packet) {
             match decode_result {
@@ -1410,7 +1435,7 @@ impl PlayerSession {
         };
 
         let codec_id = decoder_config.codec_id().to_string();
-        match audio::create_audio_decoder(decoder_config) {
+        match self.audio_decoder_factory.create_decoder(decoder_config) {
             Ok(decoder) => {
                 self.pipeline.install_audio_decoder(decoder);
                 info!(
@@ -3276,7 +3301,7 @@ impl PlayerSession {
             "Audio track выбран; decoder/output будут созданы лениво"
         );
 
-        let decoder_config = audio::AudioDecoderConfig::from_track_metadata(
+        let decoder_config = audio_core::AudioDecoderConfig::from_track_metadata(
             init_spec.track_id.get(),
             init_spec.codec_id.clone(),
             init_spec.initial_sample_rate,
@@ -3469,8 +3494,8 @@ fn audio_decoder_init_spec_from_tracks(
 /// Сохраняет typed unsupported-codec ошибку factory, не меняя остальные init errors.
 fn player_error_from_audio_decoder_factory_error(error: anyhow::Error) -> PlayerError {
     if matches!(
-        error.downcast_ref::<audio::AudioDecoderError>(),
-        Some(audio::AudioDecoderError::UnsupportedCodec { .. })
+        error.downcast_ref::<audio_core::AudioDecoderError>(),
+        Some(audio_core::AudioDecoderError::UnsupportedCodec { .. })
     ) {
         return PlayerError::new(
             PlayerErrorKind::UnsupportedAudioCodec,
@@ -3594,6 +3619,7 @@ impl Default for PlayerSession {
         Self {
             snapshot: PlayerSnapshot::default(),
             pipeline: PlaybackPipeline::default(),
+            audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
             diagnostics: PlaybackDiagnostics::default(),
             pending_events: Vec::new(),
@@ -4031,9 +4057,12 @@ mod tests {
         }
     }
 
-    impl audio::AudioDecoder for CountingAudioDecoder {
+    impl audio_core::AudioDecoder for CountingAudioDecoder {
         /// Decode в этом fake path-е не используется.
-        fn decode(&mut self, _packet: &audio::EncodedAudioPacket<'_>) -> anyhow::Result<Vec<f32>> {
+        fn decode(
+            &mut self,
+            _packet: &audio_core::EncodedAudioPacket<'_>,
+        ) -> anyhow::Result<Vec<f32>> {
             Ok(Vec::new())
         }
 
@@ -4051,6 +4080,116 @@ mod tests {
         /// Возвращает стабильный channel count для boundary contract-а.
         fn channels(&self) -> u32 {
             2
+        }
+    }
+
+    /// Упаковывает fake decoder в neutral trait object для тестов boundary methods.
+    fn counting_audio_decoder_handle(
+        reset_count: Arc<AtomicUsize>,
+    ) -> audio_core::AudioDecoderHandle {
+        Box::new(CountingAudioDecoder::new(reset_count))
+    }
+
+    /// Наблюдаемый handle fake decoder factory для lazy-init tests.
+    #[derive(Clone)]
+    struct ScriptedAudioDecoderFactoryHandle {
+        /// Config-и, по которым session реально запросила decoder.
+        created_configs: Arc<Mutex<Vec<audio_core::AudioDecoderConfig>>>,
+    }
+
+    impl ScriptedAudioDecoderFactoryHandle {
+        /// Создаёт пустой журнал factory calls.
+        fn new() -> Self {
+            Self {
+                created_configs: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        /// Возвращает снимок созданных decoder config-ов.
+        fn created_configs(&self) -> Vec<audio_core::AudioDecoderConfig> {
+            self.created_configs
+                .lock()
+                .expect("scripted audio decoder factory log lock")
+                .clone()
+        }
+    }
+
+    /// Явный сценарий fake decoder factory без concrete audio crate.
+    enum ScriptedAudioDecoderFactoryOutcome {
+        /// Успешно вернуть decoder, который decode-ит пустой PCM packet.
+        Success,
+
+        /// Вернуть stable typed unsupported codec error.
+        UnsupportedCodec,
+
+        /// Вернуть generic init failure.
+        Error(&'static str),
+    }
+
+    /// Fake decoder factory для проверки lazy creation policy в player-core.
+    struct ScriptedAudioDecoderFactory {
+        /// Журнал вызовов, доступный тесту после packet processing.
+        handle: ScriptedAudioDecoderFactoryHandle,
+
+        /// Предсказуемый результат factory call-а.
+        outcome: ScriptedAudioDecoderFactoryOutcome,
+    }
+
+    impl ScriptedAudioDecoderFactory {
+        /// Создаёт factory, которая успешно возвращает fake decoder.
+        fn success() -> (Arc<Self>, ScriptedAudioDecoderFactoryHandle) {
+            Self::new(ScriptedAudioDecoderFactoryOutcome::Success)
+        }
+
+        /// Создаёт factory, которая возвращает unsupported codec.
+        fn unsupported_codec() -> (Arc<Self>, ScriptedAudioDecoderFactoryHandle) {
+            Self::new(ScriptedAudioDecoderFactoryOutcome::UnsupportedCodec)
+        }
+
+        /// Создаёт factory, которая возвращает generic init error.
+        fn error(error: &'static str) -> (Arc<Self>, ScriptedAudioDecoderFactoryHandle) {
+            Self::new(ScriptedAudioDecoderFactoryOutcome::Error(error))
+        }
+
+        /// Создаёт scripted factory с общим журналом вызовов.
+        fn new(
+            outcome: ScriptedAudioDecoderFactoryOutcome,
+        ) -> (Arc<Self>, ScriptedAudioDecoderFactoryHandle) {
+            let handle = ScriptedAudioDecoderFactoryHandle::new();
+            (
+                Arc::new(Self {
+                    handle: handle.clone(),
+                    outcome,
+                }),
+                handle,
+            )
+        }
+    }
+
+    impl audio_core::AudioDecoderFactory for ScriptedAudioDecoderFactory {
+        /// Записывает config и возвращает scripted outcome без Symphonia/Opus deps.
+        fn create_decoder(
+            &self,
+            config: audio_core::AudioDecoderConfig,
+        ) -> anyhow::Result<audio_core::AudioDecoderHandle> {
+            self.handle
+                .created_configs
+                .lock()
+                .expect("scripted audio decoder factory log lock")
+                .push(config.clone());
+
+            match self.outcome {
+                ScriptedAudioDecoderFactoryOutcome::Success => Ok(Box::new(
+                    CountingAudioDecoder::new(Arc::new(AtomicUsize::new(0))),
+                )),
+                ScriptedAudioDecoderFactoryOutcome::UnsupportedCodec => {
+                    Err(audio_core::AudioDecoderError::UnsupportedCodec {
+                        codec_id: config.codec_id().to_string(),
+                    }
+                    .into())
+                }
+                ScriptedAudioDecoderFactoryOutcome::Error(error) => Err(anyhow::anyhow!(error)),
+            }
         }
     }
 
@@ -4367,7 +4506,7 @@ mod tests {
         let reset_count = Arc::new(AtomicUsize::new(0));
         session
             .pipeline
-            .install_audio_decoder(Box::new(CountingAudioDecoder::new(reset_count)));
+            .install_audio_decoder(counting_audio_decoder_handle(reset_count));
 
         let (audio_output, handle) =
             ScriptedAudioOutput::new(buffer_level_ms, play_error).into_parts();
@@ -4763,7 +4902,9 @@ mod tests {
 
     #[test]
     fn init_audio_pipeline_defers_unsupported_factory_codec_until_first_packet() {
-        let mut session = PlayerSession::new();
+        let (decoder_factory, _decoder_factory_handle) =
+            ScriptedAudioDecoderFactory::unsupported_codec();
+        let mut session = PlayerSession::with_audio_decoder_factory(decoder_factory);
         let tracks = vec![fake_audio_track_with_codec(2, "A_NOT_REAL")];
 
         session.init_audio_pipeline(&tracks);
@@ -4791,6 +4932,55 @@ mod tests {
     }
 
     #[test]
+    fn lazy_audio_decoder_factory_is_called_only_for_selected_track() {
+        let (decoder_factory, decoder_factory_handle) = ScriptedAudioDecoderFactory::success();
+        let mut session = PlayerSession::with_audio_decoder_factory(decoder_factory);
+        let tracks = vec![fake_audio_track_with_codec(2, "A_OPUS")];
+
+        session.init_audio_pipeline(&tracks);
+        session.process_audio_packet(TrackId::new(3), Duration::ZERO, None, None, 0, b"other");
+
+        assert_eq!(decoder_factory_handle.created_configs(), Vec::new());
+        assert!(session.pipeline.has_deferred_audio_decoder_config());
+        assert!(!session.pipeline.has_audio_decoder());
+
+        session.process_audio_packet(TrackId::new(2), Duration::ZERO, None, None, 0, b"selected");
+
+        assert!(session.pipeline.has_audio_decoder());
+        assert!(!session.pipeline.has_deferred_audio_decoder_config());
+        assert_eq!(
+            decoder_factory_handle.created_configs(),
+            vec![audio_core::AudioDecoderConfig::from_track_metadata(
+                2,
+                "A_OPUS",
+                Some(48_000),
+                Some(2),
+            )]
+        );
+    }
+
+    #[test]
+    fn audio_decoder_factory_generic_error_stays_recoverable_runtime_error() {
+        let (decoder_factory, _decoder_factory_handle) =
+            ScriptedAudioDecoderFactory::error("decoder backend failed");
+        let mut session = PlayerSession::with_audio_decoder_factory(decoder_factory);
+        let tracks = vec![fake_audio_track_with_codec(2, "A_OPUS")];
+
+        session.init_audio_pipeline(&tracks);
+        session.process_audio_packet(TrackId::new(2), Duration::ZERO, None, None, 0, b"encoded");
+
+        assert!(!session.pipeline.has_audio_decoder());
+        assert!(!session.pipeline.has_deferred_audio_decoder_config());
+        assert!(session.pipeline.selected_audio_track_id().is_none());
+        assert!(session.take_events().iter().any(|event| matches!(
+            event,
+            PlayerEvent::RecoverableError(error)
+                if error.kind == PlayerErrorKind::RuntimeError
+                    && error.message.contains("decoder backend failed")
+        )));
+    }
+
+    #[test]
     fn audio_output_factory_is_not_called_before_decoded_spec() {
         let (factory, factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
         let mut session = PlayerSession::with_audio_output_factory(factory);
@@ -4799,9 +4989,7 @@ mod tests {
         session.pipeline.select_audio_track(audio_track_id);
         session
             .pipeline
-            .install_audio_decoder(Box::new(CountingAudioDecoder::new(Arc::new(
-                AtomicUsize::new(0),
-            ))));
+            .install_audio_decoder(counting_audio_decoder_handle(Arc::new(AtomicUsize::new(0))));
         session.process_audio_packet(audio_track_id, Duration::ZERO, None, None, 0, b"encoded");
 
         assert_eq!(factory_handle.create_count(), 0);
@@ -4889,11 +5077,9 @@ mod tests {
         let reset_count = Arc::new(AtomicUsize::new(0));
         session
             .pipeline
-            .install_audio_decoder(Box::new(CountingAudioDecoder::new(Arc::clone(
-                &reset_count,
-            ))));
+            .install_audio_decoder(counting_audio_decoder_handle(Arc::clone(&reset_count)));
         session.pipeline.install_deferred_audio_decoder_config(
-            audio::AudioDecoderConfig::from_track_metadata(2, "A_OPUS", Some(48_000), Some(2)),
+            audio_core::AudioDecoderConfig::from_track_metadata(2, "A_OPUS", Some(48_000), Some(2)),
         );
         let initial_generation = session.pipeline.seek_generation();
 
@@ -7401,9 +7587,7 @@ mod tests {
         session.pipeline.select_audio_track(TrackId::new(2));
         session
             .pipeline
-            .install_audio_decoder(Box::new(CountingAudioDecoder::new(Arc::clone(
-                &reset_count,
-            ))));
+            .install_audio_decoder(counting_audio_decoder_handle(Arc::clone(&reset_count)));
 
         session
             .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
@@ -9041,9 +9225,7 @@ mod tests {
 
         session
             .pipeline
-            .install_audio_decoder(Box::new(CountingAudioDecoder::new(Arc::new(
-                AtomicUsize::new(0),
-            ))));
+            .install_audio_decoder(counting_audio_decoder_handle(Arc::new(AtomicUsize::new(0))));
 
         assert_eq!(
             session.autoplay_audio_readiness(50.0),
@@ -9080,7 +9262,9 @@ mod tests {
 
     #[test]
     fn unsupported_audio_path_does_not_block_autoplay_after_disable() {
-        let mut session = PlayerSession::new();
+        let (decoder_factory, _decoder_factory_handle) =
+            ScriptedAudioDecoderFactory::unsupported_codec();
+        let mut session = PlayerSession::with_audio_decoder_factory(decoder_factory);
         let audio_track_id = TrackId::new(2);
         let tracks = vec![fake_audio_track_with_codec(
             audio_track_id.get(),
@@ -9148,9 +9332,7 @@ mod tests {
         session.snapshot.selected_tracks.audio_track = Some(audio_track_id);
         session
             .pipeline
-            .install_audio_decoder(Box::new(CountingAudioDecoder::new(Arc::new(
-                AtomicUsize::new(0),
-            ))));
+            .install_audio_decoder(counting_audio_decoder_handle(Arc::new(AtomicUsize::new(0))));
         session.begin_autoplay_preroll().unwrap();
 
         assert_eq!(

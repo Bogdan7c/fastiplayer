@@ -5,6 +5,7 @@
 ```text
 crates/app-egui              desktop shell, media opening, backend/render wiring
 crates/player-core           worker, session, scheduler, commands/events/snapshots
+crates/audio-core            neutral audio decoder/output/clock contracts
 crates/media-core            Packet, TrackInfo, MediaTime, TimelineSnapshot
 crates/codec-core            codec/profile/color/surface/memory contracts
 crates/capability-core       backend reports, render reports, stream selection
@@ -13,7 +14,7 @@ crates/source-core           local files, HTTP Range, RAM byte-range cache
 crates/symphonia-demux       Symphonia audio container demux adapter
 crates/webm-demux            compatibility re-export for old demux crate path
 crates/service-youtube       yt-dlp adapter, stream candidates, YouTube demux open
-crates/audio                 Opus decoder, CPAL output, audio clock
+crates/audio                 Symphonia/Opus decoder factory, CPAL output backend, audio clock
 crates/video-core            decoded frame and video diagnostics contracts
 crates/video-vaapi           VA-API decoder thread, probe, DMA-BUF/WGPU import
 crates/render-core           renderer-neutral capabilities and color contracts
@@ -34,12 +35,12 @@ and forwards prepared boundaries into `player-core`. It must not own playback
 queues, A/V scheduling or `PlayerSession` state.
 
 `player-core` owns playback state. It consumes `PreparedMedia`, demuxer traits,
-audio output/decoder services, video backend handles, commands, events and
+audio-core decoder/output contracts, video backend handles, commands, events and
 snapshots. It no longer opens WebM/Matroska or imports `video-vaapi` directly,
 but it still contains WGPU-specific render texture boundary types for the
 current zero-copy render path.
 
-`media-core`, `codec-core`, `render-core`, `video-core` are contract crates.
+`media-core`, `codec-core`, `audio-core`, `render-core`, `video-core` are contract crates.
 They should stay backend-neutral and avoid UI/service dependencies.
 
 `source-core` owns byte access. It does not know YouTube, containers, codecs,
@@ -69,13 +70,13 @@ app-egui -> player-core/service-youtube/desktop-integration
 app-egui -> symphonia-demux/audio/video-vaapi/render-wgpu/source-core
 app-egui -> media-core/codec-core/capability-core/video-core/render-core/rustiplayer-config
 app-egui -> wgpu/winit/egui/egui-winit
-player-core -> media-core/codec-core/capability-core/video-core/rustiplayer-config/audio/wgpu
+player-core -> media-core/codec-core/capability-core/video-core/rustiplayer-config/audio-core/wgpu
 desktop-integration -> player-core/media-core
 service-youtube -> source-core/symphonia-demux/rustiplayer-config/capability-core/codec-core
 source-core -> rustiplayer-config
 symphonia-demux -> media-core/codec-core/source-core
 webm-demux -> symphonia-demux
-audio -> codec-core
+audio -> audio-core
 capability-core -> codec-core/render-core
 video-core -> media-core/codec-core
 render-core -> codec-core

@@ -18,293 +18,37 @@ use symphonia::core::codecs::audio::{
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::packet::{PacketBuilder, PacketRef as SymphoniaPacketRef};
 use symphonia::core::units::{Duration as SymphoniaDuration, Timestamp as SymphoniaTimestamp};
-use thiserror::Error;
 use tracing::{info, warn};
+
+pub use audio_core::{
+    AudioDecoder, AudioDecoderConfig, AudioDecoderError, AudioDecoderFactory, AudioDecoderHandle,
+    AudioPacketTimeBase, AudioPacketTiming, EncodedAudioPacket,
+};
 
 /// Максимальное количество samples на packet для Opus fallback (120ms @ 48kHz stereo).
 const MAX_OPUS_SAMPLES_PER_PACKET: usize = 48000 * 2 * 120 / 1000;
 
-/// Codec-neutral параметры audio track-а, по которым factory создаёт decoder.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AudioDecoderConfig {
-    /// Track ID нужен для сборки Symphonia `PacketRef` и проверки выбранного track-а.
-    track_id: u32,
+/// Production decoder factory, которая скрывает Symphonia registry и Opus fallback.
+#[derive(Debug, Default)]
+pub struct ProductionAudioDecoderFactory;
 
-    /// Container codec id (`A_OPUS`, `A_AAC`, `A_FLAC` и т.д.).
-    codec_id: String,
-
-    /// Sample rate из track metadata, если demuxer уже смог его определить.
-    sample_rate: Option<u32>,
-
-    /// Количество каналов из track metadata, если demuxer уже смог его определить.
-    channels: Option<u32>,
-
-    /// Codec private / extra data из container track metadata.
-    codec_private: Option<Vec<u8>>,
-}
-
-impl AudioDecoderConfig {
-    /// Создаёт config с уже известным decoded audio spec и без codec-private данных.
-    #[must_use]
-    pub fn new(
-        track_id: u32,
-        codec_id: impl Into<String>,
-        sample_rate: u32,
-        channels: u32,
-    ) -> Self {
-        Self::from_track_metadata(track_id, codec_id, Some(sample_rate), Some(channels))
+impl AudioDecoderFactory for ProductionAudioDecoderFactory {
+    /// Создаёт concrete decoder через production helper без раскрытия backend-а caller-у.
+    fn create_decoder(&self, config: AudioDecoderConfig) -> Result<AudioDecoderHandle> {
+        create_audio_decoder(config)
     }
-
-    /// Создаёт config из container metadata, где audio spec может быть ещё неполным.
-    #[must_use]
-    pub fn from_track_metadata(
-        track_id: u32,
-        codec_id: impl Into<String>,
-        sample_rate: Option<u32>,
-        channels: Option<u32>,
-    ) -> Self {
-        Self {
-            track_id,
-            codec_id: codec_id.into(),
-            sample_rate,
-            channels,
-            codec_private: None,
-        }
-    }
-
-    /// Добавляет codec-private bytes, если container сообщил decoder extra data.
-    #[must_use]
-    pub fn with_codec_private(mut self, codec_private: Option<Vec<u8>>) -> Self {
-        self.codec_private = codec_private;
-        self
-    }
-
-    /// Возвращает Track ID в числовом виде для backend adapter-ов.
-    #[must_use]
-    pub const fn track_id(&self) -> u32 {
-        self.track_id
-    }
-
-    /// Возвращает исходный container codec id.
-    #[must_use]
-    pub fn codec_id(&self) -> &str {
-        &self.codec_id
-    }
-
-    /// Возвращает sample rate из track metadata, если container сообщил его до decode.
-    #[must_use]
-    pub const fn sample_rate(&self) -> Option<u32> {
-        self.sample_rate
-    }
-
-    /// Возвращает channel count из track metadata, если container сообщил его до decode.
-    #[must_use]
-    pub const fn channels(&self) -> Option<u32> {
-        self.channels
-    }
-}
-
-/// Временная база исходного audio track-а для decoder packet timing metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AudioPacketTimeBase {
-    /// Числитель длительности одного track unit-а в секундах.
-    numer: u32,
-
-    /// Знаменатель длительности одного track unit-а в секундах.
-    denom: u32,
-}
-
-impl AudioPacketTimeBase {
-    /// Создаёт audio packet time base только из ненулевых Symphonia-compatible частей.
-    #[must_use]
-    pub const fn new(numer: u32, denom: u32) -> Option<Self> {
-        if numer == 0 || denom == 0 {
-            None
-        } else {
-            Some(Self { numer, denom })
-        }
-    }
-
-    /// Возвращает числитель временной базы.
-    #[must_use]
-    pub const fn numer(self) -> u32 {
-        self.numer
-    }
-
-    /// Возвращает знаменатель временной базы.
-    #[must_use]
-    pub const fn denom(self) -> u32 {
-        self.denom
-    }
-}
-
-/// Raw timing metadata encoded audio packet-а в исходных units container track-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AudioPacketTiming {
-    /// Временная база, в которой выражены raw packet units.
-    time_base: Option<AudioPacketTimeBase>,
-
-    /// Presentation timestamp в исходных signed track units.
-    pts_units: i64,
-
-    /// Decode timestamp в исходных signed track units, если container сообщил DTS.
-    dts_units: Option<i64>,
-
-    /// Packet duration в исходных unsigned track units, если container сообщил duration.
-    duration_units: Option<u64>,
-}
-
-impl AudioPacketTiming {
-    /// Создаёт явно отсутствующий raw timing без sample-rate догадок.
-    #[must_use]
-    pub const fn unknown() -> Self {
-        Self {
-            time_base: None,
-            pts_units: 0,
-            dts_units: None,
-            duration_units: None,
-        }
-    }
-
-    /// Создаёт timing из raw container units одного audio track-а.
-    #[must_use]
-    pub const fn from_track_units(
-        time_base: AudioPacketTimeBase,
-        pts_units: i64,
-        dts_units: Option<i64>,
-        duration_units: Option<u64>,
-    ) -> Self {
-        Self {
-            time_base: Some(time_base),
-            pts_units,
-            dts_units,
-            duration_units,
-        }
-    }
-
-    /// Возвращает временную базу raw units, если demuxer смог её сохранить.
-    #[must_use]
-    pub const fn time_base(&self) -> Option<AudioPacketTimeBase> {
-        self.time_base
-    }
-
-    /// Возвращает raw PTS units для сборки Symphonia packet boundary.
-    #[must_use]
-    pub const fn pts_units(&self) -> i64 {
-        self.pts_units
-    }
-
-    /// Возвращает raw DTS units для сборки Symphonia packet boundary.
-    #[must_use]
-    pub const fn dts_units(&self) -> Option<i64> {
-        self.dts_units
-    }
-
-    /// Возвращает raw duration units для сборки Symphonia packet boundary.
-    #[must_use]
-    pub const fn duration_units(&self) -> Option<u64> {
-        self.duration_units
-    }
-}
-
-/// Codec-neutral ссылка на encoded audio packet.
-#[derive(Debug, Clone, Copy)]
-pub struct EncodedAudioPacket<'a> {
-    /// Track ID packet-а.
-    track_id: u32,
-
-    /// Raw timing metadata, нужная Symphonia decoder packet API.
-    timing: AudioPacketTiming,
-
-    /// Encoded codec bytes.
-    data: &'a [u8],
-}
-
-impl<'a> EncodedAudioPacket<'a> {
-    /// Создаёт immutable packet view без привязки к конкретному decoder backend-у.
-    #[must_use]
-    pub const fn new(track_id: u32, timing: AudioPacketTiming, data: &'a [u8]) -> Self {
-        Self {
-            track_id,
-            timing,
-            data,
-        }
-    }
-
-    /// Создаёт packet view для backend-ов/tests, где container timing отсутствует.
-    #[must_use]
-    pub const fn without_timing(track_id: u32, data: &'a [u8]) -> Self {
-        Self::new(track_id, AudioPacketTiming::unknown(), data)
-    }
-
-    /// Возвращает track id packet-а.
-    #[must_use]
-    pub const fn track_id(&self) -> u32 {
-        self.track_id
-    }
-
-    /// Возвращает encoded bytes.
-    #[must_use]
-    pub const fn data(&self) -> &'a [u8] {
-        self.data
-    }
-
-    /// Возвращает raw timing metadata packet-а.
-    #[must_use]
-    pub const fn timing(&self) -> AudioPacketTiming {
-        self.timing
-    }
-}
-
-/// Codec-neutral audio decoder contract для playback pipeline.
-pub trait AudioDecoder: Send {
-    /// Декодирует один encoded audio packet в interleaved PCM f32.
-    fn decode(&mut self, packet: &EncodedAudioPacket<'_>) -> Result<Vec<f32>>;
-
-    /// Сбрасывает codec state после seek или discontinuity.
-    fn reset(&mut self) -> Result<()>;
-
-    /// Возвращает sample rate decoded PCM.
-    fn sample_rate(&self) -> u32;
-
-    /// Возвращает количество interleaved channels decoded PCM.
-    fn channels(&self) -> u32;
-}
-
-/// Владеющий handle codec-neutral decoder-а, который можно хранить в player pipeline.
-pub type AudioDecoderHandle = Box<dyn AudioDecoder + Send>;
-
-/// Ошибки audio decoder factory, которые caller может downcast-ить из anyhow.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum AudioDecoderError {
-    /// Codec id не удалось связать с Symphonia audio codec id или decoder registry.
-    #[error("Audio codec {codec_id} is not supported by the audio decoder factory")]
-    UnsupportedCodec {
-        /// Container codec id, для которого factory не смог создать decoder.
-        codec_id: String,
-    },
-
-    /// Track metadata непригодна для создания decoder-а.
-    #[error("Invalid audio decoder config for {codec_id}: {reason}")]
-    InvalidConfig {
-        /// Container codec id, для которого config оказался некорректным.
-        codec_id: String,
-
-        /// Человекочитаемая причина отказа.
-        reason: String,
-    },
 }
 
 /// Создаёт codec-neutral decoder object для заданного audio track config.
 pub fn create_audio_decoder(config: AudioDecoderConfig) -> Result<AudioDecoderHandle> {
     match SymphoniaAudioDecoder::new(&config) {
-        Ok(decoder) => Ok(Box::new(decoder)),
+        Ok(decoder) => Ok(Box::new(decoder) as AudioDecoderHandle),
         Err(error) if should_use_opus_fallback(&config, &error) => {
             info!(
                 codec_id = %config.codec_id(),
                 "Symphonia не предоставила Opus decoder; используется Opus fallback adapter"
             );
-            Ok(Box::new(OpusFallbackDecoder::new(&config)?))
+            Ok(Box::new(OpusFallbackDecoder::new(&config)?) as AudioDecoderHandle)
         }
         Err(error) => Err(error),
     }
@@ -548,27 +292,7 @@ impl AudioDecoder for OpusFallbackDecoder {
 
 /// Проверяет базовые инварианты decoder config-а до обращения к backend registry.
 fn validate_audio_decoder_config(config: &AudioDecoderConfig) -> Result<()> {
-    validate_optional_audio_config_value(config.sample_rate(), "sample_rate", config)?;
-    validate_optional_audio_config_value(config.channels(), "channels", config)?;
-
-    Ok(())
-}
-
-/// Проверяет, что metadata value либо отсутствует, либо содержит ненулевое значение.
-fn validate_optional_audio_config_value(
-    value: Option<u32>,
-    value_name: &'static str,
-    config: &AudioDecoderConfig,
-) -> Result<()> {
-    if value == Some(0) {
-        return Err(AudioDecoderError::InvalidConfig {
-            codec_id: config.codec_id().to_string(),
-            reason: format!("{value_name} must be greater than 0 when present"),
-        }
-        .into());
-    }
-
-    Ok(())
+    config.validate_probe_metadata()
 }
 
 /// Возвращает обязательное значение для backend-ов, которые не умеют deferred audio spec.
@@ -602,8 +326,8 @@ fn audio_codec_parameters(
         params.with_channels(channels_from_count(channels, config.codec_id())?);
     }
 
-    if let Some(codec_private) = config.codec_private.as_ref() {
-        params.with_extra_data(codec_private.clone().into_boxed_slice());
+    if let Some(codec_private) = config.codec_private() {
+        params.with_extra_data(codec_private.to_vec().into_boxed_slice());
     }
 
     Ok(params)
