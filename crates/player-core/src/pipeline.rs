@@ -1020,7 +1020,6 @@ impl PlaybackPipeline {
     }
 
     /// Даёт read-only проход по presentation queue без доступа к самой структуре очереди.
-    #[must_use]
     pub(crate) fn queued_video_frames(&self) -> impl Iterator<Item = &video_core::DecodedFrame> {
         self.video_frame_queue.iter()
     }

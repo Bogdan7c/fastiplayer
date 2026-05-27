@@ -109,6 +109,7 @@ pretending HDR can be shown as SDR.
 - typed rejection reasons from `VideoCapabilityRejection`.
 
 `video-vaapi::VaapiCapabilityProvider` supplies the current hardware backend
-report. `render-wgpu` supplies render capabilities from WGPU device features,
-including `TEXTURE_FORMAT_16BIT_NORM` and `TEXTURE_FORMAT_P010` implications for
-P010 layouts.
+report. `render-wgpu-video` builds render capabilities from WGPU device
+features, including `TEXTURE_FORMAT_16BIT_NORM` and `TEXTURE_FORMAT_P010`
+implications for P010 layouts; `render-wgpu-shell` exposes that report to
+`app-egui` during system capability probing.

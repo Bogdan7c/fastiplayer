@@ -225,8 +225,7 @@ impl VideoDecoderThreadConfig {
     /// Загружает production defaults и overlay flush timeout-а из окружения.
     #[must_use]
     pub fn from_env() -> Self {
-        let mut config = Self::default();
-        config.flush_timeout = match std::env::var(DECODER_FLUSH_TIMEOUT_ENV_VAR) {
+        let flush_timeout = match std::env::var(DECODER_FLUSH_TIMEOUT_ENV_VAR) {
             Ok(raw_value) => match Self::parse_flush_timeout(&raw_value) {
                 Ok(timeout) => timeout,
                 Err(error) => {
@@ -250,7 +249,11 @@ impl VideoDecoderThreadConfig {
                 Self::default_flush_timeout()
             }
         };
-        config
+
+        Self {
+            flush_timeout,
+            ..Self::default()
+        }
     }
 
     /// Возвращает default timeout как `Duration`.

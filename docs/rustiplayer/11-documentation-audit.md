@@ -52,7 +52,7 @@
 
 - Нет ссылок на удалённые phase/session документы.
 - Текущая production matrix соответствует `codec-core`, `capability-core`,
-  `render-core`, `render-wgpu` и `video-vaapi`.
+  `render-core`, `render-wgpu-video`, `render-wgpu-shell` и `video-vaapi`.
 - Config schema version указан как `2`.
 - Zero-copy описан как обязательный invariant.
 - Места с неидеальными границами вынесены в отдельный документ.

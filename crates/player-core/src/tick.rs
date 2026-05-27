@@ -1077,9 +1077,7 @@ fn texture_capacity_backpressure_reason(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> Option<PipelinePauseReason> {
-    let Some(stats) = session.pipeline.video_decoder_resource_snapshot() else {
-        return None;
-    };
+    let stats = session.pipeline.video_decoder_resource_snapshot()?;
 
     let available_slots = stats.available_slots();
     if available_slots > texture_slot_min_watermark(tick_config) {
@@ -1830,12 +1828,10 @@ fn video_present_lead(session: &PlayerSession, tick_config: &PlayerTickConfig) -
         tick_config.video_present_lead_frames,
         PlayerTickConfig::default().video_present_lead_frames,
     );
-    let present_lead = session
+    session
         .pipeline
         .video_frame_duration_estimate()
-        .mul_f64(lead_frames);
-
-    present_lead
+        .mul_f64(lead_frames)
 }
 
 /// Собирает diagnostics по первому queued frame без мутации очереди.

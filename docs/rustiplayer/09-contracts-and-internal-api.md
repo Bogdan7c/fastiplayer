@@ -27,7 +27,8 @@
   resource provider handle.
 - `video-backend-api` владеет startup/resource-provider contract. Concrete
   backend crates реализуют этот contract без зависимости на `player-core`.
-- WGPU materialization находится в `app-egui`/`render-wgpu`: player lease хранит
+- WGPU materialization находится в `app-egui`/`render-wgpu-video`, а
+  surface/present lifecycle остаётся в `render-wgpu-shell`: player lease хранит
   opaque handle, descriptor, lookup/release accounting и не возвращает
   `wgpu::TextureView`.
 
@@ -185,12 +186,14 @@ Decoded frame contract:
 - diagnostics travel with the frame.
 
 `VideoTextureViewProvider` является concrete render-side bridge для WGPU texture
-views. Он остаётся в `video-vaapi`/`app-egui`/`render-wgpu` composition path-е,
-а `player-core` видит только renderer-neutral lookup/release boundary.
+views. Он остаётся в `video-vaapi`/`app-egui`/`render-wgpu-video` composition
+path-е, а `player-core` видит только renderer-neutral lookup/release boundary.
 
 ## Render contract
 
-`render-wgpu::WgpuRenderableFrame` validates decoded frame metadata before render.
+`render_wgpu_video::WgpuRenderableFrame` validates decoded frame metadata before
+render. `render-wgpu-shell` получает уже подготовленный `WgpuRenderableFrame` и
+владеет только WGPU surface/egui composition/submit-present lifecycle.
 
 Allowed constructors:
 

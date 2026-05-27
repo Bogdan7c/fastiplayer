@@ -7,16 +7,16 @@ app-egui
   window, egui, input, redraw pacing, local/YouTube media opening,
   WGPU surface, VA-API/WGPU backend wiring
         |
-        +--------------------+--------------------+--------------------+
-        |                    |                    |                    |
-        v                    v                    v                    v
-player-core          service-youtube      video-vaapi          render-wgpu
-  worker/session      yt-dlp adapter,     VA-API decode,       WGPU shell,
-  commands/events     HTTP refresh,       DMA-BUF export,      egui/winit
-  scheduler/state     WebM demux open     WGPU import          composition
-        |                    |                    |                    |
-        v                    v                    v                    v
-media-core           source-core          video-backend-api    render-core
+        +--------------------+--------------------+--------------------+--------------------+
+        |                    |                    |                    |                    |
+        v                    v                    v                    v                    v
+player-core          service-youtube      video-vaapi          render-wgpu-shell   render-wgpu-video
+  worker/session      yt-dlp adapter,     VA-API decode,       WGPU surface,       NV12/P010 renderer,
+  commands/events     HTTP refresh,       DMA-BUF export,      egui/winit          materialization API,
+  scheduler/state     WebM demux open     WGPU import          composition         shader/color path
+        |                    |                    |                    |                    |
+        v                    v                    v                    v                    v
+media-core           source-core          video-backend-api    render-core <-------+
   packets/tracks      local/http/cache    startup/backend     render/color
         |                    |            startup/resource     contract
         v                    v            provider contract           |
@@ -69,14 +69,15 @@ Demuxer::next_packet()
   -> video-vaapi::VideoDecodeThread
   -> video_core::DecodedFrame
   -> PlayerWorker PresentFrameLease + resource descriptor
-  -> app-egui/render-wgpu WGPU materialization
-  -> render-wgpu::WgpuRenderableFrame
-  -> WGPU swapchain
+  -> app-egui/render-wgpu-video WGPU materialization
+  -> render_wgpu_video::WgpuRenderableFrame
+  -> render-wgpu-shell Renderer
+  -> WGPU swapchain/surface present
 ```
 
 Production frame memory path: `FrameMemoryPath::DmaBufZeroCopy`. Production
 decode/render path: VA-API decode, DMA-BUF export, WGPU texture import,
-`render-wgpu` NV12/P010 rendering.
+`render-wgpu-video` NV12/P010 rendering and `render-wgpu-shell` surface present.
 
 ## Color flow
 
@@ -85,7 +86,7 @@ manifest/container/bitstream/backend metadata
   -> codec_core::VideoColorMetadata
   -> video_core::DecodedFrame
   -> render_core::RenderableFrame
-  -> render-wgpu NV12 or P010 renderer
+  -> render-wgpu-video NV12 or P010 renderer
   -> RenderDiagnostics::active_color_path
 ```
 
@@ -118,9 +119,9 @@ PlayerWorker::try_acquire_present_frame()
   -> PresentFrameLease { DecodedFrame, generation, stale, texture handle }
   -> PresentFrameLease::resource_descriptor() / try_resource_lookup()
   -> app-egui WgpuFrameTextureViewMaterializer
-  -> render-wgpu WgpuFrameTextureViews
+  -> render-wgpu-video WgpuFrameTextureViews
   -> WgpuRenderableFrame::from_decoded_nv12/from_decoded_p010
-  -> Renderer::render_frame()
+  -> render-wgpu-shell::Renderer::render_frame()
   -> RAII drop/ack releases texture slot
 ```
 
