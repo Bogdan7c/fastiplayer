@@ -1,19 +1,19 @@
 //! Audio clock — source of truth для A/V синхронизации.
 //!
-//! Отслеживает время воспроизведения на основе количества сэмплов,
-//! отправленных в audio output. Использует AtomicU64 для thread-safe
-//! доступа из CPAL callback потока.
-//!
-//! Формула: current_time = samples_played / (sample_rate * channels)
+//! Отслеживает время воспроизведения по CPAL playback timestamp-ам,
+//! потому что callback заранее заполняет будущий output buffer.
+//! `samples_played` нужен для buffer accounting, а A/V sync берёт
+//! только безопасную оценку того, что уже дошло до playback clock.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Clock для audio playback.
 ///
-/// Два счётчика:
+/// Основные счётчики:
 /// - samples_written: сколько сэмплов записано в ring buffer (из main thread)
 /// - samples_played: сколько interleaved сэмплов прочитано из ring buffer (из CPAL callback)
+/// - last_stable_played_samples: что безопасно отдавать наружу как media time
 ///
 /// Разница между ними = уровень заполнения buffer.
 pub struct AudioClock {
@@ -31,6 +31,9 @@ pub struct AudioClock {
 
     /// Общее количество interleaved сэмплов, прочитанных из buffer.
     samples_played: AtomicU64,
+
+    /// Последняя монотонная оценка media sample index, безопасная для `now()`.
+    last_stable_played_samples: AtomicU64,
 
     /// Флаг: есть валидный CPAL playback anchor.
     playback_anchor_valid: AtomicBool,
@@ -81,6 +84,7 @@ impl AudioClock {
             channels,
             samples_written: AtomicU64::new(0),
             samples_played: AtomicU64::new(0),
+            last_stable_played_samples: AtomicU64::new(0),
             playback_anchor_valid: AtomicBool::new(false),
             playback_anchor_generation: AtomicU64::new(0),
             previous_playback_anchor_valid: AtomicBool::new(false),
@@ -99,11 +103,12 @@ impl AudioClock {
 
     /// Возвращает текущее время воспроизведения.
     ///
-    /// Основано на samples_played — реально "сыгранных" сэмплах,
-    /// а не записанных. Это даёт точное время для A/V sync.
+    /// Основано на стабильной оценке CPAL playback anchor, а не на конце
+    /// свежего callback-buffer. Это не даёт video scheduler увидеть будущее
+    /// audio-время и массово сбросить ещё не опоздавшие кадры.
     ///
-    /// samples_played = total interleaved samples (frames * channels).
-    /// time = samples_played / (sample_rate * channels).
+    /// stable samples = total interleaved samples (frames * channels).
+    /// time = stable samples / (sample_rate * channels).
     pub fn now(&self) -> Duration {
         self.samples_to_duration(self.smoothed_played_samples())
     }
@@ -117,7 +122,7 @@ impl AudioClock {
 
         let generation_before = self.playback_anchor_generation.load(Ordering::Acquire);
         if generation_before % 2 != 0 {
-            return self.samples_played.load(Ordering::Relaxed);
+            return self.stable_played_samples();
         }
 
         let previous_anchor_valid = self.previous_playback_anchor_valid.load(Ordering::Relaxed);
@@ -141,20 +146,45 @@ impl AudioClock {
             output_end_ns: self.playback_anchor_output_end_ns.load(Ordering::Relaxed),
         };
         let generation_after = self.playback_anchor_generation.load(Ordering::Acquire);
-        if generation_before != generation_after {
-            return self.samples_played.load(Ordering::Relaxed);
-        }
-
         let current_ns = self.origin.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        let selected_anchor = select_playback_anchor(
+
+        let estimated_samples = estimate_samples_from_anchor_snapshot(
+            generation_before,
+            generation_after,
             previous_anchor_valid.then_some(previous_anchor),
             latest_anchor_valid.then_some(latest_anchor),
             current_ns,
+            samples_per_sec,
+            self.stable_played_samples(),
         );
 
-        selected_anchor
-            .map(|anchor| interpolate_anchor_samples(anchor, current_ns, samples_per_sec))
-            .unwrap_or_else(|| self.samples_played.load(Ordering::Relaxed))
+        self.publish_stable_played_samples(estimated_samples)
+    }
+
+    /// Возвращает последний sample index, который уже был получен из
+    /// согласованного playback anchor или из legacy path без CPAL timestamp.
+    fn stable_played_samples(&self) -> u64 {
+        self.last_stable_played_samples.load(Ordering::Acquire)
+    }
+
+    /// Публикует безопасную оценку монотонно: clock может стоять, но не
+    /// должен откатываться назад из-за jitter-а backend timestamp.
+    fn publish_stable_played_samples(&self, candidate_samples: u64) -> u64 {
+        let mut stable_samples = self.last_stable_played_samples.load(Ordering::Acquire);
+
+        while candidate_samples > stable_samples {
+            match self.last_stable_played_samples.compare_exchange(
+                stable_samples,
+                candidate_samples,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return candidate_samples,
+                Err(observed_samples) => stable_samples = observed_samples,
+            }
+        }
+
+        stable_samples
     }
 
     /// Возвращает число interleaved samples в секунду.
@@ -194,7 +224,10 @@ impl AudioClock {
     /// Вызывается из CPAL callback при заполнении output buffer.
     /// `samples` — это total interleaved samples.
     pub fn record_played(&self, samples: u64) {
-        self.samples_played.fetch_add(samples, Ordering::Relaxed);
+        let samples_before = self.samples_played.fetch_add(samples, Ordering::Relaxed);
+        let samples_after = samples_before.saturating_add(samples);
+
+        self.publish_stable_played_samples(samples_after);
     }
 
     /// Записывает результат одного CPAL output callback вместе с playback timestamp.
@@ -315,6 +348,7 @@ impl AudioClock {
     pub fn reset(&self) {
         self.samples_written.store(0, Ordering::Relaxed);
         self.samples_played.store(0, Ordering::Relaxed);
+        self.last_stable_played_samples.store(0, Ordering::Release);
 
         self.begin_playback_anchor_write();
         self.playback_anchor_valid.store(false, Ordering::Relaxed);
@@ -410,6 +444,25 @@ fn select_playback_anchor(
     }
 }
 
+/// Превращает согласованный seqlock snapshot в безопасную playback-оценку.
+fn estimate_samples_from_anchor_snapshot(
+    generation_before: u64,
+    generation_after: u64,
+    previous_anchor: Option<PlaybackAnchor>,
+    latest_anchor: Option<PlaybackAnchor>,
+    current_ns: u64,
+    samples_per_sec: u64,
+    stable_fallback_samples: u64,
+) -> u64 {
+    if generation_before % 2 != 0 || generation_before != generation_after {
+        return stable_fallback_samples;
+    }
+
+    select_playback_anchor(previous_anchor, latest_anchor, current_ns)
+        .map(|anchor| interpolate_anchor_samples(anchor, current_ns, samples_per_sec))
+        .unwrap_or(stable_fallback_samples)
+}
+
 /// Интерполирует media sample index внутри выбранного CPAL playback anchor.
 fn interpolate_anchor_samples(
     playback_anchor: PlaybackAnchor,
@@ -451,9 +504,11 @@ fn nanos_to_samples(nanos: u64, samples_per_sec: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use super::{
-        PlaybackAnchor, chain_reported_playback_ns, interpolate_anchor_samples,
-        select_playback_anchor,
+        AudioClock, PlaybackAnchor, chain_reported_playback_ns,
+        estimate_samples_from_anchor_snapshot, interpolate_anchor_samples, select_playback_anchor,
     };
 
     #[test]
@@ -499,6 +554,79 @@ mod tests {
     }
 
     #[test]
+    fn unfinished_anchor_write_uses_stable_estimate_not_fresh_callback_end() {
+        let clock = AudioClock::new(48_000, 2);
+        clock.publish_stable_played_samples(4_800);
+        clock.samples_played.store(9_600, Ordering::Relaxed);
+        clock.playback_anchor_generation.store(1, Ordering::Release);
+
+        let samples = clock.smoothed_played_samples();
+
+        assert_eq!(samples, 4_800);
+    }
+
+    #[test]
+    fn missing_anchor_uses_stable_estimate_not_raw_played_counter() {
+        let clock = AudioClock::new(48_000, 2);
+        clock.publish_stable_played_samples(4_800);
+        clock.samples_played.store(9_600, Ordering::Relaxed);
+
+        let samples = clock.smoothed_played_samples();
+
+        assert_eq!(samples, 4_800);
+    }
+
+    #[test]
+    fn generation_conflict_fallback_does_not_jump_to_fresh_callback_end() {
+        let previous_anchor = PlaybackAnchor {
+            playback_ns: 0,
+            start_samples: 0,
+            end_samples: 4_800,
+            output_end_ns: 50_000_000,
+        };
+        let latest_anchor = PlaybackAnchor {
+            playback_ns: 50_000_000,
+            start_samples: 4_800,
+            end_samples: 9_600,
+            output_end_ns: 100_000_000,
+        };
+
+        let samples = estimate_samples_from_anchor_snapshot(
+            2,
+            4,
+            Some(previous_anchor),
+            Some(latest_anchor),
+            75_000_000,
+            96_000,
+            4_800,
+        );
+
+        assert_eq!(samples, 4_800);
+    }
+
+    #[test]
+    fn consistent_anchor_snapshot_preserves_normal_interpolation() {
+        let latest_anchor = PlaybackAnchor {
+            playback_ns: 0,
+            start_samples: 4_800,
+            end_samples: 9_600,
+            output_end_ns: 50_000_000,
+        };
+
+        let samples = estimate_samples_from_anchor_snapshot(
+            2,
+            2,
+            None,
+            Some(latest_anchor),
+            25_000_000,
+            96_000,
+            4_800,
+        );
+
+        assert_eq!(samples, 7_200);
+    }
+
+    #[test]
     fn clamps_interpolation_to_anchor_end() {
         let playback_anchor = PlaybackAnchor {
             playback_ns: 0,
@@ -538,6 +666,39 @@ mod tests {
         let samples = interpolate_anchor_samples(playback_anchor, 25_000_000, 96_000);
 
         assert_eq!(samples, 0);
+    }
+
+    #[test]
+    fn silence_tail_does_not_advance_media_clock_past_real_audio() {
+        let playback_anchor = PlaybackAnchor {
+            playback_ns: 0,
+            start_samples: 4_800,
+            end_samples: 4_800,
+            output_end_ns: 50_000_000,
+        };
+
+        let samples = interpolate_anchor_samples(playback_anchor, 25_000_000, 96_000);
+
+        assert_eq!(samples, 4_800);
+    }
+
+    #[test]
+    fn reset_clears_stable_played_samples() {
+        let clock = AudioClock::new(48_000, 2);
+        clock.record_played(9_600);
+
+        clock.reset();
+
+        assert_eq!(clock.smoothed_played_samples(), 0);
+    }
+
+    #[test]
+    fn record_played_keeps_legacy_no_anchor_clock_moving() {
+        let clock = AudioClock::new(48_000, 2);
+
+        clock.record_played(9_600);
+
+        assert_eq!(clock.smoothed_played_samples(), 9_600);
     }
 
     #[test]
