@@ -41,7 +41,8 @@ REQUIRED_ROLE_CRATES = frozenset(
         "media-core",
         "player-core",
         "render-core",
-        "render-wgpu",
+        "render-wgpu-shell",
+        "render-wgpu-video",
         "rustiplayer-config",
         "service-youtube",
         "source-core",
@@ -63,7 +64,8 @@ CONTRACT_FORBIDDEN_DEPENDENCIES = frozenset(
         "egui-wgpu",
         "egui-winit",
         "player-core",
-        "render-wgpu",
+        "render-wgpu-shell",
+        "render-wgpu-video",
         "service-youtube",
         "symphonia-demux",
         "video-vaapi",
@@ -86,7 +88,8 @@ LOW_LEVEL_CRATES = frozenset(
 
 LOW_LEVEL_FORBIDDEN_DEPENDENCIES = frozenset(
     {
-        "render-wgpu",
+        "render-wgpu-shell",
+        "render-wgpu-video",
         "video-vaapi",
         "wgpu",
     }
@@ -99,7 +102,8 @@ PLAYER_CORE_FORBIDDEN_DEPENDENCIES = frozenset(
         "egui",
         "egui-wgpu",
         "egui-winit",
-        "render-wgpu",
+        "render-wgpu-shell",
+        "render-wgpu-video",
         "service-youtube",
         "source-core",
         "symphonia-demux",
@@ -123,23 +127,41 @@ VIDEO_BACKEND_FORBIDDEN_DEPENDENCIES = frozenset(
     }
 )
 
-RENDER_WGPU_FORBIDDEN_DEPENDENCIES = frozenset(
+RENDER_WGPU_SHELL_FORBIDDEN_DEPENDENCIES = frozenset(
     {
         "audio",
         "player-core",
         "service-youtube",
         "source-core",
         "symphonia-demux",
+        "video-vaapi",
+        "video-vulkan",
         "webm-demux",
     }
 )
 
-KNOWN_DEBT_EDGES = {
-    ("render-wgpu", "egui"): "temporary shell split debt: render-wgpu ещё содержит egui composition",
-    ("render-wgpu", "egui-wgpu"): "temporary shell split debt: render-wgpu ещё содержит egui-wgpu composition",
-    ("render-wgpu", "video-vulkan"): "temporary reference backend debt: video-vulkan связан с render-wgpu",
-    ("render-wgpu", "winit"): "temporary shell split debt: render-wgpu ещё содержит winit composition",
-}
+RENDER_WGPU_VIDEO_FORBIDDEN_DEPENDENCIES = frozenset(
+    {
+        "app-egui",
+        "audio",
+        "desktop-integration",
+        "egui",
+        "egui-wgpu",
+        "egui-winit",
+        "player-core",
+        "pollster",
+        "render-wgpu-shell",
+        "service-youtube",
+        "source-core",
+        "symphonia-demux",
+        "video-vaapi",
+        "video-vulkan",
+        "webm-demux",
+        "winit",
+    }
+)
+
+KNOWN_DEBT_EDGES: dict[tuple[str, str], str] = {}
 
 
 class GuardrailError(RuntimeError):
@@ -326,9 +348,17 @@ def find_dependency_violations(
     violations.extend(
         find_forbidden_dependencies(
             dependency_map,
-            frozenset({"render-wgpu"}),
-            RENDER_WGPU_FORBIDDEN_DEPENDENCIES,
-            "render-wgpu не зависит от demux/source/audio/player/service crates",
+            frozenset({"render-wgpu-shell"}),
+            RENDER_WGPU_SHELL_FORBIDDEN_DEPENDENCIES,
+            "render-wgpu-shell не зависит от demux/source/audio/player/service/concrete video backend crates",
+        )
+    )
+    violations.extend(
+        find_forbidden_dependencies(
+            dependency_map,
+            frozenset({"render-wgpu-video"}),
+            RENDER_WGPU_VIDEO_FORBIDDEN_DEPENDENCIES,
+            "render-wgpu-video не зависит от shell/UI/app/player/service/concrete video backend crates",
         )
     )
     return sorted(violations, key=lambda violation: (violation.owner, violation.dependency))

@@ -21,7 +21,9 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use render_core::{ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics};
-use render_wgpu_video::{WgpuVideoRenderer, required_wgpu_video_texture_features};
+use render_wgpu_video::{
+    WgpuRenderableFrame, WgpuVideoRenderer, required_wgpu_video_texture_features,
+};
 use tracing::{debug, info, instrument};
 use winit::window::Window;
 
@@ -331,6 +333,7 @@ impl Renderer {
             egui_textures_delta,
             screen,
         } = input;
+        let video_frame: Option<&WgpuRenderableFrame<'_>> = video_frame;
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: screen.size_in_pixels,
             pixels_per_point: screen.pixels_per_point,

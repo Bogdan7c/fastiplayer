@@ -138,7 +138,8 @@ dependencies = [
  "player-core",
  "pollster",
  "render-core",
- "render-wgpu",
+ "render-wgpu-shell",
+ "render-wgpu-video",
  "rfd",
  "rustiplayer-config",
  "service-youtube",
@@ -3273,7 +3274,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "render-wgpu"
+name = "render-wgpu-shell"
 version = "0.1.0"
 dependencies = [
  "anyhow",

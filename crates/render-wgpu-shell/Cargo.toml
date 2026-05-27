@@ -1,5 +1,5 @@
 [package]
-name = "render-wgpu"
+name = "render-wgpu-shell"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,4 +13,4 @@ tracing.workspace = true
 winit.workspace = true
 wgpu.workspace = true
 render-wgpu-video = { workspace = true }
-render-core = { path = "../render-core" }
+render-core.workspace = true

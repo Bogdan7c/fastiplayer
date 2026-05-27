@@ -7,10 +7,10 @@
 /// - поддержание 60 fps через VSync (Fifo present mode)
 /// - координацию между рендерингом видео и UI
 ///
-/// Почему winit + render-wgpu, а не eframe:
+/// Почему winit + render-wgpu-shell, а не eframe:
 /// eframe скрывает lifecycle и swapchain детали, а нам нужен явный контроль
 /// над окном и shared GPU context для zero-copy video path. Сам render pass
-/// теперь живёт в `render-wgpu`, а app shell только передаёт input/snapshot.
+/// теперь живёт в `render-wgpu-shell`, а video materialization API — в `render-wgpu-video`.
 ///
 /// Архитектура event loop:
 /// - winit 0.30 использует ApplicationHandler trait
@@ -34,7 +34,7 @@ use render_core::{
     ColorAdjustment, ColorPipelineSettings, HdrOutputMode, HdrToSdrSettings,
     HdrToneMappingOperator, RenderCapabilities, SwapchainTransferMode,
 };
-use render_wgpu::Renderer;
+use render_wgpu_shell::Renderer;
 use rustiplayer_config::{AppConfig, HdrToSdrOperatorConfig};
 use tracing::{debug, info, instrument, warn};
 use winit::{
@@ -61,7 +61,7 @@ const BACKGROUND_JOB_POLL_INTERVAL: Duration = YOUTUBE_STARTUP_POLL_INTERVAL;
 ///
 /// Владеет:
 /// - окном (Arc<Window>)
-/// - рендерером (`render-wgpu` backend)
+/// - рендерером (`render-wgpu-shell` backend)
 /// - состоянием приложения (egui + player state)
 /// - телеметрией
 /// - путём к файлу для автозагрузки из CLI

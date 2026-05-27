@@ -4,9 +4,8 @@ use anyhow::Result;
 use player_core::{
     PlayerRenderError, PlayerSnapshot, PlayerTickResult, PlayerVideoDropReason, PlayerWorkerEvent,
 };
-use render_wgpu::{
-    RenderFrameDropReason, RenderFrameOutcome, Renderer, WgpuFrameTextureViewLookup,
-};
+use render_wgpu_shell::{RenderFrameDropReason, RenderFrameOutcome, Renderer};
+use render_wgpu_video::{WgpuFrameTextureViewLookup, WgpuRenderableFrame};
 use tracing::instrument;
 use video_core::DecodedPixelFormat;
 use winit::window::Window;
@@ -24,13 +23,13 @@ struct PreparedUiFrame {
     textures_delta: egui::TexturesDelta,
 
     /// Размер surface target-а и UI scale без раскрытия `egui-wgpu` наружу.
-    screen: render_wgpu::RenderScreenDescriptor,
+    screen: render_wgpu_shell::RenderScreenDescriptor,
 
     /// Признак, что egui попросил следующий repaint.
     requested_repaint: bool,
 }
 
-/// Video stage, подготовленный до финального `RenderFrameInput`.
+/// Video stage, подготовленный до финального `render_wgpu_shell::RenderFrameInput`.
 struct PreparedVideoFrame {
     /// Lease и texture views живут вместе, чтобы `WgpuRenderableFrame` не пережил owner-а.
     renderable_frame: Option<RenderablePresentFrame>,
@@ -56,10 +55,10 @@ impl PreparedVideoFrame {
         }
     }
 
-    /// Собирает `render-wgpu` boundary frame на время одного renderer call-а.
+    /// Собирает video boundary frame на время одного `render-wgpu-shell` call-а.
     fn render_input_video_frame(
         &self,
-    ) -> Result<Option<render_wgpu::WgpuRenderableFrame<'_>>, PlayerRenderError> {
+    ) -> Result<Option<WgpuRenderableFrame<'_>>, PlayerRenderError> {
         self.renderable_frame
             .as_ref()
             .map(|renderable_frame| {
@@ -275,7 +274,7 @@ fn prepare_ui_frame(
     PreparedUiFrame {
         paint_jobs,
         textures_delta: egui_full_output.textures_delta,
-        screen: render_wgpu::RenderScreenDescriptor {
+        screen: render_wgpu_shell::RenderScreenDescriptor {
             size_in_pixels: screen_size_in_pixels,
             pixels_per_point,
         },
@@ -420,7 +419,7 @@ fn report_video_render_boundary_error(app_state: &mut AppState, error: PlayerRen
 fn build_render_input_video_frame<'frame>(
     renderable_frame: &'frame RenderablePresentFrame,
     acquisition_state: &'static str,
-) -> Result<render_wgpu::WgpuRenderableFrame<'frame>, PlayerRenderError> {
+) -> Result<WgpuRenderableFrame<'frame>, PlayerRenderError> {
     let present_frame = &renderable_frame.present_frame;
     let texture_views = &renderable_frame.texture_views;
 
@@ -435,12 +434,12 @@ fn build_render_input_video_frame<'frame>(
     );
 
     let boundary_frame = match present_frame.frame.format {
-        DecodedPixelFormat::Nv12 => render_wgpu::WgpuRenderableFrame::from_decoded_nv12(
+        DecodedPixelFormat::Nv12 => WgpuRenderableFrame::from_decoded_nv12(
             &present_frame.frame,
             &texture_views.y_view,
             &texture_views.uv_view,
         ),
-        DecodedPixelFormat::P010 => render_wgpu::WgpuRenderableFrame::from_decoded_p010(
+        DecodedPixelFormat::P010 => WgpuRenderableFrame::from_decoded_p010(
             &present_frame.frame,
             &texture_views.y_view,
             &texture_views.uv_view,
@@ -483,7 +482,7 @@ fn submit_render_frame(
     };
     let submitted_video_frame = video_frame.is_some();
 
-    match renderer.render_frame(render_wgpu::RenderFrameInput {
+    match renderer.render_frame(render_wgpu_shell::RenderFrameInput {
         window,
         video_frame: video_frame.as_ref(),
         egui_paint_jobs: prepared_ui_frame.paint_jobs,
@@ -561,7 +560,7 @@ mod tests {
     use std::time::Duration;
 
     use player_core::{PlayerRenderErrorKind, PlayerVideoFrameDrop};
-    use render_wgpu::{RenderFrameDropReason, RenderFrameFailure};
+    use render_wgpu_shell::{RenderFrameDropReason, RenderFrameFailure};
 
     /// Проверяет, что renderer error становится fatal media error, а не silent fallback.
     #[test]
@@ -710,8 +709,7 @@ mod tests {
     fn prepared_video_frame_render_input_is_borrowed_from_prepared_stage() {
         fn render_input_with_prepared_lifetime<'prepared>(
             prepared_video_frame: &'prepared PreparedVideoFrame,
-        ) -> Result<Option<render_wgpu::WgpuRenderableFrame<'prepared>>, PlayerRenderError>
-        {
+        ) -> Result<Option<WgpuRenderableFrame<'prepared>>, PlayerRenderError> {
             prepared_video_frame.render_input_video_frame()
         }
 

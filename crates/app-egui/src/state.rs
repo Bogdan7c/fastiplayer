@@ -16,6 +16,9 @@ use player_core::{
     PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PreparedMedia, SeekRequest,
 };
 use render_core::RenderDiagnostics;
+use render_wgpu_video::{
+    WgpuFrameTextureViewLookup, WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
+};
 use rustiplayer_config::AppConfig;
 use tracing::{debug, instrument, warn};
 use video_vaapi::{VaapiWgpuVideoBackendFactory, VideoTextureViewLookup, VideoTextureViewProvider};
@@ -135,16 +138,13 @@ pub struct RenderablePresentFrame {
     pub present_frame: PlayerPresentFrame,
 
     /// WGPU texture views соответствуют `present_frame` и не используются без его lease-а.
-    pub texture_views: render_wgpu::WgpuFrameTextureViews,
+    pub texture_views: WgpuFrameTextureViews,
 }
 
 impl RenderablePresentFrame {
     /// Собирает renderable frame из lease-а и WGPU texture views одного decoded кадра.
     #[must_use]
-    pub fn new(
-        present_frame: PlayerPresentFrame,
-        texture_views: render_wgpu::WgpuFrameTextureViews,
-    ) -> Self {
+    pub fn new(present_frame: PlayerPresentFrame, texture_views: WgpuFrameTextureViews) -> Self {
         Self {
             present_frame,
             texture_views,
@@ -152,7 +152,7 @@ impl RenderablePresentFrame {
     }
 }
 
-/// Adapter app composition layer-а между VA-API provider-ом и `render-wgpu` API.
+/// Adapter app composition layer-а между VA-API provider-ом и `render-wgpu-video` API.
 struct VaapiWgpuFrameMaterializer {
     /// Concrete provider остаётся вне `player-core` и materialize-ит только WGPU views.
     texture_view_provider: VideoTextureViewProvider,
@@ -167,35 +167,33 @@ impl VaapiWgpuFrameMaterializer {
     }
 }
 
-impl render_wgpu::WgpuFrameTextureViewMaterializer for VaapiWgpuFrameMaterializer {
+impl WgpuFrameTextureViewMaterializer for VaapiWgpuFrameMaterializer {
     /// Делегирует non-blocking materialization в VA-API/WGPU provider.
     fn try_texture_view_lookup(
         &self,
         handle: video_core::FrameTextureHandle,
-    ) -> render_wgpu::WgpuFrameTextureViewLookup {
+    ) -> WgpuFrameTextureViewLookup {
         match self.texture_view_provider.try_texture_view_lookup(handle) {
             VideoTextureViewLookup::Ready {
                 views,
                 lock_diagnostics,
-            } => render_wgpu::WgpuFrameTextureViewLookup::Ready {
-                views: render_wgpu::WgpuFrameTextureViews {
+            } => WgpuFrameTextureViewLookup::Ready {
+                views: WgpuFrameTextureViews {
                     y_view: views.y_view,
                     uv_view: views.uv_view,
                 },
                 texture_pool_lock_wait: lock_diagnostics.wait,
             },
-            VideoTextureViewLookup::Busy { lock_diagnostics } => {
-                render_wgpu::WgpuFrameTextureViewLookup::Busy {
-                    texture_pool_lock_wait: lock_diagnostics.wait,
-                }
-            }
+            VideoTextureViewLookup::Busy { lock_diagnostics } => WgpuFrameTextureViewLookup::Busy {
+                texture_pool_lock_wait: lock_diagnostics.wait,
+            },
             VideoTextureViewLookup::Missing { lock_diagnostics } => {
-                render_wgpu::WgpuFrameTextureViewLookup::Missing {
+                WgpuFrameTextureViewLookup::Missing {
                     texture_pool_lock_wait: lock_diagnostics.wait,
                 }
             }
             VideoTextureViewLookup::Error { lock_diagnostics } => {
-                render_wgpu::WgpuFrameTextureViewLookup::Error {
+                WgpuFrameTextureViewLookup::Error {
                     texture_pool_lock_wait: lock_diagnostics.wait,
                 }
             }
@@ -503,8 +501,8 @@ pub struct AppState {
     /// Последний кадр с уже полученными texture views для safe fallback на busy lock.
     cached_renderable_present_frame: Option<CachedRenderablePresentFrame>,
 
-    /// WGPU materializer concrete backend-а; `player-core` его не видит.
-    wgpu_frame_materializer: Option<Arc<dyn render_wgpu::WgpuFrameTextureViewMaterializer>>,
+    /// WGPU video materializer concrete backend-а; `player-core` его не видит.
+    wgpu_frame_materializer: Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
 
     /// Последний локальный файл, открытый shell-ом, для восстановления после suspend.
     current_local_file: Option<PathBuf>,
@@ -811,7 +809,7 @@ impl AppState {
     /// Возвращает WGPU materializer текущего concrete video backend-а.
     pub(crate) fn wgpu_frame_materializer(
         &self,
-    ) -> Option<Arc<dyn render_wgpu::WgpuFrameTextureViewMaterializer>> {
+    ) -> Option<Arc<dyn WgpuFrameTextureViewMaterializer>> {
         self.wgpu_frame_materializer.clone()
     }
 
