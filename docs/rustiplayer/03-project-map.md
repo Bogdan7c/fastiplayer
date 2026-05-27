@@ -16,6 +16,7 @@ crates/webm-demux            compatibility re-export for old demux crate path
 crates/service-youtube       yt-dlp adapter, stream candidates, YouTube demux open
 crates/audio                 Symphonia/Opus decoder factory, CPAL output backend, audio clock
 crates/video-core            decoded frame and video diagnostics contracts
+crates/video-backend-api     backend startup and resource-provider contracts
 crates/video-vaapi           VA-API decoder thread, probe, DMA-BUF/WGPU import
 crates/render-core           renderer-neutral capabilities and color contracts
 crates/render-wgpu           WGPU shell, NV12 path, P010 BT.2446-C path
@@ -37,11 +38,18 @@ queues, A/V scheduling or `PlayerSession` state.
 `player-core` owns playback state. It consumes `PreparedMedia`, demuxer traits,
 audio-core decoder/output contracts, video backend handles, commands, events and
 snapshots. It no longer opens WebM/Matroska or imports `video-vaapi` directly,
-but it still contains WGPU-specific render texture boundary types for the
-current zero-copy render path.
+and it does not materialize WGPU texture views. Present-frame resource lookup and
+release use renderer-neutral handles from `video-backend-api`.
 
-`media-core`, `codec-core`, `audio-core`, `render-core`, `video-core` are contract crates.
-They should stay backend-neutral and avoid UI/service dependencies.
+`media-core`, `codec-core`, `audio-core`, `render-core`, `video-core` and
+`video-backend-api` are contract crates. They should stay backend-neutral and
+avoid UI/service dependencies.
+
+`video-backend-api` owns the video backend startup/resource-provider contract:
+`VideoBackendFactory`, `StartedVideoBackend`, `PresentFrameResourceProvider` and
+the cloneable provider handle used by render lease accounting. It depends on
+`video-core`, but must not depend on `player-core`, VA-API, WGPU or renderer
+materialization code.
 
 `source-core` owns byte access. It does not know YouTube, containers, codecs,
 renderer or player state.
@@ -52,14 +60,14 @@ It also exposes capability-aware candidate metadata for a future startup path
 where `capability-core` selects before the demuxer is opened.
 
 `video-vaapi` owns VA-API decode, DMA-BUF export/import and texture pool lifetime.
-Its `VaapiWgpuVideoBackendFactory` implements the `player-core`
-`VideoBackendFactory` boundary, so the concrete backend crate currently depends
-on `player-core` for the adapter contract.
+Its `VaapiWgpuVideoBackendFactory` implements the `video-backend-api`
+`VideoBackendFactory` boundary. The concrete backend crate depends on
+`video-backend-api`, not on `player-core`.
 
-`render-wgpu` owns WGPU resources and shader paths. It consumes renderer-neutral
-metadata plus WGPU texture views and does not call demux/source/player APIs. The
-crate still also contains egui/winit shell composition and a `video-vulkan`
-reference dependency.
+`render-wgpu` owns WGPU resources, materialization-facing WGPU texture view
+types and shader paths. It consumes renderer-neutral metadata plus WGPU texture
+views and does not call demux/source/player APIs. The crate still also contains
+egui/winit shell composition and a `video-vulkan` reference dependency.
 
 ## Направление зависимостей
 
@@ -70,7 +78,7 @@ app-egui -> player-core/service-youtube/desktop-integration
 app-egui -> symphonia-demux/audio/video-vaapi/render-wgpu/source-core
 app-egui -> media-core/codec-core/capability-core/video-core/render-core/rustiplayer-config
 app-egui -> wgpu/winit/egui/egui-winit
-player-core -> media-core/codec-core/capability-core/video-core/rustiplayer-config/audio-core/wgpu
+player-core -> media-core/codec-core/capability-core/video-core/video-backend-api/rustiplayer-config/audio-core
 desktop-integration -> player-core/media-core
 service-youtube -> source-core/symphonia-demux/rustiplayer-config/capability-core/codec-core
 source-core -> rustiplayer-config
@@ -79,8 +87,9 @@ webm-demux -> symphonia-demux
 audio -> audio-core
 capability-core -> codec-core/render-core
 video-core -> media-core/codec-core
+video-backend-api -> video-core
 render-core -> codec-core
-video-vaapi -> player-core/video-core/media-core/codec-core/capability-core/wgpu
+video-vaapi -> video-backend-api/video-core/media-core/codec-core/capability-core/wgpu
 render-wgpu -> render-core/video-core/codec-core/video-vulkan/wgpu/egui/egui-wgpu/winit
 ```
 
@@ -100,14 +109,19 @@ Before:
 After:
   app-egui -> symphonia-demux
   app-egui -> video-vaapi
-  video-vaapi -> player-core (adapter for VideoBackendFactory)
-  player-core -> wgpu remains temporary
+  player-core -> video-backend-api
+  video-vaapi -> video-backend-api
+  reverse video-vaapi/player-core edge closed
+  player-core -> wgpu closed
   render-wgpu -> egui/egui-wgpu/winit/video-vulkan remains temporary
 ```
 
 Закрытые связи `player-core -> symphonia-demux/webm-demux` и `player-core -> video-vaapi` не
-должны возвращаться. Текущий production path всё ещё WGPU/VA-API specific, потому
-что zero-copy texture lookup и concrete backend factory завязаны на эти API.
+должны возвращаться. Обратная direct dependency от `video-vaapi` к `player-core`
+тоже не должна возвращаться: backend startup/resource-provider boundary живёт в
+`video-backend-api`. Текущий production path всё ещё WGPU/VA-API specific,
+потому что concrete factory и WGPU materialization собираются в shell/render
+composition layer-е.
 
 ## Особые случаи
 
@@ -116,9 +130,10 @@ After:
 - `video-vaapi::VaapiWgpuVideoBackendFactory` is the production backend factory.
   The deprecated `WgpuVideoBackendFactory` alias now lives in `video-vaapi`, not
   in `player-core`.
-- `player-core` still exposes `WgpuRenderTextureProviderHandle` and related
-  WGPU texture-view lookup types. This is an unresolved renderer-neutrality
-  boundary.
+- `video-backend-api` owns `VideoBackendFactory`, `StartedVideoBackend` and the
+  renderer-neutral resource-provider handle used by `player-core`.
+- WGPU texture-view materialization stays in `app-egui`/`render-wgpu`; `player-core`
+  exposes opaque frame descriptors and resource lookup/release accounting only.
 - `video-vulkan` remains in the workspace but is not the production decode path
   used by `PlayerWorker`; `render-wgpu` still depends on it as reference debt.
 - Миграция Symphonia закрыла активный долг локального fork-а: workspace

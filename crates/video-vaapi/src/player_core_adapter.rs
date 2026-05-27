@@ -101,9 +101,7 @@ impl VideoBackendFactory for VaapiWgpuVideoBackendFactory {
 }
 
 /// Старое public имя оставлено в concrete crate как compatibility alias.
-#[deprecated(
-    note = "use VaapiWgpuVideoBackendFactory; WgpuVideoBackendFactory no longer lives in player-core"
-)]
+#[deprecated(note = "use VaapiWgpuVideoBackendFactory; deprecated alias stays in video-vaapi")]
 pub type WgpuVideoBackendFactory = VaapiWgpuVideoBackendFactory;
 
 /// Запущенный VA-API/WGPU backend, разделённый на playback и render-facing части.

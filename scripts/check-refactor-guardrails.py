@@ -25,6 +25,7 @@ CONTRACT_CRATES = frozenset(
         "media-core",
         "codec-core",
         "video-core",
+        "video-backend-api",
         "render-core",
         "capability-core",
     }
@@ -46,6 +47,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "source-core",
         "symphonia-demux",
         "video-core",
+        "video-backend-api",
         "video-vaapi",
         "video-vulkan",
         "webm-demux",
@@ -104,7 +106,20 @@ PLAYER_CORE_FORBIDDEN_DEPENDENCIES = frozenset(
         "video-vaapi",
         "video-vulkan",
         "webm-demux",
+        "wgpu",
         "winit",
+    }
+)
+
+VIDEO_BACKEND_CRATES = frozenset(
+    {
+        "video-vaapi",
+    }
+)
+
+VIDEO_BACKEND_FORBIDDEN_DEPENDENCIES = frozenset(
+    {
+        "player-core",
     }
 )
 
@@ -120,9 +135,6 @@ RENDER_WGPU_FORBIDDEN_DEPENDENCIES = frozenset(
 )
 
 KNOWN_DEBT_EDGES = {
-    ("player-core", "audio"): "temporary audio decoder debt: Opus живёт в concrete audio crate",
-    ("player-core", "wgpu"): "temporary renderer resource debt: WGPU texture materialization ещё не neutral",
-    ("video-vaapi", "player-core"): "temporary adapter debt: VideoBackendFactory пока объявлен в player-core",
     ("render-wgpu", "egui"): "temporary shell split debt: render-wgpu ещё содержит egui composition",
     ("render-wgpu", "egui-wgpu"): "temporary shell split debt: render-wgpu ещё содержит egui-wgpu composition",
     ("render-wgpu", "video-vulkan"): "temporary reference backend debt: video-vulkan связан с render-wgpu",
@@ -300,7 +312,15 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"player-core"}),
             PLAYER_CORE_FORBIDDEN_DEPENDENCIES,
-            "player-core не добавляет direct dependency на shell/service/demux/video backend crates",
+            "player-core не добавляет direct dependency на shell/service/demux/video backend/GPU crates",
+        )
+    )
+    violations.extend(
+        find_forbidden_dependencies(
+            dependency_map,
+            VIDEO_BACKEND_CRATES,
+            VIDEO_BACKEND_FORBIDDEN_DEPENDENCIES,
+            "concrete video backend crates используют video-backend-api вместо player-core",
         )
     )
     violations.extend(

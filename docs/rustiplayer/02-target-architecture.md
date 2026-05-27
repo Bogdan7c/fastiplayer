@@ -16,13 +16,18 @@ player-core          service-youtube      video-vaapi          render-wgpu
   scheduler/state     WebM demux open     WGPU import          composition
         |                    |                    |                    |
         v                    v                    v                    v
-media-core           source-core          video-core           render-core
-  packets/tracks      local/http/cache    decoded frame        render/color
-        |                    |            contract             contract
-        v                    v                    |                    |
+media-core           source-core          video-backend-api    render-core
+  packets/tracks      local/http/cache    startup/backend     render/color
+        |                    |            startup/resource     contract
+        v                    v            provider contract           |
 codec-core <--------- webm-demux <--------+       |                    |
   codec/color         packets/tracks              |                    |
         |                                           v                    v
+        |                                     video-core                |
+        |                                    decoded frame              |
+        |                                      contract                 |
+        |                                           |                   |
+        |                                           v                   v
         +------------------------------------> capability-core <---------+
                                               decode/render selection
 ```
@@ -59,10 +64,12 @@ Demuxer::next_packet()
   -> codec-core requirement/refinement
   -> capability-core intersection
   -> app-egui VaapiWgpuVideoBackendFactory
-  -> player-core VideoBackendFactory boundary
+  -> video-backend-api VideoBackendFactory / StartedVideoBackend
+  -> player-core playback-facing decoder handle
   -> video-vaapi::VideoDecodeThread
   -> video_core::DecodedFrame
-  -> PlayerWorker PresentFrameLease
+  -> PlayerWorker PresentFrameLease + resource descriptor
+  -> app-egui/render-wgpu WGPU materialization
   -> render-wgpu::WgpuRenderableFrame
   -> WGPU swapchain
 ```
@@ -109,7 +116,9 @@ candidate-а через `capability-core` остаётся extension point.
 ```text
 PlayerWorker::try_acquire_present_frame()
   -> PresentFrameLease { DecodedFrame, generation, stale, texture handle }
-  -> PresentFrameLease::texture_views()
+  -> PresentFrameLease::resource_descriptor() / try_resource_lookup()
+  -> app-egui WgpuFrameTextureViewMaterializer
+  -> render-wgpu WgpuFrameTextureViews
   -> WgpuRenderableFrame::from_decoded_nv12/from_decoded_p010
   -> Renderer::render_frame()
   -> RAII drop/ack releases texture slot

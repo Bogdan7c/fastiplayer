@@ -25,6 +25,7 @@ Contract crates задают нейтральные типы и правила �
 - `media-core` - neutral media packets, tracks, timeline/time contracts.
 - `codec-core` - codec/profile/color/surface/memory requirements.
 - `video-core` - decoded frame, texture handle и video diagnostics contracts.
+- `video-backend-api` - video backend startup/resource-provider boundary.
 - `render-core` - renderer-neutral capabilities, color и render diagnostics.
 - `capability-core` - selection gate между stream requirements и render/backend reports.
 
@@ -33,6 +34,7 @@ Contract crates задают нейтральные типы и правила �
 ```text
 media-core -> codec-core
 video-core -> media-core / codec-core
+video-backend-api -> video-core
 render-core -> codec-core
 capability-core -> codec-core / render-core
 ```
@@ -83,13 +85,14 @@ upstream `symphonia = 0.6`, а устаревшие локальные ката�
 app-egui -> player-core/service-youtube/desktop-integration
 app-egui -> symphonia-demux/audio/video-vaapi/render-wgpu/source-core
 app-egui -> wgpu/winit/egui/egui-winit/rustiplayer-config
-player-core -> media-core/codec-core/capability-core/video-core/rustiplayer-config/audio-core/wgpu
+player-core -> media-core/codec-core/capability-core/video-core/video-backend-api/rustiplayer-config/audio-core
+video-backend-api -> video-core
 service-youtube -> source-core/symphonia-demux/rustiplayer-config/capability-core/codec-core
 source-core -> rustiplayer-config
 symphonia-demux -> source-core/media-core/codec-core
 webm-demux -> symphonia-demux
 audio -> audio-core
-video-vaapi -> player-core/video-core/media-core/codec-core/capability-core/wgpu
+video-vaapi -> video-backend-api/video-core/media-core/codec-core/capability-core/wgpu
 render-wgpu -> render-core/video-core/codec-core/video-vulkan/wgpu/egui/egui-wgpu/winit
 ```
 
@@ -102,6 +105,7 @@ VA-API и WGPU остаются частью production boundary.
 Before:
   player-core -> webm-demux
   player-core -> video-vaapi
+  video-vaapi depended on player-core
   player-core -> audio
   player-core -> wgpu
   render-wgpu -> egui/winit/video-vulkan
@@ -109,11 +113,13 @@ Before:
 After:
   player-core -> symphonia-demux/webm-demux closed
   player-core -> video-vaapi closed
+  reverse video-vaapi/player-core edge closed
   player-core -> audio closed; player-core -> audio-core remains
+  player-core -> wgpu closed
+  player-core -> video-backend-api owns playback-facing backend boundary
   app-egui -> symphonia-demux/video-vaapi owns production composition
   app-egui -> audio wires production audio factories
-  video-vaapi -> player-core adapter remains
-  player-core -> wgpu remains
+  video-vaapi -> video-backend-api implements backend startup/resource provider
   render-wgpu -> egui/egui-wgpu/winit/video-vulkan remains
 ```
 
@@ -124,18 +130,19 @@ After:
 
 | Связь | Почему сейчас существует | Целевое направление |
 | --- | --- | --- |
-| `player-core -> wgpu` | Zero-copy render lease сейчас материализует WGPU texture views через `WgpuRenderTextureProviderHandle`. | Выделить renderer-neutral resource materialization boundary, чтобы player не зависел от конкретного graphics API. |
-| `video-vaapi -> player-core` | Concrete VA-API backend реализует `VideoBackendFactory`, который пока объявлен в `player-core`. | Перенести backend startup/decoder-handle contract в `video-core` или отдельный backend API при появлении второго production decoder-а. |
 | `render-wgpu -> egui/winit/video-vulkan` | Crate одновременно содержит shell composition, WGPU renderer и reference Vulkan linkage. | Разделить shell/winit/egui wiring и production WGPU video backend; убрать reference dependency из production renderer path. |
 
 `render-wgpu -> egui-wgpu` считается частью той же shell-composition проблемы,
 хотя краткая debt-метка выше записана как `egui/winit`.
 
 Закрытые нарушения `player-core -> symphonia-demux/webm-demux`,
-`player-core -> video-vaapi` и `player-core -> audio` не должны возвращаться. Local/YouTube opening
-остаётся за shell/service layer и за `PreparedMedia`, а production backend
-startup остаётся в `video-vaapi` adapter-е, а production audio factories остаются
-в `audio` и передаются через `audio-core` contracts.
+`player-core -> video-vaapi`, обратная dependency от `video-vaapi` к
+`player-core`, `player-core -> wgpu` и `player-core -> audio` не должны
+возвращаться. Local/YouTube opening остаётся
+за shell/service layer и за `PreparedMedia`, production backend startup/resource
+provider boundary остаётся в `video-backend-api`, WGPU materialization остаётся
+в `app-egui`/`render-wgpu`, а production audio factories остаются в `audio` и
+передаются через `audio-core` contracts.
 
 ## Dependency guardrails
 
@@ -149,12 +156,11 @@ startup остаётся в `video-vaapi` adapter-е, а production audio factor
   добавляют прямые зависимости на `wgpu`, `video-vaapi` или `render-wgpu`.
 - `player-core` не добавляет новые direct dependencies на UI/shell/service,
   `symphonia-demux`, `webm-demux`, `video-vaapi`, `render-wgpu`,
-  `video-vulkan`, `audio` или другие concrete backend crates. Текущая exception
-  для `wgpu` не расширяется без отдельного архитектурного решения.
+  `video-vulkan`, `audio`, `wgpu` или другие concrete backend crates.
 - `render-wgpu` не начинает знать demux/source/audio/player/session crates.
-- `video-vaapi -> player-core` допускается только для adapter-а
-  `VideoBackendFactory`; decoder internals не должны читать session/pipeline
-  state напрямую.
+- `video-vaapi` и будущие concrete video backend crates не зависят от
+  `player-core`; backend startup/resource provider boundary проходит через
+  `video-backend-api`.
 - Новые обращения к `PlaybackPipeline` внутри `player-core` проходят через
   intent methods. Возвращать `pub(crate)` поля в сам `PlaybackPipeline`
   запрещено без отдельного архитектурного решения и focused tests.
@@ -178,15 +184,11 @@ startup остаётся в `video-vaapi` adapter-е, а production audio factor
 - запрещает прямые `media-core`/`codec-core`/`audio`/demux dependencies на
   `wgpu`, `video-vaapi` и `render-wgpu`;
 - запрещает возвращение `player-core -> symphonia-demux/webm-demux`,
-  `player-core -> video-vaapi` и `player-core -> audio`;
+  `player-core -> video-vaapi`, `player-core -> audio` и `player-core -> wgpu`;
+- запрещает прямую dependency от `video-vaapi` к `player-core`;
 - запрещает новые прямые связи `player-core` и `render-wgpu` с явно опасными
   соседними слоями, кроме текущего temporary debt allowlist;
 - печатает найденные временные нарушения как долг, но не считает их ошибкой.
-
-Скрипт пока не покрывает весь документ: `video-vaapi -> player-core` печатается
-как текущий adapter debt, но не проверяется на source-level ограничение
-`VideoBackendFactory`; это остаётся policy до переноса backend contract в
-neutral crate.
 
 Локальный pre-PR путь находится в `scripts/pre-pr-checks.sh`. Он последовательно
 запускает:
@@ -201,12 +203,6 @@ neutral crate.
 
 - Добавить transitive graph проверку через `cargo metadata` без `--no-deps`,
   когда появится стабильная policy для dev/build dependencies.
-- Проверять, что `player-core -> audio` не возвращается после переноса neutral
-  decoder/output/clock contracts в `audio-core`.
-- Проверять удаление `player-core -> wgpu` после renderer-neutral resource
-  materialization boundary.
-- Проверять удаление `video-vaapi -> player-core` после переноса
-  backend startup/decoder-handle contract в neutral crate.
 - Проверять split `render-wgpu` shell и video backend частей, включая
   `egui`, `egui-wgpu`, `winit` и `video-vulkan`.
 - Сравнивать новые public/internal boundary methods с tests на absent resource,

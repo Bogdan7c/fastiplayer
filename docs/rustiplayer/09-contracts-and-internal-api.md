@@ -8,12 +8,13 @@
 - state: `PlayerSnapshot`, `PlaybackState`;
 - events: `PlayerEvent`, `PlayerWorkerEvent`;
 - runtime: `PlayerWorker`, `PlayerWorkerConfig`;
-- render lease: `PresentFrameLease`, `PlayerPresentFrame`, `PresentFrameTextureViews`;
+- render lease: `PresentFrameLease`, `PlayerPresentFrame`,
+  `PresentFrameResourceDescriptor`, `PresentFrameResourceLookup`;
 - render errors: `PlayerRenderError`, `PlayerRenderErrorKind`;
 - seek: `SeekRequest`, `SeekTarget`, `SeekMode`, `ScrubCommitPolicy`;
-- backend init boundary: `VideoBackendFactory`, `StartedVideoBackend`;
-- current WGPU texture bridge: `WgpuRenderTextureProviderHandle`,
-  `WgpuRenderTextureViewLookup`, `WgpuRenderTextureViews`.
+- backend/resource provider re-exports: `StartedVideoBackend`,
+  `PresentFrameResourceProvider`, `PresentFrameResourceProviderHandle`,
+  `PresentFrameResourceProviderLookup`.
 
 Контракт:
 
@@ -21,11 +22,14 @@
 - Worker владеет `PlayerSession`.
 - Render thread получает frame leases, а не ссылки на pipeline.
 - Частые scrub updates схлопываются по latest-wins семантике.
-- Concrete production backend создаётся вне `player-core`.
-  `video-vaapi::VaapiWgpuVideoBackendFactory` реализует `VideoBackendFactory` и
-  возвращает decoder handle через `StartedVideoBackend`.
-- Renderer-neutrality здесь ещё неполная: texture view provider в `player-core`
-  WGPU-specific, потому что production zero-copy path материализует WGPU views.
+- Concrete production backend создаётся вне `player-core`. `player-core`
+  получает только `video-backend-api::StartedVideoBackend` и renderer-neutral
+  resource provider handle.
+- `video-backend-api` владеет startup/resource-provider contract. Concrete
+  backend crates реализуют этот contract без зависимости на `player-core`.
+- WGPU materialization находится в `app-egui`/`render-wgpu`: player lease хранит
+  opaque handle, descriptor, lookup/release accounting и не возвращает
+  `wgpu::TextureView`.
 
 ## `PlaybackPipeline` internal boundary
 
@@ -165,11 +169,12 @@ Selection должна учитывать:
 `video-vaapi::VideoDecodeThread` owns backend threading and queues. It accepts
 `DecodePacket` and publishes `video_core::DecodedFrame`.
 
-`VideoBackendFactory` lives in `player-core`, while the production implementation
-`VaapiWgpuVideoBackendFactory` lives in `video-vaapi`. This keeps
-`player-core -> video-vaapi` closed, but leaves `video-vaapi -> player-core` as a
-current adapter dependency until the backend startup contract moves to a more
-neutral crate.
+`video-backend-api` owns `VideoBackendFactory`, `StartedVideoBackend` and
+`PresentFrameResourceProvider*`. `player-core` consumes `StartedVideoBackend`
+and re-exports the playback-facing provider handle types, but does not own the
+factory trait. `video-vaapi::VaapiWgpuVideoBackendFactory` implements the
+contract from `video-backend-api`; concrete backend crates must not depend on
+`player-core`.
 
 Decoded frame contract:
 
@@ -179,7 +184,9 @@ Decoded frame contract:
 - `color`: resolved `VideoColorMetadata`;
 - diagnostics travel with the frame.
 
-`VideoTextureViewProvider` является render-side bridge для WGPU texture views.
+`VideoTextureViewProvider` является concrete render-side bridge для WGPU texture
+views. Он остаётся в `video-vaapi`/`app-egui`/`render-wgpu` composition path-е,
+а `player-core` видит только renderer-neutral lookup/release boundary.
 
 ## Render contract
 

@@ -83,7 +83,8 @@ YouTube startup polling.
 
 Render bridge rules:
 
-- texture views are created on render thread via `PresentFrameLease::texture_views()`;
+- render thread reads `PresentFrameLease` resource descriptors and lookup status,
+  then asks the active `app-egui`/`render-wgpu` materializer for WGPU texture views;
 - lease carries generation, stale flag and decoded frame metadata;
 - last safe lease may be reused on transient acquire miss;
 - stale generation is rejected;

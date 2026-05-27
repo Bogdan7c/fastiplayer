@@ -5,22 +5,19 @@
 
 ## Текущие временные exceptions
 
-После последних refactor PR прямые зависимости `player-core -> symphonia-demux/webm-demux`,
-`player-core -> video-vaapi` и `player-core -> audio` закрыты. Оставшийся
-Cargo/source-level долг:
+После последних refactor PR прямые зависимости
+`player-core -> symphonia-demux/webm-demux`, `player-core -> video-vaapi`,
+`player-core -> audio`, `player-core -> wgpu` и обратная dependency от
+`video-vaapi` к `player-core` закрыты. Оставшийся Cargo/source-level долг:
 
-- `player-core -> wgpu`: render lease и decoder boundary возвращают WGPU texture
-  views для текущего zero-copy path.
-- `video-vaapi -> player-core`: concrete backend crate реализует
-  `VideoBackendFactory`, который пока объявлен в `player-core`.
 - `render-wgpu -> egui/egui-wgpu/winit`: crate совмещает WGPU video renderer и
   shell composition.
 - `render-wgpu -> video-vulkan`: reference/experimental Vulkan code всё ещё
   подключён к production renderer crate.
 
 Эти exceptions не делают контрактные crates backend-specific: `media-core`,
-`codec-core`, `audio-core`, `video-core`, `render-core` и `capability-core` остаются
-нейтральными contract boundaries.
+`codec-core`, `audio-core`, `video-core`, `video-backend-api`, `render-core` и
+`capability-core` остаются нейтральными contract boundaries.
 
 ## `player-core::PlayerSession`
 
@@ -93,30 +90,28 @@ redraw pacing и error mapping. Это shell-level код, но файл ост�
 
 Следующий шаг: выделить shell runtime module без переноса player logic обратно в UI.
 
-## WGPU texture bridge в `player-core`
+## Backend API и WGPU materialization boundary
 
-`player-core` больше не содержит `WgpuVideoBackendFactory` и не зависит от
-`video-vaapi`, но WGPU-specific boundary ещё не закрыт полностью.
-`WgpuRenderTextureProviderHandle`, `WgpuRenderTextureViewLookup` и
-`WgpuRenderTextureViews` находятся в `player-core`, потому что current production
-lease flow материализует WGPU texture views из decoder-owned DMA-BUF resources.
+`video-backend-api` владеет startup/resource-provider contract между playback и
+concrete video backend-ами. В нём живут `VideoBackendFactory`,
+`StartedVideoBackend`, `PresentFrameResourceProvider` и cloneable provider
+handle для lookup/release decoded resources.
 
-Следующий шаг: выделить renderer-neutral resource materialization contract
-между `player-core`, decoder backend-ом и render backend-ом. Это должно
-сохранить различие между absent resource, busy texture pool, missing handle,
-fatal backend error и нормальным release path.
+`player-core` зависит от `video-backend-api` и `video-core`, принимает
+`StartedVideoBackend`, ведёт render lease accounting и различает absent resource,
+busy texture pool, missing handle, fatal backend error и нормальный release path.
+Он не зависит от `video-vaapi`, не зависит от `wgpu` и не возвращает
+`wgpu::TextureView`.
 
-## `video-vaapi` adapter boundary
+`video-vaapi` реализует `VideoBackendFactory` из `video-backend-api` и владеет
+VA-API decode thread-ом, DMA-BUF/WGPU import-ом и texture pool lifetime.
+Concrete backend crates не должны зависеть от `player-core`; adapter boundary
+идёт через `video-backend-api`.
 
-`VaapiWgpuVideoBackendFactory` теперь живёт в `video-vaapi` и реализует
-`player-core::VideoBackendFactory`. Это закрывает прежний долг
-`player-core -> video-vaapi`, но создаёт обратную adapter-зависимость
-`video-vaapi -> player-core`.
-
-Следующий шаг: когда появится второй production decoder backend, перенести
-startup/decoder-handle contract из `player-core` в более нейтральный crate
-(`video-core` или отдельный backend API). До этого dependency допустима как
-adapter debt, потому что ownership decoder thread-а остаётся у `video-vaapi`.
+WGPU materialization остаётся в `app-egui`/`render-wgpu`: shell получает
+`VideoTextureViewProvider` из `VaapiWgpuVideoBackendFactory::start_for_composition()`,
+создаёт `WgpuFrameTextureViewMaterializer` и передаёт renderer-у WGPU texture
+views без переноса GPU handles в `player-core`.
 
 ## `service-youtube`
 

@@ -1,10 +1,11 @@
 # Render Video
 
 - `video-core` owns decoded frame, opaque texture handle, and video diagnostics contracts. Production decoded formats are `Nv12` and `P010`; production memory path is `DmaBufZeroCopy`.
-- `video-core::VideoDecoderThreadHandle` exposes a renderer/resource provider associated type, not concrete GPU handles. `player-core` specializes it to `PresentFrameResourceProviderHandle` for neutral lookup/release accounting.
+- `video-core::VideoDecoderThreadHandle` exposes a renderer/resource provider associated type, not concrete GPU handles. `video-backend-api` supplies `PresentFrameResourceProviderHandle`, and `player-core` consumes it for neutral lookup/release accounting.
 - `video-vaapi` owns VA-API probe/decode thread, backend queues, DMA-BUF export/import, GBM/dma-heap/frame pool, texture cache, and WGPU import adapter.
-- `video-vaapi::VaapiWgpuVideoBackendFactory` is now an app composition startup helper, not a `player-core` factory. `start_for_composition()` returns both `StartedVideoBackend` for playback and `VideoTextureViewProvider` for WGPU materialization.
-- `video-vaapi` implements `player-core::PresentFrameResourceProvider` for `VideoTextureViewProvider` only to provide renderer-neutral Ready/Busy/Missing/Error status, lock diagnostics, and release path. The WGPU views themselves stay out of `player-core`.
+- `video-vaapi::VaapiWgpuVideoBackendFactory` is an app composition startup helper implementing `video_backend_api::VideoBackendFactory`; playback code only consumes the returned `StartedVideoBackend`. `start_for_composition()` returns both `StartedVideoBackend` for playback and `VideoTextureViewProvider` for WGPU materialization.
+- `video-vaapi` implements `video_backend_api::PresentFrameResourceProvider` for `VideoTextureViewProvider` only to provide renderer-neutral Ready/Busy/Missing/Error status, lock diagnostics, and release path. The WGPU views themselves stay out of `player-core`.
+- Backend startup/resource-provider boundary lives in `video-backend-api`; `video-vaapi` and future concrete video backend crates must not depend on `player-core` for adapter contracts.
 - `render-core` owns renderer-neutral capabilities/color/render diagnostics and must not allocate GPU resources.
 - `render-wgpu` owns WGPU instance/device/surface shell, egui composition, NV12 renderer, P010 HDR-to-SDR renderer, diagnostics, frame timing, and WGPU materialization API (`WgpuFrameTextureViewMaterializer`, `WgpuFrameTextureViewLookup`, `WgpuFrameTextureViews`).
 - `render-wgpu` source modules include `capabilities`, `color_pipeline`, `egui_compositor`, `frame`, `shell`, `video`, `bt2446c_reference`; shaders live under `crates/render-wgpu/shaders`.
