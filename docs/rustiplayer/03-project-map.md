@@ -19,10 +19,15 @@ crates/video-core            decoded frame and video diagnostics contracts
 crates/video-backend-api     backend startup and resource-provider contracts
 crates/video-vaapi           VA-API decoder thread, probe, DMA-BUF/WGPU import
 crates/render-core           renderer-neutral capabilities and color contracts
-crates/render-wgpu           WGPU shell, NV12 path, P010 BT.2446-C path
+crates/render-wgpu-video     WGPU NV12/P010 renderer, materialization API, shaders
+crates/render-wgpu-shell     WGPU device/surface shell, egui composition, present path
 crates/desktop-integration   PlayerCommand/PlayerSnapshot adapter for desktop controls
 crates/vp9-parser            VP9 header parser used by codec adapter
-crates/video-vulkan          reference/experimental Vulkan Video code
+```
+
+Local replacement crates outside workspace:
+
+```text
 crates/cros-codecs-patch     local patched cros-codecs dependency
 crates/cros-libva-patch      local patched cros-libva dependency
 ```
@@ -64,10 +69,15 @@ Its `VaapiWgpuVideoBackendFactory` implements the `video-backend-api`
 `VideoBackendFactory` boundary. The concrete backend crate depends on
 `video-backend-api`, not on `player-core`.
 
-`render-wgpu` owns WGPU resources, materialization-facing WGPU texture view
-types and shader paths. It consumes renderer-neutral metadata plus WGPU texture
-views and does not call demux/source/player APIs. The crate still also contains
-egui/winit shell composition and a `video-vulkan` reference dependency.
+`render-wgpu-video` owns the pure WGPU video backend: renderer capabilities,
+NV12/P010 renderers, BT.2446-C HDR-to-SDR shader path, WGPU texture-view
+materialization API and renderer diagnostics. It consumes renderer-neutral
+metadata plus WGPU texture views and does not call demux/source/player APIs.
+
+`render-wgpu-shell` owns WGPU instance/device/surface lifecycle, required WGPU
+feature selection for the video renderer, egui composition, frame timing and
+submit/present. It consumes `render-wgpu-video`, but does not own decoded video
+resources or playback queues.
 
 ## Направление зависимостей
 
@@ -75,22 +85,24 @@ egui/winit shell composition and a `video-vulkan` reference dependency.
 
 ```text
 app-egui -> player-core/service-youtube/desktop-integration
-app-egui -> symphonia-demux/audio/video-vaapi/render-wgpu/source-core
-app-egui -> media-core/codec-core/capability-core/video-core/render-core/rustiplayer-config
+app-egui -> symphonia-demux/audio/video-core/video-vaapi/render-wgpu-shell/render-wgpu-video/source-core
+app-egui -> media-core/capability-core/render-core/rustiplayer-config
 app-egui -> wgpu/winit/egui/egui-winit
-player-core -> media-core/codec-core/capability-core/video-core/video-backend-api/rustiplayer-config/audio-core
+player-core -> media-core/codec-core/capability-core/video-core/video-backend-api/rustiplayer-config/audio-core/render-core
 desktop-integration -> player-core/media-core
-service-youtube -> source-core/symphonia-demux/rustiplayer-config/capability-core/codec-core
+service-youtube -> source-core/symphonia-demux/rustiplayer-config/capability-core/codec-core/media-core
 source-core -> rustiplayer-config
 symphonia-demux -> media-core/codec-core/source-core
 webm-demux -> symphonia-demux
 audio -> audio-core
 capability-core -> codec-core/render-core
+codec-core -> vp9-parser
 video-core -> media-core/codec-core
 video-backend-api -> video-core
 render-core -> codec-core
 video-vaapi -> video-backend-api/video-core/media-core/codec-core/capability-core/wgpu
-render-wgpu -> render-core/video-core/codec-core/video-vulkan/wgpu/egui/egui-wgpu/winit
+render-wgpu-video -> render-core/video-core/codec-core/wgpu
+render-wgpu-shell -> render-wgpu-video/render-core/wgpu/egui/egui-wgpu/winit
 ```
 
 Contract crates should not depend on `app-egui`, `service-youtube` or concrete UI.
@@ -109,11 +121,13 @@ Before:
 After:
   app-egui -> symphonia-demux
   app-egui -> video-vaapi
+  app-egui -> render-wgpu-shell/render-wgpu-video
   player-core -> video-backend-api
   video-vaapi -> video-backend-api
   reverse video-vaapi/player-core edge closed
   player-core -> wgpu closed
-  render-wgpu -> egui/egui-wgpu/winit/video-vulkan remains temporary
+  render-wgpu split into render-wgpu-video and render-wgpu-shell
+  video-vulkan removed from workspace and Cargo graph
 ```
 
 Закрытые связи `player-core -> symphonia-demux/webm-demux` и `player-core -> video-vaapi` не
@@ -132,10 +146,11 @@ composition layer-е.
   in `player-core`.
 - `video-backend-api` owns `VideoBackendFactory`, `StartedVideoBackend` and the
   renderer-neutral resource-provider handle used by `player-core`.
-- WGPU texture-view materialization stays in `app-egui`/`render-wgpu`; `player-core`
-  exposes opaque frame descriptors and resource lookup/release accounting only.
-- `video-vulkan` remains in the workspace but is not the production decode path
-  used by `PlayerWorker`; `render-wgpu` still depends on it as reference debt.
+- WGPU texture-view materialization stays in `app-egui`/`render-wgpu-video`, and
+  WGPU surface presentation stays in `render-wgpu-shell`; `player-core` exposes
+  opaque frame descriptors and resource lookup/release accounting only.
+- The old reference backend `video-vulkan` has been removed from workspace and
+  must not return as an implicit production dependency.
 - Миграция Symphonia закрыла активный долг локального fork-а: workspace
   использует upstream `symphonia = 0.6` из Cargo, а устаревшие локальные каталоги
   патчей Symphonia удалены. Оставшиеся локальные dependency patches - это

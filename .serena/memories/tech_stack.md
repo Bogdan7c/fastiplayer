@@ -2,7 +2,7 @@
 
 - Language: Rust, workspace edition `2024`, workspace `rust-version = "1.85"`, Cargo resolver `2`.
 - Main UI/window stack: `winit 0.30`, `egui 0.34`, `egui-winit 0.34`, `egui-wgpu 0.34`.
-- Render/GPU: `wgpu 29` with `vulkan` feature; production renderer crate is `render-wgpu`.
+- Render/GPU: `wgpu 29` with `vulkan` feature; production renderer crates are `render-wgpu-video` (pure WGPU NV12/P010 video renderer/materializer boundary) and `render-wgpu-shell` (WGPU device/surface/egui composition shell).
 - Media/container/audio dependencies: upstream `symphonia 0.6` with `all-formats`, `all-codecs`, `all-meta`; `cpal 0.15`; `opus 0.3`; `bytes`; `ringbuf`; `crossbeam-channel`; neutral audio contracts live in local `audio-core`.
 - Error/log/config stack: `anyhow`, `thiserror`, `tracing`, `tracing-subscriber`, `serde` derive, `toml 0.9`, `directories 6.0`.
 - Local patches via root `[replace]`: `cros-libva:0.0.12` -> `crates/cros-libva-patch`; `cros-codecs:0.0.6` -> `crates/cros-codecs-patch`. These are compatibility patches, not app-owned architecture.

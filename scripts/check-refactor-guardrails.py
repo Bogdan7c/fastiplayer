@@ -50,10 +50,13 @@ REQUIRED_ROLE_CRATES = frozenset(
         "video-core",
         "video-backend-api",
         "video-vaapi",
-        "video-vulkan",
         "webm-demux",
     }
 )
+
+# Crates из этого списка были удалены из workspace и не должны возвращаться
+# как "reference" backend-ы без отдельного архитектурного решения.
+REMOVED_WORKSPACE_CRATES = frozenset({"video-vulkan"})
 
 CONTRACT_FORBIDDEN_DEPENDENCIES = frozenset(
     {
@@ -90,6 +93,7 @@ LOW_LEVEL_FORBIDDEN_DEPENDENCIES = frozenset(
     {
         "render-wgpu-shell",
         "render-wgpu-video",
+        "video-vulkan",
         "video-vaapi",
         "wgpu",
     }
@@ -307,6 +311,12 @@ def find_missing_role_crates(packages: dict[str, dict[str, Any]]) -> list[str]:
     return sorted(REQUIRED_ROLE_CRATES.difference(packages))
 
 
+def find_reintroduced_workspace_crates(packages: dict[str, dict[str, Any]]) -> list[str]:
+    """Находит удалённые workspace crates, которые нельзя вернуть молча."""
+
+    return sorted(REMOVED_WORKSPACE_CRATES.intersection(packages))
+
+
 def find_dependency_violations(
     dependency_map: dict[str, frozenset[str]],
 ) -> list[DependencyViolation]:
@@ -404,6 +414,7 @@ def print_success(known_debt_edges: list[tuple[str, str, str]]) -> None:
 
 def print_failures(
     missing_role_crates: list[str],
+    reintroduced_workspace_crates: list[str],
     violations: list[DependencyViolation],
 ) -> None:
     """Печатает все найденные ошибки за один запуск."""
@@ -412,6 +423,11 @@ def print_failures(
     if missing_role_crates:
         print("Missing required role crates:", file=sys.stderr)
         for crate_name in missing_role_crates:
+            print(f"  - {crate_name}", file=sys.stderr)
+
+    if reintroduced_workspace_crates:
+        print("Removed workspace crates reintroduced:", file=sys.stderr)
+        for crate_name in reintroduced_workspace_crates:
             print(f"  - {crate_name}", file=sys.stderr)
 
     if violations:
@@ -434,9 +450,10 @@ def run() -> int:
     dependency_map = direct_normal_dependencies(packages)
 
     missing_role_crates = find_missing_role_crates(packages)
+    reintroduced_workspace_crates = find_reintroduced_workspace_crates(packages)
     violations = find_dependency_violations(dependency_map)
-    if missing_role_crates or violations:
-        print_failures(missing_role_crates, violations)
+    if missing_role_crates or reintroduced_workspace_crates or violations:
+        print_failures(missing_role_crates, reintroduced_workspace_crates, violations)
         return 1
 
     print_success(find_known_debt_edges(dependency_map))

@@ -1,7 +1,7 @@
 # 13. Refactor Guardrails
 
 Этот документ фиксирует проверяемые границы после серии refactoring PR.
-Он описывает фактическую карту зависимостей, оставшиеся временные exceptions и
+Он описывает фактическую карту зависимостей, закрытые временные exceptions и
 правило, что каждый следующий PR обязан сохранять behavior parity.
 
 ## Главный инвариант
@@ -53,8 +53,9 @@ playback state или scheduling обратно из `player-core`.
 - `app-egui` - desktop process, winit lifecycle, egui UI, renderer wiring,
   startup jobs, desktop integration wiring, local media opening и production
   backend composition.
-- `render-wgpu` shell часть - WGPU surface/swapchain setup, `winit`/`egui`
-  composition и shell-facing render frame assembly.
+- `render-wgpu-shell` - WGPU instance/device/surface lifecycle, `winit`/`egui`
+  composition, frame timing, submit/present и shell-facing render frame
+  assembly.
 
 ## Concrete backend crates
 
@@ -68,10 +69,12 @@ hardware decode или GPU render path. Они могут зависеть от 
 - `webm-demux` - compatibility re-export старого crate path на время transition.
 - `audio` - concrete Symphonia/Opus decoder factory и CPAL output backend.
 - `video-vaapi` - VA-API decoder thread, probe, DMA-BUF export/import.
-- `render-wgpu` video backend часть - NV12/P010 WGPU renderer и shader paths.
+- `render-wgpu-video` - NV12/P010 WGPU renderer, materialization API и shader
+  paths.
 
-`video-vulkan` остаётся experimental/reference crate в workspace и не является
-production decode path для `PlayerWorker`.
+`video-vulkan` удалён из workspace и Cargo graph. Его нельзя возвращать как
+reference backend или hidden production dependency без отдельного
+архитектурного решения.
 
 Миграция Symphonia закрыла активный долг локального fork-а: workspace использует
 upstream `symphonia = 0.6`, а устаревшие локальные каталоги патчей Symphonia
@@ -83,17 +86,22 @@ upstream `symphonia = 0.6`, а устаревшие локальные ката�
 
 ```text
 app-egui -> player-core/service-youtube/desktop-integration
-app-egui -> symphonia-demux/audio/video-vaapi/render-wgpu/source-core
-app-egui -> wgpu/winit/egui/egui-winit/rustiplayer-config
-player-core -> media-core/codec-core/capability-core/video-core/video-backend-api/rustiplayer-config/audio-core
+app-egui -> symphonia-demux/audio/video-core/video-vaapi/render-core/render-wgpu-shell/render-wgpu-video/source-core
+app-egui -> media-core/capability-core/wgpu/winit/egui/egui-winit/rustiplayer-config
+player-core -> media-core/codec-core/capability-core/video-core/video-backend-api/rustiplayer-config/audio-core/render-core
 video-backend-api -> video-core
-service-youtube -> source-core/symphonia-demux/rustiplayer-config/capability-core/codec-core
+service-youtube -> source-core/symphonia-demux/rustiplayer-config/capability-core/codec-core/media-core
 source-core -> rustiplayer-config
 symphonia-demux -> source-core/media-core/codec-core
 webm-demux -> symphonia-demux
 audio -> audio-core
+codec-core -> vp9-parser
+capability-core -> codec-core/render-core
+render-core -> codec-core
+video-core -> media-core/codec-core
 video-vaapi -> video-backend-api/video-core/media-core/codec-core/capability-core/wgpu
-render-wgpu -> render-core/video-core/codec-core/video-vulkan/wgpu/egui/egui-wgpu/winit
+render-wgpu-video -> render-core/video-core/codec-core/wgpu
+render-wgpu-shell -> render-wgpu-video/render-core/wgpu/egui/egui-wgpu/winit
 ```
 
 Карта намеренно отражает current production path, а не идеальную нейтральность:
@@ -120,20 +128,18 @@ After:
   app-egui -> symphonia-demux/video-vaapi owns production composition
   app-egui -> audio wires production audio factories
   video-vaapi -> video-backend-api implements backend startup/resource provider
-  render-wgpu -> egui/egui-wgpu/winit/video-vulkan remains
+  render-wgpu split into render-wgpu-video and render-wgpu-shell
+  render-wgpu-video owns video rendering without shell/reference backend deps
+  render-wgpu-shell owns winit/egui surface composition
+  video-vulkan removed from workspace and Cargo graph
 ```
 
 ## Временные нарушения
 
-Эти связи описывают текущий долг. Они допустимы только как compatibility debt и
-не являются целевой архитектурой.
-
-| Связь | Почему сейчас существует | Целевое направление |
-| --- | --- | --- |
-| `render-wgpu -> egui/winit/video-vulkan` | Crate одновременно содержит shell composition, WGPU renderer и reference Vulkan linkage. | Разделить shell/winit/egui wiring и production WGPU video backend; убрать reference dependency из production renderer path. |
-
-`render-wgpu -> egui-wgpu` считается частью той же shell-composition проблемы,
-хотя краткая debt-метка выше записана как `egui/winit`.
+Temporary dependency debt для старого mixed `render-wgpu` crate отсутствует.
+`render-wgpu-shell -> egui/egui-wgpu/winit` теперь является штатной shell
+boundary, а не исключением. `render-wgpu-video` не зависит от shell/UI crates и
+не зависит от удалённого `video-vulkan`.
 
 Закрытые нарушения `player-core -> symphonia-demux/webm-demux`,
 `player-core -> video-vaapi`, обратная dependency от `video-vaapi` к
@@ -141,7 +147,8 @@ After:
 возвращаться. Local/YouTube opening остаётся
 за shell/service layer и за `PreparedMedia`, production backend startup/resource
 provider boundary остаётся в `video-backend-api`, WGPU materialization остаётся
-в `app-egui`/`render-wgpu`, а production audio factories остаются в `audio` и
+в `app-egui`/`render-wgpu-video`, WGPU present path остаётся в
+`render-wgpu-shell`, а production audio factories остаются в `audio` и
 передаются через `audio-core` contracts.
 
 ## Dependency guardrails
@@ -149,18 +156,26 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
 Новые refactoring PR должны соблюдать эти правила:
 
 - Contract crates не добавляют прямые зависимости на `app-egui`, `player-core`,
-  `symphonia-demux`, `webm-demux`, `audio`, `video-vaapi`, `render-wgpu`,
-  `video-vulkan`, `service-youtube`, `desktop-integration`, `wgpu`, `winit`,
-  `egui`, `egui-winit` или `egui-wgpu`.
+  `symphonia-demux`, `webm-demux`, `audio`, `video-vaapi`,
+  `render-wgpu-shell`, `render-wgpu-video`, `video-vulkan`,
+  `service-youtube`, `desktop-integration`, `wgpu`, `winit`, `egui`,
+  `egui-winit` или `egui-wgpu`.
 - `media-core`, `codec-core`, `audio-core`, `audio`, `symphonia-demux` и `webm-demux` не
-  добавляют прямые зависимости на `wgpu`, `video-vaapi` или `render-wgpu`.
+  добавляют прямые зависимости на `wgpu`, `video-vaapi`, `video-vulkan`,
+  `render-wgpu-shell` или `render-wgpu-video`.
 - `player-core` не добавляет новые direct dependencies на UI/shell/service,
-  `symphonia-demux`, `webm-demux`, `video-vaapi`, `render-wgpu`,
-  `video-vulkan`, `audio`, `wgpu` или другие concrete backend crates.
-- `render-wgpu` не начинает знать demux/source/audio/player/session crates.
+  `symphonia-demux`, `webm-demux`, `video-vaapi`, `render-wgpu-shell`,
+  `render-wgpu-video`, `video-vulkan`, `audio`, `wgpu` или другие concrete
+  backend crates.
+- `render-wgpu-shell` не начинает знать demux/source/audio/player/service или
+  concrete video backend crates.
+- `render-wgpu-video` не начинает знать shell/UI/app/player/service или
+  concrete video backend crates.
 - `video-vaapi` и будущие concrete video backend crates не зависят от
   `player-core`; backend startup/resource provider boundary проходит через
   `video-backend-api`.
+- `video-vulkan` не возвращается в workspace и не становится dependency
+  production crates без отдельного архитектурного решения.
 - Новые обращения к `PlaybackPipeline` внутри `player-core` проходят через
   intent methods. Возвращать `pub(crate)` поля в сам `PlaybackPipeline`
   запрещено без отдельного архитектурного решения и focused tests.
@@ -180,15 +195,18 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
 Текущая проверка намеренно маленькая:
 
 - проверяет наличие зафиксированных role crates в workspace;
+- запрещает молчаливое возвращение удалённых workspace crates, сейчас
+  `video-vulkan`;
 - запрещает прямые normal-dependencies из contract crates в shell/backend/player;
 - запрещает прямые `media-core`/`codec-core`/`audio`/demux dependencies на
-  `wgpu`, `video-vaapi` и `render-wgpu`;
+  `wgpu`, `video-vaapi`, `video-vulkan`, `render-wgpu-shell` и
+  `render-wgpu-video`;
 - запрещает возвращение `player-core -> symphonia-demux/webm-demux`,
   `player-core -> video-vaapi`, `player-core -> audio` и `player-core -> wgpu`;
 - запрещает прямую dependency от `video-vaapi` к `player-core`;
-- запрещает новые прямые связи `player-core` и `render-wgpu` с явно опасными
-  соседними слоями, кроме текущего temporary debt allowlist;
-- печатает найденные временные нарушения как долг, но не считает их ошибкой.
+- запрещает новые прямые связи `player-core`, `render-wgpu-shell` и
+  `render-wgpu-video` с явно опасными соседними слоями;
+- не содержит temporary debt allowlist для old mixed `render-wgpu` crate.
 
 Локальный pre-PR путь находится в `scripts/pre-pr-checks.sh`. Он последовательно
 запускает:
@@ -203,7 +221,8 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
 
 - Добавить transitive graph проверку через `cargo metadata` без `--no-deps`,
   когда появится стабильная policy для dev/build dependencies.
-- Проверять split `render-wgpu` shell и video backend частей, включая
-  `egui`, `egui-wgpu`, `winit` и `video-vulkan`.
+- Следить, чтобы `render-wgpu-shell` оставался shell boundary, а
+  `render-wgpu-video` оставался video-renderer boundary без UI/player/backend
+  dependencies.
 - Сравнивать новые public/internal boundary methods с tests на absent resource,
   active fake/stub, typed error и accounting no-op cases.

@@ -9,6 +9,7 @@
 - `render-core` owns renderer-neutral capabilities/color/render diagnostics and must not allocate GPU resources.
 - `render-wgpu-video` owns the pure WGPU video renderer: `capabilities`, `color_pipeline`, `video/*`, NV12/P010 shaders, test-only `bt2446c_reference`, renderer diagnostics, and WGPU materialization API (`WgpuFrameTextureViewMaterializer`, `WgpuFrameTextureViewLookup`, `WgpuFrameTextureViews`). It also exposes `required_wgpu_video_texture_features(&wgpu::Adapter)` for shell/device creation.
 - `render-wgpu-shell` owns WGPU instance/device/surface shell, egui composition, frame timing, and submit/present. It consumes `render-wgpu-video` for video rendering and required texture features, but does not re-export the video materializer/view/renderable-frame API.
+- The old reference backend `video-vulkan` has been removed from the workspace and Cargo graph; guardrails keep reintroduction banned for production/contract/player/render crates unless a separate architecture decision changes that.
 - `WgpuRenderableFrame` constructors validate decoded frame metadata. NV12 and P010 paths reject non-zero-copy memory paths; plane/metadata mismatch is a render boundary error.
 - P010 support depends on WGPU device features/layout: separate R16/Rg16 plane views or composed P010 path. Both become Y plus UV plane views at renderer boundary.
 - SDR path shader: `nv12_to_rgba.wgsl`; HDR path shader: `p010_bt2446c_to_sdr.wgsl`; HDR output is SDR BT.709 via BT.2446 Method C.

@@ -2,15 +2,30 @@
 
 ## Renderer
 
-Production renderer crate: `render-wgpu`.
+Production renderer crates:
 
-`render-wgpu` owns:
+- `render-wgpu-video` - pure WGPU video renderer and materialization boundary;
+- `render-wgpu-shell` - WGPU device/surface shell and egui composition.
 
-- WGPU instance/device/surface shell;
-- egui composition through `egui-wgpu`;
+`render-wgpu-video` owns:
+
 - NV12 SDR renderer;
 - P010 HDR-to-SDR renderer;
-- renderer diagnostics and frame timing.
+- `WgpuRenderableFrame`, `WgpuFrameTextureViews` and materializer-facing lookup
+  types;
+- renderer diagnostics;
+- required video texture feature calculation for shell device creation.
+
+`render-wgpu-shell` owns:
+
+- WGPU instance/device/surface shell;
+- `egui-wgpu` composition;
+- surface configuration and recovery;
+- frame timing, command submission and present.
+
+`render-wgpu-shell` consumes `render-wgpu-video`; `render-wgpu-video` does not
+depend on `winit`, `egui`, `egui-wgpu`, `app-egui`, demux, source, player,
+VA-API or the removed reference backend `video-vulkan`.
 
 `render-core` owns renderer-neutral contracts and must not create GPU resources.
 
@@ -36,14 +51,14 @@ Both layouts become the same renderer plane kind after import: Y view plus UV vi
 
 NV12 path:
 
-- shader: `render-wgpu/shaders/nv12_to_rgba.wgsl`;
+- shader: `render-wgpu-video/shaders/nv12_to_rgba.wgsl`;
 - output: SDR BT.709;
 - defaults preserve current SDR visual result;
 - `SwapchainTransferMode::PreserveCurrentUnorm`.
 
 P010 path:
 
-- shader: `render-wgpu/shaders/p010_bt2446c_to_sdr.wgsl`;
+- shader: `render-wgpu-video/shaders/p010_bt2446c_to_sdr.wgsl`;
 - input: strict BT.2020 PQ/HLG P010;
 - operator: BT.2446 Method C;
 - output: SDR BT.709;
@@ -84,7 +99,10 @@ YouTube startup polling.
 Render bridge rules:
 
 - render thread reads `PresentFrameLease` resource descriptors and lookup status,
-  then asks the active `app-egui`/`render-wgpu` materializer for WGPU texture views;
+  then asks the active `app-egui`/`render-wgpu-video` materializer for WGPU
+  texture views;
+- `render-wgpu-shell` receives an optional `WgpuRenderableFrame` and performs
+  surface/egui composition without owning decoder resources;
 - lease carries generation, stale flag and decoded frame metadata;
 - last safe lease may be reused on transient acquire miss;
 - stale generation is rejected;

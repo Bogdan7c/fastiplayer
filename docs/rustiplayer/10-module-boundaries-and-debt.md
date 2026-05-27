@@ -8,15 +8,16 @@
 После последних refactor PR прямые зависимости
 `player-core -> symphonia-demux/webm-demux`, `player-core -> video-vaapi`,
 `player-core -> audio`, `player-core -> wgpu` и обратная dependency от
-`video-vaapi` к `player-core` закрыты. Оставшийся Cargo/source-level долг:
+`video-vaapi` к `player-core` закрыты. Долг старого mixed render crate тоже
+закрыт: `render-wgpu` разделён на `render-wgpu-video` и `render-wgpu-shell`, а
+reference backend `video-vulkan` удалён из workspace и Cargo graph.
 
-- `render-wgpu -> egui/egui-wgpu/winit`: crate совмещает WGPU video renderer и
-  shell composition.
-- `render-wgpu -> video-vulkan`: reference/experimental Vulkan code всё ещё
-  подключён к production renderer crate.
+Сейчас нет зафиксированных temporary dependency exceptions для старого
+`render-wgpu -> video-vulkan` долга. Оставшиеся разделы ниже описывают
+архитектурные зоны риска, а не allowlist для прямых Cargo dependency нарушений.
 
-Эти exceptions не делают контрактные crates backend-specific: `media-core`,
-`codec-core`, `audio-core`, `video-core`, `video-backend-api`, `render-core` и
+Это не делает контрактные crates backend-specific: `media-core`, `codec-core`,
+`audio-core`, `video-core`, `video-backend-api`, `render-core` и
 `capability-core` остаются нейтральными contract boundaries.
 
 ## `player-core::PlayerSession`
@@ -108,10 +109,12 @@ VA-API decode thread-ом, DMA-BUF/WGPU import-ом и texture pool lifetime.
 Concrete backend crates не должны зависеть от `player-core`; adapter boundary
 идёт через `video-backend-api`.
 
-WGPU materialization остаётся в `app-egui`/`render-wgpu`: shell получает
+WGPU materialization остаётся в `app-egui`/`render-wgpu-video`: shell получает
 `VideoTextureViewProvider` из `VaapiWgpuVideoBackendFactory::start_for_composition()`,
 создаёт `WgpuFrameTextureViewMaterializer` и передаёт renderer-у WGPU texture
-views без переноса GPU handles в `player-core`.
+views без переноса GPU handles в `player-core`. `render-wgpu-shell` отвечает за
+WGPU surface/device lifecycle, egui composition и present, но не владеет decoded
+video resources.
 
 ## `service-youtube`
 
@@ -143,12 +146,17 @@ Symphonia fork как source-level или Cargo-level fallback.
 Следующий шаг: опираться на container metadata там, где Symphonia/Matroska
 pre-scan даёт явный TrackType.
 
-## `render-wgpu`
+## `render-wgpu-video` и `render-wgpu-shell`
 
-NV12 и P010 paths разделены, но WGPU shell, egui composition и video renderer
-живут в одном crate. Это нормально сейчас, но при появлении второго renderer
-backend-а нужно удержать `render-core` как общий contract, а не переносить туда
-WGPU-specific детали.
+NV12/P010 video renderer теперь живёт в `render-wgpu-video`, а WGPU
+instance/device/surface lifecycle и egui composition живут в
+`render-wgpu-shell`. Это закрывает старый долг mixed crate и reference
+dependency на `video-vulkan`.
+
+Следующий безопасный шаг для renderer layer-а: удерживать `render-core` как
+нейтральный contract и не переносить туда WGPU-specific details. Если появится
+второй renderer backend, он должен подключаться через новые boundary methods и
+focused tests, а не через восстановление старого mixed `render-wgpu` crate.
 
 ## Patched dependencies
 
