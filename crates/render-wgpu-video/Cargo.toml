@@ -1,0 +1,17 @@
+[package]
+name = "render-wgpu-video"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+codec-core = { workspace = true }
+render-core = { workspace = true }
+video-core = { workspace = true }
+wgpu.workspace = true
+tracing.workspace = true
+bytemuck = "1.25"
+
+[dev-dependencies]
+naga = { version = "29", features = ["wgsl-in"] }

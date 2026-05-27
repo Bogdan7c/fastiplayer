@@ -8,7 +8,7 @@
 ///
 /// Почему не eframe:
 /// eframe скрывает детали инициализации swapchain и render pass.
-/// Нам нужен прямой контроль для будущего zero-copy video path,
+/// Нам нужен прямой контроль для текущего zero-copy video path,
 /// где decoded VkImage будет рендериться напрямую без CPU readback.
 ///
 /// Архитектура рендеринга:
@@ -21,6 +21,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use render_core::{ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics};
+use render_wgpu_video::{WgpuVideoRenderer, required_wgpu_video_texture_features};
 use tracing::{debug, info, instrument};
 use winit::window::Window;
 
@@ -29,8 +30,6 @@ use crate::frame::{
     RenderFrameDropReason, RenderFrameFailure, RenderFrameInput, RenderFrameOutcome,
     RenderFrameTiming,
 };
-use crate::video::WgpuVideoRenderer;
-use video_vulkan::UnifiedVulkanInstance;
 
 /// Выбирает формат swapchain для SDR-видео.
 fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> Result<wgpu::TextureFormat> {
@@ -107,30 +106,30 @@ pub struct GpuContext {
 }
 
 impl GpuContext {
-    /// Создаёт GPU контекст асинхронно с единым Vulkan instance.
+    /// Создаёт GPU контекст асинхронно через стандартный WGPU Vulkan instance.
     ///
     /// Последовательность:
-    /// 1. UnifiedVulkanInstance — ash instance с video extensions + wgpu::Instance
+    /// 1. WGPU Vulkan instance без display handle ownership
     /// 2. Surface — привязка к окну
     /// 3. Adapter — выбор GPU
-    /// 4. Device/Queue — через hal open_with_callback с video decode extensions
+    /// 4. Device/Queue — с feature gates, нужными video renderer boundary
     /// 5. Surface configuration — настройка swapchain
     #[instrument(skip(window), fields(window = "youtube-player"))]
     pub async fn new(window: Arc<Window>) -> Result<Self> {
-        info!("Инициализация UnifiedVulkanInstance");
+        info!("Инициализация WGPU Vulkan instance");
 
-        let unified =
-            UnifiedVulkanInstance::new().context("Не удалось создать UnifiedVulkanInstance")?;
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
 
-        let surface = unified
-            .wgpu_instance
+        let surface = instance
             .create_surface(window.clone())
             .context("Не удалось создать surface для окна")?;
 
         info!("Запрос адаптера GPU");
 
-        let adapter = unified
-            .wgpu_instance
+        let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::LowPower,
                 compatible_surface: Some(&surface),
@@ -148,14 +147,26 @@ impl GpuContext {
             "Выбран GPU адаптер"
         );
 
-        let (device, queue) = unified
-            .create_device_with_video(&adapter)
-            .await
-            .context("Не удалось создать wgpu device с video decode extensions")?;
+        let required_features = required_wgpu_video_texture_features(&adapter);
+        info!(
+            nv12_texture_format = required_features.contains(wgpu::Features::TEXTURE_FORMAT_NV12),
+            p010_texture_format = required_features.contains(wgpu::Features::TEXTURE_FORMAT_P010),
+            texture_format_16bit_norm =
+                required_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
+            "Запрос WGPU device с video texture features"
+        );
 
-        // unified больше не нужен после инициализации — wgpu device и surface
-        // не зависят от него во время работы. Раньше хранили для Vulkan Video decode,
-        // но сейчас используем VA-API, которая имеет собственный display.
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("youtube-player device"),
+                required_features,
+                required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::Off,
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            })
+            .await
+            .context("Не удалось создать wgpu device с video texture features")?;
 
         let surface_caps = surface.get_capabilities(&adapter);
 
@@ -188,7 +199,7 @@ impl GpuContext {
         );
 
         Ok(Self {
-            instance: unified.wgpu_instance,
+            instance,
             adapter,
             surface,
             device,

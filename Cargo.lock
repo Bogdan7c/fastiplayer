@@ -3277,18 +3277,28 @@ name = "render-wgpu"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bytemuck",
- "codec-core",
  "egui",
  "egui-wgpu",
- "naga",
  "pollster",
+ "render-core",
+ "render-wgpu-video",
+ "tracing",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "render-wgpu-video"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "codec-core",
+ "naga",
  "render-core",
  "tracing",
  "video-core",
- "video-vulkan",
  "wgpu",
- "winit",
 ]
 
 [[package]]

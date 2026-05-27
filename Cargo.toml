@@ -17,6 +17,7 @@ members = [
     "crates/video-backend-api",
     "crates/video-vulkan",
     "crates/render-core",
+    "crates/render-wgpu-video",
     "crates/render-wgpu",
     "crates/video-vaapi",
     "crates/service-youtube",
@@ -63,6 +64,7 @@ video-backend-api = { path = "crates/video-backend-api" }
 video-vulkan = { path = "crates/video-vulkan" }
 video-vaapi = { path = "crates/video-vaapi" }
 render-core = { path = "crates/render-core" }
+render-wgpu-video = { path = "crates/render-wgpu-video" }
 render-wgpu = { path = "crates/render-wgpu" }
 player-core = { path = "crates/player-core" }
 desktop-integration = { path = "crates/desktop-integration" }

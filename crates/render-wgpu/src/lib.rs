@@ -1,29 +1,23 @@
 //! WGPU render backend.
 //!
-//! Crate сохраняет прежние public exports, но внутренне разделяет:
-//! - фасад video renderer-а и NV12/P010 dispatch;
-//! - shell для surface/swapchain lifecycle;
+//! Crate сохраняет прежние public exports, но теперь владеет только shell:
+//! - surface/swapchain lifecycle;
 //! - egui composition поверх video pass-а;
-//! - mapping backend capabilities.
+//! - re-export video boundary из `render-wgpu-video`.
 
 #![forbid(unsafe_code)]
 
-mod capabilities;
-mod color_pipeline;
 mod egui_compositor;
 mod frame;
 mod shell;
-mod video;
-
-#[cfg(test)]
-mod bt2446c_reference;
 
 pub use frame::{
     RenderFrameDropReason, RenderFrameFailure, RenderFrameInput, RenderFrameOutcome,
     RenderScreenDescriptor,
 };
-pub use shell::{GpuContext, Renderer};
-pub use video::{
+pub use render_wgpu_video::{
     WgpuFramePlanes, WgpuFrameTextureViewLookup, WgpuFrameTextureViewMaterializer,
     WgpuFrameTextureViews, WgpuRenderableFrame, WgpuVideoRenderer, clear_to_black,
+    required_wgpu_video_texture_features,
 };
+pub use shell::{GpuContext, Renderer};

@@ -1,8 +1,7 @@
 use std::time::Duration;
 
+use render_wgpu_video::WgpuRenderableFrame;
 use winit::window::Window;
-
-use crate::video::WgpuRenderableFrame;
 
 /// Итог одного render-frame вызова.
 #[derive(Debug, Clone, PartialEq, Eq)]
