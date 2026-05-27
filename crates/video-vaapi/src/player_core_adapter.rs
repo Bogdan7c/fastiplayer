@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use player_core::{
+use video_backend_api::{
     PresentFrameResourceProvider, PresentFrameResourceProviderHandle,
-    PresentFrameResourceProviderLookup, StartedVideoBackend,
+    PresentFrameResourceProviderLookup, StartedVideoBackend, VideoBackendFactory,
 };
 use video_core::VideoDecoderThreadHandle;
 
@@ -89,6 +89,13 @@ impl VaapiWgpuVideoBackendFactory {
 
     /// Compatibility helper для callers, которым не нужен WGPU materializer.
     pub fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend> {
+        <Self as VideoBackendFactory>::start_video_backend(self)
+    }
+}
+
+impl VideoBackendFactory for VaapiWgpuVideoBackendFactory {
+    /// Стартует concrete VA-API backend через тот же startup path, что и app composition.
+    fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend> {
         Ok(self.start_for_composition()?.into_player_backend())
     }
 }
@@ -300,6 +307,15 @@ mod tests {
     use media_core::TrackId;
 
     use super::*;
+
+    /// Compile-time helper фиксирует, что factory реализует neutral backend API.
+    fn assert_video_backend_factory<T: VideoBackendFactory>() {}
+
+    /// Проверяет dependency boundary: VA-API factory доступна через `video-backend-api`.
+    #[test]
+    fn vaapi_factory_implements_video_backend_factory_contract() {
+        assert_video_backend_factory::<VaapiWgpuVideoBackendFactory>();
+    }
 
     /// Проверяет, что packet adapter не теряет ownership payload-а и timing metadata.
     #[test]
