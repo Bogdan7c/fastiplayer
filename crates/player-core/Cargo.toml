@@ -18,6 +18,7 @@ crossbeam-channel = { workspace = true }
 media-core = { workspace = true }
 rustiplayer-config = { workspace = true }
 tracing = { workspace = true }
+video-backend-api = { workspace = true }
 video-core = { path = "../video-core" }
 
 [dev-dependencies]

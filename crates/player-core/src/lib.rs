@@ -19,7 +19,6 @@ mod session;
 mod snapshot;
 mod state;
 mod tick;
-mod video_backend;
 mod worker;
 mod worker_scheduler;
 
@@ -40,7 +39,7 @@ pub(crate) use decoder_boundary::{
 };
 pub use decoder_boundary::{
     PlayerVideoDecoderThreadConfig, PresentFrameResourceProvider,
-    PresentFrameResourceProviderHandle, PresentFrameResourceProviderLookup,
+    PresentFrameResourceProviderHandle, PresentFrameResourceProviderLookup, StartedVideoBackend,
 };
 pub(crate) use diagnostics::{
     ActiveSeekDiagnosticsSnapshot, PlaybackDiagnostics, SeekProgressBlocker,
@@ -78,7 +77,6 @@ pub use tick::{
     PlayerPipelinePause, PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult,
     PlayerVideoDropReason, PlayerVideoFrameDrop,
 };
-pub use video_backend::StartedVideoBackend;
 pub use worker::{
     PlayerCommandSender, PlayerRenderError, PlayerRenderErrorKind, PlayerWorker,
     PlayerWorkerConfig, PlayerWorkerEvent, PlayerWorkerJoinError, PlayerWorkerSendError,
