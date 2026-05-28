@@ -26,7 +26,7 @@ use crate::{
     FrameCounters, MediaOpenRequest, MediaSource, MediaSummary, PipelineLatencyStage,
     PipelinePauseReason, PipelineQueueDepthSnapshot, PlaybackDiagnostics,
     PlaybackDiagnosticsLogSummary, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerError,
-    PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot, PlayerTickConfig, QualitySelection,
+    PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot, QualitySelection,
     SeekAudioResumeInfo, SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo, SeekProgressBlocker,
     SeekRequest, SeekTargetFramePresentation, StartedVideoBackend, TextureSlotPressureSnapshot,
     TrackId, TrackSelectionSnapshot, VideoDropReason, WorkerWakeupDiagnosticsSnapshot,
@@ -34,8 +34,16 @@ use crate::{
 
 mod render_leases;
 mod snapshot_builder;
+mod tick;
 
 pub(crate) use self::render_leases::LeasedPresentFrame;
+pub use self::tick::{
+    PlayerPipelinePause, PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult,
+    PlayerVideoDropReason, PlayerVideoFrameDrop,
+};
+pub(crate) use self::tick::{
+    PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,
+};
 
 /// Чистый план выбора audio track-а без decoder/output side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1533,7 +1541,7 @@ impl PlayerSession {
     /// Process pending audio packets с throttle по buffer level.
     pub fn process_pending_audio_packets(&mut self) {
         self.process_pending_audio_packets_with_buffer_limit(
-            crate::PlayerTickConfig::default().audio_buffer_high_water_mark_ms,
+            PlayerTickConfig::default().audio_buffer_high_water_mark_ms,
         );
     }
 

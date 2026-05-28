@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::tick::{PlayerTickConfig, PlayerWorkerWakeupPlan};
+use crate::{PlayerTickConfig, PlayerWorkerWakeupPlan};
 
 /// Чистый helper выбора ближайшего самостоятельного wakeup-а worker loop-а.
 #[derive(Debug, Default, Clone, Copy)]

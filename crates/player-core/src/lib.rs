@@ -18,7 +18,6 @@ mod seek_state;
 mod session;
 mod snapshot;
 mod state;
-mod tick;
 mod worker;
 mod worker_scheduler;
 
@@ -66,17 +65,19 @@ pub use render_lease_bridge::{
     PresentFrameResourceKind, PresentFrameResourceLookup,
 };
 pub use seek_state::PlaybackResumeIntent;
-pub use session::PlayerSession;
+pub use session::{
+    PlayerPipelinePause, PlayerSession, PlayerTickConfig, PlayerTickContext, PlayerTickPacket,
+    PlayerTickResult, PlayerVideoDropReason, PlayerVideoFrameDrop,
+};
+pub(crate) use session::{
+    PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,
+};
 pub use snapshot::{
     AudioBufferSnapshot, BackendSnapshot, FrameCounters, PlayerSnapshot, QualitySummary,
     QueueSnapshot, TexturePoolSnapshot, TrackSelectionSnapshot, TrackSummarySnapshot,
     VideoFrameSnapshot,
 };
 pub use state::PlaybackState;
-pub use tick::{
-    PlayerPipelinePause, PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult,
-    PlayerVideoDropReason, PlayerVideoFrameDrop,
-};
 pub use worker::{
     PlayerCommandSender, PlayerRenderError, PlayerRenderErrorKind, PlayerWorker,
     PlayerWorkerConfig, PlayerWorkerEvent, PlayerWorkerJoinError, PlayerWorkerSendError,

@@ -16,16 +16,14 @@ use crate::render_lease_bridge::{
 use crate::render_lease_bridge::{
     PlayerPresentFrame, PresentFrameLease, RenderLeaseBridge, RenderLeaseBridgeClient,
 };
-use crate::tick::{
-    PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,
-};
 use crate::worker_scheduler::{PlannedWorkerWakeup, WorkerScheduler, WorkerWakeupDeadline};
 use crate::{
     ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory, FrameCounters,
     LatencyCounterSnapshot, MediaOpenRequest, MediaSource, PlayerCommand, PlayerError,
     PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSession, PlayerSnapshot, PlayerTickConfig,
-    PlayerTickContext, PlayerTickResult, PlayerVideoDecoderThreadConfig, PreparedMedia,
-    StartedVideoBackend,
+    PlayerTickContext, PlayerTickResult, PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan,
+    PreparedMedia, SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend,
+    scheduler_timing_diagnostics,
 };
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.

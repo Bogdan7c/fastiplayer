@@ -16,11 +16,12 @@ use media_core::{DemuxReadEvent, PacketKeyframe, TrackId, TrackKind, TrackTimest
 use rustiplayer_config::AppConfig;
 use tracing::{debug, trace, warn};
 
+use super::PlayerSession;
 use crate::{
     DecodeSendError, DecodeThreadError, PendingAudioPacket, PendingVideoPacket,
     PipelineLatencyStage, PipelinePauseReason, PlaybackPipeline, PlaybackState, PlayerDecodePacket,
-    PlayerError, PlayerErrorKind, PlayerSession, WorkerFrameTimingSnapshot,
-    WorkerWakeupDiagnosticsSnapshot, WorkerWakeupReason,
+    PlayerError, PlayerErrorKind, WorkerFrameTimingSnapshot, WorkerWakeupDiagnosticsSnapshot,
+    WorkerWakeupReason,
 };
 
 /// Контекст одного playback tick.
