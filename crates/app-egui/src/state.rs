@@ -1866,6 +1866,7 @@ mod tests {
 
         assert!(!include_str!("state.rs").contains(forbidden_member));
         assert!(!include_str!("main.rs").contains(forbidden_member));
+        assert!(!include_str!("app_shell/mod.rs").contains(forbidden_member));
     }
 
     /// Проверяет pure-classifier stale cache без создания GPU lease-а.
