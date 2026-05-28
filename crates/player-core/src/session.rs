@@ -3,26 +3,24 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
-use media_core::{
-    MediaDemuxError, MediaDuration, MediaTime, TimelineNotSeekableReason, TrackInfo, TrackKind,
-};
+use media_core::{MediaDemuxError, MediaDuration, MediaTime, TimelineNotSeekableReason, TrackKind};
 use tracing::{debug, info, trace, warn};
 
 use crate::audio_boundary::{missing_audio_decoder_factory, missing_audio_output_factory};
-use crate::pipeline::{AudioEofDrainState, AudioSeekRuntimeState};
+use crate::pipeline::AudioEofDrainState;
 use crate::seek_state::{
     PlaybackResumeIntent, SeekCommitState, SeekDemuxRequestError,
     demux_seek_request_for_transaction,
 };
 use crate::{
-    ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory, AudioOutputSpec,
-    FrameCounters, PipelineQueueDepthSnapshot, PlaybackDiagnostics, PlaybackPipeline,
-    PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult,
-    PlayerSnapshot, QualitySelection, SeekAudioResumeInfo, SeekBootstrapDiagnosticsSnapshot,
-    SeekCommitInfo, SeekProgressBlocker, SeekRequest, SeekTargetFramePresentation,
-    StartedVideoBackend, TrackId,
+    ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory, FrameCounters,
+    PipelineQueueDepthSnapshot, PlaybackDiagnostics, PlaybackPipeline, PlaybackState,
+    PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot,
+    QualitySelection, SeekAudioResumeInfo, SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo,
+    SeekProgressBlocker, SeekRequest, SeekTargetFramePresentation, StartedVideoBackend, TrackId,
 };
 
+mod audio_runtime;
 mod capability_selection;
 mod diagnostics_sink;
 mod media_lifecycle;
@@ -30,6 +28,7 @@ mod render_leases;
 mod snapshot_builder;
 mod tick;
 
+use self::audio_runtime::SeekAudioGateStatus;
 use self::media_lifecycle::MediaLifecycleState;
 pub(crate) use self::render_leases::LeasedPresentFrame;
 pub use self::tick::{
@@ -40,49 +39,15 @@ pub(crate) use self::tick::{
     PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,
 };
 
-/// Чистый план выбора audio track-а без decoder/output side effects.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AudioDecoderInitSpec {
-    /// Track ID выбранного audio трека.
-    track_id: TrackId,
-
-    /// Container codec id, который audio crate мапит на Symphonia codec id.
-    codec_id: String,
-
-    /// Codec private / extra data из container metadata.
-    codec_private: Option<Vec<u8>>,
-
-    /// Sample rate, который demuxer уже сообщил до первого decoded packet-а.
-    initial_sample_rate: Option<u32>,
-
-    /// Количество каналов, которое demuxer уже сообщил до первого decoded packet-а.
-    initial_channels: Option<u32>,
-}
-
-/// Минимальный защитный preroll, ниже которого seek resume не должен считать audio готовым.
-const MIN_SEEK_AUDIO_PREROLL_MS: f64 = 1.0;
-
-/// Минимальный audio preroll для autoplay, защищающий старт от пустого output buffer-а.
-const MIN_AUTOPLAY_AUDIO_PREROLL_MS: f64 = 1.0;
-
-/// Typed результат проверки audio readiness для autoplay preroll.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AudioAutoplayReadiness {
-    /// Audio track не выбран: video-only или отключённый audio path не блокируют autoplay.
-    NoSelectedAudio,
-
-    /// Audio track выбран, но decoder ещё не установлен.
-    WaitingForDecoder,
-
-    /// Decoder установлен, но output ещё не создан из decoded audio spec.
-    WaitingForOutput,
-
-    /// Output готов, но buffer ещё не набрал целевой preroll.
-    WaitingForPreroll,
-
-    /// Decoder/output готовы, а buffer достиг целевого preroll.
-    Ready,
-}
+#[cfg(test)]
+use self::audio_runtime::{
+    AudioAutoplayReadiness, AudioDecoderInitSpec, audio_decoder_init_spec_from_tracks,
+    classify_autoplay_audio_readiness, classify_seek_audio_gate,
+};
+#[cfg(test)]
+use crate::pipeline::AudioSeekRuntimeState;
+#[cfg(test)]
+use media_core::TrackInfo;
 
 /// Точная причина, по которой EOF-drain ещё не может перейти в `Ended`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -122,58 +87,6 @@ enum EofDrainBlocker {
         /// Порог, после которого stale output buffer считается зависшим.
         stall_timeout: Duration,
     },
-}
-
-impl AudioAutoplayReadiness {
-    /// Возвращает `true` только для состояний, которые не блокируют autoplay.
-    const fn is_ready(self) -> bool {
-        matches!(self, Self::NoSelectedAudio | Self::Ready)
-    }
-}
-
-/// Typed результат проверки audio gate-а для seek commit-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SeekAudioGateStatus {
-    /// Audio gate готов и не блокирует commit.
-    Ready,
-
-    /// Output ещё не подтвердил очистку buffer-а текущего seek generation.
-    WaitingForClear,
-
-    /// Для выбранного audio track-а ещё нет установленного decoder-а.
-    WaitingForDecoder,
-
-    /// Decoder установлен, но output ещё не создан по decoded AudioSpec.
-    WaitingForOutput,
-
-    /// Output готов, но buffer ещё не содержит минимальный post-seek preroll.
-    WaitingForPreroll,
-}
-
-impl SeekAudioGateStatus {
-    /// Возвращает `true`, только если status не блокирует seek commit.
-    const fn is_ready(self) -> bool {
-        matches!(self, Self::Ready)
-    }
-
-    /// Мапит audio-gate status в diagnostics blocker без потери причины.
-    const fn blocker(self) -> Option<SeekProgressBlocker> {
-        match self {
-            Self::Ready => None,
-            Self::WaitingForClear => Some(SeekProgressBlocker::WaitingForAudioClear),
-            Self::WaitingForDecoder => Some(SeekProgressBlocker::WaitingForAudioDecoder),
-            Self::WaitingForOutput => Some(SeekProgressBlocker::WaitingForAudioOutput),
-            Self::WaitingForPreroll => Some(SeekProgressBlocker::WaitingForAudioPreroll),
-        }
-    }
-
-    /// Возвращает `true` только для blockers, которые можно отпустить soft fallback-ом.
-    const fn can_soft_fallback(self) -> bool {
-        matches!(
-            self,
-            Self::WaitingForDecoder | Self::WaitingForOutput | Self::WaitingForPreroll
-        )
-    }
 }
 
 /// Read-only срез gate-состояния, нужный только для диагностики active seek-а.
@@ -942,227 +855,6 @@ impl PlayerSession {
         true
     }
 
-    /// Обрабатывает audio packet: decode -> write to AudioOutput.
-    pub fn process_audio_packet(
-        &mut self,
-        track_id: TrackId,
-        packet_pts: Duration,
-        packet_dts: Option<Duration>,
-        packet_duration: Option<Duration>,
-        generation: u64,
-        encoded_audio_bytes: &[u8],
-    ) {
-        self.process_audio_packet_with_timing(
-            track_id,
-            packet_pts,
-            packet_dts,
-            packet_duration,
-            audio_core::AudioPacketTiming::unknown(),
-            generation,
-            encoded_audio_bytes,
-        );
-    }
-
-    /// Обрабатывает audio packet с raw container timing для decoder boundary.
-    pub(crate) fn process_audio_packet_with_timing(
-        &mut self,
-        track_id: TrackId,
-        packet_pts: Duration,
-        _packet_dts: Option<Duration>,
-        _packet_duration: Option<Duration>,
-        packet_timing: audio_core::AudioPacketTiming,
-        generation: u64,
-        encoded_audio_bytes: &[u8],
-    ) {
-        if self.pipeline.selected_audio_track_id() != Some(track_id) {
-            return;
-        }
-
-        if !self.pipeline.packet_generation_is_current(generation) {
-            return;
-        }
-
-        match self.ensure_audio_decoder_for_packet(track_id) {
-            Ok(true) => {}
-            Ok(false) => return,
-            Err(error) => {
-                self.record_recoverable_error(error);
-                return;
-            }
-        }
-
-        let encoded_audio_packet =
-            audio_core::EncodedAudioPacket::new(track_id.get(), packet_timing, encoded_audio_bytes);
-
-        if let Some(decode_result) = self.pipeline.decode_audio_packet(&encoded_audio_packet) {
-            match decode_result {
-                Ok(decoded_audio) if !decoded_audio.samples.is_empty() => {
-                    if let Err(error) = self.ensure_audio_output_for_decoded_spec(
-                        decoded_audio.sample_rate,
-                        decoded_audio.channels,
-                    ) {
-                        warn!(error = %error, "Не удалось подготовить audio output");
-                        self.disable_selected_audio_path();
-                        self.record_recoverable_error(error);
-                        return;
-                    }
-
-                    let samples = trim_decoded_audio_to_clock_base(
-                        &decoded_audio.samples,
-                        packet_pts,
-                        self.pipeline.media_clock_base(),
-                        decoded_audio.sample_rate,
-                        decoded_audio.channels,
-                    );
-                    if samples.is_empty() {
-                        return;
-                    }
-
-                    let _written_samples = self.pipeline.write_audio_output_samples(samples);
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    warn!(error = %error, "Ошибка декодирования audio packet");
-                    self.set_runtime_error(format!("Audio decode error: {error}"));
-                }
-            }
-        }
-    }
-
-    /// Создаёт deferred audio decoder при первом packet-е выбранного track-а.
-    fn ensure_audio_decoder_for_packet(&mut self, track_id: TrackId) -> PlayerResult<bool> {
-        if self.pipeline.has_audio_decoder() {
-            return Ok(true);
-        }
-
-        let Some(decoder_config) = self.pipeline.take_deferred_audio_decoder_config(track_id)
-        else {
-            return Ok(false);
-        };
-
-        let codec_id = decoder_config.codec_id().to_string();
-        match self.audio_decoder_factory.create_decoder(decoder_config) {
-            Ok(decoder) => {
-                self.pipeline.install_audio_decoder(decoder);
-                info!(
-                    track_id = %track_id,
-                    codec_id = %codec_id,
-                    "Deferred audio decoder создан по первому packet-у"
-                );
-                Ok(true)
-            }
-            Err(error) => {
-                let player_error = player_error_from_audio_decoder_factory_error(error);
-                warn!(
-                    error = %player_error,
-                    codec_id = %codec_id,
-                    "Не удалось создать deferred audio decoder"
-                );
-                self.disable_selected_audio_path();
-                Err(player_error)
-            }
-        }
-    }
-
-    /// Создаёт audio output только после того, как decoder сообщил реальный decoded spec.
-    fn ensure_audio_output_for_decoded_spec(
-        &mut self,
-        sample_rate: u32,
-        channels: u32,
-    ) -> PlayerResult<()> {
-        if self.pipeline.has_audio_output() {
-            return Ok(());
-        }
-
-        if sample_rate == 0 || channels == 0 {
-            return Err(PlayerError::new(
-                PlayerErrorKind::RuntimeError,
-                format!(
-                    "Audio decoder produced samples without complete AudioSpec: sample_rate={sample_rate}, channels={channels}"
-                ),
-            ));
-        }
-
-        let output_spec = AudioOutputSpec {
-            sample_rate,
-            channels,
-        };
-        let mut output = self
-            .audio_output_factory
-            .create_output(output_spec)
-            .map_err(|error| {
-                PlayerError::new(
-                    PlayerErrorKind::AudioDeviceUnavailable,
-                    format!("Audio output init failed: {error}"),
-                )
-            })?;
-
-        output.set_volume(self.snapshot.volume);
-        self.pipeline.install_audio_output(output);
-
-        if let Some(clock) = self.pipeline.audio_output_clock() {
-            self.pipeline.install_audio_clock(clock);
-        }
-
-        if self.playback_state() == PlaybackState::Playing {
-            if let Some(Err(error)) = self.pipeline.play_audio_output() {
-                return Err(PlayerError::new(
-                    PlayerErrorKind::AudioDeviceUnavailable,
-                    format!("Audio play after lazy output init failed: {error}"),
-                ));
-            }
-
-            let observed_at = Instant::now();
-            let audio_now = self.audio_clock_now();
-            self.pipeline
-                .reset_audio_clock_sample(audio_now, observed_at);
-        }
-
-        info!(
-            sample_rate,
-            channels, "Audio output создан после первого decoded AudioSpec"
-        );
-
-        Ok(())
-    }
-
-    /// Отключает audio path после unrecoverable lazy-init ошибки, не трогая video state.
-    fn disable_selected_audio_path(&mut self) {
-        self.pipeline.clear_audio_decoder();
-        self.pipeline.clear_audio_output();
-        self.pipeline.clear_audio_clock();
-        self.pipeline.clear_selected_audio_track();
-        self.pipeline.clear_pending_audio_packets();
-        self.snapshot.selected_tracks.audio_track = None;
-    }
-
-    /// Process pending audio packets с throttle по buffer level.
-    pub fn process_pending_audio_packets(&mut self) {
-        self.process_pending_audio_packets_with_buffer_limit(
-            PlayerTickConfig::default().audio_buffer_high_water_mark_ms,
-        );
-    }
-
-    /// Возвращает audio clock time для отображения в UI.
-    #[must_use]
-    pub fn audio_clock_secs(&self) -> Option<f64> {
-        self.pipeline
-            .audio_output_clock()
-            .map(|clock| clock.now().as_secs_f64())
-    }
-
-    /// Возвращает уровень audio buffer в миллисекундах.
-    #[must_use]
-    pub fn audio_buffer_level_ms(&self) -> Option<f64> {
-        self.pipeline.audio_output_buffer_level_ms()
-    }
-
-    /// Возвращает текущее время audio clock.
-    #[must_use]
-    pub fn audio_clock_now(&self) -> Duration {
-        self.pipeline.audio_clock_now()
-    }
-
     /// Проверяет, есть ли активный seek commit для scheduler/gate логики.
     #[must_use]
     pub(crate) const fn has_active_seek_commit(&self) -> bool {
@@ -1918,21 +1610,6 @@ impl PlayerSession {
             .is_ready()
     }
 
-    /// Возвращает typed status audio gate-а без схлопывания разных причин в `bool`.
-    fn seek_audio_gate_status(
-        &self,
-        seek_commit: SeekCommitState,
-        resume_audio_min_buffer_ms: f64,
-    ) -> SeekAudioGateStatus {
-        classify_seek_audio_gate(
-            seek_commit,
-            self.pipeline.audio_seek_runtime_state(),
-            self.pipeline.audio_buffer_clear_generation(),
-            self.audio_buffer_level_ms(),
-            resume_audio_min_buffer_ms,
-        )
-    }
-
     /// Успешно закрывает seek transaction и применяет сохранённый resume intent.
     fn complete_seek_commit(&mut self, seek_commit: SeekCommitState) {
         self.complete_final_seek_commit(seek_commit);
@@ -2254,15 +1931,6 @@ impl PlayerSession {
             !self.pipeline.has_selected_video_track() || self.pipeline.has_present_video_frame();
 
         audio_ready && video_ready
-    }
-
-    /// Возвращает typed audio readiness для autoplay без раскрытия pipeline storage.
-    fn autoplay_audio_readiness(&self, audio_preroll_target_ms: f64) -> AudioAutoplayReadiness {
-        classify_autoplay_audio_readiness(
-            self.pipeline.audio_seek_runtime_state(),
-            self.audio_buffer_level_ms(),
-            audio_preroll_target_ms,
-        )
     }
 
     /// Переводит playback в `Paused` и останавливает audio output.
@@ -2732,201 +2400,6 @@ impl PlayerSession {
     fn clear_error(&mut self) {
         self.snapshot.last_error = None;
     }
-
-    /// Выбирает audio track и откладывает decoder/output init до первого packet-а.
-    fn init_audio_pipeline(&mut self, tracks: &[TrackInfo]) {
-        let init_spec = match audio_decoder_init_spec_from_tracks(tracks) {
-            Ok(Some(init_spec)) => init_spec,
-            Ok(None) => {
-                info!("Audio track не найден — playback без звука");
-                return;
-            }
-            Err(error) => {
-                warn!(error = %error, "Audio track rejected during lazy decoder planning");
-                self.record_recoverable_error(error);
-                return;
-            }
-        };
-
-        info!(
-            track_id = %init_spec.track_id,
-            codec_id = %init_spec.codec_id,
-            sample_rate = ?init_spec.initial_sample_rate,
-            channels = ?init_spec.initial_channels,
-            "Audio track выбран; decoder/output будут созданы лениво"
-        );
-
-        let decoder_config = audio_core::AudioDecoderConfig::from_track_metadata(
-            init_spec.track_id.get(),
-            init_spec.codec_id.clone(),
-            init_spec.initial_sample_rate,
-            init_spec.initial_channels,
-        )
-        .with_codec_private(init_spec.codec_private.clone());
-
-        self.pipeline
-            .install_deferred_audio_decoder_config(decoder_config);
-
-        self.pipeline.select_audio_track(init_spec.track_id);
-        self.snapshot.selected_tracks.audio_track = Some(init_spec.track_id);
-
-        info!(
-            track_id = %init_spec.track_id,
-            "Audio pipeline подготовлен к lazy init"
-        );
-    }
-}
-
-/// Чистая политика audio gate-а для autoplay preroll.
-fn classify_autoplay_audio_readiness(
-    audio_runtime_state: AudioSeekRuntimeState,
-    audio_buffer_level_ms: Option<f64>,
-    audio_preroll_target_ms: f64,
-) -> AudioAutoplayReadiness {
-    match audio_runtime_state {
-        AudioSeekRuntimeState::NoSelectedAudio => AudioAutoplayReadiness::NoSelectedAudio,
-        AudioSeekRuntimeState::WaitingForDecoder => AudioAutoplayReadiness::WaitingForDecoder,
-        AudioSeekRuntimeState::WaitingForOutput => AudioAutoplayReadiness::WaitingForOutput,
-        AudioSeekRuntimeState::Ready => {
-            if autoplay_audio_preroll_ready(audio_buffer_level_ms, audio_preroll_target_ms) {
-                AudioAutoplayReadiness::Ready
-            } else {
-                AudioAutoplayReadiness::WaitingForPreroll
-            }
-        }
-    }
-}
-
-/// Проверяет, набрал ли output buffer минимальный audio preroll для autoplay.
-fn autoplay_audio_preroll_ready(
-    audio_buffer_level_ms: Option<f64>,
-    audio_preroll_target_ms: f64,
-) -> bool {
-    let required_preroll_ms = audio_preroll_target_ms.max(MIN_AUTOPLAY_AUDIO_PREROLL_MS);
-
-    audio_buffer_level_ms
-        .is_some_and(|level_ms| level_ms.is_finite() && level_ms >= required_preroll_ms)
-}
-
-/// Чистая политика audio gate-а для seek commit-а.
-fn classify_seek_audio_gate(
-    seek_commit: SeekCommitState,
-    audio_runtime_state: AudioSeekRuntimeState,
-    audio_buffer_clear_generation: u64,
-    audio_buffer_level_ms: Option<f64>,
-    resume_audio_min_buffer_ms: f64,
-) -> SeekAudioGateStatus {
-    if audio_runtime_state == AudioSeekRuntimeState::NoSelectedAudio {
-        return SeekAudioGateStatus::Ready;
-    }
-
-    if audio_buffer_clear_generation < seek_commit.generation {
-        return SeekAudioGateStatus::WaitingForClear;
-    }
-
-    if seek_commit.resume_intent == PlaybackResumeIntent::Pause {
-        return SeekAudioGateStatus::Ready;
-    }
-
-    match audio_runtime_state {
-        AudioSeekRuntimeState::NoSelectedAudio => SeekAudioGateStatus::Ready,
-        AudioSeekRuntimeState::WaitingForDecoder => SeekAudioGateStatus::WaitingForDecoder,
-        AudioSeekRuntimeState::WaitingForOutput => SeekAudioGateStatus::WaitingForOutput,
-        AudioSeekRuntimeState::Ready => {
-            if seek_audio_preroll_ready(audio_buffer_level_ms, resume_audio_min_buffer_ms) {
-                SeekAudioGateStatus::Ready
-            } else {
-                SeekAudioGateStatus::WaitingForPreroll
-            }
-        }
-    }
-}
-
-/// Проверяет минимальный audio buffer после seek, не считая absent output успехом.
-fn seek_audio_preroll_ready(
-    audio_buffer_level_ms: Option<f64>,
-    resume_audio_min_buffer_ms: f64,
-) -> bool {
-    let Some(audio_buffer_level_ms) = audio_buffer_level_ms else {
-        return false;
-    };
-
-    audio_buffer_level_ms.is_finite()
-        && audio_buffer_level_ms >= normalized_seek_audio_preroll_ms(resume_audio_min_buffer_ms)
-}
-
-/// Нормализует внешний config seek-preroll-а к безопасному положительному минимуму.
-fn normalized_seek_audio_preroll_ms(resume_audio_min_buffer_ms: f64) -> f64 {
-    if resume_audio_min_buffer_ms.is_finite() && resume_audio_min_buffer_ms > 0.0 {
-        return resume_audio_min_buffer_ms.max(MIN_SEEK_AUDIO_PREROLL_MS);
-    }
-
-    MIN_SEEK_AUDIO_PREROLL_MS
-}
-
-/// Находит первый audio track, даже если probe ещё не сообщил полный decoded spec.
-fn first_audio_track(tracks: &[TrackInfo]) -> Option<&TrackInfo> {
-    tracks.iter().find(|track| track.kind == TrackKind::Audio)
-}
-
-/// Создаёт чистый lazy-init plan для audio decoder-а без открытия CPAL device.
-fn audio_decoder_init_spec_from_track(track: &TrackInfo) -> PlayerResult<AudioDecoderInitSpec> {
-    if track.sample_rate == Some(0) {
-        return Err(PlayerError::new(
-            PlayerErrorKind::RuntimeError,
-            format!(
-                "Audio track `{}` содержит нулевой sample_rate для decoder init",
-                track.id
-            ),
-        ));
-    }
-
-    if track.channels == Some(0) {
-        return Err(PlayerError::new(
-            PlayerErrorKind::RuntimeError,
-            format!(
-                "Audio track `{}` содержит нулевой channel count для decoder init",
-                track.id
-            ),
-        ));
-    }
-
-    Ok(AudioDecoderInitSpec {
-        track_id: track.id,
-        codec_id: track.codec_id.clone(),
-        codec_private: track.codec_private.as_ref().map(|bytes| bytes.to_vec()),
-        initial_sample_rate: track.sample_rate,
-        initial_channels: track.channels,
-    })
-}
-
-/// Выбирает audio decoder lazy-init plan по track metadata, не создавая runtime ресурсы.
-fn audio_decoder_init_spec_from_tracks(
-    tracks: &[TrackInfo],
-) -> PlayerResult<Option<AudioDecoderInitSpec>> {
-    let Some(track) = first_audio_track(tracks) else {
-        return Ok(None);
-    };
-
-    audio_decoder_init_spec_from_track(track).map(Some)
-}
-
-/// Сохраняет typed unsupported-codec ошибку factory, не меняя остальные init errors.
-fn player_error_from_audio_decoder_factory_error(error: anyhow::Error) -> PlayerError {
-    if matches!(
-        error.downcast_ref::<audio_core::AudioDecoderError>(),
-        Some(audio_core::AudioDecoderError::UnsupportedCodec { .. })
-    ) {
-        return PlayerError::new(
-            PlayerErrorKind::UnsupportedAudioCodec,
-            format!("Audio error: {error}"),
-        );
-    }
-
-    PlayerError::new(
-        PlayerErrorKind::RuntimeError,
-        format!("Audio error: {error}"),
-    )
 }
 
 impl Default for PlayerSession {
@@ -2950,41 +2423,6 @@ impl Default for PlayerSession {
             seek_eof_fallback_video_position: None,
         }
     }
-}
-
-/// Возвращает срез audio samples, который начинается не раньше текущей media clock base.
-fn trim_decoded_audio_to_clock_base(
-    samples: &[f32],
-    packet_pts: Duration,
-    media_clock_base: Duration,
-    sample_rate: u32,
-    channels: u32,
-) -> &[f32] {
-    if packet_pts >= media_clock_base || sample_rate == 0 || channels == 0 {
-        return samples;
-    }
-
-    let channel_count = channels as usize;
-    let frame_count = samples.len() / channel_count;
-    if frame_count == 0 {
-        return &[];
-    }
-
-    let trim_duration = media_clock_base.saturating_sub(packet_pts);
-    let trim_frames = duration_to_audio_frames(trim_duration, sample_rate);
-    if trim_frames >= frame_count {
-        return &[];
-    }
-
-    let trim_samples = trim_frames.saturating_mul(channel_count);
-    &samples[trim_samples..]
-}
-
-/// Конвертирует duration в количество audio frames с округлением вниз.
-fn duration_to_audio_frames(duration: Duration, sample_rate: u32) -> usize {
-    let frames = duration.as_nanos().saturating_mul(u128::from(sample_rate)) / 1_000_000_000u128;
-
-    frames.min(usize::MAX as u128) as usize
 }
 
 /// Мапит ошибку demux seek в player error без смешивания unavailable/timeout/demux.

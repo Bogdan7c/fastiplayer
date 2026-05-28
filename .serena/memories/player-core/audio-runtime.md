@@ -1,0 +1,8 @@
+# Player Core Audio Runtime
+
+- Audio runtime orchestration is extracted to `crates/player-core/src/session/audio_runtime.rs` under the `session` boundary.
+- The module owns internal audio decoder init spec planning, lazy decoder creation from `AudioDecoderFactory`, lazy output creation from `AudioOutputFactory`, audio packet decode/write processing, autoplay audio readiness, seek audio gate classification helpers, audio high-water normalization, audio clock/buffer accessors, `disable_selected_audio_path`, and `init_audio_pipeline`.
+- `audio-core` remains the neutral contract boundary. `player-core` still stores factory trait objects and uses `audio_core::AudioDecoderConfig`, `EncodedAudioPacket`, `AudioOutputSpec`, and trait-object output/clock contracts without depending on the concrete `audio` crate.
+- Output creation must remain lazy until the decoder returns a decoded audio spec. Unsupported codec factory errors are mapped to `PlayerErrorKind::UnsupportedAudioCodec` and recorded as recoverable when reached through packet processing; output factory/play failures map to `AudioDeviceUnavailable` and remain recoverable in the existing lazy-init paths.
+- `session/tick/mod.rs` keeps scheduling/demux admission policy, but pending audio packet processing is implemented by audio runtime through `PlayerSession::process_pending_audio_packets_with_buffer_limit`.
+- Focused tests live in `crates/player-core/src/session/tests/audio_runtime.rs`; related audio gate distinction coverage also exists in `session/tests/seek_transaction.rs` and `session/tests/seek_regressions.rs`. Usual verification for this boundary is `cargo test -p player-core audio_runtime`, `cargo test -p player-core audio`, `cargo check -p player-core`, and `cargo fmt --all --check`.

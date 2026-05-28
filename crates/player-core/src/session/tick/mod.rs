@@ -16,7 +16,7 @@ use media_core::{DemuxReadEvent, PacketKeyframe, TrackId, TrackKind, TrackTimest
 use rustiplayer_config::AppConfig;
 use tracing::{debug, trace, warn};
 
-use super::PlayerSession;
+use super::{PlayerSession, audio_runtime::sanitize_audio_high_water_mark};
 use crate::{
     DecodeSendError, DecodeThreadError, PendingAudioPacket, PendingVideoPacket,
     PipelineLatencyStage, PipelinePauseReason, PlaybackPipeline, PlaybackState, PlayerDecodePacket,
@@ -595,35 +595,6 @@ impl PlayerSession {
         tick_result
     }
 
-    /// Обрабатывает pending audio packets до достижения high-water mark audio buffer.
-    pub(crate) fn process_pending_audio_packets_with_buffer_limit(
-        &mut self,
-        high_water_mark_ms: f64,
-    ) {
-        let high_water_mark_ms = sanitize_audio_high_water_mark(high_water_mark_ms);
-
-        if self.audio_buffer_level_ms().unwrap_or(0.0) > high_water_mark_ms {
-            return;
-        }
-
-        while let Some(packet) = self.pipeline.pop_pending_audio_packet_front() {
-            if self.audio_buffer_level_ms().unwrap_or(0.0) > high_water_mark_ms {
-                self.pipeline.push_pending_audio_packet_front(packet);
-                break;
-            }
-
-            self.process_audio_packet_with_timing(
-                packet.track_id,
-                packet.pts,
-                packet.dts,
-                packet.duration,
-                packet.timing,
-                packet.generation,
-                &packet.encoded_bytes,
-            );
-        }
-    }
-
     /// Обновляет playback position один раз за tick.
     fn update_position_for_tick(&mut self, now: Instant) {
         let eof_audio_tail_drain_without_seek =
@@ -638,15 +609,6 @@ impl PlayerSession {
                 .note_audio_clock_sample(self.audio_clock_now(), now);
         }
         self.update_current_position(playback_position);
-    }
-}
-
-/// Нормализует high-water mark, чтобы внешний некорректный config не ломал audio throttle.
-fn sanitize_audio_high_water_mark(high_water_mark_ms: f64) -> f64 {
-    if high_water_mark_ms.is_finite() && high_water_mark_ms > 0.0 {
-        high_water_mark_ms
-    } else {
-        PlayerTickConfig::default().audio_buffer_high_water_mark_ms
     }
 }
 

@@ -69,6 +69,22 @@ fn audio_decoder_init_spec_returns_none_when_audio_track_is_absent() {
 }
 
 #[test]
+fn absent_audio_track_does_not_create_decoder_or_output() {
+    let (decoder_factory, decoder_factory_handle) = ScriptedAudioDecoderFactory::success();
+    let (output_factory, output_factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
+    let mut session = PlayerSession::with_audio_factories(decoder_factory, output_factory);
+
+    session.init_audio_pipeline(&[fake_track(1, TrackKind::Video)]);
+
+    assert_eq!(decoder_factory_handle.created_configs(), Vec::new());
+    assert_eq!(output_factory_handle.create_count(), 0);
+    assert!(session.pipeline.selected_audio_track_id().is_none());
+    assert!(!session.pipeline.has_deferred_audio_decoder_config());
+    assert!(!session.pipeline.has_audio_decoder());
+    assert!(!session.pipeline.has_audio_output());
+}
+
+#[test]
 fn audio_decoder_init_spec_rejects_zero_probe_parameters() {
     let mut invalid_audio_track = fake_audio_track_with_codec(2, "A_OPUS");
     invalid_audio_track.sample_rate = Some(0);
