@@ -100,14 +100,19 @@ absent resource, active fake/stub, typed error/no-op и accounting edge cases.
 - `crates/player-core/src/worker.rs` около 2.2k строк: worker runtime и тесты
   ещё плотные; это отдельный future boundary, не часть текущего cleanup.
 
-## `app-egui::AppState::player_snapshot()`
+## `app-egui` player snapshot boundary
 
-Метод не является чистым getter-ом: он читает latest snapshot, обновляет cache и
-публикует snapshot в desktop integration. Это практично для текущего shell, но
-граница "read snapshot" и "publish desktop state" смешана.
+Resolved/current invariant: `AppState` больше не предоставляет mutable
+getter-like `player_snapshot()`. Чтение worker snapshot и публикация desktop
+state разделены на явные boundary methods.
 
-Следующий шаг: разделить `refresh_player_snapshot()` и `publish_desktop_snapshot()`
-или сделать явный per-frame shell context.
+- `refresh_player_snapshot()` читает latest snapshot из `PlayerWorker`,
+  обновляет redraw cache `last_player_snapshot` и не публикует desktop state.
+- `publish_desktop_snapshot(&PlayerSnapshot)` публикует уже выбранный snapshot в
+  desktop integration и не читает worker snapshot.
+- `render_frame` создаёт один `AppFrameContext` на кадр и передаёт его snapshot
+  в UI, renderer preparation и desktop integration, чтобы разные consumers не
+  расходились внутри одного frame-а.
 
 ## `app-egui` shell decomposition
 

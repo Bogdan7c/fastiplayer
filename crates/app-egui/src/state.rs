@@ -1761,7 +1761,8 @@ mod tests {
     use media_core::MediaTime;
     use player_core::{
         MediaOpenRequest, MediaSource, MediaSummary, PlaybackResumeIntent, PlaybackState,
-        PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, SeekCommitInfo, SeekRequest,
+        PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot, SeekCommitInfo,
+        SeekRequest,
     };
     use render_core::{
         ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
@@ -1770,13 +1771,30 @@ mod tests {
     use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
 
     use super::{
-        AppState, CachedPresentFrameDiscardReason, CachedPresentFrameValidationState,
-        PresentFrameIdentity, TextureBusyFallbackRejectReason, TextureBusyFallbackReuseState,
-        cached_present_frame_discard_reason_for_player_event, cached_present_frame_stale_reason,
-        texture_busy_fallback_can_reuse_previous_frame, texture_busy_fallback_reject_reason,
-        timeline_command_from_action,
+        AppFrameContext, AppState, CachedPresentFrameDiscardReason,
+        CachedPresentFrameValidationState, PresentFrameIdentity, TextureBusyFallbackRejectReason,
+        TextureBusyFallbackReuseState, cached_present_frame_discard_reason_for_player_event,
+        cached_present_frame_stale_reason, texture_busy_fallback_can_reuse_previous_frame,
+        texture_busy_fallback_reject_reason, timeline_command_from_action,
     };
     use crate::ui::timeline::TimelineAction;
+
+    /// Возвращает участок source между двумя маркерами для architecture guard tests.
+    fn source_section_between<'source>(
+        source_code: &'source str,
+        start_marker: &str,
+        end_marker: &str,
+    ) -> &'source str {
+        let section_start = source_code
+            .find(start_marker)
+            .unwrap_or_else(|| panic!("Не найден начальный source marker: {start_marker}"));
+        let section_after_start = &source_code[section_start..];
+        let section_end = section_after_start
+            .find(end_marker)
+            .unwrap_or_else(|| panic!("Не найден конечный source marker: {end_marker}"));
+
+        &section_after_start[..section_end]
+    }
 
     /// Создаёт decoded frame для pure identity tests без GPU lease-а.
     fn decoded_frame_for_identity_tests(
@@ -1872,6 +1890,94 @@ mod tests {
         assert!(!include_str!("state.rs").contains(forbidden_member));
         assert!(!include_str!("main.rs").contains(forbidden_member));
         assert!(!include_str!("app_shell/mod.rs").contains(forbidden_member));
+    }
+
+    /// Фиксирует явную границу refresh/publish вместо getter-like API с side effects.
+    #[test]
+    fn app_state_player_snapshot_boundary_stays_explicit() {
+        let state_source = include_str!("state.rs");
+        let frame_prepare_source = include_str!("frame_prepare.rs");
+        let removed_getter_signature = concat!("fn ", "player_snapshot", "(&mut self)");
+        let refresh_signature = concat!(
+            "pub(crate) fn ",
+            "refresh_player_snapshot",
+            "(&mut self) -> PlayerSnapshot"
+        );
+        let publish_signature = concat!(
+            "pub(crate) fn ",
+            "publish_desktop_snapshot",
+            "(&self, player_snapshot: &PlayerSnapshot)"
+        );
+
+        assert!(
+            !state_source.contains(removed_getter_signature),
+            "AppState не должен возвращать player snapshot через mutable getter-like API"
+        );
+        assert!(
+            state_source.contains(refresh_signature),
+            "AppState должен явно читать worker snapshot через refresh_player_snapshot()"
+        );
+        assert!(
+            state_source.contains(publish_signature),
+            "AppState должен явно публиковать desktop snapshot через publish_desktop_snapshot()"
+        );
+
+        let refresh_section = source_section_between(
+            state_source,
+            refresh_signature,
+            concat!("pub fn ", "wants_continuous_redraw", "(&self) -> bool"),
+        );
+        assert!(
+            !refresh_section.contains("publish_desktop_snapshot"),
+            "refresh_player_snapshot() не должен публиковать desktop state"
+        );
+        assert!(
+            !refresh_section.contains("desktop_integration"),
+            "refresh_player_snapshot() не должен напрямую трогать desktop integration"
+        );
+
+        let publish_section = source_section_between(
+            state_source,
+            publish_signature,
+            concat!("fn ", "log_desktop_integration_events"),
+        );
+        assert!(
+            !publish_section.contains("latest_snapshot"),
+            "publish_desktop_snapshot() не должен читать worker snapshot"
+        );
+        assert!(
+            !publish_section.contains("player_worker"),
+            "publish_desktop_snapshot() не должен зависеть от worker storage"
+        );
+
+        let begin_frame_position = frame_prepare_source
+            .find("let frame_context = app_state.begin_frame_context(renderer.diagnostics());")
+            .expect("render_frame должен создавать AppFrameContext перед публикацией");
+        let publish_position = frame_prepare_source
+            .find("app_state.publish_desktop_snapshot(frame_context.player_snapshot());")
+            .expect("render_frame должен явно публиковать snapshot текущего frame-а");
+        let ui_prepare_position = frame_prepare_source
+            .find("let prepared_ui_frame = prepare_ui_frame(window, app_state, egui_input, &frame_context);")
+            .expect("render_frame должен готовить UI через тот же AppFrameContext");
+
+        assert!(
+            begin_frame_position < publish_position && publish_position < ui_prepare_position,
+            "render_frame должен публиковать snapshot из AppFrameContext до UI/render подготовки"
+        );
+    }
+
+    /// Проверяет, что AppFrameContext отдаёт уже зафиксированный snapshot по ссылке.
+    #[test]
+    fn app_frame_context_returns_fixed_player_snapshot_reference() {
+        let frame_context = AppFrameContext {
+            player_snapshot: PlayerSnapshot::empty(),
+            render_diagnostics: RenderDiagnostics::default(),
+        };
+
+        assert!(std::ptr::eq(
+            frame_context.player_snapshot(),
+            &frame_context.player_snapshot
+        ));
     }
 
     /// Проверяет pure-classifier stale cache без создания GPU lease-а.

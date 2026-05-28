@@ -50,7 +50,6 @@
   открытым полевым storage boundary.
 - Временные size exceptions в `player-core`: `pipeline.rs`, `session/tick/mod.rs`
   и `worker.rs` пока выше ориентира 2k строк.
-- `AppState::player_snapshot()` имеет side effect публикации desktop snapshot.
 - YouTube service API ещё не capability-aware.
 - `webm-demux` грубо классифицирует non-audio tracks как video.
 
