@@ -10,7 +10,7 @@
 //! через boundary methods `AppState`, `Renderer` и startup/redraw helpers.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::render_settings::{
     color_pipeline_settings_from_config, hdr_to_sdr_settings_from_config,
@@ -21,21 +21,17 @@ use render_wgpu_shell::Renderer;
 use rustiplayer_config::AppConfig;
 use tracing::{debug, info, instrument};
 use winit::{
-    application::ApplicationHandler,
-    dpi::PhysicalSize,
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, ControlFlow},
-    window::Window,
+    application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
+    event_loop::ActiveEventLoop, window::Window,
 };
 
 use crate::frame_prepare::render_frame;
-use crate::redraw_pacing::{RedrawPacing, should_request_redraw_after_window_event};
-use crate::startup_media::{InitialMedia, StartupMediaController, YOUTUBE_STARTUP_POLL_INTERVAL};
+use crate::redraw_pacing::{
+    BackgroundPollScheduler, RedrawControlAction, should_request_redraw_after_window_event,
+};
+use crate::startup_media::{InitialMedia, StartupMediaController};
 use crate::state::AppState;
 use crate::telemetry::Telemetry;
-
-/// Единый интервал polling-а shell background jobs, когда playback не даёт continuous redraw.
-const BACKGROUND_JOB_POLL_INTERVAL: Duration = YOUTUBE_STARTUP_POLL_INTERVAL;
 
 /// Winit shell приложения.
 ///
@@ -64,8 +60,8 @@ pub(crate) struct AppShell {
     /// Валидированная пользовательская конфигурация.
     app_config: AppConfig,
 
-    /// Ближайшее время, когда нужно снова проверить shell background jobs.
-    next_background_job_poll_at: Option<Instant>,
+    /// Scheduler idle wakeup-ов для shell background jobs.
+    background_poll_scheduler: BackgroundPollScheduler,
 }
 
 impl AppShell {
@@ -84,7 +80,7 @@ impl AppShell {
             telemetry: Arc::new(Telemetry::new()),
             startup_media: StartupMediaController::new(initial_media, startup_error),
             app_config,
-            next_background_job_poll_at: None,
+            background_poll_scheduler: BackgroundPollScheduler::new(),
         }
     }
 
@@ -147,7 +143,6 @@ impl AppShell {
             .start_pending_initial_media(&mut app_state, &self.app_config);
         self.startup_media.poll_youtube_job(&mut app_state);
         app_state.poll_local_file_open_job();
-        self.refresh_background_job_poll_deadline(false);
 
         // Shell получает read-only snapshot без доступа к mutable playback internals.
         let _player_snapshot = app_state.player_snapshot();
@@ -171,48 +166,19 @@ impl AppShell {
         self.renderer = None;
     }
 
-    /// Сбрасывает deadline polling-а, когда shell background jobs уже завершены.
-    fn refresh_background_job_poll_deadline(&mut self, has_pending_local_file_open: bool) {
-        if !self.startup_media.has_pending_youtube_job() && !has_pending_local_file_open {
-            self.next_background_job_poll_at = None;
-        }
-    }
-
-    /// Применяет pacing после render pass-а.
-    fn apply_redraw_pacing(
-        &mut self,
+    /// Применяет уже принятое scheduler-ом решение к winit и окну.
+    fn apply_redraw_control_action(
         event_loop: &ActiveEventLoop,
-        window: &Window,
-        pacing: RedrawPacing,
+        window: Option<&Window>,
+        action: RedrawControlAction,
     ) {
-        if pacing.wants_continuous_redraw() {
-            event_loop.set_control_flow(ControlFlow::Poll);
-            window.request_redraw();
-            return;
+        event_loop.set_control_flow(action.control_flow);
+
+        if action.request_redraw {
+            if let Some(window) = window {
+                window.request_redraw();
+            }
         }
-
-        if pacing.wants_immediate_redraw() {
-            event_loop.set_control_flow(ControlFlow::Wait);
-            window.request_redraw();
-            return;
-        }
-
-        self.configure_idle_control_flow(event_loop);
-    }
-
-    /// Настраивает idle ожидание: обычный Wait или timed wakeup для background jobs.
-    fn configure_idle_control_flow(&mut self, event_loop: &ActiveEventLoop) {
-        if !self.has_pending_background_job() {
-            self.next_background_job_poll_at = None;
-            event_loop.set_control_flow(ControlFlow::Wait);
-            return;
-        }
-
-        let deadline = self
-            .next_background_job_poll_at
-            .unwrap_or_else(|| Instant::now() + BACKGROUND_JOB_POLL_INTERVAL);
-        self.next_background_job_poll_at = Some(deadline);
-        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
 
     /// Возвращает `true`, если shell уже держит continuous redraw из-за playback.
@@ -349,11 +315,14 @@ impl ApplicationHandler for AppShell {
                 self.startup_media.poll_youtube_job(app_state);
                 app_state.poll_local_file_open_job();
                 let pacing = render_frame(&self.telemetry, &window, renderer, app_state);
-                let has_pending_local_file_open = app_state.has_pending_local_file_open();
-                if !self.startup_media.has_pending_youtube_job() && !has_pending_local_file_open {
-                    self.next_background_job_poll_at = None;
-                }
-                self.apply_redraw_pacing(event_loop, &window, pacing);
+                let has_pending_background_job = self.startup_media.has_pending_youtube_job()
+                    || app_state.has_pending_local_file_open();
+                let action = self.background_poll_scheduler.after_render(
+                    pacing,
+                    has_pending_background_job,
+                    Instant::now(),
+                );
+                Self::apply_redraw_control_action(event_loop, Some(&window), action);
                 return;
             }
 
@@ -367,28 +336,15 @@ impl ApplicationHandler for AppShell {
 
     /// Перед idle wait будит shell только для timed background job polling-а.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.has_continuous_redraw() {
-            event_loop.set_control_flow(ControlFlow::Poll);
-            return;
-        }
-
-        if !self.has_pending_background_job() {
-            self.next_background_job_poll_at = None;
-            event_loop.set_control_flow(ControlFlow::Wait);
-            return;
-        }
-
+        let has_continuous_redraw = self.has_continuous_redraw();
+        let has_pending_background_job = self.has_pending_background_job();
         let now = Instant::now();
-        let deadline = self.next_background_job_poll_at.unwrap_or(now);
-        if now >= deadline {
-            if let Some(window) = &self.window {
-                window.request_redraw();
-            }
-            self.next_background_job_poll_at = Some(now + BACKGROUND_JOB_POLL_INTERVAL);
-        }
+        let action = self.background_poll_scheduler.before_idle_wait(
+            has_continuous_redraw,
+            has_pending_background_job,
+            now,
+        );
 
-        if let Some(next_deadline) = self.next_background_job_poll_at {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(next_deadline));
-        }
+        Self::apply_redraw_control_action(event_loop, self.window.as_deref(), action);
     }
 }
