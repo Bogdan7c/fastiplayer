@@ -6,22 +6,24 @@
 
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
-use codec_core::{
-    VideoCodec, VideoDecodeRequirement, VideoRequirementProbe, VideoRequirementRejection,
-    probe_video_packet_requirement, resolve_video_metadata,
-    video_requirement_needs_packet_refinement,
-};
 use media_core::{DemuxReadEvent, PacketKeyframe, TrackId, TrackKind, TrackTimestamp};
 use rustiplayer_config::AppConfig;
 use tracing::{debug, trace, warn};
 
 use super::{PlayerSession, audio_runtime::sanitize_audio_high_water_mark};
 use crate::{
-    DecodeSendError, DecodeThreadError, PendingAudioPacket, PendingVideoPacket,
-    PipelineLatencyStage, PipelinePauseReason, PlaybackPipeline, PlaybackState, PlayerDecodePacket,
-    PlayerError, PlayerErrorKind, WorkerFrameTimingSnapshot, WorkerWakeupDiagnosticsSnapshot,
-    WorkerWakeupReason,
+    PendingAudioPacket, PendingVideoPacket, PipelineLatencyStage, PipelinePauseReason,
+    PlaybackState, PlayerError, PlayerErrorKind, WorkerFrameTimingSnapshot,
+    WorkerWakeupDiagnosticsSnapshot, WorkerWakeupReason,
+};
+
+mod video_decoder_io;
+
+use video_decoder_io::{
+    VideoDecoderDecodeAheadLimits, VideoDecoderIoContext, VideoDecoderIoLimits,
+    VideoDecoderTextureLimits, can_send_video_packet_to_decoder, drain_decoded_video_frames,
+    has_texture_capacity_for_decode, run_video_decoder_io, send_pending_video_packets_to_decoder,
+    texture_capacity_backpressure_reason,
 };
 
 /// Контекст одного playback tick.
@@ -966,7 +968,7 @@ fn can_read_next_demux_packet_with_audio_priority(
         return audio_priority_pending_video_limit_allows_demux(session, tick_config);
     }
 
-    if !has_texture_capacity_for_decode(session, tick_config) {
+    if !has_texture_capacity_for_decode(session, video_decoder_texture_limits(tick_config)) {
         return false;
     }
 
@@ -992,7 +994,9 @@ fn demux_backpressure_reason(
             .then_some(PipelinePauseReason::WaitingForDemuxAudioPriority);
     }
 
-    if let Some(reason) = texture_capacity_backpressure_reason(session, tick_config) {
+    if let Some(reason) =
+        texture_capacity_backpressure_reason(session, video_decoder_texture_limits(tick_config))
+    {
         return Some(reason);
     }
 
@@ -1002,65 +1006,6 @@ fn demux_backpressure_reason(
 
     (!seek_admission_active(session) && available_video_present_slots(session, tick_config) == 0)
         .then_some(PipelinePauseReason::WaitingForPresentQueue)
-}
-
-/// Проверяет, можно ли отправить video packet в decoder thread без чрезмерного decode-ahead.
-fn can_send_video_packet_to_decoder(
-    session: &PlayerSession,
-    tick_config: &PlayerTickConfig,
-    packet_pts: Duration,
-    decode_ahead_limit: Duration,
-) -> bool {
-    if !has_texture_capacity_for_decode(session, tick_config) {
-        return false;
-    }
-
-    if !session.pipeline.has_selected_audio_track() || !session.pipeline.has_audio_clock() {
-        return true;
-    }
-
-    let media_audio_now = session.pipeline.media_position_from_audio_clock();
-    let packet_lead = packet_pts.saturating_sub(media_audio_now);
-
-    packet_lead <= decode_ahead_limit.min(video_decode_ahead_limit(tick_config))
-}
-
-/// Проверяет запас texture slots для ещё одного decoded frame.
-fn has_texture_capacity_for_decode(
-    session: &PlayerSession,
-    tick_config: &PlayerTickConfig,
-) -> bool {
-    texture_capacity_backpressure_reason(session, tick_config).is_none()
-}
-
-/// Диагностирует, почему texture/surface pool не даёт отправить новый packet.
-fn texture_capacity_backpressure_reason(
-    session: &PlayerSession,
-    tick_config: &PlayerTickConfig,
-) -> Option<PipelinePauseReason> {
-    let stats = session.pipeline.video_decoder_resource_snapshot()?;
-
-    let available_slots = stats.available_slots();
-    if available_slots > texture_slot_min_watermark(tick_config) {
-        return None;
-    }
-
-    trace!(
-        texture_slots = stats.slots,
-        texture_in_use = stats.in_use,
-        texture_capacity = stats.capacity,
-        available_slots,
-        reserve = texture_slot_min_watermark(tick_config),
-        waiting_gpu_completion = stats.waiting_gpu_completion,
-        waiting_decoder_reuse = stats.waiting_decoder_reuse,
-        "Video backpressure: waiting for texture slots"
-    );
-
-    if stats.waiting_gpu_completion > 0 || stats.waiting_decoder_reuse > 0 {
-        Some(PipelinePauseReason::WaitingForGpuRelease)
-    } else {
-        Some(PipelinePauseReason::WaitingForFreeSurface)
-    }
 }
 
 /// Возвращает количество свободных мест в presentation queue.
@@ -1105,36 +1050,6 @@ fn normal_present_queue_blocks_video_admission(
         && available_video_present_slots(session, tick_config) == 0
 }
 
-/// Возвращает bounded budget приёма decoded frames для текущего admission mode.
-fn decoded_frame_receive_budget(
-    session: &PlayerSession,
-    tick_config: &PlayerTickConfig,
-    max_frames_to_drain: usize,
-) -> usize {
-    if seek_admission_active(session) {
-        return max_frames_to_drain;
-    }
-
-    if session.can_present_video() {
-        return available_video_present_slots(session, tick_config).min(max_frames_to_drain);
-    }
-
-    max_frames_to_drain
-}
-
-/// Возвращает bounded budget отправки packets в decoder для текущего admission mode.
-fn video_packet_send_present_admission_budget(
-    session: &PlayerSession,
-    tick_config: &PlayerTickConfig,
-    max_packets_to_send: usize,
-) -> usize {
-    if seek_admission_active(session) {
-        return max_packets_to_send;
-    }
-
-    available_video_present_slots(session, tick_config).min(max_packets_to_send)
-}
-
 /// Возвращает безопасный максимум decode-ahead относительно audio clock.
 fn video_decode_ahead_limit(tick_config: &PlayerTickConfig) -> Duration {
     tick_config
@@ -1162,553 +1077,39 @@ fn texture_slot_target_watermark(tick_config: &PlayerTickConfig) -> usize {
         .max(texture_slot_min_watermark(tick_config))
 }
 
+/// Формирует typed texture limits для decoder I/O без передачи всего config-а.
+fn video_decoder_texture_limits(tick_config: &PlayerTickConfig) -> VideoDecoderTextureLimits {
+    VideoDecoderTextureLimits::new(texture_slot_min_watermark(tick_config))
+}
+
+/// Формирует typed decode-ahead limits для конкретного режима admission.
+fn video_decoder_decode_ahead_limits(
+    tick_config: &PlayerTickConfig,
+    admission_limit: Duration,
+) -> VideoDecoderDecodeAheadLimits {
+    VideoDecoderDecodeAheadLimits::new(admission_limit, video_decode_ahead_limit(tick_config))
+}
+
+/// Формирует полный набор лимитов для одного decoder I/O прохода.
+fn video_decoder_io_limits(
+    tick_config: &PlayerTickConfig,
+    max_frames_to_drain: usize,
+    max_packets_to_send: usize,
+    decode_ahead_limit: Duration,
+) -> VideoDecoderIoLimits {
+    VideoDecoderIoLimits::new(
+        max_frames_to_drain,
+        max_packets_to_send,
+        video_present_queue_limit(tick_config),
+        video_decoder_texture_limits(tick_config),
+        video_decoder_decode_ahead_limits(tick_config, decode_ahead_limit),
+    )
+}
+
 /// Возвращает достижимый video preroll для seek resume с учётом размера presentation queue.
 #[cfg(test)]
 fn effective_seek_resume_video_min_ready_frames(tick_config: &PlayerTickConfig) -> usize {
     tick_config.effective_seek_resume_video_min_ready_frames()
-}
-
-/// Кладёт decoded frame в presentation queue, сохраняя фиксированный размер очереди.
-fn enqueue_decoded_video_frame(
-    session: &mut PlayerSession,
-    tick_config: &PlayerTickConfig,
-    tick_result: &mut PlayerTickResult,
-    frame: video_core::DecodedFrame,
-) {
-    let queue_limit = video_present_queue_limit(tick_config);
-
-    while session.pipeline.video_present_queue_len() >= queue_limit {
-        let Some(stale_frame) = session.pipeline.pop_queued_video_frame_front() else {
-            break;
-        };
-
-        release_video_texture(session, stale_frame.texture_handle);
-        record_video_drop(
-            session,
-            tick_result,
-            stale_frame.pts,
-            PlayerVideoDropReason::QueueOverflow,
-        );
-        tracing::debug!(
-            pts_ms = stale_frame.pts.as_millis(),
-            queue_limit,
-            "Dropping oldest queued video frame before enqueue"
-        );
-    }
-
-    let frame_pts = frame.pts;
-    let frame_generation = frame.generation;
-    session.pipeline.enqueue_queued_video_frame(frame);
-    session.note_queued_video_frame_for_seek_trace(frame_pts, frame_generation);
-}
-
-/// Забирает fatal decoder-thread error и переводит его в состояние player session.
-fn drain_video_decoder_thread_error(session: &mut PlayerSession) -> bool {
-    let mut fatal_decoder_error = None;
-
-    while let Some(error) = session.pipeline.try_recv_video_decoder_error() {
-        fatal_decoder_error = Some(error);
-    }
-
-    let Some(error) = fatal_decoder_error else {
-        return false;
-    };
-
-    session.pipeline.clear_pending_video_packets();
-    session.pipeline.reset_video_decode_in_flight();
-    session.mark_fatal_error(player_error_from_decode_thread_error(&error));
-    true
-}
-
-/// Забирает typed diagnostics events от decoder/backend boundary.
-fn drain_video_decoder_thread_diagnostics(
-    session: &mut PlayerSession,
-    tick_result: &mut PlayerTickResult,
-) {
-    loop {
-        let diagnostic_event = session.pipeline.try_recv_video_decoder_diagnostic_event();
-        let Some(event) = diagnostic_event else {
-            break;
-        };
-        match event {
-            video_core::VideoDecoderDiagnosticEvent::FrameDropped { pts, reason } => {
-                let drop_reason = match reason {
-                    video_core::VideoDecoderDropReason::ReadyQueueOverflow => {
-                        PlayerVideoDropReason::QueueOverflow
-                    }
-                };
-                record_video_drop(session, tick_result, pts, drop_reason);
-            }
-            video_core::VideoDecoderDiagnosticEvent::DecodedFramePublishPressure { pressure } => {
-                session.record_decoded_frame_publish_pressure(pressure);
-            }
-        }
-    }
-}
-
-/// Мапит fail-closed ошибку decoder thread в player error model.
-fn player_error_from_decode_thread_error(error: &DecodeThreadError) -> PlayerError {
-    PlayerError::new(
-        PlayerErrorKind::RuntimeError,
-        format!("Video decoder thread failed: {}", error.message()),
-    )
-}
-
-/// Забирает готовые кадры из decoder thread и кладёт их в presentation queue.
-fn drain_decoded_video_frames(
-    session: &mut PlayerSession,
-    tick_config: &PlayerTickConfig,
-    tick_result: &mut PlayerTickResult,
-    max_frames_to_drain: usize,
-    catch_up_deadline: Option<Instant>,
-) -> usize {
-    drain_completed_video_decode_packets(session);
-    drain_video_decoder_thread_diagnostics(session, tick_result);
-
-    if drain_video_decoder_thread_error(session) {
-        return 0;
-    }
-
-    if !session.pipeline.can_receive_decoded_video_frames() {
-        if !session.pipeline.pending_video_packet_is_empty() {
-            tracing::warn!(
-                count = session.pipeline.pending_video_packet_len(),
-                "No video decoder thread — dropping video packets"
-            );
-        }
-        while let Some(packet) = session.pipeline.pop_pending_video_packet_front() {
-            record_video_drop(
-                session,
-                tick_result,
-                packet.pts,
-                PlayerVideoDropReason::DecoderStarvation,
-            );
-        }
-        session.pipeline.reset_video_decode_in_flight();
-        return 0;
-    }
-
-    let playback_can_present = session.can_present_video();
-    let receive_budget = decoded_frame_receive_budget(session, tick_config, max_frames_to_drain);
-
-    if receive_budget == 0 {
-        return 0;
-    }
-
-    let mut decoded_frames = Vec::new();
-    for _ in 0..receive_budget {
-        if catch_up_deadline_reached(catch_up_deadline) {
-            break;
-        }
-        let Some(frame) = session.pipeline.try_recv_decoded_video_frame() else {
-            break;
-        };
-        decoded_frames.push(frame);
-    }
-
-    if drain_video_decoder_thread_error(session) {
-        for frame in decoded_frames {
-            release_video_texture(session, frame.texture_handle);
-        }
-        return 0;
-    }
-    drain_video_decoder_thread_diagnostics(session, tick_result);
-
-    let drained_frame_count = decoded_frames.len();
-    for frame in decoded_frames {
-        if !session
-            .pipeline
-            .packet_generation_is_current(frame.generation)
-        {
-            release_video_texture(session, frame.texture_handle);
-            record_video_drop(
-                session,
-                tick_result,
-                frame.pts,
-                PlayerVideoDropReason::StaleGeneration,
-            );
-            tracing::debug!(
-                frame_generation = frame.generation,
-                pipeline_generation = session.pipeline.seek_generation(),
-                pts_ms = frame.pts.as_millis(),
-                "Dropping decoded video frame from stale seek generation"
-            );
-            continue;
-        }
-
-        session.note_decoded_video_frame_for_seek_trace(frame.pts, frame.generation);
-        tracing::debug!(
-            generation = frame.generation,
-            pts_ms = frame.pts.as_millis(),
-            format = %frame.format,
-            bit_depth = %frame.bit_depth,
-            memory_path = %frame.memory_path,
-            width = frame.width,
-            height = frame.height,
-            "Video frame decoded"
-        );
-        tick_result.record_decoded_video_frame();
-        session.record_decoded_frame_diagnostics(&frame);
-
-        let frame_pts = frame.pts;
-        if session.should_drop_decoded_frame_for_seek(frame_pts) {
-            if session.can_keep_seek_preroll_fallback(frame_pts) {
-                replace_seek_preroll_fallback_frame(session, tick_result, frame);
-            } else {
-                release_video_texture(session, frame.texture_handle);
-                record_video_drop(
-                    session,
-                    tick_result,
-                    frame_pts,
-                    PlayerVideoDropReason::SeekPreroll,
-                );
-            }
-            tracing::debug!(
-                pts_ms = frame_pts.as_millis(),
-                "Retaining or dropping pre-roll video frame before seek target"
-            );
-            continue;
-        }
-
-        drop_seek_preroll_fallback_frame(session, tick_result);
-        session.observe_video_frame_pts(frame.pts);
-
-        if playback_can_present {
-            enqueue_decoded_video_frame(session, tick_config, tick_result, frame);
-        } else {
-            release_video_texture(session, frame.texture_handle);
-            record_video_drop(
-                session,
-                tick_result,
-                frame.pts,
-                PlayerVideoDropReason::Paused,
-            );
-            tracing::debug!("Dropping decoded frame received while playback is paused");
-        }
-    }
-
-    drained_frame_count
-}
-
-/// Синхронизирует player-side in-flight счётчик с packet ack-ами decoder thread-а.
-fn drain_completed_video_decode_packets(session: &mut PlayerSession) {
-    let completed_packet_count = session.pipeline.drain_completed_video_decode_packet_count();
-
-    session
-        .pipeline
-        .note_video_packets_completed_by_decoder(completed_packet_count);
-}
-
-/// Отправляет ограниченное число pending video packets в decoder thread.
-fn send_pending_video_packets_to_decoder(
-    session: &mut PlayerSession,
-    tick_config: &PlayerTickConfig,
-    tick_result: &mut PlayerTickResult,
-    max_packets_to_send: usize,
-    decode_ahead_limit: Duration,
-    catch_up_deadline: Option<Instant>,
-) -> usize {
-    if !session.pipeline.can_send_video_decode_packets() {
-        return 0;
-    }
-
-    let mut sent_packets = 0usize;
-    let present_admission_budget =
-        video_packet_send_present_admission_budget(session, tick_config, max_packets_to_send);
-
-    while sent_packets < max_packets_to_send {
-        if catch_up_deadline_reached(catch_up_deadline) {
-            break;
-        }
-
-        if present_admission_budget == 0 {
-            record_pipeline_pause(
-                session,
-                tick_result,
-                PipelinePauseReason::WaitingForPresentQueue,
-            );
-            break;
-        }
-        if sent_packets >= present_admission_budget {
-            break;
-        }
-
-        let Some(packet) = session.pipeline.front_pending_video_packet() else {
-            break;
-        };
-        let packet_track_id = packet.track_id;
-        let packet_pts = packet.pts;
-        let packet_generation = packet.generation;
-        let packet_keyframe = packet.keyframe;
-        let encoded_bytes = packet.encoded_bytes.clone();
-
-        if let Some(drop_reason) =
-            pending_video_packet_generation_drop_reason(&session.pipeline, packet_generation)
-        {
-            session.pipeline.pop_pending_video_packet_front();
-            record_video_drop(session, tick_result, packet_pts, drop_reason);
-            continue;
-        }
-
-        if !session
-            .pipeline
-            .video_packet_belongs_to_selected_track(packet_track_id)
-        {
-            session.pipeline.pop_pending_video_packet_front();
-            continue;
-        }
-
-        let decoder_was_waiting_for_keyframe = session.pipeline.video_decoder_needs_keyframe();
-        if !accept_video_packet_for_decoder_bootstrap(session, packet_keyframe, packet_pts) {
-            session.pipeline.pop_pending_video_packet_front();
-            record_video_drop(
-                session,
-                tick_result,
-                packet_pts,
-                PlayerVideoDropReason::SeekPreroll,
-            );
-            continue;
-        }
-
-        let packet_probe = PendingVideoPacketProbe {
-            track_id: packet_track_id,
-            encoded_bytes,
-        };
-        if !validate_pending_video_packet_before_decode(session, &packet_probe) {
-            break;
-        }
-
-        if let Some(reason) = texture_capacity_backpressure_reason(session, tick_config) {
-            record_pipeline_pause(session, tick_result, reason);
-            break;
-        }
-
-        if !can_send_video_packet_to_decoder(session, tick_config, packet_pts, decode_ahead_limit) {
-            trace!(
-                pts_ms = packet_pts.as_millis(),
-                audio_ms = session.audio_clock_now().as_millis(),
-                decode_ahead_limit_ms = decode_ahead_limit.as_millis(),
-                max_ahead_ms = video_decode_ahead_limit(tick_config).as_millis(),
-                "A/V sync: holding video packet to limit decode-ahead"
-            );
-            break;
-        }
-
-        let decode_packet_keyframe_hint =
-            video_decode_packet_keyframe_hint(packet_keyframe, decoder_was_waiting_for_keyframe);
-        trace!(
-            pts_ms = packet_pts.as_millis(),
-            encoded_len = packet_probe.encoded_bytes.len(),
-            keyframe = ?packet_keyframe,
-            decode_keyframe_hint = decode_packet_keyframe_hint,
-            "Sending video packet to decoder thread"
-        );
-
-        let resolved_color = session
-            .pipeline
-            .active_video_requirement()
-            .and_then(|requirement| requirement.color.clone());
-        let decode_packet = PlayerDecodePacket {
-            track_id: packet_track_id,
-            pts: packet_pts,
-            generation: packet_generation,
-            encoded_bytes: packet_probe.encoded_bytes,
-            keyframe: decode_packet_keyframe_hint,
-            resolved_color,
-        };
-
-        match session.pipeline.send_video_decode_packet(decode_packet) {
-            None => break,
-            Some(Ok(())) => {
-                session.pipeline.pop_pending_video_packet_front();
-                session.pipeline.note_video_packet_sent_to_decoder();
-            }
-            Some(Err(DecodeSendError::Backpressure(reason))) => {
-                tracing::debug!(reason = %reason, "Decoder packet channel backpressure");
-                record_pipeline_pause(
-                    session,
-                    tick_result,
-                    PipelinePauseReason::DecoderPacketQueueFull,
-                );
-                break;
-            }
-            Some(Err(DecodeSendError::Fatal(error))) => {
-                tracing::warn!(error = %error, "Failed to send packet to decoder thread");
-                session.mark_fatal_error(PlayerError::new(
-                    PlayerErrorKind::RuntimeError,
-                    format!("Video decoder thread stopped before accepting packet: {error}"),
-                ));
-                break;
-            }
-        }
-
-        sent_packets += 1;
-    }
-
-    sent_packets
-}
-
-/// Пропускает inter-frames, пока decoder после flush ждёт новый keyframe.
-fn accept_video_packet_for_decoder_bootstrap(
-    session: &mut PlayerSession,
-    packet_keyframe: PacketKeyframe,
-    packet_pts: Duration,
-) -> bool {
-    if !session.pipeline.video_decoder_needs_keyframe() {
-        return true;
-    }
-
-    match packet_keyframe {
-        PacketKeyframe::Keyframe => {
-            let bootstrap = session.record_video_decoder_bootstrap_accepted(packet_keyframe);
-            debug!(
-                pts_ms = packet_pts.as_millis(),
-                dropped_until_keyframe = bootstrap.dropped_until_keyframe,
-                first_accepted_keyframe = ?bootstrap.first_accepted_keyframe,
-                "Accepted post-flush video decoder bootstrap packet"
-            );
-            session.pipeline.mark_video_decoder_bootstrapped();
-            true
-        }
-        PacketKeyframe::NotKeyframe => {
-            let bootstrap = session.record_video_packet_dropped_until_keyframe();
-            debug!(
-                pts_ms = packet_pts.as_millis(),
-                dropped_until_keyframe = bootstrap.dropped_until_keyframe,
-                "Dropping video packet until decoder receives post-flush keyframe"
-            );
-            false
-        }
-        PacketKeyframe::Unknown => {
-            let bootstrap = session.record_video_decoder_bootstrap_accepted(packet_keyframe);
-            warn!(
-                pts_ms = packet_pts.as_millis(),
-                dropped_until_keyframe = bootstrap.dropped_until_keyframe,
-                first_accepted_keyframe = ?bootstrap.first_accepted_keyframe,
-                "Accepting video packet with unknown keyframe state as post-flush decode start"
-            );
-            session.pipeline.mark_video_decoder_bootstrapped();
-            true
-        }
-    }
-}
-
-/// Переводит typed demux-классификацию в текущий bool contract decoder-а.
-fn video_decode_packet_keyframe_hint(
-    packet_keyframe: PacketKeyframe,
-    accepted_as_decode_start: bool,
-) -> bool {
-    matches!(packet_keyframe, PacketKeyframe::Keyframe)
-        || (accepted_as_decode_start && packet_keyframe == PacketKeyframe::Unknown)
-}
-
-/// Отделяет stale seek generation от late-drop policy.
-fn pending_video_packet_generation_drop_reason(
-    pipeline: &PlaybackPipeline,
-    packet_generation: u64,
-) -> Option<PlayerVideoDropReason> {
-    (!pipeline.packet_generation_is_current(packet_generation))
-        .then_some(PlayerVideoDropReason::StaleGeneration)
-}
-
-/// Минимальный view pending packet-а для bitstream capability validation.
-struct PendingVideoPacketProbe {
-    /// Track ID нужен, чтобы найти container codec.
-    track_id: TrackId,
-
-    /// Codec payload нужен adapter-у для чтения header-level requirement.
-    encoded_bytes: Bytes,
-}
-
-/// Проверяет profile/format до отправки packet-а в hardware decoder.
-fn validate_pending_video_packet_before_decode(
-    session: &mut PlayerSession,
-    packet: &PendingVideoPacketProbe,
-) -> bool {
-    if session
-        .pipeline
-        .active_video_requirement()
-        .is_some_and(|requirement| !video_requirement_needs_packet_refinement(requirement))
-    {
-        return true;
-    }
-
-    let requirement = match video_requirement_from_packet(session, packet) {
-        Ok(Some(requirement)) => requirement,
-        Ok(None) => return true,
-        Err(error) => {
-            warn!(error = %error, "Video stream rejected by packet requirement probe");
-            session.mark_fatal_error(error);
-            session.pipeline.clear_pending_video_packets();
-            return false;
-        }
-    };
-
-    match session.refine_active_video_requirement(requirement) {
-        Ok(()) => true,
-        Err(error) => {
-            warn!(error = %error, "Video stream rejected before hardware decode");
-            session.mark_fatal_error(error);
-            session.pipeline.clear_pending_video_packets();
-            false
-        }
-    }
-}
-
-/// Читает codec header через adapter registry и строит уточнённое requirement.
-fn video_requirement_from_packet_data(
-    codec: VideoCodec,
-    packet_data: &[u8],
-    container_source: Option<codec_core::VideoMetadataSource>,
-) -> Result<Option<VideoDecodeRequirement>, PlayerError> {
-    match probe_video_packet_requirement(codec, packet_data) {
-        VideoRequirementProbe::Candidate(candidate) => Ok(Some(
-            resolve_video_metadata(codec, container_source, Some(candidate)).requirement,
-        )),
-        VideoRequirementProbe::Rejected(rejection) => {
-            Err(player_error_from_requirement_rejection(rejection))
-        }
-        VideoRequirementProbe::Recoverable(uncertainty) => {
-            trace!(
-                ?uncertainty,
-                "Video requirement probe skipped before decode"
-            );
-            Ok(None)
-        }
-    }
-}
-
-/// Переводит codec adapter reject в player error без generic hardware wording.
-fn player_error_from_requirement_rejection(rejection: VideoRequirementRejection) -> PlayerError {
-    let kind = match rejection {
-        VideoRequirementRejection::UnsupportedBitDepth { .. } => {
-            PlayerErrorKind::UnsupportedVideoBitDepth
-        }
-        VideoRequirementRejection::UnsupportedChroma { .. } => {
-            PlayerErrorKind::UnsupportedVideoChroma
-        }
-        VideoRequirementRejection::UnsupportedCodecAdapter { .. } => {
-            PlayerErrorKind::UnsupportedVideoCodec
-        }
-    };
-
-    PlayerError::new(kind, rejection.user_message())
-}
-
-/// Возвращает codec-specific requirement probe через adapter registry.
-fn video_requirement_from_packet(
-    session: &PlayerSession,
-    packet: &PendingVideoPacketProbe,
-) -> Result<Option<VideoDecodeRequirement>, PlayerError> {
-    let Some(codec) = session.video_codec_for_track(packet.track_id) else {
-        return Ok(None);
-    };
-
-    video_requirement_from_packet_data(
-        codec,
-        &packet.encoded_bytes,
-        session.video_metadata_source_for_track(packet.track_id),
-    )
 }
 
 /// Удаляет лишние кадры, если presentation queue стала больше безопасного лимита.
@@ -1908,9 +1309,9 @@ fn pending_video_work_available(session: &PlayerSession, tick_config: &PlayerTic
 
     can_send_video_packet_to_decoder(
         session,
-        tick_config,
+        video_decoder_texture_limits(tick_config),
+        video_decoder_decode_ahead_limits(tick_config, video_decode_ahead_target(tick_config)),
         packet.pts,
-        video_decode_ahead_target(tick_config),
     )
 }
 
@@ -2342,13 +1743,14 @@ fn run_adaptive_catch_up_pass(
         let drain_budget = budget
             .decoded_frames
             .min(tick_config.max_decoded_video_frames_drained_per_tick);
-        let drained_frames = drain_decoded_video_frames(
-            session,
+        let drain_limits = video_decoder_io_limits(
             tick_config,
-            tick_result,
             drain_budget,
-            Some(deadline),
+            0,
+            video_decode_ahead_limit(tick_config),
         );
+        let drained_frames =
+            drain_decoded_video_frames(session, tick_result, drain_limits, Some(deadline));
         budget.decoded_frames = budget.decoded_frames.saturating_sub(drained_frames);
         made_progress |= drained_frames > 0;
     }
@@ -2360,12 +1762,16 @@ fn run_adaptive_catch_up_pass(
         let send_budget = budget
             .video_packets
             .min(tick_config.max_video_packets_sent_per_tick);
-        let sent_packets = send_pending_video_packets_to_decoder(
-            session,
+        let send_limits = video_decoder_io_limits(
             tick_config,
-            tick_result,
+            0,
             send_budget,
             video_decode_ahead_limit(tick_config),
+        );
+        let sent_packets = send_pending_video_packets_to_decoder(
+            session,
+            tick_result,
+            send_limits,
             Some(deadline),
         );
         budget.video_packets = budget.video_packets.saturating_sub(sent_packets);
@@ -2448,23 +1854,27 @@ fn process_pending_video_packets(
     } else {
         usize::MAX
     };
-    drain_decoded_video_frames(session, tick_config, tick_result, base_drain_budget, None);
+    let decoder_io_limits = video_decoder_io_limits(
+        tick_config,
+        base_drain_budget,
+        tick_config.max_video_packets_sent_per_tick,
+        video_decode_ahead_target(tick_config),
+    );
+    let decoder_io_progress = run_video_decoder_io(
+        session,
+        tick_result,
+        decoder_io_limits,
+        VideoDecoderIoContext::new(None, true, true),
+    );
+    trace!(
+        decoded_frames_drained = decoder_io_progress.decoded_frames_drained,
+        packets_sent = decoder_io_progress.packets_sent,
+        "Decoder I/O pass completed"
+    );
 
     let playback_can_present = session.can_present_video();
     if !playback_can_present {
         return;
-    }
-
-    // EOF-drain больше не читает demuxer, но обязан дожать уже накопленный video tail.
-    if session.playback_state().is_playback_active() {
-        send_pending_video_packets_to_decoder(
-            session,
-            tick_config,
-            tick_result,
-            tick_config.max_video_packets_sent_per_tick,
-            video_decode_ahead_target(tick_config),
-            None,
-        );
     }
 
     run_adaptive_catch_up(session, tick_context, tick_result);
@@ -2631,10 +2041,19 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
+    use bytes::Bytes;
+    use codec_core::{VideoCodec, VideoDecodeRequirement};
+
+    use super::video_decoder_io::{
+        accept_video_packet_for_decoder_bootstrap, drain_decoded_video_frames,
+        pending_video_packet_generation_drop_reason, player_error_from_decode_thread_error,
+        send_pending_video_packets_to_decoder,
+    };
     use super::*;
     use crate::{
-        FrameCounters, PlayerAudioClock, PlayerAudioOutput, PlayerCommand, PlayerSession,
-        PresentFrameResourceProviderHandle,
+        DecodeBackpressureReason, DecodeSendError, DecodeThreadError, FrameCounters,
+        PlaybackPipeline, PlayerAudioClock, PlayerAudioOutput, PlayerCommand, PlayerDecodePacket,
+        PlayerSession, PresentFrameResourceProviderHandle,
     };
 
     /// Empty demuxer для проверки admission без реального container backend-а.
@@ -2781,6 +2200,21 @@ mod tests {
             ));
     }
 
+    /// Создаёт минимальный VP9 video track для packet refinement tests.
+    fn video_track_for_tests(track_id: u32) -> media_core::TrackInfo {
+        media_core::TrackInfo {
+            id: TrackId::new(track_id),
+            kind: TrackKind::Video,
+            codec_id: "V_VP9".to_string(),
+            codec_private: None,
+            time_base: media_core::TimeBase::new(1, 1_000),
+            duration: Some(Duration::from_secs(30)),
+            sample_rate: None,
+            channels: None,
+            video: None,
+        }
+    }
+
     /// Создаёт test frame без реальных GPU resources с явным decoded contract.
     fn decoded_frame_with_format(
         pts: Duration,
@@ -2823,14 +2257,51 @@ mod tests {
         decoded_frame_with_format(pts, handle, video_core::DecodedPixelFormat::Nv12)
     }
 
+    /// Формирует decoder I/O limits для focused tests без чтения config внутри scheduler-а.
+    fn decoder_io_limits_for_tests(
+        max_frames_to_drain: usize,
+        max_packets_to_send: usize,
+    ) -> VideoDecoderIoLimits {
+        video_decoder_io_limits(
+            &PlayerTickConfig::default(),
+            max_frames_to_drain,
+            max_packets_to_send,
+            Duration::from_millis(250),
+        )
+    }
+
+    /// Добавляет pending video packet для выбранного track-а текущей generation.
+    fn enqueue_selected_video_packet(
+        session: &mut PlayerSession,
+        pts: Duration,
+        encoded_bytes: Bytes,
+        keyframe: impl Into<PacketKeyframe>,
+    ) {
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                TrackId::new(1),
+                pts,
+                session.pipeline.seek_generation(),
+                encoded_bytes,
+                keyframe,
+            ));
+    }
+
     /// Fake decoder, который записывает отправленные packets без реального backend-а.
     #[derive(Clone, Default)]
     struct RecordingVideoDecoderThread {
         /// Packet log нужен тесту, чтобы отличить drop от отправки в decoder.
         sent_packets: Arc<Mutex<Vec<PlayerDecodePacket>>>,
 
+        /// Scripted send results позволяют различить backpressure и fatal send.
+        send_results: Arc<Mutex<VecDeque<Result<(), DecodeSendError>>>>,
+
         /// Очередь decoded frames для проверки decoder receive boundary.
         decoded_frames: Arc<Mutex<VecDeque<video_core::DecodedFrame>>>,
+
+        /// Texture handles, которые session вернула decoder boundary.
+        released_handles: Arc<Mutex<Vec<video_core::FrameTextureHandle>>>,
     }
 
     impl RecordingVideoDecoderThread {
@@ -2854,6 +2325,22 @@ mod tests {
                 .expect("recording decoder frame queue lock")
                 .push_back(frame);
         }
+
+        /// Задаёт результат следующей отправки packet-а в decoder boundary.
+        fn push_send_result(&self, result: Result<(), DecodeSendError>) {
+            self.send_results
+                .lock()
+                .expect("recording decoder send result lock")
+                .push_back(result);
+        }
+
+        /// Возвращает handles, освобождённые через decoder release path.
+        fn released_handles(&self) -> Vec<video_core::FrameTextureHandle> {
+            self.released_handles
+                .lock()
+                .expect("recording decoder release log lock")
+                .clone()
+        }
     }
 
     impl video_core::VideoDecoderThreadHandle for RecordingVideoDecoderThread {
@@ -2864,6 +2351,21 @@ mod tests {
         }
 
         fn send_packet(&self, packet: PlayerDecodePacket) -> Result<(), DecodeSendError> {
+            let scripted_result = self
+                .send_results
+                .lock()
+                .expect("recording decoder send result lock")
+                .pop_front();
+            if let Some(result) = scripted_result {
+                if result.is_ok() {
+                    self.sent_packets
+                        .lock()
+                        .expect("recording decoder packet log lock")
+                        .push(packet);
+                }
+                return result;
+            }
+
             self.sent_packets
                 .lock()
                 .expect("recording decoder packet log lock")
@@ -2871,7 +2373,12 @@ mod tests {
             Ok(())
         }
 
-        fn release_frame(&self, _handle: video_core::FrameTextureHandle) {}
+        fn release_frame(&self, handle: video_core::FrameTextureHandle) {
+            self.released_handles
+                .lock()
+                .expect("recording decoder release log lock")
+                .push(handle);
+        }
 
         fn try_recv_frame(&self) -> Option<video_core::DecodedFrame> {
             self.decoded_frames
@@ -2907,6 +2414,47 @@ mod tests {
         fn drain_completed_packet_count(&self) -> usize {
             0
         }
+    }
+
+    /// Создаёт capabilities, где аппаратный backend принимает только VP9 Profile 0.
+    fn capabilities_with_vp9_profile0_for_decoder_io() -> capability_core::SystemCapabilities {
+        let backend_id = codec_core::DecodeBackendId::new("decoder_io_test_backend")
+            .expect("test backend id должен быть валидным");
+
+        capability_core::SystemCapabilities {
+            schema_version: capability_core::CURRENT_CAPABILITY_SCHEMA_VERSION,
+            probed_at_unix_seconds: 1,
+            video_backends: vec![capability_core::BackendCapabilities {
+                backend_id: backend_id.clone(),
+                display_name: "Decoder I/O test backend".to_string(),
+                status: capability_core::BackendProbeStatus::Available,
+                driver: capability_core::BackendDriverInfo::default(),
+                supported_video_decode_formats: vec![codec_core::SupportedVideoDecodeFormat {
+                    codec: VideoCodec::Vp9,
+                    profile: codec_core::VideoProfile::Vp9(codec_core::Vp9Profile::Profile0),
+                    bit_depth: codec_core::BitDepth::Eight,
+                    chroma: codec_core::ChromaSubsampling::Yuv420,
+                    max_width: Some(1920),
+                    max_height: Some(1080),
+                    max_fps: None,
+                    hdr_input: false,
+                    backend: backend_id,
+                }],
+                raw_profiles: Vec::new(),
+                raw_entrypoints: Vec::new(),
+                raw_rt_formats: Vec::new(),
+                quirks: Vec::new(),
+                export_paths: vec![capability_core::VideoExportPath::DmaBuf],
+                p010_storage_layouts: Vec::new(),
+                diagnostics: Vec::new(),
+            }],
+            render_backends: vec![render_core::RenderCapabilities::wgpu_nv12(Some(4096))],
+        }
+    }
+
+    /// Собирает минимальный VP9 keyframe header для packet refinement tests.
+    fn vp9_profile2_10bit_keyframe_for_tests() -> Bytes {
+        Bytes::from_static(&[0x92, 0x49, 0x83, 0x42, 0x50, 0x77, 0xf8, 0x43, 0x78])
     }
 
     #[test]
@@ -3905,6 +3453,51 @@ mod tests {
     }
 
     #[test]
+    fn absent_decoder_send_is_noop_and_drain_drops_pending_packets() {
+        let mut session = PlayerSession::new();
+        let mut tick_result = PlayerTickResult::default();
+
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        enqueue_selected_video_packet(
+            &mut session,
+            Duration::from_millis(120),
+            Bytes::from_static(b"pending-without-decoder"),
+            true,
+        );
+
+        let sent_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+
+        assert_eq!(sent_packets, 0);
+        assert!(!session.pipeline.pending_video_packet_is_empty());
+        assert!(tick_result.dropped_video_frames.is_empty());
+
+        let drained_frames = drain_decoded_video_frames(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(1, 0),
+            None,
+        );
+
+        assert_eq!(drained_frames, 0);
+        assert!(session.pipeline.pending_video_packet_is_empty());
+        assert_eq!(
+            tick_result.dropped_video_frames,
+            vec![PlayerVideoFrameDrop {
+                pts: Duration::from_millis(120),
+                reason: PlayerVideoDropReason::DecoderStarvation,
+            }]
+        );
+    }
+
+    #[test]
     fn pending_video_packet_from_unselected_track_is_dropped_before_decoder_send() {
         let mut session = PlayerSession::new();
         let decoder_thread = RecordingVideoDecoderThread::new();
@@ -3929,10 +3522,8 @@ mod tests {
 
         let sent_packets = send_pending_video_packets_to_decoder(
             &mut session,
-            &PlayerTickConfig::default(),
             &mut tick_result,
-            1,
-            Duration::from_millis(250),
+            decoder_io_limits_for_tests(0, 1),
             None,
         );
 
@@ -3969,10 +3560,8 @@ mod tests {
 
         let sent_packets = send_pending_video_packets_to_decoder(
             &mut session,
-            &PlayerTickConfig::default(),
             &mut tick_result,
-            1,
-            Duration::from_millis(250),
+            decoder_io_limits_for_tests(0, 1),
             None,
         );
 
@@ -3986,6 +3575,92 @@ mod tests {
                 reason: PlayerVideoDropReason::StaleGeneration,
             }]
         );
+    }
+
+    #[test]
+    fn decoder_packet_send_backpressure_records_typed_pause_reason() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+
+        decoder_thread.push_send_result(Err(DecodeSendError::Backpressure(
+            DecodeBackpressureReason::PacketQueueFull {
+                queued_packets: 4,
+                capacity: 4,
+            },
+        )));
+        session
+            .pipeline
+            .set_video_decoder_thread(decoder_thread.clone());
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        enqueue_selected_video_packet(
+            &mut session,
+            Duration::from_millis(120),
+            Bytes::from_static(b"backpressured-video"),
+            true,
+        );
+
+        let sent_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+
+        assert_eq!(sent_packets, 0);
+        assert!(!session.pipeline.pending_video_packet_is_empty());
+        assert!(decoder_thread.sent_packets().is_empty());
+        assert_eq!(
+            tick_result.pipeline_pauses,
+            vec![PlayerPipelinePause {
+                reason: PipelinePauseReason::DecoderPacketQueueFull,
+            }]
+        );
+    }
+
+    #[test]
+    fn decoder_packet_send_fatal_error_marks_session_failed() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+
+        decoder_thread.push_send_result(Err(DecodeSendError::Fatal(DecodeThreadError::new(
+            "fatal send failure",
+        ))));
+        session
+            .pipeline
+            .set_video_decoder_thread(decoder_thread.clone());
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        enqueue_selected_video_packet(
+            &mut session,
+            Duration::from_millis(120),
+            Bytes::from_static(b"fatal-video"),
+            true,
+        );
+
+        let sent_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+
+        assert_eq!(sent_packets, 0);
+        assert!(!session.pipeline.pending_video_packet_is_empty());
+        assert!(decoder_thread.sent_packets().is_empty());
+        let last_error = session
+            .snapshot()
+            .last_error
+            .as_ref()
+            .expect("fatal decoder send должен записать last_error");
+        assert_eq!(last_error.kind, PlayerErrorKind::RuntimeError);
+        assert!(last_error.message.contains("fatal send failure"));
     }
 
     #[test]
@@ -4009,14 +3684,17 @@ mod tests {
 
         let drained_frames = drain_decoded_video_frames(
             &mut session,
-            &PlayerTickConfig::default(),
             &mut tick_result,
-            1,
+            decoder_io_limits_for_tests(1, 0),
             None,
         );
 
         assert_eq!(drained_frames, 1);
         assert!(session.pipeline.video_present_queue_is_empty());
+        assert_eq!(
+            decoder_thread.released_handles(),
+            vec![video_core::FrameTextureHandle(77)]
+        );
         assert_eq!(
             tick_result.dropped_video_frames,
             vec![PlayerVideoFrameDrop {
@@ -4052,10 +3730,8 @@ mod tests {
 
         let sent_packets = send_pending_video_packets_to_decoder(
             &mut session,
-            &PlayerTickConfig::default(),
             &mut tick_result,
-            1,
-            Duration::from_millis(250),
+            decoder_io_limits_for_tests(0, 1),
             None,
         );
         let decoder_packets = decoder_thread.sent_packets();
@@ -4073,6 +3749,49 @@ mod tests {
             diagnostics.first_accepted_keyframe,
             Some(PacketKeyframe::Unknown)
         );
+    }
+
+    #[test]
+    fn packet_refinement_rejection_stops_before_decoder_send() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+
+        session.set_system_capabilities(capabilities_with_vp9_profile0_for_decoder_io());
+        session
+            .pipeline
+            .apply_demux_track_list_update(vec![video_track_for_tests(1)]);
+        session
+            .pipeline
+            .set_video_decoder_thread(decoder_thread.clone());
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        enqueue_selected_video_packet(
+            &mut session,
+            Duration::from_millis(120),
+            vp9_profile2_10bit_keyframe_for_tests(),
+            true,
+        );
+
+        let sent_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+
+        assert_eq!(sent_packets, 0);
+        assert!(session.pipeline.pending_video_packet_is_empty());
+        assert!(decoder_thread.sent_packets().is_empty());
+        let last_error = session
+            .snapshot()
+            .last_error
+            .as_ref()
+            .expect("rejected bitstream refinement должен стать fatal before send");
+        assert_eq!(last_error.kind, PlayerErrorKind::UnsupportedVideoProfile);
+        assert!(last_error.message.contains("profile VP9 Profile 2"));
     }
 
     #[test]
