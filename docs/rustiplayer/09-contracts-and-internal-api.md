@@ -21,6 +21,8 @@
 - UI отправляет команды и читает snapshots.
 - Worker владеет `PlayerSession`.
 - Render thread получает frame leases, а не ссылки на pipeline.
+- Render bridge получает stable present-frame identity через session boundary,
+  а не через прямой доступ к `PlayerSession::pipeline`.
 - Частые scrub updates схлопываются по latest-wins семантике.
 - Concrete production backend создаётся вне `player-core`. `player-core`
   получает только `video-backend-api::StartedVideoBackend` и renderer-neutral
@@ -36,9 +38,10 @@
 
 `player-core::PlaybackPipeline` является владельцем runtime slots текущей
 session, но больше не является широким `pub(crate)` storage boundary. Сам struct
-остаётся `pub(crate)`, потому что `session`, `tick`, `worker` и render bridge
-работают внутри `player-core`, но поля struct закрыты. Межмодульный доступ должен
-идти через intent methods, а не через чтение/запись concrete fields.
+остаётся `pub(crate)`, потому что session boundary работает внутри
+`player-core`, но поля struct закрыты. `PlayerSession::pipeline` тоже private:
+sibling modules вне `session` должны идти через session-owned boundary methods,
+а не через чтение/запись concrete fields.
 
 Закрытые домены:
 
@@ -92,7 +95,7 @@ session, но больше не является широким `pub(crate)` sto
   `can_send_video_decode_packets()`, `can_receive_decoded_video_frames()`,
   `video_decoder_packet_queue_depth()`, `video_decoder_resource_snapshot()`,
   `video_decoder_control_channel_pressure()`,
-  `video_decoder_texture_view_provider()`, `release_frame_to_video_decoder()`,
+  `video_decoder_resource_provider()`, `release_frame_to_video_decoder()`,
   `flush_video_decoder_thread()`, `try_recv_decoded_video_frame()`,
   `try_recv_video_decoder_diagnostic_event()`,
   `try_recv_video_decoder_error()`,
@@ -105,6 +108,23 @@ session, но больше не является широким `pub(crate)` sto
   `render_generation()`, `try_register_render_lease()`,
   `release_render_lease_accounting()`, `request_video_texture_release()`,
   `active_render_lease_count()`, `deferred_render_release_count()`.
+
+## `PlayerSession` render lease boundary
+
+`PlayerSession` владеет связкой present frame, active decoder guard-а, render
+generation и render lease accounting. Sibling modules не читают `pipeline`
+напрямую.
+
+Основные boundary methods:
+
+- `current_present_frame_identity()` возвращает stable identity latest-slot-а
+  только если есть active video decoder и текущий present frame.
+- `lease_present_video_frame()` регистрирует render lease и передаёт render
+  bridge-у `LeasedPresentFrame`.
+- `release_render_lease_with_provider()` различает submitted/unsubmitted
+  renderer ownership и сохраняет release path через original provider.
+- `release_video_texture()` освобождает texture сразу, через renderer provider
+  или откладывает release до drop render lease-а.
 
 Transitional method:
 

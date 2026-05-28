@@ -26,7 +26,7 @@ mod tick;
 
 use self::eof_drain::EofDrainRuntime;
 use self::media_lifecycle::MediaLifecycleState;
-pub(crate) use self::render_leases::LeasedPresentFrame;
+pub(crate) use self::render_leases::{LeasedPresentFrame, PresentFrameIdentity};
 pub use self::tick::{
     PlayerPipelinePause, PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult,
     PlayerVideoDropReason, PlayerVideoFrameDrop,
@@ -50,8 +50,8 @@ pub struct PlayerSession {
     /// Последний базовый read-only snapshot без runtime diagnostics, зависящих от shell.
     snapshot: PlayerSnapshot,
 
-    /// Media pipeline, перенесённый из `AppState` в Phase 3.
-    pub(crate) pipeline: PlaybackPipeline,
+    /// Media pipeline, закрытый от sibling modules за session-owned boundary methods.
+    pipeline: PlaybackPipeline,
 
     /// Factory, через которую session лениво создаёт audio decoder по первому selected packet-у.
     audio_decoder_factory: Arc<dyn AudioDecoderFactory>,

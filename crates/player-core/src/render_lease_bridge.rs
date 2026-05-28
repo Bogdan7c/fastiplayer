@@ -11,7 +11,7 @@ use crate::PresentFrameResourceProviderHandle;
 #[cfg(test)]
 use crate::decoder_boundary::PresentFrameResourceProvider;
 use crate::decoder_boundary::PresentFrameResourceProviderLookup;
-use crate::session::{LeasedPresentFrame, PlayerSession};
+use crate::session::{LeasedPresentFrame, PlayerSession, PresentFrameIdentity};
 
 /// Ёмкость release ack stream; защищает worker от бесконечного роста drop-ack очереди.
 const RENDER_RELEASE_CHANNEL_CAPACITY: usize = 512;
@@ -284,25 +284,9 @@ impl PresentFrameLease {
     }
 }
 
-/// Стабильная identity кадра для latest-slot без сравнения backend handles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PresentFrameLeaseIdentity {
-    /// Поколение render resources, где был создан texture handle.
-    render_generation: u64,
-
-    /// Opaque texture handle decoded frame-а.
-    texture_handle: video_core::FrameTextureHandle,
-}
-
-impl PresentFrameLeaseIdentity {
-    /// Собирает identity из lease-а, который уже безопасно опубликован render-side.
-    #[must_use]
-    const fn from_lease(lease: &PresentFrameLease) -> Self {
-        Self {
-            render_generation: lease.render_generation,
-            texture_handle: lease.frame.texture_handle,
-        }
-    }
+/// Собирает stable identity из lease-а, который уже безопасно опубликован render-side.
+fn present_frame_identity_from_lease(lease: &PresentFrameLease) -> PresentFrameIdentity {
+    PresentFrameIdentity::new(lease.render_generation, lease.frame.texture_handle)
 }
 
 /// Результат неблокирующего чтения latest present frame.
@@ -355,10 +339,10 @@ impl LatestPresentFrameHandoff {
     }
 
     /// Возвращает identity текущего slot-а, чтобы worker не создавал новый lease без причины.
-    fn current_identity(&self) -> Option<PresentFrameLeaseIdentity> {
+    fn current_identity(&self) -> Option<PresentFrameIdentity> {
         self.latest_frame_guard()
             .as_ref()
-            .map(PresentFrameLeaseIdentity::from_lease)
+            .map(present_frame_identity_from_lease)
     }
 
     /// Очищает latest-slot и отдаёт release ack старого frame-а через RAII.
@@ -806,20 +790,8 @@ impl RenderLeaseBridge {
     }
 
     /// Возвращает identity текущего present frame без создания нового render lease-а.
-    fn current_present_frame_identity(
-        session: &PlayerSession,
-    ) -> Option<PresentFrameLeaseIdentity> {
-        if !session.pipeline.has_active_video_decoder() {
-            return None;
-        }
-
-        session
-            .pipeline
-            .present_video_frame()
-            .map(|frame| PresentFrameLeaseIdentity {
-                render_generation: session.pipeline.render_generation(),
-                texture_handle: frame.texture_handle,
-            })
+    fn current_present_frame_identity(session: &PlayerSession) -> Option<PresentFrameIdentity> {
+        session.current_present_frame_identity()
     }
 
     /// Собирает renderable frame без передачи `PlayerSession` наружу.

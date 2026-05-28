@@ -22,21 +22,33 @@ reference backend `video-vulkan` удалён из workspace и Cargo graph.
 
 ## `player-core::PlayerSession`
 
-`PlayerSession` всё ещё крупный объект. Часть обязанностей уже вынесена в
-`pipeline`, `media_opening`, `seek_controller`, `seek_state`, `worker`, но session
-по-прежнему содержит много orchestration logic:
+`PlayerSession` остаётся центральным owner-ом playback state machine, но его поля
+закрыты от sibling modules. Даже внутренний `PlaybackPipeline` slot больше не
+является `pub(crate)` полем session: внешние модули `player-core` должны идти
+через session-owned boundary methods.
+
+Устойчивые поддомены уже вынесены в `session/*`: media lifecycle, capability
+selection, audio runtime, diagnostics sink, EOF drain, seek transaction,
+snapshot builder, render lease boundary и `session/tick/*`. Session всё ещё
+координирует:
 
 - media open/install/reset;
 - command dispatch;
 - seek commit gates;
 - audio/video scheduler helpers;
 - capability refinement;
-- render lease accounting;
+- render lease handoff/accounting;
 - diagnostics aggregation.
 
-Следующий безопасный шаг: выделять не новые абстракции ради размера файла, а
-устойчивые поддомены с тестами: media opening, seek transaction, diagnostics sink,
-video backend binding.
+Render bridge больше не читает `session.pipeline` напрямую: он получает stable
+present-frame identity через `PlayerSession::current_present_frame_identity()` и
+создаёт render lease через `PlayerSession::lease_present_video_frame()`. Это
+оставляет ownership active decoder guard-а, render generation и texture handle
+identity внутри session boundary.
+
+Следующий безопасный шаг: уменьшать оставшийся orchestration surface только
+там, где появляется новый устойчивый поддомен с тестами; не возвращать прямой
+доступ к полям ради удобства.
 
 Media opening уже вынесен из прямой зависимости `player-core -> symphonia-demux/webm-demux`:
 `player-core` принимает `PreparedMedia`. Оставшаяся работа здесь не в том, чтобы
@@ -47,11 +59,11 @@ surface самого `PlayerSession`.
 
 `PlaybackPipeline` больше не является широким `pub(crate)` хранилищем runtime
 slots. Struct остаётся crate-visible как внутренний владелец состояния
-`player-core`, но его поля закрыты. `session.rs`, `tick.rs`, `worker.rs`,
-`render_lease_bridge.rs` и snapshot builder должны обращаться к pipeline через
-intent methods, описанные в
+`player-core`, но его поля закрыты. Session/tick/snapshot code внутри session
+boundary обращается к pipeline через intent methods, описанные в
 [09. Контракты и Internal API](09-contracts-and-internal-api.md), а не через
-конкретное устройство storage.
+конкретное устройство storage. Sibling modules вне `session` не должны читать
+pipeline slot у `PlayerSession`.
 
 Закрытые домены уже включают media source/demux, track selection, active video
 requirement, seek generation, audio runtime/clock, packet queues, presentation
@@ -71,9 +83,22 @@ render lease accounting.
   scope, не полевая граница `PlaybackPipeline`.
 
 Следующий безопасный шаг: сужать не поля, а слишком крупные orchestration
-домены: media opening, seek transaction, decoder I/O scheduler и diagnostics.
-Каждое сужение должно идти с focused tests на absent resource, active fake/stub,
-typed error/no-op и accounting edge cases.
+домены и boundary method surface. Каждое сужение должно идти с focused tests на
+absent resource, active fake/stub, typed error/no-op и accounting edge cases.
+
+## Размер модулей
+
+Большинство production modules после session decomposition укладываются в
+ориентир до 2k строк. Временные исключения на момент cleanup-сессии:
+
+- `crates/player-core/src/pipeline.rs` около 2.8k строк: широкий internal owner
+  runtime slots; дальнейшее дробление должно идти только через устойчивые
+  state domains, а не косметически.
+- `crates/player-core/src/session/tick/mod.rs` около 2.2k строк: содержит public
+  tick config/result types и основной `PlayerSession::tick`; child modules уже
+  вынесены для demux admission, presentation scheduler, decoder I/O и wakeup.
+- `crates/player-core/src/worker.rs` около 2.2k строк: worker runtime и тесты
+  ещё плотные; это отдельный future boundary, не часть текущего cleanup.
 
 ## `app-egui::AppState::player_snapshot()`
 

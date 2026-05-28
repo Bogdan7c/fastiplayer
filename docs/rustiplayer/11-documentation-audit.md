@@ -1,6 +1,6 @@
 # 11. Аудит документации
 
-Дата аудита: 2026-05-15.
+Дата аудита: 2026-05-28.
 
 ## Что было устаревшим
 
@@ -26,6 +26,9 @@
   `unknown_video`.
 - Worker render bridge больше не создаёт WGPU views внутри player thread:
   texture views создаются на render thread через lease provider.
+- `PlayerSession::pipeline` больше не описывается как открытый `pub(crate)`
+  slot: render bridge получает present-frame identity и leases через session
+  boundary methods.
 
 ## Логические ошибки, которые убраны из доков
 
@@ -43,7 +46,10 @@
 Коротко:
 
 - `PlayerSession` всё ещё крупный orchestration object.
-- `PlaybackPipeline` остаётся широким `pub(crate)` хранилищем.
+- `PlaybackPipeline` остаётся широким internal owner-ом runtime slots, но не
+  открытым полевым storage boundary.
+- Временные size exceptions в `player-core`: `pipeline.rs`, `session/tick/mod.rs`
+  и `worker.rs` пока выше ориентира 2k строк.
 - `AppState::player_snapshot()` имеет side effect публикации desktop snapshot.
 - YouTube service API ещё не capability-aware.
 - `webm-demux` грубо классифицирует non-audio tracks как video.

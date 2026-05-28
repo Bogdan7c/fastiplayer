@@ -18,7 +18,43 @@ pub(crate) struct LeasedPresentFrame {
     pub resource_provider: PresentFrameResourceProviderHandle,
 }
 
+/// Стабильная identity текущего present frame без раскрытия `PlaybackPipeline`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PresentFrameIdentity {
+    /// Поколение render resources, где был создан texture handle.
+    render_generation: u64,
+
+    /// Opaque texture handle decoded frame-а.
+    texture_handle: video_core::FrameTextureHandle,
+}
+
+impl PresentFrameIdentity {
+    /// Собирает identity из session-owned render generation и texture handle.
+    #[must_use]
+    pub(crate) const fn new(
+        render_generation: u64,
+        texture_handle: video_core::FrameTextureHandle,
+    ) -> Self {
+        Self {
+            render_generation,
+            texture_handle,
+        }
+    }
+}
+
 impl PlayerSession {
+    /// Возвращает identity текущего present frame для latest-slot render bridge-а.
+    #[must_use]
+    pub(crate) fn current_present_frame_identity(&self) -> Option<PresentFrameIdentity> {
+        if !self.pipeline.has_active_video_decoder() {
+            return None;
+        }
+
+        self.pipeline.present_video_frame().map(|frame| {
+            PresentFrameIdentity::new(self.pipeline.render_generation(), frame.texture_handle)
+        })
+    }
+
     /// Резервирует текущий present frame для render thread без раскрытия `PlaybackPipeline`.
     #[must_use]
     pub(crate) fn lease_present_video_frame(&mut self) -> Option<LeasedPresentFrame> {
@@ -156,6 +192,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::{PresentFrameResourceProvider, PresentFrameResourceProviderLookup};
+    use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
+    use video_core::{DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
 
     /// Fake provider, который показывает, каким release path-ом ушёл rendered frame.
     #[derive(Clone)]
@@ -184,11 +222,142 @@ mod tests {
         }
     }
 
+    /// Минимальный decoder handle для проверки active-decoder guard-а render boundary.
+    struct NoopVideoDecoderThread {
+        /// Provider, который boundary должен возвращать clone-ом без владения backend state.
+        resource_provider: PresentFrameResourceProviderHandle,
+    }
+
+    impl video_core::VideoDecoderThreadHandle for NoopVideoDecoderThread {
+        type ResourceProvider = PresentFrameResourceProviderHandle;
+
+        /// Возвращает стабильное имя fake backend-а для diagnostics.
+        fn backend_name(&self) -> &'static str {
+            "noop-render-lease-test"
+        }
+
+        /// Packet path в этих тестах не используется.
+        fn send_packet(
+            &self,
+            _packet: video_core::DecodePacket,
+        ) -> Result<(), video_core::DecodeSendError> {
+            Ok(())
+        }
+
+        /// Release path в этих тестах не используется.
+        fn release_frame(&self, _handle: FrameTextureHandle) {}
+
+        /// Тест не публикует frames через decoder queue.
+        fn try_recv_frame(&self) -> Option<video_core::DecodedFrame> {
+            None
+        }
+
+        /// Diagnostics stream для этого fake backend-а пустой.
+        fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent> {
+            None
+        }
+
+        /// Fatal decoder errors в этом fake backend-е отсутствуют.
+        fn try_recv_error(&self) -> Option<video_core::DecodeThreadError> {
+            None
+        }
+
+        /// Flush является no-op, потому что decoder state отсутствует.
+        fn flush(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        /// Возвращает renderer-neutral resource provider active decoder-а.
+        fn resource_provider(&self) -> Self::ResourceProvider {
+            self.resource_provider.clone()
+        }
+
+        /// Resource accounting в этих тестах не участвует.
+        fn decoder_resource_snapshot(&self) -> Option<video_core::DecoderResourceSnapshot> {
+            None
+        }
+
+        /// Packet queue fake backend-а всегда пуста.
+        fn packet_queue_depth(&self) -> usize {
+            0
+        }
+
+        /// Completed packet accounting fake backend-а всегда пустой.
+        fn drain_completed_packet_count(&self) -> usize {
+            0
+        }
+    }
+
+    /// Создаёт decoded frame с renderer-neutral texture handle для boundary tests.
+    fn decoded_frame_for_tests(texture_handle: FrameTextureHandle) -> video_core::DecodedFrame {
+        video_core::DecodedFrame {
+            generation: 0,
+            pts: std::time::Duration::from_millis(42),
+            format: DecodedPixelFormat::Nv12,
+            bit_depth: BitDepth::Eight,
+            chroma: ChromaSubsampling::Yuv420,
+            memory_path: FrameMemoryPath::DmaBufZeroCopy,
+            width: 640,
+            height: 360,
+            render_width: 640,
+            render_height: 360,
+            color: VideoColorMetadata::sdr_bt709_limited(),
+            texture_handle,
+            diagnostics: video_core::VideoFrameDiagnostics::default(),
+        }
+    }
+
+    /// Собирает fake decoder handle с renderer-neutral provider-ом.
+    fn noop_video_decoder_thread() -> NoopVideoDecoderThread {
+        let released_handles = Arc::new(Mutex::new(Vec::new()));
+        let resource_provider =
+            PresentFrameResourceProviderHandle::new(RecordingResourceProvider { released_handles });
+
+        NoopVideoDecoderThread { resource_provider }
+    }
+
+    #[test]
+    fn present_frame_identity_is_absent_without_active_decoder() {
+        let mut session = PlayerSession::new();
+        let texture_handle = FrameTextureHandle(47);
+
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(texture_handle));
+
+        assert_eq!(session.current_present_frame_identity(), None);
+        assert_eq!(session.render_lease_count(), 0);
+    }
+
+    #[test]
+    fn present_frame_identity_uses_active_decoder_without_registering_lease() {
+        let mut session = PlayerSession::new();
+        let texture_handle = FrameTextureHandle(48);
+
+        session
+            .pipeline
+            .set_video_decoder_thread(noop_video_decoder_thread());
+        let render_generation = session.pipeline.render_generation();
+        session
+            .pipeline
+            .set_present_video_frame(decoded_frame_for_tests(texture_handle));
+
+        let identity = session
+            .current_present_frame_identity()
+            .expect("active decoder and present frame should expose identity");
+
+        assert_eq!(
+            identity,
+            PresentFrameIdentity::new(render_generation, texture_handle)
+        );
+        assert_eq!(session.render_lease_count(), 0);
+    }
+
     #[test]
     fn register_render_lease_rejects_stale_generation_without_accounting() {
         let mut session = PlayerSession::new();
         let stale_generation = session.pipeline.render_generation().saturating_add(1);
-        let texture_handle = video_core::FrameTextureHandle(41);
+        let texture_handle = FrameTextureHandle(41);
 
         assert!(!session.register_render_lease(stale_generation, texture_handle));
 
