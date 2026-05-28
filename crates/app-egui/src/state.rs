@@ -598,14 +598,15 @@ impl AppState {
 
     /// Собирает immutable context одного render frame-а.
     ///
-    /// Внутри frame-а `PlayerSnapshot` читается только здесь, чтобы UI, renderer boundary,
-    /// desktop integration и redraw pacing не расходились на один worker tick.
+    /// Внутри frame-а `PlayerSnapshot` читается только здесь, чтобы UI, renderer boundary
+    /// и redraw pacing не расходились на один worker tick. Публикация в desktop integration
+    /// остаётся отдельным side-effect boundary у вызывающего кода.
     #[must_use]
     pub fn begin_frame_context(
         &mut self,
         render_diagnostics: RenderDiagnostics,
     ) -> AppFrameContext {
-        let player_snapshot = self.player_snapshot();
+        let player_snapshot = self.refresh_player_snapshot();
 
         AppFrameContext {
             player_snapshot,
@@ -634,14 +635,16 @@ impl AppState {
         self.mark_pending_worker_redraw();
     }
 
-    /// Возвращает read-only snapshot из `player-core` и обновляет shell integrations.
+    /// Обновляет кешированный read-only snapshot из `player-core` без внешней публикации.
+    ///
+    /// Это mutable boundary для worker snapshot: метод учитывает frame counters и обновляет
+    /// `last_player_snapshot`, но не выполняет desktop integration side effects.
     #[must_use]
-    pub fn player_snapshot(&mut self) -> PlayerSnapshot {
+    pub(crate) fn refresh_player_snapshot(&mut self) -> PlayerSnapshot {
         let player_snapshot = self
             .player_worker
             .latest_snapshot(self.frame_counters_snapshot());
         self.last_player_snapshot = player_snapshot.clone();
-        self.publish_desktop_snapshot(&player_snapshot);
         player_snapshot
     }
 
@@ -665,8 +668,8 @@ impl AppState {
         self.pending_redraw_after_worker_command = true;
     }
 
-    /// Публикует read-only snapshot в desktop integration boundary.
-    fn publish_desktop_snapshot(&self, player_snapshot: &PlayerSnapshot) {
+    /// Явно публикует read-only snapshot в desktop integration boundary и забирает events.
+    pub(crate) fn publish_desktop_snapshot(&self, player_snapshot: &PlayerSnapshot) {
         let Some(desktop_integration) = &self.desktop_integration else {
             return;
         };
@@ -1269,7 +1272,9 @@ impl AppState {
                 true
             }
             winit::keyboard::KeyCode::KeyM => {
-                let current_volume = self.player_snapshot().volume;
+                let player_snapshot = self.refresh_player_snapshot();
+                self.publish_desktop_snapshot(&player_snapshot);
+                let current_volume = player_snapshot.volume;
                 let next_volume = if current_volume > 0.0 {
                     0.0
                 } else {

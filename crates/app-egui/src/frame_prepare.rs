@@ -530,6 +530,7 @@ pub(crate) fn render_frame(
     let worker_events = app_state.drain_worker_events();
     record_worker_events(telemetry, app_state, worker_events);
     let frame_context = app_state.begin_frame_context(renderer.diagnostics());
+    app_state.publish_desktop_snapshot(frame_context.player_snapshot());
     let prepared_ui_frame = prepare_ui_frame(window, app_state, egui_input, &frame_context);
     let egui_requested_repaint = prepared_ui_frame.requested_repaint;
     let prepared_video_frame =

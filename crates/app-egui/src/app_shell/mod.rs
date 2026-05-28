@@ -144,8 +144,9 @@ impl AppShell {
         self.startup_media.poll_youtube_job(&mut app_state);
         app_state.poll_local_file_open_job();
 
-        // Shell получает read-only snapshot без доступа к mutable playback internals.
-        let _player_snapshot = app_state.player_snapshot();
+        // Shell явно разделяет обновление snapshot и публикацию в desktop integration.
+        let player_snapshot = app_state.refresh_player_snapshot();
+        app_state.publish_desktop_snapshot(&player_snapshot);
 
         self.renderer = Some(renderer);
         self.app_state = Some(app_state);
