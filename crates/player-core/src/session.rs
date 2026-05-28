@@ -3,11 +3,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
-use media_core::{MediaDuration, MediaTime, TimelineNotSeekableReason};
-use tracing::{debug, info, trace, warn};
+use media_core::{MediaDuration, MediaTime};
+use tracing::{debug, info, warn};
 
 use crate::audio_boundary::{missing_audio_decoder_factory, missing_audio_output_factory};
-use crate::pipeline::AudioEofDrainState;
 use crate::seek_state::{PlaybackResumeIntent, SeekRuntimeState};
 use crate::{
     AudioDecoderFactory, AudioOutputFactory, FrameCounters, PlaybackDiagnostics, PlaybackPipeline,
@@ -18,12 +17,14 @@ use crate::{
 mod audio_runtime;
 mod capability_selection;
 mod diagnostics_sink;
+mod eof_drain;
 mod media_lifecycle;
 mod render_leases;
 mod seek_transaction;
 mod snapshot_builder;
 mod tick;
 
+use self::eof_drain::EofDrainRuntime;
 use self::media_lifecycle::MediaLifecycleState;
 pub(crate) use self::render_leases::LeasedPresentFrame;
 pub use self::tick::{
@@ -43,46 +44,6 @@ use self::audio_runtime::{
 use crate::pipeline::AudioSeekRuntimeState;
 #[cfg(test)]
 use media_core::TrackInfo;
-
-/// Точная причина, по которой EOF-drain ещё не может перейти в `Ended`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum EofDrainBlocker {
-    /// Активный seek commit владеет текущим lifecycle, EOF не должен его перебивать.
-    SeekCommit,
-
-    /// Seek near EOF ждёт fallback video frame, которым владеет seek pipeline.
-    SeekEofFallbackVideo,
-
-    /// В pipeline ещё лежит preroll fallback frame, который должен быть обработан владельцем seek.
-    SeekPrerollFallbackFrame,
-
-    /// Уже считанные video packets ещё не отправлены или не отброшены decoder boundary.
-    PendingVideoPackets { queued_packets: usize },
-
-    /// Готовые video frames ещё ждут presentation/release.
-    VideoPresentQueue { queued_frames: usize },
-
-    /// Decoder thread ещё не подтвердил завершение ранее отправленных packets.
-    VideoDecodeInFlight { in_flight_packets: usize },
-
-    /// Уже считанные audio packets ещё не декодированы и не записаны в output.
-    PendingAudioPackets { queued_packets: usize },
-
-    /// Audio output ещё сообщает buffered tail.
-    DrainingAudioOutput {
-        /// Текущий уровень output buffer-а в миллисекундах.
-        buffer_level_ms: f64,
-
-        /// Был ли уже успешно запрошен запуск output stream-а.
-        playback_requested: bool,
-
-        /// Сколько времени audio clock не показывал нового progress-а.
-        stalled_for: Duration,
-
-        /// Порог, после которого stale output buffer считается зависшим.
-        stall_timeout: Duration,
-    },
-}
 
 /// Центральная session плеера: high-level state machine и владение playback pipeline.
 pub struct PlayerSession {
@@ -110,8 +71,8 @@ pub struct PlayerSession {
     /// Был ли принят shutdown-запрос.
     shutdown_requested: bool,
 
-    /// Флаг дорендера хвоста после EOF.
-    pub draining_after_eof: bool,
+    /// Runtime EOF-drain boundary: наружу выходит только через intent methods.
+    eof_drain: EofDrainRuntime,
 
     /// Последний системный capability report, полученный от shell/backend layer.
     capabilities: Option<SystemCapabilities>,
@@ -179,7 +140,7 @@ impl PlayerSession {
     /// Возвращает effective playback state с учётом EOF-drain режима.
     #[must_use]
     pub const fn playback_state(&self) -> PlaybackState {
-        if self.draining_after_eof {
+        if self.is_eof_draining() {
             PlaybackState::Draining
         } else {
             self.snapshot.playback_state
@@ -201,7 +162,7 @@ impl PlayerSession {
         matches!(
             self.snapshot.playback_state,
             PlaybackState::Playing | PlaybackState::Buffering | PlaybackState::Seeking
-        ) || self.draining_after_eof
+        ) || self.is_eof_draining()
     }
 
     /// Возвращает `true`, если текущая session владеет открытым demuxer-ом.
@@ -221,7 +182,7 @@ impl PlayerSession {
         debug!(
             command = ?command,
             playback_state = ?self.playback_state(),
-            draining_after_eof = self.draining_after_eof,
+            draining_after_eof = self.is_eof_draining(),
             current_position_ms = self.snapshot.current_position.as_secs_f64() * 1000.0,
             duration_ms = ?self
                 .snapshot
@@ -304,8 +265,7 @@ impl PlayerSession {
 
     /// Проверяет, может ли no-audio monotonic clock сейчас двигать user-visible position.
     fn monotonic_media_clock_drives_position(&self) -> bool {
-        self.snapshot.playback_state == PlaybackState::Playing
-            || (self.draining_after_eof && !self.has_active_seek_commit())
+        self.snapshot.playback_state == PlaybackState::Playing || self.eof_drain_needs_progress()
     }
 
     /// Синхронизирует snapshot position с monotonic fallback clock без изменения playback state.
@@ -355,188 +315,6 @@ impl PlayerSession {
         self.snapshot.last_error = Some(error.clone());
         self.set_playback_state(PlaybackState::Failed);
         self.pending_events.push(PlayerEvent::FatalError(error));
-    }
-
-    /// Переводит session в EOF-drain, сохраняя demuxer открытым для replay/seek.
-    pub fn enter_eof_drain(&mut self) {
-        let previous_state = self.playback_state();
-        debug!(
-            previous_state = ?previous_state,
-            current_position_ms = self.snapshot.current_position.as_secs_f64() * 1000.0,
-            duration_ms = ?self
-                .snapshot
-                .duration
-                .map(|duration| duration.as_secs_f64() * 1000.0),
-            pending_audio_packets = self.pipeline.pending_audio_packet_len(),
-            pending_video_packets = self.pipeline.pending_video_packet_len(),
-            queued_video_frames = self.pipeline.video_present_queue_len(),
-            video_decode_in_flight = self.pipeline.video_decode_in_flight_packets(),
-            audio_eof_drain_state = ?self.pipeline.audio_eof_drain_state(),
-            "Entering EOF drain"
-        );
-        self.set_playback_state(PlaybackState::Draining);
-
-        if matches!(
-            previous_state,
-            PlaybackState::Playing | PlaybackState::Buffering
-        ) {
-            self.start_eof_audio_tail_if_needed();
-        }
-    }
-
-    /// Проверяет, должен ли worker продолжать bounded wakeup для EOF-drain state machine.
-    #[must_use]
-    pub(crate) fn eof_drain_needs_progress(&self) -> bool {
-        self.draining_after_eof && !self.has_active_seek_commit()
-    }
-
-    /// Запускает audio output для EOF tail-а, который был накоплен до завершения autoplay preroll.
-    pub(crate) fn start_eof_audio_tail_if_needed(&mut self) {
-        if !self.draining_after_eof || self.has_active_seek_commit() {
-            return;
-        }
-
-        let AudioEofDrainState::DrainingOutput {
-            playback_requested: false,
-            ..
-        } = self.pipeline.audio_eof_drain_state()
-        else {
-            return;
-        };
-
-        if let Some(play_result) = self.pipeline.play_audio_output() {
-            if let Err(error) = play_result {
-                warn!(error = %error, "Не удалось запустить audio tail после EOF");
-                self.set_runtime_error(format!("Audio EOF drain play error: {error}"));
-                self.pipeline.clear_audio_output();
-                self.pipeline.clear_audio_clock();
-                return;
-            }
-
-            let observed_at = Instant::now();
-            let audio_now = self.audio_clock_now();
-            self.pipeline
-                .reset_audio_clock_sample(audio_now, observed_at);
-        }
-    }
-
-    /// Завершает EOF-drain, когда audio/video очереди полностью отдали buffered tail.
-    pub(crate) fn finish_eof_drain_if_ready(
-        &mut self,
-        now: Instant,
-        audio_stall_timeout: Duration,
-    ) -> bool {
-        if !self.draining_after_eof {
-            return false;
-        }
-
-        if !self.eof_drain_ready_to_end(now, audio_stall_timeout) {
-            let blocker = self.eof_drain_blocker(now, audio_stall_timeout);
-            trace!(
-                blocker = ?blocker,
-                playback_state = ?self.playback_state(),
-                current_position_ms = self.snapshot.current_position.as_secs_f64() * 1000.0,
-                duration_ms = ?self
-                    .snapshot
-                    .duration
-                    .map(|duration| duration.as_secs_f64() * 1000.0),
-                pending_audio_packets = self.pipeline.pending_audio_packet_len(),
-                pending_video_packets = self.pipeline.pending_video_packet_len(),
-                queued_video_frames = self.pipeline.video_present_queue_len(),
-                video_decode_in_flight = self.pipeline.video_decode_in_flight_packets(),
-                seek_commit_active = self.has_active_seek_commit(),
-                seek_eof_fallback_video = self.seek_runtime.has_eof_fallback_video_position(),
-                audio_eof_drain_state = ?self.pipeline.audio_eof_drain_state(),
-                audio_clock_now_ms = self.audio_clock_now().as_secs_f64() * 1000.0,
-                audio_clock_stalled_for_ms =
-                    self.pipeline.audio_clock_stalled_for(now).as_secs_f64() * 1000.0,
-                "EOF drain waiting"
-            );
-            return false;
-        }
-
-        let end_position = self
-            .snapshot
-            .duration
-            .unwrap_or_else(|| self.presentation_clock_position_at(now));
-        debug!(
-            end_position_ms = end_position.as_secs_f64() * 1000.0,
-            previous_position_ms = self.snapshot.current_position.as_secs_f64() * 1000.0,
-            audio_eof_drain_state = ?self.pipeline.audio_eof_drain_state(),
-            "EOF drain finished; entering Ended"
-        );
-        self.update_current_position(end_position);
-        self.set_playback_state(PlaybackState::Ended);
-        true
-    }
-
-    /// Проверяет только условия завершения drain; сам state меняет `finish_eof_drain_if_ready`.
-    fn eof_drain_ready_to_end(&self, now: Instant, audio_stall_timeout: Duration) -> bool {
-        self.eof_drain_blocker(now, audio_stall_timeout).is_none()
-    }
-
-    /// Возвращает первый blocker EOF-drain в порядке ownership/lifecycle зависимостей.
-    fn eof_drain_blocker(
-        &self,
-        now: Instant,
-        audio_stall_timeout: Duration,
-    ) -> Option<EofDrainBlocker> {
-        if self.has_active_seek_commit() {
-            return Some(EofDrainBlocker::SeekCommit);
-        }
-
-        if self.seek_runtime.has_eof_fallback_video_position() {
-            return Some(EofDrainBlocker::SeekEofFallbackVideo);
-        }
-
-        if self.pipeline.has_seek_preroll_fallback_video_frame() {
-            return Some(EofDrainBlocker::SeekPrerollFallbackFrame);
-        }
-
-        let pending_video_packets = self.pipeline.pending_video_packet_len();
-        if pending_video_packets > 0 {
-            return Some(EofDrainBlocker::PendingVideoPackets {
-                queued_packets: pending_video_packets,
-            });
-        }
-
-        let queued_video_frames = self.pipeline.video_present_queue_len();
-        if queued_video_frames > 0 {
-            return Some(EofDrainBlocker::VideoPresentQueue {
-                queued_frames: queued_video_frames,
-            });
-        }
-
-        let in_flight_packets = self.pipeline.video_decode_in_flight_packets();
-        if in_flight_packets > 0 {
-            return Some(EofDrainBlocker::VideoDecodeInFlight { in_flight_packets });
-        }
-
-        match self.pipeline.audio_eof_drain_state() {
-            AudioEofDrainState::PendingPackets { queued_packets } => {
-                Some(EofDrainBlocker::PendingAudioPackets { queued_packets })
-            }
-            AudioEofDrainState::DrainingOutput {
-                buffer_level_ms,
-                playback_requested,
-            } if !self.eof_audio_output_stalled(now, audio_stall_timeout) => {
-                Some(EofDrainBlocker::DrainingAudioOutput {
-                    buffer_level_ms,
-                    playback_requested,
-                    stalled_for: self.pipeline.audio_clock_stalled_for(now),
-                    stall_timeout: audio_stall_timeout,
-                })
-            }
-            AudioEofDrainState::DrainingOutput { .. }
-            | AudioEofDrainState::NoSelectedAudio
-            | AudioEofDrainState::NoOutput
-            | AudioEofDrainState::DrainedOutput { .. } => None,
-        }
-    }
-
-    /// Проверяет зависший audio output после EOF без чтения concrete CPAL state-а.
-    fn eof_audio_output_stalled(&self, now: Instant, audio_stall_timeout: Duration) -> bool {
-        self.pipeline.audio_clock_stalled_for(now) >= audio_stall_timeout
     }
 
     /// Забирает накопленные события и очищает внутреннюю очередь.
@@ -641,7 +419,7 @@ impl PlayerSession {
             return Ok(());
         }
 
-        if self.draining_after_eof || self.snapshot.playback_state == PlaybackState::Ended {
+        if self.should_replay_from_eof_on_play() {
             return self.restart_playback_after_eof();
         }
 
@@ -660,38 +438,6 @@ impl PlayerSession {
         self.anchor_monotonic_media_clock_if_needed(Instant::now());
 
         Ok(())
-    }
-
-    /// Запускает повторное воспроизведение после штатного EOF через обычный seek pipeline.
-    fn restart_playback_after_eof(&mut self) -> PlayerResult<()> {
-        if !self.pipeline.has_demuxer() {
-            let error = PlayerError::new(
-                PlayerErrorKind::SeekUnavailable,
-                "Replay невозможен: media pipeline уже закрыт",
-            );
-            self.record_recoverable_error(error);
-            return Ok(());
-        }
-
-        if !self.snapshot.timeline.seekable {
-            let reason = self
-                .snapshot
-                .timeline
-                .not_seekable_reason
-                .unwrap_or(TimelineNotSeekableReason::UnknownTimeline);
-            let error = PlayerError::new(
-                PlayerErrorKind::SeekUnavailable,
-                format!("Replay невозможен: timeline не seekable ({reason:?})"),
-            );
-            self.record_recoverable_error(error);
-            return Ok(());
-        }
-
-        self.start_seek_transaction(
-            MediaTime::ZERO,
-            crate::SeekMode::Accurate,
-            PlaybackResumeIntent::Play,
-        )
     }
 
     /// Запускает preroll перед autoplay, не включая audio stream раньше заполнения buffer.
@@ -852,7 +598,7 @@ impl PlayerSession {
     /// Обновляет playback state и публикует событие только при реальном изменении.
     fn set_playback_state(&mut self, playback_state: PlaybackState) {
         let previous_state = self.playback_state();
-        self.draining_after_eof = playback_state == PlaybackState::Draining;
+        self.eof_drain.sync_from_playback_state(playback_state);
         self.snapshot.playback_state = playback_state;
 
         if previous_state == playback_state {
@@ -862,7 +608,7 @@ impl PlayerSession {
         debug!(
             previous_state = ?previous_state,
             playback_state = ?playback_state,
-            draining_after_eof = self.draining_after_eof,
+            draining_after_eof = self.is_eof_draining(),
             current_position_ms = self.snapshot.current_position.as_secs_f64() * 1000.0,
             duration_ms = ?self
                 .snapshot
@@ -934,7 +680,7 @@ impl Default for PlayerSession {
             pending_events: Vec::new(),
             media_lifecycle: MediaLifecycleState::default(),
             shutdown_requested: false,
-            draining_after_eof: false,
+            eof_drain: EofDrainRuntime::default(),
             capabilities: None,
             seek_runtime: SeekRuntimeState::default(),
         }

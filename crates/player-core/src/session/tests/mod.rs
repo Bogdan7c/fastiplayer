@@ -33,7 +33,8 @@ use codec_core::{
 };
 use media_core::{
     DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
-    DemuxTrackListUpdate, Demuxer, PacketKeyframe, TrackKind, VideoTrackMetadata,
+    DemuxTrackListUpdate, Demuxer, PacketKeyframe, TimelineNotSeekableReason, TrackKind,
+    VideoTrackMetadata,
 };
 use render_core::RenderCapabilities;
 

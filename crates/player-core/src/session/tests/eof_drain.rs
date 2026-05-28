@@ -34,6 +34,47 @@ fn eof_drain_state_is_visible_in_snapshot() {
 }
 
 #[test]
+fn eof_drain_tick_does_not_read_new_demux_packets() {
+    let mut session = PlayerSession::new();
+    let tracks = vec![fake_track(1, TrackKind::Video)];
+    let seek_log = Arc::new(Mutex::new(Vec::new()));
+    let event_read_count = Arc::new(AtomicUsize::new(0));
+    let mut demuxer = FakeDemuxer::new(
+        tracks.clone(),
+        Some(Duration::from_secs(30)),
+        Arc::clone(&seek_log),
+    )
+    .with_event_read_count(Arc::clone(&event_read_count));
+    demuxer.push_packet(fake_video_packet(
+        TrackId::new(1),
+        Duration::from_millis(100),
+    ));
+
+    session
+        .pipeline
+        .install_opened_media(Box::new(demuxer), None, None, tracks.clone());
+    session
+        .pipeline
+        .select_video_track_preserving_active_requirement(TrackId::new(1));
+    session.set_snapshot_duration(Some(Duration::from_secs(30)));
+    session.apply_demux_seekability(DemuxSeekability::Seekable);
+    session.set_playback_state(PlaybackState::Playing);
+    session.enter_eof_drain();
+
+    let _tick_result = session.tick(PlayerTickContext::with_config(
+        Instant::now(),
+        PlayerTickConfig {
+            max_demux_packets_per_tick: 4,
+            ..PlayerTickConfig::default()
+        },
+    ));
+
+    assert_eq!(event_read_count.load(Ordering::Relaxed), 0);
+    assert!(session.pipeline.pending_video_packet_is_empty());
+    assert_eq!(session.playback_state(), PlaybackState::Ended);
+}
+
+#[test]
 fn audio_only_eof_after_buffered_samples_keeps_bounded_wakeup_until_drain() {
     let mut session = PlayerSession::new();
     install_fake_media(&mut session, vec![fake_track(2, TrackKind::Audio)]);
@@ -308,7 +349,7 @@ fn eof_drain_keeps_demuxer_open_for_seek() {
         &[Duration::from_secs(5)]
     );
     assert_eq!(session.playback_state(), PlaybackState::Seeking);
-    assert!(!session.draining_after_eof);
+    assert!(!session.is_eof_draining());
     assert!(session.snapshot().last_error.is_none());
 }
 
@@ -337,7 +378,7 @@ fn replay_and_seek_from_ended_keep_demuxer_contract() {
         &[Duration::from_secs(5)]
     );
     assert_eq!(seek_session.playback_state(), PlaybackState::Seeking);
-    assert!(!seek_session.draining_after_eof);
+    assert!(!seek_session.is_eof_draining());
     assert!(seek_session.snapshot().last_error.is_none());
 
     let mut replay_session = PlayerSession::new();
@@ -367,7 +408,7 @@ fn replay_and_seek_from_ended_keep_demuxer_contract() {
     assert_eq!(seek_commit.target_position, MediaTime::ZERO);
     assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
     assert_eq!(replay_session.playback_state(), PlaybackState::Seeking);
-    assert!(!replay_session.draining_after_eof);
+    assert!(!replay_session.is_eof_draining());
     assert!(replay_session.snapshot().last_error.is_none());
 }
 
@@ -422,7 +463,7 @@ fn play_pause_toggle_from_ended_after_eof_replays_with_seek_to_zero() {
     assert_eq!(seek_commit.target_position, MediaTime::ZERO);
     assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
     assert_eq!(session.playback_state(), PlaybackState::Seeking);
-    assert!(!session.draining_after_eof);
+    assert!(!session.is_eof_draining());
     assert!(session.snapshot().last_error.is_none());
 }
 
@@ -452,7 +493,7 @@ fn play_from_eof_drain_rewinds_to_start_and_resumes_playback() {
     assert_eq!(seek_commit.target_position, MediaTime::ZERO);
     assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
     assert_eq!(session.playback_state(), PlaybackState::Seeking);
-    assert!(!session.draining_after_eof);
+    assert!(!session.is_eof_draining());
     assert!(session.snapshot().last_error.is_none());
 }
 

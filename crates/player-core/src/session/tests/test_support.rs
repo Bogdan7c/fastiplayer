@@ -29,6 +29,7 @@ pub(super) struct FakeDemuxer {
     pub(super) events: VecDeque<DemuxReadEvent>,
     pub(super) seek_log: Arc<Mutex<Vec<Duration>>>,
     pub(super) seek_request_log: Option<Arc<Mutex<Vec<DemuxSeekRequest>>>>,
+    pub(super) event_read_count: Option<Arc<AtomicUsize>>,
     pub(super) seek_results: VecDeque<DemuxSeekResult>,
     pub(super) seekability: DemuxSeekability,
 }
@@ -47,6 +48,7 @@ impl FakeDemuxer {
             events: VecDeque::new(),
             seek_log,
             seek_request_log: None,
+            event_read_count: None,
             seek_results: VecDeque::new(),
             seekability: DemuxSeekability::Seekable,
         }
@@ -64,6 +66,12 @@ impl FakeDemuxer {
         seek_request_log: Arc<Mutex<Vec<DemuxSeekRequest>>>,
     ) -> Self {
         self.seek_request_log = Some(seek_request_log);
+        self
+    }
+
+    /// Подключает счётчик `next_event`, чтобы EOF tests проверяли отсутствие новых demux reads.
+    pub(super) fn with_event_read_count(mut self, event_read_count: Arc<AtomicUsize>) -> Self {
+        self.event_read_count = Some(event_read_count);
         self
     }
 
@@ -102,6 +110,10 @@ impl Demuxer for FakeDemuxer {
     }
 
     fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        if let Some(ref event_read_count) = self.event_read_count {
+            event_read_count.fetch_add(1, Ordering::Relaxed);
+        }
+
         let Some(event) = self.events.pop_front() else {
             return match self.next_packet()? {
                 Some(packet) => Ok(DemuxReadEvent::Packet(packet)),

@@ -576,7 +576,7 @@ impl PlayerSession {
             );
         }
 
-        if self.is_demuxing_active() || self.draining_after_eof {
+        if self.is_demuxing_active() || self.is_eof_draining() {
             self.process_pending_audio_packets_with_buffer_limit(
                 tick_context.config.audio_buffer_high_water_mark_ms,
             );
@@ -597,9 +597,7 @@ impl PlayerSession {
 
     /// Обновляет playback position один раз за tick.
     fn update_position_for_tick(&mut self, now: Instant) {
-        let eof_audio_tail_drain_without_seek =
-            self.draining_after_eof && !self.has_active_seek_commit();
-        if self.playback_state() != PlaybackState::Playing && !eof_audio_tail_drain_without_seek {
+        if self.playback_state() != PlaybackState::Playing && !self.eof_drain_needs_progress() {
             return;
         }
 
@@ -2165,7 +2163,7 @@ fn present_seek_preroll_fallback_after_eof(
 
 /// Проверяет, что после EOF больше нет decoder work, способного дать точный target frame.
 fn seek_preroll_fallback_ready_after_eof(session: &PlayerSession) -> bool {
-    if session.active_final_seek_target().is_none() || !session.draining_after_eof {
+    if session.active_final_seek_target().is_none() || !session.is_eof_draining() {
         return false;
     }
 

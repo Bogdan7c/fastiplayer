@@ -138,7 +138,7 @@ impl PlayerSession {
                 .front_queued_video_frame()
                 .map(|frame| frame.pts),
             demuxing_active: self.is_demuxing_active(),
-            draining_after_eof: self.draining_after_eof,
+            draining_after_eof: self.is_eof_draining(),
             stale_frame: self.snapshot.timeline.stale_frame,
             stale_generation_discards: diagnostics_snapshot.drops.stale_generation,
             seek_bootstrap: diagnostics_snapshot.seek_bootstrap,
@@ -757,7 +757,7 @@ impl PlayerSession {
             return SeekProgressBlocker::WaitingForScheduler;
         }
 
-        if self.is_demuxing_active() && !self.draining_after_eof {
+        if self.is_demuxing_active() && !self.is_eof_draining() {
             return SeekProgressBlocker::WaitingForDemux;
         }
 
@@ -796,7 +796,7 @@ impl PlayerSession {
         _seek_commit: SeekCommitState,
         target_position: Duration,
     ) -> bool {
-        if !self.draining_after_eof {
+        if !self.is_eof_draining() {
             return false;
         }
 
@@ -876,7 +876,7 @@ impl PlayerSession {
         &self,
         seek_commit: SeekCommitState,
     ) -> Option<Duration> {
-        if !self.draining_after_eof {
+        if !self.is_eof_draining() {
             return None;
         }
 
