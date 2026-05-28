@@ -12,8 +12,10 @@ mod frame_prepare;
 mod local_file_open;
 mod local_media;
 mod redraw_pacing;
+mod render_settings;
 mod startup_media;
 mod state;
+mod system_capabilities;
 mod telemetry;
 mod ui;
 
