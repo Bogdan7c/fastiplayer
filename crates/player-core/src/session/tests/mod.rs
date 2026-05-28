@@ -21,12 +21,12 @@ use capability_core::{
     BackendCapabilities, BackendDriverInfo, BackendProbeStatus, P010StorageLayout, VideoExportPath,
 };
 use codec_core::{
-    BitDepth, ChromaSubsampling, DecodeBackendId, SupportedVideoDecodeFormat, VideoProfile,
-    Vp9Profile,
+    BitDepth, ChromaSubsampling, DecodeBackendId, SupportedVideoDecodeFormat, VideoCodec,
+    VideoDecodeRequirement, VideoProfile, Vp9Profile, video_requirement_needs_packet_refinement,
 };
 use media_core::{
     DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
-    DemuxTrackListUpdate, Demuxer, PacketKeyframe,
+    DemuxTrackListUpdate, Demuxer, PacketKeyframe, VideoTrackMetadata,
 };
 use render_core::RenderCapabilities;
 

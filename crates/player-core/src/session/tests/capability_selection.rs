@@ -78,6 +78,42 @@ fn active_video_requirement_refinement_preserves_selection_and_rejects_before_mu
 }
 
 #[test]
+fn deferred_bitstream_selection_preserves_selected_track() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_with_phase10_vp9_profile2_hdr());
+    let mut video_track = fake_track(7, TrackKind::Video);
+    let mut container_metadata = VideoTrackMetadata::empty();
+    container_metadata.coded_width = Some(3840);
+    container_metadata.coded_height = Some(2160);
+    container_metadata.color = Some(bt2020_pq_limited());
+    video_track.video = Some(container_metadata);
+    let video_tracks = vec![video_track];
+    let video_track_id = video_tracks[0].id;
+
+    session
+        .select_default_video_track(&video_tracks, "fake media содержит video track")
+        .expect("неполный HDR metadata должен выбрать track до packet refinement");
+
+    let active_requirement = session
+        .pipeline
+        .active_video_requirement()
+        .expect("deferred selection должен сохранить active requirement");
+
+    assert_eq!(
+        session.pipeline.selected_video_track_id(),
+        Some(video_track_id)
+    );
+    assert_eq!(
+        session.snapshot().selected_tracks.video_track,
+        Some(video_track_id)
+    );
+    assert!(video_requirement_needs_packet_refinement(
+        active_requirement
+    ));
+    assert!(session.can_defer_packet_refinement(active_requirement));
+}
+
+#[test]
 fn incomplete_vp9_hdr_container_metadata_waits_for_packet_refinement() {
     let mut session = PlayerSession::new();
     session.set_system_capabilities(capabilities_with_phase10_vp9_profile2_hdr());

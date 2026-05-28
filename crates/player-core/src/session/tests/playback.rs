@@ -160,8 +160,7 @@ fn unsupported_audio_path_does_not_block_autoplay_after_disable() {
 fn video_only_autoplay_keeps_present_frame_gate() {
     let mut session = PlayerSession::new();
     let video_track = fake_track(1, TrackKind::Video);
-    let video_requirement =
-        video_requirement_from_track(&video_track).expect("fake video track should be VP9");
+    let video_requirement = VideoDecodeRequirement::new(VideoCodec::Vp9);
 
     session
         .pipeline
