@@ -17,9 +17,13 @@ use media_core::{PacketKeyframe, TrackId};
 use tracing::{debug, trace, warn};
 
 use super::{
-    PlayerTickResult, PlayerVideoDropReason, catch_up_deadline_reached,
-    drop_seek_preroll_fallback_frame, record_pipeline_pause, record_video_drop,
-    release_video_texture, replace_seek_preroll_fallback_frame,
+    PlayerTickResult, PlayerVideoDropReason,
+    demux_admission::catch_up_deadline_reached,
+    presentation_scheduler::{
+        drop_seek_preroll_fallback_frame, release_video_texture,
+        replace_seek_preroll_fallback_frame,
+    },
+    record_pipeline_pause, record_video_drop,
 };
 use crate::{
     DecodeSendError, DecodeThreadError, PipelinePauseReason, PlaybackPipeline, PlayerDecodePacket,
