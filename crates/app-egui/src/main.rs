@@ -40,7 +40,7 @@ fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    info!("=== YouTube Player Stage 1: Render Shell ===");
+    info!("=== rustiplayer ===");
     info!("Запуск приложения");
 
     let loaded_config =

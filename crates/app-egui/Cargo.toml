@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "youtube-player"
+name = "rustiplayer"
 path = "src/main.rs"
 
 [dependencies]

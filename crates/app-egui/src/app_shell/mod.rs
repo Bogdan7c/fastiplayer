@@ -221,7 +221,7 @@ impl ApplicationHandler for AppShell {
         info!("Resumed: создание окна");
 
         let window_attributes = Window::default_attributes()
-            .with_title("YouTube Player — Stage 1 (Render Shell)")
+            .with_title("rustiplayer")
             .with_inner_size(winit::dpi::PhysicalSize::new(1280, 720))
             .with_visible(true);
 

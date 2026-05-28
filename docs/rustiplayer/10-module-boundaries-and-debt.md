@@ -109,12 +109,30 @@ absent resource, active fake/stub, typed error/no-op и accounting edge cases.
 Следующий шаг: разделить `refresh_player_snapshot()` и `publish_desktop_snapshot()`
 или сделать явный per-frame shell context.
 
-## `app-egui::main.rs`
+## `app-egui` shell decomposition
 
-`main.rs` всё ещё связывает winit lifecycle, renderer frame, YouTube startup job,
-redraw pacing и error mapping. Это shell-level код, но файл остаётся плотным.
+`main.rs` теперь остаётся процессной точкой входа: инициализирует tracing,
+загружает config, разбирает CLI initial media, создаёт `EventLoop` и передаёт
+управление `AppShell`. Shell-level orchestration больше не живёт в entrypoint-е.
 
-Следующий шаг: выделить shell runtime module без переноса player logic обратно в UI.
+Текущая shell boundary разделена по стабильным поддоменам:
+
+- `app_shell` владеет `winit::ApplicationHandler`, окном, runtime
+  restore/drop, renderer/app-state wiring и применением redraw decisions к
+  `ControlFlow`/`request_redraw`;
+- `render_settings` мапит валидированный `AppConfig` в renderer-neutral
+  `render-core` настройки color pipeline и HDR-to-SDR;
+- `system_capabilities` выполняет shell-level capability scan: VA-API provider
+  плюс render capabilities;
+- `startup_media` владеет CLI initial media, startup error и background
+  подготовкой YouTube startup job;
+- `redraw_pacing` владеет redraw pacing и timed polling decisions для shell
+  background jobs.
+
+Следующий безопасный шаг: сужать отдельные shell helpers только при появлении
+нового устойчивого поддомена с focused tests; не переносить playback queues,
+scheduling, demux state, decoder state или renderer/GPU internals обратно в
+`main.rs` или UI widgets.
 
 ## Backend API и WGPU materialization boundary
 
