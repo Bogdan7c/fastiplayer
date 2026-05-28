@@ -52,10 +52,7 @@ impl<'session> PlayerSnapshotBuilder<'session> {
         snapshot.audio_buffer = self.audio_buffer_snapshot();
         snapshot.queues = self.queue_snapshot();
         snapshot.frame_counters = self.frame_counters;
-        snapshot.diagnostics = self
-            .session
-            .diagnostics
-            .snapshot_with_queues(self.session.diagnostic_queue_depths());
+        snapshot.diagnostics = self.session.diagnostics_snapshot();
         snapshot
     }
 

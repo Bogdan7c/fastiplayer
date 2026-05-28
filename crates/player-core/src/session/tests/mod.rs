@@ -25,6 +25,7 @@ use codec_core::{
 };
 use media_core::{
     DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer,
+    PacketKeyframe,
 };
 use render_core::RenderCapabilities;
 
@@ -33,6 +34,7 @@ mod test_support;
 mod audio_runtime;
 mod capability_selection;
 mod decoder_boundary;
+mod diagnostics_sink;
 mod eof_drain;
 mod media_lifecycle;
 mod playback;
