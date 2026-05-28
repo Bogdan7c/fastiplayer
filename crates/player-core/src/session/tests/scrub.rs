@@ -5,26 +5,28 @@ use super::*;
 fn inactive_end_scrub_clears_simple_state_without_resetting_unrelated_seek_state() {
     let mut session = PlayerSession::new();
 
-    session.seek_eof_fallback_video_position = Some(MediaTime::from_secs(29));
-    session.simple_scrub_active = false;
-    session.simple_scrub_latest_request = Some(session_scrub_request(17, SeekMode::Accurate));
-    session.seek_commit = Some(SeekCommitState {
+    session.set_seek_eof_fallback_video_position_for_tests(Some(MediaTime::from_secs(29)));
+    session.set_simple_scrub_state_for_tests(
+        false,
+        Some(session_scrub_request(17, SeekMode::Accurate)),
+    );
+    session.set_seek_commit_for_tests(Some(SeekCommitState {
         generation: 77,
         target_position: MediaTime::from_secs(17),
         actual_position: MediaTime::from_secs(16),
         started_at: Instant::now(),
         resume_intent: PlaybackResumeIntent::Pause,
-    });
+    }));
 
     session.end_scrub().unwrap();
 
-    assert!(!session.simple_scrub_active);
-    assert_eq!(session.simple_scrub_latest_request, None);
+    assert!(!session.simple_scrub_active_for_tests());
+    assert_eq!(session.simple_scrub_latest_request_for_tests(), None);
     assert_eq!(
-        session.seek_eof_fallback_video_position,
+        session.seek_eof_fallback_video_position_for_tests(),
         Some(MediaTime::from_secs(29))
     );
-    assert!(session.seek_commit.is_some());
+    assert!(session.seek_commit().is_some());
 }
 
 #[test]
@@ -34,7 +36,7 @@ fn direct_dispatch_scrub_api_remains_session_compatibility_path() {
     let request = SeekRequest::absolute(MediaTime::from_secs(3));
 
     session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
-    assert!(session.simple_scrub_active);
+    assert!(session.simple_scrub_active_for_tests());
 
     session
         .dispatch_command(PlayerCommand::UpdateScrub(request))
@@ -283,11 +285,11 @@ fn reset_media_state_clears_simple_scrub_latest_request() {
             MediaTime::from_secs(6),
         )))
         .unwrap();
-    assert!(session.simple_scrub_latest_request.is_some());
+    assert!(session.simple_scrub_latest_request_for_tests().is_some());
 
     session.reset_media_state();
 
-    assert_eq!(session.simple_scrub_latest_request, None);
+    assert_eq!(session.simple_scrub_latest_request_for_tests(), None);
     assert!(!session.snapshot().timeline.scrubbing);
     assert_eq!(session.snapshot().timeline.target_position, None);
 }
@@ -304,11 +306,11 @@ fn stop_clears_simple_scrub_latest_request() {
             MediaTime::from_secs(6),
         )))
         .unwrap();
-    assert!(session.simple_scrub_latest_request.is_some());
+    assert!(session.simple_scrub_latest_request_for_tests().is_some());
 
     session.dispatch_command(PlayerCommand::Stop).unwrap();
 
-    assert_eq!(session.simple_scrub_latest_request, None);
+    assert_eq!(session.simple_scrub_latest_request_for_tests(), None);
     assert_eq!(session.snapshot().playback_state, PlaybackState::Stopped);
     assert!(!session.snapshot().timeline.scrubbing);
 }
@@ -325,7 +327,10 @@ fn final_seek_completion_clears_simple_scrub_latest_request() {
         )))
         .unwrap();
     assert!(session.seek_commit().is_some());
-    session.simple_scrub_latest_request = Some(SeekRequest::absolute(MediaTime::from_secs(3)));
+    session.set_simple_scrub_state_for_tests(
+        false,
+        Some(SeekRequest::absolute(MediaTime::from_secs(3))),
+    );
 
     session.finish_seek_commit_if_ready_for_tests(
         Instant::now(),
@@ -335,7 +340,7 @@ fn final_seek_completion_clears_simple_scrub_latest_request() {
         1,
     );
 
-    assert_eq!(session.simple_scrub_latest_request, None);
+    assert_eq!(session.simple_scrub_latest_request_for_tests(), None);
     assert_eq!(session.snapshot().current_position, Duration::from_secs(7));
 }
 

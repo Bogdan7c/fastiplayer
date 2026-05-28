@@ -6,15 +6,22 @@ use std::sync::{
 
 use codec_core::{ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction};
 
+use super::audio_runtime::SeekAudioGateStatus;
+use super::seek_transaction::SeekProgressGateSnapshot;
 use super::*;
+use crate::seek_state::{
+    POST_SEEK_PACKET_TRACE_LIMIT, PlaybackResumeIntent, PostSeekPacketTraceDecision,
+    SeekCommitState, SeekTraceState,
+};
 use crate::{
     AudioOutputFactory, AudioOutputSpec, DecodeBackpressureReason, DecodeSendError,
     DecodeThreadError, DecoderControlChannelPressureSnapshot, DecoderResourceSnapshot,
     MediaOpenRequest, MediaSource, MediaSummary, PendingAudioPacket, PendingVideoPacket,
-    PlayerAudioClock, PlayerAudioOutput, PlayerCommand, PlayerDecodePacket, PlayerError,
-    PlayerErrorKind, PlayerEvent, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
-    PlayerVideoFrameDrop, PreparedMedia, PresentFrameResourceProviderHandle, ScrubCommitPolicy,
-    SeekMode, SeekTarget,
+    PipelineQueueDepthSnapshot, PlayerAudioClock, PlayerAudioOutput, PlayerCommand,
+    PlayerDecodePacket, PlayerError, PlayerErrorKind, PlayerEvent, PlayerTickConfig,
+    PlayerTickContext, PlayerTickResult, PlayerVideoFrameDrop, PreparedMedia,
+    PresentFrameResourceProviderHandle, ScrubCommitPolicy, SeekBootstrapDiagnosticsSnapshot,
+    SeekMode, SeekProgressBlocker, SeekTarget,
 };
 use bytes::Bytes;
 use capability_core::{
@@ -26,7 +33,7 @@ use codec_core::{
 };
 use media_core::{
     DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
-    DemuxTrackListUpdate, Demuxer, PacketKeyframe, VideoTrackMetadata,
+    DemuxTrackListUpdate, Demuxer, PacketKeyframe, TrackKind, VideoTrackMetadata,
 };
 use render_core::RenderCapabilities;
 

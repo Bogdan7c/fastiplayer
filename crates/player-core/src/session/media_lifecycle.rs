@@ -142,11 +142,11 @@ impl PlayerSession {
     /// Применяет lifecycle update от demuxer-а после container discontinuity.
     pub(crate) fn handle_demux_track_list_update(&mut self, track_update: DemuxTrackListUpdate) {
         let DemuxTrackListUpdate { tracks, duration } = track_update;
-        let active_seek_before_update = self.seek_commit;
+        let active_seek_before_update = self.seek_runtime.active_commit();
         let active_timeline_before_update =
             active_seek_before_update.map(|_| self.snapshot.timeline);
         let pipeline_generation_before_update = self.pipeline.seek_generation();
-        let first_post_seek_track_update = self.seek_trace.record_first_track_list_update();
+        let first_post_seek_track_update = self.seek_runtime.record_first_track_list_update();
 
         info!(
             tracks = tracks.len(),
@@ -209,10 +209,8 @@ impl PlayerSession {
         &mut self,
         generation: u64,
     ) -> Option<SeekCommitState> {
-        let active_seek = self.seek_commit?;
-        let rebased_seek = active_seek.rebased_to_generation(generation);
-        self.seek_commit = Some(rebased_seek);
-        Some(rebased_seek)
+        self.seek_runtime
+            .rebase_active_commit_to_generation(generation)
     }
 
     /// Возвращает volatile timeline-флаги, которые `set_snapshot_duration` пересоздаёт.
@@ -259,11 +257,10 @@ impl PlayerSession {
         self.reset_diagnostics_for_media();
 
         self.media_lifecycle.clear_pending_autoplay();
-        self.seek_commit = None;
-        self.seek_trace.clear();
-        self.simple_scrub_active = false;
-        self.simple_scrub_latest_request = None;
-        self.seek_eof_fallback_video_position = None;
+        self.seek_runtime.clear_active_commit();
+        self.seek_runtime.clear_trace();
+        self.seek_runtime.clear_simple_scrub();
+        self.seek_runtime.clear_eof_fallback_video_position();
         self.snapshot.source_label = None;
         self.snapshot.media_title = None;
         self.snapshot.clear_timeline();
