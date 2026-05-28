@@ -19,7 +19,7 @@ use crate::render_settings::{
 use crate::system_capabilities::probe_system_capabilities;
 use render_wgpu_shell::Renderer;
 use rustiplayer_config::AppConfig;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -30,9 +30,7 @@ use winit::{
 
 use crate::frame_prepare::render_frame;
 use crate::redraw_pacing::{RedrawPacing, should_request_redraw_after_window_event};
-use crate::startup_media::{
-    InitialMedia, YOUTUBE_STARTUP_POLL_INTERVAL, YoutubeStartupJob, poll_youtube_startup_job,
-};
+use crate::startup_media::{InitialMedia, StartupMediaController, YOUTUBE_STARTUP_POLL_INTERVAL};
 use crate::state::AppState;
 use crate::telemetry::Telemetry;
 
@@ -46,7 +44,7 @@ const BACKGROUND_JOB_POLL_INTERVAL: Duration = YOUTUBE_STARTUP_POLL_INTERVAL;
 /// - рендерером (`render-wgpu-shell` backend)
 /// - состоянием приложения (egui + player state)
 /// - телеметрией
-/// - media для автозагрузки из CLI
+/// - controller-ом стартового media lifecycle
 pub(crate) struct AppShell {
     /// Окно приложения. None до Resumed.
     window: Option<Arc<Window>>,
@@ -60,14 +58,8 @@ pub(crate) struct AppShell {
     /// Общая телеметрия.
     telemetry: Arc<Telemetry>,
 
-    /// Media, переданное через CLI, для автозагрузки при старте.
-    initial_media: Option<InitialMedia>,
-
-    /// Фоновая подготовка CLI YouTube URL, если она уже запущена.
-    youtube_startup_job: Option<YoutubeStartupJob>,
-
-    /// Startup-ошибка shell-слоя, которую нужно показать после создания UI.
-    startup_error: Option<String>,
+    /// Controller стартового media и фоновой подготовки CLI YouTube URL.
+    startup_media: StartupMediaController,
 
     /// Валидированная пользовательская конфигурация.
     app_config: AppConfig,
@@ -90,9 +82,7 @@ impl AppShell {
             renderer: None,
             app_state: None,
             telemetry: Arc::new(Telemetry::new()),
-            initial_media,
-            youtube_startup_job: None,
-            startup_error,
+            startup_media: StartupMediaController::new(initial_media, startup_error),
             app_config,
             next_background_job_poll_at: None,
         }
@@ -134,7 +124,7 @@ impl AppShell {
             &window,
             self.telemetry.clone(),
             self.app_config.clone(),
-            self.startup_error.clone(),
+            self.startup_media.startup_error_message(),
         ) {
             Ok(app_state) => app_state,
             Err(error) => {
@@ -153,27 +143,9 @@ impl AppShell {
             renderer.queue(),
         );
 
-        if let Some(job) = &self.youtube_startup_job {
-            app_state.set_startup_pending(job.pending_message().to_string());
-        }
-
-        if let Some(initial_media) = self.initial_media.take() {
-            match initial_media {
-                InitialMedia::File(path) => {
-                    info!(path = %path.display(), "Автозагрузка файла из CLI");
-                    app_state.load_file(&path);
-                }
-                InitialMedia::YouTubeUrl { url } => {
-                    info!(source = %url, "Автозагрузка YouTube URL из CLI");
-                    self.start_youtube_startup_job(url, &mut app_state);
-                }
-            }
-        }
-        poll_youtube_startup_job(
-            &mut self.youtube_startup_job,
-            &mut app_state,
-            &mut self.startup_error,
-        );
+        self.startup_media
+            .start_pending_initial_media(&mut app_state, &self.app_config);
+        self.startup_media.poll_youtube_job(&mut app_state);
         app_state.poll_local_file_open_job();
         self.refresh_background_job_poll_deadline(false);
 
@@ -191,8 +163,7 @@ impl AppShell {
             app_state.clear_cached_present_frame_for_runtime_drop();
 
             if let Some(path) = app_state.current_local_file() {
-                self.initial_media = Some(InitialMedia::File(path.to_path_buf()));
-                self.startup_error = None;
+                self.startup_media.restore_file_on_next_resume(path);
             }
         }
 
@@ -200,28 +171,9 @@ impl AppShell {
         self.renderer = None;
     }
 
-    /// Запускает background resolve для CLI YouTube URL и сразу обновляет UI state.
-    fn start_youtube_startup_job(&mut self, source_url: String, app_state: &mut AppState) {
-        app_state.set_startup_pending("Подготовка YouTube stream...".to_string());
-        self.next_background_job_poll_at = None;
-        match YoutubeStartupJob::spawn(source_url, self.app_config.clone()) {
-            Ok(job) => {
-                self.startup_error = None;
-                self.youtube_startup_job = Some(job);
-            }
-            Err(error) => {
-                warn!(error = %error, "Не удалось запустить YouTube startup resolver");
-                let startup_error = format!("NetworkError: YouTube error: {error}");
-                self.startup_error = Some(startup_error.clone());
-                app_state.set_startup_error(startup_error);
-                self.next_background_job_poll_at = None;
-            }
-        }
-    }
-
     /// Сбрасывает deadline polling-а, когда shell background jobs уже завершены.
     fn refresh_background_job_poll_deadline(&mut self, has_pending_local_file_open: bool) {
-        if self.youtube_startup_job.is_none() && !has_pending_local_file_open {
+        if !self.startup_media.has_pending_youtube_job() && !has_pending_local_file_open {
             self.next_background_job_poll_at = None;
         }
     }
@@ -272,7 +224,7 @@ impl AppShell {
 
     /// Возвращает `true`, если idle loop должен просыпаться для polling-а background jobs.
     fn has_pending_background_job(&self) -> bool {
-        self.youtube_startup_job.is_some()
+        self.startup_media.has_pending_youtube_job()
             || self
                 .app_state
                 .as_ref()
@@ -394,15 +346,11 @@ impl ApplicationHandler for AppShell {
             },
 
             WindowEvent::RedrawRequested => {
-                poll_youtube_startup_job(
-                    &mut self.youtube_startup_job,
-                    app_state,
-                    &mut self.startup_error,
-                );
+                self.startup_media.poll_youtube_job(app_state);
                 app_state.poll_local_file_open_job();
                 let pacing = render_frame(&self.telemetry, &window, renderer, app_state);
                 let has_pending_local_file_open = app_state.has_pending_local_file_open();
-                if self.youtube_startup_job.is_none() && !has_pending_local_file_open {
+                if !self.startup_media.has_pending_youtube_job() && !has_pending_local_file_open {
                     self.next_background_job_poll_at = None;
                 }
                 self.apply_redraw_pacing(event_loop, &window, pacing);
