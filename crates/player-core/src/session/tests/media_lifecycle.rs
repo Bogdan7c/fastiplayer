@@ -310,6 +310,124 @@ fn audio_only_prepared_media_opens_without_missing_video_fatal() {
 }
 
 #[test]
+fn failed_prepared_media_open_publishes_error_without_resetting_old_playback() {
+    let mut session = PlayerSession::new();
+    let old_tracks = vec![fake_track(1, TrackKind::Video)];
+    let old_seek_log = Arc::new(Mutex::new(Vec::new()));
+    let old_demuxer = FakeDemuxer::new(
+        old_tracks,
+        Some(Duration::from_secs(30)),
+        Arc::clone(&old_seek_log),
+    );
+    let old_media_path = std::path::PathBuf::from("/tmp/current.webm");
+    let old_prepared_media =
+        PreparedMedia::from_local_file(old_media_path.clone(), Box::new(old_demuxer));
+    session.load_prepared_media_with_autoplay(old_prepared_media, false);
+    let _ = session.take_events();
+    session.set_playback_state(PlaybackState::Playing);
+
+    let failed_request = MediaOpenRequest::new(
+        MediaSource::LocalFile(std::path::PathBuf::from("/tmp/missing.webm")),
+        true,
+    );
+    let open_error = PlayerError::new(PlayerErrorKind::DemuxError, "adapter failed");
+
+    session.fail_media_open_with_error(failed_request.clone(), open_error.clone());
+
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+    assert_eq!(
+        session.snapshot().source_label.as_deref(),
+        Some("/tmp/current.webm")
+    );
+    assert_eq!(session.snapshot().media_title.as_deref(), Some("current"));
+    assert_eq!(
+        session.snapshot().selected_tracks.video_track,
+        Some(TrackId::new(1))
+    );
+    assert!(session.pipeline.has_demuxer());
+    assert_eq!(
+        session
+            .snapshot()
+            .last_error
+            .as_ref()
+            .expect("open failure должен попасть в snapshot")
+            .kind,
+        PlayerErrorKind::DemuxError
+    );
+
+    let events = session.take_events();
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            PlayerEvent::MediaOpenRequested(request) if request == &failed_request
+        )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            PlayerEvent::RecoverableError(error)
+                if error.kind == open_error.kind && error.message == open_error.message
+        )
+    }));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::FatalError(_)))
+    );
+}
+
+#[test]
+fn not_seekable_prepared_media_blocks_seek_transaction() {
+    let mut session = PlayerSession::new();
+    let tracks = vec![fake_track(1, TrackKind::Video)];
+    let seek_log = Arc::new(Mutex::new(Vec::new()));
+    let demuxer = FakeDemuxer::new(tracks, Some(Duration::from_secs(30)), Arc::clone(&seek_log))
+        .with_seekability(DemuxSeekability::NotSeekable {
+            reason: TimelineNotSeekableReason::SourceNotSeekable,
+        });
+    let media_path = std::path::PathBuf::from("/tmp/live-stream.webm");
+    let prepared_media = PreparedMedia::from_local_file(media_path, Box::new(demuxer));
+    session.load_prepared_media_with_autoplay(prepared_media, false);
+    let _ = session.take_events();
+
+    let seek_request = SeekRequest::absolute(MediaTime::from_secs(6));
+    session
+        .dispatch_command(PlayerCommand::Seek(seek_request))
+        .unwrap();
+
+    assert!(session.seek_commit().is_none());
+    assert_eq!(
+        *seek_log
+            .lock()
+            .expect("seek log mutex should not be poisoned"),
+        Vec::<Duration>::new()
+    );
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
+    let seek_error = session
+        .snapshot()
+        .last_error
+        .as_ref()
+        .expect("blocked seek должен опубликовать user-facing error");
+    assert_eq!(seek_error.kind, PlayerErrorKind::SeekUnavailable);
+    assert!(seek_error.message.contains("timeline не seekable"));
+
+    let events = session.take_events();
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            PlayerEvent::SeekRequested(request) if *request == seek_request
+        )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            PlayerEvent::RecoverableError(error)
+                if error.kind == PlayerErrorKind::SeekUnavailable
+        )
+    }));
+}
+
+#[test]
 fn audio_only_play_and_tick_do_not_require_video_decoder() {
     let mut session = PlayerSession::new();
     let tracks = vec![fake_track(2, TrackKind::Audio)];

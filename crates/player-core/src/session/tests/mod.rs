@@ -9,11 +9,12 @@ use codec_core::{ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunctio
 use super::*;
 use crate::{
     AudioOutputFactory, AudioOutputSpec, DecodeBackpressureReason, DecodeSendError,
-    DecodeThreadError, DecoderControlChannelPressureSnapshot, DecoderResourceSnapshot, MediaSource,
-    PendingAudioPacket, PendingVideoPacket, PlayerAudioClock, PlayerAudioOutput, PlayerCommand,
-    PlayerDecodePacket, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
-    PlayerVideoFrameDrop, PresentFrameResourceProviderHandle, ScrubCommitPolicy, SeekMode,
-    SeekTarget,
+    DecodeThreadError, DecoderControlChannelPressureSnapshot, DecoderResourceSnapshot,
+    MediaOpenRequest, MediaSource, MediaSummary, PendingAudioPacket, PendingVideoPacket,
+    PlayerAudioClock, PlayerAudioOutput, PlayerCommand, PlayerDecodePacket, PlayerError,
+    PlayerErrorKind, PlayerEvent, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
+    PlayerVideoFrameDrop, PreparedMedia, PresentFrameResourceProviderHandle, ScrubCommitPolicy,
+    SeekMode, SeekTarget,
 };
 use bytes::Bytes;
 use capability_core::{
@@ -24,8 +25,8 @@ use codec_core::{
     Vp9Profile,
 };
 use media_core::{
-    DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer,
-    PacketKeyframe,
+    DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
+    DemuxTrackListUpdate, Demuxer, PacketKeyframe,
 };
 use render_core::RenderCapabilities;
 
