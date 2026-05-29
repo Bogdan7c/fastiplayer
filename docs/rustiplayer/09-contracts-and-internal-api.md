@@ -157,11 +157,14 @@ payload.
 `player-core::PreparedMedia` является границей открытия media. Shell или service
 layer открывает concrete demuxer, снимает tracks/duration/seekability и передаёт
 в worker уже готовый `Box<dyn media_core::Demuxer + Send>`. `player-core` после
-refactor не должен напрямую зависеть от `webm-demux` ради локального открытия.
+refactor не должен напрямую зависеть от `symphonia-demux`/`webm-demux` ради
+локального открытия.
 
-`webm-demux::Demuxer` returns packets and supports timeline seek through
-`DemuxSeekRequest`. Demuxer seek gives a decode-safe or approximate container
-position; `player-core` owns final pre-roll/drop/commit.
+`media_core::Demuxer` возвращает packets и поддерживает timeline seek через
+`DemuxSeekRequest`. `symphonia-demux` реализует concrete adapter и re-export
+нейтрального demux contract-а для совместимости. Demuxer seek возвращает
+decode-safe или approximate container position; `player-core` владеет финальным
+pre-roll/drop/commit.
 
 ## Codec contract
 

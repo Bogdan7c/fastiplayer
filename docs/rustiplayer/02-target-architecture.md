@@ -13,14 +13,14 @@ app-egui
 player-core          service-youtube      video-vaapi          render-wgpu-shell   render-wgpu-video
   worker/session      yt-dlp adapter,     VA-API decode,       WGPU surface,       NV12/P010 renderer,
   commands/events     HTTP refresh,       DMA-BUF export,      egui/winit          materialization API,
-  scheduler/state     WebM demux open     WGPU import          composition         shader/color path
+  scheduler/state     stream demux open   WGPU import          composition         shader/color path
         |                    |                    |                    |                    |
         v                    v                    v                    v                    v
 media-core           source-core          video-backend-api    render-core <-------+
   packets/tracks      local/http/cache    startup/backend     render/color
         |                    |            startup/resource     contract
         v                    v            provider contract           |
-codec-core <--------- webm-demux <--------+       |                    |
+codec-core <--------- symphonia-demux <---+       |                    |
   codec/color         packets/tracks              |                    |
         |                                           v                    v
         |                                     video-core                |
@@ -52,9 +52,9 @@ UI/CLI/media URL
 
 Текущий production composition не является полностью backend-neutral:
 `app-egui` создаёт WGPU context, регистрирует VA-API capability probe, открывает
-локальный WebM через `webm-demux` и передаёт в `player-core` уже подготовленный
-`PreparedMedia`. YouTube startup остаётся service-level открытием demuxer-а через
-`service-youtube`.
+локальные media files через `symphonia-demux` и передаёт в `player-core` уже
+подготовленный `PreparedMedia`. YouTube startup остаётся service-level открытием
+demuxer-а через `service-youtube`.
 
 ## Video flow
 

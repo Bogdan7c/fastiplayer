@@ -1,6 +1,6 @@
 # Документация rustiplayer
 
-Актуализировано: 2026-05-21.
+Актуализировано: 2026-05-29.
 
 Этот каталог описывает текущее состояние `rustiplayer`, а не историю фаз
 рефакторинга. Исторические session-планы удалены из рабочей навигации: если
@@ -38,7 +38,8 @@ Software video fallback, CPU upload и CPU readback не являются нас
 
 Текущий service path:
 
-- Локальные WebM/Matroska идут через `webm-demux`.
+- Локальные media files открываются через `symphonia-demux`; `webm-demux`
+  остаётся только compatibility re-export-ом старого crate path.
 - YouTube пока проходит через `service-youtube` и `yt-dlp`.
 - `source-core` владеет local/HTTP byte source, Range seekability и RAM byte-range cache.
 

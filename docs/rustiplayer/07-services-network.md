@@ -38,8 +38,10 @@ playback, seek or scrub hot paths without a clear boundary.
 
 ## Demux boundary
 
-`webm-demux` owns WebM/Matroska demuxing through Symphonia and Matroska pre-scan.
-It exposes `Demuxer`, `DemuxSeekRequest`, `DemuxSeekResult` and `DemuxSeekability`.
+`symphonia-demux` owns concrete demuxing through Symphonia and Matroska pre-scan.
+It exposes `Demuxer`, `DemuxSeekRequest`, `DemuxSeekResult` and
+`DemuxSeekability` through the neutral `media-core` contract. `webm-demux`
+remains only a compatibility re-export for the old crate path.
 
 Rules:
 

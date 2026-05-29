@@ -23,17 +23,19 @@ capability-core.workspace = true
 service-youtube.workspace = true
 desktop-integration.workspace = true
 
-# Новые зависимости для Этапа 2a
+# Композиция playback/media boundary.
 player-core.workspace = true
 media-core.workspace = true
 symphonia-demux.workspace = true
+
+# UI helpers для async/file-dialog.
 pollster.workspace = true
 rfd = "0.15"
 
-# Этап 2b: audio pipeline
+# Композиция audio backend-а.
 audio = { path = "../audio" }
 
-# Stage 2.5: video decode pipeline
+# Композиция video decode/render.
 video-core = { path = "../video-core" }
 video-vaapi = { path = "../video-vaapi" }
 render-core.workspace = true

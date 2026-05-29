@@ -1,6 +1,6 @@
 # 11. Аудит документации
 
-Дата аудита: 2026-05-28.
+Дата аудита: 2026-05-29.
 
 ## Что было устаревшим
 
@@ -24,6 +24,9 @@
   path существует, но gated capabilities.
 - Unknown video codec не должен описываться как VP9 fallback: demuxer использует
   `unknown_video`.
+- Track kind inference не должен описываться как non-audio -> video fallback:
+  demuxer использует Symphonia `TrackType`, type-specific `CodecParameters` и
+  Matroska video metadata только как явное доказательство video track-а.
 - Worker render bridge больше не создаёт WGPU views внутри player thread:
   texture views создаются на render thread через lease provider.
 - `PlayerSession::pipeline` больше не описывается как открытый `pub(crate)`
@@ -50,8 +53,10 @@
   открытым полевым storage boundary.
 - Временные size exceptions в `player-core`: `pipeline.rs`, `session/tick/mod.rs`
   и `worker.rs` пока выше ориентира 2k строк.
-- YouTube service API ещё не capability-aware.
-- `webm-demux` грубо классифицирует non-audio tracks как video.
+- YouTube startup/playback path ещё не использует capability-aware stream
+  candidates, хотя `service-youtube` уже умеет их отдавать.
+- `webm-demux` ещё остаётся compatibility re-export-ом старого crate path, хотя
+  активный concrete demux adapter уже `symphonia-demux`.
 
 ## Self-review checklist
 

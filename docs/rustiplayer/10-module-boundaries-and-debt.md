@@ -190,11 +190,18 @@ crate `webm-demux` оставлен только как compatibility re-export 
 Symphonia удалены из workspace. Demux/audio path больше не имеет локального
 Symphonia fork как source-level или Cargo-level fallback.
 
-`infer_track_kind()` пока считает всё non-audio видео. Unknown video codec уже не
-маскируется под VP9, но определение kind всё ещё грубое.
+Закрытый долг: `infer_track_kind()` больше не считает всё non-audio видео. Маппер
+сначала использует `TrackType`, затем fallback только на type-specific
+`CodecParameters`. Unknown track без Matroska metadata, подтверждающей video
+track, остаётся `UnsupportedTrackKind::Unknown`. Unknown video codec не
+маскируется под VP9 и остаётся `unknown_video` для capability layer-а.
 
-Следующий шаг: опираться на container metadata там, где Symphonia/Matroska
-pre-scan даёт явный TrackType.
+Оставшийся долг здесь только совместимый старый crate path: `webm-demux` ещё
+присутствует в workspace как re-export `symphonia-demux`.
+
+Следующий шаг: удалить compatibility crate `webm-demux` только после отдельного
+решения о разрыве старого публичного пути и проверки, что внешние call sites уже
+мигрировали на `symphonia-demux` или `media-core`.
 
 ## `render-wgpu-video` и `render-wgpu-shell`
 
