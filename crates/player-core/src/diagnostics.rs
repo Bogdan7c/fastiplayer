@@ -301,8 +301,14 @@ pub struct PipelineLatencyCountersSnapshot {
 /// Drop counters по typed причинам.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VideoDropCountersSnapshot {
-    /// Все typed drops.
+    /// Все typed removals, включая ожидаемый seek discard.
     pub total: u64,
+
+    /// Drops вне seek-discard taxonomy: playback, render boundary и pause-state.
+    pub playback_or_render: u64,
+
+    /// Ожидаемые discard вокруг seek/generation boundary.
+    pub seek_discard: u64,
 
     /// Late drops.
     pub late: u64,
@@ -986,21 +992,31 @@ impl PlaybackDiagnostics {
         self.snapshot.drops.total = self.snapshot.drops.total.saturating_add(1);
         match reason {
             VideoDropReason::Late => {
+                self.snapshot.drops.playback_or_render =
+                    self.snapshot.drops.playback_or_render.saturating_add(1);
                 self.snapshot.drops.late = self.snapshot.drops.late.saturating_add(1);
             }
             VideoDropReason::QueueOverflow => {
+                self.snapshot.drops.playback_or_render =
+                    self.snapshot.drops.playback_or_render.saturating_add(1);
                 self.snapshot.drops.queue_overflow =
                     self.snapshot.drops.queue_overflow.saturating_add(1);
             }
             VideoDropReason::StaleGeneration => {
+                self.snapshot.drops.seek_discard =
+                    self.snapshot.drops.seek_discard.saturating_add(1);
                 self.snapshot.drops.stale_generation =
                     self.snapshot.drops.stale_generation.saturating_add(1);
             }
             VideoDropReason::SeekPreroll => {
+                self.snapshot.drops.seek_discard =
+                    self.snapshot.drops.seek_discard.saturating_add(1);
                 self.snapshot.drops.seek_preroll =
                     self.snapshot.drops.seek_preroll.saturating_add(1);
             }
             VideoDropReason::RenderAcquisitionTimeout => {
+                self.snapshot.drops.playback_or_render =
+                    self.snapshot.drops.playback_or_render.saturating_add(1);
                 self.snapshot.drops.render_acquisition_timeout = self
                     .snapshot
                     .drops
@@ -1008,10 +1024,14 @@ impl PlaybackDiagnostics {
                     .saturating_add(1);
             }
             VideoDropReason::DecoderStarvation => {
+                self.snapshot.drops.playback_or_render =
+                    self.snapshot.drops.playback_or_render.saturating_add(1);
                 self.snapshot.drops.decoder_starvation =
                     self.snapshot.drops.decoder_starvation.saturating_add(1);
             }
             VideoDropReason::Paused => {
+                self.snapshot.drops.playback_or_render =
+                    self.snapshot.drops.playback_or_render.saturating_add(1);
                 self.snapshot.drops.paused = self.snapshot.drops.paused.saturating_add(1);
             }
         }
@@ -1459,14 +1479,28 @@ mod tests {
         );
         diagnostics.record_drop(
             Some(Duration::from_millis(20)),
+            VideoDropReason::StaleGeneration,
+            queues,
+        );
+        diagnostics.record_drop(
+            Some(Duration::from_millis(30)),
+            VideoDropReason::Late,
+            queues,
+        );
+        diagnostics.record_drop(
+            Some(Duration::from_millis(40)),
             VideoDropReason::RenderAcquisitionTimeout,
             queues,
         );
 
         let snapshot = diagnostics.snapshot_with_queues(queues);
 
-        assert_eq!(snapshot.drops.total, 2);
+        assert_eq!(snapshot.drops.total, 4);
+        assert_eq!(snapshot.drops.seek_discard, 2);
+        assert_eq!(snapshot.drops.playback_or_render, 2);
         assert_eq!(snapshot.drops.seek_preroll, 1);
+        assert_eq!(snapshot.drops.stale_generation, 1);
+        assert_eq!(snapshot.drops.late, 1);
         assert_eq!(snapshot.drops.render_acquisition_timeout, 1);
         assert_eq!(
             snapshot.drops.last.map(|drop| drop.reason),

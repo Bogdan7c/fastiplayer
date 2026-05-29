@@ -1139,6 +1139,8 @@ impl PlayerWorkerRuntime {
         let publish_pressure = summary.decoder_frame_publish_pressure;
         debug!(
             drops = summary.drops_total,
+            drops_playback_or_render = summary.drops.playback_or_render,
+            drops_seek_discard = summary.drops.seek_discard,
             drops_late = summary.drops.late,
             drops_queue = summary.drops.queue_overflow,
             drops_stale_generation = summary.drops.stale_generation,
