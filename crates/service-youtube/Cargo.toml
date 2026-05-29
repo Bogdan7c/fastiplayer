@@ -18,6 +18,7 @@ serde = { workspace = true }
 serde_json = "1.0"
 rustiplayer-config = { workspace = true }
 source-core = { workspace = true }
+media-prefetch = { workspace = true }
 tracing = { workspace = true }
 symphonia-demux.workspace = true
 

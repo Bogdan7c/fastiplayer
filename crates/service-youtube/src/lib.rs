@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
-use source_core::{ByteSource, CachedByteSource, HttpHeader, SourceRuntimeConfig};
+use source_core::{ByteSource, HttpHeader, SourceRuntimeConfig};
 use symphonia_demux::DemuxerOptions;
 
 /// Размер HTTP chunk, который fetcher передаёт demuxer-у.
@@ -238,8 +238,12 @@ fn open_range_backed_demuxer(
         return Ok(None);
     }
 
-    let video_source = CachedByteSource::new(video_source, &source_config);
-    let audio_source = CachedByteSource::new(audio_source, &source_config);
+    // Сессия 4 пробросит эти значения из NetworkConfig; пока сохраняем дефолты 8 MiB/256 MiB.
+    let prefetch_config = media_prefetch::PrefetchConfig::default();
+    let video_source =
+        media_prefetch::PrefetchingByteSource::new(Box::new(video_source), prefetch_config);
+    let audio_source =
+        media_prefetch::PrefetchingByteSource::new(Box::new(audio_source), prefetch_config);
     let video_demuxer = symphonia_demux::SymphoniaDemuxer::from_byte_source_with_options(
         video_source,
         "webm",

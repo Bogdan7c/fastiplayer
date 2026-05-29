@@ -3643,6 +3643,7 @@ dependencies = [
  "capability-core",
  "codec-core",
  "media-core",
+ "media-prefetch",
  "reqwest",
  "rustiplayer-config",
  "serde",
