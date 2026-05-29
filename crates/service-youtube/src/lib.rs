@@ -20,6 +20,9 @@ use symphonia_demux::DemuxerOptions;
 /// Размер HTTP chunk, который fetcher передаёт demuxer-у.
 const HTTP_READ_CHUNK_SIZE: usize = 64 * 1024;
 
+/// Один мебибайт в bytes для явной конвертации пользовательских network-настроек.
+const MIB_BYTES: u64 = 1024 * 1024;
+
 mod dto;
 mod http_refresh;
 mod process;
@@ -93,6 +96,8 @@ pub fn open_streaming_media_with_demux_config(
 ) -> Result<YoutubeStreamingMedia> {
     let source_config = SourceRuntimeConfig::from_network_config(network_config)
         .context("Network config нельзя использовать для YouTube source")?;
+    let prefetch_config = prefetch_config_from_network_config(network_config)
+        .context("Network config нельзя использовать для YouTube prefetch")?;
     let demuxer_options = demuxer_options_from_config(demux_config);
     let resolver: Arc<dyn YoutubeDirectStreamResolver> = Arc::new(
         YtDlpDirectStreamResolver::from_youtube_config(youtube_config)?,
@@ -103,6 +108,7 @@ pub fn open_streaming_media_with_demux_config(
         video_url,
         &mut direct_streams,
         source_config,
+        prefetch_config,
         Arc::clone(&resolver),
         demuxer_options,
     )?;
@@ -129,6 +135,8 @@ pub fn open_streaming_media_from_candidates_with_demux_config(
 ) -> Result<YoutubeStreamingMedia> {
     let source_config = SourceRuntimeConfig::from_network_config(network_config)
         .context("Network config нельзя использовать для YouTube source")?;
+    let prefetch_config = prefetch_config_from_network_config(network_config)
+        .context("Network config нельзя использовать для YouTube prefetch")?;
     let demuxer_options = demuxer_options_from_config(demux_config);
     let selected_candidate = stream_candidates
         .candidates
@@ -149,6 +157,7 @@ pub fn open_streaming_media_from_candidates_with_demux_config(
         video_url,
         &mut direct_streams,
         source_config,
+        prefetch_config,
         resolver,
         demuxer_options,
     )?;
@@ -165,6 +174,7 @@ fn build_demuxer_from_direct_streams(
     original_video_url: &str,
     direct_streams: &mut YoutubeDirectStreams,
     source_config: SourceRuntimeConfig,
+    prefetch_config: media_prefetch::PrefetchConfig,
     resolver: Arc<dyn YoutubeDirectStreamResolver>,
     demuxer_options: DemuxerOptions,
 ) -> Result<Box<dyn symphonia_demux::Demuxer + Send>> {
@@ -177,6 +187,7 @@ fn build_demuxer_from_direct_streams(
         original_video_url,
         direct_streams,
         source_config.clone(),
+        prefetch_config,
         resolver,
         demuxer_options,
     )? {
@@ -190,6 +201,7 @@ fn open_range_backed_demuxer(
     original_video_url: &str,
     direct_streams: &mut YoutubeDirectStreams,
     source_config: SourceRuntimeConfig,
+    prefetch_config: media_prefetch::PrefetchConfig,
     resolver: Arc<dyn YoutubeDirectStreamResolver>,
     demuxer_options: DemuxerOptions,
 ) -> Result<Option<Box<dyn symphonia_demux::Demuxer + Send>>> {
@@ -238,8 +250,6 @@ fn open_range_backed_demuxer(
         return Ok(None);
     }
 
-    // Сессия 4 пробросит эти значения из NetworkConfig; пока сохраняем дефолты 8 MiB/256 MiB.
-    let prefetch_config = media_prefetch::PrefetchConfig::default();
     let video_source =
         media_prefetch::PrefetchingByteSource::new(Box::new(video_source), prefetch_config);
     let audio_source =
@@ -262,6 +272,32 @@ fn open_range_backed_demuxer(
         .context("Не удалось объединить Range-backed video/audio demuxer-ы")?;
 
     Ok(Some(Box::new(demuxer)))
+}
+
+/// Строит нейтральный `media-prefetch` config из пользовательской network-секции.
+fn prefetch_config_from_network_config(
+    network_config: &NetworkConfig,
+) -> Result<media_prefetch::PrefetchConfig> {
+    let chunk_bytes = network_mebibytes_to_bytes(
+        "network.prefetch_chunk_mb",
+        network_config.prefetch_chunk_mb,
+    )?;
+    let window_bytes =
+        network_mebibytes_to_bytes("network.read_ahead_mb", network_config.read_ahead_mb)?;
+
+    media_prefetch::PrefetchConfig::new(chunk_bytes, window_bytes).with_context(|| {
+        format!(
+            "некорректные prefetch настройки: prefetch_chunk_mb={}, read_ahead_mb={}",
+            network_config.prefetch_chunk_mb, network_config.read_ahead_mb
+        )
+    })
+}
+
+/// Переводит MiB-поле config-а в bytes без переполнения.
+fn network_mebibytes_to_bytes(field_name: &'static str, value_mb: u64) -> Result<u64> {
+    value_mb
+        .checked_mul(MIB_BYTES)
+        .with_context(|| format!("{field_name} не помещается в байтовый budget: {value_mb} MiB"))
 }
 
 /// Открывает старый playback-only path через последовательный HTTP body stream.
@@ -526,14 +562,44 @@ mod tests {
         }
     }
 
-    fn test_source_config() -> SourceRuntimeConfig {
-        SourceRuntimeConfig::from_network_config(&NetworkConfig {
+    fn test_network_config(read_ahead_mb: u64, prefetch_chunk_mb: u64) -> NetworkConfig {
+        NetworkConfig {
             memory_cache_mb: 1,
-            read_ahead_mb: 1,
+            read_ahead_mb,
+            prefetch_chunk_mb,
             connect_timeout_ms: 1_000,
             read_timeout_ms: 1_000,
-        })
-        .expect("source config")
+        }
+    }
+
+    fn test_source_config() -> SourceRuntimeConfig {
+        SourceRuntimeConfig::from_network_config(&test_network_config(1, 1)).expect("source config")
+    }
+
+    fn test_prefetch_config() -> media_prefetch::PrefetchConfig {
+        media_prefetch::PrefetchConfig::new(MIB_BYTES, MIB_BYTES).expect("test prefetch config")
+    }
+
+    #[test]
+    fn prefetch_config_uses_network_chunk_and_readahead_window() {
+        let network_config = test_network_config(9, 3);
+
+        let prefetch_config = prefetch_config_from_network_config(&network_config)
+            .expect("valid network prefetch config");
+
+        assert_eq!(prefetch_config.chunk_bytes(), 3 * MIB_BYTES);
+        assert_eq!(prefetch_config.window_bytes(), 9 * MIB_BYTES);
+    }
+
+    #[test]
+    fn prefetch_config_rejects_window_smaller_than_chunk() {
+        let network_config = test_network_config(4, 8);
+
+        let error = prefetch_config_from_network_config(&network_config)
+            .expect_err("window smaller than chunk must be rejected");
+
+        assert!(format!("{error:#}").contains("prefetch_chunk_mb=8"));
+        assert!(format!("{error:#}").contains("read_ahead_mb=4"));
     }
 
     fn descriptor(kind: YoutubeStreamKind, url: String) -> YoutubeDirectStreamDescriptor {
@@ -788,6 +854,7 @@ mod tests {
             "http://youtube.test/watch",
             &mut streams,
             test_source_config(),
+            test_prefetch_config(),
             resolver,
             DemuxerOptions::default(),
         )
@@ -942,6 +1009,7 @@ mod tests {
             "http://youtube.test/watch",
             &mut streams,
             test_source_config(),
+            test_prefetch_config(),
             resolver,
             DemuxerOptions::default(),
         )
@@ -994,6 +1062,7 @@ mod tests {
             "http://youtube.test/watch",
             &mut streams,
             test_source_config(),
+            test_prefetch_config(),
             resolver,
             DemuxerOptions::default(),
         )

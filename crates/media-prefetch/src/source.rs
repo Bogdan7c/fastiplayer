@@ -129,6 +129,11 @@ impl ByteSource for PrefetchingByteSource {
         if offset_is_buffered {
             state.buffer.set_cursor_within(offset);
             self.logical_position = offset;
+            tracing::debug!(
+                offset,
+                buffered_end,
+                "media prefetch foreground seek остался внутри RAM window"
+            );
             self.shared.notify_all();
             return Ok(());
         }
@@ -148,6 +153,12 @@ impl ByteSource for PrefetchingByteSource {
         state.fatal_error = None;
         state.diagnostics.refetches = state.diagnostics.refetches.saturating_add(1);
         self.logical_position = offset;
+        tracing::debug!(
+            offset,
+            previous_buffered_end = buffered_end,
+            refetches = state.diagnostics.refetches,
+            "media prefetch foreground seek запросил новое RAM window"
+        );
         self.shared.notify_all();
         Ok(())
     }

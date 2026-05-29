@@ -211,7 +211,8 @@ mod tests {
         assert_eq!(config.video.scheduler.surface_free_slots_min, 2);
         assert_eq!(config.video.scheduler.surface_free_slots_target, 4);
         assert_eq!(config.network.memory_cache_mb, 128);
-        assert_eq!(config.network.read_ahead_mb, 64);
+        assert_eq!(config.network.read_ahead_mb, 256);
+        assert_eq!(config.network.prefetch_chunk_mb, 8);
         assert_eq!(config.network.connect_timeout_ms, 15_000);
         assert_eq!(config.network.read_timeout_ms, 15_000);
         assert_eq!(config.youtube.resolve_timeout_ms, 30_000);
@@ -340,7 +341,8 @@ mod tests {
         assert!(created_toml.contains("surface_free_slots_target = 4"));
         assert!(created_toml.contains("# RAM cache budget"));
         assert!(created_toml.contains("memory_cache_mb = 128"));
-        assert!(created_toml.contains("read_ahead_mb = 64"));
+        assert!(created_toml.contains("read_ahead_mb = 256"));
+        assert!(created_toml.contains("prefetch_chunk_mb = 8"));
         assert!(created_toml.contains("# Timeout подготовки YouTube metadata"));
         assert!(created_toml.contains("resolve_timeout_ms = 30000"));
         assert!(!created_toml.contains("index_fingerprint_sample_kb"));
@@ -384,6 +386,29 @@ schema_version = 2
 
             assert!(error.to_string().contains(field_name));
         }
+    }
+
+    /// Проверяет backward compatibility: старый network config без нового chunk-поля получает default.
+    #[test]
+    fn existing_network_config_without_prefetch_chunk_gets_default() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[network]
+memory_cache_mb = 128
+read_ahead_mb = 64
+"#,
+        )
+        .expect("legacy network config written");
+
+        let loaded = load_from_path(&config_path).expect("legacy network config accepted");
+
+        assert_eq!(loaded.config.network.read_ahead_mb, 64);
+        assert_eq!(loaded.config.network.prefetch_chunk_mb, 8);
     }
 
     /// Проверяет, что старые preview-настройки seek не остаются молча принятыми.
@@ -589,6 +614,49 @@ memory_cache_mb = 4097
         let error = load_from_path(&config_path).expect_err("invalid memory cache rejected");
 
         assert!(error.to_string().contains("network.memory_cache_mb"));
+    }
+
+    /// Проверяет, что prefetch chunk нельзя отключить нулём.
+    #[test]
+    fn invalid_network_prefetch_chunk_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[network]
+prefetch_chunk_mb = 0
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid prefetch chunk rejected");
+
+        assert!(error.to_string().contains("network.prefetch_chunk_mb"));
+    }
+
+    /// Проверяет, что prefetch window не может быть меньше одного chunk-а.
+    #[test]
+    fn invalid_network_prefetch_window_smaller_than_chunk_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[network]
+read_ahead_mb = 4
+prefetch_chunk_mb = 8
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("invalid prefetch window rejected");
+
+        assert!(error.to_string().contains("network.read_ahead_mb"));
     }
 
     /// Проверяет положительность network timeout-ов.

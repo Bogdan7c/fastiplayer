@@ -344,6 +344,21 @@ fn validate_network_section(config: &AppConfig) -> ConfigResult<()> {
         1,
         MAX_NETWORK_READ_AHEAD_MB,
     )?;
+    validate_u64_range(
+        "network.prefetch_chunk_mb",
+        config.network.prefetch_chunk_mb,
+        1,
+        MAX_NETWORK_READ_AHEAD_MB,
+    )?;
+    if config.network.read_ahead_mb < config.network.prefetch_chunk_mb {
+        return Err(invalid_value(
+            "network.read_ahead_mb",
+            format!(
+                "prefetch window должен быть не меньше chunk: read_ahead_mb={}, prefetch_chunk_mb={}",
+                config.network.read_ahead_mb, config.network.prefetch_chunk_mb
+            ),
+        ));
+    }
     validate_positive_u64(
         "network.connect_timeout_ms",
         config.network.connect_timeout_ms,

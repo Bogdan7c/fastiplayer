@@ -177,6 +177,24 @@ SDR-safe selector и возвращает уже открытый demuxer для
 Следующий шаг: service candidates -> capability selection -> demux open без
 изменения HTTP refresh/range boundary.
 
+## `media-prefetch`
+
+Закрытый долг: seekable YouTube Range/VOD path больше не читает сеть из
+foreground demux/read path после первичного заполнения RAM window. `service-youtube`
+оборачивает video/audio `YoutubeRefreshingRangeSource` в `PrefetchingByteSource`,
+а `media-prefetch` держит bounded RAM read-ahead window и один background worker
+на source.
+
+Граница `media-prefetch` намеренно узкая: crate зависит только от
+`source-core`, `tracing` и `thiserror`. Он не знает `service-youtube`,
+`rustiplayer-config`, `player-core`, renderer/UI, containers или codecs.
+Пользовательский TOML мапится в `PrefetchConfig` снаружи, в service boundary.
+
+Оставшийся риск здесь не архитектурный debt, а tuning: дефолты 8 MiB chunk /
+256 MiB window могут требовать корректировки для слабых сетей или малого RAM
+budget, но изменение policy должно идти через `[network]`, а не через новые
+зависимости prefetch слоя.
+
 ## `symphonia-demux`
 
 `symphonia-demux` владеет concrete adapter-ом поверх Symphonia и открывает

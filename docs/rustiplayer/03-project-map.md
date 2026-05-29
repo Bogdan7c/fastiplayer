@@ -11,6 +11,7 @@ crates/codec-core            codec/profile/color/surface/memory contracts
 crates/capability-core       backend reports, render reports, stream selection
 crates/config                TOML schema v2, defaults, validation, paths
 crates/source-core           local files, HTTP Range, RAM byte-range cache
+crates/media-prefetch        config-agnostic RAM read-ahead over ByteSource
 crates/symphonia-demux       Symphonia audio container demux adapter
 crates/webm-demux            compatibility re-export for old demux crate path
 crates/service-youtube       yt-dlp adapter, stream candidates, YouTube demux open
@@ -59,6 +60,10 @@ materialization code.
 `source-core` owns byte access. It does not know YouTube, containers, codecs,
 renderer or player state.
 
+`media-prefetch` owns config-agnostic RAM read-ahead over `source-core::ByteSource`.
+It owns the sliding window state and background worker boundary, but it does not
+know YouTube, config schema, containers, codecs, renderer, UI or player state.
+
 `service-youtube` owns YouTube/yt-dlp details. It returns already opened streaming
 media/demuxer objects to the shell and does not contain UI/render/player state.
 It also exposes capability-aware candidate metadata for a future startup path
@@ -91,7 +96,9 @@ app-egui -> wgpu/winit/egui/egui-winit
 player-core -> media-core/codec-core/capability-core/video-core/video-backend-api/rustiplayer-config/audio-core/render-core
 desktop-integration -> player-core/media-core
 service-youtube -> source-core/symphonia-demux/rustiplayer-config/capability-core/codec-core/media-core
+service-youtube -> media-prefetch
 source-core -> rustiplayer-config
+media-prefetch -> source-core
 symphonia-demux -> media-core/codec-core/source-core
 webm-demux -> symphonia-demux
 audio -> audio-core

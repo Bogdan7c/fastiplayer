@@ -69,6 +69,12 @@ impl PrefetchWorker {
                 return;
             }
 
+            tracing::debug!(
+                fetch_offset,
+                chunk_bytes = chunk_len,
+                window_bytes = self.config.window_bytes(),
+                "media prefetch worker читает следующий chunk"
+            );
             let read_result = self
                 .inner
                 .read(&mut chunk_buffer[..chunk_len], &self.cancellation);
@@ -86,6 +92,10 @@ impl PrefetchWorker {
             }
 
             if let Some(offset) = state.seek_request.take() {
+                tracing::debug!(
+                    offset,
+                    "media prefetch worker сбрасывает окно после foreground seek"
+                );
                 state.buffer.reset_to(offset);
                 state.fatal_error = None;
             }
@@ -94,6 +104,12 @@ impl PrefetchWorker {
                 return FetchDecision::Fetch(state.buffer.next_fetch_offset());
             }
 
+            tracing::debug!(
+                buffered_end = state.buffer.buffered_end(),
+                next_fetch_offset = state.buffer.next_fetch_offset(),
+                window_bytes = self.config.window_bytes(),
+                "media prefetch worker ждёт foreground consume/seek"
+            );
             state = self.shared.wait_state(state);
         }
     }
@@ -124,6 +140,12 @@ impl PrefetchWorker {
         match read_result {
             Ok(0) => {
                 state.buffer.mark_eof_at_fetch_offset();
+                tracing::debug!(
+                    eof_offset = state.buffer.buffered_end(),
+                    chunks_fetched = state.diagnostics.chunks_fetched,
+                    bytes_prefetched = state.diagnostics.bytes_prefetched,
+                    "media prefetch worker дошёл до EOF"
+                );
                 self.shared.notify_all();
             }
             Ok(bytes_read) => {
@@ -136,9 +158,20 @@ impl PrefetchWorker {
                     .saturating_add(bytes_read as u64);
                 state.diagnostics.chunks_fetched =
                     state.diagnostics.chunks_fetched.saturating_add(1);
+                tracing::debug!(
+                    bytes_read,
+                    buffered_end = state.buffer.buffered_end(),
+                    chunks_fetched = state.diagnostics.chunks_fetched,
+                    bytes_prefetched = state.diagnostics.bytes_prefetched,
+                    "media prefetch worker добавил chunk в RAM window"
+                );
                 self.shared.notify_all();
             }
             Err(error) => {
+                tracing::debug!(
+                    error = %error,
+                    "media prefetch worker передаёт ошибку foreground read"
+                );
                 state.fatal_error = Some(error);
                 self.shared.notify_all();
             }

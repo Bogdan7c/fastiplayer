@@ -71,7 +71,8 @@ Serde deserialization.
 - `render.vulkan.present_mode = "fifo"`
 - `render.vulkan.max_frame_latency = 2`
 - `network.memory_cache_mb = 128`
-- `network.read_ahead_mb = 64`
+- `network.read_ahead_mb = 256`
+- `network.prefetch_chunk_mb = 8`
 - `youtube.enabled = true`
 - `youtube.prefer_account_session = true`
 - `youtube.resolve_timeout_ms = 30000`

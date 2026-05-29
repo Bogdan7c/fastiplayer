@@ -113,6 +113,7 @@ mod tests {
         let config = NetworkConfig {
             memory_cache_mb: 2,
             read_ahead_mb: 3,
+            prefetch_chunk_mb: 1,
             connect_timeout_ms: 4,
             read_timeout_ms: 5,
         };

@@ -125,8 +125,13 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
-        "read_ahead_mb = 64",
-        "# Network read-ahead budget.",
+        "read_ahead_mb = 256",
+        "# RAM window, которое prefetch держит впереди foreground cursor-а.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "prefetch_chunk_mb = 8",
+        "# Размер одного фонового prefetch-чтения.",
     );
     insert_default_config_comment(
         toml_text,
@@ -779,8 +784,11 @@ pub struct NetworkConfig {
     /// Размер RAM cache; `0` явно отключает RAM cache.
     pub memory_cache_mb: u64,
 
-    /// Максимальный read-ahead для сетевых источников.
+    /// RAM window, которое prefetch держит впереди foreground cursor-а.
     pub read_ahead_mb: u64,
+
+    /// Размер одного фонового prefetch-чтения.
+    pub prefetch_chunk_mb: u64,
 
     /// Timeout подключения к сетевому источнику.
     pub connect_timeout_ms: u64,
@@ -794,7 +802,8 @@ impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
             memory_cache_mb: 128,
-            read_ahead_mb: 64,
+            read_ahead_mb: 256,
+            prefetch_chunk_mb: 8,
             connect_timeout_ms: 15_000,
             read_timeout_ms: 15_000,
         }

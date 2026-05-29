@@ -38,6 +38,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "capability-core",
         "codec-core",
         "desktop-integration",
+        "media-prefetch",
         "media-core",
         "player-core",
         "render-core",
@@ -162,6 +163,16 @@ RENDER_WGPU_VIDEO_FORBIDDEN_DEPENDENCIES = frozenset(
         "video-vulkan",
         "webm-demux",
         "winit",
+    }
+)
+
+MEDIA_PREFETCH_CRATES = frozenset({"media-prefetch"})
+
+MEDIA_PREFETCH_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "source-core",
+        "thiserror",
+        "tracing",
     }
 )
 
@@ -371,6 +382,14 @@ def find_dependency_violations(
             "render-wgpu-video не зависит от shell/UI/app/player/service/concrete video backend crates",
         )
     )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            MEDIA_PREFETCH_CRATES,
+            MEDIA_PREFETCH_ALLOWED_DEPENDENCIES,
+            "media-prefetch зависит только от source-core плюс tracing/thiserror",
+        )
+    )
     return sorted(violations, key=lambda violation: (violation.owner, violation.dependency))
 
 
@@ -386,6 +405,22 @@ def find_forbidden_dependencies(
     for owner in sorted(owner_crates):
         dependencies = dependency_map.get(owner, frozenset())
         for dependency in sorted(dependencies.intersection(forbidden_dependencies)):
+            violations.append(DependencyViolation(owner=owner, dependency=dependency, rule=rule))
+    return violations
+
+
+def find_disallowed_dependencies(
+    dependency_map: dict[str, frozenset[str]],
+    owner_crates: frozenset[str],
+    allowed_dependencies: frozenset[str],
+    rule: str,
+) -> list[DependencyViolation]:
+    """Возвращает прямые зависимости, которых нет в allowlist роли."""
+
+    violations: list[DependencyViolation] = []
+    for owner in sorted(owner_crates):
+        dependencies = dependency_map.get(owner, frozenset())
+        for dependency in sorted(dependencies.difference(allowed_dependencies)):
             violations.append(DependencyViolation(owner=owner, dependency=dependency, rule=rule))
     return violations
 

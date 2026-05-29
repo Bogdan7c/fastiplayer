@@ -57,6 +57,14 @@ playback state или scheduling обратно из `player-core`.
   composition, frame timing, submit/present и shell-facing render frame
   assembly.
 
+## Source/network crates
+
+Source/network crates владеют byte-access utilities и не должны становиться
+service/player/render API.
+
+- `media-prefetch` - config-agnostic RAM read-ahead wrapper поверх
+  `source-core::ByteSource`.
+
 ## Concrete backend crates
 
 Concrete backend crates владеют конкретной реализацией контейнера, аудио,
@@ -90,8 +98,9 @@ app-egui -> symphonia-demux/audio/video-core/video-vaapi/render-core/render-wgpu
 app-egui -> media-core/capability-core/wgpu/winit/egui/egui-winit/rustiplayer-config
 player-core -> media-core/codec-core/capability-core/video-core/video-backend-api/rustiplayer-config/audio-core/render-core
 video-backend-api -> video-core
-service-youtube -> source-core/symphonia-demux/rustiplayer-config/capability-core/codec-core/media-core
+service-youtube -> source-core/media-prefetch/symphonia-demux/rustiplayer-config/capability-core/codec-core/media-core
 source-core -> rustiplayer-config
+media-prefetch -> source-core
 symphonia-demux -> source-core/media-core/codec-core
 webm-demux -> symphonia-demux
 audio -> audio-core
@@ -171,6 +180,10 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
   concrete video backend crates.
 - `render-wgpu-video` не начинает знать shell/UI/app/player/service или
   concrete video backend crates.
+- `media-prefetch` остаётся config-agnostic source wrapper: разрешены только
+  direct dependencies на `source-core`, `tracing` и `thiserror`; запрещены
+  `service-youtube`, `rustiplayer-config`, `player-core`, `app-egui`,
+  render crates, containers, codecs и concrete backend crates.
 - `video-vaapi` и будущие concrete video backend crates не зависят от
   `player-core`; backend startup/resource provider boundary проходит через
   `video-backend-api`.
@@ -206,6 +219,8 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
 - запрещает прямую dependency от `video-vaapi` к `player-core`;
 - запрещает новые прямые связи `player-core`, `render-wgpu-shell` и
   `render-wgpu-video` с явно опасными соседними слоями;
+- запрещает `media-prefetch` добавлять любые normal-dependencies кроме
+  `source-core`, `tracing` и `thiserror`;
 - не содержит temporary debt allowlist для old mixed `render-wgpu` crate.
 
 Локальный pre-PR путь находится в `scripts/pre-pr-checks.sh`. Он последовательно
