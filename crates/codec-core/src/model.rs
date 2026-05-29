@@ -790,6 +790,20 @@ impl VideoDecodeRequirement {
         }
     }
 
+    /// Сообщает, требует ли stream полноценной HDR-обработки.
+    ///
+    /// Объединяет явный `hdr`-флаг и resolved HDR color metadata, чтобы
+    /// capability/orchestration слои спрашивали про HDR через намерение, а не
+    /// читали отдельные поля `hdr`/`color` напрямую.
+    #[must_use]
+    pub fn requires_hdr_processing(&self) -> bool {
+        self.hdr
+            || self
+                .color
+                .as_ref()
+                .is_some_and(VideoColorMetadata::requires_hdr_processing)
+    }
+
     /// Возвращает копию requirement с уточнённым profile.
     #[must_use]
     pub const fn with_profile(mut self, profile: VideoProfile) -> Self {

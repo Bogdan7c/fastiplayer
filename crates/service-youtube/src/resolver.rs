@@ -619,7 +619,18 @@ fn vp9_requirement_from_codec_tag(
     let mut missing_fields = Vec::new();
 
     if codec_tag == "vp9" {
-        missing_fields.extend(["profile", "bit_depth", "chroma"]);
+        // yt-dlp на YouTube отдаёт SDR VP9 голым тегом `vp9` без ISO BMFF полей
+        // profile/bit-depth/chroma. На YouTube такой stream всегда VP9 Profile 0
+        // (8-bit 4:2:0 SDR) — это и есть базовый production decode path
+        // (VP9 Profile 0 SDR -> VA-API -> NV12 -> WGPU SDR). HDR VP9 на YouTube
+        // приходит только детальным тегом `vp09.02.*`; ошибочный HDR-намёк на
+        // голом `vp9` дополнительно отсекает
+        // reject_hdr_hint_without_resolved_hdr_metadata. Поэтому здесь это не
+        // «угадывание», а доменный факт YouTube-адаптера.
+        requirement = requirement
+            .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0))
+            .with_bit_depth(BitDepth::Eight)
+            .with_chroma(ChromaSubsampling::Yuv420);
         return ready_or_insufficient(
             apply_common_video_fields(requirement, format),
             missing_fields,
@@ -1313,30 +1324,38 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_codec_metadata_is_marked_insufficient_without_guessing() {
+    fn plain_vp9_resolves_to_youtube_sdr_profile0_baseline() {
         let format = video_format("248", "vp9");
+
+        let requirement = ready_requirement(&format);
+
+        // YouTube отдаёт SDR VP9 голым тегом `vp9`; адаптер раскрывает его в
+        // базовый production-профиль Profile 0 / 8-bit / 4:2:0 SDR, иначе
+        // capability-aware startup path не получил бы ни одного ready candidate.
+        assert_eq!(requirement.codec, VideoCodec::Vp9);
+        assert_eq!(
+            requirement.profile,
+            Some(VideoProfile::Vp9(Vp9Profile::Profile0))
+        );
+        assert_eq!(requirement.bit_depth, Some(BitDepth::Eight));
+        assert_eq!(requirement.chroma, Some(ChromaSubsampling::Yuv420));
+        assert!(!requirement.hdr);
+    }
+
+    #[test]
+    fn plain_vp9_with_hdr_dynamic_range_hint_stays_insufficient() {
+        // Голый `vp9` сам по себе раскрывается в SDR Profile 0, но если manifest
+        // помечает формат как HDR, мы не имеем resolved HDR color metadata и не
+        // должны выдавать его за SDR-ready: guard возвращает Insufficient.
+        let mut format = video_format("248", "vp9");
+        format.dynamic_range = Some("HDR".to_string());
 
         let requirement = video_requirement_from_format(&format);
 
         let YoutubeVideoRequirement::Insufficient(metadata) = requirement else {
-            panic!("plain vp9 metadata не должна становиться ready requirement");
+            panic!("HDR-намёк на голом `vp9` не должен проходить как SDR-ready requirement");
         };
-        assert!(metadata.reason.contains("profile"));
-        assert!(metadata.reason.contains("bit_depth"));
-        assert_eq!(
-            metadata
-                .partial_requirement
-                .as_ref()
-                .map(|requirement| requirement.codec),
-            Some(VideoCodec::Vp9)
-        );
-        assert_eq!(
-            metadata
-                .partial_requirement
-                .as_ref()
-                .and_then(|requirement| requirement.profile),
-            None
-        );
+        assert!(metadata.reason.to_ascii_lowercase().contains("hdr"));
     }
 
     #[test]

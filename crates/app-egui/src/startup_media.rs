@@ -255,6 +255,28 @@ fn resolve_youtube_startup_media(
     })
 }
 
+/// Временная политика: HDR-потоки YouTube не выбираются, пока в UI нет
+/// переключателя HDR.
+///
+/// HDR decode/render path (VP9 Profile 2 -> P010 -> BT.2446-C HDR→SDR) уже
+/// реализован и сам gated в `capability-core`/`render-wgpu-video`. Когда в UI
+/// появится кнопка, этот `const` станет runtime-значением из UI/config, и
+/// HDR-кандидаты (детальный тег `vp09.02.*`) станут выбираемыми без других
+/// изменений в этом модуле.
+const ALLOW_YOUTUBE_HDR: bool = false;
+
+/// Сообщает, что ready requirement кандидата требует HDR-обработки.
+///
+/// Использует намерение `VideoDecodeRequirement::requires_hdr_processing`, а не
+/// читает поля `hdr`/`color` напрямую. Insufficient-кандидаты HDR не требуют
+/// (их и так нельзя выбрать), поэтому возвращаем `false`.
+fn youtube_candidate_requires_hdr(candidate: &service_youtube::YoutubeStreamCandidate) -> bool {
+    candidate
+        .video_requirement
+        .as_requirement()
+        .is_some_and(|requirement| requirement.requires_hdr_processing())
+}
+
 /// Выбирает лучший YouTube candidate строго до открытия media bytes.
 fn select_youtube_startup_candidate(
     stream_candidates: &YoutubeStreamCandidates,
@@ -264,6 +286,9 @@ fn select_youtube_startup_candidate(
         .candidates
         .iter()
         .filter(|candidate| candidate.audio.is_some())
+        // ВРЕМЕННО: пока в UI нет HDR-переключателя, отбираем только SDR-потоки;
+        // HDR-кандидаты исключаются ещё до capability selection.
+        .filter(|candidate| ALLOW_YOUTUBE_HDR || !youtube_candidate_requires_hdr(candidate))
         .filter_map(service_youtube::YoutubeStreamCandidate::to_capability_candidate)
         .collect::<Vec<_>>();
 
@@ -626,6 +651,53 @@ mod tests {
             YoutubeStartupSelectionError::NoReadyVideoCandidates(reason)
                 if reason.contains("video-without-audio")
                     && reason.contains("audio companion")
+        ));
+    }
+
+    #[test]
+    fn youtube_startup_selection_temporarily_skips_hdr_candidate() {
+        // HDR-кандидат с самым высоким quality_score: без временного фильтра он
+        // был бы предпочтён, но пока в UI нет HDR-переключателя выбираем SDR.
+        let mut hdr_requirement = vp9_requirement(Vp9Profile::Profile2, BitDepth::Ten);
+        hdr_requirement.hdr = true;
+        let candidates = youtube_candidates(vec![
+            ready_youtube_candidate("hdr-stream", "315", hdr_requirement, 10_000),
+            ready_youtube_candidate(
+                "sdr-nv12",
+                "303",
+                vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
+                1_000,
+            ),
+        ]);
+
+        let selected =
+            select_youtube_startup_candidate(&candidates, &capabilities_with_vp9_profile0())
+                .expect("SDR candidate остаётся выбираемым при отключённом HDR");
+
+        assert_eq!(selected.stream_id, "sdr-nv12");
+    }
+
+    #[test]
+    fn youtube_startup_hdr_only_is_filtered_before_capability_selection() {
+        // Единственный кандидат — HDR. Временный фильтр убирает его ещё до
+        // capability selection, поэтому ошибка именно NoReadyVideoCandidates
+        // (отфильтрован), а не типизированный Capability rejection.
+        let mut hdr_requirement = vp9_requirement(Vp9Profile::Profile2, BitDepth::Ten);
+        hdr_requirement.hdr = true;
+        let candidates = youtube_candidates(vec![ready_youtube_candidate(
+            "hdr-only",
+            "315",
+            hdr_requirement,
+            10_000,
+        )]);
+
+        let error =
+            select_youtube_startup_candidate(&candidates, &capabilities_with_vp9_profile0())
+                .expect_err("HDR-only кандидат отфильтрован до capability selection");
+
+        assert!(matches!(
+            error,
+            YoutubeStartupSelectionError::NoReadyVideoCandidates(_)
         ));
     }
 }
