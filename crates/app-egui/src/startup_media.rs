@@ -3,7 +3,11 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use rustiplayer_config::AppConfig;
+use anyhow::{Context, Result};
+use capability_core::{SelectedVideoStream, StreamSelectionError, SystemCapabilities};
+use rustiplayer_config::{AppConfig, NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
+use service_youtube::YoutubeStreamCandidates;
+use thiserror::Error;
 use tracing::{debug, info, warn};
 
 use crate::state::AppState;
@@ -40,7 +44,11 @@ struct YoutubeStartupJob {
 
 impl YoutubeStartupJob {
     /// Запускает подготовку YouTube media на отдельном thread-е.
-    fn spawn(source_url: String, app_config: AppConfig) -> std::result::Result<Self, String> {
+    fn spawn(
+        source_url: String,
+        app_config: AppConfig,
+        system_capabilities: SystemCapabilities,
+    ) -> std::result::Result<Self, String> {
         let (result_tx, result_rx) = mpsc::channel();
         let thread_url = source_url.clone();
         let network_config = app_config.network.clone();
@@ -49,11 +57,12 @@ impl YoutubeStartupJob {
         let join_handle = thread::Builder::new()
             .name("youtube-startup-resolver".to_string())
             .spawn(move || {
-                let resolve_result = service_youtube::open_streaming_media_with_demux_config(
+                let resolve_result = resolve_youtube_startup_media(
                     &thread_url,
                     &network_config,
                     &youtube_config,
                     &demux_config,
+                    &system_capabilities,
                 )
                 .map_err(|error| format!("{error:#}"));
 
@@ -148,6 +157,7 @@ impl StartupMediaController {
         &mut self,
         app_state: &mut AppState,
         app_config: &AppConfig,
+        system_capabilities: &SystemCapabilities,
     ) {
         if let Some(pending_message) = self.pending_message() {
             app_state.set_startup_pending(pending_message.to_string());
@@ -164,7 +174,7 @@ impl StartupMediaController {
             }
             InitialMedia::YouTubeUrl { url } => {
                 info!(source = %url, "Автозагрузка YouTube URL из CLI");
-                self.start_youtube_startup_job(url, app_state, app_config);
+                self.start_youtube_startup_job(url, app_state, app_config, system_capabilities);
             }
         }
     }
@@ -184,9 +194,11 @@ impl StartupMediaController {
         source_url: String,
         app_state: &mut AppState,
         app_config: &AppConfig,
+        system_capabilities: &SystemCapabilities,
     ) {
         app_state.set_startup_pending("Подготовка YouTube stream...".to_string());
-        match YoutubeStartupJob::spawn(source_url, app_config.clone()) {
+        match YoutubeStartupJob::spawn(source_url, app_config.clone(), system_capabilities.clone())
+        {
             Ok(job) => {
                 self.startup_error = None;
                 self.youtube_startup_job = Some(job);
@@ -199,6 +211,102 @@ impl StartupMediaController {
             }
         }
     }
+}
+
+/// Ошибка выбора YouTube stream-а до открытия demuxer-а.
+#[derive(Debug, Error)]
+enum YoutubeStartupSelectionError {
+    /// Service candidates есть, но ни один не содержит полной metadata для capability-core.
+    #[error("YouTube stream candidates не содержат ready video metadata: {0}")]
+    NoReadyVideoCandidates(String),
+
+    /// Capability-core отклонил все ready candidates с typed причиной.
+    #[error("YouTube stream rejected by current hardware/render capabilities: {0}")]
+    Capability(#[from] StreamSelectionError),
+}
+
+/// Выполняет production chain: service candidates -> capability selection -> demux open.
+fn resolve_youtube_startup_media(
+    source_url: &str,
+    network_config: &NetworkConfig,
+    youtube_config: &YoutubeConfig,
+    demux_config: &PlayerDemuxConfig,
+    system_capabilities: &SystemCapabilities,
+) -> Result<service_youtube::YoutubeStreamingMedia> {
+    let stream_candidates =
+        service_youtube::resolve_youtube_stream_candidates_with_config(source_url, youtube_config)
+            .context("Не удалось получить YouTube stream candidates")?;
+    let selected_stream = select_youtube_startup_candidate(&stream_candidates, system_capabilities)
+        .context("Не удалось выбрать YouTube stream по system capabilities")?;
+
+    service_youtube::open_streaming_media_from_candidates_with_demux_config(
+        source_url,
+        &stream_candidates,
+        &selected_stream.stream_id,
+        network_config,
+        youtube_config,
+        demux_config,
+    )
+    .with_context(|| {
+        format!(
+            "Не удалось открыть выбранный YouTube stream {}",
+            selected_stream.stream_id
+        )
+    })
+}
+
+/// Выбирает лучший YouTube candidate строго до открытия media bytes.
+fn select_youtube_startup_candidate(
+    stream_candidates: &YoutubeStreamCandidates,
+    system_capabilities: &SystemCapabilities,
+) -> std::result::Result<SelectedVideoStream, YoutubeStartupSelectionError> {
+    let capability_candidates = stream_candidates
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.audio.is_some())
+        .filter_map(service_youtube::YoutubeStreamCandidate::to_capability_candidate)
+        .collect::<Vec<_>>();
+
+    if capability_candidates.is_empty() {
+        return Err(YoutubeStartupSelectionError::NoReadyVideoCandidates(
+            youtube_no_ready_candidates_reason(stream_candidates),
+        ));
+    }
+
+    Ok(system_capabilities.select_best_video_stream(&capability_candidates)?)
+}
+
+/// Формирует короткую причину, почему service candidates нельзя передать в capability-core.
+fn youtube_no_ready_candidates_reason(stream_candidates: &YoutubeStreamCandidates) -> String {
+    if stream_candidates.candidates.is_empty() {
+        return "yt-dlp не вернул WebM VP9/Opus candidates для текущего production path"
+            .to_string();
+    }
+
+    let reasons = stream_candidates
+        .candidates
+        .iter()
+        .filter_map(|candidate| {
+            if candidate.audio.is_none() {
+                return Some(format!(
+                    "{}: отсутствует WebM/Opus audio companion",
+                    candidate.stream_id
+                ));
+            }
+
+            candidate
+                .video_requirement
+                .insufficient_reason()
+                .map(|reason| format!("{}: {reason}", candidate.stream_id))
+        })
+        .take(3)
+        .collect::<Vec<_>>();
+
+    if reasons.is_empty() {
+        return "все candidates были отфильтрованы до capability selection".to_string();
+    }
+
+    reasons.join("; ")
 }
 
 /// Забирает готовый результат фоновой подготовки YouTube и доставляет его в UI/player.
@@ -268,8 +376,117 @@ pub(crate) fn resolve_initial_media_from_cli(
 mod tests {
     use std::path::Path;
     use std::sync::mpsc;
+    use std::time::Duration;
+
+    use capability_core::{
+        BackendCapabilities, BackendDriverInfo, BackendProbeStatus, SystemCapabilities,
+        VideoExportPath,
+    };
+    use codec_core::{
+        BitDepth, ChromaSubsampling, DecodeBackendId, SupportedVideoDecodeFormat, VideoCodec,
+        VideoDecodeRequirement, VideoProfile, Vp9Profile,
+    };
+    use render_core::RenderCapabilities;
+    use service_youtube::{
+        YoutubeDirectStreamDescriptor, YoutubeInsufficientVideoMetadata, YoutubeStreamCandidate,
+        YoutubeStreamCandidates, YoutubeStreamKind, YoutubeVideoRequirement,
+    };
+    use source_core::SourceValidators;
 
     use super::*;
+
+    fn capabilities_with_vp9_profile0() -> SystemCapabilities {
+        SystemCapabilities {
+            schema_version: capability_core::CURRENT_CAPABILITY_SCHEMA_VERSION,
+            probed_at_unix_seconds: 1,
+            video_backends: vec![BackendCapabilities {
+                backend_id: DecodeBackendId::vaapi(),
+                display_name: "VA-API".to_string(),
+                status: BackendProbeStatus::Available,
+                driver: BackendDriverInfo::default(),
+                supported_video_decode_formats: vec![SupportedVideoDecodeFormat {
+                    codec: VideoCodec::Vp9,
+                    profile: VideoProfile::Vp9(Vp9Profile::Profile0),
+                    bit_depth: BitDepth::Eight,
+                    chroma: ChromaSubsampling::Yuv420,
+                    max_width: Some(4096),
+                    max_height: Some(2304),
+                    max_fps: None,
+                    hdr_input: false,
+                    backend: DecodeBackendId::vaapi(),
+                }],
+                raw_profiles: Vec::new(),
+                raw_entrypoints: Vec::new(),
+                raw_rt_formats: Vec::new(),
+                quirks: Vec::new(),
+                export_paths: vec![VideoExportPath::DmaBuf],
+                p010_storage_layouts: Vec::new(),
+                diagnostics: Vec::new(),
+            }],
+            render_backends: vec![RenderCapabilities::wgpu_nv12(Some(4096))],
+        }
+    }
+
+    fn youtube_descriptor(
+        kind: YoutubeStreamKind,
+        format_id: &str,
+    ) -> YoutubeDirectStreamDescriptor {
+        let kind_label = match kind {
+            YoutubeStreamKind::Video => "video",
+            YoutubeStreamKind::Audio => "audio",
+        };
+
+        YoutubeDirectStreamDescriptor {
+            kind,
+            url: format!("http://media.test/{format_id}.webm"),
+            headers: Vec::new(),
+            format_id: Some(format_id.to_string()),
+            service_media_id: Some("media-id".to_string()),
+            validators: SourceValidators::default(),
+            duration: Some(Duration::from_secs(120)),
+            live: false,
+            description: format!("{kind_label} descriptor"),
+        }
+    }
+
+    fn vp9_requirement(profile: Vp9Profile, bit_depth: BitDepth) -> VideoDecodeRequirement {
+        VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_profile(VideoProfile::Vp9(profile))
+            .with_bit_depth(bit_depth)
+            .with_chroma(ChromaSubsampling::Yuv420)
+            .with_resolution(1920, 1080)
+            .with_frame_rate(60.0)
+    }
+
+    fn ready_youtube_candidate(
+        stream_id: &str,
+        format_id: &str,
+        requirement: VideoDecodeRequirement,
+        quality_score: i64,
+    ) -> YoutubeStreamCandidate {
+        YoutubeStreamCandidate {
+            stream_id: stream_id.to_string(),
+            format_id: Some(format!("{format_id}+251")),
+            video: youtube_descriptor(YoutubeStreamKind::Video, format_id),
+            audio: Some(youtube_descriptor(YoutubeStreamKind::Audio, "251")),
+            height: requirement.height,
+            fps: requirement.fps,
+            vcodec: Some("vp09.00.10.08".to_string()),
+            acodec: Some("opus".to_string()),
+            video_requirement: YoutubeVideoRequirement::Ready(requirement),
+            quality_score,
+        }
+    }
+
+    fn youtube_candidates(candidates: Vec<YoutubeStreamCandidate>) -> YoutubeStreamCandidates {
+        YoutubeStreamCandidates {
+            title: Some("sample".to_string()),
+            service_media_id: Some("media-id".to_string()),
+            duration: Some(Duration::from_secs(120)),
+            live: false,
+            candidates,
+        }
+    }
 
     #[test]
     fn controller_exposes_startup_error_for_app_state_creation() {
@@ -319,5 +536,96 @@ mod tests {
             controller.pending_message(),
             Some("Подготовка YouTube stream...")
         );
+    }
+
+    #[test]
+    fn youtube_startup_selection_picks_supported_candidate_before_demux_open() {
+        let candidates = youtube_candidates(vec![
+            ready_youtube_candidate(
+                "hdr-p010",
+                "315",
+                vp9_requirement(Vp9Profile::Profile2, BitDepth::Ten),
+                10_000,
+            ),
+            ready_youtube_candidate(
+                "sdr-nv12",
+                "303",
+                vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
+                1_000,
+            ),
+        ]);
+
+        let selected =
+            select_youtube_startup_candidate(&candidates, &capabilities_with_vp9_profile0())
+                .expect("supported SDR candidate is selected");
+
+        assert_eq!(selected.stream_id, "sdr-nv12");
+    }
+
+    #[test]
+    fn youtube_startup_selection_returns_typed_capability_rejection() {
+        let candidates = youtube_candidates(vec![ready_youtube_candidate(
+            "sdr-nv12",
+            "303",
+            vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
+            1_000,
+        )]);
+
+        let error = select_youtube_startup_candidate(&candidates, &SystemCapabilities::empty(1))
+            .expect_err("empty capabilities reject ready candidate");
+
+        assert!(matches!(
+            error,
+            YoutubeStartupSelectionError::Capability(StreamSelectionError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn youtube_startup_selection_reports_insufficient_service_metadata() {
+        let mut candidate = ready_youtube_candidate(
+            "plain-vp9",
+            "248",
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+            1_000,
+        );
+        candidate.video_requirement =
+            YoutubeVideoRequirement::Insufficient(YoutubeInsufficientVideoMetadata {
+                reason: "missing VP9 profile metadata".to_string(),
+                partial_requirement: Some(VideoDecodeRequirement::new(VideoCodec::Vp9)),
+            });
+        let candidates = youtube_candidates(vec![candidate]);
+
+        let error =
+            select_youtube_startup_candidate(&candidates, &capabilities_with_vp9_profile0())
+                .expect_err("insufficient service metadata is rejected before selection");
+
+        assert!(matches!(
+            error,
+            YoutubeStartupSelectionError::NoReadyVideoCandidates(reason)
+                if reason.contains("plain-vp9") && reason.contains("missing VP9 profile metadata")
+        ));
+    }
+
+    #[test]
+    fn youtube_startup_selection_rejects_candidate_without_audio_companion() {
+        let mut candidate = ready_youtube_candidate(
+            "video-without-audio",
+            "303",
+            vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
+            1_000,
+        );
+        candidate.audio = None;
+        let candidates = youtube_candidates(vec![candidate]);
+
+        let error =
+            select_youtube_startup_candidate(&candidates, &capabilities_with_vp9_profile0())
+                .expect_err("video-only candidate is not openable by current service path");
+
+        assert!(matches!(
+            error,
+            YoutubeStartupSelectionError::NoReadyVideoCandidates(reason)
+                if reason.contains("video-without-audio")
+                    && reason.contains("audio companion")
+        ));
     }
 }

@@ -2,7 +2,9 @@
 //!
 //! Этот crate является service boundary: он знает про YouTube/yt-dlp format
 //! selection и HTTP headers, но не знает про UI, renderer или внутренний state
-//! player-а. `app-egui` получает отсюда уже готовый streaming demuxer.
+//! player-а. Production startup получает candidates, выбирает stream через
+//! capability layer в `app-egui`, а затем возвращается сюда только для открытия
+//! demuxer-а выбранной пары.
 
 use std::io::Read;
 use std::sync::Arc;
@@ -35,7 +37,9 @@ pub use resolver::{
 
 use http_refresh::{RefreshContext, YoutubeRefreshingRangeSource};
 use resolver::{
-    YoutubeDirectStreamResolver, YtDlpDirectStreamResolver, build_streaming_description,
+    YoutubeDirectStreamResolver, YoutubeSelectedStreamIdentity, YtDlpDirectStreamResolver,
+    YtDlpSelectedStreamResolver, build_streaming_description,
+    direct_streams_from_selected_candidate,
 };
 
 #[cfg(test)]
@@ -54,7 +58,11 @@ pub fn is_probably_url(argument: &str) -> bool {
     argument.starts_with("https://") || argument.starts_with("http://")
 }
 
-/// Открывает YouTube URL как demuxer без предварительного скачивания файла.
+/// Открывает YouTube URL старым compatibility path-ом без внешнего capability selection.
+///
+/// Production startup в `app-egui` должен использовать
+/// `resolve_youtube_stream_candidates_with_config` и затем
+/// `open_streaming_media_from_candidates_with_demux_config`.
 pub fn open_streaming_media(
     video_url: &str,
     network_config: &NetworkConfig,
@@ -62,7 +70,7 @@ pub fn open_streaming_media(
     open_streaming_media_with_config(video_url, network_config, &YoutubeConfig::default())
 }
 
-/// Открывает YouTube URL с явной service policy из пользовательского config.
+/// Открывает YouTube URL старым compatibility path-ом с явной service policy.
 pub fn open_streaming_media_with_config(
     video_url: &str,
     network_config: &NetworkConfig,
@@ -76,7 +84,7 @@ pub fn open_streaming_media_with_config(
     )
 }
 
-/// Открывает YouTube URL с явной service и demux fail-safe политикой.
+/// Открывает YouTube URL старым compatibility path-ом с явной demux fail-safe политикой.
 pub fn open_streaming_media_with_demux_config(
     video_url: &str,
     network_config: &NetworkConfig,
@@ -96,6 +104,52 @@ pub fn open_streaming_media_with_demux_config(
         &mut direct_streams,
         source_config,
         Arc::clone(&resolver),
+        demuxer_options,
+    )?;
+
+    Ok(YoutubeStreamingMedia {
+        demuxer,
+        description,
+        direct_streams,
+    })
+}
+
+/// Открывает YouTube URL по candidate-у, выбранному внешним capability layer-ом.
+///
+/// Этот API является production path для startup/playback: service уже не
+/// применяет legacy SDR-safe selector до открытия bytes, а только строит source
+/// для выбранной `stream_id` пары.
+pub fn open_streaming_media_from_candidates_with_demux_config(
+    video_url: &str,
+    stream_candidates: &YoutubeStreamCandidates,
+    selected_stream_id: &str,
+    network_config: &NetworkConfig,
+    youtube_config: &YoutubeConfig,
+    demux_config: &PlayerDemuxConfig,
+) -> Result<YoutubeStreamingMedia> {
+    let source_config = SourceRuntimeConfig::from_network_config(network_config)
+        .context("Network config нельзя использовать для YouTube source")?;
+    let demuxer_options = demuxer_options_from_config(demux_config);
+    let selected_candidate = stream_candidates
+        .candidates
+        .iter()
+        .find(|candidate| candidate.stream_id == selected_stream_id)
+        .with_context(|| {
+            format!("selected YouTube stream id не найден в candidates: {selected_stream_id}")
+        })?;
+    let selected_stream_identity =
+        YoutubeSelectedStreamIdentity::from_candidate(selected_candidate);
+    let resolver: Arc<dyn YoutubeDirectStreamResolver> = Arc::new(
+        YtDlpSelectedStreamResolver::from_youtube_config(youtube_config, selected_stream_identity)?,
+    );
+    let mut direct_streams =
+        direct_streams_from_selected_candidate(stream_candidates, selected_stream_id)?;
+    let description = build_streaming_description(&direct_streams);
+    let demuxer = build_demuxer_from_direct_streams(
+        video_url,
+        &mut direct_streams,
+        source_config,
+        resolver,
         demuxer_options,
     )?;
 
@@ -355,6 +409,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread;
 
+    use codec_core::{
+        BitDepth, ChromaSubsampling, VideoCodec, VideoDecodeRequirement, VideoProfile, Vp9Profile,
+    };
     use media_core::TimelineNotSeekableReason;
     use source_core::ByteSource;
     use symphonia_demux::DemuxSeekability;
@@ -502,6 +559,39 @@ mod tests {
             live: false,
             video: descriptor(YoutubeStreamKind::Video, video_url),
             audio: descriptor(YoutubeStreamKind::Audio, audio_url),
+        }
+    }
+
+    fn vp9_profile2_requirement() -> VideoDecodeRequirement {
+        VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_profile(VideoProfile::Vp9(Vp9Profile::Profile2))
+            .with_bit_depth(BitDepth::Ten)
+            .with_chroma(ChromaSubsampling::Yuv420)
+            .with_resolution(3840, 2160)
+            .with_frame_rate(60.0)
+    }
+
+    fn stream_candidates_from_streams(
+        stream_id: &str,
+        direct_streams: &YoutubeDirectStreams,
+    ) -> YoutubeStreamCandidates {
+        YoutubeStreamCandidates {
+            title: direct_streams.title.clone(),
+            service_media_id: direct_streams.service_media_id.clone(),
+            duration: direct_streams.duration,
+            live: direct_streams.live,
+            candidates: vec![YoutubeStreamCandidate {
+                stream_id: stream_id.to_string(),
+                format_id: direct_streams.format_id.clone(),
+                video: direct_streams.video.clone(),
+                audio: Some(direct_streams.audio.clone()),
+                height: direct_streams.height,
+                fps: direct_streams.fps,
+                vcodec: direct_streams.vcodec.clone(),
+                acodec: direct_streams.acodec.clone(),
+                video_requirement: YoutubeVideoRequirement::Ready(vp9_profile2_requirement()),
+                quality_score: 1,
+            }],
         }
     }
 
@@ -715,6 +805,80 @@ mod tests {
                 .iter()
                 .any(|request| request.headers.contains_key("range"))
         );
+    }
+
+    #[test]
+    fn selected_candidate_open_path_builds_range_backed_demuxer() {
+        let media = test_webm_bytes();
+        let video_media = Arc::clone(&media);
+        let audio_media = Arc::clone(&media);
+        let video_server = TestHttpServer::spawn(move |_index, request, stream| {
+            assert_eq!(
+                request.headers.get("x-test-header").map(String::as_str),
+                Some("video")
+            );
+            respond_with_range(stream, &request, &video_media);
+        });
+        let audio_server = TestHttpServer::spawn(move |_index, request, stream| {
+            assert_eq!(
+                request.headers.get("x-test-header").map(String::as_str),
+                Some("audio")
+            );
+            respond_with_range(stream, &request, &audio_media);
+        });
+        let direct_streams = direct_streams(video_server.url.clone(), audio_server.url.clone());
+        let candidates = stream_candidates_from_streams("selected-vp9-p010", &direct_streams);
+
+        let media = open_streaming_media_from_candidates_with_demux_config(
+            "http://youtube.test/watch",
+            &candidates,
+            "selected-vp9-p010",
+            &NetworkConfig::default(),
+            &YoutubeConfig::default(),
+            &PlayerDemuxConfig::default(),
+        )
+        .expect("selected candidate opens");
+
+        assert_eq!(media.demuxer.seekability(), DemuxSeekability::Seekable);
+        assert_eq!(
+            media.direct_streams.format_id.as_deref(),
+            Some("video+audio")
+        );
+        assert!(
+            video_server
+                .requests()
+                .iter()
+                .any(|request| request.headers.contains_key("range"))
+        );
+        assert!(
+            audio_server
+                .requests()
+                .iter()
+                .any(|request| request.headers.contains_key("range"))
+        );
+    }
+
+    #[test]
+    fn selected_candidate_open_path_requires_audio_companion() {
+        let direct_streams = direct_streams(
+            "http://video.test/media.webm".to_string(),
+            "http://audio.test/media.webm".to_string(),
+        );
+        let mut candidates = stream_candidates_from_streams("video-only", &direct_streams);
+        candidates.candidates[0].audio = None;
+
+        let open_result = open_streaming_media_from_candidates_with_demux_config(
+            "http://youtube.test/watch",
+            &candidates,
+            "video-only",
+            &NetworkConfig::default(),
+            &YoutubeConfig::default(),
+            &PlayerDemuxConfig::default(),
+        )
+        .map(|_| ());
+        let error = open_result.expect_err("video-only selected candidate is rejected");
+
+        assert!(format!("{error:#}").contains("audio companion descriptor"));
     }
 
     #[test]

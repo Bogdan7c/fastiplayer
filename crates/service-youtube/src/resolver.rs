@@ -30,6 +30,31 @@ pub(crate) struct YtDlpDirectStreamResolver {
     process_config: YtDlpProcessConfig,
 }
 
+/// Stable identity выбранного candidate-а для refresh-а direct URL.
+#[derive(Debug, Clone)]
+pub(crate) struct YoutubeSelectedStreamIdentity {
+    /// Stream id из первого service manifest-а.
+    stream_id: String,
+
+    /// Composite format id пары, если extractor его сообщил.
+    format_id: Option<String>,
+
+    /// Video format id, который должен сохраниться при refresh-е.
+    video_format_id: Option<String>,
+
+    /// Audio format id, который должен сохраниться при refresh-е.
+    audio_format_id: Option<String>,
+}
+
+/// Resolver, который refresh-ит direct URL той же capability-selected пары.
+pub(crate) struct YtDlpSelectedStreamResolver {
+    /// Process policy для повторного получения manifest-а.
+    process_config: YtDlpProcessConfig,
+
+    /// Identity выбранной пары, которую нельзя заменить legacy selector-ом.
+    selected_stream: YoutubeSelectedStreamIdentity,
+}
+
 impl YtDlpDirectStreamResolver {
     /// Создаёт production resolver из пользовательского YouTube config.
     pub(crate) fn from_youtube_config(youtube_config: &YoutubeConfig) -> Result<Self> {
@@ -42,6 +67,66 @@ impl YtDlpDirectStreamResolver {
 impl YoutubeDirectStreamResolver for YtDlpDirectStreamResolver {
     fn resolve_direct_streams(&self, video_url: &str) -> Result<YoutubeDirectStreams> {
         resolve_youtube_direct_streams_with_process_config(video_url, &self.process_config)
+    }
+}
+
+impl YoutubeSelectedStreamIdentity {
+    /// Запоминает выбранные ids без владения полным manifest-ом.
+    #[must_use]
+    pub(crate) fn from_candidate(candidate: &YoutubeStreamCandidate) -> Self {
+        Self {
+            stream_id: candidate.stream_id.clone(),
+            format_id: candidate.format_id.clone(),
+            video_format_id: candidate.video.format_id.clone(),
+            audio_format_id: candidate
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.format_id.clone()),
+        }
+    }
+
+    /// Проверяет, что fresh manifest содержит ту же video/audio пару.
+    fn matches_format_identity(&self, candidate: &YoutubeStreamCandidate) -> bool {
+        let Some(expected_video_format_id) = self.video_format_id.as_deref() else {
+            return false;
+        };
+        let Some(expected_audio_format_id) = self.audio_format_id.as_deref() else {
+            return false;
+        };
+
+        let candidate_audio_format_id = candidate
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.format_id.as_deref());
+
+        candidate.video.format_id.as_deref() == Some(expected_video_format_id)
+            && candidate_audio_format_id == Some(expected_audio_format_id)
+            && self
+                .format_id
+                .as_deref()
+                .is_none_or(|format_id| candidate.format_id.as_deref() == Some(format_id))
+    }
+}
+
+impl YtDlpSelectedStreamResolver {
+    /// Создаёт refresh resolver для уже выбранной capability-aware пары.
+    pub(crate) fn from_youtube_config(
+        youtube_config: &YoutubeConfig,
+        selected_stream: YoutubeSelectedStreamIdentity,
+    ) -> Result<Self> {
+        Ok(Self {
+            process_config: YtDlpProcessConfig::from_youtube_config(youtube_config)?,
+            selected_stream,
+        })
+    }
+}
+
+impl YoutubeDirectStreamResolver for YtDlpSelectedStreamResolver {
+    fn resolve_direct_streams(&self, video_url: &str) -> Result<YoutubeDirectStreams> {
+        let stream_candidates =
+            resolve_youtube_stream_candidates_with_process_config(video_url, &self.process_config)?;
+
+        direct_streams_from_matching_candidate(&stream_candidates, &self.selected_stream)
     }
 }
 
@@ -103,7 +188,7 @@ pub(crate) fn build_stream_candidates(metadata: &YtDlpMetadata) -> Result<Youtub
 
     for (video_index, video_format) in manifest_formats
         .iter()
-        .filter(|format| is_video_only_format(format))
+        .filter(|format| is_supported_video_candidate_format(format))
         .enumerate()
     {
         let audio = audio_format.clone().map(|format| {
@@ -142,6 +227,12 @@ pub(crate) fn build_stream_candidates(metadata: &YtDlpMetadata) -> Result<Youtub
             format_id,
             video,
             audio,
+            height: video_format.height,
+            fps: video_format.fps,
+            vcodec: video_format.vcodec.clone(),
+            acodec: audio_format
+                .as_ref()
+                .and_then(|format| format.acodec.clone()),
             video_requirement: video_requirement_from_format(video_format),
             quality_score: video_quality_score(video_format),
         });
@@ -153,6 +244,77 @@ pub(crate) fn build_stream_candidates(metadata: &YtDlpMetadata) -> Result<Youtub
         duration: media_duration,
         live,
         candidates,
+    })
+}
+
+/// Берёт выбранный stream id из service candidates и строит pair descriptors.
+pub(crate) fn direct_streams_from_selected_candidate(
+    stream_candidates: &YoutubeStreamCandidates,
+    selected_stream_id: &str,
+) -> Result<YoutubeDirectStreams> {
+    let selected_candidate = stream_candidates
+        .candidates
+        .iter()
+        .find(|candidate| candidate.stream_id == selected_stream_id)
+        .with_context(|| {
+            format!("selected YouTube stream id не найден в candidates: {selected_stream_id}")
+        })?;
+
+    direct_streams_from_candidate(stream_candidates, selected_candidate)
+}
+
+/// Повторно находит выбранный stream после refresh-а manifest-а.
+fn direct_streams_from_matching_candidate(
+    stream_candidates: &YoutubeStreamCandidates,
+    selected_stream: &YoutubeSelectedStreamIdentity,
+) -> Result<YoutubeDirectStreams> {
+    let selected_candidate = stream_candidates
+        .candidates
+        .iter()
+        .find(|candidate| candidate.stream_id == selected_stream.stream_id)
+        .or_else(|| {
+            stream_candidates
+                .candidates
+                .iter()
+                .find(|candidate| selected_stream.matches_format_identity(candidate))
+        })
+        .with_context(|| {
+            format!(
+                "fresh YouTube manifest не содержит выбранную stream pair: {}",
+                selected_stream.stream_id
+            )
+        })?;
+
+    direct_streams_from_candidate(stream_candidates, selected_candidate)
+}
+
+/// Превращает selected service candidate в структуру, которую уже умеет открыть demux path.
+fn direct_streams_from_candidate(
+    stream_candidates: &YoutubeStreamCandidates,
+    candidate: &YoutubeStreamCandidate,
+) -> Result<YoutubeDirectStreams> {
+    let audio = candidate.audio.clone().with_context(|| {
+        format!(
+            "selected YouTube stream {} не содержит audio companion descriptor",
+            candidate.stream_id
+        )
+    })?;
+
+    Ok(YoutubeDirectStreams {
+        title: stream_candidates.title.clone(),
+        service_media_id: stream_candidates
+            .service_media_id
+            .clone()
+            .or_else(|| candidate.video.service_media_id.clone()),
+        format_id: candidate.format_id.clone(),
+        height: candidate.height,
+        fps: candidate.fps,
+        vcodec: candidate.vcodec.clone(),
+        acodec: candidate.acodec.clone(),
+        duration: stream_candidates.duration.or(candidate.video.duration),
+        live: stream_candidates.live || candidate.video.live || audio.live,
+        video: candidate.video.clone(),
+        audio,
     })
 }
 
@@ -235,6 +397,40 @@ fn selected_requested_formats(metadata: &YtDlpMetadata) -> Option<&Vec<YtDlpForm
         .or(metadata.requested_formats.as_ref())
 }
 
+/// Проверяет, что format находится в текущем production envelope service open path-а.
+fn is_supported_video_candidate_format(format: &YtDlpFormat) -> bool {
+    is_video_only_format(format) && is_webm_format(format) && is_vp9_codec_tag(format)
+}
+
+/// Проверяет companion audio для текущего WebM dual-demux path-а.
+fn is_supported_audio_companion_format(format: &YtDlpFormat) -> bool {
+    is_audio_only_format(format) && is_webm_format(format) && is_opus_codec_tag(format)
+}
+
+/// Текущий service demux open path открывает только WebM byte streams.
+fn is_webm_format(format: &YtDlpFormat) -> bool {
+    format
+        .ext
+        .as_deref()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("webm"))
+}
+
+/// VP9 остаётся единственным YouTube video codec-ом в scope этой задачи.
+fn is_vp9_codec_tag(format: &YtDlpFormat) -> bool {
+    normalized_video_codec_tag(format)
+        .as_deref()
+        .is_some_and(|codec| codec.starts_with("vp9") || codec.starts_with("vp09"))
+}
+
+/// Opus/WebM сохраняет текущую audio policy legacy selector-а.
+fn is_opus_codec_tag(format: &YtDlpFormat) -> bool {
+    format
+        .acodec
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|codec| codec.eq_ignore_ascii_case("opus"))
+}
+
 /// Проверяет, что format является direct video-only stream-ом.
 fn is_video_only_format(format: &YtDlpFormat) -> bool {
     has_direct_media_url(format)
@@ -270,7 +466,7 @@ fn has_direct_media_url(format: &YtDlpFormat) -> bool {
 fn select_companion_audio_format(formats: &[YtDlpFormat]) -> Option<YtDlpFormat> {
     formats
         .iter()
-        .filter(|format| is_audio_only_format(format))
+        .filter(|format| is_supported_audio_companion_format(format))
         .max_by(|left, right| {
             audio_quality_score(left)
                 .cmp(&audio_quality_score(right))
@@ -1029,6 +1225,24 @@ mod tests {
         }
     }
 
+    fn metadata_with_formats(formats: Vec<YtDlpFormat>) -> YtDlpMetadata {
+        YtDlpMetadata {
+            title: Some("sample".to_string()),
+            id: Some("abc123".to_string()),
+            format_id: None,
+            height: None,
+            fps: None,
+            vcodec: None,
+            acodec: None,
+            duration: Some(120.0),
+            is_live: Some(false),
+            live_status: None,
+            requested_downloads: None,
+            requested_formats: None,
+            formats: Some(formats),
+        }
+    }
+
     fn ready_requirement(format: &YtDlpFormat) -> VideoDecodeRequirement {
         let YoutubeVideoRequirement::Ready(requirement) = video_requirement_from_format(format)
         else {
@@ -1127,25 +1341,11 @@ mod tests {
 
     #[test]
     fn stream_candidates_preserve_direct_descriptors_and_capability_candidate() {
-        let metadata = YtDlpMetadata {
-            title: Some("sample".to_string()),
-            id: Some("abc123".to_string()),
-            format_id: None,
-            height: None,
-            fps: None,
-            vcodec: None,
-            acodec: None,
-            duration: Some(120.0),
-            is_live: Some(false),
-            live_status: None,
-            requested_downloads: None,
-            requested_formats: None,
-            formats: Some(vec![
-                video_format("315", "vp09.02.10.10.01.09.16.09.00"),
-                audio_format("250", 70.0),
-                audio_format("251", 160.0),
-            ]),
-        };
+        let metadata = metadata_with_formats(vec![
+            video_format("315", "vp09.02.10.10.01.09.16.09.00"),
+            audio_format("250", 70.0),
+            audio_format("251", 160.0),
+        ]);
 
         let candidates = build_stream_candidates(&metadata).expect("candidates built");
 
@@ -1161,11 +1361,72 @@ mod tests {
                 .and_then(|audio| audio.format_id.as_deref()),
             Some("251")
         );
+        assert_eq!(candidate.height, Some(2160));
+        assert_eq!(candidate.fps, Some(60.0));
+        assert_eq!(
+            candidate.vcodec.as_deref(),
+            Some("vp09.02.10.10.01.09.16.09.00")
+        );
+        assert_eq!(candidate.acodec.as_deref(), Some("opus"));
         assert!(candidate.video_requirement.is_ready());
         let capability_candidate = candidate
             .to_capability_candidate()
             .expect("ready metadata converts to capability candidate");
         assert_eq!(capability_candidate.stream_id, "abc123:v315:a251");
         assert_eq!(capability_candidate.quality_score, candidate.quality_score);
+    }
+
+    #[test]
+    fn stream_candidates_keep_current_webm_vp9_opus_scope() {
+        let mut av1_mp4_video = video_format("399", "av01.0.08M.08");
+        av1_mp4_video.ext = Some("mp4".to_string());
+        let mut h264_mp4_video = video_format("137", "avc1.640028");
+        h264_mp4_video.ext = Some("mp4".to_string());
+        let mut high_bitrate_m4a_audio = audio_format("140", 320.0);
+        high_bitrate_m4a_audio.ext = Some("m4a".to_string());
+        high_bitrate_m4a_audio.acodec = Some("mp4a.40.2".to_string());
+        let metadata = metadata_with_formats(vec![
+            av1_mp4_video,
+            h264_mp4_video,
+            video_format("315", "vp09.02.10.10.01.09.16.09.00"),
+            high_bitrate_m4a_audio,
+            audio_format("251", 160.0),
+        ]);
+
+        let candidates = build_stream_candidates(&metadata).expect("candidates built");
+
+        assert_eq!(candidates.candidates.len(), 1);
+        let candidate = &candidates.candidates[0];
+        assert_eq!(candidate.stream_id, "abc123:v315:a251");
+        assert_eq!(candidate.video.format_id.as_deref(), Some("315"));
+        assert_eq!(
+            candidate
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.format_id.as_deref()),
+            Some("251")
+        );
+    }
+
+    #[test]
+    fn selected_candidate_refresh_match_preserves_chosen_format_identity() {
+        let initial_candidates = build_stream_candidates(&metadata_with_formats(vec![
+            video_format("315", "vp09.02.10.10.01.09.16.09.00"),
+            audio_format("251", 160.0),
+        ]))
+        .expect("initial candidates built");
+        let selected_identity =
+            YoutubeSelectedStreamIdentity::from_candidate(&initial_candidates.candidates[0]);
+        let mut refreshed_candidates = initial_candidates.clone();
+        refreshed_candidates.candidates[0].stream_id =
+            "fresh-manifest-renumbered:v315:a251".to_string();
+
+        let direct_streams =
+            direct_streams_from_matching_candidate(&refreshed_candidates, &selected_identity)
+                .expect("format identity fallback selects refreshed candidate");
+
+        assert_eq!(direct_streams.format_id.as_deref(), Some("315+251"));
+        assert_eq!(direct_streams.video.format_id.as_deref(), Some("315"));
+        assert_eq!(direct_streams.audio.format_id.as_deref(), Some("251"));
     }
 }

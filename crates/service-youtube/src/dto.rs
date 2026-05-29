@@ -239,6 +239,18 @@ pub struct YoutubeStreamCandidate {
     /// Audio-only direct stream descriptor, выбранный как service companion для video.
     pub audio: Option<YoutubeDirectStreamDescriptor>,
 
+    /// Высота video stream-а из service manifest-а.
+    pub height: Option<u32>,
+
+    /// FPS video stream-а из service manifest-а.
+    pub fps: Option<f64>,
+
+    /// Raw video codec tag из service manifest-а.
+    pub vcodec: Option<String>,
+
+    /// Raw audio codec tag выбранного companion stream-а.
+    pub acodec: Option<String>,
+
     /// Требование к capability-core или typed причина, почему metadata недостаточна.
     pub video_requirement: YoutubeVideoRequirement,
 

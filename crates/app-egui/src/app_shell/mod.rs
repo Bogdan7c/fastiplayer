@@ -131,7 +131,7 @@ impl AppShell {
         };
         let system_capabilities = probe_system_capabilities(renderer.render_capabilities());
         info!("{}", system_capabilities.summary_text());
-        app_state.set_system_capabilities(system_capabilities);
+        app_state.set_system_capabilities(system_capabilities.clone());
         app_state.init_video_pipeline(
             renderer.instance(),
             renderer.adapter(),
@@ -139,8 +139,11 @@ impl AppShell {
             renderer.queue(),
         );
 
-        self.startup_media
-            .start_pending_initial_media(&mut app_state, &self.app_config);
+        self.startup_media.start_pending_initial_media(
+            &mut app_state,
+            &self.app_config,
+            &system_capabilities,
+        );
         self.startup_media.poll_youtube_job(&mut app_state);
         app_state.poll_local_file_open_job();
 
