@@ -535,6 +535,71 @@ fn seek_progress_blocker_reports_post_flush_keyframe_drops() {
 }
 
 #[test]
+fn seek_without_video_decoder_treats_absent_flush_as_noop() {
+    let mut session = PlayerSession::new();
+    let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+    let initial_generation = session.pipeline.seek_generation();
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            MediaTime::from_secs(5),
+        )))
+        .unwrap();
+
+    assert_eq!(
+        *seek_log
+            .lock()
+            .expect("seek log mutex should not be poisoned"),
+        vec![Duration::from_secs(5)]
+    );
+    assert_eq!(
+        session.pipeline.seek_generation(),
+        initial_generation.saturating_add(1)
+    );
+    assert!(session.seek_commit().is_some());
+    assert!(session.snapshot().timeline.seeking);
+    assert_eq!(
+        session.snapshot().timeline.target_position,
+        Some(MediaTime::from_secs(5))
+    );
+    assert!(session.snapshot().last_error.is_none());
+}
+
+#[test]
+fn seek_successful_decoder_flush_calls_demux_seek_and_advances_generation() {
+    let mut session = PlayerSession::new();
+    let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+    let decoder = SharedFakeVideoDecoderThread::new();
+    session.pipeline.set_video_decoder_thread(decoder.clone());
+    let initial_generation = session.pipeline.seek_generation();
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            MediaTime::from_secs(7),
+        )))
+        .unwrap();
+
+    assert_eq!(decoder.flush_count(), 1);
+    assert_eq!(
+        *seek_log
+            .lock()
+            .expect("seek log mutex should not be poisoned"),
+        vec![Duration::from_secs(7)]
+    );
+    assert_eq!(
+        session.pipeline.seek_generation(),
+        initial_generation.saturating_add(1)
+    );
+    assert!(session.seek_commit().is_some());
+    assert!(session.snapshot().timeline.seeking);
+    assert_eq!(
+        session.snapshot().timeline.target_position,
+        Some(MediaTime::from_secs(7))
+    );
+    assert!(session.snapshot().last_error.is_none());
+}
+
+#[test]
 fn seek_flush_failure_does_not_call_demux_seek_or_advance_generation() {
     let mut session = PlayerSession::new();
     let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
@@ -569,6 +634,11 @@ fn seek_flush_failure_does_not_call_demux_seek_or_advance_generation() {
             .map(|error| &error.kind),
         Some(PlayerErrorKind::DecoderFlushFailed)
     ));
+    assert!(session.take_events().iter().any(|event| matches!(
+        event,
+        PlayerEvent::RecoverableError(error)
+            if error.kind == PlayerErrorKind::DecoderFlushFailed
+    )));
 }
 
 #[test]

@@ -706,6 +706,9 @@ pub(super) struct SharedFakeVideoDecoderThread {
     /// Опциональная flush ошибка для проверки проброса seek/reset failure.
     pub(super) flush_error_message: Arc<Mutex<Option<String>>>,
 
+    /// Счётчик flush попыток, чтобы тесты отличали успешный boundary от отсутствующего decoder.
+    pub(super) flush_count: Arc<Mutex<usize>>,
+
     /// Texture handles, которые session вернула decoder boundary через release.
     pub(super) released_handles: Arc<Mutex<Vec<video_core::FrameTextureHandle>>>,
 
@@ -727,6 +730,7 @@ impl SharedFakeVideoDecoderThread {
             decode_on_send_frames: Arc::new(Mutex::new(VecDeque::new())),
             diagnostic_events: Arc::new(Mutex::new(VecDeque::new())),
             flush_error_message: Arc::new(Mutex::new(None)),
+            flush_count: Arc::new(Mutex::new(0)),
             released_handles: Arc::new(Mutex::new(Vec::new())),
             resource_snapshot: Arc::new(Mutex::new(None)),
             control_pressure: Arc::new(Mutex::new(None)),
@@ -800,6 +804,14 @@ impl SharedFakeVideoDecoderThread {
             .flush_error_message
             .lock()
             .expect("fake decoder flush error lock") = Some(error_message.to_string());
+    }
+
+    /// Возвращает число flush попыток, прошедших через fake decoder boundary.
+    pub(super) fn flush_count(&self) -> usize {
+        *self
+            .flush_count
+            .lock()
+            .expect("fake decoder flush count lock")
     }
 
     /// Возвращает release log для проверки bounded queue и ownership.
@@ -903,6 +915,11 @@ impl video_core::VideoDecoderThreadHandle for SharedFakeVideoDecoderThread {
     }
 
     fn flush(&self) -> anyhow::Result<()> {
+        *self
+            .flush_count
+            .lock()
+            .expect("fake decoder flush count lock") += 1;
+
         if let Some(error_message) = self
             .flush_error_message
             .lock()
