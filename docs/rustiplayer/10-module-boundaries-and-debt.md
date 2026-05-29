@@ -74,13 +74,15 @@ render lease accounting.
 
 - surface area boundary methods всё ещё широкий, потому что `PlayerSession` и
   tick/scheduler пока разделяют orchestration внутри одного crate;
-- `select_video_track_preserving_active_requirement()` является transitional
-  legacy command path. TODO хранится рядом с методом: удалить его, когда выбор
-  video track будет всегда передавать заново проверенный
-  `VideoDecodeRequirement`;
 - helper packet records `DecodedAudioPacket`, `PendingAudioPacket` и
   `PendingVideoPacket` всё ещё имеют `pub(crate)` поля. Это отдельный transport
   scope, не полевая граница `PlaybackPipeline`.
+
+Закрытый долг:
+
+- video track command path больше не сохраняет старый active requirement:
+  `PlayerSession` строит и валидирует fresh `VideoDecodeRequirement` для
+  выбранного `TrackId` до mutation `PlaybackPipeline`.
 
 Следующий безопасный шаг: сужать не поля, а слишком крупные orchestration
 домены и boundary method surface. Каждое сужение должно идти с focused tests на

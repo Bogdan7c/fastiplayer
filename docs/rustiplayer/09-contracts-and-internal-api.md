@@ -126,12 +126,16 @@ generation и render lease accounting. Sibling modules не читают `pipeli
 - `release_video_texture()` освобождает texture сразу, через renderer provider
   или откладывает release до drop render lease-а.
 
-Transitional method:
+Video track selection contract:
 
-- `select_video_track_preserving_active_requirement()` остаётся для legacy
-  command path, где команда выбора video track ещё не приносит заново
-  проверенный `VideoDecodeRequirement`. В коде рядом с методом есть TODO и
-  причина удаления.
+- `PlayerCommand::SelectVideoTrack(TrackId)` остаётся UI-facing командой без
+  concrete backend данных.
+- `PlayerSession` на capability boundary находит `TrackInfo`, строит fresh
+  `VideoDecodeRequirement`, валидирует его по последнему capability report или
+  явно допускает packet refinement, и только после этого вызывает
+  `PlaybackPipeline::select_video_track(track_id, requirement)`.
+- `PlaybackPipeline` не имеет path-а, который меняет selected video track без
+  matching active requirement.
 
 Вне этой задачи:
 

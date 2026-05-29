@@ -33,6 +33,109 @@ fn unsupported_profile_returns_player_error_before_decode() {
 }
 
 #[test]
+fn requested_video_track_selection_sets_matching_requirement() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_with_vp9_profile0());
+    let _ = session.take_events();
+    let video_track_id = TrackId::new(7);
+    let tracks = vec![vp9_track_with_profile(7, Vp9Profile::Profile0)];
+    install_tracks_for_capability_selection(&mut session, tracks);
+
+    session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
+        .expect("supported VP9 profile0 track должен быть выбран");
+
+    let active_requirement = session
+        .pipeline
+        .active_video_requirement()
+        .expect("validated selection должен установить active requirement");
+
+    assert_eq!(
+        session.pipeline.selected_video_track_id(),
+        Some(video_track_id)
+    );
+    assert_eq!(
+        session.snapshot().selected_tracks.video_track,
+        Some(video_track_id)
+    );
+    assert_eq!(
+        active_requirement.profile,
+        Some(VideoProfile::Vp9(Vp9Profile::Profile0))
+    );
+    assert!(session.take_events().iter().any(|event| {
+        matches!(event, PlayerEvent::VideoTrackSelected(track_id) if *track_id == video_track_id)
+    }));
+}
+
+#[test]
+fn requested_video_track_selection_replaces_stale_requirement() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_with_vp9_profile0());
+    let video_track_id = TrackId::new(11);
+    let stale_track_id = TrackId::new(99);
+    let stale_requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
+        .with_profile(VideoProfile::Vp9(Vp9Profile::Profile2));
+    let tracks = vec![vp9_track_with_profile(11, Vp9Profile::Profile0)];
+    install_tracks_for_capability_selection(&mut session, tracks);
+    session
+        .pipeline
+        .select_video_track(stale_track_id, stale_requirement);
+
+    session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
+        .expect("selection должен пересчитать requirement из выбранного track-а");
+
+    let active_requirement = session
+        .pipeline
+        .active_video_requirement()
+        .expect("fresh selection должен заменить stale requirement");
+
+    assert_eq!(
+        session.pipeline.selected_video_track_id(),
+        Some(video_track_id)
+    );
+    assert_eq!(
+        active_requirement.profile,
+        Some(VideoProfile::Vp9(Vp9Profile::Profile0))
+    );
+}
+
+#[test]
+fn requested_video_track_selection_rejects_unsupported_requirement_before_mutation() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_with_vp9_profile0());
+    let supported_track_id = TrackId::new(1);
+    let unsupported_track_id = TrackId::new(2);
+    let tracks = vec![
+        vp9_track_with_profile(1, Vp9Profile::Profile0),
+        vp9_track_with_profile(2, Vp9Profile::Profile2),
+    ];
+    install_tracks_for_capability_selection(&mut session, tracks);
+    session
+        .select_requested_video_track(supported_track_id)
+        .expect("initial supported selection должен пройти validation");
+    let accepted_requirement = session
+        .pipeline
+        .active_video_requirement()
+        .expect("initial selection должен установить requirement")
+        .clone();
+
+    let error = session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(unsupported_track_id))
+        .expect_err("unsupported profile2 track должен быть отвергнут до mutation");
+
+    assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoProfile);
+    assert_eq!(
+        session.pipeline.selected_video_track_id(),
+        Some(supported_track_id)
+    );
+    assert_eq!(
+        session.pipeline.active_video_requirement(),
+        Some(&accepted_requirement)
+    );
+}
+
+#[test]
 fn active_video_requirement_refinement_preserves_selection_and_rejects_before_mutation() {
     let mut session = PlayerSession::new();
     session.set_system_capabilities(capabilities_with_vp9_profile0());
@@ -128,4 +231,21 @@ fn incomplete_vp9_hdr_container_metadata_waits_for_packet_refinement() {
     assert_eq!(error.kind, PlayerErrorKind::UnsupportedHdrMode);
     assert!(video_requirement_needs_packet_refinement(&requirement));
     assert!(session.can_defer_packet_refinement(&requirement));
+}
+
+fn install_tracks_for_capability_selection(session: &mut PlayerSession, tracks: Vec<TrackInfo>) {
+    let seek_log = Arc::new(Mutex::new(Vec::new()));
+    let demuxer = FakeDemuxer::new(tracks.clone(), Some(Duration::from_secs(30)), seek_log);
+
+    session
+        .pipeline
+        .install_opened_media(Box::new(demuxer), None, None, tracks);
+}
+
+fn vp9_track_with_profile(track_id: u32, profile: Vp9Profile) -> TrackInfo {
+    let mut track = fake_track(track_id, TrackKind::Video);
+    let mut metadata = VideoTrackMetadata::empty();
+    metadata.profile = Some(VideoProfile::Vp9(profile));
+    track.video = Some(metadata);
+    track
 }

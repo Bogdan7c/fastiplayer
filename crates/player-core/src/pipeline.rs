@@ -728,14 +728,6 @@ impl PlaybackPipeline {
         self.active_video_requirement = Some(requirement);
     }
 
-    /// Меняет selected video track, сохраняя текущий active requirement как legacy command path.
-    ///
-    /// TODO(pipeline-boundary): убрать transitional path, когда команда выбора video track
-    /// будет всегда передавать заново проверенный `VideoDecodeRequirement`.
-    pub(crate) fn select_video_track_preserving_active_requirement(&mut self, track_id: TrackId) {
-        self.video_track_id = Some(track_id);
-    }
-
     /// Выбирает audio track id без side effects для decoder/output ownership.
     pub(crate) fn select_audio_track(&mut self, track_id: TrackId) {
         self.audio_track_id = Some(track_id);

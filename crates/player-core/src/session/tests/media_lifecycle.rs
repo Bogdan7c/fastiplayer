@@ -71,8 +71,11 @@ fn active_seek_survives_tracks_changed_before_first_video_packet() {
         .pipeline
         .install_opened_media(Box::new(demuxer), None, None, initial_tracks.clone());
     session
-        .pipeline
-        .select_video_track_preserving_active_requirement(TrackId::new(1));
+        .select_default_video_track(
+            &initial_tracks,
+            "fake media lifecycle media содержит video track",
+        )
+        .expect("fake media lifecycle video track должен получить fresh decode requirement");
     session.set_snapshot_duration(Some(Duration::from_secs(30)));
     session.apply_demux_seekability(DemuxSeekability::Seekable);
     session.set_playback_state(PlaybackState::Paused);

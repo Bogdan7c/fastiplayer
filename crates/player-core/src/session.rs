@@ -531,9 +531,7 @@ impl PlayerSession {
     /// Выбирает video track.
     fn select_video_track(&mut self, track_id: TrackId) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        self.pipeline
-            .select_video_track_preserving_active_requirement(track_id);
-        self.snapshot.selected_tracks.video_track = Some(track_id);
+        self.select_requested_video_track(track_id)?;
         self.pending_events
             .push(PlayerEvent::VideoTrackSelected(track_id));
         Ok(())

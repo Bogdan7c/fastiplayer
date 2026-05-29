@@ -41,41 +41,70 @@ impl PlayerSession {
 
         let mut last_rejection = None;
         for track in video_tracks {
-            let Some(requirement) = video_requirement_from_track(track) else {
-                last_rejection = Some(PlayerError::new(
-                    PlayerErrorKind::UnsupportedVideoCodec,
-                    format!(
-                        "Video codec `{}` не поддерживается текущей capability model",
-                        track.codec_id
-                    ),
-                ));
-                continue;
-            };
-
-            match self.validate_video_decode_requirement(&requirement) {
-                Ok(()) => {
+            match self.accepted_video_requirement_for_track(track) {
+                Ok(requirement) => {
                     self.activate_video_track(track, requirement);
                     return Ok(());
                 }
-                Err(error) => {
-                    if self.can_defer_packet_refinement(&requirement) {
-                        info!(
-                            track_id = %track.id,
-                            requirement = %requirement.describe(),
-                            "Video track выбран до bitstream refinement; strict capability check будет повторён перед decode"
-                        );
-                        self.activate_video_track(track, requirement);
-                        return Ok(());
-                    }
-
-                    last_rejection = Some(error);
-                }
+                Err(error) => last_rejection = Some(error),
             }
         }
 
         Err(last_rejection.unwrap_or_else(|| {
             PlayerError::new(PlayerErrorKind::UnsupportedVideoCodec, missing_message)
         }))
+    }
+
+    /// Выбирает явно запрошенный video track только после fresh capability validation.
+    pub(super) fn select_requested_video_track(&mut self, track_id: TrackId) -> PlayerResult<()> {
+        let Some(track) = self
+            .pipeline
+            .tracks()
+            .iter()
+            .find(|track| track.id == track_id && track.kind == TrackKind::Video)
+            .cloned()
+        else {
+            return Err(PlayerError::new(
+                PlayerErrorKind::InvalidCommand,
+                format!("Video track `{track_id}` не найден в текущем media"),
+            ));
+        };
+
+        let requirement = self.accepted_video_requirement_for_track(&track)?;
+        self.activate_video_track(&track, requirement);
+        Ok(())
+    }
+
+    /// Строит requirement из container metadata и принимает его до mutation selection state.
+    fn accepted_video_requirement_for_track(
+        &self,
+        track: &TrackInfo,
+    ) -> PlayerResult<VideoDecodeRequirement> {
+        let Some(requirement) = video_requirement_from_track(track) else {
+            return Err(PlayerError::new(
+                PlayerErrorKind::UnsupportedVideoCodec,
+                format!(
+                    "Video codec `{}` не поддерживается текущей capability model",
+                    track.codec_id
+                ),
+            ));
+        };
+
+        match self.validate_video_decode_requirement(&requirement) {
+            Ok(()) => Ok(requirement),
+            Err(error) => {
+                if self.can_defer_packet_refinement(&requirement) {
+                    info!(
+                        track_id = %track.id,
+                        requirement = %requirement.describe(),
+                        "Video track выбран до bitstream refinement; strict capability check будет повторён перед decode"
+                    );
+                    return Ok(requirement);
+                }
+
+                Err(error)
+            }
+        }
     }
 
     /// Активирует video track после обычной проверки или разрешённого deferred refinement.

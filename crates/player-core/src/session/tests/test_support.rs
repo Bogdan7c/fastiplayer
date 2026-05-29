@@ -1015,14 +1015,10 @@ pub(super) fn install_fake_media_with_seekability(
     session
         .pipeline
         .install_opened_media(Box::new(demuxer), None, None, tracks.clone());
-    if let Some(video_track_id) = tracks
-        .iter()
-        .find(|track| track.kind == TrackKind::Video)
-        .map(|track| track.id)
-    {
+    if tracks.iter().any(|track| track.kind == TrackKind::Video) {
         session
-            .pipeline
-            .select_video_track_preserving_active_requirement(video_track_id);
+            .select_default_video_track(&tracks, "fake media не содержит video track")
+            .expect("fake video track должен получить fresh decode requirement");
     }
     if let Some(audio_track_id) = tracks
         .iter()
@@ -1051,14 +1047,10 @@ pub(super) fn install_fake_media_with_seek_request_log(
     session
         .pipeline
         .install_opened_media(Box::new(demuxer), None, None, tracks.clone());
-    if let Some(video_track_id) = tracks
-        .iter()
-        .find(|track| track.kind == TrackKind::Video)
-        .map(|track| track.id)
-    {
+    if tracks.iter().any(|track| track.kind == TrackKind::Video) {
         session
-            .pipeline
-            .select_video_track_preserving_active_requirement(video_track_id);
+            .select_default_video_track(&tracks, "fake media не содержит video track")
+            .expect("fake video track должен получить fresh decode requirement");
     }
     if let Some(audio_track_id) = tracks
         .iter()
@@ -1206,14 +1198,13 @@ impl SeekRegressionHarness {
         session
             .pipeline
             .install_opened_media(Box::new(demuxer), None, None, tracks.clone());
-        if let Some(video_track_id) = tracks
-            .iter()
-            .find(|track| track.kind == TrackKind::Video)
-            .map(|track| track.id)
-        {
+        if tracks.iter().any(|track| track.kind == TrackKind::Video) {
             session
-                .pipeline
-                .select_video_track_preserving_active_requirement(video_track_id);
+                .select_default_video_track(
+                    &tracks,
+                    "seek regression media не содержит video track",
+                )
+                .expect("seek regression video track должен получить fresh decode requirement");
             session.pipeline.set_video_decoder_thread(decoder.clone());
         }
         if let Some(audio_track_id) = tracks
