@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use source_core::{ByteSource, CancellationToken, Seekability, SourceResult};
+use source_core::{ByteSource, CancellationToken, Seekability, SourceError, SourceResult};
 
 use crate::config::PrefetchConfig;
 use crate::shared::PrefetchShared;
@@ -13,7 +13,7 @@ pub(crate) struct PrefetchWorker {
     /// Shared state для обмена chunks, seek requests и lifecycle flags.
     shared: Arc<PrefetchShared>,
 
-    /// Token, которым `Drop` прерывает блокирующие source operations.
+    /// Token, которым `Drop` останавливает worker loop, когда worker не находится внутри fetch-а.
     cancellation: CancellationToken,
 
     /// Настройки размера chunk/window, снятые из публичного config.
@@ -60,8 +60,11 @@ impl PrefetchWorker {
                 return;
             }
 
-            let fetch_offset = match self.next_fetch_offset() {
-                FetchDecision::Fetch(offset) => offset,
+            let (fetch_offset, fetch_cancellation) = match self.next_fetch_offset() {
+                FetchDecision::Fetch {
+                    offset,
+                    cancellation,
+                } => (offset, cancellation),
                 FetchDecision::Shutdown => return,
             };
 
@@ -73,6 +76,7 @@ impl PrefetchWorker {
             }
 
             if self.cancellation.is_cancelled() {
+                self.clear_fetch_cancellation();
                 return;
             }
 
@@ -86,7 +90,7 @@ impl PrefetchWorker {
             );
             let read_result = self
                 .inner
-                .read(&mut chunk_buffer[..current_chunk_len], &self.cancellation);
+                .read(&mut chunk_buffer[..current_chunk_len], &fetch_cancellation);
             match read_result {
                 Ok(bytes_read) => {
                     self.publish_read_result(Ok(bytes_read), &chunk_buffer);
@@ -126,7 +130,16 @@ impl PrefetchWorker {
             }
 
             if state.fatal_error.is_none() && state.buffer.needs_fetch() {
-                return FetchDecision::Fetch(state.buffer.next_fetch_offset());
+                let fetch_cancellation = CancellationToken::new();
+                debug_assert!(
+                    state.fetch_cancellation.is_none(),
+                    "fetch token должен очищаться после каждого завершённого fetch-а"
+                );
+                state.fetch_cancellation = Some(fetch_cancellation.clone());
+                return FetchDecision::Fetch {
+                    offset: state.buffer.next_fetch_offset(),
+                    cancellation: fetch_cancellation,
+                };
             }
 
             tracing::debug!(
@@ -146,6 +159,7 @@ impl PrefetchWorker {
         };
 
         let mut state = self.shared.lock_state();
+        state.fetch_cancellation = None;
         if !state.shutdown && !self.cancellation.is_cancelled() && state.seek_request.is_none() {
             state.fatal_error = Some(error);
             self.shared.notify_all();
@@ -157,8 +171,38 @@ impl PrefetchWorker {
     /// Публикует результат blocking read-а, отбрасывая устаревший chunk после concurrent seek.
     fn publish_read_result(&self, read_result: SourceResult<usize>, chunk_buffer: &[u8]) {
         let mut state = self.shared.lock_state();
+        let seek_request_pending = state.seek_request.is_some();
+        state.fetch_cancellation = None;
 
-        if state.shutdown || self.cancellation.is_cancelled() || state.seek_request.is_some() {
+        if seek_request_pending {
+            state.diagnostics.cancelled_fetches =
+                state.diagnostics.cancelled_fetches.saturating_add(1);
+            match read_result {
+                Err(SourceError::Cancelled) => {
+                    tracing::debug!(
+                        cancelled_fetches = state.diagnostics.cancelled_fetches,
+                        "media prefetch worker отбросил отменённый fetch после foreground seek"
+                    );
+                }
+                Ok(bytes_read) => {
+                    tracing::debug!(
+                        bytes_read,
+                        cancelled_fetches = state.diagnostics.cancelled_fetches,
+                        "media prefetch worker отбросил устаревший chunk после foreground seek"
+                    );
+                }
+                Err(error) => {
+                    tracing::debug!(
+                        error = %error,
+                        cancelled_fetches = state.diagnostics.cancelled_fetches,
+                        "media prefetch worker отбросил ошибку устаревшего fetch-а после foreground seek"
+                    );
+                }
+            }
+            return;
+        }
+
+        if state.shutdown || self.cancellation.is_cancelled() {
             return;
         }
 
@@ -202,12 +246,24 @@ impl PrefetchWorker {
             }
         }
     }
+
+    /// Очищает token fetch-а, если worker остановили между выбором offset-а и чтением source-а.
+    fn clear_fetch_cancellation(&self) {
+        let mut state = self.shared.lock_state();
+        state.fetch_cancellation = None;
+    }
 }
 
 /// Решение worker-а после проверки shared predicates.
 enum FetchDecision {
     /// Нужно читать source с указанного absolute offset.
-    Fetch(u64),
+    Fetch {
+        /// Absolute offset, с которого worker должен начать следующий Range/fetch.
+        offset: u64,
+
+        /// Token только для этого fetch-а; foreground seek/drop отменяют именно его.
+        cancellation: CancellationToken,
+    },
 
     /// Source закрывается, worker должен выйти без дополнительных действий.
     Shutdown,

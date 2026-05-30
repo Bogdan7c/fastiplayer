@@ -1,7 +1,7 @@
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
-use source_core::SourceError;
+use source_core::{CancellationToken, SourceError};
 
 use crate::buffer::PrefetchBufferState;
 
@@ -22,6 +22,9 @@ pub struct PrefetchDiagnostics {
 
     /// Сколько раз foreground seek потребовал сбросить окно и заново читать source.
     pub refetches: u64,
+
+    /// Сколько in-flight fetch-ей worker отбросил из-за foreground seek.
+    pub cancelled_fetches: u64,
 }
 
 /// Общее состояние prefetch-слоя, защищённое одним mutex-ом.
@@ -32,6 +35,9 @@ pub(crate) struct PrefetchSharedState {
 
     /// Запрос foreground-а переставить worker на новый absolute offset.
     pub seek_request: Option<u64>,
+
+    /// Token выбранного fetch-а; `None` означает, что foreground сейчас нечего отменять.
+    pub fetch_cancellation: Option<CancellationToken>,
 
     /// Последняя fatal ошибка worker-а, которую foreground должен увидеть как `read` error.
     pub fatal_error: Option<SourceError>,
@@ -61,6 +67,7 @@ impl PrefetchShared {
             state: Mutex::new(PrefetchSharedState {
                 buffer,
                 seek_request: None,
+                fetch_cancellation: None,
                 fatal_error: None,
                 shutdown: false,
                 diagnostics: PrefetchDiagnostics::default(),

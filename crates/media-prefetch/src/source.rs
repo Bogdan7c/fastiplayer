@@ -16,7 +16,7 @@ pub struct PrefetchingByteSource {
     /// Shared RAM-window и lifecycle state для foreground/worker обмена.
     shared: Arc<PrefetchShared>,
 
-    /// Token, который `Drop` использует для остановки blocking `inner.read`.
+    /// Token, которым `Drop` будит worker wait-loop; активный fetch отменяется отдельным token-ом.
     worker_cancellation: CancellationToken,
 
     /// JoinHandle хранится в Option, чтобы `Drop` мог забрать его ровно один раз.
@@ -151,6 +151,11 @@ impl ByteSource for PrefetchingByteSource {
         state.buffer.reset_to(offset);
         state.seek_request = Some(offset);
         state.fatal_error = None;
+        // Отмена под тем же mutex-ом, что и `seek_request`, делает порядок видимым worker-у:
+        // когда `inner.read` вернёт Cancelled, новый offset уже лежит в shared state.
+        if let Some(fetch_cancellation) = &state.fetch_cancellation {
+            fetch_cancellation.cancel();
+        }
         state.diagnostics.refetches = state.diagnostics.refetches.saturating_add(1);
         self.logical_position = offset;
         tracing::debug!(
@@ -189,6 +194,11 @@ impl Drop for PrefetchingByteSource {
         {
             let mut state = self.shared.lock_state();
             state.shutdown = true;
+            // Worker больше не передаёт shutdown-token в `inner.read`, поэтому Drop обязан
+            // отдельно отменить token текущего fetch-а перед join-ом.
+            if let Some(fetch_cancellation) = &state.fetch_cancellation {
+                fetch_cancellation.cancel();
+            }
         }
 
         self.worker_cancellation.cancel();
@@ -219,6 +229,9 @@ mod tests {
     use source_core::{NotSeekableReason, SourceFingerprint};
 
     use super::*;
+
+    /// Частота проверки test cancellation во время искусственно медленного fake read-а.
+    const FAKE_READ_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
     /// Один вызов inner.read, сохранённый fake source-ом для проверки chunk policy.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -349,6 +362,85 @@ mod tests {
         }
     }
 
+    /// Записывает старт read-а до блокирующей задержки, чтобы тест мог увидеть in-flight fetch.
+    fn record_started_read(
+        state: &mut FakeInnerState,
+        requested_len: usize,
+    ) -> (usize, usize, u64) {
+        let call_index = state.read_records.len() + 1;
+        let record_index = state.read_records.len();
+        let offset = state.position;
+        state.read_records.push(ReadRecord {
+            offset,
+            requested_len,
+            returned_len: 0,
+        });
+
+        (call_index, record_index, offset)
+    }
+
+    /// Ждёт искусственную задержку маленькими шагами, чтобы fetch token мог прервать read.
+    fn wait_for_cancellable_read_delay(
+        read_delay: Duration,
+        cancellation: &CancellationToken,
+    ) -> SourceResult<()> {
+        let deadline = Instant::now() + read_delay;
+
+        while Instant::now() < deadline {
+            if cancellation.is_cancelled() {
+                return Err(SourceError::Cancelled);
+            }
+
+            let remaining_delay = deadline.saturating_duration_since(Instant::now());
+            thread::sleep(remaining_delay.min(FAKE_READ_CANCELLATION_POLL_INTERVAL));
+        }
+
+        if cancellation.is_cancelled() {
+            return Err(SourceError::Cancelled);
+        }
+
+        Ok(())
+    }
+
+    /// Имитирует зависшее network read, которое завершается только после fetch cancellation.
+    fn wait_until_fake_read_cancelled(cancellation: &CancellationToken) -> SourceResult<usize> {
+        while !cancellation.is_cancelled() {
+            thread::sleep(FAKE_READ_CANCELLATION_POLL_INTERVAL);
+        }
+
+        Err(SourceError::Cancelled)
+    }
+
+    /// Завершает ранее записанный fake read: копирует bytes, двигает cursor или возвращает ошибку.
+    fn complete_recorded_read(
+        state: &mut FakeInnerState,
+        output: &mut [u8],
+        call_index: usize,
+        record_index: usize,
+        offset: u64,
+    ) -> SourceResult<usize> {
+        if state.fail_on_read_call == Some(call_index) {
+            return Err(SourceError::UnexpectedEof {
+                offset,
+                expected_bytes: output.len(),
+                actual_bytes: 0,
+            });
+        }
+
+        let start = usize::try_from(offset).expect("fake offset должен помещаться в usize");
+        let available = state.bytes.len().saturating_sub(start);
+        let returned_len = available.min(output.len());
+
+        if returned_len > 0 {
+            output[..returned_len].copy_from_slice(&state.bytes[start..start + returned_len]);
+        }
+
+        state.position = state.position.saturating_add(returned_len as u64);
+        state.read_records[record_index].returned_len = returned_len;
+
+        Ok(returned_len)
+    }
+
     impl ByteSource for FakeByteSource {
         fn read(
             &mut self,
@@ -359,69 +451,37 @@ mod tests {
                 return Err(SourceError::Cancelled);
             }
 
-            let (read_delay, wait_until_cancelled) = {
-                let state = self
-                    .state
-                    .lock()
-                    .expect("fake state mutex не должен быть poisoned");
-                (state.read_delay, state.wait_until_cancelled)
-            };
-
-            if read_delay > Duration::ZERO {
-                thread::sleep(read_delay);
-            }
-
             let mut state = self
                 .state
                 .lock()
                 .expect("fake state mutex не должен быть poisoned");
-            let call_index = state.read_records.len() + 1;
-            let offset = state.position;
+            let read_delay = state.read_delay;
+            let wait_until_cancelled = state.wait_until_cancelled;
+            let (call_index, record_index, offset) = record_started_read(&mut state, output.len());
 
-            if wait_until_cancelled {
-                state.read_records.push(ReadRecord {
-                    offset,
-                    requested_len: output.len(),
-                    returned_len: 0,
-                });
+            if read_delay > Duration::ZERO || wait_until_cancelled {
                 drop(state);
 
-                while !cancellation.is_cancelled() {
-                    thread::sleep(Duration::from_millis(5));
+                wait_for_cancellable_read_delay(read_delay, cancellation)?;
+
+                if wait_until_cancelled {
+                    return wait_until_fake_read_cancelled(cancellation);
                 }
 
-                return Err(SourceError::Cancelled);
-            }
-
-            if state.fail_on_read_call == Some(call_index) {
-                state.read_records.push(ReadRecord {
+                let mut state = self
+                    .state
+                    .lock()
+                    .expect("fake state mutex не должен быть poisoned");
+                return complete_recorded_read(
+                    &mut state,
+                    output,
+                    call_index,
+                    record_index,
                     offset,
-                    requested_len: output.len(),
-                    returned_len: 0,
-                });
-                return Err(SourceError::UnexpectedEof {
-                    offset,
-                    expected_bytes: output.len(),
-                    actual_bytes: 0,
-                });
+                );
             }
 
-            let start = usize::try_from(offset).expect("fake offset должен помещаться в usize");
-            let available = state.bytes.len().saturating_sub(start);
-            let returned_len = available.min(output.len());
-
-            if returned_len > 0 {
-                output[..returned_len].copy_from_slice(&state.bytes[start..start + returned_len]);
-            }
-
-            state.position = state.position.saturating_add(returned_len as u64);
-            state.read_records.push(ReadRecord {
-                offset,
-                requested_len: output.len(),
-                returned_len,
-            });
-
-            Ok(returned_len)
+            complete_recorded_read(&mut state, output, call_index, record_index, offset)
         }
 
         fn seek(&mut self, offset: u64) -> SourceResult<()> {
@@ -509,6 +569,32 @@ mod tests {
 
         panic!(
             "worker не сделал {expected} read-вызовов, текущая история: {:?}",
+            handle.read_records()
+        );
+    }
+
+    /// Ждёт, пока fake source начнёт read с нужного offset-а.
+    fn wait_for_read_offset(
+        handle: &FakeByteSourceHandle,
+        expected_offset: u64,
+        timeout: Duration,
+    ) -> ReadRecord {
+        let deadline = Instant::now() + timeout;
+
+        while Instant::now() < deadline {
+            if let Some(record) = handle
+                .read_records()
+                .into_iter()
+                .find(|record| record.offset == expected_offset)
+            {
+                return record;
+            }
+
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        panic!(
+            "worker не начал read с offset {expected_offset}, текущая история: {:?}",
             handle.read_records()
         );
     }
@@ -641,6 +727,71 @@ mod tests {
     }
 
     #[test]
+    fn seek_interrupts_slow_in_flight_read() {
+        let bytes = sample_bytes(192);
+        let read_delay = Duration::from_millis(300);
+        let seek_offset = 96;
+        let (inner, handle) = FakeByteSource::seekable(bytes.clone());
+        let inner = inner.with_read_delay(read_delay);
+        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 64, 128));
+
+        wait_for_read_count(&handle, 1);
+        let seek_started = Instant::now();
+        source
+            .seek(seek_offset)
+            .expect("seek за окно должен отменить текущий fetch");
+
+        let refetch_record = wait_for_read_offset(
+            &handle,
+            seek_offset,
+            read_delay.saturating_sub(Duration::from_millis(50)),
+        );
+        assert!(
+            seek_started.elapsed() < read_delay,
+            "worker должен начать новый fetch до завершения старого read_delay"
+        );
+        assert_eq!(refetch_record.requested_len, 8);
+
+        let mut output = [0; 8];
+        let bytes_read = source
+            .read(&mut output, &token())
+            .expect("seek-cancel не должен стать foreground ошибкой");
+
+        assert_eq!(bytes_read, 8);
+        assert_eq!(
+            output,
+            bytes[seek_offset as usize..seek_offset as usize + 8]
+        );
+        assert_eq!(source.diagnostics().cancelled_fetches, 1);
+    }
+
+    #[test]
+    fn seek_cancel_is_not_reported_as_foreground_error() {
+        let bytes = sample_bytes(128);
+        let seek_offset = 64;
+        let (inner, handle) = FakeByteSource::seekable(bytes.clone());
+        let inner = inner.with_read_delay(Duration::from_millis(80));
+        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 32, 64));
+
+        wait_for_read_count(&handle, 1);
+        source
+            .seek(seek_offset)
+            .expect("seek за окно должен пройти");
+
+        let mut output = [0; 8];
+        let bytes_read = source
+            .read(&mut output, &token())
+            .expect("Cancelled от старого fetch-а не должен протечь в foreground read");
+
+        assert_eq!(bytes_read, 8);
+        assert_eq!(
+            output,
+            bytes[seek_offset as usize..seek_offset as usize + 8]
+        );
+        assert_eq!(source.diagnostics().cancelled_fetches, 1);
+    }
+
+    #[test]
     fn non_seekable_source_rejects_backward_seek_outside_window_and_reads_forward() {
         let bytes = sample_bytes(48);
         let seekability = Seekability::NotSeekable {
@@ -713,7 +864,7 @@ mod tests {
 
         assert!(
             started.elapsed() < Duration::from_secs(1),
-            "drop должен завершиться после cancellation worker token"
+            "drop должен завершиться после cancellation текущего fetch token"
         );
     }
 
