@@ -175,26 +175,12 @@ impl Nv12VideoRenderer {
         uv_view: &wgpu::TextureView,
         pass_context: &mut VideoRenderPassContext<'_>,
     ) -> Result<ActiveColorPath> {
-        // Считаем отношение сторон видео и текущего окна.
-        let video_aspect = frame.render_width as f32 / frame.render_height.max(1) as f32;
-        let window_aspect = self.window_size.0 as f32 / self.window_size.1.max(1) as f32;
+        // Letterbox uv_scale/uv_offset считаем в общей функции video::letterbox_scale_and_offset,
+        // чтобы NV12 и P010 не расходились в формуле сохранения пропорций.
+        let (uv_scale, uv_offset) = super::letterbox_scale_and_offset(frame, self.window_size);
 
-        let (scale_x, scale_y, offset_x, offset_y) = if video_aspect > window_aspect {
-            // Видео шире окна: shader оставит чёрные полосы сверху и снизу.
-            let scale = window_aspect / video_aspect;
-            (1.0, scale, 0.0, (1.0 - scale) * 0.5)
-        } else {
-            // Видео выше окна: shader оставит чёрные полосы слева и справа.
-            let scale = video_aspect / window_aspect;
-            (scale, 1.0, (1.0 - scale) * 0.5, 0.0)
-        };
-
-        let prepared_color_pipeline = prepare_nv12_color_pipeline(
-            frame,
-            &self.color_settings,
-            [scale_x, scale_y],
-            [offset_x, offset_y],
-        );
+        let prepared_color_pipeline =
+            prepare_nv12_color_pipeline(frame, &self.color_settings, uv_scale, uv_offset);
 
         pass_context.queue.write_buffer(
             &self.uniform_buffer,

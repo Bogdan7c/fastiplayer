@@ -399,7 +399,7 @@ fn prepare_p010_render(
 
     let color_path = select_p010_color_path(frame)?;
     validate_hdr_to_sdr_settings_for_p010(hdr_to_sdr_settings, color_path)?;
-    let (uv_scale, uv_offset) = letterbox_scale_and_offset(frame, window_size);
+    let (uv_scale, uv_offset) = super::letterbox_scale_and_offset(frame, window_size);
     let active_path =
         active_color_path_for_p010(frame, color_settings, hdr_to_sdr_settings, color_path);
     let range_normalization = p010_range_normalization(frame.color.range)?;
@@ -766,23 +766,6 @@ fn active_color_path_for_p010(
                 Some(hdr_to_sdr_settings),
             )
         }
-    }
-}
-
-/// Считает letterbox scale/offset в тех же координатах, что и NV12 shader.
-fn letterbox_scale_and_offset(
-    frame: &RenderableFrame,
-    window_size: (u32, u32),
-) -> ([f32; 2], [f32; 2]) {
-    let video_aspect = frame.render_width as f32 / frame.render_height.max(1) as f32;
-    let window_aspect = window_size.0 as f32 / window_size.1.max(1) as f32;
-
-    if video_aspect > window_aspect {
-        let scale_y = window_aspect / video_aspect;
-        ([1.0, scale_y], [0.0, (1.0 - scale_y) * 0.5])
-    } else {
-        let scale_x = video_aspect / window_aspect;
-        ([scale_x, 1.0], [(1.0 - scale_x) * 0.5, 0.0])
     }
 }
 

@@ -373,6 +373,37 @@ enum RendererDispatch {
     P010,
 }
 
+/// Считает letterbox `uv_scale`/`uv_offset` для NV12 и P010 shader-ов.
+///
+/// Оба shader-а вычисляют `scaled_uv = uv * uv_scale + uv_offset`, где `uv` пробегает
+/// `[0, 1]` по всей цели рендера, а семплы за пределами `[0, 1]` красятся чёрным.
+/// Чтобы кадр целиком уместился в окно с сохранением пропорций (letterbox), масштаб
+/// по "лишней" оси должен быть `> 1`: тогда края экрана отображаются в координаты
+/// текстуры за пределами `[0, 1]` и превращаются в чёрные полосы, а смещение
+/// `(1 - scale) * 0.5` центрирует видимую часть кадра.
+///
+/// Возвращает `(uv_scale, uv_offset)`; единый источник правды, чтобы NV12 и P010
+/// не расходились в формуле.
+pub(super) fn letterbox_scale_and_offset(
+    frame: &RenderableFrame,
+    window_size: (u32, u32),
+) -> ([f32; 2], [f32; 2]) {
+    // Соотношение сторон кадра по render-размеру (учитывает non-square SAR на этапе decode).
+    let video_aspect = frame.render_width as f32 / frame.render_height.max(1) as f32;
+    // Соотношение сторон цели рендера (всё окно/swapchain).
+    let window_aspect = window_size.0 as f32 / window_size.1.max(1) as f32;
+
+    if video_aspect > window_aspect {
+        // Видео шире окна: чёрные полосы сверху и снизу, масштабируем по вертикали.
+        let scale_y = video_aspect / window_aspect;
+        ([1.0, scale_y], [0.0, (1.0 - scale_y) * 0.5])
+    } else {
+        // Видео уже окна (или равно): чёрные полосы слева и справа, масштаб по горизонтали.
+        let scale_x = window_aspect / video_aspect;
+        ([scale_x, 1.0], [(1.0 - scale_x) * 0.5, 0.0])
+    }
+}
+
 /// Выбирает renderer path по renderer-neutral format и kind plane set.
 fn select_renderer_dispatch(
     format: VideoFrameFormat,
@@ -491,6 +522,93 @@ mod tests {
         _storage_layout: TestP010StorageLayout,
     ) -> WgpuFramePlaneKind {
         WgpuFramePlaneKind::P010
+    }
+
+    /// Строит renderer-neutral frame с заданным render-размером для letterbox тестов.
+    fn renderable_test_frame(render_width: u32, render_height: u32) -> RenderableFrame {
+        let mut decoded = decoded_nv12_test_frame(FrameMemoryPath::CpuUpload);
+        decoded.render_width = render_width;
+        decoded.render_height = render_height;
+        renderable_metadata_from_decoded(&decoded, VideoFrameFormat::Nv12)
+    }
+
+    /// Долю оси, занятую видео, восстанавливаем из uv_scale: видимая полоса = 1 / scale.
+    fn visible_axis_fraction(scale: f32) -> f32 {
+        1.0 / scale
+    }
+
+    #[test]
+    fn letterbox_wide_video_adds_top_bottom_bars() {
+        // Видео 16:9 (1.778) в почти квадратном окне (1.0): кадр шире окна.
+        let frame = renderable_test_frame(1920, 1080);
+        let (uv_scale, uv_offset) = letterbox_scale_and_offset(&frame, (1000, 1000));
+
+        // По горизонтали кадр занимает всё окно, по вертикали — сжимается с полосами.
+        assert_eq!(uv_scale[0], 1.0);
+        assert_eq!(uv_offset[0], 0.0);
+        // Масштаб > 1 и отрицательное смещение => шейдер уводит края за [0, 1] и красит чёрным.
+        assert!(
+            uv_scale[1] > 1.0,
+            "ожидали scale_y > 1, получили {}",
+            uv_scale[1]
+        );
+        assert!(
+            uv_offset[1] < 0.0,
+            "ожидали offset_y < 0, получили {}",
+            uv_offset[1]
+        );
+        // Видимая по вертикали доля = window_aspect / video_aspect = 1.0 / 1.778.
+        let video_aspect = 1920.0_f32 / 1080.0;
+        let window_aspect = 1.0_f32;
+        assert!((visible_axis_fraction(uv_scale[1]) - window_aspect / video_aspect).abs() < 1e-4);
+    }
+
+    #[test]
+    fn letterbox_tall_video_adds_left_right_bars() {
+        // Портретное видео 9:16 (0.5625) в широком окне 16:9 (1.778): кадр уже окна.
+        let frame = renderable_test_frame(1080, 1920);
+        let (uv_scale, uv_offset) = letterbox_scale_and_offset(&frame, (1920, 1080));
+
+        // По вертикали кадр занимает всё окно, по горизонтали — полосы слева и справа.
+        assert_eq!(uv_scale[1], 1.0);
+        assert_eq!(uv_offset[1], 0.0);
+        assert!(
+            uv_scale[0] > 1.0,
+            "ожидали scale_x > 1, получили {}",
+            uv_scale[0]
+        );
+        assert!(
+            uv_offset[0] < 0.0,
+            "ожидали offset_x < 0, получили {}",
+            uv_offset[0]
+        );
+        let video_aspect = 1080.0_f32 / 1920.0;
+        let window_aspect = 1920.0_f32 / 1080.0;
+        assert!((visible_axis_fraction(uv_scale[0]) - video_aspect / window_aspect).abs() < 1e-4);
+    }
+
+    #[test]
+    fn letterbox_matching_aspect_is_identity() {
+        // Кадр 16:9 в окне 16:9: ни полос, ни масштабирования.
+        let frame = renderable_test_frame(1920, 1080);
+        let (uv_scale, uv_offset) = letterbox_scale_and_offset(&frame, (1280, 720));
+
+        assert!((uv_scale[0] - 1.0).abs() < 1e-4);
+        assert!((uv_scale[1] - 1.0).abs() < 1e-4);
+        assert!(uv_offset[0].abs() < 1e-4);
+        assert!(uv_offset[1].abs() < 1e-4);
+    }
+
+    #[test]
+    fn letterbox_keeps_video_centered_in_clip_space() {
+        // Центр экрана (uv = 0.5) должен отображаться в центр текстуры (0.5) на обеих осях.
+        let frame = renderable_test_frame(1920, 1080);
+        let (uv_scale, uv_offset) = letterbox_scale_and_offset(&frame, (800, 1200));
+
+        let center_x = 0.5 * uv_scale[0] + uv_offset[0];
+        let center_y = 0.5 * uv_scale[1] + uv_offset[1];
+        assert!((center_x - 0.5).abs() < 1e-4, "center_x = {center_x}");
+        assert!((center_y - 0.5).abs() < 1e-4, "center_y = {center_y}");
     }
 
     fn decoded_nv12_test_frame(memory_path: FrameMemoryPath) -> DecodedFrame {
