@@ -20,8 +20,11 @@ use symphonia_demux::DemuxerOptions;
 /// Размер HTTP chunk, который fetcher передаёт demuxer-у.
 const HTTP_READ_CHUNK_SIZE: usize = 64 * 1024;
 
+/// Один кибибайт в bytes для slow-start prefetch policy.
+const KIB_BYTES: u64 = 1024;
+
 /// Один мебибайт в bytes для явной конвертации пользовательских network-настроек.
-const MIB_BYTES: u64 = 1024 * 1024;
+const MIB_BYTES: u64 = KIB_BYTES * 1024;
 
 mod dto;
 mod http_refresh;
@@ -278,6 +281,10 @@ fn open_range_backed_demuxer(
 fn prefetch_config_from_network_config(
     network_config: &NetworkConfig,
 ) -> Result<media_prefetch::PrefetchConfig> {
+    let initial_chunk_bytes = network_kibibytes_to_bytes(
+        "network.prefetch_initial_chunk_kb",
+        network_config.prefetch_initial_chunk_kb,
+    )?;
     let chunk_bytes = network_mebibytes_to_bytes(
         "network.prefetch_chunk_mb",
         network_config.prefetch_chunk_mb,
@@ -285,12 +292,23 @@ fn prefetch_config_from_network_config(
     let window_bytes =
         network_mebibytes_to_bytes("network.read_ahead_mb", network_config.read_ahead_mb)?;
 
-    media_prefetch::PrefetchConfig::new(chunk_bytes, window_bytes).with_context(|| {
+    let prefetch_config =
+        media_prefetch::PrefetchConfig::new(initial_chunk_bytes, chunk_bytes, window_bytes);
+    prefetch_config.with_context(|| {
         format!(
-            "некорректные prefetch настройки: prefetch_chunk_mb={}, read_ahead_mb={}",
-            network_config.prefetch_chunk_mb, network_config.read_ahead_mb
+            "некорректные prefetch настройки: prefetch_initial_chunk_kb={}, prefetch_chunk_mb={}, read_ahead_mb={}",
+            network_config.prefetch_initial_chunk_kb,
+            network_config.prefetch_chunk_mb,
+            network_config.read_ahead_mb
         )
     })
+}
+
+/// Переводит KiB-поле config-а в bytes без переполнения.
+fn network_kibibytes_to_bytes(field_name: &'static str, value_kb: u64) -> Result<u64> {
+    value_kb
+        .checked_mul(KIB_BYTES)
+        .with_context(|| format!("{field_name} не помещается в байтовый budget: {value_kb} KiB"))
 }
 
 /// Переводит MiB-поле config-а в bytes без переполнения.
@@ -562,10 +580,15 @@ mod tests {
         }
     }
 
-    fn test_network_config(read_ahead_mb: u64, prefetch_chunk_mb: u64) -> NetworkConfig {
+    fn test_network_config(
+        read_ahead_mb: u64,
+        prefetch_initial_chunk_kb: u64,
+        prefetch_chunk_mb: u64,
+    ) -> NetworkConfig {
         NetworkConfig {
             memory_cache_mb: 1,
             read_ahead_mb,
+            prefetch_initial_chunk_kb,
             prefetch_chunk_mb,
             connect_timeout_ms: 1_000,
             read_timeout_ms: 1_000,
@@ -573,31 +596,35 @@ mod tests {
     }
 
     fn test_source_config() -> SourceRuntimeConfig {
-        SourceRuntimeConfig::from_network_config(&test_network_config(1, 1)).expect("source config")
+        SourceRuntimeConfig::from_network_config(&test_network_config(1, 64, 1))
+            .expect("source config")
     }
 
     fn test_prefetch_config() -> media_prefetch::PrefetchConfig {
-        media_prefetch::PrefetchConfig::new(MIB_BYTES, MIB_BYTES).expect("test prefetch config")
+        media_prefetch::PrefetchConfig::new(MIB_BYTES, MIB_BYTES, MIB_BYTES)
+            .expect("test prefetch config")
     }
 
     #[test]
     fn prefetch_config_uses_network_chunk_and_readahead_window() {
-        let network_config = test_network_config(9, 3);
+        let network_config = test_network_config(9, 128, 3);
 
         let prefetch_config = prefetch_config_from_network_config(&network_config)
             .expect("valid network prefetch config");
 
+        assert_eq!(prefetch_config.initial_chunk_bytes(), 128 * KIB_BYTES);
         assert_eq!(prefetch_config.chunk_bytes(), 3 * MIB_BYTES);
         assert_eq!(prefetch_config.window_bytes(), 9 * MIB_BYTES);
     }
 
     #[test]
     fn prefetch_config_rejects_window_smaller_than_chunk() {
-        let network_config = test_network_config(4, 8);
+        let network_config = test_network_config(4, 64, 8);
 
         let error = prefetch_config_from_network_config(&network_config)
             .expect_err("window smaller than chunk must be rejected");
 
+        assert!(format!("{error:#}").contains("prefetch_initial_chunk_kb=64"));
         assert!(format!("{error:#}").contains("prefetch_chunk_mb=8"));
         assert!(format!("{error:#}").contains("read_ahead_mb=4"));
     }

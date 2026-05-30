@@ -19,6 +19,9 @@ pub(crate) struct PrefetchWorker {
     /// Настройки размера chunk/window, снятые из публичного config.
     config: PrefetchConfig,
 
+    /// Текущий размер следующего чтения; worker-local slow-start не нужен shared state-у.
+    current_chunk_len: usize,
+
     /// Флаг seekability, снятый один раз до передачи source-а в worker thread.
     inner_is_seekable: bool,
 }
@@ -33,20 +36,24 @@ impl PrefetchWorker {
         config: PrefetchConfig,
         seekability: Seekability,
     ) -> Self {
+        let current_chunk_len = usize::try_from(config.initial_chunk_bytes())
+            .expect("prefetch initial_chunk_bytes должен помещаться в usize");
+
         Self {
             inner,
             shared,
             cancellation,
             config,
+            current_chunk_len,
             inner_is_seekable: matches!(seekability, Seekability::Seekable),
         }
     }
 
     /// Основной цикл prefetch-а: lock нужен только для RAM-state, сеть читается без mutex-а.
     pub fn run(mut self) {
-        let chunk_len = usize::try_from(self.config.chunk_bytes())
+        let max_chunk_len = usize::try_from(self.config.chunk_bytes())
             .expect("prefetch chunk_bytes должен помещаться в usize для allocation");
-        let mut chunk_buffer = vec![0; chunk_len];
+        let mut chunk_buffer = vec![0; max_chunk_len];
 
         loop {
             if self.cancellation.is_cancelled() {
@@ -69,21 +76,36 @@ impl PrefetchWorker {
                 return;
             }
 
+            let current_chunk_len = self.current_chunk_len;
             tracing::debug!(
                 fetch_offset,
-                chunk_bytes = chunk_len,
+                chunk_bytes = current_chunk_len,
+                max_chunk_bytes = max_chunk_len,
                 window_bytes = self.config.window_bytes(),
                 "media prefetch worker читает следующий chunk"
             );
             let read_result = self
                 .inner
-                .read(&mut chunk_buffer[..chunk_len], &self.cancellation);
-            self.publish_read_result(read_result, &chunk_buffer);
+                .read(&mut chunk_buffer[..current_chunk_len], &self.cancellation);
+            match read_result {
+                Ok(bytes_read) => {
+                    self.publish_read_result(Ok(bytes_read), &chunk_buffer);
+                    if bytes_read > 0 {
+                        // Рост применяется только к следующему fetch: уже опубликованный chunk
+                        // остаётся ровно тем размером, который запросил текущий HTTP Range.
+                        self.current_chunk_len =
+                            self.current_chunk_len.saturating_mul(2).min(max_chunk_len);
+                    }
+                }
+                Err(error) => self.publish_read_result(Err(error), &chunk_buffer),
+            }
         }
     }
 
     /// Выбирает следующий fetch offset или ждёт, пока foreground освободит место/попросит seek.
-    fn next_fetch_offset(&self) -> FetchDecision {
+    fn next_fetch_offset(&mut self) -> FetchDecision {
+        let initial_chunk_len = usize::try_from(self.config.initial_chunk_bytes())
+            .expect("prefetch initial_chunk_bytes должен помещаться в usize");
         let mut state = self.shared.lock_state();
 
         loop {
@@ -98,6 +120,9 @@ impl PrefetchWorker {
                 );
                 state.buffer.reset_to(offset);
                 state.fatal_error = None;
+                // Seek начинает новую серию чтения с маленького Range, чтобы foreground
+                // получил первый байт с нового offset-а без ожидания полного большого chunk-а.
+                self.current_chunk_len = initial_chunk_len;
             }
 
             if state.fatal_error.is_none() && state.buffer.needs_fetch() {

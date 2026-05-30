@@ -72,6 +72,7 @@ Serde deserialization.
 - `render.vulkan.max_frame_latency = 2`
 - `network.memory_cache_mb = 128`
 - `network.read_ahead_mb = 256`
+- `network.prefetch_initial_chunk_kb = 64`
 - `network.prefetch_chunk_mb = 8`
 - `youtube.enabled = true`
 - `youtube.prefer_account_session = true`

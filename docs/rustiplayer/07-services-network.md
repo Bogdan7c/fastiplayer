@@ -30,6 +30,7 @@ Current cache is RAM byte-range cache. Public knobs:
 
 - `network.memory_cache_mb`;
 - `network.read_ahead_mb`;
+- `network.prefetch_initial_chunk_kb`;
 - `network.prefetch_chunk_mb`;
 - `network.connect_timeout_ms`;
 - `network.read_timeout_ms`.
@@ -44,15 +45,19 @@ sources. The layer wraps a `source-core::ByteSource`, moves the inner source int
 one background worker thread and keeps a bounded sliding window in memory.
 
 Policy comes from `[network]` in user TOML, but the mapping lives in
-`service-youtube`: `network.prefetch_chunk_mb` becomes one worker read chunk, and
-`network.read_ahead_mb` becomes the target RAM window. Defaults are 8 MiB chunk
-and 256 MiB window. The window is bounded per wrapped source and does not grow
-with the media duration.
+`service-youtube`: `network.prefetch_initial_chunk_kb` becomes the first
+slow-start read size after open/seek, `network.prefetch_chunk_mb` becomes the
+maximum worker read chunk, and `network.read_ahead_mb` becomes the target RAM
+window. Defaults are 64 KiB initial chunk, 8 MiB maximum chunk and 256 MiB
+window. The window is bounded per wrapped source and does not grow with the
+media duration.
 
 Foreground demux reads are served from RAM. Network IO is owned by the worker,
 so the playback foreground path does not synchronously perform HTTP reads after
 the prefetch window is primed. Seek outside the current window resets the RAM
-window and continues from the new absolute byte offset.
+window, resets slow-start back to the initial chunk and continues from the new
+absolute byte offset. This keeps first-byte latency small while steady-state
+prefetch still ramps back to large chunks.
 
 Live streams and direct URLs that fail the Range seekability probe still use the
 separate playback-only streaming fallback (`StreamingByteReader` +

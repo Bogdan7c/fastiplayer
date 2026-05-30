@@ -57,6 +57,9 @@ const MAX_CONSECUTIVE_CORRUPTED_PACKETS: usize = 4096;
 /// Верхний предел network read-ahead на раннем этапе без полноценного cache manager.
 const MAX_NETWORK_READ_AHEAD_MB: u64 = 4096;
 
+/// Верхний предел начального prefetch chunk-а в КиБ, привязанный к общему read-ahead budget.
+const MAX_NETWORK_PREFETCH_INITIAL_CHUNK_KB: u64 = MAX_NETWORK_READ_AHEAD_MB * 1024;
+
 /// Верхний предел RAM cache, чтобы ошибочный config не занял всю память.
 const MAX_NETWORK_MEMORY_CACHE_MB: u64 = 4096;
 
@@ -350,6 +353,34 @@ fn validate_network_section(config: &AppConfig) -> ConfigResult<()> {
         1,
         MAX_NETWORK_READ_AHEAD_MB,
     )?;
+    validate_u64_range(
+        "network.prefetch_initial_chunk_kb",
+        config.network.prefetch_initial_chunk_kb,
+        1,
+        MAX_NETWORK_PREFETCH_INITIAL_CHUNK_KB,
+    )?;
+    let chunk_size_kb = config
+        .network
+        .prefetch_chunk_mb
+        .checked_mul(1024)
+        .ok_or_else(|| {
+            invalid_value(
+                "network.prefetch_chunk_mb",
+                format!(
+                    "prefetch chunk не помещается в КиБ: prefetch_chunk_mb={}",
+                    config.network.prefetch_chunk_mb
+                ),
+            )
+        })?;
+    if config.network.prefetch_initial_chunk_kb > chunk_size_kb {
+        return Err(invalid_value(
+            "network.prefetch_initial_chunk_kb",
+            format!(
+                "initial prefetch chunk должен быть не больше chunk: prefetch_initial_chunk_kb={}, prefetch_chunk_mb={}",
+                config.network.prefetch_initial_chunk_kb, config.network.prefetch_chunk_mb
+            ),
+        ));
+    }
     if config.network.read_ahead_mb < config.network.prefetch_chunk_mb {
         return Err(invalid_value(
             "network.read_ahead_mb",

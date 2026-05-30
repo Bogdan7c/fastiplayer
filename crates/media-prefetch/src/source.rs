@@ -476,8 +476,12 @@ mod tests {
     }
 
     /// Короткий config делает тесты быстрыми и позволяет явно видеть chunk boundaries.
-    fn test_config(chunk_bytes: u64, window_bytes: u64) -> PrefetchConfig {
-        PrefetchConfig::new(chunk_bytes, window_bytes)
+    fn test_config(
+        initial_chunk_bytes: u64,
+        chunk_bytes: u64,
+        window_bytes: u64,
+    ) -> PrefetchConfig {
+        PrefetchConfig::new(initial_chunk_bytes, chunk_bytes, window_bytes)
             .expect("test config должен сохранять инварианты prefetch buffer")
     }
 
@@ -532,7 +536,7 @@ mod tests {
     fn sequential_read_returns_all_bytes_and_inner_reads_large_chunks() {
         let bytes = sample_bytes(50);
         let (inner, handle) = FakeByteSource::seekable(bytes.clone());
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(16, 32));
+        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(16, 16, 32));
 
         let actual = read_all(&mut source, 5);
 
@@ -547,9 +551,26 @@ mod tests {
     }
 
     #[test]
+    fn worker_doubles_chunk_len_until_configured_ceiling() {
+        let (inner, handle) = FakeByteSource::seekable(sample_bytes(256));
+        let _source = PrefetchingByteSource::new(Box::new(inner), test_config(4, 32, 128));
+
+        wait_for_read_count(&handle, 5);
+
+        let requested_lens = handle
+            .read_records()
+            .into_iter()
+            .take(5)
+            .map(|record| record.requested_len)
+            .collect::<Vec<_>>();
+
+        assert_eq!(requested_lens, vec![4, 8, 16, 32, 32]);
+    }
+
+    #[test]
     fn small_window_stops_worker_until_foreground_consumes_bytes() {
         let (inner, handle) = FakeByteSource::seekable(sample_bytes(128));
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 16));
+        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 8, 16));
 
         wait_for_read_count(&handle, 2);
         thread::sleep(Duration::from_millis(30));
@@ -567,7 +588,7 @@ mod tests {
     fn seek_inside_window_reuses_buffer_without_refetching_from_seek_offset() {
         let bytes = sample_bytes(64);
         let (inner, handle) = FakeByteSource::seekable(bytes.clone());
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 16));
+        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 8, 16));
 
         wait_for_read_count(&handle, 2);
         source
@@ -595,7 +616,7 @@ mod tests {
     fn seek_outside_window_resets_buffer_and_refetches_from_requested_offset() {
         let bytes = sample_bytes(96);
         let (inner, handle) = FakeByteSource::seekable(bytes.clone());
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 16));
+        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(4, 8, 16));
 
         wait_for_read_count(&handle, 2);
         source
@@ -611,12 +632,12 @@ mod tests {
         assert_eq!(bytes_read, 4);
         assert_eq!(output, bytes[40..44]);
         assert_eq!(source.diagnostics().refetches, 1);
-        assert!(
-            handle
-                .read_records()
-                .iter()
-                .any(|record| record.offset == 40)
-        );
+        let refetch_record = handle
+            .read_records()
+            .into_iter()
+            .find(|record| record.offset == 40)
+            .expect("worker должен refetch-нуть с requested seek offset");
+        assert_eq!(refetch_record.requested_len, 4);
     }
 
     #[test]
@@ -626,7 +647,7 @@ mod tests {
             reason: NotSeekableReason::Unknown,
         };
         let (inner, handle) = FakeByteSource::new(bytes.clone(), seekability);
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(4, 8));
+        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(4, 4, 8));
         let mut output = [0; 12];
 
         wait_for_read_count(&handle, 2);
@@ -646,7 +667,7 @@ mod tests {
     fn eof_returns_short_tail_and_then_zero() {
         let bytes = sample_bytes(10);
         let (inner, handle) = FakeByteSource::seekable(bytes.clone());
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(4, 8));
+        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(4, 4, 8));
         let actual = read_all(&mut source, 3);
 
         assert_eq!(actual, bytes);
@@ -668,7 +689,7 @@ mod tests {
     fn inner_error_is_returned_to_foreground_read() {
         let (inner, _handle) = FakeByteSource::seekable(sample_bytes(32));
         let inner = inner.with_fail_on_read_call(1);
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 16));
+        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 8, 16));
         let mut output = [0; 4];
 
         let error = source
@@ -684,7 +705,7 @@ mod tests {
         let inner = inner
             .with_read_delay(Duration::from_millis(10))
             .with_wait_until_cancelled();
-        let source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 16));
+        let source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 8, 16));
 
         wait_for_read_count(&handle, 1);
         let started = Instant::now();
@@ -699,7 +720,7 @@ mod tests {
     #[test]
     fn metadata_methods_return_constructor_snapshots() {
         let (inner, handle) = FakeByteSource::seekable(sample_bytes(16));
-        let source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 16));
+        let source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 8, 16));
 
         assert_eq!(source.seekability(), Seekability::Seekable);
         assert_eq!(source.content_length(), Some(16));
@@ -712,7 +733,7 @@ mod tests {
     fn foreground_cancellation_interrupts_wait_without_reporting_worker_error() {
         let (inner, _handle) = FakeByteSource::seekable(sample_bytes(32));
         let inner = inner.with_read_delay(Duration::from_millis(80));
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 16));
+        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 8, 16));
         let cancellation = CancellationToken::new();
         let cancellation_for_thread = cancellation.clone();
         let canceller = thread::spawn(move || {
