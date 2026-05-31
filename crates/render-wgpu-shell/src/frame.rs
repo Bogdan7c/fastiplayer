@@ -16,11 +16,118 @@ pub enum RenderFrameOutcome {
     Failed(RenderFrameFailure),
 }
 
-/// Timing одного успешного submit/present участка render loop-а.
+/// Timing внутренних стадий одного `Renderer::render_frame`.
+///
+/// Эти значения остаются на shell boundary: app/player layer видит только
+/// длительности стадий, но не получает доступ к wgpu surface/device/queue.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RenderFrameStageTimings {
+    /// Обновление egui texture atlas-а перед созданием command buffer-а.
+    pub egui_texture_update: Duration,
+
+    /// Создание command encoder-а для текущего кадра.
+    pub encoder_creation: Duration,
+
+    /// Обновление egui vertex/index buffers.
+    pub egui_buffer_update: Duration,
+
+    /// Получение swapchain texture через `surface.get_current_texture()`.
+    pub surface_acquire: Duration,
+
+    /// Создание view поверх полученной surface texture.
+    pub surface_view_creation: Duration,
+
+    /// Video pass или очистка target-а.
+    pub video_render: Duration,
+
+    /// Egui overlay pass поверх video output.
+    pub egui_render: Duration,
+
+    /// Синхронная часть `queue.submit(...)`.
+    pub queue_submit: Duration,
+
+    /// Неблокирующий `device.poll(wgpu::PollType::Poll)`.
+    pub device_poll: Duration,
+
+    /// Уведомление winit перед present.
+    pub pre_present_notify: Duration,
+
+    /// Синхронная часть `surface_texture.present()`.
+    pub surface_present: Duration,
+}
+
+impl RenderFrameStageTimings {
+    /// Возвращает сумму стадий submit/poll/present для старого aggregate counter-а.
+    #[must_use]
+    pub fn submit_present_elapsed(self) -> Duration {
+        self.queue_submit + self.device_poll + self.pre_present_notify + self.surface_present
+    }
+
+    /// Возвращает самую дорогую стадию внутри renderer-owned части кадра.
+    #[must_use]
+    pub fn slowest_stage(self) -> RenderFrameSlowestStage {
+        let mut slowest_stage = RenderFrameSlowestStage {
+            name: "egui_texture_update",
+            elapsed: self.egui_texture_update,
+        };
+
+        for candidate in [
+            ("encoder_creation", self.encoder_creation),
+            ("egui_buffer_update", self.egui_buffer_update),
+            ("surface_acquire", self.surface_acquire),
+            ("surface_view_creation", self.surface_view_creation),
+            ("video_render", self.video_render),
+            ("egui_render", self.egui_render),
+            ("queue_submit", self.queue_submit),
+            ("device_poll", self.device_poll),
+            ("pre_present_notify", self.pre_present_notify),
+            ("surface_present", self.surface_present),
+        ] {
+            if candidate.1 > slowest_stage.elapsed {
+                slowest_stage = RenderFrameSlowestStage {
+                    name: candidate.0,
+                    elapsed: candidate.1,
+                };
+            }
+        }
+
+        slowest_stage
+    }
+}
+
+/// Самая дорогая renderer-owned стадия кадра.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderFrameSlowestStage {
+    /// Стабильное имя стадии для logs/diagnostics.
+    pub name: &'static str,
+
+    /// Измеренная длительность стадии.
+    pub elapsed: Duration,
+}
+
+/// Timing одного успешного render loop-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderFrameTiming {
     /// Время от отправки command buffer-а до возврата из `surface_texture.present()`.
     pub submit_present_elapsed: Duration,
+
+    /// Полная длительность renderer-owned части от входа в shell до present.
+    pub renderer_elapsed: Duration,
+
+    /// Разбивка renderer-owned path по стадиям.
+    pub stages: RenderFrameStageTimings,
+}
+
+impl RenderFrameTiming {
+    /// Собирает итоговый timing и сохраняет старый aggregate submit/present counter.
+    #[must_use]
+    pub fn new(stages: RenderFrameStageTimings, renderer_elapsed: Duration) -> Self {
+        Self {
+            submit_present_elapsed: stages.submit_present_elapsed(),
+            renderer_elapsed,
+            stages,
+        }
+    }
 }
 
 /// Размер target-а и UI scale без раскрытия egui-wgpu типа наружу.
@@ -87,4 +194,42 @@ pub enum RenderFrameDropReason {
 
     /// Повторный acquisition после Outdated/Reconfigure тоже не дал frame.
     SurfaceOutdatedRecoveryFailed,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Проверяет, что старый aggregate counter остаётся суммой submit/poll/present стадий.
+    #[test]
+    fn render_timing_keeps_submit_present_aggregate() {
+        let stages = RenderFrameStageTimings {
+            queue_submit: Duration::from_millis(1),
+            device_poll: Duration::from_millis(2),
+            pre_present_notify: Duration::from_millis(3),
+            surface_present: Duration::from_millis(4),
+            ..RenderFrameStageTimings::default()
+        };
+
+        let timing = RenderFrameTiming::new(stages, Duration::from_millis(20));
+
+        assert_eq!(timing.submit_present_elapsed, Duration::from_millis(10));
+        assert_eq!(timing.renderer_elapsed, Duration::from_millis(20));
+    }
+
+    /// Проверяет, что диагностика указывает самую дорогую renderer-owned стадию.
+    #[test]
+    fn render_stage_timing_reports_slowest_stage() {
+        let stages = RenderFrameStageTimings {
+            surface_acquire: Duration::from_millis(7),
+            device_poll: Duration::from_millis(11),
+            surface_present: Duration::from_millis(5),
+            ..RenderFrameStageTimings::default()
+        };
+
+        let slowest_stage = stages.slowest_stage();
+
+        assert_eq!(slowest_stage.name, "device_poll");
+        assert_eq!(slowest_stage.elapsed, Duration::from_millis(11));
+    }
 }

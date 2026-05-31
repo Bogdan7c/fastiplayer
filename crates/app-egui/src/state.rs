@@ -5,7 +5,7 @@
 /// `AppState` оставляет у себя только egui/winit state и shell-данные.
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
 use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
@@ -100,6 +100,49 @@ pub struct AppFrameContext {
 
     /// Renderer-neutral diagnostics, которые UI показывает в этом же frame-е.
     render_diagnostics: RenderDiagnostics,
+}
+
+/// CPU timing внутренних частей `AppState::render_ui`.
+///
+/// Структура остаётся internal API `app-egui`: `frame_prepare` получает только
+/// длительности и не знает деталей хранения UI-состояния.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AppUiRenderTimings {
+    /// Полная длительность вызова `render_ui`.
+    pub(crate) total: Duration,
+
+    /// Подготовка snapshot-derived значений до входа в egui closure.
+    pub(crate) pre_ui_setup: Duration,
+
+    /// Полный `egui_ctx.run_ui`, включая все панели и layout.
+    pub(crate) egui_run: Duration,
+
+    /// Рендер верхней панели.
+    pub(crate) top_bar: Duration,
+
+    /// Рендер нижних controls и timeline.
+    pub(crate) bottom_controls: Duration,
+
+    /// Рендер telemetry панели, если она включена в config.
+    pub(crate) telemetry_panel: Duration,
+
+    /// Рендер центрального overlay.
+    pub(crate) center_overlay: Duration,
+
+    /// Применение UI actions после egui closure.
+    pub(crate) post_ui_actions: Duration,
+
+    /// Была ли telemetry панель включена в этом кадре.
+    pub(crate) telemetry_panel_visible: bool,
+}
+
+/// Результат app-owned UI подготовки до platform output и tessellation.
+pub(crate) struct RenderedAppUi {
+    /// Полный output egui за текущий кадр.
+    pub(crate) full_output: egui::FullOutput,
+
+    /// Timing внутренних участков `render_ui`.
+    pub(crate) timings: AppUiRenderTimings,
 }
 
 impl AppFrameContext {
@@ -1109,7 +1152,10 @@ impl AppState {
         window: &Window,
         egui_input: egui::RawInput,
         frame_context: &AppFrameContext,
-    ) -> egui::FullOutput {
+    ) -> RenderedAppUi {
+        let render_ui_started_at = Instant::now();
+
+        let pre_ui_setup_started_at = Instant::now();
         let player_snapshot = frame_context.player_snapshot();
         let is_playing = player_snapshot.playback_state == PlaybackState::Playing;
 
@@ -1151,17 +1197,30 @@ impl AppState {
         let show_telemetry = self.app_config.ui.show_telemetry;
         let mut control_actions = Vec::new();
         let mut timeline_ui_state = std::mem::take(&mut self.timeline_ui_state);
+        let pre_ui_setup_elapsed = pre_ui_setup_started_at.elapsed();
 
+        let mut top_bar_elapsed = Duration::ZERO;
+        let mut bottom_controls_elapsed = Duration::ZERO;
+        let mut telemetry_panel_elapsed = Duration::ZERO;
+        let mut center_overlay_elapsed = Duration::ZERO;
+
+        let egui_run_started_at = Instant::now();
         let full_output = self.egui_ctx.run_ui(egui_input, |ui| {
+            let stage_started_at = Instant::now();
             player_controls::render_top_bar(ui, app_version, &selected_skin);
+            top_bar_elapsed = stage_started_at.elapsed();
+
+            let stage_started_at = Instant::now();
             control_actions = player_controls::render_bottom_controls(
                 ui,
                 player_snapshot,
                 &mut timeline_ui_state,
                 &selected_skin,
             );
+            bottom_controls_elapsed = stage_started_at.elapsed();
 
             if show_telemetry {
+                let stage_started_at = Instant::now();
                 Self::render_telemetry_panel(
                     ui,
                     TelemetryPanelState {
@@ -1174,7 +1233,10 @@ impl AppState {
                         frame_duration_estimate_ms,
                     },
                 );
+                telemetry_panel_elapsed = stage_started_at.elapsed();
             }
+
+            let stage_started_at = Instant::now();
             Self::render_center_overlay(
                 ui,
                 is_playing,
@@ -1183,12 +1245,29 @@ impl AppState {
                 &selected_skin,
                 animation_state,
             );
+            center_overlay_elapsed = stage_started_at.elapsed();
         });
+        let egui_run_elapsed = egui_run_started_at.elapsed();
 
+        let post_ui_actions_started_at = Instant::now();
         self.timeline_ui_state = timeline_ui_state;
         self.handle_control_actions(window, control_actions);
+        let post_ui_actions_elapsed = post_ui_actions_started_at.elapsed();
 
-        full_output
+        RenderedAppUi {
+            full_output,
+            timings: AppUiRenderTimings {
+                total: render_ui_started_at.elapsed(),
+                pre_ui_setup: pre_ui_setup_elapsed,
+                egui_run: egui_run_elapsed,
+                top_bar: top_bar_elapsed,
+                bottom_controls: bottom_controls_elapsed,
+                telemetry_panel: telemetry_panel_elapsed,
+                center_overlay: center_overlay_elapsed,
+                post_ui_actions: post_ui_actions_elapsed,
+                telemetry_panel_visible: show_telemetry,
+            },
+        }
     }
 
     /// Применяет действия controls после завершения egui pass.

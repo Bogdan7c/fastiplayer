@@ -17,7 +17,7 @@
 /// 3. Рендерим egui overlay поверх видео
 /// 4. Present на экран
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use render_core::{ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics};
@@ -30,8 +30,28 @@ use winit::window::Window;
 use crate::egui_compositor::EguiCompositor;
 use crate::frame::{
     RenderFrameDropReason, RenderFrameFailure, RenderFrameInput, RenderFrameOutcome,
-    RenderFrameTiming,
+    RenderFrameStageTimings, RenderFrameTiming,
 };
+
+/// Превращает длительность в миллисекунды для числовых tracing fields.
+fn duration_ms(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
+}
+
+/// Возвращает dropped outcome и логирует timing даже для кадров без успешного present.
+fn dropped_frame_after_surface_acquire(
+    reason: RenderFrameDropReason,
+    renderer_started_at: Instant,
+    surface_acquire_started_at: Instant,
+) -> RenderFrameOutcome {
+    tracing::debug!(
+        reason = ?reason,
+        renderer_elapsed_ms = duration_ms(renderer_started_at.elapsed()),
+        surface_acquire_ms = duration_ms(surface_acquire_started_at.elapsed()),
+        "render frame dropped before present"
+    );
+    RenderFrameOutcome::Dropped(reason)
+}
 
 /// Выбирает формат swapchain для SDR-видео.
 fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> Result<wgpu::TextureFormat> {
@@ -326,6 +346,7 @@ impl Renderer {
     /// 4. Рендерим egui поверх видео
     /// 5. Submit и present
     pub fn render_frame(&mut self, input: RenderFrameInput<'_>) -> RenderFrameOutcome {
+        let renderer_started_at = Instant::now();
         let RenderFrameInput {
             window,
             video_frame,
@@ -340,21 +361,26 @@ impl Renderer {
         };
 
         // Обновляем egui текстуры (новые и удалённые).
+        let stage_started_at = Instant::now();
         self.egui_compositor.update_textures(
             &self.gpu.device,
             &self.gpu.queue,
             &egui_textures_delta,
         );
+        let egui_texture_update_elapsed = stage_started_at.elapsed();
 
         // Создаём command encoder для этого кадра
+        let stage_started_at = Instant::now();
         let mut encoder = self
             .gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame encoder"),
             });
+        let encoder_creation_elapsed = stage_started_at.elapsed();
 
         // Обновляем egui буферы (vertex/index) перед рендерингом
+        let stage_started_at = Instant::now();
         self.egui_compositor.update_buffers(
             &self.gpu.device,
             &self.gpu.queue,
@@ -362,8 +388,11 @@ impl Renderer {
             &egui_paint_jobs,
             &screen_descriptor,
         );
+        let egui_buffer_update_elapsed = stage_started_at.elapsed();
 
         // Получаем surface texture для текущего кадра
+        let stage_started_at = Instant::now();
+        let surface_acquire_started_at = stage_started_at;
         let surface_texture = match self.gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -380,20 +409,30 @@ impl Renderer {
                             "Не удалось получить surface texture после reconfigure: {:?}",
                             other
                         );
-                        return RenderFrameOutcome::Dropped(
+                        return dropped_frame_after_surface_acquire(
                             RenderFrameDropReason::SurfaceOutdatedRecoveryFailed,
+                            renderer_started_at,
+                            surface_acquire_started_at,
                         );
                     }
                 }
             }
             wgpu::CurrentSurfaceTexture::Timeout => {
                 // Таймаут — пропускаем кадр, не блокируем
-                return RenderFrameOutcome::Dropped(RenderFrameDropReason::SurfaceTimeout);
+                return dropped_frame_after_surface_acquire(
+                    RenderFrameDropReason::SurfaceTimeout,
+                    renderer_started_at,
+                    surface_acquire_started_at,
+                );
             }
             wgpu::CurrentSurfaceTexture::Occluded => {
                 // Окно скрыто другим окном — пропускаем кадр
                 tracing::debug!("Surface occluded — skipping frame");
-                return RenderFrameOutcome::Dropped(RenderFrameDropReason::SurfaceOccluded);
+                return dropped_frame_after_surface_acquire(
+                    RenderFrameDropReason::SurfaceOccluded,
+                    renderer_started_at,
+                    surface_acquire_started_at,
+                );
             }
             wgpu::CurrentSurfaceTexture::Lost => {
                 // Surface потерян: сначала пробуем штатный reconfigure текущей surface.
@@ -403,24 +442,36 @@ impl Renderer {
                 self.gpu
                     .surface
                     .configure(&self.gpu.device, &self.gpu.surface_config);
-                return RenderFrameOutcome::Dropped(RenderFrameDropReason::SurfaceLost);
+                return dropped_frame_after_surface_acquire(
+                    RenderFrameDropReason::SurfaceLost,
+                    renderer_started_at,
+                    surface_acquire_started_at,
+                );
             }
             wgpu::CurrentSurfaceTexture::Validation => {
                 // Validation error при получении surface texture — пропускаем кадр
                 tracing::warn!("Surface validation error — skipping frame");
-                return RenderFrameOutcome::Dropped(RenderFrameDropReason::SurfaceValidation);
+                return dropped_frame_after_surface_acquire(
+                    RenderFrameDropReason::SurfaceValidation,
+                    renderer_started_at,
+                    surface_acquire_started_at,
+                );
             }
         };
+        let surface_acquire_elapsed = stage_started_at.elapsed();
 
+        let stage_started_at = Instant::now();
         let surface_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let surface_view_creation_elapsed = stage_started_at.elapsed();
 
         self.video_renderer.resize(
             self.gpu.surface_config.width,
             self.gpu.surface_config.height,
         );
 
+        let stage_started_at = Instant::now();
         match self.video_renderer.render_or_clear(
             video_frame,
             &surface_view,
@@ -434,35 +485,59 @@ impl Renderer {
                 return RenderFrameOutcome::Failed(RenderFrameFailure::new(error.to_string()));
             }
         }
+        let video_render_elapsed = stage_started_at.elapsed();
 
         // Рендерим egui поверх видео.
+        let stage_started_at = Instant::now();
         self.egui_compositor.render_overlay(
             &mut encoder,
             &surface_view,
             &egui_paint_jobs,
             &screen_descriptor,
         );
-
-        let submit_present_started_at = Instant::now();
+        let egui_render_elapsed = stage_started_at.elapsed();
 
         // Отправляем команды на GPU
+        let stage_started_at = Instant::now();
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
+        let queue_submit_elapsed = stage_started_at.elapsed();
 
         // Продвигаем wgpu callbacks для submitted work.
         // Zero-copy imports теперь живут в bounded persistent pool, поэтому poll
         // больше не является основным механизмом выживания resource cleanup-а.
+        let stage_started_at = Instant::now();
         if let Err(error) = self.gpu.device.poll(wgpu::PollType::Poll) {
             tracing::warn!(error = %error, "wgpu device poll завершился ошибкой во время GPU callback polling");
         }
+        let device_poll_elapsed = stage_started_at.elapsed();
 
         // Сообщаем winit, что сейчас будет present: это помогает backend/compositor timing.
+        let stage_started_at = Instant::now();
         window.pre_present_notify();
+        let pre_present_notify_elapsed = stage_started_at.elapsed();
 
         // Показываем кадр на экране.
+        let stage_started_at = Instant::now();
         surface_texture.present();
-        RenderFrameOutcome::Presented(RenderFrameTiming {
-            submit_present_elapsed: submit_present_started_at.elapsed(),
-        })
+        let surface_present_elapsed = stage_started_at.elapsed();
+
+        let stages = RenderFrameStageTimings {
+            egui_texture_update: egui_texture_update_elapsed,
+            encoder_creation: encoder_creation_elapsed,
+            egui_buffer_update: egui_buffer_update_elapsed,
+            surface_acquire: surface_acquire_elapsed,
+            surface_view_creation: surface_view_creation_elapsed,
+            video_render: video_render_elapsed,
+            egui_render: egui_render_elapsed,
+            queue_submit: queue_submit_elapsed,
+            device_poll: device_poll_elapsed,
+            pre_present_notify: pre_present_notify_elapsed,
+            surface_present: surface_present_elapsed,
+        };
+        RenderFrameOutcome::Presented(RenderFrameTiming::new(
+            stages,
+            renderer_started_at.elapsed(),
+        ))
     }
 }
 
