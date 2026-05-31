@@ -8,10 +8,7 @@ rust-version.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 bytes.workspace = true
-wgpu.workspace = true
 crossbeam-channel.workspace = true
-ash = "0.38"
-wgpu-types = "29"
 nix = { version = "0.29", features = ["ioctl", "fs"] }
 
 media-core = { workspace = true }

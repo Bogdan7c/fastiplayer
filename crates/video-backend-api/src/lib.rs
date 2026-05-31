@@ -39,52 +39,105 @@ impl StartedVideoBackend {
     }
 }
 
-/// Результат renderer-neutral lookup-а decoded resource-а без GPU handles.
+/// Результат playback-facing lookup-а decoded resource-а без GPU handles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PresentFrameResourceProviderLookup {
     /// Backend resource table доступен, opaque handle можно materialize в renderer layer-е.
     Ready {
         /// Сколько render thread ждал lock backend resource pool-а внутри provider-а.
-        texture_pool_lock_wait: Duration,
+        resource_pool_lock_wait: Duration,
     },
 
     /// Backend resource pool занят, render hot path должен выбрать fallback без ожидания.
     Busy {
         /// Сколько заняла non-blocking попытка получить lock.
-        texture_pool_lock_wait: Duration,
+        resource_pool_lock_wait: Duration,
     },
 
     /// Backend доступен, но resource для handle отсутствует.
     Missing {
         /// Сколько render thread ждал lock backend resource pool-а внутри provider-а.
-        texture_pool_lock_wait: Duration,
+        resource_pool_lock_wait: Duration,
     },
 
     /// Backend обнаружил poisoned/fatal state при lookup-е.
-    Error {
+    Fatal {
         /// Сколько render thread ждал lock backend resource pool-а внутри provider-а.
-        texture_pool_lock_wait: Duration,
+        resource_pool_lock_wait: Duration,
     },
 }
 
 impl PresentFrameResourceProviderLookup {
     /// Возвращает lock wait sample без раскрытия конкретного outcome.
     #[must_use]
-    pub const fn texture_pool_lock_wait(&self) -> Duration {
+    pub const fn resource_pool_lock_wait(&self) -> Duration {
         match self {
             Self::Ready {
-                texture_pool_lock_wait,
+                resource_pool_lock_wait,
                 ..
             }
             | Self::Busy {
-                texture_pool_lock_wait,
+                resource_pool_lock_wait,
             }
             | Self::Missing {
-                texture_pool_lock_wait,
+                resource_pool_lock_wait,
             }
-            | Self::Error {
-                texture_pool_lock_wait,
-            } => *texture_pool_lock_wait,
+            | Self::Fatal {
+                resource_pool_lock_wait,
+            } => *resource_pool_lock_wait,
+        }
+    }
+}
+
+/// Результат renderer-facing descriptor lookup-а с duplicated platform handles.
+#[derive(Debug)]
+pub enum PresentFrameResourceDescriptorLookup {
+    /// Backend вернул neutral descriptor; fd внутри descriptor-а принадлежат caller-у.
+    Ready {
+        /// Descriptor с duplicated owned platform handles.
+        descriptor: video_core::FrameResourceDescriptor,
+
+        /// Сколько render thread ждал lock backend resource pool-а внутри provider-а.
+        resource_pool_lock_wait: Duration,
+    },
+
+    /// Backend resource pool занят, render hot path должен выбрать fallback без ожидания.
+    Busy {
+        /// Сколько заняла non-blocking попытка получить lock.
+        resource_pool_lock_wait: Duration,
+    },
+
+    /// Backend доступен, но resource для handle отсутствует.
+    Missing {
+        /// Сколько render thread ждал lock backend resource pool-а внутри provider-а.
+        resource_pool_lock_wait: Duration,
+    },
+
+    /// Backend не может безопасно дублировать descriptor.
+    Fatal {
+        /// Сколько render thread ждал lock backend resource pool-а внутри provider-а.
+        resource_pool_lock_wait: Duration,
+    },
+}
+
+impl PresentFrameResourceDescriptorLookup {
+    /// Возвращает lock wait sample без раскрытия concrete outcome.
+    #[must_use]
+    pub const fn resource_pool_lock_wait(&self) -> Duration {
+        match self {
+            Self::Ready {
+                resource_pool_lock_wait,
+                ..
+            }
+            | Self::Busy {
+                resource_pool_lock_wait,
+            }
+            | Self::Missing {
+                resource_pool_lock_wait,
+            }
+            | Self::Fatal {
+                resource_pool_lock_wait,
+            } => *resource_pool_lock_wait,
         }
     }
 }
@@ -94,19 +147,56 @@ pub trait PresentFrameResourceProvider: Send + Sync {
     /// Получает status и lock diagnostics для frame handle без возврата GPU handles.
     fn resource_lookup(
         &self,
-        handle: video_core::FrameTextureHandle,
+        handle: video_core::FrameResourceHandle,
     ) -> PresentFrameResourceProviderLookup;
 
     /// Пытается получить status без ожидания backend resource pool mutex-а.
     fn try_resource_lookup(
         &self,
-        handle: video_core::FrameTextureHandle,
+        handle: video_core::FrameResourceHandle,
     ) -> PresentFrameResourceProviderLookup {
         self.resource_lookup(handle)
     }
 
+    /// Получает duplicated resource descriptor для renderer-side materializer-а.
+    fn resource_descriptor_lookup(
+        &self,
+        handle: video_core::FrameResourceHandle,
+    ) -> PresentFrameResourceDescriptorLookup {
+        match self.resource_lookup(handle) {
+            PresentFrameResourceProviderLookup::Ready {
+                resource_pool_lock_wait,
+            } => PresentFrameResourceDescriptorLookup::Missing {
+                resource_pool_lock_wait,
+            },
+            PresentFrameResourceProviderLookup::Busy {
+                resource_pool_lock_wait,
+            } => PresentFrameResourceDescriptorLookup::Busy {
+                resource_pool_lock_wait,
+            },
+            PresentFrameResourceProviderLookup::Missing {
+                resource_pool_lock_wait,
+            } => PresentFrameResourceDescriptorLookup::Missing {
+                resource_pool_lock_wait,
+            },
+            PresentFrameResourceProviderLookup::Fatal {
+                resource_pool_lock_wait,
+            } => PresentFrameResourceDescriptorLookup::Fatal {
+                resource_pool_lock_wait,
+            },
+        }
+    }
+
+    /// Пытается получить duplicated descriptor без ожидания backend mutex-а.
+    fn try_resource_descriptor_lookup(
+        &self,
+        handle: video_core::FrameResourceHandle,
+    ) -> PresentFrameResourceDescriptorLookup {
+        self.resource_descriptor_lookup(handle)
+    }
+
     /// Освобождает renderer-owned frame после submitted GPU work или fallback release.
-    fn release_frame(&self, handle: video_core::FrameTextureHandle);
+    fn release_frame(&self, handle: video_core::FrameResourceHandle);
 }
 
 /// Clone-able handle, который скрывает конкретный backend provider за trait boundary.
@@ -129,7 +219,7 @@ impl PresentFrameResourceProviderHandle {
     #[must_use]
     pub fn resource_lookup(
         &self,
-        handle: video_core::FrameTextureHandle,
+        handle: video_core::FrameResourceHandle,
     ) -> PresentFrameResourceProviderLookup {
         self.provider.resource_lookup(handle)
     }
@@ -138,13 +228,31 @@ impl PresentFrameResourceProviderHandle {
     #[must_use]
     pub fn try_resource_lookup(
         &self,
-        handle: video_core::FrameTextureHandle,
+        handle: video_core::FrameResourceHandle,
     ) -> PresentFrameResourceProviderLookup {
         self.provider.try_resource_lookup(handle)
     }
 
+    /// Получает duplicated descriptor через backend provider.
+    #[must_use]
+    pub fn resource_descriptor_lookup(
+        &self,
+        handle: video_core::FrameResourceHandle,
+    ) -> PresentFrameResourceDescriptorLookup {
+        self.provider.resource_descriptor_lookup(handle)
+    }
+
+    /// Пытается получить duplicated descriptor без ожидания backend mutex-а.
+    #[must_use]
+    pub fn try_resource_descriptor_lookup(
+        &self,
+        handle: video_core::FrameResourceHandle,
+    ) -> PresentFrameResourceDescriptorLookup {
+        self.provider.try_resource_descriptor_lookup(handle)
+    }
+
     /// Освобождает frame через backend provider, который создал texture handle.
-    pub fn release_frame(&self, handle: video_core::FrameTextureHandle) {
+    pub fn release_frame(&self, handle: video_core::FrameResourceHandle) {
         self.provider.release_frame(handle);
     }
 }
@@ -157,6 +265,8 @@ pub trait VideoBackendFactory {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use std::os::fd::OwnedFd;
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -165,13 +275,19 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingProviderState {
         /// Handles, полученные через blocking resource lookup.
-        resource_lookup_handles: Mutex<Vec<video_core::FrameTextureHandle>>,
+        resource_lookup_handles: Mutex<Vec<video_core::FrameResourceHandle>>,
 
         /// Handles, полученные через non-blocking resource lookup.
-        try_resource_lookup_handles: Mutex<Vec<video_core::FrameTextureHandle>>,
+        try_resource_lookup_handles: Mutex<Vec<video_core::FrameResourceHandle>>,
+
+        /// Handles, полученные через blocking descriptor lookup.
+        resource_descriptor_lookup_handles: Mutex<Vec<video_core::FrameResourceHandle>>,
+
+        /// Handles, полученные через non-blocking descriptor lookup.
+        try_resource_descriptor_lookup_handles: Mutex<Vec<video_core::FrameResourceHandle>>,
 
         /// Handles, освобождённые через renderer-owned release path.
-        released_handles: Mutex<Vec<video_core::FrameTextureHandle>>,
+        released_handles: Mutex<Vec<video_core::FrameResourceHandle>>,
     }
 
     /// Fake resource provider, который записывает делегированные вызовы.
@@ -197,7 +313,7 @@ mod tests {
     impl PresentFrameResourceProvider for RecordingResourceProvider {
         fn resource_lookup(
             &self,
-            handle: video_core::FrameTextureHandle,
+            handle: video_core::FrameResourceHandle,
         ) -> PresentFrameResourceProviderLookup {
             self.state
                 .resource_lookup_handles
@@ -206,13 +322,13 @@ mod tests {
                 .push(handle);
 
             PresentFrameResourceProviderLookup::Ready {
-                texture_pool_lock_wait: Duration::from_millis(7),
+                resource_pool_lock_wait: Duration::from_millis(7),
             }
         }
 
         fn try_resource_lookup(
             &self,
-            handle: video_core::FrameTextureHandle,
+            handle: video_core::FrameResourceHandle,
         ) -> PresentFrameResourceProviderLookup {
             self.state
                 .try_resource_lookup_handles
@@ -221,17 +337,82 @@ mod tests {
                 .push(handle);
 
             PresentFrameResourceProviderLookup::Busy {
-                texture_pool_lock_wait: Duration::from_millis(3),
+                resource_pool_lock_wait: Duration::from_millis(3),
             }
         }
 
-        fn release_frame(&self, handle: video_core::FrameTextureHandle) {
+        fn resource_descriptor_lookup(
+            &self,
+            handle: video_core::FrameResourceHandle,
+        ) -> PresentFrameResourceDescriptorLookup {
+            self.state
+                .resource_descriptor_lookup_handles
+                .lock()
+                .expect("recording provider descriptor lookup state must be available")
+                .push(handle);
+
+            PresentFrameResourceDescriptorLookup::Ready {
+                descriptor: sample_frame_resource_descriptor(31),
+                resource_pool_lock_wait: Duration::from_millis(11),
+            }
+        }
+
+        fn try_resource_descriptor_lookup(
+            &self,
+            handle: video_core::FrameResourceHandle,
+        ) -> PresentFrameResourceDescriptorLookup {
+            self.state
+                .try_resource_descriptor_lookup_handles
+                .lock()
+                .expect("recording provider try descriptor lookup state must be available")
+                .push(handle);
+
+            PresentFrameResourceDescriptorLookup::Fatal {
+                resource_pool_lock_wait: Duration::from_millis(13),
+            }
+        }
+
+        fn release_frame(&self, handle: video_core::FrameResourceHandle) {
             self.state
                 .released_handles
                 .lock()
                 .expect("recording provider release state must be available")
                 .push(handle);
         }
+    }
+
+    /// Создаёт owned fd для neutral descriptor tests.
+    fn open_test_dma_buf_fd() -> OwnedFd {
+        let file = File::open("/dev/null").expect("test fd source must be readable");
+        file.into()
+    }
+
+    /// Создаёт minimal descriptor без WGPU/VAAPI/cros типов.
+    fn sample_frame_resource_descriptor(resource_id: u64) -> video_core::FrameResourceDescriptor {
+        video_core::FrameResourceDescriptor::DmaBuf(video_core::DmaBufFrameDescriptor {
+            resource_id,
+            fourcc: 0x3231_564e,
+            export_layout: video_core::DmaBufFrameExportLayout::ComposedLayers,
+            width: 1280,
+            height: 720,
+            objects: vec![video_core::DmaBufObjectDescriptor {
+                fd: open_test_dma_buf_fd(),
+                size: 4096,
+                drm_format_modifier: 0,
+                identity: video_core::DmaBufObjectIdentity {
+                    device: 1,
+                    inode: 2,
+                    special_device: 3,
+                },
+            }],
+            layers: vec![video_core::DmaBufLayerDescriptor {
+                drm_format: 0x3231_564e,
+                num_planes: 2,
+                object_index: [0, 0, 0, 0],
+                offset: [0, 2048, 0, 0],
+                pitch: [1280, 1280, 0, 0],
+            }],
+        })
     }
 
     /// Minimal fake decoder для проверки startup wrapper-а без production backend resources.
@@ -253,7 +434,7 @@ mod tests {
             ))
         }
 
-        fn release_frame(&self, _handle: video_core::FrameTextureHandle) {}
+        fn release_frame(&self, _handle: video_core::FrameResourceHandle) {}
 
         fn try_recv_frame(&self) -> Option<video_core::DecodedFrame> {
             None
@@ -310,25 +491,60 @@ mod tests {
 
     /// Проверяет lock wait accessor для всех renderer-neutral lookup variants.
     #[test]
-    fn texture_pool_lock_wait_returns_wait_for_all_lookup_variants() {
+    fn resource_pool_lock_wait_returns_wait_for_all_lookup_variants() {
         let lookups = [
             PresentFrameResourceProviderLookup::Ready {
-                texture_pool_lock_wait: Duration::from_millis(1),
+                resource_pool_lock_wait: Duration::from_millis(1),
             },
             PresentFrameResourceProviderLookup::Busy {
-                texture_pool_lock_wait: Duration::from_millis(2),
+                resource_pool_lock_wait: Duration::from_millis(2),
             },
             PresentFrameResourceProviderLookup::Missing {
-                texture_pool_lock_wait: Duration::from_millis(3),
+                resource_pool_lock_wait: Duration::from_millis(3),
             },
-            PresentFrameResourceProviderLookup::Error {
-                texture_pool_lock_wait: Duration::from_millis(4),
+            PresentFrameResourceProviderLookup::Fatal {
+                resource_pool_lock_wait: Duration::from_millis(4),
             },
         ];
 
         let waits: Vec<Duration> = lookups
             .iter()
-            .map(PresentFrameResourceProviderLookup::texture_pool_lock_wait)
+            .map(PresentFrameResourceProviderLookup::resource_pool_lock_wait)
+            .collect();
+
+        assert_eq!(
+            waits,
+            vec![
+                Duration::from_millis(1),
+                Duration::from_millis(2),
+                Duration::from_millis(3),
+                Duration::from_millis(4),
+            ]
+        );
+    }
+
+    /// Проверяет lock wait accessor для renderer descriptor lookup variants.
+    #[test]
+    fn descriptor_lookup_resource_pool_lock_wait_returns_wait_for_all_variants() {
+        let lookups = [
+            PresentFrameResourceDescriptorLookup::Ready {
+                descriptor: sample_frame_resource_descriptor(1),
+                resource_pool_lock_wait: Duration::from_millis(1),
+            },
+            PresentFrameResourceDescriptorLookup::Busy {
+                resource_pool_lock_wait: Duration::from_millis(2),
+            },
+            PresentFrameResourceDescriptorLookup::Missing {
+                resource_pool_lock_wait: Duration::from_millis(3),
+            },
+            PresentFrameResourceDescriptorLookup::Fatal {
+                resource_pool_lock_wait: Duration::from_millis(4),
+            },
+        ];
+
+        let waits: Vec<Duration> = lookups
+            .iter()
+            .map(PresentFrameResourceDescriptorLookup::resource_pool_lock_wait)
             .collect();
 
         assert_eq!(
@@ -347,14 +563,14 @@ mod tests {
     fn present_frame_resource_provider_handle_delegates_resource_lookup() {
         let (provider, state) = RecordingResourceProvider::new();
         let handle = PresentFrameResourceProviderHandle::new(provider);
-        let frame_handle = video_core::FrameTextureHandle(11);
+        let frame_handle = video_core::FrameResourceHandle(11);
 
         let lookup = handle.resource_lookup(frame_handle);
 
         assert_eq!(
             lookup,
             PresentFrameResourceProviderLookup::Ready {
-                texture_pool_lock_wait: Duration::from_millis(7),
+                resource_pool_lock_wait: Duration::from_millis(7),
             }
         );
         assert_eq!(
@@ -372,14 +588,14 @@ mod tests {
     fn present_frame_resource_provider_handle_delegates_try_resource_lookup() {
         let (provider, state) = RecordingResourceProvider::new();
         let handle = PresentFrameResourceProviderHandle::new(provider);
-        let frame_handle = video_core::FrameTextureHandle(17);
+        let frame_handle = video_core::FrameResourceHandle(17);
 
         let lookup = handle.try_resource_lookup(frame_handle);
 
         assert_eq!(
             lookup,
             PresentFrameResourceProviderLookup::Busy {
-                texture_pool_lock_wait: Duration::from_millis(3),
+                resource_pool_lock_wait: Duration::from_millis(3),
             }
         );
         assert_eq!(
@@ -392,12 +608,68 @@ mod tests {
         );
     }
 
+    /// Проверяет, что handle не синтезирует renderer descriptor вместо provider-а.
+    #[test]
+    fn present_frame_resource_provider_handle_delegates_resource_descriptor_lookup() {
+        let (provider, state) = RecordingResourceProvider::new();
+        let handle = PresentFrameResourceProviderHandle::new(provider);
+        let frame_handle = video_core::FrameResourceHandle(19);
+
+        let lookup = handle.resource_descriptor_lookup(frame_handle);
+
+        match lookup {
+            PresentFrameResourceDescriptorLookup::Ready {
+                descriptor: video_core::FrameResourceDescriptor::DmaBuf(descriptor),
+                resource_pool_lock_wait,
+            } => {
+                assert_eq!(descriptor.resource_id, 31);
+                assert_eq!(descriptor.objects.len(), 1);
+                assert_eq!(descriptor.layers.len(), 1);
+                assert_eq!(resource_pool_lock_wait, Duration::from_millis(11));
+            }
+            _ => panic!("descriptor lookup must return provider-owned Ready descriptor"),
+        }
+        assert_eq!(
+            state
+                .resource_descriptor_lookup_handles
+                .lock()
+                .expect("descriptor lookup calls must be recorded")
+                .as_slice(),
+            [frame_handle]
+        );
+    }
+
+    /// Проверяет, что non-blocking descriptor lookup сохраняет Fatal/Busy distinction.
+    #[test]
+    fn present_frame_resource_provider_handle_delegates_try_resource_descriptor_lookup() {
+        let (provider, state) = RecordingResourceProvider::new();
+        let handle = PresentFrameResourceProviderHandle::new(provider);
+        let frame_handle = video_core::FrameResourceHandle(29);
+
+        let lookup = handle.try_resource_descriptor_lookup(frame_handle);
+
+        assert!(matches!(
+            lookup,
+            PresentFrameResourceDescriptorLookup::Fatal {
+                resource_pool_lock_wait
+            } if resource_pool_lock_wait == Duration::from_millis(13)
+        ));
+        assert_eq!(
+            state
+                .try_resource_descriptor_lookup_handles
+                .lock()
+                .expect("try descriptor lookup calls must be recorded")
+                .as_slice(),
+            [frame_handle]
+        );
+    }
+
     /// Проверяет, что release идёт через исходный provider.
     #[test]
     fn present_frame_resource_provider_handle_delegates_release_frame() {
         let (provider, state) = RecordingResourceProvider::new();
         let handle = PresentFrameResourceProviderHandle::new(provider);
-        let frame_handle = video_core::FrameTextureHandle(23);
+        let frame_handle = video_core::FrameResourceHandle(23);
 
         handle.release_frame(frame_handle);
 

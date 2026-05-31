@@ -25,7 +25,7 @@ pub(crate) struct PresentFrameIdentity {
     render_generation: u64,
 
     /// Opaque texture handle decoded frame-а.
-    texture_handle: video_core::FrameTextureHandle,
+    resource_handle: video_core::FrameResourceHandle,
 }
 
 impl PresentFrameIdentity {
@@ -33,11 +33,11 @@ impl PresentFrameIdentity {
     #[must_use]
     pub(crate) const fn new(
         render_generation: u64,
-        texture_handle: video_core::FrameTextureHandle,
+        resource_handle: video_core::FrameResourceHandle,
     ) -> Self {
         Self {
             render_generation,
-            texture_handle,
+            resource_handle,
         }
     }
 }
@@ -51,7 +51,7 @@ impl PlayerSession {
         }
 
         self.pipeline.present_video_frame().map(|frame| {
-            PresentFrameIdentity::new(self.pipeline.render_generation(), frame.texture_handle)
+            PresentFrameIdentity::new(self.pipeline.render_generation(), frame.resource_handle)
         })
     }
 
@@ -63,7 +63,7 @@ impl PlayerSession {
         let render_generation = self.pipeline.render_generation();
         let stale = self.snapshot.timeline.stale_frame;
 
-        if !self.register_render_lease(render_generation, frame.texture_handle) {
+        if !self.register_render_lease(render_generation, frame.resource_handle) {
             return None;
         }
 
@@ -87,10 +87,10 @@ impl PlayerSession {
     #[must_use]
     pub(crate) fn has_deferred_video_texture_release(
         &self,
-        texture_handle: video_core::FrameTextureHandle,
+        resource_handle: video_core::FrameResourceHandle,
     ) -> bool {
         self.pipeline
-            .has_deferred_video_texture_release(texture_handle)
+            .has_deferred_video_texture_release(resource_handle)
     }
 
     /// Возвращает количество отложенных texture releases без раскрытия HashSet.
@@ -104,10 +104,10 @@ impl PlayerSession {
     pub(crate) fn register_render_lease(
         &mut self,
         render_generation: u64,
-        texture_handle: video_core::FrameTextureHandle,
+        resource_handle: video_core::FrameResourceHandle,
     ) -> bool {
         self.pipeline
-            .try_register_render_lease(render_generation, texture_handle)
+            .try_register_render_lease(render_generation, resource_handle)
     }
 
     /// Снимает render lease и применяет отложенный texture release, если он уже был запрошен.
@@ -115,22 +115,22 @@ impl PlayerSession {
     pub(crate) fn release_render_lease(
         &mut self,
         render_generation: u64,
-        texture_handle: video_core::FrameTextureHandle,
+        resource_handle: video_core::FrameResourceHandle,
     ) {
-        self.release_render_lease_with_provider(render_generation, texture_handle, None, false);
+        self.release_render_lease_with_provider(render_generation, resource_handle, None, false);
     }
 
     /// Снимает render lease и релизит texture через provider поколения, создавшего кадр.
     pub(crate) fn release_render_lease_with_provider(
         &mut self,
         render_generation: u64,
-        texture_handle: video_core::FrameTextureHandle,
+        resource_handle: video_core::FrameResourceHandle,
         resource_provider: Option<&PresentFrameResourceProviderHandle>,
         submitted_to_renderer: bool,
     ) {
         match self
             .pipeline
-            .release_render_lease_accounting(render_generation, texture_handle)
+            .release_render_lease_accounting(render_generation, resource_handle)
         {
             RenderLeaseReleaseEffect::UnknownLease | RenderLeaseReleaseEffect::LeaseStillActive => {
             }
@@ -138,7 +138,7 @@ impl PlayerSession {
                 if submitted_to_renderer && let Some(resource_provider) = resource_provider {
                     self.pipeline.remember_rendered_texture_release_provider(
                         render_generation,
-                        texture_handle,
+                        resource_handle,
                         resource_provider,
                     );
                 }
@@ -146,7 +146,7 @@ impl PlayerSession {
             RenderLeaseReleaseEffect::DeferredTextureReady => {
                 self.release_deferred_video_texture(
                     render_generation,
-                    texture_handle,
+                    resource_handle,
                     resource_provider,
                     submitted_to_renderer,
                 );
@@ -155,13 +155,18 @@ impl PlayerSession {
     }
 
     /// Освобождает texture handle сразу или откладывает release до завершения render lease.
-    pub(crate) fn release_video_texture(&mut self, texture_handle: video_core::FrameTextureHandle) {
-        match self.pipeline.request_video_texture_release(texture_handle) {
+    pub(crate) fn release_video_texture(
+        &mut self,
+        resource_handle: video_core::FrameResourceHandle,
+    ) {
+        match self.pipeline.request_video_texture_release(resource_handle) {
             VideoTextureReleaseEffect::DeferredUntilRenderLeaseDrop => {}
             VideoTextureReleaseEffect::ReleaseViaRenderProvider(resource_provider) => {
-                resource_provider.release_frame(texture_handle);
+                resource_provider.release_frame(resource_handle);
             }
-            VideoTextureReleaseEffect::ReleaseNow => self.release_video_texture_now(texture_handle),
+            VideoTextureReleaseEffect::ReleaseNow => {
+                self.release_video_texture_now(resource_handle)
+            }
         }
     }
 
@@ -169,20 +174,21 @@ impl PlayerSession {
     fn release_deferred_video_texture(
         &mut self,
         render_generation: u64,
-        texture_handle: video_core::FrameTextureHandle,
+        resource_handle: video_core::FrameResourceHandle,
         resource_provider: Option<&PresentFrameResourceProviderHandle>,
         submitted_to_renderer: bool,
     ) {
         if submitted_to_renderer && let Some(resource_provider) = resource_provider {
-            resource_provider.release_frame(texture_handle);
+            resource_provider.release_frame(resource_handle);
         } else if render_generation == self.pipeline.render_generation() {
-            self.release_video_texture_now(texture_handle);
+            self.release_video_texture_now(resource_handle);
         }
     }
 
     /// Непосредственно отдаёт texture slot обратно decoder thread.
-    fn release_video_texture_now(&mut self, texture_handle: video_core::FrameTextureHandle) {
-        self.pipeline.release_frame_to_video_decoder(texture_handle);
+    fn release_video_texture_now(&mut self, resource_handle: video_core::FrameResourceHandle) {
+        self.pipeline
+            .release_frame_to_video_decoder(resource_handle);
     }
 }
 
@@ -193,28 +199,28 @@ mod tests {
 
     use crate::{PresentFrameResourceProvider, PresentFrameResourceProviderLookup};
     use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
-    use video_core::{DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
+    use video_core::{DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle};
 
     /// Fake provider, который показывает, каким release path-ом ушёл rendered frame.
     #[derive(Clone)]
     struct RecordingResourceProvider {
         /// Texture handles, освобождённые через renderer-owned provider.
-        released_handles: Arc<Mutex<Vec<video_core::FrameTextureHandle>>>,
+        released_handles: Arc<Mutex<Vec<video_core::FrameResourceHandle>>>,
     }
 
     impl PresentFrameResourceProvider for RecordingResourceProvider {
         /// Lookup в этих тестах не используется: проверяется только release lifecycle.
         fn resource_lookup(
             &self,
-            _handle: video_core::FrameTextureHandle,
+            _handle: video_core::FrameResourceHandle,
         ) -> PresentFrameResourceProviderLookup {
             PresentFrameResourceProviderLookup::Ready {
-                texture_pool_lock_wait: std::time::Duration::ZERO,
+                resource_pool_lock_wait: std::time::Duration::ZERO,
             }
         }
 
         /// Запоминает release, который должен пройти через renderer-owned boundary.
-        fn release_frame(&self, handle: video_core::FrameTextureHandle) {
+        fn release_frame(&self, handle: video_core::FrameResourceHandle) {
             self.released_handles
                 .lock()
                 .expect("recording provider release log lock")
@@ -245,7 +251,7 @@ mod tests {
         }
 
         /// Release path в этих тестах не используется.
-        fn release_frame(&self, _handle: FrameTextureHandle) {}
+        fn release_frame(&self, _handle: FrameResourceHandle) {}
 
         /// Тест не публикует frames через decoder queue.
         fn try_recv_frame(&self) -> Option<video_core::DecodedFrame> {
@@ -289,7 +295,7 @@ mod tests {
     }
 
     /// Создаёт decoded frame с renderer-neutral texture handle для boundary tests.
-    fn decoded_frame_for_tests(texture_handle: FrameTextureHandle) -> video_core::DecodedFrame {
+    fn decoded_frame_for_tests(resource_handle: FrameResourceHandle) -> video_core::DecodedFrame {
         video_core::DecodedFrame {
             generation: 0,
             pts: std::time::Duration::from_millis(42),
@@ -302,7 +308,7 @@ mod tests {
             render_width: 640,
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
-            texture_handle,
+            resource_handle,
             diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
     }
@@ -319,11 +325,11 @@ mod tests {
     #[test]
     fn present_frame_identity_is_absent_without_active_decoder() {
         let mut session = PlayerSession::new();
-        let texture_handle = FrameTextureHandle(47);
+        let resource_handle = FrameResourceHandle(47);
 
         session
             .pipeline
-            .set_present_video_frame(decoded_frame_for_tests(texture_handle));
+            .set_present_video_frame(decoded_frame_for_tests(resource_handle));
 
         assert_eq!(session.current_present_frame_identity(), None);
         assert_eq!(session.render_lease_count(), 0);
@@ -332,7 +338,7 @@ mod tests {
     #[test]
     fn present_frame_identity_uses_active_decoder_without_registering_lease() {
         let mut session = PlayerSession::new();
-        let texture_handle = FrameTextureHandle(48);
+        let resource_handle = FrameResourceHandle(48);
 
         session
             .pipeline
@@ -340,7 +346,7 @@ mod tests {
         let render_generation = session.pipeline.render_generation();
         session
             .pipeline
-            .set_present_video_frame(decoded_frame_for_tests(texture_handle));
+            .set_present_video_frame(decoded_frame_for_tests(resource_handle));
 
         let identity = session
             .current_present_frame_identity()
@@ -348,7 +354,7 @@ mod tests {
 
         assert_eq!(
             identity,
-            PresentFrameIdentity::new(render_generation, texture_handle)
+            PresentFrameIdentity::new(render_generation, resource_handle)
         );
         assert_eq!(session.render_lease_count(), 0);
     }
@@ -357,9 +363,9 @@ mod tests {
     fn register_render_lease_rejects_stale_generation_without_accounting() {
         let mut session = PlayerSession::new();
         let stale_generation = session.pipeline.render_generation().saturating_add(1);
-        let texture_handle = FrameTextureHandle(41);
+        let resource_handle = FrameResourceHandle(41);
 
-        assert!(!session.register_render_lease(stale_generation, texture_handle));
+        assert!(!session.register_render_lease(stale_generation, resource_handle));
 
         assert_eq!(session.render_lease_count(), 0);
         assert_eq!(session.deferred_video_texture_release_count(), 0);
@@ -369,18 +375,18 @@ mod tests {
     fn deferred_texture_release_waits_until_last_render_lease() {
         let mut session = PlayerSession::new();
         let render_generation = session.pipeline.render_generation();
-        let texture_handle = video_core::FrameTextureHandle(42);
+        let resource_handle = video_core::FrameResourceHandle(42);
 
-        assert!(session.register_render_lease(render_generation, texture_handle));
-        assert!(session.register_render_lease(render_generation, texture_handle));
-        session.release_video_texture(texture_handle);
+        assert!(session.register_render_lease(render_generation, resource_handle));
+        assert!(session.register_render_lease(render_generation, resource_handle));
+        session.release_video_texture(resource_handle);
 
-        session.release_render_lease(render_generation, texture_handle);
+        session.release_render_lease(render_generation, resource_handle);
 
         assert_eq!(session.render_lease_count(), 1);
-        assert!(session.has_deferred_video_texture_release(texture_handle));
+        assert!(session.has_deferred_video_texture_release(resource_handle));
 
-        session.release_render_lease(render_generation, texture_handle);
+        session.release_render_lease(render_generation, resource_handle);
 
         assert_eq!(session.render_lease_count(), 0);
         assert_eq!(session.deferred_video_texture_release_count(), 0);
@@ -390,8 +396,8 @@ mod tests {
     fn unknown_render_lease_release_does_not_clear_deferred_release() {
         let mut session = PlayerSession::new();
         let render_generation = session.pipeline.render_generation();
-        let leased_handle = video_core::FrameTextureHandle(43);
-        let unknown_handle = video_core::FrameTextureHandle(44);
+        let leased_handle = video_core::FrameResourceHandle(43);
+        let unknown_handle = video_core::FrameResourceHandle(44);
 
         assert!(session.register_render_lease(render_generation, leased_handle));
         session.release_video_texture(leased_handle);
@@ -406,17 +412,17 @@ mod tests {
     fn submitted_release_provider_survives_when_lease_drops_before_texture_release() {
         let mut session = PlayerSession::new();
         let render_generation = session.pipeline.render_generation();
-        let texture_handle = video_core::FrameTextureHandle(45);
+        let resource_handle = video_core::FrameResourceHandle(45);
         let released_handles = Arc::new(Mutex::new(Vec::new()));
         let resource_provider =
             PresentFrameResourceProviderHandle::new(RecordingResourceProvider {
                 released_handles: Arc::clone(&released_handles),
             });
 
-        assert!(session.register_render_lease(render_generation, texture_handle));
+        assert!(session.register_render_lease(render_generation, resource_handle));
         session.release_render_lease_with_provider(
             render_generation,
-            texture_handle,
+            resource_handle,
             Some(&resource_provider),
             true,
         );
@@ -430,14 +436,14 @@ mod tests {
             &[]
         );
 
-        session.release_video_texture(texture_handle);
+        session.release_video_texture(resource_handle);
 
         assert_eq!(
             released_handles
                 .lock()
                 .expect("recorded releases lock after player release")
                 .as_slice(),
-            &[texture_handle]
+            &[resource_handle]
         );
     }
 
@@ -445,22 +451,22 @@ mod tests {
     fn unsubmitted_release_provider_is_not_used_for_later_texture_release() {
         let mut session = PlayerSession::new();
         let render_generation = session.pipeline.render_generation();
-        let texture_handle = video_core::FrameTextureHandle(46);
+        let resource_handle = video_core::FrameResourceHandle(46);
         let released_handles = Arc::new(Mutex::new(Vec::new()));
         let resource_provider =
             PresentFrameResourceProviderHandle::new(RecordingResourceProvider {
                 released_handles: Arc::clone(&released_handles),
             });
 
-        assert!(session.register_render_lease(render_generation, texture_handle));
+        assert!(session.register_render_lease(render_generation, resource_handle));
         session.release_render_lease_with_provider(
             render_generation,
-            texture_handle,
+            resource_handle,
             Some(&resource_provider),
             false,
         );
 
-        session.release_video_texture(texture_handle);
+        session.release_video_texture(resource_handle);
 
         assert_eq!(
             released_handles

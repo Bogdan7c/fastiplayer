@@ -25,9 +25,9 @@ pub struct VideoFrameTimingDiagnostics {
     pub decoded_frame_publish_latency: Option<Duration>,
 }
 
-/// Codec-neutral pressure texture/surface pool-а рядом с кадром.
+/// Codec-neutral pressure resource/surface pool-а рядом с кадром.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct VideoTexturePoolDiagnostics {
+pub struct VideoResourcePoolDiagnostics {
     /// Максимальное количество слотов, разрешённое backend pool-ом.
     pub capacity: usize,
 
@@ -59,7 +59,7 @@ pub struct VideoTexturePoolDiagnostics {
     pub imports_replaced: u64,
 }
 
-impl VideoTexturePoolDiagnostics {
+impl VideoResourcePoolDiagnostics {
     /// Возвращает доступный запас slots без underflow.
     #[must_use]
     pub const fn available_slots(self) -> usize {
@@ -76,8 +76,8 @@ pub struct VideoFrameDiagnostics {
     /// Глубина backend ready queue после enqueue этого кадра.
     pub decoder_ready_queue_depth: Option<usize>,
 
-    /// Texture/surface pressure после zero-copy import этого кадра.
-    pub texture_pool: Option<VideoTexturePoolDiagnostics>,
+    /// Resource/surface pressure после zero-copy export этого кадра.
+    pub resource_pool: Option<VideoResourcePoolDiagnostics>,
 }
 
 /// Причина frame drop-а внутри decoder/backend boundary.

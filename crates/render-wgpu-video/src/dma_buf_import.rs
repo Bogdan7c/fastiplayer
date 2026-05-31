@@ -4,19 +4,16 @@
 /// для импорта dma-buf напрямую в VkImage без CPU readback.
 ///
 /// Почему это нужно:
-/// GenericDmaVideoFrame::map() делает blocking poll(PollTimeout::NONE) на DMA-BUF fence,
-/// что занимает 700-1000 мс на Intel i965 для 4K NV12. Это делает декод ~1 FPS.
+/// CPU mapping decoded DMA-BUF делает blocking wait на fence, что занимает
+/// 700-1000 мс на Intel i965 для 4K NV12. Это делает декод ~1 FPS.
 /// DMA-BUF fd уже содержит decoded frame в GPU-visible memory (shared system memory на Intel).
 /// Импорт fd в Vulkan image позволяет использовать decoded frame zero-copy.
 use std::os::fd::{AsRawFd, RawFd};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 use ash::vk;
-use cros_codecs::decoder::{DecodedDmaBufExportLayout, DecodedDmaBufImage, DecodedDmaBufLayer};
-use cros_codecs::libva::ExternalBufferDescriptor;
-use cros_codecs::video_frame::generic_dma_video_frame::GenericDmaVideoFrame;
+use video_core::{DmaBufFrameDescriptor, DmaBufFrameExportLayout, DmaBufLayerDescriptor};
 
 /// Значение VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT из Vulkan headers.
 /// ash 0.38 не экспортирует эту константу напрямую.
@@ -70,7 +67,7 @@ impl DmaBufFrameFormat {
     /// Определяет формат по separate-layer DRM descriptor-у VA-API.
     pub(crate) fn from_separate_layers(
         image_fourcc: u32,
-        layers: &[DecodedDmaBufLayer],
+        layers: &[DmaBufLayerDescriptor],
     ) -> anyhow::Result<Self> {
         let y_layer = layers
             .first()
@@ -324,8 +321,8 @@ fn bind_imported_memory_to_image(
     }
 }
 
-/// Логирует первый VA export descriptor на info-уровне для диагностики zero-copy.
-fn log_first_export_descriptor(image: &DecodedDmaBufImage, frame_format: DmaBufFrameFormat) {
+/// Логирует первый DMA-BUF descriptor на info-уровне для диагностики zero-copy.
+fn log_first_export_descriptor(image: &DmaBufFrameDescriptor, frame_format: DmaBufFrameFormat) {
     static LOGGED_NV12_EXPORT_DESCRIPTOR: AtomicBool = AtomicBool::new(false);
     static LOGGED_P010_EXPORT_DESCRIPTOR: AtomicBool = AtomicBool::new(false);
 
@@ -450,6 +447,34 @@ pub(crate) struct ImportedDmaBufTexture {
     pub(crate) uv_view: wgpu::TextureView,
 }
 
+impl ImportedDmaBufStorage {
+    /// Возвращает число textures, которыми guard владеет для lifetime imported views.
+    pub(crate) fn texture_count(&self) -> usize {
+        match self {
+            Self::Multiplanar(texture) => {
+                let _keep_texture_alive = texture;
+                1
+            }
+            Self::SeparatePlanes {
+                y_texture,
+                uv_texture,
+            } => {
+                let _keep_y_texture_alive = y_texture;
+                let _keep_uv_texture_alive = uv_texture;
+                2
+            }
+        }
+    }
+}
+
+impl ImportedDmaBufTexture {
+    /// Проверяет, что renderer guard реально содержит storage для imported plane views.
+    pub(crate) fn storage_texture_count(&self) -> usize {
+        let _frame_format_keeps_layout_context = self.frame_format;
+        self.storage.texture_count()
+    }
+}
+
 /// Описание одной DMA-BUF plane для импорта в отдельную Vulkan/wgpu texture.
 struct DmaBufPlaneImport {
     /// DMA-BUF fd; helper сам dup-ает fd перед передачей Vulkan.
@@ -484,118 +509,16 @@ impl DmaBufImporter {
         }
     }
 
-    /// Импортирует NV12 frame (две плоскости: Y + UV) в пару wgpu textures.
+    /// Импортирует neutral DMA-BUF descriptor в renderer-owned WGPU textures.
     ///
-    /// # Аргументы
-    /// * `video_frame` — `Arc<GenericDmaVideoFrame>` от cros-codecs decoded handle.
-    ///
-    /// # Возвращаемое значение
-    /// `(y_texture, uv_texture)` — wgpu textures для биндинга в шейдер.
-    pub fn import_nv12(
-        &self,
-        video_frame: &Arc<GenericDmaVideoFrame>,
-    ) -> anyhow::Result<(wgpu::Texture, wgpu::Texture)> {
-        // Клонируем frame для получения VA surface descriptor.
-        // Клон дублирует fd (dup), так что descriptor будет валиден пока frame жив.
-        let mut frame = (**video_frame).clone();
-        let desc = frame.va_surface_attribute();
-
-        // Для NV12 ожидаем один dma-buf объект с двумя плоскостями.
-        let fd = desc.objects[0].fd;
-        let width = desc.width;
-        let height = desc.height;
-
-        // Dup fd — оригинал закроется при drop frame, а этот fd закрывается
-        // в конце функции или при раннем выходе через явный cleanup ниже.
-        let fd_dup =
-            nix::unistd::dup(fd).with_context(|| format!("dup dma-buf fd {} failed", fd))?;
-
-        let y_offset = desc.layers[0].offset[0] as u64;
-        let uv_offset = desc.layers[0].offset[1] as u64;
-        let y_pitch = desc.layers[0].pitch[0];
-        let uv_pitch = desc.layers[0].pitch[1];
-        let modifier = desc.objects[0].drm_format_modifier;
-        tracing::debug!(
-            width,
-            height,
-            y_offset,
-            uv_offset,
-            y_pitch,
-            uv_pitch,
-            modifier,
-            "DMA-BUF desc for import"
-        );
-
-        // Импортируем Y-плоскость.
-        let y_texture = self
-            .import_plane(DmaBufPlaneImport {
-                fd: fd_dup,
-                offset: y_offset,
-                width,
-                height,
-                pitch: y_pitch,
-                modifier,
-                format: wgpu::TextureFormat::R8Unorm,
-            })
-            .with_context(|| "Y-plane DMA-BUF import failed");
-        let y_texture = match y_texture {
-            Ok(texture) => texture,
-            Err(error) => {
-                close_unimported_fd(fd_dup, "NV12 Y-plane import cleanup");
-                return Err(error);
-            }
-        };
-
-        // Для UV-плоскости dup fd ещё раз (каждый allocate_memory может или dup, или consume fd).
-        let fd_dup2 =
-            match nix::unistd::dup(fd_dup).with_context(|| "dup dma-buf fd for UV plane failed") {
-                Ok(duplicated_fd) => duplicated_fd,
-                Err(error) => {
-                    close_unimported_fd(fd_dup, "NV12 UV-plane fd duplication cleanup");
-                    return Err(error);
-                }
-            };
-
-        // Импортируем UV-плоскость.
-        let uv_texture = self
-            .import_plane(DmaBufPlaneImport {
-                fd: fd_dup2,
-                offset: uv_offset,
-                width: width / 2,
-                height: height / 2,
-                pitch: uv_pitch,
-                modifier,
-                format: wgpu::TextureFormat::Rg8Unorm,
-            })
-            .with_context(|| "UV-plane DMA-BUF import failed");
-        let uv_texture = match uv_texture {
-            Ok(texture) => texture,
-            Err(error) => {
-                close_unimported_fd(fd_dup, "NV12 UV-plane import cleanup");
-                close_unimported_fd(fd_dup2, "NV12 UV-plane import cleanup");
-                return Err(error);
-            }
-        };
-
-        // Закрываем только caller-owned dup fds. Внутренние fd, переданные
-        // в `vkAllocateMemory`, закрывает Vulkan implementation после успешного import.
-        close_unimported_fd(fd_dup, "NV12 imported Y-plane caller fd cleanup");
-        close_unimported_fd(fd_dup2, "NV12 imported UV-plane caller fd cleanup");
-
-        Ok((y_texture, uv_texture))
-    }
-
-    /// Импортирует DMA-BUF, экспортированный напрямую из decoded VA surface.
-    ///
-    /// Decoder остаётся на internal VA surfaces, а готовая поверхность экспортируется через
-    /// `vaExportSurfaceHandle()`. Драйвер может вернуть composed multi-planar image или
-    /// отдельные luma/chroma layers; оба варианта остаются zero-copy.
+    /// Decoder/provider остаётся владельцем исходного frame resource-а, а этот
+    /// слой получает duplicated fd и закрывает их через drop descriptor-а.
     pub(crate) fn import_exported_dma_buf_image(
         &self,
-        image: &DecodedDmaBufImage,
+        image: &DmaBufFrameDescriptor,
     ) -> anyhow::Result<ImportedDmaBufTexture> {
         match image.export_layout {
-            DecodedDmaBufExportLayout::ComposedLayers => {
+            DmaBufFrameExportLayout::ComposedLayers => {
                 let layer = image
                     .layers
                     .first()
@@ -619,7 +542,7 @@ impl DmaBufImporter {
                         )
                     })
             }
-            DecodedDmaBufExportLayout::SeparateLayers => {
+            DmaBufFrameExportLayout::SeparateLayers => {
                 let frame_format =
                     DmaBufFrameFormat::from_separate_layers(image.fourcc, &image.layers)?;
 
@@ -644,8 +567,8 @@ impl DmaBufImporter {
     /// `VkImageDrmFormatModifierExplicitCreateInfoEXT`.
     fn import_multiplanar_dma_buf(
         &self,
-        image: &DecodedDmaBufImage,
-        layer: &cros_codecs::decoder::DecodedDmaBufLayer,
+        image: &DmaBufFrameDescriptor,
+        layer: &DmaBufLayerDescriptor,
         frame_format: DmaBufFrameFormat,
     ) -> anyhow::Result<ImportedDmaBufTexture> {
         frame_format.ensure_device_feature(self.device.features())?;
@@ -874,7 +797,7 @@ impl DmaBufImporter {
     /// descriptor как `R16` luma + `GR32` interleaved chroma.
     fn import_separate_layer_dma_buf(
         &self,
-        image: &DecodedDmaBufImage,
+        image: &DmaBufFrameDescriptor,
         frame_format: DmaBufFrameFormat,
     ) -> anyhow::Result<ImportedDmaBufTexture> {
         frame_format.ensure_separate_layer_device_features(self.device.features())?;
@@ -1202,14 +1125,14 @@ mod tests {
     #[test]
     fn separate_layer_p010_maps_to_dma_buf_frame_format() {
         let layers = vec![
-            DecodedDmaBufLayer {
+            DmaBufLayerDescriptor {
                 drm_format: DRM_FORMAT_R16,
                 num_planes: 1,
                 object_index: [0, 0, 0, 0],
                 offset: [0, 0, 0, 0],
                 pitch: [7680, 0, 0, 0],
             },
-            DecodedDmaBufLayer {
+            DmaBufLayerDescriptor {
                 drm_format: DRM_FORMAT_GR1616,
                 num_planes: 1,
                 object_index: [0, 0, 0, 0],

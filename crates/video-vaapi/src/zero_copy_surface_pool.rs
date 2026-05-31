@@ -4,9 +4,9 @@
 //! 1. decoder получает decoded surface из backend frame pool;
 //! 2. VA-API экспортирует surface как DMA-BUF/DRM PRIME descriptor;
 //! 3. renderer backend создаёт или переиспользует persistent external import;
-//! 4. frame lease публикуется renderer-у через opaque [`FrameTextureHandle`];
+//! 4. frame lease публикуется renderer-у через opaque [`FrameResourceHandle`];
 //! 5. renderer submits GPU work и затем отпускает lease;
-//! 6. wgpu queue callback подтверждает GPU completion;
+//! 6. renderer queue callback подтверждает GPU completion;
 //! 7. decoder guard отпускается, surface возвращается в decoder pool;
 //! 8. import slot становится free: backend contract решает reuse или replace.
 
@@ -16,7 +16,7 @@ use std::os::fd::AsRawFd;
 
 use cros_codecs::decoder::{DecodedDmaBufExportLayout, DecodedDmaBufImage};
 use nix::sys::stat::fstat;
-use video_core::FrameTextureHandle;
+use video_core::FrameResourceHandle;
 
 /// Явный backend contract для persistent zero-copy imports.
 ///
@@ -32,7 +32,7 @@ pub struct ZeroCopyImportReuseContract {
     /// Renderer не пишет в imported image, а только семплит её после decoder sync.
     pub renderer_is_sample_only: bool,
 
-    /// Decoder получает surface обратно только после `Queue::on_submitted_work_done`.
+    /// Decoder получает surface обратно только после renderer GPU completion callback.
     pub decoder_reuse_waits_for_gpu_completion: bool,
 
     /// Surface id остаётся primary key внутри decoder output pool-а.
@@ -46,13 +46,13 @@ pub struct ZeroCopyImportReuseContract {
 }
 
 impl ZeroCopyImportReuseContract {
-    /// Контракт текущего VA-API/Vulkan/wgpu path.
+    /// Контракт текущего VA-API/Vulkan DMA-BUF path.
     ///
     /// VA surface удерживается decoded handle-ом до release ack, а renderer-side
-    /// GPU work подтверждается через wgpu queue callback перед возвратом surface
+    /// GPU work подтверждается через renderer queue callback перед возвратом surface
     /// в decoder frame pool. Persistent import reuse пока выключен: текущий
-    /// wgpu/hal слой не оформляет явные VA writer -> Vulkan sampler transitions.
-    pub const fn vaapi_vulkan_wgpu() -> Self {
+    /// Vulkan import слой не оформляет явные VA writer -> Vulkan sampler transitions.
+    pub const fn vaapi_vulkan_dma_buf() -> Self {
         Self {
             backend_name: "VA-API Vulkan DMA-BUF",
             renderer_is_sample_only: true,
@@ -217,7 +217,7 @@ enum ZeroCopySurfaceState {
     /// Slot отдан renderer-у как frame lease.
     Leased {
         /// Уникальный frame handle текущего lease-а.
-        handle: FrameTextureHandle,
+        handle: FrameResourceHandle,
 
         /// Monotonic generation lease-а внутри slot-а.
         generation: u64,
@@ -226,7 +226,7 @@ enum ZeroCopySurfaceState {
     /// Renderer отпустил lease, но GPU completion callback ещё не пришёл.
     WaitingGpuCompletion {
         /// Уникальный frame handle текущего release-а.
-        handle: FrameTextureHandle,
+        handle: FrameResourceHandle,
 
         /// Generation, выданная при lease.
         generation: u64,
@@ -235,7 +235,7 @@ enum ZeroCopySurfaceState {
     /// GPU completion подтверждён, но decoder ещё держит decoded handle guard.
     WaitingDecoderReuse {
         /// Уникальный frame handle текущего release-а.
-        handle: FrameTextureHandle,
+        handle: FrameResourceHandle,
 
         /// Generation, выданная при lease.
         generation: u64,
@@ -254,7 +254,7 @@ impl ZeroCopySurfaceState {
     }
 
     /// Возвращает handle, если состояние привязано к live/releasing lease.
-    const fn handle(self) -> Option<FrameTextureHandle> {
+    const fn handle(self) -> Option<FrameResourceHandle> {
         match self {
             Self::Free => None,
             Self::Leased { handle, .. }
@@ -289,7 +289,7 @@ struct ZeroCopySurfaceSlot {
 
 impl ZeroCopySurfaceSlot {
     /// Создаёт slot сразу в состоянии active lease.
-    fn leased(descriptor: ZeroCopySurfaceDescriptor, handle: FrameTextureHandle) -> Self {
+    fn leased(descriptor: ZeroCopySurfaceDescriptor, handle: FrameResourceHandle) -> Self {
         Self {
             descriptor,
             state: ZeroCopySurfaceState::Leased {
@@ -301,7 +301,7 @@ impl ZeroCopySurfaceSlot {
     }
 
     /// Переводит free slot в новый renderer lease.
-    fn lease(&mut self, handle: FrameTextureHandle) {
+    fn lease(&mut self, handle: FrameResourceHandle) {
         let generation = self.next_generation;
         self.next_generation = self.next_generation.saturating_add(1);
         self.state = ZeroCopySurfaceState::Leased { handle, generation };
@@ -331,12 +331,12 @@ pub enum ZeroCopyImportPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZeroCopyGpuCompletionLease {
     /// Frame handle, ожидающий GPU completion.
-    frame_handle: FrameTextureHandle,
+    frame_handle: FrameResourceHandle,
 }
 
 impl ZeroCopyGpuCompletionLease {
     /// Возвращает frame handle для callback-а.
-    pub const fn frame_handle(self) -> FrameTextureHandle {
+    pub const fn frame_handle(self) -> FrameResourceHandle {
         self.frame_handle
     }
 }
@@ -451,7 +451,7 @@ pub enum ZeroCopySurfacePoolError {
         operation: &'static str,
     },
 
-    /// Texture storage владельца и lifecycle pool разошлись по slot index.
+    /// Resource storage владельца и lifecycle pool разошлись по slot index.
     MissingStorageSlot {
         /// Slot index, который вернул lifecycle pool.
         slot_index: usize,
@@ -525,13 +525,13 @@ impl std::error::Error for ZeroCopySurfacePoolError {}
 
 /// Управляемый lifecycle pool persistent zero-copy imports.
 pub struct ZeroCopySurfacePool {
-    /// Bounded capacity persistent imports.
+    /// Bounded capacity persistent resources.
     capacity: usize,
 
     /// Явный backend reuse/synchronization contract.
     reuse_contract: ZeroCopyImportReuseContract,
 
-    /// Slots indexed identically to owner texture storage.
+    /// Slots indexed identically to owner resource storage.
     slots: Vec<ZeroCopySurfaceSlot>,
 
     /// Быстрый поиск slot-а по backend-native surface id.
@@ -578,7 +578,7 @@ impl ZeroCopySurfacePool {
     pub fn begin_import_or_reuse(
         &mut self,
         descriptor: ZeroCopySurfaceDescriptor,
-        handle: FrameTextureHandle,
+        handle: FrameResourceHandle,
     ) -> Result<ZeroCopyImportPlan, ZeroCopySurfacePoolError> {
         if let Some(&slot_index) = self.surface_to_slot.get(&descriptor.surface_id) {
             let slot = self
@@ -617,7 +617,7 @@ impl ZeroCopySurfacePool {
     pub fn register_imported_surface(
         &mut self,
         descriptor: ZeroCopySurfaceDescriptor,
-        handle: FrameTextureHandle,
+        handle: FrameResourceHandle,
         slot_index: usize,
     ) -> Result<(), ZeroCopySurfacePoolError> {
         if slot_index != self.slots.len() {
@@ -644,7 +644,7 @@ impl ZeroCopySurfacePool {
     pub fn register_replaced_surface(
         &mut self,
         descriptor: ZeroCopySurfaceDescriptor,
-        handle: FrameTextureHandle,
+        handle: FrameResourceHandle,
         slot_index: usize,
     ) -> Result<(), ZeroCopySurfacePoolError> {
         let slot = self
@@ -672,7 +672,7 @@ impl ZeroCopySurfacePool {
     }
 
     /// Возвращает storage slot index для live renderer lease.
-    pub fn leased_slot_index(&self, handle: FrameTextureHandle) -> Option<usize> {
+    pub fn leased_slot_index(&self, handle: FrameResourceHandle) -> Option<usize> {
         let slot_index = *self.handle_to_slot.get(&handle.0)?;
         let slot = self.slots.get(slot_index)?;
         let is_same_handle = slot.state.handle() == Some(handle);
@@ -684,7 +684,7 @@ impl ZeroCopySurfacePool {
     /// Переводит renderer-owned frame в ожидание GPU completion.
     pub fn release_after_gpu_submission(
         &mut self,
-        handle: FrameTextureHandle,
+        handle: FrameResourceHandle,
     ) -> Result<ZeroCopyGpuCompletionLease, ZeroCopySurfacePoolError> {
         let (slot_index, generation) =
             self.expect_handle_state(handle, "release_after_gpu_submission", "leased")?;
@@ -711,7 +711,7 @@ impl ZeroCopySurfacePool {
     /// Релизит frame, который не был отдан renderer GPU work-у.
     pub fn release_without_gpu_submission(
         &mut self,
-        handle: FrameTextureHandle,
+        handle: FrameResourceHandle,
     ) -> Result<(), ZeroCopySurfacePoolError> {
         let (slot_index, generation) =
             self.expect_handle_state(handle, "release_without_gpu_submission", "leased")?;
@@ -736,7 +736,7 @@ impl ZeroCopySurfacePool {
     /// Подтверждает completion GPU work-а для renderer-owned frame-а.
     pub fn acknowledge_gpu_completion(
         &mut self,
-        handle: FrameTextureHandle,
+        handle: FrameResourceHandle,
     ) -> Result<(), ZeroCopySurfacePoolError> {
         let (slot_index, generation) = self.expect_handle_state(
             handle,
@@ -767,7 +767,7 @@ impl ZeroCopySurfacePool {
     /// Подтверждает, что decoder guard отпущен и surface можно переиспользовать.
     pub fn acknowledge_decoder_reuse(
         &mut self,
-        handle: FrameTextureHandle,
+        handle: FrameResourceHandle,
     ) -> Result<(), ZeroCopySurfacePoolError> {
         let (slot_index, _generation) =
             self.expect_handle_state(handle, "acknowledge_decoder_reuse", "waiting-decoder-reuse")?;
@@ -798,7 +798,7 @@ impl ZeroCopySurfacePool {
     /// Проверяет handle и возвращает slot index + lease generation.
     fn expect_handle_state(
         &self,
-        handle: FrameTextureHandle,
+        handle: FrameResourceHandle,
         operation: &'static str,
         expected: &'static str,
     ) -> Result<(usize, u64), ZeroCopySurfacePoolError> {
@@ -917,7 +917,7 @@ mod tests {
     fn verified_reuse_contract_for_tests() -> ZeroCopyImportReuseContract {
         ZeroCopyImportReuseContract {
             explicit_external_memory_reuse_sync: true,
-            ..ZeroCopyImportReuseContract::vaapi_vulkan_wgpu()
+            ..ZeroCopyImportReuseContract::vaapi_vulkan_dma_buf()
         }
     }
 
@@ -926,15 +926,18 @@ mod tests {
         ZeroCopySurfacePool::new(capacity, verified_reuse_contract_for_tests())
     }
 
-    /// Создаёт pool с production VAAPI/wgpu contract-ом.
+    /// Создаёт pool с production VAAPI/DMA-BUF contract-ом.
     fn production_pool(capacity: usize) -> ZeroCopySurfacePool {
-        ZeroCopySurfacePool::new(capacity, ZeroCopyImportReuseContract::vaapi_vulkan_wgpu())
+        ZeroCopySurfacePool::new(
+            capacity,
+            ZeroCopyImportReuseContract::vaapi_vulkan_dma_buf(),
+        )
     }
 
     #[test]
     fn lease_release_order_requires_gpu_before_decoder_reuse() {
         let mut surface_pool = pool(2);
-        let first_handle = FrameTextureHandle(10);
+        let first_handle = FrameResourceHandle(10);
         let first_descriptor = descriptor(7);
 
         let import_plan = surface_pool
@@ -971,8 +974,8 @@ mod tests {
     #[test]
     fn released_surface_reuses_import_with_new_generation_and_rejects_stale_handle() {
         let mut surface_pool = pool(2);
-        let first_handle = FrameTextureHandle(10);
-        let second_handle = FrameTextureHandle(11);
+        let first_handle = FrameResourceHandle(10);
+        let second_handle = FrameResourceHandle(11);
         let first_descriptor = descriptor(7);
 
         surface_pool
@@ -1007,8 +1010,8 @@ mod tests {
     #[test]
     fn free_surface_replaces_import_when_descriptor_changes() {
         let mut surface_pool = pool(2);
-        let first_handle = FrameTextureHandle(10);
-        let second_handle = FrameTextureHandle(11);
+        let first_handle = FrameResourceHandle(10);
+        let second_handle = FrameResourceHandle(11);
         let first_descriptor = descriptor(7);
         let mut changed_descriptor = descriptor(7);
         changed_descriptor.width = 1280;
@@ -1036,8 +1039,8 @@ mod tests {
     #[test]
     fn production_contract_replaces_same_descriptor_until_explicit_sync_exists() {
         let mut surface_pool = production_pool(2);
-        let first_handle = FrameTextureHandle(10);
-        let second_handle = FrameTextureHandle(11);
+        let first_handle = FrameResourceHandle(10);
+        let second_handle = FrameResourceHandle(11);
         let first_descriptor = descriptor(7);
 
         surface_pool
@@ -1064,8 +1067,8 @@ mod tests {
     #[test]
     fn replaced_surface_keeps_generation_safety_and_records_churn() {
         let mut surface_pool = pool(2);
-        let first_handle = FrameTextureHandle(10);
-        let second_handle = FrameTextureHandle(11);
+        let first_handle = FrameResourceHandle(10);
+        let second_handle = FrameResourceHandle(11);
         let first_descriptor = descriptor(7);
         let mut changed_descriptor = descriptor(7);
         changed_descriptor.objects[0].identity.inode = 99;
@@ -1108,8 +1111,8 @@ mod tests {
     #[test]
     fn busy_surface_cannot_be_leased_twice() {
         let mut surface_pool = pool(2);
-        let first_handle = FrameTextureHandle(10);
-        let second_handle = FrameTextureHandle(11);
+        let first_handle = FrameResourceHandle(10);
+        let second_handle = FrameResourceHandle(11);
         let first_descriptor = descriptor(7);
 
         surface_pool

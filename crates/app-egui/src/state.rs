@@ -17,11 +17,12 @@ use player_core::{
 };
 use render_core::RenderDiagnostics;
 use render_wgpu_video::{
-    WgpuFrameTextureViewLookup, WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
+    DmaBufWgpuFrameMaterializer, WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
+    wrap_video_backend_for_wgpu_submission,
 };
 use rustiplayer_config::AppConfig;
 use tracing::{debug, instrument, warn};
-use video_vaapi::{VaapiWgpuVideoBackendFactory, VideoTextureViewLookup, VideoTextureViewProvider};
+use video_vaapi::VaapiVideoBackendFactory;
 use winit::window::Window;
 
 use crate::local_file_open::{
@@ -347,55 +348,6 @@ impl RenderablePresentFrame {
     }
 }
 
-/// Adapter app composition layer-а между VA-API provider-ом и `render-wgpu-video` API.
-struct VaapiWgpuFrameMaterializer {
-    /// Concrete provider остаётся вне `player-core` и materialize-ит только WGPU views.
-    texture_view_provider: VideoTextureViewProvider,
-}
-
-impl VaapiWgpuFrameMaterializer {
-    /// Создаёт materializer из provider-а, возвращённого concrete backend startup-ом.
-    fn new(texture_view_provider: VideoTextureViewProvider) -> Self {
-        Self {
-            texture_view_provider,
-        }
-    }
-}
-
-impl WgpuFrameTextureViewMaterializer for VaapiWgpuFrameMaterializer {
-    /// Делегирует non-blocking materialization в VA-API/WGPU provider.
-    fn try_texture_view_lookup(
-        &self,
-        handle: video_core::FrameTextureHandle,
-    ) -> WgpuFrameTextureViewLookup {
-        match self.texture_view_provider.try_texture_view_lookup(handle) {
-            VideoTextureViewLookup::Ready {
-                views,
-                lock_diagnostics,
-            } => WgpuFrameTextureViewLookup::Ready {
-                views: WgpuFrameTextureViews {
-                    y_view: views.y_view,
-                    uv_view: views.uv_view,
-                },
-                texture_pool_lock_wait: lock_diagnostics.wait,
-            },
-            VideoTextureViewLookup::Busy { lock_diagnostics } => WgpuFrameTextureViewLookup::Busy {
-                texture_pool_lock_wait: lock_diagnostics.wait,
-            },
-            VideoTextureViewLookup::Missing { lock_diagnostics } => {
-                WgpuFrameTextureViewLookup::Missing {
-                    texture_pool_lock_wait: lock_diagnostics.wait,
-                }
-            }
-            VideoTextureViewLookup::Error { lock_diagnostics } => {
-                WgpuFrameTextureViewLookup::Error {
-                    texture_pool_lock_wait: lock_diagnostics.wait,
-                }
-            }
-        }
-    }
-}
-
 /// Cached renderable frame вместе с media source identity.
 #[derive(Clone)]
 struct CachedRenderablePresentFrame {
@@ -413,7 +365,7 @@ struct PresentFrameIdentity {
     render_generation: u64,
 
     /// Opaque handle backend texture resource.
-    texture_handle: video_core::FrameTextureHandle,
+    resource_handle: video_core::FrameResourceHandle,
 
     /// Поколение decoded frame внутри текущего seek/decode lifecycle.
     decoded_generation: u64,
@@ -427,7 +379,7 @@ impl PresentFrameIdentity {
     fn from_decoded_frame(render_generation: u64, frame: &video_core::DecodedFrame) -> Self {
         Self {
             render_generation,
-            texture_handle: frame.texture_handle,
+            resource_handle: frame.resource_handle,
             decoded_generation: frame.generation,
             pts: frame.pts,
         }
@@ -979,13 +931,8 @@ impl AppState {
         queue: &wgpu::Queue,
     ) {
         let decoder_thread_config = self.player_worker.decoder_thread_config();
-        let backend_factory = VaapiWgpuVideoBackendFactory::new_with_decoder_config(
-            instance,
-            adapter,
-            device,
-            queue,
-            decoder_thread_config,
-        );
+        let backend_factory =
+            VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config);
 
         let started_backend = match backend_factory.start_for_composition() {
             Ok(started_backend) => started_backend,
@@ -994,9 +941,13 @@ impl AppState {
                 return;
             }
         };
-        let (player_backend, texture_view_provider) = started_backend.into_parts();
-        self.wgpu_frame_materializer = Some(Arc::new(VaapiWgpuFrameMaterializer::new(
-            texture_view_provider,
+        let (player_backend, frame_resource_provider) =
+            wrap_video_backend_for_wgpu_submission(started_backend, queue);
+        self.wgpu_frame_materializer = Some(Arc::new(DmaBufWgpuFrameMaterializer::new(
+            instance,
+            adapter,
+            device,
+            frame_resource_provider,
         )));
 
         if let Err(error) = self.player_worker.set_video_backend(player_backend) {
@@ -2181,7 +2132,7 @@ mod tests {
         ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
         HdrReferenceDefaultDiagnostics, RenderDiagnostics, VideoFrameFormat,
     };
-    use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
+    use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle};
 
     use super::{
         AppFrameContext, AppState, CachedPresentFrameDiscardReason,
@@ -2216,7 +2167,7 @@ mod tests {
     fn decoded_frame_for_identity_tests(
         generation: u64,
         pts: Duration,
-        texture_handle: u64,
+        resource_handle: u64,
     ) -> DecodedFrame {
         DecodedFrame {
             generation,
@@ -2230,7 +2181,7 @@ mod tests {
             render_width: 640,
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
-            texture_handle: FrameTextureHandle(texture_handle),
+            resource_handle: FrameResourceHandle(resource_handle),
             diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
     }

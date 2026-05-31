@@ -54,18 +54,18 @@ impl PlayerSession {
         queues.texture_slots =
             frame
                 .diagnostics
-                .texture_pool
-                .map(|texture_pool| TextureSlotPressureSnapshot {
-                    capacity: texture_pool.capacity,
-                    slots: texture_pool.slots,
-                    in_use: texture_pool.in_use,
-                    free_surfaces: texture_pool.free_surfaces,
-                    waiting_gpu_completion: texture_pool.waiting_gpu_completion,
-                    waiting_decoder_reuse: texture_pool.waiting_decoder_reuse,
-                    import_failures: texture_pool.import_failures,
-                    imports_created: texture_pool.imports_created,
-                    imports_reused: texture_pool.imports_reused,
-                    imports_replaced: texture_pool.imports_replaced,
+                .resource_pool
+                .map(|resource_pool| TextureSlotPressureSnapshot {
+                    capacity: resource_pool.capacity,
+                    slots: resource_pool.slots,
+                    in_use: resource_pool.in_use,
+                    free_surfaces: resource_pool.free_surfaces,
+                    waiting_gpu_completion: resource_pool.waiting_gpu_completion,
+                    waiting_decoder_reuse: resource_pool.waiting_decoder_reuse,
+                    import_failures: resource_pool.import_failures,
+                    imports_created: resource_pool.imports_created,
+                    imports_reused: resource_pool.imports_reused,
+                    imports_replaced: resource_pool.imports_replaced,
                 });
         self.diagnostics.observe_decoded_frame(frame, queues);
     }

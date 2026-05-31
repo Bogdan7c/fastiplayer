@@ -650,7 +650,7 @@ mod tests {
             render_width: 640,
             render_height: 360,
             color: codec_core::VideoColorMetadata::sdr_bt709_limited(),
-            texture_handle: video_core::FrameTextureHandle(handle),
+            resource_handle: video_core::FrameResourceHandle(handle),
             diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
     }
@@ -704,7 +704,7 @@ mod tests {
         decoded_frames: Arc<Mutex<VecDeque<video_core::DecodedFrame>>>,
 
         /// Texture handles, которые session вернула decoder boundary.
-        released_handles: Arc<Mutex<Vec<video_core::FrameTextureHandle>>>,
+        released_handles: Arc<Mutex<Vec<video_core::FrameResourceHandle>>>,
     }
 
     impl RecordingVideoDecoderThread {
@@ -738,7 +738,7 @@ mod tests {
         }
 
         /// Возвращает handles, освобождённые через decoder release path.
-        fn released_handles(&self) -> Vec<video_core::FrameTextureHandle> {
+        fn released_handles(&self) -> Vec<video_core::FrameResourceHandle> {
             self.released_handles
                 .lock()
                 .expect("recording decoder release log lock")
@@ -776,7 +776,7 @@ mod tests {
             Ok(())
         }
 
-        fn release_frame(&self, handle: video_core::FrameTextureHandle) {
+        fn release_frame(&self, handle: video_core::FrameResourceHandle) {
             self.released_handles
                 .lock()
                 .expect("recording decoder release log lock")
@@ -2096,7 +2096,7 @@ mod tests {
         assert!(session.pipeline.video_present_queue_is_empty());
         assert_eq!(
             decoder_thread.released_handles(),
-            vec![video_core::FrameTextureHandle(77)]
+            vec![video_core::FrameResourceHandle(77)]
         );
         assert_eq!(
             tick_result.dropped_video_frames,

@@ -200,7 +200,7 @@ Selection должна учитывать:
 `video-backend-api` owns `VideoBackendFactory`, `StartedVideoBackend` and
 `PresentFrameResourceProvider*`. `player-core` consumes `StartedVideoBackend`
 and re-exports the playback-facing provider handle types, but does not own the
-factory trait. `video-vaapi::VaapiWgpuVideoBackendFactory` implements the
+factory trait. `video-vaapi::VaapiVideoBackendFactory` implements the
 contract from `video-backend-api`; concrete backend crates must not depend on
 `player-core`.
 
@@ -208,13 +208,17 @@ Decoded frame contract:
 
 - `format`: `Nv12` or `P010` for production paths;
 - `memory_path`: `DmaBufZeroCopy`;
-- `texture_handle`: opaque handle, not a CPU image;
+- `resource_handle`: opaque handle for renderer-neutral resource lookup, not a
+  CPU image or GPU texture view;
 - `color`: resolved `VideoColorMetadata`;
 - diagnostics travel with the frame.
 
-`VideoTextureViewProvider` является concrete render-side bridge для WGPU texture
-views. Он остаётся в `video-vaapi`/`app-egui`/`render-wgpu-video` composition
-path-е, а `player-core` видит только renderer-neutral lookup/release boundary.
+`PresentFrameResourceProvider` сообщает playback-facing статусы
+`Ready`/`Busy`/`Missing`/`Fatal` и renderer-facing duplicated
+`FrameResourceDescriptor`. `video-vaapi` владеет исходным descriptor/surface до
+release, а `render-wgpu-video` импортирует duplicated DMA-BUF handles в WGPU
+texture views. `player-core` видит только renderer-neutral lookup/release
+boundary.
 
 ## Render contract
 

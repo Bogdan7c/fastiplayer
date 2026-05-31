@@ -5,7 +5,7 @@
 ```text
 app-egui
   window, egui, input, redraw pacing, local/YouTube media opening,
-  WGPU surface, VA-API/WGPU backend wiring
+  WGPU surface, VA-API backend and WGPU materializer wiring
         |
         +--------------------+--------------------+--------------------+--------------------+
         |                    |                    |                    |                    |
@@ -13,7 +13,7 @@ app-egui
 player-core          service-youtube      video-vaapi          render-wgpu-shell   render-wgpu-video
   worker/session      yt-dlp adapter,     VA-API decode,       WGPU surface,       NV12/P010 renderer,
   commands/events     HTTP refresh,       DMA-BUF export,      egui/winit          materialization API,
-  scheduler/state     stream demux open   WGPU import          composition         shader/color path
+  scheduler/state     stream demux open   resource lifetime    composition         shader/color path
         |                    |                    |                    |                    |
         v                    v                    v                    v                    v
 media-core           source-core          video-backend-api    render-core <-------+
@@ -63,7 +63,7 @@ Demuxer::next_packet()
   -> media_core::Packet { Bytes payload, TrackId, PTS, keyframe }
   -> codec-core requirement/refinement
   -> capability-core intersection
-  -> app-egui VaapiWgpuVideoBackendFactory
+  -> app-egui VaapiVideoBackendFactory
   -> video-backend-api VideoBackendFactory / StartedVideoBackend
   -> player-core playback-facing decoder handle
   -> video-vaapi::VideoDecodeThread

@@ -237,7 +237,7 @@ fn autoplay_open_media_enters_buffering_before_play() {
 fn old_generation_render_release_does_not_touch_current_generation() {
     let mut session = PlayerSession::new();
     let old_generation = session.pipeline.render_generation();
-    let old_handle = video_core::FrameTextureHandle(5);
+    let old_handle = video_core::FrameResourceHandle(5);
 
     assert!(session.register_render_lease(old_generation, old_handle));
     session.release_video_texture(old_handle);

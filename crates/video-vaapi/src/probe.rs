@@ -2,7 +2,7 @@
 //!
 //! Модуль читает libva profiles/entrypoints/RT formats и переводит их в
 //! `codec-core` matrix. Decode thread остаётся отдельно: probe не создаёт
-//! decoder, frame pool, wgpu device или renderer resources.
+//! decoder, frame pool, graphics device или renderer resources.
 
 use std::collections::BTreeSet;
 use std::rc::Rc;

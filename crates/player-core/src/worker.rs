@@ -271,11 +271,11 @@ impl PlayerRenderError {
         Self {
             kind: PlayerRenderErrorKind::MissingRenderResources,
             render_generation: Some(lease.render_generation),
-            frame_handle: Some(lease.texture_handle().0),
+            frame_handle: Some(lease.resource_handle().0),
             message: format!(
                 "Render resources are missing for {} frame handle {} in generation {}",
                 lease.frame.format,
-                lease.texture_handle().0,
+                lease.resource_handle().0,
                 lease.render_generation
             ),
         }
@@ -287,11 +287,11 @@ impl PlayerRenderError {
         Self {
             kind: PlayerRenderErrorKind::RenderResourceLookupFailed,
             render_generation: Some(lease.render_generation),
-            frame_handle: Some(lease.texture_handle().0),
+            frame_handle: Some(lease.resource_handle().0),
             message: format!(
                 "Render resource lookup failed for {} frame handle {} in generation {}",
                 lease.frame.format,
-                lease.texture_handle().0,
+                lease.resource_handle().0,
                 lease.render_generation
             ),
         }
@@ -303,7 +303,7 @@ impl PlayerRenderError {
         Self {
             kind: PlayerRenderErrorKind::UnsupportedFrameFormat,
             render_generation: Some(lease.render_generation),
-            frame_handle: Some(lease.texture_handle().0),
+            frame_handle: Some(lease.resource_handle().0),
             message: message.into(),
         }
     }
@@ -1340,7 +1340,7 @@ mod tests {
         DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaTime, TrackId,
         TrackInfo, TrackKind,
     };
-    use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
+    use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle};
 
     use super::*;
     use crate::{MediaSource, PlaybackState, ScrubCommitPolicy, SeekRequest};
@@ -1582,14 +1582,14 @@ mod tests {
         }
     }
 
-    fn decoded_frame_for_tests(texture_handle: FrameTextureHandle) -> DecodedFrame {
-        decoded_frame_with_pts_for_tests(Duration::ZERO, texture_handle)
+    fn decoded_frame_for_tests(resource_handle: FrameResourceHandle) -> DecodedFrame {
+        decoded_frame_with_pts_for_tests(Duration::ZERO, resource_handle)
     }
 
     /// Создаёт decoded frame с заданным PTS для session present-frame simulation.
     fn decoded_frame_with_pts_for_tests(
         pts: Duration,
-        texture_handle: FrameTextureHandle,
+        resource_handle: FrameResourceHandle,
     ) -> DecodedFrame {
         DecodedFrame {
             generation: 0,
@@ -1603,20 +1603,20 @@ mod tests {
             render_width: 640,
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
-            texture_handle,
+            resource_handle,
             diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
     }
 
     fn present_frame_lease_for_tests(
         render_generation: u64,
-        texture_handle: FrameTextureHandle,
+        resource_handle: FrameResourceHandle,
         stale: bool,
         release_tx: Sender<RenderLeaseRelease>,
     ) -> PresentFrameLease {
         PresentFrameLease::new_for_tests(
             render_generation,
-            decoded_frame_for_tests(texture_handle),
+            decoded_frame_for_tests(resource_handle),
             stale,
             release_tx,
         )
@@ -1934,13 +1934,13 @@ mod tests {
         let mut runtime = runtime_for_tests(Instant::now());
         runtime
             .session
-            .register_render_lease(0, video_core::FrameTextureHandle(7));
+            .register_render_lease(0, video_core::FrameResourceHandle(7));
         runtime
             .render_bridge
             .release_sender_for_tests()
             .try_send(RenderLeaseRelease {
                 render_generation: 0,
-                texture_handle: video_core::FrameTextureHandle(7),
+                resource_handle: video_core::FrameResourceHandle(7),
                 resource_provider: None,
                 submitted_to_renderer: false,
                 released_at: Instant::now(),
@@ -1963,9 +1963,9 @@ mod tests {
         let handoff = LatestPresentFrameHandoff::new();
         let (release_tx, release_rx) = unbounded();
         let first_frame =
-            present_frame_lease_for_tests(2, FrameTextureHandle(12), false, release_tx.clone());
+            present_frame_lease_for_tests(2, FrameResourceHandle(12), false, release_tx.clone());
         let second_frame =
-            present_frame_lease_for_tests(2, FrameTextureHandle(13), false, release_tx);
+            present_frame_lease_for_tests(2, FrameResourceHandle(13), false, release_tx);
 
         handoff.publish(Some(first_frame));
         let first_render_clone = match handoff.try_clone_latest() {
@@ -1988,7 +1988,7 @@ mod tests {
         handoff.publish(Some(second_frame));
         let release = release_rx.try_recv().unwrap();
         assert_eq!(release.render_generation, 2);
-        assert_eq!(release.texture_handle, FrameTextureHandle(12));
+        assert_eq!(release.resource_handle, FrameResourceHandle(12));
         assert!(release_rx.try_recv().is_err());
     }
 
@@ -1997,7 +1997,7 @@ mod tests {
         let handoff = LatestPresentFrameHandoff::new();
         let (release_tx, release_rx) = unbounded();
         let old_generation_frame =
-            present_frame_lease_for_tests(4, FrameTextureHandle(31), false, release_tx);
+            present_frame_lease_for_tests(4, FrameResourceHandle(31), false, release_tx);
 
         handoff.publish(Some(old_generation_frame));
         let acquired_frame = match handoff.try_clone_latest() {
@@ -2013,16 +2013,16 @@ mod tests {
         handoff.clear();
         let release = release_rx.try_recv().unwrap();
         assert_eq!(release.render_generation, 4);
-        assert_eq!(release.texture_handle, FrameTextureHandle(31));
+        assert_eq!(release.resource_handle, FrameResourceHandle(31));
     }
 
     #[test]
     fn player_worker_try_acquire_present_frame_reads_latest_slot_without_reply_wait() {
         let latest_present_frame_handoff = Arc::new(LatestPresentFrameHandoff::new());
         let (release_tx, _release_rx) = unbounded();
-        let expected_texture_handle = FrameTextureHandle(44);
+        let expected_resource_handle = FrameResourceHandle(44);
         let frame =
-            present_frame_lease_for_tests(3, expected_texture_handle, false, release_tx.clone());
+            present_frame_lease_for_tests(3, expected_resource_handle, false, release_tx.clone());
         latest_present_frame_handoff.publish(Some(frame));
         let (
             worker,
@@ -2034,7 +2034,7 @@ mod tests {
         let acquired_frame = worker.try_acquire_present_frame().unwrap();
 
         assert_eq!(acquired_frame.render_generation, 3);
-        assert_eq!(acquired_frame.texture_handle(), expected_texture_handle);
+        assert_eq!(acquired_frame.resource_handle(), expected_resource_handle);
         assert!(render_acquire_sample_rx.try_recv().is_ok());
     }
 
@@ -2078,7 +2078,7 @@ mod tests {
         let mut runtime = runtime_for_tests(Instant::now());
         runtime
             .session
-            .register_render_lease(0, video_core::FrameTextureHandle(11));
+            .register_render_lease(0, video_core::FrameResourceHandle(11));
         runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
         let previous_tick_at = runtime.last_tick_at;
         let plan = runtime.session.worker_wakeup_plan(
@@ -2097,7 +2097,7 @@ mod tests {
     fn present_frame_lease_drop_releases_frame_exactly_once() {
         let (release_tx, release_rx) = unbounded();
         let lease =
-            present_frame_lease_for_tests(2, FrameTextureHandle(12), false, release_tx.clone());
+            present_frame_lease_for_tests(2, FrameResourceHandle(12), false, release_tx.clone());
         let lease_clone = lease.clone();
 
         drop(lease);
@@ -2107,7 +2107,7 @@ mod tests {
         let release = release_rx.try_recv().unwrap();
 
         assert_eq!(release.render_generation, 2);
-        assert_eq!(release.texture_handle, FrameTextureHandle(12));
+        assert_eq!(release.resource_handle, FrameResourceHandle(12));
         assert!(release_rx.try_recv().is_err());
     }
 
@@ -2117,13 +2117,13 @@ mod tests {
         release_tx
             .try_send(RenderLeaseRelease {
                 render_generation: 1,
-                texture_handle: FrameTextureHandle(1),
+                resource_handle: FrameResourceHandle(1),
                 resource_provider: None,
                 submitted_to_renderer: false,
                 released_at: Instant::now(),
             })
             .unwrap();
-        let lease = present_frame_lease_for_tests(2, FrameTextureHandle(12), false, release_tx);
+        let lease = present_frame_lease_for_tests(2, FrameResourceHandle(12), false, release_tx);
         let drop_started_at = Instant::now();
 
         drop(lease);
@@ -2132,25 +2132,25 @@ mod tests {
         assert_eq!(release_rx.len(), 1);
         let queued_release = release_rx.try_recv().unwrap();
         assert_eq!(queued_release.render_generation, 1);
-        assert_eq!(queued_release.texture_handle, FrameTextureHandle(1));
+        assert_eq!(queued_release.resource_handle, FrameResourceHandle(1));
     }
 
     #[test]
     fn leased_frame_release_is_deferred_until_renderer_drops_lease() {
         let mut runtime = runtime_for_tests(Instant::now());
-        let texture_handle = FrameTextureHandle(21);
+        let resource_handle = FrameResourceHandle(21);
 
-        assert!(runtime.session.register_render_lease(0, texture_handle));
-        runtime.session.release_video_texture(texture_handle);
+        assert!(runtime.session.register_render_lease(0, resource_handle));
+        runtime.session.release_video_texture(resource_handle);
 
         assert_eq!(runtime.session.render_lease_count(), 1);
         assert!(
             runtime
                 .session
-                .has_deferred_video_texture_release(texture_handle)
+                .has_deferred_video_texture_release(resource_handle)
         );
 
-        runtime.session.release_render_lease(0, texture_handle);
+        runtime.session.release_render_lease(0, resource_handle);
 
         assert_eq!(runtime.session.render_lease_count(), 0);
         assert_eq!(runtime.session.deferred_video_texture_release_count(), 0);
@@ -2159,7 +2159,7 @@ mod tests {
     #[test]
     fn new_generation_makes_old_lease_stale_without_dropping_it() {
         let (release_tx, release_rx) = unbounded();
-        let lease = present_frame_lease_for_tests(4, FrameTextureHandle(31), false, release_tx);
+        let lease = present_frame_lease_for_tests(4, FrameResourceHandle(31), false, release_tx);
 
         assert!(lease.stale_for_generation(5));
         assert!(release_rx.try_recv().is_err());
@@ -2168,7 +2168,7 @@ mod tests {
 
         let release = release_rx.try_recv().unwrap();
         assert_eq!(release.render_generation, 4);
-        assert_eq!(release.texture_handle, FrameTextureHandle(31));
+        assert_eq!(release.resource_handle, FrameResourceHandle(31));
     }
 
     #[test]

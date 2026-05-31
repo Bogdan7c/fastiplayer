@@ -848,10 +848,10 @@ impl PlaybackPipeline {
 
     /// Очищает очередь будущих video frames и возвращает texture handles для release.
     #[must_use]
-    pub(crate) fn clear_video_queues(&mut self) -> Vec<video_core::FrameTextureHandle> {
+    pub(crate) fn clear_video_queues(&mut self) -> Vec<video_core::FrameResourceHandle> {
         self.video_frame_queue
             .drain(..)
-            .map(|frame| frame.texture_handle)
+            .map(|frame| frame.resource_handle)
             .collect()
     }
 
@@ -1311,13 +1311,13 @@ impl PlaybackPipeline {
     /// в `PlayerSession`, потому что только session видит поколение renderer-а.
     pub(crate) fn release_frame_to_video_decoder(
         &self,
-        texture_handle: video_core::FrameTextureHandle,
+        resource_handle: video_core::FrameResourceHandle,
     ) -> bool {
         let Some(decoder_thread) = self.video_decoder_thread.as_ref() else {
             return false;
         };
 
-        decoder_thread.release_frame(texture_handle);
+        decoder_thread.release_frame(resource_handle);
         true
     }
 
@@ -1406,13 +1406,13 @@ impl PlaybackPipeline {
     pub(crate) fn try_register_render_lease(
         &mut self,
         render_generation: u64,
-        texture_handle: video_core::FrameTextureHandle,
+        resource_handle: video_core::FrameResourceHandle,
     ) -> bool {
         if render_generation != self.render_generation {
             return false;
         }
 
-        let lease_key = (render_generation, texture_handle.0);
+        let lease_key = (render_generation, resource_handle.0);
         let lease_count = self.leased_video_textures.entry(lease_key).or_insert(0);
         *lease_count = lease_count.saturating_add(1);
         true
@@ -1422,9 +1422,9 @@ impl PlaybackPipeline {
     pub(crate) fn release_render_lease_accounting(
         &mut self,
         render_generation: u64,
-        texture_handle: video_core::FrameTextureHandle,
+        resource_handle: video_core::FrameResourceHandle,
     ) -> RenderLeaseReleaseEffect {
-        let lease_key = (render_generation, texture_handle.0);
+        let lease_key = (render_generation, resource_handle.0);
 
         let Some(lease_count) = self.leased_video_textures.get_mut(&lease_key) else {
             return RenderLeaseReleaseEffect::UnknownLease;
@@ -1449,14 +1449,14 @@ impl PlaybackPipeline {
     pub(crate) fn remember_rendered_texture_release_provider(
         &mut self,
         render_generation: u64,
-        texture_handle: video_core::FrameTextureHandle,
+        resource_handle: video_core::FrameResourceHandle,
         resource_provider: &PresentFrameResourceProviderHandle,
     ) {
         if render_generation != self.render_generation {
             return;
         }
 
-        let lease_key = (render_generation, texture_handle.0);
+        let lease_key = (render_generation, resource_handle.0);
         if self.leased_video_textures.contains_key(&lease_key)
             || self.deferred_video_texture_releases.contains(&lease_key)
         {
@@ -1470,9 +1470,9 @@ impl PlaybackPipeline {
     /// Помечает texture handle текущего поколения как deferred, если renderer держит lease.
     pub(crate) fn request_video_texture_release(
         &mut self,
-        texture_handle: video_core::FrameTextureHandle,
+        resource_handle: video_core::FrameResourceHandle,
     ) -> VideoTextureReleaseEffect {
-        let lease_key = (self.render_generation, texture_handle.0);
+        let lease_key = (self.render_generation, resource_handle.0);
         if self.leased_video_textures.contains_key(&lease_key) {
             self.deferred_video_texture_releases.insert(lease_key);
             return VideoTextureReleaseEffect::DeferredUntilRenderLeaseDrop;
@@ -1499,10 +1499,10 @@ impl PlaybackPipeline {
     #[must_use]
     pub(crate) fn has_deferred_video_texture_release(
         &self,
-        texture_handle: video_core::FrameTextureHandle,
+        resource_handle: video_core::FrameResourceHandle,
     ) -> bool {
         self.deferred_video_texture_releases
-            .contains(&(self.render_generation, texture_handle.0))
+            .contains(&(self.render_generation, resource_handle.0))
     }
 
     /// Возвращает количество отложенных texture releases.
@@ -1587,7 +1587,7 @@ mod tests {
     use media_core::{MediaTime, TrackKind};
 
     /// Создаёт decoded frame без реальных GPU resources для проверки pipeline storage.
-    fn decoded_frame_for_tests(pts: Duration, texture_handle: u64) -> video_core::DecodedFrame {
+    fn decoded_frame_for_tests(pts: Duration, resource_handle: u64) -> video_core::DecodedFrame {
         video_core::DecodedFrame {
             generation: 0,
             pts,
@@ -1600,7 +1600,7 @@ mod tests {
             render_width: 640,
             render_height: 360,
             color: codec_core::VideoColorMetadata::sdr_bt709_limited(),
-            texture_handle: video_core::FrameTextureHandle(texture_handle),
+            resource_handle: video_core::FrameResourceHandle(resource_handle),
             diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
     }
@@ -1869,14 +1869,14 @@ mod tests {
         assert_eq!(
             pipeline
                 .pop_queued_video_frame_front()
-                .map(|frame| frame.texture_handle),
-            Some(video_core::FrameTextureHandle(1))
+                .map(|frame| frame.resource_handle),
+            Some(video_core::FrameResourceHandle(1))
         );
         assert_eq!(
             pipeline
                 .pop_queued_video_frame_front()
-                .map(|frame| frame.texture_handle),
-            Some(video_core::FrameTextureHandle(2))
+                .map(|frame| frame.resource_handle),
+            Some(video_core::FrameResourceHandle(2))
         );
         assert!(pipeline.pop_queued_video_frame_front().is_none());
         assert!(pipeline.video_present_queue_is_empty());
@@ -1950,14 +1950,14 @@ mod tests {
             .replace_present_video_frame(decoded_frame_for_tests(Duration::from_millis(20), 20));
 
         assert_eq!(
-            replaced_frame.map(|frame| frame.texture_handle),
-            Some(video_core::FrameTextureHandle(10))
+            replaced_frame.map(|frame| frame.resource_handle),
+            Some(video_core::FrameResourceHandle(10))
         );
         assert_eq!(
             pipeline
                 .take_present_video_frame()
-                .map(|frame| frame.texture_handle),
-            Some(video_core::FrameTextureHandle(20))
+                .map(|frame| frame.resource_handle),
+            Some(video_core::FrameResourceHandle(20))
         );
         assert!(!pipeline.has_present_video_frame());
     }
@@ -2708,7 +2708,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_video_queues_returns_only_queued_texture_handles() {
+    fn clear_video_queues_returns_only_queued_resource_handles() {
         let mut pipeline = PlaybackPipeline::default();
 
         pipeline.enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(16), 1));
@@ -2719,27 +2719,27 @@ mod tests {
             4,
         ));
 
-        let released_texture_handles = pipeline.clear_video_queues();
+        let released_resource_handles = pipeline.clear_video_queues();
 
         assert_eq!(
-            released_texture_handles,
+            released_resource_handles,
             vec![
-                video_core::FrameTextureHandle(1),
-                video_core::FrameTextureHandle(2)
+                video_core::FrameResourceHandle(1),
+                video_core::FrameResourceHandle(2)
             ]
         );
         assert!(pipeline.video_present_queue_is_empty());
         assert_eq!(
             pipeline
                 .present_video_frame()
-                .map(|frame| frame.texture_handle),
-            Some(video_core::FrameTextureHandle(3))
+                .map(|frame| frame.resource_handle),
+            Some(video_core::FrameResourceHandle(3))
         );
         assert_eq!(
             pipeline
                 .take_seek_preroll_fallback_video_frame()
-                .map(|frame| frame.texture_handle),
-            Some(video_core::FrameTextureHandle(4))
+                .map(|frame| frame.resource_handle),
+            Some(video_core::FrameResourceHandle(4))
         );
     }
 

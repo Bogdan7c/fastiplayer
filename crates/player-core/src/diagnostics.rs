@@ -1415,7 +1415,7 @@ fn average_duration(total: Duration, samples: u64) -> Duration {
 mod tests {
     use super::*;
     use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
-    use video_core::{DecodedPixelFormat, FrameTextureHandle, VideoFrameTimingDiagnostics};
+    use video_core::{DecodedPixelFormat, FrameResourceHandle, VideoFrameTimingDiagnostics};
 
     /// Создаёт queue snapshot для чистых aggregation тестов.
     fn queue_depths_for_tests(pending_video_packets: usize) -> PipelineQueueDepthSnapshot {
@@ -1454,7 +1454,7 @@ mod tests {
             render_width: 640,
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
-            texture_handle: FrameTextureHandle(7),
+            resource_handle: FrameResourceHandle(7),
             diagnostics: video_core::VideoFrameDiagnostics {
                 timings: VideoFrameTimingDiagnostics {
                     decoder_submit_latency: Some(Duration::from_millis(3)),
@@ -1462,7 +1462,7 @@ mod tests {
                     ..VideoFrameTimingDiagnostics::default()
                 },
                 decoder_ready_queue_depth: Some(1),
-                texture_pool: None,
+                resource_pool: None,
             },
         }
     }

@@ -295,7 +295,7 @@ pub(super) fn drain_decoded_video_frames(
 
     if drain_video_decoder_thread_error(session) {
         for frame in decoded_frames {
-            release_video_texture(session, frame.texture_handle);
+            release_video_texture(session, frame.resource_handle);
         }
         return 0;
     }
@@ -307,7 +307,7 @@ pub(super) fn drain_decoded_video_frames(
             .pipeline
             .packet_generation_is_current(frame.generation)
         {
-            release_video_texture(session, frame.texture_handle);
+            release_video_texture(session, frame.resource_handle);
             record_video_drop(
                 session,
                 tick_result,
@@ -342,7 +342,7 @@ pub(super) fn drain_decoded_video_frames(
             if session.can_keep_seek_preroll_fallback(frame_pts) {
                 replace_seek_preroll_fallback_frame(session, tick_result, frame);
             } else {
-                release_video_texture(session, frame.texture_handle);
+                release_video_texture(session, frame.resource_handle);
                 record_video_drop(
                     session,
                     tick_result,
@@ -363,7 +363,7 @@ pub(super) fn drain_decoded_video_frames(
         if playback_can_present {
             enqueue_decoded_video_frame(session, tick_result, limits, frame);
         } else {
-            release_video_texture(session, frame.texture_handle);
+            release_video_texture(session, frame.resource_handle);
             record_video_drop(
                 session,
                 tick_result,
@@ -626,7 +626,7 @@ fn enqueue_decoded_video_frame(
             break;
         };
 
-        release_video_texture(session, stale_frame.texture_handle);
+        release_video_texture(session, stale_frame.resource_handle);
         record_video_drop(
             session,
             tick_result,

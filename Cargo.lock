@@ -3289,13 +3289,17 @@ name = "render-wgpu-video"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ash",
  "bytemuck",
  "codec-core",
  "naga",
+ "nix 0.29.0",
  "render-core",
  "tracing",
+ "video-backend-api",
  "video-core",
  "wgpu",
+ "wgpu-types",
 ]
 
 [[package]]
@@ -4603,7 +4607,6 @@ name = "video-vaapi"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ash",
  "bytes",
  "capability-core",
  "codec-core",
@@ -4616,8 +4619,6 @@ dependencies = [
  "tracing",
  "video-backend-api",
  "video-core",
- "wgpu",
- "wgpu-types",
 ]
 
 [[package]]

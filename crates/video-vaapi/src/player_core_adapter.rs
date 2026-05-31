@@ -1,129 +1,69 @@
-use std::sync::Arc;
-
 use video_backend_api::{
-    PresentFrameResourceProvider, PresentFrameResourceProviderHandle,
-    PresentFrameResourceProviderLookup, StartedVideoBackend, VideoBackendFactory,
+    PresentFrameResourceDescriptorLookup, PresentFrameResourceProvider,
+    PresentFrameResourceProviderHandle, PresentFrameResourceProviderLookup, StartedVideoBackend,
+    VideoBackendFactory,
 };
 use video_core::VideoDecoderThreadHandle;
 
 use crate::{
-    VideoDecodeThread, VideoDecodeThreadConfig, VideoTextureViewLookup, VideoTextureViewProvider,
+    VideoDecodeThread, VideoDecodeThreadConfig, VideoFrameResourceDescriptorLookup,
+    VideoFrameResourceLookup, VideoFrameResourceProvider,
 };
 
 /// Factory текущего production VA-API backend-а для app composition layer-а.
 ///
 /// Тип живёт в concrete backend crate, а `player-core` получает только
 /// `StartedVideoBackend` с playback-facing decoder handle.
-pub struct VaapiWgpuVideoBackendFactory {
-    /// WGPU instance для zero-copy import path.
-    instance: wgpu::Instance,
-
-    /// WGPU adapter для backend capability matching.
-    adapter: wgpu::Adapter,
-
-    /// WGPU device для texture allocation.
-    device: wgpu::Device,
-
-    /// WGPU queue для texture upload/release callbacks.
-    queue: wgpu::Queue,
-
+pub struct VaapiVideoBackendFactory {
     /// Backend-neutral runtime limits, которые адаптируются к VA-API config при startup.
     decoder_thread_config: video_core::VideoDecoderThreadConfig,
 }
 
-impl VaapiWgpuVideoBackendFactory {
-    /// Создаёт factory из GPU handles, которыми владеет shell/render layer.
+impl VaapiVideoBackendFactory {
+    /// Создаёт factory с production decoder-thread config.
     #[must_use]
-    pub fn new(
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) -> Self {
-        Self::new_with_decoder_config(
-            instance,
-            adapter,
-            device,
-            queue,
-            video_core::VideoDecoderThreadConfig::default(),
-        )
+    pub fn new() -> Self {
+        Self::new_with_decoder_config(video_core::VideoDecoderThreadConfig::default())
     }
 
     /// Создаёт factory с явным decoder-thread config из validated app config.
     #[must_use]
     pub fn new_with_decoder_config(
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         decoder_thread_config: impl Into<video_core::VideoDecoderThreadConfig>,
     ) -> Self {
         Self {
-            instance: instance.clone(),
-            adapter: adapter.clone(),
-            device: device.clone(),
-            queue: queue.clone(),
             decoder_thread_config: decoder_thread_config.into(),
         }
     }
 
-    /// Стартует VA-API/WGPU backend и возвращает player/backend части отдельно.
-    pub fn start_for_composition(&self) -> anyhow::Result<StartedVaapiWgpuVideoBackend> {
-        let decoder_thread = VideoDecodeThread::new_with_config(
-            Arc::new(self.device.clone()),
-            Arc::new(self.queue.clone()),
-            self.instance.clone(),
-            self.adapter.clone(),
-            VideoDecodeThreadConfig::from(self.decoder_thread_config),
-        )?;
-        let texture_view_provider = VideoDecodeThread::texture_view_provider(&decoder_thread);
+    /// Стартует VA-API backend и возвращает playback-facing artifact.
+    pub fn start_for_composition(&self) -> anyhow::Result<StartedVideoBackend> {
+        let decoder_thread = VideoDecodeThread::new_with_config(VideoDecodeThreadConfig::from(
+            self.decoder_thread_config,
+        ))?;
         let player_backend = StartedVideoBackend::from_decoder_thread(
             VaapiVideoDecoderThreadHandle::new(decoder_thread),
         );
 
-        Ok(StartedVaapiWgpuVideoBackend {
-            player_backend,
-            texture_view_provider,
-        })
+        Ok(player_backend)
     }
 
-    /// Compatibility helper для callers, которым не нужен WGPU materializer.
+    /// Compatibility helper для callers, которым не нужен composition-specific setup.
     pub fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend> {
         <Self as VideoBackendFactory>::start_video_backend(self)
     }
 }
 
-impl VideoBackendFactory for VaapiWgpuVideoBackendFactory {
+impl Default for VaapiVideoBackendFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VideoBackendFactory for VaapiVideoBackendFactory {
     /// Стартует concrete VA-API backend через тот же startup path, что и app composition.
     fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend> {
-        Ok(self.start_for_composition()?.into_player_backend())
-    }
-}
-
-/// Старое public имя оставлено в concrete crate как compatibility alias.
-#[deprecated(note = "use VaapiWgpuVideoBackendFactory; deprecated alias stays in video-vaapi")]
-pub type WgpuVideoBackendFactory = VaapiWgpuVideoBackendFactory;
-
-/// Запущенный VA-API/WGPU backend, разделённый на playback и render-facing части.
-pub struct StartedVaapiWgpuVideoBackend {
-    /// Playback-facing backend отдаётся `player-core`.
-    player_backend: StartedVideoBackend,
-
-    /// WGPU-facing provider остаётся в app/render composition layer-е.
-    texture_view_provider: VideoTextureViewProvider,
-}
-
-impl StartedVaapiWgpuVideoBackend {
-    /// Разделяет startup artifact без передачи WGPU materializer-а в `player-core`.
-    #[must_use]
-    pub fn into_parts(self) -> (StartedVideoBackend, VideoTextureViewProvider) {
-        (self.player_backend, self.texture_view_provider)
-    }
-
-    /// Возвращает только playback-facing backend для compatibility helper-а.
-    #[must_use]
-    pub fn into_player_backend(self) -> StartedVideoBackend {
-        self.player_backend
+        self.start_for_composition()
     }
 }
 
@@ -140,13 +80,13 @@ impl VaapiVideoDecoderThreadHandle {
     }
 }
 
-impl PresentFrameResourceProvider for VideoTextureViewProvider {
+impl PresentFrameResourceProvider for VideoFrameResourceProvider {
     /// Делегирует resource status lookup и lock timing в текущий VA-API provider.
     fn resource_lookup(
         &self,
-        handle: video_core::FrameTextureHandle,
+        handle: video_core::FrameResourceHandle,
     ) -> PresentFrameResourceProviderLookup {
-        let lookup = VideoTextureViewProvider::texture_view_lookup(self, handle);
+        let lookup = VideoFrameResourceProvider::resource_lookup(self, handle);
 
         resource_provider_lookup_from_vaapi(lookup)
     }
@@ -154,16 +94,36 @@ impl PresentFrameResourceProvider for VideoTextureViewProvider {
     /// Делегирует non-blocking lookup в VA-API provider без раскрытия backend enum-а.
     fn try_resource_lookup(
         &self,
-        handle: video_core::FrameTextureHandle,
+        handle: video_core::FrameResourceHandle,
     ) -> PresentFrameResourceProviderLookup {
-        let lookup = VideoTextureViewProvider::try_texture_view_lookup(self, handle);
+        let lookup = VideoFrameResourceProvider::try_resource_lookup(self, handle);
 
         resource_provider_lookup_from_vaapi(lookup)
     }
 
+    /// Делегирует duplicated descriptor lookup в VA-API provider.
+    fn resource_descriptor_lookup(
+        &self,
+        handle: video_core::FrameResourceHandle,
+    ) -> PresentFrameResourceDescriptorLookup {
+        let lookup = VideoFrameResourceProvider::try_resource_descriptor_lookup(self, handle);
+
+        resource_descriptor_lookup_from_vaapi(lookup)
+    }
+
+    /// Делегирует non-blocking duplicated descriptor lookup в VA-API provider.
+    fn try_resource_descriptor_lookup(
+        &self,
+        handle: video_core::FrameResourceHandle,
+    ) -> PresentFrameResourceDescriptorLookup {
+        let lookup = VideoFrameResourceProvider::try_resource_descriptor_lookup(self, handle);
+
+        resource_descriptor_lookup_from_vaapi(lookup)
+    }
+
     /// Делегирует renderer-owned release в текущий VA-API production provider.
-    fn release_frame(&self, handle: video_core::FrameTextureHandle) {
-        VideoTextureViewProvider::release_frame(self, handle);
+    fn release_frame(&self, handle: video_core::FrameResourceHandle) {
+        VideoFrameResourceProvider::release_frame(self, handle);
     }
 }
 
@@ -180,58 +140,88 @@ enum VaapiResourceLookupState {
     Missing,
 
     /// Backend сообщил poisoned/fatal состояние.
-    Error,
+    Fatal,
 }
 
 /// Конвертирует VA-API typed lookup в renderer-neutral player-core boundary.
 fn resource_provider_lookup_from_vaapi(
-    lookup: VideoTextureViewLookup,
+    lookup: VideoFrameResourceLookup,
 ) -> PresentFrameResourceProviderLookup {
     match lookup {
-        VideoTextureViewLookup::Ready {
-            lock_diagnostics, ..
-        } => resource_provider_lookup_from_vaapi_state(
-            VaapiResourceLookupState::Ready,
-            lock_diagnostics.wait,
-        ),
-        VideoTextureViewLookup::Busy { lock_diagnostics } => {
+        VideoFrameResourceLookup::Ready { lock_diagnostics } => {
+            resource_provider_lookup_from_vaapi_state(
+                VaapiResourceLookupState::Ready,
+                lock_diagnostics.wait,
+            )
+        }
+        VideoFrameResourceLookup::Busy { lock_diagnostics } => {
             resource_provider_lookup_from_vaapi_state(
                 VaapiResourceLookupState::Busy,
                 lock_diagnostics.wait,
             )
         }
-        VideoTextureViewLookup::Missing { lock_diagnostics } => {
+        VideoFrameResourceLookup::Missing { lock_diagnostics } => {
             resource_provider_lookup_from_vaapi_state(
                 VaapiResourceLookupState::Missing,
                 lock_diagnostics.wait,
             )
         }
-        VideoTextureViewLookup::Error { lock_diagnostics } => {
+        VideoFrameResourceLookup::Fatal { lock_diagnostics } => {
             resource_provider_lookup_from_vaapi_state(
-                VaapiResourceLookupState::Error,
+                VaapiResourceLookupState::Fatal,
                 lock_diagnostics.wait,
             )
         }
     }
 }
 
-/// Конвертирует state и timing без materialized WGPU handles.
+/// Конвертирует VA-API duplicated descriptor lookup в neutral backend API.
+fn resource_descriptor_lookup_from_vaapi(
+    lookup: VideoFrameResourceDescriptorLookup,
+) -> PresentFrameResourceDescriptorLookup {
+    match lookup {
+        VideoFrameResourceDescriptorLookup::Ready {
+            descriptor,
+            lock_diagnostics,
+        } => PresentFrameResourceDescriptorLookup::Ready {
+            descriptor,
+            resource_pool_lock_wait: lock_diagnostics.wait,
+        },
+        VideoFrameResourceDescriptorLookup::Busy { lock_diagnostics } => {
+            PresentFrameResourceDescriptorLookup::Busy {
+                resource_pool_lock_wait: lock_diagnostics.wait,
+            }
+        }
+        VideoFrameResourceDescriptorLookup::Missing { lock_diagnostics } => {
+            PresentFrameResourceDescriptorLookup::Missing {
+                resource_pool_lock_wait: lock_diagnostics.wait,
+            }
+        }
+        VideoFrameResourceDescriptorLookup::Fatal { lock_diagnostics } => {
+            PresentFrameResourceDescriptorLookup::Fatal {
+                resource_pool_lock_wait: lock_diagnostics.wait,
+            }
+        }
+    }
+}
+
+/// Конвертирует state и timing без materialized GPU handles.
 fn resource_provider_lookup_from_vaapi_state(
     state: VaapiResourceLookupState,
-    texture_pool_lock_wait: std::time::Duration,
+    resource_pool_lock_wait: std::time::Duration,
 ) -> PresentFrameResourceProviderLookup {
     match state {
         VaapiResourceLookupState::Ready => PresentFrameResourceProviderLookup::Ready {
-            texture_pool_lock_wait,
+            resource_pool_lock_wait,
         },
         VaapiResourceLookupState::Busy => PresentFrameResourceProviderLookup::Busy {
-            texture_pool_lock_wait,
+            resource_pool_lock_wait,
         },
         VaapiResourceLookupState::Missing => PresentFrameResourceProviderLookup::Missing {
-            texture_pool_lock_wait,
+            resource_pool_lock_wait,
         },
-        VaapiResourceLookupState::Error => PresentFrameResourceProviderLookup::Error {
-            texture_pool_lock_wait,
+        VaapiResourceLookupState::Fatal => PresentFrameResourceProviderLookup::Fatal {
+            resource_pool_lock_wait,
         },
     }
 }
@@ -250,7 +240,7 @@ impl VideoDecoderThreadHandle for VaapiVideoDecoderThreadHandle {
         VideoDecodeThread::send_packet(&self.decoder_thread, packet.into()).map_err(Into::into)
     }
 
-    fn release_frame(&self, handle: video_core::FrameTextureHandle) {
+    fn release_frame(&self, handle: video_core::FrameResourceHandle) {
         VideoDecodeThread::release_frame(&self.decoder_thread, handle);
     }
 
@@ -271,13 +261,13 @@ impl VideoDecoderThreadHandle for VaapiVideoDecoderThreadHandle {
     }
 
     fn resource_provider(&self) -> PresentFrameResourceProviderHandle {
-        PresentFrameResourceProviderHandle::new(VideoDecodeThread::texture_view_provider(
+        PresentFrameResourceProviderHandle::new(VideoDecodeThread::frame_resource_provider(
             &self.decoder_thread,
         ))
     }
 
     fn decoder_resource_snapshot(&self) -> Option<video_core::DecoderResourceSnapshot> {
-        VideoDecodeThread::texture_pool_stats(&self.decoder_thread).map(Into::into)
+        VideoDecodeThread::resource_pool_stats(&self.decoder_thread).map(Into::into)
     }
 
     fn decoder_control_channel_pressure(
@@ -312,7 +302,7 @@ mod tests {
     /// Проверяет dependency boundary: VA-API factory доступна через `video-backend-api`.
     #[test]
     fn vaapi_factory_implements_video_backend_factory_contract() {
-        assert_video_backend_factory::<VaapiWgpuVideoBackendFactory>();
+        assert_video_backend_factory::<VaapiVideoBackendFactory>();
     }
 
     /// Проверяет, что packet adapter не теряет ownership payload-а и timing metadata.
@@ -408,8 +398,8 @@ mod tests {
 
     /// Проверяет, что resource snapshot не теряет counters, нужные backpressure/UI.
     #[test]
-    fn resource_snapshot_adapter_preserves_texture_pool_counters() {
-        let stats = crate::texture_cache::TexturePoolStats {
+    fn resource_snapshot_adapter_preserves_resource_pool_counters() {
+        let stats = crate::resource_pool::ResourcePoolStats {
             capacity: 10,
             slots: 6,
             in_use: 4,
@@ -423,7 +413,7 @@ mod tests {
         };
 
         let snapshot = video_core::DecoderResourceSnapshot::from(stats);
-        let roundtrip_stats = crate::texture_cache::TexturePoolStats::from(snapshot);
+        let roundtrip_stats = crate::resource_pool::ResourcePoolStats::from(snapshot);
 
         assert_eq!(snapshot.available_slots(), 6);
         assert_eq!(roundtrip_stats.capacity, stats.capacity);
@@ -472,32 +462,32 @@ mod tests {
             resource_provider_lookup_from_vaapi_state(VaapiResourceLookupState::Busy, lock_wait);
         let missing =
             resource_provider_lookup_from_vaapi_state(VaapiResourceLookupState::Missing, lock_wait);
-        let error =
-            resource_provider_lookup_from_vaapi_state(VaapiResourceLookupState::Error, lock_wait);
+        let fatal =
+            resource_provider_lookup_from_vaapi_state(VaapiResourceLookupState::Fatal, lock_wait);
 
         assert!(matches!(
             ready,
             PresentFrameResourceProviderLookup::Ready {
-                texture_pool_lock_wait
-            } if texture_pool_lock_wait == lock_wait
+                resource_pool_lock_wait
+            } if resource_pool_lock_wait == lock_wait
         ));
         assert!(matches!(
             busy,
             PresentFrameResourceProviderLookup::Busy {
-                texture_pool_lock_wait
-            } if texture_pool_lock_wait == lock_wait
+                resource_pool_lock_wait
+            } if resource_pool_lock_wait == lock_wait
         ));
         assert!(matches!(
             missing,
             PresentFrameResourceProviderLookup::Missing {
-                texture_pool_lock_wait
-            } if texture_pool_lock_wait == lock_wait
+                resource_pool_lock_wait
+            } if resource_pool_lock_wait == lock_wait
         ));
         assert!(matches!(
-            error,
-            PresentFrameResourceProviderLookup::Error {
-                texture_pool_lock_wait
-            } if texture_pool_lock_wait == lock_wait
+            fatal,
+            PresentFrameResourceProviderLookup::Fatal {
+                resource_pool_lock_wait
+            } if resource_pool_lock_wait == lock_wait
         ));
     }
 }

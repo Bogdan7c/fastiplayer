@@ -1,12 +1,11 @@
 pub mod decoder;
 pub mod decoder_thread;
-pub mod dma_buf_import;
 pub mod dma_heap;
 pub mod frame_pool;
 pub mod internal_vaapi_frame;
 pub mod player_core_adapter;
 pub mod probe;
-pub mod texture_cache;
+pub mod resource_pool;
 pub mod zero_copy_surface_pool;
 
 #[cfg(test)]
@@ -19,10 +18,8 @@ pub use decoder::VaapiVideoDecoder;
 pub use decoder_thread::{
     DecodePacket, DecodeThreadBackpressureReason, DecodeThreadError, DecodeThreadSendError,
     VideoDecodeThread, VideoDecodeThreadConfig, VideoDecoderControlChannelPressureStats,
-    VideoTextureViewLockDiagnostics, VideoTextureViewLookup, VideoTextureViewProvider,
-    VideoTextureViews,
+    VideoFrameResourceDescriptorLookup, VideoFrameResourceLockDiagnostics,
+    VideoFrameResourceLookup, VideoFrameResourceProvider,
 };
-#[allow(deprecated)]
-pub use player_core_adapter::WgpuVideoBackendFactory;
-pub use player_core_adapter::{StartedVaapiWgpuVideoBackend, VaapiWgpuVideoBackendFactory};
+pub use player_core_adapter::VaapiVideoBackendFactory;
 pub use probe::{VaapiCapabilityProvider, probe_vaapi_capabilities};

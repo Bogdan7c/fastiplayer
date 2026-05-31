@@ -18,9 +18,9 @@ crates/service-youtube       yt-dlp adapter, stream candidates, YouTube demux op
 crates/audio                 Symphonia/Opus decoder factory, CPAL output backend, audio clock
 crates/video-core            decoded frame and video diagnostics contracts
 crates/video-backend-api     backend startup and resource-provider contracts
-crates/video-vaapi           VA-API decoder thread, probe, DMA-BUF/WGPU import
+crates/video-vaapi           VA-API decoder thread, probe, DMA-BUF export/lifecycle
 crates/render-core           renderer-neutral capabilities and color contracts
-crates/render-wgpu-video     WGPU NV12/P010 renderer, materialization API, shaders
+crates/render-wgpu-video     WGPU NV12/P010 renderer, DMA-BUF materialization, shaders
 crates/render-wgpu-shell     WGPU device/surface shell, egui composition, present path
 crates/desktop-integration   PlayerCommand/PlayerSnapshot adapter for desktop controls
 crates/vp9-parser            VP9 header parser used by codec adapter
@@ -37,9 +37,9 @@ crates/cros-libva-patch      local patched cros-libva dependency
 
 `app-egui` owns UI state, window lifecycle, renderer lifetime and current
 production composition. It opens local files through `symphonia-demux`, receives
-YouTube demuxers from `service-youtube`, creates the VA-API/WGPU backend factory
-and forwards prepared boundaries into `player-core`. It must not own playback
-queues, A/V scheduling or `PlayerSession` state.
+YouTube demuxers from `service-youtube`, starts the VA-API backend, creates the
+WGPU materializer and forwards prepared boundaries into `player-core`. It must
+not own playback queues, A/V scheduling or `PlayerSession` state.
 
 `player-core` owns playback state. It consumes `PreparedMedia`, demuxer traits,
 audio-core decoder/output contracts, video backend handles, commands, events and
@@ -69,15 +69,16 @@ media/demuxer objects to the shell and does not contain UI/render/player state.
 It also exposes capability-aware candidate metadata for a future startup path
 where `capability-core` selects before the demuxer is opened.
 
-`video-vaapi` owns VA-API decode, DMA-BUF export/import and texture pool lifetime.
-Its `VaapiWgpuVideoBackendFactory` implements the `video-backend-api`
+`video-vaapi` owns VA-API decode, DMA-BUF export and decoded surface lifecycle
+until renderer release. Its `VaapiVideoBackendFactory` implements the `video-backend-api`
 `VideoBackendFactory` boundary. The concrete backend crate depends on
-`video-backend-api`, not on `player-core`.
+`video-backend-api`, not on `player-core`, `wgpu`, `wgpu-types` or `ash`.
 
 `render-wgpu-video` owns the pure WGPU video backend: renderer capabilities,
-NV12/P010 renderers, BT.2446-C HDR-to-SDR shader path, WGPU texture-view
-materialization API and renderer diagnostics. It consumes renderer-neutral
-metadata plus WGPU texture views and does not call demux/source/player APIs.
+NV12/P010 renderers, BT.2446-C HDR-to-SDR shader path, renderer-side DMA-BUF
+import/materialization API and renderer diagnostics. It consumes
+renderer-neutral metadata plus duplicated resource descriptors and does not call
+demux/source/player APIs or depend on `video-vaapi`.
 
 `render-wgpu-shell` owns WGPU instance/device/surface lifecycle, required WGPU
 feature selection for the video renderer, egui composition, frame timing and
@@ -107,8 +108,8 @@ codec-core -> vp9-parser
 video-core -> media-core/codec-core
 video-backend-api -> video-core
 render-core -> codec-core
-video-vaapi -> video-backend-api/video-core/media-core/codec-core/capability-core/wgpu
-render-wgpu-video -> render-core/video-core/codec-core/wgpu
+video-vaapi -> video-backend-api/video-core/media-core/codec-core/capability-core
+render-wgpu-video -> render-core/video-core/video-backend-api/codec-core/wgpu/ash/wgpu-types
 render-wgpu-shell -> render-wgpu-video/render-core/wgpu/egui/egui-wgpu/winit
 ```
 
@@ -148,14 +149,15 @@ composition layer-е.
 
 - `desktop-integration` depends on `player-core` and `media-core`, because it is
   an adapter from desktop protocols to public player contracts.
-- `video-vaapi::VaapiWgpuVideoBackendFactory` is the production backend factory.
-  The deprecated `WgpuVideoBackendFactory` alias now lives in `video-vaapi`, not
-  in `player-core`.
+- `video-vaapi::VaapiVideoBackendFactory` is the production backend factory.
+  It returns only a neutral `StartedVideoBackend`; WGPU materialization is owned
+  by `render-wgpu-video`.
 - `video-backend-api` owns `VideoBackendFactory`, `StartedVideoBackend` and the
   renderer-neutral resource-provider handle used by `player-core`.
-- WGPU texture-view materialization stays in `app-egui`/`render-wgpu-video`, and
-  WGPU surface presentation stays in `render-wgpu-shell`; `player-core` exposes
-  opaque frame descriptors and resource lookup/release accounting only.
+- WGPU texture-view materialization stays in `render-wgpu-video`, and WGPU
+  surface presentation stays in `render-wgpu-shell`; `app-egui` only wires the
+  concrete backend/materializer. `player-core` exposes opaque frame descriptors
+  and resource lookup/release accounting only.
 - The old reference backend `video-vulkan` has been removed from workspace and
   must not return as an implicit production dependency.
 - Миграция Symphonia закрыла активный долг локального fork-а: workspace

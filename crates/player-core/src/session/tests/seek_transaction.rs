@@ -1060,7 +1060,7 @@ fn active_seek_drains_target_frame_when_present_queue_is_full() {
     assert!(
         fake_decoder
             .released_handles()
-            .contains(&video_core::FrameTextureHandle(5))
+            .contains(&video_core::FrameResourceHandle(5))
     );
 }
 
@@ -1155,7 +1155,7 @@ fn final_seek_releases_stale_present_when_texture_pressure_blocks_decoder() {
     assert_eq!(fake_decoder.sent_packets().len(), 1);
     assert_eq!(
         fake_decoder.released_handles(),
-        vec![video_core::FrameTextureHandle(1)]
+        vec![video_core::FrameResourceHandle(1)]
     );
     assert!(session.pipeline.present_video_frame().is_none());
     assert!(session.snapshot().timeline.stale_frame);
@@ -1301,7 +1301,7 @@ fn paused_video_seek_tick_presents_target_frame_and_stays_paused() {
     assert!(
         fake_decoder
             .released_handles()
-            .contains(&video_core::FrameTextureHandle(1))
+            .contains(&video_core::FrameResourceHandle(1))
     );
 }
 

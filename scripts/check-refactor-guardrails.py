@@ -63,6 +63,9 @@ CONTRACT_FORBIDDEN_DEPENDENCIES = frozenset(
     {
         "app-egui",
         "audio",
+        "ash",
+        "cros-codecs",
+        "cros-libva",
         "desktop-integration",
         "egui",
         "egui-wgpu",
@@ -76,6 +79,7 @@ CONTRACT_FORBIDDEN_DEPENDENCIES = frozenset(
         "video-vulkan",
         "webm-demux",
         "wgpu",
+        "wgpu-types",
         "winit",
     }
 )
@@ -92,11 +96,13 @@ LOW_LEVEL_CRATES = frozenset(
 
 LOW_LEVEL_FORBIDDEN_DEPENDENCIES = frozenset(
     {
+        "ash",
         "render-wgpu-shell",
         "render-wgpu-video",
         "video-vulkan",
         "video-vaapi",
         "wgpu",
+        "wgpu-types",
     }
 )
 
@@ -116,6 +122,8 @@ PLAYER_CORE_FORBIDDEN_DEPENDENCIES = frozenset(
         "video-vulkan",
         "webm-demux",
         "wgpu",
+        "wgpu-types",
+        "ash",
         "winit",
     }
 )
@@ -128,7 +136,12 @@ VIDEO_BACKEND_CRATES = frozenset(
 
 VIDEO_BACKEND_FORBIDDEN_DEPENDENCIES = frozenset(
     {
+        "ash",
         "player-core",
+        "render-wgpu-shell",
+        "render-wgpu-video",
+        "wgpu",
+        "wgpu-types",
     }
 )
 
@@ -363,7 +376,7 @@ def find_dependency_violations(
             dependency_map,
             VIDEO_BACKEND_CRATES,
             VIDEO_BACKEND_FORBIDDEN_DEPENDENCIES,
-            "concrete video backend crates используют video-backend-api вместо player-core",
+            "concrete video backend crates используют video-backend-api и не владеют renderer/GPU import crates",
         )
     )
     violations.extend(

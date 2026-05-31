@@ -336,27 +336,27 @@ impl PlayerSession {
     /// Очищает video frame queue и present frame, освобождая texture slots.
     pub fn clear_video_frames(&mut self) {
         self.clear_seek_preroll_fallback_frame();
-        let queued_texture_handles = self.pipeline.clear_video_queues();
-        let present_texture_handle = self
+        let queued_resource_handles = self.pipeline.clear_video_queues();
+        let present_resource_handle = self
             .pipeline
             .take_present_video_frame()
-            .map(|frame| frame.texture_handle);
+            .map(|frame| frame.resource_handle);
 
-        for texture_handle in queued_texture_handles {
-            self.release_video_texture(texture_handle);
+        for resource_handle in queued_resource_handles {
+            self.release_video_texture(resource_handle);
         }
-        if let Some(texture_handle) = present_texture_handle {
-            self.release_video_texture(texture_handle);
+        if let Some(resource_handle) = present_resource_handle {
+            self.release_video_texture(resource_handle);
         }
     }
 
     /// Очищает только очередь будущих video frames, сохраняя текущий кадр на экране.
     pub fn clear_queued_video_frames(&mut self) {
         self.clear_seek_preroll_fallback_frame();
-        let queued_texture_handles = self.pipeline.clear_video_queues();
+        let queued_resource_handles = self.pipeline.clear_video_queues();
 
-        for texture_handle in queued_texture_handles {
-            self.release_video_texture(texture_handle);
+        for resource_handle in queued_resource_handles {
+            self.release_video_texture(resource_handle);
         }
     }
 
@@ -388,11 +388,11 @@ impl PlayerSession {
         };
 
         let frame_pts = stale_frame.pts;
-        let texture_handle = stale_frame.texture_handle;
-        self.release_video_texture(texture_handle);
+        let resource_handle = stale_frame.resource_handle;
+        self.release_video_texture(resource_handle);
         debug!(
             pts_ms = frame_pts.as_millis(),
-            handle = texture_handle.0,
+            handle = resource_handle.0,
             available_texture_slots = texture_slots.available_slots(),
             min_available_texture_slots,
             "Final seek released stale present frame under texture pressure"

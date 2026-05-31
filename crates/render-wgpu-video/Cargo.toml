@@ -9,9 +9,13 @@ anyhow.workspace = true
 codec-core = { workspace = true }
 render-core = { workspace = true }
 video-core = { workspace = true }
+video-backend-api = { workspace = true }
 wgpu.workspace = true
 tracing.workspace = true
+ash = "0.38"
 bytemuck = "1.25"
+nix = { version = "0.29", features = ["fs"] }
+wgpu-types = "29"
 
 [dev-dependencies]
 naga = { version = "29", features = ["wgsl-in"] }

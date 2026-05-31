@@ -361,7 +361,7 @@ impl PlayerSession {
     /// Освобождает EOF fallback frame при новом seek/reset/точном target frame-е.
     pub(crate) fn clear_seek_preroll_fallback_frame(&mut self) {
         if let Some(frame) = self.pipeline.clear_seek_preroll_fallback_video_frame() {
-            self.release_video_texture(frame.texture_handle);
+            self.release_video_texture(frame.resource_handle);
         }
     }
 

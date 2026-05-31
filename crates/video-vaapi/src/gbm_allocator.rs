@@ -52,9 +52,9 @@ pub fn allocate_gbm_buffer(width: u32, height: u32) -> anyhow::Result<GbmAllocat
     let gbm_device =
         Device::new(dri_file).map_err(|e| anyhow::anyhow!("Failed to create GBM device: {}", e))?;
 
-    // Флаги для CPU upload path.
-    // HW_VIDEO_DECODER нужен VA-API decoder'у, LINEAR нужен `Queue::write_texture()`:
-    // wgpu принимает обычные строки байтов, а не tiled-layout GPU memory.
+    // Флаги для VA-API/GBM allocation path.
+    // HW_VIDEO_DECODER нужен VA-API decoder'у, LINEAR сохраняет предсказуемый
+    // layout exported buffer-а без протаскивания renderer import API в этот crate.
     let usage_flags = BufferObjectFlags::from_bits_truncate(GBM_BO_USE_HW_VIDEO_DECODER)
         | BufferObjectFlags::LINEAR;
 

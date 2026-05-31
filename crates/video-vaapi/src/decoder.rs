@@ -19,14 +19,14 @@ use cros_codecs::libva::{
 use media_core::Packet;
 use tracing::{debug, info, trace, warn};
 use video_core::{
-    DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle, VideoDecoder,
+    DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle, VideoDecoder,
     VideoDecoderDiagnosticEvent, VideoDecoderDropReason, VideoFrameDiagnostics,
-    VideoFrameTimingDiagnostics, VideoTexturePoolDiagnostics,
+    VideoFrameTimingDiagnostics, VideoResourcePoolDiagnostics,
 };
 
 use crate::frame_pool::DmaFramePool;
 use crate::internal_vaapi_frame::InternalVaapiFrame;
-use crate::texture_cache::WgpuTexturePool;
+use crate::resource_pool::FrameResourcePool;
 
 /// Production default количества кадров в VA DMA-пуле.
 ///
@@ -140,7 +140,7 @@ impl DecodeLoopReport {
 /// Минимальный интерфейс, который нужен retry state machine.
 ///
 /// Production implementation живёт на `VaapiVideoDecoder`, а unit test подставляет
-/// fake driver без VA-API/wgpu, чтобы проверить контракт `CheckEvents -> retry same packet`.
+/// fake driver без VA-API, чтобы проверить контракт `CheckEvents -> retry same packet`.
 trait DecoderRetryDriver {
     /// Отправляет один packet в backend decoder.
     fn submit_packet(
@@ -265,7 +265,7 @@ struct DecodedSurfaceContract {
 /// Фатальное нарушение zero-copy video boundary contract.
 ///
 /// Любой decoded video frame нельзя безопасно отправлять в CPU fallback: так
-/// pipeline скрывает отсутствие production DMA-BUF export/import и ломает
+/// pipeline скрывает отсутствие production DMA-BUF export/materialization и ломает
 /// диагностику плавности. Поэтому такие ошибки останавливают decoder thread.
 #[derive(Debug)]
 struct ZeroCopyContractViolation {
@@ -350,43 +350,6 @@ fn decoded_contract_for_rt_format(rt_format: u32) -> Result<DecodedSurfaceContra
     }
 }
 
-/// Проверяет zero-copy boundary requirement до обработки decoded кадра.
-fn ensure_zero_copy_importer_for_contract(
-    decoded_contract: DecodedSurfaceContract,
-    can_import_dma_buf: bool,
-) -> Result<()> {
-    if !can_import_dma_buf {
-        return Err(zero_copy_contract_violation(format!(
-            "{} decoded frame requires DMA-BUF zero-copy importer, but importer is unavailable",
-            decoded_contract.format
-        )));
-    }
-
-    Ok(())
-}
-
-/// Проверяет production texture pool до создания decoder thread state.
-fn ensure_texture_pool_has_zero_copy_importer(
-    texture_cache: &Arc<Mutex<WgpuTexturePool>>,
-) -> Result<()> {
-    let can_import_dma_buf = texture_cache
-        .lock()
-        .map_err(|error| {
-            zero_copy_contract_violation(format!(
-                "Zero-copy texture pool mutex is poisoned before decoder start: {error}"
-            ))
-        })?
-        .can_import_dma_buf();
-
-    if !can_import_dma_buf {
-        return Err(zero_copy_contract_violation(
-            "VA-API decoder requires DMA-BUF zero-copy importer at startup",
-        ));
-    }
-
-    Ok(())
-}
-
 /// Преобразует decoded output format из `StreamInfo` в VA RT format для surface pool.
 fn rt_format_for_decoded_format(decoded_format: DecodedFormat) -> Result<u32> {
     match decoded_format {
@@ -409,7 +372,7 @@ fn rt_format_for_decoded_format(decoded_format: DecodedFormat) -> Result<u32> {
 /// VA-API VP9 hardware decoder, реализующий трейт [`VideoDecoder`].
 ///
 /// Оборачивает `cros-codecs::StatelessDecoder<Vp9, VaapiBackend<InternalVaapiFrame>>`
-/// с internal VA surfaces, wgpu texture cache и drain events внутри `decode()`
+/// с internal VA surfaces, DMA-BUF resource pool и drain events внутри `decode()`
 /// для предоставления синхронного интерфейса.
 pub struct VaapiVideoDecoder {
     /// Внутренний stateless decoder как trait object.
@@ -421,11 +384,11 @@ pub struct VaapiVideoDecoder {
     /// Пул lightweight frame descriptors для выходных VA surfaces.
     frame_pool: DmaFramePool,
 
-    /// Пул persistent zero-copy imports для decoded surfaces.
+    /// Пул exported DMA-BUF resource descriptors для decoded surfaces.
     ///
-    /// Arc<Mutex<>> потому что пул используется из decoder thread (DMA-BUF import)
-    /// и из render thread (get_views / release).
-    texture_cache: Arc<Mutex<WgpuTexturePool>>,
+    /// Arc<Mutex<>> потому что пул используется из decoder thread (DMA-BUF export)
+    /// и из render thread (descriptor lookup / release).
+    resource_pool: Arc<Mutex<FrameResourcePool>>,
 
     /// Очередь готовых к отображению кадров.
     ///
@@ -442,7 +405,7 @@ pub struct VaapiVideoDecoder {
     /// и decoder не может перезаписать memory, которую может семплить renderer.
     zero_copy_guards: HashMap<u64, DynDecodedHandle<InternalVaapiFrame>>,
 
-    /// Был ли уже залогирован первый успешный zero-copy кадр.
+    /// Был ли уже залогирован первый успешный zero-copy descriptor.
     zero_copy_success_logged: bool,
 
     /// Diagnostics events для player-core без зависимости от player-core.
@@ -451,13 +414,6 @@ pub struct VaapiVideoDecoder {
     /// Была ли уже залогирована проверенная P010 zero-copy boundary.
     p010_boundary_verified_logged: bool,
 
-    /// wgpu device — нужен для создания текстур в `WgpuTexturePool`.
-    ///
-    /// В настоящий момент device передаётся в `WgpuTexturePool` при создании,
-    /// но храним ссылку здесь для будущих расширений (ленивая аллокация текстур).
-    #[allow(dead_code)]
-    device: Arc<wgpu::Device>,
-
     /// Имя бэкенда для отображения в UI.
     backend_name: &'static str,
 }
@@ -465,38 +421,25 @@ pub struct VaapiVideoDecoder {
 impl VaapiVideoDecoder {
     /// Создаёт новый VA-API VP9 decoder.
     ///
-    /// # Аргументы
-    /// * `device` — [`Arc<wgpu::Device>`] для создания wgpu-текстур.
-    /// * `_queue` — сохранён в сигнатуре для совместимости; CPU upload policy отключена.
-    ///
     /// # Ошибки
     /// Возвращает ошибку если:
     /// - VA-API display недоступен (`vainfo` не показывает VP9),
     /// - не удалось создать stateless decoder,
     /// - не удалось создать GBM frame pool.
-    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Result<Self> {
-        let texture_cache = Arc::new(Mutex::new(WgpuTexturePool::new(None)));
-        Self::new_with_pool(
-            device,
-            queue,
-            texture_cache,
-            None,
-            VaapiDecoderRuntimeConfig::default(),
-        )
+    pub fn new() -> Result<Self> {
+        let resource_pool = Arc::new(Mutex::new(FrameResourcePool::new()));
+        Self::new_with_pool(resource_pool, None, VaapiDecoderRuntimeConfig::default())
     }
 
     pub fn new_with_pool(
-        device: Arc<wgpu::Device>,
-        _queue: Arc<wgpu::Queue>,
-        texture_cache: Arc<Mutex<WgpuTexturePool>>,
+        resource_pool: Arc<Mutex<FrameResourcePool>>,
         diagnostic_tx: Option<std::sync::mpsc::SyncSender<VideoDecoderDiagnosticEvent>>,
         runtime_config: VaapiDecoderRuntimeConfig,
     ) -> Result<Self> {
         let runtime_config = runtime_config.normalized();
         info!("Opening VA-API display");
-        ensure_texture_pool_has_zero_copy_importer(&texture_cache)?;
-        if let Ok(texture_pool) = texture_cache.lock() {
-            let reuse_contract = texture_pool.reuse_contract();
+        if let Ok(resource_pool) = resource_pool.lock() {
+            let reuse_contract = resource_pool.reuse_contract();
             info!(
                 backend_contract = reuse_contract.backend_name,
                 sample_only = reuse_contract.renderer_is_sample_only,
@@ -504,7 +447,7 @@ impl VaapiVideoDecoder {
                 identity_is_surface_id = reuse_contract.import_identity_is_surface_id,
                 dma_buf_identity_checked = reuse_contract.dma_buf_object_identity_checked,
                 explicit_reuse_sync = reuse_contract.explicit_external_memory_reuse_sync,
-                "Zero-copy import lifecycle contract configured"
+                "Zero-copy resource lifecycle contract configured"
             );
         }
 
@@ -547,65 +490,45 @@ impl VaapiVideoDecoder {
         Ok(Self {
             inner,
             frame_pool,
-            texture_cache,
+            resource_pool,
             ready_queue: VecDeque::new(),
             runtime_config,
             zero_copy_guards: HashMap::new(),
             zero_copy_success_logged: false,
             diagnostic_tx,
             p010_boundary_verified_logged: false,
-            device,
             backend_name: "VA-API VP9",
         })
-    }
-
-    /// Возвращает Y/UV texture views для заданного frame handle.
-    ///
-    /// Используется в рендер-цикле для получения views по handle из [`DecodedFrame::texture_handle`].
-    ///
-    /// # Аргументы
-    /// * `frame_handle` — [`FrameTextureHandle`], полученный из [`DecodedFrame`].
-    ///
-    /// # Возвращаемое значение
-    /// `Some((y_view, uv_view))` если handle найден и слот занят.
-    /// Возвращает Y/UV texture views для заданного frame handle.
-    ///
-    /// Thread-safe: вызывается из render thread.
-    pub fn get_wgpu_texture_views(
-        &self,
-        frame_handle: FrameTextureHandle,
-    ) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
-        self.texture_cache.lock().unwrap().get_views(frame_handle)
     }
 
     /// Освобождает decoder-owned frame, который не был отправлен renderer GPU work-у.
     ///
     /// Должен вызываться когда кадр больше не нужен (drop по A/V sync,
     /// замена present frame, очистка очереди и т.д.).
-    /// Без этого texture pool исчерпается после 8 кадров.
-    /// Освобождает texture slot.
+    /// Без этого resource pool исчерпается после bounded числа кадров.
+    /// Освобождает lifecycle slot и возвращает VA surface после ack.
     ///
     /// Thread-safe: вызывается из decoder thread (через channel) или render thread.
-    pub fn release_frame(&mut self, texture_handle: FrameTextureHandle) -> Result<()> {
+    pub fn release_frame(&mut self, resource_handle: FrameResourceHandle) -> Result<()> {
         trace!(
-            handle_id = texture_handle.0,
+            handle_id = resource_handle.0,
             "Releasing decoder-owned zero-copy frame"
         );
-        self.texture_cache
+        self.resource_pool
             .lock()
             .map_err(|error| {
-                anyhow::anyhow!("zero-copy texture pool mutex poisoned during release: {error}")
+                anyhow::anyhow!("zero-copy resource pool mutex poisoned during release: {error}")
             })?
-            .release_without_gpu_submission(texture_handle)
+            .release_without_gpu_submission(resource_handle)
             .map_err(anyhow::Error::from)?;
 
-        self.release_zero_copy_frame(texture_handle)
+        self.release_zero_copy_frame(resource_handle)
     }
 
-    /// Возвращает статистику texture pool для отладки.
-    pub fn texture_pool_stats(&self) -> (usize, usize) {
-        let cache = self.texture_cache.lock().unwrap();
-        (cache.num_slots(), cache.num_in_use())
+    /// Возвращает статистику resource pool для отладки.
+    pub fn resource_pool_stats(&self) -> (usize, usize) {
+        let resource_pool = self.resource_pool.lock().unwrap();
+        (resource_pool.num_slots(), resource_pool.num_in_use())
     }
 
     /// Забирает следующий backend-ready frame без submit-а нового packet-а.
@@ -630,27 +553,27 @@ impl VaapiVideoDecoder {
     }
 
     /// Освобождает VA handle, удерживаемый zero-copy кадром.
-    pub fn release_zero_copy_frame(&mut self, texture_handle: FrameTextureHandle) -> Result<()> {
-        let Some(handle) = self.zero_copy_guards.remove(&texture_handle.0) else {
+    pub fn release_zero_copy_frame(&mut self, resource_handle: FrameResourceHandle) -> Result<()> {
+        let Some(handle) = self.zero_copy_guards.remove(&resource_handle.0) else {
             warn!(
-                handle_id = texture_handle.0,
+                handle_id = resource_handle.0,
                 "No zero-copy guard found for released frame"
             );
             return Err(anyhow::anyhow!(
                 "zero-copy guard missing for released handle {}",
-                texture_handle.0
+                resource_handle.0
             ));
         };
 
         self.return_frame_from_handle(handle);
-        self.texture_cache
+        self.resource_pool
             .lock()
             .map_err(|error| {
                 anyhow::anyhow!(
-                    "zero-copy texture pool mutex poisoned during decoder reuse ack: {error}"
+                    "zero-copy resource pool mutex poisoned during decoder reuse ack: {error}"
                 )
             })?
-            .acknowledge_decoder_reuse(texture_handle)
+            .acknowledge_decoder_reuse(resource_handle)
             .map_err(anyhow::Error::from)?;
         Ok(())
     }
@@ -671,19 +594,19 @@ impl VaapiVideoDecoder {
     /// Добавляет zero-copy кадр в decoder ready queue, сбрасывая самый старый backlog.
     ///
     /// UI получает кадры через отдельный канал, поэтому decoder может временно
-    /// накопить уже импортированные textures внутри `ready_queue`. Для видео важнее
-    /// держать низкую задержку и не исчерпывать GPU slots, чем сохранить каждый
+    /// накопить exported descriptors внутри `ready_queue`. Для видео важнее
+    /// держать низкую задержку и не исчерпывать VA surfaces, чем сохранить каждый
     /// промежуточный кадр при backlog.
     fn push_ready_frame(&mut self, mut frame: DecodedFrame) -> Result<()> {
         if let Err(error) = frame.validate_contract() {
-            let invalid_texture_handle = frame.texture_handle;
+            let invalid_resource_handle = frame.resource_handle;
             warn!(
                 error = %error,
                 format = %frame.format,
                 memory_path = %frame.memory_path,
                 "Decoded frame contract validation failed before ready queue"
             );
-            if let Err(release_error) = self.release_frame(invalid_texture_handle) {
+            if let Err(release_error) = self.release_frame(invalid_resource_handle) {
                 return Err(zero_copy_contract_violation(format!(
                     "Decoded frame contract validation failed before ready queue: {error}; release also failed: {release_error:#}"
                 )));
@@ -698,7 +621,7 @@ impl VaapiVideoDecoder {
                 break;
             };
             let stale_pts_ms = stale_frame.pts.as_millis();
-            self.release_frame(stale_frame.texture_handle)?;
+            self.release_frame(stale_frame.resource_handle)?;
             self.send_diagnostic_event(VideoDecoderDiagnosticEvent::FrameDropped {
                 pts: stale_frame.pts,
                 reason: VideoDecoderDropReason::ReadyQueueOverflow,
@@ -714,7 +637,7 @@ impl VaapiVideoDecoder {
 
         trace!(
             pts_ms = frame.pts.as_millis(),
-            handle_id = frame.texture_handle.0,
+            handle_id = frame.resource_handle.0,
             format = %frame.format,
             bit_depth = %frame.bit_depth,
             chroma = %frame.chroma,
@@ -742,19 +665,19 @@ impl VaapiVideoDecoder {
     /// только через обычный release от session, иначе VA surface может быть
     /// переиспользован, пока renderer ещё семплит старый кадр.
     fn release_decoder_owned_ready_frames(&mut self, reason: &'static str) -> Result<()> {
-        let decoder_owned_texture_handles = self
+        let decoder_owned_resource_handles = self
             .ready_queue
             .drain(..)
-            .map(|frame| frame.texture_handle)
+            .map(|frame| frame.resource_handle)
             .collect::<Vec<_>>();
 
-        if decoder_owned_texture_handles.is_empty() {
+        if decoder_owned_resource_handles.is_empty() {
             return Ok(());
         }
 
-        let released_frame_count = decoder_owned_texture_handles.len();
-        for texture_handle in decoder_owned_texture_handles {
-            self.release_frame(texture_handle)?;
+        let released_frame_count = decoder_owned_resource_handles.len();
+        for resource_handle in decoder_owned_resource_handles {
+            self.release_frame(resource_handle)?;
         }
 
         debug!(
@@ -764,39 +687,39 @@ impl VaapiVideoDecoder {
         Ok(())
     }
 
-    /// Сбрасывает texture cache после смены формата только если нет live кадров.
+    /// Сбрасывает resource pool после смены формата только если нет live кадров.
     ///
     /// Render/player могут всё ещё держать старый кадр как stale frame во время
     /// seek или dynamic format change. Полный `invalidate_all()` в такой момент
     /// удалит handle mapping раньше обычного release и оставит zero-copy guard
     /// без пути возврата VA surface в pool.
-    fn invalidate_idle_texture_cache_after_format_change(&mut self) {
-        let mut texture_cache = self.texture_cache.lock().unwrap();
-        let live_texture_count = texture_cache.num_in_use();
+    fn invalidate_idle_resource_pool_after_format_change(&mut self) {
+        let mut resource_pool = self.resource_pool.lock().unwrap();
+        let live_resource_count = resource_pool.num_in_use();
 
-        if live_texture_count == 0 {
-            if let Err(error) = texture_cache.invalidate_all() {
+        if live_resource_count == 0 {
+            if let Err(error) = resource_pool.invalidate_all() {
                 warn!(
                     error = %error,
-                    "Failed to invalidate idle zero-copy texture cache after format change"
+                    "Failed to invalidate idle zero-copy resource pool after format change"
                 );
             }
             return;
         }
 
         debug!(
-            live_texture_count,
-            "Keeping texture cache entries because render-owned frames are still live"
+            live_resource_count,
+            "Keeping resource pool entries because render-owned frames are still live"
         );
     }
 
-    /// Обрабатывает готовый кадр от decoder: sync, DMA-BUF export и zero-copy import.
+    /// Обрабатывает готовый кадр от decoder: sync, DMA-BUF export и resource registration.
     ///
     /// # Аргументы
     /// * `handle` — handle декодированного кадра от cros-codecs.
     ///
     /// # Ошибки
-    /// Возвращает ошибку если sync, DMA-BUF export или zero-copy import не удался.
+    /// Возвращает ошибку если sync, DMA-BUF export или registration не удался.
     fn process_ready_frame(&mut self, handle: DynDecodedHandle<InternalVaapiFrame>) -> Result<()> {
         // Получаем разрешения кадра ДО sync (sync может потребовать mutable borrow).
         let resolution = handle.coded_resolution();
@@ -822,19 +745,7 @@ impl VaapiVideoDecoder {
         let hardware_sync_latency = sync_start.elapsed();
         let decoded_contract = self.current_decoded_contract(&handle)?;
 
-        // Шаг 2: Проверяем, что importer есть до попытки export-а.
-        let can_import_dma_buf = self
-            .texture_cache
-            .lock()
-            .map_err(|error| {
-                zero_copy_contract_violation(format!(
-                    "Zero-copy texture pool mutex is poisoned before DMA-BUF import: {error}"
-                ))
-            })?
-            .can_import_dma_buf();
-        ensure_zero_copy_importer_for_contract(decoded_contract, can_import_dma_buf)?;
-
-        // Шаг 3: Экспортируем VA surface как DMA-BUF. Отсутствие export-а — fatal contract error.
+        // Шаг 2: Экспортируем VA surface как DMA-BUF. Отсутствие export-а — fatal contract error.
         let export_start = std::time::Instant::now();
         let dma_buf_image = match handle.dma_buf_image() {
             Ok(Some(dma_buf_image)) => dma_buf_image,
@@ -859,57 +770,52 @@ impl VaapiVideoDecoder {
         };
         let dma_buf_export_latency = export_start.elapsed();
 
-        // Шаг 4: Импортируем DMA-BUF в renderer-visible wgpu textures.
-        let import_start = std::time::Instant::now();
-        let (texture_handle, texture_pool_diagnostics) = {
-            let mut texture_cache = self.texture_cache.lock().map_err(|error| {
+        // Шаг 3: Регистрируем descriptor; renderer сам выполнит graphics import.
+        let (resource_handle, resource_pool_diagnostics) = {
+            let mut resource_pool = self.resource_pool.lock().map_err(|error| {
                 zero_copy_contract_violation(format!(
-                    "Zero-copy texture pool mutex is poisoned during DMA-BUF import: {error}"
+                    "Zero-copy resource pool mutex is poisoned during DMA-BUF registration: {error}"
                 ))
             })?;
-            let texture_handle =
-                texture_cache
-                    .import_dma_buf_image(&dma_buf_image)
-                    .map_err(|import_error| {
-                        let import_error_chain = format!("{:#}", import_error);
-                        warn!(
-                            error = %import_error_chain,
-                            format = %decoded_contract.format,
-                            "DMA-BUF zero-copy import failed; CPU fallback is disabled"
-                        );
-                        zero_copy_contract_violation(format!(
-                            "{} DMA-BUF zero-copy import failed: {}",
-                            decoded_contract.format, import_error_chain
-                        ))
-                    })?;
-            let texture_stats = texture_cache.stats();
+            let resource_handle = resource_pool
+                .register_dma_buf_image(dma_buf_image)
+                .map_err(|registration_error| {
+                    let registration_error_chain = format!("{:#}", registration_error);
+                    warn!(
+                        error = %registration_error_chain,
+                        format = %decoded_contract.format,
+                        "DMA-BUF zero-copy resource registration failed; CPU fallback is disabled"
+                    );
+                    zero_copy_contract_violation(format!(
+                        "{} DMA-BUF zero-copy resource registration failed: {}",
+                        decoded_contract.format, registration_error_chain
+                    ))
+                })?;
+            let resource_stats = resource_pool.stats();
             (
-                texture_handle,
-                VideoTexturePoolDiagnostics {
-                    capacity: texture_stats.capacity,
-                    slots: texture_stats.slots,
-                    in_use: texture_stats.in_use,
-                    free_surfaces: texture_stats.free_surfaces,
-                    waiting_gpu_completion: texture_stats.waiting_gpu_completion,
-                    waiting_decoder_reuse: texture_stats.waiting_decoder_reuse,
-                    import_failures: texture_stats.import_failures,
-                    imports_created: texture_stats.imports_created,
-                    imports_reused: texture_stats.imports_reused,
-                    imports_replaced: texture_stats.imports_replaced,
+                resource_handle,
+                VideoResourcePoolDiagnostics {
+                    capacity: resource_stats.capacity,
+                    slots: resource_stats.slots,
+                    in_use: resource_stats.in_use,
+                    free_surfaces: resource_stats.free_surfaces,
+                    waiting_gpu_completion: resource_stats.waiting_gpu_completion,
+                    waiting_decoder_reuse: resource_stats.waiting_decoder_reuse,
+                    import_failures: resource_stats.import_failures,
+                    imports_created: resource_stats.imports_created,
+                    imports_reused: resource_stats.imports_reused,
+                    imports_replaced: resource_stats.imports_replaced,
                 },
             )
         };
-        let dma_buf_import_latency = import_start.elapsed();
-        let import_elapsed = dma_buf_import_latency.as_millis();
 
         if !self.zero_copy_success_logged {
             self.zero_copy_success_logged = true;
             info!(
-                handle_id = texture_handle.0,
+                handle_id = resource_handle.0,
                 format = %decoded_contract.format,
                 sync_ms = hardware_sync_latency.as_millis(),
-                import_ms = import_elapsed,
-                "Zero-copy DMA-BUF import succeeded"
+                "Zero-copy DMA-BUF resource registered"
             );
         }
         if decoded_contract.format == DecodedPixelFormat::P010
@@ -917,7 +823,7 @@ impl VaapiVideoDecoder {
         {
             self.p010_boundary_verified_logged = true;
             info!(
-                handle_id = texture_handle.0,
+                handle_id = resource_handle.0,
                 width = resolution.width,
                 height = resolution.height,
                 bit_depth = %decoded_contract.bit_depth,
@@ -926,10 +832,10 @@ impl VaapiVideoDecoder {
             );
         }
 
-        // Шаг 5: Удерживаем VA handle, пока renderer не подтвердит release после GPU work.
-        self.zero_copy_guards.insert(texture_handle.0, handle);
+        // Шаг 4: Удерживаем VA handle, пока renderer не подтвердит release после GPU work.
+        self.zero_copy_guards.insert(resource_handle.0, handle);
 
-        // Шаг 6: Публикуем только zero-copy frame metadata.
+        // Шаг 5: Публикуем только zero-copy frame metadata.
         self.push_ready_frame(DecodedFrame {
             generation: 0,
             pts: Duration::from_micros(timestamp),
@@ -942,16 +848,15 @@ impl VaapiVideoDecoder {
             render_width: display_resolution.width,
             render_height: display_resolution.height,
             color: VideoColorMetadata::sdr_bt709_limited(),
-            texture_handle,
+            resource_handle,
             diagnostics: VideoFrameDiagnostics {
                 timings: VideoFrameTimingDiagnostics {
                     hardware_sync_latency: Some(hardware_sync_latency),
                     dma_buf_export_latency: Some(dma_buf_export_latency),
-                    dma_buf_import_latency: Some(dma_buf_import_latency),
                     ..VideoFrameTimingDiagnostics::default()
                 },
                 decoder_ready_queue_depth: None,
-                texture_pool: Some(texture_pool_diagnostics),
+                resource_pool: Some(resource_pool_diagnostics),
             },
         })?;
 
@@ -961,7 +866,7 @@ impl VaapiVideoDecoder {
     /// Обрабатывает все pending events из `cros-codecs`.
     ///
     /// `FrameReady` превращается в `DecodedFrame` и кладётся в `ready_queue`.
-    /// `FormatChanged` инвалидирует старые textures и пересоздаёт frame pool
+    /// `FormatChanged` инвалидирует старые resource descriptors и пересоздаёт frame pool
     /// под новое coded resolution/decoded format.
     fn drain_decoder_events(&mut self) -> Result<DecoderDrainReport> {
         let mut report = DecoderDrainReport::default();
@@ -981,13 +886,13 @@ impl VaapiVideoDecoder {
                 }
                 DecoderEvent::FormatChanged => {
                     report.format_changed = true;
-                    info!("Format changed, invalidating texture cache and frame pool");
+                    info!("Format changed, invalidating resource pool and frame pool");
 
                     // Сначала освобождаем decoder-owned кадры из `ready_queue`.
                     // Иначе `invalidate_all()` удалит mappings, а VA handles,
                     // удерживаемые этими кадрами, останутся без release path.
                     self.release_decoder_owned_ready_frames("format_changed")?;
-                    self.invalidate_idle_texture_cache_after_format_change();
+                    self.invalidate_idle_resource_pool_after_format_change();
 
                     // Пересоздаём frame pool под новое разрешение/формат.
                     // `stream_info()` уже обновлён внутри cros-codecs перед event-ом.
@@ -1308,59 +1213,5 @@ mod tests {
             error.to_string().contains("Unsupported VA RT format"),
             "unexpected error: {error}"
         );
-    }
-
-    /// Проверяет, что P010 boundary не уходит в CPU fallback без importer-а.
-    #[test]
-    fn p010_boundary_rejects_missing_zero_copy_importer() {
-        let error = ensure_zero_copy_importer_for_contract(DecodedSurfaceContract::p010(), false)
-            .unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .contains("requires DMA-BUF zero-copy importer"),
-            "unexpected error: {error}"
-        );
-    }
-
-    /// Проверяет, что P010 без zero-copy считается фатальной ошибкой decoder thread.
-    #[test]
-    fn p010_boundary_missing_importer_is_fatal_decoder_error() {
-        let error = ensure_zero_copy_importer_for_contract(DecodedSurfaceContract::p010(), false)
-            .unwrap_err();
-
-        assert!(is_fatal_decoder_error(&error));
-    }
-
-    /// Проверяет, что NV12 защищён тем же zero-copy contract, что и P010.
-    #[test]
-    fn nv12_boundary_rejects_missing_zero_copy_importer() {
-        let error = ensure_zero_copy_importer_for_contract(DecodedSurfaceContract::nv12(), false)
-            .unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .contains("NV12 decoded frame requires DMA-BUF zero-copy importer"),
-            "unexpected error: {error}"
-        );
-        assert!(is_fatal_decoder_error(&error));
-    }
-
-    /// Проверяет fail-fast startup, если pool создан без importer-а.
-    #[test]
-    fn decoder_start_rejects_texture_pool_without_zero_copy_importer() {
-        let texture_pool = Arc::new(Mutex::new(WgpuTexturePool::new(None)));
-
-        let error = ensure_texture_pool_has_zero_copy_importer(&texture_pool).unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .contains("requires DMA-BUF zero-copy importer at startup"),
-            "unexpected error: {error}"
-        );
-        assert!(is_fatal_decoder_error(&error));
     }
 }

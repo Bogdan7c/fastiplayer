@@ -1,11 +1,10 @@
 pub mod decoder;
 pub mod decoder_thread;
 pub mod diagnostics;
+pub mod resource;
 pub mod sync;
 
-pub use decoder::{
-    DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle, VideoDecoder,
-};
+pub use decoder::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, VideoDecoder};
 pub use decoder_thread::{
     DecodeBackpressureReason, DecodePacket, DecodeSendError, DecodeThreadError,
     DecoderResourceSnapshot, VideoDecoderControlChannelPressureSnapshot, VideoDecoderThreadConfig,
@@ -13,6 +12,11 @@ pub use decoder_thread::{
 };
 pub use diagnostics::{
     VideoDecoderDiagnosticEvent, VideoDecoderDropReason, VideoFrameDiagnostics,
-    VideoFramePublishPressureDiagnostics, VideoFrameTimingDiagnostics, VideoTexturePoolDiagnostics,
+    VideoFramePublishPressureDiagnostics, VideoFrameTimingDiagnostics,
+    VideoResourcePoolDiagnostics,
+};
+pub use resource::{
+    DmaBufFrameDescriptor, DmaBufFrameExportLayout, DmaBufLayerDescriptor, DmaBufObjectDescriptor,
+    DmaBufObjectIdentity, FrameResourceDescriptor, FrameResourceHandle,
 };
 pub use sync::{AvSync, FrameAction};

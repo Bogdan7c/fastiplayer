@@ -318,7 +318,7 @@ pub trait VideoDecoderThreadHandle: Send {
     fn send_packet(&self, packet: DecodePacket) -> Result<(), DecodeSendError>;
 
     /// Освобождает texture/surface handle после presentation/drop.
-    fn release_frame(&self, handle: crate::FrameTextureHandle);
+    fn release_frame(&self, handle: crate::FrameResourceHandle);
 
     /// Забирает следующий decoded frame без блокировки worker-а.
     fn try_recv_frame(&self) -> Option<crate::DecodedFrame>;

@@ -3,18 +3,22 @@
 //! Crate владеет только video boundary: renderer capabilities, color pipeline,
 //! NV12/P010 shader paths и materialization-facing public types.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 mod capabilities;
 mod color_pipeline;
+mod dma_buf_import;
+mod resource_provider;
 mod video;
 
 #[cfg(test)]
 mod bt2446c_reference;
 
+pub use resource_provider::wrap_video_backend_for_wgpu_submission;
 pub use video::{
-    WgpuFramePlanes, WgpuFrameTextureViewLookup, WgpuFrameTextureViewMaterializer,
-    WgpuFrameTextureViews, WgpuRenderableFrame, WgpuVideoRenderer, clear_to_black,
+    DmaBufWgpuFrameMaterializer, WgpuFramePlanes, WgpuFrameTextureViewLookup,
+    WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews, WgpuRenderableFrame,
+    WgpuVideoRenderer, clear_to_black,
 };
 
 /// Возвращает набор WGPU features, обязательный для video texture boundary.

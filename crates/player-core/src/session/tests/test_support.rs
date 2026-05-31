@@ -180,7 +180,7 @@ impl video_core::VideoDecoderThreadHandle for FailingFlushVideoDecoderThread {
         )))
     }
 
-    fn release_frame(&self, _handle: video_core::FrameTextureHandle) {}
+    fn release_frame(&self, _handle: video_core::FrameResourceHandle) {}
 
     fn try_recv_frame(&self) -> Option<video_core::DecodedFrame> {
         None
@@ -710,7 +710,7 @@ pub(super) struct SharedFakeVideoDecoderThread {
     pub(super) flush_count: Arc<Mutex<usize>>,
 
     /// Texture handles, которые session вернула decoder boundary через release.
-    pub(super) released_handles: Arc<Mutex<Vec<video_core::FrameTextureHandle>>>,
+    pub(super) released_handles: Arc<Mutex<Vec<video_core::FrameResourceHandle>>>,
 
     /// Snapshot texture/surface pressure, который fake отдаёт scheduler-у.
     pub(super) resource_snapshot: Arc<Mutex<Option<DecoderResourceSnapshot>>>,
@@ -815,7 +815,7 @@ impl SharedFakeVideoDecoderThread {
     }
 
     /// Возвращает release log для проверки bounded queue и ownership.
-    pub(super) fn released_handles(&self) -> Vec<video_core::FrameTextureHandle> {
+    pub(super) fn released_handles(&self) -> Vec<video_core::FrameResourceHandle> {
         self.released_handles
             .lock()
             .expect("fake decoder release log lock")
@@ -879,7 +879,7 @@ impl video_core::VideoDecoderThreadHandle for SharedFakeVideoDecoderThread {
         send_result
     }
 
-    fn release_frame(&self, handle: video_core::FrameTextureHandle) {
+    fn release_frame(&self, handle: video_core::FrameResourceHandle) {
         self.released_handles
             .lock()
             .expect("fake decoder release log lock")
@@ -1092,7 +1092,7 @@ pub(super) fn decoded_frame_for_tests(pts: Duration, handle: u64) -> video_core:
         render_width: 640,
         render_height: 360,
         color: codec_core::VideoColorMetadata::sdr_bt709_limited(),
-        texture_handle: video_core::FrameTextureHandle(handle),
+        resource_handle: video_core::FrameResourceHandle(handle),
         diagnostics: video_core::VideoFrameDiagnostics::default(),
     }
 }

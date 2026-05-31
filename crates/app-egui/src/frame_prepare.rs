@@ -483,7 +483,7 @@ fn prepare_video_frame(
 
     let stage_started_at = Instant::now();
     let texture_view_lookup =
-        texture_view_materializer.try_texture_view_lookup(present_frame.texture_handle());
+        texture_view_materializer.try_texture_view_lookup(present_frame.resource_handle());
     timings.texture_view_lookup = stage_started_at.elapsed();
 
     let stage_started_at = Instant::now();
@@ -616,7 +616,7 @@ fn build_render_input_video_frame<'frame>(
     let texture_views = &renderable_frame.texture_views;
 
     tracing::trace!(
-        handle_id = present_frame.frame.texture_handle.0,
+        handle_id = present_frame.frame.resource_handle.0,
         pts_ms = present_frame.frame.pts.as_millis(),
         format = %present_frame.frame.format,
         memory_path = %present_frame.frame.memory_path,

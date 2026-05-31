@@ -150,21 +150,21 @@ handle для lookup/release decoded resources.
 
 `player-core` зависит от `video-backend-api` и `video-core`, принимает
 `StartedVideoBackend`, ведёт render lease accounting и различает absent resource,
-busy texture pool, missing handle, fatal backend error и нормальный release path.
+busy resource pool, missing handle, fatal backend error и нормальный release path.
 Он не зависит от `video-vaapi`, не зависит от `wgpu` и не возвращает
 `wgpu::TextureView`.
 
 `video-vaapi` реализует `VideoBackendFactory` из `video-backend-api` и владеет
-VA-API decode thread-ом, DMA-BUF/WGPU import-ом и texture pool lifetime.
-Concrete backend crates не должны зависеть от `player-core`; adapter boundary
-идёт через `video-backend-api`.
+VA-API decode thread-ом, DMA-BUF export-ом, neutral resource descriptors и
+decoded surface lifetime до renderer release. Concrete backend crates не должны
+зависеть от `player-core`; adapter boundary идёт через `video-backend-api`.
 
-WGPU materialization остаётся в `app-egui`/`render-wgpu-video`: shell получает
-`VideoTextureViewProvider` из `VaapiWgpuVideoBackendFactory::start_for_composition()`,
-создаёт `WgpuFrameTextureViewMaterializer` и передаёт renderer-у WGPU texture
-views без переноса GPU handles в `player-core`. `render-wgpu-shell` отвечает за
-WGPU surface/device lifecycle, egui composition и present, но не владеет decoded
-video resources.
+WGPU materialization остаётся в `render-wgpu-video`: `app-egui` запускает
+`VaapiVideoBackendFactory`, оборачивает backend release path через renderer
+queue completion, создаёт `DmaBufWgpuFrameMaterializer` и передаёт renderer-у
+WGPU texture views без переноса GPU handles в `player-core` или `video-vaapi`.
+`render-wgpu-shell` отвечает за WGPU surface/device lifecycle, egui composition
+и present, но не владеет decoded video resources.
 
 ## `service-youtube`
 

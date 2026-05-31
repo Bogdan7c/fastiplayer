@@ -21,7 +21,7 @@ fn playback_pipeline_decoder_boundary_absent_thread_is_noop() {
             .send_video_decode_packet(decode_packet_for_tests(Duration::from_millis(10)))
             .is_none()
     );
-    assert!(!pipeline.release_frame_to_video_decoder(video_core::FrameTextureHandle(7)));
+    assert!(!pipeline.release_frame_to_video_decoder(video_core::FrameResourceHandle(7)));
 }
 
 #[test]
@@ -154,12 +154,12 @@ fn playback_pipeline_decoder_boundary_releases_active_fake_frame() {
     let mut pipeline = PlaybackPipeline::default();
     let fake_decoder = SharedFakeVideoDecoderThread::new();
     let released_decoder = fake_decoder.clone();
-    let texture_handle = video_core::FrameTextureHandle(42);
+    let resource_handle = video_core::FrameResourceHandle(42);
     pipeline.set_video_decoder_thread(fake_decoder);
 
     assert!(pipeline.can_receive_decoded_video_frames());
-    assert!(pipeline.release_frame_to_video_decoder(texture_handle));
-    assert_eq!(released_decoder.released_handles(), vec![texture_handle]);
+    assert!(pipeline.release_frame_to_video_decoder(resource_handle));
+    assert_eq!(released_decoder.released_handles(), vec![resource_handle]);
 }
 
 #[test]
@@ -202,11 +202,11 @@ fn clear_queued_video_frames_releases_queue_and_fallback_without_present() {
 
     let released_handles = fake_decoder.released_handles();
     assert_eq!(released_handles.len(), 3);
-    assert!(released_handles.contains(&video_core::FrameTextureHandle(1)));
-    assert!(released_handles.contains(&video_core::FrameTextureHandle(2)));
-    assert!(released_handles.contains(&video_core::FrameTextureHandle(4)));
+    assert!(released_handles.contains(&video_core::FrameResourceHandle(1)));
+    assert!(released_handles.contains(&video_core::FrameResourceHandle(2)));
+    assert!(released_handles.contains(&video_core::FrameResourceHandle(4)));
     assert!(
-        !released_handles.contains(&video_core::FrameTextureHandle(3)),
+        !released_handles.contains(&video_core::FrameResourceHandle(3)),
         "present frame ownership must stay explicit"
     );
     assert!(session.pipeline.video_present_queue_is_empty());
@@ -214,8 +214,8 @@ fn clear_queued_video_frames_releases_queue_and_fallback_without_present() {
         session
             .pipeline
             .present_video_frame()
-            .map(|frame| frame.texture_handle),
-        Some(video_core::FrameTextureHandle(3))
+            .map(|frame| frame.resource_handle),
+        Some(video_core::FrameResourceHandle(3))
     );
     assert!(!session.pipeline.has_seek_preroll_fallback_video_frame());
 }

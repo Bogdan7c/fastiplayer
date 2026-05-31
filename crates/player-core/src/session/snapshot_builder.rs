@@ -137,7 +137,7 @@ impl<'session> PlayerSnapshotBuilder<'session> {
             .present_video_frame()
             .map(|present_frame| VideoFrameSnapshot {
                 render_generation: self.session.pipeline.render_generation(),
-                handle: present_frame.texture_handle.0,
+                handle: present_frame.resource_handle.0,
                 pts: present_frame.pts,
                 width: present_frame.width,
                 height: present_frame.height,

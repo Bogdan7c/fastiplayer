@@ -76,9 +76,10 @@ hardware decode или GPU render path. Они могут зависеть от 
 - `symphonia-demux` - concrete adapter поверх upstream Symphonia для audio/container demux.
 - `webm-demux` - compatibility re-export старого crate path на время transition.
 - `audio` - concrete Symphonia/Opus decoder factory и CPAL output backend.
-- `video-vaapi` - VA-API decoder thread, probe, DMA-BUF export/import.
-- `render-wgpu-video` - NV12/P010 WGPU renderer, materialization API и shader
-  paths.
+- `video-vaapi` - VA-API decoder thread, probe, DMA-BUF export и lifecycle
+  decoded surfaces до renderer release.
+- `render-wgpu-video` - NV12/P010 WGPU renderer, renderer-side DMA-BUF import,
+  materialization API и shader paths.
 
 `video-vulkan` удалён из workspace и Cargo graph. Его нельзя возвращать как
 reference backend или hidden production dependency без отдельного
@@ -108,13 +109,14 @@ codec-core -> vp9-parser
 capability-core -> codec-core/render-core
 render-core -> codec-core
 video-core -> media-core/codec-core
-video-vaapi -> video-backend-api/video-core/media-core/codec-core/capability-core/wgpu
-render-wgpu-video -> render-core/video-core/codec-core/wgpu
+video-vaapi -> video-backend-api/video-core/media-core/codec-core/capability-core
+render-wgpu-video -> render-core/video-core/video-backend-api/codec-core/wgpu/ash/wgpu-types
 render-wgpu-shell -> render-wgpu-video/render-core/wgpu/egui/egui-wgpu/winit
 ```
 
-Карта намеренно отражает current production path, а не идеальную нейтральность:
-VA-API и WGPU остаются частью production boundary.
+Карта намеренно отражает current production path. VA-API остаётся decoder
+boundary, а WGPU/Vulkan import принадлежит renderer boundary; `video-vaapi`
+не зависит от `wgpu`, `wgpu-types` или `ash`.
 
 ## Before/after refactor map
 
@@ -168,14 +170,15 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
   `symphonia-demux`, `webm-demux`, `audio`, `video-vaapi`,
   `render-wgpu-shell`, `render-wgpu-video`, `video-vulkan`,
   `service-youtube`, `desktop-integration`, `wgpu`, `winit`, `egui`,
-  `egui-winit` или `egui-wgpu`.
+  `egui-winit`, `egui-wgpu`, `wgpu-types`, `ash`, `cros-codecs` или
+  `cros-libva`.
 - `media-core`, `codec-core`, `audio-core`, `audio`, `symphonia-demux` и `webm-demux` не
   добавляют прямые зависимости на `wgpu`, `video-vaapi`, `video-vulkan`,
-  `render-wgpu-shell` или `render-wgpu-video`.
+  `render-wgpu-shell`, `render-wgpu-video`, `wgpu-types` или `ash`.
 - `player-core` не добавляет новые direct dependencies на UI/shell/service,
   `symphonia-demux`, `webm-demux`, `video-vaapi`, `render-wgpu-shell`,
-  `render-wgpu-video`, `video-vulkan`, `audio`, `wgpu` или другие concrete
-  backend crates.
+  `render-wgpu-video`, `video-vulkan`, `audio`, `wgpu`, `wgpu-types`, `ash`
+  или другие concrete backend crates.
 - `render-wgpu-shell` не начинает знать demux/source/audio/player/service или
   concrete video backend crates.
 - `render-wgpu-video` не начинает знать shell/UI/app/player/service или
@@ -187,6 +190,10 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
 - `video-vaapi` и будущие concrete video backend crates не зависят от
   `player-core`; backend startup/resource provider boundary проходит через
   `video-backend-api`.
+- `video-vaapi` не зависит от renderer/GPU import crates (`wgpu`,
+  `wgpu-types`, `ash`, `render-wgpu-video`, `render-wgpu-shell`): он владеет
+  VA display, cros decoder, VA surfaces, DMA-BUF export и release lifecycle,
+  но не создаёт WGPU texture views.
 - `video-vulkan` не возвращается в workspace и не становится dependency
   production crates без отдельного архитектурного решения.
 - Новые обращения к `PlaybackPipeline` внутри `player-core` проходят через
@@ -212,11 +219,13 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
   `video-vulkan`;
 - запрещает прямые normal-dependencies из contract crates в shell/backend/player;
 - запрещает прямые `media-core`/`codec-core`/`audio`/demux dependencies на
-  `wgpu`, `video-vaapi`, `video-vulkan`, `render-wgpu-shell` и
-  `render-wgpu-video`;
+  `wgpu`, `wgpu-types`, `ash`, `video-vaapi`, `video-vulkan`,
+  `render-wgpu-shell` и `render-wgpu-video`;
 - запрещает возвращение `player-core -> symphonia-demux/webm-demux`,
-  `player-core -> video-vaapi`, `player-core -> audio` и `player-core -> wgpu`;
-- запрещает прямую dependency от `video-vaapi` к `player-core`;
+  `player-core -> video-vaapi`, `player-core -> audio`, `player-core -> wgpu`,
+  `player-core -> wgpu-types` и `player-core -> ash`;
+- запрещает прямую dependency от `video-vaapi` к `player-core`, `wgpu`,
+  `wgpu-types`, `ash`, `render-wgpu-video` и `render-wgpu-shell`;
 - запрещает новые прямые связи `player-core`, `render-wgpu-shell` и
   `render-wgpu-video` с явно опасными соседними слоями;
 - запрещает `media-prefetch` добавлять любые normal-dependencies кроме

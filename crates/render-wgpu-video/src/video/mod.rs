@@ -1,13 +1,19 @@
-use std::time::Duration;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, TryLockError};
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail, ensure};
 use render_core::{
     ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics,
     RenderableFrame, VideoFrameFormat,
 };
-use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameTextureHandle};
+use video_backend_api::{PresentFrameResourceDescriptorLookup, PresentFrameResourceProviderHandle};
+use video_core::{
+    DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceDescriptor, FrameResourceHandle,
+};
 
 use crate::capabilities::wgpu_capabilities_from_features;
+use crate::dma_buf_import::{DmaBufImporter, ImportedDmaBufTexture};
 
 use self::nv12_renderer::Nv12VideoRenderer;
 use self::p010_renderer::P010VideoRenderer;
@@ -23,6 +29,21 @@ pub struct WgpuFrameTextureViews {
 
     /// Texture view с chroma/UV plane.
     pub uv_view: wgpu::TextureView,
+
+    /// Guard держит imported texture storage живым как минимум до drop-а views.
+    _imported_texture_guard: Option<Arc<ImportedDmaBufTexture>>,
+}
+
+impl WgpuFrameTextureViews {
+    /// Создаёт views из renderer-owned imported texture.
+    fn from_imported_texture(imported_texture: Arc<ImportedDmaBufTexture>) -> Self {
+        let _owned_storage_textures = imported_texture.storage_texture_count();
+        Self {
+            y_view: imported_texture.y_view.clone(),
+            uv_view: imported_texture.uv_view.clone(),
+            _imported_texture_guard: Some(imported_texture),
+        }
+    }
 }
 
 /// Результат WGPU materialization без участия playback core.
@@ -86,7 +107,160 @@ impl WgpuFrameTextureViewLookup {
 /// WGPU-side materializer plane views из backend-owned opaque frame resource-а.
 pub trait WgpuFrameTextureViewMaterializer: Send + Sync {
     /// Пытается materialize frame resource без ожидания backend texture pool mutex-а.
-    fn try_texture_view_lookup(&self, handle: FrameTextureHandle) -> WgpuFrameTextureViewLookup;
+    fn try_texture_view_lookup(&self, handle: FrameResourceHandle) -> WgpuFrameTextureViewLookup;
+}
+
+/// Renderer-side materializer, который импортирует neutral DMA-BUF descriptors в WGPU.
+pub struct DmaBufWgpuFrameMaterializer {
+    /// Backend provider возвращает duplicated descriptors и lock diagnostics.
+    resource_provider: PresentFrameResourceProviderHandle,
+
+    /// Renderer-owned cache/importer; VAAPI/cros types сюда не попадают.
+    texture_cache: Mutex<DmaBufWgpuTextureCache>,
+}
+
+impl DmaBufWgpuFrameMaterializer {
+    /// Создаёт materializer из WGPU handles renderer layer-а и neutral provider-а.
+    #[must_use]
+    pub fn new(
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        resource_provider: PresentFrameResourceProviderHandle,
+    ) -> Self {
+        Self {
+            resource_provider,
+            texture_cache: Mutex::new(DmaBufWgpuTextureCache::new(DmaBufImporter::new(
+                device.clone(),
+                instance.clone(),
+                adapter.clone(),
+            ))),
+        }
+    }
+}
+
+impl WgpuFrameTextureViewMaterializer for DmaBufWgpuFrameMaterializer {
+    fn try_texture_view_lookup(&self, handle: FrameResourceHandle) -> WgpuFrameTextureViewLookup {
+        let provider_lookup = self
+            .resource_provider
+            .try_resource_descriptor_lookup(handle);
+        let provider_wait = provider_lookup.resource_pool_lock_wait();
+
+        let descriptor = match provider_lookup {
+            PresentFrameResourceDescriptorLookup::Ready { descriptor, .. } => descriptor,
+            PresentFrameResourceDescriptorLookup::Busy { .. } => {
+                return WgpuFrameTextureViewLookup::Busy {
+                    texture_pool_lock_wait: provider_wait,
+                };
+            }
+            PresentFrameResourceDescriptorLookup::Missing { .. } => {
+                return WgpuFrameTextureViewLookup::Missing {
+                    texture_pool_lock_wait: provider_wait,
+                };
+            }
+            PresentFrameResourceDescriptorLookup::Fatal { .. } => {
+                return WgpuFrameTextureViewLookup::Error {
+                    texture_pool_lock_wait: provider_wait,
+                };
+            }
+        };
+
+        let cache_lock_started_at = Instant::now();
+        let mut texture_cache = match self.texture_cache.try_lock() {
+            Ok(texture_cache) => texture_cache,
+            Err(TryLockError::WouldBlock) => {
+                return WgpuFrameTextureViewLookup::Busy {
+                    texture_pool_lock_wait: provider_wait
+                        .saturating_add(cache_lock_started_at.elapsed()),
+                };
+            }
+            Err(TryLockError::Poisoned(error)) => {
+                tracing::warn!(error = %error, "WGPU DMA-BUF texture cache mutex poisoned");
+                return WgpuFrameTextureViewLookup::Error {
+                    texture_pool_lock_wait: provider_wait
+                        .saturating_add(cache_lock_started_at.elapsed()),
+                };
+            }
+        };
+        let total_lock_wait = provider_wait.saturating_add(cache_lock_started_at.elapsed());
+
+        match texture_cache.materialize(handle, descriptor) {
+            Ok(views) => WgpuFrameTextureViewLookup::Ready {
+                views,
+                texture_pool_lock_wait: total_lock_wait,
+            },
+            Err(error) => texture_view_lookup_after_import_failure(handle, error, total_lock_wait),
+        }
+    }
+}
+
+/// Bounded renderer-side cache imported DMA-BUF textures.
+struct DmaBufWgpuTextureCache {
+    /// Vulkan/WGPU importer владеет unsafe platform import code.
+    importer: DmaBufImporter,
+
+    /// FIFO cache по frame resource handle; views держат storage через Arc guard.
+    cached_textures: VecDeque<CachedDmaBufTexture>,
+
+    /// Верхняя граница renderer-owned imported textures.
+    capacity: usize,
+}
+
+impl DmaBufWgpuTextureCache {
+    /// Default cache size совпадает с bounded decoder/resource pool порядком.
+    const DEFAULT_CAPACITY: usize = 24;
+
+    /// Создаёт cache вокруг renderer-owned importer-а.
+    fn new(importer: DmaBufImporter) -> Self {
+        Self {
+            importer,
+            cached_textures: VecDeque::with_capacity(Self::DEFAULT_CAPACITY),
+            capacity: Self::DEFAULT_CAPACITY,
+        }
+    }
+
+    /// Возвращает cached views или импортирует descriptor как renderer error boundary.
+    fn materialize(
+        &mut self,
+        handle: FrameResourceHandle,
+        descriptor: FrameResourceDescriptor,
+    ) -> anyhow::Result<WgpuFrameTextureViews> {
+        if let Some(cached_texture) = self
+            .cached_textures
+            .iter()
+            .find(|cached_texture| cached_texture.handle == handle)
+        {
+            return Ok(WgpuFrameTextureViews::from_imported_texture(
+                cached_texture.imported_texture.clone(),
+            ));
+        }
+
+        let FrameResourceDescriptor::DmaBuf(dma_buf_descriptor) = descriptor;
+        let imported_texture = Arc::new(
+            self.importer
+                .import_exported_dma_buf_image(&dma_buf_descriptor)?,
+        );
+        let views = WgpuFrameTextureViews::from_imported_texture(imported_texture.clone());
+
+        if self.cached_textures.len() >= self.capacity {
+            self.cached_textures.pop_front();
+        }
+        self.cached_textures.push_back(CachedDmaBufTexture {
+            handle,
+            imported_texture,
+        });
+
+        Ok(views)
+    }
+}
+
+/// Один cached renderer import.
+struct CachedDmaBufTexture {
+    /// Frame resource handle, для которого выполнен import.
+    handle: FrameResourceHandle,
+
+    /// Imported storage и typed plane views.
+    imported_texture: Arc<ImportedDmaBufTexture>,
 }
 
 /// GPU context одного video render pass-а.
@@ -201,13 +375,29 @@ fn validate_decoded_p010_frame(frame: &DecodedFrame) -> Result<()> {
     Ok(())
 }
 
+/// Превращает ошибку renderer-side DMA-BUF import-а в typed render lookup failure.
+fn texture_view_lookup_after_import_failure(
+    handle: FrameResourceHandle,
+    error: anyhow::Error,
+    texture_pool_lock_wait: Duration,
+) -> WgpuFrameTextureViewLookup {
+    tracing::warn!(
+        error = %error,
+        handle_id = handle.0,
+        "Renderer DMA-BUF import failed; CPU fallback is disabled"
+    );
+    WgpuFrameTextureViewLookup::Error {
+        texture_pool_lock_wait,
+    }
+}
+
 /// Копирует renderer-neutral metadata из decoded frame без backend-specific handles.
 fn renderable_metadata_from_decoded(
     frame: &DecodedFrame,
     format: VideoFrameFormat,
 ) -> RenderableFrame {
     RenderableFrame {
-        handle: frame.texture_handle.0,
+        handle: frame.resource_handle.0,
         pts: frame.pts,
         format,
         bit_depth: frame.bit_depth,
@@ -496,6 +686,22 @@ mod tests {
     }
 
     #[test]
+    fn dma_buf_import_failure_is_renderer_error_without_cpu_fallback() {
+        let lookup = texture_view_lookup_after_import_failure(
+            FrameResourceHandle(77),
+            anyhow::anyhow!("synthetic import failure"),
+            Duration::from_millis(9),
+        );
+
+        assert!(matches!(
+            lookup,
+            WgpuFrameTextureViewLookup::Error {
+                texture_pool_lock_wait
+            } if texture_pool_lock_wait == Duration::from_millis(9)
+        ));
+    }
+
+    #[test]
     fn p010_storage_layouts_map_to_same_renderer_plane_kind() {
         let baseline_separate_layer_kind =
             p010_storage_layout_renderer_plane_kind(TestP010StorageLayout::BaselineSeparateLayer);
@@ -624,7 +830,7 @@ mod tests {
             render_width: 640,
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
-            texture_handle: video_core::FrameTextureHandle(1),
+            resource_handle: video_core::FrameResourceHandle(1),
             diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
     }
@@ -642,7 +848,7 @@ mod tests {
             render_width: 1920,
             render_height: 1080,
             color: VideoColorMetadata::sdr_bt709_limited(),
-            texture_handle: video_core::FrameTextureHandle(7),
+            resource_handle: video_core::FrameResourceHandle(7),
             diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
     }

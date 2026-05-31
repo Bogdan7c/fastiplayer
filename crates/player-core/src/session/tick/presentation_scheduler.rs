@@ -176,7 +176,7 @@ pub(super) fn trim_video_present_queue(
             break;
         };
 
-        release_video_texture(session, frame.texture_handle);
+        release_video_texture(session, frame.resource_handle);
         record_video_drop(
             session,
             tick_result,
@@ -375,9 +375,9 @@ pub(super) fn should_wait_for_front_frame(
 /// Освобождает texture handle через decoder thread, если он ещё существует.
 pub(super) fn release_video_texture(
     session: &mut PlayerSession,
-    texture_handle: video_core::FrameTextureHandle,
+    resource_handle: video_core::FrameResourceHandle,
 ) {
-    session.release_video_texture(texture_handle);
+    session.release_video_texture(resource_handle);
 }
 
 /// Удаляет первый queued frame и записывает причину drop.
@@ -391,7 +391,7 @@ pub(super) fn drop_front_queued_video_frame(
     };
 
     let frame_pts = frame.pts;
-    release_video_texture(session, frame.texture_handle);
+    release_video_texture(session, frame.resource_handle);
     record_video_drop(session, tick_result, frame_pts, reason);
     tracing::debug!(
         pts_ms = frame_pts.as_millis(),
@@ -408,7 +408,7 @@ pub(super) fn replace_seek_preroll_fallback_frame(
     frame: video_core::DecodedFrame,
 ) {
     if let Some(replaced_frame) = session.replace_seek_preroll_fallback_frame(frame) {
-        release_video_texture(session, replaced_frame.texture_handle);
+        release_video_texture(session, replaced_frame.resource_handle);
         record_video_drop(
             session,
             tick_result,
@@ -424,7 +424,7 @@ pub(super) fn drop_seek_preroll_fallback_frame(
     tick_result: &mut PlayerTickResult,
 ) {
     if let Some(frame) = session.take_seek_preroll_fallback_frame() {
-        release_video_texture(session, frame.texture_handle);
+        release_video_texture(session, frame.resource_handle);
         record_video_drop(
             session,
             tick_result,
@@ -449,7 +449,7 @@ pub(super) fn present_front_queued_video_frame(
     );
     let frame_pts = frame.pts;
     if let Some(old_frame) = session.pipeline.replace_present_video_frame(frame) {
-        release_video_texture(session, old_frame.texture_handle);
+        release_video_texture(session, old_frame.resource_handle);
     }
     session.note_presented_frame_for_seek(frame_pts);
     tick_result.record_presented_video_frame();
@@ -475,7 +475,7 @@ pub(super) fn present_seek_preroll_fallback_after_eof(
         "Presenting final seek EOF fallback frame"
     );
     if let Some(old_frame) = session.pipeline.replace_present_video_frame(frame) {
-        release_video_texture(session, old_frame.texture_handle);
+        release_video_texture(session, old_frame.resource_handle);
     }
     session.note_presented_seek_eof_fallback_frame(frame_pts);
     tick_result.record_presented_video_frame();

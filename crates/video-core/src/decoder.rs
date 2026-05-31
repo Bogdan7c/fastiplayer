@@ -6,10 +6,8 @@ use anyhow::ensure;
 use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoSurfaceFormat};
 use media_core::Packet;
 
+use crate::FrameResourceHandle;
 use crate::VideoFrameDiagnostics;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FrameTextureHandle(pub u64);
 
 /// Compatibility alias: decoded frame использует общий surface contract.
 pub type DecodedPixelFormat = VideoSurfaceFormat;
@@ -48,7 +46,7 @@ pub struct DecodedFrame {
     pub render_width: u32,
     pub render_height: u32,
     pub color: VideoColorMetadata,
-    pub texture_handle: FrameTextureHandle,
+    pub resource_handle: FrameResourceHandle,
     pub diagnostics: VideoFrameDiagnostics,
 }
 
@@ -140,7 +138,7 @@ mod tests {
             render_width: 640,
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
-            texture_handle: FrameTextureHandle(1),
+            resource_handle: FrameResourceHandle(1),
             diagnostics: VideoFrameDiagnostics::default(),
         }
     }
@@ -179,7 +177,7 @@ mod tests {
             render_width: 640,
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
-            texture_handle: FrameTextureHandle(2),
+            resource_handle: FrameResourceHandle(2),
             diagnostics: VideoFrameDiagnostics::default(),
         };
 
@@ -203,7 +201,7 @@ mod tests {
             render_width: 640,
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
-            texture_handle: FrameTextureHandle(3),
+            resource_handle: FrameResourceHandle(3),
             diagnostics: VideoFrameDiagnostics::default(),
         };
 
@@ -231,7 +229,7 @@ mod tests {
             render_width: 640,
             render_height: 360,
             color: VideoColorMetadata::sdr_bt709_limited(),
-            texture_handle: FrameTextureHandle(4),
+            resource_handle: FrameResourceHandle(4),
             diagnostics: VideoFrameDiagnostics::default(),
         };
 
