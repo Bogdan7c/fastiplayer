@@ -35,6 +35,15 @@ use crate::ui::player_controls::{self, ControlAction};
 use crate::ui::skin::{self, PlayerSkin};
 use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
 
+/// Частота обновления тяжёлого текста telemetry panel.
+///
+/// Видео всё равно перерисовывает egui каждый кадр, но diagnostics-тексту достаточно
+/// 4 Hz, чтобы не конкурировать с 60 fps video pacing.
+const TELEMETRY_PANEL_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Начальная вместимость строк telemetry panel, чтобы refresh не делал лишних realloc.
+const TELEMETRY_PANEL_ROW_CAPACITY: usize = 96;
+
 /// Данные правой diagnostic panel, сгруппированные отдельно от UI output.
 struct TelemetryPanelState<'panel> {
     /// Snapshot player-а на начало egui frame.
@@ -57,6 +66,149 @@ struct TelemetryPanelState<'panel> {
 
     /// Оценка длительности video frame в миллисекундах.
     frame_duration_estimate_ms: f64,
+}
+
+/// Кэш уже отформатированных строк telemetry panel.
+struct TelemetryPanelCache {
+    /// Строки, которые egui будет раскладывать в текущих frame-ах.
+    rows: Arc<[TelemetryPanelRow]>,
+
+    /// Момент, после которого diagnostics нужно перечитать и переформатировать.
+    next_refresh_at: Option<Instant>,
+}
+
+impl Default for TelemetryPanelCache {
+    /// Создаёт пустой cache, который обновится при первом видимом кадре панели.
+    fn default() -> Self {
+        let rows: Arc<[TelemetryPanelRow]> = Vec::new().into();
+
+        Self {
+            rows,
+            next_refresh_at: None,
+        }
+    }
+}
+
+impl TelemetryPanelCache {
+    /// Возвращает строки для текущего кадра, обновляя тяжёлую diagnostics только по таймеру.
+    fn rows_for_frame(
+        &mut self,
+        now: Instant,
+        panel_state: TelemetryPanelState<'_>,
+    ) -> Arc<[TelemetryPanelRow]> {
+        if self.needs_refresh(now) {
+            self.rows = AppState::build_telemetry_panel_rows(panel_state);
+            self.next_refresh_at = Some(now + TELEMETRY_PANEL_REFRESH_INTERVAL);
+        }
+
+        Arc::clone(&self.rows)
+    }
+
+    /// Проверяет, пора ли перечитать counters/snapshot и собрать новый текст.
+    fn needs_refresh(&self, now: Instant) -> bool {
+        if self.rows.is_empty() {
+            return true;
+        }
+
+        match self.next_refresh_at {
+            Some(next_refresh_at) => now >= next_refresh_at,
+            None => true,
+        }
+    }
+}
+
+/// Визуальный тон строки telemetry panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TelemetryPanelRowTone {
+    /// Обычная diagnostics-строка.
+    Normal,
+
+    /// Заголовок секции внутри virtualized списка.
+    Heading,
+
+    /// Успешное/здоровое состояние.
+    Good,
+
+    /// Пограничное состояние, которое стоит заметить.
+    Warning,
+
+    /// Ошибка или явно плохое состояние.
+    Error,
+
+    /// Пустая строка-разделитель.
+    Spacer,
+}
+
+impl TelemetryPanelRowTone {
+    /// Возвращает цвет текста, не меняя глобальный egui style.
+    const fn color(self) -> egui::Color32 {
+        match self {
+            Self::Normal => egui::Color32::LIGHT_GRAY,
+            Self::Heading => egui::Color32::LIGHT_BLUE,
+            Self::Good => egui::Color32::GREEN,
+            Self::Warning => egui::Color32::YELLOW,
+            Self::Error => egui::Color32::RED,
+            Self::Spacer => egui::Color32::TRANSPARENT,
+        }
+    }
+}
+
+/// Одна fixed-height строка virtualized telemetry panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TelemetryPanelRow {
+    /// Уже отформатированный текст, чтобы не собирать строки каждый video frame.
+    text: String,
+
+    /// Цветовой смысл строки.
+    tone: TelemetryPanelRowTone,
+}
+
+impl TelemetryPanelRow {
+    /// Создаёт обычную строку diagnostics.
+    fn normal(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            tone: TelemetryPanelRowTone::Normal,
+        }
+    }
+
+    /// Создаёт строку-заголовок секции.
+    fn heading(text: impl Into<String>) -> Self {
+        Self {
+            text: format!("[{}]", text.into()),
+            tone: TelemetryPanelRowTone::Heading,
+        }
+    }
+
+    /// Создаёт status-строку с явным цветовым тоном.
+    fn status(text: impl Into<String>, tone: TelemetryPanelRowTone) -> Self {
+        Self {
+            text: text.into(),
+            tone,
+        }
+    }
+
+    /// Создаёт пустую строку без отдельного egui separator widget.
+    fn spacer() -> Self {
+        Self {
+            text: String::new(),
+            tone: TelemetryPanelRowTone::Spacer,
+        }
+    }
+
+    /// Рендерит строку как single-line label, чтобы `show_rows` сохранял fixed row height.
+    fn render(&self, ui: &mut egui::Ui) {
+        let text = egui::RichText::new(self.text.as_str())
+            .monospace()
+            .color(self.tone.color());
+        ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Truncate));
+    }
+
+    /// Возвращает текст строки для focused unit tests cache-а.
+    #[cfg(test)]
+    fn text(&self) -> &str {
+        &self.text
+    }
 }
 
 /// Diagnostic route пользовательского timeline intent-а на границе app-egui -> player-core.
@@ -556,6 +708,9 @@ pub struct AppState {
     /// Transient pointer state timeline; player position здесь не хранится.
     timeline_ui_state: TimelineUiState,
 
+    /// Кэш строк telemetry panel; живёт в UI-слое и не владеет playback/render state.
+    telemetry_panel_cache: TelemetryPanelCache,
+
     /// Версия приложения для отображения в UI.
     pub app_version: &'static str,
 }
@@ -616,6 +771,7 @@ impl AppState {
             current_local_file: None,
             local_file_open_job: None,
             timeline_ui_state: TimelineUiState::default(),
+            telemetry_panel_cache: TelemetryPanelCache::default(),
             app_version: env!("CARGO_PKG_VERSION"),
         })
     }
@@ -1198,6 +1354,26 @@ impl AppState {
         let mut control_actions = Vec::new();
         let mut timeline_ui_state = std::mem::take(&mut self.timeline_ui_state);
         let pre_ui_setup_elapsed = pre_ui_setup_started_at.elapsed();
+        let mut telemetry_panel_cache_elapsed = Duration::ZERO;
+        let telemetry_panel_rows = if show_telemetry {
+            let telemetry_panel_cache_started_at = Instant::now();
+            let panel_rows = self.telemetry_panel_cache.rows_for_frame(
+                Instant::now(),
+                TelemetryPanelState {
+                    player_snapshot,
+                    telemetry: &telemetry,
+                    render_diagnostics,
+                    timeline_ui_state: &timeline_ui_state,
+                    backend_name: &backend_name,
+                    start_time,
+                    frame_duration_estimate_ms,
+                },
+            );
+            telemetry_panel_cache_elapsed = telemetry_panel_cache_started_at.elapsed();
+            Some(panel_rows)
+        } else {
+            None
+        };
 
         let mut top_bar_elapsed = Duration::ZERO;
         let mut bottom_controls_elapsed = Duration::ZERO;
@@ -1219,21 +1395,11 @@ impl AppState {
             );
             bottom_controls_elapsed = stage_started_at.elapsed();
 
-            if show_telemetry {
+            if let Some(telemetry_panel_rows) = telemetry_panel_rows.as_ref() {
                 let stage_started_at = Instant::now();
-                Self::render_telemetry_panel(
-                    ui,
-                    TelemetryPanelState {
-                        player_snapshot,
-                        telemetry: &telemetry,
-                        render_diagnostics,
-                        timeline_ui_state: &timeline_ui_state,
-                        backend_name: &backend_name,
-                        start_time,
-                        frame_duration_estimate_ms,
-                    },
-                );
-                telemetry_panel_elapsed = stage_started_at.elapsed();
+                Self::render_telemetry_panel(ui, telemetry_panel_rows);
+                telemetry_panel_elapsed =
+                    telemetry_panel_cache_elapsed + stage_started_at.elapsed();
             }
 
             let stage_started_at = Instant::now();
@@ -1401,17 +1567,8 @@ impl AppState {
         }
     }
 
-    /// Рендерит правую диагностическую панель на основе snapshot.
-    fn render_telemetry_panel(ui: &mut egui::Ui, panel_state: TelemetryPanelState<'_>) {
-        let TelemetryPanelState {
-            player_snapshot,
-            telemetry,
-            render_diagnostics,
-            timeline_ui_state,
-            backend_name,
-            start_time,
-            frame_duration_estimate_ms,
-        } = panel_state;
+    /// Рендерит правую диагностическую панель из заранее отформатированных строк.
+    fn render_telemetry_panel(ui: &mut egui::Ui, panel_rows: &[TelemetryPanelRow]) {
         let telemetry_frame =
             egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160));
         egui::Panel::right("telemetry")
@@ -1426,299 +1583,464 @@ impl AppState {
                 egui::ScrollArea::vertical()
                     .id_salt("telemetry_scroll")
                     .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        let fps = telemetry.current_fps();
-                        let frame_time = telemetry.last_frame_time_ms();
-                        let frames_presented_to_surface = telemetry.frames_presented_to_surface();
-                        let surface_dropped_frames = telemetry.surface_dropped_frames();
-                        let surface_drop_rate = telemetry.surface_drop_rate_percent();
-
-                        ui.monospace(format!("FPS: {fps}"));
-                        ui.monospace(format!("Frame time: {:.2} ms", frame_time as f64));
-                        ui.separator();
-                        ui.heading("Swapchain");
-                        ui.monospace(format!(
-                            "frames_presented_to_surface: {frames_presented_to_surface}"
-                        ));
-                        ui.monospace(format!("surface_dropped_frames: {surface_dropped_frames}"));
-                        ui.monospace(format!("surface_drop_rate: {surface_drop_rate:.2}%"));
-                        ui.separator();
-                        ui.heading("Smoothness");
-                        ui.monospace(format!(
-                            "Playback visible drops: {}",
-                            telemetry.playback_visible_drops()
-                        ));
-                        ui.monospace(format!("repeated_frames: {}", telemetry.repeated_frames()));
-                        ui.separator();
-                        ui.heading("Seek");
-                        ui.monospace(format!(
-                            "Seek discard, expected: {}",
-                            telemetry.seek_discarded_frames()
-                        ));
-                        ui.separator();
-
-                        let quality_color = if fps >= 55 {
-                            egui::Color32::GREEN
-                        } else if fps >= 30 {
-                            egui::Color32::YELLOW
-                        } else {
-                            egui::Color32::RED
-                        };
-                        ui.colored_label(quality_color, "Frame pacing: OK");
-
-                        ui.separator();
-                        ui.monospace(format!("Backend: {backend_name}"));
-                        ui.monospace(format!(
-                            "Elapsed: {:.1}s",
-                            start_time.elapsed().as_secs_f64()
-                        ));
-
-                        ui.separator();
-                        ui.heading("Media Info");
-                        Self::render_media_info(
-                            ui,
-                            player_snapshot,
-                            telemetry,
-                            render_diagnostics,
-                            timeline_ui_state,
-                            frame_duration_estimate_ms,
-                        );
-                    });
+                    .show_rows(
+                        ui,
+                        Self::telemetry_panel_row_height(ui),
+                        panel_rows.len(),
+                        |ui, visible_rows| {
+                            for row_index in visible_rows {
+                                if let Some(row) = panel_rows.get(row_index) {
+                                    row.render(ui);
+                                }
+                            }
+                        },
+                    );
             });
     }
 
-    /// Рендерит media diagnostics из `PlayerSnapshot`.
-    fn render_media_info(
-        ui: &mut egui::Ui,
-        player_snapshot: &PlayerSnapshot,
-        telemetry: &Telemetry,
-        render_diagnostics: &RenderDiagnostics,
-        timeline_ui_state: &TimelineUiState,
-        frame_duration_estimate_ms: f64,
+    /// Возвращает fixed-height строки для `ScrollArea::show_rows`.
+    fn telemetry_panel_row_height(ui: &egui::Ui) -> f32 {
+        ui.text_style_height(&egui::TextStyle::Monospace) + ui.spacing().item_spacing.y
+    }
+
+    /// Собирает cached модель telemetry panel без доступа к renderer/player internals.
+    fn build_telemetry_panel_rows(
+        panel_state: TelemetryPanelState<'_>,
+    ) -> Arc<[TelemetryPanelRow]> {
+        let mut panel_rows = Vec::with_capacity(TELEMETRY_PANEL_ROW_CAPACITY);
+
+        Self::append_telemetry_summary_rows(&mut panel_rows, &panel_state);
+        Self::append_media_info_rows(&mut panel_rows, &panel_state);
+
+        panel_rows.into()
+    }
+
+    /// Добавляет верхнюю summary-секцию telemetry panel.
+    fn append_telemetry_summary_rows(
+        panel_rows: &mut Vec<TelemetryPanelRow>,
+        panel_state: &TelemetryPanelState<'_>,
     ) {
+        let telemetry = panel_state.telemetry;
+        let fps = telemetry.current_fps();
+        let frame_time = telemetry.last_frame_time_ms();
+        let frames_presented_to_surface = telemetry.frames_presented_to_surface();
+        let surface_dropped_frames = telemetry.surface_dropped_frames();
+        let surface_drop_rate = telemetry.surface_drop_rate_percent();
+        let frame_pacing_tone = if fps >= 55 {
+            TelemetryPanelRowTone::Good
+        } else if fps >= 30 {
+            TelemetryPanelRowTone::Warning
+        } else {
+            TelemetryPanelRowTone::Error
+        };
+        let frame_pacing_text = if fps >= 55 {
+            "Frame pacing: OK"
+        } else if fps >= 30 {
+            "Frame pacing: warning"
+        } else {
+            "Frame pacing: bad"
+        };
+
+        panel_rows.push(TelemetryPanelRow::normal(format!("FPS: {fps}")));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "Frame time: {:.2} ms",
+            frame_time as f64
+        )));
+        panel_rows.push(TelemetryPanelRow::spacer());
+        panel_rows.push(TelemetryPanelRow::heading("Swapchain"));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "frames_presented_to_surface: {frames_presented_to_surface}"
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "surface_dropped_frames: {surface_dropped_frames}"
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "surface_drop_rate: {surface_drop_rate:.2}%"
+        )));
+        panel_rows.push(TelemetryPanelRow::spacer());
+        panel_rows.push(TelemetryPanelRow::heading("Smoothness"));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "Playback visible drops: {}",
+            telemetry.playback_visible_drops()
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "repeated_frames: {}",
+            telemetry.repeated_frames()
+        )));
+        panel_rows.push(TelemetryPanelRow::spacer());
+        panel_rows.push(TelemetryPanelRow::heading("Seek"));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "Seek discard, expected: {}",
+            telemetry.seek_discarded_frames()
+        )));
+        panel_rows.push(TelemetryPanelRow::spacer());
+        panel_rows.push(TelemetryPanelRow::status(
+            frame_pacing_text,
+            frame_pacing_tone,
+        ));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "Backend: {}",
+            panel_state.backend_name
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "Elapsed: {:.1}s",
+            panel_state.start_time.elapsed().as_secs_f64()
+        )));
+    }
+
+    /// Добавляет media/player diagnostics в cached строки telemetry panel.
+    fn append_media_info_rows(
+        panel_rows: &mut Vec<TelemetryPanelRow>,
+        panel_state: &TelemetryPanelState<'_>,
+    ) {
+        let player_snapshot = panel_state.player_snapshot;
+        let telemetry = panel_state.telemetry;
+
+        panel_rows.push(TelemetryPanelRow::spacer());
+        panel_rows.push(TelemetryPanelRow::heading("Media Info"));
+
         if player_snapshot.source_label.is_none() {
-            ui.monospace("No file loaded");
+            panel_rows.push(TelemetryPanelRow::normal("No file loaded"));
             return;
         }
 
         for track in &player_snapshot.tracks {
             match track.kind {
                 TrackKind::Video => {
-                    ui.monospace(format!("Video: {}", track.codec_id));
+                    panel_rows.push(TelemetryPanelRow::normal(format!(
+                        "Video: {}",
+                        track.codec_id
+                    )));
                     if let Some(color_summary) = &track.video_color_summary {
-                        ui.monospace(format!("  Color: {color_summary}"));
+                        panel_rows.push(TelemetryPanelRow::normal(format!(
+                            "  Color: {color_summary}"
+                        )));
                     }
                 }
                 TrackKind::Audio => {
-                    ui.monospace(format!("Audio: {}", track.codec_id));
+                    panel_rows.push(TelemetryPanelRow::normal(format!(
+                        "Audio: {}",
+                        track.codec_id
+                    )));
                 }
             };
         }
 
         if let Some(duration) = player_snapshot.duration {
-            ui.monospace(format!(
+            panel_rows.push(TelemetryPanelRow::normal(format!(
                 "Duration: {}",
                 timeline::format_seconds(Some(duration.as_secs_f64()))
-            ));
+            )));
         }
 
         if let Some(source_label) = &player_snapshot.media_title {
-            ui.monospace(format!("File: {source_label}"));
+            panel_rows.push(TelemetryPanelRow::normal(format!("File: {source_label}")));
         }
 
-        ui.separator();
+        panel_rows.push(TelemetryPanelRow::spacer());
+        Self::append_packet_rows(panel_rows, telemetry);
+        Self::append_timeline_rows(panel_rows, panel_state);
+        Self::append_audio_rows(panel_rows, player_snapshot);
+        Self::append_video_rows(panel_rows, panel_state);
+        Self::append_capability_rows(panel_rows, player_snapshot);
+    }
+
+    /// Добавляет packet counters shell telemetry.
+    fn append_packet_rows(panel_rows: &mut Vec<TelemetryPanelRow>, telemetry: &Telemetry) {
         let total = telemetry.packets_read();
         let video_packets = telemetry.video_packets();
         let audio_packets = telemetry.audio_packets();
-        ui.monospace(format!("Packets: {total}"));
-        ui.monospace(format!("  Video: {video_packets}"));
-        ui.monospace(format!("  Audio: {audio_packets}"));
 
-        let playback_position_secs = timeline_ui_state
-            .display_position(&player_snapshot.timeline)
+        panel_rows.push(TelemetryPanelRow::normal(format!("Packets: {total}")));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "  Video: {video_packets}"
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "  Audio: {audio_packets}"
+        )));
+    }
+
+    /// Добавляет timeline строки, которые берутся из UI-state/snapshot boundary.
+    fn append_timeline_rows(
+        panel_rows: &mut Vec<TelemetryPanelRow>,
+        panel_state: &TelemetryPanelState<'_>,
+    ) {
+        let playback_position_secs = panel_state
+            .timeline_ui_state
+            .display_position(&panel_state.player_snapshot.timeline)
             .as_duration()
             .as_secs_f64();
-        ui.monospace(format!(
+
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "Playback PTS: {}",
             timeline::format_seconds(Some(playback_position_secs))
-        ));
-
-        ui.separator();
-        ui.monospace(format!(
+        )));
+        panel_rows.push(TelemetryPanelRow::spacer());
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "Timeline: {}",
             timeline::format_seconds(Some(playback_position_secs))
-        ));
+        )));
+    }
+
+    /// Добавляет audio diagnostics из `PlayerSnapshot`.
+    fn append_audio_rows(
+        panel_rows: &mut Vec<TelemetryPanelRow>,
+        player_snapshot: &PlayerSnapshot,
+    ) {
         if let Some(buffer_level) = player_snapshot.audio_buffer.level {
             let buffer_ms = buffer_level.as_secs_f64() * 1000.0;
-            let buffer_color = if buffer_ms > 10.0 {
-                egui::Color32::GREEN
+            let buffer_tone = if buffer_ms > 10.0 {
+                TelemetryPanelRowTone::Good
             } else if buffer_ms > 0.0 {
-                egui::Color32::YELLOW
+                TelemetryPanelRowTone::Warning
             } else {
-                egui::Color32::RED
+                TelemetryPanelRowTone::Error
             };
-            ui.colored_label(buffer_color, format!("Audio buf: {buffer_ms:.1}ms"));
+
+            panel_rows.push(TelemetryPanelRow::status(
+                format!("Audio buf: {buffer_ms:.1}ms"),
+                buffer_tone,
+            ));
         }
-        ui.monospace(format!(
+
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "Audio underruns: {}",
             player_snapshot.audio_buffer.underruns
-        ));
+        )));
+    }
 
-        ui.separator();
-        ui.heading("Video");
+    /// Добавляет video diagnostics без чтения внутренних очередей player-core напрямую.
+    fn append_video_rows(
+        panel_rows: &mut Vec<TelemetryPanelRow>,
+        panel_state: &TelemetryPanelState<'_>,
+    ) {
+        let player_snapshot = panel_state.player_snapshot;
+        let telemetry = panel_state.telemetry;
+        let diagnostics = &player_snapshot.diagnostics;
+        let publish_pressure = diagnostics.decoder_frame_publish_pressure;
+
+        panel_rows.push(TelemetryPanelRow::spacer());
+        panel_rows.push(TelemetryPanelRow::heading("Video"));
+
         if let Some(backend_name) = &player_snapshot.active_backend.name {
-            ui.monospace(format!("Backend: {backend_name}"));
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "Backend: {backend_name}"
+            )));
         }
         if let Some(active_color_path_text) =
-            Self::active_color_path_text_for_ui(render_diagnostics)
+            Self::active_color_path_text_for_ui(panel_state.render_diagnostics)
         {
-            ui.monospace(format!("Color: {active_color_path_text}"));
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "Color: {active_color_path_text}"
+            )));
         }
         if let Some(reference_defaults_text) =
-            Self::hdr_reference_defaults_text_for_ui(render_diagnostics)
+            Self::hdr_reference_defaults_text_for_ui(panel_state.render_diagnostics)
         {
-            ui.monospace(format!("HDR metadata: {reference_defaults_text}"));
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "HDR metadata: {reference_defaults_text}"
+            )));
         }
-        ui.monospace(format!("Decoded: {}", telemetry.video_frames_decoded()));
-        ui.monospace(format!(
+
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "Decoded: {}",
+            telemetry.video_frames_decoded()
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "video_frames_presented: {}",
             player_snapshot.frame_counters.presented
-        ));
-        ui.monospace(format!(
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "Playback visible drops: {}",
             telemetry.playback_visible_drops()
-        ));
-        ui.monospace(format!(
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "Playback drops incl pause: {}",
             player_snapshot.frame_counters.dropped
-        ));
-        ui.monospace(format!(
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "  video_late_drops: {}",
             telemetry.video_late_drops()
-        ));
-        ui.monospace(format!(
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "  video_queue_drops: {}",
             telemetry.video_queue_drops()
-        ));
-        ui.monospace(format!(
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "  video_pause_drops: {}",
             telemetry.video_pause_drops()
-        ));
-        ui.monospace(format!(
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "  video_decoder_starvation: {}",
             telemetry.video_decoder_starvation()
-        ));
-        ui.monospace(format!(
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "  video_other_drops: {}",
             telemetry.video_other_drops()
-        ));
-        ui.monospace(format!(
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "Seek discard, expected: {}",
             telemetry.seek_discarded_frames()
-        ));
-        ui.monospace(format!(
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "  seek_preroll_discarded: {}",
             telemetry.seek_preroll_discarded()
-        ));
-        ui.monospace(format!(
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "  stale_generation_discarded: {}",
             telemetry.stale_generation_discarded()
-        ));
-        ui.monospace(format!(
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "  core seek/pre-roll diagnostics: {}",
-            player_snapshot.diagnostics.drops.seek_preroll
-        ));
-        ui.monospace(format!(
+            diagnostics.drops.seek_preroll
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "  core stale-generation diagnostics: {}",
-            player_snapshot.diagnostics.drops.stale_generation
-        ));
-        ui.monospace(format!(
+            diagnostics.drops.stale_generation
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "  core render acquisition timeout: {}",
-            player_snapshot.diagnostics.drops.render_acquisition_timeout
-        ));
-        ui.monospace(format!(
+            diagnostics.drops.render_acquisition_timeout
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "  core decoder starvation diagnostics: {}",
-            player_snapshot.diagnostics.drops.decoder_starvation
-        ));
-        ui.monospace(format!(
+            diagnostics.drops.decoder_starvation
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "repeated_frames: {}",
             player_snapshot.frame_counters.repeated
-        ));
-        ui.monospace(format!(
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "Worker repeats: {}",
-            player_snapshot.diagnostics.repeated_video_frames
-        ));
-        let publish_pressure = player_snapshot.diagnostics.decoder_frame_publish_pressure;
-        ui.monospace(format!(
+            diagnostics.repeated_video_frames
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "Decoder publish pressure: {}",
             publish_pressure.frame_publish_channel_full_count
-        ));
-        if let Some(control_pressure) = player_snapshot.diagnostics.queues.decoder_control_channel {
-            ui.monospace(format!(
-                "Decoder control queue: {}/{}",
-                control_pressure.control_channel_len, control_pressure.control_channel_capacity
-            ));
-            ui.monospace(format!(
-                "Control full/fail: full={} release={} flush={}",
-                control_pressure.control_channel_full_count,
-                control_pressure.release_control_send_fail_count,
-                control_pressure.flush_control_send_fail_count
-            ));
-        }
-        ui.monospace(format!(
+        )));
+
+        Self::append_decoder_control_rows(panel_rows, player_snapshot);
+
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "Publish max: {:.3}ms",
             publish_pressure
                 .max_decoded_frame_publish_latency
                 .as_secs_f64()
                 * 1000.0
-        ));
-        ui.monospace(format!("Frame dur: {:.2}ms", frame_duration_estimate_ms));
-        let worker_wakeup = player_snapshot.diagnostics.worker_wakeup;
-        if let Some(reason) = worker_wakeup.reason {
-            ui.monospace(format!("Wake: {}", reason.metric_name()));
-        }
-        if let Some(planned_delay) = worker_wakeup.planned_delay {
-            ui.monospace(format!(
-                "Wake delay: {:.2}ms",
-                planned_delay.as_secs_f64() * 1000.0
-            ));
-        }
-        ui.monospace(format!(
-            "Wake late: {:.2}ms",
-            worker_wakeup.tick_late_by.as_secs_f64() * 1000.0
-        ));
-        if let Some(frame_timing) = worker_wakeup.frame_timing {
-            ui.monospace(format!(
-                "PTS-target: {:.2}ms",
-                frame_timing.front_frame_delta_from_target_us as f64 / 1000.0
-            ));
-        }
-        ui.monospace(format!(
+        )));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "Frame dur: {:.2}ms",
+            panel_state.frame_duration_estimate_ms
+        )));
+
+        Self::append_worker_wakeup_rows(panel_rows, player_snapshot);
+
+        panel_rows.push(TelemetryPanelRow::normal(format!(
             "Queue: {}",
             player_snapshot.queues.decoded_video_frames
-        ));
+        )));
+
+        Self::append_texture_pool_rows(panel_rows, player_snapshot);
+        Self::append_latency_rows(panel_rows, player_snapshot);
+
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "Pipeline pauses: {}",
+            diagnostics.pauses.total
+        )));
+    }
+
+    /// Добавляет decoder control-channel строки, если backend их опубликовал.
+    fn append_decoder_control_rows(
+        panel_rows: &mut Vec<TelemetryPanelRow>,
+        player_snapshot: &PlayerSnapshot,
+    ) {
+        if let Some(control_pressure) = player_snapshot.diagnostics.queues.decoder_control_channel {
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "Decoder control queue: {}/{}",
+                control_pressure.control_channel_len, control_pressure.control_channel_capacity
+            )));
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "Control full/fail: full={} release={} flush={}",
+                control_pressure.control_channel_full_count,
+                control_pressure.release_control_send_fail_count,
+                control_pressure.flush_control_send_fail_count
+            )));
+        }
+    }
+
+    /// Добавляет wakeup/scheduler строки из player diagnostics snapshot.
+    fn append_worker_wakeup_rows(
+        panel_rows: &mut Vec<TelemetryPanelRow>,
+        player_snapshot: &PlayerSnapshot,
+    ) {
+        let worker_wakeup = player_snapshot.diagnostics.worker_wakeup;
+
+        if let Some(reason) = worker_wakeup.reason {
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "Wake: {}",
+                reason.metric_name()
+            )));
+        }
+        if let Some(planned_delay) = worker_wakeup.planned_delay {
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "Wake delay: {:.2}ms",
+                planned_delay.as_secs_f64() * 1000.0
+            )));
+        }
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "Wake late: {:.2}ms",
+            worker_wakeup.tick_late_by.as_secs_f64() * 1000.0
+        )));
+        if let Some(frame_timing) = worker_wakeup.frame_timing {
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "PTS-target: {:.2}ms",
+                frame_timing.front_frame_delta_from_target_us as f64 / 1000.0
+            )));
+        }
+    }
+
+    /// Добавляет texture-pool строки из backend-neutral diagnostics snapshot.
+    fn append_texture_pool_rows(
+        panel_rows: &mut Vec<TelemetryPanelRow>,
+        player_snapshot: &PlayerSnapshot,
+    ) {
         if let Some(texture_pool) = player_snapshot.active_backend.texture_pool {
-            ui.monospace(format!(
+            panel_rows.push(TelemetryPanelRow::normal(format!(
                 "Textures: {}/{}",
                 texture_pool.in_use, texture_pool.capacity
-            ));
-            ui.monospace(format!("Texture slots: {}", texture_pool.slots));
-            ui.monospace(format!("Texture free: {}", texture_pool.free_surfaces));
-            ui.monospace(format!(
+            )));
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "Texture slots: {}",
+                texture_pool.slots
+            )));
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "Texture free: {}",
+                texture_pool.free_surfaces
+            )));
+            panel_rows.push(TelemetryPanelRow::normal(format!(
                 "Texture wait: gpu={} decoder={}",
                 texture_pool.waiting_gpu_completion, texture_pool.waiting_decoder_reuse
-            ));
-            ui.monospace(format!(
+            )));
+            panel_rows.push(TelemetryPanelRow::normal(format!(
                 "Imports: create={} reuse={} replace={} fail={}",
                 texture_pool.imports_created,
                 texture_pool.imports_reused,
                 texture_pool.imports_replaced,
                 texture_pool.import_failures
-            ));
+            )));
         }
         if let Some(memory_path) = player_snapshot.diagnostics.zero_copy_memory_path {
-            ui.monospace(format!("Memory path: {memory_path}"));
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "Memory path: {memory_path}"
+            )));
         }
+    }
+
+    /// Добавляет worst-latency строки, сохраняя прежний набор diagnostics.
+    fn append_latency_rows(
+        panel_rows: &mut Vec<TelemetryPanelRow>,
+        player_snapshot: &PlayerSnapshot,
+    ) {
         let worst_import = player_snapshot
             .diagnostics
             .worst_latencies
@@ -1726,8 +2048,11 @@ impl AppState {
             .worst
             .map(|sample| sample.duration.as_secs_f64() * 1000.0);
         if let Some(worst_import_ms) = worst_import {
-            ui.monospace(format!("Worst import: {worst_import_ms:.2}ms"));
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "Worst import: {worst_import_ms:.2}ms"
+            )));
         }
+
         let worst_sync = player_snapshot
             .diagnostics
             .worst_latencies
@@ -1735,8 +2060,11 @@ impl AppState {
             .worst
             .map(|sample| sample.duration.as_secs_f64() * 1000.0);
         if let Some(worst_sync_ms) = worst_sync {
-            ui.monospace(format!("Worst sync: {worst_sync_ms:.2}ms"));
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "Worst sync: {worst_sync_ms:.2}ms"
+            )));
         }
+
         let worst_render_acquire = player_snapshot
             .diagnostics
             .worst_latencies
@@ -1744,8 +2072,11 @@ impl AppState {
             .worst
             .map(|sample| sample.duration.as_secs_f64() * 1000.0);
         if let Some(worst_render_acquire_ms) = worst_render_acquire {
-            ui.monospace(format!("Worst acquire: {worst_render_acquire_ms:.3}ms"));
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "Worst acquire: {worst_render_acquire_ms:.3}ms"
+            )));
         }
+
         let render_resource_lock_wait = player_snapshot
             .diagnostics
             .worst_latencies
@@ -1756,30 +2087,32 @@ impl AppState {
                 .worst
                 .map(|sample| sample.duration.as_secs_f64() * 1000.0)
                 .unwrap_or(0.0);
-            ui.monospace(format!(
+            panel_rows.push(TelemetryPanelRow::normal(format!(
                 "Render resource lock: count={} avg={average_lock_wait_ms:.3}ms max={worst_lock_wait_ms:.3}ms",
                 render_resource_lock_wait.samples
-            ));
+            )));
         }
         if player_snapshot.diagnostics.render_resource_lock_busy_count > 0 {
-            ui.monospace(format!(
+            panel_rows.push(TelemetryPanelRow::normal(format!(
                 "Render resource busy: count={} reuse={}",
                 player_snapshot.diagnostics.render_resource_lock_busy_count,
                 player_snapshot
                     .diagnostics
                     .render_resource_previous_frame_reuse_count
-            ));
+            )));
         }
-        ui.monospace(format!(
-            "Pipeline pauses: {}",
-            player_snapshot.diagnostics.pauses.total
-        ));
+    }
 
+    /// Добавляет capability summary построчно, чтобы virtualization могла скрыть offscreen строки.
+    fn append_capability_rows(
+        panel_rows: &mut Vec<TelemetryPanelRow>,
+        player_snapshot: &PlayerSnapshot,
+    ) {
         if let Some(capability_summary) = &player_snapshot.capability_summary {
-            ui.separator();
-            ui.heading("Capabilities");
+            panel_rows.push(TelemetryPanelRow::spacer());
+            panel_rows.push(TelemetryPanelRow::heading("Capabilities"));
             for line in capability_summary.lines() {
-                ui.monospace(line);
+                panel_rows.push(TelemetryPanelRow::normal(line));
             }
         }
     }
@@ -1834,7 +2167,8 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
     use media_core::MediaTime;
@@ -1851,12 +2185,15 @@ mod tests {
 
     use super::{
         AppFrameContext, AppState, CachedPresentFrameDiscardReason,
-        CachedPresentFrameValidationState, PresentFrameIdentity, TextureBusyFallbackRejectReason,
-        TextureBusyFallbackReuseState, cached_present_frame_discard_reason_for_player_event,
-        cached_present_frame_stale_reason, texture_busy_fallback_can_reuse_previous_frame,
-        texture_busy_fallback_reject_reason, timeline_command_from_action,
+        CachedPresentFrameValidationState, PresentFrameIdentity, TELEMETRY_PANEL_REFRESH_INTERVAL,
+        TelemetryPanelCache, TelemetryPanelRow, TelemetryPanelState,
+        TextureBusyFallbackRejectReason, TextureBusyFallbackReuseState,
+        cached_present_frame_discard_reason_for_player_event, cached_present_frame_stale_reason,
+        texture_busy_fallback_can_reuse_previous_frame, texture_busy_fallback_reject_reason,
+        timeline_command_from_action,
     };
-    use crate::ui::timeline::TimelineAction;
+    use crate::telemetry::Telemetry;
+    use crate::ui::timeline::{TimelineAction, TimelineUiState};
 
     /// Возвращает участок source между двумя маркерами для architecture guard tests.
     fn source_section_between<'source>(
@@ -1896,6 +2233,32 @@ mod tests {
             texture_handle: FrameTextureHandle(texture_handle),
             diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
+    }
+
+    /// Создаёт минимальный input telemetry panel без запуска worker/renderer.
+    fn telemetry_panel_state_for_tests<'state>(
+        player_snapshot: &'state PlayerSnapshot,
+        telemetry: &'state Telemetry,
+        render_diagnostics: &'state RenderDiagnostics,
+        timeline_ui_state: &'state TimelineUiState,
+        start_time: Instant,
+    ) -> TelemetryPanelState<'state> {
+        TelemetryPanelState {
+            player_snapshot,
+            telemetry,
+            render_diagnostics,
+            timeline_ui_state,
+            backend_name: "test-backend",
+            start_time,
+            frame_duration_estimate_ms: 16.67,
+        }
+    }
+
+    /// Ищет точный текст в cached строках telemetry panel.
+    fn telemetry_rows_contain(panel_rows: &[TelemetryPanelRow], expected_text: &str) -> bool {
+        panel_rows
+            .iter()
+            .any(|panel_row| panel_row.text() == expected_text)
     }
 
     /// Проверяет, что click-to-seek уходит в exact seek route без scrub policy.
@@ -1959,6 +2322,87 @@ mod tests {
                 "mastering-max=confirmed, mastering-min=confirmed, maxcll=reference-default, maxfall=reference-default"
             )
         );
+    }
+
+    /// Проверяет, что telemetry panel не форматирует heavy diagnostics чаще refresh interval.
+    #[test]
+    fn telemetry_panel_cache_reuses_rows_until_refresh_deadline() {
+        let mut telemetry_panel_cache = TelemetryPanelCache::default();
+        let player_snapshot = PlayerSnapshot::empty();
+        let telemetry = Telemetry::new();
+        let render_diagnostics = RenderDiagnostics::default();
+        let timeline_ui_state = TimelineUiState::default();
+        let started_at = Instant::now();
+
+        let initial_rows = telemetry_panel_cache.rows_for_frame(
+            started_at,
+            telemetry_panel_state_for_tests(
+                &player_snapshot,
+                &telemetry,
+                &render_diagnostics,
+                &timeline_ui_state,
+                started_at,
+            ),
+        );
+        assert!(telemetry_rows_contain(
+            &initial_rows,
+            "frames_presented_to_surface: 0"
+        ));
+
+        telemetry.record_frame_presented_to_surface();
+        let rows_before_deadline = telemetry_panel_cache.rows_for_frame(
+            started_at + TELEMETRY_PANEL_REFRESH_INTERVAL / 2,
+            telemetry_panel_state_for_tests(
+                &player_snapshot,
+                &telemetry,
+                &render_diagnostics,
+                &timeline_ui_state,
+                started_at,
+            ),
+        );
+        assert!(Arc::ptr_eq(&initial_rows, &rows_before_deadline));
+        assert!(telemetry_rows_contain(
+            &rows_before_deadline,
+            "frames_presented_to_surface: 0"
+        ));
+
+        let rows_after_deadline = telemetry_panel_cache.rows_for_frame(
+            started_at + TELEMETRY_PANEL_REFRESH_INTERVAL,
+            telemetry_panel_state_for_tests(
+                &player_snapshot,
+                &telemetry,
+                &render_diagnostics,
+                &timeline_ui_state,
+                started_at,
+            ),
+        );
+        assert!(!Arc::ptr_eq(&initial_rows, &rows_after_deadline));
+        assert!(telemetry_rows_contain(
+            &rows_after_deadline,
+            "frames_presented_to_surface: 1"
+        ));
+    }
+
+    /// Проверяет empty snapshot path без player/render side effects.
+    #[test]
+    fn telemetry_panel_rows_keep_empty_media_state_explicit() {
+        let player_snapshot = PlayerSnapshot::empty();
+        let telemetry = Telemetry::new();
+        let render_diagnostics = RenderDiagnostics::default();
+        let timeline_ui_state = TimelineUiState::default();
+        let started_at = Instant::now();
+
+        let panel_rows = AppState::build_telemetry_panel_rows(telemetry_panel_state_for_tests(
+            &player_snapshot,
+            &telemetry,
+            &render_diagnostics,
+            &timeline_ui_state,
+            started_at,
+        ));
+
+        assert!(telemetry_rows_contain(&panel_rows, "[Media Info]"));
+        assert!(telemetry_rows_contain(&panel_rows, "No file loaded"));
+        assert!(!telemetry_rows_contain(&panel_rows, "[Video]"));
     }
 
     /// Проверяет, что app shell не читает внутренний present frame из player pipeline.
