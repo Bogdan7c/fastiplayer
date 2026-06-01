@@ -280,6 +280,11 @@ fn video_eof_drain_decodes_pending_video_tail_before_ending() {
     session.dispatch_command(PlayerCommand::Play).unwrap();
     session.enter_eof_drain();
 
+    assert!(
+        decoder.eof_drain_requests().is_empty(),
+        "decoder EOF drain нельзя начинать до отправки уже считанного video tail"
+    );
+
     let tick_started_at = Instant::now();
     for tick_index in 0..3 {
         let tick_now = tick_started_at + Duration::from_millis(tick_index);
@@ -287,6 +292,10 @@ fn video_eof_drain_decodes_pending_video_tail_before_ending() {
     }
 
     assert_eq!(decoder.sent_packets().len(), 1);
+    assert_eq!(
+        decoder.eof_drain_requests(),
+        vec![session.pipeline.seek_generation()]
+    );
     assert!(session.pipeline.pending_video_packet_is_empty());
     assert_eq!(session.pipeline.video_decode_in_flight_packets(), 0);
     assert!(session.pipeline.video_present_queue_is_empty());

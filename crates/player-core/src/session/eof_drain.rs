@@ -101,7 +101,7 @@ impl PlayerSession {
             "Entering EOF drain"
         );
         self.set_playback_state(PlaybackState::Draining);
-        self.begin_video_decoder_eof_drain();
+        self.start_video_decoder_eof_drain_if_ready();
 
         if matches!(
             previous_state,
@@ -157,6 +157,11 @@ impl PlayerSession {
             return false;
         }
 
+        self.start_video_decoder_eof_drain_if_ready();
+        if !self.is_eof_draining() {
+            return false;
+        }
+
         if !self.eof_drain_ready_to_end(now, audio_stall_timeout) {
             let blocker = self.eof_drain_blocker(now, audio_stall_timeout);
             trace!(
@@ -198,6 +203,74 @@ impl PlayerSession {
     }
 
     /// Запускает decoder-side EOF/DPB drain без seek flush и без generation advance.
+    ///
+    /// H.264 B-frames могут остаться в DPB только после того, как все уже
+    /// считанные packets дошли до decoder-а. Поэтому drain стартует не в момент
+    /// container EOF, а когда player-side pending queue и decoder in-flight уже
+    /// пусты.
+    fn start_video_decoder_eof_drain_if_ready(&mut self) {
+        if !self.video_decoder_eof_drain_is_required()
+            || self.video_decoder_eof_drain_start_blocker().is_some()
+        {
+            return;
+        }
+
+        let generation = self.pipeline.seek_generation();
+        match self.pipeline.video_decoder_end_of_stream_drain_state() {
+            video_core::VideoDecoderEndOfStreamDrainState::Draining {
+                generation: active_generation,
+            }
+            | video_core::VideoDecoderEndOfStreamDrainState::Drained {
+                generation: active_generation,
+            } if active_generation == generation => return,
+            video_core::VideoDecoderEndOfStreamDrainState::Fatal { error, .. } => {
+                self.fail_video_decoder_eof_drain(error);
+                return;
+            }
+            video_core::VideoDecoderEndOfStreamDrainState::Idle
+            | video_core::VideoDecoderEndOfStreamDrainState::Draining { .. }
+            | video_core::VideoDecoderEndOfStreamDrainState::Drained { .. } => {}
+        }
+
+        self.begin_video_decoder_eof_drain();
+    }
+
+    /// Проверяет, нужен ли selected video track-у decoder-side EOF drain.
+    fn video_decoder_eof_drain_is_required(&self) -> bool {
+        self.pipeline.has_selected_video_track() && self.pipeline.has_active_video_decoder()
+    }
+
+    /// Возвращает blocker, который не даёт безопасно начать decoder-side EOF drain.
+    fn video_decoder_eof_drain_start_blocker(&self) -> Option<EofDrainBlocker> {
+        let pending_video_packets = self.pipeline.pending_video_packet_len();
+        if pending_video_packets > 0 {
+            return Some(EofDrainBlocker::PendingVideoPackets {
+                queued_packets: pending_video_packets,
+            });
+        }
+
+        let in_flight_packets = self.pipeline.video_decode_in_flight_packets();
+        if in_flight_packets > 0 {
+            return Some(EofDrainBlocker::VideoDecodeInFlight { in_flight_packets });
+        }
+
+        None
+    }
+
+    /// Переводит fatal EOF-drain state в player error без смешивания с seek flush.
+    fn fail_video_decoder_eof_drain(&mut self, error: video_core::DecodeThreadError) {
+        warn!(
+            error = %error,
+            generation = self.pipeline.seek_generation(),
+            "Decoder EOF drain failed"
+        );
+        self.mark_fatal_error(PlayerError::new(
+            PlayerErrorKind::RuntimeError,
+            format!("Video decoder EOF drain failed: {error}"),
+        ));
+    }
+
+    /// Запускает decoder-side EOF/DPB drain без seek flush и без generation advance.
     fn begin_video_decoder_eof_drain(&mut self) {
         let generation = self.pipeline.seek_generation();
         match self
@@ -221,15 +294,7 @@ impl PlayerSession {
                 );
             }
             video_core::VideoDecoderEndOfStreamDrainResult::Fatal(error) => {
-                warn!(
-                    error = %error,
-                    generation,
-                    "Decoder EOF drain failed"
-                );
-                self.mark_fatal_error(PlayerError::new(
-                    PlayerErrorKind::RuntimeError,
-                    format!("Video decoder EOF drain failed: {error}"),
-                ));
+                self.fail_video_decoder_eof_drain(error);
             }
         }
     }
@@ -308,11 +373,20 @@ impl PlayerSession {
             return Some(EofDrainBlocker::VideoDecodeInFlight { in_flight_packets });
         }
 
-        if matches!(
-            self.pipeline.video_decoder_end_of_stream_drain_state(),
-            video_core::VideoDecoderEndOfStreamDrainState::Draining { .. }
-        ) {
-            return Some(EofDrainBlocker::DecoderEndOfStreamDrain);
+        if self.video_decoder_eof_drain_is_required() {
+            match self.pipeline.video_decoder_end_of_stream_drain_state() {
+                video_core::VideoDecoderEndOfStreamDrainState::Idle
+                | video_core::VideoDecoderEndOfStreamDrainState::Draining { .. }
+                | video_core::VideoDecoderEndOfStreamDrainState::Fatal { .. } => {
+                    return Some(EofDrainBlocker::DecoderEndOfStreamDrain);
+                }
+                video_core::VideoDecoderEndOfStreamDrainState::Drained { generation }
+                    if generation != self.pipeline.seek_generation() =>
+                {
+                    return Some(EofDrainBlocker::DecoderEndOfStreamDrain);
+                }
+                video_core::VideoDecoderEndOfStreamDrainState::Drained { .. } => {}
+            }
         }
 
         match self.pipeline.audio_eof_drain_state() {

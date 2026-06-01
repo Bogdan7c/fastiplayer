@@ -32,6 +32,9 @@ type FlushAck = std::result::Result<(), String>;
 /// Результат, которым decoder thread подтверждает замену codec adapter-а.
 type ConfigureStreamAck = video_core::VideoStreamConfigResult;
 
+/// Результат, которым decoder thread подтверждает запуск EOF/DPB drain.
+type EndOfStreamDrainAck = video_core::VideoDecoderEndOfStreamDrainResult;
+
 /// Подтверждение, что decoder thread уже обработал один packet из input channel.
 type DecodePacketAck = ();
 
@@ -369,6 +372,9 @@ enum ThreadControlMsg {
 
     /// Сбросить decoder state и подтвердить завершение операции.
     Flush(Sender<FlushAck>),
+
+    /// Дожать codec tail/DPB без seek flush и generation reset.
+    BeginEndOfStreamDrain(u64, Sender<EndOfStreamDrainAck>),
 }
 
 /// Sender-side control operation для logs и раздельных counters.
@@ -379,6 +385,9 @@ enum DecoderControlOperation {
 
     /// Синхронный flush decoder thread-а.
     Flush,
+
+    /// Explicit EOF/DPB drain без seek reset semantics.
+    EofDrain,
 }
 
 impl DecoderControlOperation {
@@ -387,6 +396,7 @@ impl DecoderControlOperation {
         match self {
             Self::Release => "release",
             Self::Flush => "flush",
+            Self::EofDrain => "eof_drain",
         }
     }
 
@@ -395,6 +405,7 @@ impl DecoderControlOperation {
         match self {
             Self::Release => "zero-copy release",
             Self::Flush => "decoder flush",
+            Self::EofDrain => "decoder EOF drain",
         }
     }
 }
@@ -431,6 +442,7 @@ impl DecoderControlChannelPressureCounters {
             DecoderControlOperation::Flush => {
                 self.flush_send_fail_count.fetch_add(1, Ordering::Relaxed);
             }
+            DecoderControlOperation::EofDrain => {}
         }
 
         self.snapshot(control_tx)
@@ -1041,6 +1053,10 @@ impl VideoDecodeThread {
         let (init_tx, init_rx) = bounded::<anyhow::Result<()>>(1);
         let thread_state = DecoderThreadState::new();
         let decoder_runtime_config = config.vaapi_decoder_config();
+        let end_of_stream_drain_state = Arc::new(Mutex::new(
+            video_core::VideoDecoderEndOfStreamDrainState::Idle,
+        ));
+        let end_of_stream_drain_state_for_thread = end_of_stream_drain_state.clone();
 
         std::thread::Builder::new()
             .name("video-decode".into())
@@ -1073,12 +1089,15 @@ impl VideoDecodeThread {
 
                 decoder_thread_loop(
                     decoder,
-                    packet_rx,
-                    control_rx,
-                    frame_tx,
-                    packet_ack_tx,
-                    error_tx,
-                    thread_diagnostic_tx,
+                    DecoderThreadChannels {
+                        packet_rx,
+                        control_rx,
+                        frame_tx,
+                        packet_ack_tx,
+                        error_tx,
+                        diagnostic_tx: thread_diagnostic_tx,
+                        end_of_stream_drain_state: end_of_stream_drain_state_for_thread,
+                    },
                 );
                 info!("Decoder thread exiting");
             })
@@ -1106,9 +1125,7 @@ impl VideoDecodeThread {
             resource_pool,
             thread_state,
             stream_config: Arc::new(Mutex::new(None)),
-            end_of_stream_drain_state: Arc::new(Mutex::new(
-                video_core::VideoDecoderEndOfStreamDrainState::Idle,
-            )),
+            end_of_stream_drain_state,
             config,
             backend_name: "VA-API VP9",
         })
@@ -1235,7 +1252,7 @@ impl VideoDecodeThread {
         }
     }
 
-    /// Запускает explicit EOF drain; VP9 stateless path не имеет отложенного DPB tail.
+    /// Запускает explicit EOF drain через decoder thread без seek flush semantics.
     pub fn begin_end_of_stream_drain(
         &self,
         generation: u64,
@@ -1244,7 +1261,7 @@ impl VideoDecodeThread {
             return video_core::VideoDecoderEndOfStreamDrainResult::Fatal(error.into());
         }
 
-        let mut drain_state = match self.end_of_stream_drain_state.lock() {
+        let drain_state = match self.end_of_stream_drain_state.lock() {
             Ok(drain_state) => drain_state,
             Err(error) => {
                 let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(format!(
@@ -1254,25 +1271,49 @@ impl VideoDecodeThread {
             }
         };
 
-        if matches!(
-            *drain_state,
-            video_core::VideoDecoderEndOfStreamDrainState::Draining {
-                generation: active_generation,
-            } | video_core::VideoDecoderEndOfStreamDrainState::Drained {
-                generation: active_generation,
-            } if active_generation == generation
-        ) {
+        if decoder_eof_drain_state_matches_generation(&drain_state, generation) {
             return video_core::VideoDecoderEndOfStreamDrainResult::Unchanged(drain_state.clone());
         }
+        drop(drain_state);
 
-        *drain_state = video_core::VideoDecoderEndOfStreamDrainState::Drained { generation };
-        video_core::VideoDecoderEndOfStreamDrainResult::Started(drain_state.clone())
+        let (done_tx, done_rx) = bounded(1);
+        if let Err(error) = self
+            .control_tx
+            .try_send(ThreadControlMsg::BeginEndOfStreamDrain(generation, done_tx))
+        {
+            return match error {
+                TrySendError::Full(_) => {
+                    let _message = record_decoder_control_send_failure(
+                        DecoderControlOperation::EofDrain,
+                        &self.control_tx,
+                        &self.control_pressure,
+                        &error,
+                    );
+                    video_core::VideoDecoderEndOfStreamDrainResult::Backpressure(
+                        video_core::VideoDecoderControlBackpressureReason::ControlChannelFull {
+                            queued_messages: self.control_tx.len(),
+                            capacity: self.control_tx.capacity().unwrap_or(0),
+                        },
+                    )
+                }
+                TrySendError::Disconnected(_) => {
+                    let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(
+                        "Decoder thread disconnected before EOF drain",
+                    ));
+                    video_core::VideoDecoderEndOfStreamDrainResult::Fatal(fatal_error.into())
+                }
+            };
+        }
+
+        wait_for_end_of_stream_drain_ack(done_rx, self.config.flush_timeout, &self.thread_state)
     }
 
     /// Возвращает текущее explicit EOF drain state без блокировки decoder thread loop-а.
     pub fn end_of_stream_drain_state(&self) -> video_core::VideoDecoderEndOfStreamDrainState {
         match self.end_of_stream_drain_state.lock() {
-            Ok(drain_state) => drain_state.clone(),
+            Ok(drain_state) => {
+                player_visible_eof_drain_state(drain_state.clone(), self.frame_rx.len())
+            }
             Err(error) => {
                 let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(format!(
                     "VA-API EOF drain state mutex poisoned during read: {error}"
@@ -1390,6 +1431,9 @@ impl VideoDecodeThread {
             wait_for_flush_ack(done_rx, self.config.flush_timeout, &self.thread_state);
         self.release_received_frames();
         self.drain_completed_packet_acks();
+        if flush_result.is_ok() {
+            self.reset_end_of_stream_drain_state();
+        }
         flush_result
     }
 
@@ -1581,6 +1625,30 @@ impl FramePublishPressureCounters {
     }
 }
 
+/// Каналы и shared state, которыми владеет lifetime decoder thread loop-а.
+struct DecoderThreadChannels {
+    /// Encoded packets от player worker-а.
+    packet_rx: Receiver<QueuedDecodePacket>,
+
+    /// Control messages: release, flush, stream config, EOF drain.
+    control_rx: Receiver<ThreadControlMsg>,
+
+    /// Decoded frames обратно в player worker.
+    frame_tx: Sender<DecodedFrame>,
+
+    /// Packet completion ACK-и для player-side in-flight accounting.
+    packet_ack_tx: Sender<DecodePacketAck>,
+
+    /// Fatal decoder errors для player boundary.
+    error_tx: Sender<DecodeThreadError>,
+
+    /// Decoder diagnostics events без player-core dependency.
+    diagnostic_tx: DecoderDiagnosticSender,
+
+    /// Shared EOF/DPB drain state, читаемый handle-ом с player thread-а.
+    end_of_stream_drain_state: Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
+}
+
 /// Ждёт stream-config ACK и сохраняет distinct result для caller-а.
 fn wait_for_configure_stream_ack(
     done_rx: Receiver<ConfigureStreamAck>,
@@ -1602,6 +1670,64 @@ fn wait_for_configure_stream_ack(
             ));
             video_core::VideoStreamConfigResult::Fatal(fatal_error.into())
         }
+    }
+}
+
+/// Ждёт ACK запуска EOF drain, сохраняя fatal/backpressure различия boundary.
+fn wait_for_end_of_stream_drain_ack(
+    done_rx: Receiver<EndOfStreamDrainAck>,
+    timeout: Duration,
+    thread_state: &DecoderThreadState,
+) -> video_core::VideoDecoderEndOfStreamDrainResult {
+    match done_rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => {
+            let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(format!(
+                "Decoder thread did not confirm EOF drain within {} ms",
+                timeout.as_millis()
+            )));
+            video_core::VideoDecoderEndOfStreamDrainResult::Fatal(fatal_error.into())
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(
+                "Decoder thread did not confirm EOF drain",
+            ));
+            video_core::VideoDecoderEndOfStreamDrainResult::Fatal(fatal_error.into())
+        }
+    }
+}
+
+/// Не показывает player-у `Drained`, пока decoded frame channel ещё несёт tail frames.
+fn player_visible_eof_drain_state(
+    state: video_core::VideoDecoderEndOfStreamDrainState,
+    pending_decoded_frames: usize,
+) -> video_core::VideoDecoderEndOfStreamDrainState {
+    if pending_decoded_frames == 0 {
+        return state;
+    }
+
+    match state {
+        video_core::VideoDecoderEndOfStreamDrainState::Drained { generation } => {
+            video_core::VideoDecoderEndOfStreamDrainState::Draining { generation }
+        }
+        other => other,
+    }
+}
+
+/// Проверяет, относится ли уже начатый/завершённый EOF drain к текущей generation.
+fn decoder_eof_drain_state_matches_generation(
+    state: &video_core::VideoDecoderEndOfStreamDrainState,
+    generation: u64,
+) -> bool {
+    match state {
+        video_core::VideoDecoderEndOfStreamDrainState::Draining {
+            generation: active_generation,
+        }
+        | video_core::VideoDecoderEndOfStreamDrainState::Drained {
+            generation: active_generation,
+        } => *active_generation == generation,
+        video_core::VideoDecoderEndOfStreamDrainState::Idle
+        | video_core::VideoDecoderEndOfStreamDrainState::Fatal { .. } => false,
     }
 }
 
@@ -1637,15 +1763,16 @@ fn decoder_control_send_error_message<T>(operation: &str, error: &TrySendError<T
 }
 
 /// Главный цикл decoder thread.
-fn decoder_thread_loop(
-    mut decoder: crate::VaapiVideoDecoder,
-    packet_rx: Receiver<QueuedDecodePacket>,
-    control_rx: Receiver<ThreadControlMsg>,
-    frame_tx: Sender<DecodedFrame>,
-    packet_ack_tx: Sender<DecodePacketAck>,
-    error_tx: Sender<DecodeThreadError>,
-    diagnostic_tx: DecoderDiagnosticSender,
-) {
+fn decoder_thread_loop(mut decoder: crate::VaapiVideoDecoder, channels: DecoderThreadChannels) {
+    let DecoderThreadChannels {
+        packet_rx,
+        control_rx,
+        frame_tx,
+        packet_ack_tx,
+        error_tx,
+        diagnostic_tx,
+        end_of_stream_drain_state,
+    } = channels;
     let mut pending_publish: Option<PendingFramePublish> = None;
     let mut output_backpressured_packet: Option<QueuedDecodePacket> = None;
     let mut publish_pressure = FramePublishPressureCounters::default();
@@ -1659,6 +1786,7 @@ fn decoder_thread_loop(
             &error_tx,
             &mut pending_publish,
             &mut output_backpressured_packet,
+            &end_of_stream_drain_state,
         ) {
             break;
         }
@@ -1669,6 +1797,14 @@ fn decoder_thread_loop(
             &mut publish_pressure,
             &diagnostic_tx,
         ) {
+            break;
+        }
+        if let Err(error) = complete_decoder_eof_drain_if_ready(
+            &decoder,
+            pending_publish.as_ref(),
+            &end_of_stream_drain_state,
+        ) {
+            send_decoder_thread_error(&error_tx, error.message().to_string());
             break;
         }
 
@@ -1682,6 +1818,7 @@ fn decoder_thread_loop(
                         &error_tx,
                         &mut pending_publish,
                         &mut output_backpressured_packet,
+                        &end_of_stream_drain_state,
                     ) {
                         break;
                     }
@@ -1729,6 +1866,7 @@ fn decoder_thread_loop(
                                 &error_tx,
                                 &mut pending_publish,
                                 &mut output_backpressured_packet,
+                                &end_of_stream_drain_state,
                             ) {
                                 break;
                             }
@@ -1752,6 +1890,7 @@ fn decoder_thread_loop(
                             &error_tx,
                             &mut pending_publish,
                             &mut output_backpressured_packet,
+                            &end_of_stream_drain_state,
                         ) {
                             break;
                         }
@@ -1799,6 +1938,7 @@ fn drain_decoder_control_messages(
     error_tx: &Sender<DecodeThreadError>,
     pending_publish: &mut Option<PendingFramePublish>,
     output_backpressured_packet: &mut Option<QueuedDecodePacket>,
+    end_of_stream_drain_state: &Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
 ) -> bool {
     loop {
         match control_rx.try_recv() {
@@ -1810,6 +1950,7 @@ fn drain_decoder_control_messages(
                     error_tx,
                     pending_publish,
                     output_backpressured_packet,
+                    end_of_stream_drain_state,
                 ) {
                     return false;
                 }
@@ -1820,6 +1961,53 @@ fn drain_decoder_control_messages(
     }
 }
 
+/// Читает shared EOF drain state с typed fatal error для decoder thread-а.
+fn decoder_eof_drain_state(
+    end_of_stream_drain_state: &Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
+) -> Result<video_core::VideoDecoderEndOfStreamDrainState, DecodeThreadError> {
+    end_of_stream_drain_state
+        .lock()
+        .map(|state| state.clone())
+        .map_err(|error| {
+            DecodeThreadError::new(format!("VA-API EOF drain state poisoned: {error}"))
+        })
+}
+
+/// Записывает shared EOF drain state без раскрытия mutex-а в control handlers.
+fn set_decoder_eof_drain_state(
+    end_of_stream_drain_state: &Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
+    next_state: video_core::VideoDecoderEndOfStreamDrainState,
+) -> Result<(), DecodeThreadError> {
+    let mut state = end_of_stream_drain_state.lock().map_err(|error| {
+        DecodeThreadError::new(format!(
+            "VA-API EOF drain state poisoned during update: {error}"
+        ))
+    })?;
+    *state = next_state;
+    Ok(())
+}
+
+/// Завершает decoder-side EOF drain только после публикации всех backend-ready frames.
+fn complete_decoder_eof_drain_if_ready(
+    decoder: &crate::VaapiVideoDecoder,
+    pending_publish: Option<&PendingFramePublish>,
+    end_of_stream_drain_state: &Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
+) -> Result<(), DecodeThreadError> {
+    if pending_publish.is_some() || decoder.has_ready_frames() {
+        return Ok(());
+    }
+
+    let current_state = decoder_eof_drain_state(end_of_stream_drain_state)?;
+    if let video_core::VideoDecoderEndOfStreamDrainState::Draining { generation } = current_state {
+        set_decoder_eof_drain_state(
+            end_of_stream_drain_state,
+            video_core::VideoDecoderEndOfStreamDrainState::Drained { generation },
+        )?;
+    }
+
+    Ok(())
+}
+
 /// Обрабатывает release/flush control message без ожидания packet channel.
 fn handle_decoder_control_message(
     decoder: &mut crate::VaapiVideoDecoder,
@@ -1828,6 +2016,7 @@ fn handle_decoder_control_message(
     error_tx: &Sender<DecodeThreadError>,
     pending_publish: &mut Option<PendingFramePublish>,
     output_backpressured_packet: &mut Option<QueuedDecodePacket>,
+    end_of_stream_drain_state: &Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
 ) -> bool {
     match control_message {
         ThreadControlMsg::ConfigureStream(config, done_tx) => {
@@ -1869,6 +2058,82 @@ fn handle_decoder_control_message(
                 );
                 send_decoder_thread_error(error_tx, message);
                 return false;
+            }
+            true
+        }
+        ThreadControlMsg::BeginEndOfStreamDrain(generation, done_tx) => {
+            if let Ok(state) = decoder_eof_drain_state(end_of_stream_drain_state) {
+                if decoder_eof_drain_state_matches_generation(&state, generation) {
+                    if done_tx
+                        .send(video_core::VideoDecoderEndOfStreamDrainResult::Unchanged(
+                            state,
+                        ))
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            "Decoder thread: EOF drain unchanged, but caller dropped receiver"
+                        );
+                    }
+                    return true;
+                }
+            }
+
+            if let Err(error) = set_decoder_eof_drain_state(
+                end_of_stream_drain_state,
+                video_core::VideoDecoderEndOfStreamDrainState::Draining { generation },
+            ) {
+                send_decoder_thread_error(error_tx, error.message().to_string());
+                let _ = done_tx.send(video_core::VideoDecoderEndOfStreamDrainResult::Fatal(
+                    error.into(),
+                ));
+                return false;
+            }
+
+            let drain_result = decoder.begin_end_of_stream_drain_for_thread();
+            if let Err(error) = drain_result {
+                let fatal_error = DecodeThreadError::new(format!(
+                    "Decoder thread failed during VA-API EOF drain: {error:#}"
+                ));
+                let _ = set_decoder_eof_drain_state(
+                    end_of_stream_drain_state,
+                    video_core::VideoDecoderEndOfStreamDrainState::Fatal {
+                        generation: Some(generation),
+                        error: fatal_error.clone().into(),
+                    },
+                );
+                send_decoder_thread_error(error_tx, fatal_error.message().to_string());
+                let _ = done_tx.send(video_core::VideoDecoderEndOfStreamDrainResult::Fatal(
+                    fatal_error.into(),
+                ));
+                return false;
+            }
+
+            if let Err(error) = complete_decoder_eof_drain_if_ready(
+                decoder,
+                pending_publish.as_ref(),
+                end_of_stream_drain_state,
+            ) {
+                send_decoder_thread_error(error_tx, error.message().to_string());
+                let _ = done_tx.send(video_core::VideoDecoderEndOfStreamDrainResult::Fatal(
+                    error.into(),
+                ));
+                return false;
+            }
+
+            let state =
+                decoder_eof_drain_state(end_of_stream_drain_state).unwrap_or_else(|error| {
+                    video_core::VideoDecoderEndOfStreamDrainState::Fatal {
+                        generation: Some(generation),
+                        error: error.into(),
+                    }
+                });
+            if done_tx
+                .send(video_core::VideoDecoderEndOfStreamDrainResult::Started(
+                    state,
+                ))
+                .is_err()
+            {
+                tracing::warn!("Decoder thread: EOF drain completed, but caller dropped receiver");
             }
             true
         }
@@ -2439,6 +2704,51 @@ mod tests {
                 .to_string()
                 .contains("Decoder thread did not confirm flush within")
         );
+        assert!(thread_state.current_error().is_some());
+        assert!(thread_state.take_pending_error().is_some());
+        assert!(thread_state.take_pending_error().is_none());
+    }
+
+    /// Проверяет, что player не видит EOF drain завершённым, пока frame channel несёт tail.
+    #[test]
+    fn eof_drain_state_stays_draining_while_decoded_tail_waits_in_channel() {
+        let visible_state = player_visible_eof_drain_state(
+            video_core::VideoDecoderEndOfStreamDrainState::Drained { generation: 7 },
+            1,
+        );
+
+        assert_eq!(
+            visible_state,
+            video_core::VideoDecoderEndOfStreamDrainState::Draining { generation: 7 }
+        );
+        assert_eq!(
+            player_visible_eof_drain_state(
+                video_core::VideoDecoderEndOfStreamDrainState::Drained { generation: 7 },
+                0,
+            ),
+            video_core::VideoDecoderEndOfStreamDrainState::Drained { generation: 7 }
+        );
+    }
+
+    /// Проверяет timeout explicit EOF drain отдельно от seek flush timeout-а.
+    #[test]
+    fn eof_drain_ack_timeout_marks_thread_fatal_once() {
+        let (_done_tx, done_rx) = bounded(1);
+        let thread_state = DecoderThreadState::new();
+
+        let result =
+            wait_for_end_of_stream_drain_ack(done_rx, Duration::from_millis(1), &thread_state);
+
+        match result {
+            video_core::VideoDecoderEndOfStreamDrainResult::Fatal(error) => {
+                assert!(
+                    error
+                        .to_string()
+                        .contains("Decoder thread did not confirm EOF drain within")
+                );
+            }
+            other => panic!("empty EOF drain ACK channel must timeout, got {other:?}"),
+        }
         assert!(thread_state.current_error().is_some());
         assert!(thread_state.take_pending_error().is_some());
         assert!(thread_state.take_pending_error().is_none());

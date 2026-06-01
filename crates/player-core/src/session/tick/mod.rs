@@ -2221,6 +2221,72 @@ mod tests {
     }
 
     #[test]
+    fn h264_unknown_keyframe_bootstrap_packet_waits_for_codec_proof() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+
+        session
+            .pipeline
+            .set_video_decoder_thread(decoder_thread.clone());
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::H264),
+        );
+        session.pipeline.require_video_decoder_keyframe();
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                TrackId::new(1),
+                Duration::from_millis(120),
+                session.pipeline.seek_generation(),
+                Bytes::from_static(b"h264-unknown-keyframe"),
+                PacketKeyframe::Unknown,
+            ));
+
+        let sent_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+
+        assert_eq!(sent_packets, 0);
+        assert!(decoder_thread.sent_packets().is_empty());
+        assert!(session.pipeline.pending_video_packet_is_empty());
+        assert!(session.pipeline.video_decoder_needs_keyframe());
+        assert_eq!(
+            tick_result.dropped_video_frames,
+            vec![PlayerVideoFrameDrop {
+                pts: Duration::from_millis(120),
+                reason: PlayerVideoDropReason::SeekPreroll,
+            }]
+        );
+
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                TrackId::new(1),
+                Duration::from_millis(160),
+                session.pipeline.seek_generation(),
+                Bytes::from_static(b"h264-idr"),
+                PacketKeyframe::Keyframe,
+            ));
+        let sent_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+        let decoder_packets = decoder_thread.sent_packets();
+
+        assert_eq!(sent_packets, 1);
+        assert_eq!(decoder_packets.len(), 1);
+        assert!(decoder_packets[0].keyframe);
+        assert!(!session.pipeline.video_decoder_needs_keyframe());
+    }
+
+    #[test]
     fn packet_refinement_rejection_stops_before_decoder_send() {
         let mut session = PlayerSession::new();
         let decoder_thread = RecordingVideoDecoderThread::new();

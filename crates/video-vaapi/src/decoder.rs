@@ -564,6 +564,11 @@ impl VaapiVideoDecoder {
         self.ready_queue.pop_front()
     }
 
+    /// Проверяет, есть ли backend-ready frames, которые decoder thread ещё не опубликовал.
+    pub(crate) fn has_ready_frames(&self) -> bool {
+        !self.ready_queue.is_empty()
+    }
+
     /// Определяет decoded surface contract для текущего ready handle.
     fn current_decoded_contract(
         &self,
@@ -1068,6 +1073,15 @@ impl VaapiVideoDecoder {
         }
 
         Ok(VaapiDecodePacketOutcome::Accepted(result.map(Box::new)))
+    }
+
+    /// Запускает explicit EOF/DPB drain и оставляет tail frames в обычном publish path.
+    pub(crate) fn begin_end_of_stream_drain_for_thread(&mut self) -> Result<()> {
+        self.adapter
+            .begin_end_of_stream_drain()
+            .map_err(|error| anyhow::anyhow!("EOF drain error: {error}"))?;
+        self.drain_decoder_events()?;
+        Ok(())
     }
 }
 

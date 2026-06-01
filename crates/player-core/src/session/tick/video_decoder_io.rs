@@ -564,6 +564,16 @@ pub(super) fn accept_video_packet_for_decoder_bootstrap(
             false
         }
         PacketKeyframe::Unknown => {
+            if active_video_codec_requires_proven_decode_start(session) {
+                let bootstrap = session.record_video_packet_dropped_until_keyframe();
+                warn!(
+                    pts_ms = packet_pts.as_millis(),
+                    dropped_until_keyframe = bootstrap.dropped_until_keyframe,
+                    "Dropping H.264 packet with unknown keyframe state until codec-aware IDR proof"
+                );
+                return false;
+            }
+
             let bootstrap = session.record_video_decoder_bootstrap_accepted(packet_keyframe);
             warn!(
                 pts_ms = packet_pts.as_millis(),
@@ -575,6 +585,14 @@ pub(super) fn accept_video_packet_for_decoder_bootstrap(
             true
         }
     }
+}
+
+/// Проверяет, требует ли активный codec доказанный decode-start после seek/flush.
+fn active_video_codec_requires_proven_decode_start(session: &PlayerSession) -> bool {
+    session
+        .pipeline
+        .active_video_requirement()
+        .is_some_and(|requirement| requirement.codec == VideoCodec::H264)
 }
 
 /// Отделяет stale seek generation от late-drop policy.
@@ -712,6 +730,9 @@ fn drain_completed_video_decode_packets(session: &mut PlayerSession) {
 }
 
 /// Переводит typed demux-классификацию в текущий bool contract decoder-а.
+///
+/// `Unknown` становится decode-start hint только если codec policy уже разрешила
+/// такой bootstrap. Для H.264 этот путь закрыт выше codec-aware проверкой.
 fn video_decode_packet_keyframe_hint(
     packet_keyframe: PacketKeyframe,
     accepted_as_decode_start: bool,

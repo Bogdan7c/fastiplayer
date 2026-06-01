@@ -266,6 +266,9 @@ pub(crate) trait VaapiCodecAdapter {
     /// Flush-ит adapter-owned codec state.
     fn flush(&mut self) -> std::result::Result<(), VaapiAdapterDecodeError>;
 
+    /// Дожимает codec tail при EOF без передачи этого намерения как seek flush.
+    fn begin_end_of_stream_drain(&mut self) -> std::result::Result<(), VaapiAdapterDecodeError>;
+
     /// Забирает следующий pending decoder event.
     fn next_event(&mut self) -> Option<VaapiDecoderEvent>;
 
@@ -496,6 +499,17 @@ impl VaapiCodecAdapter for H264VaapiCodecAdapter {
         self.inner.flush().map_err(VaapiAdapterDecodeError::from)
     }
 
+    /// Дожимает H.264 DPB tail; cros-codecs отдаёт tail frames через events.
+    fn begin_end_of_stream_drain(&mut self) -> std::result::Result<(), VaapiAdapterDecodeError> {
+        if self.pending_access_unit.is_some() {
+            return Err(VaapiAdapterDecodeError::Decoder(
+                "cannot drain H.264 while an access unit is partially submitted".to_string(),
+            ));
+        }
+
+        self.inner.flush().map_err(VaapiAdapterDecodeError::from)
+    }
+
     /// Возвращает следующий cros event в локальном wrapper-е.
     fn next_event(&mut self) -> Option<VaapiDecoderEvent> {
         self.inner.next_event().map(VaapiDecoderEvent::from)
@@ -569,6 +583,11 @@ impl VaapiCodecAdapter for Vp9VaapiCodecAdapter {
     /// Flush-ит текущий VP9 decoder state.
     fn flush(&mut self) -> std::result::Result<(), VaapiAdapterDecodeError> {
         self.inner.flush().map_err(VaapiAdapterDecodeError::from)
+    }
+
+    /// VP9 stateless path публикует готовые frames во время обычного decode loop-а.
+    fn begin_end_of_stream_drain(&mut self) -> std::result::Result<(), VaapiAdapterDecodeError> {
+        Ok(())
     }
 
     /// Возвращает следующий cros event в локальном wrapper-е.
