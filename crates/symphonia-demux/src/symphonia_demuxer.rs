@@ -1867,7 +1867,7 @@ mod tests {
     }
 
     fn test_webm_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/test.webm")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/VP9/test.webm")
     }
 
     fn audio_fixture_path(file_name: &str) -> PathBuf {
