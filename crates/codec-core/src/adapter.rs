@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BitDepth, ChromaSubsampling, ColorMetadataOrigin, VideoCodec, VideoColorMetadata,
-    VideoDecodeRequirement, VideoProfile, VideoSurfaceFormat, Vp9DecodedFormatRequirement,
-    Vp9MetadataSource, Vp9Profile, Vp9RequirementCandidate, Vp9RequirementProbe,
-    Vp9RequirementRejection, Vp9RequirementUncertainty, probe_vp9_packet_requirement,
-    resolve_vp9_metadata,
+    BitDepth, ChromaSubsampling, ColorMetadataOrigin, H264ParameterSetKind, H264RequirementError,
+    H264SpsError, H264SpsMetadata, VideoCodec, VideoColorMetadata, VideoDecodeRequirement,
+    VideoProfile, VideoSurfaceFormat, Vp9DecodedFormatRequirement, Vp9MetadataSource, Vp9Profile,
+    Vp9RequirementCandidate, Vp9RequirementProbe, Vp9RequirementRejection,
+    Vp9RequirementUncertainty, h264_sps_metadata_from_avc_decoder_configuration_record,
+    h264_sps_metadata_from_packet, infer_h264_packetization, probe_h264_packet_keyframe,
+    probe_vp9_packet_requirement, resolve_vp9_metadata,
 };
 
 /// Codec-neutral source metadata, пришедшая из manifest/container до decode.
@@ -181,6 +183,7 @@ enum CodecPrivateCandidate {
 }
 
 /// Результат codec-neutral packet probing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum VideoRequirementProbe {
     /// Header прочитан достаточно надёжно для typed capability check.
@@ -243,6 +246,42 @@ pub enum VideoRequirementRejection {
         /// Codec adapter diagnostic.
         reason: String,
     },
+
+    /// Chroma распознана в codec-specific числовом поле, но общей enum-модели пока нет.
+    UnsupportedChromaFormat {
+        /// Codec stream-а.
+        codec: VideoCodec,
+
+        /// Raw codec-specific chroma id.
+        chroma_format_idc: u32,
+
+        /// Codec adapter diagnostic.
+        reason: String,
+    },
+
+    /// Profile распознан, но v1 production policy его запрещает.
+    UnsupportedProfile {
+        /// Codec stream-а.
+        codec: VideoCodec,
+
+        /// Raw codec-specific profile id.
+        profile_idc: u8,
+
+        /// Raw codec-specific constraint/compatibility flags.
+        constraint_flags: u8,
+
+        /// Codec adapter diagnostic.
+        reason: String,
+    },
+
+    /// Packetization/stream framing распознаны как неподдержанные текущим adapter-ом.
+    UnsupportedPacketization {
+        /// Codec stream-а.
+        codec: VideoCodec,
+
+        /// Codec adapter diagnostic.
+        reason: String,
+    },
 }
 
 impl VideoRequirementRejection {
@@ -256,6 +295,9 @@ impl VideoRequirementRejection {
             Self::UnsupportedBitDepth { reason, .. } | Self::UnsupportedChroma { reason, .. } => {
                 reason.clone()
             }
+            Self::UnsupportedChromaFormat { reason, .. }
+            | Self::UnsupportedProfile { reason, .. }
+            | Self::UnsupportedPacketization { reason, .. } => reason.clone(),
         }
     }
 }
@@ -314,6 +356,15 @@ pub enum VideoRequirementUncertainty {
         /// Сырое значение bit depth из parser-а.
         bit_depth: u8,
     },
+
+    /// Packet не содержит нужный codec parameter set, но stream ещё может отдать его позже.
+    MissingParameterSet {
+        /// Codec stream-а.
+        codec: VideoCodec,
+
+        /// Какого parameter set-а не хватает.
+        parameter_set: H264ParameterSetKind,
+    },
 }
 
 /// Итоговый generic metadata resolver output.
@@ -335,8 +386,24 @@ pub fn probe_video_packet_requirement(
     codec: VideoCodec,
     packet_bytes: &[u8],
 ) -> VideoRequirementProbe {
+    probe_video_packet_requirement_with_codec_private(codec, packet_bytes, None)
+}
+
+/// Возвращает packet-level probing result с codec-private state контейнера.
+///
+/// H.264 MP4/MKV streams часто несут SPS/PPS и NAL length size в `avcC`, а
+/// packet bytes содержат только length-prefixed access unit. Поэтому caller,
+/// у которого есть container private data, должен использовать этот boundary,
+/// вместо угадывания packetization по первым байтам packet-а.
+#[must_use]
+pub fn probe_video_packet_requirement_with_codec_private(
+    codec: VideoCodec,
+    packet_bytes: &[u8],
+    codec_private: Option<&[u8]>,
+) -> VideoRequirementProbe {
     match codec {
         VideoCodec::Vp9 => map_vp9_probe(probe_vp9_packet_requirement(packet_bytes)),
+        VideoCodec::H264 => probe_h264_packet_requirement(packet_bytes, codec_private),
         other_codec => {
             VideoRequirementProbe::Recoverable(VideoRequirementUncertainty::AdapterUnavailable {
                 codec: other_codec,
@@ -351,9 +418,30 @@ pub fn probe_video_packet_keyframe(
     codec: VideoCodec,
     packet_bytes: &[u8],
 ) -> VideoPacketKeyframeProbe {
+    probe_video_packet_keyframe_with_codec_private(codec, packet_bytes, None)
+}
+
+/// Возвращает keyframe flag с учётом container codec private data.
+#[must_use]
+pub fn probe_video_packet_keyframe_with_codec_private(
+    codec: VideoCodec,
+    packet_bytes: &[u8],
+    codec_private: Option<&[u8]>,
+) -> VideoPacketKeyframeProbe {
     match codec {
         VideoCodec::Vp9 => match vp9_parser::parse_uncompressed_header(packet_bytes) {
             Ok(frame_info) => VideoPacketKeyframeProbe::Keyframe(frame_info.keyframe),
+            Err(error) => {
+                VideoPacketKeyframeProbe::Uncertain(VideoRequirementUncertainty::ParseError {
+                    codec,
+                    reason: error.to_string(),
+                })
+            }
+        },
+        VideoCodec::H264 => match infer_h264_packetization(codec_private, packet_bytes)
+            .and_then(|packetization| probe_h264_packet_keyframe(packet_bytes, packetization))
+        {
+            Ok(keyframe) => VideoPacketKeyframeProbe::Keyframe(keyframe),
             Err(error) => {
                 VideoPacketKeyframeProbe::Uncertain(VideoRequirementUncertainty::ParseError {
                     codec,
@@ -403,6 +491,14 @@ pub fn video_requirement_needs_packet_refinement(requirement: &VideoDecodeRequir
                 || requirement.color.is_none()
                 || requirement.surface_format.is_none()
         }
+        VideoCodec::H264 => {
+            requirement.profile.is_none()
+                || requirement.bit_depth.is_none()
+                || requirement.chroma.is_none()
+                || requirement.width.is_none()
+                || requirement.height.is_none()
+                || requirement.surface_format.is_none()
+        }
         _ => false,
     }
 }
@@ -414,6 +510,164 @@ pub fn unsupported_requirement_can_be_refined_by_packet_probe(
     is_metadata_rejection: bool,
 ) -> bool {
     video_requirement_needs_packet_refinement(requirement) && is_metadata_rejection
+}
+
+/// Пробует H.264 requirement из avcC, затем из SPS внутри packet-а.
+fn probe_h264_packet_requirement(
+    packet_bytes: &[u8],
+    codec_private: Option<&[u8]>,
+) -> VideoRequirementProbe {
+    let mut deferred_private_error = None;
+
+    if let Some(codec_private) = codec_private.filter(|bytes| !bytes.is_empty()) {
+        match h264_sps_metadata_from_avc_decoder_configuration_record(codec_private) {
+            Ok(metadata) => return VideoRequirementProbe::Candidate(h264_candidate(metadata)),
+            Err(error) if h264_requirement_error_is_policy_rejection(&error) => {
+                return map_h264_requirement_error(error);
+            }
+            Err(error) => {
+                deferred_private_error = Some(error);
+            }
+        }
+    }
+
+    match infer_h264_packetization(codec_private, packet_bytes)
+        .map_err(H264RequirementError::ByteStream)
+        .and_then(|packetization| h264_sps_metadata_from_packet(packet_bytes, packetization))
+    {
+        Ok(metadata) => VideoRequirementProbe::Candidate(h264_candidate(metadata)),
+        Err(error)
+            if matches!(error, H264RequirementError::ByteStream(_))
+                && deferred_private_error.is_some() =>
+        {
+            map_h264_requirement_error(
+                deferred_private_error.expect("checked by deferred_private_error.is_some()"),
+            )
+        }
+        Err(error) => map_h264_requirement_error(error),
+    }
+}
+
+/// Строит codec-neutral candidate из подтверждённого H.264 SPS.
+fn h264_candidate(metadata: H264SpsMetadata) -> VideoRequirementCandidate {
+    let mut requirement = VideoDecodeRequirement::new(VideoCodec::H264)
+        .with_profile(VideoProfile::H264(metadata.profile))
+        .with_bit_depth(metadata.bit_depth)
+        .with_chroma(metadata.chroma)
+        .with_resolution(metadata.width, metadata.height)
+        .with_surface_format(VideoSurfaceFormat::Nv12);
+
+    if let Some(color) = metadata.color {
+        requirement = requirement.with_color(color);
+    }
+
+    VideoRequirementCandidate::generic(requirement)
+}
+
+/// Проверяет, что H.264 ошибка является policy reject-ом, а не recoverable uncertainty.
+fn h264_requirement_error_is_policy_rejection(error: &H264RequirementError) -> bool {
+    matches!(
+        error,
+        H264RequirementError::AvcDecoderConfigurationRecord(
+            crate::AvcDecoderConfigurationRecordError::UnsupportedProfile { .. }
+                | crate::AvcDecoderConfigurationRecordError::UnsupportedNalLengthSize { .. }
+        ) | H264RequirementError::SequenceParameterSet(
+            H264SpsError::UnsupportedProfile { .. }
+                | H264SpsError::UnsupportedBitDepth { .. }
+                | H264SpsError::UnsupportedChroma { .. }
+        )
+    )
+}
+
+/// Мапит H.264 typed errors в общий adapter result.
+fn map_h264_requirement_error(error: H264RequirementError) -> VideoRequirementProbe {
+    match error {
+        H264RequirementError::AvcDecoderConfigurationRecord(
+            crate::AvcDecoderConfigurationRecordError::UnsupportedProfile {
+                profile_idc,
+                profile_compatibility,
+                reason,
+            },
+        ) => VideoRequirementProbe::Rejected(VideoRequirementRejection::UnsupportedProfile {
+            codec: VideoCodec::H264,
+            profile_idc,
+            constraint_flags: profile_compatibility,
+            reason: reason.to_string(),
+        }),
+        H264RequirementError::AvcDecoderConfigurationRecord(
+            crate::AvcDecoderConfigurationRecordError::UnsupportedNalLengthSize { nal_length_size },
+        ) => VideoRequirementProbe::Rejected(VideoRequirementRejection::UnsupportedPacketization {
+            codec: VideoCodec::H264,
+            reason: format!(
+                "H.264 AVCC NAL length size {nal_length_size} is unsupported; expected 1, 2 or 4"
+            ),
+        }),
+        H264RequirementError::SequenceParameterSet(H264SpsError::UnsupportedProfile {
+            profile_idc,
+            constraint_flags,
+            reason,
+        }) => VideoRequirementProbe::Rejected(VideoRequirementRejection::UnsupportedProfile {
+            codec: VideoCodec::H264,
+            profile_idc,
+            constraint_flags,
+            reason: reason.to_string(),
+        }),
+        H264RequirementError::SequenceParameterSet(H264SpsError::UnsupportedBitDepth {
+            bit_depth,
+        }) => VideoRequirementProbe::Rejected(VideoRequirementRejection::UnsupportedBitDepth {
+            codec: VideoCodec::H264,
+            bit_depth,
+            reason: format!(
+                "H.264 {bit_depth}-bit stream is not supported by the v1 zero-copy path"
+            ),
+        }),
+        H264RequirementError::SequenceParameterSet(H264SpsError::UnsupportedChroma {
+            chroma_format_idc,
+        }) => map_h264_unsupported_chroma(chroma_format_idc),
+        H264RequirementError::MissingSequenceParameterSet => {
+            VideoRequirementProbe::Recoverable(VideoRequirementUncertainty::MissingParameterSet {
+                codec: VideoCodec::H264,
+                parameter_set: H264ParameterSetKind::Sequence,
+            })
+        }
+        other_error => {
+            VideoRequirementProbe::Recoverable(VideoRequirementUncertainty::ParseError {
+                codec: VideoCodec::H264,
+                reason: other_error.to_string(),
+            })
+        }
+    }
+}
+
+/// Мапит H.264 `chroma_format_idc` в максимально конкретный общий reject.
+fn map_h264_unsupported_chroma(chroma_format_idc: u32) -> VideoRequirementProbe {
+    let Some(chroma) = h264_chroma_subsampling_from_format_idc(chroma_format_idc) else {
+        return VideoRequirementProbe::Rejected(
+            VideoRequirementRejection::UnsupportedChromaFormat {
+                codec: VideoCodec::H264,
+                chroma_format_idc,
+                reason: format!(
+                    "H.264 chroma_format_idc {chroma_format_idc} is not supported by the v1 zero-copy path"
+                ),
+            },
+        );
+    };
+
+    VideoRequirementProbe::Rejected(VideoRequirementRejection::UnsupportedChroma {
+        codec: VideoCodec::H264,
+        chroma,
+        reason: format!("H.264 {chroma} stream is not supported by the v1 zero-copy path"),
+    })
+}
+
+/// Переводит H.264 chroma id в общую model там, где это возможно.
+fn h264_chroma_subsampling_from_format_idc(chroma_format_idc: u32) -> Option<ChromaSubsampling> {
+    match chroma_format_idc {
+        1 => Some(ChromaSubsampling::Yuv420),
+        2 => Some(ChromaSubsampling::Yuv422),
+        3 => Some(ChromaSubsampling::Yuv444),
+        _ => None,
+    }
 }
 
 /// Мапит VP9 packet probe в общий adapter result.

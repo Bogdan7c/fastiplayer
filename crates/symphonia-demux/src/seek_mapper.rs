@@ -119,6 +119,7 @@ mod tests {
         TrackEntry {
             kind: TrackEntryKind::Supported(kind),
             codec_id: "test".to_string(),
+            codec_private: None,
             time_base: Some(TimeBase::try_new(1, 1_000).expect("valid time base")),
             sample_rate: None,
             channels: None,

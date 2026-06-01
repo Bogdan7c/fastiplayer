@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use bytes::Bytes;
-use codec_core::{VideoCodec, VideoPacketKeyframeProbe, probe_video_packet_keyframe};
+use codec_core::{
+    VideoCodec, VideoPacketKeyframeProbe, probe_video_packet_keyframe_with_codec_private,
+};
 use media_core::{
     Packet as MediaPacket, PacketKeyframe, TrackDuration, TrackId, TrackKind, TrackTimestamp,
 };
@@ -150,9 +152,13 @@ fn packet_keyframe(
         return PacketKeyframe::NotKeyframe;
     }
 
-    match VideoCodec::from_container_codec_id(&track_entry.codec_id)
-        .map(|codec| probe_video_packet_keyframe(codec, packet_data))
-    {
+    match VideoCodec::from_container_codec_id(&track_entry.codec_id).map(|codec| {
+        probe_video_packet_keyframe_with_codec_private(
+            codec,
+            packet_data,
+            track_entry.codec_private.as_deref(),
+        )
+    }) {
         Some(VideoPacketKeyframeProbe::Keyframe(keyframe)) => PacketKeyframe::from_known(keyframe),
         Some(VideoPacketKeyframeProbe::Uncertain(_))
         | Some(VideoPacketKeyframeProbe::AdapterUnavailable { .. })
@@ -176,6 +182,7 @@ mod tests {
         TrackEntry {
             kind: TrackEntryKind::Supported(kind),
             codec_id: codec_id.to_string(),
+            codec_private: None,
             time_base: Some(TimeBase::try_new(1, 48_000).expect("valid time base")),
             sample_rate: None,
             channels: None,
@@ -186,6 +193,7 @@ mod tests {
         TrackEntry {
             kind: TrackEntryKind::Supported(kind),
             codec_id: codec_id.to_string(),
+            codec_private: None,
             time_base: None,
             sample_rate: None,
             channels: None,
@@ -196,6 +204,7 @@ mod tests {
         TrackEntry {
             kind: TrackEntryKind::Unsupported(kind),
             codec_id: codec_id.to_string(),
+            codec_private: None,
             time_base: Some(TimeBase::try_new(1, 48_000).expect("valid time base")),
             sample_rate: None,
             channels: None,

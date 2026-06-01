@@ -792,6 +792,15 @@ fn player_error_from_requirement_rejection(rejection: VideoRequirementRejection)
         VideoRequirementRejection::UnsupportedChroma { .. } => {
             PlayerErrorKind::UnsupportedVideoChroma
         }
+        VideoRequirementRejection::UnsupportedChromaFormat { .. } => {
+            PlayerErrorKind::UnsupportedVideoChroma
+        }
+        VideoRequirementRejection::UnsupportedProfile { .. } => {
+            PlayerErrorKind::UnsupportedVideoProfile
+        }
+        VideoRequirementRejection::UnsupportedPacketization { .. } => {
+            PlayerErrorKind::UnsupportedVideoCodec
+        }
         VideoRequirementRejection::UnsupportedCodecAdapter { .. } => {
             PlayerErrorKind::UnsupportedVideoCodec
         }

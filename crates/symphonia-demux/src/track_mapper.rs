@@ -33,6 +33,7 @@ const UNSUPPORTED_TRACK_CODEC_ID: &str = "unsupported_track";
 pub(crate) struct TrackEntry {
     pub(crate) kind: TrackEntryKind,
     pub(crate) codec_id: String,
+    pub(crate) codec_private: Option<Bytes>,
     pub(crate) time_base: Option<SymphoniaTimeBase>,
     pub(crate) sample_rate: Option<u32>,
     pub(crate) channels: Option<u32>,
@@ -273,6 +274,10 @@ pub(crate) fn build_track_entry(
     TrackEntry {
         kind,
         codec_id,
+        codec_private: track
+            .codec_params
+            .as_ref()
+            .and_then(codec_private_from_codec_params),
         time_base: track.time_base,
         sample_rate,
         channels,

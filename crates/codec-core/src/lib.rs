@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod adapter;
+mod h264;
 mod model;
 mod profile;
 mod vp9;
@@ -13,9 +14,20 @@ mod vp9;
 pub use adapter::{
     VideoMetadataSource, VideoPacketKeyframeProbe, VideoRequirementCandidate,
     VideoRequirementProbe, VideoRequirementRejection, VideoRequirementUncertainty,
-    VideoResolvedMetadata, probe_video_packet_keyframe, probe_video_packet_requirement,
-    resolve_video_metadata, unsupported_requirement_can_be_refined_by_packet_probe,
+    VideoResolvedMetadata, probe_video_packet_keyframe,
+    probe_video_packet_keyframe_with_codec_private, probe_video_packet_requirement,
+    probe_video_packet_requirement_with_codec_private, resolve_video_metadata,
+    unsupported_requirement_can_be_refined_by_packet_probe,
     video_requirement_needs_packet_refinement, vp9_profile_from_video_profile,
+};
+pub use h264::{
+    AvcDecoderConfigurationRecord, AvcDecoderConfigurationRecordError, H264BitReaderError,
+    H264ByteStreamError, H264NalLengthSize, H264NalUnit, H264Packetization, H264PacketizationError,
+    H264ParameterSetInjection, H264ParameterSetKind, H264RequirementError, H264SpsError,
+    H264SpsMetadata, h264_access_unit_to_annex_b, h264_nal_units,
+    h264_sps_metadata_from_avc_decoder_configuration_record, h264_sps_metadata_from_packet,
+    infer_h264_packetization, parse_avc_decoder_configuration_record, parse_h264_sps_metadata,
+    probe_h264_packet_keyframe,
 };
 pub use model::{
     AudioCodec, BitDepth, ChromaSubsampling, CodecLevel, ColorMetadataConfidence,
