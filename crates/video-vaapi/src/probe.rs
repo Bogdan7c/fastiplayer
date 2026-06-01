@@ -18,6 +18,8 @@ use codec_core::{
 use cros_codecs::libva;
 use tracing::{debug, warn};
 
+use crate::codec_adapter::VaapiCodecAdapterFactory;
+
 /// Человекочитаемое имя backend-а в reports.
 const VAAPI_DISPLAY_NAME: &str = "VA-API";
 
@@ -608,6 +610,11 @@ fn formats_for_va_profile(
         _ => {}
     }
 
+    // Hardware profile сам по себе не означает production support. Report должен
+    // показывать только formats, для которых в `video-vaapi` уже есть adapter,
+    // умеющий сохранить zero-copy decode path без CPU fallback.
+    formats.retain(VaapiCodecAdapterFactory::supports_decode_format);
+
     formats
 }
 
@@ -799,9 +806,71 @@ mod tests {
             },
         );
 
+        assert_eq!(formats.len(), 1);
+        assert_eq!(formats[0].codec, VideoCodec::Vp9);
+        assert_eq!(formats[0].profile, VideoProfile::Vp9(Vp9Profile::Profile2));
+        assert_eq!(formats[0].bit_depth, BitDepth::Ten);
+        assert_eq!(formats[0].chroma, ChromaSubsampling::Yuv420);
         assert_eq!(
             p010_storage_layouts_for_formats(&formats),
             vec![P010StorageLayout::BaselineSeparateLayer]
         );
+    }
+
+    #[test]
+    fn capability_probe_does_not_advertise_unimplemented_h264_slot() {
+        let formats = formats_for_va_profile(
+            libva::VAProfile::VAProfileH264High,
+            libva::VA_RT_FORMAT_YUV420,
+            MaxResolution {
+                width: Some(1920),
+                height: Some(1080),
+            },
+        );
+
+        assert!(formats.is_empty());
+    }
+
+    #[test]
+    fn capability_probe_does_not_advertise_unimplemented_vp9_profiles() {
+        let profile1_formats = formats_for_va_profile(
+            libva::VAProfile::VAProfileVP9Profile1,
+            libva::VA_RT_FORMAT_YUV422,
+            MaxResolution {
+                width: Some(1920),
+                height: Some(1080),
+            },
+        );
+        let profile3_formats = formats_for_va_profile(
+            libva::VAProfile::VAProfileVP9Profile3,
+            libva::VA_RT_FORMAT_YUV420_10,
+            MaxResolution {
+                width: Some(1920),
+                height: Some(1080),
+            },
+        );
+
+        assert!(profile1_formats.is_empty());
+        assert!(profile3_formats.is_empty());
+    }
+
+    #[test]
+    fn capability_probe_does_not_advertise_future_codecs_without_adapters() {
+        for profile in [
+            libva::VAProfile::VAProfileAV1Profile0,
+            libva::VAProfile::VAProfileHEVCMain,
+            libva::VAProfile::VAProfileVP8Version0_3,
+        ] {
+            let formats = formats_for_va_profile(
+                profile,
+                libva::VA_RT_FORMAT_YUV420,
+                MaxResolution {
+                    width: Some(1920),
+                    height: Some(1080),
+                },
+            );
+
+            assert!(formats.is_empty(), "{profile:?} must not be advertised");
+        }
     }
 }

@@ -1,6 +1,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use codec_core::{DecodeBackendId, SupportedVideoDecodeFormat, ZeroCopyExportRequirement};
+use codec_core::{
+    DecodeBackendId, SupportedVideoDecodeFormat, VideoDecodeRequirement, VideoSurfaceFormat,
+    ZeroCopyExportRequirement,
+};
 use render_core::{P010StorageLayout, RenderCapabilities};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -66,7 +69,7 @@ impl CapabilityScanner {
         for provider in &self.providers {
             let backend_id = provider.backend_id();
             debug!(backend = %backend_id, "Запуск capability probe");
-            let capabilities = provider.probe();
+            let mut capabilities = provider.probe();
             if capabilities.backend_id != backend_id {
                 warn!(
                     expected = %backend_id,
@@ -74,6 +77,8 @@ impl CapabilityScanner {
                     "Capability provider вернул другой backend id"
                 );
             }
+            capabilities =
+                filter_backend_capabilities_for_report(capabilities, &self.render_backends);
             video_backends.push(capabilities);
         }
 
@@ -84,6 +89,61 @@ impl CapabilityScanner {
             render_backends: self.render_backends.clone(),
         }
     }
+}
+
+/// Оставляет в system report только formats, которые реально проходят production intersection.
+fn filter_backend_capabilities_for_report(
+    mut capabilities: BackendCapabilities,
+    render_backends: &[RenderCapabilities],
+) -> BackendCapabilities {
+    if !capabilities.status.is_available() {
+        return capabilities;
+    }
+
+    let original_format_count = capabilities.supported_video_decode_formats.len();
+    let export_paths = capabilities.export_paths.clone();
+    capabilities
+        .supported_video_decode_formats
+        .retain(|format| reportable_decode_format(format, &export_paths, render_backends));
+
+    let hidden_format_count =
+        original_format_count.saturating_sub(capabilities.supported_video_decode_formats.len());
+    if hidden_format_count > 0 {
+        capabilities.diagnostics.push(format!(
+            "Capability report hid {hidden_format_count} decode formats without full zero-copy renderer intersection"
+        ));
+    }
+
+    capabilities
+}
+
+/// Проверяет hardware+export+renderer часть capability report intersection.
+fn reportable_decode_format(
+    format: &SupportedVideoDecodeFormat,
+    export_paths: &[VideoExportPath],
+    render_backends: &[RenderCapabilities],
+) -> bool {
+    if !export_paths.contains(&VideoExportPath::DmaBuf) {
+        return false;
+    }
+
+    let requirement = decode_requirement_for_supported_format(format);
+    render_backends
+        .iter()
+        .any(|renderer| renderer.supports_decode_requirement(&requirement))
+}
+
+/// Собирает минимальное stream requirement из probed backend format-а для renderer check-а.
+fn decode_requirement_for_supported_format(
+    format: &SupportedVideoDecodeFormat,
+) -> VideoDecodeRequirement {
+    let mut requirement = VideoDecodeRequirement::new(format.codec)
+        .with_profile(format.profile)
+        .with_bit_depth(format.bit_depth)
+        .with_chroma(format.chroma);
+    requirement.surface_format = VideoSurfaceFormat::from_decode_requirement(&requirement);
+    requirement.hdr = format.hdr_input;
+    requirement
 }
 
 /// Полный capability report текущей системы.
@@ -317,3 +377,152 @@ pub struct DriverQuirk {
 
 /// Compatibility alias: capability layer использует общий zero-copy export contract.
 pub type VideoExportPath = ZeroCopyExportRequirement;
+
+#[cfg(test)]
+mod tests {
+    use codec_core::{BitDepth, ChromaSubsampling, VideoCodec, VideoProfile, Vp9Profile};
+
+    use super::*;
+
+    /// Static provider для scanner-level filtering tests без реального backend probe.
+    struct StaticVideoProvider {
+        /// Capabilities, которые provider вернёт scanner-у.
+        capabilities: BackendCapabilities,
+    }
+
+    impl VideoCapabilityProvider for StaticVideoProvider {
+        /// Возвращает backend id тестового report-а.
+        fn backend_id(&self) -> DecodeBackendId {
+            self.capabilities.backend_id.clone()
+        }
+
+        /// Возвращает заранее заданные capabilities.
+        fn probe(&self) -> BackendCapabilities {
+            self.capabilities.clone()
+        }
+    }
+
+    /// Собирает минимальный available backend report для filtering tests.
+    fn backend_with_formats(
+        formats: Vec<SupportedVideoDecodeFormat>,
+        export_paths: Vec<VideoExportPath>,
+    ) -> BackendCapabilities {
+        BackendCapabilities {
+            backend_id: DecodeBackendId::vaapi(),
+            display_name: "Test VA-API".to_string(),
+            status: BackendProbeStatus::Available,
+            driver: BackendDriverInfo::default(),
+            supported_video_decode_formats: formats,
+            raw_profiles: Vec::new(),
+            raw_entrypoints: Vec::new(),
+            raw_rt_formats: Vec::new(),
+            quirks: Vec::new(),
+            export_paths,
+            p010_storage_layouts: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// Собирает one-line decode format с production VAAPI backend id.
+    fn vp9_format(
+        profile: Vp9Profile,
+        bit_depth: BitDepth,
+        chroma: ChromaSubsampling,
+        hdr_input: bool,
+    ) -> SupportedVideoDecodeFormat {
+        SupportedVideoDecodeFormat {
+            codec: VideoCodec::Vp9,
+            profile: VideoProfile::Vp9(profile),
+            bit_depth,
+            chroma,
+            max_width: Some(3840),
+            max_height: Some(2160),
+            max_fps: None,
+            hdr_input,
+            backend: DecodeBackendId::vaapi(),
+        }
+    }
+
+    /// Проверяет, что system report не рекламирует formats без DMA-BUF export.
+    #[test]
+    fn scanner_hides_formats_without_dma_buf_export() {
+        let mut scanner = CapabilityScanner::new();
+        scanner.register_provider(Box::new(StaticVideoProvider {
+            capabilities: backend_with_formats(
+                vec![vp9_format(
+                    Vp9Profile::Profile0,
+                    BitDepth::Eight,
+                    ChromaSubsampling::Yuv420,
+                    false,
+                )],
+                Vec::new(),
+            ),
+        }));
+        scanner.register_render_capabilities(RenderCapabilities::wgpu_nv12(Some(4096)));
+
+        let report = scanner.scan_with_timestamp(7);
+
+        assert_eq!(report.supported_video_formats().count(), 0);
+        assert!(
+            report.video_backends[0]
+                .diagnostics
+                .iter()
+                .any(|message| message.contains("zero-copy renderer intersection"))
+        );
+    }
+
+    /// Проверяет, что renderer-incompatible P010 не попадает в advertised decode matrix.
+    #[test]
+    fn scanner_hides_renderer_incompatible_surface_formats() {
+        let mut scanner = CapabilityScanner::new();
+        scanner.register_provider(Box::new(StaticVideoProvider {
+            capabilities: backend_with_formats(
+                vec![
+                    vp9_format(
+                        Vp9Profile::Profile0,
+                        BitDepth::Eight,
+                        ChromaSubsampling::Yuv420,
+                        false,
+                    ),
+                    vp9_format(
+                        Vp9Profile::Profile2,
+                        BitDepth::Ten,
+                        ChromaSubsampling::Yuv420,
+                        true,
+                    ),
+                ],
+                vec![VideoExportPath::DmaBuf],
+            ),
+        }));
+        scanner.register_render_capabilities(RenderCapabilities::wgpu_nv12(Some(4096)));
+
+        let report = scanner.scan_with_timestamp(7);
+        let formats = report.supported_video_formats().collect::<Vec<_>>();
+
+        assert_eq!(formats.len(), 1);
+        assert_eq!(formats[0].profile, VideoProfile::Vp9(Vp9Profile::Profile0));
+    }
+
+    /// Проверяет positive path: NV12 + DMA-BUF + renderer support остаётся advertised.
+    #[test]
+    fn scanner_keeps_renderer_compatible_zero_copy_format() {
+        let mut scanner = CapabilityScanner::new();
+        scanner.register_provider(Box::new(StaticVideoProvider {
+            capabilities: backend_with_formats(
+                vec![vp9_format(
+                    Vp9Profile::Profile0,
+                    BitDepth::Eight,
+                    ChromaSubsampling::Yuv420,
+                    false,
+                )],
+                vec![VideoExportPath::DmaBuf],
+            ),
+        }));
+        scanner.register_render_capabilities(RenderCapabilities::wgpu_nv12(Some(4096)));
+
+        let report = scanner.scan_with_timestamp(7);
+
+        assert_eq!(report.supported_video_formats().count(), 1);
+        assert!(report.video_backends[0].diagnostics.is_empty());
+    }
+}

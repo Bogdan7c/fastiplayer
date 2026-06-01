@@ -1,4 +1,4 @@
-/// Dedicated decoder thread для VA-API VP9 decode.
+/// Dedicated decoder thread для VA-API hardware decode.
 ///
 /// Изолирует blocking hardware decode и DMA-BUF export от render thread.
 ///
@@ -13,9 +13,7 @@ use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use codec_core::{
-    BitDepth, ChromaSubsampling, VideoCodec, VideoColorMetadata, VideoProfile, VideoSurfaceFormat,
-};
+use codec_core::VideoColorMetadata;
 use crossbeam_channel::{
     Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError, bounded, select, unbounded,
 };
@@ -776,7 +774,7 @@ pub struct DecodePacket {
     /// Seek generation player pipeline-а, которому принадлежит packet.
     pub generation: u64,
 
-    /// Encoded VP9 bytes, которые decoder thread передаёт hardware backend-у без повторной копии.
+    /// Encoded video bytes, которые decoder thread передаёт hardware backend-у без повторной копии.
     pub encoded_bytes: Bytes,
 
     /// Keyframe flag из container/demuxer.
@@ -1007,7 +1005,7 @@ pub struct VideoDecodeThread {
 }
 
 impl VideoDecodeThread {
-    /// Создаёт decoder thread с VA-API VP9 decoder.
+    /// Создаёт decoder thread с VA-API hardware decoder.
     pub fn new() -> anyhow::Result<Self> {
         Self::new_with_config(VideoDecodeThreadConfig::from_env())
     }
@@ -1134,7 +1132,7 @@ impl VideoDecodeThread {
             })
     }
 
-    /// Принимает stream config для текущего hardcoded VP9 VA-API adapter-а.
+    /// Принимает stream config для текущей VA-API adapter matrix.
     pub fn configure_stream(
         &self,
         config: video_core::VideoStreamDecodeConfig,
@@ -1435,49 +1433,7 @@ impl VideoDecodeThread {
 fn reject_unsupported_vaapi_stream_config(
     config: &video_core::VideoStreamDecodeConfig,
 ) -> Option<video_core::VideoStreamConfigRejection> {
-    if config.codec != VideoCodec::Vp9 {
-        return Some(video_core::VideoStreamConfigRejection::UnsupportedCodec {
-            codec: config.codec,
-        });
-    }
-
-    if let Some(profile) = config.profile
-        && !matches!(profile, VideoProfile::Vp9(_))
-    {
-        return Some(video_core::VideoStreamConfigRejection::UnsupportedProfile { profile });
-    }
-
-    if let Some(bit_depth) = config.bit_depth
-        && !matches!(bit_depth, BitDepth::Eight | BitDepth::Ten)
-    {
-        return Some(video_core::VideoStreamConfigRejection::UnsupportedBitDepth { bit_depth });
-    }
-
-    if let Some(chroma) = config.chroma
-        && chroma != ChromaSubsampling::Yuv420
-    {
-        return Some(video_core::VideoStreamConfigRejection::UnsupportedChroma { chroma });
-    }
-
-    if let Some(surface_format) = config.surface_format
-        && !matches!(
-            surface_format,
-            VideoSurfaceFormat::Nv12 | VideoSurfaceFormat::P010
-        )
-    {
-        return Some(
-            video_core::VideoStreamConfigRejection::UnsupportedSurfaceFormat { surface_format },
-        );
-    }
-
-    if config.packetization.is_some() {
-        return Some(video_core::VideoStreamConfigRejection::BackendUnsupported {
-            reason: "VP9 VA-API adapter does not accept codec-specific packetization metadata"
-                .to_string(),
-        });
-    }
-
-    None
+    crate::codec_adapter::VaapiCodecAdapterFactory::stream_config_rejection(config)
 }
 
 /// Ждёт flush ACK ограниченное время и переводит thread state в fatal при срыве.

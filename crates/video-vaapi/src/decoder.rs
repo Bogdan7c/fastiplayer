@@ -5,12 +5,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
-use cros_codecs::DecodedFormat;
-use cros_codecs::decoder::BlockingMode;
-use cros_codecs::decoder::DecoderEvent;
-use cros_codecs::decoder::DynDecodedHandle;
-use cros_codecs::decoder::stateless::DecodeError;
-use cros_codecs::decoder::stateless::StatelessVideoDecoder;
 use cros_codecs::libva::{
     VA_RT_FORMAT_YUV420, VA_RT_FORMAT_YUV420_10, VA_RT_FORMAT_YUV420_12, VA_RT_FORMAT_YUV422,
     VA_RT_FORMAT_YUV422_10, VA_RT_FORMAT_YUV422_12, VA_RT_FORMAT_YUV444, VA_RT_FORMAT_YUV444_10,
@@ -24,14 +18,17 @@ use video_core::{
     VideoFrameTimingDiagnostics, VideoResourcePoolDiagnostics,
 };
 
+use crate::codec_adapter::{
+    VaapiAdapterDecodeError, VaapiCodecAdapter, VaapiCodecAdapterFactory, VaapiDecodedFormat,
+    VaapiDecodedFrameHandle, VaapiDecoderEvent,
+};
 use crate::frame_pool::DmaFramePool;
-use crate::internal_vaapi_frame::InternalVaapiFrame;
 use crate::resource_pool::FrameResourcePool;
 
 /// Production default количества кадров в VA DMA-пуле.
 ///
-/// VP9 decoder может держать до 8 reference frames. 24 descriptors дают запас
-/// для 4k60 burst-ов, но остаются bounded через `VaapiDecoderRuntimeConfig`.
+/// Текущий VP9 adapter может держать до 8 reference frames. 24 descriptors дают
+/// запас для 4k60 burst-ов, но остаются bounded через `VaapiDecoderRuntimeConfig`.
 pub const DEFAULT_DECODER_SURFACE_POOL_FRAMES: usize = 24;
 
 /// Production default кадров, которые decoder держит импортированными до publish boundary.
@@ -72,7 +69,7 @@ impl VaapiDecoderRuntimeConfig {
     }
 }
 
-/// Максимум повторных submit попыток после `DecodeError::CheckEvents`.
+/// Максимум повторных submit попыток после adapter-level `CheckEvents`.
 ///
 /// `cros-codecs` использует `CheckEvents` как backpressure-сигнал:
 /// вызывающий код должен обработать pending events и повторить тот же bitstream.
@@ -106,7 +103,7 @@ struct DecoderDrainReport {
 /// как recoverable parse error. Все готовые кадры по-прежнему лежат в `ready_queue`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct DecodeLoopReport {
-    /// Сколько раз packet был отправлен в `inner.decode()`.
+    /// Сколько раз packet был отправлен в active codec adapter.
     attempts: usize,
 
     /// Количество обработанных decoder events за весь вызов.
@@ -142,12 +139,15 @@ impl DecodeLoopReport {
 /// Production implementation живёт на `VaapiVideoDecoder`, а unit test подставляет
 /// fake driver без VA-API, чтобы проверить контракт `CheckEvents -> retry same packet`.
 trait DecoderRetryDriver {
+    /// Короткое имя codec-а для diagnostics retry-loop-а.
+    fn codec_label(&self) -> &'static str;
+
     /// Отправляет один packet в backend decoder.
     fn submit_packet(
         &mut self,
         timestamp_us: u64,
         packet_data: &[u8],
-    ) -> std::result::Result<usize, DecodeError>;
+    ) -> std::result::Result<usize, VaapiAdapterDecodeError>;
 
     /// Обрабатывает все pending decoder events.
     fn drain_events(&mut self) -> Result<DecoderDrainReport>;
@@ -168,6 +168,7 @@ where
 {
     let pts_ms = timestamp_us / 1000;
     let mut report = DecodeLoopReport::default();
+    let codec_label = driver.codec_label();
 
     loop {
         report.attempts += 1;
@@ -191,7 +192,7 @@ where
                 report.record_drain(drain_report, drain_start.elapsed());
                 return Ok(report);
             }
-            Err(DecodeError::CheckEvents) => {
+            Err(VaapiAdapterDecodeError::CheckEvents) => {
                 let drain_start = std::time::Instant::now();
                 let drain_report = driver.drain_events()?;
                 let format_changed = drain_report.format_changed;
@@ -208,10 +209,11 @@ where
                     keyframe = keyframe,
                     attempt = attempt,
                     format_changed = format_changed,
-                    "retrying same VP9 packet after decoder event drain"
+                    codec = codec_label,
+                    "retrying same packet after decoder event drain"
                 );
             }
-            Err(DecodeError::NotEnoughOutputBuffers(needed)) => {
+            Err(VaapiAdapterDecodeError::NotEnoughOutputBuffers(needed)) => {
                 warn!(
                     pts_ms = pts_ms,
                     keyframe = keyframe,
@@ -224,14 +226,15 @@ where
                 report.record_drain(drain_report, drain_start.elapsed());
                 return Ok(report);
             }
-            Err(DecodeError::ParseFrameError(message)) => {
+            Err(VaapiAdapterDecodeError::ParseFrameError(message)) => {
                 report.skipped_packet = true;
                 warn!(
                     pts_ms = pts_ms,
                     keyframe = keyframe,
                     attempt = attempt,
+                    codec = codec_label,
                     %message,
-                    "VP9 parse error, skipping packet"
+                    "parse error, skipping packet"
                 );
                 return Ok(report);
             }
@@ -241,9 +244,10 @@ where
                     keyframe = keyframe,
                     attempt = attempt,
                     error = ?error,
+                    codec = codec_label,
                     "Decode error"
                 );
-                return Err(anyhow::anyhow!("Decode error: {:?}", error));
+                return Err(anyhow::Error::from(error));
             }
         }
     }
@@ -300,6 +304,19 @@ fn zero_copy_contract_violation(detail: impl Into<String>) -> anyhow::Error {
     ZeroCopyContractViolation::new(detail).into()
 }
 
+/// Забирает handles только из decoder-owned ready queue.
+///
+/// Renderer-owned frames намеренно не представлены в этой очереди: они уже
+/// опубликованы наружу и освобождаются только через обычный release path.
+fn drain_decoder_owned_ready_frame_handles(
+    ready_queue: &mut VecDeque<DecodedFrame>,
+) -> Vec<FrameResourceHandle> {
+    ready_queue
+        .drain(..)
+        .map(|frame| frame.resource_handle)
+        .collect()
+}
+
 impl DecodedSurfaceContract {
     /// Создаёт контракт для текущего production NV12 path.
     const fn nv12() -> Self {
@@ -320,17 +337,17 @@ impl DecodedSurfaceContract {
     }
 }
 
-/// Преобразует `cros-codecs` decoded format в внешний frame contract.
+/// Преобразует adapter decoded format в внешний frame contract.
 ///
 /// Важно: `cros-codecs::DecodedFormat::I010` здесь приходит из VA `P010`
 /// image format mapping. Для renderer boundary это не planar I010 upload path,
 /// а P010 DMA-BUF zero-copy contract.
 fn decoded_contract_for_stream_format(
-    decoded_format: DecodedFormat,
+    decoded_format: VaapiDecodedFormat,
 ) -> Result<DecodedSurfaceContract> {
     match decoded_format {
-        DecodedFormat::NV12 | DecodedFormat::I420 => Ok(DecodedSurfaceContract::nv12()),
-        DecodedFormat::I010 => Ok(DecodedSurfaceContract::p010()),
+        VaapiDecodedFormat::Nv12 | VaapiDecodedFormat::I420 => Ok(DecodedSurfaceContract::nv12()),
+        VaapiDecodedFormat::I010 => Ok(DecodedSurfaceContract::p010()),
         other => Err(anyhow::anyhow!(
             "Unsupported decoded stream format for VA-API renderer boundary: {:?}",
             other
@@ -351,17 +368,17 @@ fn decoded_contract_for_rt_format(rt_format: u32) -> Result<DecodedSurfaceContra
 }
 
 /// Преобразует decoded output format из `StreamInfo` в VA RT format для surface pool.
-fn rt_format_for_decoded_format(decoded_format: DecodedFormat) -> Result<u32> {
+fn rt_format_for_decoded_format(decoded_format: VaapiDecodedFormat) -> Result<u32> {
     match decoded_format {
-        DecodedFormat::NV12 | DecodedFormat::I420 => Ok(VA_RT_FORMAT_YUV420),
-        DecodedFormat::I010 => Ok(VA_RT_FORMAT_YUV420_10),
-        DecodedFormat::I012 => Ok(VA_RT_FORMAT_YUV420_12),
-        DecodedFormat::I422 => Ok(VA_RT_FORMAT_YUV422),
-        DecodedFormat::I210 => Ok(VA_RT_FORMAT_YUV422_10),
-        DecodedFormat::I212 => Ok(VA_RT_FORMAT_YUV422_12),
-        DecodedFormat::I444 => Ok(VA_RT_FORMAT_YUV444),
-        DecodedFormat::I410 => Ok(VA_RT_FORMAT_YUV444_10),
-        DecodedFormat::I412 => Ok(VA_RT_FORMAT_YUV444_12),
+        VaapiDecodedFormat::Nv12 | VaapiDecodedFormat::I420 => Ok(VA_RT_FORMAT_YUV420),
+        VaapiDecodedFormat::I010 => Ok(VA_RT_FORMAT_YUV420_10),
+        VaapiDecodedFormat::I012 => Ok(VA_RT_FORMAT_YUV420_12),
+        VaapiDecodedFormat::I422 => Ok(VA_RT_FORMAT_YUV422),
+        VaapiDecodedFormat::I210 => Ok(VA_RT_FORMAT_YUV422_10),
+        VaapiDecodedFormat::I212 => Ok(VA_RT_FORMAT_YUV422_12),
+        VaapiDecodedFormat::I444 => Ok(VA_RT_FORMAT_YUV444),
+        VaapiDecodedFormat::I410 => Ok(VA_RT_FORMAT_YUV444_10),
+        VaapiDecodedFormat::I412 => Ok(VA_RT_FORMAT_YUV444_12),
         other => Err(anyhow::anyhow!(
             "Unsupported VA decoded format for internal surface pool: {:?}",
             other
@@ -369,17 +386,13 @@ fn rt_format_for_decoded_format(decoded_format: DecodedFormat) -> Result<u32> {
     }
 }
 
-/// VA-API VP9 hardware decoder, реализующий трейт [`VideoDecoder`].
+/// VA-API hardware decoder с internal codec adapter shell.
 ///
-/// Оборачивает `cros-codecs::StatelessDecoder<Vp9, VaapiBackend<InternalVaapiFrame>>`
-/// с internal VA surfaces, DMA-BUF resource pool и drain events внутри `decode()`
-/// для предоставления синхронного интерфейса.
+/// Активный adapter владеет concrete cros-codecs decoder-ом, а этот слой владеет
+/// internal VA surfaces, DMA-BUF resource pool и drain events внутри `decode()`.
 pub struct VaapiVideoDecoder {
-    /// Внутренний stateless decoder как trait object.
-    ///
-    /// Используем `DynStatelessVideoDecoder` чтобы избежать monomorphization
-    /// и упростить тип (иначе пришлось бы тащить generic параметры через всё приложение).
-    inner: cros_codecs::decoder::stateless::DynStatelessVideoDecoder<InternalVaapiFrame>,
+    /// Активный codec adapter, который скрывает concrete cros-codecs decoder type.
+    adapter: Box<dyn VaapiCodecAdapter>,
 
     /// Пул lightweight frame descriptors для выходных VA surfaces.
     frame_pool: DmaFramePool,
@@ -403,7 +416,7 @@ pub struct VaapiVideoDecoder {
     ///
     /// Пока handle находится в этой map, VA surface не возвращается в frame pool
     /// и decoder не может перезаписать memory, которую может семплить renderer.
-    zero_copy_guards: HashMap<u64, DynDecodedHandle<InternalVaapiFrame>>,
+    zero_copy_guards: HashMap<u64, VaapiDecodedFrameHandle>,
 
     /// Был ли уже залогирован первый успешный zero-copy descriptor.
     zero_copy_success_logged: bool,
@@ -419,12 +432,12 @@ pub struct VaapiVideoDecoder {
 }
 
 impl VaapiVideoDecoder {
-    /// Создаёт новый VA-API VP9 decoder.
+    /// Создаёт новый VA-API decoder с production adapter-ом по умолчанию.
     ///
     /// # Ошибки
     /// Возвращает ошибку если:
-    /// - VA-API display недоступен (`vainfo` не показывает VP9),
-    /// - не удалось создать stateless decoder,
+    /// - VA-API display недоступен,
+    /// - не удалось создать production codec adapter,
     /// - не удалось создать GBM frame pool.
     pub fn new() -> Result<Self> {
         let resource_pool = Arc::new(Mutex::new(FrameResourcePool::new()));
@@ -456,24 +469,14 @@ impl VaapiVideoDecoder {
         let display = cros_codecs::libva::Display::open()
             .ok_or_else(|| anyhow::anyhow!("Failed to open VA-API display: libva not available"))?;
 
-        info!("Creating VA-API VP9 decoder");
+        info!("Creating VA-API codec adapter");
 
-        // Создаём stateless decoder для VP9 с VA-API backend.
-        // `BlockingMode::Blocking` упрощает синхронизацию — decode ждёт завершения GPU.
-        //
-        // Используем turbofish для явного указания generic параметров,
-        // так как `new_vaapi` определён для нескольких кодеков (AV1, H264, H265, VP8, VP9)
-        // и компилятор не может выбрать нужный impl без подсказки.
-        type VaapiVp9Decoder = cros_codecs::decoder::stateless::StatelessDecoder<
-            cros_codecs::decoder::stateless::vp9::Vp9,
-            cros_codecs::backend::vaapi::decoder::VaapiBackend<InternalVaapiFrame>,
-        >;
-
-        let decoder = VaapiVp9Decoder::new_vaapi(display, BlockingMode::Blocking)
-            .map_err(|e| anyhow::anyhow!("Failed to create VA-API decoder: {:?}", e))?;
-
-        // Преобразуем в trait object чтобы избежать generic типов в поле структуры.
-        let inner = decoder.into_trait_object();
+        // Создаём production adapter через internal factory. Сейчас factory
+        // выбирает VP9, а будущие codec adapters смогут заменить active adapter
+        // без раскрытия cros-codecs generic типов наружу этого boundary.
+        let adapter = VaapiCodecAdapterFactory::create_default_adapter(display)?;
+        let backend_name = adapter.backend_name();
+        let adapter_codec = adapter.codec();
 
         info!("Creating internal VA frame pool");
 
@@ -485,10 +488,14 @@ impl VaapiVideoDecoder {
         )
         .map_err(|e| anyhow::anyhow!("Failed to create frame pool: {}", e))?;
 
-        info!("VA-API VP9 decoder initialized successfully");
+        info!(
+            backend_name,
+            codec = %adapter_codec,
+            "VA-API decoder initialized successfully"
+        );
 
         Ok(Self {
-            inner,
+            adapter,
             frame_pool,
             resource_pool,
             ready_queue: VecDeque::new(),
@@ -497,7 +504,7 @@ impl VaapiVideoDecoder {
             zero_copy_success_logged: false,
             diagnostic_tx,
             p010_boundary_verified_logged: false,
-            backend_name: "VA-API VP9",
+            backend_name,
         })
     }
 
@@ -542,9 +549,9 @@ impl VaapiVideoDecoder {
     /// Определяет decoded surface contract для текущего ready handle.
     fn current_decoded_contract(
         &self,
-        handle: &DynDecodedHandle<InternalVaapiFrame>,
+        handle: &VaapiDecodedFrameHandle,
     ) -> Result<DecodedSurfaceContract> {
-        if let Some(stream_info) = self.inner.stream_info() {
+        if let Some(stream_info) = self.adapter.stream_info() {
             return decoded_contract_for_stream_format(stream_info.format);
         }
 
@@ -579,7 +586,7 @@ impl VaapiVideoDecoder {
     }
 
     /// Возвращает backing frame в pool после того, как decoded handle больше не нужен.
-    fn return_frame_from_handle(&mut self, handle: DynDecodedHandle<InternalVaapiFrame>) {
+    fn return_frame_from_handle(&mut self, handle: VaapiDecodedFrameHandle) {
         let frame_arc = handle.video_frame();
         drop(handle);
 
@@ -665,11 +672,8 @@ impl VaapiVideoDecoder {
     /// только через обычный release от session, иначе VA surface может быть
     /// переиспользован, пока renderer ещё семплит старый кадр.
     fn release_decoder_owned_ready_frames(&mut self, reason: &'static str) -> Result<()> {
-        let decoder_owned_resource_handles = self
-            .ready_queue
-            .drain(..)
-            .map(|frame| frame.resource_handle)
-            .collect::<Vec<_>>();
+        let decoder_owned_resource_handles =
+            drain_decoder_owned_ready_frame_handles(&mut self.ready_queue);
 
         if decoder_owned_resource_handles.is_empty() {
             return Ok(());
@@ -720,7 +724,7 @@ impl VaapiVideoDecoder {
     ///
     /// # Ошибки
     /// Возвращает ошибку если sync, DMA-BUF export или registration не удался.
-    fn process_ready_frame(&mut self, handle: DynDecodedHandle<InternalVaapiFrame>) -> Result<()> {
+    fn process_ready_frame(&mut self, handle: VaapiDecodedFrameHandle) -> Result<()> {
         // Получаем разрешения кадра ДО sync (sync может потребовать mutable borrow).
         let resolution = handle.coded_resolution();
         let display_resolution = handle.display_resolution();
@@ -871,10 +875,10 @@ impl VaapiVideoDecoder {
     fn drain_decoder_events(&mut self) -> Result<DecoderDrainReport> {
         let mut report = DecoderDrainReport::default();
 
-        while let Some(event) = self.inner.next_event() {
+        while let Some(event) = self.adapter.next_event() {
             report.events_count += 1;
             match event {
-                DecoderEvent::FrameReady(handle) => {
+                VaapiDecoderEvent::FrameReady(handle) => {
                     let pts_ms = handle.timestamp() / 1000;
                     trace!(pts_ms = pts_ms, "DecoderEvent::FrameReady");
                     if let Err(error) = self.process_ready_frame(handle) {
@@ -884,7 +888,7 @@ impl VaapiVideoDecoder {
                         warn!(error = %error, "Failed to process ready frame");
                     }
                 }
-                DecoderEvent::FormatChanged => {
+                VaapiDecoderEvent::FormatChanged => {
                     report.format_changed = true;
                     info!("Format changed, invalidating resource pool and frame pool");
 
@@ -896,7 +900,7 @@ impl VaapiVideoDecoder {
 
                     // Пересоздаём frame pool под новое разрешение/формат.
                     // `stream_info()` уже обновлён внутри cros-codecs перед event-ом.
-                    if let Some(stream_info) = self.inner.stream_info() {
+                    if let Some(stream_info) = self.adapter.stream_info() {
                         let res = stream_info.coded_resolution;
                         let rt_format = match rt_format_for_decoded_format(stream_info.format) {
                             Ok(rt_format) => rt_format,
@@ -943,25 +947,19 @@ impl VaapiVideoDecoder {
 }
 
 impl DecoderRetryDriver for VaapiVideoDecoder {
+    /// Возвращает codec label активного adapter-а.
+    fn codec_label(&self) -> &'static str {
+        self.adapter.codec_label()
+    }
+
     /// Отправляет packet в реальный VA-API decoder.
     fn submit_packet(
         &mut self,
         timestamp_us: u64,
         packet_data: &[u8],
-    ) -> std::result::Result<usize, DecodeError> {
-        // Декодер вызывает callback, когда ему нужен новый выходной VA surface.
-        // `alloc_or_allocate` сохраняет forward progress, если reference frames
-        // временно удерживают больше surfaces, чем ожидалось.
-        let frame_pool = &mut self.frame_pool;
-        let mut alloc_cb = || {
-            let frame = frame_pool.alloc_or_allocate();
-            if frame.is_none() {
-                warn!("Frame pool exhausted — decoder needs more output buffers");
-            }
-            frame
-        };
-
-        self.inner.decode(timestamp_us, packet_data, &mut alloc_cb)
+    ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
+        self.adapter
+            .submit_packet(timestamp_us, packet_data, &mut self.frame_pool)
     }
 
     /// Обрабатывает pending events реального decoder-а.
@@ -971,7 +969,7 @@ impl DecoderRetryDriver for VaapiVideoDecoder {
 }
 
 impl VideoDecoder for VaapiVideoDecoder {
-    /// Декодирует один VP9 packet.
+    /// Декодирует один encoded video packet активным codec adapter-ом.
     ///
     /// Pipeline:
     /// 1. Submit bitstream в cros-codecs decoder.
@@ -1055,9 +1053,9 @@ impl VideoDecoder for VaapiVideoDecoder {
     ///
     /// После flush decoder требует keyframe перед возобновлением декодирования.
     fn flush(&mut self) -> Result<()> {
-        self.inner
+        self.adapter
             .flush()
-            .map_err(|e| anyhow::anyhow!("Flush error: {:?}", e))?;
+            .map_err(|error| anyhow::anyhow!("Flush error: {error}"))?;
         self.release_decoder_owned_ready_frames("flush")?;
         Ok(())
     }
@@ -1082,6 +1080,25 @@ impl VideoDecoder for VaapiVideoDecoder {
 mod tests {
     use super::*;
 
+    /// Создаёт neutral decoded frame без реального VA resource-а для ownership tests.
+    fn decoded_frame_for_tests(resource_handle: FrameResourceHandle) -> DecodedFrame {
+        DecodedFrame {
+            generation: 0,
+            pts: Duration::ZERO,
+            format: DecodedPixelFormat::Nv12,
+            bit_depth: BitDepth::Eight,
+            chroma: ChromaSubsampling::Yuv420,
+            memory_path: FrameMemoryPath::DmaBufZeroCopy,
+            width: 640,
+            height: 360,
+            render_width: 640,
+            render_height: 360,
+            color: VideoColorMetadata::sdr_bt709_limited(),
+            resource_handle,
+            diagnostics: VideoFrameDiagnostics::default(),
+        }
+    }
+
     /// Test-only event type для проверки retry state machine без реальной VA-API.
     enum FakeDecoderEvent {
         /// Имитирует `DecoderEvent::FormatChanged`.
@@ -1094,7 +1111,7 @@ mod tests {
     /// Минимальный fake-драйвер для `CheckEvents -> drain -> retry same packet`.
     struct FakeRetryDriver {
         /// Заранее заданные ответы fake `decode()`.
-        decode_results: VecDeque<std::result::Result<usize, DecodeError>>,
+        decode_results: VecDeque<std::result::Result<usize, VaapiAdapterDecodeError>>,
 
         /// Пакеты событий, которые вернёт каждый fake drain.
         drain_batches: VecDeque<Vec<FakeDecoderEvent>>,
@@ -1109,7 +1126,7 @@ mod tests {
     impl FakeRetryDriver {
         /// Создаёт fake-драйвер с управляемыми decode/drain шагами.
         fn new(
-            decode_results: Vec<std::result::Result<usize, DecodeError>>,
+            decode_results: Vec<std::result::Result<usize, VaapiAdapterDecodeError>>,
             drain_batches: Vec<Vec<FakeDecoderEvent>>,
         ) -> Self {
             Self {
@@ -1122,12 +1139,17 @@ mod tests {
     }
 
     impl DecoderRetryDriver for FakeRetryDriver {
+        /// Возвращает codec label fake-драйвера для retry diagnostics.
+        fn codec_label(&self) -> &'static str {
+            "fake"
+        }
+
         /// Записывает submit и возвращает следующий заранее заданный результат.
         fn submit_packet(
             &mut self,
             timestamp_us: u64,
             packet_data: &[u8],
-        ) -> std::result::Result<usize, DecodeError> {
+        ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
             self.submissions.push((timestamp_us, packet_data.to_vec()));
             self.decode_results
                 .pop_front()
@@ -1162,7 +1184,10 @@ mod tests {
     fn check_events_format_change_retries_same_packet_and_preserves_pts() {
         let packet_data = vec![0x82, 0x49, 0x83, 0x42];
         let mut driver = FakeRetryDriver::new(
-            vec![Err(DecodeError::CheckEvents), Ok(packet_data.len())],
+            vec![
+                Err(VaapiAdapterDecodeError::CheckEvents),
+                Ok(packet_data.len()),
+            ],
             vec![
                 vec![FakeDecoderEvent::FormatChanged],
                 vec![FakeDecoderEvent::FrameReady {
@@ -1184,6 +1209,25 @@ mod tests {
         assert_eq!(driver.ready_pts.pop_front(), Some(Duration::ZERO));
     }
 
+    /// Проверяет reconfigure/flush scope: release берёт только decoder-owned ready frames.
+    #[test]
+    fn reconfigure_release_scope_drains_only_decoder_owned_ready_frames() {
+        let renderer_owned_handle = FrameResourceHandle(99);
+        let mut ready_queue = VecDeque::from([
+            decoded_frame_for_tests(FrameResourceHandle(1)),
+            decoded_frame_for_tests(FrameResourceHandle(2)),
+        ]);
+
+        let decoder_owned_handles = drain_decoder_owned_ready_frame_handles(&mut ready_queue);
+
+        assert_eq!(
+            decoder_owned_handles,
+            vec![FrameResourceHandle(1), FrameResourceHandle(2)]
+        );
+        assert!(!decoder_owned_handles.contains(&renderer_owned_handle));
+        assert!(ready_queue.is_empty());
+    }
+
     /// Проверяет, что VA 10-bit 4:2:0 surface становится P010 boundary contract.
     #[test]
     fn va_yuv420_10_rt_format_maps_to_p010_decoded_contract() {
@@ -1197,7 +1241,7 @@ mod tests {
     /// Проверяет `cros-codecs` I010 alias, который VA-API отдаёт для P010 FourCC.
     #[test]
     fn i010_stream_format_maps_to_p010_decoded_contract() {
-        let contract = decoded_contract_for_stream_format(DecodedFormat::I010).unwrap();
+        let contract = decoded_contract_for_stream_format(VaapiDecodedFormat::I010).unwrap();
 
         assert_eq!(contract.format, DecodedPixelFormat::P010);
         assert_eq!(contract.bit_depth, BitDepth::Ten);

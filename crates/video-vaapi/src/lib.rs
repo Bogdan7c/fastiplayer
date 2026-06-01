@@ -1,3 +1,5 @@
+mod codec_adapter;
+
 pub mod decoder;
 pub mod decoder_thread;
 pub mod dma_heap;
@@ -23,3 +25,25 @@ pub use decoder_thread::{
 };
 pub use player_core_adapter::VaapiVideoBackendFactory;
 pub use probe::{VaapiCapabilityProvider, probe_vaapi_capabilities};
+
+#[cfg(test)]
+mod dependency_guardrail_tests {
+    /// Проверяет, что backend crate не вернул прямые renderer/GPU import dependencies.
+    #[test]
+    fn video_vaapi_manifest_keeps_renderer_import_crates_out() {
+        let manifest = include_str!("../Cargo.toml");
+
+        for forbidden_dependency in ["wgpu", "wgpu-types", "ash"] {
+            let has_forbidden_direct_dependency = manifest.lines().any(|line| {
+                let trimmed_line = line.trim_start();
+                trimmed_line.starts_with(&format!("{forbidden_dependency} "))
+                    || trimmed_line.starts_with(&format!("{forbidden_dependency}="))
+            });
+
+            assert!(
+                !has_forbidden_direct_dependency,
+                "video-vaapi must not directly depend on `{forbidden_dependency}`"
+            );
+        }
+    }
+}
