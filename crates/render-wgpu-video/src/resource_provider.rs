@@ -104,6 +104,28 @@ impl VideoDecoderThreadHandle for WgpuReleaseVideoDecoderThreadHandle {
         self.inner.send_packet(packet)
     }
 
+    fn configure_stream(
+        &self,
+        config: video_core::VideoStreamDecodeConfig,
+    ) -> video_core::VideoStreamConfigResult {
+        self.inner.configure_stream(config)
+    }
+
+    fn clear_stream(&self) -> video_core::VideoStreamConfigResult {
+        self.inner.clear_stream()
+    }
+
+    fn begin_end_of_stream_drain(
+        &self,
+        generation: u64,
+    ) -> video_core::VideoDecoderEndOfStreamDrainResult {
+        self.inner.begin_end_of_stream_drain(generation)
+    }
+
+    fn end_of_stream_drain_state(&self) -> video_core::VideoDecoderEndOfStreamDrainState {
+        self.inner.end_of_stream_drain_state()
+    }
+
     fn release_frame(&self, handle: video_core::FrameResourceHandle) {
         self.inner.release_frame(handle);
     }

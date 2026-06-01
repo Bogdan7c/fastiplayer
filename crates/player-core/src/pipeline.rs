@@ -7,12 +7,15 @@ use bytes::Bytes;
 use codec_core::VideoDecodeRequirement;
 use media_core::{
     DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, Demuxer, PacketKeyframe, TrackId, TrackInfo,
+    TrackTimestamp,
 };
 
 use crate::{
     DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
     DecoderResourceSnapshot, PlayerAudioClock, PlayerAudioOutput, PlayerDecodePacket,
     PlayerVideoDecoderThreadHandle, PresentFrameResourceProviderHandle,
+    VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState, VideoStreamConfigResult,
+    VideoStreamDecodeConfig,
 };
 #[cfg(test)]
 use video_core::VideoDecoderThreadHandle;
@@ -222,6 +225,12 @@ pub(crate) struct PendingVideoPacket {
     /// Presentation timestamp определяет A/V sync и decode-ahead лимит.
     pub(crate) pts: Duration,
 
+    /// Decode timestamp нужен codec backends с decode-order семантикой, например H.264 B-frames.
+    pub(crate) dts: Option<Duration>,
+
+    /// Raw DTS в track time base сохраняет container ordering metadata до decoder boundary.
+    pub(crate) track_dts: Option<TrackTimestamp>,
+
     /// Seek generation, в котором packet был прочитан из demuxer.
     pub(crate) generation: u64,
 
@@ -235,6 +244,7 @@ pub(crate) struct PendingVideoPacket {
 impl PendingVideoPacket {
     /// Создаёт ожидающий video packet без неименованных tuple-полей.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn new(
         track_id: TrackId,
         pts: Duration,
@@ -242,9 +252,33 @@ impl PendingVideoPacket {
         encoded_bytes: Bytes,
         keyframe: impl Into<PacketKeyframe>,
     ) -> Self {
+        Self::new_with_decode_timestamps(
+            track_id,
+            pts,
+            None,
+            None,
+            generation,
+            encoded_bytes,
+            keyframe,
+        )
+    }
+
+    /// Создаёт ожидающий video packet с decode-order timestamp metadata.
+    #[must_use]
+    pub(crate) fn new_with_decode_timestamps(
+        track_id: TrackId,
+        pts: Duration,
+        dts: Option<Duration>,
+        track_dts: Option<TrackTimestamp>,
+        generation: u64,
+        encoded_bytes: Bytes,
+        keyframe: impl Into<PacketKeyframe>,
+    ) -> Self {
         Self {
             track_id,
             pts,
+            dts,
+            track_dts,
             generation,
             encoded_bytes,
             keyframe: keyframe.into(),
@@ -1319,6 +1353,49 @@ impl PlaybackPipeline {
 
         decoder_thread.release_frame(resource_handle);
         true
+    }
+
+    /// Конфигурирует active decoder stream без seek flush/generation side effects.
+    pub(crate) fn configure_video_decoder_stream(
+        &self,
+        config: VideoStreamDecodeConfig,
+    ) -> VideoStreamConfigResult {
+        let Some(decoder_thread) = self.video_decoder_thread.as_ref() else {
+            return VideoStreamConfigResult::AbsentDecoder;
+        };
+
+        decoder_thread.configure_stream(config)
+    }
+
+    /// Очищает stream config активного decoder-а как отдельный media lifecycle step.
+    pub(crate) fn clear_video_decoder_stream(&self) -> VideoStreamConfigResult {
+        let Some(decoder_thread) = self.video_decoder_thread.as_ref() else {
+            return VideoStreamConfigResult::AbsentDecoder;
+        };
+
+        decoder_thread.clear_stream()
+    }
+
+    /// Запускает decoder EOF/DPB drain без превращения его в seek flush.
+    pub(crate) fn begin_video_decoder_end_of_stream_drain(
+        &self,
+        generation: u64,
+    ) -> VideoDecoderEndOfStreamDrainResult {
+        let Some(decoder_thread) = self.video_decoder_thread.as_ref() else {
+            return VideoDecoderEndOfStreamDrainResult::AbsentDecoder;
+        };
+
+        decoder_thread.begin_end_of_stream_drain(generation)
+    }
+
+    /// Возвращает explicit decoder EOF/DPB drain state без чтения decoder storage.
+    pub(crate) fn video_decoder_end_of_stream_drain_state(
+        &self,
+    ) -> VideoDecoderEndOfStreamDrainState {
+        self.video_decoder_thread
+            .as_ref()
+            .map(|decoder_thread| decoder_thread.end_of_stream_drain_state())
+            .unwrap_or(VideoDecoderEndOfStreamDrainState::Idle)
     }
 
     /// Сбрасывает decoder thread перед seek/media reset.

@@ -236,9 +236,11 @@ pub(super) fn route_demuxed_packet(session: &mut PlayerSession, packet: media_co
                 .enqueue_pending_audio_packet(pending_packet);
         }
         TrackKind::Video => {
-            let pending_packet = PendingVideoPacket::new(
+            let pending_packet = PendingVideoPacket::new_with_decode_timestamps(
                 packet.track_id,
                 packet.pts,
+                packet.dts,
+                packet.track_dts,
                 generation,
                 packet.data,
                 packet.keyframe,

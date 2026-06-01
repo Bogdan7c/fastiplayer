@@ -5,7 +5,9 @@ pub use video_backend_api::{
 #[cfg(test)]
 pub(crate) use video_core::DecodeBackpressureReason;
 pub(crate) use video_core::{
-    DecodePacket as PlayerDecodePacket, DecodeSendError, DecodeThreadError, DecoderResourceSnapshot,
+    DecodePacket as PlayerDecodePacket, DecodeSendError, DecodeThreadError,
+    DecoderResourceSnapshot, VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState,
+    VideoStreamConfigResult, VideoStreamDecodeConfig,
 };
 
 /// Backwards-compatible public name для backend-neutral decoder-thread config.

@@ -66,6 +66,9 @@ enum EofDrainBlocker {
         /// Порог, после которого stale output buffer считается зависшим.
         stall_timeout: Duration,
     },
+
+    /// Decoder backend ещё дожимает codec tail/DPB frames.
+    DecoderEndOfStreamDrain,
 }
 
 impl PlayerSession {
@@ -98,6 +101,7 @@ impl PlayerSession {
             "Entering EOF drain"
         );
         self.set_playback_state(PlaybackState::Draining);
+        self.begin_video_decoder_eof_drain();
 
         if matches!(
             previous_state,
@@ -193,6 +197,43 @@ impl PlayerSession {
         true
     }
 
+    /// Запускает decoder-side EOF/DPB drain без seek flush и без generation advance.
+    fn begin_video_decoder_eof_drain(&mut self) {
+        let generation = self.pipeline.seek_generation();
+        match self
+            .pipeline
+            .begin_video_decoder_end_of_stream_drain(generation)
+        {
+            video_core::VideoDecoderEndOfStreamDrainResult::AbsentDecoder => {}
+            video_core::VideoDecoderEndOfStreamDrainResult::Started(state)
+            | video_core::VideoDecoderEndOfStreamDrainResult::Unchanged(state) => {
+                debug!(
+                    state = ?state,
+                    generation,
+                    "Decoder EOF drain state updated"
+                );
+            }
+            video_core::VideoDecoderEndOfStreamDrainResult::Backpressure(reason) => {
+                warn!(
+                    reason = %reason,
+                    generation,
+                    "Decoder EOF drain command hit control-channel backpressure"
+                );
+            }
+            video_core::VideoDecoderEndOfStreamDrainResult::Fatal(error) => {
+                warn!(
+                    error = %error,
+                    generation,
+                    "Decoder EOF drain failed"
+                );
+                self.mark_fatal_error(PlayerError::new(
+                    PlayerErrorKind::RuntimeError,
+                    format!("Video decoder EOF drain failed: {error}"),
+                ));
+            }
+        }
+    }
+
     /// Запускает повторное воспроизведение после штатного EOF через обычный seek pipeline.
     pub(super) fn restart_playback_after_eof(&mut self) -> PlayerResult<()> {
         if !self.pipeline.has_demuxer() {
@@ -265,6 +306,13 @@ impl PlayerSession {
         let in_flight_packets = self.pipeline.video_decode_in_flight_packets();
         if in_flight_packets > 0 {
             return Some(EofDrainBlocker::VideoDecodeInFlight { in_flight_packets });
+        }
+
+        if matches!(
+            self.pipeline.video_decoder_end_of_stream_drain_state(),
+            video_core::VideoDecoderEndOfStreamDrainState::Draining { .. }
+        ) {
+            return Some(EofDrainBlocker::DecoderEndOfStreamDrain);
         }
 
         match self.pipeline.audio_eof_drain_state() {

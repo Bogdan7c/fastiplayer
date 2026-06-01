@@ -408,6 +408,14 @@ impl PlayerSession {
             backend = self.pipeline.video_backend_name(),
             "Video backend started"
         );
+
+        if let Err(error) = self.configure_active_video_decoder_stream() {
+            warn!(
+                error = %error,
+                "Video backend failed to configure active stream after startup"
+            );
+            self.mark_fatal_error(error);
+        }
     }
 
     /// Переводит playback в `Playing` и запускает audio output.

@@ -240,6 +240,28 @@ impl VideoDecoderThreadHandle for VaapiVideoDecoderThreadHandle {
         VideoDecodeThread::send_packet(&self.decoder_thread, packet.into()).map_err(Into::into)
     }
 
+    fn configure_stream(
+        &self,
+        config: video_core::VideoStreamDecodeConfig,
+    ) -> video_core::VideoStreamConfigResult {
+        VideoDecodeThread::configure_stream(&self.decoder_thread, config)
+    }
+
+    fn clear_stream(&self) -> video_core::VideoStreamConfigResult {
+        VideoDecodeThread::clear_stream(&self.decoder_thread)
+    }
+
+    fn begin_end_of_stream_drain(
+        &self,
+        generation: u64,
+    ) -> video_core::VideoDecoderEndOfStreamDrainResult {
+        VideoDecodeThread::begin_end_of_stream_drain(&self.decoder_thread, generation)
+    }
+
+    fn end_of_stream_drain_state(&self) -> video_core::VideoDecoderEndOfStreamDrainState {
+        VideoDecodeThread::end_of_stream_drain_state(&self.decoder_thread)
+    }
+
     fn release_frame(&self, handle: video_core::FrameResourceHandle) {
         VideoDecodeThread::release_frame(&self.decoder_thread, handle);
     }
@@ -311,6 +333,8 @@ mod tests {
         let packet = video_core::DecodePacket {
             track_id: TrackId::new(7),
             pts: Duration::from_millis(42),
+            dts: Some(Duration::from_millis(40)),
+            track_dts: None,
             generation: 11,
             encoded_bytes: Bytes::from_static(b"encoded-vp9-packet"),
             keyframe: true,
@@ -322,6 +346,8 @@ mod tests {
 
         assert_eq!(neutral_packet.track_id, packet.track_id);
         assert_eq!(neutral_packet.pts, packet.pts);
+        assert_eq!(neutral_packet.dts, packet.dts);
+        assert_eq!(neutral_packet.track_dts, packet.track_dts);
         assert_eq!(neutral_packet.generation, packet.generation);
         assert_eq!(neutral_packet.encoded_bytes, packet.encoded_bytes);
         assert_eq!(neutral_packet.keyframe, packet.keyframe);

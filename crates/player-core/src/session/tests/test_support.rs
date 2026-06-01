@@ -717,6 +717,28 @@ pub(super) struct SharedFakeVideoDecoderThread {
 
     /// Control-channel pressure snapshot, который fake отдаёт через decoder boundary.
     pub(super) control_pressure: Arc<Mutex<Option<DecoderControlChannelPressureSnapshot>>>,
+
+    /// Scripted результаты configure-stream для focused boundary тестов.
+    pub(super) configure_results: Arc<Mutex<VecDeque<video_core::VideoStreamConfigResult>>>,
+
+    /// Последний stream config, принятый fake decoder-ом.
+    pub(super) stream_config: Arc<Mutex<Option<video_core::VideoStreamDecodeConfig>>>,
+
+    /// История stream configs, дошедших до fake decoder-а.
+    pub(super) configured_streams: Arc<Mutex<Vec<video_core::VideoStreamDecodeConfig>>>,
+
+    /// Счётчик clear-stream вызовов, отделённый от seek flush.
+    pub(super) clear_stream_count: Arc<Mutex<usize>>,
+
+    /// Scripted результаты explicit EOF drain для boundary тестов.
+    pub(super) eof_drain_results:
+        Arc<Mutex<VecDeque<video_core::VideoDecoderEndOfStreamDrainResult>>>,
+
+    /// State explicit EOF drain внутри fake backend-а.
+    pub(super) eof_drain_state: Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
+
+    /// Generation requests, переданные в EOF drain boundary.
+    pub(super) eof_drain_requests: Arc<Mutex<Vec<u64>>>,
 }
 
 impl SharedFakeVideoDecoderThread {
@@ -734,6 +756,15 @@ impl SharedFakeVideoDecoderThread {
             released_handles: Arc::new(Mutex::new(Vec::new())),
             resource_snapshot: Arc::new(Mutex::new(None)),
             control_pressure: Arc::new(Mutex::new(None)),
+            configure_results: Arc::new(Mutex::new(VecDeque::new())),
+            stream_config: Arc::new(Mutex::new(None)),
+            configured_streams: Arc::new(Mutex::new(Vec::new())),
+            clear_stream_count: Arc::new(Mutex::new(0)),
+            eof_drain_results: Arc::new(Mutex::new(VecDeque::new())),
+            eof_drain_state: Arc::new(Mutex::new(
+                video_core::VideoDecoderEndOfStreamDrainState::Idle,
+            )),
+            eof_drain_requests: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -837,6 +868,57 @@ impl SharedFakeVideoDecoderThread {
             .lock()
             .expect("fake decoder control pressure lock") = Some(pressure);
     }
+
+    /// Скриптует следующий результат stream configuration boundary.
+    pub(super) fn push_configure_result(&self, result: video_core::VideoStreamConfigResult) {
+        self.configure_results
+            .lock()
+            .expect("fake decoder configure result lock")
+            .push_back(result);
+    }
+
+    /// Возвращает последнюю active stream configuration fake backend-а.
+    pub(super) fn stream_config(&self) -> Option<video_core::VideoStreamDecodeConfig> {
+        self.stream_config
+            .lock()
+            .expect("fake decoder stream config lock")
+            .clone()
+    }
+
+    /// Возвращает историю configs, принятых fake backend-ом.
+    pub(super) fn configured_streams(&self) -> Vec<video_core::VideoStreamDecodeConfig> {
+        self.configured_streams
+            .lock()
+            .expect("fake decoder configured streams lock")
+            .clone()
+    }
+
+    /// Возвращает число clear-stream вызовов.
+    pub(super) fn clear_stream_count(&self) -> usize {
+        *self
+            .clear_stream_count
+            .lock()
+            .expect("fake decoder clear-stream count lock")
+    }
+
+    /// Скриптует следующий результат explicit EOF drain boundary.
+    pub(super) fn push_eof_drain_result(
+        &self,
+        result: video_core::VideoDecoderEndOfStreamDrainResult,
+    ) {
+        self.eof_drain_results
+            .lock()
+            .expect("fake decoder EOF drain result lock")
+            .push_back(result);
+    }
+
+    /// Возвращает generation requests, переданные в explicit EOF drain.
+    pub(super) fn eof_drain_requests(&self) -> Vec<u64> {
+        self.eof_drain_requests
+            .lock()
+            .expect("fake decoder EOF drain request log lock")
+            .clone()
+    }
 }
 
 impl video_core::VideoDecoderThreadHandle for SharedFakeVideoDecoderThread {
@@ -877,6 +959,127 @@ impl video_core::VideoDecoderThreadHandle for SharedFakeVideoDecoderThread {
         }
 
         send_result
+    }
+
+    fn configure_stream(
+        &self,
+        config: video_core::VideoStreamDecodeConfig,
+    ) -> video_core::VideoStreamConfigResult {
+        if let Some(scripted_result) = self
+            .configure_results
+            .lock()
+            .expect("fake decoder configure result lock")
+            .pop_front()
+        {
+            if scripted_result.is_accepted() {
+                *self
+                    .stream_config
+                    .lock()
+                    .expect("fake decoder stream config lock") = Some(config.clone());
+                self.configured_streams
+                    .lock()
+                    .expect("fake decoder configured streams lock")
+                    .push(config);
+            }
+            return scripted_result;
+        }
+
+        let mut stream_config = self
+            .stream_config
+            .lock()
+            .expect("fake decoder stream config lock");
+        if stream_config.as_ref() == Some(&config) {
+            return video_core::VideoStreamConfigResult::Unchanged;
+        }
+
+        *stream_config = Some(config.clone());
+        self.configured_streams
+            .lock()
+            .expect("fake decoder configured streams lock")
+            .push(config);
+        video_core::VideoStreamConfigResult::Configured
+    }
+
+    fn clear_stream(&self) -> video_core::VideoStreamConfigResult {
+        *self
+            .clear_stream_count
+            .lock()
+            .expect("fake decoder clear-stream count lock") += 1;
+
+        let mut stream_config = self
+            .stream_config
+            .lock()
+            .expect("fake decoder stream config lock");
+        if stream_config.take().is_some() {
+            video_core::VideoStreamConfigResult::Cleared
+        } else {
+            video_core::VideoStreamConfigResult::Unchanged
+        }
+    }
+
+    fn begin_end_of_stream_drain(
+        &self,
+        generation: u64,
+    ) -> video_core::VideoDecoderEndOfStreamDrainResult {
+        self.eof_drain_requests
+            .lock()
+            .expect("fake decoder EOF drain request log lock")
+            .push(generation);
+
+        if let Some(scripted_result) = self
+            .eof_drain_results
+            .lock()
+            .expect("fake decoder EOF drain result lock")
+            .pop_front()
+        {
+            match &scripted_result {
+                video_core::VideoDecoderEndOfStreamDrainResult::Started(state)
+                | video_core::VideoDecoderEndOfStreamDrainResult::Unchanged(state) => {
+                    *self
+                        .eof_drain_state
+                        .lock()
+                        .expect("fake decoder EOF drain state lock") = state.clone();
+                }
+                video_core::VideoDecoderEndOfStreamDrainResult::Fatal(error) => {
+                    *self
+                        .eof_drain_state
+                        .lock()
+                        .expect("fake decoder EOF drain state lock") =
+                        video_core::VideoDecoderEndOfStreamDrainState::Fatal {
+                            generation: Some(generation),
+                            error: error.clone(),
+                        };
+                }
+                video_core::VideoDecoderEndOfStreamDrainResult::AbsentDecoder
+                | video_core::VideoDecoderEndOfStreamDrainResult::Backpressure(_) => {}
+            }
+            return scripted_result;
+        }
+
+        let mut drain_state = self
+            .eof_drain_state
+            .lock()
+            .expect("fake decoder EOF drain state lock");
+        if matches!(
+            *drain_state,
+            video_core::VideoDecoderEndOfStreamDrainState::Draining {
+                generation: active_generation,
+            } | video_core::VideoDecoderEndOfStreamDrainState::Drained {
+                generation: active_generation,
+            } if active_generation == generation
+        ) {
+            return video_core::VideoDecoderEndOfStreamDrainResult::Unchanged(drain_state.clone());
+        }
+
+        *drain_state = video_core::VideoDecoderEndOfStreamDrainState::Drained { generation };
+        video_core::VideoDecoderEndOfStreamDrainResult::Started(drain_state.clone())
+    }
+
+    fn end_of_stream_drain_state(&self) -> video_core::VideoDecoderEndOfStreamDrainState {
+        self.eof_drain_state
+            .lock()
+            .expect("fake decoder EOF drain state lock")
+            .clone()
     }
 
     fn release_frame(&self, handle: video_core::FrameResourceHandle) {
@@ -1141,6 +1344,8 @@ pub(super) fn decode_packet_for_tests(pts: Duration) -> PlayerDecodePacket {
     PlayerDecodePacket {
         track_id: TrackId::new(1),
         pts,
+        dts: None,
+        track_dts: None,
         generation: 0,
         encoded_bytes: Bytes::from_static(b"vp9-test-packet"),
         keyframe: true,

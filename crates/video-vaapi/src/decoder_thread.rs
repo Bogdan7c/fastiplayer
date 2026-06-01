@@ -13,11 +13,13 @@ use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use codec_core::VideoColorMetadata;
+use codec_core::{
+    BitDepth, ChromaSubsampling, VideoCodec, VideoColorMetadata, VideoProfile, VideoSurfaceFormat,
+};
 use crossbeam_channel::{
     Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError, bounded, select, unbounded,
 };
-use media_core::{Packet, TrackId, TrackKind};
+use media_core::{Packet, TrackId, TrackKind, TrackTimestamp};
 use tracing::{info, trace};
 use video_core::{
     DecodedFrame, VideoDecoder, VideoDecoderDiagnosticEvent, VideoFramePublishPressureDiagnostics,
@@ -765,6 +767,12 @@ pub struct DecodePacket {
     /// Presentation timestamp packet-а.
     pub pts: Duration,
 
+    /// Decode timestamp packet-а, если container сообщил DTS.
+    pub dts: Option<Duration>,
+
+    /// Raw track DTS для backends, которым нужен decode-order timestamp.
+    pub track_dts: Option<TrackTimestamp>,
+
     /// Seek generation player pipeline-а, которому принадлежит packet.
     pub generation: u64,
 
@@ -784,6 +792,8 @@ impl From<video_core::DecodePacket> for DecodePacket {
         Self {
             track_id: packet.track_id,
             pts: packet.pts,
+            dts: packet.dts,
+            track_dts: packet.track_dts,
             generation: packet.generation,
             encoded_bytes: packet.encoded_bytes,
             keyframe: packet.keyframe,
@@ -798,6 +808,8 @@ impl From<DecodePacket> for video_core::DecodePacket {
         Self {
             track_id: packet.track_id,
             pts: packet.pts,
+            dts: packet.dts,
+            track_dts: packet.track_dts,
             generation: packet.generation,
             encoded_bytes: packet.encoded_bytes,
             keyframe: packet.keyframe,
@@ -988,6 +1000,8 @@ pub struct VideoDecodeThread {
     diagnostic_rx: DecoderDiagnosticReceiver,
     resource_pool: Arc<Mutex<crate::resource_pool::FrameResourcePool>>,
     thread_state: DecoderThreadState,
+    stream_config: Arc<Mutex<Option<video_core::VideoStreamDecodeConfig>>>,
+    end_of_stream_drain_state: Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
     config: VideoDecodeThreadConfig,
     backend_name: &'static str,
 }
@@ -1084,6 +1098,10 @@ impl VideoDecodeThread {
             diagnostic_rx,
             resource_pool,
             thread_state,
+            stream_config: Arc::new(Mutex::new(None)),
+            end_of_stream_drain_state: Arc::new(Mutex::new(
+                video_core::VideoDecoderEndOfStreamDrainState::Idle,
+            )),
             config,
             backend_name: "VA-API VP9",
         })
@@ -1114,6 +1132,118 @@ impl VideoDecodeThread {
                     DecodeThreadSendError::Fatal(fatal_error)
                 }
             })
+    }
+
+    /// Принимает stream config для текущего hardcoded VP9 VA-API adapter-а.
+    pub fn configure_stream(
+        &self,
+        config: video_core::VideoStreamDecodeConfig,
+    ) -> video_core::VideoStreamConfigResult {
+        if let Err(error) = self.ensure_thread_usable() {
+            return video_core::VideoStreamConfigResult::Fatal(error.into());
+        }
+        if let Some(rejection) = reject_unsupported_vaapi_stream_config(&config) {
+            return video_core::VideoStreamConfigResult::Unsupported(rejection);
+        }
+
+        let mut stream_config = match self.stream_config.lock() {
+            Ok(stream_config) => stream_config,
+            Err(error) => {
+                let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(format!(
+                    "VA-API stream config mutex poisoned: {error}"
+                )));
+                return video_core::VideoStreamConfigResult::Fatal(fatal_error.into());
+            }
+        };
+
+        if stream_config.as_ref() == Some(&config) {
+            return video_core::VideoStreamConfigResult::Unchanged;
+        }
+
+        *stream_config = Some(config);
+        self.reset_end_of_stream_drain_state();
+        video_core::VideoStreamConfigResult::Configured
+    }
+
+    /// Очищает stream config как explicit media-switch lifecycle step.
+    pub fn clear_stream(&self) -> video_core::VideoStreamConfigResult {
+        if let Err(error) = self.ensure_thread_usable() {
+            return video_core::VideoStreamConfigResult::Fatal(error.into());
+        }
+
+        let mut stream_config = match self.stream_config.lock() {
+            Ok(stream_config) => stream_config,
+            Err(error) => {
+                let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(format!(
+                    "VA-API stream config mutex poisoned during clear: {error}"
+                )));
+                return video_core::VideoStreamConfigResult::Fatal(fatal_error.into());
+            }
+        };
+
+        self.reset_end_of_stream_drain_state();
+        if stream_config.take().is_some() {
+            video_core::VideoStreamConfigResult::Cleared
+        } else {
+            video_core::VideoStreamConfigResult::Unchanged
+        }
+    }
+
+    /// Запускает explicit EOF drain; VP9 stateless path не имеет отложенного DPB tail.
+    pub fn begin_end_of_stream_drain(
+        &self,
+        generation: u64,
+    ) -> video_core::VideoDecoderEndOfStreamDrainResult {
+        if let Err(error) = self.ensure_thread_usable() {
+            return video_core::VideoDecoderEndOfStreamDrainResult::Fatal(error.into());
+        }
+
+        let mut drain_state = match self.end_of_stream_drain_state.lock() {
+            Ok(drain_state) => drain_state,
+            Err(error) => {
+                let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(format!(
+                    "VA-API EOF drain state mutex poisoned: {error}"
+                )));
+                return video_core::VideoDecoderEndOfStreamDrainResult::Fatal(fatal_error.into());
+            }
+        };
+
+        if matches!(
+            *drain_state,
+            video_core::VideoDecoderEndOfStreamDrainState::Draining {
+                generation: active_generation,
+            } | video_core::VideoDecoderEndOfStreamDrainState::Drained {
+                generation: active_generation,
+            } if active_generation == generation
+        ) {
+            return video_core::VideoDecoderEndOfStreamDrainResult::Unchanged(drain_state.clone());
+        }
+
+        *drain_state = video_core::VideoDecoderEndOfStreamDrainState::Drained { generation };
+        video_core::VideoDecoderEndOfStreamDrainResult::Started(drain_state.clone())
+    }
+
+    /// Возвращает текущее explicit EOF drain state без блокировки decoder thread loop-а.
+    pub fn end_of_stream_drain_state(&self) -> video_core::VideoDecoderEndOfStreamDrainState {
+        match self.end_of_stream_drain_state.lock() {
+            Ok(drain_state) => drain_state.clone(),
+            Err(error) => {
+                let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(format!(
+                    "VA-API EOF drain state mutex poisoned during read: {error}"
+                )));
+                video_core::VideoDecoderEndOfStreamDrainState::Fatal {
+                    generation: None,
+                    error: fatal_error.into(),
+                }
+            }
+        }
+    }
+
+    /// Сбрасывает EOF-drain marker после смены stream-а или media.
+    fn reset_end_of_stream_drain_state(&self) {
+        if let Ok(mut drain_state) = self.end_of_stream_drain_state.lock() {
+            *drain_state = video_core::VideoDecoderEndOfStreamDrainState::Idle;
+        }
     }
 
     /// Освобождает frame, который не находится в renderer GPU work.
@@ -1299,6 +1429,55 @@ impl VideoDecodeThread {
         }
         completed_packet_count
     }
+}
+
+/// Проверяет stream config на реализованный в этой фазе VA-API adapter intersection.
+fn reject_unsupported_vaapi_stream_config(
+    config: &video_core::VideoStreamDecodeConfig,
+) -> Option<video_core::VideoStreamConfigRejection> {
+    if config.codec != VideoCodec::Vp9 {
+        return Some(video_core::VideoStreamConfigRejection::UnsupportedCodec {
+            codec: config.codec,
+        });
+    }
+
+    if let Some(profile) = config.profile
+        && !matches!(profile, VideoProfile::Vp9(_))
+    {
+        return Some(video_core::VideoStreamConfigRejection::UnsupportedProfile { profile });
+    }
+
+    if let Some(bit_depth) = config.bit_depth
+        && !matches!(bit_depth, BitDepth::Eight | BitDepth::Ten)
+    {
+        return Some(video_core::VideoStreamConfigRejection::UnsupportedBitDepth { bit_depth });
+    }
+
+    if let Some(chroma) = config.chroma
+        && chroma != ChromaSubsampling::Yuv420
+    {
+        return Some(video_core::VideoStreamConfigRejection::UnsupportedChroma { chroma });
+    }
+
+    if let Some(surface_format) = config.surface_format
+        && !matches!(
+            surface_format,
+            VideoSurfaceFormat::Nv12 | VideoSurfaceFormat::P010
+        )
+    {
+        return Some(
+            video_core::VideoStreamConfigRejection::UnsupportedSurfaceFormat { surface_format },
+        );
+    }
+
+    if config.packetization.is_some() {
+        return Some(video_core::VideoStreamConfigRejection::BackendUnsupported {
+            reason: "VP9 VA-API adapter does not accept codec-specific packetization metadata"
+                .to_string(),
+        });
+    }
+
+    None
 }
 
 /// Ждёт flush ACK ограниченное время и переводит thread state в fatal при срыве.
@@ -1513,13 +1692,15 @@ fn decoder_thread_loop(
                         if !decode_queued_packet(
                             &mut decoder,
                             queued_packet,
-                            &frame_tx,
-                            &packet_ack_tx,
-                            &error_tx,
-                            &mut pending_publish,
-                            &mut publish_pressure,
-                            &diagnostic_tx,
-                            &mut latest_color_metadata,
+                            DecodeQueuedPacketContext {
+                                frame_tx: &frame_tx,
+                                packet_ack_tx: &packet_ack_tx,
+                                error_tx: &error_tx,
+                                pending_publish: &mut pending_publish,
+                                publish_pressure: &mut publish_pressure,
+                                diagnostic_tx: &diagnostic_tx,
+                                latest_color_metadata: &mut latest_color_metadata,
+                            },
                         ) {
                             break;
                         }
@@ -1631,36 +1812,43 @@ fn drain_queued_decode_packets(packet_rx: &Receiver<QueuedDecodePacket>) -> usiz
     }
 }
 
+/// Собирает decoder-thread state, который нужен одному packet decode step.
+struct DecodeQueuedPacketContext<'a> {
+    frame_tx: &'a Sender<DecodedFrame>,
+    packet_ack_tx: &'a Sender<DecodePacketAck>,
+    error_tx: &'a Sender<DecodeThreadError>,
+    pending_publish: &'a mut Option<PendingFramePublish>,
+    publish_pressure: &'a mut FramePublishPressureCounters,
+    diagnostic_tx: &'a DecoderDiagnosticSender,
+    latest_color_metadata: &'a mut Option<VideoColorMetadata>,
+}
+
 /// Декодирует один queued packet и ставит первый готовый frame в publish stage.
 fn decode_queued_packet(
     decoder: &mut crate::VaapiVideoDecoder,
     queued_packet: QueuedDecodePacket,
-    frame_tx: &Sender<DecodedFrame>,
-    packet_ack_tx: &Sender<DecodePacketAck>,
-    error_tx: &Sender<DecodeThreadError>,
-    pending_publish: &mut Option<PendingFramePublish>,
-    publish_pressure: &mut FramePublishPressureCounters,
-    diagnostic_tx: &DecoderDiagnosticSender,
-    latest_color_metadata: &mut Option<VideoColorMetadata>,
+    decode_context: DecodeQueuedPacketContext<'_>,
 ) -> bool {
     let packet_receive_latency = queued_packet.enqueued_at.elapsed();
     let DecodePacket {
         track_id,
         pts,
+        dts,
+        track_dts,
         generation,
         encoded_bytes,
         keyframe,
         resolved_color,
     } = queued_packet.packet;
 
-    *latest_color_metadata = resolved_color.clone();
+    *decode_context.latest_color_metadata = resolved_color.clone();
     let packet = Packet {
         track_id,
         kind: TrackKind::Video,
         pts,
         track_pts: None,
-        dts: None,
-        track_dts: None,
+        dts,
+        track_dts,
         duration: None,
         track_duration: None,
         keyframe: keyframe.into(),
@@ -1669,7 +1857,7 @@ fn decode_queued_packet(
     };
 
     let decode_result = decoder.decode(&packet);
-    let _ = packet_ack_tx.try_send(());
+    let _ = decode_context.packet_ack_tx.try_send(());
 
     match decode_result {
         Ok(Some(mut frame)) => {
@@ -1678,8 +1866,13 @@ fn decode_queued_packet(
                 frame.color = color_metadata.clone();
             }
             frame.diagnostics.timings.decoder_packet_receive_latency = Some(packet_receive_latency);
-            *pending_publish = Some(PendingFramePublish::new(frame));
-            publish_pending_frame(frame_tx, pending_publish, publish_pressure, diagnostic_tx)
+            *decode_context.pending_publish = Some(PendingFramePublish::new(frame));
+            publish_pending_frame(
+                decode_context.frame_tx,
+                decode_context.pending_publish,
+                decode_context.publish_pressure,
+                decode_context.diagnostic_tx,
+            )
         }
         Ok(None) => true,
         Err(error) => {
@@ -1689,7 +1882,7 @@ fn decode_queued_packet(
                     error = %message,
                     "Decoder thread: fatal decode error, exiting"
                 );
-                send_decoder_thread_error(error_tx, message);
+                send_decoder_thread_error(decode_context.error_tx, message);
                 return false;
             }
             tracing::warn!(error = %error, "Decoder thread: decode error");
@@ -2092,6 +2285,8 @@ mod tests {
                     packet: DecodePacket {
                         track_id: media_core::TrackId::new(1),
                         pts: Duration::from_millis(packet_index),
+                        dts: None,
+                        track_dts: None,
                         generation: packet_index,
                         encoded_bytes: Bytes::from_static(b"vp9"),
                         keyframe: packet_index == 0,

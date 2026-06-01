@@ -1,11 +1,16 @@
 use capability_core::{SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection};
 use codec_core::{
-    VideoCodec, VideoDecodeRequirement, VideoMetadataSource, resolve_video_metadata,
+    VideoCodec, VideoDecodeRequirement, VideoMetadataSource,
+    parse_avc_decoder_configuration_record, resolve_video_metadata,
     unsupported_requirement_can_be_refined_by_packet_probe as codec_requirement_can_be_refined_by_packet_probe,
     video_requirement_needs_packet_refinement,
 };
 use media_core::{TrackInfo, TrackKind};
 use tracing::info;
+use video_core::{
+    VideoStreamConfigRejection, VideoStreamConfigResult, VideoStreamDecodeConfig,
+    VideoStreamPacketization,
+};
 
 use crate::{PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, TrackId};
 
@@ -43,10 +48,13 @@ impl PlayerSession {
         for track in video_tracks {
             match self.accepted_video_requirement_for_track(track) {
                 Ok(requirement) => {
-                    self.activate_video_track(track, requirement);
+                    self.activate_video_track(track, requirement)?;
                     return Ok(());
                 }
-                Err(error) => last_rejection = Some(error),
+                Err(error) if can_try_next_video_track_after_error(&error.kind) => {
+                    last_rejection = Some(error);
+                }
+                Err(error) => return Err(error),
             }
         }
 
@@ -71,7 +79,7 @@ impl PlayerSession {
         };
 
         let requirement = self.accepted_video_requirement_for_track(&track)?;
-        self.activate_video_track(&track, requirement);
+        self.activate_video_track(&track, requirement)?;
         Ok(())
     }
 
@@ -108,10 +116,51 @@ impl PlayerSession {
     }
 
     /// Активирует video track после обычной проверки или разрешённого deferred refinement.
-    fn activate_video_track(&mut self, track: &TrackInfo, requirement: VideoDecodeRequirement) {
+    fn activate_video_track(
+        &mut self,
+        track: &TrackInfo,
+        requirement: VideoDecodeRequirement,
+    ) -> PlayerResult<()> {
+        self.configure_decoder_stream_for_track(track, &requirement)?;
         self.pipeline.select_video_track(track.id, requirement);
         self.snapshot.selected_tracks.video_track = Some(track.id);
         log_selected_video_track_metadata(track, self.pipeline.active_video_requirement());
+        Ok(())
+    }
+
+    /// Передаёт selected stream config decoder boundary до mutation selected-track state.
+    fn configure_decoder_stream_for_track(
+        &self,
+        track: &TrackInfo,
+        requirement: &VideoDecodeRequirement,
+    ) -> PlayerResult<()> {
+        let config = video_stream_decode_config_from_track(track, requirement)?;
+        player_result_from_stream_config_result(
+            self.pipeline.configure_video_decoder_stream(config),
+        )
+    }
+
+    /// Повторно конфигурирует новый decoder backend под уже выбранный active video track.
+    pub(super) fn configure_active_video_decoder_stream(&self) -> PlayerResult<()> {
+        let Some(track_id) = self.pipeline.selected_video_track_id() else {
+            return Ok(());
+        };
+        let Some(requirement) = self.pipeline.active_video_requirement().cloned() else {
+            return Ok(());
+        };
+        let Some(track) = self
+            .pipeline
+            .tracks()
+            .iter()
+            .find(|track| track.id == track_id && track.kind == TrackKind::Video)
+        else {
+            return Err(PlayerError::new(
+                PlayerErrorKind::InvalidCommand,
+                format!("Active video track `{track_id}` отсутствует в текущем media"),
+            ));
+        };
+
+        self.configure_decoder_stream_for_track(track, &requirement)
     }
 
     /// Разрешает отложить codec validation до первого packet header-а, если container неполный.
@@ -176,6 +225,107 @@ impl PlayerSession {
             .find(|track| track.id == track_id && track.kind == TrackKind::Video)
             .and_then(video_metadata_source_from_track)
     }
+}
+
+/// Строит decoder stream config из уже принятого track requirement.
+fn video_stream_decode_config_from_track(
+    track: &TrackInfo,
+    requirement: &VideoDecodeRequirement,
+) -> PlayerResult<VideoStreamDecodeConfig> {
+    let mut config = VideoStreamDecodeConfig::from_requirement(track.id, requirement)
+        .with_codec_private(track.codec_private.clone());
+
+    if requirement.codec == VideoCodec::H264 {
+        config = config.with_packetization(h264_packetization_from_track(track)?);
+    }
+
+    Ok(config)
+}
+
+/// Достаёт H.264 packetization из codec-private, если adapter уже подтвердил `avcC`.
+fn h264_packetization_from_track(
+    track: &TrackInfo,
+) -> PlayerResult<Option<VideoStreamPacketization>> {
+    let Some(codec_private) = track
+        .codec_private
+        .as_ref()
+        .filter(|bytes| !bytes.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let record = parse_avc_decoder_configuration_record(codec_private).map_err(|error| {
+        PlayerError::new(
+            PlayerErrorKind::UnsupportedVideoCodec,
+            format!(
+                "H.264 track `{}` codec_private не является поддержанным avcC: {error}",
+                track.id
+            ),
+        )
+    })?;
+
+    Ok(Some(VideoStreamPacketization::H264(record.packetization())))
+}
+
+/// Переводит decoder configure outcome в player policy без мутации selection state.
+fn player_result_from_stream_config_result(result: VideoStreamConfigResult) -> PlayerResult<()> {
+    match result {
+        VideoStreamConfigResult::AbsentDecoder
+        | VideoStreamConfigResult::Configured
+        | VideoStreamConfigResult::Unchanged
+        | VideoStreamConfigResult::Cleared => Ok(()),
+        VideoStreamConfigResult::Unsupported(rejection) => {
+            Err(player_error_from_config_rejection(rejection))
+        }
+        VideoStreamConfigResult::Backpressure(reason) => Err(PlayerError::new(
+            PlayerErrorKind::RuntimeError,
+            format!("Video decoder stream configure backpressure: {reason}"),
+        )),
+        VideoStreamConfigResult::Fatal(error) => Err(PlayerError::new(
+            PlayerErrorKind::RuntimeError,
+            format!("Video decoder stream configure failed: {error}"),
+        )),
+    }
+}
+
+/// Сохраняет существующую policy: unsupported track можно пропустить, runtime failure — нет.
+fn can_try_next_video_track_after_error(error_kind: &PlayerErrorKind) -> bool {
+    matches!(
+        error_kind,
+        PlayerErrorKind::UnsupportedVideoCodec
+            | PlayerErrorKind::UnsupportedVideoProfile
+            | PlayerErrorKind::UnsupportedVideoBitDepth
+            | PlayerErrorKind::UnsupportedVideoChroma
+            | PlayerErrorKind::UnsupportedHdrMode
+            | PlayerErrorKind::UnsupportedRenderFormat
+    )
+}
+
+/// Мапит neutral decoder-stream отказ в существующие категории player errors.
+fn player_error_from_config_rejection(rejection: VideoStreamConfigRejection) -> PlayerError {
+    let kind = match &rejection {
+        VideoStreamConfigRejection::UnsupportedCodec { .. }
+        | VideoStreamConfigRejection::MissingPacketization { .. }
+        | VideoStreamConfigRejection::InvalidCodecPrivate { .. }
+        | VideoStreamConfigRejection::BackendUnsupported { .. } => {
+            PlayerErrorKind::UnsupportedVideoCodec
+        }
+        VideoStreamConfigRejection::UnsupportedProfile { .. } => {
+            PlayerErrorKind::UnsupportedVideoProfile
+        }
+        VideoStreamConfigRejection::UnsupportedBitDepth { .. } => {
+            PlayerErrorKind::UnsupportedVideoBitDepth
+        }
+        VideoStreamConfigRejection::UnsupportedChroma { .. } => {
+            PlayerErrorKind::UnsupportedVideoChroma
+        }
+        VideoStreamConfigRejection::UnsupportedSurfaceFormat { .. }
+        | VideoStreamConfigRejection::UnsupportedMemoryContract { .. } => {
+            PlayerErrorKind::UnsupportedRenderFormat
+        }
+    };
+
+    PlayerError::new(kind, rejection.to_string())
 }
 
 /// Строит минимальное decode requirement из container track metadata.

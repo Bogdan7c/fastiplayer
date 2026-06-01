@@ -253,6 +253,33 @@ impl PlayerSession {
             warn!(error = %error, "Не удалось сбросить video decoder thread");
         }
 
+        match self.pipeline.clear_video_decoder_stream() {
+            video_core::VideoStreamConfigResult::AbsentDecoder
+            | video_core::VideoStreamConfigResult::Cleared
+            | video_core::VideoStreamConfigResult::Unchanged => {}
+            video_core::VideoStreamConfigResult::Configured => {
+                debug!("Decoder stream clear вернул unexpected Configured outcome");
+            }
+            video_core::VideoStreamConfigResult::Unsupported(rejection) => {
+                warn!(
+                    rejection = %rejection,
+                    "Decoder stream clear rejected current stream config during media reset"
+                );
+            }
+            video_core::VideoStreamConfigResult::Backpressure(reason) => {
+                warn!(
+                    reason = %reason,
+                    "Decoder stream clear hit control-channel backpressure during media reset"
+                );
+            }
+            video_core::VideoStreamConfigResult::Fatal(error) => {
+                warn!(
+                    error = %error,
+                    "Decoder stream clear failed during media reset"
+                );
+            }
+        }
+
         self.pipeline.reset_media_slots();
         self.reset_diagnostics_for_media();
 

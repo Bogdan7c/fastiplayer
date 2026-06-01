@@ -37,9 +37,13 @@ fn requested_video_track_selection_sets_matching_requirement() {
     let mut session = PlayerSession::new();
     session.set_system_capabilities(capabilities_with_vp9_profile0());
     let _ = session.take_events();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
     let video_track_id = TrackId::new(7);
     let tracks = vec![vp9_track_with_profile(7, Vp9Profile::Profile0)];
     install_tracks_for_capability_selection(&mut session, tracks);
+    session
+        .pipeline
+        .set_video_decoder_thread(fake_decoder.clone());
 
     session
         .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
@@ -61,6 +65,13 @@ fn requested_video_track_selection_sets_matching_requirement() {
     assert_eq!(
         active_requirement.profile,
         Some(VideoProfile::Vp9(Vp9Profile::Profile0))
+    );
+    assert_eq!(
+        fake_decoder
+            .stream_config()
+            .expect("VP9 selection должен сконфигурировать fake decoder")
+            .codec,
+        VideoCodec::Vp9
     );
     assert!(session.take_events().iter().any(|event| {
         matches!(event, PlayerEvent::VideoTrackSelected(track_id) if *track_id == video_track_id)
@@ -128,6 +139,129 @@ fn requested_video_track_selection_rejects_unsupported_requirement_before_mutati
     assert_eq!(
         session.pipeline.selected_video_track_id(),
         Some(supported_track_id)
+    );
+    assert_eq!(
+        session.pipeline.active_video_requirement(),
+        Some(&accepted_requirement)
+    );
+}
+
+#[test]
+fn h264_stream_config_uses_track_codec_private_and_metadata() {
+    let mut session = PlayerSession::new();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    let video_track_id = TrackId::new(17);
+    install_tracks_for_capability_selection(&mut session, vec![h264_track_with_avcc(17)]);
+    session
+        .pipeline
+        .set_video_decoder_thread(fake_decoder.clone());
+
+    session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
+        .expect("fake backend должен принять H.264 config без production VAAPI decode");
+
+    let config = fake_decoder
+        .stream_config()
+        .expect("H.264 selection должен передать stream config в decoder boundary");
+
+    assert_eq!(config.track_id, video_track_id);
+    assert_eq!(config.codec, VideoCodec::H264);
+    assert_eq!(
+        config.profile,
+        Some(VideoProfile::H264(H264Profile::ConstrainedBaseline))
+    );
+    assert_eq!(config.bit_depth, Some(BitDepth::Eight));
+    assert_eq!(config.chroma, Some(ChromaSubsampling::Yuv420));
+    assert_eq!(config.coded_width, Some(1280));
+    assert_eq!(config.coded_height, Some(720));
+    assert_eq!(config.codec_private, Some(h264_avcc_codec_private()));
+    match config.packetization {
+        Some(video_core::VideoStreamPacketization::H264(
+            codec_core::H264Packetization::AvccLengthPrefixed { nal_length_size },
+        )) => assert_eq!(nal_length_size.get(), 4),
+        unexpected_packetization => {
+            panic!("expected AVCC H.264 packetization, got {unexpected_packetization:?}");
+        }
+    }
+}
+
+#[test]
+fn fake_backend_accepts_vp9_h264_vp9_switch_without_restart() {
+    let mut session = PlayerSession::new();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    let first_vp9_track_id = TrackId::new(1);
+    let h264_track_id = TrackId::new(2);
+    let second_vp9_track_id = TrackId::new(3);
+    let tracks = vec![
+        vp9_track_with_profile(1, Vp9Profile::Profile0),
+        h264_track_with_avcc(2),
+        vp9_track_with_profile(3, Vp9Profile::Profile0),
+    ];
+    install_tracks_for_capability_selection(&mut session, tracks);
+    session
+        .pipeline
+        .set_video_decoder_thread(fake_decoder.clone());
+
+    session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(first_vp9_track_id))
+        .expect("first VP9 track должен быть выбран");
+    session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(h264_track_id))
+        .expect("H.264 track должен быть выбран fake backend-ом");
+    session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(second_vp9_track_id))
+        .expect("second VP9 track должен быть выбран без restart приложения");
+
+    let codecs = fake_decoder
+        .configured_streams()
+        .into_iter()
+        .map(|config| config.codec)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        codecs,
+        vec![VideoCodec::Vp9, VideoCodec::H264, VideoCodec::Vp9]
+    );
+    assert_eq!(
+        session.pipeline.selected_video_track_id(),
+        Some(second_vp9_track_id)
+    );
+}
+
+#[test]
+fn stream_config_failure_does_not_mutate_selected_track_or_requirement() {
+    let mut session = PlayerSession::new();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    let selected_track_id = TrackId::new(1);
+    let rejected_track_id = TrackId::new(2);
+    let tracks = vec![
+        vp9_track_with_profile(1, Vp9Profile::Profile0),
+        vp9_track_with_profile(2, Vp9Profile::Profile0),
+    ];
+    install_tracks_for_capability_selection(&mut session, tracks);
+    session
+        .pipeline
+        .set_video_decoder_thread(fake_decoder.clone());
+    session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(selected_track_id))
+        .expect("initial VP9 selection должен пройти");
+    let accepted_requirement = session
+        .pipeline
+        .active_video_requirement()
+        .expect("initial selection должен сохранить requirement")
+        .clone();
+    fake_decoder.push_configure_result(video_core::VideoStreamConfigResult::Fatal(
+        DecodeThreadError::new("configure failed"),
+    ));
+
+    let error = session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(rejected_track_id))
+        .expect_err("configure failure должен остановить selection до mutation");
+
+    assert_eq!(error.kind, PlayerErrorKind::RuntimeError);
+    assert_eq!(
+        session.pipeline.selected_video_track_id(),
+        Some(selected_track_id)
     );
     assert_eq!(
         session.pipeline.active_video_requirement(),
@@ -248,4 +382,24 @@ fn vp9_track_with_profile(track_id: u32, profile: Vp9Profile) -> TrackInfo {
     metadata.profile = Some(VideoProfile::Vp9(profile));
     track.video = Some(metadata);
     track
+}
+
+fn h264_track_with_avcc(track_id: u32) -> TrackInfo {
+    let mut track = fake_track(track_id, TrackKind::Video);
+    let mut metadata = VideoTrackMetadata::empty();
+    metadata.profile = Some(VideoProfile::H264(H264Profile::ConstrainedBaseline));
+    metadata.bit_depth = Some(BitDepth::Eight);
+    metadata.chroma = Some(ChromaSubsampling::Yuv420);
+    metadata.coded_width = Some(1280);
+    metadata.coded_height = Some(720);
+    track.codec_id = "V_MPEG4/ISO/AVC".to_string();
+    track.codec_private = Some(h264_avcc_codec_private());
+    track.video = Some(metadata);
+    track
+}
+
+fn h264_avcc_codec_private() -> Bytes {
+    Bytes::from_static(&[
+        1, 0x42, 0xe0, 0x1f, 0xff, 0xe1, 0x00, 0x04, 0x67, 0x42, 0xe0, 0x1f, 0x01, 0x00, 0x01, 0x68,
+    ])
 }

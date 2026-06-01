@@ -1828,13 +1828,26 @@ mod tests {
         let mut session = PlayerSession::new();
         let payload = Bytes::from(vec![0x82, 0x49, 0x83, 0x42]);
         let payload_ptr = payload.as_ptr();
+        let time_base = media_core::TimeBase::new(1, 90_000).expect("valid video time base");
         let packet = media_core::Packet::new(
             TrackId::new(1),
             TrackKind::Video,
             Duration::from_millis(120),
-            None,
+            Some(Duration::from_millis(80)),
             true,
             payload.clone(),
+        )
+        .with_track_timestamps(
+            Some(media_core::TrackTimestamp::new(
+                TrackId::new(1),
+                10_800,
+                time_base,
+            )),
+            Some(media_core::TrackTimestamp::new(
+                TrackId::new(1),
+                7_200,
+                time_base,
+            )),
         );
 
         route_demuxed_packet(&mut session, packet);
@@ -1849,6 +1862,15 @@ mod tests {
         assert_eq!(
             pending_packet.generation,
             session.pipeline.seek_generation()
+        );
+        assert_eq!(pending_packet.dts, Some(Duration::from_millis(80)));
+        assert_eq!(
+            pending_packet
+                .track_dts
+                .expect("video pending packet должен сохранить raw DTS")
+                .units
+                .get(),
+            7_200
         );
         assert_eq!(pending_packet.keyframe, PacketKeyframe::Keyframe);
         assert_eq!(pending_packet.encoded_bytes.as_ptr(), payload_ptr);
@@ -1898,6 +1920,50 @@ mod tests {
                 reason: PlayerVideoDropReason::DecoderStarvation,
             }]
         );
+    }
+
+    #[test]
+    fn pending_video_packet_preserves_dts_through_decode_boundary() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+        let time_base = media_core::TimeBase::new(1, 90_000).expect("valid video time base");
+        let track_dts = media_core::TrackTimestamp::new(TrackId::new(1), 7_200, time_base);
+
+        session
+            .pipeline
+            .set_video_decoder_thread(decoder_thread.clone());
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        session.pipeline.enqueue_pending_video_packet(
+            PendingVideoPacket::new_with_decode_timestamps(
+                TrackId::new(1),
+                Duration::from_millis(120),
+                Some(Duration::from_millis(80)),
+                Some(track_dts),
+                session.pipeline.seek_generation(),
+                Bytes::from_static(b"decode-order-video"),
+                true,
+            ),
+        );
+
+        let sent_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+
+        assert_eq!(sent_packets, 1);
+        let sent_packet = decoder_thread
+            .sent_packets()
+            .pop()
+            .expect("decoder должен получить packet");
+        assert_eq!(sent_packet.pts, Duration::from_millis(120));
+        assert_eq!(sent_packet.dts, Some(Duration::from_millis(80)));
+        assert_eq!(sent_packet.track_dts, Some(track_dts));
     }
 
     #[test]

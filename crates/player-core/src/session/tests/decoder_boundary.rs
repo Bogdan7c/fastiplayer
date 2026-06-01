@@ -4,10 +4,30 @@ use super::*;
 #[test]
 fn playback_pipeline_decoder_boundary_absent_thread_is_noop() {
     let pipeline = PlaybackPipeline::default();
+    let config = video_core::VideoStreamDecodeConfig::from_requirement(
+        TrackId::new(1),
+        &VideoDecodeRequirement::new(VideoCodec::Vp9),
+    );
 
     assert!(!pipeline.has_active_video_decoder());
     assert_eq!(pipeline.video_backend_name(), "Synthetic (test)");
     assert!(pipeline.flush_video_decoder_thread().is_ok());
+    assert_eq!(
+        pipeline.configure_video_decoder_stream(config),
+        video_core::VideoStreamConfigResult::AbsentDecoder
+    );
+    assert_eq!(
+        pipeline.clear_video_decoder_stream(),
+        video_core::VideoStreamConfigResult::AbsentDecoder
+    );
+    assert_eq!(
+        pipeline.begin_video_decoder_end_of_stream_drain(0),
+        video_core::VideoDecoderEndOfStreamDrainResult::AbsentDecoder
+    );
+    assert_eq!(
+        pipeline.video_decoder_end_of_stream_drain_state(),
+        video_core::VideoDecoderEndOfStreamDrainState::Idle
+    );
     assert!(pipeline.try_recv_decoded_video_frame().is_none());
     assert!(pipeline.try_recv_video_decoder_diagnostic_event().is_none());
     assert!(pipeline.try_recv_video_decoder_error().is_none());
@@ -22,6 +42,145 @@ fn playback_pipeline_decoder_boundary_absent_thread_is_noop() {
             .is_none()
     );
     assert!(!pipeline.release_frame_to_video_decoder(video_core::FrameResourceHandle(7)));
+}
+
+#[test]
+fn playback_pipeline_decoder_boundary_forwards_stream_config_results() {
+    let mut pipeline = PlaybackPipeline::default();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    let config = video_core::VideoStreamDecodeConfig::from_requirement(
+        TrackId::new(7),
+        &VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0))
+            .with_bit_depth(BitDepth::Eight)
+            .with_chroma(ChromaSubsampling::Yuv420),
+    );
+    pipeline.set_video_decoder_thread(fake_decoder.clone());
+
+    assert_eq!(
+        pipeline.configure_video_decoder_stream(config.clone()),
+        video_core::VideoStreamConfigResult::Configured
+    );
+    assert_eq!(
+        pipeline.configure_video_decoder_stream(config.clone()),
+        video_core::VideoStreamConfigResult::Unchanged
+    );
+    assert_eq!(fake_decoder.configured_streams(), vec![config]);
+    assert_eq!(
+        pipeline.clear_video_decoder_stream(),
+        video_core::VideoStreamConfigResult::Cleared
+    );
+    assert_eq!(
+        pipeline.clear_video_decoder_stream(),
+        video_core::VideoStreamConfigResult::Unchanged
+    );
+    assert_eq!(fake_decoder.clear_stream_count(), 2);
+}
+
+#[test]
+fn playback_pipeline_decoder_boundary_preserves_config_error_states() {
+    let mut pipeline = PlaybackPipeline::default();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    let config = video_core::VideoStreamDecodeConfig::from_requirement(
+        TrackId::new(1),
+        &VideoDecodeRequirement::new(VideoCodec::Vp9),
+    );
+    fake_decoder.push_configure_result(video_core::VideoStreamConfigResult::Unsupported(
+        video_core::VideoStreamConfigRejection::UnsupportedCodec {
+            codec: VideoCodec::H264,
+        },
+    ));
+    fake_decoder.push_configure_result(video_core::VideoStreamConfigResult::Backpressure(
+        video_core::VideoDecoderControlBackpressureReason::ControlChannelFull {
+            queued_messages: 4,
+            capacity: 4,
+        },
+    ));
+    fake_decoder.push_configure_result(video_core::VideoStreamConfigResult::Fatal(
+        DecodeThreadError::new("configure fatal"),
+    ));
+    pipeline.set_video_decoder_thread(fake_decoder);
+
+    assert!(matches!(
+        pipeline.configure_video_decoder_stream(config.clone()),
+        video_core::VideoStreamConfigResult::Unsupported(
+            video_core::VideoStreamConfigRejection::UnsupportedCodec {
+                codec: VideoCodec::H264
+            }
+        )
+    ));
+    assert!(matches!(
+        pipeline.configure_video_decoder_stream(config.clone()),
+        video_core::VideoStreamConfigResult::Backpressure(
+            video_core::VideoDecoderControlBackpressureReason::ControlChannelFull {
+                queued_messages: 4,
+                capacity: 4
+            }
+        )
+    ));
+    assert!(matches!(
+        pipeline.configure_video_decoder_stream(config),
+        video_core::VideoStreamConfigResult::Fatal(error) if error.message() == "configure fatal"
+    ));
+}
+
+#[test]
+fn playback_pipeline_decoder_boundary_forwards_eof_drain_without_seek_flush() {
+    let mut pipeline = PlaybackPipeline::default();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    pipeline.set_video_decoder_thread(fake_decoder.clone());
+
+    assert_eq!(
+        pipeline.begin_video_decoder_end_of_stream_drain(3),
+        video_core::VideoDecoderEndOfStreamDrainResult::Started(
+            video_core::VideoDecoderEndOfStreamDrainState::Drained { generation: 3 }
+        )
+    );
+    assert_eq!(
+        pipeline.begin_video_decoder_end_of_stream_drain(3),
+        video_core::VideoDecoderEndOfStreamDrainResult::Unchanged(
+            video_core::VideoDecoderEndOfStreamDrainState::Drained { generation: 3 }
+        )
+    );
+    assert_eq!(
+        pipeline.video_decoder_end_of_stream_drain_state(),
+        video_core::VideoDecoderEndOfStreamDrainState::Drained { generation: 3 }
+    );
+    assert_eq!(fake_decoder.eof_drain_requests(), vec![3, 3]);
+    assert_eq!(fake_decoder.flush_count(), 0);
+}
+
+#[test]
+fn playback_pipeline_decoder_boundary_preserves_eof_drain_error_states() {
+    let mut pipeline = PlaybackPipeline::default();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    fake_decoder.push_eof_drain_result(
+        video_core::VideoDecoderEndOfStreamDrainResult::Backpressure(
+            video_core::VideoDecoderControlBackpressureReason::ControlChannelFull {
+                queued_messages: 2,
+                capacity: 2,
+            },
+        ),
+    );
+    fake_decoder.push_eof_drain_result(video_core::VideoDecoderEndOfStreamDrainResult::Fatal(
+        DecodeThreadError::new("eof fatal"),
+    ));
+    pipeline.set_video_decoder_thread(fake_decoder);
+
+    assert!(matches!(
+        pipeline.begin_video_decoder_end_of_stream_drain(4),
+        video_core::VideoDecoderEndOfStreamDrainResult::Backpressure(
+            video_core::VideoDecoderControlBackpressureReason::ControlChannelFull {
+                queued_messages: 2,
+                capacity: 2
+            }
+        )
+    ));
+    assert!(matches!(
+        pipeline.begin_video_decoder_end_of_stream_drain(4),
+        video_core::VideoDecoderEndOfStreamDrainResult::Fatal(error)
+            if error.message() == "eof fatal"
+    ));
 }
 
 #[test]

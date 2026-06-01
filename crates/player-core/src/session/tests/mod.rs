@@ -28,8 +28,9 @@ use capability_core::{
     BackendCapabilities, BackendDriverInfo, BackendProbeStatus, P010StorageLayout, VideoExportPath,
 };
 use codec_core::{
-    BitDepth, ChromaSubsampling, DecodeBackendId, SupportedVideoDecodeFormat, VideoCodec,
-    VideoDecodeRequirement, VideoProfile, Vp9Profile, video_requirement_needs_packet_refinement,
+    BitDepth, ChromaSubsampling, DecodeBackendId, H264Profile, SupportedVideoDecodeFormat,
+    VideoCodec, VideoDecodeRequirement, VideoProfile, Vp9Profile,
+    video_requirement_needs_packet_refinement,
 };
 use media_core::{
     DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,

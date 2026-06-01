@@ -34,7 +34,8 @@ pub use command::{
 pub(crate) use decoder_boundary::DecodeBackpressureReason;
 pub(crate) use decoder_boundary::{
     DecodeSendError, DecodeThreadError, DecoderResourceSnapshot, PlayerDecodePacket,
-    PlayerVideoDecoderThreadHandle,
+    PlayerVideoDecoderThreadHandle, VideoDecoderEndOfStreamDrainResult,
+    VideoDecoderEndOfStreamDrainState, VideoStreamConfigResult, VideoStreamDecodeConfig,
 };
 pub use decoder_boundary::{
     PlayerVideoDecoderThreadConfig, PresentFrameResourceProvider,

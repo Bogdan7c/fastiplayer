@@ -75,6 +75,28 @@ fn eof_drain_tick_does_not_read_new_demux_packets() {
 }
 
 #[test]
+fn eof_drain_starts_decoder_drain_without_seek_flush_or_generation_change() {
+    let mut session = PlayerSession::new();
+    install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+    let decoder = SharedFakeVideoDecoderThread::new();
+    session.pipeline.set_video_decoder_thread(decoder.clone());
+    session.dispatch_command(PlayerCommand::Play).unwrap();
+    let generation_before_drain = session.pipeline.seek_generation();
+
+    session.enter_eof_drain();
+
+    assert_eq!(session.pipeline.seek_generation(), generation_before_drain);
+    assert_eq!(decoder.flush_count(), 0);
+    assert_eq!(decoder.eof_drain_requests(), vec![generation_before_drain]);
+    assert_eq!(
+        session.pipeline.video_decoder_end_of_stream_drain_state(),
+        video_core::VideoDecoderEndOfStreamDrainState::Drained {
+            generation: generation_before_drain
+        }
+    );
+}
+
+#[test]
 fn audio_only_eof_after_buffered_samples_keeps_bounded_wakeup_until_drain() {
     let mut session = PlayerSession::new();
     install_fake_media(&mut session, vec![fake_track(2, TrackKind::Audio)]);
