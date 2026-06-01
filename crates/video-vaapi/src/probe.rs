@@ -818,17 +818,21 @@ mod tests {
     }
 
     #[test]
-    fn capability_probe_does_not_advertise_unimplemented_h264_slot() {
+    fn capability_probe_advertises_implemented_h264_8bit_yuv420_slot() {
         let formats = formats_for_va_profile(
             libva::VAProfile::VAProfileH264High,
-            libva::VA_RT_FORMAT_YUV420,
+            libva::VA_RT_FORMAT_YUV420 | libva::VA_RT_FORMAT_YUV420_10,
             MaxResolution {
                 width: Some(1920),
                 height: Some(1080),
             },
         );
 
-        assert!(formats.is_empty());
+        assert_eq!(formats.len(), 1);
+        assert_eq!(formats[0].codec, VideoCodec::H264);
+        assert_eq!(formats[0].profile, VideoProfile::H264(H264Profile::High));
+        assert_eq!(formats[0].bit_depth, BitDepth::Eight);
+        assert_eq!(formats[0].chroma, ChromaSubsampling::Yuv420);
     }
 
     #[test]

@@ -23,11 +23,14 @@ use video_core::{
     DecodedFrame, VideoDecoder, VideoDecoderDiagnosticEvent, VideoFramePublishPressureDiagnostics,
 };
 
-use crate::decoder::VaapiDecoderRuntimeConfig;
+use crate::decoder::{VaapiDecodePacketOutcome, VaapiDecoderRuntimeConfig};
 use crate::resource_pool::{DEFAULT_ZERO_COPY_SURFACE_POOL_SLOTS, ResourcePoolStats};
 
 /// Результат, которым decoder thread подтверждает завершение flush.
 type FlushAck = std::result::Result<(), String>;
+
+/// Результат, которым decoder thread подтверждает замену codec adapter-а.
+type ConfigureStreamAck = video_core::VideoStreamConfigResult;
 
 /// Подтверждение, что decoder thread уже обработал один packet из input channel.
 type DecodePacketAck = ();
@@ -355,6 +358,12 @@ impl DecoderThreadState {
 
 /// Control-команда для decoder thread.
 enum ThreadControlMsg {
+    /// Настроить concrete codec adapter под выбранный stream.
+    ConfigureStream(
+        video_core::VideoStreamDecodeConfig,
+        Sender<ConfigureStreamAck>,
+    ),
+
     /// Освободить decoded handle, удерживаемый zero-copy кадром.
     ReleaseZeroCopy(video_core::FrameResourceHandle),
 
@@ -1144,23 +1153,62 @@ impl VideoDecodeThread {
             return video_core::VideoStreamConfigResult::Unsupported(rejection);
         }
 
-        let mut stream_config = match self.stream_config.lock() {
-            Ok(stream_config) => stream_config,
-            Err(error) => {
-                let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(format!(
-                    "VA-API stream config mutex poisoned: {error}"
-                )));
-                return video_core::VideoStreamConfigResult::Fatal(fatal_error.into());
-            }
-        };
+        {
+            let stream_config = match self.stream_config.lock() {
+                Ok(stream_config) => stream_config,
+                Err(error) => {
+                    let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(
+                        format!("VA-API stream config mutex poisoned: {error}"),
+                    ));
+                    return video_core::VideoStreamConfigResult::Fatal(fatal_error.into());
+                }
+            };
 
-        if stream_config.as_ref() == Some(&config) {
-            return video_core::VideoStreamConfigResult::Unchanged;
+            if stream_config.as_ref() == Some(&config) {
+                return video_core::VideoStreamConfigResult::Unchanged;
+            }
         }
 
-        *stream_config = Some(config);
-        self.reset_end_of_stream_drain_state();
-        video_core::VideoStreamConfigResult::Configured
+        let (done_tx, done_rx) = bounded(1);
+        if let Err(error) = self
+            .control_tx
+            .try_send(ThreadControlMsg::ConfigureStream(config.clone(), done_tx))
+        {
+            return match error {
+                TrySendError::Full(_) => video_core::VideoStreamConfigResult::Backpressure(
+                    video_core::VideoDecoderControlBackpressureReason::ControlChannelFull {
+                        queued_messages: self.control_tx.len(),
+                        capacity: self.control_tx.capacity().unwrap_or(0),
+                    },
+                ),
+                TrySendError::Disconnected(_) => {
+                    let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(
+                        "Decoder thread disconnected before stream configure",
+                    ));
+                    video_core::VideoStreamConfigResult::Fatal(fatal_error.into())
+                }
+            };
+        }
+
+        let configure_result =
+            wait_for_configure_stream_ack(done_rx, self.config.flush_timeout, &self.thread_state);
+
+        if configure_result == video_core::VideoStreamConfigResult::Configured {
+            let mut stream_config = match self.stream_config.lock() {
+                Ok(stream_config) => stream_config,
+                Err(error) => {
+                    let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(
+                        format!("VA-API stream config mutex poisoned after configure: {error}"),
+                    ));
+                    return video_core::VideoStreamConfigResult::Fatal(fatal_error.into());
+                }
+            };
+
+            *stream_config = Some(config);
+            self.reset_end_of_stream_drain_state();
+        }
+
+        configure_result
     }
 
     /// Очищает stream config как explicit media-switch lifecycle step.
@@ -1533,6 +1581,30 @@ impl FramePublishPressureCounters {
     }
 }
 
+/// Ждёт stream-config ACK и сохраняет distinct result для caller-а.
+fn wait_for_configure_stream_ack(
+    done_rx: Receiver<ConfigureStreamAck>,
+    timeout: Duration,
+    thread_state: &DecoderThreadState,
+) -> video_core::VideoStreamConfigResult {
+    match done_rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => {
+            let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(format!(
+                "Decoder thread did not confirm stream configure within {} ms",
+                timeout.as_millis()
+            )));
+            video_core::VideoStreamConfigResult::Fatal(fatal_error.into())
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(
+                "Decoder thread did not confirm stream configure",
+            ));
+            video_core::VideoStreamConfigResult::Fatal(fatal_error.into())
+        }
+    }
+}
+
 /// Учитывает failed control send и пишет pressure fields перед fail-closed переходом.
 fn record_decoder_control_send_failure(
     operation: DecoderControlOperation,
@@ -1575,6 +1647,7 @@ fn decoder_thread_loop(
     diagnostic_tx: DecoderDiagnosticSender,
 ) {
     let mut pending_publish: Option<PendingFramePublish> = None;
+    let mut output_backpressured_packet: Option<QueuedDecodePacket> = None;
     let mut publish_pressure = FramePublishPressureCounters::default();
     let mut latest_color_metadata: Option<VideoColorMetadata> = None;
 
@@ -1585,6 +1658,7 @@ fn decoder_thread_loop(
             &control_rx,
             &error_tx,
             &mut pending_publish,
+            &mut output_backpressured_packet,
         ) {
             break;
         }
@@ -1607,6 +1681,7 @@ fn decoder_thread_loop(
                         &packet_rx,
                         &error_tx,
                         &mut pending_publish,
+                        &mut output_backpressured_packet,
                     ) {
                         break;
                     }
@@ -1625,6 +1700,47 @@ fn decoder_thread_loop(
             continue;
         }
 
+        if let Some(queued_packet) = output_backpressured_packet.take() {
+            match decode_queued_packet(
+                &mut decoder,
+                queued_packet,
+                DecodeQueuedPacketContext {
+                    frame_tx: &frame_tx,
+                    packet_ack_tx: &packet_ack_tx,
+                    error_tx: &error_tx,
+                    pending_publish: &mut pending_publish,
+                    publish_pressure: &mut publish_pressure,
+                    diagnostic_tx: &diagnostic_tx,
+                    latest_color_metadata: &mut latest_color_metadata,
+                },
+            ) {
+                DecodeQueuedPacketResult::Continue => continue,
+                DecodeQueuedPacketResult::Stop => break,
+                DecodeQueuedPacketResult::OutputBackpressured(queued_packet) => {
+                    output_backpressured_packet = Some(queued_packet);
+                    match control_rx
+                        .recv_timeout(Duration::from_millis(DECODER_FRAME_PUBLISH_RETRY_MS))
+                    {
+                        Ok(control_message) => {
+                            if !handle_decoder_control_message(
+                                &mut decoder,
+                                control_message,
+                                &packet_rx,
+                                &error_tx,
+                                &mut pending_publish,
+                                &mut output_backpressured_packet,
+                            ) {
+                                break;
+                            }
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
+                    continue;
+                }
+            }
+        }
+
         select! {
             recv(control_rx) -> control_result => {
                 match control_result {
@@ -1635,6 +1751,7 @@ fn decoder_thread_loop(
                             &packet_rx,
                             &error_tx,
                             &mut pending_publish,
+                            &mut output_backpressured_packet,
                         ) {
                             break;
                         }
@@ -1645,7 +1762,7 @@ fn decoder_thread_loop(
             recv(packet_rx) -> packet_result => {
                 match packet_result {
                     Ok(queued_packet) => {
-                        if !decode_queued_packet(
+                        match decode_queued_packet(
                             &mut decoder,
                             queued_packet,
                             DecodeQueuedPacketContext {
@@ -1658,7 +1775,11 @@ fn decoder_thread_loop(
                                 latest_color_metadata: &mut latest_color_metadata,
                             },
                         ) {
-                            break;
+                            DecodeQueuedPacketResult::Continue => {}
+                            DecodeQueuedPacketResult::Stop => break,
+                            DecodeQueuedPacketResult::OutputBackpressured(queued_packet) => {
+                                output_backpressured_packet = Some(queued_packet);
+                            }
                         }
                     }
                     Err(_) => break,
@@ -1677,6 +1798,7 @@ fn drain_decoder_control_messages(
     control_rx: &Receiver<ThreadControlMsg>,
     error_tx: &Sender<DecodeThreadError>,
     pending_publish: &mut Option<PendingFramePublish>,
+    output_backpressured_packet: &mut Option<QueuedDecodePacket>,
 ) -> bool {
     loop {
         match control_rx.try_recv() {
@@ -1687,6 +1809,7 @@ fn drain_decoder_control_messages(
                     packet_rx,
                     error_tx,
                     pending_publish,
+                    output_backpressured_packet,
                 ) {
                     return false;
                 }
@@ -1704,8 +1827,38 @@ fn handle_decoder_control_message(
     packet_rx: &Receiver<QueuedDecodePacket>,
     error_tx: &Sender<DecodeThreadError>,
     pending_publish: &mut Option<PendingFramePublish>,
+    output_backpressured_packet: &mut Option<QueuedDecodePacket>,
 ) -> bool {
     match control_message {
+        ThreadControlMsg::ConfigureStream(config, done_tx) => {
+            release_pending_publish_frame(decoder, pending_publish.take());
+            output_backpressured_packet.take();
+            let config_result =
+                if let Some(rejection) = reject_unsupported_vaapi_stream_config(&config) {
+                    video_core::VideoStreamConfigResult::Unsupported(rejection)
+                } else {
+                    match decoder.configure_stream(&config) {
+                        Ok(()) => video_core::VideoStreamConfigResult::Configured,
+                        Err(error) => {
+                            let fatal_error = DecodeThreadError::new(format!(
+                                "Decoder thread failed to configure VA-API stream: {error:#}"
+                            ));
+                            send_decoder_thread_error(error_tx, fatal_error.message().to_string());
+                            video_core::VideoStreamConfigResult::Fatal(fatal_error.into())
+                        }
+                    }
+                };
+            let keep_running =
+                !matches!(config_result, video_core::VideoStreamConfigResult::Fatal(_));
+
+            if done_tx.send(config_result).is_err() {
+                tracing::warn!(
+                    "Decoder thread: stream configure completed, but caller dropped receiver"
+                );
+            }
+
+            keep_running
+        }
         ThreadControlMsg::ReleaseZeroCopy(handle) => {
             if let Err(error) = decoder.release_zero_copy_frame(handle) {
                 let message = format!("Video decoder zero-copy release failed: {error:#}");
@@ -1721,6 +1874,7 @@ fn handle_decoder_control_message(
         }
         ThreadControlMsg::Flush(done_tx) => {
             release_pending_publish_frame(decoder, pending_publish.take());
+            output_backpressured_packet.take();
             let dropped_packet_count = drain_queued_decode_packets(packet_rx);
             if dropped_packet_count > 0 {
                 tracing::debug!(
@@ -1779,58 +1933,72 @@ struct DecodeQueuedPacketContext<'a> {
     latest_color_metadata: &'a mut Option<VideoColorMetadata>,
 }
 
+/// Result одного decode attempt-а внутри decoder thread loop-а.
+enum DecodeQueuedPacketResult {
+    /// Loop может продолжать normal scheduling.
+    Continue,
+
+    /// Decode thread должен завершиться.
+    Stop,
+
+    /// Packet не принят из-за output-buffer pressure и должен быть повторён позже.
+    OutputBackpressured(QueuedDecodePacket),
+}
+
 /// Декодирует один queued packet и ставит первый готовый frame в publish stage.
 fn decode_queued_packet(
     decoder: &mut crate::VaapiVideoDecoder,
     queued_packet: QueuedDecodePacket,
     decode_context: DecodeQueuedPacketContext<'_>,
-) -> bool {
+) -> DecodeQueuedPacketResult {
     let packet_receive_latency = queued_packet.enqueued_at.elapsed();
-    let DecodePacket {
-        track_id,
-        pts,
-        dts,
-        track_dts,
-        generation,
-        encoded_bytes,
-        keyframe,
-        resolved_color,
-    } = queued_packet.packet;
-
-    *decode_context.latest_color_metadata = resolved_color.clone();
+    let decode_packet = &queued_packet.packet;
     let packet = Packet {
-        track_id,
+        track_id: decode_packet.track_id,
         kind: TrackKind::Video,
-        pts,
+        pts: decode_packet.pts,
         track_pts: None,
-        dts,
-        track_dts,
+        dts: decode_packet.dts,
+        track_dts: decode_packet.track_dts,
         duration: None,
         track_duration: None,
-        keyframe: keyframe.into(),
+        keyframe: decode_packet.keyframe.into(),
         byte_offset: None,
-        data: encoded_bytes,
+        data: decode_packet.encoded_bytes.clone(),
     };
 
-    let decode_result = decoder.decode(&packet);
-    let _ = decode_context.packet_ack_tx.try_send(());
+    let decode_result = decoder.decode_packet_for_thread(&packet);
 
     match decode_result {
-        Ok(Some(mut frame)) => {
-            frame.generation = generation;
-            if let Some(color_metadata) = &resolved_color {
+        Ok(VaapiDecodePacketOutcome::OutputBackpressured) => {
+            DecodeQueuedPacketResult::OutputBackpressured(queued_packet)
+        }
+        Ok(VaapiDecodePacketOutcome::Accepted(Some(frame))) => {
+            let mut frame = *frame;
+            let _ = decode_context.packet_ack_tx.try_send(());
+            *decode_context.latest_color_metadata = decode_packet.resolved_color.clone();
+            frame.generation = decode_packet.generation;
+            if let Some(color_metadata) = &decode_packet.resolved_color {
                 frame.color = color_metadata.clone();
             }
             frame.diagnostics.timings.decoder_packet_receive_latency = Some(packet_receive_latency);
             *decode_context.pending_publish = Some(PendingFramePublish::new(frame));
-            publish_pending_frame(
+            if publish_pending_frame(
                 decode_context.frame_tx,
                 decode_context.pending_publish,
                 decode_context.publish_pressure,
                 decode_context.diagnostic_tx,
-            )
+            ) {
+                DecodeQueuedPacketResult::Continue
+            } else {
+                DecodeQueuedPacketResult::Stop
+            }
         }
-        Ok(None) => true,
+        Ok(VaapiDecodePacketOutcome::Accepted(None)) => {
+            let _ = decode_context.packet_ack_tx.try_send(());
+            *decode_context.latest_color_metadata = decode_packet.resolved_color.clone();
+            DecodeQueuedPacketResult::Continue
+        }
         Err(error) => {
             if crate::decoder::is_fatal_decoder_error(&error) {
                 let message = format!("Video decoder stopped after fatal error: {error:#}");
@@ -1839,10 +2007,10 @@ fn decode_queued_packet(
                     "Decoder thread: fatal decode error, exiting"
                 );
                 send_decoder_thread_error(decode_context.error_tx, message);
-                return false;
+                return DecodeQueuedPacketResult::Stop;
             }
             tracing::warn!(error = %error, "Decoder thread: decode error");
-            true
+            DecodeQueuedPacketResult::Continue
         }
     }
 }

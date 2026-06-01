@@ -4,11 +4,14 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use codec_core::{
-    BitDepth, ChromaSubsampling, SupportedVideoDecodeFormat, VideoCodec, VideoProfile,
-    VideoSurfaceFormat, Vp9Profile,
+    BitDepth, ChromaSubsampling, H264Packetization, H264ParameterSetInjection,
+    SupportedVideoDecodeFormat, VideoCodec, VideoProfile, VideoSurfaceFormat, Vp9Profile,
+    h264_access_unit_to_annex_b, parse_avc_decoder_configuration_record,
 };
 use cros_codecs::DecodedFormat;
-use cros_codecs::decoder::stateless::{DecodeError, StatelessVideoDecoder};
+use cros_codecs::backend::vaapi::decoder::VaapiBackend;
+use cros_codecs::decoder::stateless::h264::H264;
+use cros_codecs::decoder::stateless::{DecodeError, StatelessDecoder, StatelessVideoDecoder};
 use cros_codecs::decoder::{
     BlockingMode, DecodedDmaBufImage, DecodedHandle, DecoderEvent, DynDecodedHandle, StreamInfo,
 };
@@ -174,12 +177,15 @@ pub(crate) enum VaapiDecoderEvent {
     FormatChanged,
 }
 
-impl From<DecoderEvent<DynDecodedHandle<InternalVaapiFrame>>> for VaapiDecoderEvent {
+impl<H> From<DecoderEvent<H>> for VaapiDecoderEvent
+where
+    H: DecodedHandle<Frame = InternalVaapiFrame> + 'static,
+{
     /// Скрывает cros event enum за локальным adapter event-ом.
-    fn from(event: DecoderEvent<DynDecodedHandle<InternalVaapiFrame>>) -> Self {
+    fn from(event: DecoderEvent<H>) -> Self {
         match event {
             DecoderEvent::FrameReady(handle) => {
-                Self::FrameReady(VaapiDecodedFrameHandle::new(handle))
+                Self::FrameReady(VaapiDecodedFrameHandle::new(Box::new(handle)))
             }
             DecoderEvent::FormatChanged => Self::FormatChanged,
         }
@@ -265,6 +271,240 @@ pub(crate) trait VaapiCodecAdapter {
 
     /// Возвращает последний stream info после codec parser/format change.
     fn stream_info(&self) -> Option<VaapiAdapterStreamInfo>;
+}
+
+/// H.264 stream metadata, доказанная на configure boundary.
+struct H264VaapiStreamConfig {
+    /// Packetization player/demuxer уже подтвердили через `codec-core`.
+    packetization: H264Packetization,
+
+    /// SPS NAL units из codec-private без Annex B start code.
+    sequence_parameter_sets: Vec<Vec<u8>>,
+
+    /// PPS NAL units из codec-private без Annex B start code.
+    picture_parameter_sets: Vec<Vec<u8>>,
+}
+
+impl H264VaapiStreamConfig {
+    /// Строит backend-local config только из уже принятого neutral stream config-а.
+    fn from_decode_config(
+        config: &VideoStreamDecodeConfig,
+    ) -> std::result::Result<Self, VideoStreamConfigRejection> {
+        let packetization = match config.packetization {
+            Some(VideoStreamPacketization::H264(packetization)) => packetization,
+            _ => {
+                return Err(VideoStreamConfigRejection::MissingPacketization {
+                    codec: VideoCodec::H264,
+                });
+            }
+        };
+
+        let codec_private = config
+            .codec_private
+            .as_deref()
+            .filter(|bytes| !bytes.is_empty())
+            .ok_or_else(|| VideoStreamConfigRejection::InvalidCodecPrivate {
+                codec: VideoCodec::H264,
+                reason: "H.264 VA-API adapter requires avcC codec_private with SPS/PPS".to_string(),
+            })?;
+
+        let decoder_config =
+            parse_avc_decoder_configuration_record(codec_private).map_err(|error| {
+                VideoStreamConfigRejection::InvalidCodecPrivate {
+                    codec: VideoCodec::H264,
+                    reason: error.to_string(),
+                }
+            })?;
+
+        if let H264Packetization::AvccLengthPrefixed { nal_length_size } = packetization
+            && decoder_config.nal_length_size != nal_length_size
+        {
+            return Err(VideoStreamConfigRejection::InvalidCodecPrivate {
+                codec: VideoCodec::H264,
+                reason: format!(
+                    "H.264 packetization length size {nal_length_size:?} does not match avcC {:?}",
+                    decoder_config.nal_length_size
+                ),
+            });
+        }
+
+        Ok(Self {
+            packetization,
+            sequence_parameter_sets: decoder_config.sequence_parameter_sets().to_vec(),
+            picture_parameter_sets: decoder_config.picture_parameter_sets().to_vec(),
+        })
+    }
+
+    /// Конвертирует один access unit в Annex B и добавляет SPS/PPS по явной policy.
+    fn access_unit_to_annex_b(
+        &self,
+        packet_data: &[u8],
+    ) -> std::result::Result<Vec<u8>, VaapiAdapterDecodeError> {
+        h264_access_unit_to_annex_b(
+            packet_data,
+            self.packetization,
+            H264ParameterSetInjection::BeforeAccessUnit {
+                sequence_parameter_sets: &self.sequence_parameter_sets,
+                picture_parameter_sets: &self.picture_parameter_sets,
+            },
+        )
+        .map_err(|error| VaapiAdapterDecodeError::ParseFrameError(error.to_string()))
+    }
+}
+
+/// Annex B access unit, который может быть partially consumed cros H.264 decoder-ом.
+struct H264PendingAccessUnit {
+    /// Полный Annex B payload с injected parameter sets.
+    annex_b_bytes: Vec<u8>,
+
+    /// Размер исходного packet-а на external adapter boundary.
+    source_packet_len: usize,
+
+    /// Сколько Annex B bytes уже принято cros decoder-ом.
+    consumed_bytes: usize,
+}
+
+impl H264PendingAccessUnit {
+    /// Создаёт pending AU до первого NAL submit-а.
+    fn new(annex_b_bytes: Vec<u8>, source_packet_len: usize) -> Self {
+        Self {
+            annex_b_bytes,
+            source_packet_len,
+            consumed_bytes: 0,
+        }
+    }
+
+    /// Кормит cros decoder NAL-ами до полного AU или первого backpressure/error.
+    fn feed_until_blocked(
+        &mut self,
+        mut decode_next_nal: impl FnMut(&[u8]) -> std::result::Result<usize, VaapiAdapterDecodeError>,
+    ) -> std::result::Result<Option<usize>, VaapiAdapterDecodeError> {
+        while self.consumed_bytes < self.annex_b_bytes.len() {
+            let remaining_bytes = &self.annex_b_bytes[self.consumed_bytes..];
+            let consumed_now = decode_next_nal(remaining_bytes)?;
+
+            if consumed_now == 0 {
+                return Err(VaapiAdapterDecodeError::Decoder(
+                    "H.264 decoder accepted a NAL but reported 0 consumed bytes".to_string(),
+                ));
+            }
+            if consumed_now > remaining_bytes.len() {
+                return Err(VaapiAdapterDecodeError::Decoder(format!(
+                    "H.264 decoder reported {consumed_now} consumed bytes for {} available bytes",
+                    remaining_bytes.len()
+                )));
+            }
+
+            self.consumed_bytes += consumed_now;
+        }
+
+        Ok(Some(self.source_packet_len))
+    }
+}
+
+/// Production H.264 adapter поверх cros-codecs VAAPI decoder-а.
+struct H264VaapiCodecAdapter {
+    /// Concrete cros decoder остаётся private implementation detail adapter-а.
+    inner: StatelessDecoder<H264, VaapiBackend<InternalVaapiFrame>>,
+
+    /// Configure-time packetization и SPS/PPS state.
+    stream_config: H264VaapiStreamConfig,
+
+    /// Unconsumed AU после `CheckEvents` или output-buffer backpressure.
+    pending_access_unit: Option<H264PendingAccessUnit>,
+}
+
+impl H264VaapiCodecAdapter {
+    /// Создаёт H.264 decoder только для уже валидированного stream config-а.
+    fn new(display: Rc<Display>, config: &VideoStreamDecodeConfig) -> Result<Self> {
+        let stream_config = H264VaapiStreamConfig::from_decode_config(config)
+            .map_err(|rejection| anyhow::anyhow!("Invalid H.264 VA-API config: {rejection}"))?;
+        let inner = StatelessDecoder::<H264, VaapiBackend<InternalVaapiFrame>>::new_vaapi(
+            display,
+            BlockingMode::Blocking,
+        )
+        .map_err(|error| anyhow::anyhow!("Failed to create VA-API H.264 decoder: {error:?}"))?;
+
+        Ok(Self {
+            inner,
+            stream_config,
+            pending_access_unit: None,
+        })
+    }
+}
+
+impl VaapiCodecAdapter for H264VaapiCodecAdapter {
+    /// Сообщает codec production adapter-а.
+    fn codec(&self) -> VideoCodec {
+        VideoCodec::H264
+    }
+
+    /// Возвращает backend label для H.264 diagnostics.
+    fn backend_name(&self) -> &'static str {
+        "VA-API H.264"
+    }
+
+    /// Возвращает codec label для сообщений retry-loop-а.
+    fn codec_label(&self) -> &'static str {
+        "H.264"
+    }
+
+    /// Конвертирует AU в Annex B и отправляет все NAL units в cros decoder.
+    fn submit_packet(
+        &mut self,
+        timestamp_us: u64,
+        packet_data: &[u8],
+        frame_pool: &mut DmaFramePool,
+    ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
+        if self.pending_access_unit.is_none() {
+            let annex_b_bytes = self.stream_config.access_unit_to_annex_b(packet_data)?;
+            self.pending_access_unit =
+                Some(H264PendingAccessUnit::new(annex_b_bytes, packet_data.len()));
+        }
+
+        let pending_access_unit = self
+            .pending_access_unit
+            .as_mut()
+            .expect("pending access unit was just created");
+        let feed_result = pending_access_unit.feed_until_blocked(|remaining_bytes| {
+            let mut alloc_cb = || {
+                let frame = frame_pool.alloc_or_allocate();
+                if frame.is_none() {
+                    tracing::warn!("Frame pool exhausted; H.264 decoder needs output buffers");
+                }
+                frame
+            };
+
+            self.inner
+                .decode(timestamp_us, remaining_bytes, &mut alloc_cb)
+                .map_err(VaapiAdapterDecodeError::from)
+        });
+
+        match feed_result {
+            Ok(Some(source_packet_len)) => {
+                self.pending_access_unit = None;
+                Ok(source_packet_len)
+            }
+            Ok(None) => unreachable!("H.264 feed loop always completes or returns an error"),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Flush-ит H.264 decoder state и забывает partially consumed AU.
+    fn flush(&mut self) -> std::result::Result<(), VaapiAdapterDecodeError> {
+        self.pending_access_unit = None;
+        self.inner.flush().map_err(VaapiAdapterDecodeError::from)
+    }
+
+    /// Возвращает следующий cros event в локальном wrapper-е.
+    fn next_event(&mut self) -> Option<VaapiDecoderEvent> {
+        self.inner.next_event().map(VaapiDecoderEvent::from)
+    }
+
+    /// Возвращает stream info без раскрытия cros type-а наружу module-а.
+    fn stream_info(&self) -> Option<VaapiAdapterStreamInfo> {
+        self.inner.stream_info().map(VaapiAdapterStreamInfo::from)
+    }
 }
 
 /// Production VP9 adapter поверх существующего cros-codecs decoder-а.
@@ -354,13 +594,33 @@ impl VaapiCodecAdapterFactory {
         Ok(Box::new(Vp9VaapiCodecAdapter::new(display)?))
     }
 
+    /// Создаёт adapter, который соответствует уже принятому stream config-у.
+    pub(crate) fn create_adapter_for_config(
+        display: Rc<Display>,
+        config: &VideoStreamDecodeConfig,
+    ) -> Result<Box<dyn VaapiCodecAdapter>> {
+        if let Some(rejection) = Self::stream_config_rejection(config) {
+            return Err(anyhow::anyhow!(
+                "Unsupported VA-API stream config: {rejection}"
+            ));
+        }
+
+        match config.codec {
+            VideoCodec::Vp9 => Ok(Box::new(Vp9VaapiCodecAdapter::new(display)?)),
+            VideoCodec::H264 => Ok(Box::new(H264VaapiCodecAdapter::new(display, config)?)),
+            codec @ (VideoCodec::Av1 | VideoCodec::H265 | VideoCodec::Vp8) => Err(anyhow::anyhow!(
+                "VA-API adapter factory has no implemented adapter for {codec}"
+            )),
+        }
+    }
+
     /// Возвращает typed отказ, если stream config не входит в implemented adapter matrix.
     pub(crate) fn stream_config_rejection(
         config: &VideoStreamDecodeConfig,
     ) -> Option<VideoStreamConfigRejection> {
         match config.codec {
             VideoCodec::Vp9 => reject_unsupported_vp9_config(config),
-            VideoCodec::H264 => reject_h264_stub_config(config),
+            VideoCodec::H264 => reject_unsupported_h264_config(config),
             codec @ (VideoCodec::Av1 | VideoCodec::H265 | VideoCodec::Vp8) => {
                 Some(VideoStreamConfigRejection::UnsupportedCodec { codec })
             }
@@ -375,6 +635,9 @@ impl VaapiCodecAdapterFactory {
             }
             (VideoCodec::Vp9, VideoProfile::Vp9(Vp9Profile::Profile2)) => {
                 format.bit_depth == BitDepth::Ten && format.chroma == ChromaSubsampling::Yuv420
+            }
+            (VideoCodec::H264, VideoProfile::H264(_)) => {
+                format.bit_depth == BitDepth::Eight && format.chroma == ChromaSubsampling::Yuv420
             }
             _ => false,
         }
@@ -451,8 +714,10 @@ fn reject_vp9_without_profile(
     None
 }
 
-/// Валидирует H.264 slot и всегда закрывает production decode до готового adapter-а.
-fn reject_h264_stub_config(config: &VideoStreamDecodeConfig) -> Option<VideoStreamConfigRejection> {
+/// Валидирует H.264 stream config против production adapter-а.
+fn reject_unsupported_h264_config(
+    config: &VideoStreamDecodeConfig,
+) -> Option<VideoStreamConfigRejection> {
     if let Some(profile) = config.profile
         && !matches!(profile, VideoProfile::H264(_))
     {
@@ -475,10 +740,7 @@ fn reject_h264_stub_config(config: &VideoStreamDecodeConfig) -> Option<VideoStre
         });
     }
 
-    Some(VideoStreamConfigRejection::BackendUnsupported {
-        reason: "H.264 VA-API adapter slot exists, but production decode is not implemented yet"
-            .to_string(),
-    })
+    H264VaapiStreamConfig::from_decode_config(config).err()
 }
 
 /// Проверяет optional bit depth на точное expected значение.
@@ -572,15 +834,38 @@ mod tests {
         ));
     }
 
-    /// Проверяет H.264 stub: metadata slot есть, но production packets ещё запрещены.
+    /// Собирает минимальный avcC record с SPS/PPS для configure-boundary tests.
+    fn valid_h264_avcc_private() -> Bytes {
+        Bytes::from_static(&[1, 100, 0, 31, 0xff, 0xe1, 0, 2, 0x67, 0x64, 1, 0, 1, 0x68])
+    }
+
+    /// Собирает Annex B access unit из NAL units без start code.
+    fn annex_b_access_unit(nal_units: &[&[u8]]) -> Vec<u8> {
+        let mut access_unit = Vec::new();
+        for nal_unit in nal_units {
+            access_unit.extend_from_slice(&[0, 0, 0, 1]);
+            access_unit.extend_from_slice(nal_unit);
+        }
+        access_unit
+    }
+
+    /// Возвращает размер первого Annex B NAL-а в переданном suffix-е.
+    fn first_annex_b_nal_len(bytes: &[u8]) -> usize {
+        bytes[4..]
+            .windows(4)
+            .position(|window| window == [0, 0, 0, 1])
+            .map_or(bytes.len(), |position| position + 4)
+    }
+
+    /// Проверяет H.264 adapter matrix: metadata slot теперь production-ready.
     #[test]
-    fn factory_keeps_h264_slot_unsupported_after_packetization_is_known() {
+    fn factory_accepts_h264_after_packetization_and_avcc_are_known() {
         let config = VideoStreamDecodeConfig {
             profile: Some(VideoProfile::H264(H264Profile::High)),
             bit_depth: Some(BitDepth::Eight),
             chroma: Some(ChromaSubsampling::Yuv420),
             surface_format: Some(VideoSurfaceFormat::Nv12),
-            codec_private: Some(Bytes::from_static(b"avcC")),
+            codec_private: Some(valid_h264_avcc_private()),
             packetization: Some(VideoStreamPacketization::H264(
                 H264Packetization::AvccLengthPrefixed {
                     nal_length_size: H264NalLengthSize::FOUR,
@@ -589,11 +874,7 @@ mod tests {
             ..stream_config(VideoCodec::H264)
         };
 
-        assert!(matches!(
-            VaapiCodecAdapterFactory::stream_config_rejection(&config),
-            Some(VideoStreamConfigRejection::BackendUnsupported { reason })
-                if reason.contains("production decode is not implemented")
-        ));
+        assert!(VaapiCodecAdapterFactory::stream_config_rejection(&config).is_none());
     }
 
     /// Проверяет typed отказ до H.264 packetization proof.
@@ -615,10 +896,82 @@ mod tests {
         ));
     }
 
+    /// Проверяет H.264 AU feeder: один packet может состоять из нескольких NAL units.
+    #[test]
+    fn h264_pending_access_unit_consumes_all_nals_before_accepting_packet() {
+        let annex_b = annex_b_access_unit(&[&[0x67, 0x64], &[0x68], &[0x65, 0x88]]);
+        let mut pending_access_unit = H264PendingAccessUnit::new(annex_b.clone(), 17);
+        let mut submitted_nals = Vec::new();
+
+        let accepted_len = pending_access_unit
+            .feed_until_blocked(|remaining_bytes| {
+                let consumed_len = first_annex_b_nal_len(remaining_bytes);
+                submitted_nals.push(remaining_bytes[..consumed_len].to_vec());
+                Ok(consumed_len)
+            })
+            .unwrap();
+
+        assert_eq!(accepted_len, Some(17));
+        assert_eq!(pending_access_unit.consumed_bytes, annex_b.len());
+        assert_eq!(submitted_nals.len(), 3);
+    }
+
+    /// Проверяет, что `CheckEvents` оставляет offset на том же NAL-е для retry.
+    #[test]
+    fn h264_check_events_retry_does_not_double_consume_input() {
+        let annex_b = annex_b_access_unit(&[&[0x67, 0x64], &[0x65, 0x88]]);
+        let mut pending_access_unit = H264PendingAccessUnit::new(annex_b, 11);
+        let mut first_attempts = 0usize;
+
+        let first_result = pending_access_unit.feed_until_blocked(|_remaining_bytes| {
+            first_attempts += 1;
+            Err(VaapiAdapterDecodeError::CheckEvents)
+        });
+
+        assert!(matches!(
+            first_result,
+            Err(VaapiAdapterDecodeError::CheckEvents)
+        ));
+        assert_eq!(pending_access_unit.consumed_bytes, 0);
+        assert_eq!(first_attempts, 1);
+
+        let accepted_len = pending_access_unit
+            .feed_until_blocked(|remaining_bytes| Ok(first_annex_b_nal_len(remaining_bytes)))
+            .unwrap();
+
+        assert_eq!(accepted_len, Some(11));
+    }
+
+    /// Проверяет, что output-buffer pressure сохраняет текущий NAL для retry.
+    #[test]
+    fn h264_not_enough_output_buffers_preserves_pending_access_unit() {
+        let annex_b = annex_b_access_unit(&[&[0x65, 0x88]]);
+        let mut pending_access_unit = H264PendingAccessUnit::new(annex_b.clone(), 5);
+
+        let first_result = pending_access_unit.feed_until_blocked(|_remaining_bytes| {
+            Err(VaapiAdapterDecodeError::NotEnoughOutputBuffers(1))
+        });
+
+        assert!(matches!(
+            first_result,
+            Err(VaapiAdapterDecodeError::NotEnoughOutputBuffers(1))
+        ));
+        assert_eq!(pending_access_unit.consumed_bytes, 0);
+
+        let accepted_len = pending_access_unit
+            .feed_until_blocked(|remaining_bytes| {
+                assert_eq!(remaining_bytes, annex_b.as_slice());
+                Ok(remaining_bytes.len())
+            })
+            .unwrap();
+
+        assert_eq!(accepted_len, Some(5));
+    }
+
     /// Проверяет production capability matrix adapter-а без hardware probe.
     #[test]
-    fn implemented_format_matrix_contains_only_vp9_profile0_and_profile2() {
-        let supported = SupportedVideoDecodeFormat {
+    fn implemented_format_matrix_contains_vp9_and_h264_8bit_yuv420() {
+        let supported_vp9 = SupportedVideoDecodeFormat {
             codec: VideoCodec::Vp9,
             profile: VideoProfile::Vp9(Vp9Profile::Profile2),
             bit_depth: BitDepth::Ten,
@@ -629,15 +982,29 @@ mod tests {
             hdr_input: true,
             backend: codec_core::DecodeBackendId::vaapi(),
         };
-        let rejected = SupportedVideoDecodeFormat {
+        let supported_h264 = SupportedVideoDecodeFormat {
             profile: VideoProfile::H264(H264Profile::High),
             codec: VideoCodec::H264,
             bit_depth: BitDepth::Eight,
             hdr_input: false,
-            ..supported.clone()
+            ..supported_vp9.clone()
+        };
+        let rejected_h264_high10 = SupportedVideoDecodeFormat {
+            profile: VideoProfile::H264(H264Profile::High),
+            codec: VideoCodec::H264,
+            bit_depth: BitDepth::Ten,
+            hdr_input: true,
+            ..supported_vp9.clone()
         };
 
-        assert!(VaapiCodecAdapterFactory::supports_decode_format(&supported));
-        assert!(!VaapiCodecAdapterFactory::supports_decode_format(&rejected));
+        assert!(VaapiCodecAdapterFactory::supports_decode_format(
+            &supported_vp9
+        ));
+        assert!(VaapiCodecAdapterFactory::supports_decode_format(
+            &supported_h264
+        ));
+        assert!(!VaapiCodecAdapterFactory::supports_decode_format(
+            &rejected_h264_high10
+        ));
     }
 }

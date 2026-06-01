@@ -1,10 +1,11 @@
 use std::any::Any;
 use std::collections::{HashMap, VecDeque};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
+use codec_core::{BitDepth, ChromaSubsampling, VideoCodec, VideoColorMetadata};
 use cros_codecs::libva::{
     VA_RT_FORMAT_YUV420, VA_RT_FORMAT_YUV420_10, VA_RT_FORMAT_YUV420_12, VA_RT_FORMAT_YUV422,
     VA_RT_FORMAT_YUV422_10, VA_RT_FORMAT_YUV422_12, VA_RT_FORMAT_YUV444, VA_RT_FORMAT_YUV444_10,
@@ -15,7 +16,7 @@ use tracing::{debug, info, trace, warn};
 use video_core::{
     DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle, VideoDecoder,
     VideoDecoderDiagnosticEvent, VideoDecoderDropReason, VideoFrameDiagnostics,
-    VideoFrameTimingDiagnostics, VideoResourcePoolDiagnostics,
+    VideoFrameTimingDiagnostics, VideoResourcePoolDiagnostics, VideoStreamDecodeConfig,
 };
 
 use crate::codec_adapter::{
@@ -118,6 +119,9 @@ struct DecodeLoopReport {
     /// Был ли packet пропущен из-за recoverable parse error.
     skipped_packet: bool,
 
+    /// Был ли packet оставлен на retry из-за временной нехватки output buffers.
+    output_backpressured: bool,
+
     /// Суммарное время внутри submit attempts.
     submit_elapsed: Duration,
 
@@ -132,6 +136,15 @@ impl DecodeLoopReport {
         self.format_changed |= drain_report.format_changed;
         self.drain_elapsed += drain_elapsed;
     }
+}
+
+/// Итог обработки packet-а для decoder thread-а.
+pub(crate) enum VaapiDecodePacketOutcome {
+    /// Packet принят adapter-ом; готовый frame может появиться сразу или позже.
+    Accepted(Option<Box<DecodedFrame>>),
+
+    /// Packet сохранён adapter-ом как pending и должен быть повторён после release/backpressure.
+    OutputBackpressured,
 }
 
 /// Минимальный интерфейс, который нужен retry state machine.
@@ -224,6 +237,7 @@ where
                 let drain_start = std::time::Instant::now();
                 let drain_report = driver.drain_events()?;
                 report.record_drain(drain_report, drain_start.elapsed());
+                report.output_backpressured = true;
                 return Ok(report);
             }
             Err(VaapiAdapterDecodeError::ParseFrameError(message)) => {
@@ -391,6 +405,9 @@ fn rt_format_for_decoded_format(decoded_format: VaapiDecodedFormat) -> Result<u3
 /// Активный adapter владеет concrete cros-codecs decoder-ом, а этот слой владеет
 /// internal VA surfaces, DMA-BUF resource pool и drain events внутри `decode()`.
 pub struct VaapiVideoDecoder {
+    /// VA display, через который создаются codec adapters при stream reconfigure.
+    display: Rc<cros_codecs::libva::Display>,
+
     /// Активный codec adapter, который скрывает concrete cros-codecs decoder type.
     adapter: Box<dyn VaapiCodecAdapter>,
 
@@ -474,7 +491,7 @@ impl VaapiVideoDecoder {
         // Создаём production adapter через internal factory. Сейчас factory
         // выбирает VP9, а будущие codec adapters смогут заменить active adapter
         // без раскрытия cros-codecs generic типов наружу этого boundary.
-        let adapter = VaapiCodecAdapterFactory::create_default_adapter(display)?;
+        let adapter = VaapiCodecAdapterFactory::create_default_adapter(display.clone())?;
         let backend_name = adapter.backend_name();
         let adapter_codec = adapter.codec();
 
@@ -495,6 +512,7 @@ impl VaapiVideoDecoder {
         );
 
         Ok(Self {
+            display,
             adapter,
             frame_pool,
             resource_pool,
@@ -557,6 +575,31 @@ impl VaapiVideoDecoder {
 
         let backing_frame = handle.video_frame();
         decoded_contract_for_rt_format(backing_frame.rt_format())
+    }
+
+    /// Переключает active codec adapter под уже валидированный stream config.
+    pub(crate) fn configure_stream(&mut self, config: &VideoStreamDecodeConfig) -> Result<()> {
+        if self.adapter.codec() == config.codec && config.codec != VideoCodec::H264 {
+            return Ok(());
+        }
+
+        self.release_decoder_owned_ready_frames("configure_stream")?;
+        self.invalidate_idle_resource_pool_after_format_change();
+
+        let adapter =
+            VaapiCodecAdapterFactory::create_adapter_for_config(self.display.clone(), config)?;
+        self.backend_name = adapter.backend_name();
+        self.adapter = adapter;
+        self.zero_copy_success_logged = false;
+        self.p010_boundary_verified_logged = false;
+
+        info!(
+            backend_name = self.backend_name,
+            codec = %self.adapter.codec(),
+            "VA-API codec adapter configured for stream"
+        );
+
+        Ok(())
     }
 
     /// Освобождает VA handle, удерживаемый zero-copy кадром.
@@ -944,38 +987,12 @@ impl VaapiVideoDecoder {
 
         Ok(report)
     }
-}
 
-impl DecoderRetryDriver for VaapiVideoDecoder {
-    /// Возвращает codec label активного adapter-а.
-    fn codec_label(&self) -> &'static str {
-        self.adapter.codec_label()
-    }
-
-    /// Отправляет packet в реальный VA-API decoder.
-    fn submit_packet(
+    /// Декодирует packet для decoder thread-а и сохраняет output-buffer backpressure.
+    pub(crate) fn decode_packet_for_thread(
         &mut self,
-        timestamp_us: u64,
-        packet_data: &[u8],
-    ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
-        self.adapter
-            .submit_packet(timestamp_us, packet_data, &mut self.frame_pool)
-    }
-
-    /// Обрабатывает pending events реального decoder-а.
-    fn drain_events(&mut self) -> Result<DecoderDrainReport> {
-        self.drain_decoder_events()
-    }
-}
-
-impl VideoDecoder for VaapiVideoDecoder {
-    /// Декодирует один encoded video packet активным codec adapter-ом.
-    ///
-    /// Pipeline:
-    /// 1. Submit bitstream в cros-codecs decoder.
-    /// 2. Drain все pending events (FrameReady / FormatChanged).
-    /// 3. Вернуть самый старый готовый кадр из очереди.
-    fn decode(&mut self, packet: &Packet) -> Result<Option<DecodedFrame>> {
+        packet: &Packet,
+    ) -> Result<VaapiDecodePacketOutcome> {
         // Конвертируем PTS из Duration в микросекунды (u64).
         // cros-codecs использует u64 timestamp для идентификации кадров.
         let timestamp_us = packet.pts.as_micros() as u64;
@@ -998,8 +1015,11 @@ impl VideoDecoder for VaapiVideoDecoder {
             &packet.data,
             packet.keyframe.is_known_keyframe(),
         )?;
+        if loop_report.output_backpressured {
+            return Ok(VaapiDecodePacketOutcome::OutputBackpressured);
+        }
         if loop_report.skipped_packet {
-            return Ok(None);
+            return Ok(VaapiDecodePacketOutcome::Accepted(None));
         }
 
         // Шаг 3: Возвращаем самый старый готовый кадр (FIFO).
@@ -1046,7 +1066,45 @@ impl VideoDecoder for VaapiVideoDecoder {
                 "decode() completed: no events, no frame"
             );
         }
-        Ok(result)
+
+        Ok(VaapiDecodePacketOutcome::Accepted(result.map(Box::new)))
+    }
+}
+
+impl DecoderRetryDriver for VaapiVideoDecoder {
+    /// Возвращает codec label активного adapter-а.
+    fn codec_label(&self) -> &'static str {
+        self.adapter.codec_label()
+    }
+
+    /// Отправляет packet в реальный VA-API decoder.
+    fn submit_packet(
+        &mut self,
+        timestamp_us: u64,
+        packet_data: &[u8],
+    ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
+        self.adapter
+            .submit_packet(timestamp_us, packet_data, &mut self.frame_pool)
+    }
+
+    /// Обрабатывает pending events реального decoder-а.
+    fn drain_events(&mut self) -> Result<DecoderDrainReport> {
+        self.drain_decoder_events()
+    }
+}
+
+impl VideoDecoder for VaapiVideoDecoder {
+    /// Декодирует один encoded video packet активным codec adapter-ом.
+    ///
+    /// Pipeline:
+    /// 1. Submit bitstream в cros-codecs decoder.
+    /// 2. Drain все pending events (FrameReady / FormatChanged).
+    /// 3. Вернуть самый старый готовый кадр из очереди.
+    fn decode(&mut self, packet: &Packet) -> Result<Option<DecodedFrame>> {
+        match self.decode_packet_for_thread(packet)? {
+            VaapiDecodePacketOutcome::Accepted(frame) => Ok(frame.map(|boxed_frame| *boxed_frame)),
+            VaapiDecodePacketOutcome::OutputBackpressured => Ok(None),
+        }
     }
 
     /// Сбрасывает decoder: завершает все pending decode requests.
@@ -1207,6 +1265,23 @@ mod tests {
             vec![(0, packet_data.clone()), (0, packet_data)]
         );
         assert_eq!(driver.ready_pts.pop_front(), Some(Duration::ZERO));
+    }
+
+    /// Проверяет, что `NotEnoughOutputBuffers` не маскируется под принятый packet.
+    #[test]
+    fn not_enough_output_buffers_marks_packet_as_backpressured() {
+        let packet_data = vec![0x82, 0x49, 0x83, 0x42];
+        let mut driver = FakeRetryDriver::new(
+            vec![Err(VaapiAdapterDecodeError::NotEnoughOutputBuffers(1))],
+            vec![Vec::new()],
+        );
+
+        let report = run_decode_with_event_retry(&mut driver, 0, &packet_data, true).unwrap();
+
+        assert_eq!(report.attempts, 1);
+        assert!(report.output_backpressured);
+        assert!(!report.skipped_packet);
+        assert_eq!(driver.submissions, vec![(0, packet_data)]);
     }
 
     /// Проверяет reconfigure/flush scope: release берёт только decoder-owned ready frames.
