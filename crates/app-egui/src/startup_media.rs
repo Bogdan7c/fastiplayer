@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use capability_core::{SelectedVideoStream, StreamSelectionError, SystemCapabilities};
+use player_core::PreparedMedia;
 use rustiplayer_config::{AppConfig, NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
 use service_youtube::YoutubeStreamCandidates;
 use thiserror::Error;
@@ -12,20 +13,28 @@ use tracing::{debug, info, warn};
 
 use crate::state::AppState;
 
-/// Интервал polling-а фоновой подготовки YouTube, когда playback ещё не активен.
-pub(crate) const YOUTUBE_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Интервал polling-а фоновой подготовки startup media, когда playback ещё не активен.
+pub(crate) const STARTUP_MEDIA_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Media, которое нужно автоматически открыть после создания окна.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum InitialMedia {
     /// Локальный файл.
     File(PathBuf),
 
-    /// YouTube/web URL, который нужно подготовить после старта UI.
+    /// YouTube URL, который нужно подготовить через service-specific resolver.
     YouTubeUrl { url: String },
+
+    /// Обычный seekable `http(s)` media URL с явным container extension.
+    DirectMediaUrl { url: String },
 }
 
 /// Результат фоновой подготовки CLI YouTube URL.
 type YoutubeStartupResult = std::result::Result<service_youtube::YoutubeStreamingMedia, String>;
+
+/// Результат фоновой подготовки generic direct media URL.
+type DirectMediaStartupResult =
+    std::result::Result<service_direct_media::DirectMediaOpenResult, String>;
 
 /// Фоновый job, который не блокирует создание окна и UI.
 struct YoutubeStartupJob {
@@ -107,6 +116,78 @@ impl YoutubeStartupJob {
     }
 }
 
+/// Фоновый job для generic direct media URL.
+struct DirectMediaStartupJob {
+    /// Direct media URL, который был передан через CLI.
+    source_url: String,
+
+    /// Текст pending-состояния для центрального overlay.
+    pending_message: String,
+
+    /// Receiver одноразового результата background opener-а.
+    result_rx: Receiver<DirectMediaStartupResult>,
+
+    /// JoinHandle нужен для cleanup после получения результата.
+    join_handle: Option<JoinHandle<()>>,
+}
+
+impl DirectMediaStartupJob {
+    /// Запускает подготовку direct media на отдельном thread-е.
+    fn spawn(source_url: String, app_config: AppConfig) -> std::result::Result<Self, String> {
+        let (result_tx, result_rx) = mpsc::channel();
+        let thread_url = source_url.clone();
+        let network_config = app_config.network.clone();
+        let demux_config = app_config.player.demux;
+        let join_handle = thread::Builder::new()
+            .name("direct-media-startup-opener".to_string())
+            .spawn(move || {
+                let open_result =
+                    resolve_direct_media_startup_media(&thread_url, &network_config, &demux_config)
+                        .map_err(|error| format!("{error:#}"));
+
+                if result_tx.send(open_result).is_err() {
+                    debug!("UI больше не ждёт результат direct media startup opener-а");
+                }
+            })
+            .map_err(|error| {
+                format!("Не удалось запустить direct media startup opener: {error}")
+            })?;
+
+        Ok(Self {
+            source_url,
+            pending_message: "Подготовка direct media URL...".to_string(),
+            result_rx,
+            join_handle: Some(join_handle),
+        })
+    }
+
+    /// Возвращает pending-текст без доступа к внутреннему channel state.
+    fn pending_message(&self) -> &str {
+        &self.pending_message
+    }
+
+    /// Неблокирующе забирает результат opener-а, если он уже готов.
+    fn try_take_result(&mut self) -> Option<DirectMediaStartupResult> {
+        let result = match self.result_rx.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) => {
+                Err("Direct media startup opener завершился без результата".to_string())
+            }
+        };
+
+        if let Some(join_handle) = self.join_handle.take()
+            && join_handle.join().is_err()
+        {
+            return Some(Err(
+                "Direct media startup opener завершился panic после результата".to_string(),
+            ));
+        }
+
+        Some(result)
+    }
+}
+
 /// Владеет shell-состоянием стартового media без знания о renderer/GPU.
 pub(crate) struct StartupMediaController {
     /// Media, переданное через CLI или восстановленное после suspend.
@@ -114,6 +195,9 @@ pub(crate) struct StartupMediaController {
 
     /// Фоновая подготовка CLI YouTube URL, если она уже запущена.
     youtube_startup_job: Option<YoutubeStartupJob>,
+
+    /// Фоновая подготовка generic direct media URL, если она уже запущена.
+    direct_media_startup_job: Option<DirectMediaStartupJob>,
 
     /// Startup-ошибка shell-слоя, которую нужно показать после создания UI.
     startup_error: Option<String>,
@@ -125,6 +209,7 @@ impl StartupMediaController {
         Self {
             initial_media,
             youtube_startup_job: None,
+            direct_media_startup_job: None,
             startup_error,
         }
     }
@@ -134,16 +219,21 @@ impl StartupMediaController {
         self.startup_error.clone()
     }
 
-    /// Возвращает pending-текст активного YouTube startup job.
+    /// Возвращает pending-текст активного startup job.
     pub(crate) fn pending_message(&self) -> Option<&str> {
         self.youtube_startup_job
             .as_ref()
             .map(YoutubeStartupJob::pending_message)
+            .or_else(|| {
+                self.direct_media_startup_job
+                    .as_ref()
+                    .map(DirectMediaStartupJob::pending_message)
+            })
     }
 
-    /// Сообщает shell scheduler-у, нужно ли продолжать polling YouTube startup job.
-    pub(crate) fn has_pending_youtube_job(&self) -> bool {
-        self.youtube_startup_job.is_some()
+    /// Сообщает shell scheduler-у, нужно ли продолжать polling startup jobs.
+    pub(crate) fn has_pending_startup_job(&self) -> bool {
+        self.youtube_startup_job.is_some() || self.direct_media_startup_job.is_some()
     }
 
     /// Запоминает текущий локальный файл для повторного открытия после следующего resume.
@@ -176,7 +266,21 @@ impl StartupMediaController {
                 info!(source = %url, "Автозагрузка YouTube URL из CLI");
                 self.start_youtube_startup_job(url, app_state, app_config, system_capabilities);
             }
+            InitialMedia::DirectMediaUrl { url } => {
+                info!(source = %url, "Автозагрузка direct media URL из CLI");
+                self.start_direct_media_startup_job(url, app_state, app_config);
+            }
         }
+    }
+
+    /// Неблокирующе опрашивает результаты фоновой подготовки startup URL-ов.
+    pub(crate) fn poll_startup_jobs(&mut self, app_state: &mut AppState) {
+        self.poll_youtube_job(app_state);
+        poll_direct_media_startup_job(
+            &mut self.direct_media_startup_job,
+            app_state,
+            &mut self.startup_error,
+        );
     }
 
     /// Неблокирующе опрашивает результат фоновой подготовки YouTube URL.
@@ -206,6 +310,28 @@ impl StartupMediaController {
             Err(error) => {
                 warn!(error = %error, "Не удалось запустить YouTube startup resolver");
                 let startup_error = format!("NetworkError: YouTube error: {error}");
+                self.startup_error = Some(startup_error.clone());
+                app_state.set_startup_error(startup_error);
+            }
+        }
+    }
+
+    /// Запускает background open для CLI direct media URL и сразу обновляет UI state.
+    fn start_direct_media_startup_job(
+        &mut self,
+        source_url: String,
+        app_state: &mut AppState,
+        app_config: &AppConfig,
+    ) {
+        app_state.set_startup_pending("Подготовка direct media URL...".to_string());
+        match DirectMediaStartupJob::spawn(source_url, app_config.clone()) {
+            Ok(job) => {
+                self.startup_error = None;
+                self.direct_media_startup_job = Some(job);
+            }
+            Err(error) => {
+                warn!(error = %error, "Не удалось запустить direct media startup opener");
+                let startup_error = format!("NetworkError: Direct media error: {error}");
                 self.startup_error = Some(startup_error.clone());
                 app_state.set_startup_error(startup_error);
             }
@@ -253,6 +379,16 @@ fn resolve_youtube_startup_media(
             selected_stream.stream_id
         )
     })
+}
+
+/// Выполняет generic direct media open chain без YouTube-specific semantics.
+fn resolve_direct_media_startup_media(
+    source_url: &str,
+    network_config: &NetworkConfig,
+    demux_config: &PlayerDemuxConfig,
+) -> Result<service_direct_media::DirectMediaOpenResult> {
+    service_direct_media::open_direct_media_url(source_url, network_config, demux_config)
+        .context("Не удалось открыть direct media URL")
 }
 
 /// Временная политика: HDR-потоки YouTube не выбираются, пока в UI нет
@@ -368,10 +504,49 @@ fn poll_youtube_startup_job(
     }
 }
 
+/// Забирает готовый результат фоновой подготовки direct media и доставляет его в UI/player.
+fn poll_direct_media_startup_job(
+    job_slot: &mut Option<DirectMediaStartupJob>,
+    app_state: &mut AppState,
+    startup_error_slot: &mut Option<String>,
+) {
+    let Some(job) = job_slot.as_mut() else {
+        return;
+    };
+    let Some(open_result) = job.try_take_result() else {
+        return;
+    };
+    let source_url = job.source_url.clone();
+    *job_slot = None;
+
+    match open_result {
+        Ok(opened_media) => {
+            *startup_error_slot = None;
+            let source_label = opened_media.source_label().to_string();
+            let prepared_media = PreparedMedia::from_external_label(
+                source_label.clone(),
+                opened_media.into_demuxer(),
+            );
+            info!(
+                source = %source_url,
+                label = %source_label,
+                "Direct media URL подготовлен для playback"
+            );
+            app_state.load_prepared_external_media(source_label, prepared_media);
+        }
+        Err(error) => {
+            warn!(source = %source_url, error = %error, "Не удалось подготовить direct media URL");
+            let startup_error = format!("NetworkError: Direct media error: {error}");
+            *startup_error_slot = Some(startup_error.clone());
+            app_state.set_startup_error(startup_error);
+        }
+    }
+}
+
 /// Подготавливает стартовый media-файл из CLI-аргумента.
 ///
-/// Локальный путь возвращается как файл.
-/// HTTP URL открывается через streaming adapter.
+/// Локальный путь возвращается как файл. Web URL маршрутизируется либо в
+/// YouTube adapter, либо в generic direct media opener.
 pub(crate) fn resolve_initial_media_from_cli(
     app_config: &AppConfig,
 ) -> (Option<InitialMedia>, Option<String>) {
@@ -380,9 +555,16 @@ pub(crate) fn resolve_initial_media_from_cli(
         return (None, None);
     };
 
-    // URL обрабатываем отдельно: текущий demuxer умеет только локальные файлы.
-    if service_youtube::is_probably_url(&argument) {
-        info!(url = %argument, "CLI аргумент распознан как YouTube/web URL");
+    resolve_initial_media_argument(argument, app_config)
+}
+
+/// Pure helper для тестируемой маршрутизации одного CLI аргумента.
+fn resolve_initial_media_argument(
+    argument: String,
+    app_config: &AppConfig,
+) -> (Option<InitialMedia>, Option<String>) {
+    if service_youtube::is_supported_youtube_url(&argument) {
+        info!(url = %argument, "CLI аргумент распознан как YouTube URL");
         if !app_config.youtube.enabled {
             return (
                 None,
@@ -393,8 +575,32 @@ pub(crate) fn resolve_initial_media_from_cli(
         return (Some(InitialMedia::YouTubeUrl { url: argument }), None);
     }
 
+    if service_youtube::is_probably_url(&argument)
+        || service_direct_media::looks_like_url(&argument)
+    {
+        return resolve_direct_media_initial_url(argument);
+    }
+
     // Всё остальное считаем локальным путём, как работало раньше.
     (Some(InitialMedia::File(PathBuf::from(argument))), None)
+}
+
+/// Классифицирует direct media URL без сетевых запросов и возвращает typed startup error.
+fn resolve_direct_media_initial_url(argument: String) -> (Option<InitialMedia>, Option<String>) {
+    match service_direct_media::parse_direct_media_url(&argument) {
+        Ok(direct_url) => (
+            Some(InitialMedia::DirectMediaUrl {
+                url: direct_url.url().to_string(),
+            }),
+            None,
+        ),
+        Err(error) => (
+            None,
+            Some(format!(
+                "NetworkError: Direct media URL unsupported: {error}"
+            )),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -553,13 +759,85 @@ mod tests {
                 result_rx,
                 join_handle: None,
             }),
+            direct_media_startup_job: None,
             startup_error: None,
         };
 
-        assert!(controller.has_pending_youtube_job());
+        assert!(controller.has_pending_startup_job());
         assert_eq!(
             controller.pending_message(),
             Some("Подготовка YouTube stream...")
+        );
+    }
+
+    #[test]
+    fn cli_route_keeps_local_path_unchanged() {
+        let (initial_media, startup_error) =
+            resolve_initial_media_argument("/tmp/sample.mp4".to_string(), &AppConfig::default());
+
+        assert!(startup_error.is_none());
+        assert!(matches!(
+            initial_media,
+            Some(InitialMedia::File(path)) if path == Path::new("/tmp/sample.mp4")
+        ));
+    }
+
+    #[test]
+    fn cli_route_sends_youtube_host_to_youtube_path() {
+        let (initial_media, startup_error) = resolve_initial_media_argument(
+            "https://youtu.be/video-id".to_string(),
+            &AppConfig::default(),
+        );
+
+        assert!(startup_error.is_none());
+        assert!(matches!(
+            initial_media,
+            Some(InitialMedia::YouTubeUrl { url }) if url == "https://youtu.be/video-id"
+        ));
+    }
+
+    #[test]
+    fn cli_route_sends_supported_http_media_to_direct_path() {
+        let (initial_media, startup_error) = resolve_initial_media_argument(
+            "https://cdn.example.test/video.mp4?token=1".to_string(),
+            &AppConfig::default(),
+        );
+
+        assert!(startup_error.is_none());
+        assert!(matches!(
+            initial_media,
+            Some(InitialMedia::DirectMediaUrl { url })
+                if url == "https://cdn.example.test/video.mp4?token=1"
+        ));
+    }
+
+    #[test]
+    fn cli_route_rejects_http_media_without_supported_extension() {
+        let (initial_media, startup_error) = resolve_initial_media_argument(
+            "https://192.0.2.10/media".to_string(),
+            &AppConfig::default(),
+        );
+
+        assert!(initial_media.is_none());
+        assert!(
+            startup_error
+                .as_deref()
+                .is_some_and(|error| error.contains("Direct media URL unsupported"))
+        );
+    }
+
+    #[test]
+    fn cli_route_rejects_unsupported_media_protocol() {
+        let (initial_media, startup_error) = resolve_initial_media_argument(
+            "rtsp://192.0.2.10/video.mp4".to_string(),
+            &AppConfig::default(),
+        );
+
+        assert!(initial_media.is_none());
+        assert!(
+            startup_error
+                .as_deref()
+                .is_some_and(|error| error.contains("protocol `rtsp`"))
         );
     }
 

@@ -144,7 +144,7 @@ impl AppShell {
             &self.app_config,
             &system_capabilities,
         );
-        self.startup_media.poll_youtube_job(&mut app_state);
+        self.startup_media.poll_startup_jobs(&mut app_state);
         app_state.poll_local_file_open_job();
 
         // Shell явно разделяет обновление snapshot и публикацию в desktop integration.
@@ -194,7 +194,7 @@ impl AppShell {
 
     /// Возвращает `true`, если idle loop должен просыпаться для polling-а background jobs.
     fn has_pending_background_job(&self) -> bool {
-        self.startup_media.has_pending_youtube_job()
+        self.startup_media.has_pending_startup_job()
             || self
                 .app_state
                 .as_ref()
@@ -316,10 +316,10 @@ impl ApplicationHandler for AppShell {
             },
 
             WindowEvent::RedrawRequested => {
-                self.startup_media.poll_youtube_job(app_state);
+                self.startup_media.poll_startup_jobs(app_state);
                 app_state.poll_local_file_open_job();
                 let pacing = render_frame(&self.telemetry, &window, renderer, app_state);
-                let has_pending_background_job = self.startup_media.has_pending_youtube_job()
+                let has_pending_background_job = self.startup_media.has_pending_startup_job()
                     || app_state.has_pending_local_file_open();
                 let action = self.background_poll_scheduler.after_render(
                     pacing,

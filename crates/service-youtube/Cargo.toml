@@ -21,6 +21,7 @@ source-core = { workspace = true }
 media-prefetch = { workspace = true }
 tracing = { workspace = true }
 symphonia-demux.workspace = true
+url = { workspace = true }
 
 [dev-dependencies]
 media-core = { workspace = true }

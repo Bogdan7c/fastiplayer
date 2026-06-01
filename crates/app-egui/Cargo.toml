@@ -20,6 +20,7 @@ tracing-subscriber.workspace = true
 rustiplayer-config.workspace = true
 source-core.workspace = true
 capability-core.workspace = true
+service-direct-media.workspace = true
 service-youtube.workspace = true
 desktop-integration.workspace = true
 

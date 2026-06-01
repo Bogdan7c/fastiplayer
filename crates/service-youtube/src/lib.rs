@@ -16,6 +16,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
 use source_core::{ByteSource, HttpHeader, SourceRuntimeConfig};
 use symphonia_demux::DemuxerOptions;
+use url::Url;
 
 /// Размер HTTP chunk, который fetcher передаёт demuxer-у.
 const HTTP_READ_CHUNK_SIZE: usize = 64 * 1024;
@@ -57,11 +58,33 @@ use source_core::{CancellationToken, SourceValidators};
 #[cfg(test)]
 use std::time::Duration;
 
-/// Проверяет, похож ли CLI-аргумент на URL, который должен обрабатывать YouTube resolver.
+/// Проверяет, выглядит ли CLI-аргумент как web URL.
 #[must_use]
 pub fn is_probably_url(argument: &str) -> bool {
     // Явно поддерживаем только web URL, чтобы локальные пути с двоеточиями не ломали CLI.
     argument.starts_with("https://") || argument.starts_with("http://")
+}
+
+/// Проверяет, принадлежит ли web URL YouTube route allowlist.
+#[must_use]
+pub fn is_supported_youtube_url(argument: &str) -> bool {
+    let Ok(parsed_url) = Url::parse(argument) else {
+        return false;
+    };
+
+    if !matches!(parsed_url.scheme(), "http" | "https") {
+        return false;
+    }
+
+    let Some(host) = parsed_url.host_str() else {
+        return false;
+    };
+    let normalized_host = host.trim_end_matches('.').to_ascii_lowercase();
+
+    matches!(
+        normalized_host.as_str(),
+        "youtube.com" | "www.youtube.com" | "m.youtube.com" | "music.youtube.com" | "youtu.be"
+    )
 }
 
 /// Открывает YouTube URL старым compatibility path-ом без внешнего capability selection.
@@ -606,6 +629,29 @@ mod tests {
     }
 
     #[test]
+    fn youtube_url_allowlist_accepts_known_hosts() {
+        assert!(is_supported_youtube_url("https://youtube.com/watch?v=abc"));
+        assert!(is_supported_youtube_url(
+            "https://www.youtube.com/watch?v=abc"
+        ));
+        assert!(is_supported_youtube_url(
+            "https://m.youtube.com/watch?v=abc"
+        ));
+        assert!(is_supported_youtube_url(
+            "https://music.youtube.com/watch?v=abc"
+        ));
+        assert!(is_supported_youtube_url("https://youtu.be/abc"));
+    }
+
+    #[test]
+    fn youtube_url_allowlist_rejects_generic_http_media() {
+        assert!(!is_supported_youtube_url(
+            "https://cdn.example.test/video.mp4"
+        ));
+        assert!(!is_supported_youtube_url("rtsp://youtube.com/watch?v=abc"));
+    }
+
+    #[test]
     fn prefetch_config_uses_network_chunk_and_readahead_window() {
         let network_config = test_network_config(9, 128, 3);
 
@@ -693,7 +739,8 @@ mod tests {
     }
 
     fn test_webm_bytes() -> Arc<Vec<u8>> {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/test.webm");
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/VP9/test.webm");
         Arc::new(std::fs::read(path).expect("test webm bytes"))
     }
 

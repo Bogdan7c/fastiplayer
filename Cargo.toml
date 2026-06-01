@@ -8,6 +8,7 @@ members = [
     "crates/desktop-integration",
     "crates/source-core",
     "crates/media-prefetch",
+    "crates/service-direct-media",
     "crates/player-core",
     "crates/media-core",
     "crates/symphonia-demux",
@@ -69,6 +70,8 @@ player-core = { path = "crates/player-core" }
 desktop-integration = { path = "crates/desktop-integration" }
 media-core = { path = "crates/media-core" }
 symphonia-demux = { path = "crates/symphonia-demux" }
+service-direct-media = { path = "crates/service-direct-media" }
 service-youtube = { path = "crates/service-youtube" }
 source-core = { path = "crates/source-core" }
 media-prefetch = { path = "crates/media-prefetch" }
+url = "2.5"

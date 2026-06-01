@@ -142,6 +142,7 @@ dependencies = [
  "render-wgpu-video",
  "rfd",
  "rustiplayer-config",
+ "service-direct-media",
  "service-youtube",
  "source-core",
  "symphonia-demux",
@@ -3639,6 +3640,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "service-direct-media"
+version = "0.1.0"
+dependencies = [
+ "media-prefetch",
+ "rustiplayer-config",
+ "source-core",
+ "symphonia-demux",
+ "thiserror 2.0.18",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "service-youtube"
 version = "0.1.0"
 dependencies = [
@@ -3655,6 +3669,7 @@ dependencies = [
  "source-core",
  "symphonia-demux",
  "tracing",
+ "url",
 ]
 
 [[package]]

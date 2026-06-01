@@ -2,10 +2,10 @@ use std::time::{Duration, Instant};
 
 use winit::{event::WindowEvent, event_loop::ControlFlow};
 
-use crate::startup_media::YOUTUBE_STARTUP_POLL_INTERVAL;
+use crate::startup_media::STARTUP_MEDIA_POLL_INTERVAL;
 
 /// Единый интервал polling-а shell background jobs, когда playback не даёт continuous redraw.
-const BACKGROUND_JOB_POLL_INTERVAL: Duration = YOUTUBE_STARTUP_POLL_INTERVAL;
+const BACKGROUND_JOB_POLL_INTERVAL: Duration = STARTUP_MEDIA_POLL_INTERVAL;
 
 /// Решение render pass-а о том, нужен ли следующий redraw без внешнего window event-а.
 #[derive(Debug, Clone, Copy)]

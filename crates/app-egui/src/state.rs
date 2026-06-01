@@ -922,6 +922,27 @@ impl AppState {
         self.mark_pending_worker_redraw();
     }
 
+    /// Загружает уже подготовленный внешний media source через PreparedMedia boundary.
+    pub fn load_prepared_external_media(&mut self, label: String, prepared_media: PreparedMedia) {
+        let autoplay = !self.app_config.player.start_paused;
+        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
+        self.clear_startup_status();
+        self.current_local_file = None;
+
+        if let Err(error) = self
+            .player_worker
+            .load_prepared_media(prepared_media, autoplay)
+        {
+            warn!(error = %error, label = %label, "Не удалось отправить внешний media source в worker");
+            self.set_startup_error(format!(
+                "WorkerUnavailable: direct media worker недоступен для {label}: {error}"
+            ));
+            return;
+        }
+
+        self.mark_pending_worker_redraw();
+    }
+
     /// Инициализирует video pipeline и сохраняет WGPU materializer в shell layer-е.
     pub fn init_video_pipeline(
         &mut self,

@@ -3,7 +3,7 @@
 - Build/check whole workspace: `cargo check --workspace`.
 - Run app shell: `cargo run -p app-egui` (single binary target `rustiplayer`; explicit form: `cargo run -p app-egui --bin rustiplayer`).
 - Run app with media path or URL: `cargo run -p app-egui -- /path/to/media.webm` or `cargo run -p app-egui -- 'https://www.youtube.com/watch?v=VIDEO_ID'`.
-- Focused tests: `cargo test -p player-core`; prefetch buffer/config tests: `cargo test -p media-prefetch`; capability/codec policy tests: `cargo test -p capability-core -p codec-core`; render split checks: `cargo test -p render-wgpu-video`, `cargo test -p render-wgpu-shell`, then `cargo check -p app-egui`.
+- Focused tests: `cargo test -p player-core`; direct HTTP media opener tests: `cargo test -p service-direct-media`; prefetch buffer/config tests: `cargo test -p media-prefetch`; capability/codec policy tests: `cargo test -p capability-core -p codec-core`; render split checks: `cargo test -p render-wgpu-video`, `cargo test -p render-wgpu-shell`, then `cargo check -p app-egui`.
 - Broad tests when behavior may cross crates: `cargo test --workspace`.
 - Clippy for local quality/Sonar input: `cargo clippy --workspace --all-targets`.
 - Refactor dependency guardrails: `scripts/check-refactor-guardrails.py`.
