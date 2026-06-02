@@ -838,8 +838,11 @@ impl PlayerSession {
     }
 
     /// Считает current frame и уже декодированные future frames для seek resume.
+    ///
+    /// Resume budget использует тот же landing-frame guard, что и commit:
+    /// frame текущего generation-а с `PTS >= actual` безопасен даже до requested target.
+    /// Это сохраняет low-latency no-audio seek после decode-safe demux preroll.
     fn seek_ready_video_frame_count(&self, seek_commit: SeekCommitState) -> usize {
-        let target_position = seek_commit.target_position.as_duration();
         let current_frame_ready = self.seek_presented_frame_ready(seek_commit);
         let queued_ready_frames = self
             .pipeline
@@ -850,7 +853,7 @@ impl PlayerSession {
                     frame.pts,
                     frame.generation,
                     false,
-                ) && frame.pts >= target_position
+                )
             })
             .count();
 

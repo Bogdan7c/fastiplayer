@@ -18,6 +18,28 @@ fn final_seek_harness_with_actual_position(
     harness
 }
 
+/// Собирает video-only playing seek, где demux actual раньше requested target.
+fn playing_final_seek_harness_with_actual_position(
+    target: Duration,
+    actual: Duration,
+) -> SeekRegressionHarness {
+    let video_track = fake_track(1, TrackKind::Video);
+    let demuxer = scripted_seek_demuxer(vec![video_track.clone()], target, actual, Vec::new());
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+    harness
+        .session
+        .pipeline
+        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(1), 1));
+    harness
+        .session
+        .dispatch_command(PlayerCommand::Play)
+        .unwrap();
+    harness.start_final_seek(MediaTime::from_duration(target));
+    let _events_before_present = harness.session.take_events();
+
+    harness
+}
+
 #[test]
 fn seek_command_sets_target_and_commits_position_after_gates() {
     let mut session = PlayerSession::new();
@@ -1556,6 +1578,125 @@ fn no_audio_seek_scheduler_uses_target_before_position_commit() {
     assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
     assert_eq!(session.snapshot().current_position, Duration::from_secs(24));
     assert!(!session.snapshot().timeline.seeking);
+}
+
+#[test]
+fn no_audio_seek_counts_decode_safe_frames_before_target_for_resume_budget() {
+    let target_position = Duration::from_secs(24);
+    let actual_position = Duration::from_millis(23_900);
+    let mut harness =
+        playing_final_seek_harness_with_actual_position(target_position, actual_position);
+    let seek_commit = harness.aligned_seek_commit();
+
+    assert_eq!(
+        seek_commit.actual_position,
+        MediaTime::from_duration(actual_position)
+    );
+
+    present_frame_for_current_seek_generation(&mut harness.session, actual_position, 42);
+    harness
+        .session
+        .pipeline
+        .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
+            &harness.session,
+            Duration::from_millis(23_933),
+            43,
+        ));
+    harness
+        .session
+        .pipeline
+        .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
+            &harness.session,
+            Duration::from_millis(23_966),
+            44,
+        ));
+
+    harness.session.finish_seek_commit_if_ready_for_tests(
+        seek_commit.started_at,
+        Duration::from_secs(10),
+        50.0,
+        Duration::from_millis(250),
+        3,
+    );
+
+    assert!(harness.session.seek_commit().is_none());
+    assert_eq!(harness.session.snapshot().current_position, actual_position);
+    assert_eq!(harness.session.pipeline.media_clock_base(), actual_position);
+    assert_eq!(harness.session.pipeline.video_present_queue_len(), 2);
+    assert!(!harness.session.snapshot().timeline.stale_frame);
+}
+
+#[test]
+fn no_audio_seek_worker_wakeup_treats_decode_safe_frame_before_target_as_immediate() {
+    let target_position = Duration::from_secs(24);
+    let actual_position = Duration::from_millis(23_900);
+    let mut harness =
+        playing_final_seek_harness_with_actual_position(target_position, actual_position);
+
+    harness
+        .session
+        .pipeline
+        .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
+            &harness.session,
+            actual_position,
+            42,
+        ));
+
+    let plan = harness.session.worker_wakeup_plan(
+        Instant::now(),
+        &PlayerTickConfig::default(),
+        Duration::from_millis(2),
+        Duration::from_millis(250),
+    );
+
+    assert_eq!(plan.reason, crate::WorkerWakeupReason::FrameReady);
+    assert_eq!(plan.delay, Some(Duration::ZERO));
+}
+
+#[test]
+fn no_audio_seek_does_not_force_present_or_clear_stale_for_frame_before_actual() {
+    let target_position = Duration::from_secs(24);
+    let actual_position = Duration::from_millis(23_900);
+    let too_early_position = Duration::from_millis(23_899);
+    let mut harness =
+        playing_final_seek_harness_with_actual_position(target_position, actual_position);
+
+    harness
+        .session
+        .pipeline
+        .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
+            &harness.session,
+            too_early_position,
+            42,
+        ));
+
+    let seek_commit = harness.aligned_seek_commit();
+    assert!(
+        !harness
+            .session
+            .active_seek_frame_ready_for_scheduler(too_early_position, seek_commit.generation)
+    );
+
+    let tick_result = harness.session.tick(PlayerTickContext::with_config(
+        Instant::now(),
+        PlayerTickConfig {
+            max_demux_packets_per_tick: 0,
+            seek_resume_video_min_ready_frames: 1,
+            ..PlayerTickConfig::default()
+        },
+    ));
+
+    assert_eq!(tick_result.video_frames_presented, 1);
+    assert!(harness.session.snapshot().timeline.stale_frame);
+    assert!(harness.session.seek_commit().is_some());
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(too_early_position)
+    );
 }
 
 #[test]
