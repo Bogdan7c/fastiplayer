@@ -1,32 +1,19 @@
-# H.264 known issues (диагностика 2026-06-02)
+# H.264 status / known issues (validation 2026-06-02)
 
-Файлы 4K60 `test-assets/H264/4k60fps/LXb3EKWsInQ_2160p60_*` (3840×2160@59.94, 154–180 Mbps).
-Полные разборы и Codex-промты: `user/h264_playback_perf_findings.md`, `user/h264_seek_bug_diagnosis.md`.
+Разборы и планы: `user/h264_playback_perf_findings.md`, `user/h264_seek_bug_diagnosis.md`, `user/h264_seek_perf_implementation_plan.md`.
 
-## Seek сломан (баг корректности, не perf, воспроизводится и в release)
-- Корень: seek-flush зовёт cros `inner.flush()` (H.264 adapter `codec_adapter.rs` `flush()`), который
-  отдаёт буферизованные DPB-tail B-кадры как pending events. `VaapiVideoDecoder::flush`
-  (`decoder.rs`) после adapter.flush() только `release_decoder_owned_ready_frames`, но НЕ drain-ит и
-  не выбрасывает свежие cros tail-события. Следующий post-seek пакет затягивает их через
-  `drain_decoder_events` в `ready_queue`; `decode_queued_packet` (`decoder_thread.rs`) делает
-  `frame.generation = decode_packet.generation` и штампует stale-кадр новым generation.
-- Эффект: первый presented frame seek-а = stale-кадр с ранним pts; commit policy "presented-frame"
-  (`seek_transaction.rs` `note_presented_frame_for_seek` / `final_seek_presented_frame_commit_position`)
-  коммитит seek на pts старого кадра. Измерено: seek→30s коммитится в debug на 4.0s, в release на ~6s
-  (≈ прежняя позиция). VP9 иммунен: Profile 0/2 без B-frame reorder → flush не отдаёт дисплейных tail.
-- Фикс (план): на seek-flush явно discard cros tail events + очистить ready_queue (release VA surface),
-  отделив seek-discard от EOF-drain (`begin_end_of_stream_drain`, который tail-кадры СОХРАНЯЕТ — см.
-  `mem:video-core/decoder-stream-boundary`); плюс защитный generation/pts-гейт у player.
+## Seek correctness: fixed / validated
+- Старый баг stale DPB tail после seek-flush закрыт: seek 6s -> 30s в ручной release-проверке коммитится около demux `actual_ms`, не около pre-seek position.
+- Первый post-seek presented frame не является stale H.264 DPB tail. `video-vaapi` seek-flush использует discard policy для tail events/decoder-owned ready frames; EOF/DPB drain остается отдельным intent и tail frames сохраняет.
+- Player-side landing-frame guard остается обязательной защитой: seek frame может открыть gate/дать commit только для активной generation и `frame_pts >= seek_commit.actual_position`.
+- VP9 seek/playback regression в ручной проверке не найден.
 
-## Playback в release ок; debug не тянет (perf, не баг)
-- В release все 5 файлов ~60fps, 0 late drops. В debug (`cargo run`) decoder отстаёт (in_flight упирается
-  в packet-channel cap 32), present queue голодает → repeats/late. Причина — CPU-парсинг битстрима +
-  per-frame работа; VP9 4K выживает в debug из-за ~6× меньшего битрейта.
-- Perf-опт для отдельной сессии: (1) SPS/PPS инжектить только на keyframe (сейчас `BeforeAccessUnit` на
-  каждый AU в `codec_adapter.rs access_unit_to_annex_b`) + scratch-буфер вместо Vec на кадр; нужно
-  протянуть keyframe-флаг в `submit_packet` boundary. (2) Persistent DMA-BUF import reuse выключен
-  намеренно (`imports_reused=0`): `zero_copy_surface_pool.rs allows_persistent_reuse` требует
-  `explicit_external_memory_reuse_sync`, а `vaapi_vulkan_dma_buf()` ставит его false (нет
-  VA-writer→Vulkan-sampler sync); общий путь VP9+H.264.
+## Автоматическая validation wave 2026-06-02
+- Passed: `cargo test -p video-vaapi --lib` (68 tests), `cargo test -p player-core seek --lib` (103 seek-filtered tests), `cargo test -p codec-core h264 --lib` (12 tests), `cargo test -p symphonia-demux --test h264_fixtures` (2 tests), `cargo check --workspace`.
+- `cargo clippy --workspace --all-targets` завершился с exit code 0. Остались warnings: patched cros crates (`unexpected_cfgs`, lifetime syntax) плюс project warnings (`codec-core::h264` redundant closure call, `player-core` large enum / too_many_arguments). Они не были исправлены в validation scope.
 
-Диагностика — без правок кода (temp autoseek-хук в worker и temp test seek_diag удалены).
+## H.264 adapter perf/status
+- Adapter perf changes validated by parser/conversion/keyframe tests and VAAPI adapter lifecycle tests: SPS/PPS injection is lifecycle/keyframe-driven, reusable Annex B scratch owns converted AU bytes, partial AU/backpressure semantics preserved.
+- Debug build still не тянет 4K60 H.264 при свободных ресурсах на любых H.264 samples; treat as debug-only perf limitation, not current release correctness regression.
+- Release manual playback: seek stable, frame drops = 0, VP9 unchanged. Perfect smoothness observed for `h264_baseline_l52_160mbps_no_bframes_video_only.mp4`, `h264_high_l52_180mbps_bframes_aac.mkv`, and VP9.
+- Remaining open issue: release MP4 high-bitrate B-frame samples show subjective ~30fps/microstutter despite 0 drops: `h264_main_l52_160mbps_bframes_video_only.mp4`, `h264_high_l52_180mbps_bframes_video_only.mp4`, `h264_high_l52_180mbps_bframes_aac.mp4`. Root cause not diagnosed; likely next investigation should compare MP4 timestamp/reorder cadence, presentation scheduling/repeat accounting, and renderer/vsync pacing before changing decoder boundaries.

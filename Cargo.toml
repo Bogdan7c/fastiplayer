@@ -31,6 +31,9 @@ resolver = "2"
 [replace]
 "cros-libva:0.0.12" = { path = "crates/cros-libva-patch" }
 "cros-codecs:0.0.6" = { path = "crates/cros-codecs-patch" }
+# Patch для Symphonia MP4: upstream 0.6.0 игнорирует ctts/trun composition offsets.
+# H.264 B-frames в MP4 из-за этого получают decode-order PTS и дергаются при playback.
+"symphonia-format-isomp4:0.6.0" = { path = "crates/symphonia-format-isomp4-patch" }
 
 [workspace.package]
 version = "0.1.0"
