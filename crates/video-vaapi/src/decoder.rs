@@ -98,6 +98,22 @@ struct DecoderDrainReport {
     format_changed: bool,
 }
 
+/// Политика обработки `FrameReady` events во время drain-а decoder-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecoderEventDrainPolicy {
+    /// Обычный playback/EOF путь: кадры экспортируются и получают seek generation.
+    Publish {
+        /// Seek generation, к которому принадлежат все кадры этого drain-а.
+        generation: u64,
+    },
+
+    /// Seek flush/reconfigure cleanup: кадры из backend tail не публикуются.
+    Discard {
+        /// Короткая причина для diagnostics/logging.
+        reason: &'static str,
+    },
+}
+
 /// Сводка одного вызова decode state machine.
 ///
 /// `decode()` использует её только для логов и решения, был ли packet пропущен
@@ -163,7 +179,7 @@ trait DecoderRetryDriver {
     ) -> std::result::Result<usize, VaapiAdapterDecodeError>;
 
     /// Обрабатывает все pending decoder events.
-    fn drain_events(&mut self) -> Result<DecoderDrainReport>;
+    fn drain_events(&mut self, policy: DecoderEventDrainPolicy) -> Result<DecoderDrainReport>;
 }
 
 /// Выполняет submit packet с bounded retry после `CheckEvents`.
@@ -175,6 +191,7 @@ fn run_decode_with_event_retry<D>(
     timestamp_us: u64,
     packet_data: &[u8],
     keyframe: bool,
+    generation: u64,
 ) -> Result<DecodeLoopReport>
 where
     D: DecoderRetryDriver + ?Sized,
@@ -201,13 +218,15 @@ where
                     "decode() accepted bitstream"
                 );
                 let drain_start = std::time::Instant::now();
-                let drain_report = driver.drain_events()?;
+                let drain_report =
+                    driver.drain_events(DecoderEventDrainPolicy::Publish { generation })?;
                 report.record_drain(drain_report, drain_start.elapsed());
                 return Ok(report);
             }
             Err(VaapiAdapterDecodeError::CheckEvents) => {
                 let drain_start = std::time::Instant::now();
-                let drain_report = driver.drain_events()?;
+                let drain_report =
+                    driver.drain_events(DecoderEventDrainPolicy::Publish { generation })?;
                 let format_changed = drain_report.format_changed;
                 report.record_drain(drain_report, drain_start.elapsed());
 
@@ -235,7 +254,8 @@ where
                     "Decoder out of output buffers"
                 );
                 let drain_start = std::time::Instant::now();
-                let drain_report = driver.drain_events()?;
+                let drain_report =
+                    driver.drain_events(DecoderEventDrainPolicy::Publish { generation })?;
                 report.record_drain(drain_report, drain_start.elapsed());
                 report.output_backpressured = true;
                 return Ok(report);
@@ -769,10 +789,15 @@ impl VaapiVideoDecoder {
     ///
     /// # Аргументы
     /// * `handle` — handle декодированного кадра от cros-codecs.
+    /// * `generation` — seek generation, которому принадлежит event drain.
     ///
     /// # Ошибки
     /// Возвращает ошибку если sync, DMA-BUF export или registration не удался.
-    fn process_ready_frame(&mut self, handle: VaapiDecodedFrameHandle) -> Result<()> {
+    fn process_ready_frame(
+        &mut self,
+        handle: VaapiDecodedFrameHandle,
+        generation: u64,
+    ) -> Result<()> {
         // Получаем разрешения кадра ДО sync (sync может потребовать mutable borrow).
         let resolution = handle.coded_resolution();
         let display_resolution = handle.display_resolution();
@@ -889,7 +914,7 @@ impl VaapiVideoDecoder {
 
         // Шаг 5: Публикуем только zero-copy frame metadata.
         self.push_ready_frame(DecodedFrame {
-            generation: 0,
+            generation,
             pts: Duration::from_micros(timestamp),
             format: decoded_contract.format,
             bit_depth: decoded_contract.bit_depth,
@@ -915,12 +940,87 @@ impl VaapiVideoDecoder {
         Ok(())
     }
 
+    /// Выбрасывает готовый backend frame без DMA-BUF export-а и publish-а.
+    ///
+    /// Seek flush использует этот путь для H.264 DPB tail, который `cros-codecs`
+    /// делает видимым через `FrameReady` после `flush()`. Handle остаётся
+    /// владельцем VA surface до конца этой функции и освобождается обычным drop path.
+    fn discard_ready_frame(&self, handle: VaapiDecodedFrameHandle, reason: &'static str) {
+        let pts_ms = handle.timestamp() / 1000;
+        debug!(
+            pts_ms,
+            reason, "Discarding decoder-ready frame without DMA-BUF export"
+        );
+        drop(handle);
+    }
+
+    /// Обрабатывает `FormatChanged` одинаково для publish и discard drain-а.
+    ///
+    /// Этот event меняет lifecycle decoder-owned resources, поэтому его нельзя
+    /// игнорировать даже при seek flush cleanup.
+    fn handle_format_changed_event(&mut self) -> Result<()> {
+        info!("Format changed, invalidating resource pool and frame pool");
+
+        // Сначала освобождаем decoder-owned кадры из `ready_queue`.
+        // Иначе `invalidate_all()` удалит mappings, а VA handles,
+        // удерживаемые этими кадрами, останутся без release path.
+        self.release_decoder_owned_ready_frames("format_changed")?;
+        self.invalidate_idle_resource_pool_after_format_change();
+
+        // Пересоздаём frame pool под новое разрешение/формат.
+        // `stream_info()` уже обновлён внутри cros-codecs перед event-ом.
+        if let Some(stream_info) = self.adapter.stream_info() {
+            let res = stream_info.coded_resolution;
+            let rt_format = match rt_format_for_decoded_format(stream_info.format) {
+                Ok(rt_format) => rt_format,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        decoded_format = ?stream_info.format,
+                        "Cannot map decoded format to VA RT format"
+                    );
+                    return Ok(());
+                }
+            };
+            if let Err(error) = self.frame_pool.resize_with_rt_format(
+                res.width,
+                res.height,
+                self.runtime_config.surface_pool_frames,
+                rt_format,
+            ) {
+                warn!(
+                    error = %error,
+                    width = res.width,
+                    height = res.height,
+                    rt_format,
+                    "Failed to resize frame pool after format change"
+                );
+            } else {
+                info!(
+                    width = res.width,
+                    height = res.height,
+                    decoded_format = ?stream_info.format,
+                    rt_format,
+                    "Frame pool resized for new format"
+                );
+            }
+        } else {
+            warn!("FormatChanged event without stream_info — cannot resize frame pool");
+        }
+
+        Ok(())
+    }
+
     /// Обрабатывает все pending events из `cros-codecs`.
     ///
-    /// `FrameReady` превращается в `DecodedFrame` и кладётся в `ready_queue`.
+    /// `FrameReady` либо превращается в `DecodedFrame`, либо отбрасывается
+    /// по явно выбранной policy.
     /// `FormatChanged` инвалидирует старые resource descriptors и пересоздаёт frame pool
     /// под новое coded resolution/decoded format.
-    fn drain_decoder_events(&mut self) -> Result<DecoderDrainReport> {
+    fn drain_decoder_events(
+        &mut self,
+        policy: DecoderEventDrainPolicy,
+    ) -> Result<DecoderDrainReport> {
         let mut report = DecoderDrainReport::default();
 
         while let Some(event) = self.adapter.next_event() {
@@ -929,63 +1029,23 @@ impl VaapiVideoDecoder {
                 VaapiDecoderEvent::FrameReady(handle) => {
                     let pts_ms = handle.timestamp() / 1000;
                     trace!(pts_ms = pts_ms, "DecoderEvent::FrameReady");
-                    if let Err(error) = self.process_ready_frame(handle) {
-                        if is_fatal_decoder_error(&error) {
-                            return Err(error);
+                    match policy {
+                        DecoderEventDrainPolicy::Publish { generation } => {
+                            if let Err(error) = self.process_ready_frame(handle, generation) {
+                                if is_fatal_decoder_error(&error) {
+                                    return Err(error);
+                                }
+                                warn!(error = %error, "Failed to process ready frame");
+                            }
                         }
-                        warn!(error = %error, "Failed to process ready frame");
+                        DecoderEventDrainPolicy::Discard { reason } => {
+                            self.discard_ready_frame(handle, reason);
+                        }
                     }
                 }
                 VaapiDecoderEvent::FormatChanged => {
                     report.format_changed = true;
-                    info!("Format changed, invalidating resource pool and frame pool");
-
-                    // Сначала освобождаем decoder-owned кадры из `ready_queue`.
-                    // Иначе `invalidate_all()` удалит mappings, а VA handles,
-                    // удерживаемые этими кадрами, останутся без release path.
-                    self.release_decoder_owned_ready_frames("format_changed")?;
-                    self.invalidate_idle_resource_pool_after_format_change();
-
-                    // Пересоздаём frame pool под новое разрешение/формат.
-                    // `stream_info()` уже обновлён внутри cros-codecs перед event-ом.
-                    if let Some(stream_info) = self.adapter.stream_info() {
-                        let res = stream_info.coded_resolution;
-                        let rt_format = match rt_format_for_decoded_format(stream_info.format) {
-                            Ok(rt_format) => rt_format,
-                            Err(error) => {
-                                warn!(
-                                    error = %error,
-                                    decoded_format = ?stream_info.format,
-                                    "Cannot map decoded format to VA RT format"
-                                );
-                                continue;
-                            }
-                        };
-                        if let Err(error) = self.frame_pool.resize_with_rt_format(
-                            res.width,
-                            res.height,
-                            self.runtime_config.surface_pool_frames,
-                            rt_format,
-                        ) {
-                            warn!(
-                                error = %error,
-                                width = res.width,
-                                height = res.height,
-                                rt_format,
-                                "Failed to resize frame pool after format change"
-                            );
-                        } else {
-                            info!(
-                                width = res.width,
-                                height = res.height,
-                                decoded_format = ?stream_info.format,
-                                rt_format,
-                                "Frame pool resized for new format"
-                            );
-                        }
-                    } else {
-                        warn!("FormatChanged event without stream_info — cannot resize frame pool");
-                    }
+                    self.handle_format_changed_event()?;
                 }
             }
         }
@@ -997,6 +1057,7 @@ impl VaapiVideoDecoder {
     pub(crate) fn decode_packet_for_thread(
         &mut self,
         packet: &Packet,
+        generation: u64,
     ) -> Result<VaapiDecodePacketOutcome> {
         // Конвертируем PTS из Duration в микросекунды (u64).
         // cros-codecs использует u64 timestamp для идентификации кадров.
@@ -1019,6 +1080,7 @@ impl VaapiVideoDecoder {
             timestamp_us,
             &packet.data,
             packet.keyframe.is_known_keyframe(),
+            generation,
         )?;
         if loop_report.output_backpressured {
             return Ok(VaapiDecodePacketOutcome::OutputBackpressured);
@@ -1076,11 +1138,11 @@ impl VaapiVideoDecoder {
     }
 
     /// Запускает explicit EOF/DPB drain и оставляет tail frames в обычном publish path.
-    pub(crate) fn begin_end_of_stream_drain_for_thread(&mut self) -> Result<()> {
+    pub(crate) fn begin_end_of_stream_drain_for_thread(&mut self, generation: u64) -> Result<()> {
         self.adapter
             .begin_end_of_stream_drain()
             .map_err(|error| anyhow::anyhow!("EOF drain error: {error}"))?;
-        self.drain_decoder_events()?;
+        self.drain_decoder_events(DecoderEventDrainPolicy::Publish { generation })?;
         Ok(())
     }
 }
@@ -1102,8 +1164,8 @@ impl DecoderRetryDriver for VaapiVideoDecoder {
     }
 
     /// Обрабатывает pending events реального decoder-а.
-    fn drain_events(&mut self) -> Result<DecoderDrainReport> {
-        self.drain_decoder_events()
+    fn drain_events(&mut self, policy: DecoderEventDrainPolicy) -> Result<DecoderDrainReport> {
+        self.drain_decoder_events(policy)
     }
 }
 
@@ -1115,7 +1177,7 @@ impl VideoDecoder for VaapiVideoDecoder {
     /// 2. Drain все pending events (FrameReady / FormatChanged).
     /// 3. Вернуть самый старый готовый кадр из очереди.
     fn decode(&mut self, packet: &Packet) -> Result<Option<DecodedFrame>> {
-        match self.decode_packet_for_thread(packet)? {
+        match self.decode_packet_for_thread(packet, 0)? {
             VaapiDecodePacketOutcome::Accepted(frame) => Ok(frame.map(|boxed_frame| *boxed_frame)),
             VaapiDecodePacketOutcome::OutputBackpressured => Ok(None),
         }
@@ -1128,6 +1190,7 @@ impl VideoDecoder for VaapiVideoDecoder {
         self.adapter
             .flush()
             .map_err(|error| anyhow::anyhow!("Flush error: {error}"))?;
+        self.drain_decoder_events(DecoderEventDrainPolicy::Discard { reason: "flush" })?;
         self.release_decoder_owned_ready_frames("flush")?;
         Ok(())
     }
@@ -1180,6 +1243,16 @@ mod tests {
         FrameReady { pts: Duration },
     }
 
+    /// Fake decoded frame после publish policy.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct FakeReadyFrame {
+        /// PTS, который пришёл из fake event-а.
+        pts: Duration,
+
+        /// Generation, назначенный event drain policy.
+        generation: u64,
+    }
+
     /// Минимальный fake-драйвер для `CheckEvents -> drain -> retry same packet`.
     struct FakeRetryDriver {
         /// Заранее заданные ответы fake `decode()`.
@@ -1191,8 +1264,11 @@ mod tests {
         /// История submit-ов: timestamp и копия bitstream-а.
         submissions: Vec<(u64, Vec<u8>)>,
 
-        /// Очередь fake ready frames, по которой проверяем сохранение PTS.
-        ready_pts: VecDeque<Duration>,
+        /// Очередь fake ready frames, по которой проверяем publish policy.
+        ready_frames: VecDeque<FakeReadyFrame>,
+
+        /// PTS кадров, отброшенных discard policy.
+        discarded_pts: Vec<Duration>,
     }
 
     impl FakeRetryDriver {
@@ -1205,7 +1281,8 @@ mod tests {
                 decode_results: VecDeque::from(decode_results),
                 drain_batches: VecDeque::from(drain_batches),
                 submissions: Vec::new(),
-                ready_pts: VecDeque::new(),
+                ready_frames: VecDeque::new(),
+                discarded_pts: Vec::new(),
             }
         }
     }
@@ -1229,7 +1306,7 @@ mod tests {
         }
 
         /// Обрабатывает один пакет fake events.
-        fn drain_events(&mut self) -> Result<DecoderDrainReport> {
+        fn drain_events(&mut self, policy: DecoderEventDrainPolicy) -> Result<DecoderDrainReport> {
             let mut report = DecoderDrainReport::default();
             let Some(events) = self.drain_batches.pop_front() else {
                 return Ok(report);
@@ -1241,9 +1318,15 @@ mod tests {
                     FakeDecoderEvent::FormatChanged => {
                         report.format_changed = true;
                     }
-                    FakeDecoderEvent::FrameReady { pts } => {
-                        self.ready_pts.push_back(pts);
-                    }
+                    FakeDecoderEvent::FrameReady { pts } => match policy {
+                        DecoderEventDrainPolicy::Publish { generation } => {
+                            self.ready_frames
+                                .push_back(FakeReadyFrame { pts, generation });
+                        }
+                        DecoderEventDrainPolicy::Discard { reason: _ } => {
+                            self.discarded_pts.push(pts);
+                        }
+                    },
                 }
             }
 
@@ -1268,7 +1351,7 @@ mod tests {
             ],
         );
 
-        let report = run_decode_with_event_retry(&mut driver, 0, &packet_data, true).unwrap();
+        let report = run_decode_with_event_retry(&mut driver, 0, &packet_data, true, 11).unwrap();
 
         assert_eq!(report.attempts, 2);
         assert_eq!(report.events_count, 2);
@@ -1278,7 +1361,13 @@ mod tests {
             driver.submissions,
             vec![(0, packet_data.clone()), (0, packet_data)]
         );
-        assert_eq!(driver.ready_pts.pop_front(), Some(Duration::ZERO));
+        assert_eq!(
+            driver.ready_frames.pop_front(),
+            Some(FakeReadyFrame {
+                pts: Duration::ZERO,
+                generation: 11,
+            })
+        );
     }
 
     /// Проверяет, что `NotEnoughOutputBuffers` не маскируется под принятый packet.
@@ -1290,12 +1379,95 @@ mod tests {
             vec![Vec::new()],
         );
 
-        let report = run_decode_with_event_retry(&mut driver, 0, &packet_data, true).unwrap();
+        let report = run_decode_with_event_retry(&mut driver, 0, &packet_data, true, 17).unwrap();
 
         assert_eq!(report.attempts, 1);
         assert!(report.output_backpressured);
         assert!(!report.skipped_packet);
         assert_eq!(driver.submissions, vec![(0, packet_data)]);
+    }
+
+    /// Проверяет seek flush policy: H.264 tail event не попадает в ready queue.
+    #[test]
+    fn seek_flush_discard_policy_drops_tail_frame_events() {
+        let tail_pts = Duration::from_millis(33);
+        let mut driver = FakeRetryDriver::new(
+            Vec::new(),
+            vec![vec![FakeDecoderEvent::FrameReady { pts: tail_pts }]],
+        );
+
+        let report = driver
+            .drain_events(DecoderEventDrainPolicy::Discard { reason: "flush" })
+            .unwrap();
+
+        assert_eq!(report.events_count, 1);
+        assert!(!report.format_changed);
+        assert!(driver.ready_frames.is_empty());
+        assert_eq!(driver.discarded_pts, vec![tail_pts]);
+    }
+
+    /// Проверяет EOF drain policy: tail frame публикуется с generation запроса.
+    #[test]
+    fn eof_drain_publish_policy_keeps_tail_frame_generation() {
+        let tail_pts = Duration::from_millis(67);
+        let mut driver = FakeRetryDriver::new(
+            Vec::new(),
+            vec![vec![FakeDecoderEvent::FrameReady { pts: tail_pts }]],
+        );
+
+        let report = driver
+            .drain_events(DecoderEventDrainPolicy::Publish { generation: 23 })
+            .unwrap();
+
+        assert_eq!(report.events_count, 1);
+        assert_eq!(
+            driver.ready_frames.pop_front(),
+            Some(FakeReadyFrame {
+                pts: tail_pts,
+                generation: 23,
+            })
+        );
+        assert!(driver.discarded_pts.is_empty());
+    }
+
+    /// Проверяет burst из нескольких `FrameReady`: весь drain получает одну generation.
+    #[test]
+    fn burst_frames_drained_in_one_generation_keep_that_generation() {
+        let mut driver = FakeRetryDriver::new(
+            vec![Ok(4)],
+            vec![vec![
+                FakeDecoderEvent::FrameReady {
+                    pts: Duration::from_millis(10),
+                },
+                FakeDecoderEvent::FrameReady {
+                    pts: Duration::from_millis(20),
+                },
+                FakeDecoderEvent::FrameReady {
+                    pts: Duration::from_millis(30),
+                },
+            ]],
+        );
+
+        let report = run_decode_with_event_retry(&mut driver, 0, &[1, 2, 3, 4], true, 31).unwrap();
+
+        assert_eq!(report.events_count, 3);
+        assert_eq!(
+            driver.ready_frames.into_iter().collect::<Vec<_>>(),
+            vec![
+                FakeReadyFrame {
+                    pts: Duration::from_millis(10),
+                    generation: 31,
+                },
+                FakeReadyFrame {
+                    pts: Duration::from_millis(20),
+                    generation: 31,
+                },
+                FakeReadyFrame {
+                    pts: Duration::from_millis(30),
+                    generation: 31,
+                },
+            ]
+        );
     }
 
     /// Проверяет reconfigure/flush scope: release берёт только decoder-owned ready frames.

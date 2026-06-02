@@ -2089,7 +2089,7 @@ fn handle_decoder_control_message(
                 return false;
             }
 
-            let drain_result = decoder.begin_end_of_stream_drain_for_thread();
+            let drain_result = decoder.begin_end_of_stream_drain_for_thread(generation);
             if let Err(error) = drain_result {
                 let fatal_error = DecodeThreadError::new(format!(
                     "Decoder thread failed during VA-API EOF drain: {error:#}"
@@ -2232,7 +2232,7 @@ fn decode_queued_packet(
         data: decode_packet.encoded_bytes.clone(),
     };
 
-    let decode_result = decoder.decode_packet_for_thread(&packet);
+    let decode_result = decoder.decode_packet_for_thread(&packet, decode_packet.generation);
 
     match decode_result {
         Ok(VaapiDecodePacketOutcome::OutputBackpressured) => {
@@ -2242,7 +2242,6 @@ fn decode_queued_packet(
             let mut frame = *frame;
             let _ = decode_context.packet_ack_tx.try_send(());
             *decode_context.latest_color_metadata = decode_packet.resolved_color.clone();
-            frame.generation = decode_packet.generation;
             if let Some(color_metadata) = &decode_packet.resolved_color {
                 frame.color = color_metadata.clone();
             }
