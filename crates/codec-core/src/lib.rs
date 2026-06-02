@@ -24,7 +24,7 @@ pub use h264::{
     AvcDecoderConfigurationRecord, AvcDecoderConfigurationRecordError, H264BitReaderError,
     H264ByteStreamError, H264NalLengthSize, H264NalUnit, H264Packetization, H264PacketizationError,
     H264ParameterSetInjection, H264ParameterSetKind, H264RequirementError, H264SpsError,
-    H264SpsMetadata, h264_access_unit_to_annex_b, h264_nal_units,
+    H264SpsMetadata, h264_access_unit_to_annex_b, h264_access_unit_to_annex_b_into, h264_nal_units,
     h264_sps_metadata_from_avc_decoder_configuration_record, h264_sps_metadata_from_packet,
     infer_h264_packetization, parse_avc_decoder_configuration_record, parse_h264_sps_metadata,
     probe_h264_packet_keyframe,

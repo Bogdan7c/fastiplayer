@@ -6,7 +6,7 @@ use anyhow::Result;
 use codec_core::{
     BitDepth, ChromaSubsampling, H264Packetization, H264ParameterSetInjection,
     SupportedVideoDecodeFormat, VideoCodec, VideoProfile, VideoSurfaceFormat, Vp9Profile,
-    h264_access_unit_to_annex_b, parse_avc_decoder_configuration_record,
+    h264_access_unit_to_annex_b_into, parse_avc_decoder_configuration_record,
 };
 use cros_codecs::DecodedFormat;
 use cros_codecs::backend::vaapi::decoder::VaapiBackend;
@@ -177,6 +177,13 @@ pub(crate) enum VaapiDecoderEvent {
     FormatChanged,
 }
 
+/// Packet-local decode hints на internal VAAPI adapter boundary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct VaapiPacketDecodeHints {
+    /// H.264 AU должен получить SPS/PPS перед payload-ом.
+    pub(crate) inject_h264_parameter_sets: bool,
+}
+
 impl<H> From<DecoderEvent<H>> for VaapiDecoderEvent
 where
     H: DecodedHandle<Frame = InternalVaapiFrame> + 'static,
@@ -260,6 +267,7 @@ pub(crate) trait VaapiCodecAdapter {
         &mut self,
         timestamp_us: u64,
         packet_data: &[u8],
+        decode_hints: VaapiPacketDecodeHints,
         frame_pool: &mut DmaFramePool,
     ) -> std::result::Result<usize, VaapiAdapterDecodeError>;
 
@@ -338,20 +346,89 @@ impl H264VaapiStreamConfig {
         })
     }
 
-    /// Конвертирует один access unit в Annex B и добавляет SPS/PPS по явной policy.
-    fn access_unit_to_annex_b(
+    /// Конвертирует один access unit в caller-owned Annex B buffer по явному intent.
+    fn access_unit_to_annex_b_into(
         &self,
         packet_data: &[u8],
-    ) -> std::result::Result<Vec<u8>, VaapiAdapterDecodeError> {
-        h264_access_unit_to_annex_b(
-            packet_data,
-            self.packetization,
+        inject_h264_parameter_sets: bool,
+        output: &mut Vec<u8>,
+    ) -> std::result::Result<(), VaapiAdapterDecodeError> {
+        let parameter_set_injection = if inject_h264_parameter_sets {
             H264ParameterSetInjection::BeforeAccessUnit {
                 sequence_parameter_sets: &self.sequence_parameter_sets,
                 picture_parameter_sets: &self.picture_parameter_sets,
-            },
+            }
+        } else {
+            H264ParameterSetInjection::None
+        };
+
+        h264_access_unit_to_annex_b_into(
+            packet_data,
+            self.packetization,
+            parameter_set_injection,
+            output,
         )
         .map_err(|error| VaapiAdapterDecodeError::ParseFrameError(error.to_string()))
+    }
+}
+
+/// Готовит H.264 AU к submit-у и владеет reusable Annex B scratch buffer.
+struct H264AccessUnitPreparer {
+    /// Configure-time packetization и SPS/PPS state.
+    stream_config: H264VaapiStreamConfig,
+
+    /// Reusable output buffer для AVCC/Annex B перепаковки.
+    annex_b_scratch: Vec<u8>,
+
+    /// Lifecycle flag: первый AU после configure/flush должен получить SPS/PPS.
+    inject_parameter_sets_on_next_au: bool,
+}
+
+impl H264AccessUnitPreparer {
+    /// Создаёт preparer после configure; первый AU остаётся decode-safe.
+    fn new(stream_config: H264VaapiStreamConfig) -> Self {
+        Self {
+            stream_config,
+            annex_b_scratch: Vec::new(),
+            inject_parameter_sets_on_next_au: true,
+        }
+    }
+
+    /// Собирает pending AU, перемещая reusable scratch в ownership pending state-а.
+    fn prepare_pending_access_unit(
+        &mut self,
+        packet_data: &[u8],
+        decode_hints: VaapiPacketDecodeHints,
+    ) -> std::result::Result<H264PendingAccessUnit, VaapiAdapterDecodeError> {
+        let inject_h264_parameter_sets =
+            decode_hints.inject_h264_parameter_sets || self.inject_parameter_sets_on_next_au;
+
+        self.stream_config.access_unit_to_annex_b_into(
+            packet_data,
+            inject_h264_parameter_sets,
+            &mut self.annex_b_scratch,
+        )?;
+        self.inject_parameter_sets_on_next_au = false;
+
+        let annex_b_bytes = std::mem::take(&mut self.annex_b_scratch);
+        Ok(H264PendingAccessUnit::new(annex_b_bytes, packet_data.len()))
+    }
+
+    /// Возвращает полностью consumed AU buffer в scratch и сохраняет его capacity.
+    fn recycle_completed_access_unit(&mut self, pending_access_unit: H264PendingAccessUnit) {
+        debug_assert_eq!(
+            pending_access_unit.consumed_bytes,
+            pending_access_unit.annex_b_bytes.len(),
+            "H.264 AU buffer can return to scratch only after full consume"
+        );
+        self.annex_b_scratch = pending_access_unit.into_reusable_annex_b_bytes();
+        self.annex_b_scratch.clear();
+    }
+
+    /// Сбрасывает lifecycle policy после seek flush/reconfigure cleanup.
+    fn reset_after_flush(&mut self) {
+        self.annex_b_scratch.clear();
+        self.inject_parameter_sets_on_next_au = true;
     }
 }
 
@@ -375,6 +452,11 @@ impl H264PendingAccessUnit {
             source_packet_len,
             consumed_bytes: 0,
         }
+    }
+
+    /// Возвращает owned bytes adapter-у после полного consume.
+    fn into_reusable_annex_b_bytes(self) -> Vec<u8> {
+        self.annex_b_bytes
     }
 
     /// Кормит cros decoder NAL-ами до полного AU или первого backpressure/error.
@@ -410,8 +492,8 @@ struct H264VaapiCodecAdapter {
     /// Concrete cros decoder остаётся private implementation detail adapter-а.
     inner: StatelessDecoder<H264, VaapiBackend<InternalVaapiFrame>>,
 
-    /// Configure-time packetization и SPS/PPS state.
-    stream_config: H264VaapiStreamConfig,
+    /// Готовит AU, выбирает SPS/PPS injection policy и переиспользует scratch.
+    access_unit_preparer: H264AccessUnitPreparer,
 
     /// Unconsumed AU после `CheckEvents` или output-buffer backpressure.
     pending_access_unit: Option<H264PendingAccessUnit>,
@@ -430,7 +512,7 @@ impl H264VaapiCodecAdapter {
 
         Ok(Self {
             inner,
-            stream_config,
+            access_unit_preparer: H264AccessUnitPreparer::new(stream_config),
             pending_access_unit: None,
         })
     }
@@ -457,12 +539,14 @@ impl VaapiCodecAdapter for H264VaapiCodecAdapter {
         &mut self,
         timestamp_us: u64,
         packet_data: &[u8],
+        decode_hints: VaapiPacketDecodeHints,
         frame_pool: &mut DmaFramePool,
     ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
         if self.pending_access_unit.is_none() {
-            let annex_b_bytes = self.stream_config.access_unit_to_annex_b(packet_data)?;
-            self.pending_access_unit =
-                Some(H264PendingAccessUnit::new(annex_b_bytes, packet_data.len()));
+            self.pending_access_unit = Some(
+                self.access_unit_preparer
+                    .prepare_pending_access_unit(packet_data, decode_hints)?,
+            );
         }
 
         let pending_access_unit = self
@@ -485,7 +569,12 @@ impl VaapiCodecAdapter for H264VaapiCodecAdapter {
 
         match feed_result {
             Ok(Some(source_packet_len)) => {
-                self.pending_access_unit = None;
+                let completed_access_unit = self
+                    .pending_access_unit
+                    .take()
+                    .expect("completed H.264 access unit must still be pending");
+                self.access_unit_preparer
+                    .recycle_completed_access_unit(completed_access_unit);
                 Ok(source_packet_len)
             }
             Ok(None) => unreachable!("H.264 feed loop always completes or returns an error"),
@@ -496,6 +585,7 @@ impl VaapiCodecAdapter for H264VaapiCodecAdapter {
     /// Flush-ит H.264 decoder state и забывает partially consumed AU.
     fn flush(&mut self) -> std::result::Result<(), VaapiAdapterDecodeError> {
         self.pending_access_unit = None;
+        self.access_unit_preparer.reset_after_flush();
         self.inner.flush().map_err(VaapiAdapterDecodeError::from)
     }
 
@@ -507,6 +597,7 @@ impl VaapiCodecAdapter for H264VaapiCodecAdapter {
             ));
         }
 
+        self.access_unit_preparer.reset_after_flush();
         self.inner.flush().map_err(VaapiAdapterDecodeError::from)
     }
 
@@ -565,6 +656,7 @@ impl VaapiCodecAdapter for Vp9VaapiCodecAdapter {
         &mut self,
         timestamp_us: u64,
         packet_data: &[u8],
+        _decode_hints: VaapiPacketDecodeHints,
         frame_pool: &mut DmaFramePool,
     ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
         let mut alloc_cb = || {
@@ -858,6 +950,49 @@ mod tests {
         Bytes::from_static(&[1, 100, 0, 31, 0xff, 0xe1, 0, 2, 0x67, 0x64, 1, 0, 1, 0x68])
     }
 
+    /// Собирает H.264 stream config с AVCC packetization для adapter policy tests.
+    fn h264_stream_config() -> H264VaapiStreamConfig {
+        let config = VideoStreamDecodeConfig {
+            profile: Some(VideoProfile::H264(H264Profile::High)),
+            bit_depth: Some(BitDepth::Eight),
+            chroma: Some(ChromaSubsampling::Yuv420),
+            surface_format: Some(VideoSurfaceFormat::Nv12),
+            codec_private: Some(valid_h264_avcc_private()),
+            packetization: Some(VideoStreamPacketization::H264(
+                H264Packetization::AvccLengthPrefixed {
+                    nal_length_size: H264NalLengthSize::FOUR,
+                },
+            )),
+            ..stream_config(VideoCodec::H264)
+        };
+
+        H264VaapiStreamConfig::from_decode_config(&config)
+            .expect("valid test avcC должен проходить H.264 configure boundary")
+    }
+
+    /// Собирает AVCC access unit с 4-byte NAL lengths.
+    fn avcc_access_unit(nal_units: &[&[u8]]) -> Vec<u8> {
+        let mut access_unit = Vec::new();
+        for nal_unit in nal_units {
+            let nal_len = u32::try_from(nal_unit.len()).expect("test NAL length fits u32");
+            access_unit.extend_from_slice(&nal_len.to_be_bytes());
+            access_unit.extend_from_slice(nal_unit);
+        }
+        access_unit
+    }
+
+    /// Имитирует полный consume AU перед возвратом buffer-а в scratch.
+    fn recycle_fully_consumed_access_unit(
+        preparer: &mut H264AccessUnitPreparer,
+        mut pending_access_unit: H264PendingAccessUnit,
+    ) {
+        let accepted_len = pending_access_unit
+            .feed_until_blocked(|remaining_bytes| Ok(remaining_bytes.len()))
+            .expect("test AU должен полностью consume-иться");
+        assert_eq!(accepted_len, Some(pending_access_unit.source_packet_len));
+        preparer.recycle_completed_access_unit(pending_access_unit);
+    }
+
     /// Собирает Annex B access unit из NAL units без start code.
     fn annex_b_access_unit(nal_units: &[&[u8]]) -> Vec<u8> {
         let mut access_unit = Vec::new();
@@ -913,6 +1048,141 @@ mod tests {
                 codec: VideoCodec::H264
             })
         ));
+    }
+
+    /// Проверяет, что обычный non-keyframe AU после старта не получает SPS/PPS.
+    #[test]
+    fn h264_non_keyframe_access_unit_after_start_uses_no_parameter_set_injection() {
+        let mut preparer = H264AccessUnitPreparer::new(h264_stream_config());
+        let first_access_unit = avcc_access_unit(&[&[0x65, 0x88]]);
+        let first_pending = preparer
+            .prepare_pending_access_unit(
+                &first_access_unit,
+                VaapiPacketDecodeHints {
+                    inject_h264_parameter_sets: true,
+                },
+            )
+            .expect("first H.264 AU должен собираться");
+        recycle_fully_consumed_access_unit(&mut preparer, first_pending);
+
+        let non_keyframe_access_unit = avcc_access_unit(&[&[0x41, 0x9a]]);
+        let pending_access_unit = preparer
+            .prepare_pending_access_unit(
+                &non_keyframe_access_unit,
+                VaapiPacketDecodeHints::default(),
+            )
+            .expect("non-keyframe H.264 AU должен собираться");
+
+        assert_eq!(
+            pending_access_unit.annex_b_bytes,
+            annex_b_access_unit(&[&[0x41, 0x9a]])
+        );
+    }
+
+    /// Проверяет, что keyframe AU получает SPS/PPS даже не будучи первым после configure.
+    #[test]
+    fn h264_keyframe_access_unit_injects_parameter_sets() {
+        let mut preparer = H264AccessUnitPreparer::new(h264_stream_config());
+        let first_access_unit = avcc_access_unit(&[&[0x41, 0x9a]]);
+        let first_pending = preparer
+            .prepare_pending_access_unit(&first_access_unit, VaapiPacketDecodeHints::default())
+            .expect("first H.264 AU должен собираться");
+        recycle_fully_consumed_access_unit(&mut preparer, first_pending);
+
+        let keyframe_access_unit = avcc_access_unit(&[&[0x65, 0x88]]);
+        let pending_access_unit = preparer
+            .prepare_pending_access_unit(
+                &keyframe_access_unit,
+                VaapiPacketDecodeHints {
+                    inject_h264_parameter_sets: true,
+                },
+            )
+            .expect("keyframe H.264 AU должен собираться");
+
+        assert_eq!(
+            pending_access_unit.annex_b_bytes,
+            annex_b_access_unit(&[&[0x67, 0x64], &[0x68], &[0x65, 0x88]])
+        );
+    }
+
+    /// Проверяет, что первый AU после flush снова получает SPS/PPS.
+    #[test]
+    fn h264_first_access_unit_after_flush_injects_parameter_sets() {
+        let mut preparer = H264AccessUnitPreparer::new(h264_stream_config());
+        let first_access_unit = avcc_access_unit(&[&[0x65, 0x88]]);
+        let first_pending = preparer
+            .prepare_pending_access_unit(
+                &first_access_unit,
+                VaapiPacketDecodeHints {
+                    inject_h264_parameter_sets: true,
+                },
+            )
+            .expect("first H.264 AU должен собираться");
+        recycle_fully_consumed_access_unit(&mut preparer, first_pending);
+
+        preparer.reset_after_flush();
+        let post_flush_access_unit = avcc_access_unit(&[&[0x41, 0x9a]]);
+        let pending_access_unit = preparer
+            .prepare_pending_access_unit(&post_flush_access_unit, VaapiPacketDecodeHints::default())
+            .expect("post-flush H.264 AU должен собираться");
+
+        assert_eq!(
+            pending_access_unit.annex_b_bytes,
+            annex_b_access_unit(&[&[0x67, 0x64], &[0x68], &[0x41, 0x9a]])
+        );
+    }
+
+    /// Проверяет, что backpressure держит bytes в pending AU до полного consume.
+    #[test]
+    fn h264_output_backpressure_preserves_pending_bytes_until_complete_consume() {
+        let mut preparer = H264AccessUnitPreparer::new(h264_stream_config());
+        let first_access_unit = avcc_access_unit(&[&[0x65, 0x88]]);
+        let first_pending = preparer
+            .prepare_pending_access_unit(
+                &first_access_unit,
+                VaapiPacketDecodeHints {
+                    inject_h264_parameter_sets: true,
+                },
+            )
+            .expect("first H.264 AU должен собираться");
+        let first_capacity = first_pending.annex_b_bytes.capacity();
+        recycle_fully_consumed_access_unit(&mut preparer, first_pending);
+        assert_eq!(preparer.annex_b_scratch.capacity(), first_capacity);
+
+        let retry_access_unit = avcc_access_unit(&[&[0x41, 0x9a]]);
+        let mut pending_access_unit = preparer
+            .prepare_pending_access_unit(&retry_access_unit, VaapiPacketDecodeHints::default())
+            .expect("retry H.264 AU должен собираться");
+        let pending_bytes_before_backpressure = pending_access_unit.annex_b_bytes.clone();
+        let pending_capacity = pending_access_unit.annex_b_bytes.capacity();
+        assert_eq!(preparer.annex_b_scratch.capacity(), 0);
+
+        let backpressure_result = pending_access_unit.feed_until_blocked(|_remaining_bytes| {
+            Err(VaapiAdapterDecodeError::NotEnoughOutputBuffers(1))
+        });
+
+        assert!(matches!(
+            backpressure_result,
+            Err(VaapiAdapterDecodeError::NotEnoughOutputBuffers(1))
+        ));
+        assert_eq!(
+            pending_access_unit.annex_b_bytes,
+            pending_bytes_before_backpressure
+        );
+        assert_eq!(
+            pending_access_unit.annex_b_bytes.capacity(),
+            pending_capacity
+        );
+        assert_eq!(preparer.annex_b_scratch.capacity(), 0);
+
+        let accepted_len = pending_access_unit
+            .feed_until_blocked(|remaining_bytes| Ok(remaining_bytes.len()))
+            .expect("pending AU должен завершиться после retry");
+        assert_eq!(accepted_len, Some(retry_access_unit.len()));
+
+        preparer.recycle_completed_access_unit(pending_access_unit);
+        assert_eq!(preparer.annex_b_scratch.capacity(), pending_capacity);
+        assert!(preparer.annex_b_scratch.is_empty());
     }
 
     /// Проверяет H.264 AU feeder: один packet может состоять из нескольких NAL units.

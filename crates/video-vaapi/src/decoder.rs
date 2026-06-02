@@ -21,7 +21,7 @@ use video_core::{
 
 use crate::codec_adapter::{
     VaapiAdapterDecodeError, VaapiCodecAdapter, VaapiCodecAdapterFactory, VaapiDecodedFormat,
-    VaapiDecodedFrameHandle, VaapiDecoderEvent,
+    VaapiDecodedFrameHandle, VaapiDecoderEvent, VaapiPacketDecodeHints,
 };
 use crate::frame_pool::DmaFramePool;
 use crate::resource_pool::FrameResourcePool;
@@ -176,6 +176,7 @@ trait DecoderRetryDriver {
         &mut self,
         timestamp_us: u64,
         packet_data: &[u8],
+        decode_hints: VaapiPacketDecodeHints,
     ) -> std::result::Result<usize, VaapiAdapterDecodeError>;
 
     /// Обрабатывает все pending decoder events.
@@ -199,12 +200,15 @@ where
     let pts_ms = timestamp_us / 1000;
     let mut report = DecodeLoopReport::default();
     let codec_label = driver.codec_label();
+    let decode_hints = VaapiPacketDecodeHints {
+        inject_h264_parameter_sets: keyframe,
+    };
 
     loop {
         report.attempts += 1;
         let attempt = report.attempts;
         let submit_start = std::time::Instant::now();
-        let submit_result = driver.submit_packet(timestamp_us, packet_data);
+        let submit_result = driver.submit_packet(timestamp_us, packet_data, decode_hints);
         report.submit_elapsed += submit_start.elapsed();
 
         match submit_result {
@@ -1158,9 +1162,14 @@ impl DecoderRetryDriver for VaapiVideoDecoder {
         &mut self,
         timestamp_us: u64,
         packet_data: &[u8],
+        decode_hints: VaapiPacketDecodeHints,
     ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
-        self.adapter
-            .submit_packet(timestamp_us, packet_data, &mut self.frame_pool)
+        self.adapter.submit_packet(
+            timestamp_us,
+            packet_data,
+            decode_hints,
+            &mut self.frame_pool,
+        )
     }
 
     /// Обрабатывает pending events реального decoder-а.
@@ -1298,6 +1307,7 @@ mod tests {
             &mut self,
             timestamp_us: u64,
             packet_data: &[u8],
+            _decode_hints: VaapiPacketDecodeHints,
         ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
             self.submissions.push((timestamp_us, packet_data.to_vec()));
             self.decode_results

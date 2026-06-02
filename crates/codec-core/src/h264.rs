@@ -773,24 +773,45 @@ pub fn h264_access_unit_to_annex_b(
     packetization: H264Packetization,
     parameter_set_injection: H264ParameterSetInjection<'_>,
 ) -> Result<Vec<u8>, H264ByteStreamError> {
-    let nal_units = h264_nal_units(packet_bytes, packetization)?;
     let mut annex_b_bytes = Vec::new();
-
-    if let H264ParameterSetInjection::BeforeAccessUnit {
-        sequence_parameter_sets,
-        picture_parameter_sets,
-    } = parameter_set_injection
-    {
-        append_parameter_sets(&mut annex_b_bytes, sequence_parameter_sets);
-        append_parameter_sets(&mut annex_b_bytes, picture_parameter_sets);
-    }
-
-    for nal_unit in nal_units {
-        annex_b_bytes.extend_from_slice(H264_START_CODE_4);
-        annex_b_bytes.extend_from_slice(nal_unit.bytes());
-    }
-
+    h264_access_unit_to_annex_b_into(
+        packet_bytes,
+        packetization,
+        parameter_set_injection,
+        &mut annex_b_bytes,
+    )?;
     Ok(annex_b_bytes)
+}
+
+/// Конвертирует H.264 access unit в caller-owned Annex B buffer без новой output allocation.
+///
+/// Функция очищает `output`, сохраняет его capacity и оставляет его пустым при ошибке.
+pub fn h264_access_unit_to_annex_b_into(
+    packet_bytes: &[u8],
+    packetization: H264Packetization,
+    parameter_set_injection: H264ParameterSetInjection<'_>,
+    output: &mut Vec<u8>,
+) -> Result<(), H264ByteStreamError> {
+    output.clear();
+
+    let write_result = (|| {
+        if let H264ParameterSetInjection::BeforeAccessUnit {
+            sequence_parameter_sets,
+            picture_parameter_sets,
+        } = parameter_set_injection
+        {
+            append_parameter_sets(output, sequence_parameter_sets);
+            append_parameter_sets(output, picture_parameter_sets);
+        }
+
+        append_access_unit_nals_to_annex_b(packet_bytes, packetization, output)
+    })();
+
+    if write_result.is_err() {
+        output.clear();
+    }
+
+    write_result
 }
 
 /// Возвращает `true` только для access unit-а с IDR slice.
@@ -1116,6 +1137,109 @@ fn avcc_nal_units(
     }
 
     Ok(nal_units)
+}
+
+fn append_access_unit_nals_to_annex_b(
+    packet_bytes: &[u8],
+    packetization: H264Packetization,
+    output: &mut Vec<u8>,
+) -> Result<(), H264ByteStreamError> {
+    match packetization {
+        H264Packetization::AnnexB => append_annex_b_nal_units_to_annex_b(packet_bytes, output),
+        H264Packetization::AvccLengthPrefixed { nal_length_size } => {
+            append_avcc_nal_units_to_annex_b(packet_bytes, nal_length_size, output)
+        }
+    }
+}
+
+fn append_annex_b_nal_units_to_annex_b(
+    packet_bytes: &[u8],
+    output: &mut Vec<u8>,
+) -> Result<(), H264ByteStreamError> {
+    let Some((first_start_code_offset, first_start_code_size)) =
+        find_annex_b_start_code(packet_bytes, 0)
+    else {
+        return Err(H264ByteStreamError::MissingStartCode);
+    };
+
+    let mut nal_units_written = 0usize;
+    let mut nal_start = first_start_code_offset + first_start_code_size;
+
+    while nal_start < packet_bytes.len() {
+        let next_start_code = find_annex_b_start_code(packet_bytes, nal_start);
+        let nal_end = next_start_code
+            .map(|(start_code_offset, _)| start_code_offset)
+            .unwrap_or(packet_bytes.len());
+
+        if nal_start < nal_end {
+            append_nal_unit_to_annex_b(&packet_bytes[nal_start..nal_end], output)?;
+            nal_units_written += 1;
+        }
+
+        let Some((next_start_code_offset, next_start_code_size)) = next_start_code else {
+            break;
+        };
+        nal_start = next_start_code_offset + next_start_code_size;
+    }
+
+    if nal_units_written == 0 {
+        return Err(H264ByteStreamError::NoNalUnits);
+    }
+
+    Ok(())
+}
+
+fn append_avcc_nal_units_to_annex_b(
+    packet_bytes: &[u8],
+    nal_length_size: H264NalLengthSize,
+    output: &mut Vec<u8>,
+) -> Result<(), H264ByteStreamError> {
+    let mut cursor = 0;
+    let mut nal_units_written = 0usize;
+
+    while cursor < packet_bytes.len() {
+        let remaining_bytes = packet_bytes.len() - cursor;
+        if remaining_bytes < nal_length_size.bytes() {
+            return Err(H264ByteStreamError::TruncatedAvccNalLength {
+                nal_length_size,
+                remaining_bytes,
+            });
+        }
+
+        let declared_size = read_avcc_nal_size(packet_bytes, cursor, nal_length_size);
+        cursor += nal_length_size.bytes();
+        if declared_size == 0 {
+            return Err(H264ByteStreamError::ZeroLengthAvccNalUnit);
+        }
+
+        let remaining_bytes = packet_bytes.len() - cursor;
+        if remaining_bytes < declared_size {
+            return Err(H264ByteStreamError::TruncatedAvccNalUnit {
+                declared_size,
+                remaining_bytes,
+            });
+        }
+
+        append_nal_unit_to_annex_b(&packet_bytes[cursor..cursor + declared_size], output)?;
+        cursor += declared_size;
+        nal_units_written += 1;
+    }
+
+    if nal_units_written == 0 {
+        return Err(H264ByteStreamError::NoNalUnits);
+    }
+
+    Ok(())
+}
+
+fn append_nal_unit_to_annex_b(
+    nal_unit_bytes: &[u8],
+    output: &mut Vec<u8>,
+) -> Result<(), H264ByteStreamError> {
+    let nal_unit = parse_nal_unit(nal_unit_bytes)?;
+    output.extend_from_slice(H264_START_CODE_4);
+    output.extend_from_slice(nal_unit.bytes());
+    Ok(())
 }
 
 fn read_avcc_nal_size(
@@ -1530,8 +1654,8 @@ mod tests {
 
     use super::{
         H264ByteStreamError, H264NalLengthSize, H264Packetization, H264ParameterSetInjection,
-        H264SpsError, h264_access_unit_to_annex_b, h264_nal_units,
-        h264_sps_metadata_from_avc_decoder_configuration_record,
+        H264SpsError, h264_access_unit_to_annex_b, h264_access_unit_to_annex_b_into,
+        h264_nal_units, h264_sps_metadata_from_avc_decoder_configuration_record,
         parse_avc_decoder_configuration_record, parse_h264_sps_metadata,
         probe_h264_packet_keyframe,
     };
@@ -1702,6 +1826,57 @@ mod tests {
         let expected =
             annex_b_access_unit(&[sequence_parameter_set, picture_parameter_set, idr_slice()]);
         assert_eq!(annex_b, expected);
+    }
+
+    #[test]
+    fn avcc_to_annex_b_into_matches_legacy_wrapper() {
+        let sequence_parameter_set = constrained_baseline_sps();
+        let picture_parameter_set = pps();
+        let access_unit = avcc_access_unit(
+            H264NalLengthSize::FOUR,
+            &[aud(), idr_slice(), non_idr_slice()],
+        );
+        let packetization = H264Packetization::AvccLengthPrefixed {
+            nal_length_size: H264NalLengthSize::FOUR,
+        };
+        let injection = H264ParameterSetInjection::BeforeAccessUnit {
+            sequence_parameter_sets: std::slice::from_ref(&sequence_parameter_set),
+            picture_parameter_sets: std::slice::from_ref(&picture_parameter_set),
+        };
+        let legacy_annex_b = h264_access_unit_to_annex_b(&access_unit, packetization, injection)
+            .expect("legacy wrapper должен сохранить прежнюю конвертацию");
+        let mut caller_owned_annex_b = Vec::with_capacity(legacy_annex_b.len() + 64);
+
+        h264_access_unit_to_annex_b_into(
+            &access_unit,
+            packetization,
+            H264ParameterSetInjection::BeforeAccessUnit {
+                sequence_parameter_sets: std::slice::from_ref(&sequence_parameter_set),
+                picture_parameter_sets: std::slice::from_ref(&picture_parameter_set),
+            },
+            &mut caller_owned_annex_b,
+        )
+        .expect("_into API должен писать те же Annex B bytes");
+
+        assert_eq!(caller_owned_annex_b, legacy_annex_b);
+    }
+
+    #[test]
+    fn avcc_to_annex_b_none_injection_does_not_add_parameter_sets() {
+        let access_unit = avcc_access_unit(H264NalLengthSize::FOUR, &[idr_slice()]);
+        let mut annex_b = annex_b_access_unit(&[aud()]);
+
+        h264_access_unit_to_annex_b_into(
+            &access_unit,
+            H264Packetization::AvccLengthPrefixed {
+                nal_length_size: H264NalLengthSize::FOUR,
+            },
+            H264ParameterSetInjection::None,
+            &mut annex_b,
+        )
+        .expect("None injection должен только перепаковать NAL units");
+
+        assert_eq!(annex_b, annex_b_access_unit(&[idr_slice()]));
     }
 
     #[test]
