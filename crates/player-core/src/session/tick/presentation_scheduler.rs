@@ -277,7 +277,7 @@ pub(super) fn front_frame_ready_for_scheduler(
         return false;
     };
 
-    if session.active_seek_frame_ready_for_scheduler(front_frame.pts) {
+    if session.active_seek_frame_ready_for_scheduler(front_frame.pts, front_frame.generation) {
         return true;
     }
 
@@ -867,7 +867,9 @@ pub(super) fn process_pending_video_packets(
         if session
             .pipeline
             .front_queued_video_frame()
-            .is_some_and(|frame| session.active_seek_frame_ready_for_scheduler(frame.pts))
+            .is_some_and(|frame| {
+                session.active_seek_frame_ready_for_scheduler(frame.pts, frame.generation)
+            })
         {
             break;
         }
@@ -893,7 +895,8 @@ pub(super) fn process_pending_video_packets(
     };
 
     let diff_ms = frame.pts.as_secs_f64() * 1000.0 - target_media_time.as_secs_f64() * 1000.0;
-    let force_present_for_seek = session.active_seek_frame_ready_for_scheduler(frame.pts);
+    let force_present_for_seek =
+        session.active_seek_frame_ready_for_scheduler(frame.pts, frame.generation);
     if !force_present_for_seek
         && should_wait_for_front_frame(frame.pts, target_media_time, present_window)
     {

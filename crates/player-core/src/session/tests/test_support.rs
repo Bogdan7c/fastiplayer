@@ -1311,6 +1311,17 @@ pub(super) fn decoded_frame_for_current_seek_generation(
     frame
 }
 
+/// Делает frame текущего seek generation видимым и сообщает об этом seek transaction.
+pub(super) fn present_frame_for_current_seek_generation(
+    session: &mut PlayerSession,
+    pts: Duration,
+    handle: u64,
+) {
+    let frame = decoded_frame_for_current_seek_generation(session, pts, handle);
+    session.pipeline.set_present_video_frame(frame);
+    session.note_presented_frame_for_seek(pts);
+}
+
 /// Создаёт keyframe video packet для session-level demux/reset tests.
 pub(super) fn fake_video_packet(track_id: TrackId, pts: Duration) -> media_core::Packet {
     media_core::Packet::new(

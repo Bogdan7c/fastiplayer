@@ -1,6 +1,23 @@
 use super::test_support::*;
 use super::*;
 
+fn final_seek_harness_with_actual_position(
+    target: Duration,
+    actual: Duration,
+) -> SeekRegressionHarness {
+    let video_track = fake_track(1, TrackKind::Video);
+    let demuxer = scripted_seek_demuxer(vec![video_track.clone()], target, actual, Vec::new());
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+    harness
+        .session
+        .pipeline
+        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(1), 1));
+    harness.start_final_seek(MediaTime::from_duration(target));
+    let _events_before_present = harness.session.take_events();
+
+    harness
+}
+
 #[test]
 fn seek_command_sets_target_and_commits_position_after_gates() {
     let mut session = PlayerSession::new();
@@ -807,10 +824,7 @@ fn final_ready_gates_after_budget_commit_instead_of_timeout() {
             MediaTime::from_secs(6),
         )))
         .unwrap();
-    session
-        .pipeline
-        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
-    session.note_presented_frame_for_seek(Duration::from_secs(6));
+    present_frame_for_current_seek_generation(&mut session, Duration::from_secs(6), 42);
     let seek_commit = session
         .seek_commit()
         .expect("final seek должен быть активен до late tick");
@@ -840,6 +854,115 @@ fn final_ready_gates_after_budget_commit_instead_of_timeout() {
             if commit.target_position == Duration::from_secs(6)
                 && commit.actual_position == Duration::from_secs(6)
                 && commit.resume_intent == PlaybackResumeIntent::Pause
+    )));
+}
+
+#[test]
+fn current_generation_frame_before_actual_does_not_commit_final_seek() {
+    let target_position = Duration::from_secs(6);
+    let actual_position = Duration::from_secs(5);
+    let stale_tail_position = Duration::from_millis(4_950);
+    let mut harness = final_seek_harness_with_actual_position(target_position, actual_position);
+
+    harness
+        .session
+        .pipeline
+        .set_present_video_frame(decoded_frame_for_current_seek_generation(
+            &harness.session,
+            stale_tail_position,
+            90,
+        ));
+    harness
+        .session
+        .note_presented_frame_for_seek(stale_tail_position);
+    let seek_commit = harness.aligned_seek_commit();
+
+    assert!(harness.session.snapshot().timeline.stale_frame);
+    assert!(!harness.session.seek_video_gate_ready(seek_commit, 1));
+
+    harness.session.finish_seek_commit_if_ready_for_tests(
+        seek_commit.started_at,
+        Duration::from_secs(10),
+        50.0,
+        Duration::from_millis(250),
+        1,
+    );
+
+    assert!(harness.session.seek_commit().is_some());
+    assert_eq!(harness.session.snapshot().current_position, Duration::ZERO);
+    assert!(
+        !harness
+            .session
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::SeekTargetFramePresented(_)))
+    );
+}
+
+#[test]
+fn current_generation_frame_exactly_at_actual_can_commit_final_seek() {
+    let target_position = Duration::from_secs(6);
+    let actual_position = Duration::from_secs(5);
+    let mut harness = final_seek_harness_with_actual_position(target_position, actual_position);
+
+    present_frame_for_current_seek_generation(&mut harness.session, actual_position, 91);
+    let seek_commit = harness.aligned_seek_commit();
+
+    assert!(harness.session.seek_video_gate_ready(seek_commit, 1));
+
+    harness.session.finish_seek_commit_if_ready_for_tests(
+        seek_commit.started_at,
+        Duration::from_secs(10),
+        50.0,
+        Duration::from_millis(250),
+        1,
+    );
+
+    assert!(harness.session.seek_commit().is_none());
+    assert_eq!(harness.session.snapshot().current_position, actual_position);
+    assert_eq!(harness.session.pipeline.media_clock_base(), actual_position);
+    assert!(harness.session.take_events().iter().any(|event| matches!(
+        event,
+        PlayerEvent::SeekTargetFramePresented(presentation)
+            if presentation.target_position == target_position
+                && presentation.frame_pts == actual_position
+    )));
+}
+
+#[test]
+fn current_generation_frame_after_actual_before_target_can_commit_final_seek() {
+    let target_position = Duration::from_secs(6);
+    let actual_position = Duration::from_secs(5);
+    let decode_safe_frame_position = Duration::from_millis(5_500);
+    let mut harness = final_seek_harness_with_actual_position(target_position, actual_position);
+
+    present_frame_for_current_seek_generation(&mut harness.session, decode_safe_frame_position, 92);
+    let seek_commit = harness.aligned_seek_commit();
+
+    assert!(harness.session.seek_video_gate_ready(seek_commit, 1));
+
+    harness.session.finish_seek_commit_if_ready_for_tests(
+        seek_commit.started_at,
+        Duration::from_secs(10),
+        50.0,
+        Duration::from_millis(250),
+        1,
+    );
+
+    assert!(harness.session.seek_commit().is_none());
+    assert_eq!(
+        harness.session.snapshot().current_position,
+        decode_safe_frame_position
+    );
+    assert_eq!(
+        harness.session.pipeline.media_clock_base(),
+        decode_safe_frame_position
+    );
+    assert!(harness.session.take_events().iter().any(|event| matches!(
+        event,
+        PlayerEvent::SeekTargetFramePresented(presentation)
+            if presentation.target_position == target_position
+                && presentation.frame_pts == decode_safe_frame_position
     )));
 }
 
@@ -953,9 +1076,7 @@ fn no_audio_media_seek_resumes_after_target_video_frame() {
             MediaTime::from_secs(6),
         )))
         .unwrap();
-    let target_frame = decoded_frame_for_tests(Duration::from_secs(6), 42);
-    session.pipeline.set_present_video_frame(target_frame);
-    session.note_presented_frame_for_seek(Duration::from_secs(6));
+    present_frame_for_current_seek_generation(&mut session, Duration::from_secs(6), 42);
 
     session.finish_seek_commit_if_ready_for_tests(
         Instant::now(),
@@ -989,13 +1110,25 @@ fn deselected_audio_path_seek_resumes_after_target_video_frame() {
         .unwrap();
     session
         .pipeline
-        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
+        .set_present_video_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_secs(6),
+            42,
+        ));
     session
         .pipeline
-        .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(6_016), 43));
+        .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_millis(6_016),
+            43,
+        ));
     session
         .pipeline
-        .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(6_033), 44));
+        .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_millis(6_033),
+            44,
+        ));
     session.note_presented_frame_for_seek(Duration::from_secs(6));
 
     session.finish_seek_commit_if_ready_for_tests(
@@ -1080,7 +1213,11 @@ fn active_seek_sends_video_packet_when_present_queue_is_full() {
         .unwrap();
     session
         .pipeline
-        .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 60));
+        .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_secs(6),
+            60,
+        ));
     session
         .pipeline
         .enqueue_pending_video_packet(PendingVideoPacket::new(
@@ -1171,75 +1308,88 @@ fn final_seek_releases_stale_present_when_texture_pressure_blocks_decoder() {
 
 #[test]
 fn active_seek_long_preroll_drain_keeps_present_queue_bounded() {
-    let mut session = PlayerSession::new();
-    install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
-    let fake_decoder = SharedFakeVideoDecoderThread::new();
-    session
-        .pipeline
-        .set_video_decoder_thread(fake_decoder.clone());
+    let target_position = Duration::from_secs(2);
+    let video_track = fake_track(1, TrackKind::Video);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        target_position,
+        Duration::ZERO,
+        Vec::new(),
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
 
-    session
-        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
-            MediaTime::from_secs(2),
-        )))
-        .unwrap();
+    harness.start_final_seek(MediaTime::from_duration(target_position));
 
     for frame_index in 0..32u64 {
-        fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
-            &session,
-            Duration::from_millis(frame_index * 50),
-            100 + frame_index,
-        ));
+        harness
+            .decoder
+            .push_decoded_frame(decoded_frame_for_current_seek_generation(
+                &harness.session,
+                Duration::from_millis(frame_index * 50),
+                100 + frame_index,
+            ));
     }
-    fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
-        &session,
-        Duration::from_secs(2),
-        200,
-    ));
+    harness
+        .decoder
+        .push_decoded_frame(decoded_frame_for_current_seek_generation(
+            &harness.session,
+            target_position,
+            200,
+        ));
 
-    let tick_result = session.tick(PlayerTickContext::with_config(
+    let tick_result = harness.session.tick(PlayerTickContext::with_config(
         Instant::now(),
         seek_admission_tick_config(2, 64),
     ));
 
     assert_eq!(tick_result.decoded_video_frames, 33);
-    assert!(session.seek_commit().is_none());
-    assert!(session.pipeline.video_present_queue_len() <= 2);
-    let presented_frame_pts = session
+    assert!(harness.session.seek_commit().is_none());
+    assert!(harness.session.pipeline.video_present_queue_len() <= 2);
+    let presented_frame_pts = harness
+        .session
         .pipeline
         .present_video_frame()
         .map(|frame| frame.pts)
         .expect("seek с минимальной задержкой должен показать свежий frame");
-    assert!(presented_frame_pts < Duration::from_secs(2));
-    assert!(!session.pipeline.has_seek_preroll_fallback_video_frame());
+    assert!(presented_frame_pts < target_position);
+    assert!(
+        !harness
+            .session
+            .pipeline
+            .has_seek_preroll_fallback_video_frame()
+    );
 }
 
 #[test]
 fn final_seek_presents_preroll_frame_without_eof_fallback_wait() {
-    let mut session = PlayerSession::new();
-    install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
-    let fake_decoder = SharedFakeVideoDecoderThread::new();
-    session
-        .pipeline
-        .set_video_decoder_thread(fake_decoder.clone());
+    let target_position = Duration::from_secs(2);
+    let first_landing_position = Duration::from_millis(1_500);
+    let video_track = fake_track(1, TrackKind::Video);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        target_position,
+        first_landing_position,
+        Vec::new(),
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
 
-    session
-        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
-            MediaTime::from_secs(2),
-        )))
-        .unwrap();
-    fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
-        &session,
-        Duration::from_millis(1_500),
-        15,
-    ));
-    fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
-        &session,
-        Duration::from_millis(1_900),
-        19,
-    ));
+    harness.start_final_seek(MediaTime::from_duration(target_position));
+    harness
+        .decoder
+        .push_decoded_frame(decoded_frame_for_current_seek_generation(
+            &harness.session,
+            first_landing_position,
+            15,
+        ));
+    harness
+        .decoder
+        .push_decoded_frame(decoded_frame_for_current_seek_generation(
+            &harness.session,
+            Duration::from_millis(1_900),
+            19,
+        ));
 
-    let tick_result = session.tick(PlayerTickContext::with_config(
+    let tick_result = harness.session.tick(PlayerTickContext::with_config(
         Instant::now(),
         seek_admission_tick_config(2, 4),
     ));
@@ -1247,17 +1397,18 @@ fn final_seek_presents_preroll_frame_without_eof_fallback_wait() {
     assert_eq!(tick_result.decoded_video_frames, 2);
     assert_eq!(tick_result.video_frames_presented, 1);
     assert!(tick_result.dropped_video_frames.is_empty());
-    assert!(fake_decoder.released_handles().is_empty());
+    assert!(harness.decoder.released_handles().is_empty());
     assert_eq!(
-        session
+        harness
+            .session
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(Duration::from_millis(1_500))
+        Some(first_landing_position)
     );
-    assert_eq!(session.pipeline.video_present_queue_len(), 1);
-    assert!(!session.snapshot().timeline.stale_frame);
-    assert!(session.seek_commit().is_none());
+    assert_eq!(harness.session.pipeline.video_present_queue_len(), 1);
+    assert!(!harness.session.snapshot().timeline.stale_frame);
+    assert!(harness.session.seek_commit().is_none());
 }
 
 #[test]
@@ -1382,7 +1533,11 @@ fn no_audio_seek_scheduler_uses_target_before_position_commit() {
 
     session
         .pipeline
-        .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_secs(24), 42));
+        .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_secs(24),
+            42,
+        ));
 
     let tick_config = PlayerTickConfig {
         seek_resume_video_min_ready_frames: 1,
@@ -1416,7 +1571,11 @@ fn final_seek_worker_wakeup_treats_target_frame_as_immediate() {
         .unwrap();
     session
         .pipeline
-        .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_secs(24), 42));
+        .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_secs(24),
+            42,
+        ));
 
     let plan = session.worker_wakeup_plan(
         Instant::now(),
@@ -1488,10 +1647,7 @@ fn playing_seek_waits_for_configured_video_preroll_before_resume() {
             MediaTime::from_secs(6),
         )))
         .unwrap();
-    session
-        .pipeline
-        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
-    session.note_presented_frame_for_seek(Duration::from_secs(6));
+    present_frame_for_current_seek_generation(&mut session, Duration::from_secs(6), 42);
 
     session.finish_seek_commit_if_ready_for_tests(
         Instant::now(),
@@ -1506,10 +1662,18 @@ fn playing_seek_waits_for_configured_video_preroll_before_resume() {
 
     session
         .pipeline
-        .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(6_016), 43));
+        .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_millis(6_016),
+            43,
+        ));
     session
         .pipeline
-        .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(6_033), 44));
+        .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_millis(6_033),
+            44,
+        ));
 
     session.finish_seek_commit_if_ready_for_tests(
         Instant::now(),
@@ -1597,10 +1761,7 @@ fn playing_video_seek_with_audio_waits_for_audio_runtime_after_target_frame() {
             MediaTime::from_secs(6),
         )))
         .unwrap();
-    session
-        .pipeline
-        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
-    session.note_presented_frame_for_seek(Duration::from_secs(6));
+    present_frame_for_current_seek_generation(&mut session, Duration::from_secs(6), 42);
 
     let before_audio_gate_timeout = session
         .seek_commit()
@@ -1645,10 +1806,7 @@ fn playing_final_seek_commits_after_target_frame_and_ready_audio() {
             MediaTime::from_secs(6),
         )))
         .unwrap();
-    session
-        .pipeline
-        .set_present_video_frame(decoded_frame_for_tests(Duration::from_millis(6_016), 42));
-    session.note_presented_frame_for_seek(Duration::from_millis(6_016));
+    present_frame_for_current_seek_generation(&mut session, Duration::from_millis(6_016), 42);
     let seek_commit = session
         .seek_commit()
         .expect("seek должен быть активен до ready audio commit");
@@ -1737,10 +1895,7 @@ fn final_seek_audio_play_error_closes_seek_and_reports_visible_error() {
             MediaTime::from_secs(6),
         )))
         .unwrap();
-    session
-        .pipeline
-        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
-    session.note_presented_frame_for_seek(Duration::from_secs(6));
+    present_frame_for_current_seek_generation(&mut session, Duration::from_secs(6), 42);
     let seek_commit = session
         .seek_commit()
         .expect("seek должен быть активен до audio play error");
@@ -1909,10 +2064,7 @@ fn playing_video_seek_with_audio_soft_fallback_commits_after_target_frame() {
             MediaTime::from_secs(6),
         )))
         .unwrap();
-    session
-        .pipeline
-        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
-    session.note_presented_frame_for_seek(Duration::from_secs(6));
+    present_frame_for_current_seek_generation(&mut session, Duration::from_secs(6), 42);
 
     let seek_commit = session
         .seek_commit()
@@ -1993,10 +2145,7 @@ fn paused_video_audio_seek_does_not_wait_for_audio_runtime() {
             MediaTime::from_secs(6),
         )))
         .unwrap();
-    session
-        .pipeline
-        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(6), 42));
-    session.note_presented_frame_for_seek(Duration::from_secs(6));
+    present_frame_for_current_seek_generation(&mut session, Duration::from_secs(6), 42);
 
     session.finish_seek_commit_if_ready_for_tests(
         Instant::now(),

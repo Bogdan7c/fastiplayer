@@ -320,21 +320,31 @@ impl PlayerSession {
     /// Final seek показывает первый свежий frame текущего generation-а, чтобы click seek
     /// не ждал exact target frame после decode-safe demux preroll.
     #[must_use]
-    pub(crate) fn active_seek_frame_ready_for_scheduler(&self, frame_pts: Duration) -> bool {
+    pub(crate) fn active_seek_frame_ready_for_scheduler(
+        &self,
+        frame_pts: Duration,
+        frame_generation: u64,
+    ) -> bool {
         let Some(seek_commit) = self.seek_runtime.active_commit() else {
             return false;
         };
 
-        self.final_seek_frame_ready_for_scheduler(seek_commit, frame_pts)
+        self.final_seek_frame_ready_for_scheduler(seek_commit, frame_pts, frame_generation)
     }
 
     /// Проверяет, может ли final seek показать queued frame в обход обычного scheduler window.
     fn final_seek_frame_ready_for_scheduler(
         &self,
         seek_commit: SeekCommitState,
-        _frame_pts: Duration,
+        frame_pts: Duration,
+        frame_generation: u64,
     ) -> bool {
-        !self.final_seek_visible_frame_ready(seek_commit)
+        self.seek_landing_frame_matches_active_commit(
+            seek_commit,
+            frame_pts,
+            frame_generation,
+            false,
+        ) && !self.final_seek_visible_frame_ready(seek_commit)
     }
 
     /// Проверяет, можно ли сохранить pre-target frame как EOF fallback текущего seek-а.
@@ -403,12 +413,37 @@ impl PlayerSession {
             return;
         };
 
-        let first_post_seek_presented_frame =
-            self.seek_runtime.record_first_presented_frame(frame_pts);
         let present_frame_generation = self
             .pipeline
             .present_video_frame()
+            .filter(|frame| frame.pts == frame_pts)
             .map(|frame| frame.generation);
+        let Some(present_frame_generation) = present_frame_generation else {
+            return;
+        };
+        // Только что показанный frame уже заменил старый кадр; stale flag очищаем только после guard.
+        if !self.seek_landing_frame_matches_active_commit(
+            seek_commit,
+            frame_pts,
+            present_frame_generation,
+            false,
+        ) {
+            debug!(
+                kind = "seek",
+                target_ms = seek_commit.target_position.as_duration().as_millis(),
+                actual_ms = seek_commit.actual_position.as_duration().as_millis(),
+                active_seek_generation = seek_commit.generation,
+                pipeline_generation = self.pipeline.seek_generation(),
+                frame_pts_ms = frame_pts.as_millis(),
+                frame_generation = present_frame_generation,
+                stale_frame = self.snapshot.timeline.stale_frame,
+                "Presented frame rejected as seek landing frame"
+            );
+            return;
+        }
+
+        let first_post_seek_presented_frame =
+            self.seek_runtime.record_first_presented_frame(frame_pts);
         if first_post_seek_presented_frame {
             debug!(
                 kind = "seek",
@@ -417,7 +452,7 @@ impl PlayerSession {
                 active_seek_generation = seek_commit.generation,
                 pipeline_generation = self.pipeline.seek_generation(),
                 frame_pts_ms = frame_pts.as_millis(),
-                frame_generation = ?present_frame_generation,
+                frame_generation = present_frame_generation,
                 stale_frame = self.snapshot.timeline.stale_frame,
                 "First post-seek presented frame observed"
             );
@@ -619,13 +654,8 @@ impl PlayerSession {
             return true;
         }
 
-        if self.final_seek_visible_frame_ready(seek_commit) {
-            return true;
-        }
-
         let target_position = seek_commit.target_position.as_duration();
-        let target_frame_presented = self.pipeline.present_video_frame_covers(target_position)
-            && !self.snapshot.timeline.stale_frame;
+        let landing_frame_presented = self.seek_presented_frame_ready(seek_commit);
         let eof_fallback_presented =
             self.seek_eof_fallback_video_ready(seek_commit, target_position);
 
@@ -633,7 +663,7 @@ impl PlayerSession {
             return true;
         }
 
-        if !target_frame_presented {
+        if !landing_frame_presented {
             return false;
         }
 
@@ -650,19 +680,47 @@ impl PlayerSession {
         }
 
         let target_position = seek_commit.target_position.as_duration();
-        self.pipeline.present_video_frame_covers(target_position)
-            && !self.snapshot.timeline.stale_frame
+        self.current_seek_landing_frame_position(seek_commit)
+            .is_some_and(|frame_position| frame_position >= target_position)
     }
 
     /// Проверяет, что обычный final seek уже показал свежий frame текущего generation-а.
     fn final_seek_visible_frame_ready(&self, seek_commit: SeekCommitState) -> bool {
-        if self.snapshot.timeline.stale_frame || !self.pipeline.has_selected_video_track() {
-            return false;
-        }
-
-        self.pipeline
-            .present_video_frame_pts_for_generation(seek_commit.generation)
+        self.current_seek_landing_frame_position(seek_commit)
             .is_some()
+    }
+
+    /// Проверяет текущий present frame как landing point активного seek-а.
+    fn current_seek_landing_frame_position(
+        &self,
+        seek_commit: SeekCommitState,
+    ) -> Option<Duration> {
+        let present_frame = self.pipeline.present_video_frame()?;
+        self.seek_landing_frame_matches_active_commit(
+            seek_commit,
+            present_frame.pts,
+            present_frame.generation,
+            self.snapshot.timeline.stale_frame,
+        )
+        .then_some(present_frame.pts)
+    }
+
+    /// Проверяет player-side invariant для frame-а, который может закрыть seek commit.
+    ///
+    /// `timeline_stale` относится к read-only проверкам уже текущего present frame-а.
+    fn seek_landing_frame_matches_active_commit(
+        &self,
+        seek_commit: SeekCommitState,
+        frame_pts: Duration,
+        frame_generation: u64,
+        timeline_stale: bool,
+    ) -> bool {
+        let actual_position = seek_commit.actual_position.as_duration();
+
+        self.pipeline.has_selected_video_track()
+            && frame_generation == seek_commit.generation
+            && !timeline_stale
+            && frame_pts >= actual_position
     }
 
     /// Классифицирует текущую причину, по которой active seek ещё не закрыл gates.
@@ -747,7 +805,9 @@ impl PlayerSession {
         if self
             .pipeline
             .front_queued_video_frame()
-            .is_some_and(|frame| self.active_seek_frame_ready_for_scheduler(frame.pts))
+            .is_some_and(|frame| {
+                self.active_seek_frame_ready_for_scheduler(frame.pts, frame.generation)
+            })
         {
             return SeekProgressBlocker::ReadyForScheduler;
         }
@@ -784,7 +844,14 @@ impl PlayerSession {
         let queued_ready_frames = self
             .pipeline
             .queued_video_frames()
-            .filter(|frame| frame.pts >= target_position)
+            .filter(|frame| {
+                self.seek_landing_frame_matches_active_commit(
+                    seek_commit,
+                    frame.pts,
+                    frame.generation,
+                    false,
+                ) && frame.pts >= target_position
+            })
             .count();
 
         usize::from(current_frame_ready) + queued_ready_frames
@@ -862,10 +929,8 @@ impl PlayerSession {
         let frame_position = self
             .seek_runtime
             .first_presented_frame_position_for_generation(seek_commit.generation)
-            .or_else(|| {
-                self.pipeline
-                    .present_video_frame_pts_for_generation(seek_commit.generation)
-            })?;
+            .filter(|frame_position| *frame_position >= seek_commit.actual_position.as_duration())
+            .or_else(|| self.current_seek_landing_frame_position(seek_commit))?;
         let target_position = seek_commit.target_position.as_duration();
 
         (frame_position < target_position).then_some(frame_position)
