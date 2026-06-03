@@ -12,6 +12,7 @@ fn h264_mp4_and_mkv_tracks_expose_avcc_codec_private() -> Result<()> {
         "720p_baseline_nobframes.mp4",
         "<MEDIA_DIR>/h264-720p-main-bframes.mp4",
         "<MEDIA_DIR>/h264-720p-high-bframes-aac.mp4",
+        "<MEDIA_DIR>/h264-4k30-bframes.mp4",
         "<MEDIA_DIR>/h264-720p-high-bframes-aac.mkv",
     ] {
         let mut demuxer = open_h264_fixture(fixture_name)?;
@@ -92,6 +93,41 @@ fn h264_mp4_bframes_expose_presentation_pts_and_decode_dts() -> Result<()> {
     assert!(
         duration_sequence_is_monotonic(&decode_timestamps),
         "MP4 B-frame decode timestamps must remain monotonic in demux packet order"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn h264_waterfall_mp4_signed_ctts_v0_offsets_do_not_wrap_pts() -> Result<()> {
+    let mut demuxer = open_h264_fixture("<MEDIA_DIR>/h264-4k30-bframes.mp4")?;
+    let video_track = first_h264_video_track(&mut demuxer)
+        .context("waterfall MP4: expected H.264 video track")?;
+    let video_packets = collect_video_packets(&mut demuxer, video_track.id, 24)
+        .context("waterfall MP4: collect video packets")?;
+
+    assert!(
+        video_packets.iter().any(|packet| packet.dts.is_some()),
+        "waterfall MP4 B-frame packets must carry separate DTS"
+    );
+
+    assert!(
+        video_packets
+            .iter()
+            .all(|packet| packet.pts < Duration::from_secs(2)),
+        "waterfall MP4 ctts v0 signed offsets must not wrap PTS by 2^32 timebase units"
+    );
+
+    let presentation_pts = packet_pts_sequence(&video_packets);
+    assert!(
+        duration_sequence_has_backward_step(&presentation_pts),
+        "waterfall MP4 packet PTS must preserve B-frame presentation order"
+    );
+
+    let decode_timestamps = packet_decode_timestamp_sequence(&video_packets);
+    assert!(
+        duration_sequence_is_monotonic(&decode_timestamps),
+        "waterfall MP4 decode timestamps must remain monotonic in packet order"
     );
 
     Ok(())

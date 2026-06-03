@@ -186,6 +186,38 @@ fn h264_stream_config_uses_track_codec_private_and_metadata() {
 }
 
 #[test]
+fn h264_stream_config_accepts_zeroed_avcc_reserved_bits() {
+    let mut session = PlayerSession::new();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    let video_track_id = TrackId::new(18);
+    let codec_private = h264_avcc_codec_private_with_zeroed_reserved_bits();
+    let mut h264_track = h264_track_with_avcc(video_track_id.get());
+    h264_track.codec_private = Some(codec_private.clone());
+    install_tracks_for_capability_selection(&mut session, vec![h264_track]);
+    session
+        .pipeline
+        .set_video_decoder_thread(fake_decoder.clone());
+
+    session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
+        .expect("H.264 avcC с zeroed reserved bits должен сохранять AVCC packetization");
+
+    let config = fake_decoder
+        .stream_config()
+        .expect("H.264 selection должен сконфигурировать fake decoder");
+
+    assert_eq!(config.codec_private, Some(codec_private));
+    match config.packetization {
+        Some(video_core::VideoStreamPacketization::H264(
+            codec_core::H264Packetization::AvccLengthPrefixed { nal_length_size },
+        )) => assert_eq!(nal_length_size.get(), 4),
+        unexpected_packetization => {
+            panic!("expected AVCC H.264 packetization, got {unexpected_packetization:?}");
+        }
+    }
+}
+
+#[test]
 fn fake_backend_accepts_vp9_h264_vp9_switch_without_restart() {
     let mut session = PlayerSession::new();
     let fake_decoder = SharedFakeVideoDecoderThread::new();
@@ -401,5 +433,11 @@ fn h264_track_with_avcc(track_id: u32) -> TrackInfo {
 fn h264_avcc_codec_private() -> Bytes {
     Bytes::from_static(&[
         1, 0x42, 0xe0, 0x1f, 0xff, 0xe1, 0x00, 0x04, 0x67, 0x42, 0xe0, 0x1f, 0x01, 0x00, 0x01, 0x68,
+    ])
+}
+
+fn h264_avcc_codec_private_with_zeroed_reserved_bits() -> Bytes {
+    Bytes::from_static(&[
+        1, 0x42, 0xe0, 0x1f, 0x03, 0x01, 0x00, 0x04, 0x67, 0x42, 0xe0, 0x1f, 0x01, 0x00, 0x01, 0x68,
     ])
 }

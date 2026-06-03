@@ -8,10 +8,7 @@ use crate::{
 };
 
 const AVC_DECODER_CONFIGURATION_RECORD_VERSION: u8 = 1;
-const AVC_LENGTH_SIZE_RESERVED_MASK: u8 = 0b1111_1100;
-const AVC_LENGTH_SIZE_RESERVED_VALUE: u8 = 0b1111_1100;
-const AVC_SPS_RESERVED_MASK: u8 = 0b1110_0000;
-const AVC_SPS_RESERVED_VALUE: u8 = 0b1110_0000;
+const AVC_LENGTH_SIZE_MINUS_ONE_MASK: u8 = 0b0000_0011;
 const AVC_SPS_COUNT_MASK: u8 = 0b0001_1111;
 const H264_START_CODE_3: &[u8] = &[0x00, 0x00, 0x01];
 const H264_START_CODE_4: &[u8] = &[0x00, 0x00, 0x00, 0x01];
@@ -674,15 +671,11 @@ pub fn parse_avc_decoder_configuration_record(
     }
 
     let length_size_byte = record_bytes[4];
-    if length_size_byte & AVC_LENGTH_SIZE_RESERVED_MASK != AVC_LENGTH_SIZE_RESERVED_VALUE {
-        return Err(AvcDecoderConfigurationRecordError::InvalidReservedBits {
-            field: "lengthSizeMinusOne",
-            value: length_size_byte,
-            expected_masked_value: AVC_LENGTH_SIZE_RESERVED_VALUE,
-        });
-    }
+    let nal_length_size_minus_one = length_size_byte & AVC_LENGTH_SIZE_MINUS_ONE_MASK;
+    // Некоторые MP4 muxer-ы зануляют reserved bits в `avcC`; полезную семантику
+    // несут только младшие два бита, поэтому не отвергаем воспроизводимый stream.
     let nal_length_size =
-        H264NalLengthSize::new((length_size_byte & 0b11) + 1).map_err(|error| {
+        H264NalLengthSize::new(nal_length_size_minus_one + 1).map_err(|error| {
             let H264PacketizationError::UnsupportedNalLengthSize { nal_length_size } = error else {
                 unreachable!("H264NalLengthSize::new возвращает только UnsupportedNalLengthSize");
             };
@@ -690,13 +683,6 @@ pub fn parse_avc_decoder_configuration_record(
         })?;
 
     let sps_count_byte = record_bytes[5];
-    if sps_count_byte & AVC_SPS_RESERVED_MASK != AVC_SPS_RESERVED_VALUE {
-        return Err(AvcDecoderConfigurationRecordError::InvalidReservedBits {
-            field: "numOfSequenceParameterSets",
-            value: sps_count_byte,
-            expected_masked_value: AVC_SPS_RESERVED_VALUE,
-        });
-    }
     let sps_count = usize::from(sps_count_byte & AVC_SPS_COUNT_MASK);
     if sps_count == 0 {
         return Err(AvcDecoderConfigurationRecordError::MissingSequenceParameterSet);
@@ -1653,9 +1639,10 @@ mod tests {
     };
 
     use super::{
-        H264ByteStreamError, H264NalLengthSize, H264Packetization, H264ParameterSetInjection,
-        H264SpsError, h264_access_unit_to_annex_b, h264_access_unit_to_annex_b_into,
-        h264_nal_units, h264_sps_metadata_from_avc_decoder_configuration_record,
+        AVC_LENGTH_SIZE_MINUS_ONE_MASK, AVC_SPS_COUNT_MASK, H264ByteStreamError, H264NalLengthSize,
+        H264Packetization, H264ParameterSetInjection, H264SpsError, h264_access_unit_to_annex_b,
+        h264_access_unit_to_annex_b_into, h264_nal_units,
+        h264_sps_metadata_from_avc_decoder_configuration_record,
         parse_avc_decoder_configuration_record, parse_h264_sps_metadata,
         probe_h264_packet_keyframe,
     };
@@ -1763,6 +1750,28 @@ mod tests {
                 std::slice::from_ref(&picture_parameter_set)
             );
         }
+    }
+
+    #[test]
+    fn avcc_parser_accepts_zeroed_reserved_bits_from_noncanonical_muxers() {
+        let sequence_parameter_set = constrained_baseline_sps();
+        let picture_parameter_set = pps();
+        let mut record_bytes = avcc(4, &sequence_parameter_set, &picture_parameter_set);
+
+        record_bytes[4] &= AVC_LENGTH_SIZE_MINUS_ONE_MASK;
+        record_bytes[5] &= AVC_SPS_COUNT_MASK;
+        let record = parse_avc_decoder_configuration_record(&record_bytes)
+            .expect("avcC с zeroed reserved bits должен разбираться по значимым битам");
+
+        assert_eq!(record.nal_length_size, H264NalLengthSize::FOUR);
+        assert_eq!(
+            record.sequence_parameter_sets(),
+            std::slice::from_ref(&sequence_parameter_set)
+        );
+        assert_eq!(
+            record.picture_parameter_sets(),
+            std::slice::from_ref(&picture_parameter_set)
+        );
     }
 
     #[test]
