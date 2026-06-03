@@ -107,9 +107,9 @@ impl TkhdDisplayMatrix {
 
         match rotation_terms {
             (MATRIX_FIXED_ONE, 0, 0, MATRIX_FIXED_ONE) => Some(0),
-            (0, MATRIX_FIXED_NEG_ONE, MATRIX_FIXED_ONE, 0) => Some(90),
+            (0, MATRIX_FIXED_ONE, MATRIX_FIXED_NEG_ONE, 0) => Some(90),
             (MATRIX_FIXED_NEG_ONE, 0, 0, MATRIX_FIXED_NEG_ONE) => Some(180),
-            (0, MATRIX_FIXED_ONE, MATRIX_FIXED_NEG_ONE, 0) => Some(270),
+            (0, MATRIX_FIXED_NEG_ONE, MATRIX_FIXED_ONE, 0) => Some(270),
             _ => None,
         }
     }
@@ -171,11 +171,24 @@ mod tests {
     use super::{MATRIX_FIXED_NEG_ONE, MATRIX_FIXED_ONE, TkhdDisplayMatrix};
 
     #[test]
-    fn display_matrix_recognizes_android_portrait_rotation() {
+    fn display_matrix_recognizes_android_portrait_rotation_like_ffmpeg_autorotate() {
         let matrix = TkhdDisplayMatrix {
             a: 0,
             b: MATRIX_FIXED_ONE,
             c: MATRIX_FIXED_NEG_ONE,
+            d: 0,
+            ..TkhdDisplayMatrix::default()
+        };
+
+        assert_eq!(matrix.quarter_turn_clockwise_degrees(), Some(90));
+    }
+
+    #[test]
+    fn display_matrix_recognizes_inverse_portrait_rotation() {
+        let matrix = TkhdDisplayMatrix {
+            a: 0,
+            b: MATRIX_FIXED_NEG_ONE,
+            c: MATRIX_FIXED_ONE,
             d: 0,
             ..TkhdDisplayMatrix::default()
         };
