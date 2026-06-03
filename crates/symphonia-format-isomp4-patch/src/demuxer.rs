@@ -15,7 +15,10 @@ use symphonia_core::formats::prelude::*;
 use symphonia_core::formats::probe::{ProbeFormatData, ProbeableFormat, Score, Scoreable};
 use symphonia_core::formats::well_known::FORMAT_ID_ISOMP4;
 use symphonia_core::io::*;
-use symphonia_core::meta::{Metadata, MetadataLog};
+use symphonia_core::meta::well_known::METADATA_ID_ISOMP4;
+use symphonia_core::meta::{
+    Metadata, MetadataBuilder, MetadataInfo, MetadataLog, PerTrackMetadataBuilder, Tag,
+};
 use symphonia_core::packet::PacketBuilder;
 use symphonia_core::units::Time;
 
@@ -35,6 +38,15 @@ const ISOMP4_FORMAT_INFO: FormatInfo = FormatInfo {
     short_name: "isomp4",
     long_name: "ISO Base Media File Format",
 };
+
+const ISOMP4_METADATA_INFO: MetadataInfo = MetadataInfo {
+    metadata: METADATA_ID_ISOMP4,
+    short_name: "isomp4",
+    long_name: "ISO Base Media File Format",
+};
+
+const RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG: &str =
+    "rustiplayer.display_orientation.clockwise_degrees";
 
 pub struct TrackState {
     /// The track number.
@@ -294,6 +306,7 @@ impl<'s> IsoMp4Reader<'s> {
         if let Some(rev) = moov.take_metadata() {
             metadata.push(rev);
         }
+        append_track_display_orientation_metadata(&mut metadata, &moov.traks);
 
         // Create a track and track state for each Track (trak) atom.
         let mut tracks = Vec::with_capacity(moov.traks.len());
@@ -596,6 +609,39 @@ impl<'s> IsoMp4Reader<'s> {
             required_ts: ts,
             actual_ts,
         })
+    }
+}
+
+/// Публикует распознанный `tkhd` display matrix как per-track metadata.
+///
+/// Symphonia 0.6 `Track`/`VideoCodecParameters` не имеют поля для display transform,
+/// поэтому локальный MP4 patch передаёт только нормализованный clockwise quarter-turn tag.
+fn append_track_display_orientation_metadata(metadata: &mut MetadataLog, traks: &[TrakAtom]) {
+    let mut metadata_builder = MetadataBuilder::new(ISOMP4_METADATA_INFO);
+    let mut has_orientation_metadata = false;
+
+    for trak in traks {
+        let Some(clockwise_degrees) = trak.tkhd.display_matrix.quarter_turn_clockwise_degrees()
+        else {
+            continue;
+        };
+
+        if clockwise_degrees == 0 {
+            continue;
+        }
+
+        let mut track_metadata_builder = PerTrackMetadataBuilder::new(u64::from(trak.tkhd.id));
+        track_metadata_builder.add_tag(Tag::new_from_parts(
+            RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG,
+            u64::from(clockwise_degrees),
+            None,
+        ));
+        metadata_builder.add_track(track_metadata_builder.build());
+        has_orientation_metadata = true;
+    }
+
+    if has_orientation_metadata {
+        metadata.push_front(metadata_builder.build());
     }
 }
 

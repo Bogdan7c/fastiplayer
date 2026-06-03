@@ -241,8 +241,14 @@ fn video_stream_decode_config_from_track(
     track: &TrackInfo,
     requirement: &VideoDecodeRequirement,
 ) -> PlayerResult<VideoStreamDecodeConfig> {
+    let display_orientation = track
+        .video
+        .as_ref()
+        .map(|metadata| metadata.orientation)
+        .unwrap_or_default();
     let mut config = VideoStreamDecodeConfig::from_requirement(track.id, requirement)
-        .with_codec_private(track.codec_private.clone());
+        .with_codec_private(track.codec_private.clone())
+        .with_display_orientation(display_orientation);
 
     if requirement.codec == VideoCodec::H264 {
         config = config.with_packetization(h264_packetization_from_track(track)?);
@@ -396,6 +402,7 @@ fn log_selected_video_track_metadata(
         bit_depth = ?video_metadata.bit_depth,
         chroma = ?video_metadata.chroma,
         color = ?video_metadata.color,
+        display_orientation = %video_metadata.orientation,
         requirement = ?active_requirement,
         "Video track metadata resolved from container"
     );

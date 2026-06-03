@@ -2396,6 +2396,7 @@ mod tests {
             height: 360,
             render_width: 640,
             render_height: 360,
+            display_orientation: codec_core::VideoDisplayOrientation::Identity,
             color: VideoColorMetadata::sdr_bt709_limited(),
             resource_handle: FrameResourceHandle(handle_id),
             diagnostics: video_core::VideoFrameDiagnostics::default(),

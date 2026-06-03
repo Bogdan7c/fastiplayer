@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use bytes::Bytes;
-use codec_core::{Av1Profile, H264Profile, H265Profile, VideoProfile, Vp9Profile};
+use codec_core::{
+    Av1Profile, H264Profile, H265Profile, VideoDisplayOrientation, VideoProfile, Vp9Profile,
+};
 use media_core::{TrackId, TrackInfo, TrackKind, VideoTrackMetadata};
 use symphonia::core::codecs::audio::well_known as audio_codec;
 use symphonia::core::codecs::audio::{AudioCodecId, CODEC_ID_NULL_AUDIO};
@@ -119,9 +121,19 @@ pub(crate) struct TrackMapping {
 }
 
 /// Собирает public track metadata и private lookup map из Symphonia track list.
+#[cfg(test)]
 pub(crate) fn map_tracks(
     symphonia_tracks: &[Track],
     video_tracks_by_track: &mut HashMap<TrackId, MatroskaVideoTrack>,
+) -> TrackMapping {
+    map_tracks_with_display_orientations(symphonia_tracks, video_tracks_by_track, &HashMap::new())
+}
+
+/// Собирает public track metadata с уже нормализованной display orientation.
+pub(crate) fn map_tracks_with_display_orientations(
+    symphonia_tracks: &[Track],
+    video_tracks_by_track: &mut HashMap<TrackId, MatroskaVideoTrack>,
+    display_orientations_by_track: &HashMap<TrackId, VideoDisplayOrientation>,
 ) -> TrackMapping {
     let mut tracks = Vec::new();
     let mut track_map = HashMap::new();
@@ -135,9 +147,18 @@ pub(crate) fn map_tracks(
             video_fallback_candidate_count,
             video_tracks_by_track,
         );
+        let display_orientation = display_orientations_by_track
+            .get(&TrackId::new(track.id))
+            .copied()
+            .unwrap_or_default();
         let video_metadata_source = video_metadata_source(track, matroska_video_track.as_ref());
         let track_entry = build_track_entry(track, matroska_video_track.as_ref());
-        if let Some(track_info) = build_track_info(track, &track_entry, matroska_video_track) {
+        if let Some(track_info) = build_track_info(
+            track,
+            &track_entry,
+            matroska_video_track,
+            display_orientation,
+        ) {
             log_supported_track_metadata(track, &track_entry, &track_info, video_metadata_source);
             tracks.push(track_info);
         } else {
@@ -301,6 +322,7 @@ fn build_track_info(
     track: &Track,
     track_entry: &TrackEntry,
     matroska_video_track: Option<MatroskaVideoTrack>,
+    display_orientation: VideoDisplayOrientation,
 ) -> Option<TrackInfo> {
     let kind = track_entry.supported_kind()?;
     let duration = track_entry
@@ -319,6 +341,7 @@ fn build_track_info(
             merge_video_metadata(
                 video_metadata_from_symphonia_track(track),
                 matroska_video_track.and_then(|video_track| video_track.metadata),
+                display_orientation,
             )
         })
         .flatten();
@@ -386,8 +409,9 @@ fn video_metadata_source(
 fn merge_video_metadata(
     symphonia_metadata: Option<VideoTrackMetadata>,
     matroska_metadata: Option<VideoTrackMetadata>,
+    display_orientation: VideoDisplayOrientation,
 ) -> Option<VideoTrackMetadata> {
-    match (symphonia_metadata, matroska_metadata) {
+    let mut merged_metadata = match (symphonia_metadata, matroska_metadata) {
         (Some(mut primary_metadata), Some(fallback_metadata)) => {
             primary_metadata.coded_width = primary_metadata
                 .coded_width
@@ -399,12 +423,15 @@ fn merge_video_metadata(
             primary_metadata.bit_depth = primary_metadata.bit_depth.or(fallback_metadata.bit_depth);
             primary_metadata.chroma = primary_metadata.chroma.or(fallback_metadata.chroma);
             primary_metadata.color = primary_metadata.color.or(fallback_metadata.color);
-            primary_metadata.into_option()
+            primary_metadata
         }
-        (Some(primary_metadata), None) => primary_metadata.into_option(),
-        (None, Some(fallback_metadata)) => fallback_metadata.into_option(),
-        (None, None) => None,
-    }
+        (Some(primary_metadata), None) => primary_metadata,
+        (None, Some(fallback_metadata)) => fallback_metadata,
+        (None, None) => VideoTrackMetadata::empty(),
+    };
+
+    merged_metadata.orientation = display_orientation;
+    merged_metadata.into_option()
 }
 
 /// Достаёт video track-level metadata, которую Symphonia 0.6 уже отдаёт без Matroska pre-scan-а.
@@ -422,6 +449,7 @@ fn video_metadata_from_symphonia_track(track: &Track) -> Option<VideoTrackMetada
         bit_depth: None,
         chroma: None,
         color: None,
+        orientation: VideoDisplayOrientation::Identity,
     }
     .into_option()
 }
@@ -496,6 +524,7 @@ fn log_supported_track_metadata(
         track_type = ?track.track_type(),
         time_base = ?track.time_base,
         duration = ?track.duration,
+        display_orientation = ?track_info.video.as_ref().map(|metadata| metadata.orientation),
         video_metadata_source = video_metadata_source.as_str(),
         "Symphonia track metadata mapped"
     );
@@ -806,7 +835,7 @@ mod tests {
 
     use codec_core::{
         ColorPrimaries, ColorRange, HdrMetadata, MatrixCoefficients, TransferFunction,
-        VideoColorMetadata, VideoProfile, Vp9Profile,
+        VideoColorMetadata, VideoDisplayOrientation, VideoProfile, Vp9Profile,
     };
     use media_core::{TrackId, TrackKind, VideoTrackMetadata};
     use symphonia::core::codecs::CodecParameters;
@@ -820,7 +849,8 @@ mod tests {
 
     use super::{
         TrackEntryKind, UnsupportedTrackKind, build_track_entry, map_tracks,
-        take_matroska_video_track_for_mapping, tracks_may_need_matroska_video_metadata,
+        map_tracks_with_display_orientations, take_matroska_video_track_for_mapping,
+        tracks_may_need_matroska_video_metadata,
     };
     use crate::matroska_metadata::MatroskaVideoTrack;
 
@@ -930,6 +960,7 @@ mod tests {
             bit_depth: None,
             chroma: None,
             color: None,
+            orientation: VideoDisplayOrientation::Identity,
         }
     }
 
@@ -961,6 +992,7 @@ mod tests {
                     max_frame_average_light_level_nits: Some(400),
                 }),
             )),
+            orientation: VideoDisplayOrientation::Identity,
         }
     }
 
@@ -1155,6 +1187,28 @@ mod tests {
             Some(1080)
         );
         assert!(mapping.track_map.contains_key(&1));
+    }
+
+    #[test]
+    fn map_tracks_preserves_display_orientation_metadata() {
+        let mut metadata_by_track = HashMap::new();
+        let display_orientations_by_track =
+            HashMap::from([(TrackId::new(1), VideoDisplayOrientation::Rotate270Clockwise)]);
+
+        let mapping = map_tracks_with_display_orientations(
+            &[vp9_video_track(1)],
+            &mut metadata_by_track,
+            &display_orientations_by_track,
+        );
+        let video_metadata = mapping.tracks[0]
+            .video
+            .as_ref()
+            .expect("orientation сама по себе является video metadata");
+
+        assert_eq!(
+            video_metadata.orientation,
+            VideoDisplayOrientation::Rotate270Clockwise
+        );
     }
 
     #[test]

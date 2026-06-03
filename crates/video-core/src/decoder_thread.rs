@@ -3,7 +3,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use codec_core::{
     BitDepth, ChromaSubsampling, H264Packetization, VideoCodec, VideoColorMetadata,
-    VideoDecodeRequirement, VideoMemoryContract, VideoProfile, VideoSurfaceFormat,
+    VideoDecodeRequirement, VideoDisplayOrientation, VideoMemoryContract, VideoProfile,
+    VideoSurfaceFormat,
 };
 use media_core::{TrackId, TrackTimestamp};
 
@@ -42,6 +43,9 @@ pub struct VideoStreamDecodeConfig {
     /// Coded height stream-а, если metadata уже надёжна.
     pub coded_height: Option<u32>,
 
+    /// Display orientation из container track transform.
+    pub display_orientation: VideoDisplayOrientation,
+
     /// Expected decoded surface format на renderer/backend boundary.
     pub surface_format: Option<VideoSurfaceFormat>,
 
@@ -67,6 +71,7 @@ impl VideoStreamDecodeConfig {
             chroma: requirement.chroma,
             coded_width: requirement.width,
             coded_height: requirement.height,
+            display_orientation: VideoDisplayOrientation::Identity,
             surface_format: requirement.surface_format,
             memory_contract: requirement.memory_contract,
             codec_private: None,
@@ -88,6 +93,16 @@ impl VideoStreamDecodeConfig {
         packetization: Option<VideoStreamPacketization>,
     ) -> Self {
         self.packetization = packetization;
+        self
+    }
+
+    /// Добавляет display orientation, которую renderer применит к decoded frames.
+    #[must_use]
+    pub const fn with_display_orientation(
+        mut self,
+        display_orientation: VideoDisplayOrientation,
+    ) -> Self {
+        self.display_orientation = display_orientation;
         self
     }
 }

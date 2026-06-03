@@ -2,7 +2,9 @@ use std::fmt;
 use std::time::Duration;
 
 use bytes::Bytes;
-use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoProfile};
+use codec_core::{
+    BitDepth, ChromaSubsampling, VideoColorMetadata, VideoDisplayOrientation, VideoProfile,
+};
 
 use crate::TimeBase;
 
@@ -106,6 +108,9 @@ pub struct VideoTrackMetadata {
 
     /// Container Colour metadata после нормализации в общую color model.
     pub color: Option<VideoColorMetadata>,
+
+    /// Display orientation из container track transform.
+    pub orientation: VideoDisplayOrientation,
 }
 
 impl VideoTrackMetadata {
@@ -119,6 +124,7 @@ impl VideoTrackMetadata {
             bit_depth: None,
             chroma: None,
             color: None,
+            orientation: VideoDisplayOrientation::Identity,
         }
     }
 
@@ -130,7 +136,8 @@ impl VideoTrackMetadata {
             || self.profile.is_some()
             || self.bit_depth.is_some()
             || self.chroma.is_some()
-            || self.color.is_some();
+            || self.color.is_some()
+            || self.orientation != VideoDisplayOrientation::Identity;
 
         has_metadata.then_some(self)
     }

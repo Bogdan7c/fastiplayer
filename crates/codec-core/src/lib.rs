@@ -33,8 +33,8 @@ pub use model::{
     AudioCodec, BitDepth, ChromaSubsampling, CodecLevel, ColorMetadataConfidence,
     ColorMetadataOrigin, ColorPipelineRequirement, ColorPrimaries, ColorRange, DecodeBackendId,
     FrameTimingContract, HdrMetadata, MatrixCoefficients, SupportedVideoDecodeFormat,
-    TransferFunction, VideoCodec, VideoColorMetadata, VideoDecodeRequirement, VideoMemoryContract,
-    VideoSurfaceFormat, ZeroCopyExportRequirement,
+    TransferFunction, VideoCodec, VideoColorMetadata, VideoDecodeRequirement,
+    VideoDisplayOrientation, VideoMemoryContract, VideoSurfaceFormat, ZeroCopyExportRequirement,
 };
 pub use profile::{Av1Profile, H264Profile, H265Profile, VideoProfile, Vp8Profile, Vp9Profile};
 pub use vp9::{

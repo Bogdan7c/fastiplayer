@@ -178,9 +178,16 @@ impl Nv12VideoRenderer {
         // Letterbox uv_scale/uv_offset считаем в общей функции video::letterbox_scale_and_offset,
         // чтобы NV12 и P010 не расходились в формуле сохранения пропорций.
         let (uv_scale, uv_offset) = super::letterbox_scale_and_offset(frame, self.window_size);
+        let orientation_transform =
+            super::display_orientation_uv_transform(frame.display_orientation);
 
-        let prepared_color_pipeline =
-            prepare_nv12_color_pipeline(frame, &self.color_settings, uv_scale, uv_offset);
+        let prepared_color_pipeline = prepare_nv12_color_pipeline(
+            frame,
+            &self.color_settings,
+            uv_scale,
+            uv_offset,
+            orientation_transform,
+        );
 
         pass_context.queue.write_buffer(
             &self.uniform_buffer,

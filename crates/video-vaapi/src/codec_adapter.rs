@@ -906,6 +906,7 @@ mod tests {
             chroma: None,
             coded_width: Some(1920),
             coded_height: Some(1080),
+            display_orientation: codec_core::VideoDisplayOrientation::Identity,
             surface_format: None,
             memory_contract: VideoMemoryContract::dma_buf_zero_copy(),
             codec_private: None,

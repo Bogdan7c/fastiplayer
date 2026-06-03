@@ -1294,6 +1294,7 @@ pub(super) fn decoded_frame_for_tests(pts: Duration, handle: u64) -> video_core:
         height: 360,
         render_width: 640,
         render_height: 360,
+        display_orientation: codec_core::VideoDisplayOrientation::Identity,
         color: codec_core::VideoColorMetadata::sdr_bt709_limited(),
         resource_handle: video_core::FrameResourceHandle(handle),
         diagnostics: video_core::VideoFrameDiagnostics::default(),

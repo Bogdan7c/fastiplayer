@@ -320,6 +320,71 @@ impl TransferFunction {
     }
 }
 
+/// Display orientation, которую контейнер просит применить при показе кадра.
+///
+/// Значение описывает только поворот на четверть оборота. Decode backend по-прежнему
+/// работает с coded surface, а renderer использует этот intent для выбора UV sampling.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoDisplayOrientation {
+    /// Кадр уже хранится в display orientation.
+    #[default]
+    Identity,
+
+    /// Показать кадр с поворотом на 90 градусов по часовой стрелке.
+    Rotate90Clockwise,
+
+    /// Показать кадр с поворотом на 180 градусов.
+    Rotate180,
+
+    /// Показать кадр с поворотом на 270 градусов по часовой стрелке.
+    Rotate270Clockwise,
+}
+
+impl VideoDisplayOrientation {
+    /// Нормализует clockwise rotation в одну из поддержанных четвертей оборота.
+    #[must_use]
+    pub fn from_clockwise_degrees(clockwise_degrees: i32) -> Option<Self> {
+        match clockwise_degrees.rem_euclid(360) {
+            0 => Some(Self::Identity),
+            90 => Some(Self::Rotate90Clockwise),
+            180 => Some(Self::Rotate180),
+            270 => Some(Self::Rotate270Clockwise),
+            _ => None,
+        }
+    }
+
+    /// Возвращает clockwise rotation в градусах для logs и container adapters.
+    #[must_use]
+    pub const fn clockwise_degrees(self) -> u16 {
+        match self {
+            Self::Identity => 0,
+            Self::Rotate90Clockwise => 90,
+            Self::Rotate180 => 180,
+            Self::Rotate270Clockwise => 270,
+        }
+    }
+
+    /// Возвращает `true`, если display width/height должны поменяться местами.
+    #[must_use]
+    pub const fn swaps_axes(self) -> bool {
+        matches!(self, Self::Rotate90Clockwise | Self::Rotate270Clockwise)
+    }
+}
+
+impl fmt::Display for VideoDisplayOrientation {
+    /// Печатает orientation компактно, без container-specific matrix деталей.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::Identity => "identity",
+            Self::Rotate90Clockwise => "rotate-90-clockwise",
+            Self::Rotate180 => "rotate-180",
+            Self::Rotate270Clockwise => "rotate-270-clockwise",
+        };
+        formatter.write_str(label)
+    }
+}
+
 /// HDR metadata, нужная renderer-у для tone mapping.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1046,6 +1111,21 @@ mod tests {
             Some(AudioCodec::Vorbis)
         );
         assert_eq!(AudioCodec::from_container_codec_id("unknown"), None);
+    }
+
+    #[test]
+    fn display_orientation_normalizes_quarter_turn_degrees() {
+        assert_eq!(
+            VideoDisplayOrientation::from_clockwise_degrees(-90),
+            Some(VideoDisplayOrientation::Rotate270Clockwise)
+        );
+        assert_eq!(
+            VideoDisplayOrientation::from_clockwise_degrees(450),
+            Some(VideoDisplayOrientation::Rotate90Clockwise)
+        );
+        assert_eq!(VideoDisplayOrientation::from_clockwise_degrees(45), None);
+        assert!(VideoDisplayOrientation::Rotate90Clockwise.swaps_axes());
+        assert!(!VideoDisplayOrientation::Rotate180.swaps_axes());
     }
 
     #[test]

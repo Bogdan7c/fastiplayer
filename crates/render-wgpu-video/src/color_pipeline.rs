@@ -76,6 +76,12 @@ pub(crate) struct ColorPipelineUniforms {
     /// Смещение UV для letterbox.
     pub uv_offset: [f32; 2],
 
+    /// Первая строка affine transform из display UV в source texture UV.
+    pub orientation_transform_row0: [f32; 4],
+
+    /// Вторая строка affine transform из display UV в source texture UV.
+    pub orientation_transform_row1: [f32; 4],
+
     /// `x`: Y offset, `y`: Y scale, `z`: U offset, `w`: V offset.
     pub yuv_range: [f32; 4],
 
@@ -121,6 +127,7 @@ pub(crate) fn prepare_nv12_color_pipeline(
     settings: &ColorPipelineSettings,
     uv_scale: [f32; 2],
     uv_offset: [f32; 2],
+    orientation_transform: [[f32; 4]; 2],
 ) -> PreparedColorPipeline {
     let active_path = ActiveColorPath::from_frame(frame, settings);
     let effective_color = effective_shader_color_metadata(&active_path);
@@ -131,6 +138,8 @@ pub(crate) fn prepare_nv12_color_pipeline(
         uniforms: ColorPipelineUniforms {
             uv_scale,
             uv_offset,
+            orientation_transform_row0: orientation_transform[0],
+            orientation_transform_row1: orientation_transform[1],
             yuv_range: color_coefficients.yuv_range,
             chroma_scale: color_coefficients.chroma_scale,
             yuv_to_rgb_row0: color_coefficients.yuv_to_rgb_rows[0],
@@ -251,7 +260,7 @@ mod tests {
     use bytemuck::Zeroable;
     use codec_core::{
         BitDepth, ChromaSubsampling, ColorMetadataConfidence, ColorMetadataOrigin, ColorPrimaries,
-        ColorRange, HdrMetadata, MatrixCoefficients, TransferFunction,
+        ColorRange, HdrMetadata, MatrixCoefficients, TransferFunction, VideoDisplayOrientation,
     };
     use render_core::{
         ActiveColorPathFallback, RenderCapabilities, RenderOutputColorSpace, VideoFrameFormat,
@@ -274,6 +283,7 @@ mod tests {
             coded_height: 1080,
             render_width: 1920,
             render_height: 1080,
+            display_orientation: VideoDisplayOrientation::Identity,
             color,
         }
     }
@@ -285,6 +295,7 @@ mod tests {
             &ColorPipelineSettings::default(),
             [1.0, 1.0],
             [0.0, 0.0],
+            [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]],
         )
     }
 
@@ -353,22 +364,30 @@ mod tests {
         let uniforms = ColorPipelineUniforms::zeroed();
 
         assert_eq!(align_of::<ColorPipelineUniforms>(), 16);
-        assert_eq!(size_of::<ColorPipelineUniforms>(), 160);
+        assert_eq!(size_of::<ColorPipelineUniforms>(), 192);
         assert_eq!(size_of::<ColorPipelineUniforms>() % 16, 0);
         assert_eq!(offset_of!(ColorPipelineUniforms, uv_scale), 0);
         assert_eq!(offset_of!(ColorPipelineUniforms, uv_offset), 8);
-        assert_eq!(offset_of!(ColorPipelineUniforms, yuv_range), 16);
-        assert_eq!(offset_of!(ColorPipelineUniforms, chroma_scale), 32);
-        assert_eq!(offset_of!(ColorPipelineUniforms, yuv_to_rgb_row0), 48);
-        assert_eq!(offset_of!(ColorPipelineUniforms, yuv_to_rgb_row1), 64);
-        assert_eq!(offset_of!(ColorPipelineUniforms, yuv_to_rgb_row2), 80);
+        assert_eq!(
+            offset_of!(ColorPipelineUniforms, orientation_transform_row0),
+            16
+        );
+        assert_eq!(
+            offset_of!(ColorPipelineUniforms, orientation_transform_row1),
+            32
+        );
+        assert_eq!(offset_of!(ColorPipelineUniforms, yuv_range), 48);
+        assert_eq!(offset_of!(ColorPipelineUniforms, chroma_scale), 64);
+        assert_eq!(offset_of!(ColorPipelineUniforms, yuv_to_rgb_row0), 80);
+        assert_eq!(offset_of!(ColorPipelineUniforms, yuv_to_rgb_row1), 96);
+        assert_eq!(offset_of!(ColorPipelineUniforms, yuv_to_rgb_row2), 112);
         assert_eq!(
             offset_of!(ColorPipelineUniforms, saturation_luma_weights),
-            96
+            128
         );
-        assert_eq!(offset_of!(ColorPipelineUniforms, color_adjustment), 112);
-        assert_eq!(offset_of!(ColorPipelineUniforms, rgb_gain), 128);
-        assert_eq!(offset_of!(ColorPipelineUniforms, rgb_offset), 144);
+        assert_eq!(offset_of!(ColorPipelineUniforms, color_adjustment), 144);
+        assert_eq!(offset_of!(ColorPipelineUniforms, rgb_gain), 160);
+        assert_eq!(offset_of!(ColorPipelineUniforms, rgb_offset), 176);
         assert_eq!(
             bytemuck::bytes_of(&uniforms).len() as u64,
             COLOR_PIPELINE_UNIFORM_SIZE

@@ -974,6 +974,7 @@ mod tests {
                 bit_depth: None,
                 chroma: None,
                 color: None,
+                orientation: codec_core::VideoDisplayOrientation::Identity,
             }),
         }
     }

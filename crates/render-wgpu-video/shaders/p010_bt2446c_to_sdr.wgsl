@@ -30,6 +30,8 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 struct HdrColorPipelineUniforms {
     uv_scale: vec2<f32>,
     uv_offset: vec2<f32>,
+    orientation_transform_row0: vec4<f32>,
+    orientation_transform_row1: vec4<f32>,
     shader_mode: vec4<u32>,
     luma_range: vec4<f32>,
     chroma_range: vec4<f32>,
@@ -286,17 +288,26 @@ fn p010_hdr_bt2446c_to_sdr(normalized_yuv: vec3<f32>) -> vec3<f32> {
     return encode_sdr_bt709_output(linear_sdr_rgb);
 }
 
+fn display_uv_to_source_uv(display_uv: vec2<f32>) -> vec2<f32> {
+    let affine_input = vec3<f32>(display_uv, 1.0);
+    let source_x = dot(uniforms.orientation_transform_row0.xyz, affine_input);
+    let source_y = dot(uniforms.orientation_transform_row1.xyz, affine_input);
+
+    return vec2<f32>(source_x, source_y);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let scaled_uv = input.uv * uniforms.uv_scale + uniforms.uv_offset;
+    let display_uv = input.uv * uniforms.uv_scale + uniforms.uv_offset;
 
-    if (scaled_uv.x < 0.0 || scaled_uv.x > 1.0 ||
-        scaled_uv.y < 0.0 || scaled_uv.y > 1.0) {
+    if (display_uv.x < 0.0 || display_uv.x > 1.0 ||
+        display_uv.y < 0.0 || display_uv.y > 1.0) {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
 
-    let sampled_y = textureSample(p010_y_texture, p010_sampler, scaled_uv).r;
-    let sampled_uv = textureSample(p010_uv_texture, p010_sampler, scaled_uv).rg;
+    let source_uv = display_uv_to_source_uv(display_uv);
+    let sampled_y = textureSample(p010_y_texture, p010_sampler, source_uv).r;
+    let sampled_uv = textureSample(p010_uv_texture, p010_sampler, source_uv).rg;
     let normalized_yuv = normalize_p010_sample(sampled_y, sampled_uv.r, sampled_uv.g);
 
     if (uniforms.shader_mode.x == P010_SHADER_MODE_SDR_BT709) {

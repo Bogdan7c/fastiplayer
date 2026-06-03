@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use codec_core::{
     BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction,
-    VideoColorMetadata, VideoDecodeRequirement, VideoSurfaceFormat,
+    VideoColorMetadata, VideoDecodeRequirement, VideoDisplayOrientation, VideoSurfaceFormat,
 };
 use serde::{Deserialize, Serialize};
 
@@ -851,6 +851,10 @@ pub struct RenderableFrame {
     /// Display height после crop/aspect handling.
     pub render_height: u32,
 
+    /// Display orientation, которую renderer применяет при sampling.
+    #[serde(default)]
+    pub display_orientation: VideoDisplayOrientation,
+
     /// Typed color metadata кадра.
     pub color: RenderColorMetadata,
 }
@@ -860,6 +864,26 @@ impl RenderableFrame {
     #[must_use]
     pub const fn has_display_size(&self) -> bool {
         self.render_width > 0 && self.render_height > 0
+    }
+
+    /// Возвращает display width после применения quarter-turn orientation.
+    #[must_use]
+    pub const fn oriented_display_width(&self) -> u32 {
+        if self.display_orientation.swaps_axes() {
+            self.render_height
+        } else {
+            self.render_width
+        }
+    }
+
+    /// Возвращает display height после применения quarter-turn orientation.
+    #[must_use]
+    pub const fn oriented_display_height(&self) -> u32 {
+        if self.display_orientation.swaps_axes() {
+            self.render_width
+        } else {
+            self.render_height
+        }
     }
 }
 
@@ -1155,6 +1179,7 @@ mod tests {
             coded_height: 1080,
             render_width: 1920,
             render_height: 1080,
+            display_orientation: VideoDisplayOrientation::Identity,
             color: VideoColorMetadata::sdr_bt709_limited(),
         };
         let settings = ColorPipelineSettings::default();

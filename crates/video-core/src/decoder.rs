@@ -3,7 +3,9 @@ use std::fmt;
 use std::time::Duration;
 
 use anyhow::ensure;
-use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoSurfaceFormat};
+use codec_core::{
+    BitDepth, ChromaSubsampling, VideoColorMetadata, VideoDisplayOrientation, VideoSurfaceFormat,
+};
 use media_core::Packet;
 
 use crate::FrameResourceHandle;
@@ -45,6 +47,7 @@ pub struct DecodedFrame {
     pub height: u32,
     pub render_width: u32,
     pub render_height: u32,
+    pub display_orientation: VideoDisplayOrientation,
     pub color: VideoColorMetadata,
     pub resource_handle: FrameResourceHandle,
     pub diagnostics: VideoFrameDiagnostics,
@@ -137,6 +140,7 @@ mod tests {
             height: 360,
             render_width: 640,
             render_height: 360,
+            display_orientation: VideoDisplayOrientation::Identity,
             color: VideoColorMetadata::sdr_bt709_limited(),
             resource_handle: FrameResourceHandle(1),
             diagnostics: VideoFrameDiagnostics::default(),
@@ -176,6 +180,7 @@ mod tests {
             height: 360,
             render_width: 640,
             render_height: 360,
+            display_orientation: VideoDisplayOrientation::Identity,
             color: VideoColorMetadata::sdr_bt709_limited(),
             resource_handle: FrameResourceHandle(2),
             diagnostics: VideoFrameDiagnostics::default(),
@@ -200,6 +205,7 @@ mod tests {
             height: 360,
             render_width: 640,
             render_height: 360,
+            display_orientation: VideoDisplayOrientation::Identity,
             color: VideoColorMetadata::sdr_bt709_limited(),
             resource_handle: FrameResourceHandle(3),
             diagnostics: VideoFrameDiagnostics::default(),
@@ -228,6 +234,7 @@ mod tests {
             height: 360,
             render_width: 640,
             render_height: 360,
+            display_orientation: VideoDisplayOrientation::Identity,
             color: VideoColorMetadata::sdr_bt709_limited(),
             resource_handle: FrameResourceHandle(4),
             diagnostics: VideoFrameDiagnostics::default(),

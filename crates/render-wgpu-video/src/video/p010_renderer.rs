@@ -79,6 +79,12 @@ pub(crate) struct HdrColorPipelineUniforms {
     /// Смещение UV для letterbox.
     uv_offset: [f32; 2],
 
+    /// Первая строка affine transform из display UV в source texture UV.
+    orientation_transform_row0: [f32; 4],
+
+    /// Вторая строка affine transform из display UV в source texture UV.
+    orientation_transform_row1: [f32; 4],
+
     /// `x`: shader branch, `y`: transfer mode, `z/w`: reserved для стабильного layout.
     shader_mode: [u32; 4],
 
@@ -400,6 +406,7 @@ fn prepare_p010_render(
     let color_path = select_p010_color_path(frame)?;
     validate_hdr_to_sdr_settings_for_p010(hdr_to_sdr_settings, color_path)?;
     let (uv_scale, uv_offset) = super::letterbox_scale_and_offset(frame, window_size);
+    let orientation_transform = super::display_orientation_uv_transform(frame.display_orientation);
     let active_path =
         active_color_path_for_p010(frame, color_settings, hdr_to_sdr_settings, color_path);
     let range_normalization = p010_range_normalization(frame.color.range)?;
@@ -413,6 +420,8 @@ fn prepare_p010_render(
         uniforms: HdrColorPipelineUniforms {
             uv_scale,
             uv_offset,
+            orientation_transform_row0: orientation_transform[0],
+            orientation_transform_row1: orientation_transform[1],
             shader_mode: [
                 color_path.shader_mode(),
                 p010_transfer_shader_mode(frame.color.transfer),
@@ -777,6 +786,7 @@ mod tests {
     use bytemuck::Zeroable;
     use codec_core::{
         ColorMetadataConfidence, ColorMetadataOrigin, ColorRange, HdrMetadata, MatrixCoefficients,
+        VideoDisplayOrientation,
     };
     use render_core::HdrToneMappingOperator;
 
@@ -794,17 +804,25 @@ mod tests {
         assert_eq!(size_of::<HdrColorPipelineUniforms>() % 16, 0);
         assert_eq!(offset_of!(HdrColorPipelineUniforms, uv_scale), 0);
         assert_eq!(offset_of!(HdrColorPipelineUniforms, uv_offset), 8);
-        assert_eq!(offset_of!(HdrColorPipelineUniforms, shader_mode), 16);
-        assert_eq!(offset_of!(HdrColorPipelineUniforms, luma_range), 32);
-        assert_eq!(offset_of!(HdrColorPipelineUniforms, chroma_range), 48);
-        assert_eq!(offset_of!(HdrColorPipelineUniforms, hdr_reference_nits), 64);
+        assert_eq!(
+            offset_of!(HdrColorPipelineUniforms, orientation_transform_row0),
+            16
+        );
+        assert_eq!(
+            offset_of!(HdrColorPipelineUniforms, orientation_transform_row1),
+            32
+        );
+        assert_eq!(offset_of!(HdrColorPipelineUniforms, shader_mode), 48);
+        assert_eq!(offset_of!(HdrColorPipelineUniforms, luma_range), 64);
+        assert_eq!(offset_of!(HdrColorPipelineUniforms, chroma_range), 80);
+        assert_eq!(offset_of!(HdrColorPipelineUniforms, hdr_reference_nits), 96);
         assert_eq!(
             offset_of!(HdrColorPipelineUniforms, content_light_levels),
-            80
+            112
         );
         assert_eq!(
             offset_of!(HdrColorPipelineUniforms, optional_metadata_markers),
-            96
+            128
         );
         assert_eq!(
             bytemuck::bytes_of(&uniforms).len() as u64,
@@ -1166,12 +1184,12 @@ mod tests {
             "P010 plane 1 must be the interleaved UV texture binding"
         );
         assert!(
-            P010_SHADER_SOURCE.contains("textureSample(p010_y_texture, p010_sampler, scaled_uv).r"),
+            P010_SHADER_SOURCE.contains("textureSample(p010_y_texture, p010_sampler, source_uv).r"),
             "P010 Y must be read from the luma plane"
         );
         assert!(
             P010_SHADER_SOURCE
-                .contains("textureSample(p010_uv_texture, p010_sampler, scaled_uv).rg"),
+                .contains("textureSample(p010_uv_texture, p010_sampler, source_uv).rg"),
             "P010 UV must be read from the chroma plane"
         );
     }
@@ -1260,6 +1278,7 @@ mod tests {
             coded_height: 1080,
             render_width: 1920,
             render_height: 1080,
+            display_orientation: VideoDisplayOrientation::Identity,
             color,
         }
     }

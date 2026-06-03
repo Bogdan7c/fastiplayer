@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
+use codec_core::VideoDisplayOrientation;
 use media_core::{
     DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
     DemuxTrackListUpdate, Demuxer, MediaTime, Packet as OurPacket, PacketKeyframe,
@@ -13,6 +14,7 @@ use media_core::{
 use source_core::{
     ByteSource, CancellationToken, Seekability as SourceSeekability, SourceError, SourceResult,
 };
+use symphonia::core::meta::RawValue;
 use tracing::{debug, info, trace, warn};
 
 use crate::byte_source::ByteSourceMediaSource;
@@ -30,13 +32,18 @@ use crate::symphonia_api::{
     self, FormatReaderBox, Hint, MediaSourceStream, ReadOnlySource, SeekErrorKind, SeekedTo,
     SymphoniaError, SymphoniaSeekMode,
 };
-use crate::track_mapper::{TrackEntry, map_tracks, tracks_may_need_matroska_video_metadata};
+use crate::track_mapper::{
+    TrackEntry, map_tracks_with_display_orientations, tracks_may_need_matroska_video_metadata,
+};
 
 /// Верхняя граница prefix scan-а для seekable byte source-ов.
 const MATROSKA_BYTE_SOURCE_SCAN_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Более короткая граница для unseekable stream, чтобы open не ждал большой network prefix.
 const MATROSKA_STREAM_SCAN_LIMIT_BYTES: usize = 256 * 1024;
+
+const RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG: &str =
+    "rustiplayer.display_orientation.clockwise_degrees";
 
 /// Лимит повторов для восстановления before-or-at-target semantics после backend overshoot.
 const DECODE_POINT_BEFORE_MAX_RETRIES: usize = 6;
@@ -257,7 +264,7 @@ impl SymphoniaDemuxer {
         options: DemuxerOptions,
     ) -> Result<Self, DemuxError> {
         let symphonia_metadata = summarize_symphonia_format_metadata(&mut format);
-        let track_state = track_state_from_format_reader(&format, &video_tracks_by_track);
+        let track_state = track_state_from_format_reader(&mut format, &video_tracks_by_track);
 
         info!(
             source = %label,
@@ -357,8 +364,10 @@ impl SymphoniaDemuxer {
         let mut rebuilt_format =
             symphonia_api::probe_format_reader(&self.probe_hint, media_source_stream)?;
         let symphonia_metadata = summarize_symphonia_format_metadata(&mut rebuilt_format);
-        let track_state =
-            track_state_from_format_reader(&rebuilt_format, &self.matroska_video_tracks_by_track);
+        let track_state = track_state_from_format_reader(
+            &mut rebuilt_format,
+            &self.matroska_video_tracks_by_track,
+        );
         let rebuilt_snapshot = track_layout_snapshot(&track_state.tracks, track_state.duration);
 
         if track_state.tracks != previous_tracks || track_state.duration != previous_duration {
@@ -511,13 +520,80 @@ fn summarize_symphonia_format_metadata(
     }
 }
 
+/// Достаёт display orientation, которую MP4 patch публикует как per-track metadata.
+fn display_orientations_from_metadata(
+    format: &mut FormatReaderBox<'static>,
+) -> HashMap<TrackId, VideoDisplayOrientation> {
+    let mut orientations_by_track = HashMap::new();
+    let metadata = format.metadata();
+    let Some(revision) = metadata.current() else {
+        return orientations_by_track;
+    };
+
+    for per_track_metadata in &revision.per_track {
+        for tag in &per_track_metadata.metadata.tags {
+            if tag.raw.key != RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG {
+                continue;
+            }
+
+            let Some(clockwise_degrees) =
+                display_orientation_degrees_from_raw_value(&tag.raw.value)
+            else {
+                debug!(
+                    track_id = per_track_metadata.track_id,
+                    value = %tag.raw.value,
+                    "Display orientation metadata has unsupported value type"
+                );
+                continue;
+            };
+
+            let Some(display_orientation) =
+                VideoDisplayOrientation::from_clockwise_degrees(clockwise_degrees)
+            else {
+                debug!(
+                    track_id = per_track_metadata.track_id,
+                    clockwise_degrees,
+                    "Display orientation metadata is not a supported quarter-turn"
+                );
+                continue;
+            };
+
+            let Ok(raw_track_id) = u32::try_from(per_track_metadata.track_id) else {
+                debug!(
+                    track_id = per_track_metadata.track_id,
+                    "Display orientation metadata track id does not fit media-core TrackId"
+                );
+                continue;
+            };
+
+            orientations_by_track.insert(TrackId::new(raw_track_id), display_orientation);
+        }
+    }
+
+    orientations_by_track
+}
+
+/// Нормализует raw Symphonia metadata value в signed clockwise degrees.
+fn display_orientation_degrees_from_raw_value(raw_value: &RawValue) -> Option<i32> {
+    match raw_value {
+        RawValue::SignedInt(value) => i32::try_from(*value).ok(),
+        RawValue::UnsignedInt(value) => i32::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
 /// Строит neutral track state из текущего Symphonia reader-а без изменения public boundary.
 fn track_state_from_format_reader(
-    format: &FormatReaderBox<'static>,
+    format: &mut FormatReaderBox<'static>,
     video_tracks_by_track: &HashMap<TrackId, MatroskaVideoTrack>,
 ) -> SymphoniaTrackState {
     let mut video_tracks_for_mapping = video_tracks_by_track.clone();
-    let track_mapping = map_tracks(format.tracks(), &mut video_tracks_for_mapping);
+    let display_orientations_by_track = display_orientations_from_metadata(format);
+    let track_mapping = map_tracks_with_display_orientations(
+        format.tracks(),
+        &mut video_tracks_for_mapping,
+        &display_orientations_by_track,
+    );
     let media_info_duration = media_info_duration(format.media_info());
     let duration = track_mapping.duration.or(media_info_duration);
 
@@ -1656,6 +1732,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    use codec_core::VideoDisplayOrientation;
     use media_core::{
         DemuxReadEvent, DemuxSeekRequest, DemuxSeekability, DemuxTrackListUpdate, Demuxer,
         MediaDemuxError, PacketKeyframe, TimelineNotSeekableReason, TrackId, TrackKind,
@@ -1673,14 +1750,18 @@ mod tests {
         FORMAT_ID_NULL, FormatInfo, FormatReader, MediaInfo, SeekMode, SeekTo, SeekedTo, Track,
     };
     use symphonia::core::io::MediaSourceStream;
-    use symphonia::core::meta::{Metadata, MetadataLog};
+    use symphonia::core::meta::{
+        METADATA_ID_NULL, Metadata, MetadataBuilder, MetadataInfo, MetadataLog,
+        PerTrackMetadataBuilder, Tag,
+    };
     use symphonia::core::packet::Packet;
     use symphonia::core::units::{Duration as SymphoniaDuration, TimeBase, Timestamp};
 
     use super::{
         DECODE_POINT_BEFORE_MAX_RETRIES, DecodePointBeforeVerificationIssue,
         DecodePointBeforeVideoPacket, MATROSKA_STREAM_SCAN_LIMIT_BYTES,
-        MatroskaVideoMetadataScanDecision, SymphoniaDemuxer, decide_matroska_video_metadata_scan,
+        MatroskaVideoMetadataScanDecision, RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG,
+        SymphoniaDemuxer, decide_matroska_video_metadata_scan,
         decode_point_before_retry_timestamp_for_issue, read_stream_prefix,
     };
     use crate::error::DemuxError;
@@ -1689,6 +1770,11 @@ mod tests {
 
     const MAX_UNIT_EVENTS_BEFORE_EOF: usize = 16_384;
     const MAX_UNIT_EVENTS_AFTER_SEEK: usize = 512;
+    const FAKE_METADATA_INFO: MetadataInfo = MetadataInfo {
+        metadata: METADATA_ID_NULL,
+        short_name: "fake",
+        long_name: "Fake metadata",
+    };
 
     struct FakeFormatReader {
         format_info: FormatInfo,
@@ -1767,6 +1853,24 @@ mod tests {
 
         fn with_media_info(mut self, media_info: MediaInfo) -> Self {
             self.media_info = media_info;
+            self
+        }
+
+        fn with_display_orientation_metadata(
+            mut self,
+            track_id: u32,
+            display_orientation: VideoDisplayOrientation,
+        ) -> Self {
+            let mut track_metadata = PerTrackMetadataBuilder::new(u64::from(track_id));
+            track_metadata.add_tag(Tag::new_from_parts(
+                RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG,
+                u64::from(display_orientation.clockwise_degrees()),
+                None,
+            ));
+
+            let mut metadata = MetadataBuilder::new(FAKE_METADATA_INFO);
+            metadata.add_track(track_metadata.build());
+            self.metadata.push_front(metadata.build());
             self
         }
 
@@ -2232,6 +2336,30 @@ mod tests {
         assert_eq!(demuxer.tracks()[0].duration, None);
         assert_eq!(demuxer.duration(), Some(Duration::from_secs(12)));
         assert_eq!(demuxer.seekability(), DemuxSeekability::Seekable);
+    }
+
+    #[test]
+    fn demuxer_maps_per_track_display_orientation_metadata() {
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_display_orientation_metadata(1, VideoDisplayOrientation::Rotate270Clockwise);
+
+        let demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "video-orientation",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыть video track с orientation metadata");
+        let video_metadata = demuxer.tracks()[0]
+            .video
+            .as_ref()
+            .expect("orientation должна создать video metadata");
+
+        assert_eq!(
+            video_metadata.orientation,
+            VideoDisplayOrientation::Rotate270Clockwise
+        );
     }
 
     #[test]

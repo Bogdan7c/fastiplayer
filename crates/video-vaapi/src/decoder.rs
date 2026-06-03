@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use codec_core::{BitDepth, ChromaSubsampling, VideoCodec, VideoColorMetadata};
+use codec_core::{
+    BitDepth, ChromaSubsampling, VideoCodec, VideoColorMetadata, VideoDisplayOrientation,
+};
 use cros_codecs::libva::{
     VA_RT_FORMAT_YUV420, VA_RT_FORMAT_YUV420_10, VA_RT_FORMAT_YUV420_12, VA_RT_FORMAT_YUV422,
     VA_RT_FORMAT_YUV422_10, VA_RT_FORMAT_YUV422_12, VA_RT_FORMAT_YUV444, VA_RT_FORMAT_YUV444_10,
@@ -470,6 +472,9 @@ pub struct VaapiVideoDecoder {
 
     /// Имя бэкенда для отображения в UI.
     backend_name: &'static str,
+
+    /// Display orientation текущего stream-а; применяется renderer-ом, не decoder-ом.
+    display_orientation: VideoDisplayOrientation,
 }
 
 impl VaapiVideoDecoder {
@@ -547,6 +552,7 @@ impl VaapiVideoDecoder {
             diagnostic_tx,
             p010_boundary_verified_logged: false,
             backend_name,
+            display_orientation: VideoDisplayOrientation::Identity,
         })
     }
 
@@ -608,6 +614,8 @@ impl VaapiVideoDecoder {
 
     /// Переключает active codec adapter под уже валидированный stream config.
     pub(crate) fn configure_stream(&mut self, config: &VideoStreamDecodeConfig) -> Result<()> {
+        self.display_orientation = config.display_orientation;
+
         if self.adapter.codec() == config.codec && config.codec != VideoCodec::H264 {
             return Ok(());
         }
@@ -928,6 +936,7 @@ impl VaapiVideoDecoder {
             height: resolution.height,
             render_width: display_resolution.width,
             render_height: display_resolution.height,
+            display_orientation: self.display_orientation,
             color: VideoColorMetadata::sdr_bt709_limited(),
             resource_handle,
             diagnostics: VideoFrameDiagnostics {
@@ -1237,6 +1246,7 @@ mod tests {
             height: 360,
             render_width: 640,
             render_height: 360,
+            display_orientation: VideoDisplayOrientation::Identity,
             color: VideoColorMetadata::sdr_bt709_limited(),
             resource_handle,
             diagnostics: VideoFrameDiagnostics::default(),

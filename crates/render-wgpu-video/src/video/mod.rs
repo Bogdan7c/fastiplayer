@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail, ensure};
+use codec_core::VideoDisplayOrientation;
 use render_core::{
     ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics,
     RenderableFrame, VideoFrameFormat,
@@ -406,6 +407,7 @@ fn renderable_metadata_from_decoded(
         coded_height: frame.height,
         render_width: frame.render_width,
         render_height: frame.render_height,
+        display_orientation: frame.display_orientation,
         color: frame.color.clone(),
     }
 }
@@ -565,8 +567,9 @@ enum RendererDispatch {
 
 /// Считает letterbox `uv_scale`/`uv_offset` для NV12 и P010 shader-ов.
 ///
-/// Оба shader-а вычисляют `scaled_uv = uv * uv_scale + uv_offset`, где `uv` пробегает
-/// `[0, 1]` по всей цели рендера, а семплы за пределами `[0, 1]` красятся чёрным.
+/// Оба shader-а вычисляют display UV через `uv * uv_scale + uv_offset`, где `uv`
+/// пробегает `[0, 1]` по всей цели рендера, а семплы за пределами `[0, 1]`
+/// красятся чёрным до применения source orientation transform.
 /// Чтобы кадр целиком уместился в окно с сохранением пропорций (letterbox), масштаб
 /// по "лишней" оси должен быть `> 1`: тогда края экрана отображаются в координаты
 /// текстуры за пределами `[0, 1]` и превращаются в чёрные полосы, а смещение
@@ -578,8 +581,9 @@ pub(super) fn letterbox_scale_and_offset(
     frame: &RenderableFrame,
     window_size: (u32, u32),
 ) -> ([f32; 2], [f32; 2]) {
-    // Соотношение сторон кадра по render-размеру (учитывает non-square SAR на этапе decode).
-    let video_aspect = frame.render_width as f32 / frame.render_height.max(1) as f32;
+    // Соотношение сторон кадра после container display orientation.
+    let video_aspect =
+        frame.oriented_display_width() as f32 / frame.oriented_display_height().max(1) as f32;
     // Соотношение сторон цели рендера (всё окно/swapchain).
     let window_aspect = window_size.0 as f32 / window_size.1.max(1) as f32;
 
@@ -591,6 +595,20 @@ pub(super) fn letterbox_scale_and_offset(
         // Видео уже окна (или равно): чёрные полосы слева и справа, масштаб по горизонтали.
         let scale_x = window_aspect / video_aspect;
         ([scale_x, 1.0], [(1.0 - scale_x) * 0.5, 0.0])
+    }
+}
+
+/// Возвращает affine rows для преобразования display UV в source texture UV.
+pub(super) fn display_orientation_uv_transform(
+    orientation: VideoDisplayOrientation,
+) -> [[f32; 4]; 2] {
+    match orientation {
+        VideoDisplayOrientation::Identity => [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]],
+        VideoDisplayOrientation::Rotate90Clockwise => [[0.0, 1.0, 0.0, 0.0], [-1.0, 0.0, 1.0, 0.0]],
+        VideoDisplayOrientation::Rotate180 => [[-1.0, 0.0, 1.0, 0.0], [0.0, -1.0, 1.0, 0.0]],
+        VideoDisplayOrientation::Rotate270Clockwise => {
+            [[0.0, -1.0, 1.0, 0.0], [1.0, 0.0, 0.0, 0.0]]
+        }
     }
 }
 
@@ -794,6 +812,31 @@ mod tests {
     }
 
     #[test]
+    fn letterbox_uses_oriented_display_size_for_rotated_phone_video() {
+        let mut frame = renderable_test_frame(3840, 2160);
+        frame.display_orientation = VideoDisplayOrientation::Rotate270Clockwise;
+
+        let (uv_scale, uv_offset) = letterbox_scale_and_offset(&frame, (1920, 1080));
+
+        assert_eq!(uv_scale[1], 1.0);
+        assert_eq!(uv_offset[1], 0.0);
+        assert!(
+            uv_scale[0] > 1.0,
+            "rotated portrait video should add left/right bars, got scale_x={}",
+            uv_scale[0]
+        );
+    }
+
+    #[test]
+    fn rotate270_clockwise_orientation_maps_display_uv_to_source_uv() {
+        let transform =
+            display_orientation_uv_transform(VideoDisplayOrientation::Rotate270Clockwise);
+
+        assert_eq!(transform[0], [0.0, -1.0, 1.0, 0.0]);
+        assert_eq!(transform[1], [1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
     fn letterbox_matching_aspect_is_identity() {
         // Кадр 16:9 в окне 16:9: ни полос, ни масштабирования.
         let frame = renderable_test_frame(1920, 1080);
@@ -829,6 +872,7 @@ mod tests {
             height: 360,
             render_width: 640,
             render_height: 360,
+            display_orientation: codec_core::VideoDisplayOrientation::Identity,
             color: VideoColorMetadata::sdr_bt709_limited(),
             resource_handle: video_core::FrameResourceHandle(1),
             diagnostics: video_core::VideoFrameDiagnostics::default(),
@@ -847,6 +891,7 @@ mod tests {
             height: 1080,
             render_width: 1920,
             render_height: 1080,
+            display_orientation: codec_core::VideoDisplayOrientation::Identity,
             color: VideoColorMetadata::sdr_bt709_limited(),
             resource_handle: video_core::FrameResourceHandle(7),
             diagnostics: video_core::VideoFrameDiagnostics::default(),
