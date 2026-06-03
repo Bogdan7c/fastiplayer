@@ -35,6 +35,20 @@ resolver = "2"
 # H.264 B-frames в MP4 из-за этого получают decode-order PTS и дергаются при playback.
 "symphonia-format-isomp4:0.6.0" = { path = "crates/symphonia-format-isomp4-patch" }
 
+# Debug/dev H.264 4K60 упирается в CPU-heavy adapter/parser/VAAPI submit path.
+# Эти overrides ускоряют только dev build горячих decode crates и не меняют release profile.
+[profile.dev.package.codec-core]
+opt-level = 3
+
+[profile.dev.package.video-vaapi]
+opt-level = 3
+
+[profile.dev.package.cros-codecs]
+opt-level = 3
+
+[profile.dev.package.cros-libva]
+opt-level = 3
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
