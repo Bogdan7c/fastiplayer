@@ -3,7 +3,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use codec_core::{VideoCodec, parse_avc_decoder_configuration_record};
-use media_core::{DemuxReadEvent, Demuxer, Packet, PacketKeyframe, TrackId, TrackInfo, TrackKind};
+use media_core::{
+    DemuxReadEvent, DemuxSeekRequest, Demuxer, Packet, PacketKeyframe, TrackId, TrackInfo,
+    TrackKind,
+};
 use symphonia_demux::SymphoniaDemuxer;
 
 #[test]
@@ -151,6 +154,44 @@ fn h264_mp4_baseline_without_bframes_keeps_pts_and_dts_aligned() -> Result<()> {
         duration_sequence_is_monotonic(&presentation_pts),
         "no-B-frame MP4 packet PTS should stay monotonic"
     );
+
+    Ok(())
+}
+
+#[test]
+fn h264_bframe_startup_seek_to_zero_accepts_first_decode_point() -> Result<()> {
+    for fixture_name in [
+        "4k30fps/18253473-uhd_3840_2160_30fps.mp4",
+        "4k60fps/LXb3EKWsInQ_2160p60_h264_high_l52_180mbps_bframes_video_only.mp4",
+        "4k60fps/LXb3EKWsInQ_2160p60_h264_main_l52_160mbps_bframes_video_only.mp4",
+    ] {
+        let mut demuxer = open_h264_fixture(fixture_name)?;
+        let video_track = first_h264_video_track(&mut demuxer)
+            .with_context(|| format!("{fixture_name}: expected H.264 video track"))?;
+
+        let seek_result = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::ZERO))
+            .with_context(|| format!("{fixture_name}: seek-to-zero should find decode point"))?;
+        let first_video_packet = collect_video_packets(&mut demuxer, video_track.id, 1)?
+            .into_iter()
+            .next()
+            .with_context(|| format!("{fixture_name}: expected post-seek video packet"))?;
+
+        assert!(
+            seek_result.actual_position.as_duration() <= Duration::from_millis(250),
+            "{fixture_name}: startup actual position should stay near zero"
+        );
+        assert_eq!(
+            seek_result.actual_position.as_duration(),
+            first_video_packet.pts,
+            "{fixture_name}: seek actual should match accepted startup video packet"
+        );
+        assert_eq!(
+            first_video_packet.keyframe,
+            PacketKeyframe::Keyframe,
+            "{fixture_name}: startup packet should be a proven H.264 keyframe"
+        );
+    }
 
     Ok(())
 }

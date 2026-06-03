@@ -1,0 +1,6 @@
+# Symphonia Demux DecodePointBefore Startup
+
+- `DecodePointBefore` verification remains strict for ordinary seeks: the selected video decode-start packet must be at/before the requested target, within accepted preroll, and not a proven non-keyframe.
+- The only accepted after-target exception is startup seek-to-zero. If `requested == 0`, a selected video packet after zero may be accepted only when it is not `PacketKeyframe::NotKeyframe` and its PTS is within `DECODE_POINT_BEFORE_STARTUP_LEAD_TOLERANCE` (currently 250 ms). This handles MP4/H.264 B-frame files where the backend seek operates on nonnegative DTS and can land on the first packet after zero even though the media starts at zero.
+- On this accepted startup path, `seek_result_with_verified_video_packet()` still reports `actual_position` as the accepted packet PTS so player-core seek gates can wait for `frame_pts >= actual_position` instead of an unavailable zero frame.
+- Regression coverage: `crates/symphonia-demux/src/symphonia_demuxer.rs` tests `decode_point_before_seek_accepts_startup_keyframe_after_zero` and `decode_point_before_seek_rejects_startup_keyframe_beyond_lead_window`; real H.264 fixture coverage in `crates/symphonia-demux/tests/h264_fixtures.rs::h264_bframe_startup_seek_to_zero_accepts_first_decode_point` covers the 4k30/4k60 problem assets.

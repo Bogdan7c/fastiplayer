@@ -44,6 +44,13 @@ const DECODE_POINT_BEFORE_MAX_RETRIES: usize = 6;
 /// Минимальный отступ назад, чтобы retry не попал в ту же after-target packet boundary.
 const DECODE_POINT_BEFORE_RETRY_MARGIN: Duration = Duration::from_millis(1);
 
+/// Допустимый lead первого стартового keyframe-а после zero seek.
+///
+/// MP4 с B-frames может иметь первый display keyframe на PTS 0 и отрицательный DTS.
+/// Backend seek по неотрицательной decode timeline тогда возвращает первый packet
+/// после нуля. Окно остаётся маленьким, чтобы не принимать настоящий late seek.
+const DECODE_POINT_BEFORE_STARTUP_LEAD_TOLERANCE: Duration = Duration::from_millis(250);
+
 /// Первый шаг назад для поиска рабочей позиции, когда Symphonia считает in-range цель концом stream-а.
 const IN_RANGE_OUT_OF_RANGE_SEEK_INITIAL_RETRY_OFFSET: Duration = Duration::from_millis(10);
 
@@ -1272,6 +1279,10 @@ fn decode_point_before_packet_issue(
     max_accepted_preroll: Duration,
 ) -> Option<DecodePointBeforeVerificationIssue> {
     if packet.pts > requested_timestamp {
+        if decode_point_before_startup_lead_is_accepted(requested_timestamp, packet) {
+            return None;
+        }
+
         return Some(DecodePointBeforeVerificationIssue::FirstVideoAfterTarget { packet });
     }
 
@@ -1284,6 +1295,16 @@ fn decode_point_before_packet_issue(
     }
 
     None
+}
+
+/// Проверяет единственное допустимое нарушение "packet <= target": старт media после zero seek.
+fn decode_point_before_startup_lead_is_accepted(
+    requested_timestamp: Duration,
+    packet: DecodePointBeforeVideoPacket,
+) -> bool {
+    requested_timestamp.is_zero()
+        && packet.keyframe != PacketKeyframe::NotKeyframe
+        && packet.pts <= DECODE_POINT_BEFORE_STARTUP_LEAD_TOLERANCE
 }
 
 /// Считает retry target для packet-level failure без смешивания разных причин.
@@ -2606,6 +2627,65 @@ mod tests {
         assert_eq!(packet.kind, TrackKind::Video);
         assert_eq!(packet.pts, Duration::from_millis(400));
         assert_eq!(packet.keyframe, PacketKeyframe::Keyframe);
+    }
+
+    #[test]
+    fn decode_point_before_seek_accepts_startup_keyframe_after_zero() {
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_seek_packet_scripts(vec![vec![Ok(small_vp9_keyframe_packet(1, 33))]]);
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "startup-keyframe-after-zero",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+
+        let seek_result = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::ZERO))
+            .expect("стартовый keyframe сразу после zero seek должен приниматься");
+        let packet = demuxer
+            .next_packet()
+            .expect("startup packet должен остаться в prebuffer")
+            .expect("verification не должна терять startup packet");
+
+        assert_eq!(
+            seek_result.actual_position,
+            media_core::MediaTime::from_millis(33)
+        );
+        assert_eq!(packet.kind, TrackKind::Video);
+        assert_eq!(packet.pts, Duration::from_millis(33));
+        assert_eq!(packet.keyframe, PacketKeyframe::Keyframe);
+    }
+
+    #[test]
+    fn decode_point_before_seek_rejects_startup_keyframe_beyond_lead_window() {
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_seek_packet_scripts(vec![vec![Ok(small_vp9_keyframe_packet(1, 500))]]);
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "startup-keyframe-too-late",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+
+        let error = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::ZERO))
+            .expect_err("слишком поздний startup keyframe не должен считаться началом");
+        let demux_error = error
+            .downcast_ref::<DemuxError>()
+            .expect("verification failure должен быть typed DemuxError");
+
+        assert!(matches!(
+            demux_error,
+            DemuxError::DecodePointBeforeVerificationFailed {
+                reason: "first_video_after_target",
+                ..
+            }
+        ));
     }
 
     #[test]

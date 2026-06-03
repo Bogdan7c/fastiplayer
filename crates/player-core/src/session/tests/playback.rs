@@ -184,6 +184,25 @@ fn video_only_autoplay_keeps_present_frame_gate() {
 }
 
 #[test]
+fn video_only_autoplay_accepts_queued_preroll_frame() {
+    let mut session = PlayerSession::new();
+    let video_track = fake_track(1, TrackKind::Video);
+    let video_requirement = VideoDecodeRequirement::new(VideoCodec::Vp9);
+
+    session
+        .pipeline
+        .select_video_track(video_track.id, video_requirement);
+    session.snapshot.selected_tracks.video_track = Some(video_track.id);
+    session.begin_autoplay_preroll().unwrap();
+    session
+        .pipeline
+        .enqueue_queued_video_frame(decoded_frame_for_tests(Duration::from_millis(33), 7));
+
+    assert!(session.finish_autoplay_preroll_if_ready(50.0).unwrap());
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+}
+
+#[test]
 fn selected_audio_without_output_does_not_satisfy_autoplay() {
     let mut session = PlayerSession::new();
     let audio_track_id = TrackId::new(2);

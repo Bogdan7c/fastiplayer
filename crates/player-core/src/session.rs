@@ -482,10 +482,18 @@ impl PlayerSession {
         let audio_ready = self
             .autoplay_audio_readiness(audio_preroll_target_ms)
             .is_ready();
-        let video_ready =
-            !self.pipeline.has_selected_video_track() || self.pipeline.has_present_video_frame();
+        let video_ready = self.autoplay_video_preroll_ready();
 
         audio_ready && video_ready
+    }
+
+    /// Проверяет video gate autoplay-preroll без раскрытия очередей pipeline.
+    fn autoplay_video_preroll_ready(&self) -> bool {
+        if !self.pipeline.has_selected_video_track() {
+            return true;
+        }
+
+        self.pipeline.has_present_video_frame() || !self.pipeline.video_present_queue_is_empty()
     }
 
     /// Переводит playback в `Paused` и останавливает audio output.
