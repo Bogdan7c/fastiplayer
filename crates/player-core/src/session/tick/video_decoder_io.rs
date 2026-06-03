@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use codec_core::{
     VideoCodec, VideoDecodeRequirement, VideoRequirementProbe, VideoRequirementRejection,
-    probe_video_packet_requirement, resolve_video_metadata,
+    probe_video_packet_requirement_with_codec_private, resolve_video_metadata,
     video_requirement_needs_packet_refinement,
 };
 use media_core::{PacketKeyframe, TrackId};
@@ -789,9 +789,10 @@ fn validate_pending_video_packet_before_decode(
 fn video_requirement_from_packet_data(
     codec: VideoCodec,
     packet_data: &[u8],
+    codec_private: Option<&[u8]>,
     container_source: Option<codec_core::VideoMetadataSource>,
 ) -> Result<Option<VideoDecodeRequirement>, PlayerError> {
-    match probe_video_packet_requirement(codec, packet_data) {
+    match probe_video_packet_requirement_with_codec_private(codec, packet_data, codec_private) {
         VideoRequirementProbe::Candidate(candidate) => Ok(Some(
             resolve_video_metadata(codec, container_source, Some(candidate)).requirement,
         )),
@@ -846,6 +847,146 @@ fn video_requirement_from_packet(
     video_requirement_from_packet_data(
         codec,
         &packet.encoded_bytes,
+        session.video_codec_private_for_track(packet.track_id),
         session.video_metadata_source_for_track(packet.track_id),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codec_core::{BitDepth, ChromaSubsampling, H264Profile, VideoProfile, VideoSurfaceFormat};
+    use media_core::{
+        DemuxSeekResult, Demuxer, Packet, TimeBase, TrackInfo, TrackKind, VideoTrackMetadata,
+    };
+
+    #[test]
+    fn h264_packet_refinement_uses_codec_private_for_avcc_packets() {
+        let codec_private = supported_h264_high_avcc_codec_private();
+        let ambiguous_avcc_packet = avcc_packet_with_annex_b_like_length_prefix();
+
+        let false_rejection = video_requirement_from_packet_data(
+            VideoCodec::H264,
+            &ambiguous_avcc_packet,
+            None,
+            None,
+        )
+        .expect_err("без avcC AVCC packet ошибочно выглядит как unsupported SPS");
+        assert_eq!(
+            false_rejection.kind,
+            PlayerErrorKind::UnsupportedVideoProfile
+        );
+
+        let refined_requirement = video_requirement_from_packet_data(
+            VideoCodec::H264,
+            &ambiguous_avcc_packet,
+            Some(&codec_private),
+            None,
+        )
+        .expect("valid avcC должен уточнить H.264 requirement")
+        .expect("valid avcC должен вернуть candidate requirement");
+
+        assert_eq!(
+            refined_requirement.profile,
+            Some(VideoProfile::H264(H264Profile::High))
+        );
+        assert_eq!(refined_requirement.bit_depth, Some(BitDepth::Eight));
+        assert_eq!(refined_requirement.chroma, Some(ChromaSubsampling::Yuv420));
+        assert_eq!(refined_requirement.width, Some(1280));
+        assert_eq!(refined_requirement.height, Some(720));
+        assert_eq!(
+            refined_requirement.surface_format,
+            Some(VideoSurfaceFormat::Nv12)
+        );
+    }
+
+    #[test]
+    fn h264_packet_refinement_reads_codec_private_from_session_track() {
+        let track_id = TrackId::new(42);
+        let codec_private = supported_h264_high_avcc_codec_private();
+        let video_track = h264_video_track(track_id, codec_private.clone());
+        let mut session = PlayerSession::new();
+        session.pipeline.install_opened_media(
+            Box::new(NoopDemuxer {
+                tracks: vec![video_track.clone()],
+            }),
+            None,
+            None,
+            vec![video_track],
+        );
+
+        let packet = PendingVideoPacketProbe {
+            track_id,
+            encoded_bytes: Bytes::from(avcc_packet_with_annex_b_like_length_prefix()),
+        };
+        let refined_requirement = video_requirement_from_packet(&session, &packet)
+            .expect("session track codec_private должен быть передан в H.264 probe")
+            .expect("valid avcC должен вернуть refined requirement");
+
+        assert_eq!(
+            refined_requirement.profile,
+            Some(VideoProfile::H264(H264Profile::High))
+        );
+        assert_eq!(
+            refined_requirement.surface_format,
+            Some(VideoSurfaceFormat::Nv12)
+        );
+    }
+
+    struct NoopDemuxer {
+        tracks: Vec<TrackInfo>,
+    }
+
+    impl Demuxer for NoopDemuxer {
+        fn tracks(&self) -> &[TrackInfo] {
+            &self.tracks
+        }
+
+        fn duration(&self) -> Option<Duration> {
+            Some(Duration::from_secs(1))
+        }
+
+        fn next_packet(&mut self) -> anyhow::Result<Option<Packet>> {
+            Ok(None)
+        }
+
+        fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+            Err(anyhow::anyhow!(
+                "NoopDemuxer не поддерживает seek в этом тесте"
+            ))
+        }
+    }
+
+    fn h264_video_track(track_id: TrackId, codec_private: Vec<u8>) -> TrackInfo {
+        TrackInfo {
+            id: track_id,
+            kind: TrackKind::Video,
+            codec_id: "V_MPEG4/ISO/AVC".to_owned(),
+            codec_private: Some(Bytes::from(codec_private)),
+            time_base: TimeBase::new(1, 1_000),
+            duration: Some(Duration::from_secs(1)),
+            sample_rate: None,
+            channels: None,
+            video: Some(VideoTrackMetadata {
+                coded_width: Some(1280),
+                coded_height: Some(720),
+                profile: Some(VideoProfile::H264(H264Profile::High)),
+                bit_depth: None,
+                chroma: None,
+                color: None,
+            }),
+        }
+    }
+
+    fn supported_h264_high_avcc_codec_private() -> Vec<u8> {
+        vec![
+            0x01, 0x64, 0x00, 0x20, 0xff, 0xe1, 0x00, 0x1b, 0x67, 0x64, 0x00, 0x20, 0xac, 0xd1,
+            0x00, 0x50, 0x05, 0xbb, 0x01, 0x6a, 0x02, 0x02, 0x02, 0x80, 0x00, 0x01, 0xf4, 0x80,
+            0x00, 0xea, 0x60, 0x07, 0x8c, 0x18, 0x89, 0x01, 0x00, 0x04, 0x68, 0xeb, 0x8f, 0x2c,
+        ]
+    }
+
+    fn avcc_packet_with_annex_b_like_length_prefix() -> Vec<u8> {
+        vec![0x00, 0x00, 0x00, 0x01, 0x67, 0x00, 0x00, 0x00, 0x02]
+    }
 }

@@ -214,6 +214,15 @@ impl PlayerSession {
             .and_then(|track| VideoCodec::from_container_codec_id(&track.codec_id))
     }
 
+    /// Возвращает codec private data video track-а для codec-aware packet refinement.
+    pub(super) fn video_codec_private_for_track(&self, track_id: TrackId) -> Option<&[u8]> {
+        self.pipeline
+            .tracks()
+            .iter()
+            .find(|track| track.id == track_id && track.kind == TrackKind::Video)
+            .and_then(|track| track.codec_private.as_deref())
+    }
+
     /// Возвращает container metadata source для active track refinement.
     pub(super) fn video_metadata_source_for_track(
         &self,
