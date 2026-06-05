@@ -28,6 +28,9 @@ pub enum DirectMediaExtension {
     /// ISO BMFF / MP4.
     Mp4,
 
+    /// QuickTime/MOV, тот же ISO BMFF probe path, но с отдельным extension hint.
+    Mov,
+
     /// Matroska.
     Mkv,
 
@@ -41,6 +44,7 @@ impl DirectMediaExtension {
     pub const fn as_extension_hint(self) -> &'static str {
         match self {
             Self::Mp4 => "mp4",
+            Self::Mov => "mov",
             Self::Mkv => "mkv",
             Self::Webm => "webm",
         }
@@ -51,6 +55,10 @@ impl DirectMediaExtension {
     pub fn from_path_extension(extension: &str) -> Option<Self> {
         if extension.eq_ignore_ascii_case("mp4") {
             return Some(Self::Mp4);
+        }
+
+        if extension.eq_ignore_ascii_case("mov") {
+            return Some(Self::Mov);
         }
 
         if extension.eq_ignore_ascii_case("mkv") {
@@ -174,7 +182,7 @@ pub enum DirectMediaUrlUnsupportedReason {
     #[error("http(s) URL не содержит host")]
     MissingHost,
 
-    /// URL path не содержит явного `.mp4`, `.mkv` или `.webm`.
+    /// URL path не содержит явного `.mp4`, `.mov`, `.mkv` или `.webm`.
     #[error("URL path не содержит поддерживаемый media extension")]
     MissingExtension,
 
@@ -743,6 +751,15 @@ mod tests {
             .expect("IP URL с supported extension должен пройти классификацию");
 
         assert_eq!(parsed.extension(), DirectMediaExtension::Mp4);
+    }
+
+    #[test]
+    fn direct_url_accepts_quicktime_mov_as_iso_bmff_extension() {
+        let parsed = parse_direct_media_url("https://media.example.test/camera/ios-hevc-main10-aac-4k60.MOV")
+            .expect("QuickTime .mov должен идти через direct media ISO BMFF path");
+
+        assert_eq!(parsed.extension(), DirectMediaExtension::Mov);
+        assert_eq!(parsed.extension().as_extension_hint(), "mov");
     }
 
     #[test]

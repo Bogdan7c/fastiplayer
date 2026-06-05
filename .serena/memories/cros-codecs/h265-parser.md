@@ -1,0 +1,6 @@
+# cros-codecs H.265 parser
+
+- The vendored `crates/cros-codecs-patch/src/codec/h265/parser.rs` parser is part of the production VAAPI H.265 path even though it lives outside first-party codec-core abstractions.
+- iOS/Dolby Vision profile 8 MOV files can carry Dolby Vision RPU as HEVC NAL type 62. Treat HEVC unspecified NAL types 48..63 as syntactically valid headers; the stateless H.265 decoder should then ignore them through the existing unknown/other NAL path instead of rejecting the whole packet.
+- H.265 slice `num_entry_point_offsets` is stream-dependent and can exceed 32 for 4K/WPP content. `SliceHeader.entry_point_offset_minus1` must stay dynamically sized; do not restore the old fixed `[u32; 32]` storage.
+- Focused parser tests are in the patch crate: `nalu_header_accepts_unspecified_type_62_for_dolby_vision_rpu` and `slice_header_parses_more_than_32_entry_point_offsets`. Because the crate is patched into the workspace but not a normal workspace member, direct isolated tests can be run from a copied `/tmp` crate with `cargo test --manifest-path /tmp/.../cros-codecs-patch/Cargo.toml <test> --lib`.

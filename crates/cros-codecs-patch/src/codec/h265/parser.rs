@@ -111,6 +111,22 @@ pub enum NaluType {
     RsvNvcl45 = 45,
     RsvNvcl46 = 46,
     RsvNvcl47 = 47,
+    Unspec48 = 48,
+    Unspec49 = 49,
+    Unspec50 = 50,
+    Unspec51 = 51,
+    Unspec52 = 52,
+    Unspec53 = 53,
+    Unspec54 = 54,
+    Unspec55 = 55,
+    Unspec56 = 56,
+    Unspec57 = 57,
+    Unspec58 = 58,
+    Unspec59 = 59,
+    Unspec60 = 60,
+    Unspec61 = 61,
+    Unspec62 = 62,
+    Unspec63 = 63,
 }
 
 impl TryFrom<u32> for NaluType {
@@ -166,6 +182,22 @@ impl TryFrom<u32> for NaluType {
             45 => Ok(NaluType::RsvNvcl45),
             46 => Ok(NaluType::RsvNvcl46),
             47 => Ok(NaluType::RsvNvcl47),
+            48 => Ok(NaluType::Unspec48),
+            49 => Ok(NaluType::Unspec49),
+            50 => Ok(NaluType::Unspec50),
+            51 => Ok(NaluType::Unspec51),
+            52 => Ok(NaluType::Unspec52),
+            53 => Ok(NaluType::Unspec53),
+            54 => Ok(NaluType::Unspec54),
+            55 => Ok(NaluType::Unspec55),
+            56 => Ok(NaluType::Unspec56),
+            57 => Ok(NaluType::Unspec57),
+            58 => Ok(NaluType::Unspec58),
+            59 => Ok(NaluType::Unspec59),
+            60 => Ok(NaluType::Unspec60),
+            61 => Ok(NaluType::Unspec61),
+            62 => Ok(NaluType::Unspec62),
+            63 => Ok(NaluType::Unspec63),
             _ => Err(format!("Invalid NaluType {}", value)),
         }
     }
@@ -1708,7 +1740,7 @@ pub struct SliceHeader {
     /// num_entry_point_offsets + 1 subsets, with subset index values ranging
     /// from 0 to num_entry_point_offsets, inclusive. See the specification for
     /// more details.
-    pub entry_point_offset_minus1: [u32; 32],
+    pub entry_point_offset_minus1: Vec<u32>,
     /// Same as NumPicTotalCurr in the specification.
     pub num_pic_total_curr: u32,
     // Size of slice_header() in bits.
@@ -1804,7 +1836,8 @@ impl<'a> Slice<'a> {
             let segment_address = self.header.segment_address;
 
             let offset_len_minus1 = self.header.offset_len_minus1;
-            let entry_point_offset_minus1 = self.header.entry_point_offset_minus1;
+            let entry_point_offset_minus1 =
+                std::mem::take(&mut self.header.entry_point_offset_minus1);
             let num_pic_total_curr = self.header.num_pic_total_curr;
             let header_bit_size = self.header.header_bit_size;
             let n_emulation_prevention_bytes = self.header.n_emulation_prevention_bytes;
@@ -4081,9 +4114,18 @@ impl Parser {
             hdr.num_entry_point_offsets = r.read_ue_max(max)?;
             if hdr.num_entry_point_offsets > 0 {
                 hdr.offset_len_minus1 = r.read_ue_max(31)?;
-                for i in 0..hdr.num_entry_point_offsets as usize {
+                let entry_point_count =
+                    usize::try_from(hdr.num_entry_point_offsets).map_err(|_| {
+                        format!(
+                            "Invalid num_entry_point_offsets {}",
+                            hdr.num_entry_point_offsets
+                        )
+                    })?;
+                hdr.entry_point_offset_minus1.reserve(entry_point_count);
+
+                for _ in 0..entry_point_count {
                     let num_bits = usize::from(hdr.offset_len_minus1 + 1);
-                    hdr.entry_point_offset_minus1[i] = r.read_bits(num_bits)?;
+                    hdr.entry_point_offset_minus1.push(r.read_bits(num_bits)?);
                 }
             }
         }
@@ -4128,7 +4170,9 @@ impl Parser {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
     use std::io::Cursor;
+    use std::rc::Rc;
 
     use crate::codec::h264::nalu::Nalu;
     use crate::codec::h265::parser::Level;
@@ -4204,6 +4248,110 @@ mod tests {
         None
     }
 
+    fn append_bit(bits: &mut Vec<bool>, bit: bool) {
+        bits.push(bit);
+    }
+
+    fn append_bits(bits: &mut Vec<bool>, value: u32, bit_count: u32) {
+        for shift in (0..bit_count).rev() {
+            bits.push(((value >> shift) & 1) != 0);
+        }
+    }
+
+    fn append_unsigned_exp_golomb(bits: &mut Vec<bool>, value: u32) {
+        let code_num = value + 1;
+        let bit_count = u32::BITS - code_num.leading_zeros();
+
+        for _ in 0..bit_count - 1 {
+            bits.push(false);
+        }
+
+        append_bits(bits, code_num, bit_count);
+    }
+
+    fn finish_rbsp(mut bits: Vec<bool>) -> Vec<u8> {
+        bits.push(true);
+
+        while bits.len() % 8 != 0 {
+            bits.push(false);
+        }
+
+        let mut bytes = Vec::with_capacity(bits.len() / 8);
+        for chunk in bits.chunks(8) {
+            let mut byte = 0;
+            for (bit_index, bit) in chunk.iter().enumerate() {
+                if *bit {
+                    byte |= 1 << (7 - bit_index);
+                }
+            }
+            bytes.push(byte);
+        }
+
+        bytes
+    }
+
+    fn synthetic_idr_slice_with_entry_points(entry_point_count: u32) -> Nalu<'static, NaluHeader> {
+        let mut bits = Vec::new();
+        append_bit(&mut bits, true);
+        append_bit(&mut bits, false);
+        append_unsigned_exp_golomb(&mut bits, 0);
+        append_unsigned_exp_golomb(&mut bits, SliceType::I as u32);
+        append_unsigned_exp_golomb(&mut bits, 0);
+        append_unsigned_exp_golomb(&mut bits, entry_point_count);
+        append_unsigned_exp_golomb(&mut bits, 0);
+
+        for _ in 0..entry_point_count {
+            append_bit(&mut bits, false);
+        }
+
+        let mut data = vec![0, 0];
+        data.extend(finish_rbsp(bits));
+
+        Nalu {
+            header: NaluHeader {
+                type_: NaluType::IdrNLp,
+                nuh_layer_id: 0,
+                nuh_temporal_id_plus1: 1,
+            },
+            size: data.len(),
+            offset: 0,
+            data: Cow::Owned(data),
+        }
+    }
+
+    fn parser_with_wpp_entry_point_capacity(entry_point_count: u32) -> Parser {
+        let mut parser = Parser::default();
+
+        let vps_nalu = find_nalu_by_type(STREAM_TEST25FPS, NaluType::VpsNut, 0).unwrap();
+        parser.parse_vps(&vps_nalu).unwrap();
+
+        let sps_nalu = find_nalu_by_type(STREAM_TEST25FPS, NaluType::SpsNut, 0).unwrap();
+        parser.parse_sps(&sps_nalu).unwrap();
+
+        let pps_nalu = find_nalu_by_type(STREAM_TEST25FPS, NaluType::PpsNut, 0).unwrap();
+        let mut pps = parser.parse_pps(&pps_nalu).unwrap().clone();
+        let mut sps = pps.sps.as_ref().clone();
+        sps.pic_height_in_ctbs_y = entry_point_count + 1;
+        sps.pic_size_in_ctbs_y = sps.pic_width_in_ctbs_y * sps.pic_height_in_ctbs_y;
+        sps.sample_adaptive_offset_enabled_flag = false;
+
+        pps.sps = Rc::new(sps);
+        pps.tiles_enabled_flag = false;
+        pps.entropy_coding_sync_enabled_flag = true;
+        pps.output_flag_present_flag = false;
+        pps.num_extra_slice_header_bits = 0;
+        pps.slice_chroma_qp_offsets_present_flag = false;
+        pps.deblocking_filter_override_enabled_flag = false;
+        pps.loop_filter_across_slices_enabled_flag = false;
+        pps.slice_segment_header_extension_present_flag = false;
+
+        parser
+            .active_ppses
+            .insert(pps.pic_parameter_set_id, Rc::new(pps));
+
+        parser
+    }
+
     /// This test is adapted from chromium, available at media/video/h265_parser_unittest.cc
     #[test]
     fn parse_nalus_from_stream_file() {
@@ -4232,6 +4380,18 @@ mod tests {
         assert_eq!(num_nalus, STREAM_TEST25FPS_NUM_NALUS);
     }
 
+    #[test]
+    fn nalu_header_accepts_unspecified_type_62_for_dolby_vision_rpu() {
+        let bitstream = [0x00, 0x00, 0x01, 0x7c, 0x01, 0x80];
+        let mut cursor = Cursor::new(bitstream.as_slice());
+
+        let nalu = Nalu::<NaluHeader>::next(&mut cursor).unwrap();
+
+        assert_eq!(nalu.header.type_, NaluType::Unspec62);
+        assert_eq!(nalu.header.nuh_layer_id, 0);
+        assert_eq!(nalu.header.nuh_temporal_id_plus1, 1);
+    }
+
     /// Parse the syntax, making sure we can parse the files without crashing.
     /// Does not check whether the parsed values are correct.
     #[test]
@@ -4256,6 +4416,26 @@ mod tests {
         while let Ok(nalu) = Nalu::<NaluHeader>::next(&mut cursor) {
             dispatch_parse_call(&mut parser, nalu).unwrap();
         }
+    }
+
+    #[test]
+    fn slice_header_parses_more_than_32_entry_point_offsets() {
+        let entry_point_count = 39;
+        let mut parser = parser_with_wpp_entry_point_capacity(entry_point_count);
+        let slice_nalu = synthetic_idr_slice_with_entry_points(entry_point_count);
+
+        let slice = parser.parse_slice_header(slice_nalu).unwrap();
+        let hdr = &slice.header;
+
+        assert_eq!(hdr.num_entry_point_offsets, entry_point_count);
+        assert_eq!(
+            hdr.entry_point_offset_minus1.len(),
+            entry_point_count as usize
+        );
+        assert!(hdr
+            .entry_point_offset_minus1
+            .iter()
+            .all(|offset_minus1| *offset_minus1 == 0));
     }
 
     /// Adapted from Chromium (media/video/h265_parser_unittest.cc::VpsParsing())

@@ -812,6 +812,21 @@ mod tests {
     }
 
     #[test]
+    fn cli_route_sends_quicktime_mov_http_media_to_direct_path() {
+        let (initial_media, startup_error) = resolve_initial_media_argument(
+            "https://cdn.example.test/camera/ios-hevc-main10-aac-4k60.MOV".to_string(),
+            &AppConfig::default(),
+        );
+
+        assert!(startup_error.is_none());
+        assert!(matches!(
+            initial_media,
+            Some(InitialMedia::DirectMediaUrl { url })
+                if url == "https://cdn.example.test/camera/ios-hevc-main10-aac-4k60.MOV"
+        ));
+    }
+
+    #[test]
     fn cli_route_rejects_http_media_without_supported_extension() {
         let (initial_media, startup_error) = resolve_initial_media_argument(
             "https://192.0.2.10/media".to_string(),

@@ -1996,7 +1996,8 @@ mod tests {
     use std::time::Duration;
 
     use codec_core::{
-        ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction, VideoDisplayOrientation,
+        ColorPrimaries, ColorRange, H265Profile, MatrixCoefficients, TransferFunction,
+        VideoDisplayOrientation, VideoProfile,
     };
     use media_core::{
         DemuxReadEvent, DemuxSeekRequest, DemuxSeekability, DemuxTrackListUpdate, Demuxer,
@@ -2321,6 +2322,11 @@ mod tests {
             .join(file_name)
     }
 
+    fn ios_h265_mov_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../<MEDIA_DIR>/ios-hevc-main10-aac-4k60.mov")
+    }
+
     fn drain_demuxer_to_eof_for_unit_test(demuxer: &mut SymphoniaDemuxer) {
         for event_index in 0..MAX_UNIT_EVENTS_BEFORE_EOF {
             match demuxer
@@ -2635,6 +2641,57 @@ mod tests {
         assert_eq!(demuxer.tracks()[0].channels, Some(2));
         assert_eq!(demuxer.duration(), Some(Duration::from_secs(30)));
         assert_eq!(demuxer.seekability(), DemuxSeekability::Seekable);
+    }
+
+    #[test]
+    fn ios_quicktime_h265_mov_fixture_opens_supported_tracks() {
+        let fixture_path = ios_h265_mov_fixture_path();
+        if !fixture_path.exists() {
+            eprintln!(
+                "skipping iOS QuickTime HEVC fixture test: {} is absent",
+                fixture_path.display()
+            );
+            return;
+        }
+
+        let demuxer = SymphoniaDemuxer::from_file(&fixture_path)
+            .expect("iOS QuickTime .mov fixture должен открыться через Symphonia");
+
+        assert_eq!(demuxer.tracks().len(), 2);
+        assert!(demuxer.duration().is_some());
+
+        let video_track = demuxer
+            .tracks()
+            .iter()
+            .find(|track| track.kind == TrackKind::Video)
+            .expect("iOS .mov fixture должен содержать поддерживаемый HEVC video track");
+        assert_eq!(video_track.codec_id, "V_MPEGH/ISO/HEVC");
+        assert!(
+            video_track
+                .codec_private
+                .as_ref()
+                .is_some_and(|codec_private| !codec_private.is_empty())
+        );
+
+        let video_metadata = video_track
+            .video
+            .as_ref()
+            .expect("HEVC video track должен сохранить container metadata");
+        assert_eq!(video_metadata.coded_width, Some(3840));
+        assert_eq!(video_metadata.coded_height, Some(2160));
+        assert_eq!(
+            video_metadata.profile,
+            Some(VideoProfile::H265(H265Profile::Main10))
+        );
+
+        let audio_track = demuxer
+            .tracks()
+            .iter()
+            .find(|track| track.kind == TrackKind::Audio)
+            .expect("iOS .mov fixture должен содержать поддерживаемый AAC audio track");
+        assert_eq!(audio_track.codec_id, "A_AAC");
+        assert_eq!(audio_track.sample_rate, Some(48_000));
+        assert_eq!(audio_track.channels, Some(2));
     }
 
     #[test]

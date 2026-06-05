@@ -10,7 +10,7 @@ use rustiplayer_config::PlayerDemuxConfig;
 /// отсекается на уровне приложения.
 pub(crate) const SUPPORTED_LOCAL_MEDIA_EXTENSIONS: &[&str] = &[
     "wav", "aiff", "aif", "caf", "flac", "mp3", "mp2", "mp1", "m4a", "mp4", "ogg", "oga", "opus",
-    "alac", "wv", "webm", "mkv",
+    "alac", "wv", "webm", "mkv", "mov",
 ];
 
 /// Открывает локальный файл через container adapter, который находится вне `player-core`.
@@ -44,7 +44,7 @@ mod tests {
     fn local_media_extension_hints_cover_symphonia_audio_containers() {
         let required_extensions = [
             "wav", "aiff", "aif", "caf", "flac", "mp3", "mp2", "mp1", "m4a", "mp4", "ogg", "oga",
-            "opus", "alac", "wv", "webm", "mkv",
+            "opus", "alac", "wv", "webm", "mkv", "mov",
         ];
 
         for extension in required_extensions {
