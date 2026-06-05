@@ -5,7 +5,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
-use codec_core::VideoDisplayOrientation;
+use codec_core::{
+    ColorPrimaries, ColorRange, HdrMetadata, MatrixCoefficients, TransferFunction,
+    VideoColorMetadata, VideoDisplayOrientation,
+};
 use media_core::{
     DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
     DemuxTrackListUpdate, Demuxer, MediaTime, Packet as OurPacket, PacketKeyframe,
@@ -33,7 +36,7 @@ use crate::symphonia_api::{
     SymphoniaError, SymphoniaSeekMode,
 };
 use crate::track_mapper::{
-    TrackEntry, map_tracks_with_display_orientations, tracks_may_need_matroska_video_metadata,
+    TrackEntry, map_tracks_with_video_metadata, tracks_may_need_matroska_video_metadata,
 };
 
 /// Верхняя граница prefix scan-а для seekable byte source-ов.
@@ -44,6 +47,20 @@ const MATROSKA_STREAM_SCAN_LIMIT_BYTES: usize = 256 * 1024;
 
 const RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG: &str =
     "rustiplayer.display_orientation.clockwise_degrees";
+const RUSTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG: &str = "rustiplayer.video.color.full_range";
+const RUSTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG: &str =
+    "rustiplayer.video.color.matrix_coefficients_h273";
+const RUSTIPLAYER_VIDEO_COLOR_PRIMARIES_H273_TAG: &str = "rustiplayer.video.color.primaries_h273";
+const RUSTIPLAYER_VIDEO_COLOR_TRANSFER_CHARACTERISTICS_H273_TAG: &str =
+    "rustiplayer.video.color.transfer_characteristics_h273";
+const RUSTIPLAYER_VIDEO_HDR_MAX_LUMINANCE_NITS_TAG: &str =
+    "rustiplayer.video.hdr.mastering_display.max_luminance_nits";
+const RUSTIPLAYER_VIDEO_HDR_MIN_LUMINANCE_NITS_TAG: &str =
+    "rustiplayer.video.hdr.mastering_display.min_luminance_nits";
+const RUSTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG: &str =
+    "rustiplayer.video.hdr.max_content_light_level_nits";
+const RUSTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG: &str =
+    "rustiplayer.video.hdr.max_frame_average_light_level_nits";
 
 /// Лимит повторов для восстановления before-or-at-target semantics после backend overshoot.
 const DECODE_POINT_BEFORE_MAX_RETRIES: usize = 6;
@@ -582,6 +599,250 @@ fn display_orientation_degrees_from_raw_value(raw_value: &RawValue) -> Option<i3
     }
 }
 
+/// Накопитель MP4 color/HDR tags до сборки полной `VideoColorMetadata`.
+#[derive(Default)]
+struct Mp4VideoColorMetadataTags {
+    range: Option<ColorRange>,
+    matrix: Option<MatrixCoefficients>,
+    primaries: Option<ColorPrimaries>,
+    transfer: Option<TransferFunction>,
+    max_luminance_nits: Option<f32>,
+    min_luminance_nits: Option<f32>,
+    max_content_light_level_nits: Option<u32>,
+    max_frame_average_light_level_nits: Option<u32>,
+}
+
+impl Mp4VideoColorMetadataTags {
+    /// Возвращает typed metadata только если MP4 tags содержали хотя бы одно полезное поле.
+    fn into_color_metadata(self) -> Option<VideoColorMetadata> {
+        let has_color_metadata = self.range.is_some()
+            || self.matrix.is_some()
+            || self.primaries.is_some()
+            || self.transfer.is_some()
+            || self.max_luminance_nits.is_some()
+            || self.min_luminance_nits.is_some()
+            || self.max_content_light_level_nits.is_some()
+            || self.max_frame_average_light_level_nits.is_some();
+
+        if !has_color_metadata {
+            return None;
+        }
+
+        let primaries = self.primaries.unwrap_or(ColorPrimaries::Unknown);
+        let transfer = self.transfer.unwrap_or(TransferFunction::Unknown);
+        let hdr_metadata = mp4_hdr_metadata_from_tags(&self, primaries, transfer);
+
+        Some(VideoColorMetadata::container(
+            self.range.unwrap_or(ColorRange::Unknown),
+            self.matrix.unwrap_or(MatrixCoefficients::Unknown),
+            primaries,
+            transfer,
+            hdr_metadata,
+        ))
+    }
+}
+
+/// Собирает HDR side metadata из MP4 `mdcv`/`clli` tags.
+fn mp4_hdr_metadata_from_tags(
+    tags: &Mp4VideoColorMetadataTags,
+    primaries: ColorPrimaries,
+    transfer: TransferFunction,
+) -> Option<HdrMetadata> {
+    let has_hdr_side_metadata = tags.max_luminance_nits.is_some()
+        || tags.min_luminance_nits.is_some()
+        || tags.max_content_light_level_nits.is_some()
+        || tags.max_frame_average_light_level_nits.is_some();
+
+    has_hdr_side_metadata.then_some(HdrMetadata {
+        color_primaries: primaries,
+        transfer_function: transfer,
+        max_luminance_nits: tags.max_luminance_nits,
+        min_luminance_nits: tags.min_luminance_nits,
+        max_content_light_level_nits: tags.max_content_light_level_nits,
+        max_frame_average_light_level_nits: tags.max_frame_average_light_level_nits,
+    })
+}
+
+/// Достаёт MP4 color metadata, которую локальный MP4 patch публикует как per-track tags.
+fn video_color_metadata_from_metadata(
+    format: &mut FormatReaderBox<'static>,
+) -> HashMap<TrackId, VideoColorMetadata> {
+    let mut color_tags_by_track = HashMap::<TrackId, Mp4VideoColorMetadataTags>::new();
+    let metadata = format.metadata();
+    let Some(revision) = metadata.current() else {
+        return HashMap::new();
+    };
+
+    for per_track_metadata in &revision.per_track {
+        let Some(track_id) =
+            track_id_from_metadata(per_track_metadata.track_id, "MP4 color metadata")
+        else {
+            continue;
+        };
+
+        for tag in &per_track_metadata.metadata.tags {
+            if apply_mp4_video_color_tag(
+                color_tags_by_track.entry(track_id).or_default(),
+                &tag.raw.key,
+                &tag.raw.value,
+            ) {
+                continue;
+            }
+        }
+    }
+
+    color_tags_by_track
+        .into_iter()
+        .filter_map(|(track_id, tags)| {
+            tags.into_color_metadata()
+                .map(|color_metadata| (track_id, color_metadata))
+        })
+        .collect()
+}
+
+/// Применяет один raw tag к MP4 color accumulator-у и сообщает, был ли tag распознан.
+fn apply_mp4_video_color_tag(
+    color_tags: &mut Mp4VideoColorMetadataTags,
+    tag_key: &str,
+    raw_value: &RawValue,
+) -> bool {
+    match tag_key {
+        RUSTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG => {
+            match bool_from_raw_value(raw_value) {
+                Some(full_range) => {
+                    color_tags.range = Some(if full_range {
+                        ColorRange::Full
+                    } else {
+                        ColorRange::Limited
+                    });
+                }
+                None => log_unsupported_mp4_video_color_tag_value(tag_key, raw_value),
+            }
+            true
+        }
+        RUSTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG => {
+            match u64_from_raw_value(raw_value) {
+                Some(value) => {
+                    color_tags.matrix = Some(MatrixCoefficients::from_h273_value(value));
+                }
+                None => log_unsupported_mp4_video_color_tag_value(tag_key, raw_value),
+            }
+            true
+        }
+        RUSTIPLAYER_VIDEO_COLOR_PRIMARIES_H273_TAG => {
+            match u64_from_raw_value(raw_value) {
+                Some(value) => {
+                    color_tags.primaries = Some(ColorPrimaries::from_h273_value(value));
+                }
+                None => log_unsupported_mp4_video_color_tag_value(tag_key, raw_value),
+            }
+            true
+        }
+        RUSTIPLAYER_VIDEO_COLOR_TRANSFER_CHARACTERISTICS_H273_TAG => {
+            match u64_from_raw_value(raw_value) {
+                Some(value) => {
+                    color_tags.transfer = Some(TransferFunction::from_h273_value(value));
+                }
+                None => log_unsupported_mp4_video_color_tag_value(tag_key, raw_value),
+            }
+            true
+        }
+        RUSTIPLAYER_VIDEO_HDR_MAX_LUMINANCE_NITS_TAG => {
+            match f32_from_raw_value(raw_value) {
+                Some(value) => color_tags.max_luminance_nits = Some(value),
+                None => log_unsupported_mp4_video_color_tag_value(tag_key, raw_value),
+            }
+            true
+        }
+        RUSTIPLAYER_VIDEO_HDR_MIN_LUMINANCE_NITS_TAG => {
+            match f32_from_raw_value(raw_value) {
+                Some(value) => color_tags.min_luminance_nits = Some(value),
+                None => log_unsupported_mp4_video_color_tag_value(tag_key, raw_value),
+            }
+            true
+        }
+        RUSTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG => {
+            match u32_from_raw_value(raw_value) {
+                Some(value) => color_tags.max_content_light_level_nits = Some(value),
+                None => log_unsupported_mp4_video_color_tag_value(tag_key, raw_value),
+            }
+            true
+        }
+        RUSTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG => {
+            match u32_from_raw_value(raw_value) {
+                Some(value) => color_tags.max_frame_average_light_level_nits = Some(value),
+                None => log_unsupported_mp4_video_color_tag_value(tag_key, raw_value),
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Логирует recognized MP4 color tag, значение которого нельзя безопасно нормализовать.
+fn log_unsupported_mp4_video_color_tag_value(tag_key: &str, raw_value: &RawValue) {
+    debug!(
+        tag_key,
+        value = %raw_value,
+        "MP4 video color metadata tag has unsupported raw value"
+    );
+}
+
+/// Нормализует raw Symphonia metadata track id в `media-core::TrackId`.
+fn track_id_from_metadata(raw_track_id: u64, metadata_kind: &str) -> Option<TrackId> {
+    let Ok(track_id) = u32::try_from(raw_track_id) else {
+        debug!(
+            track_id = raw_track_id,
+            metadata_kind, "Per-track metadata id does not fit media-core TrackId"
+        );
+        return None;
+    };
+
+    Some(TrackId::new(track_id))
+}
+
+/// Читает boolean metadata value без угадывания произвольных строк.
+fn bool_from_raw_value(raw_value: &RawValue) -> Option<bool> {
+    match raw_value {
+        RawValue::Boolean(value) => Some(*value),
+        RawValue::SignedInt(value) => match value {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        },
+        RawValue::UnsignedInt(value) => match value {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Читает unsigned metadata value из integer raw tags.
+fn u64_from_raw_value(raw_value: &RawValue) -> Option<u64> {
+    match raw_value {
+        RawValue::SignedInt(value) => u64::try_from(*value).ok(),
+        RawValue::UnsignedInt(value) => Some(*value),
+        _ => None,
+    }
+}
+
+/// Читает `u32` metadata value с overflow protection.
+fn u32_from_raw_value(raw_value: &RawValue) -> Option<u32> {
+    u64_from_raw_value(raw_value).and_then(|value| u32::try_from(value).ok())
+}
+
+/// Читает floating-point metadata value, принимая integer tags как точные nits.
+fn f32_from_raw_value(raw_value: &RawValue) -> Option<f32> {
+    match raw_value {
+        RawValue::Float(value) if value.is_finite() && *value >= 0.0 => Some(*value as f32),
+        RawValue::SignedInt(value) => u64::try_from(*value).ok().map(|value| value as f32),
+        RawValue::UnsignedInt(value) => Some(*value as f32),
+        _ => None,
+    }
+}
+
 /// Строит neutral track state из текущего Symphonia reader-а без изменения public boundary.
 fn track_state_from_format_reader(
     format: &mut FormatReaderBox<'static>,
@@ -589,10 +850,12 @@ fn track_state_from_format_reader(
 ) -> SymphoniaTrackState {
     let mut video_tracks_for_mapping = video_tracks_by_track.clone();
     let display_orientations_by_track = display_orientations_from_metadata(format);
-    let track_mapping = map_tracks_with_display_orientations(
+    let color_metadata_by_track = video_color_metadata_from_metadata(format);
+    let track_mapping = map_tracks_with_video_metadata(
         format.tracks(),
         &mut video_tracks_for_mapping,
         &display_orientations_by_track,
+        &color_metadata_by_track,
     );
     let media_info_duration = media_info_duration(format.media_info());
     let duration = track_mapping.duration.or(media_info_duration);
@@ -1732,7 +1995,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use codec_core::VideoDisplayOrientation;
+    use codec_core::{
+        ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction, VideoDisplayOrientation,
+    };
     use media_core::{
         DemuxReadEvent, DemuxSeekRequest, DemuxSeekability, DemuxTrackListUpdate, Demuxer,
         MediaDemuxError, PacketKeyframe, TimelineNotSeekableReason, TrackId, TrackKind,
@@ -1761,6 +2026,12 @@ mod tests {
         DECODE_POINT_BEFORE_MAX_RETRIES, DecodePointBeforeVerificationIssue,
         DecodePointBeforeVideoPacket, MATROSKA_STREAM_SCAN_LIMIT_BYTES,
         MatroskaVideoMetadataScanDecision, RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG,
+        RUSTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG,
+        RUSTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG,
+        RUSTIPLAYER_VIDEO_COLOR_PRIMARIES_H273_TAG,
+        RUSTIPLAYER_VIDEO_COLOR_TRANSFER_CHARACTERISTICS_H273_TAG,
+        RUSTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG, RUSTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG,
+        RUSTIPLAYER_VIDEO_HDR_MAX_LUMINANCE_NITS_TAG, RUSTIPLAYER_VIDEO_HDR_MIN_LUMINANCE_NITS_TAG,
         SymphoniaDemuxer, decide_matroska_video_metadata_scan,
         decode_point_before_retry_timestamp_for_issue, read_stream_prefix,
     };
@@ -1865,6 +2136,55 @@ mod tests {
             track_metadata.add_tag(Tag::new_from_parts(
                 RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG,
                 u64::from(display_orientation.clockwise_degrees()),
+                None,
+            ));
+
+            let mut metadata = MetadataBuilder::new(FAKE_METADATA_INFO);
+            metadata.add_track(track_metadata.build());
+            self.metadata.push_front(metadata.build());
+            self
+        }
+
+        fn with_mp4_hdr_color_metadata(mut self, track_id: u32) -> Self {
+            let mut track_metadata = PerTrackMetadataBuilder::new(u64::from(track_id));
+            track_metadata.add_tag(Tag::new_from_parts(
+                RUSTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG,
+                true,
+                None,
+            ));
+            track_metadata.add_tag(Tag::new_from_parts(
+                RUSTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG,
+                9_u64,
+                None,
+            ));
+            track_metadata.add_tag(Tag::new_from_parts(
+                RUSTIPLAYER_VIDEO_COLOR_PRIMARIES_H273_TAG,
+                9_u64,
+                None,
+            ));
+            track_metadata.add_tag(Tag::new_from_parts(
+                RUSTIPLAYER_VIDEO_COLOR_TRANSFER_CHARACTERISTICS_H273_TAG,
+                16_u64,
+                None,
+            ));
+            track_metadata.add_tag(Tag::new_from_parts(
+                RUSTIPLAYER_VIDEO_HDR_MAX_LUMINANCE_NITS_TAG,
+                1_000.0_f64,
+                None,
+            ));
+            track_metadata.add_tag(Tag::new_from_parts(
+                RUSTIPLAYER_VIDEO_HDR_MIN_LUMINANCE_NITS_TAG,
+                0.005_f64,
+                None,
+            ));
+            track_metadata.add_tag(Tag::new_from_parts(
+                RUSTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG,
+                1_000_u64,
+                None,
+            ));
+            track_metadata.add_tag(Tag::new_from_parts(
+                RUSTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG,
+                400_u64,
                 None,
             ));
 
@@ -2359,6 +2679,45 @@ mod tests {
         assert_eq!(
             video_metadata.orientation,
             VideoDisplayOrientation::Rotate270Clockwise
+        );
+    }
+
+    #[test]
+    fn demuxer_maps_mp4_per_track_hdr_color_metadata() {
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_mp4_hdr_color_metadata(1);
+
+        let demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "video-color",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыть video track с MP4 color metadata");
+        let color = demuxer.tracks()[0]
+            .video
+            .as_ref()
+            .and_then(|metadata| metadata.color.as_ref())
+            .expect("MP4 HDR color metadata должна попасть в VideoTrackMetadata.color");
+
+        assert_eq!(color.range, ColorRange::Full);
+        assert_eq!(color.matrix, MatrixCoefficients::Bt2020);
+        assert_eq!(color.primaries, ColorPrimaries::Bt2020);
+        assert_eq!(color.transfer, TransferFunction::Pq);
+        assert_eq!(
+            color
+                .hdr_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.max_content_light_level_nits),
+            Some(1_000)
+        );
+        assert_eq!(
+            color
+                .hdr_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.max_frame_average_light_level_nits),
+            Some(400)
         );
     }
 

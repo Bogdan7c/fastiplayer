@@ -1,0 +1,9 @@
+# symphonia-demux MP4 Color/HDR Metadata
+
+- Local `symphonia-format-isomp4-patch` parses visual sample entry `colr`/`mdcv`/`clli` sub-atoms. Supported `colr` transport is `nclx` only: H.273 primaries/transfer/matrix plus full-range flag. ICC/profile `colr` payloads are intentionally logged/ignored, not guessed.
+- The patch publishes MP4 video metadata through Symphonia per-track raw tags under `rustiplayer.video.*`, in the same `MetadataLog` mechanism as `rustiplayer.display_orientation.clockwise_degrees`; it does not add fields to Symphonia `VideoCodecParameters`.
+- `symphonia-demux` reads those tags in `video_color_metadata_from_metadata()`, normalizes to `codec_core::VideoColorMetadata::container`, and passes them into `track_mapper::map_tracks_with_video_metadata()`.
+- Merge priority is: Symphonia track fields + MP4 per-track color metadata as primary, then Matroska pre-scan metadata only fills missing fields. This preserves existing Matroska fallback behavior while allowing MP4 HDR metadata to reach `VideoTrackMetadata.color`.
+- `mdcv` parsing validates/stores mastering display chromaticity internally in the patch, but current neutral `HdrMetadata` transports only existing max/min luminance fields plus `clli` MaxCLL/MaxFALL. Adding mastering display xy coordinates requires a future neutral API discussion.
+- HEVC bitstream VUI/SEI parsing is still not part of this path. Future policy remains: confirmed bitstream metadata should override container-side metadata when such parser support exists.
+- Focused coverage: patch tests in `crates/symphonia-format-isomp4-patch/src/atoms/stsd.rs` for synthetic `colr`/`mdcv`/`clli` and nested visual sample entry; `symphonia-demux` tests `demuxer_maps_mp4_per_track_hdr_color_metadata` and `mp4_color_metadata_wins_over_matroska_color_fallback`.

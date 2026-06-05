@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use codec_core::{
-    Av1Profile, H264Profile, H265Profile, VideoDisplayOrientation, VideoProfile, Vp9Profile,
+    Av1Profile, H264Profile, H265Profile, VideoColorMetadata, VideoDisplayOrientation,
+    VideoProfile, Vp9Profile,
 };
 use media_core::{TrackId, TrackInfo, TrackKind, VideoTrackMetadata};
 use symphonia::core::codecs::audio::well_known as audio_codec;
@@ -126,14 +127,20 @@ pub(crate) fn map_tracks(
     symphonia_tracks: &[Track],
     video_tracks_by_track: &mut HashMap<TrackId, MatroskaVideoTrack>,
 ) -> TrackMapping {
-    map_tracks_with_display_orientations(symphonia_tracks, video_tracks_by_track, &HashMap::new())
+    map_tracks_with_video_metadata(
+        symphonia_tracks,
+        video_tracks_by_track,
+        &HashMap::new(),
+        &HashMap::new(),
+    )
 }
 
-/// Собирает public track metadata с уже нормализованной display orientation.
-pub(crate) fn map_tracks_with_display_orientations(
+/// Собирает public track metadata с уже нормализованными per-track video metadata tags.
+pub(crate) fn map_tracks_with_video_metadata(
     symphonia_tracks: &[Track],
     video_tracks_by_track: &mut HashMap<TrackId, MatroskaVideoTrack>,
     display_orientations_by_track: &HashMap<TrackId, VideoDisplayOrientation>,
+    color_metadata_by_track: &HashMap<TrackId, VideoColorMetadata>,
 ) -> TrackMapping {
     let mut tracks = Vec::new();
     let mut track_map = HashMap::new();
@@ -151,6 +158,9 @@ pub(crate) fn map_tracks_with_display_orientations(
             .get(&TrackId::new(track.id))
             .copied()
             .unwrap_or_default();
+        let color_metadata = color_metadata_by_track
+            .get(&TrackId::new(track.id))
+            .cloned();
         let video_metadata_source = video_metadata_source(track, matroska_video_track.as_ref());
         let track_entry = build_track_entry(track, matroska_video_track.as_ref());
         if let Some(track_info) = build_track_info(
@@ -158,6 +168,7 @@ pub(crate) fn map_tracks_with_display_orientations(
             &track_entry,
             matroska_video_track,
             display_orientation,
+            color_metadata,
         ) {
             log_supported_track_metadata(track, &track_entry, &track_info, video_metadata_source);
             tracks.push(track_info);
@@ -323,6 +334,7 @@ fn build_track_info(
     track_entry: &TrackEntry,
     matroska_video_track: Option<MatroskaVideoTrack>,
     display_orientation: VideoDisplayOrientation,
+    color_metadata: Option<VideoColorMetadata>,
 ) -> Option<TrackInfo> {
     let kind = track_entry.supported_kind()?;
     let duration = track_entry
@@ -342,6 +354,7 @@ fn build_track_info(
                 video_metadata_from_symphonia_track(track),
                 matroska_video_track.and_then(|video_track| video_track.metadata),
                 display_orientation,
+                color_metadata,
             )
         })
         .flatten();
@@ -405,30 +418,32 @@ fn video_metadata_source(
     }
 }
 
-/// Объединяет Symphonia metadata как primary source с Matroska fallback-ом для отсутствующих полей.
+/// Объединяет Symphonia/MP4 metadata как primary source с Matroska fallback-ом для отсутствующих полей.
+///
+/// MP4 color metadata здесь остаётся container-side hint. Когда появится confirmed bitstream
+/// VUI/SEI parser, его metadata должна применяться с более высоким приоритетом.
 fn merge_video_metadata(
     symphonia_metadata: Option<VideoTrackMetadata>,
     matroska_metadata: Option<VideoTrackMetadata>,
     display_orientation: VideoDisplayOrientation,
+    color_metadata: Option<VideoColorMetadata>,
 ) -> Option<VideoTrackMetadata> {
-    let mut merged_metadata = match (symphonia_metadata, matroska_metadata) {
-        (Some(mut primary_metadata), Some(fallback_metadata)) => {
-            primary_metadata.coded_width = primary_metadata
-                .coded_width
-                .or(fallback_metadata.coded_width);
-            primary_metadata.coded_height = primary_metadata
-                .coded_height
-                .or(fallback_metadata.coded_height);
-            primary_metadata.profile = primary_metadata.profile.or(fallback_metadata.profile);
-            primary_metadata.bit_depth = primary_metadata.bit_depth.or(fallback_metadata.bit_depth);
-            primary_metadata.chroma = primary_metadata.chroma.or(fallback_metadata.chroma);
-            primary_metadata.color = primary_metadata.color.or(fallback_metadata.color);
-            primary_metadata
-        }
-        (Some(primary_metadata), None) => primary_metadata,
-        (None, Some(fallback_metadata)) => fallback_metadata,
-        (None, None) => VideoTrackMetadata::empty(),
-    };
+    let mut merged_metadata = symphonia_metadata.unwrap_or_else(VideoTrackMetadata::empty);
+
+    merged_metadata.color = merged_metadata.color.or(color_metadata);
+
+    if let Some(fallback_metadata) = matroska_metadata {
+        merged_metadata.coded_width = merged_metadata
+            .coded_width
+            .or(fallback_metadata.coded_width);
+        merged_metadata.coded_height = merged_metadata
+            .coded_height
+            .or(fallback_metadata.coded_height);
+        merged_metadata.profile = merged_metadata.profile.or(fallback_metadata.profile);
+        merged_metadata.bit_depth = merged_metadata.bit_depth.or(fallback_metadata.bit_depth);
+        merged_metadata.chroma = merged_metadata.chroma.or(fallback_metadata.chroma);
+        merged_metadata.color = merged_metadata.color.or(fallback_metadata.color);
+    }
 
     merged_metadata.orientation = display_orientation;
     merged_metadata.into_option()
@@ -849,7 +864,7 @@ mod tests {
 
     use super::{
         TrackEntryKind, UnsupportedTrackKind, build_track_entry, map_tracks,
-        map_tracks_with_display_orientations, take_matroska_video_track_for_mapping,
+        map_tracks_with_video_metadata, take_matroska_video_track_for_mapping,
         tracks_may_need_matroska_video_metadata,
     };
     use crate::matroska_metadata::MatroskaVideoTrack;
@@ -994,6 +1009,23 @@ mod tests {
             )),
             orientation: VideoDisplayOrientation::Identity,
         }
+    }
+
+    fn mp4_hdr_color_metadata() -> VideoColorMetadata {
+        VideoColorMetadata::container(
+            ColorRange::Full,
+            MatrixCoefficients::Bt2020,
+            ColorPrimaries::Bt2020,
+            TransferFunction::Pq,
+            Some(HdrMetadata {
+                color_primaries: ColorPrimaries::Bt2020,
+                transfer_function: TransferFunction::Pq,
+                max_luminance_nits: Some(4_000.0),
+                min_luminance_nits: Some(0.005),
+                max_content_light_level_nits: Some(2_000),
+                max_frame_average_light_level_nits: Some(800),
+            }),
+        )
     }
 
     #[test]
@@ -1195,10 +1227,11 @@ mod tests {
         let display_orientations_by_track =
             HashMap::from([(TrackId::new(1), VideoDisplayOrientation::Rotate270Clockwise)]);
 
-        let mapping = map_tracks_with_display_orientations(
+        let mapping = map_tracks_with_video_metadata(
             &[vp9_video_track(1)],
             &mut metadata_by_track,
             &display_orientations_by_track,
+            &HashMap::new(),
         );
         let video_metadata = mapping.tracks[0]
             .video
@@ -1257,6 +1290,42 @@ mod tests {
                 .as_ref()
                 .and_then(|metadata| metadata.max_content_light_level_nits),
             Some(1_000)
+        );
+    }
+
+    #[test]
+    fn mp4_color_metadata_wins_over_matroska_color_fallback() {
+        let mut metadata_by_track = HashMap::from([(
+            TrackId::new(1),
+            matroska_video_track(hdr_video_track_metadata()),
+        )]);
+        let color_metadata_by_track = HashMap::from([(TrackId::new(1), mp4_hdr_color_metadata())]);
+        let track = vp9_video_track_with_dimensions(1, 1920, 1080);
+
+        let mapping = map_tracks_with_video_metadata(
+            &[track],
+            &mut metadata_by_track,
+            &HashMap::new(),
+            &color_metadata_by_track,
+        );
+        let video_metadata = mapping.tracks[0]
+            .video
+            .as_ref()
+            .expect("MP4 color metadata должна создать video metadata");
+        let color = video_metadata
+            .color
+            .as_ref()
+            .expect("MP4 color metadata должна попасть в neutral model");
+
+        assert_eq!(video_metadata.coded_width, Some(1920));
+        assert_eq!(video_metadata.coded_height, Some(1080));
+        assert_eq!(color.range, ColorRange::Full);
+        assert_eq!(
+            color
+                .hdr_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.max_content_light_level_nits),
+            Some(2_000)
         );
     }
 

@@ -125,6 +125,14 @@ impl StsdAtom {
             _ => None,
         }
     }
+
+    /// Возвращает visual sample entry, если `stsd` описывает video track.
+    pub(crate) fn visual_sample_entry(&self) -> Option<&VisualSampleEntry> {
+        match &self.sample_entry {
+            SampleEntry::Visual(entry) => Some(entry),
+            _ => None,
+        }
+    }
 }
 
 /// Polymorphic sample entry atom.
@@ -458,6 +466,121 @@ fn lpcm_channels(num_channels: u32) -> Result<Channels> {
     }
 }
 
+/// Масштаб ISO BMFF `mdcv` chromaticity coordinates: raw value / 50000.
+const MDCV_CHROMATICITY_SCALE: f32 = 50_000.0;
+
+/// Масштаб ISO BMFF `mdcv` luminance values: raw value / 10000 nits.
+const MDCV_LUMINANCE_SCALE: f32 = 10_000.0;
+
+/// `colr` atom с поддержанным `nclx` payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColourInformationAtom {
+    /// H.273 colour information из `nclx`; `None` для ICC/unknown formats.
+    pub nclx: Option<NclxColourInformation>,
+}
+
+impl Atom for ColourInformationAtom {
+    fn read<R: ReadAtom>(it: &mut AtomIterator<R>, _header: &AtomHeader) -> Result<Self> {
+        let colour_type = it.read_quad_bytes()?;
+
+        let nclx = match colour_type {
+            colour_type if colour_type == *b"nclx" => Some(NclxColourInformation {
+                color_primaries: it.read_u16()?,
+                transfer_characteristics: it.read_u16()?,
+                matrix_coefficients: it.read_u16()?,
+                full_range_flag: (it.read_u8()? & 0x80) != 0,
+            }),
+            unsupported_colour_type => {
+                debug!(
+                    "unsupported visual sample entry colr colour type: {:?}",
+                    unsupported_colour_type
+                );
+                None
+            }
+        };
+
+        Ok(Self { nclx })
+    }
+}
+
+/// Нормализованная часть `colr/nclx`, которую можно отдать дальше как H.273 metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NclxColourInformation {
+    /// H.273 colour primaries.
+    pub color_primaries: u16,
+    /// H.273 transfer characteristics.
+    pub transfer_characteristics: u16,
+    /// H.273 matrix coefficients.
+    pub matrix_coefficients: u16,
+    /// `true`, если sample values используют full range.
+    pub full_range_flag: bool,
+}
+
+/// Одна xy-координата mastering display из `mdcv`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MasteringDisplayChromaticity {
+    /// X coordinate в нормализованном виде.
+    pub x: f32,
+    /// Y coordinate в нормализованном виде.
+    pub y: f32,
+}
+
+impl MasteringDisplayChromaticity {
+    /// Читает пару raw 16-bit coordinates и применяет ISO BMFF scale.
+    fn read<R: ReadAtom>(it: &mut AtomIterator<R>) -> Result<Self> {
+        Ok(Self {
+            x: f32::from(it.read_u16()?) / MDCV_CHROMATICITY_SCALE,
+            y: f32::from(it.read_u16()?) / MDCV_CHROMATICITY_SCALE,
+        })
+    }
+}
+
+/// `mdcv` atom: mastering display colour volume.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MasteringDisplayColourVolumeAtom {
+    /// RGB primaries в порядке, заданном ISO BMFF box.
+    pub display_primaries: [MasteringDisplayChromaticity; 3],
+    /// White point mastering display.
+    pub white_point: MasteringDisplayChromaticity,
+    /// Maximum mastering display luminance в нитах.
+    pub max_luminance_nits: f32,
+    /// Minimum mastering display luminance в нитах.
+    pub min_luminance_nits: f32,
+}
+
+impl Atom for MasteringDisplayColourVolumeAtom {
+    fn read<R: ReadAtom>(it: &mut AtomIterator<R>, _header: &AtomHeader) -> Result<Self> {
+        Ok(Self {
+            display_primaries: [
+                MasteringDisplayChromaticity::read(it)?,
+                MasteringDisplayChromaticity::read(it)?,
+                MasteringDisplayChromaticity::read(it)?,
+            ],
+            white_point: MasteringDisplayChromaticity::read(it)?,
+            max_luminance_nits: it.read_u32()? as f32 / MDCV_LUMINANCE_SCALE,
+            min_luminance_nits: it.read_u32()? as f32 / MDCV_LUMINANCE_SCALE,
+        })
+    }
+}
+
+/// `clli` atom: content light level metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentLightLevelAtom {
+    /// MaxCLL в нитах.
+    pub max_content_light_level_nits: u16,
+    /// MaxFALL в нитах.
+    pub max_frame_average_light_level_nits: u16,
+}
+
+impl Atom for ContentLightLevelAtom {
+    fn read<R: ReadAtom>(it: &mut AtomIterator<R>, _header: &AtomHeader) -> Result<Self> {
+        Ok(Self {
+            max_content_light_level_nits: it.read_u16()?,
+            max_frame_average_light_level_nits: it.read_u16()?,
+        })
+    }
+}
+
 /// Visual sample entry.
 #[allow(dead_code)]
 #[derive(Debug, Default)]
@@ -473,6 +596,9 @@ pub struct VisualSampleEntry {
     pub profile: Option<CodecProfile>,
     pub level: Option<u32>,
     pub extra_data: Vec<VideoExtraData>,
+    pub colour_information: Option<ColourInformationAtom>,
+    pub mastering_display_colour_volume: Option<MasteringDisplayColourVolumeAtom>,
+    pub content_light_level: Option<ContentLightLevelAtom>,
 }
 
 impl VisualSampleEntry {
@@ -562,6 +688,16 @@ impl Atom for VisualSampleEntry {
                 AtomType::DolbyVisionConfiguration => {
                     let atom = it.read_atom::<DoviAtom>()?;
                     atom.fill_video_sample_entry(&mut entry);
+                }
+                AtomType::ColourInformation => {
+                    entry.colour_information = Some(it.read_atom::<ColourInformationAtom>()?);
+                }
+                AtomType::MasteringDisplayColourVolume => {
+                    entry.mastering_display_colour_volume =
+                        Some(it.read_atom::<MasteringDisplayColourVolumeAtom>()?);
+                }
+                AtomType::ContentLightLevel => {
+                    entry.content_light_level = Some(it.read_atom::<ContentLightLevelAtom>()?);
                 }
                 _ => {
                     debug!("unknown visual sample entry sub-atom: {:?}.", entry_header.atom_type());
@@ -740,5 +876,156 @@ impl Atom for PaspAtom {
             vert_off_n: it.read_u32()?,
             vert_off_d: it.read_u32()?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use symphonia_core::io::MediaSourceStream;
+
+    use super::{
+        Atom, AtomIterator, ColourInformationAtom, ContentLightLevelAtom,
+        MasteringDisplayColourVolumeAtom, VisualSampleEntry,
+    };
+
+    fn read_atom_from_payload<A: Atom>(atom_type: [u8; 4], payload: Vec<u8>) -> A {
+        let atom_bytes = atom_bytes(atom_type, payload);
+        let atom_len = atom_bytes.len() as u64;
+        let source = Cursor::new(atom_bytes);
+        let media_source_stream = MediaSourceStream::new(Box::new(source), Default::default());
+        let mut atom_iterator = AtomIterator::new(media_source_stream, Some(atom_len));
+
+        match atom_iterator.next_header() {
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("synthetic atom должен содержать header"),
+            Err(_) => panic!("synthetic atom header должен читаться"),
+        }
+
+        match atom_iterator.read_atom::<A>() {
+            Ok(atom) => atom,
+            Err(_) => panic!("synthetic atom должен парситься"),
+        }
+    }
+
+    fn atom_bytes(atom_type: [u8; 4], payload: Vec<u8>) -> Vec<u8> {
+        let atom_size = u32::try_from(payload.len() + 8).expect("test atom size fits u32");
+        let mut bytes = Vec::with_capacity(payload.len() + 8);
+        bytes.extend_from_slice(&atom_size.to_be_bytes());
+        bytes.extend_from_slice(&atom_type);
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    fn push_u16(bytes: &mut Vec<u8>, value: u16) {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn nclx_colr_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(b"nclx");
+        push_u16(&mut payload, 9);
+        push_u16(&mut payload, 16);
+        push_u16(&mut payload, 9);
+        payload.push(0x80);
+        payload
+    }
+
+    fn mdcv_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        for (x, y) in [
+            (34_000_u16, 16_000_u16),
+            (13_250_u16, 34_500_u16),
+            (7_500_u16, 3_000_u16),
+            (15_635_u16, 16_450_u16),
+        ] {
+            push_u16(&mut payload, x);
+            push_u16(&mut payload, y);
+        }
+        push_u32(&mut payload, 10_000_000);
+        push_u32(&mut payload, 50);
+        payload
+    }
+
+    fn clli_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        push_u16(&mut payload, 1_000);
+        push_u16(&mut payload, 400);
+        payload
+    }
+
+    fn assert_f32_near(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 0.000_1,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn parses_synthetic_colr_nclx_atom() {
+        let colour_information =
+            read_atom_from_payload::<ColourInformationAtom>(*b"colr", nclx_colr_payload());
+        let nclx = colour_information
+            .nclx
+            .expect("nclx colr должен стать typed metadata");
+
+        assert_eq!(nclx.color_primaries, 9);
+        assert_eq!(nclx.transfer_characteristics, 16);
+        assert_eq!(nclx.matrix_coefficients, 9);
+        assert!(nclx.full_range_flag);
+    }
+
+    #[test]
+    fn parses_synthetic_mdcv_atom() {
+        let mastering_display =
+            read_atom_from_payload::<MasteringDisplayColourVolumeAtom>(*b"mdcv", mdcv_payload());
+
+        assert_f32_near(mastering_display.display_primaries[0].x, 0.68);
+        assert_f32_near(mastering_display.display_primaries[0].y, 0.32);
+        assert_f32_near(mastering_display.white_point.x, 0.3127);
+        assert_f32_near(mastering_display.white_point.y, 0.329);
+        assert_f32_near(mastering_display.max_luminance_nits, 1_000.0);
+        assert_f32_near(mastering_display.min_luminance_nits, 0.005);
+    }
+
+    #[test]
+    fn parses_synthetic_clli_atom() {
+        let content_light_level =
+            read_atom_from_payload::<ContentLightLevelAtom>(*b"clli", clli_payload());
+
+        assert_eq!(content_light_level.max_content_light_level_nits, 1_000);
+        assert_eq!(content_light_level.max_frame_average_light_level_nits, 400);
+    }
+
+    #[test]
+    fn visual_sample_entry_reads_hdr_color_subatoms() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0; 6]);
+        push_u16(&mut payload, 1);
+        payload.extend_from_slice(&[0; 16]);
+        push_u16(&mut payload, 3840);
+        push_u16(&mut payload, 2160);
+        push_u32(&mut payload, 0x0048_0000);
+        push_u32(&mut payload, 0x0048_0000);
+        push_u32(&mut payload, 0);
+        push_u16(&mut payload, 1);
+        payload.push(0);
+        payload.extend_from_slice(&[0; 31]);
+        push_u16(&mut payload, 24);
+        push_u16(&mut payload, 0xffff);
+        payload.extend_from_slice(&atom_bytes(*b"colr", nclx_colr_payload()));
+        payload.extend_from_slice(&atom_bytes(*b"mdcv", mdcv_payload()));
+        payload.extend_from_slice(&atom_bytes(*b"clli", clli_payload()));
+
+        let sample_entry = read_atom_from_payload::<VisualSampleEntry>(*b"hvc1", payload);
+
+        assert!(sample_entry.colour_information.is_some());
+        assert!(sample_entry.mastering_display_colour_volume.is_some());
+        assert!(sample_entry.content_light_level.is_some());
     }
 }
