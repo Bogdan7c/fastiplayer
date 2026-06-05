@@ -189,6 +189,21 @@ mod tests {
         }
     }
 
+    fn track_entry_with_codec_private(
+        kind: TrackKind,
+        codec_id: &str,
+        codec_private: Vec<u8>,
+    ) -> TrackEntry {
+        TrackEntry {
+            kind: TrackEntryKind::Supported(kind),
+            codec_id: codec_id.to_string(),
+            codec_private: Some(codec_private.into()),
+            time_base: Some(TimeBase::try_new(1, 48_000).expect("valid time base")),
+            sample_rate: None,
+            channels: None,
+        }
+    }
+
     fn track_entry_without_time_base(kind: TrackKind, codec_id: &str) -> TrackEntry {
         TrackEntry {
             kind: TrackEntryKind::Supported(kind),
@@ -279,6 +294,63 @@ mod tests {
         push_bits(&mut bits, 63, 16);
         bits.push(0);
         bits_to_bytes(&bits)
+    }
+
+    fn build_h265_hvcc(
+        nal_length_size: u8,
+        profile_idc: u8,
+        chroma_format_idc: u8,
+        bit_depth: u8,
+    ) -> Vec<u8> {
+        let mut record_bytes = vec![
+            1,
+            profile_idc & 0x1f,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            120,
+            0xf0,
+            0x00,
+            0xfc,
+            0xfc | (chroma_format_idc & 0x03),
+            0xf8 | ((bit_depth - 8) & 0x07),
+            0xf8 | ((bit_depth - 8) & 0x07),
+            0,
+            0,
+            0b0000_1100 | ((nal_length_size - 1) & 0x03),
+            0,
+        ];
+        set_h265_profile_compatibility_flag(&mut record_bytes, profile_idc);
+        record_bytes
+    }
+
+    fn set_h265_profile_compatibility_flag(record_bytes: &mut [u8], profile_idc: u8) {
+        let flag_index = usize::from(profile_idc);
+        let byte_index = 2 + flag_index / 8;
+        let bit_index = 7 - (flag_index % 8);
+        record_bytes[byte_index] |= 1 << bit_index;
+    }
+
+    fn h265_nal_unit(nal_unit_type: u8, payload: &[u8]) -> Vec<u8> {
+        let mut nal_unit = vec![(nal_unit_type & 0x3f) << 1, 0x01];
+        nal_unit.extend_from_slice(payload);
+        nal_unit
+    }
+
+    fn h265_hvcc_access_unit(nal_units: &[Vec<u8>]) -> Vec<u8> {
+        let mut access_unit = Vec::new();
+        for nal_unit in nal_units {
+            access_unit.extend_from_slice(&(nal_unit.len() as u32).to_be_bytes());
+            access_unit.extend_from_slice(nal_unit);
+        }
+        access_unit
     }
 
     fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
@@ -476,7 +548,7 @@ mod tests {
 
     #[test]
     fn video_codecs_without_keyframe_adapter_convert_with_unknown_keyframe() {
-        for codec_id in ["V_AV1", "V_MPEG4/ISO/AVC", "V_MPEGH/ISO/HEVC"] {
+        for codec_id in ["V_AV1"] {
             let track_map = HashMap::from([(1, track_entry(TrackKind::Video, codec_id))]);
 
             let packet = convert_packet(packet(1, 0, b"opaque video packet"), &track_map)
@@ -502,6 +574,41 @@ mod tests {
 
         let packet = convert_packet(owned_packet(1, 0, build_vp9_inter_frame()), &track_map)
             .expect("валидный VP9 inter-frame должен конвертироваться");
+
+        assert_eq!(packet.keyframe, PacketKeyframe::NotKeyframe);
+    }
+
+    #[test]
+    fn valid_h265_hvcc_keyframe_packet_sets_keyframe_flag() {
+        let codec_private = build_h265_hvcc(4, 1, 1, 8);
+        let access_unit = h265_hvcc_access_unit(&[
+            h265_nal_unit(32, &[0x01]),
+            h265_nal_unit(33, &[0x01]),
+            h265_nal_unit(34, &[0x01]),
+            h265_nal_unit(21, &[0x01]),
+        ]);
+        let track_map = HashMap::from([(
+            1,
+            track_entry_with_codec_private(TrackKind::Video, "V_MPEGH/ISO/HEVC", codec_private),
+        )]);
+
+        let packet = convert_packet(owned_packet(1, 0, access_unit), &track_map)
+            .expect("валидный HEVC IRAP packet должен конвертироваться");
+
+        assert_eq!(packet.keyframe, PacketKeyframe::Keyframe);
+    }
+
+    #[test]
+    fn valid_h265_hvcc_inter_packet_sets_non_keyframe_flag() {
+        let codec_private = build_h265_hvcc(4, 1, 1, 8);
+        let access_unit = h265_hvcc_access_unit(&[h265_nal_unit(1, &[0x01])]);
+        let track_map = HashMap::from([(
+            1,
+            track_entry_with_codec_private(TrackKind::Video, "V_MPEGH/ISO/HEVC", codec_private),
+        )]);
+
+        let packet = convert_packet(owned_packet(1, 0, access_unit), &track_map)
+            .expect("валидный HEVC inter packet должен конвертироваться");
 
         assert_eq!(packet.keyframe, PacketKeyframe::NotKeyframe);
     }

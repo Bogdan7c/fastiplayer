@@ -218,6 +218,64 @@ fn h264_stream_config_accepts_zeroed_avcc_reserved_bits() {
 }
 
 #[test]
+fn h265_stream_config_uses_track_hvcc_packetization_and_metadata() {
+    let mut session = PlayerSession::new();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    let video_track_id = TrackId::new(19);
+    install_tracks_for_capability_selection(&mut session, vec![h265_track_with_hvcc(19)]);
+    session
+        .pipeline
+        .set_video_decoder_thread(fake_decoder.clone());
+
+    session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
+        .expect("fake backend должен принять нейтральный H.265 config без VAAPI adapter-а");
+
+    let config = fake_decoder
+        .stream_config()
+        .expect("H.265 selection должен передать stream config в decoder boundary");
+
+    assert_eq!(config.track_id, video_track_id);
+    assert_eq!(config.codec, VideoCodec::H265);
+    assert_eq!(
+        config.profile,
+        Some(VideoProfile::H265(codec_core::H265Profile::Main10))
+    );
+    assert_eq!(config.bit_depth, Some(BitDepth::Ten));
+    assert_eq!(config.chroma, Some(ChromaSubsampling::Yuv420));
+    assert_eq!(config.coded_width, Some(3840));
+    assert_eq!(config.coded_height, Some(2160));
+    assert_eq!(config.codec_private, Some(h265_hvcc_codec_private()));
+    match config.packetization {
+        Some(video_core::VideoStreamPacketization::H265(
+            codec_core::H265Packetization::HvccLengthPrefixed { nal_length_size },
+        )) => assert_eq!(nal_length_size.get(), 4),
+        unexpected_packetization => {
+            panic!("expected hvcC H.265 packetization, got {unexpected_packetization:?}");
+        }
+    }
+}
+
+#[test]
+fn h265_stream_config_rejects_missing_hvcc_with_typed_codec_error() {
+    let mut session = PlayerSession::new();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    let video_track_id = TrackId::new(20);
+    let mut track = h265_track_with_hvcc(video_track_id.get());
+    track.codec_private = None;
+    install_tracks_for_capability_selection(&mut session, vec![track]);
+    session.pipeline.set_video_decoder_thread(fake_decoder);
+
+    let error = session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
+        .expect_err("H.265 без hvcC не должен превращаться в bool/no-op");
+
+    assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoCodec);
+    assert!(error.message.contains("hvcC codec_private"));
+    assert!(session.pipeline.selected_video_track_id().is_none());
+}
+
+#[test]
 fn fake_backend_accepts_vp9_h264_vp9_switch_without_restart() {
     let mut session = PlayerSession::new();
     let fake_decoder = SharedFakeVideoDecoderThread::new();
@@ -440,4 +498,55 @@ fn h264_avcc_codec_private_with_zeroed_reserved_bits() -> Bytes {
     Bytes::from_static(&[
         1, 0x42, 0xe0, 0x1f, 0x03, 0x01, 0x00, 0x04, 0x67, 0x42, 0xe0, 0x1f, 0x01, 0x00, 0x01, 0x68,
     ])
+}
+
+fn h265_track_with_hvcc(track_id: u32) -> TrackInfo {
+    let mut track = fake_track(track_id, TrackKind::Video);
+    let mut metadata = VideoTrackMetadata::empty();
+    metadata.profile = Some(VideoProfile::H265(codec_core::H265Profile::Main10));
+    metadata.bit_depth = Some(BitDepth::Ten);
+    metadata.chroma = Some(ChromaSubsampling::Yuv420);
+    metadata.coded_width = Some(3840);
+    metadata.coded_height = Some(2160);
+    track.codec_id = "V_MPEGH/ISO/HEVC".to_string();
+    track.codec_private = Some(h265_hvcc_codec_private());
+    track.video = Some(metadata);
+    track
+}
+
+fn h265_hvcc_codec_private() -> Bytes {
+    let mut record_bytes = vec![
+        1,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        120,
+        0xf0,
+        0x00,
+        0xfc,
+        0xfd,
+        0xfa,
+        0xfa,
+        0,
+        0,
+        0b0000_1111,
+        0,
+    ];
+    set_h265_profile_compatibility_flag(&mut record_bytes, 2);
+    Bytes::from(record_bytes)
+}
+
+fn set_h265_profile_compatibility_flag(record_bytes: &mut [u8], profile_idc: u8) {
+    let flag_index = usize::from(profile_idc);
+    let byte_index = 2 + flag_index / 8;
+    let bit_index = 7 - (flag_index % 8);
+    record_bytes[byte_index] |= 1 << bit_index;
 }

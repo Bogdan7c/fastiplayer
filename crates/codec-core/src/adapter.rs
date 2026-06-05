@@ -2,12 +2,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BitDepth, ChromaSubsampling, ColorMetadataOrigin, H264ParameterSetKind, H264RequirementError,
-    H264SpsError, H264SpsMetadata, VideoCodec, VideoColorMetadata, VideoDecodeRequirement,
+    H264SpsError, H264SpsMetadata, H265PacketDecodeStartProbe, H265ParameterSetKind,
+    H265RequirementError, H265SpsError, VideoCodec, VideoColorMetadata, VideoDecodeRequirement,
     VideoProfile, VideoSurfaceFormat, Vp9DecodedFormatRequirement, Vp9MetadataSource, Vp9Profile,
     Vp9RequirementCandidate, Vp9RequirementProbe, Vp9RequirementRejection,
     Vp9RequirementUncertainty, h264_sps_metadata_from_avc_decoder_configuration_record,
-    h264_sps_metadata_from_packet, infer_h264_packetization, probe_h264_packet_keyframe,
-    probe_vp9_packet_requirement, resolve_vp9_metadata,
+    h264_sps_metadata_from_packet, h265_decode_requirement_from_hevc_decoder_configuration_record,
+    h265_decode_requirement_from_packet, infer_h264_packetization, infer_h265_packetization,
+    parse_hevc_decoder_configuration_record, probe_h264_packet_keyframe,
+    probe_h265_packet_decode_start, probe_vp9_packet_requirement, resolve_vp9_metadata,
 };
 
 /// Codec-neutral source metadata, пришедшая из manifest/container до decode.
@@ -365,6 +368,15 @@ pub enum VideoRequirementUncertainty {
         /// Какого parameter set-а не хватает.
         parameter_set: H264ParameterSetKind,
     },
+
+    /// Packet не содержит нужный HEVC parameter set, но stream ещё может отдать его позже.
+    MissingH265ParameterSet {
+        /// Codec stream-а.
+        codec: VideoCodec,
+
+        /// Какого HEVC parameter set-а не хватает.
+        parameter_set: H265ParameterSetKind,
+    },
 }
 
 /// Итоговый generic metadata resolver output.
@@ -391,10 +403,10 @@ pub fn probe_video_packet_requirement(
 
 /// Возвращает packet-level probing result с codec-private state контейнера.
 ///
-/// H.264 MP4/MKV streams часто несут SPS/PPS и NAL length size в `avcC`, а
-/// packet bytes содержат только length-prefixed access unit. Поэтому caller,
-/// у которого есть container private data, должен использовать этот boundary,
-/// вместо угадывания packetization по первым байтам packet-а.
+/// H.264/H.265 MP4/MKV streams часто несут parameter sets и NAL length size в
+/// `avcC`/`hvcC`, а packet bytes содержат только length-prefixed access unit.
+/// Поэтому caller, у которого есть container private data, должен использовать
+/// этот boundary вместо угадывания packetization по первым байтам packet-а.
 #[must_use]
 pub fn probe_video_packet_requirement_with_codec_private(
     codec: VideoCodec,
@@ -404,6 +416,7 @@ pub fn probe_video_packet_requirement_with_codec_private(
     match codec {
         VideoCodec::Vp9 => map_vp9_probe(probe_vp9_packet_requirement(packet_bytes)),
         VideoCodec::H264 => probe_h264_packet_requirement(packet_bytes, codec_private),
+        VideoCodec::H265 => probe_h265_packet_requirement(packet_bytes, codec_private),
         other_codec => {
             VideoRequirementProbe::Recoverable(VideoRequirementUncertainty::AdapterUnavailable {
                 codec: other_codec,
@@ -442,6 +455,32 @@ pub fn probe_video_packet_keyframe_with_codec_private(
             .and_then(|packetization| probe_h264_packet_keyframe(packet_bytes, packetization))
         {
             Ok(keyframe) => VideoPacketKeyframeProbe::Keyframe(keyframe),
+            Err(error) => {
+                VideoPacketKeyframeProbe::Uncertain(VideoRequirementUncertainty::ParseError {
+                    codec,
+                    reason: error.to_string(),
+                })
+            }
+        },
+        VideoCodec::H265 => match infer_h265_packetization(codec_private, packet_bytes) {
+            Ok(packetization) => {
+                match probe_h265_packet_decode_start(packet_bytes, packetization) {
+                    H265PacketDecodeStartProbe::DecodeStart => {
+                        VideoPacketKeyframeProbe::Keyframe(true)
+                    }
+                    H265PacketDecodeStartProbe::NotDecodeStart => {
+                        VideoPacketKeyframeProbe::Keyframe(false)
+                    }
+                    H265PacketDecodeStartProbe::Uncertain(error) => {
+                        VideoPacketKeyframeProbe::Uncertain(
+                            VideoRequirementUncertainty::ParseError {
+                                codec,
+                                reason: error.to_string(),
+                            },
+                        )
+                    }
+                }
+            }
             Err(error) => {
                 VideoPacketKeyframeProbe::Uncertain(VideoRequirementUncertainty::ParseError {
                     codec,
@@ -492,6 +531,14 @@ pub fn video_requirement_needs_packet_refinement(requirement: &VideoDecodeRequir
                 || requirement.surface_format.is_none()
         }
         VideoCodec::H264 => {
+            requirement.profile.is_none()
+                || requirement.bit_depth.is_none()
+                || requirement.chroma.is_none()
+                || requirement.width.is_none()
+                || requirement.height.is_none()
+                || requirement.surface_format.is_none()
+        }
+        VideoCodec::H265 => {
             requirement.profile.is_none()
                 || requirement.bit_depth.is_none()
                 || requirement.chroma.is_none()
@@ -562,6 +609,77 @@ fn h264_candidate(metadata: H264SpsMetadata) -> VideoRequirementCandidate {
     }
 
     VideoRequirementCandidate::generic(requirement)
+}
+
+/// Пробует H.265 requirement из `hvcC`, затем из in-band SPS внутри packet-а.
+fn probe_h265_packet_requirement(
+    packet_bytes: &[u8],
+    codec_private: Option<&[u8]>,
+) -> VideoRequirementProbe {
+    let mut packetization_from_private = None;
+    let mut fallback_private_requirement = None;
+    let mut deferred_private_error = None;
+
+    if let Some(codec_private) = codec_private.filter(|bytes| !bytes.is_empty()) {
+        match parse_hevc_decoder_configuration_record(codec_private) {
+            Ok(record) => {
+                packetization_from_private = Some(record.packetization());
+                match h265_decode_requirement_from_hevc_decoder_configuration_record(codec_private)
+                {
+                    Ok(requirement) if record.sequence_parameter_sets().is_empty() => {
+                        fallback_private_requirement = Some(requirement);
+                    }
+                    Ok(requirement) => {
+                        return VideoRequirementProbe::Candidate(
+                            VideoRequirementCandidate::generic(requirement),
+                        );
+                    }
+                    Err(error) if h265_requirement_error_is_policy_rejection(&error) => {
+                        return map_h265_requirement_error(error);
+                    }
+                    Err(error) => {
+                        deferred_private_error = Some(error);
+                    }
+                }
+            }
+            Err(error) => {
+                deferred_private_error =
+                    Some(H265RequirementError::HevcDecoderConfigurationRecord(error));
+            }
+        }
+    }
+
+    let packetization = match packetization_from_private {
+        Some(packetization) => Ok(packetization),
+        None => infer_h265_packetization(codec_private, packet_bytes),
+    };
+
+    match packetization
+        .map_err(H265RequirementError::ByteStream)
+        .and_then(|packetization| h265_decode_requirement_from_packet(packet_bytes, packetization))
+    {
+        Ok(requirement) => {
+            VideoRequirementProbe::Candidate(VideoRequirementCandidate::generic(requirement))
+        }
+        Err(H265RequirementError::MissingSequenceParameterSet)
+        | Err(H265RequirementError::ByteStream(_))
+            if fallback_private_requirement.is_some() =>
+        {
+            VideoRequirementProbe::Candidate(VideoRequirementCandidate::generic(
+                fallback_private_requirement
+                    .expect("checked by fallback_private_requirement.is_some()"),
+            ))
+        }
+        Err(error)
+            if matches!(error, H265RequirementError::ByteStream(_))
+                && deferred_private_error.is_some() =>
+        {
+            map_h265_requirement_error(
+                deferred_private_error.expect("checked by deferred_private_error.is_some()"),
+            )
+        }
+        Err(error) => map_h265_requirement_error(error),
+    }
 }
 
 /// Проверяет, что H.264 ошибка является policy reject-ом, а не recoverable uncertainty.
@@ -667,6 +785,155 @@ fn h264_chroma_subsampling_from_format_idc(chroma_format_idc: u32) -> Option<Chr
         2 => Some(ChromaSubsampling::Yuv422),
         3 => Some(ChromaSubsampling::Yuv444),
         _ => None,
+    }
+}
+
+/// Проверяет, что H.265 ошибка является policy reject-ом, а не recoverable uncertainty.
+fn h265_requirement_error_is_policy_rejection(error: &H265RequirementError) -> bool {
+    matches!(
+        error,
+        H265RequirementError::HevcDecoderConfigurationRecord(
+            crate::HevcDecoderConfigurationRecordError::UnsupportedNalLengthSize { .. }
+        ) | H265RequirementError::SequenceParameterSet(
+            H265SpsError::UnsupportedProfile { .. }
+                | H265SpsError::UnsupportedBitDepth { .. }
+                | H265SpsError::UnsupportedChroma { .. }
+                | H265SpsError::UnsupportedProfileFormat { .. }
+        ) | H265RequirementError::UnsupportedProfile { .. }
+            | H265RequirementError::UnsupportedBitDepth { .. }
+            | H265RequirementError::UnsupportedChroma { .. }
+            | H265RequirementError::UnsupportedProfileFormat { .. }
+    )
+}
+
+/// Мапит H.265 typed errors в общий adapter result.
+fn map_h265_requirement_error(error: H265RequirementError) -> VideoRequirementProbe {
+    match error {
+        H265RequirementError::HevcDecoderConfigurationRecord(
+            crate::HevcDecoderConfigurationRecordError::UnsupportedNalLengthSize {
+                nal_length_size,
+            },
+        ) => VideoRequirementProbe::Rejected(VideoRequirementRejection::UnsupportedPacketization {
+            codec: VideoCodec::H265,
+            reason: format!(
+                "H.265 hvcC NAL length size {nal_length_size} is unsupported; expected 1, 2 or 4"
+            ),
+        }),
+        H265RequirementError::SequenceParameterSet(H265SpsError::UnsupportedProfile {
+            profile_idc,
+            profile_compatibility_flags,
+            reason,
+        })
+        | H265RequirementError::UnsupportedProfile {
+            profile_idc,
+            profile_compatibility_flags,
+            reason,
+        } => VideoRequirementProbe::Rejected(VideoRequirementRejection::UnsupportedProfile {
+            codec: VideoCodec::H265,
+            profile_idc,
+            constraint_flags: (profile_compatibility_flags & 0xff) as u8,
+            reason: format!(
+                "{reason}; H.265 profile_compatibility_flags=0x{profile_compatibility_flags:08x}"
+            ),
+        }),
+        H265RequirementError::SequenceParameterSet(H265SpsError::UnsupportedBitDepth {
+            bit_depth_luma,
+            bit_depth_chroma,
+        })
+        | H265RequirementError::UnsupportedBitDepth {
+            bit_depth_luma,
+            bit_depth_chroma,
+        } => VideoRequirementProbe::Rejected(VideoRequirementRejection::UnsupportedBitDepth {
+            codec: VideoCodec::H265,
+            bit_depth: bit_depth_luma.max(bit_depth_chroma),
+            reason: format!(
+                "H.265 luma={bit_depth_luma}-bit/chroma={bit_depth_chroma}-bit stream is not supported by the v1 zero-copy path"
+            ),
+        }),
+        H265RequirementError::SequenceParameterSet(H265SpsError::UnsupportedChroma {
+            chroma_format_idc,
+        })
+        | H265RequirementError::UnsupportedChroma { chroma_format_idc } => {
+            map_h265_unsupported_chroma(chroma_format_idc)
+        }
+        H265RequirementError::SequenceParameterSet(H265SpsError::UnsupportedProfileFormat {
+            profile,
+            bit_depth,
+            chroma,
+        })
+        | H265RequirementError::UnsupportedProfileFormat {
+            profile,
+            bit_depth,
+            chroma,
+        } => VideoRequirementProbe::Rejected(VideoRequirementRejection::UnsupportedProfile {
+            codec: VideoCodec::H265,
+            profile_idc: h265_profile_idc(profile),
+            constraint_flags: 0,
+            reason: format!(
+                "H.265 {profile} {bit_depth} {chroma} stream is not supported by the v1 zero-copy path"
+            ),
+        }),
+        H265RequirementError::MissingSequenceParameterSet => VideoRequirementProbe::Recoverable(
+            VideoRequirementUncertainty::MissingH265ParameterSet {
+                codec: VideoCodec::H265,
+                parameter_set: H265ParameterSetKind::Sequence,
+            },
+        ),
+        other_error => {
+            VideoRequirementProbe::Recoverable(VideoRequirementUncertainty::ParseError {
+                codec: VideoCodec::H265,
+                reason: other_error.to_string(),
+            })
+        }
+    }
+}
+
+/// Мапит HEVC `chroma_format_idc` в максимально конкретный общий reject.
+fn map_h265_unsupported_chroma(chroma_format_idc: u32) -> VideoRequirementProbe {
+    let Some(chroma) = h265_chroma_subsampling_from_format_idc(chroma_format_idc) else {
+        return VideoRequirementProbe::Rejected(
+            VideoRequirementRejection::UnsupportedChromaFormat {
+                codec: VideoCodec::H265,
+                chroma_format_idc,
+                reason: format!(
+                    "H.265 chroma_format_idc {chroma_format_idc} is not supported by the v1 zero-copy path"
+                ),
+            },
+        );
+    };
+
+    VideoRequirementProbe::Rejected(VideoRequirementRejection::UnsupportedChroma {
+        codec: VideoCodec::H265,
+        chroma,
+        reason: format!("H.265 {chroma} stream is not supported by the v1 zero-copy path"),
+    })
+}
+
+/// Переводит HEVC chroma id в общую model там, где это возможно.
+fn h265_chroma_subsampling_from_format_idc(chroma_format_idc: u32) -> Option<ChromaSubsampling> {
+    match chroma_format_idc {
+        1 => Some(ChromaSubsampling::Yuv420),
+        2 => Some(ChromaSubsampling::Yuv422),
+        3 => Some(ChromaSubsampling::Yuv444),
+        _ => None,
+    }
+}
+
+/// Возвращает canonical profile_idc для typed HEVC profile diagnostic.
+const fn h265_profile_idc(profile: crate::H265Profile) -> u8 {
+    match profile {
+        crate::H265Profile::Main => 1,
+        crate::H265Profile::Main10 => 2,
+        crate::H265Profile::Main12 => 3,
+        crate::H265Profile::Main422_10 => 4,
+        crate::H265Profile::Main422_12 => 5,
+        crate::H265Profile::Main444 => 6,
+        crate::H265Profile::Main444_10 => 7,
+        crate::H265Profile::Main444_12 => 8,
+        crate::H265Profile::SccMain => 9,
+        crate::H265Profile::SccMain10 => 10,
+        crate::H265Profile::SccMain444 => 11,
+        crate::H265Profile::SccMain444_10 => 12,
     }
 }
 
@@ -873,6 +1140,99 @@ mod tests {
         ));
     }
 
+    /// Проверяет, что неполный, но структурно валидный `hvcC` уточняет HEVC Main10 contract.
+    #[test]
+    fn h265_hvcc_header_refines_main10_requirement_without_parameter_sets() {
+        let codec_private = h265_hvcc(4, 2, 1, 10);
+        let packet_bytes =
+            h265_hvcc_access_unit(crate::H265NalLengthSize::FOUR, &[h265_nal_unit(1, &[0x01])]);
+
+        let probe = probe_video_packet_requirement_with_codec_private(
+            VideoCodec::H265,
+            &packet_bytes,
+            Some(&codec_private),
+        );
+
+        let VideoRequirementProbe::Candidate(candidate) = probe else {
+            panic!("H.265 Main10 hvcC должен дать candidate, получено {probe:?}");
+        };
+        assert_eq!(
+            candidate.requirement.profile,
+            Some(VideoProfile::H265(crate::H265Profile::Main10))
+        );
+        assert_eq!(candidate.requirement.bit_depth, Some(BitDepth::Ten));
+        assert_eq!(
+            candidate.requirement.chroma,
+            Some(ChromaSubsampling::Yuv420)
+        );
+        assert_eq!(
+            candidate.requirement.surface_format,
+            Some(VideoSurfaceFormat::P010)
+        );
+    }
+
+    /// Проверяет real-world `hev1`: parameter sets могут прийти in-band, а `hvcC` доказывает framing.
+    #[test]
+    fn h265_keyframe_probe_accepts_hev1_style_in_band_parameter_sets() {
+        let codec_private = h265_hvcc(4, 1, 1, 8);
+        let packet_bytes = h265_hvcc_access_unit(
+            crate::H265NalLengthSize::FOUR,
+            &[
+                h265_nal_unit(32, &[0x01]),
+                h265_nal_unit(33, &[0x01]),
+                h265_nal_unit(34, &[0x01]),
+                h265_nal_unit(21, &[0x01]),
+            ],
+        );
+
+        let probe = probe_video_packet_keyframe_with_codec_private(
+            VideoCodec::H265,
+            &packet_bytes,
+            Some(&codec_private),
+        );
+
+        assert_eq!(probe, VideoPacketKeyframeProbe::Keyframe(true));
+    }
+
+    /// Проверяет, что HEVC inter-frame не становится ложным decode-start.
+    #[test]
+    fn h265_keyframe_probe_distinguishes_inter_frame() {
+        let codec_private = h265_hvcc(4, 1, 1, 8);
+        let packet_bytes =
+            h265_hvcc_access_unit(crate::H265NalLengthSize::FOUR, &[h265_nal_unit(1, &[0x01])]);
+
+        let probe = probe_video_packet_keyframe_with_codec_private(
+            VideoCodec::H265,
+            &packet_bytes,
+            Some(&codec_private),
+        );
+
+        assert_eq!(probe, VideoPacketKeyframeProbe::Keyframe(false));
+    }
+
+    /// Проверяет, что HEVC 4:2:2 остаётся typed unsupported, а не recoverable parse noise.
+    #[test]
+    fn h265_unsupported_chroma_maps_to_codec_neutral_reject() {
+        let codec_private = h265_hvcc(4, 1, 2, 8);
+        let packet_bytes =
+            h265_hvcc_access_unit(crate::H265NalLengthSize::FOUR, &[h265_nal_unit(1, &[0x01])]);
+
+        let probe = probe_video_packet_requirement_with_codec_private(
+            VideoCodec::H265,
+            &packet_bytes,
+            Some(&codec_private),
+        );
+
+        assert!(matches!(
+            probe,
+            VideoRequirementProbe::Rejected(VideoRequirementRejection::UnsupportedChroma {
+                codec: VideoCodec::H265,
+                chroma: ChromaSubsampling::Yuv422,
+                ..
+            })
+        ));
+    }
+
     /// Проверяет, что keyframe probing тоже живёт за codec adapter API.
     #[test]
     fn vp9_keyframe_probe_returns_codec_neutral_result() {
@@ -1013,6 +1373,84 @@ mod tests {
         bits.push((profile >> 1) & 1);
         if profile == 3 {
             bits.push(0);
+        }
+    }
+
+    /// Собирает минимальный `hvcC` record с header metadata и без parameter set arrays.
+    fn h265_hvcc(
+        nal_length_size: u8,
+        profile_idc: u8,
+        chroma_format_idc: u8,
+        bit_depth: u8,
+    ) -> Vec<u8> {
+        let mut record_bytes = vec![
+            1,
+            profile_idc & 0x1f,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            120,
+            0xf0,
+            0x00,
+            0xfc,
+            0xfc | (chroma_format_idc & 0x03),
+            0xf8 | ((bit_depth - 8) & 0x07),
+            0xf8 | ((bit_depth - 8) & 0x07),
+            0,
+            0,
+            0b0000_1100 | ((nal_length_size - 1) & 0x03),
+            0,
+        ];
+        set_h265_profile_compatibility_flag(&mut record_bytes, profile_idc);
+        record_bytes
+    }
+
+    /// Помечает profile compatibility flag так же, как это делает реальный `hvcC`.
+    fn set_h265_profile_compatibility_flag(record_bytes: &mut [u8], profile_idc: u8) {
+        let flag_index = usize::from(profile_idc);
+        let byte_index = 2 + flag_index / 8;
+        let bit_index = 7 - (flag_index % 8);
+        record_bytes[byte_index] |= 1 << bit_index;
+    }
+
+    /// Собирает HEVC NAL unit с валидным двухбайтовым header-ом.
+    fn h265_nal_unit(nal_unit_type: u8, payload: &[u8]) -> Vec<u8> {
+        let mut nal_unit = vec![(nal_unit_type & 0x3f) << 1, 0x01];
+        nal_unit.extend_from_slice(payload);
+        nal_unit
+    }
+
+    /// Собирает length-prefixed HEVC access unit под выбранный `hvcC` length size.
+    fn h265_hvcc_access_unit(
+        nal_length_size: crate::H265NalLengthSize,
+        nal_units: &[Vec<u8>],
+    ) -> Vec<u8> {
+        let mut access_unit = Vec::new();
+        for nal_unit in nal_units {
+            push_h265_nal_length(&mut access_unit, nal_length_size, nal_unit.len());
+            access_unit.extend_from_slice(nal_unit);
+        }
+        access_unit
+    }
+
+    /// Пишет big-endian HEVC NAL length prefix.
+    fn push_h265_nal_length(
+        output_bytes: &mut Vec<u8>,
+        nal_length_size: crate::H265NalLengthSize,
+        nal_size: usize,
+    ) {
+        match nal_length_size.get() {
+            1 => output_bytes.push(nal_size as u8),
+            2 => output_bytes.extend_from_slice(&(nal_size as u16).to_be_bytes()),
+            4 => output_bytes.extend_from_slice(&(nal_size as u32).to_be_bytes()),
+            _ => unreachable!("test uses validated H265NalLengthSize"),
         }
     }
 }

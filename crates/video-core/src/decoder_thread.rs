@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use codec_core::{
-    BitDepth, ChromaSubsampling, H264Packetization, VideoCodec, VideoColorMetadata,
-    VideoDecodeRequirement, VideoDisplayOrientation, VideoMemoryContract, VideoProfile,
-    VideoSurfaceFormat,
+    BitDepth, ChromaSubsampling, H264Packetization, H265Packetization, VideoCodec,
+    VideoColorMetadata, VideoDecodeRequirement, VideoDisplayOrientation, VideoMemoryContract,
+    VideoProfile, VideoSurfaceFormat,
 };
 use media_core::{TrackId, TrackTimestamp};
 
@@ -13,6 +13,9 @@ use media_core::{TrackId, TrackTimestamp};
 pub enum VideoStreamPacketization {
     /// H.264/AVC packetization, подтверждённая codec adapter-ом.
     H264(H264Packetization),
+
+    /// H.265/HEVC packetization, подтверждённая codec adapter-ом.
+    H265(H265Packetization),
 }
 
 /// Нейтральная конфигурация выбранного video stream-а для decoder backend-а.
@@ -52,7 +55,7 @@ pub struct VideoStreamDecodeConfig {
     /// Required decoded memory path; production policy остаётся hardware zero-copy.
     pub memory_contract: VideoMemoryContract,
 
-    /// Container codec-private bytes, например MP4/MKV `avcC` для H.264.
+    /// Container codec-private bytes, например MP4/MKV `avcC`/`hvcC`.
     pub codec_private: Option<Bytes>,
 
     /// Явная packetization/framing metadata, если codec adapter уже подтвердил её.
