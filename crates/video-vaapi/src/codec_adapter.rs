@@ -4,13 +4,17 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use codec_core::{
-    BitDepth, ChromaSubsampling, H264Packetization, H264ParameterSetInjection,
-    SupportedVideoDecodeFormat, VideoCodec, VideoProfile, VideoSurfaceFormat, Vp9Profile,
-    h264_access_unit_to_annex_b_into, parse_avc_decoder_configuration_record,
+    BitDepth, ChromaSubsampling, H264Packetization, H264ParameterSetInjection, H265NalUnit,
+    H265Packetization, H265ParameterSetInjection, H265Profile, SupportedVideoDecodeFormat,
+    VideoCodec, VideoProfile, VideoSurfaceFormat, Vp9Profile, h264_access_unit_to_annex_b_into,
+    h265_access_unit_to_annex_b_into,
+    h265_decode_requirement_from_hevc_decoder_configuration_record, h265_nal_units,
+    parse_avc_decoder_configuration_record, parse_hevc_decoder_configuration_record,
 };
 use cros_codecs::DecodedFormat;
 use cros_codecs::backend::vaapi::decoder::VaapiBackend;
 use cros_codecs::decoder::stateless::h264::H264;
+use cros_codecs::decoder::stateless::h265::H265;
 use cros_codecs::decoder::stateless::{DecodeError, StatelessDecoder, StatelessVideoDecoder};
 use cros_codecs::decoder::{
     BlockingMode, DecodedDmaBufImage, DecodedHandle, DecoderEvent, DynDecodedHandle, StreamInfo,
@@ -623,6 +627,427 @@ impl VaapiCodecAdapter for H264VaapiCodecAdapter {
     }
 }
 
+const H265_NAL_UNIT_TYPE_VPS: u8 = 32;
+const H265_NAL_UNIT_TYPE_SPS: u8 = 33;
+const H265_NAL_UNIT_TYPE_PPS: u8 = 34;
+
+/// H.265 stream metadata, доказанная на configure boundary и дополненная in-band.
+struct H265VaapiStreamConfig {
+    /// Packetization player/demuxer уже подтвердили через `codec-core`.
+    packetization: H265Packetization,
+
+    /// VPS NAL units из hvcC или in-band packets без Annex B start code.
+    video_parameter_sets: Vec<Vec<u8>>,
+
+    /// SPS NAL units из hvcC или in-band packets без Annex B start code.
+    sequence_parameter_sets: Vec<Vec<u8>>,
+
+    /// PPS NAL units из hvcC или in-band packets без Annex B start code.
+    picture_parameter_sets: Vec<Vec<u8>>,
+}
+
+impl H265VaapiStreamConfig {
+    /// Строит backend-local config без требования canonical полного `hvcC`.
+    fn from_decode_config(
+        config: &VideoStreamDecodeConfig,
+    ) -> std::result::Result<Self, VideoStreamConfigRejection> {
+        let packetization = match config.packetization {
+            Some(VideoStreamPacketization::H265(packetization)) => packetization,
+            _ => {
+                return Err(VideoStreamConfigRejection::MissingPacketization {
+                    codec: VideoCodec::H265,
+                });
+            }
+        };
+
+        let mut stream_config = Self {
+            packetization,
+            video_parameter_sets: Vec::new(),
+            sequence_parameter_sets: Vec::new(),
+            picture_parameter_sets: Vec::new(),
+        };
+
+        let Some(codec_private) = config
+            .codec_private
+            .as_deref()
+            .filter(|bytes| !bytes.is_empty())
+        else {
+            return Ok(stream_config);
+        };
+
+        let decoder_config =
+            parse_hevc_decoder_configuration_record(codec_private).map_err(|error| {
+                VideoStreamConfigRejection::InvalidCodecPrivate {
+                    codec: VideoCodec::H265,
+                    reason: error.to_string(),
+                }
+            })?;
+
+        if let H265Packetization::HvccLengthPrefixed { nal_length_size } = packetization
+            && decoder_config.nal_length_size != nal_length_size
+        {
+            return Err(VideoStreamConfigRejection::InvalidCodecPrivate {
+                codec: VideoCodec::H265,
+                reason: format!(
+                    "H.265 packetization length size {nal_length_size:?} does not match hvcC {:?}",
+                    decoder_config.nal_length_size
+                ),
+            });
+        }
+
+        stream_config
+            .video_parameter_sets
+            .extend_from_slice(decoder_config.video_parameter_sets());
+        stream_config
+            .sequence_parameter_sets
+            .extend_from_slice(decoder_config.sequence_parameter_sets());
+        stream_config
+            .picture_parameter_sets
+            .extend_from_slice(decoder_config.picture_parameter_sets());
+
+        Ok(stream_config)
+    }
+
+    /// Конвертирует AU в Annex B и после успеха запоминает in-band VPS/SPS/PPS.
+    fn access_unit_to_annex_b_into(
+        &mut self,
+        packet_data: &[u8],
+        inject_parameter_sets: bool,
+        output: &mut Vec<u8>,
+    ) -> std::result::Result<(), VaapiAdapterDecodeError> {
+        let nal_units = h265_nal_units(packet_data, self.packetization)
+            .map_err(|error| VaapiAdapterDecodeError::ParseFrameError(error.to_string()))?;
+        let discovered_parameter_sets = self.discover_new_parameter_sets(&nal_units);
+        let parameter_set_injection = if inject_parameter_sets {
+            H265ParameterSetInjection::BeforeAccessUnit {
+                video_parameter_sets: &self.video_parameter_sets,
+                sequence_parameter_sets: &self.sequence_parameter_sets,
+                picture_parameter_sets: &self.picture_parameter_sets,
+            }
+        } else {
+            H265ParameterSetInjection::None
+        };
+
+        h265_access_unit_to_annex_b_into(
+            packet_data,
+            self.packetization,
+            parameter_set_injection,
+            output,
+        )
+        .map_err(|error| VaapiAdapterDecodeError::ParseFrameError(error.to_string()))?;
+
+        self.commit_discovered_parameter_sets(discovered_parameter_sets);
+        Ok(())
+    }
+
+    /// Собирает новые in-band parameter sets без мутации stream state до успешной конверсии.
+    fn discover_new_parameter_sets(&self, nal_units: &[H265NalUnit<'_>]) -> H265ParameterSetUpdate {
+        let mut update = H265ParameterSetUpdate::default();
+        for nal_unit in nal_units {
+            match nal_unit.nal_unit_type() {
+                H265_NAL_UNIT_TYPE_VPS => collect_new_parameter_set(
+                    &self.video_parameter_sets,
+                    &mut update.video_parameter_sets,
+                    nal_unit.bytes(),
+                ),
+                H265_NAL_UNIT_TYPE_SPS => collect_new_parameter_set(
+                    &self.sequence_parameter_sets,
+                    &mut update.sequence_parameter_sets,
+                    nal_unit.bytes(),
+                ),
+                H265_NAL_UNIT_TYPE_PPS => collect_new_parameter_set(
+                    &self.picture_parameter_sets,
+                    &mut update.picture_parameter_sets,
+                    nal_unit.bytes(),
+                ),
+                _ => {}
+            }
+        }
+        update
+    }
+
+    /// Добавляет только те parameter sets, которые были подтверждены текущим AU.
+    fn commit_discovered_parameter_sets(&mut self, update: H265ParameterSetUpdate) {
+        self.video_parameter_sets
+            .extend(update.video_parameter_sets);
+        self.sequence_parameter_sets
+            .extend(update.sequence_parameter_sets);
+        self.picture_parameter_sets
+            .extend(update.picture_parameter_sets);
+    }
+}
+
+/// Пакет новых HEVC parameter sets, найденных в одном access unit-е.
+#[derive(Default)]
+struct H265ParameterSetUpdate {
+    /// Новые VPS NAL units.
+    video_parameter_sets: Vec<Vec<u8>>,
+
+    /// Новые SPS NAL units.
+    sequence_parameter_sets: Vec<Vec<u8>>,
+
+    /// Новые PPS NAL units.
+    picture_parameter_sets: Vec<Vec<u8>>,
+}
+
+/// Копирует NAL в update только если такой parameter set ещё не известен.
+fn collect_new_parameter_set(
+    known_parameter_sets: &[Vec<u8>],
+    discovered_parameter_sets: &mut Vec<Vec<u8>>,
+    nal_unit_bytes: &[u8],
+) {
+    let already_known = known_parameter_sets
+        .iter()
+        .any(|known_bytes| known_bytes.as_slice() == nal_unit_bytes);
+    let already_discovered = discovered_parameter_sets
+        .iter()
+        .any(|known_bytes| known_bytes.as_slice() == nal_unit_bytes);
+
+    if !already_known && !already_discovered {
+        discovered_parameter_sets.push(nal_unit_bytes.to_vec());
+    }
+}
+
+/// Готовит H.265 AU к submit-у и владеет reusable Annex B scratch buffer.
+struct H265AccessUnitPreparer {
+    /// Configure-time packetization плюс hvcC/in-band VPS/SPS/PPS state.
+    stream_config: H265VaapiStreamConfig,
+
+    /// Reusable output buffer для HVCC/Annex B перепаковки.
+    annex_b_scratch: Vec<u8>,
+
+    /// Lifecycle flag: первый AU после configure/flush должен получить VPS/SPS/PPS.
+    inject_parameter_sets_on_next_au: bool,
+}
+
+impl H265AccessUnitPreparer {
+    /// Создаёт preparer после configure; первый AU остаётся decode-safe.
+    fn new(stream_config: H265VaapiStreamConfig) -> Self {
+        Self {
+            stream_config,
+            annex_b_scratch: Vec::new(),
+            inject_parameter_sets_on_next_au: true,
+        }
+    }
+
+    /// Собирает pending AU, перемещая reusable scratch в ownership pending state-а.
+    fn prepare_pending_access_unit(
+        &mut self,
+        packet_data: &[u8],
+        decode_hints: VaapiPacketDecodeHints,
+    ) -> std::result::Result<H265PendingAccessUnit, VaapiAdapterDecodeError> {
+        let inject_parameter_sets =
+            decode_hints.inject_parameter_sets || self.inject_parameter_sets_on_next_au;
+
+        self.stream_config.access_unit_to_annex_b_into(
+            packet_data,
+            inject_parameter_sets,
+            &mut self.annex_b_scratch,
+        )?;
+        self.inject_parameter_sets_on_next_au = false;
+
+        let annex_b_bytes = std::mem::take(&mut self.annex_b_scratch);
+        Ok(H265PendingAccessUnit::new(annex_b_bytes, packet_data.len()))
+    }
+
+    /// Возвращает полностью consumed AU buffer в scratch и сохраняет его capacity.
+    fn recycle_completed_access_unit(&mut self, pending_access_unit: H265PendingAccessUnit) {
+        debug_assert_eq!(
+            pending_access_unit.consumed_bytes,
+            pending_access_unit.annex_b_bytes.len(),
+            "H.265 AU buffer can return to scratch only after full consume"
+        );
+        self.annex_b_scratch = pending_access_unit.into_reusable_annex_b_bytes();
+        self.annex_b_scratch.clear();
+    }
+
+    /// Сбрасывает lifecycle policy после seek flush/reconfigure cleanup.
+    fn reset_after_flush(&mut self) {
+        self.annex_b_scratch.clear();
+        self.inject_parameter_sets_on_next_au = true;
+    }
+}
+
+/// Annex B access unit, который может быть partially consumed cros H.265 decoder-ом.
+struct H265PendingAccessUnit {
+    /// Полный Annex B payload с injected parameter sets.
+    annex_b_bytes: Vec<u8>,
+
+    /// Размер исходного packet-а на external adapter boundary.
+    source_packet_len: usize,
+
+    /// Сколько Annex B bytes уже принято cros decoder-ом.
+    consumed_bytes: usize,
+}
+
+impl H265PendingAccessUnit {
+    /// Создаёт pending AU до первого NAL submit-а.
+    fn new(annex_b_bytes: Vec<u8>, source_packet_len: usize) -> Self {
+        Self {
+            annex_b_bytes,
+            source_packet_len,
+            consumed_bytes: 0,
+        }
+    }
+
+    /// Возвращает owned bytes adapter-у после полного consume.
+    fn into_reusable_annex_b_bytes(self) -> Vec<u8> {
+        self.annex_b_bytes
+    }
+
+    /// Кормит cros decoder NAL-ами до полного AU или первого backpressure/error.
+    fn feed_until_blocked(
+        &mut self,
+        mut decode_next_nal: impl FnMut(&[u8]) -> std::result::Result<usize, VaapiAdapterDecodeError>,
+    ) -> std::result::Result<Option<usize>, VaapiAdapterDecodeError> {
+        while self.consumed_bytes < self.annex_b_bytes.len() {
+            let remaining_bytes = &self.annex_b_bytes[self.consumed_bytes..];
+            let consumed_now = decode_next_nal(remaining_bytes)?;
+
+            if consumed_now == 0 {
+                return Err(VaapiAdapterDecodeError::Decoder(
+                    "H.265 decoder accepted a NAL but reported 0 consumed bytes".to_string(),
+                ));
+            }
+            if consumed_now > remaining_bytes.len() {
+                return Err(VaapiAdapterDecodeError::Decoder(format!(
+                    "H.265 decoder reported {consumed_now} consumed bytes for {} available bytes",
+                    remaining_bytes.len()
+                )));
+            }
+
+            self.consumed_bytes += consumed_now;
+        }
+
+        Ok(Some(self.source_packet_len))
+    }
+}
+
+/// Production-shaped H.265 adapter поверх cros-codecs VAAPI decoder-а.
+struct H265VaapiCodecAdapter {
+    /// Concrete cros decoder остаётся private implementation detail adapter-а.
+    inner: StatelessDecoder<H265, VaapiBackend<InternalVaapiFrame>>,
+
+    /// Готовит AU, выбирает VPS/SPS/PPS injection policy и переиспользует scratch.
+    access_unit_preparer: H265AccessUnitPreparer,
+
+    /// Unconsumed AU после `CheckEvents` или output-buffer backpressure.
+    pending_access_unit: Option<H265PendingAccessUnit>,
+}
+
+impl H265VaapiCodecAdapter {
+    /// Создаёт H.265 decoder только для уже валидированного stream config-а.
+    fn new(display: Rc<Display>, config: &VideoStreamDecodeConfig) -> Result<Self> {
+        let stream_config = H265VaapiStreamConfig::from_decode_config(config)
+            .map_err(|rejection| anyhow::anyhow!("Invalid H.265 VA-API config: {rejection}"))?;
+        let inner = StatelessDecoder::<H265, VaapiBackend<InternalVaapiFrame>>::new_vaapi(
+            display,
+            BlockingMode::Blocking,
+        )
+        .map_err(|error| anyhow::anyhow!("Failed to create VA-API H.265 decoder: {error:?}"))?;
+
+        Ok(Self {
+            inner,
+            access_unit_preparer: H265AccessUnitPreparer::new(stream_config),
+            pending_access_unit: None,
+        })
+    }
+}
+
+impl VaapiCodecAdapter for H265VaapiCodecAdapter {
+    /// Сообщает codec production adapter-а.
+    fn codec(&self) -> VideoCodec {
+        VideoCodec::H265
+    }
+
+    /// Возвращает backend label для H.265 diagnostics.
+    fn backend_name(&self) -> &'static str {
+        "VA-API H.265"
+    }
+
+    /// Возвращает codec label для сообщений retry-loop-а.
+    fn codec_label(&self) -> &'static str {
+        "H.265"
+    }
+
+    /// Конвертирует AU в Annex B и отправляет все NAL units в cros decoder.
+    fn submit_packet(
+        &mut self,
+        timestamp_us: u64,
+        packet_data: &[u8],
+        decode_hints: VaapiPacketDecodeHints,
+        frame_pool: &mut DmaFramePool,
+    ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
+        if self.pending_access_unit.is_none() {
+            self.pending_access_unit = Some(
+                self.access_unit_preparer
+                    .prepare_pending_access_unit(packet_data, decode_hints)?,
+            );
+        }
+
+        let pending_access_unit = self
+            .pending_access_unit
+            .as_mut()
+            .expect("pending access unit was just created");
+        let feed_result = pending_access_unit.feed_until_blocked(|remaining_bytes| {
+            let mut alloc_cb = || {
+                let frame = frame_pool.alloc_or_allocate();
+                if frame.is_none() {
+                    tracing::warn!("Frame pool exhausted; H.265 decoder needs output buffers");
+                }
+                frame
+            };
+
+            self.inner
+                .decode(timestamp_us, remaining_bytes, &mut alloc_cb)
+                .map_err(VaapiAdapterDecodeError::from)
+        });
+
+        match feed_result {
+            Ok(Some(source_packet_len)) => {
+                let completed_access_unit = self
+                    .pending_access_unit
+                    .take()
+                    .expect("completed H.265 access unit must still be pending");
+                self.access_unit_preparer
+                    .recycle_completed_access_unit(completed_access_unit);
+                Ok(source_packet_len)
+            }
+            Ok(None) => unreachable!("H.265 feed loop always completes or returns an error"),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Flush-ит H.265 decoder state и забывает partially consumed AU.
+    fn flush(&mut self) -> std::result::Result<(), VaapiAdapterDecodeError> {
+        self.pending_access_unit = None;
+        self.access_unit_preparer.reset_after_flush();
+        self.inner.flush().map_err(VaapiAdapterDecodeError::from)
+    }
+
+    /// Дожимает H.265 DPB tail; seek flush остаётся отдельным adapter intent.
+    fn begin_end_of_stream_drain(&mut self) -> std::result::Result<(), VaapiAdapterDecodeError> {
+        if self.pending_access_unit.is_some() {
+            return Err(VaapiAdapterDecodeError::Decoder(
+                "cannot drain H.265 while an access unit is partially submitted".to_string(),
+            ));
+        }
+
+        self.access_unit_preparer.reset_after_flush();
+        self.inner.flush().map_err(VaapiAdapterDecodeError::from)
+    }
+
+    /// Возвращает следующий cros event в локальном wrapper-е.
+    fn next_event(&mut self) -> Option<VaapiDecoderEvent> {
+        self.inner.next_event().map(VaapiDecoderEvent::from)
+    }
+
+    /// Возвращает stream info без раскрытия cros type-а наружу module-а.
+    fn stream_info(&self) -> Option<VaapiAdapterStreamInfo> {
+        self.inner.stream_info().map(VaapiAdapterStreamInfo::from)
+    }
+}
+
 /// Production VP9 adapter поверх существующего cros-codecs decoder-а.
 struct Vp9VaapiCodecAdapter {
     /// cros-codecs stateless decoder спрятан за adapter trait-object.
@@ -740,7 +1165,8 @@ impl VaapiCodecAdapterFactory {
         match config.codec {
             VideoCodec::Vp9 => Ok(Box::new(Vp9VaapiCodecAdapter::new(display)?)),
             VideoCodec::H264 => Ok(Box::new(H264VaapiCodecAdapter::new(display, config)?)),
-            codec @ (VideoCodec::Av1 | VideoCodec::H265 | VideoCodec::Vp8) => Err(anyhow::anyhow!(
+            VideoCodec::H265 => Ok(Box::new(H265VaapiCodecAdapter::new(display, config)?)),
+            codec @ (VideoCodec::Av1 | VideoCodec::Vp8) => Err(anyhow::anyhow!(
                 "VA-API adapter factory has no implemented adapter for {codec}"
             )),
         }
@@ -753,7 +1179,8 @@ impl VaapiCodecAdapterFactory {
         match config.codec {
             VideoCodec::Vp9 => reject_unsupported_vp9_config(config),
             VideoCodec::H264 => reject_unsupported_h264_config(config),
-            codec @ (VideoCodec::Av1 | VideoCodec::H265 | VideoCodec::Vp8) => {
+            VideoCodec::H265 => reject_unsupported_h265_config(config),
+            codec @ (VideoCodec::Av1 | VideoCodec::Vp8) => {
                 Some(VideoStreamConfigRejection::UnsupportedCodec { codec })
             }
         }
@@ -875,6 +1302,124 @@ fn reject_unsupported_h264_config(
     H264VaapiStreamConfig::from_decode_config(config).err()
 }
 
+/// Валидирует H.265 stream config против подготовленного VAAPI adapter path-а.
+fn reject_unsupported_h265_config(
+    config: &VideoStreamDecodeConfig,
+) -> Option<VideoStreamConfigRejection> {
+    if let Some(rejection) = reject_h265_declared_format(
+        config.profile,
+        config.bit_depth,
+        config.chroma,
+        config.surface_format,
+    ) {
+        return Some(rejection);
+    }
+
+    if !matches!(
+        config.packetization,
+        Some(VideoStreamPacketization::H265(_))
+    ) {
+        return Some(VideoStreamConfigRejection::MissingPacketization {
+            codec: VideoCodec::H265,
+        });
+    }
+
+    if let Some(rejection) = reject_h265_codec_private_requirement(config) {
+        return Some(rejection);
+    }
+
+    H265VaapiStreamConfig::from_decode_config(config).err()
+}
+
+/// Проверяет уже известные HEVC profile/format поля без требования полного hvcC.
+fn reject_h265_declared_format(
+    profile: Option<VideoProfile>,
+    bit_depth: Option<BitDepth>,
+    chroma: Option<ChromaSubsampling>,
+    surface_format: Option<VideoSurfaceFormat>,
+) -> Option<VideoStreamConfigRejection> {
+    match profile {
+        Some(VideoProfile::H265(H265Profile::Main)) => {
+            reject_optional_bit_depth(bit_depth, BitDepth::Eight)
+                .or_else(|| reject_optional_chroma(chroma, ChromaSubsampling::Yuv420))
+                .or_else(|| reject_optional_surface(surface_format, VideoSurfaceFormat::Nv12))
+        }
+        Some(VideoProfile::H265(H265Profile::Main10)) => {
+            reject_optional_bit_depth(bit_depth, BitDepth::Ten)
+                .or_else(|| reject_optional_chroma(chroma, ChromaSubsampling::Yuv420))
+                .or_else(|| reject_optional_surface(surface_format, VideoSurfaceFormat::P010))
+        }
+        Some(unsupported_profile) => Some(VideoStreamConfigRejection::UnsupportedProfile {
+            profile: unsupported_profile,
+        }),
+        None => reject_h265_without_profile(bit_depth, chroma, surface_format),
+    }
+}
+
+/// Валидирует HEVC config, когда profile ещё придёт из in-band SPS.
+fn reject_h265_without_profile(
+    bit_depth: Option<BitDepth>,
+    chroma: Option<ChromaSubsampling>,
+    surface_format: Option<VideoSurfaceFormat>,
+) -> Option<VideoStreamConfigRejection> {
+    if let Some(bit_depth) = bit_depth
+        && !matches!(bit_depth, BitDepth::Eight | BitDepth::Ten)
+    {
+        return Some(VideoStreamConfigRejection::UnsupportedBitDepth { bit_depth });
+    }
+
+    if let Some(chroma) = chroma
+        && chroma != ChromaSubsampling::Yuv420
+    {
+        return Some(VideoStreamConfigRejection::UnsupportedChroma { chroma });
+    }
+
+    if let Some(surface_format) = surface_format
+        && !matches!(
+            surface_format,
+            VideoSurfaceFormat::Nv12 | VideoSurfaceFormat::P010
+        )
+    {
+        return Some(VideoStreamConfigRejection::UnsupportedSurfaceFormat { surface_format });
+    }
+
+    match (bit_depth, surface_format) {
+        (Some(BitDepth::Eight), Some(surface_format @ VideoSurfaceFormat::P010))
+        | (Some(BitDepth::Ten), Some(surface_format @ VideoSurfaceFormat::Nv12)) => {
+            Some(VideoStreamConfigRejection::UnsupportedSurfaceFormat { surface_format })
+        }
+        _ => None,
+    }
+}
+
+/// Проверяет hvcC header/SPS, если codec_private есть, но не требует VPS/SPS/PPS arrays.
+fn reject_h265_codec_private_requirement(
+    config: &VideoStreamDecodeConfig,
+) -> Option<VideoStreamConfigRejection> {
+    let codec_private = config
+        .codec_private
+        .as_deref()
+        .filter(|bytes| !bytes.is_empty())?;
+
+    let requirement =
+        match h265_decode_requirement_from_hevc_decoder_configuration_record(codec_private) {
+            Ok(requirement) => requirement,
+            Err(error) => {
+                return Some(VideoStreamConfigRejection::InvalidCodecPrivate {
+                    codec: VideoCodec::H265,
+                    reason: error.to_string(),
+                });
+            }
+        };
+
+    reject_h265_declared_format(
+        requirement.profile,
+        requirement.bit_depth,
+        requirement.chroma,
+        requirement.surface_format,
+    )
+}
+
 /// Проверяет optional bit depth на точное expected значение.
 fn reject_optional_bit_depth(
     bit_depth: Option<BitDepth>,
@@ -913,7 +1458,8 @@ fn reject_optional_surface(
 mod tests {
     use bytes::Bytes;
     use codec_core::{
-        H264NalLengthSize, H264Packetization, H264Profile, H265Profile, VideoMemoryContract,
+        H264NalLengthSize, H264Packetization, H264Profile, H265NalLengthSize, H265Profile,
+        VideoMemoryContract,
     };
     use media_core::TrackId;
 
@@ -990,6 +1536,166 @@ mod tests {
         }
     }
 
+    /// Собирает HEVC NAL unit без Annex B start code и без hvcC length prefix.
+    fn h265_nal_unit(nal_unit_type: u8, payload: &[u8]) -> Vec<u8> {
+        let mut nal_unit = vec![(nal_unit_type & 0x3f) << 1, 0x01];
+        nal_unit.extend_from_slice(payload);
+        nal_unit
+    }
+
+    /// Минимальный VPS для adapter-level injection tests.
+    fn h265_vps() -> Vec<u8> {
+        h265_nal_unit(H265_NAL_UNIT_TYPE_VPS, &[0x01, 0x60])
+    }
+
+    /// Минимальный SPS payload для adapter-level injection tests.
+    fn h265_sps() -> Vec<u8> {
+        h265_nal_unit(H265_NAL_UNIT_TYPE_SPS, &[0x01, 0x01])
+    }
+
+    /// Минимальный PPS payload для adapter-level injection tests.
+    fn h265_pps() -> Vec<u8> {
+        h265_nal_unit(H265_NAL_UNIT_TYPE_PPS, &[0xc0])
+    }
+
+    /// Минимальный slice NAL для lifecycle tests без попытки software decode.
+    fn h265_slice() -> Vec<u8> {
+        h265_nal_unit(19, &[0x88])
+    }
+
+    /// Один hvcC array с NAL units одинакового типа.
+    struct H265HvccArray<'a> {
+        /// HEVC `nal_unit_type` array-а.
+        nal_unit_type: u8,
+
+        /// NAL units без length-prefix/start-code.
+        nal_units: &'a [Vec<u8>],
+    }
+
+    /// Собирает minimal hvcC record с optional VPS/SPS/PPS arrays.
+    fn h265_hvcc(
+        nal_length_size: u8,
+        profile_idc: u8,
+        chroma_format_idc: u8,
+        bit_depth: u8,
+        arrays: &[H265HvccArray<'_>],
+    ) -> Bytes {
+        let mut record_bytes = vec![
+            1,
+            profile_idc & 0x1f,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            120,
+            0xf0,
+            0x00,
+            0xfc,
+            0xfc | (chroma_format_idc & 0x03),
+            0xf8 | ((bit_depth - 8) & 0x07),
+            0xf8 | ((bit_depth - 8) & 0x07),
+            0,
+            0,
+            0b0000_1100 | ((nal_length_size - 1) & 0x03),
+            arrays.len() as u8,
+        ];
+
+        set_h265_profile_compatibility_flag(&mut record_bytes, profile_idc);
+        for array in arrays {
+            record_bytes.push(array.nal_unit_type & 0x3f);
+            record_bytes.extend_from_slice(&(array.nal_units.len() as u16).to_be_bytes());
+            for nal_unit in array.nal_units {
+                record_bytes.extend_from_slice(&(nal_unit.len() as u16).to_be_bytes());
+                record_bytes.extend_from_slice(nal_unit);
+            }
+        }
+
+        Bytes::from(record_bytes)
+    }
+
+    /// Включает compatibility bit, который codec-core использует для HEVC profile matching.
+    fn set_h265_profile_compatibility_flag(record_bytes: &mut [u8], profile_idc: u8) {
+        let flag_index = usize::from(profile_idc);
+        let byte_index = 2 + flag_index / 8;
+        let bit_index = 7 - (flag_index % 8);
+        record_bytes[byte_index] |= 1 << bit_index;
+    }
+
+    /// Собирает length-prefixed HEVC access unit с 4-byte NAL lengths.
+    fn h265_hvcc_access_unit(nal_units: &[&[u8]]) -> Vec<u8> {
+        let mut access_unit = Vec::new();
+        for nal_unit in nal_units {
+            let nal_len = u32::try_from(nal_unit.len()).expect("test NAL length fits u32");
+            access_unit.extend_from_slice(&nal_len.to_be_bytes());
+            access_unit.extend_from_slice(nal_unit);
+        }
+        access_unit
+    }
+
+    /// Собирает valid H.265 decode config для factory/preparer tests.
+    fn h265_stream_decode_config(
+        profile: H265Profile,
+        bit_depth: BitDepth,
+        surface_format: VideoSurfaceFormat,
+        codec_private: Option<Bytes>,
+    ) -> VideoStreamDecodeConfig {
+        VideoStreamDecodeConfig {
+            profile: Some(VideoProfile::H265(profile)),
+            bit_depth: Some(bit_depth),
+            chroma: Some(ChromaSubsampling::Yuv420),
+            surface_format: Some(surface_format),
+            codec_private,
+            packetization: Some(VideoStreamPacketization::H265(
+                H265Packetization::HvccLengthPrefixed {
+                    nal_length_size: H265NalLengthSize::FOUR,
+                },
+            )),
+            ..stream_config(VideoCodec::H265)
+        }
+    }
+
+    /// Собирает H.265 stream config с hvcC parameter sets для adapter policy tests.
+    fn h265_stream_config_with_parameter_sets() -> H265VaapiStreamConfig {
+        let video_parameter_set = h265_vps();
+        let sequence_parameter_set = h265_sps();
+        let picture_parameter_set = h265_pps();
+        let codec_private = h265_hvcc(
+            4,
+            1,
+            1,
+            8,
+            &[
+                H265HvccArray {
+                    nal_unit_type: H265_NAL_UNIT_TYPE_VPS,
+                    nal_units: std::slice::from_ref(&video_parameter_set),
+                },
+                H265HvccArray {
+                    nal_unit_type: H265_NAL_UNIT_TYPE_SPS,
+                    nal_units: std::slice::from_ref(&sequence_parameter_set),
+                },
+                H265HvccArray {
+                    nal_unit_type: H265_NAL_UNIT_TYPE_PPS,
+                    nal_units: std::slice::from_ref(&picture_parameter_set),
+                },
+            ],
+        );
+        let config = h265_stream_decode_config(
+            H265Profile::Main,
+            BitDepth::Eight,
+            VideoSurfaceFormat::Nv12,
+            Some(codec_private),
+        );
+
+        H265VaapiStreamConfig::from_decode_config(&config)
+            .expect("valid test hvcC должен проходить H.265 configure boundary")
+    }
+
     /// Проверяет безопасную default reuse policy для config-sensitive adapters.
     #[test]
     fn default_adapter_reuse_policy_rejects_every_config() {
@@ -1040,23 +1746,44 @@ mod tests {
         ));
     }
 
-    /// Проверяет, что H.265 stream config пока отсекается до adapter creation.
+    /// Проверяет, что H.265 Main/Main10 config входит в adapter construction matrix.
     #[test]
-    fn factory_rejects_h265_until_vaapi_adapter_exists() {
-        let config = VideoStreamDecodeConfig {
-            profile: Some(VideoProfile::H265(H265Profile::Main)),
-            bit_depth: Some(BitDepth::Eight),
-            chroma: Some(ChromaSubsampling::Yuv420),
-            surface_format: Some(VideoSurfaceFormat::Nv12),
-            ..stream_config(VideoCodec::H265)
+    fn factory_accepts_h265_main_and_main10_stream_configs() {
+        let main_config = h265_stream_decode_config(
+            H265Profile::Main,
+            BitDepth::Eight,
+            VideoSurfaceFormat::Nv12,
+            Some(h265_hvcc(4, 1, 1, 8, &[])),
+        );
+        let main10_config = h265_stream_decode_config(
+            H265Profile::Main10,
+            BitDepth::Ten,
+            VideoSurfaceFormat::P010,
+            Some(h265_hvcc(4, 2, 1, 10, &[])),
+        );
+
+        assert!(VaapiCodecAdapterFactory::stream_config_rejection(&main_config).is_none());
+        assert!(H265VaapiStreamConfig::from_decode_config(&main_config).is_ok());
+        assert!(VaapiCodecAdapterFactory::stream_config_rejection(&main10_config).is_none());
+        assert!(H265VaapiStreamConfig::from_decode_config(&main10_config).is_ok());
+    }
+
+    /// Проверяет, что H.265 adapter path готов, но capability advertisement выключен.
+    #[test]
+    fn factory_does_not_advertise_h265_until_validation_session() {
+        let format = SupportedVideoDecodeFormat {
+            codec: VideoCodec::H265,
+            profile: VideoProfile::H265(H265Profile::Main),
+            bit_depth: BitDepth::Eight,
+            chroma: ChromaSubsampling::Yuv420,
+            max_width: Some(3840),
+            max_height: Some(2160),
+            max_fps: None,
+            hdr_input: false,
+            backend: codec_core::DecodeBackendId::vaapi(),
         };
 
-        assert!(matches!(
-            VaapiCodecAdapterFactory::stream_config_rejection(&config),
-            Some(VideoStreamConfigRejection::UnsupportedCodec {
-                codec: VideoCodec::H265
-            })
-        ));
+        assert!(!VaapiCodecAdapterFactory::supports_decode_format(&format));
     }
 
     /// Собирает минимальный avcC record с SPS/PPS для configure-boundary tests.
@@ -1107,6 +1834,18 @@ mod tests {
         preparer.recycle_completed_access_unit(pending_access_unit);
     }
 
+    /// Имитирует полный consume H.265 AU перед возвратом buffer-а в scratch.
+    fn recycle_fully_consumed_h265_access_unit(
+        preparer: &mut H265AccessUnitPreparer,
+        mut pending_access_unit: H265PendingAccessUnit,
+    ) {
+        let accepted_len = pending_access_unit
+            .feed_until_blocked(|remaining_bytes| Ok(remaining_bytes.len()))
+            .expect("test H.265 AU должен полностью consume-иться");
+        assert_eq!(accepted_len, Some(pending_access_unit.source_packet_len));
+        preparer.recycle_completed_access_unit(pending_access_unit);
+    }
+
     /// Собирает Annex B access unit из NAL units без start code.
     fn annex_b_access_unit(nal_units: &[&[u8]]) -> Vec<u8> {
         let mut access_unit = Vec::new();
@@ -1123,6 +1862,327 @@ mod tests {
             .windows(4)
             .position(|window| window == [0, 0, 0, 1])
             .map_or(bytes.len(), |position| position + 4)
+    }
+
+    /// Проверяет typed отказ, когда H.265 packetization не доказана.
+    #[test]
+    fn factory_rejects_h265_missing_or_wrong_packetization() {
+        let mut config = h265_stream_decode_config(
+            H265Profile::Main,
+            BitDepth::Eight,
+            VideoSurfaceFormat::Nv12,
+            Some(h265_hvcc(4, 1, 1, 8, &[])),
+        );
+
+        config.packetization = None;
+        assert!(matches!(
+            VaapiCodecAdapterFactory::stream_config_rejection(&config),
+            Some(VideoStreamConfigRejection::MissingPacketization {
+                codec: VideoCodec::H265
+            })
+        ));
+
+        config.packetization = Some(VideoStreamPacketization::H264(
+            H264Packetization::AvccLengthPrefixed {
+                nal_length_size: H264NalLengthSize::FOUR,
+            },
+        ));
+        assert!(matches!(
+            VaapiCodecAdapterFactory::stream_config_rejection(&config),
+            Some(VideoStreamConfigRejection::MissingPacketization {
+                codec: VideoCodec::H265
+            })
+        ));
+    }
+
+    /// Проверяет, что incomplete hvcC не мешает принять in-band VPS/SPS/PPS.
+    #[test]
+    fn h265_incomplete_hvcc_accepts_in_band_parameter_sets() {
+        let config = h265_stream_decode_config(
+            H265Profile::Main,
+            BitDepth::Eight,
+            VideoSurfaceFormat::Nv12,
+            Some(h265_hvcc(4, 1, 1, 8, &[])),
+        );
+
+        assert!(VaapiCodecAdapterFactory::stream_config_rejection(&config).is_none());
+        let stream_config = H265VaapiStreamConfig::from_decode_config(&config)
+            .expect("incomplete hvcC должен проходить configure boundary");
+        let mut preparer = H265AccessUnitPreparer::new(stream_config);
+        let video_parameter_set = h265_vps();
+        let sequence_parameter_set = h265_sps();
+        let picture_parameter_set = h265_pps();
+        let slice = h265_slice();
+        let first_access_unit = h265_hvcc_access_unit(&[
+            &video_parameter_set,
+            &sequence_parameter_set,
+            &picture_parameter_set,
+            &slice,
+        ]);
+
+        let first_pending = preparer
+            .prepare_pending_access_unit(&first_access_unit, VaapiPacketDecodeHints::default())
+            .expect("first H.265 AU с in-band parameter sets должен собираться");
+
+        assert_eq!(preparer.stream_config.video_parameter_sets.len(), 1);
+        assert_eq!(preparer.stream_config.sequence_parameter_sets.len(), 1);
+        assert_eq!(preparer.stream_config.picture_parameter_sets.len(), 1);
+        assert_eq!(
+            first_pending.annex_b_bytes,
+            annex_b_access_unit(&[
+                &video_parameter_set,
+                &sequence_parameter_set,
+                &picture_parameter_set,
+                &slice,
+            ])
+        );
+        recycle_fully_consumed_h265_access_unit(&mut preparer, first_pending);
+
+        let second_slice = h265_slice();
+        let second_access_unit = h265_hvcc_access_unit(&[&second_slice]);
+        let second_pending = preparer
+            .prepare_pending_access_unit(
+                &second_access_unit,
+                VaapiPacketDecodeHints {
+                    inject_parameter_sets: true,
+                },
+            )
+            .expect("known in-band parameter sets должны inject-иться на следующем AU");
+
+        assert_eq!(
+            second_pending.annex_b_bytes,
+            annex_b_access_unit(&[
+                &video_parameter_set,
+                &sequence_parameter_set,
+                &picture_parameter_set,
+                &second_slice,
+            ])
+        );
+    }
+
+    /// Проверяет hev1-style path: hvcC отсутствует, но length-prefixed AU несёт parameter sets.
+    #[test]
+    fn h265_hev1_style_in_band_parameter_sets_are_accepted() {
+        let config = h265_stream_decode_config(
+            H265Profile::Main,
+            BitDepth::Eight,
+            VideoSurfaceFormat::Nv12,
+            None,
+        );
+        let stream_config = H265VaapiStreamConfig::from_decode_config(&config)
+            .expect("hev1-style config без hvcC должен проходить при доказанной packetization");
+        let mut preparer = H265AccessUnitPreparer::new(stream_config);
+        let video_parameter_set = h265_vps();
+        let sequence_parameter_set = h265_sps();
+        let picture_parameter_set = h265_pps();
+        let slice = h265_slice();
+        let access_unit = h265_hvcc_access_unit(&[
+            &video_parameter_set,
+            &sequence_parameter_set,
+            &picture_parameter_set,
+            &slice,
+        ]);
+
+        assert!(VaapiCodecAdapterFactory::stream_config_rejection(&config).is_none());
+        assert!(
+            preparer
+                .prepare_pending_access_unit(&access_unit, VaapiPacketDecodeHints::default())
+                .is_ok()
+        );
+        assert_eq!(preparer.stream_config.video_parameter_sets.len(), 1);
+        assert_eq!(preparer.stream_config.sequence_parameter_sets.len(), 1);
+        assert_eq!(preparer.stream_config.picture_parameter_sets.len(), 1);
+    }
+
+    /// Проверяет typed отказы для HEVC форматов вне Main/Main10 4:2:0.
+    #[test]
+    fn h265_rejects_unsupported_chroma_profiles_and_bit_depth() {
+        let chroma_422_config = VideoStreamDecodeConfig {
+            chroma: Some(ChromaSubsampling::Yuv422),
+            ..h265_stream_decode_config(
+                H265Profile::Main,
+                BitDepth::Eight,
+                VideoSurfaceFormat::Nv12,
+                Some(h265_hvcc(4, 1, 1, 8, &[])),
+            )
+        };
+        let main444_config = h265_stream_decode_config(
+            H265Profile::Main444,
+            BitDepth::Eight,
+            VideoSurfaceFormat::Nv12,
+            Some(h265_hvcc(4, 1, 3, 8, &[])),
+        );
+        let twelve_bit_config = h265_stream_decode_config(
+            H265Profile::Main,
+            BitDepth::Twelve,
+            VideoSurfaceFormat::Nv12,
+            Some(h265_hvcc(4, 1, 1, 12, &[])),
+        );
+
+        assert!(matches!(
+            VaapiCodecAdapterFactory::stream_config_rejection(&chroma_422_config),
+            Some(VideoStreamConfigRejection::UnsupportedChroma {
+                chroma: ChromaSubsampling::Yuv422
+            })
+        ));
+        assert!(matches!(
+            VaapiCodecAdapterFactory::stream_config_rejection(&main444_config),
+            Some(VideoStreamConfigRejection::UnsupportedProfile {
+                profile: VideoProfile::H265(H265Profile::Main444)
+            })
+        ));
+        assert!(matches!(
+            VaapiCodecAdapterFactory::stream_config_rejection(&twelve_bit_config),
+            Some(VideoStreamConfigRejection::UnsupportedBitDepth {
+                bit_depth: BitDepth::Twelve
+            })
+        ));
+    }
+
+    /// Проверяет VPS/SPS/PPS injection из hvcC перед H.265 AU payload-ом.
+    #[test]
+    fn h265_keyframe_access_unit_injects_parameter_sets() {
+        let mut preparer = H265AccessUnitPreparer::new(h265_stream_config_with_parameter_sets());
+        let video_parameter_set = h265_vps();
+        let sequence_parameter_set = h265_sps();
+        let picture_parameter_set = h265_pps();
+        let slice = h265_slice();
+        let access_unit = h265_hvcc_access_unit(&[&slice]);
+
+        let pending_access_unit = preparer
+            .prepare_pending_access_unit(
+                &access_unit,
+                VaapiPacketDecodeHints {
+                    inject_parameter_sets: true,
+                },
+            )
+            .expect("H.265 AU должен собираться с VPS/SPS/PPS injection");
+
+        assert_eq!(
+            pending_access_unit.annex_b_bytes,
+            annex_b_access_unit(&[
+                &video_parameter_set,
+                &sequence_parameter_set,
+                &picture_parameter_set,
+                &slice,
+            ])
+        );
+    }
+
+    /// Проверяет, что первый AU после flush снова получает VPS/SPS/PPS injection.
+    #[test]
+    fn h265_first_access_unit_after_flush_injects_parameter_sets() {
+        let mut preparer = H265AccessUnitPreparer::new(h265_stream_config_with_parameter_sets());
+        let video_parameter_set = h265_vps();
+        let sequence_parameter_set = h265_sps();
+        let picture_parameter_set = h265_pps();
+        let first_slice = h265_slice();
+        let first_access_unit = h265_hvcc_access_unit(&[&first_slice]);
+        let first_pending = preparer
+            .prepare_pending_access_unit(&first_access_unit, VaapiPacketDecodeHints::default())
+            .expect("first H.265 AU должен получить lifecycle injection");
+        recycle_fully_consumed_h265_access_unit(&mut preparer, first_pending);
+
+        preparer.reset_after_flush();
+        let second_slice = h265_slice();
+        let second_access_unit = h265_hvcc_access_unit(&[&second_slice]);
+        let second_pending = preparer
+            .prepare_pending_access_unit(&second_access_unit, VaapiPacketDecodeHints::default())
+            .expect("first H.265 AU after flush должен получить lifecycle injection");
+
+        assert_eq!(
+            second_pending.annex_b_bytes,
+            annex_b_access_unit(&[
+                &video_parameter_set,
+                &sequence_parameter_set,
+                &picture_parameter_set,
+                &second_slice,
+            ])
+        );
+    }
+
+    /// Проверяет, что H.265 backpressure держит bytes в pending AU до полного consume.
+    #[test]
+    fn h265_output_backpressure_preserves_pending_bytes_until_complete_consume() {
+        let mut preparer = H265AccessUnitPreparer::new(h265_stream_config_with_parameter_sets());
+        let first_slice = h265_slice();
+        let first_access_unit = h265_hvcc_access_unit(&[&first_slice]);
+        let first_pending = preparer
+            .prepare_pending_access_unit(
+                &first_access_unit,
+                VaapiPacketDecodeHints {
+                    inject_parameter_sets: true,
+                },
+            )
+            .expect("first H.265 AU должен собираться");
+        let first_capacity = first_pending.annex_b_bytes.capacity();
+        recycle_fully_consumed_h265_access_unit(&mut preparer, first_pending);
+        assert_eq!(preparer.annex_b_scratch.capacity(), first_capacity);
+
+        let retry_slice = h265_slice();
+        let retry_access_unit = h265_hvcc_access_unit(&[&retry_slice]);
+        let mut pending_access_unit = preparer
+            .prepare_pending_access_unit(&retry_access_unit, VaapiPacketDecodeHints::default())
+            .expect("retry H.265 AU должен собираться");
+        let pending_bytes_before_backpressure = pending_access_unit.annex_b_bytes.clone();
+        let pending_capacity = pending_access_unit.annex_b_bytes.capacity();
+        assert_eq!(preparer.annex_b_scratch.capacity(), 0);
+
+        let backpressure_result = pending_access_unit.feed_until_blocked(|_remaining_bytes| {
+            Err(VaapiAdapterDecodeError::NotEnoughOutputBuffers(1))
+        });
+
+        assert!(matches!(
+            backpressure_result,
+            Err(VaapiAdapterDecodeError::NotEnoughOutputBuffers(1))
+        ));
+        assert_eq!(
+            pending_access_unit.annex_b_bytes,
+            pending_bytes_before_backpressure
+        );
+        assert_eq!(
+            pending_access_unit.annex_b_bytes.capacity(),
+            pending_capacity
+        );
+        assert_eq!(preparer.annex_b_scratch.capacity(), 0);
+
+        let accepted_len = pending_access_unit
+            .feed_until_blocked(|remaining_bytes| Ok(remaining_bytes.len()))
+            .expect("pending H.265 AU должен завершиться после retry");
+        assert_eq!(accepted_len, Some(retry_access_unit.len()));
+
+        preparer.recycle_completed_access_unit(pending_access_unit);
+        assert_eq!(preparer.annex_b_scratch.capacity(), pending_capacity);
+        assert!(preparer.annex_b_scratch.is_empty());
+    }
+
+    /// Проверяет, что `CheckEvents` оставляет H.265 offset на том же NAL-е для retry.
+    #[test]
+    fn h265_check_events_retry_does_not_double_consume_input() {
+        let video_parameter_set = h265_vps();
+        let slice = h265_slice();
+        let annex_b = annex_b_access_unit(&[&video_parameter_set, &slice]);
+        let source_packet_len = annex_b.len();
+        let mut pending_access_unit = H265PendingAccessUnit::new(annex_b, source_packet_len);
+        let mut first_attempts = 0usize;
+
+        let first_result = pending_access_unit.feed_until_blocked(|_remaining_bytes| {
+            first_attempts += 1;
+            Err(VaapiAdapterDecodeError::CheckEvents)
+        });
+
+        assert!(matches!(
+            first_result,
+            Err(VaapiAdapterDecodeError::CheckEvents)
+        ));
+        assert_eq!(pending_access_unit.consumed_bytes, 0);
+        assert_eq!(first_attempts, 1);
+
+        let accepted_len = pending_access_unit
+            .feed_until_blocked(|remaining_bytes| Ok(first_annex_b_nal_len(remaining_bytes)))
+            .unwrap();
+
+        assert_eq!(accepted_len, Some(source_packet_len));
     }
 
     /// Проверяет H.264 adapter matrix: metadata slot теперь production-ready.
