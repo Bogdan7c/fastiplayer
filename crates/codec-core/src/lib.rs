@@ -7,6 +7,7 @@
 
 mod adapter;
 mod h264;
+mod h265;
 mod model;
 mod profile;
 mod vp9;
@@ -28,6 +29,20 @@ pub use h264::{
     h264_sps_metadata_from_avc_decoder_configuration_record, h264_sps_metadata_from_packet,
     infer_h264_packetization, parse_avc_decoder_configuration_record, parse_h264_sps_metadata,
     probe_h264_packet_keyframe,
+};
+pub use h265::{
+    H265BitReaderError, H265ByteStreamError, H265HeaderMetadata, H265NalLengthSize, H265NalUnit,
+    H265PacketDecodeStartProbe, H265Packetization, H265PacketizationError,
+    H265ParameterSetInjection, H265ParameterSetKind, H265ProfileTierLevel, H265RequirementError,
+    H265SpsError, H265SpsMetadata, HevcDecoderConfigurationRecord,
+    HevcDecoderConfigurationRecordError, h265_access_unit_to_annex_b,
+    h265_access_unit_to_annex_b_into,
+    h265_decode_requirement_from_hevc_decoder_configuration_record,
+    h265_decode_requirement_from_packet,
+    h265_header_metadata_from_hevc_decoder_configuration_record, h265_nal_units,
+    h265_sps_metadata_from_hevc_decoder_configuration_record, h265_sps_metadata_from_packet,
+    infer_h265_packetization, parse_h265_sps_metadata, parse_hevc_decoder_configuration_record,
+    probe_h265_packet_decode_start,
 };
 pub use model::{
     AudioCodec, BitDepth, ChromaSubsampling, CodecLevel, ColorMetadataConfidence,
