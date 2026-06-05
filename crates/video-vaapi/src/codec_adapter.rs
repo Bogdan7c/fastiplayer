@@ -180,8 +180,11 @@ pub(crate) enum VaapiDecoderEvent {
 /// Packet-local decode hints на internal VAAPI adapter boundary.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct VaapiPacketDecodeHints {
-    /// H.264 AU должен получить SPS/PPS перед payload-ом.
-    pub(crate) inject_h264_parameter_sets: bool,
+    /// AU должен получить codec parameter sets перед payload-ом.
+    ///
+    /// H.264 трактует это как SPS/PPS; будущий H.265 adapter будет трактовать
+    /// тот же intent как VPS/SPS/PPS без переименования boundary.
+    pub(crate) inject_parameter_sets: bool,
 }
 
 impl<H> From<DecoderEvent<H>> for VaapiDecoderEvent
@@ -255,6 +258,14 @@ impl From<DecodeError> for VaapiAdapterDecodeError {
 pub(crate) trait VaapiCodecAdapter {
     /// Codec, которым владеет adapter.
     fn codec(&self) -> VideoCodec;
+
+    /// Проверяет, можно ли переиспользовать adapter для нового stream config-а.
+    ///
+    /// Default `false` сохраняет безопасную политику для stateful/config-sensitive
+    /// codec-ов, пока конкретный adapter не зафиксировал exact reuse contract.
+    fn can_reuse_for_config(&self, _config: &VideoStreamDecodeConfig) -> bool {
+        false
+    }
 
     /// Имя backend-а для UI и diagnostics.
     fn backend_name(&self) -> &'static str;
@@ -350,10 +361,10 @@ impl H264VaapiStreamConfig {
     fn access_unit_to_annex_b_into(
         &self,
         packet_data: &[u8],
-        inject_h264_parameter_sets: bool,
+        inject_parameter_sets: bool,
         output: &mut Vec<u8>,
     ) -> std::result::Result<(), VaapiAdapterDecodeError> {
-        let parameter_set_injection = if inject_h264_parameter_sets {
+        let parameter_set_injection = if inject_parameter_sets {
             H264ParameterSetInjection::BeforeAccessUnit {
                 sequence_parameter_sets: &self.sequence_parameter_sets,
                 picture_parameter_sets: &self.picture_parameter_sets,
@@ -400,12 +411,12 @@ impl H264AccessUnitPreparer {
         packet_data: &[u8],
         decode_hints: VaapiPacketDecodeHints,
     ) -> std::result::Result<H264PendingAccessUnit, VaapiAdapterDecodeError> {
-        let inject_h264_parameter_sets =
-            decode_hints.inject_h264_parameter_sets || self.inject_parameter_sets_on_next_au;
+        let inject_parameter_sets =
+            decode_hints.inject_parameter_sets || self.inject_parameter_sets_on_next_au;
 
         self.stream_config.access_unit_to_annex_b_into(
             packet_data,
-            inject_h264_parameter_sets,
+            inject_parameter_sets,
             &mut self.annex_b_scratch,
         )?;
         self.inject_parameter_sets_on_next_au = false;
@@ -618,6 +629,11 @@ struct Vp9VaapiCodecAdapter {
     inner: cros_codecs::decoder::stateless::DynStatelessVideoDecoder<InternalVaapiFrame>,
 }
 
+/// VP9 сохраняет старую configure-семантику: same-codec config не пересоздаёт decoder.
+fn vp9_can_reuse_for_config(config: &VideoStreamDecodeConfig) -> bool {
+    config.codec == VideoCodec::Vp9
+}
+
 impl Vp9VaapiCodecAdapter {
     /// Создаёт VP9 decoder для уже открытого VA display.
     fn new(display: Rc<Display>) -> Result<Self> {
@@ -639,6 +655,11 @@ impl VaapiCodecAdapter for Vp9VaapiCodecAdapter {
     /// Сообщает codec production adapter-а.
     fn codec(&self) -> VideoCodec {
         VideoCodec::Vp9
+    }
+
+    /// Явно владеет VP9 reuse intent вместо внешней проверки codec-а в decoder-е.
+    fn can_reuse_for_config(&self, config: &VideoStreamDecodeConfig) -> bool {
+        vp9_can_reuse_for_config(config)
     }
 
     /// Возвращает старое имя backend-а для сохранения UI/log совместимости.
@@ -891,10 +912,65 @@ fn reject_optional_surface(
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use codec_core::{H264NalLengthSize, H264Packetization, H264Profile, VideoMemoryContract};
+    use codec_core::{
+        H264NalLengthSize, H264Packetization, H264Profile, H265Profile, VideoMemoryContract,
+    };
     use media_core::TrackId;
 
     use super::*;
+
+    /// Test-only adapter, который использует default reuse policy из trait-а.
+    struct DefaultReusePolicyAdapter;
+
+    impl VaapiCodecAdapter for DefaultReusePolicyAdapter {
+        /// Возвращает codec только для полноты тестового adapter contract-а.
+        fn codec(&self) -> VideoCodec {
+            VideoCodec::H264
+        }
+
+        /// Возвращает стабильное имя fake backend-а.
+        fn backend_name(&self) -> &'static str {
+            "test"
+        }
+
+        /// Возвращает стабильный codec label для fake diagnostics.
+        fn codec_label(&self) -> &'static str {
+            "test"
+        }
+
+        /// Имитирует полный consume packet-а без VA-API.
+        fn submit_packet(
+            &mut self,
+            _timestamp_us: u64,
+            packet_data: &[u8],
+            _decode_hints: VaapiPacketDecodeHints,
+            _frame_pool: &mut DmaFramePool,
+        ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
+            Ok(packet_data.len())
+        }
+
+        /// Fake adapter не держит codec state.
+        fn flush(&mut self) -> std::result::Result<(), VaapiAdapterDecodeError> {
+            Ok(())
+        }
+
+        /// Fake adapter не держит DPB tail.
+        fn begin_end_of_stream_drain(
+            &mut self,
+        ) -> std::result::Result<(), VaapiAdapterDecodeError> {
+            Ok(())
+        }
+
+        /// Fake adapter не публикует events.
+        fn next_event(&mut self) -> Option<VaapiDecoderEvent> {
+            None
+        }
+
+        /// Fake adapter не сообщает stream info.
+        fn stream_info(&self) -> Option<VaapiAdapterStreamInfo> {
+            None
+        }
+    }
 
     /// Собирает stream config с production zero-copy memory contract.
     fn stream_config(codec: VideoCodec) -> VideoStreamDecodeConfig {
@@ -912,6 +988,24 @@ mod tests {
             codec_private: None,
             packetization: None,
         }
+    }
+
+    /// Проверяет безопасную default reuse policy для config-sensitive adapters.
+    #[test]
+    fn default_adapter_reuse_policy_rejects_every_config() {
+        let adapter = DefaultReusePolicyAdapter;
+
+        assert!(!adapter.can_reuse_for_config(&stream_config(VideoCodec::H264)));
+        assert!(!adapter.can_reuse_for_config(&stream_config(VideoCodec::H265)));
+        assert!(!adapter.can_reuse_for_config(&stream_config(VideoCodec::Vp9)));
+    }
+
+    /// Проверяет, что VP9 explicitly сохраняет старый same-codec configure reuse.
+    #[test]
+    fn vp9_reuse_policy_accepts_only_vp9_configs() {
+        assert!(vp9_can_reuse_for_config(&stream_config(VideoCodec::Vp9)));
+        assert!(!vp9_can_reuse_for_config(&stream_config(VideoCodec::H264)));
+        assert!(!vp9_can_reuse_for_config(&stream_config(VideoCodec::H265)));
     }
 
     /// Проверяет, что VP9 Profile 0 входит в production adapter matrix.
@@ -942,6 +1036,25 @@ mod tests {
             VaapiCodecAdapterFactory::stream_config_rejection(&config),
             Some(VideoStreamConfigRejection::UnsupportedProfile {
                 profile: VideoProfile::Vp9(Vp9Profile::Profile1)
+            })
+        ));
+    }
+
+    /// Проверяет, что H.265 stream config пока отсекается до adapter creation.
+    #[test]
+    fn factory_rejects_h265_until_vaapi_adapter_exists() {
+        let config = VideoStreamDecodeConfig {
+            profile: Some(VideoProfile::H265(H265Profile::Main)),
+            bit_depth: Some(BitDepth::Eight),
+            chroma: Some(ChromaSubsampling::Yuv420),
+            surface_format: Some(VideoSurfaceFormat::Nv12),
+            ..stream_config(VideoCodec::H265)
+        };
+
+        assert!(matches!(
+            VaapiCodecAdapterFactory::stream_config_rejection(&config),
+            Some(VideoStreamConfigRejection::UnsupportedCodec {
+                codec: VideoCodec::H265
             })
         ));
     }
@@ -1060,7 +1173,7 @@ mod tests {
             .prepare_pending_access_unit(
                 &first_access_unit,
                 VaapiPacketDecodeHints {
-                    inject_h264_parameter_sets: true,
+                    inject_parameter_sets: true,
                 },
             )
             .expect("first H.264 AU должен собираться");
@@ -1095,7 +1208,7 @@ mod tests {
             .prepare_pending_access_unit(
                 &keyframe_access_unit,
                 VaapiPacketDecodeHints {
-                    inject_h264_parameter_sets: true,
+                    inject_parameter_sets: true,
                 },
             )
             .expect("keyframe H.264 AU должен собираться");
@@ -1115,7 +1228,7 @@ mod tests {
             .prepare_pending_access_unit(
                 &first_access_unit,
                 VaapiPacketDecodeHints {
-                    inject_h264_parameter_sets: true,
+                    inject_parameter_sets: true,
                 },
             )
             .expect("first H.264 AU должен собираться");
@@ -1142,7 +1255,7 @@ mod tests {
             .prepare_pending_access_unit(
                 &first_access_unit,
                 VaapiPacketDecodeHints {
-                    inject_h264_parameter_sets: true,
+                    inject_parameter_sets: true,
                 },
             )
             .expect("first H.264 AU должен собираться");
@@ -1286,6 +1399,13 @@ mod tests {
             hdr_input: true,
             ..supported_vp9.clone()
         };
+        let rejected_h265_main = SupportedVideoDecodeFormat {
+            profile: VideoProfile::H265(H265Profile::Main),
+            codec: VideoCodec::H265,
+            bit_depth: BitDepth::Eight,
+            hdr_input: false,
+            ..supported_vp9.clone()
+        };
 
         assert!(VaapiCodecAdapterFactory::supports_decode_format(
             &supported_vp9
@@ -1295,6 +1415,9 @@ mod tests {
         ));
         assert!(!VaapiCodecAdapterFactory::supports_decode_format(
             &rejected_h264_high10
+        ));
+        assert!(!VaapiCodecAdapterFactory::supports_decode_format(
+            &rejected_h265_main
         ));
     }
 }

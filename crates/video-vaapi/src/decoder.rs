@@ -5,9 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use codec_core::{
-    BitDepth, ChromaSubsampling, VideoCodec, VideoColorMetadata, VideoDisplayOrientation,
-};
+use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoDisplayOrientation};
 use cros_codecs::libva::{
     VA_RT_FORMAT_YUV420, VA_RT_FORMAT_YUV420_10, VA_RT_FORMAT_YUV420_12, VA_RT_FORMAT_YUV422,
     VA_RT_FORMAT_YUV422_10, VA_RT_FORMAT_YUV422_12, VA_RT_FORMAT_YUV444, VA_RT_FORMAT_YUV444_10,
@@ -203,7 +201,7 @@ where
     let mut report = DecodeLoopReport::default();
     let codec_label = driver.codec_label();
     let decode_hints = VaapiPacketDecodeHints {
-        inject_h264_parameter_sets: keyframe,
+        inject_parameter_sets: keyframe,
     };
 
     loop {
@@ -616,7 +614,7 @@ impl VaapiVideoDecoder {
     pub(crate) fn configure_stream(&mut self, config: &VideoStreamDecodeConfig) -> Result<()> {
         self.display_orientation = config.display_orientation;
 
-        if self.adapter.codec() == config.codec && config.codec != VideoCodec::H264 {
+        if self.adapter.can_reuse_for_config(config) {
             return Ok(());
         }
 
