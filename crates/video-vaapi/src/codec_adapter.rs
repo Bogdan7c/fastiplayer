@@ -1198,6 +1198,12 @@ impl VaapiCodecAdapterFactory {
             (VideoCodec::H264, VideoProfile::H264(_)) => {
                 format.bit_depth == BitDepth::Eight && format.chroma == ChromaSubsampling::Yuv420
             }
+            (VideoCodec::H265, VideoProfile::H265(H265Profile::Main)) => {
+                format.bit_depth == BitDepth::Eight && format.chroma == ChromaSubsampling::Yuv420
+            }
+            (VideoCodec::H265, VideoProfile::H265(H265Profile::Main10)) => {
+                format.bit_depth == BitDepth::Ten && format.chroma == ChromaSubsampling::Yuv420
+            }
             _ => false,
         }
     }
@@ -1768,10 +1774,10 @@ mod tests {
         assert!(H265VaapiStreamConfig::from_decode_config(&main10_config).is_ok());
     }
 
-    /// Проверяет, что H.265 adapter path готов, но capability advertisement выключен.
+    /// Проверяет, что H.265 capability включается только для validated Main/Main10 matrix.
     #[test]
-    fn factory_does_not_advertise_h265_until_validation_session() {
-        let format = SupportedVideoDecodeFormat {
+    fn factory_advertises_validated_h265_main_and_main10_formats() {
+        let h265_main = SupportedVideoDecodeFormat {
             codec: VideoCodec::H265,
             profile: VideoProfile::H265(H265Profile::Main),
             bit_depth: BitDepth::Eight,
@@ -1782,8 +1788,33 @@ mod tests {
             hdr_input: false,
             backend: codec_core::DecodeBackendId::vaapi(),
         };
+        let h265_main10 = SupportedVideoDecodeFormat {
+            profile: VideoProfile::H265(H265Profile::Main10),
+            bit_depth: BitDepth::Ten,
+            hdr_input: true,
+            ..h265_main.clone()
+        };
+        let rejected_main_wrong_depth = SupportedVideoDecodeFormat {
+            bit_depth: BitDepth::Ten,
+            hdr_input: true,
+            ..h265_main.clone()
+        };
+        let rejected_future_profile = SupportedVideoDecodeFormat {
+            profile: VideoProfile::H265(H265Profile::Main444),
+            chroma: ChromaSubsampling::Yuv444,
+            ..h265_main.clone()
+        };
 
-        assert!(!VaapiCodecAdapterFactory::supports_decode_format(&format));
+        assert!(VaapiCodecAdapterFactory::supports_decode_format(&h265_main));
+        assert!(VaapiCodecAdapterFactory::supports_decode_format(
+            &h265_main10
+        ));
+        assert!(!VaapiCodecAdapterFactory::supports_decode_format(
+            &rejected_main_wrong_depth
+        ));
+        assert!(!VaapiCodecAdapterFactory::supports_decode_format(
+            &rejected_future_profile
+        ));
     }
 
     /// Собирает минимальный avcC record с SPS/PPS для configure-boundary tests.
@@ -2433,7 +2464,7 @@ mod tests {
 
     /// Проверяет production capability matrix adapter-а без hardware probe.
     #[test]
-    fn implemented_format_matrix_contains_vp9_and_h264_8bit_yuv420() {
+    fn implemented_format_matrix_contains_vp9_h264_and_h265_main_main10() {
         let supported_vp9 = SupportedVideoDecodeFormat {
             codec: VideoCodec::Vp9,
             profile: VideoProfile::Vp9(Vp9Profile::Profile2),
@@ -2459,10 +2490,25 @@ mod tests {
             hdr_input: true,
             ..supported_vp9.clone()
         };
-        let rejected_h265_main = SupportedVideoDecodeFormat {
+        let supported_h265_main = SupportedVideoDecodeFormat {
             profile: VideoProfile::H265(H265Profile::Main),
             codec: VideoCodec::H265,
             bit_depth: BitDepth::Eight,
+            hdr_input: false,
+            ..supported_vp9.clone()
+        };
+        let supported_h265_main10 = SupportedVideoDecodeFormat {
+            profile: VideoProfile::H265(H265Profile::Main10),
+            codec: VideoCodec::H265,
+            bit_depth: BitDepth::Ten,
+            hdr_input: true,
+            ..supported_vp9.clone()
+        };
+        let rejected_h265_main444 = SupportedVideoDecodeFormat {
+            profile: VideoProfile::H265(H265Profile::Main444),
+            codec: VideoCodec::H265,
+            bit_depth: BitDepth::Eight,
+            chroma: ChromaSubsampling::Yuv444,
             hdr_input: false,
             ..supported_vp9.clone()
         };
@@ -2476,8 +2522,14 @@ mod tests {
         assert!(!VaapiCodecAdapterFactory::supports_decode_format(
             &rejected_h264_high10
         ));
+        assert!(VaapiCodecAdapterFactory::supports_decode_format(
+            &supported_h265_main
+        ));
+        assert!(VaapiCodecAdapterFactory::supports_decode_format(
+            &supported_h265_main10
+        ));
         assert!(!VaapiCodecAdapterFactory::supports_decode_format(
-            &rejected_h265_main
+            &rejected_h265_main444
         ));
     }
 }

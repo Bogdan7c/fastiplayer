@@ -509,7 +509,7 @@ pub fn resolve_video_metadata(
         .unwrap_or_else(|| VideoDecodeRequirement::new(codec));
 
     if let Some(candidate) = bitstream_candidate {
-        requirement = candidate.requirement;
+        requirement = merge_bitstream_requirement(requirement, candidate.requirement);
     }
 
     VideoResolvedMetadata {
@@ -517,6 +517,48 @@ pub fn resolve_video_metadata(
         color: requirement.color.clone(),
         requirement,
     }
+}
+
+/// Объединяет container metadata и bitstream refinement без потери полей,
+/// которые packet/header parser не может выразить сам, например MP4 HDR `colr`.
+fn merge_bitstream_requirement(
+    container_requirement: VideoDecodeRequirement,
+    bitstream_requirement: VideoDecodeRequirement,
+) -> VideoDecodeRequirement {
+    let mut requirement = bitstream_requirement;
+
+    if requirement.profile.is_none() {
+        requirement.profile = container_requirement.profile;
+    }
+    if requirement.bit_depth.is_none() {
+        requirement.bit_depth = container_requirement.bit_depth;
+    }
+    if requirement.chroma.is_none() {
+        requirement.chroma = container_requirement.chroma;
+    }
+    if requirement.width.is_none() {
+        requirement.width = container_requirement.width;
+    }
+    if requirement.height.is_none() {
+        requirement.height = container_requirement.height;
+    }
+    if requirement.fps.is_none() {
+        requirement.fps = container_requirement.fps;
+    }
+    if requirement.timing_contract.nominal_frame_rate.is_none() {
+        requirement.timing_contract = container_requirement.timing_contract;
+    }
+    if requirement.surface_format.is_none() {
+        requirement.surface_format =
+            VideoSurfaceFormat::from_optional_fields(requirement.bit_depth, requirement.chroma)
+                .or(container_requirement.surface_format);
+    }
+
+    if let Some(color) = requirement.color.clone().or(container_requirement.color) {
+        requirement = requirement.with_color(color);
+    }
+
+    requirement
 }
 
 /// Возвращает `true`, если requirement ещё нуждается в packet-level refinement.
@@ -1169,6 +1211,58 @@ mod tests {
             candidate.requirement.surface_format,
             Some(VideoSurfaceFormat::P010)
         );
+    }
+
+    #[test]
+    fn h265_hvcc_refinement_preserves_container_hdr_color_metadata() {
+        let container_color = VideoColorMetadata::container(
+            crate::ColorRange::Limited,
+            crate::MatrixCoefficients::Bt2020,
+            crate::ColorPrimaries::Bt2020,
+            crate::TransferFunction::Pq,
+            Some(crate::HdrMetadata {
+                color_primaries: crate::ColorPrimaries::Bt2020,
+                transfer_function: crate::TransferFunction::Pq,
+                max_luminance_nits: Some(1_000.0),
+                min_luminance_nits: Some(0.01),
+                max_content_light_level_nits: Some(1_000),
+                max_frame_average_light_level_nits: Some(400),
+            }),
+        );
+        let container_source = VideoMetadataSource::container(VideoCodec::H265)
+            .with_resolution(3840, 2160)
+            .with_color(container_color.clone());
+        let codec_private = h265_hvcc(4, 2, 1, 10);
+        let packet_bytes =
+            h265_hvcc_access_unit(crate::H265NalLengthSize::FOUR, &[h265_nal_unit(1, &[0x01])]);
+
+        let probe = probe_video_packet_requirement_with_codec_private(
+            VideoCodec::H265,
+            &packet_bytes,
+            Some(&codec_private),
+        );
+        let VideoRequirementProbe::Candidate(candidate) = probe else {
+            panic!("H.265 Main10 hvcC должен дать candidate, получено {probe:?}");
+        };
+        let resolved =
+            resolve_video_metadata(VideoCodec::H265, Some(container_source), Some(candidate));
+
+        assert_eq!(
+            resolved.requirement.profile,
+            Some(VideoProfile::H265(crate::H265Profile::Main10))
+        );
+        assert_eq!(resolved.requirement.bit_depth, Some(BitDepth::Ten));
+        assert_eq!(resolved.requirement.chroma, Some(ChromaSubsampling::Yuv420));
+        assert_eq!(resolved.requirement.width, Some(3840));
+        assert_eq!(resolved.requirement.height, Some(2160));
+        assert_eq!(
+            resolved.requirement.surface_format,
+            Some(VideoSurfaceFormat::P010)
+        );
+        assert_eq!(resolved.color, Some(container_color.clone()));
+        assert_eq!(resolved.requirement.color, Some(container_color));
+        assert!(resolved.requirement.hdr);
+        assert!(resolved.requirement.color_pipeline.requires_hdr_processing);
     }
 
     /// Проверяет real-world `hev1`: parameter sets могут прийти in-band, а `hvcC` доказывает framing.

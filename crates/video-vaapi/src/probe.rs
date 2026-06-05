@@ -836,6 +836,43 @@ mod tests {
     }
 
     #[test]
+    fn capability_probe_advertises_h265_main_and_main10_yuv420_slots() {
+        let max_resolution = MaxResolution {
+            width: Some(3840),
+            height: Some(2160),
+        };
+        let main_formats = formats_for_va_profile(
+            libva::VAProfile::VAProfileHEVCMain,
+            libva::VA_RT_FORMAT_YUV420 | libva::VA_RT_FORMAT_YUV420_10,
+            max_resolution,
+        );
+        let main10_formats = formats_for_va_profile(
+            libva::VAProfile::VAProfileHEVCMain10,
+            libva::VA_RT_FORMAT_YUV420 | libva::VA_RT_FORMAT_YUV420_10,
+            max_resolution,
+        );
+
+        assert_eq!(main_formats.len(), 1);
+        assert_eq!(main_formats[0].codec, VideoCodec::H265);
+        assert_eq!(
+            main_formats[0].profile,
+            VideoProfile::H265(H265Profile::Main)
+        );
+        assert_eq!(main_formats[0].bit_depth, BitDepth::Eight);
+        assert_eq!(main_formats[0].chroma, ChromaSubsampling::Yuv420);
+        assert!(!main_formats[0].hdr_input);
+        assert_eq!(main10_formats.len(), 1);
+        assert_eq!(main10_formats[0].codec, VideoCodec::H265);
+        assert_eq!(
+            main10_formats[0].profile,
+            VideoProfile::H265(H265Profile::Main10)
+        );
+        assert_eq!(main10_formats[0].bit_depth, BitDepth::Ten);
+        assert_eq!(main10_formats[0].chroma, ChromaSubsampling::Yuv420);
+        assert!(main10_formats[0].hdr_input);
+    }
+
+    #[test]
     fn capability_probe_does_not_advertise_unimplemented_vp9_profiles() {
         let profile1_formats = formats_for_va_profile(
             libva::VAProfile::VAProfileVP9Profile1,
@@ -862,12 +899,44 @@ mod tests {
     fn capability_probe_does_not_advertise_future_codecs_without_adapters() {
         for profile in [
             libva::VAProfile::VAProfileAV1Profile0,
-            libva::VAProfile::VAProfileHEVCMain,
             libva::VAProfile::VAProfileVP8Version0_3,
         ] {
             let formats = formats_for_va_profile(
                 profile,
                 libva::VA_RT_FORMAT_YUV420,
+                MaxResolution {
+                    width: Some(1920),
+                    height: Some(1080),
+                },
+            );
+
+            assert!(formats.is_empty(), "{profile:?} must not be advertised");
+        }
+    }
+
+    #[test]
+    fn capability_probe_does_not_advertise_future_hevc_profiles() {
+        for (profile, rt_format) in [
+            (
+                libva::VAProfile::VAProfileHEVCMain12,
+                libva::VA_RT_FORMAT_YUV420_12,
+            ),
+            (
+                libva::VAProfile::VAProfileHEVCMain422_10,
+                libva::VA_RT_FORMAT_YUV422_10,
+            ),
+            (
+                libva::VAProfile::VAProfileHEVCMain444,
+                libva::VA_RT_FORMAT_YUV444,
+            ),
+            (
+                libva::VAProfile::VAProfileHEVCSccMain,
+                libva::VA_RT_FORMAT_YUV420,
+            ),
+        ] {
+            let formats = formats_for_va_profile(
+                profile,
+                rt_format,
                 MaxResolution {
                     width: Some(1920),
                     height: Some(1080),
