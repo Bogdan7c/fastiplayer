@@ -590,6 +590,76 @@ impl SeekProgressBlocker {
     }
 }
 
+/// Временные отметки ключевых стадий active Accurate seek preroll-а.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SeekPrerollStageDiagnosticsSnapshot {
+    /// Первый demux packet после accepted seek-а.
+    pub first_post_seek_packet_elapsed: Option<Duration>,
+
+    /// Первый selected video packet на user target-е или позже.
+    pub first_target_or_after_video_packet_elapsed: Option<Duration>,
+
+    /// Первый decoded video frame на user target-е или позже.
+    pub first_decoded_target_frame_elapsed: Option<Duration>,
+
+    /// Первый queued video frame на user target-е или позже.
+    pub first_queued_target_frame_elapsed: Option<Duration>,
+
+    /// Первый presented video frame, который закрывает Accurate target gate.
+    pub first_presented_target_frame_elapsed: Option<Duration>,
+}
+
+/// Счётчики demux событий, увиденных во время active Accurate seek preroll-а.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SeekPrerollDemuxEventCountersSnapshot {
+    /// Audio packets, которые demuxer вернул после accepted seek-а.
+    pub audio_packets: u64,
+
+    /// Video packets, которые demuxer вернул после accepted seek-а.
+    pub video_packets: u64,
+
+    /// EOF markers, полученные до закрытия active seek-а.
+    pub end_of_stream: u64,
+
+    /// Track-list reset markers, полученные до закрытия active seek-а.
+    pub tracks_changed: u64,
+
+    /// Fatal demux read errors, полученные до закрытия active seek-а.
+    pub errors: u64,
+}
+
+/// Aggregate counters Accurate seek preroll-а без per-packet allocations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SeekPrerollCountersSnapshot {
+    /// Разбивка demux событий по типам.
+    pub demux_events: SeekPrerollDemuxEventCountersSnapshot,
+
+    /// Audio packets, целиком отброшенные до user target-а.
+    pub skipped_audio_preroll_packets: u64,
+
+    /// Pre-target video packets, отправленные decoder-у в fast-preroll режиме.
+    pub video_preroll_packets_sent: u64,
+
+    /// Pre-target decoded frames, не допущенные в обычный scheduler/output path.
+    pub decoded_pre_target_frames_dropped: u64,
+
+    /// Decoder/video admission pauses во время Accurate fast-preroll.
+    pub decoder_backpressure_pauses: u64,
+}
+
+/// Read-only snapshot seek-preroll diagnostics для active Accurate seek-а.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AccurateSeekPrerollDiagnosticsSnapshot {
+    /// `true`, если текущий seek использует Accurate skip/preroll semantics.
+    pub active: bool,
+
+    /// Elapsed timings от момента accepted demux seek-а.
+    pub stages: SeekPrerollStageDiagnosticsSnapshot,
+
+    /// Bounded aggregate counters без хранения всех packets.
+    pub counters: SeekPrerollCountersSnapshot,
+}
+
 /// Snapshot активного seek transition-а для throttled worker log-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActiveSeekDiagnosticsSnapshot {
@@ -619,6 +689,9 @@ pub struct ActiveSeekDiagnosticsSnapshot {
 
     /// Resume intent, сохранённый на момент старта seek transaction-а.
     pub resume_intent: &'static str,
+
+    /// Исходный public seek mode до container-level mapping-а.
+    pub seek_mode: crate::SeekMode,
 
     /// Главный текущий blocker seek progress.
     pub blocker: SeekProgressBlocker,
@@ -661,6 +734,9 @@ pub struct ActiveSeekDiagnosticsSnapshot {
 
     /// Последняя typed pause-причина, если pipeline уже её зафиксировал.
     pub last_pause_reason: Option<PipelinePauseReason>,
+
+    /// Stage/counter diagnostics Accurate seek preroll-а.
+    pub accurate_preroll: AccurateSeekPrerollDiagnosticsSnapshot,
 
     /// Queue/resource depths около active seek.
     pub queues: PipelineQueueDepthSnapshot,

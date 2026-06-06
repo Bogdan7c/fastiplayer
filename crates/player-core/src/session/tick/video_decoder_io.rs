@@ -344,6 +344,7 @@ pub(super) fn drain_decoded_video_frames(
 
         let frame_pts = frame.pts;
         if session.should_drop_decoded_frame_for_seek(frame_pts) {
+            session.note_decoded_pre_target_frame_dropped_for_seek_diagnostics();
             if session.can_keep_seek_preroll_fallback(frame_pts) {
                 replace_seek_preroll_fallback_frame(session, tick_result, frame);
             } else {
@@ -402,6 +403,7 @@ pub(super) fn send_pending_video_packets_to_decoder(
     catch_up_deadline: Option<Instant>,
 ) -> usize {
     if !session.pipeline.can_send_video_decode_packets() {
+        session.note_decoder_backpressure_for_seek_preroll_diagnostics();
         return 0;
     }
 
@@ -415,6 +417,7 @@ pub(super) fn send_pending_video_packets_to_decoder(
         }
 
         if present_admission_budget == 0 {
+            session.note_decoder_backpressure_for_seek_preroll_diagnostics();
             record_pipeline_pause(
                 session,
                 tick_result,
@@ -474,6 +477,7 @@ pub(super) fn send_pending_video_packets_to_decoder(
         }
 
         if let Some(reason) = texture_capacity_backpressure_reason(session, limits.texture) {
+            session.note_decoder_backpressure_for_seek_preroll_diagnostics();
             record_pipeline_pause(session, tick_result, reason);
             break;
         }
@@ -487,6 +491,7 @@ pub(super) fn send_pending_video_packets_to_decoder(
             limits.decode_ahead,
             packet_pts,
         ) {
+            session.note_decoder_backpressure_for_seek_preroll_diagnostics();
             trace!(
                 pts_ms = packet_pts.as_millis(),
                 audio_ms = session.audio_clock_now().as_millis(),
@@ -528,10 +533,12 @@ pub(super) fn send_pending_video_packets_to_decoder(
                 session.pipeline.pop_pending_video_packet_front();
                 session.pipeline.note_video_packet_sent_to_decoder();
                 if packet_is_seek_preroll {
+                    session.note_video_preroll_packet_sent_for_seek_diagnostics();
                     seek_preroll_packets_sent = seek_preroll_packets_sent.saturating_add(1);
                 }
             }
             Some(Err(DecodeSendError::Backpressure(reason))) => {
+                session.note_decoder_backpressure_for_seek_preroll_diagnostics();
                 tracing::debug!(reason = %reason, "Decoder packet channel backpressure");
                 record_pipeline_pause(
                     session,

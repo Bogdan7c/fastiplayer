@@ -182,6 +182,15 @@ fn keyframe_before_seek_keeps_actual_frame_as_runtime_anchor() {
             .session
             .should_drop_decoded_frame_for_seek(actual_position)
     );
+    let diagnostics = harness
+        .session
+        .active_seek_diagnostics(Instant::now(), &seek_regression_tick_config())
+        .expect("keyframe-before seek тоже имеет обычный active seek snapshot");
+    assert_eq!(diagnostics.seek_mode, SeekMode::KeyframeBefore);
+    assert!(
+        !diagnostics.accurate_preroll.active,
+        "KeyframeBefore не должен включать Accurate skip/preroll diagnostics"
+    );
 
     harness.push_decoded_frame(actual_position, 75, 1);
     let tick_result = harness.tick_once();
@@ -1408,6 +1417,50 @@ fn active_accurate_seek_demux_budget_ignores_dropped_audio_preroll() {
     assert_eq!(harness.sent_packets().len(), 1);
     assert_eq!(harness.sent_packets()[0].pts, target_position);
     assert!(harness.session.pipeline.pending_audio_packet_is_empty());
+
+    let diagnostics = harness
+        .session
+        .active_seek_diagnostics(Instant::now(), &seek_regression_tick_config())
+        .expect("active accurate seek должен иметь diagnostics до target frame");
+    assert_eq!(diagnostics.seek_mode, SeekMode::Accurate);
+    assert!(diagnostics.accurate_preroll.active);
+    assert_eq!(
+        diagnostics
+            .accurate_preroll
+            .counters
+            .skipped_audio_preroll_packets,
+        32
+    );
+    assert_eq!(
+        diagnostics
+            .accurate_preroll
+            .counters
+            .demux_events
+            .audio_packets,
+        32
+    );
+    assert_eq!(
+        diagnostics
+            .accurate_preroll
+            .counters
+            .demux_events
+            .video_packets,
+        1
+    );
+    assert!(
+        diagnostics
+            .accurate_preroll
+            .stages
+            .first_post_seek_packet_elapsed
+            .is_some()
+    );
+    assert!(
+        diagnostics
+            .accurate_preroll
+            .stages
+            .first_target_or_after_video_packet_elapsed
+            .is_some()
+    );
 }
 
 #[test]
@@ -1608,6 +1661,18 @@ fn active_accurate_seek_sends_pre_target_video_packets_in_burst() {
     assert_eq!(tick_result.demuxed_packets.len(), 0);
     assert!(harness.session.seek_commit().is_some());
     assert!(harness.session.pipeline.pending_video_packet_is_empty());
+
+    let diagnostics = harness
+        .session
+        .active_seek_diagnostics(Instant::now(), &seek_regression_tick_config())
+        .expect("active accurate seek должен оставаться открыт без decoded target frame");
+    assert_eq!(
+        diagnostics
+            .accurate_preroll
+            .counters
+            .video_preroll_packets_sent,
+        10
+    );
 }
 
 #[test]

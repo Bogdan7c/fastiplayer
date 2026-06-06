@@ -10,8 +10,8 @@ use super::audio_runtime::SeekAudioGateStatus;
 use super::seek_transaction::SeekProgressGateSnapshot;
 use super::*;
 use crate::seek_state::{
-    POST_SEEK_PACKET_TRACE_LIMIT, PlaybackResumeIntent, PostSeekPacketTraceDecision,
-    SeekCommitState, SeekTraceState,
+    AccuratePrerollDemuxEventKind, POST_SEEK_PACKET_TRACE_LIMIT, PlaybackResumeIntent,
+    PostSeekPacketTraceDecision, SeekCommitState, SeekTraceState,
 };
 use crate::{
     AudioOutputFactory, AudioOutputSpec, DecodeBackpressureReason, DecodeSendError,

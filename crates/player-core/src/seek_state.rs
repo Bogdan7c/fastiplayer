@@ -2,6 +2,10 @@ use std::time::{Duration, Instant};
 
 use media_core::{DemuxSeekRequest, MediaTime, TrackKind};
 
+use crate::diagnostics::{
+    AccurateSeekPrerollDiagnosticsSnapshot, SeekPrerollCountersSnapshot,
+    SeekPrerollDemuxEventCountersSnapshot, SeekPrerollStageDiagnosticsSnapshot,
+};
 use crate::{PlaybackState, SeekMode, SeekRequest};
 
 /// Намерение возобновления playback после обычного final seek transaction.
@@ -184,6 +188,24 @@ pub(crate) struct SeekTraceState {
 
     /// Был ли уже зафиксирован первый TracksChanged marker после seek.
     first_track_list_update_logged: bool,
+
+    /// Elapsed timings Accurate seek preroll-а.
+    accurate_preroll_stages: SeekPrerollStageDiagnosticsSnapshot,
+
+    /// Aggregate counters Accurate seek preroll-а.
+    accurate_preroll_counters: SeekPrerollCountersSnapshot,
+}
+
+/// Запоминает elapsed только для первого события стадии.
+fn record_first_elapsed(slot: &mut Option<Duration>, elapsed: Duration) {
+    if slot.is_none() {
+        *slot = Some(elapsed);
+    }
+}
+
+/// Увеличивает счётчик без риска wrap-around.
+fn increment_counter(counter: &mut u64) {
+    *counter = counter.saturating_add(1);
 }
 
 impl SeekTraceState {
@@ -226,6 +248,65 @@ impl SeekTraceState {
         })
     }
 
+    /// Учитывает demux packet только для Accurate preroll diagnostics.
+    pub(crate) fn record_accurate_preroll_demux_packet(
+        &mut self,
+        packet_kind: TrackKind,
+        target_or_after_selected_video: bool,
+        elapsed: Duration,
+    ) {
+        if self.active_generation.is_none() {
+            return;
+        }
+
+        record_first_elapsed(
+            &mut self.accurate_preroll_stages.first_post_seek_packet_elapsed,
+            elapsed,
+        );
+
+        match packet_kind {
+            TrackKind::Audio => {
+                increment_counter(&mut self.accurate_preroll_counters.demux_events.audio_packets);
+            }
+            TrackKind::Video => {
+                increment_counter(&mut self.accurate_preroll_counters.demux_events.video_packets);
+            }
+        }
+
+        if target_or_after_selected_video {
+            record_first_elapsed(
+                &mut self
+                    .accurate_preroll_stages
+                    .first_target_or_after_video_packet_elapsed,
+                elapsed,
+            );
+        }
+    }
+
+    /// Учитывает EOF/TracksChanged/error demux marker для Accurate preroll diagnostics.
+    pub(crate) fn record_accurate_preroll_demux_event(
+        &mut self,
+        event_kind: AccuratePrerollDemuxEventKind,
+    ) {
+        if self.active_generation.is_none() {
+            return;
+        }
+
+        let counters: &mut SeekPrerollDemuxEventCountersSnapshot =
+            &mut self.accurate_preroll_counters.demux_events;
+        match event_kind {
+            AccuratePrerollDemuxEventKind::EndOfStream => {
+                increment_counter(&mut counters.end_of_stream);
+            }
+            AccuratePrerollDemuxEventKind::TracksChanged => {
+                increment_counter(&mut counters.tracks_changed);
+            }
+            AccuratePrerollDemuxEventKind::Error => {
+                increment_counter(&mut counters.errors);
+            }
+        }
+    }
+
     /// Возвращает `true` только для первого decoded frame текущего seek trace-а.
     pub(crate) fn record_first_decoded_frame(&mut self) -> bool {
         if self.active_generation.is_none() || self.first_decoded_frame_logged {
@@ -234,6 +315,24 @@ impl SeekTraceState {
 
         self.first_decoded_frame_logged = true;
         true
+    }
+
+    /// Учитывает target-or-after decoded frame для Accurate preroll diagnostics.
+    pub(crate) fn record_accurate_preroll_decoded_frame(
+        &mut self,
+        target_or_after_frame: bool,
+        elapsed: Duration,
+    ) {
+        if self.active_generation.is_none() || !target_or_after_frame {
+            return;
+        }
+
+        record_first_elapsed(
+            &mut self
+                .accurate_preroll_stages
+                .first_decoded_target_frame_elapsed,
+            elapsed,
+        );
     }
 
     /// Возвращает `true` только для первого queued frame текущего seek trace-а.
@@ -246,6 +345,24 @@ impl SeekTraceState {
         true
     }
 
+    /// Учитывает target-or-after queued frame для Accurate preroll diagnostics.
+    pub(crate) fn record_accurate_preroll_queued_frame(
+        &mut self,
+        target_or_after_frame: bool,
+        elapsed: Duration,
+    ) {
+        if self.active_generation.is_none() || !target_or_after_frame {
+            return;
+        }
+
+        record_first_elapsed(
+            &mut self
+                .accurate_preroll_stages
+                .first_queued_target_frame_elapsed,
+            elapsed,
+        );
+    }
+
     /// Возвращает `true` только для первого presented frame текущего seek trace-а.
     pub(crate) fn record_first_presented_frame(&mut self, frame_pts: Duration) -> bool {
         if self.active_generation.is_none() || self.first_presented_frame_logged {
@@ -255,6 +372,24 @@ impl SeekTraceState {
         self.first_presented_frame_logged = true;
         self.first_presented_frame_position = Some(frame_pts);
         true
+    }
+
+    /// Учитывает target-or-after presented frame для Accurate preroll diagnostics.
+    pub(crate) fn record_accurate_preroll_presented_frame(
+        &mut self,
+        target_or_after_frame: bool,
+        elapsed: Duration,
+    ) {
+        if self.active_generation.is_none() || !target_or_after_frame {
+            return;
+        }
+
+        record_first_elapsed(
+            &mut self
+                .accurate_preroll_stages
+                .first_presented_target_frame_elapsed,
+            elapsed,
+        );
     }
 
     /// Возвращает PTS первого presented frame только для текущего generation-а.
@@ -278,6 +413,76 @@ impl SeekTraceState {
         self.first_track_list_update_logged = true;
         true
     }
+
+    /// Учитывает aggregate skipped audio preroll packets.
+    pub(crate) fn record_skipped_audio_preroll_packet(&mut self) {
+        if self.active_generation.is_none() {
+            return;
+        }
+
+        increment_counter(&mut self.accurate_preroll_counters.skipped_audio_preroll_packets);
+    }
+
+    /// Учитывает video packet, отправленный decoder-у как pre-target preroll.
+    pub(crate) fn record_video_preroll_packet_sent(&mut self) {
+        if self.active_generation.is_none() {
+            return;
+        }
+
+        increment_counter(&mut self.accurate_preroll_counters.video_preroll_packets_sent);
+    }
+
+    /// Учитывает decoded pre-target frame, который не дошёл в обычный output path.
+    pub(crate) fn record_decoded_pre_target_frame_dropped(&mut self) {
+        if self.active_generation.is_none() {
+            return;
+        }
+
+        increment_counter(
+            &mut self
+                .accurate_preroll_counters
+                .decoded_pre_target_frames_dropped,
+        );
+    }
+
+    /// Учитывает decoder/video admission backpressure во время Accurate preroll-а.
+    pub(crate) fn record_decoder_backpressure_pause(&mut self) {
+        if self.active_generation.is_none() {
+            return;
+        }
+
+        increment_counter(&mut self.accurate_preroll_counters.decoder_backpressure_pauses);
+    }
+
+    /// Возвращает read-only snapshot Accurate preroll diagnostics.
+    #[must_use]
+    pub(crate) fn accurate_preroll_snapshot(
+        &self,
+        active: bool,
+    ) -> AccurateSeekPrerollDiagnosticsSnapshot {
+        if !active || self.active_generation.is_none() {
+            return AccurateSeekPrerollDiagnosticsSnapshot::default();
+        }
+
+        AccurateSeekPrerollDiagnosticsSnapshot {
+            active: true,
+            stages: self.accurate_preroll_stages,
+            counters: self.accurate_preroll_counters,
+        }
+    }
+}
+
+/// Non-packet demux event kind для Accurate preroll counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccuratePrerollDemuxEventKind {
+    /// Demuxer дошёл до EOF до закрытия active seek-а.
+    EndOfStream,
+
+    /// Demuxer потребовал обновить track list.
+    TracksChanged,
+
+    /// Demuxer вернул fatal read error.
+    Error,
 }
 
 /// Session-owned runtime state seek domain-а без decoder/demux ownership.
@@ -353,9 +558,41 @@ impl SeekRuntimeState {
         self.trace.record_post_seek_packet(packet_kind)
     }
 
+    /// Учитывает packet-level demux diagnostics active Accurate preroll-а.
+    pub(crate) fn record_accurate_preroll_demux_packet(
+        &mut self,
+        packet_kind: TrackKind,
+        target_or_after_selected_video: bool,
+        elapsed: Duration,
+    ) {
+        self.trace.record_accurate_preroll_demux_packet(
+            packet_kind,
+            target_or_after_selected_video,
+            elapsed,
+        );
+    }
+
+    /// Учитывает lifecycle/error demux diagnostics active Accurate preroll-а.
+    pub(crate) fn record_accurate_preroll_demux_event(
+        &mut self,
+        event_kind: AccuratePrerollDemuxEventKind,
+    ) {
+        self.trace.record_accurate_preroll_demux_event(event_kind);
+    }
+
     /// Возвращает `true` только для первого decoded frame текущего trace-а.
     pub(crate) fn record_first_decoded_frame(&mut self) -> bool {
         self.trace.record_first_decoded_frame()
+    }
+
+    /// Учитывает target decoded frame для active Accurate preroll diagnostics.
+    pub(crate) fn record_accurate_preroll_decoded_frame(
+        &mut self,
+        target_or_after_frame: bool,
+        elapsed: Duration,
+    ) {
+        self.trace
+            .record_accurate_preroll_decoded_frame(target_or_after_frame, elapsed);
     }
 
     /// Возвращает `true` только для первого queued frame текущего trace-а.
@@ -363,14 +600,63 @@ impl SeekRuntimeState {
         self.trace.record_first_queued_frame()
     }
 
+    /// Учитывает target queued frame для active Accurate preroll diagnostics.
+    pub(crate) fn record_accurate_preroll_queued_frame(
+        &mut self,
+        target_or_after_frame: bool,
+        elapsed: Duration,
+    ) {
+        self.trace
+            .record_accurate_preroll_queued_frame(target_or_after_frame, elapsed);
+    }
+
     /// Возвращает `true` только для первого presented frame текущего trace-а.
     pub(crate) fn record_first_presented_frame(&mut self, frame_pts: Duration) -> bool {
         self.trace.record_first_presented_frame(frame_pts)
     }
 
+    /// Учитывает target presented frame для active Accurate preroll diagnostics.
+    pub(crate) fn record_accurate_preroll_presented_frame(
+        &mut self,
+        target_or_after_frame: bool,
+        elapsed: Duration,
+    ) {
+        self.trace
+            .record_accurate_preroll_presented_frame(target_or_after_frame, elapsed);
+    }
+
     /// Возвращает `true` только для первого TracksChanged marker-а текущего trace-а.
     pub(crate) fn record_first_track_list_update(&mut self) -> bool {
         self.trace.record_first_track_list_update()
+    }
+
+    /// Учитывает dropped audio preroll packet active Accurate seek-а.
+    pub(crate) fn record_skipped_audio_preroll_packet(&mut self) {
+        self.trace.record_skipped_audio_preroll_packet();
+    }
+
+    /// Учитывает pre-target video packet, отправленный decoder-у.
+    pub(crate) fn record_video_preroll_packet_sent(&mut self) {
+        self.trace.record_video_preroll_packet_sent();
+    }
+
+    /// Учитывает decoded pre-target frame, не попавший в обычный output path.
+    pub(crate) fn record_decoded_pre_target_frame_dropped(&mut self) {
+        self.trace.record_decoded_pre_target_frame_dropped();
+    }
+
+    /// Учитывает decoder/video admission backpressure active Accurate preroll-а.
+    pub(crate) fn record_decoder_backpressure_pause(&mut self) {
+        self.trace.record_decoder_backpressure_pause();
+    }
+
+    /// Возвращает read-only snapshot Accurate preroll diagnostics.
+    #[must_use]
+    pub(crate) fn accurate_preroll_snapshot(
+        &self,
+        active: bool,
+    ) -> AccurateSeekPrerollDiagnosticsSnapshot {
+        self.trace.accurate_preroll_snapshot(active)
     }
 
     /// Начинает lightweight scrub gesture.

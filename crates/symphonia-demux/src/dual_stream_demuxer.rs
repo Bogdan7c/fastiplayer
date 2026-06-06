@@ -829,9 +829,11 @@ mod tests {
             )))
             .expect("dual decode-point seek succeeds");
 
+        // RC1: initial backend seek целится почти в сам target (10 s − 1 ms margin), а не на
+        // target − 5 s, чтобы каждый поток приземлился на ближайший keyframe перед target.
         let expected_seek_call = FakeSeekCall {
             mode: SeekMode::Accurate,
-            required_timestamp_units: 5_000,
+            required_timestamp_units: 9_999,
         };
         assert_eq!(
             video_seek_log

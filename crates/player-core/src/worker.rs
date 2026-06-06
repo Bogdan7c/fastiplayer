@@ -1255,6 +1255,10 @@ fn log_active_seek_stall(
 ) {
     let queues = active_seek.queues;
     let texture_slots = queues.texture_slots;
+    let preroll = active_seek.accurate_preroll;
+    let preroll_stages = preroll.stages;
+    let preroll_counters = preroll.counters;
+    let preroll_demux = preroll_counters.demux_events;
 
     warn!(
         kind = active_seek.kind,
@@ -1273,6 +1277,7 @@ fn log_active_seek_stall(
         target_media_time_for_present_ms =
             duration_to_millis(scheduler_timing.target_media_time_for_present),
         resume_intent = active_seek.resume_intent,
+        seek_mode = ?active_seek.seek_mode,
         video_gate_ready = active_seek.video_gate_ready,
         audio_gate_ready = active_seek.audio_gate_ready,
         target_frame_presented = active_seek.target_frame_presented,
@@ -1291,6 +1296,33 @@ fn log_active_seek_stall(
             .seek_bootstrap
             .first_accepted_keyframe,
         last_pause_reason = ?active_seek.last_pause_reason,
+        accurate_preroll_active = preroll.active,
+        first_post_seek_packet_elapsed_ms = ?preroll_stages
+            .first_post_seek_packet_elapsed
+            .map(duration_to_millis),
+        first_target_video_packet_elapsed_ms = ?preroll_stages
+            .first_target_or_after_video_packet_elapsed
+            .map(duration_to_millis),
+        first_decoded_target_frame_elapsed_ms = ?preroll_stages
+            .first_decoded_target_frame_elapsed
+            .map(duration_to_millis),
+        first_queued_target_frame_elapsed_ms = ?preroll_stages
+            .first_queued_target_frame_elapsed
+            .map(duration_to_millis),
+        first_presented_target_frame_elapsed_ms = ?preroll_stages
+            .first_presented_target_frame_elapsed
+            .map(duration_to_millis),
+        seek_preroll_demux_audio_packets = preroll_demux.audio_packets,
+        seek_preroll_demux_video_packets = preroll_demux.video_packets,
+        seek_preroll_demux_eof = preroll_demux.end_of_stream,
+        seek_preroll_demux_tracks_changed = preroll_demux.tracks_changed,
+        seek_preroll_demux_errors = preroll_demux.errors,
+        skipped_audio_preroll_packets = preroll_counters.skipped_audio_preroll_packets,
+        video_preroll_packets_sent = preroll_counters.video_preroll_packets_sent,
+        decoded_pre_target_frames_dropped =
+            preroll_counters.decoded_pre_target_frames_dropped,
+        seek_preroll_decoder_backpressure_pauses =
+            preroll_counters.decoder_backpressure_pauses,
         pending_audio_packets = queues.pending_audio_packets,
         pending_video_packets = queues.pending_video_packets,
         present_queue_depth = queues.present_queue_depth,

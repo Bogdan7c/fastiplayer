@@ -68,6 +68,17 @@ const DECODE_POINT_BEFORE_MAX_RETRIES: usize = 6;
 /// Минимальный отступ назад, чтобы retry не попал в ту же after-target packet boundary.
 const DECODE_POINT_BEFORE_RETRY_MARGIN: Duration = Duration::from_millis(1);
 
+/// Отступ initial backend seek-а перед requested target.
+///
+/// RC1: раньше initial seek стартовал на целый `decode_point_before_preroll` (5 c) раньше
+/// target, из-за чего container (даже со `stss`/cues) приземлялся на keyframe за несколько
+/// GOP до цели. Это раздувало и demux-scan (особенно dense PCM), и decode-chain до target.
+/// Теперь initial seek целится практически в сам target (минус 1 ms, чтобы не уйти после
+/// цели на coarse backend-ах), и `stss`/cues снапают на БЛИЖАЙШИЙ decode-safe keyframe ≤ target.
+/// `decode_point_before_preroll` остаётся шагом backoff-а для retry, когда первая попытка
+/// приземлилась на non-keyframe или после target.
+const DECODE_POINT_BEFORE_INITIAL_SEEK_MARGIN: Duration = Duration::from_millis(1);
+
 /// Допустимый lead первого стартового keyframe-а после zero seek.
 ///
 /// MP4 с B-frames может иметь первый display keyframe на PTS 0 и отрицательный DTS.
@@ -1189,9 +1200,12 @@ impl SymphoniaDemuxer {
         reprobe_before_first_seek: bool,
     ) -> Result<DemuxSeekResult> {
         let requested_timestamp = request.timestamp;
+        // RC1: целимся в сам target (минус крошечный margin), а не в target − preroll,
+        // чтобы stss/cues приземлились на ближайший keyframe ≤ target. 5-секундный
+        // `decode_point_before_preroll` ниже остаётся только шагом retry-backoff-а.
         let mut backend_timestamp = decode_point_before_initial_timestamp(
             requested_timestamp,
-            self.options.decode_point_before_preroll(),
+            DECODE_POINT_BEFORE_INITIAL_SEEK_MARGIN,
         );
         let mut retained_lifecycle_events = VecDeque::new();
 
@@ -1561,12 +1575,15 @@ fn decode_point_before_unresolved_issue(
         .unwrap_or(DecodePointBeforeVerificationIssue::NoVideoPacket { packets_checked })
 }
 
-/// Выбирает первую backend-цель с pre-roll запасом, чтобы не стартовать после requested target.
+/// Выбирает initial backend-цель так, чтобы container приземлился на ближайший
+/// decode-safe keyframe непосредственно перед requested target (RC1), а не на GOP
+/// за несколько секунд раньше. `initial_margin` — лишь маленький отступ против coarse
+/// backend overshoot, а не полноценный pre-roll.
 fn decode_point_before_initial_timestamp(
     requested_timestamp: Duration,
-    preroll: Duration,
+    initial_margin: Duration,
 ) -> Duration {
-    requested_timestamp.saturating_sub(preroll)
+    requested_timestamp.saturating_sub(initial_margin)
 }
 
 /// Считает следующую backend-цель по величине overshoot относительно исходного target-а.
@@ -2024,9 +2041,10 @@ mod tests {
     use symphonia::core::units::{Duration as SymphoniaDuration, TimeBase, Timestamp};
 
     use super::{
-        DECODE_POINT_BEFORE_MAX_RETRIES, DecodePointBeforeVerificationIssue,
-        DecodePointBeforeVideoPacket, MATROSKA_STREAM_SCAN_LIMIT_BYTES,
-        MatroskaVideoMetadataScanDecision, RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG,
+        DECODE_POINT_BEFORE_INITIAL_SEEK_MARGIN, DECODE_POINT_BEFORE_MAX_RETRIES,
+        DecodePointBeforeVerificationIssue, DecodePointBeforeVideoPacket,
+        MATROSKA_STREAM_SCAN_LIMIT_BYTES, MatroskaVideoMetadataScanDecision,
+        RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG,
         RUSTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG,
         RUSTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG,
         RUSTIPLAYER_VIDEO_COLOR_PRIMARIES_H273_TAG,
@@ -2034,7 +2052,8 @@ mod tests {
         RUSTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG, RUSTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG,
         RUSTIPLAYER_VIDEO_HDR_MAX_LUMINANCE_NITS_TAG, RUSTIPLAYER_VIDEO_HDR_MIN_LUMINANCE_NITS_TAG,
         SymphoniaDemuxer, decide_matroska_video_metadata_scan,
-        decode_point_before_retry_timestamp_for_issue, read_stream_prefix,
+        decode_point_before_initial_timestamp, decode_point_before_retry_timestamp_for_issue,
+        read_stream_prefix,
     };
     use crate::error::DemuxError;
     use crate::matroska_metadata::MatroskaVideoTrack;
@@ -3088,6 +3107,27 @@ mod tests {
             retry_timestamp,
             Duration::from_millis(19_225),
             "retry должен расширить pre-roll, а не отступить только на маленький overshoot"
+        );
+    }
+
+    #[test]
+    fn decode_point_before_initial_seek_targets_requested_not_far_preroll() {
+        // RC1: initial backend seek целится практически в сам target, чтобы stss/cues
+        // приземлились на ближайший keyframe ≤ target, а не на GOP за несколько секунд раньше.
+        let requested = Duration::from_millis(94_351);
+        let initial = decode_point_before_initial_timestamp(
+            requested,
+            DECODE_POINT_BEFORE_INITIAL_SEEK_MARGIN,
+        );
+
+        assert!(
+            initial < requested,
+            "initial seek должен оставаться не позже target: {initial:?} < {requested:?}"
+        );
+        assert!(
+            requested.saturating_sub(initial) <= Duration::from_millis(2),
+            "initial seek должен быть почти в target, а не на целый pre-roll раньше: {:?}",
+            requested.saturating_sub(initial)
         );
     }
 

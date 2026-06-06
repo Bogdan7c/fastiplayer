@@ -267,6 +267,7 @@ pub(super) fn read_demux_packets(
                     route_outcome,
                     DemuxPacketRouteOutcome::DroppedSeekAudioPreroll
                 ) {
+                    session.note_skipped_audio_preroll_packet_for_seek_diagnostics();
                     dropped_seek_audio_preroll_packets =
                         dropped_seek_audio_preroll_packets.saturating_add(1);
                     last_dropped_seek_audio_preroll_pts = Some(packet_pts);
@@ -292,16 +293,19 @@ pub(super) fn read_demux_packets(
                     audio_clock_now_ms = session.audio_clock_now().as_secs_f64() * 1000.0,
                     "Demux reported EOF; entering drain"
                 );
+                session.note_demux_eof_for_seek_preroll_diagnostics();
                 session.enter_eof_drain();
                 break;
             }
             Ok(DemuxReadEvent::TracksChanged(track_update)) => {
+                session.note_demux_tracks_changed_for_seek_preroll_diagnostics();
                 session.handle_demux_track_list_update(track_update);
                 // Track-list reset меняет generation и decoder/audio selections; следующий
                 // demux pass должен видеть уже стабилизированное lifecycle state.
                 break;
             }
             Err(error) => {
+                session.note_demux_error_for_seek_preroll_diagnostics();
                 tracing::warn!(error = %error, "Ошибка чтения packet");
                 session.mark_fatal_error(PlayerError::new(
                     PlayerErrorKind::DemuxError,

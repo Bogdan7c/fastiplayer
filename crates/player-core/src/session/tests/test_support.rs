@@ -1468,6 +1468,18 @@ impl SeekRegressionHarness {
         ))
     }
 
+    /// Как `tick_once`, но с включённым accurate-seek fast-preroll.
+    ///
+    /// Воспроизводит продакшен-путь, где active accurate seek за один tick читает
+    /// decode-anchor + target и продвигает decode в пределах time budget, вместо
+    /// вырожденного zero-budget шага (который для Accurate в проде не используется).
+    pub(super) fn tick_once_fast_preroll(&mut self) -> PlayerTickResult {
+        self.session.tick(PlayerTickContext::with_config(
+            Instant::now(),
+            seek_regression_fast_preroll_tick_config(),
+        ))
+    }
+
     /// Запускает final seek к absolute target через public command boundary.
     pub(super) fn start_final_seek(&mut self, target: MediaTime) {
         self.session
@@ -1512,6 +1524,18 @@ impl SeekRegressionHarness {
             .lock()
             .expect("seek regression request log lock")
             .clone()
+    }
+}
+
+/// Конфиг tick-а regression harness с включённым accurate-seek fast-preroll.
+///
+/// Тот же маленький per-tick budget, но ненулевой `seek_fast_preroll_time_budget`, чтобы
+/// active accurate seek прошёл реальный fast-preroll catch-up (decode-anchor + target за
+/// один tick). Общий `seek_regression_tick_config` остаётся zero-budget для пошаговых тестов.
+pub(super) fn seek_regression_fast_preroll_tick_config() -> PlayerTickConfig {
+    PlayerTickConfig {
+        seek_fast_preroll_time_budget: Duration::from_millis(50),
+        ..seek_regression_tick_config()
     }
 }
 

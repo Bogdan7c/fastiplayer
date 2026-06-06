@@ -41,6 +41,15 @@ fn h265_ios_mov_decode_point_before_seek_starts_on_sync_sample() -> Result<()> {
         PacketKeyframe::Keyframe,
         "{fixture_name}: first video packet after seek should be proven HEVC decode-start"
     );
+    // RC1: seek должен якориться на БЛИЖАЙШИЙ sync sample перед target (iOS HEVC GOP ~1 c),
+    // а не на keyframe за несколько секунд раньше из-за избыточного 5-секундного pre-roll.
+    assert!(
+        seek_result.actual_position.as_duration()
+            >= target.saturating_sub(Duration::from_millis(1_500)),
+        "{fixture_name}: DecodePointBefore должен якориться на ближайший keyframe перед target, \
+         а не на дальний GOP (actual={:?}, target={target:?})",
+        seek_result.actual_position.as_duration(),
+    );
 
     Ok(())
 }

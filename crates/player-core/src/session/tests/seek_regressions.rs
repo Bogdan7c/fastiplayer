@@ -30,7 +30,7 @@ fn regression_ordinary_final_seek_drops_decode_safe_preroll_until_target_frame()
     assert!(harness.session.snapshot().timeline.seeking);
     assert!(!harness.session.snapshot().timeline.scrubbing);
 
-    let first_tick = harness.tick_once();
+    let first_tick = harness.tick_once_fast_preroll();
     assert_eq!(first_tick.demuxed_packets.len(), 2);
     assert_eq!(harness.sent_packets().len(), 2);
     assert_eq!(harness.sent_packets()[0].pts, actual);
@@ -41,7 +41,7 @@ fn regression_ordinary_final_seek_drops_decode_safe_preroll_until_target_frame()
     );
 
     harness.push_decoded_frame(actual, 79, 1);
-    let preroll_tick = harness.tick_once();
+    let preroll_tick = harness.tick_once_fast_preroll();
     assert_eq!(preroll_tick.demuxed_packets.len(), 0);
     assert_eq!(preroll_tick.video_frames_presented, 0);
     assert!(preroll_tick.dropped_video_frames.is_empty());
@@ -66,7 +66,7 @@ fn regression_ordinary_final_seek_drops_decode_safe_preroll_until_target_frame()
     );
 
     harness.push_decoded_frame(target, 80, 1);
-    let target_tick = harness.tick_once();
+    let target_tick = harness.tick_once_fast_preroll();
     assert_eq!(target_tick.video_frames_presented, 1);
     assert_eq!(
         harness
@@ -305,7 +305,7 @@ fn regression_symphonia_reset_required_event_rebases_generation_and_seek_complet
     harness.start_final_seek(MediaTime::from_duration(target));
     let generation_before_reset = harness.aligned_seek_commit().generation;
 
-    let reset_tick = harness.tick_once();
+    let reset_tick = harness.tick_once_fast_preroll();
     let seek_after_reset = harness.aligned_seek_commit();
     assert_eq!(reset_tick.demuxed_packets.len(), 0);
     assert_ne!(seek_after_reset.generation, generation_before_reset);
@@ -319,7 +319,7 @@ fn regression_symphonia_reset_required_event_rebases_generation_and_seek_complet
         MediaTime::from_duration(actual)
     );
 
-    let post_reset_packet_tick = harness.tick_once();
+    let post_reset_packet_tick = harness.tick_once_fast_preroll();
     let sent_after_reset = harness.sent_packets();
     assert_eq!(post_reset_packet_tick.demuxed_packets.len(), 2);
     assert_eq!(sent_after_reset.len(), 2);
@@ -331,7 +331,7 @@ fn regression_symphonia_reset_required_event_rebases_generation_and_seek_complet
     assert_eq!(sent_after_reset[1].pts, target);
 
     harness.push_decoded_frame(actual, 179, 1);
-    let preroll_tick = harness.tick_once();
+    let preroll_tick = harness.tick_once_fast_preroll();
 
     assert_eq!(preroll_tick.video_frames_presented, 0);
     assert!(harness.session.seek_commit().is_some());
@@ -347,7 +347,7 @@ fn regression_symphonia_reset_required_event_rebases_generation_and_seek_complet
     );
 
     harness.push_decoded_frame(target, 180, 1);
-    let target_tick = harness.tick_once();
+    let target_tick = harness.tick_once_fast_preroll();
 
     assert_eq!(target_tick.video_frames_presented, 1);
     assert!(harness.session.seek_commit().is_none());

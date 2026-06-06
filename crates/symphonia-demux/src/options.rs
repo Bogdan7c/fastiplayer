@@ -7,7 +7,10 @@ use std::time::Duration;
 /// таким packets и не проходят через этот лимит.
 pub const DEFAULT_MAX_CONSECUTIVE_CORRUPTED_PACKETS: usize = 64;
 
-/// Дефолтное окно pre-roll для `DecodePointBefore` перед requested target-ом.
+/// Шаг backoff-а `DecodePointBefore` при retry, когда первая попытка приземлилась на
+/// non-keyframe или после target. RC1: это больше НЕ initial-offset (initial seek целится
+/// почти в сам target через `DECODE_POINT_BEFORE_INITIAL_SEEK_MARGIN`), а только величина,
+/// на которую verification отступает назад, расширяя pre-roll окно от попытки к попытке.
 pub const DEFAULT_DECODE_POINT_BEFORE_PREROLL: Duration = Duration::from_secs(5);
 
 /// Максимальный pre-roll, который `DecodePointBefore` может принять без rescue retry.
@@ -28,7 +31,8 @@ pub struct DemuxerOptions {
     /// ошибкам reader-а: они возвращаются как fatal demux/parse ошибки.
     max_consecutive_corrupted_packets: NonZeroUsize,
 
-    /// Насколько раньше requested target-а начинать backend seek для decode-safe final video seek.
+    /// Шаг retry-backoff-а `DecodePointBefore` (НЕ initial-offset): на сколько отступать
+    /// назад между попытками, если первый видеопакет оказался non-keyframe или после target.
     decode_point_before_preroll: Duration,
 
     /// Насколько далеко до requested target-а можно принять найденный decode-start.
@@ -66,7 +70,7 @@ impl DemuxerOptions {
         self.max_consecutive_corrupted_packets.get()
     }
 
-    /// Возвращает pre-roll окно для `DecodePointBefore`.
+    /// Возвращает шаг retry-backoff-а `DecodePointBefore` (см. поле; не initial-offset).
     #[must_use]
     pub const fn decode_point_before_preroll(self) -> Duration {
         self.decode_point_before_preroll
