@@ -404,7 +404,16 @@ impl StreamSegment for MoovSegment {
         let trak = &self.moov.traks[track_num];
 
         // Find the sample timestamp. Note, complexity of O(N).
-        Ok(trak.mdia.minf.stbl.stts.find_sample_for_timestamp(ts))
+        let sample_num = trak.mdia.minf.stbl.stts.find_sample_for_timestamp(ts);
+
+        // MP4 `stss` перечисляет sync samples, с которых video decoder может стартовать после
+        // flush. Если таблица присутствует, seek обязан откатиться к такой sample, а не к
+        // ближайшему inter-frame из `stts`.
+        Ok(match (sample_num, trak.mdia.minf.stbl.stss.as_ref()) {
+            (Some(sample_num), Some(stss)) => stss.find_sync_sample_for_sample(sample_num),
+            (sample_num, None) => sample_num,
+            (None, _) => None,
+        })
     }
 
     fn sample_data(

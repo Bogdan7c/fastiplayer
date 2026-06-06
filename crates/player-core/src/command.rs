@@ -67,7 +67,8 @@ impl MediaOpenRequest {
 /// Политика seek-операции, которую должен выбрать scheduler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeekMode {
-    /// Seek с минимальной задержкой: demuxer стартует до target, а playback продолжается с первого свежего кадра.
+    /// Точный пользовательский seek: video decoder может стартовать раньше target-а,
+    /// но playback/audio gate открываются только на target-е или позже.
     Accurate,
 
     /// Seek к ближайшему ключевому кадру до указанной позиции.

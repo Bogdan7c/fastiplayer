@@ -14,6 +14,7 @@ pub(super) fn session_scrub_request(seconds: u64, mode: SeekMode) -> SeekRequest
 pub(super) fn audio_gate_seek_commit(resume_intent: PlaybackResumeIntent) -> SeekCommitState {
     SeekCommitState {
         generation: 4,
+        seek_mode: SeekMode::Accurate,
         target_position: MediaTime::from_secs(8),
         actual_position: MediaTime::from_secs(8),
         started_at: Instant::now(),
@@ -1351,6 +1352,23 @@ pub(super) fn fake_video_packet_with_keyframe(
     )
 }
 
+/// Создаёт audio packet с длительностью, чтобы seek preroll мог отличить полный preroll от target-overlap.
+pub(super) fn fake_audio_packet(
+    track_id: TrackId,
+    pts: Duration,
+    duration: Duration,
+) -> media_core::Packet {
+    media_core::Packet::new(
+        track_id,
+        TrackKind::Audio,
+        pts,
+        None,
+        true,
+        Bytes::from_static(b"audio-packet"),
+    )
+    .with_duration(duration)
+}
+
 /// Создаёт минимальный decode packet для проверки worker -> decoder boundary.
 pub(super) fn decode_packet_for_tests(pts: Duration) -> PlayerDecodePacket {
     PlayerDecodePacket {
@@ -1504,6 +1522,7 @@ pub(super) fn seek_regression_tick_config() -> PlayerTickConfig {
         max_video_packets_sent_per_tick: 1,
         max_decoded_video_frames_drained_per_tick: 4,
         adaptive_catch_up_time_budget: Duration::ZERO,
+        seek_fast_preroll_time_budget: Duration::ZERO,
         seek_commit_timeout: Duration::from_secs(10),
         ..seek_admission_tick_config(4, 4)
     }

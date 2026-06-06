@@ -51,6 +51,12 @@ const MAX_AUDIO_BUFFER_TARGET_MS: u64 = 10_000;
 /// Верхний предел video preroll перед seek resume, чтобы config не удерживал лишние GPU frames.
 const MAX_SEEK_RESUME_VIDEO_READY_FRAMES: usize = MAX_PRESENT_QUEUE_FRAMES + 1;
 
+/// Верхний предел seek-only preroll work window; это интерактивный bounded burst, не idle loop.
+const MAX_SEEK_FAST_PREROLL_BUDGET_MS: u64 = 250;
+
+/// Верхний предел GOP preroll burst-а; реальные decoder/resource лимиты остаются ниже.
+const MAX_SEEK_FAST_PREROLL_VIDEO_PACKET_BURST: usize = 4096;
+
 /// Верхний предел demux skip-window, чтобы повреждённый stream не держал worker слишком долго.
 const MAX_CONSECUTIVE_CORRUPTED_PACKETS: usize = 4096;
 
@@ -146,6 +152,18 @@ fn validate_player_seek_config(seek: &PlayerSeekConfig) -> ConfigResult<()> {
         seek.resume_video_min_ready_frames,
         1,
         MAX_SEEK_RESUME_VIDEO_READY_FRAMES,
+    )?;
+    validate_u64_range(
+        "player.seek.fast_preroll_budget_ms",
+        seek.fast_preroll_budget_ms,
+        1,
+        MAX_SEEK_FAST_PREROLL_BUDGET_MS,
+    )?;
+    validate_usize_range(
+        "player.seek.fast_preroll_video_packet_burst",
+        seek.fast_preroll_video_packet_burst,
+        1,
+        MAX_SEEK_FAST_PREROLL_VIDEO_PACKET_BURST,
     )?;
     validate_positive_u64(
         "player.seek.hotkey_small_step_secs",

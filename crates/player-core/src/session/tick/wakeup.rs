@@ -15,8 +15,8 @@ use super::{
     presentation_scheduler::{
         front_frame_ready_for_scheduler, front_frame_scheduler_delay, front_frame_timing,
         normal_present_queue_blocks_video_admission, seek_admission_active,
-        video_decode_ahead_target, video_decoder_decode_ahead_limits, video_decoder_texture_limits,
-        video_present_queue_target,
+        video_decode_ahead_limit, video_decode_ahead_target, video_decoder_decode_ahead_limits,
+        video_decoder_texture_limits, video_present_queue_target,
     },
     video_decoder_io::can_send_video_packet_to_decoder,
 };
@@ -139,6 +139,14 @@ impl PlayerSession {
         }
 
         if decoder_readiness_poll_needed(self, tick_config) {
+            if seek_fast_preroll_active(self, tick_config) {
+                return PlayerWorkerWakeupPlan::after(
+                    Duration::ZERO,
+                    WorkerWakeupReason::SeekOrPreroll,
+                    frame_timing,
+                );
+            }
+
             if let Some(audio_refill_delay) =
                 audio_refill_delay.filter(|delay| *delay < decoder_readiness_poll_interval)
             {
@@ -284,10 +292,16 @@ pub(super) fn pending_video_work_available(
         return false;
     }
 
+    let decode_ahead_limit = if seek_fast_preroll_active(session, tick_config) {
+        video_decode_ahead_limit(tick_config)
+    } else {
+        video_decode_ahead_target(tick_config)
+    };
+
     can_send_video_packet_to_decoder(
         session,
         video_decoder_texture_limits(tick_config),
-        video_decoder_decode_ahead_limits(tick_config, video_decode_ahead_target(tick_config)),
+        video_decoder_decode_ahead_limits(tick_config, decode_ahead_limit),
         packet.pts,
     )
 }
@@ -301,7 +315,9 @@ pub(super) fn demux_work_available(
         return false;
     }
 
-    let prioritize_audio_catchup = audio_demux_catchup_needed(session, tick_config);
+    let seek_fast_preroll = seek_fast_preroll_active(session, tick_config);
+    let prioritize_audio_catchup =
+        !seek_fast_preroll && audio_demux_catchup_needed(session, tick_config);
     let selected_audio_bootstrap = selected_audio_bootstrap_needs_demux(session);
     if session.pipeline.has_selected_video_track()
         && session.pipeline.video_present_queue_len() >= video_present_queue_target(tick_config)
@@ -313,6 +329,13 @@ pub(super) fn demux_work_available(
     }
 
     can_read_next_demux_packet_with_audio_priority(session, tick_config, prioritize_audio_catchup)
+}
+
+/// Проверяет active accurate seek preroll через session boundary, без доступа к seek storage.
+fn seek_fast_preroll_active(session: &PlayerSession, tick_config: &PlayerTickConfig) -> bool {
+    session.active_accurate_seek_needs_fast_video_preroll(
+        tick_config.effective_seek_resume_video_min_ready_frames(),
+    )
 }
 
 /// Проверяет, нужен ли короткий poll decoded-frame readiness.

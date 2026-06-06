@@ -194,6 +194,10 @@ pub(super) fn can_send_video_packet_to_decoder(
         return false;
     }
 
+    if session.should_fast_decode_video_packet_for_seek_preroll(packet_pts) {
+        return true;
+    }
+
     if !session.pipeline.has_selected_audio_track() || !session.pipeline.has_audio_clock() {
         return true;
     }
@@ -302,6 +306,7 @@ pub(super) fn drain_decoded_video_frames(
     drain_video_decoder_thread_diagnostics(session, tick_result);
 
     let drained_frame_count = decoded_frames.len();
+    let mut seek_preroll_frames_handled = 0usize;
     for frame in decoded_frames {
         if !session
             .pipeline
@@ -350,6 +355,7 @@ pub(super) fn drain_decoded_video_frames(
                     PlayerVideoDropReason::SeekPreroll,
                 );
             }
+            seek_preroll_frames_handled = seek_preroll_frames_handled.saturating_add(1);
             tracing::debug!(
                 pts_ms = frame_pts.as_millis(),
                 "Retaining or dropping pre-roll video frame before seek target"
@@ -374,6 +380,17 @@ pub(super) fn drain_decoded_video_frames(
         }
     }
 
+    if seek_preroll_frames_handled > 0 {
+        debug!(
+            seek_preroll_frames_handled,
+            decoded_frames_drained = drained_frame_count,
+            pending_video_packets = session.pipeline.pending_video_packet_len(),
+            decoder_in_flight_packets = session.pipeline.video_decode_in_flight_packets(),
+            present_queue_depth = session.pipeline.video_present_queue_len(),
+            "Accurate seek preroll decoded frames handled before target"
+        );
+    }
+
     drained_frame_count
 }
 
@@ -389,6 +406,7 @@ pub(super) fn send_pending_video_packets_to_decoder(
     }
 
     let mut sent_packets = 0usize;
+    let mut seek_preroll_packets_sent = 0usize;
     let present_admission_budget = video_packet_send_present_admission_budget(session, limits);
 
     while sent_packets < limits.max_packets_to_send {
@@ -460,6 +478,9 @@ pub(super) fn send_pending_video_packets_to_decoder(
             break;
         }
 
+        let packet_is_seek_preroll =
+            session.should_fast_decode_video_packet_for_seek_preroll(packet_pts);
+
         if !can_send_video_packet_to_decoder(
             session,
             limits.texture,
@@ -506,6 +527,9 @@ pub(super) fn send_pending_video_packets_to_decoder(
             Some(Ok(())) => {
                 session.pipeline.pop_pending_video_packet_front();
                 session.pipeline.note_video_packet_sent_to_decoder();
+                if packet_is_seek_preroll {
+                    seek_preroll_packets_sent = seek_preroll_packets_sent.saturating_add(1);
+                }
             }
             Some(Err(DecodeSendError::Backpressure(reason))) => {
                 tracing::debug!(reason = %reason, "Decoder packet channel backpressure");
@@ -527,6 +551,16 @@ pub(super) fn send_pending_video_packets_to_decoder(
         }
 
         sent_packets += 1;
+    }
+
+    if seek_preroll_packets_sent > 0 {
+        debug!(
+            seek_preroll_packets_sent,
+            total_packets_sent = sent_packets,
+            pending_video_packets = session.pipeline.pending_video_packet_len(),
+            decoder_in_flight_packets = session.pipeline.video_decode_in_flight_packets(),
+            "Accurate seek preroll video packets sent to decoder"
+        );
     }
 
     sent_packets

@@ -22,8 +22,12 @@ pub(crate) use presentation_scheduler::{
 };
 pub(crate) use wakeup::PlayerWorkerWakeupPlan;
 
-use demux_admission::read_demux_packets;
-use presentation_scheduler::{process_pending_video_packets, video_present_queue_limit};
+use demux_admission::{
+    demux_catch_up_deadline_for_tick, demux_packet_budget_for_tick, read_demux_packets,
+};
+use presentation_scheduler::{
+    process_pending_video_packets, run_seek_fast_preroll_catch_up, video_present_queue_limit,
+};
 
 /// Контекст одного playback tick.
 #[derive(Debug, Clone, Copy)]
@@ -116,6 +120,12 @@ pub struct PlayerTickConfig {
     /// Дополнительное bounded окно catch-up work после базового tick.
     pub adaptive_catch_up_time_budget: Duration,
 
+    /// Bounded окно fast-preroll work для active accurate seek.
+    pub seek_fast_preroll_time_budget: Duration,
+
+    /// Burst-лимит video packets/frames для active accurate seek preroll.
+    pub seek_fast_preroll_video_packet_burst: usize,
+
     /// Уровень audio buffer, выше которого audio packets временно не декодируются.
     pub audio_buffer_high_water_mark_ms: f64,
 
@@ -170,6 +180,8 @@ impl Default for PlayerTickConfig {
             max_video_decode_ahead: Duration::from_millis(500),
             target_video_decode_ahead: Duration::from_millis(250),
             adaptive_catch_up_time_budget: Duration::from_millis(4),
+            seek_fast_preroll_time_budget: Duration::from_millis(48),
+            seek_fast_preroll_video_packet_burst: 512,
             audio_buffer_high_water_mark_ms: 200.0,
             audio_demux_low_water_mark_ms: 100.0,
             audio_preroll_target_ms: 50.0,
@@ -218,6 +230,13 @@ impl From<&AppConfig> for PlayerTickConfig {
             adaptive_catch_up_time_budget: Duration::from_millis(
                 config.video.scheduler.catch_up_budget_ms,
             ),
+            seek_fast_preroll_time_budget: Duration::from_millis(
+                config.player.seek.fast_preroll_budget_ms,
+            ),
+            seek_fast_preroll_video_packet_burst: config
+                .player
+                .seek
+                .fast_preroll_video_packet_burst,
             audio_buffer_high_water_mark_ms: config.audio.buffer_target_ms as f64,
             audio_demux_low_water_mark_ms: (config.audio.buffer_target_ms as f64 * 0.5)
                 .max(config.player.seek.resume_audio_min_buffer_ms as f64),
@@ -248,6 +267,11 @@ impl PlayerTickConfig {
 pub struct PlayerTickResult {
     /// Packets, прочитанные из demuxer за tick.
     pub demuxed_packets: Vec<PlayerTickPacket>,
+
+    /// Audio packets, полностью отброшенные как accurate-seek preroll и не
+    /// записанные в `demuxed_packets`, чтобы dense PCM seek не создавал
+    /// unbounded per-packet telemetry allocations.
+    pub dropped_seek_audio_preroll_packets: u64,
 
     /// Количество decoded frames, принятых из decoder thread.
     pub decoded_video_frames: u64,
@@ -281,6 +305,12 @@ impl PlayerTickResult {
             byte_offset: packet.byte_offset,
             keyframe: packet.keyframe,
         });
+    }
+
+    /// Учитывает dropped audio preroll без создания `PlayerTickPacket`.
+    fn record_dropped_seek_audio_preroll_packet(&mut self) {
+        self.dropped_seek_audio_preroll_packets =
+            self.dropped_seek_audio_preroll_packets.saturating_add(1);
     }
 
     /// Учитывает принятый decoded video frame.
@@ -370,13 +400,22 @@ impl PlayerSession {
 
         self.update_position_for_tick(tick_context.now);
 
-        if self.is_demuxing_active() && self.pipeline.has_demuxer() {
+        let seek_fast_preroll_tick_handled =
+            run_seek_fast_preroll_catch_up(self, tick_context, &mut tick_result);
+
+        if !seek_fast_preroll_tick_handled
+            && self.is_demuxing_active()
+            && self.pipeline.has_demuxer()
+        {
+            let demux_packet_budget = demux_packet_budget_for_tick(self, &tick_context.config);
+            let demux_catch_up_deadline =
+                demux_catch_up_deadline_for_tick(self, &tick_context.config, tick_context.now);
             read_demux_packets(
                 self,
                 &tick_context.config,
                 &mut tick_result,
-                tick_context.config.max_demux_packets_per_tick,
-                None,
+                demux_packet_budget,
+                demux_catch_up_deadline,
             );
         }
 

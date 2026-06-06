@@ -174,6 +174,8 @@ impl PlayerSession {
                 packet_index = trace_decision.packet_index,
                 packet_track_id = %packet.track_id,
                 packet_pts_ms = packet.pts.as_millis(),
+                packet_dts_ms = ?packet.dts.map(|dts| dts.as_millis()),
+                packet_duration_ms = ?packet.duration.map(|duration| duration.as_millis()),
                 packet_keyframe = ?packet.keyframe,
                 "First post-seek video packet observed"
             );
@@ -193,6 +195,8 @@ impl PlayerSession {
             packet_track_id = %packet.track_id,
             packet_kind = ?packet.kind,
             packet_pts_ms = packet.pts.as_millis(),
+            packet_dts_ms = ?packet.dts.map(|dts| dts.as_millis()),
+            packet_duration_ms = ?packet.duration.map(|duration| duration.as_millis()),
             packet_keyframe = ?packet.keyframe,
             "Post-seek demux packet observed"
         );
@@ -220,6 +224,7 @@ impl PlayerSession {
             pipeline_generation = self.pipeline.seek_generation(),
             frame_pts_ms = frame_pts.as_millis(),
             frame_generation,
+            elapsed_ms = seek_commit.started_at.elapsed().as_millis(),
             "First post-seek decoded frame observed"
         );
     }
@@ -247,15 +252,15 @@ impl PlayerSession {
             frame_pts_ms = frame_pts.as_millis(),
             frame_generation,
             present_queue_depth = self.pipeline.video_present_queue_len(),
+            elapsed_ms = seek_commit.started_at.elapsed().as_millis(),
             "First post-seek queued frame observed"
         );
     }
 
-    /// Возвращает accepted seek clock base как временный clock, пока audio clock недоступен.
+    /// Возвращает seek-policy clock base как временный clock, пока audio clock недоступен.
     ///
-    /// Обычный final seek может стартовать с demux-safe actual позиции до target-а,
-    /// поэтому scheduler должен сравнивать post-seek frames с той же базой, которую
-    /// session применит к media/audio clocks после accepted demux point-а.
+    /// Accurate seek не должен вести runtime clock от раннего `actual_position`, иначе длинный
+    /// GOP превращает preroll в видимое/слышимое воспроизведение до пользовательской цели.
     #[must_use]
     pub(crate) fn seek_presentation_clock_override(&self) -> Option<Duration> {
         if self.pipeline.has_audio_clock() {
@@ -267,18 +272,13 @@ impl PlayerSession {
             .map(|seek_commit| self.accepted_seek_clock_base(seek_commit))
     }
 
-    /// Выбирает clock base, от которого audio/video должны идти во время accepted seek-а.
+    /// Выбирает clock base для runtime после accepted demux seek-а.
+    ///
+    /// Decode-safe `actual_position` может быть на несколько секунд раньше target-а. Декодер
+    /// всё ещё получает этот preroll для accurate seek-а, но audio trim и scheduler сравнивают
+    /// данные с user target. Explicit keyframe-before seek сохраняет actual как runtime anchor.
     fn accepted_seek_clock_base(&self, seek_commit: SeekCommitState) -> Duration {
-        if self.final_seek_uses_decode_safe_clock_anchor(seek_commit) {
-            return seek_commit.actual_position.as_duration();
-        }
-
-        seek_commit.target_position.as_duration()
-    }
-
-    /// Проверяет, что final seek может стартовать playback от demux-safe actual frame-а.
-    fn final_seek_uses_decode_safe_clock_anchor(&self, _seek_commit: SeekCommitState) -> bool {
-        self.pipeline.has_selected_video_track()
+        seek_commit.runtime_clock_base()
     }
 
     /// Перепривязывает clocks после accepted seek, когда demuxer уже сообщил actual point.
@@ -300,11 +300,85 @@ impl PlayerSession {
 
     /// Проверяет, нужно ли выбросить decoded frame как pre-roll до seek target.
     ///
-    /// Final seek теперь всегда latency-first для video: первый свежий кадр текущего
-    /// generation-а может попасть в scheduler и стать playback position.
+    /// `actual_position` нужен decoder-у как безопасный старт после flush, но frame до
+    /// user target не должен открывать video gate и попадать в обычный playback.
     #[must_use]
-    pub(crate) const fn should_drop_decoded_frame_for_seek(&self, _frame_pts: Duration) -> bool {
-        false
+    pub(crate) fn should_drop_decoded_frame_for_seek(&self, frame_pts: Duration) -> bool {
+        let Some(seek_commit) = self.seek_runtime.active_commit() else {
+            return false;
+        };
+
+        self.pipeline.has_selected_video_track()
+            && seek_commit.drops_decode_preroll_before_target()
+            && frame_pts < seek_commit.target_position.as_duration()
+    }
+
+    /// Проверяет, является ли video packet частью accurate seek preroll до user target.
+    ///
+    /// Такой packet нужен decoder-у для восстановления reference chain после flush-а, но
+    /// обычный audio-clock decode-ahead не должен задавать ему playback-темп.
+    #[must_use]
+    pub(crate) fn should_fast_decode_video_packet_for_seek_preroll(
+        &self,
+        packet_pts: Duration,
+    ) -> bool {
+        let Some(seek_commit) = self.seek_runtime.active_commit() else {
+            return false;
+        };
+
+        self.pipeline.has_selected_video_track()
+            && seek_commit.drops_decode_preroll_before_target()
+            && !self.seek_presented_frame_ready(seek_commit)
+            && packet_pts < seek_commit.target_position.as_duration()
+    }
+
+    /// Проверяет, должен ли tick включить fast-preroll режим для accurate seek-а.
+    ///
+    /// Режим активен только пока video gate ещё не набрал target frame и нужный
+    /// bounded resume-preroll. `KeyframeBefore` сюда не попадает: он сохраняет
+    /// demux actual/keyframe как runtime landing point.
+    #[must_use]
+    pub(crate) fn active_accurate_seek_needs_fast_video_preroll(
+        &self,
+        resume_video_min_ready_frames: usize,
+    ) -> bool {
+        let Some(seek_commit) = self.seek_runtime.active_commit() else {
+            return false;
+        };
+
+        self.pipeline.has_selected_video_track()
+            && seek_commit.drops_decode_preroll_before_target()
+            && !self.seek_video_gate_ready(seek_commit, resume_video_min_ready_frames)
+    }
+
+    /// Проверяет, можно ли пропустить demuxed audio packet, который целиком лежит до target.
+    ///
+    /// Частично пересекающий target packet оставляем audio runtime-у: там PCM уже обрезается
+    /// по `media_clock_base`, чтобы не проиграть старый preroll внутри packet-а.
+    #[must_use]
+    pub(crate) fn should_drop_demuxed_audio_packet_for_seek(
+        &self,
+        packet_pts: Duration,
+        packet_duration: Option<Duration>,
+    ) -> bool {
+        let Some(seek_commit) = self.seek_runtime.active_commit() else {
+            return false;
+        };
+
+        if !self.pipeline.has_selected_audio_track() {
+            return false;
+        }
+
+        if !seek_commit.drops_decode_preroll_before_target() {
+            return false;
+        }
+
+        let target_position = seek_commit.target_position.as_duration();
+        let Some(packet_duration) = packet_duration else {
+            return false;
+        };
+
+        packet_pts.saturating_add(packet_duration) <= target_position
     }
 
     /// Возвращает target активного final seek-а, если такой transition сейчас идёт.
@@ -317,8 +391,8 @@ impl PlayerSession {
 
     /// Проверяет, может ли active seek обойти обычное A/V scheduler window для queued frame-а.
     ///
-    /// Final seek показывает первый свежий frame текущего generation-а, чтобы click seek
-    /// не ждал exact target frame после decode-safe demux preroll.
+    /// Accurate seek форсирует только frame на user target-е или позже. Explicit
+    /// keyframe-before seek сохраняет actual/keyframe frame как разрешённую landing point.
     #[must_use]
     pub(crate) fn active_seek_frame_ready_for_scheduler(
         &self,
@@ -454,6 +528,7 @@ impl PlayerSession {
                 frame_pts_ms = frame_pts.as_millis(),
                 frame_generation = present_frame_generation,
                 stale_frame = self.snapshot.timeline.stale_frame,
+                elapsed_ms = seek_commit.started_at.elapsed().as_millis(),
                 "First post-seek presented frame observed"
             );
         }
@@ -715,12 +790,12 @@ impl PlayerSession {
         frame_generation: u64,
         timeline_stale: bool,
     ) -> bool {
-        let actual_position = seek_commit.actual_position.as_duration();
+        let landing_min_position = seek_commit.landing_frame_min_position();
 
         self.pipeline.has_selected_video_track()
             && frame_generation == seek_commit.generation
             && !timeline_stale
-            && frame_pts >= actual_position
+            && frame_pts >= landing_min_position
     }
 
     /// Классифицирует текущую причину, по которой active seek ещё не закрыл gates.
@@ -812,13 +887,16 @@ impl PlayerSession {
             return SeekProgressBlocker::ReadyForScheduler;
         }
 
-        if self.pipeline.has_present_video_frame() || !self.pipeline.video_present_queue_is_empty()
-        {
+        if !self.pipeline.video_present_queue_is_empty() {
             return SeekProgressBlocker::WaitingForScheduler;
         }
 
         if self.is_demuxing_active() && !self.is_eof_draining() {
             return SeekProgressBlocker::WaitingForDemux;
+        }
+
+        if self.pipeline.has_present_video_frame() {
+            return SeekProgressBlocker::WaitingForScheduler;
         }
 
         SeekProgressBlocker::WaitingForVideoTargetFrame
@@ -839,9 +917,9 @@ impl PlayerSession {
 
     /// Считает current frame и уже декодированные future frames для seek resume.
     ///
-    /// Resume budget использует тот же landing-frame guard, что и commit:
-    /// frame текущего generation-а с `PTS >= actual` безопасен даже до requested target.
-    /// Это сохраняет low-latency no-audio seek после decode-safe demux preroll.
+    /// Resume budget использует тот же landing-frame guard, что и commit: frame текущего
+    /// generation-а должен быть на user target-е или позже. Decode-safe preroll до target-а
+    /// нужен только decoder-у и не считается готовым playback кадром.
     fn seek_ready_video_frame_count(&self, seek_commit: SeekCommitState) -> usize {
         let current_frame_ready = self.seek_presented_frame_ready(seek_commit);
         let queued_ready_frames = self
@@ -916,11 +994,15 @@ impl PlayerSession {
         }
     }
 
-    /// Обычный video seek фиксирует первый реально показанный pre-target frame.
+    /// Explicit keyframe-before seek фиксирует реально показанный frame от demux actual.
     fn final_seek_presented_frame_commit_position(
         &self,
         seek_commit: SeekCommitState,
     ) -> Option<Duration> {
+        if seek_commit.drops_decode_preroll_before_target() {
+            return None;
+        }
+
         if self.snapshot.timeline.stale_frame {
             return None;
         }
@@ -929,14 +1011,9 @@ impl PlayerSession {
             return None;
         }
 
-        let frame_position = self
-            .seek_runtime
-            .first_presented_frame_position_for_generation(seek_commit.generation)
-            .filter(|frame_position| *frame_position >= seek_commit.actual_position.as_duration())
-            .or_else(|| self.current_seek_landing_frame_position(seek_commit))?;
-        let target_position = seek_commit.target_position.as_duration();
-
-        (frame_position < target_position).then_some(frame_position)
+        let landing_min_position = seek_commit.landing_frame_min_position();
+        self.current_seek_landing_frame_position(seek_commit)
+            .filter(|frame_position| *frame_position >= landing_min_position)
     }
 
     /// EOF fallback считается committed position только если этот frame реально сейчас показан.
@@ -1348,6 +1425,7 @@ impl PlayerSession {
                 self.seek_runtime.begin_trace(generation);
                 let seek_commit = SeekCommitState {
                     generation,
+                    seek_mode,
                     target_position,
                     actual_position: result.actual_position,
                     started_at: Instant::now(),

@@ -5,11 +5,13 @@
 
 use std::time::{Duration, Instant};
 
-use tracing::trace;
+use tracing::{debug, trace};
 
 use super::{
     PlayerTickConfig, PlayerTickContext, PlayerTickResult, PlayerVideoDropReason,
-    demux_admission::{catch_up_deadline_reached, read_demux_packets},
+    demux_admission::{
+        catch_up_deadline_reached, read_demux_packets, seek_preroll_pending_video_limit,
+    },
     record_pipeline_pause, record_video_drop,
     video_decoder_io::{
         VideoDecoderDecodeAheadLimits, VideoDecoderIoContext, VideoDecoderIoLimits,
@@ -152,6 +154,159 @@ pub(super) fn video_decoder_io_limits(
         video_present_queue_limit(tick_config),
         video_decoder_texture_limits(tick_config),
         video_decoder_decode_ahead_limits(tick_config, decode_ahead_limit),
+    )
+}
+
+/// Проверяет, активен ли fast-preroll режим accurate seek-а для video pipeline.
+fn seek_fast_preroll_active(session: &PlayerSession, tick_config: &PlayerTickConfig) -> bool {
+    session.active_accurate_seek_needs_fast_video_preroll(
+        tick_config.effective_seek_resume_video_min_ready_frames(),
+    )
+}
+
+/// Возвращает bounded decoder I/O budget для seek preroll burst-а.
+fn seek_preroll_decoder_io_budget(tick_config: &PlayerTickConfig) -> usize {
+    seek_preroll_pending_video_limit(tick_config)
+        .max(tick_config.max_video_packets_sent_per_tick)
+        .max(tick_config.max_decoded_video_frames_drained_per_tick)
+}
+
+/// Продвигает active Accurate seek несколькими короткими demux/decode проходами.
+///
+/// Обычный tick сначала отдаёт всё demux-окно чтению контейнера, а decoder I/O
+/// запускает только после этого. На dense audio interleave это создаёт pacing:
+/// pending-video лимит освобождается только в следующем worker pass-е. Этот
+/// helper сохраняет существующие admission/resource boundaries, но чередует
+/// demux, audio-preroll processing и decoder I/O внутри одного bounded seek
+/// deadline-а, пока target-or-after frame ещё не готов.
+///
+/// Возвращает `true`, если helper уже владел seek-specific budget этого tick-а.
+/// Это не обещает progress: real decoder/resource backpressure всё ещё может
+/// остановить проход, но обычный demux pass не должен получать второй budget.
+pub(super) fn run_seek_fast_preroll_catch_up(
+    session: &mut PlayerSession,
+    tick_context: PlayerTickContext,
+    tick_result: &mut PlayerTickResult,
+) -> bool {
+    let tick_config = &tick_context.config;
+    if tick_config.seek_fast_preroll_time_budget.is_zero()
+        || !seek_fast_preroll_active(session, tick_config)
+    {
+        return false;
+    }
+
+    let deadline = tick_context
+        .now
+        .checked_add(tick_config.seek_fast_preroll_time_budget)
+        .unwrap_or(tick_context.now);
+    let decoder_io_budget = seek_preroll_decoder_io_budget(tick_config);
+    let demux_packets_per_pass = tick_config
+        .max_demux_packets_per_tick
+        .min(seek_preroll_pending_video_limit(tick_config));
+    let mut passes = 0usize;
+    let mut demux_budget_packets_read = 0usize;
+    let mut decoded_frames_drained = 0usize;
+    let mut packets_sent = 0usize;
+    let started_at = Instant::now();
+
+    while seek_fast_preroll_active(session, tick_config)
+        && !catch_up_deadline_reached(Some(deadline))
+    {
+        passes = passes.saturating_add(1);
+        let mut made_progress = false;
+
+        let pre_demux_progress = run_seek_fast_preroll_decoder_io_pass(
+            session,
+            tick_result,
+            tick_config,
+            decoder_io_budget,
+            deadline,
+        );
+        decoded_frames_drained =
+            decoded_frames_drained.saturating_add(pre_demux_progress.decoded_frames_drained);
+        packets_sent = packets_sent.saturating_add(pre_demux_progress.packets_sent);
+        made_progress |= pre_demux_progress.decoded_frames_drained > 0;
+        made_progress |= pre_demux_progress.packets_sent > 0;
+
+        if !seek_fast_preroll_active(session, tick_config)
+            || catch_up_deadline_reached(Some(deadline))
+        {
+            break;
+        }
+
+        if demux_packets_per_pass > 0
+            && session.is_demuxing_active()
+            && session.pipeline.has_demuxer()
+        {
+            let packets_read = read_demux_packets(
+                session,
+                tick_config,
+                tick_result,
+                demux_packets_per_pass,
+                Some(deadline),
+            );
+            demux_budget_packets_read = demux_budget_packets_read.saturating_add(packets_read);
+            made_progress |= packets_read > 0;
+
+            if packets_read > 0 {
+                session.process_pending_audio_packets_with_buffer_limit(
+                    tick_config.audio_buffer_high_water_mark_ms,
+                );
+                session.start_eof_audio_tail_if_needed();
+            }
+        }
+
+        let post_demux_progress = run_seek_fast_preroll_decoder_io_pass(
+            session,
+            tick_result,
+            tick_config,
+            decoder_io_budget,
+            deadline,
+        );
+        decoded_frames_drained =
+            decoded_frames_drained.saturating_add(post_demux_progress.decoded_frames_drained);
+        packets_sent = packets_sent.saturating_add(post_demux_progress.packets_sent);
+        made_progress |= post_demux_progress.decoded_frames_drained > 0;
+        made_progress |= post_demux_progress.packets_sent > 0;
+
+        if !made_progress {
+            break;
+        }
+    }
+
+    debug!(
+        passes,
+        demux_budget_packets_read,
+        decoded_frames_drained,
+        packets_sent,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        deadline_reached = catch_up_deadline_reached(Some(deadline)),
+        target_ready = !seek_fast_preroll_active(session, tick_config),
+        "Active accurate seek fast-preroll catch-up pass completed"
+    );
+
+    true
+}
+
+fn run_seek_fast_preroll_decoder_io_pass(
+    session: &mut PlayerSession,
+    tick_result: &mut PlayerTickResult,
+    tick_config: &PlayerTickConfig,
+    decoder_io_budget: usize,
+    deadline: Instant,
+) -> super::video_decoder_io::VideoDecoderIoProgress {
+    let decoder_io_limits = video_decoder_io_limits(
+        tick_config,
+        decoder_io_budget,
+        decoder_io_budget,
+        video_decode_ahead_limit(tick_config),
+    );
+
+    run_video_decoder_io(
+        session,
+        tick_result,
+        decoder_io_limits,
+        VideoDecoderIoContext::new(Some(deadline), true, true),
     )
 }
 
@@ -772,16 +927,29 @@ pub(super) fn process_pending_video_packets(
         texture_slot_min_watermark(tick_config),
     );
 
-    let base_drain_budget = if session.can_present_video() {
+    let seek_fast_preroll = seek_fast_preroll_active(session, tick_config);
+    let base_drain_budget = if seek_fast_preroll {
+        seek_preroll_decoder_io_budget(tick_config)
+    } else if session.can_present_video() {
         tick_config.max_decoded_video_frames_drained_per_tick
     } else {
         usize::MAX
     };
+    let packet_send_budget = if seek_fast_preroll {
+        seek_preroll_decoder_io_budget(tick_config)
+    } else {
+        tick_config.max_video_packets_sent_per_tick
+    };
+    let decode_ahead_budget = if seek_fast_preroll {
+        video_decode_ahead_limit(tick_config)
+    } else {
+        video_decode_ahead_target(tick_config)
+    };
     let decoder_io_limits = video_decoder_io_limits(
         tick_config,
         base_drain_budget,
-        tick_config.max_video_packets_sent_per_tick,
-        video_decode_ahead_target(tick_config),
+        packet_send_budget,
+        decode_ahead_budget,
     );
     let decoder_io_progress = run_video_decoder_io(
         session,

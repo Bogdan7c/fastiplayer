@@ -189,6 +189,8 @@ mod tests {
         assert_eq!(config.player.seek.resume_audio_min_buffer_ms, 50);
         assert_eq!(config.player.seek.resume_audio_gate_timeout_ms, 250);
         assert_eq!(config.player.seek.resume_video_min_ready_frames, 3);
+        assert_eq!(config.player.seek.fast_preroll_budget_ms, 48);
+        assert_eq!(config.player.seek.fast_preroll_video_packet_burst, 512);
         assert_eq!(
             config.player.seek.paused_commit_behavior,
             PausedCommitBehavior::StayPaused
@@ -329,6 +331,8 @@ mod tests {
         assert!(created_toml.contains("commit_timeout_ms = 10000"));
         assert!(created_toml.contains("resume_audio_gate_timeout_ms = 250"));
         assert!(created_toml.contains("resume_video_min_ready_frames = 3"));
+        assert!(created_toml.contains("fast_preroll_budget_ms = 48"));
+        assert!(created_toml.contains("fast_preroll_video_packet_burst = 512"));
         assert!(created_toml.contains("[player.demux]"));
         assert!(created_toml.contains("# Fail-safe настройки demuxer-а."));
         assert!(created_toml.contains("max_consecutive_corrupted_packets = 64"));
@@ -824,6 +828,58 @@ resume_video_min_ready_frames = 0
             error
                 .to_string()
                 .contains("player.seek.resume_video_min_ready_frames")
+        );
+    }
+
+    /// Проверяет bounded окно fast-preroll work для accurate seek.
+    #[test]
+    fn invalid_seek_fast_preroll_budget_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[player.seek]
+fast_preroll_budget_ms = 0
+"#,
+        )
+        .expect("invalid config written");
+
+        let error =
+            load_from_path(&config_path).expect_err("invalid seek fast-preroll budget rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("player.seek.fast_preroll_budget_ms")
+        );
+    }
+
+    /// Проверяет bounded burst video packets для accurate seek preroll.
+    #[test]
+    fn invalid_seek_fast_preroll_video_packet_burst_fails_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[player.seek]
+fast_preroll_video_packet_burst = 0
+"#,
+        )
+        .expect("invalid config written");
+
+        let error =
+            load_from_path(&config_path).expect_err("invalid seek fast-preroll burst rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("player.seek.fast_preroll_video_packet_burst")
         );
     }
 

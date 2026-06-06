@@ -39,6 +39,9 @@ pub(crate) struct SeekCommitState {
     /// Поколение packets/frames, валидное для этой операции.
     pub generation: u64,
 
+    /// Пользовательская политика seek-а, выбранная до container-level mapping-а.
+    pub seek_mode: SeekMode,
+
     /// Цель commit-а на нормализованной media timeline.
     pub target_position: MediaTime,
 
@@ -53,6 +56,32 @@ pub(crate) struct SeekCommitState {
 }
 
 impl SeekCommitState {
+    /// Возвращает `true`, если runtime должен скрыть decode preroll до user target.
+    #[must_use]
+    pub(crate) const fn drops_decode_preroll_before_target(self) -> bool {
+        matches!(self.seek_mode, SeekMode::Accurate)
+    }
+
+    /// Возвращает clock base, от которого session должна вести playback после accepted seek-а.
+    #[must_use]
+    pub(crate) fn runtime_clock_base(self) -> Duration {
+        if self.drops_decode_preroll_before_target() {
+            return self.target_position.as_duration();
+        }
+
+        self.actual_position.as_duration()
+    }
+
+    /// Возвращает минимальный PTS кадра, который может открыть video gate.
+    #[must_use]
+    pub(crate) fn landing_frame_min_position(self) -> Duration {
+        if self.drops_decode_preroll_before_target() {
+            return self.target_position.as_duration();
+        }
+
+        self.actual_position.as_duration()
+    }
+
     /// Перепривязывает active seek к новому packet generation после container reset.
     ///
     /// `TracksChanged` не является новым пользовательским seek-ом: target, actual,
@@ -229,6 +258,7 @@ impl SeekTraceState {
     }
 
     /// Возвращает PTS первого presented frame только для текущего generation-а.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn first_presented_frame_position_for_generation(
         &self,
@@ -338,16 +368,6 @@ impl SeekRuntimeState {
         self.trace.record_first_presented_frame(frame_pts)
     }
 
-    /// Возвращает PTS первого presented frame для текущего seek generation-а.
-    #[must_use]
-    pub(crate) fn first_presented_frame_position_for_generation(
-        &self,
-        generation: u64,
-    ) -> Option<Duration> {
-        self.trace
-            .first_presented_frame_position_for_generation(generation)
-    }
-
     /// Возвращает `true` только для первого TracksChanged marker-а текущего trace-а.
     pub(crate) fn record_first_track_list_update(&mut self) -> bool {
         self.trace.record_first_track_list_update()
@@ -426,7 +446,7 @@ pub(crate) enum FinalSeekCommitPosition {
     /// Requested target становится clock base.
     Target { position: Duration },
 
-    /// Обычный video seek коммитит первый свежий frame текущего seek generation-а.
+    /// Explicit keyframe-before seek коммитит реально показанный frame текущего generation-а.
     PresentedFrame { position: Duration },
 
     /// Near-EOF fallback коммитит PTS реально показанного fallback frame-а.
@@ -468,7 +488,7 @@ pub(crate) enum SeekDemuxRequestError {
 /// Выбирает final demux seek request для текущего seek transaction-а.
 ///
 /// Video accurate seek остаётся decode-safe: demuxer начинает до target,
-/// а session закрывает transition по первому свежему frame-у текущего generation-а.
+/// а session декодирует и отбрасывает preroll до пользовательской цели.
 /// Audio-only accurate seek сохраняет container-accurate contract без video preroll.
 pub(crate) fn demux_seek_request_for_transaction(
     has_video_track: bool,

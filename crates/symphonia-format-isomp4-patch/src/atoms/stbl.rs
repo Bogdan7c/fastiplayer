@@ -7,10 +7,10 @@
 
 use crate::atoms::{
     Atom, AtomHeader, AtomIterator, AtomType, Co64Atom, CttsAtom, ReadAtom, Result, StcoAtom,
-    StscAtom, StsdAtom, StszAtom, SttsAtom, decode_error,
+    StscAtom, StsdAtom, StssAtom, StszAtom, SttsAtom, decode_error,
 };
 
-use log::{debug, warn};
+use log::warn;
 
 /// Sample table atom.
 #[allow(dead_code)]
@@ -21,6 +21,7 @@ pub struct StblAtom {
     pub stsc: StscAtom,
     pub stsz: StszAtom,
     pub ctts: Option<CttsAtom>,
+    pub stss: Option<StssAtom>,
     pub stco: Option<StcoAtom>,
     pub co64: Option<Co64Atom>,
 }
@@ -32,6 +33,7 @@ impl Atom for StblAtom {
         let mut stsc = None;
         let mut stsz = None;
         let mut ctts = None;
+        let mut stss = None;
         let mut stco = None;
         let mut co64 = None;
 
@@ -48,8 +50,9 @@ impl Atom for StblAtom {
                     ctts = Some(it.read_atom::<CttsAtom>()?);
                 }
                 AtomType::SyncSample => {
-                    // Sync sample atom is only required for video.
-                    debug!("ignoring stss atom.");
+                    // `stss` нужен seek-у video track-а: без него MP4 reader может стартовать
+                    // после flush с обычного inter-frame и сломать decode.
+                    stss = Some(it.read_atom::<StssAtom>()?);
                 }
                 AtomType::SampleToChunk => {
                     stsc = Some(it.read_atom::<StscAtom>()?);
@@ -94,6 +97,7 @@ impl Atom for StblAtom {
             stsc: stsc.unwrap(),
             stsz: stsz.unwrap(),
             ctts,
+            stss,
             stco,
             co64,
         })

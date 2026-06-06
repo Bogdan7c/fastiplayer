@@ -90,6 +90,16 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "fast_preroll_budget_ms = 48",
+        "# Bounded окно worker work для accurate seek decode-preroll до target frame.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "fast_preroll_video_packet_burst = 512",
+        "# Burst-лимит video packets/frames для accurate seek GOP preroll.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "paused_commit_behavior = \"stay_paused\"",
         "# Поведение seek commit-а, начатого из paused состояния.",
     );
@@ -337,6 +347,12 @@ pub struct PlayerSeekConfig {
     /// Минимальный запас готовых video frames перед resume после commit-а.
     pub resume_video_min_ready_frames: usize,
 
+    /// Bounded окно worker work для accurate seek decode-preroll до target frame.
+    pub fast_preroll_budget_ms: u64,
+
+    /// Burst-лимит video packets/frames для accurate seek GOP preroll.
+    pub fast_preroll_video_packet_burst: usize,
+
     /// Поведение commit-а, если playback был на паузе.
     pub paused_commit_behavior: PausedCommitBehavior,
 
@@ -355,6 +371,8 @@ impl Default for PlayerSeekConfig {
             resume_audio_min_buffer_ms: 50,
             resume_audio_gate_timeout_ms: 250,
             resume_video_min_ready_frames: 3,
+            fast_preroll_budget_ms: 48,
+            fast_preroll_video_packet_burst: 512,
             paused_commit_behavior: PausedCommitBehavior::StayPaused,
             hotkey_small_step_secs: 5,
             hotkey_large_step_secs: 30,

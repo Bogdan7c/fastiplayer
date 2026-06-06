@@ -2,7 +2,7 @@ use super::test_support::*;
 use super::*;
 
 #[test]
-fn regression_ordinary_final_seek_closes_after_first_decode_safe_frame_from_scripted_demux() {
+fn regression_ordinary_final_seek_drops_decode_safe_preroll_until_target_frame() {
     let video_track = fake_track(1, TrackKind::Video);
     let target = Duration::from_secs(8);
     let actual = Duration::from_millis(7_900);
@@ -31,43 +31,60 @@ fn regression_ordinary_final_seek_closes_after_first_decode_safe_frame_from_scri
     assert!(!harness.session.snapshot().timeline.scrubbing);
 
     let first_tick = harness.tick_once();
-    assert_eq!(first_tick.demuxed_packets.len(), 1);
-    assert_eq!(harness.sent_packets().len(), 1);
+    assert_eq!(first_tick.demuxed_packets.len(), 2);
+    assert_eq!(harness.sent_packets().len(), 2);
     assert_eq!(harness.sent_packets()[0].pts, actual);
+    assert_eq!(harness.sent_packets()[1].pts, target);
     assert_eq!(
         harness.sent_packets()[0].generation,
         accepted_seek.generation
     );
 
     harness.push_decoded_frame(actual, 79, 1);
-    let instant_tick = harness.tick_once();
-    assert_eq!(instant_tick.demuxed_packets.len(), 1);
-    assert_eq!(instant_tick.video_frames_presented, 1);
+    let preroll_tick = harness.tick_once();
+    assert_eq!(preroll_tick.demuxed_packets.len(), 0);
+    assert_eq!(preroll_tick.video_frames_presented, 0);
+    assert!(preroll_tick.dropped_video_frames.is_empty());
+    assert_eq!(harness.sent_packets().len(), 2);
     assert_eq!(
         harness
             .session
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(actual)
+        None
+    );
+    assert!(harness.session.seek_commit().is_some());
+    assert!(harness.session.snapshot().timeline.seeking);
+    assert!(!harness.session.snapshot().timeline.scrubbing);
+    assert!(!harness.session.snapshot().timeline.stale_frame);
+    assert!(
+        harness
+            .session
+            .pipeline
+            .has_seek_preroll_fallback_video_frame()
+    );
+
+    harness.push_decoded_frame(target, 80, 1);
+    let target_tick = harness.tick_once();
+    assert_eq!(target_tick.video_frames_presented, 1);
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(target)
     );
     assert!(harness.session.seek_commit().is_none());
-    assert_eq!(harness.session.snapshot().current_position, actual);
+    assert_eq!(harness.session.snapshot().current_position, target);
     assert_eq!(
         harness.session.snapshot().timeline.current_position,
-        MediaTime::from_duration(actual)
+        MediaTime::from_duration(target)
     );
     assert!(!harness.session.snapshot().timeline.seeking);
     assert!(!harness.session.snapshot().timeline.scrubbing);
     assert!(!harness.session.snapshot().timeline.stale_frame);
-    assert_eq!(
-        harness
-            .session
-            .pipeline
-            .present_video_frame()
-            .map(|frame| frame.pts),
-        Some(actual)
-    );
     assert_eq!(
         harness.session.snapshot().playback_state,
         PlaybackState::Paused
@@ -80,7 +97,7 @@ fn regression_ordinary_final_seek_closes_after_first_decode_safe_frame_from_scri
 }
 
 #[test]
-fn ordinary_final_seek_reanchors_audio_clock_base_to_actual_demux_point() {
+fn ordinary_final_seek_reanchors_audio_clock_base_to_user_target() {
     let video_track = fake_track(1, TrackKind::Video);
     let audio_track = fake_track(2, TrackKind::Audio);
     let target = Duration::from_secs(6);
@@ -105,17 +122,17 @@ fn ordinary_final_seek_reanchors_audio_clock_base_to_actual_demux_point() {
         accepted_seek.actual_position,
         MediaTime::from_duration(actual)
     );
-    assert_eq!(harness.session.pipeline.media_clock_base(), actual);
+    assert_eq!(harness.session.pipeline.media_clock_base(), target);
     assert_eq!(
         harness
             .session
             .presentation_clock_position_at(Instant::now()),
-        actual
+        target
     );
 }
 
 #[test]
-fn final_seek_without_audio_clock_uses_actual_override_before_audio_gate() {
+fn final_seek_without_audio_clock_uses_target_override_before_audio_gate() {
     let video_track = fake_track(1, TrackKind::Video);
     let audio_track = fake_track(2, TrackKind::Audio);
     let target = Duration::from_secs(6);
@@ -143,13 +160,13 @@ fn final_seek_without_audio_clock_uses_actual_override_before_audio_gate() {
     assert!(!harness.session.pipeline.has_audio_clock());
     assert_eq!(
         harness.session.seek_presentation_clock_override(),
-        Some(actual)
+        Some(target)
     );
     assert_eq!(
         harness
             .session
             .presentation_clock_position_at(Instant::now()),
-        actual
+        target
     );
 
     harness.push_decoded_frame(actual, 500, 0);
@@ -159,22 +176,22 @@ fn final_seek_without_audio_clock_uses_actual_override_before_audio_gate() {
         .session
         .tick(PlayerTickContext::with_config(Instant::now(), tick_config));
 
-    assert_eq!(first_tick.video_frames_presented, 1);
-    assert!(first_tick.dropped_video_frames.is_empty());
+    assert_eq!(first_tick.video_frames_presented, 0);
+    assert_eq!(first_tick.dropped_video_frames.len(), 2);
     assert_eq!(
         harness
             .session
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(actual)
+        None
     );
-    assert_eq!(harness.session.pipeline.video_present_queue_len(), 2);
+    assert_eq!(harness.session.pipeline.video_present_queue_len(), 0);
     assert!(harness.session.seek_commit().is_some());
 }
 
 #[test]
-fn final_seek_audio_gate_wait_keeps_preroll_frames_on_actual_clock_base() {
+fn final_seek_audio_gate_wait_keeps_target_frames_on_target_clock_base() {
     let video_track = fake_track(1, TrackKind::Video);
     let audio_track = fake_track(2, TrackKind::Audio);
     let target = Duration::from_secs(6);
@@ -199,11 +216,11 @@ fn final_seek_audio_gate_wait_keeps_preroll_frames_on_actual_clock_base() {
         .dispatch_command(PlayerCommand::Play)
         .unwrap();
     harness.start_final_seek(MediaTime::from_duration(target));
-    assert_eq!(harness.session.pipeline.media_clock_base(), actual);
+    assert_eq!(harness.session.pipeline.media_clock_base(), target);
 
-    harness.push_decoded_frame(actual, 500, 0);
-    harness.push_decoded_frame(actual + Duration::from_millis(16), 516, 0);
-    harness.push_decoded_frame(actual + Duration::from_millis(33), 533, 0);
+    harness.push_decoded_frame(target, 500, 0);
+    harness.push_decoded_frame(target + Duration::from_millis(16), 516, 0);
+    harness.push_decoded_frame(target + Duration::from_millis(33), 533, 0);
     let first_tick = harness
         .session
         .tick(PlayerTickContext::with_config(Instant::now(), tick_config));
@@ -216,7 +233,7 @@ fn final_seek_audio_gate_wait_keeps_preroll_frames_on_actual_clock_base() {
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(actual)
+        Some(target)
     );
     assert_eq!(harness.session.pipeline.video_present_queue_len(), 2);
     assert!(harness.session.seek_commit().is_some());
@@ -234,7 +251,7 @@ fn final_seek_audio_gate_wait_keeps_preroll_frames_on_actual_clock_base() {
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(actual + Duration::from_millis(16))
+        Some(target + Duration::from_millis(16))
     );
     assert_eq!(harness.session.pipeline.video_present_queue_len(), 1);
 
@@ -250,8 +267,8 @@ fn final_seek_audio_gate_wait_keeps_preroll_frames_on_actual_clock_base() {
     assert_eq!(soft_fallback_tick.video_frames_presented, 0);
     assert!(soft_fallback_tick.dropped_video_frames.is_empty());
     assert!(harness.session.seek_commit().is_none());
-    assert_eq!(harness.session.pipeline.media_clock_base(), actual);
-    assert_eq!(harness.session.snapshot().current_position, actual);
+    assert_eq!(harness.session.pipeline.media_clock_base(), target);
+    assert_eq!(harness.session.snapshot().current_position, target);
 }
 
 #[test]
@@ -304,17 +321,37 @@ fn regression_symphonia_reset_required_event_rebases_generation_and_seek_complet
 
     let post_reset_packet_tick = harness.tick_once();
     let sent_after_reset = harness.sent_packets();
-    assert_eq!(post_reset_packet_tick.demuxed_packets.len(), 1);
-    assert_eq!(sent_after_reset.len(), 1);
+    assert_eq!(post_reset_packet_tick.demuxed_packets.len(), 2);
+    assert_eq!(sent_after_reset.len(), 2);
     assert_eq!(sent_after_reset[0].track_id, reset_track.id);
     assert_eq!(sent_after_reset[0].generation, seek_after_reset.generation);
+    assert_eq!(sent_after_reset[0].pts, actual);
+    assert_eq!(sent_after_reset[1].track_id, reset_track.id);
+    assert_eq!(sent_after_reset[1].generation, seek_after_reset.generation);
+    assert_eq!(sent_after_reset[1].pts, target);
 
     harness.push_decoded_frame(actual, 179, 1);
-    let instant_tick = harness.tick_once();
+    let preroll_tick = harness.tick_once();
 
-    assert_eq!(instant_tick.video_frames_presented, 1);
+    assert_eq!(preroll_tick.video_frames_presented, 0);
+    assert!(harness.session.seek_commit().is_some());
+    assert!(harness.session.snapshot().timeline.seeking);
+    assert!(!harness.session.snapshot().timeline.stale_frame);
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        None
+    );
+
+    harness.push_decoded_frame(target, 180, 1);
+    let target_tick = harness.tick_once();
+
+    assert_eq!(target_tick.video_frames_presented, 1);
     assert!(harness.session.seek_commit().is_none());
-    assert_eq!(harness.session.snapshot().current_position, actual);
+    assert_eq!(harness.session.snapshot().current_position, target);
     assert!(!harness.session.snapshot().timeline.seeking);
     assert!(!harness.session.snapshot().timeline.stale_frame);
     assert_eq!(
@@ -323,7 +360,7 @@ fn regression_symphonia_reset_required_event_rebases_generation_and_seek_complet
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(actual)
+        Some(target)
     );
     assert_eq!(
         seek_request_log
@@ -335,7 +372,7 @@ fn regression_symphonia_reset_required_event_rebases_generation_and_seek_complet
 }
 
 #[test]
-fn regression_seek_near_eof_commits_first_decode_safe_frame_without_eof_wait() {
+fn regression_seek_near_eof_uses_preroll_fallback_after_eof() {
     let video_track = fake_track(1, TrackKind::Video);
     let target = Duration::from_millis(29_500);
     let actual = Duration::from_secs(29);
@@ -353,16 +390,10 @@ fn regression_seek_near_eof_commits_first_decode_safe_frame_without_eof_wait() {
 
     harness.start_final_seek(MediaTime::from_duration(target));
     harness.tick_once();
-    harness
-        .decoder
-        .push_decoded_frame(decoded_frame_for_current_seek_generation(
-            &harness.session,
-            actual,
-            290,
-        ));
+    harness.push_decoded_frame(actual, 290, 1);
 
-    let instant_tick = harness.tick_once();
-    assert_eq!(instant_tick.video_frames_presented, 1);
+    let fallback_tick = harness.tick_once();
+    assert_eq!(fallback_tick.video_frames_presented, 1);
     assert!(
         !harness
             .session

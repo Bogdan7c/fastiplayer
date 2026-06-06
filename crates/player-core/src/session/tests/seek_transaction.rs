@@ -150,6 +150,49 @@ fn accurate_video_seek_passes_requested_target_to_demuxer() {
 }
 
 #[test]
+fn keyframe_before_seek_keeps_actual_frame_as_runtime_anchor() {
+    let target_position = Duration::from_secs(8);
+    let actual_position = Duration::from_millis(7_500);
+    let video_track = fake_track(1, TrackKind::Video);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        target_position,
+        actual_position,
+        Vec::new(),
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+
+    harness
+        .session
+        .pipeline
+        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(1), 1));
+    harness
+        .session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest {
+            target: SeekTarget::Absolute(MediaTime::from_duration(target_position)),
+            mode: SeekMode::KeyframeBefore,
+        }))
+        .unwrap();
+    let seek_commit = harness.aligned_seek_commit();
+
+    assert_eq!(seek_commit.seek_mode, SeekMode::KeyframeBefore);
+    assert_eq!(harness.session.pipeline.media_clock_base(), actual_position);
+    assert!(
+        !harness
+            .session
+            .should_drop_decoded_frame_for_seek(actual_position)
+    );
+
+    harness.push_decoded_frame(actual_position, 75, 1);
+    let tick_result = harness.tick_once();
+
+    assert_eq!(tick_result.video_frames_presented, 1);
+    assert!(harness.session.seek_commit().is_none());
+    assert_eq!(harness.session.snapshot().current_position, actual_position);
+    assert_eq!(harness.session.pipeline.media_clock_base(), actual_position);
+}
+
+#[test]
 fn seek_transaction_passes_demux_request_without_runtime_index_hint() {
     let mut session = PlayerSession::new();
     let seek_request_log = install_fake_media_with_seek_request_log(
@@ -922,7 +965,7 @@ fn current_generation_frame_before_actual_does_not_commit_final_seek() {
 }
 
 #[test]
-fn current_generation_frame_exactly_at_actual_can_commit_final_seek() {
+fn current_generation_frame_exactly_at_actual_does_not_commit_final_seek() {
     let target_position = Duration::from_secs(6);
     let actual_position = Duration::from_secs(5);
     let mut harness = final_seek_harness_with_actual_position(target_position, actual_position);
@@ -930,7 +973,7 @@ fn current_generation_frame_exactly_at_actual_can_commit_final_seek() {
     present_frame_for_current_seek_generation(&mut harness.session, actual_position, 91);
     let seek_commit = harness.aligned_seek_commit();
 
-    assert!(harness.session.seek_video_gate_ready(seek_commit, 1));
+    assert!(!harness.session.seek_video_gate_ready(seek_commit, 1));
 
     harness.session.finish_seek_commit_if_ready_for_tests(
         seek_commit.started_at,
@@ -940,19 +983,19 @@ fn current_generation_frame_exactly_at_actual_can_commit_final_seek() {
         1,
     );
 
-    assert!(harness.session.seek_commit().is_none());
-    assert_eq!(harness.session.snapshot().current_position, actual_position);
-    assert_eq!(harness.session.pipeline.media_clock_base(), actual_position);
-    assert!(harness.session.take_events().iter().any(|event| matches!(
-        event,
-        PlayerEvent::SeekTargetFramePresented(presentation)
-            if presentation.target_position == target_position
-                && presentation.frame_pts == actual_position
-    )));
+    assert!(harness.session.seek_commit().is_some());
+    assert_eq!(harness.session.snapshot().current_position, Duration::ZERO);
+    assert!(
+        !harness
+            .session
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::SeekTargetFramePresented(_)))
+    );
 }
 
 #[test]
-fn current_generation_frame_after_actual_before_target_can_commit_final_seek() {
+fn current_generation_frame_after_actual_before_target_does_not_commit_final_seek() {
     let target_position = Duration::from_secs(6);
     let actual_position = Duration::from_secs(5);
     let decode_safe_frame_position = Duration::from_millis(5_500);
@@ -961,7 +1004,7 @@ fn current_generation_frame_after_actual_before_target_can_commit_final_seek() {
     present_frame_for_current_seek_generation(&mut harness.session, decode_safe_frame_position, 92);
     let seek_commit = harness.aligned_seek_commit();
 
-    assert!(harness.session.seek_video_gate_ready(seek_commit, 1));
+    assert!(!harness.session.seek_video_gate_ready(seek_commit, 1));
 
     harness.session.finish_seek_commit_if_ready_for_tests(
         seek_commit.started_at,
@@ -971,21 +1014,15 @@ fn current_generation_frame_after_actual_before_target_can_commit_final_seek() {
         1,
     );
 
-    assert!(harness.session.seek_commit().is_none());
-    assert_eq!(
-        harness.session.snapshot().current_position,
-        decode_safe_frame_position
+    assert!(harness.session.seek_commit().is_some());
+    assert_eq!(harness.session.snapshot().current_position, Duration::ZERO);
+    assert!(
+        !harness
+            .session
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::SeekTargetFramePresented(_)))
     );
-    assert_eq!(
-        harness.session.pipeline.media_clock_base(),
-        decode_safe_frame_position
-    );
-    assert!(harness.session.take_events().iter().any(|event| matches!(
-        event,
-        PlayerEvent::SeekTargetFramePresented(presentation)
-            if presentation.target_position == target_position
-                && presentation.frame_pts == decode_safe_frame_position
-    )));
 }
 
 #[test]
@@ -1274,6 +1311,367 @@ fn active_seek_sends_video_packet_when_present_queue_is_full() {
 }
 
 #[test]
+fn active_accurate_seek_demux_reads_target_video_through_audio_preroll_backpressure() {
+    let target_position = Duration::from_secs(2);
+    let video_track = fake_track(1, TrackKind::Video);
+    let audio_track = fake_track(2, TrackKind::Audio);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone(), audio_track.clone()],
+        target_position,
+        Duration::ZERO,
+        vec![
+            fake_audio_packet(audio_track.id, target_position, Duration::from_millis(20)),
+            fake_video_packet_with_keyframe(
+                video_track.id,
+                target_position,
+                PacketKeyframe::Keyframe,
+            ),
+        ],
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track, audio_track], demuxer);
+
+    harness.start_final_seek(MediaTime::from_duration(target_position));
+    let tick_result = harness.session.tick(PlayerTickContext::with_config(
+        Instant::now(),
+        PlayerTickConfig {
+            max_demux_packets_per_tick: 8,
+            max_video_packets_sent_per_tick: 1,
+            max_pending_video_packets: 1,
+            max_pending_video_packets_during_audio_catchup: 8,
+            ..seek_regression_tick_config()
+        },
+    ));
+
+    assert_eq!(
+        tick_result.demuxed_packets.len(),
+        2,
+        "accurate seek preroll должен читать target video в том же tick-е, а не останавливаться на audio packet"
+    );
+    assert_eq!(harness.sent_packets().len(), 1);
+    assert_eq!(harness.sent_packets()[0].pts, target_position);
+    assert!(
+        !tick_result
+            .pipeline_pauses
+            .iter()
+            .any(|pause| pause.reason == crate::PipelinePauseReason::DemuxBackpressure)
+    );
+}
+
+#[test]
+fn active_accurate_seek_demux_budget_ignores_dropped_audio_preroll() {
+    let target_position = Duration::from_secs(2);
+    let video_track = fake_track(1, TrackKind::Video);
+    let audio_track = fake_track(2, TrackKind::Audio);
+    let mut packets = Vec::new();
+    for packet_index in 0..32u64 {
+        packets.push(fake_audio_packet(
+            audio_track.id,
+            Duration::from_millis(packet_index * 20),
+            Duration::from_millis(20),
+        ));
+    }
+    packets.push(fake_video_packet_with_keyframe(
+        video_track.id,
+        target_position,
+        PacketKeyframe::Keyframe,
+    ));
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone(), audio_track.clone()],
+        target_position,
+        Duration::ZERO,
+        packets,
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track, audio_track], demuxer);
+
+    harness.start_final_seek(MediaTime::from_duration(target_position));
+    let tick_result = harness.session.tick(PlayerTickContext::with_config(
+        Instant::now(),
+        PlayerTickConfig {
+            max_demux_packets_per_tick: 1,
+            max_video_packets_sent_per_tick: 1,
+            max_pending_video_packets: 1,
+            max_pending_video_packets_during_audio_catchup: 1,
+            seek_fast_preroll_time_budget: Duration::from_millis(50),
+            ..seek_regression_tick_config()
+        },
+    ));
+
+    assert_eq!(
+        tick_result.demuxed_packets.len(),
+        1,
+        "полностью отброшенный audio preroll не должен создавать unbounded per-packet telemetry"
+    );
+    assert_eq!(
+        tick_result.dropped_seek_audio_preroll_packets, 32,
+        "полностью отброшенный audio preroll учитывается aggregate counter-ом"
+    );
+    assert_eq!(harness.sent_packets().len(), 1);
+    assert_eq!(harness.sent_packets()[0].pts, target_position);
+    assert!(harness.session.pipeline.pending_audio_packet_is_empty());
+}
+
+#[test]
+fn active_accurate_seek_interleaves_demux_and_decoder_io_during_fast_preroll() {
+    let target_position = Duration::from_millis(300);
+    let video_track = fake_track(1, TrackKind::Video);
+    let audio_track = fake_track(2, TrackKind::Audio);
+    let packets = vec![
+        fake_audio_packet(
+            audio_track.id,
+            Duration::from_millis(0),
+            Duration::from_millis(20),
+        ),
+        fake_video_packet_with_keyframe(
+            video_track.id,
+            Duration::from_millis(0),
+            PacketKeyframe::Keyframe,
+        ),
+        fake_audio_packet(
+            audio_track.id,
+            Duration::from_millis(20),
+            Duration::from_millis(20),
+        ),
+        fake_video_packet_with_keyframe(
+            video_track.id,
+            Duration::from_millis(100),
+            PacketKeyframe::NotKeyframe,
+        ),
+        fake_audio_packet(
+            audio_track.id,
+            Duration::from_millis(40),
+            Duration::from_millis(20),
+        ),
+        fake_video_packet_with_keyframe(
+            video_track.id,
+            target_position,
+            PacketKeyframe::NotKeyframe,
+        ),
+    ];
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone(), audio_track.clone()],
+        target_position,
+        Duration::ZERO,
+        packets,
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track, audio_track], demuxer);
+
+    harness.start_final_seek(MediaTime::from_duration(target_position));
+    let tick_result = harness.session.tick(PlayerTickContext::with_config(
+        Instant::now(),
+        PlayerTickConfig {
+            max_demux_packets_per_tick: 1,
+            max_video_packets_sent_per_tick: 1,
+            max_decoded_video_frames_drained_per_tick: 1,
+            max_pending_video_packets: 1,
+            max_pending_video_packets_during_audio_catchup: 1,
+            seek_fast_preroll_video_packet_burst: 1,
+            seek_fast_preroll_time_budget: Duration::from_millis(50),
+            ..seek_regression_tick_config()
+        },
+    ));
+
+    assert_eq!(
+        tick_result.demuxed_packets.len(),
+        3,
+        "fast-preroll loop должен записывать per-packet telemetry только для queued video packets"
+    );
+    assert_eq!(
+        tick_result.dropped_seek_audio_preroll_packets, 3,
+        "pre-target audio preroll должен оставаться aggregate diagnostics"
+    );
+    assert_eq!(
+        harness
+            .sent_packets()
+            .iter()
+            .map(|packet| packet.pts)
+            .collect::<Vec<_>>(),
+        vec![
+            Duration::from_millis(0),
+            Duration::from_millis(100),
+            target_position
+        ],
+        "active accurate seek должен отправлять каждый найденный GOP packet в том же tick-е"
+    );
+    assert!(harness.session.pipeline.pending_video_packet_is_empty());
+    assert!(harness.session.pipeline.pending_audio_packet_is_empty());
+}
+
+#[test]
+fn active_accurate_seek_without_catch_up_deadline_keeps_dropped_audio_scan_bounded() {
+    let target_position = Duration::from_secs(2);
+    let video_track = fake_track(1, TrackKind::Video);
+    let audio_track = fake_track(2, TrackKind::Audio);
+    let mut packets = Vec::new();
+    for packet_index in 0..32u64 {
+        packets.push(fake_audio_packet(
+            audio_track.id,
+            Duration::from_millis(packet_index * 20),
+            Duration::from_millis(20),
+        ));
+    }
+    packets.push(fake_video_packet_with_keyframe(
+        video_track.id,
+        target_position,
+        PacketKeyframe::Keyframe,
+    ));
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone(), audio_track.clone()],
+        target_position,
+        Duration::ZERO,
+        packets,
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track, audio_track], demuxer);
+
+    harness.start_final_seek(MediaTime::from_duration(target_position));
+    let tick_result = harness.session.tick(PlayerTickContext::with_config(
+        Instant::now(),
+        PlayerTickConfig {
+            max_demux_packets_per_tick: 1,
+            max_video_packets_sent_per_tick: 1,
+            max_pending_video_packets: 1,
+            max_pending_video_packets_during_audio_catchup: 1,
+            seek_fast_preroll_time_budget: Duration::ZERO,
+            ..seek_regression_tick_config()
+        },
+    ));
+
+    assert_eq!(
+        tick_result.demuxed_packets.len(),
+        1,
+        "без catch-up deadline dropped audio preroll должен оставаться bounded обычным demux budget"
+    );
+    assert!(harness.sent_packets().is_empty());
+    assert!(harness.session.pipeline.pending_audio_packet_is_empty());
+}
+
+#[test]
+fn active_accurate_seek_sends_pre_target_video_packets_in_burst() {
+    let target_position = Duration::from_secs(2);
+    let video_track = fake_track(1, TrackKind::Video);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        target_position,
+        Duration::ZERO,
+        Vec::new(),
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+
+    harness.start_final_seek(MediaTime::from_duration(target_position));
+    for frame_index in 0..10u64 {
+        let packet_pts = Duration::from_millis(frame_index * 100);
+        let packet_keyframe = if frame_index == 0 {
+            PacketKeyframe::Keyframe
+        } else {
+            PacketKeyframe::NotKeyframe
+        };
+        harness.session.pipeline.enqueue_pending_video_packet(
+            PendingVideoPacket::new_with_decode_timestamps(
+                TrackId::new(1),
+                packet_pts,
+                None,
+                None,
+                harness.session.pipeline.seek_generation(),
+                Bytes::from_static(b"seek-preroll-video"),
+                packet_keyframe,
+            ),
+        );
+    }
+    harness.session.pipeline.enqueue_pending_video_packet(
+        PendingVideoPacket::new_with_decode_timestamps(
+            TrackId::new(1),
+            target_position,
+            None,
+            None,
+            harness.session.pipeline.seek_generation(),
+            Bytes::from_static(b"seek-target-video"),
+            PacketKeyframe::NotKeyframe,
+        ),
+    );
+
+    let tick_result = harness.session.tick(PlayerTickContext::with_config(
+        Instant::now(),
+        PlayerTickConfig {
+            max_demux_packets_per_tick: 0,
+            max_video_packets_sent_per_tick: 1,
+            max_decoded_video_frames_drained_per_tick: 1,
+            max_pending_video_packets: 1,
+            max_pending_video_packets_during_audio_catchup: 16,
+            ..seek_regression_tick_config()
+        },
+    ));
+
+    assert_eq!(
+        harness.sent_packets().len(),
+        11,
+        "active accurate seek должен быстро прокачать pre-target GOP до decoder-а"
+    );
+    assert_eq!(tick_result.demuxed_packets.len(), 0);
+    assert!(harness.session.seek_commit().is_some());
+    assert!(harness.session.pipeline.pending_video_packet_is_empty());
+}
+
+#[test]
+fn active_accurate_seek_uses_seek_specific_video_packet_burst() {
+    let target_position = Duration::from_secs(4);
+    let video_track = fake_track(1, TrackKind::Video);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        target_position,
+        Duration::ZERO,
+        Vec::new(),
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+
+    harness.start_final_seek(MediaTime::from_duration(target_position));
+    for frame_index in 0..20u64 {
+        harness.session.pipeline.enqueue_pending_video_packet(
+            PendingVideoPacket::new_with_decode_timestamps(
+                TrackId::new(1),
+                Duration::from_millis(frame_index * 100),
+                None,
+                None,
+                harness.session.pipeline.seek_generation(),
+                Bytes::from_static(b"seek-preroll-video"),
+                if frame_index == 0 {
+                    PacketKeyframe::Keyframe
+                } else {
+                    PacketKeyframe::NotKeyframe
+                },
+            ),
+        );
+    }
+    harness.session.pipeline.enqueue_pending_video_packet(
+        PendingVideoPacket::new_with_decode_timestamps(
+            TrackId::new(1),
+            target_position,
+            None,
+            None,
+            harness.session.pipeline.seek_generation(),
+            Bytes::from_static(b"seek-target-video"),
+            PacketKeyframe::NotKeyframe,
+        ),
+    );
+
+    let tick_result = harness.session.tick(PlayerTickContext::with_config(
+        Instant::now(),
+        PlayerTickConfig {
+            max_demux_packets_per_tick: 0,
+            max_video_packets_sent_per_tick: 1,
+            max_decoded_video_frames_drained_per_tick: 1,
+            max_pending_video_packets: 1,
+            max_pending_video_packets_during_audio_catchup: 1,
+            seek_fast_preroll_video_packet_burst: 32,
+            ..seek_regression_tick_config()
+        },
+    ));
+
+    assert_eq!(harness.sent_packets().len(), 21);
+    assert_eq!(harness.sent_packets()[20].pts, target_position);
+    assert_eq!(tick_result.demuxed_packets.len(), 0);
+    assert!(harness.session.pipeline.pending_video_packet_is_empty());
+}
+
+#[test]
 fn final_seek_releases_stale_present_when_texture_pressure_blocks_decoder() {
     let mut session = PlayerSession::new();
     install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
@@ -1367,13 +1765,19 @@ fn active_seek_long_preroll_drain_keeps_present_queue_bounded() {
     assert_eq!(tick_result.decoded_video_frames, 33);
     assert!(harness.session.seek_commit().is_none());
     assert!(harness.session.pipeline.video_present_queue_len() <= 2);
-    let presented_frame_pts = harness
-        .session
-        .pipeline
-        .present_video_frame()
-        .map(|frame| frame.pts)
-        .expect("seek с минимальной задержкой должен показать свежий frame");
-    assert!(presented_frame_pts < target_position);
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(target_position)
+    );
+    assert_eq!(
+        tick_result.dropped_video_frames.len(),
+        32,
+        "весь pre-target GOP должен остаться seek-preroll, а не playback"
+    );
     assert!(
         !harness
             .session
@@ -1383,7 +1787,7 @@ fn active_seek_long_preroll_drain_keeps_present_queue_bounded() {
 }
 
 #[test]
-fn final_seek_presents_preroll_frame_without_eof_fallback_wait() {
+fn final_seek_retains_preroll_frame_without_presenting_before_target() {
     let target_position = Duration::from_secs(2);
     let first_landing_position = Duration::from_millis(1_500);
     let video_track = fake_track(1, TrackKind::Video);
@@ -1413,24 +1817,36 @@ fn final_seek_presents_preroll_frame_without_eof_fallback_wait() {
 
     let tick_result = harness.session.tick(PlayerTickContext::with_config(
         Instant::now(),
-        seek_admission_tick_config(2, 4),
+        PlayerTickConfig {
+            max_demux_packets_per_tick: 0,
+            ..seek_admission_tick_config(2, 4)
+        },
     ));
 
     assert_eq!(tick_result.decoded_video_frames, 2);
-    assert_eq!(tick_result.video_frames_presented, 1);
-    assert!(tick_result.dropped_video_frames.is_empty());
-    assert!(harness.decoder.released_handles().is_empty());
+    assert_eq!(tick_result.video_frames_presented, 0);
+    assert_eq!(tick_result.dropped_video_frames.len(), 1);
+    assert_eq!(
+        harness.decoder.released_handles(),
+        vec![video_core::FrameResourceHandle(15)]
+    );
     assert_eq!(
         harness
             .session
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(first_landing_position)
+        None
     );
-    assert_eq!(harness.session.pipeline.video_present_queue_len(), 1);
+    assert_eq!(harness.session.pipeline.video_present_queue_len(), 0);
     assert!(!harness.session.snapshot().timeline.stale_frame);
-    assert!(harness.session.seek_commit().is_none());
+    assert!(harness.session.seek_commit().is_some());
+    assert!(
+        harness
+            .session
+            .pipeline
+            .has_seek_preroll_fallback_video_frame()
+    );
 }
 
 #[test]
@@ -1581,7 +1997,7 @@ fn no_audio_seek_scheduler_uses_target_before_position_commit() {
 }
 
 #[test]
-fn no_audio_seek_counts_decode_safe_frames_before_target_for_resume_budget() {
+fn no_audio_seek_ignores_decode_safe_frames_before_target_for_resume_budget() {
     let target_position = Duration::from_secs(24);
     let actual_position = Duration::from_millis(23_900);
     let mut harness =
@@ -1619,15 +2035,15 @@ fn no_audio_seek_counts_decode_safe_frames_before_target_for_resume_budget() {
         3,
     );
 
-    assert!(harness.session.seek_commit().is_none());
-    assert_eq!(harness.session.snapshot().current_position, actual_position);
-    assert_eq!(harness.session.pipeline.media_clock_base(), actual_position);
+    assert!(harness.session.seek_commit().is_some());
+    assert_eq!(harness.session.snapshot().current_position, Duration::ZERO);
+    assert_eq!(harness.session.pipeline.media_clock_base(), target_position);
     assert_eq!(harness.session.pipeline.video_present_queue_len(), 2);
-    assert!(!harness.session.snapshot().timeline.stale_frame);
+    assert!(harness.session.snapshot().timeline.stale_frame);
 }
 
 #[test]
-fn no_audio_seek_worker_wakeup_treats_decode_safe_frame_before_target_as_immediate() {
+fn no_audio_seek_worker_wakeup_treats_target_frame_as_immediate() {
     let target_position = Duration::from_secs(24);
     let actual_position = Duration::from_millis(23_900);
     let mut harness =
@@ -1638,7 +2054,7 @@ fn no_audio_seek_worker_wakeup_treats_decode_safe_frame_before_target_as_immedia
         .pipeline
         .enqueue_queued_video_frame(decoded_frame_for_current_seek_generation(
             &harness.session,
-            actual_position,
+            target_position,
             42,
         ));
 
@@ -1651,6 +2067,48 @@ fn no_audio_seek_worker_wakeup_treats_decode_safe_frame_before_target_as_immedia
 
     assert_eq!(plan.reason, crate::WorkerWakeupReason::FrameReady);
     assert_eq!(plan.delay, Some(Duration::ZERO));
+}
+
+#[test]
+fn active_accurate_seek_decoder_inflight_preroll_requests_immediate_wakeup() {
+    let target_position = Duration::from_secs(2);
+    let video_track = fake_track(1, TrackKind::Video);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        target_position,
+        Duration::ZERO,
+        Vec::new(),
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+
+    harness.start_final_seek(MediaTime::from_duration(target_position));
+    harness.session.pipeline.note_video_packet_sent_to_decoder();
+
+    let plan = harness.session.worker_wakeup_plan(
+        Instant::now(),
+        &PlayerTickConfig::default(),
+        Duration::from_millis(2),
+        Duration::from_millis(250),
+    );
+
+    assert_eq!(plan.reason, crate::WorkerWakeupReason::SeekOrPreroll);
+    assert_eq!(plan.delay, Some(Duration::ZERO));
+}
+
+#[test]
+fn active_seek_blocker_reports_demux_when_only_stale_present_frame_exists() {
+    let target_position = Duration::from_secs(8);
+    let harness = final_seek_harness_with_actual_position(target_position, Duration::from_secs(3));
+
+    let diagnostics = harness
+        .session
+        .active_seek_diagnostics(Instant::now(), &PlayerTickConfig::default())
+        .expect("active seek diagnostics available");
+
+    assert_eq!(diagnostics.blocker, SeekProgressBlocker::WaitingForDemux);
+    assert!(diagnostics.stale_frame);
+    assert_eq!(diagnostics.queues.pending_video_packets, 0);
+    assert_eq!(diagnostics.queues.present_queue_depth, 0);
 }
 
 #[test]
@@ -2330,7 +2788,7 @@ fn paused_video_audio_seek_does_not_wait_for_audio_runtime() {
 }
 
 #[test]
-fn ordinary_seek_generation_keeps_pre_roll_frames_for_instant_resume() {
+fn ordinary_seek_generation_drops_video_pre_roll_before_target() {
     let mut session = PlayerSession::new();
     install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
 
@@ -2340,6 +2798,40 @@ fn ordinary_seek_generation_keeps_pre_roll_frames_for_instant_resume() {
         )))
         .unwrap();
 
-    assert!(!session.should_drop_decoded_frame_for_seek(Duration::from_millis(5_999)));
+    assert!(session.should_drop_decoded_frame_for_seek(Duration::from_millis(5_999)));
     assert!(!session.should_drop_decoded_frame_for_seek(Duration::from_secs(6)));
+}
+
+#[test]
+fn ordinary_seek_generation_drops_complete_audio_pre_roll_packets() {
+    let mut session = PlayerSession::new();
+    install_fake_media(
+        &mut session,
+        vec![
+            fake_track(1, TrackKind::Video),
+            fake_track(2, TrackKind::Audio),
+        ],
+    );
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            MediaTime::from_secs(6),
+        )))
+        .unwrap();
+
+    assert!(session.should_drop_demuxed_audio_packet_for_seek(
+        Duration::from_millis(5_900),
+        Some(Duration::from_millis(20)),
+    ));
+    assert!(!session.should_drop_demuxed_audio_packet_for_seek(
+        Duration::from_millis(5_990),
+        Some(Duration::from_millis(20)),
+    ));
+    assert!(
+        !session.should_drop_demuxed_audio_packet_for_seek(Duration::from_millis(5_900), None,)
+    );
+    assert!(!session.should_drop_demuxed_audio_packet_for_seek(
+        Duration::from_secs(6),
+        Some(Duration::from_millis(20)),
+    ));
 }

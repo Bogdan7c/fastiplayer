@@ -12,6 +12,7 @@ fn inactive_end_scrub_clears_simple_state_without_resetting_unrelated_seek_state
     );
     session.set_seek_commit_for_tests(Some(SeekCommitState {
         generation: 77,
+        seek_mode: SeekMode::Accurate,
         target_position: MediaTime::from_secs(17),
         actual_position: MediaTime::from_secs(16),
         started_at: Instant::now(),
@@ -106,7 +107,7 @@ fn default_release_after_update_commits_latest_target_without_visible_preview() 
         .seek_commit()
         .expect("EndScrub должен открыть ordinary final seek");
     assert_eq!(seek_commit.target_position, MediaTime::from_secs(7));
-    assert!(!session.should_drop_decoded_frame_for_seek(Duration::from_millis(6_900)));
+    assert!(session.should_drop_decoded_frame_for_seek(Duration::from_millis(6_900)));
     assert!(!session.snapshot().timeline.scrubbing);
     assert!(session.snapshot().timeline.seeking);
 

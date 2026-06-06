@@ -285,6 +285,11 @@ fn video_frame_texture_preparation_action(
 
 /// Переносит результат playback worker tick в shell telemetry.
 fn record_player_tick_result(telemetry: &Telemetry, tick_result: &PlayerTickResult) {
+    telemetry.record_packets(
+        media_core::TrackKind::Audio,
+        tick_result.dropped_seek_audio_preroll_packets,
+    );
+
     for packet in &tick_result.demuxed_packets {
         telemetry.record_packet(packet.kind);
 

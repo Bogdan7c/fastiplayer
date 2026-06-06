@@ -283,10 +283,20 @@ impl Telemetry {
     /// Записывает информацию о прочитанном packet.
     #[inline]
     pub fn record_packet(&self, kind: TrackKind) {
-        self.packets_read.fetch_add(1, Ordering::Relaxed);
+        self.record_packets(kind, 1);
+    }
+
+    /// Записывает пачку packet-ов одного типа без per-packet overhead.
+    #[inline]
+    pub fn record_packets(&self, kind: TrackKind, count: u64) {
+        if count == 0 {
+            return;
+        }
+
+        self.packets_read.fetch_add(count, Ordering::Relaxed);
         match kind {
-            TrackKind::Video => self.video_packets.fetch_add(1, Ordering::Relaxed),
-            TrackKind::Audio => self.audio_packets.fetch_add(1, Ordering::Relaxed),
+            TrackKind::Video => self.video_packets.fetch_add(count, Ordering::Relaxed),
+            TrackKind::Audio => self.audio_packets.fetch_add(count, Ordering::Relaxed),
         };
     }
 
@@ -519,5 +529,18 @@ mod tests {
         assert_eq!(telemetry.video_frames_dropped(), 0);
         assert_eq!(telemetry.playback_visible_drops(), 0);
         assert_eq!(telemetry.surface_dropped_frames(), 0);
+    }
+
+    /// Проверяет bulk accounting packet counters без per-packet цикла.
+    #[test]
+    fn packet_bulk_accounting_preserves_total_and_track_counters() {
+        let telemetry = Telemetry::new();
+
+        telemetry.record_packets(TrackKind::Audio, 7);
+        telemetry.record_packet(TrackKind::Video);
+
+        assert_eq!(telemetry.packets_read(), 8);
+        assert_eq!(telemetry.audio_packets(), 7);
+        assert_eq!(telemetry.video_packets(), 1);
     }
 }

@@ -18,10 +18,33 @@ use super::{
     video_decoder_io::{has_texture_capacity_for_decode, texture_capacity_backpressure_reason},
 };
 use crate::{
-    PendingAudioPacket, PendingVideoPacket, PipelineLatencyStage, PipelinePauseReason,
-    PlaybackState, PlayerError, PlayerErrorKind, session::PlayerSession,
+    PendingAudioPacket, PendingVideoPacket, PipelineLatencyStage, PipelinePauseReason, PlayerError,
+    PlayerErrorKind, session::PlayerSession,
     session::audio_runtime::sanitize_audio_high_water_mark,
 };
+
+/// Результат маршрутизации demux packet-а внутри session queues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DemuxPacketRouteOutcome {
+    /// Packet попал в downstream queue и должен расходовать bounded demux budget.
+    Queued,
+
+    /// Packet был полностью отброшен как audio preroll active accurate seek-а.
+    DroppedSeekAudioPreroll,
+}
+
+impl DemuxPacketRouteOutcome {
+    /// Проверяет, должен ли packet расходовать admission budget текущего demux pass-а.
+    const fn consumes_demux_budget(self, catch_up_deadline: Option<Instant>) -> bool {
+        match self {
+            Self::Queued => true,
+            // Полный audio preroll можно просканировать сверх packet budget только когда
+            // tick имеет time deadline; без deadline zero-config тесты и ручные вызовы
+            // остаются bounded обычным budget-ом.
+            Self::DroppedSeekAudioPreroll => catch_up_deadline.is_none(),
+        }
+    }
+}
 
 /// Нормализует low-water mark для audio catch-up demux.
 pub(super) fn sanitize_audio_demux_low_water_mark(low_water_mark_ms: f64) -> f64 {
@@ -37,6 +60,57 @@ pub(super) fn audio_catchup_pending_video_limit(tick_config: &PlayerTickConfig) 
     tick_config
         .max_pending_video_packets_during_audio_catchup
         .max(tick_config.max_pending_video_packets)
+}
+
+/// Возвращает bounded лимит pending video packets для fast accurate seek preroll.
+pub(super) fn seek_preroll_pending_video_limit(tick_config: &PlayerTickConfig) -> usize {
+    tick_config
+        .seek_fast_preroll_video_packet_burst
+        .max(audio_catchup_pending_video_limit(tick_config))
+}
+
+/// Возвращает budget demux-чтения для текущего tick-а.
+pub(super) fn demux_packet_budget_for_tick(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+) -> usize {
+    if tick_config.max_demux_packets_per_tick == 0 {
+        return 0;
+    }
+
+    if active_seek_fast_video_preroll_active(session, tick_config)
+        && !tick_config.seek_fast_preroll_time_budget.is_zero()
+    {
+        return tick_config
+            .max_demux_packets_per_tick
+            .max(seek_preroll_pending_video_limit(tick_config));
+    }
+
+    tick_config.max_demux_packets_per_tick
+}
+
+/// Возвращает deadline для fast seek demux scan-а, чтобы dense audio interleave не зависел от обычного tick.
+pub(super) fn demux_catch_up_deadline_for_tick(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+    now: Instant,
+) -> Option<Instant> {
+    if tick_config.seek_fast_preroll_time_budget.is_zero() {
+        return None;
+    }
+
+    active_seek_fast_video_preroll_active(session, tick_config)
+        .then_some(now + tick_config.seek_fast_preroll_time_budget)
+}
+
+/// Проверяет session-owned intent fast preroll без раскрытия seek storage tick-модулям.
+fn active_seek_fast_video_preroll_active(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+) -> bool {
+    session.active_accurate_seek_needs_fast_video_preroll(
+        tick_config.effective_seek_resume_video_min_ready_frames(),
+    )
 }
 
 /// Проверяет, нужно ли временно приоритизировать demux ради заполнения audio buffer.
@@ -117,13 +191,18 @@ pub(super) fn read_demux_packets(
     catch_up_deadline: Option<Instant>,
 ) -> usize {
     let mut packets_read = 0usize;
+    let mut dropped_seek_audio_preroll_packets = 0usize;
+    let mut last_dropped_seek_audio_preroll_pts = None;
+    let mut last_dropped_seek_audio_preroll_duration = None;
 
-    for _ in 0..packet_budget {
+    while packets_read < packet_budget {
         if catch_up_deadline_reached(catch_up_deadline) {
             break;
         }
 
-        let prioritize_audio_catchup = audio_demux_catchup_needed(session, tick_config);
+        let seek_fast_preroll = active_seek_fast_video_preroll_active(session, tick_config);
+        let prioritize_audio_catchup =
+            !seek_fast_preroll && audio_demux_catchup_needed(session, tick_config);
         if prioritize_audio_catchup
             && session.pipeline.pending_video_packet_len() >= tick_config.max_pending_video_packets
         {
@@ -171,9 +250,31 @@ pub(super) fn read_demux_packets(
 
         match event_result {
             Ok(DemuxReadEvent::Packet(packet)) => {
-                tick_result.record_demuxed_packet(&packet);
-                route_demuxed_packet(session, packet);
-                packets_read += 1;
+                let packet_pts = packet.pts;
+                let packet_duration = packet.duration;
+                let aggregate_seek_audio_preroll = catch_up_deadline.is_some()
+                    && packet.kind == TrackKind::Audio
+                    && session
+                        .should_drop_demuxed_audio_packet_for_seek(packet_pts, packet_duration);
+                if aggregate_seek_audio_preroll {
+                    tick_result.record_dropped_seek_audio_preroll_packet();
+                } else {
+                    tick_result.record_demuxed_packet(&packet);
+                }
+
+                let route_outcome = route_demuxed_packet(session, packet);
+                if matches!(
+                    route_outcome,
+                    DemuxPacketRouteOutcome::DroppedSeekAudioPreroll
+                ) {
+                    dropped_seek_audio_preroll_packets =
+                        dropped_seek_audio_preroll_packets.saturating_add(1);
+                    last_dropped_seek_audio_preroll_pts = Some(packet_pts);
+                    last_dropped_seek_audio_preroll_duration = packet_duration;
+                }
+                if route_outcome.consumes_demux_budget(catch_up_deadline) {
+                    packets_read += 1;
+                }
             }
             Ok(DemuxReadEvent::EndOfStream) => {
                 debug!(
@@ -196,9 +297,9 @@ pub(super) fn read_demux_packets(
             }
             Ok(DemuxReadEvent::TracksChanged(track_update)) => {
                 session.handle_demux_track_list_update(track_update);
-                if session.playback_state() == PlaybackState::Failed {
-                    break;
-                }
+                // Track-list reset меняет generation и decoder/audio selections; следующий
+                // demux pass должен видеть уже стабилизированное lifecycle state.
+                break;
             }
             Err(error) => {
                 tracing::warn!(error = %error, "Ошибка чтения packet");
@@ -211,16 +312,36 @@ pub(super) fn read_demux_packets(
         }
     }
 
+    if dropped_seek_audio_preroll_packets > 0 {
+        debug!(
+            dropped_seek_audio_preroll_packets,
+            last_pts_ms = ?last_dropped_seek_audio_preroll_pts.map(|pts| pts.as_millis()),
+            last_duration_ms = ?last_dropped_seek_audio_preroll_duration
+                .map(|duration| duration.as_millis()),
+            packets_read_budget = packets_read,
+            packet_budget,
+            catch_up_deadline_active = catch_up_deadline.is_some(),
+            "Dropped demuxed audio preroll packets before active seek target"
+        );
+    }
+
     packets_read
 }
 
 /// Перекладывает packet из demuxer в соответствующую pending queue.
-pub(super) fn route_demuxed_packet(session: &mut PlayerSession, packet: media_core::Packet) {
+pub(super) fn route_demuxed_packet(
+    session: &mut PlayerSession,
+    packet: media_core::Packet,
+) -> DemuxPacketRouteOutcome {
     let generation = session.pipeline.seek_generation();
     session.note_demux_packet_for_seek_trace(&packet, generation);
 
     match packet.kind {
         TrackKind::Audio => {
+            if session.should_drop_demuxed_audio_packet_for_seek(packet.pts, packet.duration) {
+                return DemuxPacketRouteOutcome::DroppedSeekAudioPreroll;
+            }
+
             let packet_timing = audio_packet_timing_from_media_packet(&packet);
             let pending_packet = PendingAudioPacket::with_timing(
                 packet.track_id,
@@ -234,6 +355,7 @@ pub(super) fn route_demuxed_packet(session: &mut PlayerSession, packet: media_co
             session
                 .pipeline
                 .enqueue_pending_audio_packet(pending_packet);
+            DemuxPacketRouteOutcome::Queued
         }
         TrackKind::Video => {
             let pending_packet = PendingVideoPacket::new_with_decode_timestamps(
@@ -248,6 +370,7 @@ pub(super) fn route_demuxed_packet(session: &mut PlayerSession, packet: media_co
             session
                 .pipeline
                 .enqueue_pending_video_packet(pending_packet);
+            DemuxPacketRouteOutcome::Queued
         }
     }
 }
@@ -345,11 +468,14 @@ pub(super) fn can_read_next_demux_packet_with_audio_priority(
     tick_config: &PlayerTickConfig,
     prioritize_audio_catchup: bool,
 ) -> bool {
-    if audio_read_ahead_blocks_demux(session, tick_config) {
+    let seek_fast_preroll = active_seek_fast_video_preroll_active(session, tick_config);
+    if !seek_fast_preroll && audio_read_ahead_blocks_demux(session, tick_config) {
         return false;
     }
 
-    if prioritize_audio_catchup || selected_audio_bootstrap_needs_demux(session) {
+    if !seek_fast_preroll
+        && (prioritize_audio_catchup || selected_audio_bootstrap_needs_demux(session))
+    {
         return audio_priority_pending_video_limit_allows_demux(session, tick_config);
     }
 
@@ -357,7 +483,12 @@ pub(super) fn can_read_next_demux_packet_with_audio_priority(
         return false;
     }
 
-    if session.pipeline.pending_video_packet_len() >= tick_config.max_pending_video_packets {
+    let pending_video_limit = if seek_fast_preroll {
+        seek_preroll_pending_video_limit(tick_config)
+    } else {
+        tick_config.max_pending_video_packets
+    };
+    if session.pipeline.pending_video_packet_len() >= pending_video_limit {
         return false;
     }
 
@@ -370,11 +501,14 @@ pub(super) fn demux_backpressure_reason(
     tick_config: &PlayerTickConfig,
     prioritize_audio_catchup: bool,
 ) -> Option<PipelinePauseReason> {
-    if audio_read_ahead_blocks_demux(session, tick_config) {
+    let seek_fast_preroll = active_seek_fast_video_preroll_active(session, tick_config);
+    if !seek_fast_preroll && audio_read_ahead_blocks_demux(session, tick_config) {
         return Some(PipelinePauseReason::DemuxBackpressure);
     }
 
-    if prioritize_audio_catchup || selected_audio_bootstrap_needs_demux(session) {
+    if !seek_fast_preroll
+        && (prioritize_audio_catchup || selected_audio_bootstrap_needs_demux(session))
+    {
         return (!audio_priority_pending_video_limit_allows_demux(session, tick_config))
             .then_some(PipelinePauseReason::WaitingForDemuxAudioPriority);
     }
@@ -385,7 +519,12 @@ pub(super) fn demux_backpressure_reason(
         return Some(reason);
     }
 
-    if session.pipeline.pending_video_packet_len() >= tick_config.max_pending_video_packets {
+    let pending_video_limit = if seek_fast_preroll {
+        seek_preroll_pending_video_limit(tick_config)
+    } else {
+        tick_config.max_pending_video_packets
+    };
+    if session.pipeline.pending_video_packet_len() >= pending_video_limit {
         return Some(PipelinePauseReason::DemuxBackpressure);
     }
 
