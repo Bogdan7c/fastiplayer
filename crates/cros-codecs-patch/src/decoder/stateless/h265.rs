@@ -782,6 +782,23 @@ where
         self.codec.rps.num_poc_st_foll = Default::default();
     }
 
+    /// Сбрасывает HEVC picture-order context перед новым decode segment-ом.
+    ///
+    /// Seek flush отбрасывает старый DPB, поэтому следующий IRAP должен
+    /// трактоваться как начало нового битстрима. Для CRA это критично:
+    /// `NoRaslOutputFlag` станет `true`, а последующие RASL leading pictures
+    /// будут отброшены вместо отправки VAAPI ссылок на отсутствующие кадры.
+    fn reset_picture_order_context_after_flush(&mut self) {
+        self.clear_ref_lists();
+        self.codec.current_pic = None;
+        self.codec.first_picture_after_eos = true;
+        self.codec.first_picture_in_bitstream = true;
+        self.codec.prev_tid_0_pic = None;
+        self.codec.irap_no_rasl_output_flag = false;
+        self.codec.last_independent_slice_header = None;
+        self.codec.pending_pps.clear();
+    }
+
     /// Bumps the DPB if needed.
     fn bump_as_needed(
         &mut self,
@@ -1161,20 +1178,13 @@ where
             if matches!(self.decoding_state, DecodingState::AwaitingStreamInfo) {
                 // If more SPS come along we will renegotiate in begin_picture().
                 self.renegotiate_if_needed(RenegotiationType::NewSps(&sps))?;
-            } else if matches!(self.decoding_state, DecodingState::Reset) {
-                // We can resume decoding since the decoding parameters have not changed.
-                self.decoding_state = DecodingState::Decoding;
             }
-        } else if matches!(self.decoding_state, DecodingState::Reset) {
-            let mut cursor = Cursor::new(bitstream);
+        }
 
-            while let Ok(nalu) = Nalu::next(&mut cursor) {
-                // In the Reset state we can resume decoding from any key frame.
-                if nalu.header.type_.is_idr() {
-                    self.decoding_state = DecodingState::Decoding;
-                    break;
-                }
-            }
+        if matches!(self.decoding_state, DecodingState::Reset) && nalu.header.type_.is_irap() {
+            // После flush parameter sets могут идти перед CRA/IDR из-за hvcC injection.
+            // Сам SPS не является random-access picture; выходим из Reset только на IRAP.
+            self.decoding_state = DecodingState::Decoding;
         }
 
         let nalu_len = nalu.offset + nalu.size;
@@ -1206,6 +1216,7 @@ where
 
     fn flush(&mut self) -> Result<(), DecodeError> {
         self.drain()?;
+        self.reset_picture_order_context_after_flush();
         self.decoding_state = DecodingState::Reset;
 
         Ok(())
