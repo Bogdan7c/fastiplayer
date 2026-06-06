@@ -161,6 +161,29 @@ impl<T> RefPicSet<T>
 where
     T: Clone,
 {
+    fn contains_duplicate_resolved_picture(&self) -> bool {
+        let rps_lists = [
+            (&self.ref_pic_set_lt_curr, self.num_poc_lt_curr),
+            (&self.ref_pic_set_lt_foll, self.num_poc_lt_foll),
+            (&self.ref_pic_set_st_curr_before, self.num_poc_st_curr_before),
+            (&self.ref_pic_set_st_curr_after, self.num_poc_st_curr_after),
+            (&self.ref_pic_set_st_foll, self.num_poc_st_foll),
+        ];
+        let mut seen_pictures: Vec<&Rc<RefCell<PictureData>>> = Vec::new();
+
+        for (rps_list, rps_len) in rps_lists {
+            for rps_entry in rps_list.iter().take(rps_len).flatten() {
+                if seen_pictures.iter().any(|seen_picture| Rc::ptr_eq(seen_picture, &rps_entry.0)) {
+                    return true;
+                }
+
+                seen_pictures.push(&rps_entry.0);
+            }
+        }
+
+        false
+    }
+
     // See 8.3.4.
     // Builds the reference picture list for `hdr` for P and B slices.
     fn build_ref_pic_lists(
@@ -710,22 +733,7 @@ where
             }
         }
 
-        let total_rps_len = self.codec.rps.ref_pic_set_lt_curr[0..self.codec.rps.num_poc_lt_curr]
-            .len()
-            + self.codec.rps.ref_pic_set_lt_foll[0..self.codec.rps.num_poc_lt_foll].len()
-            + self.codec.rps.ref_pic_set_st_curr_after[0..self.codec.rps.num_poc_st_curr_after]
-                .len()
-            + self.codec.rps.ref_pic_set_st_curr_before[0..self.codec.rps.num_poc_st_curr_before]
-                .len()
-            + self.codec.rps.ref_pic_set_st_foll[0..self.codec.rps.num_poc_st_foll].len();
-
-        let dpb_len = self.codec.dpb.entries().len();
-        if dpb_len != total_rps_len {
-            log::warn!(
-                "The total RPS length {} is not the same as the DPB length {}",
-                total_rps_len,
-                dpb_len
-            );
+        if self.codec.rps.contains_duplicate_resolved_picture() {
             log::warn!("A reference pic may be in more than one RPS list. This is against the specification. See 8.3.2. NOTE 5")
         }
 
@@ -1224,8 +1232,15 @@ where
 #[cfg(test)]
 pub mod tests {
 
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use super::RefPicSet;
+    use crate::codec::h265::dpb::DpbEntry;
     use crate::bitstream_utils::NalIterator;
     use crate::codec::h265::parser::Nalu;
+    use crate::codec::h265::picture::PictureData;
+    use crate::codec::h265::picture::Reference;
     use crate::decoder::stateless::h265::H265;
     use crate::decoder::stateless::tests::test_decode_stream;
     use crate::decoder::stateless::tests::TestStream;
@@ -1234,6 +1249,50 @@ pub mod tests {
     use crate::utils::simple_playback_loop;
     use crate::utils::simple_playback_loop_owned_frames;
     use crate::DecodedFormat;
+
+    fn test_ref_pic_set_entry(pic_order_cnt_val: i32) -> DpbEntry<()> {
+        let mut picture = PictureData {
+            pic_order_cnt_val,
+            ..Default::default()
+        };
+        picture.set_reference(Reference::ShortTerm);
+
+        DpbEntry(Rc::new(RefCell::new(picture)), ())
+    }
+
+    #[test]
+    fn rps_duplicate_check_accepts_unique_resolved_pictures() {
+        let mut rps = RefPicSet::<()>::default();
+        rps.ref_pic_set_st_curr_before[0] = Some(test_ref_pic_set_entry(2));
+        rps.ref_pic_set_st_curr_after[0] = Some(test_ref_pic_set_entry(4));
+        rps.num_poc_st_curr_before = 1;
+        rps.num_poc_st_curr_after = 1;
+
+        assert!(!rps.contains_duplicate_resolved_picture());
+    }
+
+    #[test]
+    fn rps_duplicate_check_ignores_missing_references() {
+        let mut rps = RefPicSet::<()>::default();
+        rps.ref_pic_set_st_curr_before[0] = Some(test_ref_pic_set_entry(2));
+        rps.ref_pic_set_st_curr_after[0] = None;
+        rps.num_poc_st_curr_before = 1;
+        rps.num_poc_st_curr_after = 1;
+
+        assert!(!rps.contains_duplicate_resolved_picture());
+    }
+
+    #[test]
+    fn rps_duplicate_check_detects_same_picture_in_two_lists() {
+        let mut rps = RefPicSet::<()>::default();
+        let shared_picture = test_ref_pic_set_entry(2);
+        rps.ref_pic_set_st_curr_before[0] = Some(shared_picture.clone());
+        rps.ref_pic_set_st_foll[0] = Some(shared_picture);
+        rps.num_poc_st_curr_before = 1;
+        rps.num_poc_st_foll = 1;
+
+        assert!(rps.contains_duplicate_resolved_picture());
+    }
 
     /// Run `test` using the dummy decoder, in both blocking and non-blocking modes.
     fn test_decoder_dummy(test: &TestStream, blocking_mode: BlockingMode) {
