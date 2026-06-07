@@ -722,6 +722,19 @@ pub(super) struct SharedFakeVideoDecoderThread {
     /// Scripted результаты configure-stream для focused boundary тестов.
     pub(super) configure_results: Arc<Mutex<VecDeque<video_core::VideoStreamConfigResult>>>,
 
+    /// Scripted результаты Accurate preroll output-floor boundary.
+    pub(super) preroll_floor_results:
+        Arc<Mutex<VecDeque<video_core::VideoPrerollOutputFloorResult>>>,
+
+    /// Последний active Accurate preroll floor внутри fake decoder-а.
+    pub(super) preroll_floor: Arc<Mutex<Option<video_core::VideoPrerollOutputFloor>>>,
+
+    /// История set-floor команд, дошедших до fake decoder-а.
+    pub(super) preroll_floor_sets: Arc<Mutex<Vec<video_core::VideoPrerollOutputFloor>>>,
+
+    /// История clear-floor команд, дошедших до fake decoder-а.
+    pub(super) preroll_floor_clears: Arc<Mutex<Vec<video_core::VideoPrerollOutputFloorClear>>>,
+
     /// Последний stream config, принятый fake decoder-ом.
     pub(super) stream_config: Arc<Mutex<Option<video_core::VideoStreamDecodeConfig>>>,
 
@@ -758,6 +771,10 @@ impl SharedFakeVideoDecoderThread {
             resource_snapshot: Arc::new(Mutex::new(None)),
             control_pressure: Arc::new(Mutex::new(None)),
             configure_results: Arc::new(Mutex::new(VecDeque::new())),
+            preroll_floor_results: Arc::new(Mutex::new(VecDeque::new())),
+            preroll_floor: Arc::new(Mutex::new(None)),
+            preroll_floor_sets: Arc::new(Mutex::new(Vec::new())),
+            preroll_floor_clears: Arc::new(Mutex::new(Vec::new())),
             stream_config: Arc::new(Mutex::new(None)),
             configured_streams: Arc::new(Mutex::new(Vec::new())),
             clear_stream_count: Arc::new(Mutex::new(0)),
@@ -876,6 +893,33 @@ impl SharedFakeVideoDecoderThread {
             .lock()
             .expect("fake decoder configure result lock")
             .push_back(result);
+    }
+
+    /// Скриптует следующий результат Accurate preroll output-floor boundary.
+    pub(super) fn push_preroll_floor_result(
+        &self,
+        result: video_core::VideoPrerollOutputFloorResult,
+    ) {
+        self.preroll_floor_results
+            .lock()
+            .expect("fake decoder preroll floor result lock")
+            .push_back(result);
+    }
+
+    /// Возвращает историю set-floor команд, дошедших до fake decoder-а.
+    pub(super) fn preroll_floor_sets(&self) -> Vec<video_core::VideoPrerollOutputFloor> {
+        self.preroll_floor_sets
+            .lock()
+            .expect("fake decoder preroll floor set log lock")
+            .clone()
+    }
+
+    /// Возвращает историю clear-floor команд, дошедших до fake decoder-а.
+    pub(super) fn preroll_floor_clears(&self) -> Vec<video_core::VideoPrerollOutputFloorClear> {
+        self.preroll_floor_clears
+            .lock()
+            .expect("fake decoder preroll floor clear log lock")
+            .clone()
     }
 
     /// Возвращает последнюю active stream configuration fake backend-а.
@@ -1015,6 +1059,94 @@ impl video_core::VideoDecoderThreadHandle for SharedFakeVideoDecoderThread {
             video_core::VideoStreamConfigResult::Cleared
         } else {
             video_core::VideoStreamConfigResult::Unchanged
+        }
+    }
+
+    fn set_preroll_output_floor(
+        &self,
+        floor: video_core::VideoPrerollOutputFloor,
+    ) -> video_core::VideoPrerollOutputFloorResult {
+        self.preroll_floor_sets
+            .lock()
+            .expect("fake decoder preroll floor set log lock")
+            .push(floor);
+
+        if let Some(scripted_result) = self
+            .preroll_floor_results
+            .lock()
+            .expect("fake decoder preroll floor result lock")
+            .pop_front()
+        {
+            if matches!(
+                scripted_result,
+                video_core::VideoPrerollOutputFloorResult::Applied
+                    | video_core::VideoPrerollOutputFloorResult::Unchanged
+            ) {
+                *self
+                    .preroll_floor
+                    .lock()
+                    .expect("fake decoder preroll floor state lock") = Some(floor);
+            }
+            return scripted_result;
+        }
+
+        let mut active_floor = self
+            .preroll_floor
+            .lock()
+            .expect("fake decoder preroll floor state lock");
+        if active_floor.as_ref() == Some(&floor) {
+            return video_core::VideoPrerollOutputFloorResult::Unchanged;
+        }
+
+        *active_floor = Some(floor);
+        video_core::VideoPrerollOutputFloorResult::Applied
+    }
+
+    fn clear_preroll_output_floor(
+        &self,
+        clear: video_core::VideoPrerollOutputFloorClear,
+    ) -> video_core::VideoPrerollOutputFloorResult {
+        self.preroll_floor_clears
+            .lock()
+            .expect("fake decoder preroll floor clear log lock")
+            .push(clear);
+
+        if let Some(scripted_result) = self
+            .preroll_floor_results
+            .lock()
+            .expect("fake decoder preroll floor result lock")
+            .pop_front()
+        {
+            if matches!(
+                scripted_result,
+                video_core::VideoPrerollOutputFloorResult::Cleared
+                    | video_core::VideoPrerollOutputFloorResult::Unchanged
+            ) {
+                *self
+                    .preroll_floor
+                    .lock()
+                    .expect("fake decoder preroll floor state lock") = None;
+            }
+            return scripted_result;
+        }
+
+        let mut active_floor = self
+            .preroll_floor
+            .lock()
+            .expect("fake decoder preroll floor state lock");
+        let should_clear = match (clear, *active_floor) {
+            (video_core::VideoPrerollOutputFloorClear::Any, Some(_)) => true,
+            (
+                video_core::VideoPrerollOutputFloorClear::MatchingGeneration(clear_generation),
+                Some(active),
+            ) => active.generation == clear_generation,
+            (_, None) => false,
+        };
+        if should_clear {
+            *active_floor = None;
+            video_core::VideoPrerollOutputFloorResult::Cleared
+        } else {
+            video_core::VideoPrerollOutputFloorResult::Unchanged
         }
     }
 

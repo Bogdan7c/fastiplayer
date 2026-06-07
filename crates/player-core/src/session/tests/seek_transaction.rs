@@ -1676,6 +1676,171 @@ fn active_accurate_seek_sends_pre_target_video_packets_in_burst() {
 }
 
 #[test]
+fn accurate_seek_sets_decoder_output_floor_with_target_and_generation() {
+    let target_position = Duration::from_secs(2);
+    let actual_position = Duration::from_millis(1_500);
+    let video_track = fake_track(1, TrackKind::Video);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        target_position,
+        actual_position,
+        Vec::new(),
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+
+    harness.start_final_seek(MediaTime::from_duration(target_position));
+    let seek_commit = harness.aligned_seek_commit();
+
+    assert_eq!(
+        harness.decoder.preroll_floor_sets(),
+        vec![video_core::VideoPrerollOutputFloor {
+            generation: seek_commit.generation,
+            floor_pts: target_position,
+            retain_latest_before_floor: true,
+        }]
+    );
+    assert!(
+        harness
+            .session
+            .decoder_output_floor_applies_to_seek_preroll_packet(
+                actual_position,
+                seek_commit.generation
+            )
+    );
+}
+
+#[test]
+fn accurate_seek_clears_decoder_output_floor_on_commit() {
+    let target_position = Duration::from_secs(2);
+    let video_track = fake_track(1, TrackKind::Video);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        target_position,
+        Duration::from_millis(1_500),
+        Vec::new(),
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+
+    harness.start_final_seek(MediaTime::from_duration(target_position));
+    let seek_generation = harness.aligned_seek_commit().generation;
+    harness
+        .decoder
+        .push_decoded_frame(decoded_frame_for_current_seek_generation(
+            &harness.session,
+            target_position,
+            22,
+        ));
+    let tick_result = harness.session.tick(PlayerTickContext::with_config(
+        Instant::now(),
+        PlayerTickConfig {
+            max_demux_packets_per_tick: 0,
+            ..seek_admission_tick_config(2, 4)
+        },
+    ));
+
+    assert_eq!(tick_result.video_frames_presented, 1);
+    assert!(harness.session.seek_commit().is_none());
+    assert_eq!(
+        harness.decoder.preroll_floor_clears(),
+        vec![video_core::VideoPrerollOutputFloorClear::MatchingGeneration(seek_generation)]
+    );
+}
+
+#[test]
+fn new_accurate_seek_clears_old_decoder_output_floor_generation() {
+    let first_target = Duration::from_secs(2);
+    let second_target = Duration::from_secs(4);
+    let video_track = fake_track(1, TrackKind::Video);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        first_target,
+        Duration::from_millis(1_500),
+        Vec::new(),
+    )
+    .with_seek_result(scripted_seek_result(
+        second_target,
+        Duration::from_millis(3_500),
+    ));
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+
+    harness.start_final_seek(MediaTime::from_duration(first_target));
+    let first_generation = harness.aligned_seek_commit().generation;
+    harness.start_final_seek(MediaTime::from_duration(second_target));
+    let second_generation = harness.aligned_seek_commit().generation;
+
+    assert_ne!(first_generation, second_generation);
+    assert_eq!(
+        harness.decoder.preroll_floor_clears(),
+        vec![video_core::VideoPrerollOutputFloorClear::MatchingGeneration(first_generation)]
+    );
+    assert_eq!(
+        harness.decoder.preroll_floor_sets(),
+        vec![
+            video_core::VideoPrerollOutputFloor {
+                generation: first_generation,
+                floor_pts: first_target,
+                retain_latest_before_floor: true,
+            },
+            video_core::VideoPrerollOutputFloor {
+                generation: second_generation,
+                floor_pts: second_target,
+                retain_latest_before_floor: true,
+            },
+        ]
+    );
+}
+
+#[test]
+fn unsupported_decoder_output_floor_keeps_player_side_preroll_drop_path() {
+    let target_position = Duration::from_secs(2);
+    let actual_position = Duration::from_millis(1_500);
+    let video_track = fake_track(1, TrackKind::Video);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        target_position,
+        actual_position,
+        Vec::new(),
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+    harness
+        .decoder
+        .push_preroll_floor_result(video_core::VideoPrerollOutputFloorResult::Unsupported);
+
+    harness.start_final_seek(MediaTime::from_duration(target_position));
+    let seek_generation = harness.aligned_seek_commit().generation;
+    assert!(
+        !harness
+            .session
+            .decoder_output_floor_applies_to_seek_preroll_packet(actual_position, seek_generation)
+    );
+
+    harness
+        .decoder
+        .push_decoded_frame(decoded_frame_for_current_seek_generation(
+            &harness.session,
+            actual_position,
+            15,
+        ));
+    let tick_result = harness.session.tick(PlayerTickContext::with_config(
+        Instant::now(),
+        PlayerTickConfig {
+            max_demux_packets_per_tick: 0,
+            ..seek_admission_tick_config(2, 4)
+        },
+    ));
+
+    assert_eq!(tick_result.video_frames_presented, 0);
+    assert!(
+        harness
+            .session
+            .pipeline
+            .has_seek_preroll_fallback_video_frame(),
+        "unsupported decoder floor должен оставить старый player-side fallback/drop path"
+    );
+    assert!(harness.session.seek_commit().is_some());
+}
+
+#[test]
 fn active_accurate_seek_uses_seek_specific_video_packet_burst() {
     let target_position = Duration::from_secs(4);
     let video_track = fake_track(1, TrackKind::Video);
@@ -1852,7 +2017,7 @@ fn active_seek_long_preroll_drain_keeps_present_queue_bounded() {
 }
 
 #[test]
-fn final_seek_presents_latest_pre_target_frame_as_landing_preview() {
+fn final_seek_retains_latest_pre_target_frame_without_landing_preview() {
     let target_position = Duration::from_secs(2);
     let first_landing_position = Duration::from_millis(1_500);
     let video_track = fake_track(1, TrackKind::Video);
@@ -1889,9 +2054,9 @@ fn final_seek_presents_latest_pre_target_frame_as_landing_preview() {
     ));
 
     assert_eq!(tick_result.decoded_video_frames, 2);
-    // RC3: самый поздний pre-target кадр (1900) поднимается в landing-preview, ранний (1500)
-    // дропается как seek-preroll, а его texture явно релизится (без утечки).
-    assert_eq!(tick_result.video_frames_presented, 1);
+    // Pre-target кадр остаётся только EOF fallback candidate-ом: scheduler не показывает
+    // его как preview, а ранний candidate релизится без texture leak.
+    assert_eq!(tick_result.video_frames_presented, 0);
     assert_eq!(tick_result.dropped_video_frames.len(), 1);
     assert_eq!(
         harness.decoder.released_handles(),
@@ -1903,24 +2068,13 @@ fn final_seek_presents_latest_pre_target_frame_as_landing_preview() {
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(Duration::from_millis(1_900))
-    );
-    // Present-кадр — именно кадр-превью (handle 19), а не ранний кадр.
-    assert_eq!(
-        harness
-            .session
-            .pipeline
-            .present_video_frame()
-            .map(|frame| frame.resource_handle),
-        Some(video_core::FrameResourceHandle(19))
+        None
     );
     assert_eq!(harness.session.pipeline.video_present_queue_len(), 0);
-    // Превью свежее: stale снят, но gate не закрыт (pts превью < target), commit ещё активен.
     assert!(!harness.session.snapshot().timeline.stale_frame);
     assert!(harness.session.seek_commit().is_some());
-    // Кадр поднят из fallback-слота в present-слот, поэтому слот пуст.
     assert!(
-        !harness
+        harness
             .session
             .pipeline
             .has_seek_preroll_fallback_video_frame()
@@ -1928,7 +2082,7 @@ fn final_seek_presents_latest_pre_target_frame_as_landing_preview() {
 }
 
 #[test]
-fn accurate_seek_landing_preview_converges_then_commits_on_target_frame() {
+fn accurate_seek_freezes_pre_seek_frame_then_commits_on_target_frame() {
     let target_position = Duration::from_secs(2);
     let video_track = fake_track(1, TrackKind::Video);
     let demuxer = scripted_seek_demuxer(
@@ -1938,16 +2092,20 @@ fn accurate_seek_landing_preview_converges_then_commits_on_target_frame() {
         Vec::new(),
     );
     let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
-    // max_demux_packets_per_tick: 0 держит demuxer от EOF, чтобы проверить чистый preview-путь
+    harness
+        .session
+        .pipeline
+        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(1), 10));
+    // max_demux_packets_per_tick: 0 держит demuxer от EOF, чтобы проверить чистый preroll path
     // без near-EOF fallback. Кадры приходят прямо из fake decoder.
-    let preview_tick_config = || PlayerTickConfig {
+    let preroll_tick_config = || PlayerTickConfig {
         max_demux_packets_per_tick: 0,
         ..seek_admission_tick_config(2, 4)
     };
 
     harness.start_final_seek(MediaTime::from_duration(target_position));
 
-    // Шаг 1: первый pre-target кадр поднимается в landing-preview, gate ещё открыт.
+    // Шаг 1: первый pre-target кадр не презентуется; экран держит pre-seek кадр.
     harness
         .decoder
         .push_decoded_frame(decoded_frame_for_current_seek_generation(
@@ -1957,23 +2115,30 @@ fn accurate_seek_landing_preview_converges_then_commits_on_target_frame() {
         ));
     let first_tick = harness.session.tick(PlayerTickContext::with_config(
         Instant::now(),
-        preview_tick_config(),
+        preroll_tick_config(),
     ));
-    assert_eq!(first_tick.video_frames_presented, 1);
+    assert_eq!(first_tick.video_frames_presented, 0);
+    assert_eq!(first_tick.video_frames_repeated, 1);
     assert_eq!(
         harness
             .session
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(Duration::from_millis(1_500))
+        Some(Duration::from_secs(1))
     );
     assert!(harness.session.seek_commit().is_some());
-    assert!(!harness.session.snapshot().timeline.stale_frame);
-    // Позиция не сдвинута превью: остаётся на user target до коммита.
+    assert!(harness.session.snapshot().timeline.stale_frame);
+    // Позиция не сдвинута pre-target кадром: остаётся на user target до коммита.
     assert_eq!(harness.session.pipeline.media_clock_base(), target_position);
+    assert!(
+        harness
+            .session
+            .pipeline
+            .has_seek_preroll_fallback_video_frame()
+    );
 
-    // Шаг 2: более близкий к target кадр обновляет превью; прежний present-кадр релизится.
+    // Шаг 2: более близкий к target кадр заменяет fallback candidate, но не present frame.
     harness
         .decoder
         .push_decoded_frame(decoded_frame_for_current_seek_generation(
@@ -1983,27 +2148,28 @@ fn accurate_seek_landing_preview_converges_then_commits_on_target_frame() {
         ));
     let closer_tick = harness.session.tick(PlayerTickContext::with_config(
         Instant::now(),
-        preview_tick_config(),
+        preroll_tick_config(),
     ));
-    assert_eq!(closer_tick.video_frames_presented, 1);
+    assert_eq!(closer_tick.video_frames_presented, 0);
+    assert_eq!(closer_tick.video_frames_repeated, 1);
     assert_eq!(
         harness
             .session
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(Duration::from_millis(1_900))
+        Some(Duration::from_secs(1))
     );
     assert!(
         harness
             .decoder
             .released_handles()
             .contains(&video_core::FrameResourceHandle(15)),
-        "замена превью на более близкий кадр должна релизить прежний present-кадр"
+        "замена fallback candidate должна релизить старый pre-target frame"
     );
     assert!(harness.session.seek_commit().is_some());
 
-    // Шаг 3: точный target кадр заменяет превью, закрывает gate и коммитит ровно на target.
+    // Шаг 3: точный target кадр заменяет pre-seek кадр, закрывает gate и коммитит target.
     harness
         .decoder
         .push_decoded_frame(decoded_frame_for_current_seek_generation(
@@ -2013,7 +2179,7 @@ fn accurate_seek_landing_preview_converges_then_commits_on_target_frame() {
         ));
     let target_tick = harness.session.tick(PlayerTickContext::with_config(
         Instant::now(),
-        preview_tick_config(),
+        preroll_tick_config(),
     ));
     assert_eq!(target_tick.video_frames_presented, 1);
     assert_eq!(
@@ -2029,7 +2195,14 @@ fn accurate_seek_landing_preview_converges_then_commits_on_target_frame() {
             .decoder
             .released_handles()
             .contains(&video_core::FrameResourceHandle(19)),
-        "target кадр должен релизить превью-кадр без утечки texture"
+        "target кадр должен очистить fallback candidate без texture leak"
+    );
+    assert!(
+        harness
+            .decoder
+            .released_handles()
+            .contains(&video_core::FrameResourceHandle(10)),
+        "target кадр должен релизить pre-seek present frame"
     );
     assert!(harness.session.seek_commit().is_none());
     assert_eq!(harness.session.snapshot().current_position, target_position);
@@ -2038,7 +2211,7 @@ fn accurate_seek_landing_preview_converges_then_commits_on_target_frame() {
 }
 
 #[test]
-fn accurate_seek_landing_preview_keeps_audio_fully_gated_before_target() {
+fn accurate_seek_keeps_audio_fully_gated_before_target_without_preview() {
     let target_position = Duration::from_secs(2);
     let actual_position = Duration::from_millis(1_500);
     let video_track = fake_track(1, TrackKind::Video);
@@ -2068,7 +2241,7 @@ fn accurate_seek_landing_preview_keeps_audio_fully_gated_before_target() {
             actual_position,
             15,
         ));
-    let preview_tick = harness.session.tick(PlayerTickContext::with_config(
+    let preroll_tick = harness.session.tick(PlayerTickContext::with_config(
         Instant::now(),
         PlayerTickConfig {
             max_demux_packets_per_tick: 0,
@@ -2076,17 +2249,17 @@ fn accurate_seek_landing_preview_keeps_audio_fully_gated_before_target() {
         },
     ));
 
-    // Видео-превью показано...
-    assert_eq!(preview_tick.video_frames_presented, 1);
+    // Pre-target video не показывается и не двигает audio/playback state.
+    assert_eq!(preroll_tick.video_frames_presented, 0);
     assert_eq!(
         harness
             .session
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(actual_position)
+        None
     );
-    // ...но аудио полностью gated: output не запускался, clock base держится на target,
+    // Аудио полностью gated: output не запускался, clock base держится на target,
     // seek ещё активен и playback не возобновлён.
     assert_eq!(
         audio_handle.play_count.load(Ordering::Relaxed),
@@ -2101,7 +2274,7 @@ fn accurate_seek_landing_preview_keeps_audio_fully_gated_before_target() {
 }
 
 #[test]
-fn keyframe_before_seek_does_not_use_accurate_landing_preview() {
+fn keyframe_before_seek_does_not_set_accurate_output_floor() {
     let target_position = Duration::from_secs(8);
     let actual_position = Duration::from_millis(7_500);
     let video_track = fake_track(1, TrackKind::Video);
@@ -2125,11 +2298,13 @@ fn keyframe_before_seek_does_not_use_accurate_landing_preview() {
         SeekMode::KeyframeBefore
     );
 
-    // Инвариант #5: KeyframeBefore не включает accurate landing-preview (превью-ветка не активна).
-    assert!(!harness.session.active_accurate_seek_wants_landing_preview());
+    assert!(
+        harness.decoder.preroll_floor_sets().is_empty(),
+        "KeyframeBefore не должен включать Accurate output-floor"
+    );
 
     // Pre-target кадр KeyframeBefore не маркируется как drop-preroll и потому не оседает в
-    // preview fallback-слоте: его путь — обычная present queue, а не landing-preview.
+    // fallback-слоте: его путь — обычная present queue.
     let pre_target = Duration::from_millis(7_000);
     assert!(
         !harness
@@ -2155,12 +2330,12 @@ fn keyframe_before_seek_does_not_use_accurate_landing_preview() {
             .session
             .pipeline
             .has_seek_preroll_fallback_video_frame(),
-        "KeyframeBefore не должен заполнять Accurate preview fallback-слот"
+        "KeyframeBefore не должен заполнять Accurate fallback-слот"
     );
 }
 
 #[test]
-fn accurate_seek_eof_during_landing_preview_commits_on_shown_frame_without_double_present() {
+fn accurate_seek_eof_commits_on_fallback_frame_after_decoder_drain() {
     let target_position = Duration::from_millis(29_500);
     let landing_position = Duration::from_secs(29);
     let video_track = fake_track(1, TrackKind::Video);
@@ -2174,7 +2349,7 @@ fn accurate_seek_eof_during_landing_preview_commits_on_shown_frame_without_doubl
 
     harness.start_final_seek(MediaTime::from_duration(target_position));
 
-    // Шаг 1 (без demux/EOF): landing-preview показывает самый близкий pre-target кадр.
+    // Шаг 1 (без demux/EOF): pre-target кадр сохраняется только как EOF fallback.
     harness
         .decoder
         .push_decoded_frame(decoded_frame_for_current_seek_generation(
@@ -2182,40 +2357,39 @@ fn accurate_seek_eof_during_landing_preview_commits_on_shown_frame_without_doubl
             landing_position,
             29,
         ));
-    let preview_tick = harness.session.tick(PlayerTickContext::with_config(
+    let preroll_tick = harness.session.tick(PlayerTickContext::with_config(
         Instant::now(),
         PlayerTickConfig {
             max_demux_packets_per_tick: 0,
             ..seek_admission_tick_config(2, 4)
         },
     ));
-    assert_eq!(preview_tick.video_frames_presented, 1);
+    assert_eq!(preroll_tick.video_frames_presented, 0);
     assert_eq!(
         harness
             .session
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(landing_position)
+        None
     );
     assert!(harness.session.seek_commit().is_some());
-    // Превью забрало кадр из fallback-слота в present-слот.
     assert!(
-        !harness
+        harness
             .session
             .pipeline
             .has_seek_preroll_fallback_video_frame()
     );
 
-    // Шаг 2: demuxer доходит до EOF во время показа превью. Точного target кадра больше не будет,
-    // поэтому seek коммитится по уже видимому landing-кадру — без второго present-а.
+    // Шаг 2: demuxer доходит до EOF, decoder drain уже пуст, поэтому fallback презентуется
+    // один раз и закрывает seek по near-EOF policy.
     let eof_tick = harness.session.tick(PlayerTickContext::with_config(
         Instant::now(),
         seek_admission_tick_config(2, 4),
     ));
     assert_eq!(
-        eof_tick.video_frames_presented, 0,
-        "EOF во время превью не должен делать второй present уже показанного кадра"
+        eof_tick.video_frames_presented, 1,
+        "EOF fallback должен презентоваться только после decoder drain"
     );
     assert!(harness.session.seek_commit().is_none());
     assert_eq!(

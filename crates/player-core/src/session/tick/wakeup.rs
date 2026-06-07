@@ -302,6 +302,7 @@ pub(super) fn pending_video_work_available(
         session,
         video_decoder_texture_limits(tick_config),
         video_decoder_decode_ahead_limits(tick_config, decode_ahead_limit),
+        session.decoder_output_floor_applies_to_seek_preroll_packet(packet.pts, packet.generation),
         packet.pts,
     )
 }

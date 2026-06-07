@@ -7,6 +7,7 @@ pub(crate) use video_core::DecodeBackpressureReason;
 pub(crate) use video_core::{
     DecodePacket as PlayerDecodePacket, DecodeSendError, DecodeThreadError,
     DecoderResourceSnapshot, VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState,
+    VideoPrerollOutputFloor, VideoPrerollOutputFloorClear, VideoPrerollOutputFloorResult,
     VideoStreamConfigResult, VideoStreamDecodeConfig,
 };
 

@@ -402,6 +402,12 @@ impl PlayerSession {
 
     /// Устанавливает video backend, уже запущенный shell composition root-ом.
     pub fn set_video_backend(&mut self, started_backend: StartedVideoBackend) {
+        if let Err(error) = self.clear_active_seek_decoder_output_floor("video backend replacement")
+        {
+            self.mark_fatal_error(error);
+            return;
+        }
+
         self.pipeline
             .set_video_decoder_thread_handle(started_backend.into_decoder_thread());
         info!(

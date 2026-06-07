@@ -14,7 +14,8 @@ use crate::{
     DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
     DecoderResourceSnapshot, PlayerAudioClock, PlayerAudioOutput, PlayerDecodePacket,
     PlayerVideoDecoderThreadHandle, PresentFrameResourceProviderHandle,
-    VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState, VideoStreamConfigResult,
+    VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState, VideoPrerollOutputFloor,
+    VideoPrerollOutputFloorClear, VideoPrerollOutputFloorResult, VideoStreamConfigResult,
     VideoStreamDecodeConfig,
 };
 #[cfg(test)]
@@ -1363,6 +1364,30 @@ impl PlaybackPipeline {
         };
 
         decoder_thread.clear_stream()
+    }
+
+    /// Устанавливает decoder-side floor для Accurate preroll без знания concrete backend-а.
+    pub(crate) fn set_video_decoder_preroll_output_floor(
+        &self,
+        floor: VideoPrerollOutputFloor,
+    ) -> VideoPrerollOutputFloorResult {
+        let Some(decoder_thread) = self.video_decoder_thread.as_ref() else {
+            return VideoPrerollOutputFloorResult::AbsentDecoder;
+        };
+
+        decoder_thread.set_preroll_output_floor(floor)
+    }
+
+    /// Очищает decoder-side Accurate preroll floor через нейтральный decoder boundary.
+    pub(crate) fn clear_video_decoder_preroll_output_floor(
+        &self,
+        clear: VideoPrerollOutputFloorClear,
+    ) -> VideoPrerollOutputFloorResult {
+        let Some(decoder_thread) = self.video_decoder_thread.as_ref() else {
+            return VideoPrerollOutputFloorResult::AbsentDecoder;
+        };
+
+        decoder_thread.clear_preroll_output_floor(clear)
     }
 
     /// Запускает decoder EOF/DPB drain без превращения его в seek flush.

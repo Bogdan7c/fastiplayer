@@ -43,9 +43,8 @@ fn regression_ordinary_final_seek_drops_decode_safe_preroll_until_target_frame()
     harness.push_decoded_frame(actual, 79, 1);
     let preroll_tick = harness.tick_once_fast_preroll();
     assert_eq!(preroll_tick.demuxed_packets.len(), 0);
-    // RC3: самый близкий к target pre-target кадр становится перцептивным landing-preview, а не
-    // держится в fallback-слоте, пока экран показывает старый до-seek кадр.
-    assert_eq!(preroll_tick.video_frames_presented, 1);
+    // Pre-target кадр не презентуется: он остаётся EOF fallback candidate-ом до target/EOF.
+    assert_eq!(preroll_tick.video_frames_presented, 0);
     assert!(preroll_tick.dropped_video_frames.is_empty());
     assert_eq!(harness.sent_packets().len(), 2);
     assert_eq!(
@@ -54,16 +53,15 @@ fn regression_ordinary_final_seek_drops_decode_safe_preroll_until_target_frame()
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(actual)
+        None
     );
-    // Превью не закрывает gate: commit ещё активен, seeking держится, позиция не сдвинута.
+    // Pre-target frame не закрывает gate: commit ещё активен, seeking держится, позиция не сдвинута.
     assert!(harness.session.seek_commit().is_some());
     assert!(harness.session.snapshot().timeline.seeking);
     assert!(!harness.session.snapshot().timeline.scrubbing);
     assert!(!harness.session.snapshot().timeline.stale_frame);
-    // Кадр поднят из fallback-слота в present-слот, поэтому слот теперь пуст.
     assert!(
-        !harness
+        harness
             .session
             .pipeline
             .has_seek_preroll_fallback_video_frame()
@@ -180,8 +178,8 @@ fn final_seek_without_audio_clock_uses_target_override_before_audio_gate() {
         .session
         .tick(PlayerTickContext::with_config(Instant::now(), tick_config));
 
-    // RC3: самый поздний pre-target кадр становится landing-preview, два более ранних дропаются.
-    assert_eq!(first_tick.video_frames_presented, 1);
+    // Самый поздний pre-target кадр остаётся fallback candidate-ом, два более ранних дропаются.
+    assert_eq!(first_tick.video_frames_presented, 0);
     assert_eq!(first_tick.dropped_video_frames.len(), 2);
     assert_eq!(
         harness
@@ -189,10 +187,10 @@ fn final_seek_without_audio_clock_uses_target_override_before_audio_gate() {
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(actual + Duration::from_millis(33))
+        None
     );
     assert_eq!(harness.session.pipeline.video_present_queue_len(), 0);
-    // Превью не двигает позицию/clock: presentation clock остаётся на user target.
+    // Pre-target fallback не двигает позицию/clock: presentation clock остаётся на user target.
     assert!(harness.session.seek_commit().is_some());
     assert_eq!(
         harness
@@ -345,9 +343,8 @@ fn regression_symphonia_reset_required_event_rebases_generation_and_seek_complet
     harness.push_decoded_frame(actual, 179, 1);
     let preroll_tick = harness.tick_once_fast_preroll();
 
-    // RC3: pre-target кадр после reset-generation тоже показывается как landing-preview,
-    // оставаясь активным seek-ом (gate не закрыт).
-    assert_eq!(preroll_tick.video_frames_presented, 1);
+    // Pre-target кадр после reset-generation не показывается и остаётся active seek fallback-ом.
+    assert_eq!(preroll_tick.video_frames_presented, 0);
     assert!(harness.session.seek_commit().is_some());
     assert!(harness.session.snapshot().timeline.seeking);
     assert!(!harness.session.snapshot().timeline.stale_frame);
@@ -357,7 +354,7 @@ fn regression_symphonia_reset_required_event_rebases_generation_and_seek_complet
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(actual)
+        None
     );
 
     harness.push_decoded_frame(target, 180, 1);

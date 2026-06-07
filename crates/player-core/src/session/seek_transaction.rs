@@ -11,7 +11,8 @@ use crate::{
     ActiveSeekDiagnosticsSnapshot, PipelineQueueDepthSnapshot, PlaybackState, PlayerError,
     PlayerErrorKind, PlayerEvent, PlayerResult, SeekAudioResumeInfo,
     SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo, SeekMode, SeekProgressBlocker, SeekRequest,
-    SeekTargetFramePresentation,
+    SeekTargetFramePresentation, VideoPrerollOutputFloor, VideoPrerollOutputFloorClear,
+    VideoPrerollOutputFloorResult,
 };
 
 use super::audio_runtime::SeekAudioGateStatus;
@@ -65,6 +66,17 @@ impl SeekCommitGateDecision {
             Self::Waiting | Self::Ready => None,
         }
     }
+}
+
+/// Мапит fatal outcome decoder output-floor boundary в player runtime error.
+fn player_error_from_preroll_output_floor_error(
+    operation: &str,
+    error: crate::DecodeThreadError,
+) -> PlayerError {
+    PlayerError::new(
+        PlayerErrorKind::RuntimeError,
+        format!("Video decoder preroll output floor {operation} failed: {error}"),
+    )
 }
 
 impl PlayerSession {
@@ -360,6 +372,35 @@ impl PlayerSession {
         }
     }
 
+    /// Учитывает frame, который backend подавил ниже decoder-side Accurate output-floor.
+    pub(crate) fn note_suppressed_preroll_frame_for_seek_diagnostics(
+        &mut self,
+        pts: Duration,
+        generation: u64,
+        floor_pts: Duration,
+    ) -> bool {
+        let Some(seek_commit) = self.seek_runtime.active_commit() else {
+            return false;
+        };
+
+        let matches_active_accurate_seek = seek_commit.generation == generation
+            && seek_commit.drops_decode_preroll_before_target()
+            && pts < seek_commit.target_position.as_duration();
+        if !matches_active_accurate_seek {
+            return false;
+        }
+
+        self.seek_runtime.record_decoded_pre_target_frame_dropped();
+        trace!(
+            pts_ms = pts.as_millis(),
+            generation,
+            floor_ms = floor_pts.as_millis(),
+            target_ms = seek_commit.target_position.as_duration().as_millis(),
+            "Accurate seek preroll frame suppressed by decoder output floor"
+        );
+        true
+    }
+
     /// Учитывает decoder/video admission backpressure во время Accurate fast-preroll-а.
     pub(crate) fn note_decoder_backpressure_for_seek_preroll_diagnostics(&mut self) {
         let Some(seek_commit) = self.seek_runtime.active_commit() else {
@@ -448,6 +489,27 @@ impl PlayerSession {
             && packet_pts < seek_commit.target_position.as_duration()
     }
 
+    /// Проверяет, может ли pre-target Accurate packet обойти только texture-capacity gate.
+    #[must_use]
+    pub(crate) fn decoder_output_floor_applies_to_seek_preroll_packet(
+        &self,
+        packet_pts: Duration,
+        packet_generation: u64,
+    ) -> bool {
+        let Some(seek_commit) = self.seek_runtime.active_commit() else {
+            return false;
+        };
+
+        self.pipeline.has_selected_video_track()
+            && seek_commit.generation == packet_generation
+            && seek_commit.drops_decode_preroll_before_target()
+            && !self.seek_presented_frame_ready(seek_commit)
+            && packet_pts < seek_commit.target_position.as_duration()
+            && self
+                .seek_runtime
+                .decoder_output_floor_applied_for_generation(packet_generation)
+    }
+
     /// Проверяет, должен ли tick включить fast-preroll режим для accurate seek-а.
     ///
     /// Режим активен только пока video gate ещё не набрал target frame и нужный
@@ -465,30 +527,6 @@ impl PlayerSession {
         self.pipeline.has_selected_video_track()
             && seek_commit.drops_decode_preroll_before_target()
             && !self.seek_video_gate_ready(seek_commit, resume_video_min_ready_frames)
-    }
-
-    /// Проверяет, должен ли scheduler показывать перцептивный landing-preview во время
-    /// active accurate seek-а.
-    ///
-    /// Превью активно, пока идёт accurate seek с выбранным video track-ом. На gate-wait
-    /// present queue пуст (decode-safe pre-target кадры не кладутся в очередь, а оседают в
-    /// fallback-слоте), поэтому без превью экран держал бы старый до-seek кадр. Сходимость к
-    /// target и завершение обеспечивает вызывающий scheduler, а не этот предикат:
-    /// - в превью-ветку он входит только при пустой present queue, так что появление точного
-    ///   target-or-after кадра (он попадает в present queue) автоматически выключает превью;
-    /// - презентер превью забирает кадр из fallback-слота, а слот очищается в тот же момент,
-    ///   когда декодируется target-кадр, поэтому после показа target-кадра превью уже не может
-    ///   подменить его более старым кадром (слот пуст, а декод pre-target кадров не возобновится).
-    ///
-    /// `SeekMode::KeyframeBefore` сюда не попадает: `drops_decode_preroll_before_target()`
-    /// для него `false`, его actual = runtime anchor, и pre-target кадры в fallback не оседают.
-    #[must_use]
-    pub(crate) fn active_accurate_seek_wants_landing_preview(&self) -> bool {
-        let Some(seek_commit) = self.seek_runtime.active_commit() else {
-            return false;
-        };
-
-        self.pipeline.has_selected_video_track() && seek_commit.drops_decode_preroll_before_target()
     }
 
     /// Проверяет, можно ли пропустить demuxed audio packet, который целиком лежит до target.
@@ -589,6 +627,140 @@ impl PlayerSession {
         }
     }
 
+    /// Пробует включить decoder-side output floor для Accurate seek preroll.
+    fn apply_decoder_output_floor_for_seek(
+        &mut self,
+        seek_commit: SeekCommitState,
+    ) -> Result<(), PlayerError> {
+        self.seek_runtime.clear_decoder_output_floor();
+        if !self.pipeline.has_selected_video_track()
+            || !seek_commit.drops_decode_preroll_before_target()
+        {
+            return Ok(());
+        }
+
+        let floor_pts = seek_commit.target_position.as_duration();
+        let floor = VideoPrerollOutputFloor {
+            generation: seek_commit.generation,
+            floor_pts,
+            retain_latest_before_floor: true,
+        };
+
+        match self.pipeline.set_video_decoder_preroll_output_floor(floor) {
+            VideoPrerollOutputFloorResult::Applied | VideoPrerollOutputFloorResult::Unchanged => {
+                self.seek_runtime
+                    .mark_decoder_output_floor_applied(seek_commit.generation, floor_pts);
+                debug!(
+                    kind = "seek",
+                    generation = seek_commit.generation,
+                    target_ms = floor_pts.as_millis(),
+                    retain_latest_before_floor = true,
+                    "Accurate seek decoder output floor applied"
+                );
+                Ok(())
+            }
+            VideoPrerollOutputFloorResult::AbsentDecoder => {
+                debug!(
+                    kind = "seek",
+                    generation = seek_commit.generation,
+                    target_ms = floor_pts.as_millis(),
+                    "Accurate seek decoder output floor skipped: decoder absent"
+                );
+                Ok(())
+            }
+            VideoPrerollOutputFloorResult::Unsupported => {
+                debug!(
+                    kind = "seek",
+                    generation = seek_commit.generation,
+                    target_ms = floor_pts.as_millis(),
+                    "Accurate seek decoder output floor unsupported; using player-side drop path"
+                );
+                Ok(())
+            }
+            VideoPrerollOutputFloorResult::Backpressure(reason) => {
+                debug!(
+                    kind = "seek",
+                    generation = seek_commit.generation,
+                    target_ms = floor_pts.as_millis(),
+                    reason = %reason,
+                    "Accurate seek decoder output floor deferred by control-channel backpressure"
+                );
+                Ok(())
+            }
+            VideoPrerollOutputFloorResult::Cleared => {
+                debug!(
+                    kind = "seek",
+                    generation = seek_commit.generation,
+                    target_ms = floor_pts.as_millis(),
+                    "Accurate seek decoder output floor set returned unexpected Cleared"
+                );
+                Ok(())
+            }
+            VideoPrerollOutputFloorResult::Fatal(error) => {
+                Err(player_error_from_preroll_output_floor_error("set", error))
+            }
+        }
+    }
+
+    /// Очищает active decoder-side floor, если session знает о подтверждённом floor.
+    pub(super) fn clear_active_seek_decoder_output_floor(
+        &mut self,
+        reason: &'static str,
+    ) -> Result<(), PlayerError> {
+        let Some(floor) = self.seek_runtime.decoder_output_floor() else {
+            return Ok(());
+        };
+
+        let clear = VideoPrerollOutputFloorClear::MatchingGeneration(floor.generation);
+        let result = self
+            .pipeline
+            .clear_video_decoder_preroll_output_floor(clear);
+        match result {
+            VideoPrerollOutputFloorResult::Cleared
+            | VideoPrerollOutputFloorResult::Unchanged
+            | VideoPrerollOutputFloorResult::AbsentDecoder
+            | VideoPrerollOutputFloorResult::Unsupported => {
+                debug!(
+                    kind = "seek",
+                    generation = floor.generation,
+                    floor_ms = floor.floor_pts.as_millis(),
+                    clear_reason = reason,
+                    clear_result = "cleared_or_noop",
+                    "Accurate seek decoder output floor cleared"
+                );
+                self.seek_runtime.clear_decoder_output_floor();
+                Ok(())
+            }
+            VideoPrerollOutputFloorResult::Backpressure(backpressure_reason) => {
+                warn!(
+                    kind = "seek",
+                    generation = floor.generation,
+                    floor_ms = floor.floor_pts.as_millis(),
+                    clear_reason = reason,
+                    reason = %backpressure_reason,
+                    "Accurate seek decoder output floor clear hit control-channel backpressure"
+                );
+                self.seek_runtime.clear_decoder_output_floor();
+                Ok(())
+            }
+            VideoPrerollOutputFloorResult::Applied => {
+                warn!(
+                    kind = "seek",
+                    generation = floor.generation,
+                    floor_ms = floor.floor_pts.as_millis(),
+                    clear_reason = reason,
+                    "Accurate seek decoder output floor clear returned unexpected Applied"
+                );
+                self.seek_runtime.clear_decoder_output_floor();
+                Ok(())
+            }
+            VideoPrerollOutputFloorResult::Fatal(error) => {
+                self.seek_runtime.clear_decoder_output_floor();
+                Err(player_error_from_preroll_output_floor_error("clear", error))
+            }
+        }
+    }
+
     /// Отмечает, что final seek near EOF показал свежий fallback frame текущего transition-а.
     pub(crate) fn note_presented_seek_eof_fallback_frame(&mut self, frame_pts: Duration) {
         let Some(seek_commit) = self.seek_runtime.active_commit() else {
@@ -621,41 +793,6 @@ impl PlayerSession {
                 "First post-seek presented frame observed"
             );
         }
-
-        self.seek_runtime
-            .set_eof_fallback_video_position(MediaTime::from_duration(frame_pts));
-        self.snapshot.timeline.stale_frame = false;
-    }
-
-    /// Отмечает, что accurate seek показал перцептивный landing-preview (pre-target кадр).
-    ///
-    /// Превью меняет ТОЛЬКО видимый кадр. Оно НЕ двигает `current_position`/clock, НЕ закрывает
-    /// video gate и НЕ завершает commit — для этого нужен реальный target-or-after кадр через
-    /// `note_presented_frame_for_seek`. Здесь делаем ровно два инварианто-значимых шага:
-    /// - снимаем `stale_frame`: на экране теперь свежий кадр текущего seek generation-а, а не
-    ///   до-seek картинка. Pts превью < target, поэтому landing-guard всё равно НЕ примет этот
-    ///   кадр как закрывающий gate (см. `seek_landing_frame_matches_active_commit`);
-    /// - ставим `eof_fallback_video_position` = pts превью, чтобы EOF во время показа превью
-    ///   закоммитил seek по уже видимому landing-кадру (`FinalSeekCommitPosition::EofFallbackFrame`),
-    ///   ровно как делает near-EOF fallback presenter. Оба читателя этого маркера
-    ///   (`seek_eof_fallback_video_ready`, `final_seek_eof_fallback_commit_position`) защищены
-    ///   `is_eof_draining()`, поэтому выставление маркера до EOF безопасно, а точный target-кадр
-    ///   его очищает через `note_presented_frame_for_seek`.
-    pub(crate) fn note_presented_seek_landing_preview(&mut self, frame_pts: Duration) {
-        let Some(seek_commit) = self.seek_runtime.active_commit() else {
-            return;
-        };
-
-        debug!(
-            kind = "seek",
-            target_ms = seek_commit.target_position.as_duration().as_millis(),
-            actual_ms = seek_commit.actual_position.as_duration().as_millis(),
-            active_seek_generation = seek_commit.generation,
-            pipeline_generation = self.pipeline.seek_generation(),
-            frame_pts_ms = frame_pts.as_millis(),
-            landing_preview = true,
-            "Accurate seek landing preview presented"
-        );
 
         self.seek_runtime
             .set_eof_fallback_video_position(MediaTime::from_duration(frame_pts));
@@ -1127,14 +1264,13 @@ impl PlayerSession {
 
     /// Проверяет, что video decoder больше НЕ может выдать target-or-after кадр текущего seek-а.
     ///
-    /// EOF fallback (показ landing-preview/последнего pre-target кадра как committed position)
+    /// EOF fallback (показ последнего pre-target кадра как committed position)
     /// допустим только когда точный target кадр уже физически недостижим: нет pending video
     /// packets, нет in-flight packets и decoder thread не держит свою packet queue. Иначе target
     /// кадр ещё может прийти из EOF-drain-а, и коммитить seek по pre-target кадру нельзя.
     ///
-    /// До RC3 этот инвариант держался неявно: `eof_fallback_video_position` ставил только
-    /// near-EOF presenter, который и так требует слитый decoder (`seek_preroll_fallback_ready_after_eof`).
-    /// RC3 ставит маркер раньше — на показе landing-preview — поэтому проверку нужно делать явно.
+    /// Инвариант продублирован здесь, чтобы commit gate не зависел только от presenter-а,
+    /// который выставляет `eof_fallback_video_position`.
     fn seek_eof_video_decoder_drained_for_fallback(&self) -> bool {
         self.pipeline.pending_video_packet_is_empty()
             && self.pipeline.video_decode_in_flight_packets() == 0
@@ -1260,6 +1396,11 @@ impl PlayerSession {
 
     /// Закрывает финальный seek и публикует новую playback позицию.
     fn complete_final_seek_commit(&mut self, seek_commit: SeekCommitState) {
+        if let Err(error) = self.clear_active_seek_decoder_output_floor("seek commit") {
+            self.mark_fatal_error(error);
+            return;
+        }
+
         let commit_position = self.final_seek_commit_position(seek_commit);
         let playback_position = commit_position.position();
 
@@ -1362,6 +1503,11 @@ impl PlayerSession {
         seek_commit: SeekCommitState,
         timeout_blocker: SeekProgressBlocker,
     ) {
+        if let Err(error) = self.clear_active_seek_decoder_output_floor("seek timeout") {
+            self.mark_fatal_error(error);
+            return;
+        }
+
         self.seek_runtime.clear_active_commit();
         self.seek_runtime.clear_trace();
         self.seek_runtime.clear_simple_scrub();
@@ -1558,6 +1704,11 @@ impl PlayerSession {
             }
         };
 
+        if let Err(error) = self.clear_active_seek_decoder_output_floor("new seek") {
+            self.mark_fatal_error(error);
+            return Ok(());
+        }
+
         self.pause_audio_output_for_seek();
         if let Err(error) = self.reset_video_decoder_for_seek() {
             self.fail_seek_transaction_on_decoder_flush(error);
@@ -1649,6 +1800,15 @@ impl PlayerSession {
                 };
                 self.reanchor_clocks_after_seek_accept(seek_commit);
                 self.seek_runtime.set_active_commit(seek_commit);
+                if let Err(error) = self.apply_decoder_output_floor_for_seek(seek_commit) {
+                    self.seek_runtime.clear_active_commit();
+                    self.seek_runtime.clear_trace();
+                    self.seek_runtime.clear_simple_scrub();
+                    self.seek_runtime.clear_eof_fallback_video_position();
+                    self.clear_seek_preroll_fallback_frame();
+                    self.mark_fatal_error(error);
+                    return Ok(());
+                }
                 Ok(())
             }
             Err(error) => {
@@ -1705,6 +1865,23 @@ impl PlayerSession {
             Some(seek_commit) => self.seek_runtime.set_active_commit(seek_commit),
             None => self.seek_runtime.clear_active_commit(),
         }
+    }
+
+    /// Открывает trace markers напрямую только для focused boundary tests.
+    #[cfg(test)]
+    pub(super) fn begin_seek_trace_for_tests(&mut self, generation: u64) {
+        self.seek_runtime.begin_trace(generation);
+    }
+
+    /// Помечает decoder-side output-floor applied напрямую только для decoder I/O tests.
+    #[cfg(test)]
+    pub(super) fn mark_decoder_output_floor_applied_for_tests(
+        &mut self,
+        generation: u64,
+        floor_pts: Duration,
+    ) {
+        self.seek_runtime
+            .mark_decoder_output_floor_applied(generation, floor_pts);
     }
 
     /// Устанавливает EOF fallback marker напрямую только для focused boundary tests.

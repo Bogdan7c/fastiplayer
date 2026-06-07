@@ -188,9 +188,10 @@ pub(super) fn can_send_video_packet_to_decoder(
     session: &PlayerSession,
     texture_limits: VideoDecoderTextureLimits,
     decode_ahead_limits: VideoDecoderDecodeAheadLimits,
+    bypass_texture_capacity: bool,
     packet_pts: Duration,
 ) -> bool {
-    if !has_texture_capacity_for_decode(session, texture_limits) {
+    if !bypass_texture_capacity && !has_texture_capacity_for_decode(session, texture_limits) {
         return false;
     }
 
@@ -476,7 +477,11 @@ pub(super) fn send_pending_video_packets_to_decoder(
             break;
         }
 
-        if let Some(reason) = texture_capacity_backpressure_reason(session, limits.texture) {
+        let packet_bypasses_texture_capacity = session
+            .decoder_output_floor_applies_to_seek_preroll_packet(packet_pts, packet_generation);
+        if !packet_bypasses_texture_capacity
+            && let Some(reason) = texture_capacity_backpressure_reason(session, limits.texture)
+        {
             session.note_decoder_backpressure_for_seek_preroll_diagnostics();
             record_pipeline_pause(session, tick_result, reason);
             break;
@@ -489,6 +494,7 @@ pub(super) fn send_pending_video_packets_to_decoder(
             session,
             limits.texture,
             limits.decode_ahead,
+            packet_bypasses_texture_capacity,
             packet_pts,
         ) {
             session.note_decoder_backpressure_for_seek_preroll_diagnostics();
@@ -732,6 +738,7 @@ fn drain_video_decoder_thread_diagnostics(
     session: &mut PlayerSession,
     tick_result: &mut PlayerTickResult,
 ) {
+    let mut matching_suppressed_preroll_frames = 0u64;
     loop {
         let diagnostic_event = session.pipeline.try_recv_video_decoder_diagnostic_event();
         let Some(event) = diagnostic_event else {
@@ -746,10 +753,29 @@ fn drain_video_decoder_thread_diagnostics(
                 };
                 record_video_drop(session, tick_result, pts, drop_reason);
             }
+            video_core::VideoDecoderDiagnosticEvent::SeekPrerollFrameSuppressed {
+                pts,
+                generation,
+                floor_pts,
+            } => {
+                if session
+                    .note_suppressed_preroll_frame_for_seek_diagnostics(pts, generation, floor_pts)
+                {
+                    matching_suppressed_preroll_frames =
+                        matching_suppressed_preroll_frames.saturating_add(1);
+                }
+            }
             video_core::VideoDecoderDiagnosticEvent::DecodedFramePublishPressure { pressure } => {
                 session.record_decoded_frame_publish_pressure(pressure);
             }
         }
+    }
+
+    if matching_suppressed_preroll_frames > 0 {
+        debug!(
+            suppressed_preroll_frames = matching_suppressed_preroll_frames,
+            "Accurate seek decoder output floor suppressed preroll frames"
+        );
     }
 }
 

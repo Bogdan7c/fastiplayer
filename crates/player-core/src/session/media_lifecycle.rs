@@ -249,6 +249,10 @@ impl PlayerSession {
         self.clear_video_frames();
         self.advance_render_generation();
 
+        if let Err(error) = self.clear_active_seek_decoder_output_floor("media reset") {
+            warn!(error = %error, "Не удалось очистить Accurate seek decoder output floor");
+        }
+
         if let Err(error) = self.pipeline.flush_video_decoder_thread() {
             warn!(error = %error, "Не удалось сбросить video decoder thread");
         }

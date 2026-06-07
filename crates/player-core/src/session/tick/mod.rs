@@ -493,9 +493,9 @@ mod tests {
     use super::{demux_admission::*, presentation_scheduler::*, wakeup::*};
     use crate::{
         DecodeBackpressureReason, DecodeSendError, DecodeThreadError, FrameCounters,
-        PendingAudioPacket, PendingVideoPacket, PlaybackPipeline, PlayerAudioClock,
-        PlayerAudioOutput, PlayerCommand, PlayerDecodePacket, PlayerErrorKind, PlayerSession,
-        PresentFrameResourceProviderHandle, WorkerWakeupReason,
+        PendingAudioPacket, PendingVideoPacket, PlaybackPipeline, PlaybackResumeIntent,
+        PlayerAudioClock, PlayerAudioOutput, PlayerCommand, PlayerDecodePacket, PlayerErrorKind,
+        PlayerSession, PresentFrameResourceProviderHandle, WorkerWakeupReason,
     };
 
     /// Empty demuxer для проверки admission без реального container backend-а.
@@ -713,6 +713,50 @@ mod tests {
         )
     }
 
+    /// Создаёт texture snapshot с явно заданным количеством занятых slots.
+    fn decoder_resource_snapshot_for_tests(
+        capacity: usize,
+        in_use: usize,
+    ) -> crate::DecoderResourceSnapshot {
+        crate::DecoderResourceSnapshot {
+            capacity,
+            slots: capacity,
+            in_use,
+            free_surfaces: capacity.saturating_sub(in_use),
+            waiting_gpu_completion: 0,
+            waiting_decoder_reuse: 0,
+            import_failures: 0,
+            imports_created: 0,
+            imports_reused: 0,
+            imports_replaced: 0,
+        }
+    }
+
+    /// Запускает Accurate seek с выбранным video track-ом и возвращает active generation.
+    fn start_accurate_seek_for_decoder_io(
+        session: &mut PlayerSession,
+        decoder_thread: RecordingVideoDecoderThread,
+        target_position: Duration,
+    ) -> u64 {
+        session.pipeline.set_video_decoder_thread(decoder_thread);
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        let generation = session.pipeline.begin_seek_generation();
+        session.begin_seek_trace_for_tests(generation);
+        session.set_seek_commit_for_tests(Some(crate::seek_state::SeekCommitState {
+            generation,
+            seek_mode: crate::SeekMode::Accurate,
+            target_position: media_core::MediaTime::from_duration(target_position),
+            actual_position: media_core::MediaTime::from_duration(target_position),
+            started_at: Instant::now(),
+            resume_intent: PlaybackResumeIntent::Pause,
+        }));
+        session.mark_decoder_output_floor_applied_for_tests(generation, target_position);
+        generation
+    }
+
     /// Добавляет pending video packet для выбранного track-а текущей generation.
     fn enqueue_selected_video_packet(
         session: &mut PlayerSession,
@@ -743,8 +787,20 @@ mod tests {
         /// Очередь decoded frames для проверки decoder receive boundary.
         decoded_frames: Arc<Mutex<VecDeque<video_core::DecodedFrame>>>,
 
+        /// Diagnostics events, которые fake отдаёт decoder I/O drain-у.
+        diagnostic_events: Arc<Mutex<VecDeque<video_core::VideoDecoderDiagnosticEvent>>>,
+
         /// Texture handles, которые session вернула decoder boundary.
         released_handles: Arc<Mutex<Vec<video_core::FrameResourceHandle>>>,
+
+        /// Snapshot texture/surface pressure для packet admission tests.
+        resource_snapshot: Arc<Mutex<Option<crate::DecoderResourceSnapshot>>>,
+
+        /// Активный Accurate preroll floor внутри fake decoder-а.
+        preroll_floor: Arc<Mutex<Option<video_core::VideoPrerollOutputFloor>>>,
+
+        /// История clear-floor команд.
+        preroll_floor_clears: Arc<Mutex<Vec<video_core::VideoPrerollOutputFloorClear>>>,
     }
 
     impl RecordingVideoDecoderThread {
@@ -777,12 +833,28 @@ mod tests {
                 .push_back(result);
         }
 
+        /// Публикует diagnostics event через fake decoder boundary.
+        fn push_diagnostic_event(&self, event: video_core::VideoDecoderDiagnosticEvent) {
+            self.diagnostic_events
+                .lock()
+                .expect("recording decoder diagnostics queue lock")
+                .push_back(event);
+        }
+
         /// Возвращает handles, освобождённые через decoder release path.
         fn released_handles(&self) -> Vec<video_core::FrameResourceHandle> {
             self.released_handles
                 .lock()
                 .expect("recording decoder release log lock")
                 .clone()
+        }
+
+        /// Настраивает texture/resource snapshot для admission pressure tests.
+        fn set_resource_snapshot(&self, resource_snapshot: crate::DecoderResourceSnapshot) {
+            *self
+                .resource_snapshot
+                .lock()
+                .expect("recording decoder resource snapshot lock") = Some(resource_snapshot);
         }
     }
 
@@ -831,7 +903,10 @@ mod tests {
         }
 
         fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent> {
-            None
+            self.diagnostic_events
+                .lock()
+                .expect("recording decoder diagnostics queue lock")
+                .pop_front()
         }
 
         fn try_recv_error(&self) -> Option<DecodeThreadError> {
@@ -847,7 +922,36 @@ mod tests {
         }
 
         fn decoder_resource_snapshot(&self) -> Option<crate::DecoderResourceSnapshot> {
-            None
+            *self
+                .resource_snapshot
+                .lock()
+                .expect("recording decoder resource snapshot lock")
+        }
+
+        fn set_preroll_output_floor(
+            &self,
+            floor: video_core::VideoPrerollOutputFloor,
+        ) -> video_core::VideoPrerollOutputFloorResult {
+            *self
+                .preroll_floor
+                .lock()
+                .expect("recording decoder preroll floor state lock") = Some(floor);
+            video_core::VideoPrerollOutputFloorResult::Applied
+        }
+
+        fn clear_preroll_output_floor(
+            &self,
+            clear: video_core::VideoPrerollOutputFloorClear,
+        ) -> video_core::VideoPrerollOutputFloorResult {
+            self.preroll_floor_clears
+                .lock()
+                .expect("recording decoder preroll floor clear log lock")
+                .push(clear);
+            *self
+                .preroll_floor
+                .lock()
+                .expect("recording decoder preroll floor state lock") = None;
+            video_core::VideoPrerollOutputFloorResult::Cleared
         }
 
         fn packet_queue_depth(&self) -> usize {
@@ -2128,6 +2232,161 @@ mod tests {
                 reason: PipelinePauseReason::DecoderPacketQueueFull,
             }]
         );
+    }
+
+    #[test]
+    fn applied_output_floor_bypasses_texture_gate_only_for_pre_target_preroll_packet() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+        let target_position = Duration::from_millis(200);
+
+        decoder_thread.set_resource_snapshot(decoder_resource_snapshot_for_tests(1, 1));
+        let generation = start_accurate_seek_for_decoder_io(
+            &mut session,
+            decoder_thread.clone(),
+            target_position,
+        );
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                TrackId::new(1),
+                Duration::from_millis(120),
+                generation,
+                Bytes::from_static(b"pre-target-preroll"),
+                true,
+            ));
+
+        let preroll_sent = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+
+        assert_eq!(preroll_sent, 1);
+        assert_eq!(decoder_thread.sent_packets().len(), 1);
+        assert!(tick_result.pipeline_pauses.is_empty());
+
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                TrackId::new(1),
+                target_position,
+                generation,
+                Bytes::from_static(b"target-video"),
+                PacketKeyframe::NotKeyframe,
+            ));
+        let target_sent = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+
+        assert_eq!(target_sent, 0);
+        assert_eq!(decoder_thread.sent_packets().len(), 1);
+        assert!(
+            tick_result
+                .pipeline_pauses
+                .iter()
+                .any(|pause| { pause.reason == PipelinePauseReason::WaitingForFreeSurface })
+        );
+    }
+
+    #[test]
+    fn applied_output_floor_does_not_bypass_decoder_packet_queue_backpressure() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+        let target_position = Duration::from_millis(200);
+
+        decoder_thread.set_resource_snapshot(decoder_resource_snapshot_for_tests(1, 1));
+        decoder_thread.push_send_result(Err(DecodeSendError::Backpressure(
+            DecodeBackpressureReason::PacketQueueFull {
+                queued_packets: 4,
+                capacity: 4,
+            },
+        )));
+        let generation = start_accurate_seek_for_decoder_io(
+            &mut session,
+            decoder_thread.clone(),
+            target_position,
+        );
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                TrackId::new(1),
+                Duration::from_millis(120),
+                generation,
+                Bytes::from_static(b"pre-target-preroll"),
+                true,
+            ));
+
+        let sent_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+
+        assert_eq!(sent_packets, 0);
+        assert!(!session.pipeline.pending_video_packet_is_empty());
+        assert!(decoder_thread.sent_packets().is_empty());
+        assert_eq!(
+            tick_result.pipeline_pauses,
+            vec![PlayerPipelinePause {
+                reason: PipelinePauseReason::DecoderPacketQueueFull,
+            }]
+        );
+    }
+
+    #[test]
+    fn suppressed_preroll_diagnostic_increments_matching_active_seek_counter_only() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+        let target_position = Duration::from_millis(200);
+        let generation = start_accurate_seek_for_decoder_io(
+            &mut session,
+            decoder_thread.clone(),
+            target_position,
+        );
+
+        decoder_thread.push_diagnostic_event(
+            video_core::VideoDecoderDiagnosticEvent::SeekPrerollFrameSuppressed {
+                pts: Duration::from_millis(120),
+                generation,
+                floor_pts: target_position,
+            },
+        );
+        decoder_thread.push_diagnostic_event(
+            video_core::VideoDecoderDiagnosticEvent::SeekPrerollFrameSuppressed {
+                pts: Duration::from_millis(130),
+                generation: generation.saturating_add(1),
+                floor_pts: target_position,
+            },
+        );
+
+        let drained_frames = drain_decoded_video_frames(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(0, 0),
+            None,
+        );
+        let diagnostics = session
+            .active_seek_diagnostics(Instant::now(), &PlayerTickConfig::default())
+            .expect("active seek diagnostics должны оставаться доступны");
+
+        assert_eq!(drained_frames, 0);
+        assert_eq!(
+            diagnostics
+                .accurate_preroll
+                .counters
+                .decoded_pre_target_frames_dropped,
+            1
+        );
+        assert!(tick_result.dropped_video_frames.is_empty());
     }
 
     #[test]

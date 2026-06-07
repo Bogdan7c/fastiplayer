@@ -96,6 +96,16 @@ impl SeekCommitState {
     }
 }
 
+/// Session-level marker, что decoder подтвердил output-floor для Accurate seek.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SeekDecoderOutputFloorState {
+    /// Seek generation, на которую decoder применил floor.
+    pub generation: u64,
+
+    /// Минимальный PTS, который decoder должен публиковать наружу.
+    pub floor_pts: Duration,
+}
+
 /// Лёгкое состояние compatibility scrub API без live-preview transaction-а.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct SimpleScrubState {
@@ -491,6 +501,9 @@ pub(crate) struct SeekRuntimeState {
     /// Активная операция final seek commit-а, если player ждёт pre-roll/gates.
     commit: Option<SeekCommitState>,
 
+    /// Decoder-side output-floor, подтверждённый backend-ом для Accurate preroll.
+    decoder_output_floor: Option<SeekDecoderOutputFloorState>,
+
     /// Одноразовые trace markers accepted seek-а.
     trace: SeekTraceState,
 
@@ -527,6 +540,41 @@ impl SeekRuntimeState {
     /// Закрывает commit state без изменения trace/scrub/fallback markers.
     pub(crate) fn clear_active_commit(&mut self) {
         self.commit = None;
+    }
+
+    /// Запоминает, что decoder подтвердил Accurate output-floor для указанного generation.
+    pub(crate) fn mark_decoder_output_floor_applied(
+        &mut self,
+        generation: u64,
+        floor_pts: Duration,
+    ) {
+        self.decoder_output_floor = Some(SeekDecoderOutputFloorState {
+            generation,
+            floor_pts,
+        });
+    }
+
+    /// Возвращает активный decoder-side floor marker без доступа к decoder internals.
+    #[must_use]
+    pub(crate) const fn decoder_output_floor(&self) -> Option<SeekDecoderOutputFloorState> {
+        self.decoder_output_floor
+    }
+
+    /// Проверяет, подтверждён ли decoder-side floor для generation конкретного packet-а.
+    #[must_use]
+    pub(crate) const fn decoder_output_floor_applied_for_generation(
+        &self,
+        generation: u64,
+    ) -> bool {
+        matches!(
+            self.decoder_output_floor,
+            Some(floor) if floor.generation == generation
+        )
+    }
+
+    /// Сбрасывает только marker decoder-side floor; decoder command вызывается отдельно.
+    pub(crate) fn clear_decoder_output_floor(&mut self) {
+        self.decoder_output_floor = None;
     }
 
     /// Перепривязывает active commit к новому packet generation после demux reset-а.

@@ -8,6 +8,11 @@ fn playback_pipeline_decoder_boundary_absent_thread_is_noop() {
         TrackId::new(1),
         &VideoDecodeRequirement::new(VideoCodec::Vp9),
     );
+    let floor = video_core::VideoPrerollOutputFloor {
+        generation: 7,
+        floor_pts: Duration::from_millis(500),
+        retain_latest_before_floor: true,
+    };
 
     assert!(!pipeline.has_active_video_decoder());
     assert_eq!(pipeline.video_backend_name(), "Synthetic (test)");
@@ -19,6 +24,16 @@ fn playback_pipeline_decoder_boundary_absent_thread_is_noop() {
     assert_eq!(
         pipeline.clear_video_decoder_stream(),
         video_core::VideoStreamConfigResult::AbsentDecoder
+    );
+    assert_eq!(
+        pipeline.set_video_decoder_preroll_output_floor(floor),
+        video_core::VideoPrerollOutputFloorResult::AbsentDecoder
+    );
+    assert_eq!(
+        pipeline.clear_video_decoder_preroll_output_floor(
+            video_core::VideoPrerollOutputFloorClear::MatchingGeneration(7)
+        ),
+        video_core::VideoPrerollOutputFloorResult::AbsentDecoder
     );
     assert_eq!(
         pipeline.begin_video_decoder_end_of_stream_drain(0),
@@ -42,6 +57,89 @@ fn playback_pipeline_decoder_boundary_absent_thread_is_noop() {
             .is_none()
     );
     assert!(!pipeline.release_frame_to_video_decoder(video_core::FrameResourceHandle(7)));
+}
+
+#[test]
+fn playback_pipeline_decoder_boundary_forwards_preroll_output_floor_results() {
+    let mut pipeline = PlaybackPipeline::default();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    let floor = video_core::VideoPrerollOutputFloor {
+        generation: 3,
+        floor_pts: Duration::from_millis(1_200),
+        retain_latest_before_floor: true,
+    };
+    pipeline.set_video_decoder_thread(fake_decoder.clone());
+
+    assert_eq!(
+        pipeline.set_video_decoder_preroll_output_floor(floor),
+        video_core::VideoPrerollOutputFloorResult::Applied
+    );
+    assert_eq!(
+        pipeline.set_video_decoder_preroll_output_floor(floor),
+        video_core::VideoPrerollOutputFloorResult::Unchanged
+    );
+    assert_eq!(fake_decoder.preroll_floor_sets(), vec![floor, floor]);
+    assert_eq!(
+        pipeline.clear_video_decoder_preroll_output_floor(
+            video_core::VideoPrerollOutputFloorClear::MatchingGeneration(3)
+        ),
+        video_core::VideoPrerollOutputFloorResult::Cleared
+    );
+    assert_eq!(
+        pipeline.clear_video_decoder_preroll_output_floor(
+            video_core::VideoPrerollOutputFloorClear::MatchingGeneration(3)
+        ),
+        video_core::VideoPrerollOutputFloorResult::Unchanged
+    );
+    assert_eq!(
+        fake_decoder.preroll_floor_clears(),
+        vec![
+            video_core::VideoPrerollOutputFloorClear::MatchingGeneration(3),
+            video_core::VideoPrerollOutputFloorClear::MatchingGeneration(3),
+        ]
+    );
+}
+
+#[test]
+fn playback_pipeline_decoder_boundary_preserves_preroll_output_floor_error_states() {
+    let mut pipeline = PlaybackPipeline::default();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    let floor = video_core::VideoPrerollOutputFloor {
+        generation: 5,
+        floor_pts: Duration::from_millis(900),
+        retain_latest_before_floor: true,
+    };
+    fake_decoder.push_preroll_floor_result(video_core::VideoPrerollOutputFloorResult::Unsupported);
+    fake_decoder.push_preroll_floor_result(
+        video_core::VideoPrerollOutputFloorResult::Backpressure(
+            video_core::VideoDecoderControlBackpressureReason::ControlChannelFull {
+                queued_messages: 4,
+                capacity: 4,
+            },
+        ),
+    );
+    fake_decoder.push_preroll_floor_result(video_core::VideoPrerollOutputFloorResult::Fatal(
+        DecodeThreadError::new("floor fatal"),
+    ));
+    pipeline.set_video_decoder_thread(fake_decoder);
+
+    assert_eq!(
+        pipeline.set_video_decoder_preroll_output_floor(floor),
+        video_core::VideoPrerollOutputFloorResult::Unsupported
+    );
+    assert!(matches!(
+        pipeline.set_video_decoder_preroll_output_floor(floor),
+        video_core::VideoPrerollOutputFloorResult::Backpressure(
+            video_core::VideoDecoderControlBackpressureReason::ControlChannelFull {
+                queued_messages: 4,
+                capacity: 4
+            }
+        )
+    ));
+    assert!(matches!(
+        pipeline.set_video_decoder_preroll_output_floor(floor),
+        video_core::VideoPrerollOutputFloorResult::Fatal(error) if error.message() == "floor fatal"
+    ));
 }
 
 #[test]
