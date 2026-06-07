@@ -22,7 +22,8 @@ use super::{
 };
 use crate::{
     PlaybackState, WorkerFrameTimingSnapshot, WorkerWakeupDiagnosticsSnapshot, WorkerWakeupReason,
-    session::PlayerSession, session::audio_runtime::sanitize_audio_high_water_mark,
+    pipeline::VideoDecoderActivityStatus, session::PlayerSession,
+    session::audio_runtime::sanitize_audio_high_water_mark,
 };
 
 /// Read-only план следующего playback wakeup-а worker-а.
@@ -114,6 +115,30 @@ impl PlayerSession {
         decoder_readiness_poll_interval: Duration,
         coarse_progress_interval: Duration,
     ) -> PlayerWorkerWakeupPlan {
+        let decoder_activity_status = self.pipeline.video_decoder_activity_status();
+
+        self.worker_wakeup_plan_with_decoder_activity_status(
+            now,
+            tick_config,
+            decoder_readiness_poll_interval,
+            coarse_progress_interval,
+            &decoder_activity_status,
+        )
+    }
+
+    /// Вычисляет worker wakeup, используя activity status, снятый caller-ом до planning.
+    ///
+    /// Worker вызывает этот overload после собственного snapshot-а, чтобы закрыть
+    /// окно lost wakeup между decoder activity snapshot и входом в `select!`.
+    #[must_use]
+    pub(crate) fn worker_wakeup_plan_with_decoder_activity_status(
+        &self,
+        now: Instant,
+        tick_config: &PlayerTickConfig,
+        decoder_readiness_poll_interval: Duration,
+        coarse_progress_interval: Duration,
+        decoder_activity_status: &VideoDecoderActivityStatus,
+    ) -> PlayerWorkerWakeupPlan {
         if !self.playback_state().is_playback_active() {
             return PlayerWorkerWakeupPlan::idle();
         }
@@ -149,9 +174,7 @@ impl PlayerSession {
                 front_frame_delay,
                 decoder_readiness_poll_interval,
                 frame_timing,
-                self.pipeline
-                    .video_decoder_activity_status()
-                    .can_wait_for_activity(),
+                decoder_activity_status.can_wait_for_activity(),
             );
         }
 

@@ -3,10 +3,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
+#[cfg(test)]
+use codec_core::{VideoCodec, VideoDecodeRequirement};
 use media_core::{MediaDuration, MediaTime};
 use tracing::{debug, info, warn};
+#[cfg(test)]
+use video_core::VideoDecoderThreadHandle;
 
 use crate::audio_boundary::{missing_audio_decoder_factory, missing_audio_output_factory};
+#[cfg(test)]
+use crate::decoder_boundary::PresentFrameResourceProviderHandle;
 use crate::seek_state::{PlaybackResumeIntent, SeekRuntimeState};
 use crate::{
     AudioDecoderFactory, AudioOutputFactory, FrameCounters, PlaybackDiagnostics, PlaybackPipeline,
@@ -169,6 +175,45 @@ impl PlayerSession {
     #[must_use]
     pub fn has_loaded_media_pipeline(&self) -> bool {
         self.pipeline.has_demuxer()
+    }
+
+    /// Возвращает neutral decoder activity status без раскрытия `PlaybackPipeline` worker-у.
+    #[must_use]
+    pub(crate) fn video_decoder_activity_status(
+        &self,
+    ) -> crate::pipeline::VideoDecoderActivityStatus {
+        self.pipeline.video_decoder_activity_status()
+    }
+
+    /// Настраивает минимальный active Accurate preroll state для worker-level tests.
+    #[cfg(test)]
+    pub(crate) fn install_active_accurate_preroll_decoder_for_tests(
+        &mut self,
+        decoder_thread: impl VideoDecoderThreadHandle<
+            ResourceProvider = PresentFrameResourceProviderHandle,
+        > + 'static,
+        target_position: Duration,
+    ) -> u64 {
+        self.pipeline.set_video_decoder_thread(decoder_thread);
+        self.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        self.set_playback_state(PlaybackState::Seeking);
+
+        let generation = self.pipeline.begin_seek_generation();
+        self.begin_seek_trace_for_tests(generation);
+        self.set_seek_commit_for_tests(Some(crate::seek_state::SeekCommitState {
+            generation,
+            seek_mode: crate::SeekMode::Accurate,
+            target_position: MediaTime::from_duration(target_position),
+            actual_position: MediaTime::from_duration(target_position),
+            started_at: Instant::now(),
+            resume_intent: PlaybackResumeIntent::Pause,
+        }));
+        self.mark_decoder_output_floor_applied_for_tests(generation, target_position);
+
+        generation
     }
 
     /// Возвращает путь текущего локального файла, если media было открыто с диска.

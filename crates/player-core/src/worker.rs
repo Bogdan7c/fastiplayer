@@ -6,8 +6,13 @@ use std::time::{Duration, Instant};
 use capability_core::SystemCapabilities;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
 use tracing::{debug, warn};
+use video_core::{
+    VideoDecoderActivityEpoch, VideoDecoderActivitySnapshot, VideoDecoderActivityUnavailableReason,
+    VideoDecoderActivityWaitOutcome,
+};
 
 use crate::audio_boundary::{missing_audio_decoder_factory, missing_audio_output_factory};
+use crate::pipeline::VideoDecoderActivityStatus;
 #[cfg(test)]
 use crate::render_lease_bridge::{
     LatestPresentFrameAcquire, LatestPresentFrameHandoff, RenderAcquireSample, RenderLeaseRelease,
@@ -406,6 +411,7 @@ impl PlayerWorker {
                         audio_output_factory,
                     ),
                     worker_scheduler: WorkerScheduler,
+                    decoder_activity: WorkerDecoderActivityState::default(),
                     command_rx,
                     snapshot_publisher: LatestSnapshotPublisher::new(
                         snapshot_tx,
@@ -667,6 +673,213 @@ impl LatestSnapshotPublisher {
     }
 }
 
+/// Stable id одного activity receiver-а внутри worker runtime.
+type DecoderActivitySourceId = u64;
+
+/// Receiver identity, по которому worker отличает старый backend от нового.
+#[derive(Debug, Clone)]
+struct DecoderActivitySource {
+    /// Monotonic worker-local id, не видимый за пределами worker-а.
+    source_id: DecoderActivitySourceId,
+
+    /// Receiver clone нужен только для `same_channel`, а не для чтения pulse-ов.
+    pulse_receiver: Receiver<()>,
+}
+
+/// Activity wait, привязанный к одному уже выбранному playback deadline-у.
+#[derive(Debug, Clone)]
+struct DecoderActivityWaitSource {
+    /// Id source-а, который был активен при planning.
+    source_id: DecoderActivitySourceId,
+
+    /// Epoch, уже учтённый worker-ом до входа в этот wait.
+    observed_epoch: VideoDecoderActivityEpoch,
+
+    /// Snapshot содержит neutral subscription без backend-specific каналов.
+    snapshot: VideoDecoderActivitySnapshot,
+
+    /// Receiver clone участвует в `select_biased!` только для этого wait cycle-а.
+    pulse_receiver: Receiver<()>,
+}
+
+/// Decoder activity state, которым владеет только worker thread.
+#[derive(Debug, Default)]
+struct WorkerDecoderActivityState {
+    /// Последний распознанный activity source.
+    active_source: Option<DecoderActivitySource>,
+
+    /// Последний epoch, после которого worker уже запускал tick или baseline-нул новый source.
+    last_observed_epoch: VideoDecoderActivityEpoch,
+
+    /// Source, отключённый после fatal/disconnected notifier до замены backend-а.
+    disabled_source_id: Option<DecoderActivitySourceId>,
+
+    /// Следующий worker-local source id.
+    next_source_id: DecoderActivitySourceId,
+}
+
+impl WorkerDecoderActivityState {
+    /// Готовит optional decoder activity wait source из snapshot-а, снятого до planning.
+    fn wait_source_for_status(
+        &mut self,
+        activity_status: &VideoDecoderActivityStatus,
+    ) -> Option<DecoderActivityWaitSource> {
+        match activity_status {
+            VideoDecoderActivityStatus::Available { snapshot } => {
+                self.wait_source_for_available_snapshot(snapshot)
+            }
+            VideoDecoderActivityStatus::Unavailable(reason) => {
+                self.disable_current_source_if_terminal(reason);
+                None
+            }
+            VideoDecoderActivityStatus::AbsentDecoder | VideoDecoderActivityStatus::Unsupported => {
+                None
+            }
+        }
+    }
+
+    /// Возвращает wait source для доступного notifier-а или `None`, если source отключён.
+    fn wait_source_for_available_snapshot(
+        &mut self,
+        snapshot: &VideoDecoderActivitySnapshot,
+    ) -> Option<DecoderActivityWaitSource> {
+        let captured_epoch = snapshot.captured_epoch()?;
+        let pulse_receiver = snapshot.pulse_receiver()?;
+        let source_id = self.source_id_for_receiver(&pulse_receiver, captured_epoch);
+
+        if self.disabled_source_id == Some(source_id) {
+            return None;
+        }
+
+        Some(DecoderActivityWaitSource {
+            source_id,
+            observed_epoch: self.last_observed_epoch,
+            snapshot: snapshot.clone(),
+            pulse_receiver,
+        })
+    }
+
+    /// Назначает новый source id только при реальной замене receiver/channel-а.
+    fn source_id_for_receiver(
+        &mut self,
+        pulse_receiver: &Receiver<()>,
+        captured_epoch: VideoDecoderActivityEpoch,
+    ) -> DecoderActivitySourceId {
+        if let Some(active_source) = self.active_source.as_ref()
+            && active_source.pulse_receiver.same_channel(pulse_receiver)
+        {
+            return active_source.source_id;
+        }
+
+        let source_id = self.next_source_id;
+        self.next_source_id = self.next_source_id.saturating_add(1);
+        self.active_source = Some(DecoderActivitySource {
+            source_id,
+            pulse_receiver: pulse_receiver.clone(),
+        });
+        self.last_observed_epoch = captured_epoch;
+        source_id
+    }
+
+    /// Проверяет, отключён ли source после terminal notifier outcome.
+    #[must_use]
+    fn source_is_disabled(&self, source_id: DecoderActivitySourceId) -> bool {
+        self.disabled_source_id == Some(source_id)
+    }
+
+    /// Запоминает epoch, из-за которого worker уже проснулся и запустит playback tick.
+    fn mark_activity_observed(
+        &mut self,
+        source_id: DecoderActivitySourceId,
+        epoch: VideoDecoderActivityEpoch,
+    ) {
+        if self
+            .active_source
+            .as_ref()
+            .is_some_and(|active_source| active_source.source_id == source_id)
+        {
+            self.last_observed_epoch = epoch;
+        }
+    }
+
+    /// Отключает source после fatal/disconnected outcome, чтобы не читать его в следующем select.
+    fn disable_source_if_terminal(
+        &mut self,
+        source_id: DecoderActivitySourceId,
+        reason: &VideoDecoderActivityUnavailableReason,
+    ) {
+        if Self::terminal_unavailable_reason(reason) {
+            self.disabled_source_id = Some(source_id);
+        }
+    }
+
+    /// Отключает текущий source, если handle уже вернул terminal unavailable snapshot.
+    fn disable_current_source_if_terminal(
+        &mut self,
+        reason: &VideoDecoderActivityUnavailableReason,
+    ) {
+        if !Self::terminal_unavailable_reason(reason) {
+            return;
+        }
+
+        self.disabled_source_id = self
+            .active_source
+            .as_ref()
+            .map(|active_source| active_source.source_id);
+    }
+
+    /// Только fatal/disconnected notifier означает, что этот source нельзя снова включать.
+    fn terminal_unavailable_reason(reason: &VideoDecoderActivityUnavailableReason) -> bool {
+        matches!(
+            reason,
+            VideoDecoderActivityUnavailableReason::DisconnectedNotifier
+                | VideoDecoderActivityUnavailableReason::FatalNotifier(_)
+        )
+    }
+}
+
+/// Полный worker wait plan: playback deadline плюс optional decoder activity source.
+#[derive(Debug, Clone)]
+struct PlannedWorkerWait {
+    /// Playback wakeup, уже выбранный scheduler-ом.
+    wakeup: PlannedWorkerWakeup,
+
+    /// Decoder activity source используется только если plan явно попросил wait.
+    decoder_activity: Option<DecoderActivityWaitSource>,
+}
+
+impl PlannedWorkerWait {
+    /// Возвращает timeout выбранного playback wakeup-а.
+    #[must_use]
+    const fn timeout(&self) -> Duration {
+        self.wakeup.timeout()
+    }
+
+    /// Возвращает deadline выбранного playback wakeup-а.
+    #[must_use]
+    const fn deadline(&self) -> WorkerWakeupDeadline {
+        self.wakeup.deadline()
+    }
+}
+
+/// Результат одной итерации timed `select!`.
+enum WorkerTimedWaitOutcome {
+    /// Render/stale activity обработаны; нужно продолжить ждать старый absolute deadline.
+    ContinueWaiting,
+
+    /// Wait завершён command/shutdown/activity/timeout outcome-ом.
+    Finished { shutdown_requested: bool },
+}
+
+/// Что делать после typed decoder activity outcome-а.
+enum DecoderActivityWaitAction {
+    /// Новая activity должна немедленно запустить playback tick.
+    RunPlaybackTick,
+
+    /// Новой activity нет или source отключён; продолжаем ждать fallback deadline.
+    ContinueWaiting,
+}
+
 /// Runtime state, который живёт только на worker thread.
 struct PlayerWorkerRuntime {
     /// Worker-owned player session и весь playback pipeline.
@@ -674,6 +887,9 @@ struct PlayerWorkerRuntime {
 
     /// Чистый planner ближайшего worker wakeup-а без владения session/scrub state.
     worker_scheduler: WorkerScheduler,
+
+    /// Worker-owned state neutral decoder activity wait-а.
+    decoder_activity: WorkerDecoderActivityState,
 
     /// Receiver основной очереди команд.
     command_rx: Receiver<WorkerCommand>,
@@ -776,62 +992,248 @@ impl PlayerWorkerRuntime {
 
     /// Ждёт ближайший command/render/shutdown wakeup вместо fixed idle polling.
     fn wait_for_worker_wakeup(&mut self) -> bool {
-        match self.plan_next_worker_wakeup() {
-            Some(wakeup) if wakeup.timeout().is_zero() => {
-                self.handle_worker_timeout(wakeup.deadline());
+        match self.plan_next_worker_wakeup_with_decoder_activity() {
+            Some(wait_plan) if wait_plan.timeout().is_zero() => {
+                self.handle_worker_timeout(wait_plan.deadline());
                 false
             }
-            Some(wakeup) => self.wait_for_worker_wakeup_with_timeout(wakeup),
+            Some(wait_plan) => self.wait_for_worker_wakeup_with_timeout(wait_plan),
             None => self.wait_for_worker_wakeup_until_event(),
         }
     }
 
     /// Блокируется до события или ближайшего playback deadline-а.
-    fn wait_for_worker_wakeup_with_timeout(&mut self, wakeup: PlannedWorkerWakeup) -> bool {
+    fn wait_for_worker_wakeup_with_timeout(&mut self, wait_plan: PlannedWorkerWait) -> bool {
         loop {
+            let wakeup = wait_plan.wakeup;
             let timeout = Self::remaining_wakeup_timeout(wakeup);
             if timeout.is_zero() {
                 self.handle_worker_timeout(wakeup.deadline());
                 return false;
             }
 
-            crossbeam_channel::select! {
-                recv(self.command_rx) -> command_result => {
-                    return self.handle_command_wakeup(command_result);
-                }
-                recv(self.render_bridge.render_release_receiver()) -> release_result => {
-                    self.render_bridge
-                        .handle_release_wakeup(&mut self.session, release_result);
-                    self.drain_render_feedback();
-                }
-                recv(self.render_bridge.render_acquire_sample_receiver()) -> sample_result => {
-                    self.render_bridge
-                        .handle_acquire_sample_wakeup(&mut self.session, sample_result);
-                    self.drain_render_feedback();
-                }
-                recv(self.render_bridge.render_timing_sample_receiver()) -> sample_result => {
-                    self.render_bridge
-                        .handle_timing_sample_wakeup(&mut self.session, sample_result);
-                    self.drain_render_feedback();
-                }
-                recv(self.render_bridge.resource_lock_sample_receiver()) -> sample_result => {
-                    self.render_bridge
-                        .handle_resource_lock_sample_wakeup(&mut self.session, sample_result);
-                    self.drain_render_feedback();
-                }
-                recv(self.render_bridge.resource_previous_frame_reuse_sample_receiver()) -> sample_result => {
-                    self.render_bridge
-                        .handle_resource_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
-                    self.drain_render_feedback();
-                }
-                recv(self.shutdown_rx) -> _ => {
-                    self.handle_shutdown_request();
-                    return true;
-                }
-                default(timeout) => {
+            if let Some(shutdown_requested) = self.handle_ready_command_or_shutdown_before_select()
+            {
+                return shutdown_requested;
+            }
+
+            let decoder_activity = wait_plan
+                .decoder_activity
+                .as_ref()
+                .filter(|activity| !self.decoder_activity.source_is_disabled(activity.source_id));
+
+            let wait_outcome = if let Some(decoder_activity) = decoder_activity {
+                if let DecoderActivityWaitAction::RunPlaybackTick =
+                    self.check_decoder_activity_before_select(decoder_activity)
+                {
                     self.handle_worker_timeout(wakeup.deadline());
                     return false;
-                },
+                }
+
+                self.wait_for_worker_timed_event_with_decoder_activity(
+                    wakeup,
+                    decoder_activity,
+                    timeout,
+                )
+            } else {
+                self.wait_for_worker_timed_event_without_decoder_activity(wakeup, timeout)
+            };
+
+            match wait_outcome {
+                WorkerTimedWaitOutcome::ContinueWaiting => {}
+                WorkerTimedWaitOutcome::Finished { shutdown_requested } => {
+                    return shutdown_requested;
+                }
+            }
+        }
+    }
+
+    /// Даёт command/shutdown приоритет над decoder activity, пришедшей после planning.
+    fn handle_ready_command_or_shutdown_before_select(&mut self) -> Option<bool> {
+        if let Some(command) = self.receive_next_command() {
+            self.handle_worker_command(command);
+            self.publish_session_outputs();
+            return Some(self.session.is_shutdown_requested());
+        }
+
+        match self.shutdown_rx.try_recv() {
+            Ok(()) | Err(TryRecvError::Disconnected) => {
+                self.handle_shutdown_request();
+                return Some(true);
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+
+        None
+    }
+
+    /// Проверяет lost-wakeup окно между snapshot/planning и входом в `select!`.
+    fn check_decoder_activity_before_select(
+        &mut self,
+        decoder_activity: &DecoderActivityWaitSource,
+    ) -> DecoderActivityWaitAction {
+        let activity_outcome = decoder_activity
+            .snapshot
+            .activity_since(decoder_activity.observed_epoch);
+        self.handle_decoder_activity_wait_outcome(decoder_activity.source_id, activity_outcome)
+    }
+
+    /// Ждёт command/shutdown/render или decoder activity до выбранного playback deadline-а.
+    fn wait_for_worker_timed_event_with_decoder_activity(
+        &mut self,
+        wakeup: PlannedWorkerWakeup,
+        decoder_activity: &DecoderActivityWaitSource,
+        timeout: Duration,
+    ) -> WorkerTimedWaitOutcome {
+        let decoder_pulse_receiver = decoder_activity.pulse_receiver.clone();
+
+        crossbeam_channel::select_biased! {
+            recv(self.command_rx) -> command_result => {
+                WorkerTimedWaitOutcome::Finished {
+                    shutdown_requested: self.handle_command_wakeup(command_result),
+                }
+            }
+            recv(self.shutdown_rx) -> _ => {
+                self.handle_shutdown_request();
+                WorkerTimedWaitOutcome::Finished {
+                    shutdown_requested: true,
+                }
+            }
+            recv(decoder_pulse_receiver) -> activity_result => {
+                let activity_outcome = decoder_activity
+                    .snapshot
+                    .activity_after_recv(decoder_activity.observed_epoch, activity_result);
+                match self.handle_decoder_activity_wait_outcome(
+                    decoder_activity.source_id,
+                    activity_outcome,
+                ) {
+                    DecoderActivityWaitAction::RunPlaybackTick => {
+                        self.handle_worker_timeout(wakeup.deadline());
+                        WorkerTimedWaitOutcome::Finished {
+                            shutdown_requested: false,
+                        }
+                    }
+                    DecoderActivityWaitAction::ContinueWaiting => {
+                        WorkerTimedWaitOutcome::ContinueWaiting
+                    }
+                }
+            }
+            recv(self.render_bridge.render_release_receiver()) -> release_result => {
+                self.render_bridge
+                    .handle_release_wakeup(&mut self.session, release_result);
+                self.drain_render_feedback();
+                WorkerTimedWaitOutcome::ContinueWaiting
+            }
+            recv(self.render_bridge.render_acquire_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_acquire_sample_wakeup(&mut self.session, sample_result);
+                self.drain_render_feedback();
+                WorkerTimedWaitOutcome::ContinueWaiting
+            }
+            recv(self.render_bridge.render_timing_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_timing_sample_wakeup(&mut self.session, sample_result);
+                self.drain_render_feedback();
+                WorkerTimedWaitOutcome::ContinueWaiting
+            }
+            recv(self.render_bridge.resource_lock_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_resource_lock_sample_wakeup(&mut self.session, sample_result);
+                self.drain_render_feedback();
+                WorkerTimedWaitOutcome::ContinueWaiting
+            }
+            recv(self.render_bridge.resource_previous_frame_reuse_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_resource_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
+                self.drain_render_feedback();
+                WorkerTimedWaitOutcome::ContinueWaiting
+            }
+            default(timeout) => {
+                self.handle_worker_timeout(wakeup.deadline());
+                WorkerTimedWaitOutcome::Finished {
+                    shutdown_requested: false,
+                }
+            },
+        }
+    }
+
+    /// Ждёт command/shutdown/render или обычный fallback timeout без decoder receiver-а.
+    fn wait_for_worker_timed_event_without_decoder_activity(
+        &mut self,
+        wakeup: PlannedWorkerWakeup,
+        timeout: Duration,
+    ) -> WorkerTimedWaitOutcome {
+        crossbeam_channel::select_biased! {
+            recv(self.command_rx) -> command_result => {
+                WorkerTimedWaitOutcome::Finished {
+                    shutdown_requested: self.handle_command_wakeup(command_result),
+                }
+            }
+            recv(self.shutdown_rx) -> _ => {
+                self.handle_shutdown_request();
+                WorkerTimedWaitOutcome::Finished {
+                    shutdown_requested: true,
+                }
+            }
+            recv(self.render_bridge.render_release_receiver()) -> release_result => {
+                self.render_bridge
+                    .handle_release_wakeup(&mut self.session, release_result);
+                self.drain_render_feedback();
+                WorkerTimedWaitOutcome::ContinueWaiting
+            }
+            recv(self.render_bridge.render_acquire_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_acquire_sample_wakeup(&mut self.session, sample_result);
+                self.drain_render_feedback();
+                WorkerTimedWaitOutcome::ContinueWaiting
+            }
+            recv(self.render_bridge.render_timing_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_timing_sample_wakeup(&mut self.session, sample_result);
+                self.drain_render_feedback();
+                WorkerTimedWaitOutcome::ContinueWaiting
+            }
+            recv(self.render_bridge.resource_lock_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_resource_lock_sample_wakeup(&mut self.session, sample_result);
+                self.drain_render_feedback();
+                WorkerTimedWaitOutcome::ContinueWaiting
+            }
+            recv(self.render_bridge.resource_previous_frame_reuse_sample_receiver()) -> sample_result => {
+                self.render_bridge
+                    .handle_resource_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
+                self.drain_render_feedback();
+                WorkerTimedWaitOutcome::ContinueWaiting
+            }
+            default(timeout) => {
+                self.handle_worker_timeout(wakeup.deadline());
+                WorkerTimedWaitOutcome::Finished {
+                    shutdown_requested: false,
+                }
+            },
+        }
+    }
+
+    /// Применяет typed activity outcome к worker-owned source state.
+    fn handle_decoder_activity_wait_outcome(
+        &mut self,
+        source_id: DecoderActivitySourceId,
+        activity_outcome: VideoDecoderActivityWaitOutcome,
+    ) -> DecoderActivityWaitAction {
+        match activity_outcome {
+            VideoDecoderActivityWaitOutcome::ActivityReceived { epoch } => {
+                self.decoder_activity
+                    .mark_activity_observed(source_id, epoch);
+                DecoderActivityWaitAction::RunPlaybackTick
+            }
+            VideoDecoderActivityWaitOutcome::NoNewActivityAfterEpoch { .. }
+            | VideoDecoderActivityWaitOutcome::Timeout { .. } => {
+                DecoderActivityWaitAction::ContinueWaiting
+            }
+            VideoDecoderActivityWaitOutcome::Unavailable { reason } => {
+                self.decoder_activity
+                    .disable_source_if_terminal(source_id, &reason);
+                DecoderActivityWaitAction::ContinueWaiting
             }
         }
     }
@@ -884,7 +1286,38 @@ impl PlayerWorkerRuntime {
     }
 
     /// Делегирует вычисление ближайшего самостоятельного wakeup-а чистому scheduler helper-у.
+    #[cfg(test)]
     fn plan_next_worker_wakeup(&self) -> Option<PlannedWorkerWakeup> {
+        let decoder_activity_status = self.session.video_decoder_activity_status();
+
+        self.plan_next_worker_wakeup_with_status(&decoder_activity_status)
+    }
+
+    /// Делегирует вычисление wakeup-а и attach-ит decoder activity только по intent flag-у.
+    fn plan_next_worker_wakeup_with_decoder_activity(&mut self) -> Option<PlannedWorkerWait> {
+        let decoder_activity_status = self.session.video_decoder_activity_status();
+        let decoder_activity = self
+            .decoder_activity
+            .wait_source_for_status(&decoder_activity_status);
+        let wakeup = self.plan_next_worker_wakeup_with_status(&decoder_activity_status)?;
+        let decoder_activity = match wakeup.deadline() {
+            WorkerWakeupDeadline::Playback { plan, .. } if plan.wait_for_decoder_activity => {
+                decoder_activity
+            }
+            WorkerWakeupDeadline::Playback { .. } => None,
+        };
+
+        Some(PlannedWorkerWait {
+            wakeup,
+            decoder_activity,
+        })
+    }
+
+    /// Строит wakeup plan из уже снятого decoder activity status-а.
+    fn plan_next_worker_wakeup_with_status(
+        &self,
+        decoder_activity_status: &VideoDecoderActivityStatus,
+    ) -> Option<PlannedWorkerWakeup> {
         let now = Instant::now();
         self.worker_scheduler.next_worker_wakeup_deadline(
             now,
@@ -892,12 +1325,14 @@ impl PlayerWorkerRuntime {
             self.config.decoder_readiness_poll_interval,
             self.config.coarse_wakeup_interval,
             |now, tick_config, decoder_readiness_poll_interval, coarse_wakeup_interval| {
-                self.session.worker_wakeup_plan(
-                    now,
-                    tick_config,
-                    decoder_readiness_poll_interval,
-                    coarse_wakeup_interval,
-                )
+                self.session
+                    .worker_wakeup_plan_with_decoder_activity_status(
+                        now,
+                        tick_config,
+                        decoder_readiness_poll_interval,
+                        coarse_wakeup_interval,
+                        decoder_activity_status,
+                    )
             },
         )
     }
@@ -1363,6 +1798,7 @@ fn worst_latency_millis(counter: LatencyCounterSnapshot) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -1372,7 +1808,10 @@ mod tests {
         DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaTime, TrackId,
         TrackInfo, TrackKind,
     };
-    use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle};
+    use video_core::{
+        DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle,
+        VideoDecoderActivitySnapshot,
+    };
 
     use super::*;
     use crate::{MediaSource, PlaybackState, ScrubCommitPolicy, SeekRequest};
@@ -1482,6 +1921,92 @@ mod tests {
         }
     }
 
+    /// Минимальный fake decoder для worker activity wait tests.
+    #[derive(Clone)]
+    struct WorkerActivityDecoderThread {
+        /// Snapshot neutral activity boundary-а, который видит worker planner.
+        activity_snapshot: VideoDecoderActivitySnapshot,
+
+        /// Scripted packet queue depth нужен, чтобы wakeup planner выбрал DecodeReadiness.
+        packet_queue_depth: usize,
+
+        /// Fatal errors не нужны большинству сценариев, но trait требует nonblocking drain.
+        errors: Arc<Mutex<VecDeque<video_core::DecodeThreadError>>>,
+    }
+
+    impl WorkerActivityDecoderThread {
+        /// Создаёт fake decoder с указанным activity snapshot-ом.
+        fn new(activity_snapshot: VideoDecoderActivitySnapshot) -> Self {
+            Self {
+                activity_snapshot,
+                packet_queue_depth: 0,
+                errors: Arc::new(Mutex::new(VecDeque::new())),
+            }
+        }
+
+        /// Возвращает fake decoder с заданной глубиной packet queue.
+        fn with_packet_queue_depth(mut self, packet_queue_depth: usize) -> Self {
+            self.packet_queue_depth = packet_queue_depth;
+            self
+        }
+    }
+
+    impl video_core::VideoDecoderThreadHandle for WorkerActivityDecoderThread {
+        type ResourceProvider = crate::PresentFrameResourceProviderHandle;
+
+        fn backend_name(&self) -> &'static str {
+            "Worker activity fake decoder"
+        }
+
+        fn send_packet(
+            &self,
+            _packet: video_core::DecodePacket,
+        ) -> Result<(), video_core::DecodeSendError> {
+            Ok(())
+        }
+
+        fn release_frame(&self, _handle: video_core::FrameResourceHandle) {}
+
+        fn try_recv_frame(&self) -> Option<video_core::DecodedFrame> {
+            None
+        }
+
+        fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent> {
+            None
+        }
+
+        fn try_recv_error(&self) -> Option<video_core::DecodeThreadError> {
+            self.errors
+                .lock()
+                .expect("worker activity fake decoder error queue lock")
+                .pop_front()
+        }
+
+        fn flush(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn resource_provider(&self) -> crate::PresentFrameResourceProviderHandle {
+            panic!("worker activity fake decoder has no renderer resources")
+        }
+
+        fn decoder_resource_snapshot(&self) -> Option<crate::DecoderResourceSnapshot> {
+            None
+        }
+
+        fn decoder_activity_snapshot(&self) -> VideoDecoderActivitySnapshot {
+            self.activity_snapshot.clone()
+        }
+
+        fn packet_queue_depth(&self) -> usize {
+            self.packet_queue_depth
+        }
+
+        fn drain_completed_packet_count(&self) -> usize {
+            0
+        }
+    }
+
     fn wait_for_snapshot(
         worker: &mut PlayerWorker,
         predicate: impl Fn(&PlayerSnapshot) -> bool,
@@ -1535,6 +2060,7 @@ mod tests {
             PlayerWorkerRuntime {
                 session: PlayerSession::new(),
                 worker_scheduler: WorkerScheduler,
+                decoder_activity: WorkerDecoderActivityState::default(),
                 command_rx,
                 snapshot_publisher: LatestSnapshotPublisher::new(snapshot_tx, snapshot_rx),
                 event_tx,
@@ -1569,6 +2095,7 @@ mod tests {
             PlayerWorkerRuntime {
                 session: PlayerSession::new(),
                 worker_scheduler: WorkerScheduler,
+                decoder_activity: WorkerDecoderActivityState::default(),
                 command_rx,
                 snapshot_publisher: LatestSnapshotPublisher::new(snapshot_tx, snapshot_rx),
                 event_tx,
@@ -1584,6 +2111,38 @@ mod tests {
             shutdown_tx,
             render_bridge_client,
         )
+    }
+
+    /// Подключает active Accurate preroll, где decoder queue уже заполнена.
+    fn install_active_decoder_activity_preroll(
+        runtime: &mut PlayerWorkerRuntime,
+        activity_snapshot: VideoDecoderActivitySnapshot,
+    ) {
+        let decoder_thread =
+            WorkerActivityDecoderThread::new(activity_snapshot).with_packet_queue_depth(4);
+        runtime
+            .session
+            .install_active_accurate_preroll_decoder_for_tests(
+                decoder_thread,
+                Duration::from_millis(500),
+            );
+    }
+
+    /// Планирует wait, который обязан использовать decoder activity до fallback timeout-а.
+    fn planned_decoder_activity_wait(runtime: &mut PlayerWorkerRuntime) -> PlannedWorkerWait {
+        let wait_plan = runtime
+            .plan_next_worker_wakeup_with_decoder_activity()
+            .expect("active Accurate preroll should plan worker wakeup");
+        let WorkerWakeupDeadline::Playback { plan, .. } = wait_plan.deadline();
+
+        assert_eq!(plan.reason, crate::WorkerWakeupReason::DecodeReadiness);
+        assert!(plan.wait_for_decoder_activity);
+        assert!(
+            wait_plan.decoder_activity.is_some(),
+            "available activity snapshot must be attached only after planner intent"
+        );
+
+        wait_plan
     }
 
     /// Устанавливает seekable fake media с video track для worker/session seek tests.
@@ -1941,6 +2500,61 @@ mod tests {
     }
 
     #[test]
+    fn active_accurate_preroll_with_full_decoder_queue_parks_until_activity() {
+        let (activity_notifier, activity_subscription) =
+            video_core::VideoDecoderActivityNotifier::new();
+        let (mut runtime, _command_tx, _shutdown_tx, _render_client) =
+            runtime_for_tests_with_wakeup_handles(Instant::now());
+        runtime.config.decoder_readiness_poll_interval = Duration::from_millis(150);
+        install_active_decoder_activity_preroll(&mut runtime, activity_subscription.snapshot());
+        let wait_plan = planned_decoder_activity_wait(&mut runtime);
+        let previous_tick_at = runtime.last_tick_at;
+
+        let notifier_thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            let _ = activity_notifier.notify_activity();
+        });
+        let wait_started_at = Instant::now();
+        let shutdown_requested = runtime.wait_for_worker_wakeup_with_timeout(wait_plan);
+        let waited_for = wait_started_at.elapsed();
+
+        notifier_thread
+            .join()
+            .expect("activity notifier thread should finish");
+        assert!(!shutdown_requested);
+        assert!(runtime.last_tick_at > previous_tick_at);
+        assert!(
+            waited_for < Duration::from_millis(100),
+            "worker should wake from decoder activity before fallback timeout, waited {waited_for:?}"
+        );
+    }
+
+    #[test]
+    fn command_wakeup_wins_over_decoder_activity() {
+        let (activity_notifier, activity_subscription) =
+            video_core::VideoDecoderActivityNotifier::new();
+        let (mut runtime, command_tx) = runtime_for_tests_with_command_sender(Instant::now());
+        runtime.config.decoder_readiness_poll_interval = Duration::from_millis(100);
+        install_active_decoder_activity_preroll(&mut runtime, activity_subscription.snapshot());
+        let wait_plan = planned_decoder_activity_wait(&mut runtime);
+        let previous_tick_at = runtime.last_tick_at;
+
+        command_tx
+            .try_send(WorkerCommand::SetSystemCapabilities(
+                SystemCapabilities::empty(7),
+            ))
+            .expect("test command queue should accept command");
+        let _ = activity_notifier.notify_activity();
+        let shutdown_requested = runtime.wait_for_worker_wakeup_with_timeout(wait_plan);
+
+        assert!(!shutdown_requested);
+        assert_eq!(
+            runtime.last_tick_at, previous_tick_at,
+            "biased select must process command before simultaneous decoder activity"
+        );
+    }
+
+    #[test]
     fn render_feedback_does_not_postpone_playback_timeout() {
         let (mut runtime, _command_tx, _shutdown_tx, render_client) =
             runtime_for_tests_with_wakeup_handles(Instant::now());
@@ -1956,10 +2570,102 @@ mod tests {
         let previous_tick_at = runtime.last_tick_at;
 
         render_client.report_gpu_submit_present_latency(Duration::from_millis(1));
-        let shutdown_requested = runtime.wait_for_worker_wakeup_with_timeout(wakeup);
+        let wait_started_at = Instant::now();
+        let shutdown_requested = runtime.wait_for_worker_wakeup_with_timeout(PlannedWorkerWait {
+            wakeup,
+            decoder_activity: None,
+        });
+        let waited_for = wait_started_at.elapsed();
 
         assert!(!shutdown_requested);
         assert!(runtime.last_tick_at > previous_tick_at);
+        assert!(
+            waited_for < Duration::from_millis(50),
+            "render feedback must not slide the original playback deadline, waited {waited_for:?}"
+        );
+    }
+
+    #[test]
+    fn disconnected_and_fatal_decoder_activity_notifiers_do_not_tight_loop() {
+        let (activity_notifier, activity_subscription) =
+            video_core::VideoDecoderActivityNotifier::new();
+        let (mut disconnected_runtime, _command_tx, _shutdown_tx, _render_client) =
+            runtime_for_tests_with_wakeup_handles(Instant::now());
+        disconnected_runtime.config.decoder_readiness_poll_interval = Duration::from_millis(20);
+        install_active_decoder_activity_preroll(
+            &mut disconnected_runtime,
+            activity_subscription.snapshot(),
+        );
+        let disconnected_wait = planned_decoder_activity_wait(&mut disconnected_runtime);
+        let disconnected_previous_tick_at = disconnected_runtime.last_tick_at;
+        drop(activity_notifier);
+
+        let disconnected_wait_started_at = Instant::now();
+        let shutdown_requested =
+            disconnected_runtime.wait_for_worker_wakeup_with_timeout(disconnected_wait);
+        let disconnected_waited_for = disconnected_wait_started_at.elapsed();
+
+        assert!(!shutdown_requested);
+        assert!(disconnected_runtime.last_tick_at > disconnected_previous_tick_at);
+        assert!(
+            disconnected_waited_for >= Duration::from_millis(10),
+            "disconnected activity receiver must fall back to bounded poll, waited {disconnected_waited_for:?}"
+        );
+
+        let (mut fatal_runtime, _command_tx, _shutdown_tx, _render_client) =
+            runtime_for_tests_with_wakeup_handles(Instant::now());
+        fatal_runtime.config.decoder_readiness_poll_interval = Duration::from_millis(20);
+        install_active_decoder_activity_preroll(
+            &mut fatal_runtime,
+            VideoDecoderActivitySnapshot::unavailable(
+                VideoDecoderActivityUnavailableReason::FatalNotifier(
+                    video_core::DecodeThreadError::new("worker activity fatal"),
+                ),
+            ),
+        );
+        let fatal_wait = fatal_runtime
+            .plan_next_worker_wakeup_with_decoder_activity()
+            .expect("fatal notifier should still use bounded fallback wakeup");
+        let WorkerWakeupDeadline::Playback { plan, .. } = fatal_wait.deadline();
+        assert_eq!(plan.reason, crate::WorkerWakeupReason::DecodeReadiness);
+        assert!(!plan.wait_for_decoder_activity);
+        assert!(fatal_wait.decoder_activity.is_none());
+        let fatal_previous_tick_at = fatal_runtime.last_tick_at;
+
+        let fatal_wait_started_at = Instant::now();
+        let shutdown_requested = fatal_runtime.wait_for_worker_wakeup_with_timeout(fatal_wait);
+        let fatal_waited_for = fatal_wait_started_at.elapsed();
+
+        assert!(!shutdown_requested);
+        assert!(fatal_runtime.last_tick_at > fatal_previous_tick_at);
+        assert!(
+            fatal_waited_for >= Duration::from_millis(10),
+            "fatal activity notifier must fall back to bounded poll, waited {fatal_waited_for:?}"
+        );
+    }
+
+    #[test]
+    fn lost_decoder_activity_between_planning_and_select_wakes_without_full_fallback() {
+        let (activity_notifier, activity_subscription) =
+            video_core::VideoDecoderActivityNotifier::new();
+        let (mut runtime, _command_tx, _shutdown_tx, _render_client) =
+            runtime_for_tests_with_wakeup_handles(Instant::now());
+        runtime.config.decoder_readiness_poll_interval = Duration::from_millis(150);
+        install_active_decoder_activity_preroll(&mut runtime, activity_subscription.snapshot());
+        let wait_plan = planned_decoder_activity_wait(&mut runtime);
+        let previous_tick_at = runtime.last_tick_at;
+
+        let _ = activity_notifier.notify_activity();
+        let wait_started_at = Instant::now();
+        let shutdown_requested = runtime.wait_for_worker_wakeup_with_timeout(wait_plan);
+        let waited_for = wait_started_at.elapsed();
+
+        assert!(!shutdown_requested);
+        assert!(runtime.last_tick_at > previous_tick_at);
+        assert!(
+            waited_for < Duration::from_millis(30),
+            "pre-select activity_since check should close the lost-wakeup window, waited {waited_for:?}"
+        );
     }
 
     #[test]
