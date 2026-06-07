@@ -3,7 +3,7 @@ use video_backend_api::{
     PresentFrameResourceProviderHandle, PresentFrameResourceProviderLookup, StartedVideoBackend,
     VideoBackendFactory,
 };
-use video_core::VideoDecoderThreadHandle;
+use video_core::{VideoDecoderActivitySnapshot, VideoDecoderThreadHandle};
 
 use crate::{
     VideoDecodeThread, VideoDecodeThreadConfig, VideoFrameResourceDescriptorLookup,
@@ -312,6 +312,10 @@ impl VideoDecoderThreadHandle for VaapiVideoDecoderThreadHandle {
         let pressure = VideoDecodeThread::control_channel_pressure_stats(&self.decoder_thread);
 
         Some(pressure.into())
+    }
+
+    fn decoder_activity_snapshot(&self) -> VideoDecoderActivitySnapshot {
+        VideoDecodeThread::decoder_activity_snapshot(&self.decoder_thread)
     }
 
     fn packet_queue_depth(&self) -> usize {

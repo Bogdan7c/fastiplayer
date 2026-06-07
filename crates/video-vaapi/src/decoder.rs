@@ -15,9 +15,10 @@ use media_core::Packet;
 use tracing::{debug, info, trace, warn};
 use video_core::{
     DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle, VideoDecoder,
-    VideoDecoderDiagnosticEvent, VideoDecoderDropReason, VideoFrameDiagnostics,
-    VideoFrameTimingDiagnostics, VideoPrerollOutputFloor, VideoPrerollOutputFloorClear,
-    VideoPrerollOutputFloorResult, VideoResourcePoolDiagnostics, VideoStreamDecodeConfig,
+    VideoDecoderActivityNotifier, VideoDecoderDiagnosticEvent, VideoDecoderDropReason,
+    VideoFrameDiagnostics, VideoFrameTimingDiagnostics, VideoPrerollOutputFloor,
+    VideoPrerollOutputFloorClear, VideoPrerollOutputFloorResult, VideoResourcePoolDiagnostics,
+    VideoStreamDecodeConfig,
 };
 
 use crate::codec_adapter::{
@@ -702,6 +703,9 @@ pub struct VaapiVideoDecoder {
     /// Diagnostics events для player-core без зависимости от player-core.
     diagnostic_tx: Option<std::sync::mpsc::SyncSender<VideoDecoderDiagnosticEvent>>,
 
+    /// Нейтральный notifier: decoder сообщает, что player-side wait может проснуться.
+    activity_notifier: Option<VideoDecoderActivityNotifier>,
+
     /// Была ли уже залогирована проверенная P010 zero-copy boundary.
     p010_boundary_verified_logged: bool,
 
@@ -735,6 +739,20 @@ impl VaapiVideoDecoder {
         resource_pool: Arc<Mutex<FrameResourcePool>>,
         diagnostic_tx: Option<std::sync::mpsc::SyncSender<VideoDecoderDiagnosticEvent>>,
         runtime_config: VaapiDecoderRuntimeConfig,
+    ) -> Result<Self> {
+        Self::new_with_pool_and_activity_notifier(
+            resource_pool,
+            diagnostic_tx,
+            runtime_config,
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_pool_and_activity_notifier(
+        resource_pool: Arc<Mutex<FrameResourcePool>>,
+        diagnostic_tx: Option<std::sync::mpsc::SyncSender<VideoDecoderDiagnosticEvent>>,
+        runtime_config: VaapiDecoderRuntimeConfig,
+        activity_notifier: Option<VideoDecoderActivityNotifier>,
     ) -> Result<Self> {
         let runtime_config = runtime_config.normalized();
         info!("Opening VA-API display");
@@ -791,6 +809,7 @@ impl VaapiVideoDecoder {
             zero_copy_guards: HashMap::new(),
             zero_copy_success_logged: false,
             diagnostic_tx,
+            activity_notifier,
             p010_boundary_verified_logged: false,
             backend_name,
             display_orientation: VideoDisplayOrientation::Identity,
@@ -1193,6 +1212,9 @@ impl VaapiVideoDecoder {
     fn send_diagnostic_event(&self, event: VideoDecoderDiagnosticEvent) {
         if let Some(diagnostic_tx) = &self.diagnostic_tx {
             let _ = diagnostic_tx.try_send(event);
+        }
+        if let Some(activity_notifier) = &self.activity_notifier {
+            let _ = activity_notifier.notify_activity();
         }
     }
 

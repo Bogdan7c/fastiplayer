@@ -20,7 +20,9 @@ use crossbeam_channel::{
 use media_core::{Packet, TrackId, TrackKind, TrackTimestamp};
 use tracing::{info, trace};
 use video_core::{
-    DecodedFrame, VideoDecoder, VideoDecoderDiagnosticEvent, VideoFramePublishPressureDiagnostics,
+    DecodedFrame, VideoDecoder, VideoDecoderActivityNotifier, VideoDecoderActivitySnapshot,
+    VideoDecoderActivitySubscription, VideoDecoderDiagnosticEvent,
+    VideoFramePublishPressureDiagnostics,
 };
 
 use crate::decoder::{VaapiDecodePacketOutcome, VaapiDecoderRuntimeConfig};
@@ -1044,6 +1046,7 @@ pub struct VideoDecodeThread {
     packet_ack_rx: Receiver<DecodePacketAck>,
     error_rx: Receiver<DecodeThreadError>,
     diagnostic_rx: DecoderDiagnosticReceiver,
+    activity_subscription: VideoDecoderActivitySubscription,
     resource_pool: Arc<Mutex<crate::resource_pool::FrameResourcePool>>,
     thread_state: DecoderThreadState,
     stream_config: Arc<Mutex<Option<video_core::VideoStreamDecodeConfig>>>,
@@ -1077,6 +1080,8 @@ impl VideoDecodeThread {
         let (diagnostic_tx, diagnostic_rx) =
             std::sync::mpsc::sync_channel(DECODER_DIAGNOSTIC_CHANNEL_CAPACITY);
         let thread_diagnostic_tx = diagnostic_tx.clone();
+        let (activity_notifier, activity_subscription) = VideoDecoderActivityNotifier::new();
+        let decoder_activity_notifier = activity_notifier.clone();
         let (init_tx, init_rx) = bounded::<anyhow::Result<()>>(1);
         let thread_state = DecoderThreadState::new();
         let decoder_runtime_config = config.vaapi_decoder_config();
@@ -1090,10 +1095,11 @@ impl VideoDecodeThread {
             .spawn(move || {
                 info!("Decoder thread started");
 
-                let decoder = match crate::VaapiVideoDecoder::new_with_pool(
+                let decoder = match crate::VaapiVideoDecoder::new_with_pool_and_activity_notifier(
                     resource_pool_for_thread,
                     Some(diagnostic_tx),
                     decoder_runtime_config,
+                    Some(decoder_activity_notifier),
                 ) {
                     Ok(decoder) => {
                         if init_tx.send(Ok(())).is_err() {
@@ -1123,6 +1129,7 @@ impl VideoDecodeThread {
                         packet_ack_tx,
                         error_tx,
                         diagnostic_tx: thread_diagnostic_tx,
+                        activity_notifier,
                         end_of_stream_drain_state: end_of_stream_drain_state_for_thread,
                     },
                 );
@@ -1149,6 +1156,7 @@ impl VideoDecodeThread {
             packet_ack_rx,
             error_rx,
             diagnostic_rx,
+            activity_subscription,
             resource_pool,
             thread_state,
             stream_config: Arc::new(Mutex::new(None)),
@@ -1518,6 +1526,11 @@ impl VideoDecodeThread {
         self.diagnostic_rx.try_recv().ok()
     }
 
+    /// Возвращает нейтральный snapshot decoder activity для player-side wait boundary.
+    pub fn decoder_activity_snapshot(&self) -> VideoDecoderActivitySnapshot {
+        self.activity_subscription.snapshot()
+    }
+
     /// Забирает fatal error из decoder thread, если backend остановился fail-closed.
     pub fn try_recv_error(&self) -> Option<DecodeThreadError> {
         self.absorb_decoder_thread_errors();
@@ -1764,8 +1777,32 @@ struct DecoderThreadChannels {
     /// Decoder diagnostics events без player-core dependency.
     diagnostic_tx: DecoderDiagnosticSender,
 
+    /// Нейтральный non-blocking activity notifier для event-driven player wakeup.
+    activity_notifier: VideoDecoderActivityNotifier,
+
     /// Shared EOF/DPB drain state, читаемый handle-ом с player thread-а.
     end_of_stream_drain_state: Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
+}
+
+/// Borrowed context для control-message handlers внутри одного decoder-loop шага.
+struct DecoderControlContext<'a> {
+    /// Packet channel нужен flush path-у для сброса уже queued packets.
+    packet_rx: &'a Receiver<QueuedDecodePacket>,
+
+    /// Fatal errors публикуются отдельно от diagnostics и frame channel-а.
+    error_tx: &'a Sender<DecodeThreadError>,
+
+    /// Pending frame release остаётся lifecycle-решением decoder thread-а.
+    pending_publish: &'a mut Option<PendingFramePublish>,
+
+    /// Packet, который ждёт output capacity, должен сбрасываться при flush/reconfigure.
+    output_backpressured_packet: &'a mut Option<QueuedDecodePacket>,
+
+    /// Shared EOF/DPB drain state, читаемый playback-facing handle-ом.
+    end_of_stream_drain_state: &'a Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
+
+    /// Neutral activity notifier для wakeup side, не раскрывающий VAAPI channels.
+    activity_notifier: &'a VideoDecoderActivityNotifier,
 }
 
 /// Ждёт stream-config ACK и сохраняет distinct result для caller-а.
@@ -1915,6 +1952,7 @@ fn decoder_thread_loop(mut decoder: crate::VaapiVideoDecoder, channels: DecoderT
         packet_ack_tx,
         error_tx,
         diagnostic_tx,
+        activity_notifier,
         end_of_stream_drain_state,
     } = channels;
     let mut pending_publish: Option<PendingFramePublish> = None;
@@ -1923,15 +1961,18 @@ fn decoder_thread_loop(mut decoder: crate::VaapiVideoDecoder, channels: DecoderT
     let mut latest_color_metadata: Option<VideoColorMetadata> = None;
 
     loop {
-        if !drain_decoder_control_messages(
-            &mut decoder,
-            &packet_rx,
-            &control_rx,
-            &error_tx,
-            &mut pending_publish,
-            &mut output_backpressured_packet,
-            &end_of_stream_drain_state,
-        ) {
+        let controls_drained = {
+            let mut control_context = DecoderControlContext {
+                packet_rx: &packet_rx,
+                error_tx: &error_tx,
+                pending_publish: &mut pending_publish,
+                output_backpressured_packet: &mut output_backpressured_packet,
+                end_of_stream_drain_state: &end_of_stream_drain_state,
+                activity_notifier: &activity_notifier,
+            };
+            drain_decoder_control_messages(&mut decoder, &control_rx, &mut control_context)
+        };
+        if !controls_drained {
             break;
         }
 
@@ -1940,6 +1981,7 @@ fn decoder_thread_loop(mut decoder: crate::VaapiVideoDecoder, channels: DecoderT
             &mut pending_publish,
             &mut publish_pressure,
             &diagnostic_tx,
+            &activity_notifier,
         ) {
             break;
         }
@@ -1947,22 +1989,27 @@ fn decoder_thread_loop(mut decoder: crate::VaapiVideoDecoder, channels: DecoderT
             &decoder,
             pending_publish.as_ref(),
             &end_of_stream_drain_state,
+            &activity_notifier,
         ) {
-            send_decoder_thread_error(&error_tx, error.message().to_string());
+            send_decoder_thread_error(&error_tx, error.message().to_string(), &activity_notifier);
             break;
         }
 
         if pending_publish.is_some() {
             match control_rx.recv_timeout(Duration::from_millis(DECODER_FRAME_PUBLISH_RETRY_MS)) {
                 Ok(control_message) => {
+                    let mut control_context = DecoderControlContext {
+                        packet_rx: &packet_rx,
+                        error_tx: &error_tx,
+                        pending_publish: &mut pending_publish,
+                        output_backpressured_packet: &mut output_backpressured_packet,
+                        end_of_stream_drain_state: &end_of_stream_drain_state,
+                        activity_notifier: &activity_notifier,
+                    };
                     if !handle_decoder_control_message(
                         &mut decoder,
                         control_message,
-                        &packet_rx,
-                        &error_tx,
-                        &mut pending_publish,
-                        &mut output_backpressured_packet,
-                        &end_of_stream_drain_state,
+                        &mut control_context,
                     ) {
                         break;
                     }
@@ -1978,6 +2025,7 @@ fn decoder_thread_loop(mut decoder: crate::VaapiVideoDecoder, channels: DecoderT
                 frame.color = color_metadata.clone();
             }
             pending_publish = Some(PendingFramePublish::new(frame));
+            notify_decoder_activity(&activity_notifier);
             continue;
         }
 
@@ -1992,6 +2040,7 @@ fn decoder_thread_loop(mut decoder: crate::VaapiVideoDecoder, channels: DecoderT
                     pending_publish: &mut pending_publish,
                     publish_pressure: &mut publish_pressure,
                     diagnostic_tx: &diagnostic_tx,
+                    activity_notifier: &activity_notifier,
                     latest_color_metadata: &mut latest_color_metadata,
                 },
             ) {
@@ -2003,14 +2052,18 @@ fn decoder_thread_loop(mut decoder: crate::VaapiVideoDecoder, channels: DecoderT
                         .recv_timeout(Duration::from_millis(DECODER_FRAME_PUBLISH_RETRY_MS))
                     {
                         Ok(control_message) => {
+                            let mut control_context = DecoderControlContext {
+                                packet_rx: &packet_rx,
+                                error_tx: &error_tx,
+                                pending_publish: &mut pending_publish,
+                                output_backpressured_packet: &mut output_backpressured_packet,
+                                end_of_stream_drain_state: &end_of_stream_drain_state,
+                                activity_notifier: &activity_notifier,
+                            };
                             if !handle_decoder_control_message(
                                 &mut decoder,
                                 control_message,
-                                &packet_rx,
-                                &error_tx,
-                                &mut pending_publish,
-                                &mut output_backpressured_packet,
-                                &end_of_stream_drain_state,
+                                &mut control_context,
                             ) {
                                 break;
                             }
@@ -2027,14 +2080,18 @@ fn decoder_thread_loop(mut decoder: crate::VaapiVideoDecoder, channels: DecoderT
             recv(control_rx) -> control_result => {
                 match control_result {
                     Ok(control_message) => {
+                        let mut control_context = DecoderControlContext {
+                            packet_rx: &packet_rx,
+                            error_tx: &error_tx,
+                            pending_publish: &mut pending_publish,
+                            output_backpressured_packet: &mut output_backpressured_packet,
+                            end_of_stream_drain_state: &end_of_stream_drain_state,
+                            activity_notifier: &activity_notifier,
+                        };
                         if !handle_decoder_control_message(
                             &mut decoder,
                             control_message,
-                            &packet_rx,
-                            &error_tx,
-                            &mut pending_publish,
-                            &mut output_backpressured_packet,
-                            &end_of_stream_drain_state,
+                            &mut control_context,
                         ) {
                             break;
                         }
@@ -2055,6 +2112,7 @@ fn decoder_thread_loop(mut decoder: crate::VaapiVideoDecoder, channels: DecoderT
                                 pending_publish: &mut pending_publish,
                                 publish_pressure: &mut publish_pressure,
                                 diagnostic_tx: &diagnostic_tx,
+                                activity_notifier: &activity_notifier,
                                 latest_color_metadata: &mut latest_color_metadata,
                             },
                         ) {
@@ -2077,25 +2135,13 @@ fn decoder_thread_loop(mut decoder: crate::VaapiVideoDecoder, channels: DecoderT
 /// Обрабатывает все pending control messages перед packet receive.
 fn drain_decoder_control_messages(
     decoder: &mut crate::VaapiVideoDecoder,
-    packet_rx: &Receiver<QueuedDecodePacket>,
     control_rx: &Receiver<ThreadControlMsg>,
-    error_tx: &Sender<DecodeThreadError>,
-    pending_publish: &mut Option<PendingFramePublish>,
-    output_backpressured_packet: &mut Option<QueuedDecodePacket>,
-    end_of_stream_drain_state: &Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
+    control_context: &mut DecoderControlContext<'_>,
 ) -> bool {
     loop {
         match control_rx.try_recv() {
             Ok(control_message) => {
-                if !handle_decoder_control_message(
-                    decoder,
-                    control_message,
-                    packet_rx,
-                    error_tx,
-                    pending_publish,
-                    output_backpressured_packet,
-                    end_of_stream_drain_state,
-                ) {
+                if !handle_decoder_control_message(decoder, control_message, control_context) {
                     return false;
                 }
             }
@@ -2121,13 +2167,18 @@ fn decoder_eof_drain_state(
 fn set_decoder_eof_drain_state(
     end_of_stream_drain_state: &Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
     next_state: video_core::VideoDecoderEndOfStreamDrainState,
+    activity_notifier: &VideoDecoderActivityNotifier,
 ) -> Result<(), DecodeThreadError> {
     let mut state = end_of_stream_drain_state.lock().map_err(|error| {
         DecodeThreadError::new(format!(
             "VA-API EOF drain state poisoned during update: {error}"
         ))
     })?;
+    let state_changed = *state != next_state;
     *state = next_state;
+    if state_changed {
+        notify_decoder_activity(activity_notifier);
+    }
     Ok(())
 }
 
@@ -2136,6 +2187,7 @@ fn complete_decoder_eof_drain_if_ready(
     decoder: &crate::VaapiVideoDecoder,
     pending_publish: Option<&PendingFramePublish>,
     end_of_stream_drain_state: &Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
+    activity_notifier: &VideoDecoderActivityNotifier,
 ) -> Result<(), DecodeThreadError> {
     if pending_publish.is_some() || decoder.has_ready_frames() {
         return Ok(());
@@ -2146,6 +2198,7 @@ fn complete_decoder_eof_drain_if_ready(
         set_decoder_eof_drain_state(
             end_of_stream_drain_state,
             video_core::VideoDecoderEndOfStreamDrainState::Drained { generation },
+            activity_notifier,
         )?;
     }
 
@@ -2156,12 +2209,15 @@ fn complete_decoder_eof_drain_if_ready(
 fn handle_decoder_control_message(
     decoder: &mut crate::VaapiVideoDecoder,
     control_message: ThreadControlMsg,
-    packet_rx: &Receiver<QueuedDecodePacket>,
-    error_tx: &Sender<DecodeThreadError>,
-    pending_publish: &mut Option<PendingFramePublish>,
-    output_backpressured_packet: &mut Option<QueuedDecodePacket>,
-    end_of_stream_drain_state: &Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
+    control_context: &mut DecoderControlContext<'_>,
 ) -> bool {
+    let packet_rx = control_context.packet_rx;
+    let error_tx = control_context.error_tx;
+    let pending_publish = &mut *control_context.pending_publish;
+    let output_backpressured_packet = &mut *control_context.output_backpressured_packet;
+    let end_of_stream_drain_state = control_context.end_of_stream_drain_state;
+    let activity_notifier = control_context.activity_notifier;
+
     match control_message {
         ThreadControlMsg::ConfigureStream(config, done_tx) => {
             release_pending_publish_frame(decoder, pending_publish.take());
@@ -2176,7 +2232,11 @@ fn handle_decoder_control_message(
                             let fatal_error = DecodeThreadError::new(format!(
                                 "Decoder thread failed to configure VA-API stream: {error:#}"
                             ));
-                            send_decoder_thread_error(error_tx, fatal_error.message().to_string());
+                            send_decoder_thread_error(
+                                error_tx,
+                                fatal_error.message().to_string(),
+                                activity_notifier,
+                            );
                             video_core::VideoStreamConfigResult::Fatal(fatal_error.into())
                         }
                     }
@@ -2200,7 +2260,7 @@ fn handle_decoder_control_message(
                     handle_id = handle.0,
                     "Decoder thread: fatal zero-copy release error"
                 );
-                send_decoder_thread_error(error_tx, message);
+                send_decoder_thread_error(error_tx, message, activity_notifier);
                 return false;
             }
             true
@@ -2243,8 +2303,9 @@ fn handle_decoder_control_message(
             if let Err(error) = set_decoder_eof_drain_state(
                 end_of_stream_drain_state,
                 video_core::VideoDecoderEndOfStreamDrainState::Draining { generation },
+                activity_notifier,
             ) {
-                send_decoder_thread_error(error_tx, error.message().to_string());
+                send_decoder_thread_error(error_tx, error.message().to_string(), activity_notifier);
                 let _ = done_tx.send(video_core::VideoDecoderEndOfStreamDrainResult::Fatal(
                     error.into(),
                 ));
@@ -2262,8 +2323,13 @@ fn handle_decoder_control_message(
                         generation: Some(generation),
                         error: fatal_error.clone().into(),
                     },
+                    activity_notifier,
                 );
-                send_decoder_thread_error(error_tx, fatal_error.message().to_string());
+                send_decoder_thread_error(
+                    error_tx,
+                    fatal_error.message().to_string(),
+                    activity_notifier,
+                );
                 let _ = done_tx.send(video_core::VideoDecoderEndOfStreamDrainResult::Fatal(
                     fatal_error.into(),
                 ));
@@ -2274,8 +2340,9 @@ fn handle_decoder_control_message(
                 decoder,
                 pending_publish.as_ref(),
                 end_of_stream_drain_state,
+                activity_notifier,
             ) {
-                send_decoder_thread_error(error_tx, error.message().to_string());
+                send_decoder_thread_error(error_tx, error.message().to_string(), activity_notifier);
                 let _ = done_tx.send(video_core::VideoDecoderEndOfStreamDrainResult::Fatal(
                     error.into(),
                 ));
@@ -2318,7 +2385,7 @@ fn handle_decoder_control_message(
                     error = %message,
                     "Decoder thread: fatal flush error, exiting"
                 );
-                send_decoder_thread_error(error_tx, message);
+                send_decoder_thread_error(error_tx, message, activity_notifier);
             }
 
             if done_tx.send(flush_result).is_err() {
@@ -2357,6 +2424,7 @@ struct DecodeQueuedPacketContext<'a> {
     pending_publish: &'a mut Option<PendingFramePublish>,
     publish_pressure: &'a mut FramePublishPressureCounters,
     diagnostic_tx: &'a DecoderDiagnosticSender,
+    activity_notifier: &'a VideoDecoderActivityNotifier,
     latest_color_metadata: &'a mut Option<VideoColorMetadata>,
 }
 
@@ -2420,17 +2488,20 @@ fn handle_decode_packet_outcome(
         Ok(VaapiDecodePacketOutcome::Accepted(Some(frame))) => {
             let mut frame = *frame;
             let _ = decode_context.packet_ack_tx.try_send(());
+            notify_decoder_activity(decode_context.activity_notifier);
             *decode_context.latest_color_metadata = decode_packet.resolved_color.clone();
             if let Some(color_metadata) = &decode_packet.resolved_color {
                 frame.color = color_metadata.clone();
             }
             frame.diagnostics.timings.decoder_packet_receive_latency = Some(packet_receive_latency);
             *decode_context.pending_publish = Some(PendingFramePublish::new(frame));
+            notify_decoder_activity(decode_context.activity_notifier);
             if publish_pending_frame(
                 decode_context.frame_tx,
                 decode_context.pending_publish,
                 decode_context.publish_pressure,
                 decode_context.diagnostic_tx,
+                decode_context.activity_notifier,
             ) {
                 DecodeQueuedPacketResult::Continue
             } else {
@@ -2439,6 +2510,7 @@ fn handle_decode_packet_outcome(
         }
         Ok(VaapiDecodePacketOutcome::Accepted(None)) => {
             let _ = decode_context.packet_ack_tx.try_send(());
+            notify_decoder_activity(decode_context.activity_notifier);
             *decode_context.latest_color_metadata = decode_packet.resolved_color.clone();
             DecodeQueuedPacketResult::Continue
         }
@@ -2449,7 +2521,11 @@ fn handle_decode_packet_outcome(
                     error = %message,
                     "Decoder thread: fatal decode error, exiting"
                 );
-                send_decoder_thread_error(decode_context.error_tx, message);
+                send_decoder_thread_error(
+                    decode_context.error_tx,
+                    message,
+                    decode_context.activity_notifier,
+                );
                 return DecodeQueuedPacketResult::Stop;
             }
             tracing::warn!(error = %error, "Decoder thread: decode error");
@@ -2464,6 +2540,7 @@ fn publish_pending_frame(
     pending_publish: &mut Option<PendingFramePublish>,
     publish_pressure: &mut FramePublishPressureCounters,
     diagnostic_tx: &DecoderDiagnosticSender,
+    activity_notifier: &VideoDecoderActivityNotifier,
 ) -> bool {
     let Some(mut pending_frame) = pending_publish.take() else {
         return true;
@@ -2484,8 +2561,13 @@ fn publish_pending_frame(
             }
             publish_pressure.record_published_latency(publish_latency);
             if is_retry {
-                send_frame_publish_pressure_event(diagnostic_tx, publish_pressure.snapshot());
+                send_frame_publish_pressure_event(
+                    diagnostic_tx,
+                    publish_pressure.snapshot(),
+                    activity_notifier,
+                );
             }
+            notify_decoder_activity(activity_notifier);
             true
         }
         Err(TrySendError::Full(frame)) => {
@@ -2500,13 +2582,21 @@ fn publish_pending_frame(
             };
             blocked_frame.mark_channel_full();
             *pending_publish = Some(blocked_frame);
-            send_frame_publish_pressure_event(diagnostic_tx, publish_pressure.snapshot());
+            send_frame_publish_pressure_event(
+                diagnostic_tx,
+                publish_pressure.snapshot(),
+                activity_notifier,
+            );
             true
         }
         Err(TrySendError::Disconnected(frame)) => {
             if is_retry {
                 publish_pressure.record_pending_retry();
-                send_frame_publish_pressure_event(diagnostic_tx, publish_pressure.snapshot());
+                send_frame_publish_pressure_event(
+                    diagnostic_tx,
+                    publish_pressure.snapshot(),
+                    activity_notifier,
+                );
             }
             tracing::warn!(
                 handle_id = frame.resource_handle.0,
@@ -2526,9 +2616,11 @@ fn publish_pending_frame(
 fn send_frame_publish_pressure_event(
     diagnostic_tx: &DecoderDiagnosticSender,
     pressure: VideoFramePublishPressureDiagnostics,
+    activity_notifier: &VideoDecoderActivityNotifier,
 ) {
     let _ = diagnostic_tx
         .try_send(VideoDecoderDiagnosticEvent::DecodedFramePublishPressure { pressure });
+    notify_decoder_activity(activity_notifier);
 }
 
 /// Освобождает frame, который decoder уже импортировал, но не успел отдать worker-у.
@@ -2550,10 +2642,20 @@ fn release_pending_publish_frame(
 }
 
 /// Отправляет fatal decoder-thread error без блокировки.
-fn send_decoder_thread_error(error_tx: &Sender<DecodeThreadError>, message: String) {
+fn send_decoder_thread_error(
+    error_tx: &Sender<DecodeThreadError>,
+    message: String,
+    activity_notifier: &VideoDecoderActivityNotifier,
+) {
     if error_tx.try_send(DecodeThreadError::new(message)).is_err() {
         trace!("Player thread dropped decoder error receiver");
     }
+    notify_decoder_activity(activity_notifier);
+}
+
+/// Продвигает neutral activity epoch, не делая disconnect receiver fatal для decoder thread-а.
+fn notify_decoder_activity(activity_notifier: &VideoDecoderActivityNotifier) {
+    let _ = activity_notifier.notify_activity();
 }
 
 #[cfg(test)]
@@ -2579,6 +2681,28 @@ mod tests {
             color: VideoColorMetadata::sdr_bt709_limited(),
             resource_handle: FrameResourceHandle(handle_id),
             diagnostics: video_core::VideoFrameDiagnostics::default(),
+        }
+    }
+
+    /// Проверяет, что subscription увидела новый activity epoch после observed marker-а.
+    fn assert_activity_received_after(
+        subscription: &VideoDecoderActivitySubscription,
+        observed_epoch: video_core::VideoDecoderActivityEpoch,
+    ) -> video_core::VideoDecoderActivityEpoch {
+        match subscription.activity_since(observed_epoch) {
+            video_core::VideoDecoderActivityWaitOutcome::ActivityReceived { epoch } => epoch,
+            other => panic!("activity epoch должен продвинуться, got {other:?}"),
+        }
+    }
+
+    /// Проверяет, что повторная запись того же state не создаёт ложную activity.
+    fn assert_no_activity_after(
+        subscription: &VideoDecoderActivitySubscription,
+        observed_epoch: video_core::VideoDecoderActivityEpoch,
+    ) {
+        match subscription.activity_since(observed_epoch) {
+            video_core::VideoDecoderActivityWaitOutcome::NoNewActivityAfterEpoch { .. } => {}
+            other => panic!("activity epoch не должен был продвинуться, got {other:?}"),
         }
     }
 
@@ -2728,6 +2852,8 @@ mod tests {
     fn frame_publish_keeps_pending_frame_when_channel_is_full() {
         let (frame_tx, frame_rx) = bounded(1);
         let (diagnostic_tx, diagnostic_rx) = std::sync::mpsc::sync_channel(4);
+        let (activity_notifier, activity_subscription) = VideoDecoderActivityNotifier::new();
+        let observed_epoch = activity_subscription.current_epoch();
         let mut publish_pressure = FramePublishPressureCounters::default();
         frame_tx
             .try_send(decoded_frame_for_tests(1))
@@ -2739,7 +2865,10 @@ mod tests {
             &mut pending_publish,
             &mut publish_pressure,
             &diagnostic_tx,
+            &activity_notifier,
         ));
+        let retry_observed_epoch =
+            assert_activity_received_after(&activity_subscription, observed_epoch);
         assert!(pending_publish.is_some());
         let first_pressure = match diagnostic_rx
             .try_recv()
@@ -2765,7 +2894,9 @@ mod tests {
             &mut pending_publish,
             &mut publish_pressure,
             &diagnostic_tx,
+            &activity_notifier,
         ));
+        assert_activity_received_after(&activity_subscription, retry_observed_epoch);
         assert!(pending_publish.is_none());
         let retry_pressure = match diagnostic_rx
             .try_recv()
@@ -2793,6 +2924,36 @@ mod tests {
         assert_eq!(
             retry_pressure.max_decoded_frame_publish_latency,
             retry_pressure.total_decoded_frame_publish_latency
+        );
+    }
+
+    /// Проверяет, что diagnostics/error paths будят neutral decoder activity wait.
+    #[test]
+    fn activity_epoch_advances_on_diagnostic_and_error_events() {
+        let (activity_notifier, activity_subscription) = VideoDecoderActivityNotifier::new();
+        let (diagnostic_tx, diagnostic_rx) = std::sync::mpsc::sync_channel(1);
+        let diagnostic_observed_epoch = activity_subscription.current_epoch();
+
+        send_frame_publish_pressure_event(
+            &diagnostic_tx,
+            VideoFramePublishPressureDiagnostics::default(),
+            &activity_notifier,
+        );
+        let error_observed_epoch =
+            assert_activity_received_after(&activity_subscription, diagnostic_observed_epoch);
+        assert!(diagnostic_rx.try_recv().is_ok());
+
+        let (error_tx, error_rx) = bounded(1);
+        send_decoder_thread_error(
+            &error_tx,
+            "fatal decode path for activity test".to_owned(),
+            &activity_notifier,
+        );
+
+        assert_activity_received_after(&activity_subscription, error_observed_epoch);
+        assert_eq!(
+            error_rx.try_recv().unwrap().message(),
+            "fatal decode path for activity test"
         );
     }
 
@@ -2861,6 +3022,7 @@ mod tests {
         let (_error_tx, error_rx) = bounded(1);
         let (_diagnostic_tx, diagnostic_rx) =
             std::sync::mpsc::sync_channel(DECODER_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let (_activity_notifier, activity_subscription) = VideoDecoderActivityNotifier::new();
 
         VideoDecodeThread {
             packet_tx,
@@ -2870,6 +3032,7 @@ mod tests {
             packet_ack_rx,
             error_rx,
             diagnostic_rx,
+            activity_subscription,
             resource_pool: Arc::new(Mutex::new(crate::resource_pool::FrameResourcePool::new())),
             thread_state,
             stream_config: Arc::new(Mutex::new(None)),
@@ -2883,6 +3046,74 @@ mod tests {
             .normalized(),
             backend_name: "VA-API test",
         }
+    }
+
+    /// Проверяет, что concrete VAAPI thread отдаёт neutral activity snapshot.
+    #[test]
+    fn decoder_thread_activity_snapshot_is_available() {
+        let (control_tx, _control_rx) = bounded(1);
+        let decoder_thread = decoder_thread_for_control_tests(
+            control_tx,
+            Arc::new(DecoderControlChannelPressureCounters::default()),
+            DecoderThreadState::new(),
+        );
+
+        match decoder_thread.decoder_activity_snapshot() {
+            VideoDecoderActivitySnapshot::Available { captured_epoch, .. } => {
+                assert_eq!(
+                    captured_epoch,
+                    video_core::VideoDecoderActivityEpoch::INITIAL
+                );
+            }
+            VideoDecoderActivitySnapshot::Unavailable { reason } => {
+                panic!("VAAPI activity snapshot должен быть Available, got {reason:?}");
+            }
+        }
+    }
+
+    /// Проверяет, что EOF drain state changes продвигают neutral activity epoch.
+    #[test]
+    fn activity_epoch_advances_on_eof_drain_state_changes() {
+        let (activity_notifier, activity_subscription) = VideoDecoderActivityNotifier::new();
+        let end_of_stream_drain_state = Arc::new(Mutex::new(
+            video_core::VideoDecoderEndOfStreamDrainState::Idle,
+        ));
+        let draining_observed_epoch = activity_subscription.current_epoch();
+
+        set_decoder_eof_drain_state(
+            &end_of_stream_drain_state,
+            video_core::VideoDecoderEndOfStreamDrainState::Draining { generation: 41 },
+            &activity_notifier,
+        )
+        .expect("test EOF state mutex should be writable");
+        let drained_observed_epoch =
+            assert_activity_received_after(&activity_subscription, draining_observed_epoch);
+
+        set_decoder_eof_drain_state(
+            &end_of_stream_drain_state,
+            video_core::VideoDecoderEndOfStreamDrainState::Drained { generation: 41 },
+            &activity_notifier,
+        )
+        .expect("test EOF state mutex should be writable");
+        let fatal_observed_epoch =
+            assert_activity_received_after(&activity_subscription, drained_observed_epoch);
+
+        let fatal_state = video_core::VideoDecoderEndOfStreamDrainState::Fatal {
+            generation: Some(41),
+            error: DecodeThreadError::new("EOF drain fatal for activity test").into(),
+        };
+        set_decoder_eof_drain_state(
+            &end_of_stream_drain_state,
+            fatal_state.clone(),
+            &activity_notifier,
+        )
+        .expect("test EOF state mutex should be writable");
+        let unchanged_observed_epoch =
+            assert_activity_received_after(&activity_subscription, fatal_observed_epoch);
+
+        set_decoder_eof_drain_state(&end_of_stream_drain_state, fatal_state, &activity_notifier)
+            .expect("test EOF state mutex should be writable");
+        assert_no_activity_after(&activity_subscription, unchanged_observed_epoch);
     }
 
     /// Проверяет, что set floor на full control channel возвращает typed Backpressure.
@@ -3035,6 +3266,8 @@ mod tests {
         let (error_tx, error_rx) = bounded(1);
         let (diagnostic_tx, diagnostic_rx) =
             std::sync::mpsc::sync_channel(DECODER_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let (activity_notifier, activity_subscription) = VideoDecoderActivityNotifier::new();
+        let observed_epoch = activity_subscription.current_epoch();
         let mut pending_publish = None;
         let mut publish_pressure = FramePublishPressureCounters::default();
         let mut latest_color_metadata = None;
@@ -3063,12 +3296,14 @@ mod tests {
                 pending_publish: &mut pending_publish,
                 publish_pressure: &mut publish_pressure,
                 diagnostic_tx: &diagnostic_tx,
+                activity_notifier: &activity_notifier,
                 latest_color_metadata: &mut latest_color_metadata,
             },
         );
 
         assert!(matches!(result, DecodeQueuedPacketResult::Continue));
         assert!(packet_ack_rx.try_recv().is_ok());
+        assert_activity_received_after(&activity_subscription, observed_epoch);
         assert!(matches!(frame_rx.try_recv(), Err(TryRecvError::Empty)));
         assert!(matches!(error_rx.try_recv(), Err(TryRecvError::Empty)));
         assert!(diagnostic_rx.try_recv().is_err());
@@ -3077,6 +3312,56 @@ mod tests {
             latest_color_metadata,
             Some(VideoColorMetadata::sdr_bt709_limited())
         );
+    }
+
+    /// Проверяет, что dropped activity receiver не превращается в fatal decode error.
+    #[test]
+    fn disconnected_activity_receiver_does_not_create_fatal_decode_error() {
+        let (frame_tx, _frame_rx) = bounded(1);
+        let (packet_ack_tx, packet_ack_rx) = bounded(1);
+        let (error_tx, error_rx) = bounded(1);
+        let (diagnostic_tx, diagnostic_rx) =
+            std::sync::mpsc::sync_channel(DECODER_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let (activity_notifier, activity_subscription) = VideoDecoderActivityNotifier::new();
+        drop(activity_subscription);
+        let mut pending_publish = None;
+        let mut publish_pressure = FramePublishPressureCounters::default();
+        let mut latest_color_metadata = None;
+        let queued_packet = QueuedDecodePacket {
+            packet: DecodePacket {
+                track_id: media_core::TrackId::new(1),
+                pts: Duration::from_millis(901),
+                dts: None,
+                track_dts: None,
+                generation: 18,
+                encoded_bytes: Bytes::from_static(b"disconnected-activity"),
+                keyframe: false,
+                resolved_color: None,
+            },
+            enqueued_at: Instant::now(),
+        };
+
+        let result = handle_decode_packet_outcome(
+            Ok(VaapiDecodePacketOutcome::Accepted(None)),
+            queued_packet,
+            Duration::from_millis(1),
+            DecodeQueuedPacketContext {
+                frame_tx: &frame_tx,
+                packet_ack_tx: &packet_ack_tx,
+                error_tx: &error_tx,
+                pending_publish: &mut pending_publish,
+                publish_pressure: &mut publish_pressure,
+                diagnostic_tx: &diagnostic_tx,
+                activity_notifier: &activity_notifier,
+                latest_color_metadata: &mut latest_color_metadata,
+            },
+        );
+
+        assert!(matches!(result, DecodeQueuedPacketResult::Continue));
+        assert!(packet_ack_rx.try_recv().is_ok());
+        assert!(matches!(error_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(diagnostic_rx.try_recv().is_err());
+        assert!(pending_publish.is_none());
     }
 
     /// Проверяет, что timeout не блокируется бесконечно и становится fatal state.
