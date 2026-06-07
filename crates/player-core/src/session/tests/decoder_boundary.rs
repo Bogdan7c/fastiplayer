@@ -48,6 +48,15 @@ fn playback_pipeline_decoder_boundary_absent_thread_is_noop() {
     assert!(pipeline.try_recv_video_decoder_error().is_none());
     assert_eq!(pipeline.drain_completed_video_decode_packet_count(), 0);
     assert!(pipeline.video_decoder_control_channel_pressure().is_none());
+    assert!(matches!(
+        pipeline.video_decoder_activity_status(),
+        crate::pipeline::VideoDecoderActivityStatus::AbsentDecoder
+    ));
+    assert!(
+        !pipeline
+            .video_decoder_activity_status()
+            .can_wait_for_activity()
+    );
     assert_eq!(pipeline.video_decode_in_flight_packets(), 0);
     assert!(!pipeline.can_send_video_decode_packets());
     assert!(!pipeline.can_receive_decoded_video_frames());
@@ -389,6 +398,70 @@ fn playback_pipeline_decoder_boundary_forwards_control_pressure_snapshot() {
     assert_eq!(
         pipeline.video_decoder_control_channel_pressure(),
         Some(pressure)
+    );
+}
+
+#[test]
+fn playback_pipeline_decoder_activity_boundary_preserves_typed_statuses() {
+    let mut unsupported_pipeline = PlaybackPipeline::default();
+    unsupported_pipeline.set_video_decoder_thread(SharedFakeVideoDecoderThread::new());
+
+    assert!(matches!(
+        unsupported_pipeline.video_decoder_activity_status(),
+        crate::pipeline::VideoDecoderActivityStatus::Unsupported
+    ));
+    assert!(
+        !unsupported_pipeline
+            .video_decoder_activity_status()
+            .can_wait_for_activity()
+    );
+
+    let (_activity_notifier, activity_subscription) =
+        video_core::VideoDecoderActivityNotifier::new();
+    let available_decoder = SharedFakeVideoDecoderThread::new();
+    available_decoder.set_activity_snapshot(activity_subscription.snapshot());
+    let mut available_pipeline = PlaybackPipeline::default();
+    available_pipeline.set_video_decoder_thread(available_decoder);
+
+    match available_pipeline.video_decoder_activity_status() {
+        crate::pipeline::VideoDecoderActivityStatus::Available { snapshot } => {
+            assert!(snapshot.captured_epoch().is_some());
+        }
+        unexpected_status => {
+            panic!("activity snapshot должен быть available, got {unexpected_status:?}");
+        }
+    }
+    assert!(
+        available_pipeline
+            .video_decoder_activity_status()
+            .can_wait_for_activity()
+    );
+
+    let unavailable_decoder = SharedFakeVideoDecoderThread::new();
+    unavailable_decoder.set_activity_snapshot(
+        video_core::VideoDecoderActivitySnapshot::unavailable(
+            video_core::VideoDecoderActivityUnavailableReason::FatalNotifier(
+                DecodeThreadError::new("activity fatal"),
+            ),
+        ),
+    );
+    let mut unavailable_pipeline = PlaybackPipeline::default();
+    unavailable_pipeline.set_video_decoder_thread(unavailable_decoder);
+
+    match unavailable_pipeline.video_decoder_activity_status() {
+        crate::pipeline::VideoDecoderActivityStatus::Unavailable(
+            video_core::VideoDecoderActivityUnavailableReason::FatalNotifier(error),
+        ) => {
+            assert_eq!(error.message(), "activity fatal");
+        }
+        unexpected_status => {
+            panic!("activity unavailable reason должен сохранить fatal, got {unexpected_status:?}");
+        }
+    }
+    assert!(
+        !unavailable_pipeline
+            .video_decoder_activity_status()
+            .can_wait_for_activity()
     );
 }
 

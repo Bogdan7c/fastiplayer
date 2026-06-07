@@ -719,6 +719,9 @@ pub(super) struct SharedFakeVideoDecoderThread {
     /// Control-channel pressure snapshot, который fake отдаёт через decoder boundary.
     pub(super) control_pressure: Arc<Mutex<Option<DecoderControlChannelPressureSnapshot>>>,
 
+    /// Neutral decoder activity snapshot, который fake отдаёт через decoder boundary.
+    pub(super) activity_snapshot: Arc<Mutex<video_core::VideoDecoderActivitySnapshot>>,
+
     /// Scripted результаты configure-stream для focused boundary тестов.
     pub(super) configure_results: Arc<Mutex<VecDeque<video_core::VideoStreamConfigResult>>>,
 
@@ -770,6 +773,9 @@ impl SharedFakeVideoDecoderThread {
             released_handles: Arc::new(Mutex::new(Vec::new())),
             resource_snapshot: Arc::new(Mutex::new(None)),
             control_pressure: Arc::new(Mutex::new(None)),
+            activity_snapshot: Arc::new(Mutex::new(
+                video_core::VideoDecoderActivitySnapshot::unsupported(),
+            )),
             configure_results: Arc::new(Mutex::new(VecDeque::new())),
             preroll_floor_results: Arc::new(Mutex::new(VecDeque::new())),
             preroll_floor: Arc::new(Mutex::new(None)),
@@ -885,6 +891,14 @@ impl SharedFakeVideoDecoderThread {
             .control_pressure
             .lock()
             .expect("fake decoder control pressure lock") = Some(pressure);
+    }
+
+    /// Настраивает neutral activity snapshot для проверки player-core boundary.
+    pub(super) fn set_activity_snapshot(&self, snapshot: video_core::VideoDecoderActivitySnapshot) {
+        *self
+            .activity_snapshot
+            .lock()
+            .expect("fake decoder activity snapshot lock") = snapshot;
     }
 
     /// Скриптует следующий результат stream configuration boundary.
@@ -1284,6 +1298,13 @@ impl video_core::VideoDecoderThreadHandle for SharedFakeVideoDecoderThread {
             .control_pressure
             .lock()
             .expect("fake decoder control pressure lock")
+    }
+
+    fn decoder_activity_snapshot(&self) -> video_core::VideoDecoderActivitySnapshot {
+        self.activity_snapshot
+            .lock()
+            .expect("fake decoder activity snapshot lock")
+            .clone()
     }
 
     fn packet_queue_depth(&self) -> usize {

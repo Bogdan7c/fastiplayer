@@ -757,6 +757,25 @@ mod tests {
         generation
     }
 
+    /// Запускает Accurate seek commit для wakeup tests без обязательного decoder backend-а.
+    fn start_accurate_seek_for_wakeup(
+        session: &mut PlayerSession,
+        target_position: Duration,
+    ) -> u64 {
+        session.set_playback_state(PlaybackState::Seeking);
+        let generation = session.pipeline.begin_seek_generation();
+        session.begin_seek_trace_for_tests(generation);
+        session.set_seek_commit_for_tests(Some(crate::seek_state::SeekCommitState {
+            generation,
+            seek_mode: crate::SeekMode::Accurate,
+            target_position: media_core::MediaTime::from_duration(target_position),
+            actual_position: media_core::MediaTime::from_duration(target_position),
+            started_at: Instant::now(),
+            resume_intent: PlaybackResumeIntent::Pause,
+        }));
+        generation
+    }
+
     /// Добавляет pending video packet для выбранного track-а текущей generation.
     fn enqueue_selected_video_packet(
         session: &mut PlayerSession,
@@ -801,12 +820,32 @@ mod tests {
 
         /// История clear-floor команд.
         preroll_floor_clears: Arc<Mutex<Vec<video_core::VideoPrerollOutputFloorClear>>>,
+
+        /// Neutral activity snapshot для planner tests без real decoder thread-а.
+        activity_snapshot: Option<video_core::VideoDecoderActivitySnapshot>,
+
+        /// Scripted packet queue depth, который видит wakeup planner.
+        packet_queue_depth: usize,
     }
 
     impl RecordingVideoDecoderThread {
         /// Создаёт пустой fake decoder для проверки routing/drop behavior.
         fn new() -> Self {
             Self::default()
+        }
+
+        /// Создаёт fake decoder с явно заданным neutral activity snapshot.
+        fn new_with_activity_snapshot(snapshot: video_core::VideoDecoderActivitySnapshot) -> Self {
+            Self {
+                activity_snapshot: Some(snapshot),
+                ..Self::default()
+            }
+        }
+
+        /// Возвращает fake decoder с заданной глубиной packet queue.
+        fn with_packet_queue_depth(mut self, packet_queue_depth: usize) -> Self {
+            self.packet_queue_depth = packet_queue_depth;
+            self
         }
 
         /// Возвращает snapshot отправленных packets без раскрытия mutex наружу.
@@ -928,6 +967,12 @@ mod tests {
                 .expect("recording decoder resource snapshot lock")
         }
 
+        fn decoder_activity_snapshot(&self) -> video_core::VideoDecoderActivitySnapshot {
+            self.activity_snapshot
+                .clone()
+                .unwrap_or_else(video_core::VideoDecoderActivitySnapshot::unsupported)
+        }
+
         fn set_preroll_output_floor(
             &self,
             floor: video_core::VideoPrerollOutputFloor,
@@ -955,7 +1000,7 @@ mod tests {
         }
 
         fn packet_queue_depth(&self) -> usize {
-            0
+            self.packet_queue_depth
         }
 
         fn drain_completed_packet_count(&self) -> usize {
@@ -1332,6 +1377,112 @@ mod tests {
         );
 
         assert!(!poll_needed);
+    }
+
+    #[test]
+    fn active_accurate_preroll_with_full_decoder_queue_waits_for_decoder_activity() {
+        let (_activity_notifier, activity_subscription) =
+            video_core::VideoDecoderActivityNotifier::new();
+        let decoder_thread = RecordingVideoDecoderThread::new_with_activity_snapshot(
+            activity_subscription.snapshot(),
+        )
+        .with_packet_queue_depth(4);
+        let mut session = PlayerSession::new();
+        session.set_playback_state(PlaybackState::Seeking);
+        start_accurate_seek_for_decoder_io(
+            &mut session,
+            decoder_thread,
+            Duration::from_millis(500),
+        );
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &PlayerTickConfig::default(),
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+
+        assert_eq!(plan.reason, WorkerWakeupReason::DecodeReadiness);
+        assert_eq!(plan.delay, Some(Duration::from_millis(2)));
+        assert!(plan.wait_for_decoder_activity);
+    }
+
+    #[test]
+    fn unsupported_decoder_activity_uses_bounded_readiness_fallback() {
+        let decoder_thread = RecordingVideoDecoderThread::new().with_packet_queue_depth(4);
+        let mut session = PlayerSession::new();
+        session.set_playback_state(PlaybackState::Seeking);
+        start_accurate_seek_for_decoder_io(
+            &mut session,
+            decoder_thread,
+            Duration::from_millis(500),
+        );
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &PlayerTickConfig::default(),
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+
+        assert_eq!(plan.reason, WorkerWakeupReason::DecodeReadiness);
+        assert_eq!(plan.delay, Some(Duration::from_millis(2)));
+        assert!(!plan.wait_for_decoder_activity);
+    }
+
+    #[test]
+    fn absent_decoder_activity_uses_bounded_seek_progress_fallback() {
+        let mut session = PlayerSession::new();
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        start_accurate_seek_for_wakeup(&mut session, Duration::from_millis(500));
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &PlayerTickConfig::default(),
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+
+        assert_eq!(plan.reason, WorkerWakeupReason::SeekOrPreroll);
+        assert_eq!(plan.delay, Some(Duration::from_millis(250)));
+        assert!(!plan.wait_for_decoder_activity);
+    }
+
+    #[test]
+    fn immediate_video_work_keeps_zero_wakeup_without_decoder_activity_wait() {
+        let (_activity_notifier, activity_subscription) =
+            video_core::VideoDecoderActivityNotifier::new();
+        let decoder_thread = RecordingVideoDecoderThread::new_with_activity_snapshot(
+            activity_subscription.snapshot(),
+        )
+        .with_packet_queue_depth(4);
+        let mut session = PlayerSession::new();
+        session.set_playback_state(PlaybackState::Playing);
+        session.pipeline.set_video_decoder_thread(decoder_thread);
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        enqueue_selected_video_packet(
+            &mut session,
+            Duration::from_millis(120),
+            Bytes::from_static(b"ready-video-work"),
+            true,
+        );
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &PlayerTickConfig::default(),
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+
+        assert_eq!(plan.reason, WorkerWakeupReason::PipelineWorkReady);
+        assert_eq!(plan.delay, Some(Duration::ZERO));
+        assert!(!plan.wait_for_decoder_activity);
     }
 
     #[test]

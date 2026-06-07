@@ -116,6 +116,7 @@ mod tests {
             delay,
             reason: WorkerWakeupReason::CoarseProgress,
             frame_timing: None,
+            wait_for_decoder_activity: false,
         }
     }
 

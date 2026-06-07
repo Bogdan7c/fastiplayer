@@ -9,6 +9,7 @@ use media_core::{
     DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, Demuxer, PacketKeyframe, TrackId, TrackInfo,
     TrackTimestamp,
 };
+use video_core::{VideoDecoderActivitySnapshot, VideoDecoderActivityUnavailableReason};
 
 use crate::{
     DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
@@ -57,6 +58,39 @@ pub(crate) enum VideoTextureReleaseEffect {
 
     /// Активных render leases нет, texture handle можно сразу вернуть decoder-у.
     ReleaseNow,
+}
+
+/// Status neutral decoder-activity boundary-а, который скрывает decoder handle storage.
+#[derive(Debug, Clone)]
+pub(crate) enum VideoDecoderActivityStatus {
+    /// Decoder backend ещё не установлен, поэтому ждать activity не у кого.
+    AbsentDecoder,
+
+    /// Backend установлен, но пока не поддерживает neutral activity notifier.
+    Unsupported,
+
+    /// Backend сообщил typed unavailable state, который нельзя превращать в busy loop.
+    ///
+    /// Session 3 только планирует intent; Session 4 будет читать reason в worker wait policy.
+    #[allow(dead_code)]
+    Unavailable(VideoDecoderActivityUnavailableReason),
+
+    /// Snapshot доступен; worker сможет ждать activity через video-core contract.
+    Available {
+        /// Captured snapshot содержит epoch и subscription без backend-specific channels.
+        snapshot: VideoDecoderActivitySnapshot,
+    },
+}
+
+impl VideoDecoderActivityStatus {
+    /// Проверяет, можно ли планировать event-driven ожидание decoder activity.
+    #[must_use]
+    pub(crate) fn can_wait_for_activity(&self) -> bool {
+        match self {
+            Self::Available { snapshot } => snapshot.captured_epoch().is_some(),
+            Self::AbsentDecoder | Self::Unsupported | Self::Unavailable(_) => false,
+        }
+    }
 }
 
 /// Runtime-готовность выбранного audio path-а для session-level audio gates.
@@ -1317,6 +1351,35 @@ impl PlaybackPipeline {
         self.video_decoder_thread
             .as_ref()
             .and_then(|decoder_thread| decoder_thread.decoder_control_channel_pressure())
+    }
+
+    /// Возвращает typed status neutral decoder activity boundary-а.
+    ///
+    /// Planner/worker видят только намерение и typed unavailable reason, а не
+    /// concrete decoder thread storage или backend-specific channels.
+    #[must_use]
+    pub(crate) fn video_decoder_activity_status(&self) -> VideoDecoderActivityStatus {
+        let Some(decoder_thread) = self.video_decoder_thread.as_ref() else {
+            return VideoDecoderActivityStatus::AbsentDecoder;
+        };
+
+        match decoder_thread.decoder_activity_snapshot() {
+            VideoDecoderActivitySnapshot::Available {
+                captured_epoch,
+                subscription,
+            } => VideoDecoderActivityStatus::Available {
+                snapshot: VideoDecoderActivitySnapshot::Available {
+                    captured_epoch,
+                    subscription,
+                },
+            },
+            VideoDecoderActivitySnapshot::Unavailable {
+                reason: VideoDecoderActivityUnavailableReason::UnsupportedNotifier,
+            } => VideoDecoderActivityStatus::Unsupported,
+            VideoDecoderActivitySnapshot::Unavailable { reason } => {
+                VideoDecoderActivityStatus::Unavailable(reason)
+            }
+        }
     }
 
     /// Возвращает renderer-neutral provider активного decoder thread-а.

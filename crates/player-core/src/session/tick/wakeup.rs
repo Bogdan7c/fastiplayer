@@ -36,6 +36,9 @@ pub(crate) struct PlayerWorkerWakeupPlan {
 
     /// Сравнение media clock target и первого queued video frame.
     pub(crate) frame_timing: Option<WorkerFrameTimingSnapshot>,
+
+    /// `true`, если worker может ждать neutral decoder activity до fallback deadline-а.
+    pub(crate) wait_for_decoder_activity: bool,
 }
 
 impl PlayerWorkerWakeupPlan {
@@ -46,6 +49,7 @@ impl PlayerWorkerWakeupPlan {
             delay: None,
             reason: WorkerWakeupReason::Idle,
             frame_timing: None,
+            wait_for_decoder_activity: false,
         }
     }
 
@@ -60,6 +64,23 @@ impl PlayerWorkerWakeupPlan {
             delay: Some(delay),
             reason,
             frame_timing,
+            wait_for_decoder_activity: false,
+        }
+    }
+
+    /// Планирует timeout, но разрешает worker-у проснуться раньше от decoder activity.
+    #[must_use]
+    const fn after_with_decoder_activity(
+        delay: Duration,
+        reason: WorkerWakeupReason,
+        frame_timing: Option<WorkerFrameTimingSnapshot>,
+        wait_for_decoder_activity: bool,
+    ) -> Self {
+        Self {
+            delay: Some(delay),
+            reason,
+            frame_timing,
+            wait_for_decoder_activity,
         }
     }
 
@@ -120,7 +141,21 @@ impl PlayerSession {
         }
 
         let audio_refill_delay = audio_buffer_refill_wakeup_delay(self, tick_config);
-        if let Some(front_frame_delay) = front_frame_scheduler_delay(self, tick_config, now) {
+        let front_frame_delay = front_frame_scheduler_delay(self, tick_config, now);
+
+        if decoder_readiness_poll_needed(self, tick_config) {
+            return decoder_readiness_wakeup_plan(
+                audio_refill_delay,
+                front_frame_delay,
+                decoder_readiness_poll_interval,
+                frame_timing,
+                self.pipeline
+                    .video_decoder_activity_status()
+                    .can_wait_for_activity(),
+            );
+        }
+
+        if let Some(front_frame_delay) = front_frame_delay {
             if let Some(audio_refill_delay) =
                 audio_refill_delay.filter(|delay| *delay < front_frame_delay)
             {
@@ -134,32 +169,6 @@ impl PlayerSession {
             return PlayerWorkerWakeupPlan::after(
                 front_frame_delay,
                 WorkerWakeupReason::FramePtsDeadline,
-                frame_timing,
-            );
-        }
-
-        if decoder_readiness_poll_needed(self, tick_config) {
-            if seek_fast_preroll_active(self, tick_config) {
-                return PlayerWorkerWakeupPlan::after(
-                    Duration::ZERO,
-                    WorkerWakeupReason::SeekOrPreroll,
-                    frame_timing,
-                );
-            }
-
-            if let Some(audio_refill_delay) =
-                audio_refill_delay.filter(|delay| *delay < decoder_readiness_poll_interval)
-            {
-                return PlayerWorkerWakeupPlan::after(
-                    audio_refill_delay,
-                    WorkerWakeupReason::PipelineWorkReady,
-                    frame_timing,
-                );
-            }
-
-            return PlayerWorkerWakeupPlan::after(
-                decoder_readiness_poll_interval,
-                WorkerWakeupReason::DecodeReadiness,
                 frame_timing,
             );
         }
@@ -198,6 +207,38 @@ impl PlayerSession {
 
         PlayerWorkerWakeupPlan::idle()
     }
+}
+
+/// Выбирает bounded decoder-readiness deadline без busy-spin.
+///
+/// Decoder activity может разбудить worker раньше timeout-а, но timeout остаётся
+/// обязательным fallback-ом для unsupported/absent/fatal notifier и seek timeout policy.
+fn decoder_readiness_wakeup_plan(
+    audio_refill_delay: Option<Duration>,
+    front_frame_delay: Option<Duration>,
+    decoder_readiness_poll_interval: Duration,
+    frame_timing: Option<WorkerFrameTimingSnapshot>,
+    wait_for_decoder_activity: bool,
+) -> PlayerWorkerWakeupPlan {
+    let mut selected_delay = decoder_readiness_poll_interval;
+    let mut selected_reason = WorkerWakeupReason::DecodeReadiness;
+
+    if let Some(audio_refill_delay) = audio_refill_delay.filter(|delay| *delay < selected_delay) {
+        selected_delay = audio_refill_delay;
+        selected_reason = WorkerWakeupReason::PipelineWorkReady;
+    }
+
+    if let Some(front_frame_delay) = front_frame_delay.filter(|delay| *delay < selected_delay) {
+        selected_delay = front_frame_delay;
+        selected_reason = WorkerWakeupReason::FramePtsDeadline;
+    }
+
+    PlayerWorkerWakeupPlan::after_with_decoder_activity(
+        selected_delay,
+        selected_reason,
+        frame_timing,
+        wait_for_decoder_activity,
+    )
 }
 
 /// Возвращает delay до момента, когда audio buffer снова можно пополнять.
