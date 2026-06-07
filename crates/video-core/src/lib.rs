@@ -7,12 +7,14 @@ pub mod sync;
 pub use decoder::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, VideoDecoder};
 pub use decoder_thread::{
     DecodeBackpressureReason, DecodePacket, DecodeSendError, DecodeThreadError,
-    DecoderResourceSnapshot, VideoDecoderControlBackpressureReason,
-    VideoDecoderControlChannelPressureSnapshot, VideoDecoderEndOfStreamDrainResult,
-    VideoDecoderEndOfStreamDrainState, VideoDecoderThreadConfig, VideoDecoderThreadHandle,
-    VideoPrerollOutputFloor, VideoPrerollOutputFloorClear, VideoPrerollOutputFloorResult,
-    VideoStreamConfigRejection, VideoStreamConfigResult, VideoStreamDecodeConfig,
-    VideoStreamPacketization,
+    DecoderResourceSnapshot, VideoDecoderActivityEpoch, VideoDecoderActivityNotifier,
+    VideoDecoderActivitySnapshot, VideoDecoderActivitySubscription,
+    VideoDecoderActivityUnavailableReason, VideoDecoderActivityWaitOutcome,
+    VideoDecoderControlBackpressureReason, VideoDecoderControlChannelPressureSnapshot,
+    VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState,
+    VideoDecoderThreadConfig, VideoDecoderThreadHandle, VideoPrerollOutputFloor,
+    VideoPrerollOutputFloorClear, VideoPrerollOutputFloorResult, VideoStreamConfigRejection,
+    VideoStreamConfigResult, VideoStreamDecodeConfig, VideoStreamPacketization,
 };
 pub use diagnostics::{
     VideoDecoderDiagnosticEvent, VideoDecoderDropReason, VideoFrameDiagnostics,

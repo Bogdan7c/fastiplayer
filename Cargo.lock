@@ -4618,6 +4618,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "codec-core",
+ "crossbeam-channel",
  "media-core",
  "tracing",
 ]
