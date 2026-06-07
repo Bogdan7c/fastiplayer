@@ -273,6 +273,54 @@ impl VideoStreamConfigResult {
     }
 }
 
+/// Нейтральный decoder-side floor для accurate seek preroll output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoPrerollOutputFloor {
+    /// Seek generation, для которой действует этот preroll floor.
+    pub generation: u64,
+
+    /// Минимальный presentation timestamp, который decoder должен публиковать наружу.
+    pub floor_pts: Duration,
+
+    /// Разрешает backend-у сохранить последний кадр перед floor как preroll reference.
+    pub retain_latest_before_floor: bool,
+}
+
+/// Нейтральный запрос очистки accurate seek preroll floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoPrerollOutputFloorClear {
+    /// Очищает floor только если active generation совпадает с указанной.
+    MatchingGeneration(u64),
+
+    /// Очищает любой active floor независимо от generation.
+    Any,
+}
+
+/// Результат preroll output-floor boundary без схлопывания control states.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VideoPrerollOutputFloorResult {
+    /// Decoder thread отсутствует; caller может продолжить seek без decoder-side floor.
+    AbsentDecoder,
+
+    /// Backend применил новый preroll output floor.
+    Applied,
+
+    /// Backend уже находился в требуемом состоянии или clear не нашёл matching floor.
+    Unchanged,
+
+    /// Backend очистил active preroll output floor.
+    Cleared,
+
+    /// Backend жив, но не поддерживает decoder-side preroll output floor.
+    Unsupported,
+
+    /// Bounded control channel временно не принял command.
+    Backpressure(VideoDecoderControlBackpressureReason),
+
+    /// Backend fail-closed или floor command завершилась fatal ошибкой.
+    Fatal(DecodeThreadError),
+}
+
 /// Нейтральное состояние explicit decoder EOF/DPB drain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VideoDecoderEndOfStreamDrainState {
@@ -654,6 +702,22 @@ pub trait VideoDecoderThreadHandle: Send {
         VideoStreamConfigResult::Unchanged
     }
 
+    /// Устанавливает decoder-side output floor для accurate seek preroll.
+    fn set_preroll_output_floor(
+        &self,
+        _floor: VideoPrerollOutputFloor,
+    ) -> VideoPrerollOutputFloorResult {
+        VideoPrerollOutputFloorResult::Unsupported
+    }
+
+    /// Очищает decoder-side output floor без изменения seek generation.
+    fn clear_preroll_output_floor(
+        &self,
+        _clear: VideoPrerollOutputFloorClear,
+    ) -> VideoPrerollOutputFloorResult {
+        VideoPrerollOutputFloorResult::Unchanged
+    }
+
     /// Запускает explicit EOF/DPB drain отдельно от seek `flush`.
     fn begin_end_of_stream_drain(&self, generation: u64) -> VideoDecoderEndOfStreamDrainResult {
         VideoDecoderEndOfStreamDrainResult::Started(VideoDecoderEndOfStreamDrainState::Drained {
@@ -704,6 +768,109 @@ pub trait VideoDecoderThreadHandle: Send {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone)]
+    struct TestResourceProvider;
+
+    struct DefaultPrerollFloorDecoderThread;
+
+    impl VideoDecoderThreadHandle for DefaultPrerollFloorDecoderThread {
+        type ResourceProvider = TestResourceProvider;
+
+        fn backend_name(&self) -> &'static str {
+            "default-preroll-floor-test"
+        }
+
+        fn send_packet(&self, _packet: DecodePacket) -> Result<(), DecodeSendError> {
+            Ok(())
+        }
+
+        fn release_frame(&self, _handle: crate::FrameResourceHandle) {}
+
+        fn try_recv_frame(&self) -> Option<crate::DecodedFrame> {
+            None
+        }
+
+        fn try_recv_diagnostic_event(&self) -> Option<crate::VideoDecoderDiagnosticEvent> {
+            None
+        }
+
+        fn try_recv_error(&self) -> Option<DecodeThreadError> {
+            None
+        }
+
+        fn flush(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn resource_provider(&self) -> Self::ResourceProvider {
+            TestResourceProvider
+        }
+
+        fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {
+            None
+        }
+
+        fn packet_queue_depth(&self) -> usize {
+            0
+        }
+
+        fn drain_completed_packet_count(&self) -> usize {
+            0
+        }
+    }
+
+    /// Проверяет default set behavior: unsupported backend не маскируется под no-op.
+    #[test]
+    fn default_preroll_output_floor_set_returns_unsupported() {
+        let decoder_thread = DefaultPrerollFloorDecoderThread;
+        let floor = VideoPrerollOutputFloor {
+            generation: 7,
+            floor_pts: Duration::from_millis(1_500),
+            retain_latest_before_floor: true,
+        };
+
+        assert_eq!(
+            decoder_thread.set_preroll_output_floor(floor),
+            VideoPrerollOutputFloorResult::Unsupported
+        );
+    }
+
+    /// Проверяет default clear behavior: отсутствие support остаётся harmless no-op.
+    #[test]
+    fn default_preroll_output_floor_clear_returns_unchanged() {
+        let decoder_thread = DefaultPrerollFloorDecoderThread;
+
+        assert_eq!(
+            decoder_thread
+                .clear_preroll_output_floor(VideoPrerollOutputFloorClear::MatchingGeneration(7)),
+            VideoPrerollOutputFloorResult::Unchanged
+        );
+    }
+
+    /// Фиксирует, что result enum сохраняет typed backpressure и fatal payloads.
+    #[test]
+    fn preroll_output_floor_result_preserves_backpressure_and_fatal_payloads() {
+        let backpressure_reason = VideoDecoderControlBackpressureReason::ControlChannelFull {
+            queued_messages: 3,
+            capacity: 4,
+        };
+        let fatal_error = DecodeThreadError::new("floor command failed");
+
+        assert_eq!(
+            VideoPrerollOutputFloorResult::Backpressure(backpressure_reason),
+            VideoPrerollOutputFloorResult::Backpressure(
+                VideoDecoderControlBackpressureReason::ControlChannelFull {
+                    queued_messages: 3,
+                    capacity: 4,
+                }
+            )
+        );
+        assert_eq!(
+            VideoPrerollOutputFloorResult::Fatal(fatal_error.clone()),
+            VideoPrerollOutputFloorResult::Fatal(DecodeThreadError::new(fatal_error.message()))
+        );
+    }
 
     /// Проверяет, что direct API caller не может создать zero-capacity очереди.
     #[test]

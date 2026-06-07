@@ -10,6 +10,7 @@ pub use decoder_thread::{
     DecoderResourceSnapshot, VideoDecoderControlBackpressureReason,
     VideoDecoderControlChannelPressureSnapshot, VideoDecoderEndOfStreamDrainResult,
     VideoDecoderEndOfStreamDrainState, VideoDecoderThreadConfig, VideoDecoderThreadHandle,
+    VideoPrerollOutputFloor, VideoPrerollOutputFloorClear, VideoPrerollOutputFloorResult,
     VideoStreamConfigRejection, VideoStreamConfigResult, VideoStreamDecodeConfig,
     VideoStreamPacketization,
 };

@@ -115,9 +115,47 @@ pub enum VideoDecoderDiagnosticEvent {
         reason: VideoDecoderDropReason,
     },
 
+    /// Accurate seek preroll подавил frame ниже decoder-side output floor.
+    SeekPrerollFrameSuppressed {
+        /// Presentation timestamp подавленного preroll frame-а.
+        pts: Duration,
+
+        /// Seek generation, к которой относится active floor.
+        generation: u64,
+
+        /// Минимальный presentation timestamp, разрешённый для публикации.
+        floor_pts: Duration,
+    },
+
     /// Decoder thread встретил pressure на bounded decoded-frame publish channel.
     DecodedFramePublishPressure {
         /// Накопительные counters publish boundary.
         pressure: VideoFramePublishPressureDiagnostics,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Проверяет, что seek preroll diagnostic остаётся Copy/Eq и не теряет payload.
+    #[test]
+    fn seek_preroll_frame_suppressed_event_is_copy_eq_and_carries_payload() {
+        let event = VideoDecoderDiagnosticEvent::SeekPrerollFrameSuppressed {
+            pts: Duration::from_millis(900),
+            generation: 12,
+            floor_pts: Duration::from_secs(1),
+        };
+        let copied_event = event;
+
+        assert_eq!(event, copied_event);
+        assert_eq!(
+            copied_event,
+            VideoDecoderDiagnosticEvent::SeekPrerollFrameSuppressed {
+                pts: Duration::from_millis(900),
+                generation: 12,
+                floor_pts: Duration::from_secs(1),
+            }
+        );
+    }
 }
