@@ -467,6 +467,30 @@ impl PlayerSession {
             && !self.seek_video_gate_ready(seek_commit, resume_video_min_ready_frames)
     }
 
+    /// Проверяет, должен ли scheduler показывать перцептивный landing-preview во время
+    /// active accurate seek-а.
+    ///
+    /// Превью активно, пока идёт accurate seek с выбранным video track-ом. На gate-wait
+    /// present queue пуст (decode-safe pre-target кадры не кладутся в очередь, а оседают в
+    /// fallback-слоте), поэтому без превью экран держал бы старый до-seek кадр. Сходимость к
+    /// target и завершение обеспечивает вызывающий scheduler, а не этот предикат:
+    /// - в превью-ветку он входит только при пустой present queue, так что появление точного
+    ///   target-or-after кадра (он попадает в present queue) автоматически выключает превью;
+    /// - презентер превью забирает кадр из fallback-слота, а слот очищается в тот же момент,
+    ///   когда декодируется target-кадр, поэтому после показа target-кадра превью уже не может
+    ///   подменить его более старым кадром (слот пуст, а декод pre-target кадров не возобновится).
+    ///
+    /// `SeekMode::KeyframeBefore` сюда не попадает: `drops_decode_preroll_before_target()`
+    /// для него `false`, его actual = runtime anchor, и pre-target кадры в fallback не оседают.
+    #[must_use]
+    pub(crate) fn active_accurate_seek_wants_landing_preview(&self) -> bool {
+        let Some(seek_commit) = self.seek_runtime.active_commit() else {
+            return false;
+        };
+
+        self.pipeline.has_selected_video_track() && seek_commit.drops_decode_preroll_before_target()
+    }
+
     /// Проверяет, можно ли пропустить demuxed audio packet, который целиком лежит до target.
     ///
     /// Частично пересекающий target packet оставляем audio runtime-у: там PCM уже обрезается
@@ -597,6 +621,41 @@ impl PlayerSession {
                 "First post-seek presented frame observed"
             );
         }
+
+        self.seek_runtime
+            .set_eof_fallback_video_position(MediaTime::from_duration(frame_pts));
+        self.snapshot.timeline.stale_frame = false;
+    }
+
+    /// Отмечает, что accurate seek показал перцептивный landing-preview (pre-target кадр).
+    ///
+    /// Превью меняет ТОЛЬКО видимый кадр. Оно НЕ двигает `current_position`/clock, НЕ закрывает
+    /// video gate и НЕ завершает commit — для этого нужен реальный target-or-after кадр через
+    /// `note_presented_frame_for_seek`. Здесь делаем ровно два инварианто-значимых шага:
+    /// - снимаем `stale_frame`: на экране теперь свежий кадр текущего seek generation-а, а не
+    ///   до-seek картинка. Pts превью < target, поэтому landing-guard всё равно НЕ примет этот
+    ///   кадр как закрывающий gate (см. `seek_landing_frame_matches_active_commit`);
+    /// - ставим `eof_fallback_video_position` = pts превью, чтобы EOF во время показа превью
+    ///   закоммитил seek по уже видимому landing-кадру (`FinalSeekCommitPosition::EofFallbackFrame`),
+    ///   ровно как делает near-EOF fallback presenter. Оба читателя этого маркера
+    ///   (`seek_eof_fallback_video_ready`, `final_seek_eof_fallback_commit_position`) защищены
+    ///   `is_eof_draining()`, поэтому выставление маркера до EOF безопасно, а точный target-кадр
+    ///   его очищает через `note_presented_frame_for_seek`.
+    pub(crate) fn note_presented_seek_landing_preview(&mut self, frame_pts: Duration) {
+        let Some(seek_commit) = self.seek_runtime.active_commit() else {
+            return;
+        };
+
+        debug!(
+            kind = "seek",
+            target_ms = seek_commit.target_position.as_duration().as_millis(),
+            actual_ms = seek_commit.actual_position.as_duration().as_millis(),
+            active_seek_generation = seek_commit.generation,
+            pipeline_generation = self.pipeline.seek_generation(),
+            frame_pts_ms = frame_pts.as_millis(),
+            landing_preview = true,
+            "Accurate seek landing preview presented"
+        );
 
         self.seek_runtime
             .set_eof_fallback_video_position(MediaTime::from_duration(frame_pts));
@@ -1066,6 +1125,25 @@ impl PlayerSession {
         usize::from(current_frame_ready) + queued_ready_frames
     }
 
+    /// Проверяет, что video decoder больше НЕ может выдать target-or-after кадр текущего seek-а.
+    ///
+    /// EOF fallback (показ landing-preview/последнего pre-target кадра как committed position)
+    /// допустим только когда точный target кадр уже физически недостижим: нет pending video
+    /// packets, нет in-flight packets и decoder thread не держит свою packet queue. Иначе target
+    /// кадр ещё может прийти из EOF-drain-а, и коммитить seek по pre-target кадру нельзя.
+    ///
+    /// До RC3 этот инвариант держался неявно: `eof_fallback_video_position` ставил только
+    /// near-EOF presenter, который и так требует слитый decoder (`seek_preroll_fallback_ready_after_eof`).
+    /// RC3 ставит маркер раньше — на показе landing-preview — поэтому проверку нужно делать явно.
+    fn seek_eof_video_decoder_drained_for_fallback(&self) -> bool {
+        self.pipeline.pending_video_packet_is_empty()
+            && self.pipeline.video_decode_in_flight_packets() == 0
+            && self
+                .pipeline
+                .video_decoder_packet_queue_depth()
+                .is_none_or(|packet_queue_depth| packet_queue_depth == 0)
+    }
+
     /// EOF fallback готов только если показан свежий frame текущего final seek transition-а.
     fn seek_eof_fallback_video_ready(
         &self,
@@ -1073,6 +1151,11 @@ impl PlayerSession {
         target_position: Duration,
     ) -> bool {
         if !self.is_eof_draining() {
+            return false;
+        }
+
+        // Target кадр ещё может прийти из EOF-drain-а — тогда коммитим по нему, а не по fallback-у.
+        if !self.seek_eof_video_decoder_drained_for_fallback() {
             return false;
         }
 
@@ -1150,6 +1233,11 @@ impl PlayerSession {
         seek_commit: SeekCommitState,
     ) -> Option<Duration> {
         if !self.is_eof_draining() {
+            return None;
+        }
+
+        // Симметрично gate-у: пока decoder может выдать target кадр, не коммитим по fallback-у.
+        if !self.seek_eof_video_decoder_drained_for_fallback() {
             return None;
         }
 

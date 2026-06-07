@@ -637,6 +637,37 @@ pub(super) fn present_seek_preroll_fallback_after_eof(
     true
 }
 
+/// Презентует перцептивный landing-preview во время active accurate seek-а.
+///
+/// Берёт из fallback-слота самый близкий к target уже декодированный pre-target кадр и делает
+/// его текущим present-кадром, явно релизя прежний кадр. Так превью «сходится» к target: каждый
+/// tick decoder I/O кладёт в слот более поздний pre-target кадр, и презентер поднимает его на
+/// экран. Возвращает `false`, если более близкого кадра в слоте ещё нет — тогда вызывающий код
+/// повторит уже показанное превью, а не вернёт до-seek кадр.
+///
+/// Презентер НЕ закрывает gate и не двигает position/clock: это делает только точный
+/// target-or-after кадр через обычный present-queue путь.
+pub(super) fn present_seek_landing_preview(
+    session: &mut PlayerSession,
+    tick_result: &mut PlayerTickResult,
+) -> bool {
+    let Some(frame) = session.take_seek_preroll_fallback_frame() else {
+        return false;
+    };
+
+    let frame_pts = frame.pts;
+    tracing::debug!(
+        pts_ms = frame_pts.as_millis(),
+        "Presenting accurate seek landing preview frame"
+    );
+    if let Some(old_frame) = session.pipeline.replace_present_video_frame(frame) {
+        release_video_texture(session, old_frame.resource_handle);
+    }
+    session.note_presented_seek_landing_preview(frame_pts);
+    tick_result.record_presented_video_frame();
+    true
+}
+
 /// Проверяет, что после EOF больше нет decoder work, способного дать точный target frame.
 pub(super) fn seek_preroll_fallback_ready_after_eof(session: &PlayerSession) -> bool {
     if session.active_final_seek_target().is_none() || !session.is_eof_draining() {
@@ -973,6 +1004,27 @@ pub(super) fn process_pending_video_packets(
     let scheduler_started_at = Instant::now();
 
     if present_seek_preroll_fallback_after_eof(session, tick_result) {
+        session.record_pipeline_latency(
+            PipelineLatencyStage::WorkerScheduler,
+            scheduler_started_at.elapsed(),
+            None,
+            None,
+        );
+        return;
+    }
+
+    // Перцептивный landing-preview: пока точного target-кадра нет в present queue, показываем
+    // самый близкий к target декодированный pre-target кадр (он сходится к target от tick к
+    // tick-у), а не держим до-seek кадр. Gate/clock/position остаются на user target. Как только
+    // target-кадр декодирован, он попадает в present queue, делает её непустой, и эта ветка
+    // пропускается — обычный force-present target-кадра закрывает gate и коммитит seek как сегодня.
+    if session.active_accurate_seek_wants_landing_preview()
+        && session.pipeline.video_present_queue_is_empty()
+    {
+        if !present_seek_landing_preview(session, tick_result) {
+            // Более близкого pre-target кадра ещё нет — повторяем уже показанное превью.
+            repeat_present_video_frame(session, tick_result, None);
+        }
         session.record_pipeline_latency(
             PipelineLatencyStage::WorkerScheduler,
             scheduler_started_at.elapsed(),
