@@ -115,6 +115,20 @@ impl VideoDecoderThreadHandle for WgpuReleaseVideoDecoderThreadHandle {
         self.inner.clear_stream()
     }
 
+    fn set_preroll_output_floor(
+        &self,
+        floor: video_core::VideoPrerollOutputFloor,
+    ) -> video_core::VideoPrerollOutputFloorResult {
+        self.inner.set_preroll_output_floor(floor)
+    }
+
+    fn clear_preroll_output_floor(
+        &self,
+        clear: video_core::VideoPrerollOutputFloorClear,
+    ) -> video_core::VideoPrerollOutputFloorResult {
+        self.inner.clear_preroll_output_floor(clear)
+    }
+
     fn begin_end_of_stream_drain(
         &self,
         generation: u64,

@@ -251,6 +251,20 @@ impl VideoDecoderThreadHandle for VaapiVideoDecoderThreadHandle {
         VideoDecodeThread::clear_stream(&self.decoder_thread)
     }
 
+    fn set_preroll_output_floor(
+        &self,
+        floor: video_core::VideoPrerollOutputFloor,
+    ) -> video_core::VideoPrerollOutputFloorResult {
+        VideoDecodeThread::set_preroll_output_floor(&self.decoder_thread, floor)
+    }
+
+    fn clear_preroll_output_floor(
+        &self,
+        clear: video_core::VideoPrerollOutputFloorClear,
+    ) -> video_core::VideoPrerollOutputFloorResult {
+        VideoDecodeThread::clear_preroll_output_floor(&self.decoder_thread, clear)
+    }
+
     fn begin_end_of_stream_drain(
         &self,
         generation: u64,

@@ -16,7 +16,8 @@ use tracing::{debug, info, trace, warn};
 use video_core::{
     DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle, VideoDecoder,
     VideoDecoderDiagnosticEvent, VideoDecoderDropReason, VideoFrameDiagnostics,
-    VideoFrameTimingDiagnostics, VideoResourcePoolDiagnostics, VideoStreamDecodeConfig,
+    VideoFrameTimingDiagnostics, VideoPrerollOutputFloor, VideoPrerollOutputFloorClear,
+    VideoPrerollOutputFloorResult, VideoResourcePoolDiagnostics, VideoStreamDecodeConfig,
 };
 
 use crate::codec_adapter::{
@@ -151,6 +152,242 @@ impl DecodeLoopReport {
         self.events_count += drain_report.events_count;
         self.format_changed |= drain_report.format_changed;
         self.drain_elapsed += drain_elapsed;
+    }
+}
+
+/// Active accurate-seek output floor, которым владеет VAAPI decoder backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActivePrerollOutputFloor {
+    /// Seek generation, для которой backend подавляет pre-floor output.
+    generation: u64,
+
+    /// Минимальный PTS, который можно публиковать наружу.
+    floor_pts: Duration,
+
+    /// Нужно ли сохранить последний кадр перед floor как EOF fallback.
+    retain_latest_before_floor: bool,
+
+    /// Был ли уже успешно опубликован кадр с `pts >= floor_pts`.
+    target_or_after_published: bool,
+}
+
+impl ActivePrerollOutputFloor {
+    /// Создаёт backend-local state из нейтрального video-core policy.
+    fn from_policy(policy: VideoPrerollOutputFloor) -> Self {
+        Self {
+            generation: policy.generation,
+            floor_pts: policy.floor_pts,
+            retain_latest_before_floor: policy.retain_latest_before_floor,
+            target_or_after_published: false,
+        }
+    }
+
+    /// Проверяет, совпадает ли active floor с новым запросом без сброса флагов.
+    fn matches_policy(self, policy: VideoPrerollOutputFloor) -> bool {
+        self.generation == policy.generation
+            && self.floor_pts == policy.floor_pts
+            && self.retain_latest_before_floor == policy.retain_latest_before_floor
+    }
+}
+
+/// Накопительные diagnostics counters для decoder-side preroll output floor.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct PrerollOutputFloorCounters {
+    /// Сколько pre-floor кадров подавлено без DMA-BUF export/publish.
+    suppressed_frame_count: u64,
+
+    /// Сколько раз более поздний pre-floor candidate заменил старый.
+    candidate_replaced_count: u64,
+
+    /// Сколько fallback candidates было опубликовано через EOF promotion.
+    candidate_promoted_count: u64,
+
+    /// Сколько раз backend впервые дошёл до publish кадра `pts >= floor`.
+    target_published_after_floor_count: u64,
+}
+
+/// Pure state accurate-seek output floor без concrete VA handle payload-а.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct PrerollOutputFloorState {
+    /// Active floor отсутствует вне accurate-seek preroll window.
+    active: Option<ActivePrerollOutputFloor>,
+
+    /// Counters остаются накопительными, чтобы debug logs были полезны вручную.
+    counters: PrerollOutputFloorCounters,
+}
+
+impl PrerollOutputFloorState {
+    /// Устанавливает новый floor или возвращает `Unchanged` для того же policy.
+    fn set_floor(&mut self, policy: VideoPrerollOutputFloor) -> VideoPrerollOutputFloorResult {
+        if self
+            .active
+            .is_some_and(|active_floor| active_floor.matches_policy(policy))
+        {
+            return VideoPrerollOutputFloorResult::Unchanged;
+        }
+
+        self.active = Some(ActivePrerollOutputFloor::from_policy(policy));
+        VideoPrerollOutputFloorResult::Applied
+    }
+
+    /// Очищает active floor, сохраняя distinct `Unchanged` для generation mismatch.
+    fn clear_floor(
+        &mut self,
+        clear: VideoPrerollOutputFloorClear,
+    ) -> VideoPrerollOutputFloorResult {
+        let Some(active_floor) = self.active else {
+            return VideoPrerollOutputFloorResult::Unchanged;
+        };
+
+        let should_clear = match clear {
+            VideoPrerollOutputFloorClear::MatchingGeneration(generation) => {
+                active_floor.generation == generation
+            }
+            VideoPrerollOutputFloorClear::Any => true,
+        };
+
+        if !should_clear {
+            return VideoPrerollOutputFloorResult::Unchanged;
+        }
+
+        self.active = None;
+        VideoPrerollOutputFloorResult::Cleared
+    }
+
+    /// Возвращает active floor только если кадр принадлежит той же generation и ниже floor.
+    fn suppression_floor(
+        self,
+        frame_pts: Duration,
+        generation: u64,
+    ) -> Option<ActivePrerollOutputFloor> {
+        let active_floor = self.active?;
+
+        if active_floor.generation == generation && frame_pts < active_floor.floor_pts {
+            Some(active_floor)
+        } else {
+            None
+        }
+    }
+
+    /// Проверяет, что кадр закрывает retained candidate для той же active generation.
+    fn is_target_or_after_for_active_floor(self, frame_pts: Duration, generation: u64) -> bool {
+        let Some(active_floor) = self.active else {
+            return false;
+        };
+
+        active_floor.generation == generation && frame_pts >= active_floor.floor_pts
+    }
+
+    /// Проверяет, является ли кадр первым успешно опубликованным target-or-after output.
+    fn record_target_or_after_published(&mut self, frame_pts: Duration, generation: u64) -> bool {
+        let Some(active_floor) = self.active.as_mut() else {
+            return false;
+        };
+
+        if active_floor.generation != generation
+            || frame_pts < active_floor.floor_pts
+            || active_floor.target_or_after_published
+        {
+            return false;
+        }
+
+        active_floor.target_or_after_published = true;
+        self.counters.target_published_after_floor_count = self
+            .counters
+            .target_published_after_floor_count
+            .saturating_add(1);
+        true
+    }
+
+    /// Учитывает suppression без связывания pure state с VA handle ownership.
+    fn record_suppressed_frame(&mut self) {
+        self.counters.suppressed_frame_count =
+            self.counters.suppressed_frame_count.saturating_add(1);
+    }
+
+    /// Учитывает замену pre-floor candidate-а более поздним кадром.
+    fn record_candidate_replaced(&mut self) {
+        self.counters.candidate_replaced_count =
+            self.counters.candidate_replaced_count.saturating_add(1);
+    }
+
+    /// Проверяет, нужно ли EOF drain публиковать fallback candidate.
+    fn should_promote_candidate(self, generation: u64) -> bool {
+        let Some(active_floor) = self.active else {
+            return false;
+        };
+
+        active_floor.generation == generation && !active_floor.target_or_after_published
+    }
+
+    /// Учитывает успешную EOF promotion и закрывает повторную promotion для generation.
+    fn record_candidate_promoted(&mut self, generation: u64) {
+        self.counters.candidate_promoted_count =
+            self.counters.candidate_promoted_count.saturating_add(1);
+
+        if let Some(active_floor) = self.active.as_mut() {
+            if active_floor.generation == generation {
+                active_floor.target_or_after_published = true;
+            }
+        }
+    }
+}
+
+/// Metadata fallback candidate-а без concrete VA handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PrerollFallbackCandidateMetadata {
+    /// PTS candidate-а, по которому выбирается самый поздний pre-floor frame.
+    pts: Duration,
+
+    /// Seek generation candidate-а; promotion разрешена только для matching generation.
+    generation: u64,
+}
+
+/// Последний pre-floor frame, который можно promoted на EOF без target-or-after output.
+struct PrerollFallbackCandidate<T> {
+    /// Concrete handle остаётся backend-local payload-ом.
+    handle: T,
+
+    /// Metadata нужна для generation checks/logs без чтения handle после move.
+    metadata: PrerollFallbackCandidateMetadata,
+}
+
+impl<T> PrerollFallbackCandidate<T> {
+    /// Собирает candidate из handle и metadata одной generation.
+    fn new(handle: T, pts: Duration, generation: u64) -> Self {
+        Self {
+            handle,
+            metadata: PrerollFallbackCandidateMetadata { pts, generation },
+        }
+    }
+}
+
+/// Решение по сохранению нового pre-floor candidate-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrerollFallbackCandidateDecision {
+    /// Candidate slot пуст, incoming становится baseline fallback-ом.
+    StoreFirst,
+
+    /// Incoming позже или равен старому PTS и заменяет текущий candidate.
+    ReplaceExisting,
+
+    /// Incoming старее текущего candidate-а и сразу отбрасывается.
+    DropIncoming,
+}
+
+/// Выбирает самый поздний pre-floor candidate без знания concrete handle type.
+fn preroll_fallback_candidate_decision<T>(
+    current_candidate: Option<&PrerollFallbackCandidate<T>>,
+    incoming_metadata: PrerollFallbackCandidateMetadata,
+) -> PrerollFallbackCandidateDecision {
+    let Some(current_candidate) = current_candidate else {
+        return PrerollFallbackCandidateDecision::StoreFirst;
+    };
+
+    if incoming_metadata.pts >= current_candidate.metadata.pts {
+        PrerollFallbackCandidateDecision::ReplaceExisting
+    } else {
+        PrerollFallbackCandidateDecision::DropIncoming
     }
 }
 
@@ -473,6 +710,12 @@ pub struct VaapiVideoDecoder {
 
     /// Display orientation текущего stream-а; применяется renderer-ом, не decoder-ом.
     display_orientation: VideoDisplayOrientation,
+
+    /// Active accurate-seek preroll output floor и его counters.
+    preroll_output_floor: PrerollOutputFloorState,
+
+    /// Последний pre-floor VA handle для EOF fallback promotion.
+    preroll_fallback_candidate: Option<PrerollFallbackCandidate<VaapiDecodedFrameHandle>>,
 }
 
 impl VaapiVideoDecoder {
@@ -551,6 +794,8 @@ impl VaapiVideoDecoder {
             p010_boundary_verified_logged: false,
             backend_name,
             display_orientation: VideoDisplayOrientation::Identity,
+            preroll_output_floor: PrerollOutputFloorState::default(),
+            preroll_fallback_candidate: None,
         })
     }
 
@@ -597,6 +842,37 @@ impl VaapiVideoDecoder {
         !self.ready_queue.is_empty()
     }
 
+    /// Устанавливает active accurate-seek output floor внутри VAAPI backend-а.
+    pub(crate) fn set_preroll_output_floor(
+        &mut self,
+        policy: VideoPrerollOutputFloor,
+    ) -> VideoPrerollOutputFloorResult {
+        let result = self.preroll_output_floor.set_floor(policy);
+        if result == VideoPrerollOutputFloorResult::Applied {
+            self.drop_preroll_fallback_candidate("set_preroll_output_floor");
+            debug!(
+                generation = policy.generation,
+                floor_pts_ms = policy.floor_pts.as_millis(),
+                retain_latest_before_floor = policy.retain_latest_before_floor,
+                "VAAPI preroll output floor applied"
+            );
+        }
+        result
+    }
+
+    /// Очищает active accurate-seek output floor, если clear policy совпала.
+    pub(crate) fn clear_preroll_output_floor(
+        &mut self,
+        clear: VideoPrerollOutputFloorClear,
+    ) -> VideoPrerollOutputFloorResult {
+        let result = self.preroll_output_floor.clear_floor(clear);
+        if result == VideoPrerollOutputFloorResult::Cleared {
+            self.drop_preroll_fallback_candidate("clear_preroll_output_floor");
+            debug!(?clear, "VAAPI preroll output floor cleared");
+        }
+        result
+    }
+
     /// Определяет decoded surface contract для текущего ready handle.
     fn current_decoded_contract(
         &self,
@@ -618,6 +894,13 @@ impl VaapiVideoDecoder {
             return Ok(());
         }
 
+        let floor_clear_result = self
+            .preroll_output_floor
+            .clear_floor(VideoPrerollOutputFloorClear::Any);
+        if floor_clear_result == VideoPrerollOutputFloorResult::Cleared {
+            debug!("Cleared VAAPI preroll output floor during stream reconfigure");
+        }
+        self.drop_preroll_fallback_candidate("configure_stream");
         self.release_decoder_owned_ready_frames("configure_stream")?;
         self.invalidate_idle_resource_pool_after_format_change();
 
@@ -674,6 +957,176 @@ impl VaapiVideoDecoder {
         } else {
             debug!("Frame still referenced by decoder, cannot return to pool yet");
         }
+    }
+
+    /// Проверяет, должен ли `FrameReady` быть подавлен active output floor-ом.
+    fn should_suppress_ready_frame(
+        &self,
+        handle_pts: Duration,
+        generation: u64,
+    ) -> Option<ActivePrerollOutputFloor> {
+        self.preroll_output_floor
+            .suppression_floor(handle_pts, generation)
+    }
+
+    /// Удаляет retained pre-floor candidate без sync/export/publish.
+    fn drop_preroll_fallback_candidate(&mut self, reason: &'static str) {
+        let Some(candidate) = self.preroll_fallback_candidate.take() else {
+            return;
+        };
+
+        debug!(
+            pts_ms = candidate.metadata.pts.as_millis(),
+            generation = candidate.metadata.generation,
+            reason,
+            "Dropping retained preroll fallback candidate without DMA-BUF export"
+        );
+        self.return_frame_from_handle(candidate.handle);
+    }
+
+    /// Сохраняет только самый поздний pre-floor candidate для EOF fallback.
+    fn retain_preroll_fallback_candidate(
+        &mut self,
+        handle: VaapiDecodedFrameHandle,
+        pts: Duration,
+        generation: u64,
+    ) {
+        let incoming_candidate = PrerollFallbackCandidate::new(handle, pts, generation);
+        match preroll_fallback_candidate_decision(
+            self.preroll_fallback_candidate.as_ref(),
+            incoming_candidate.metadata,
+        ) {
+            PrerollFallbackCandidateDecision::StoreFirst => {
+                debug!(
+                    pts_ms = incoming_candidate.metadata.pts.as_millis(),
+                    generation = incoming_candidate.metadata.generation,
+                    "Retaining first preroll fallback candidate"
+                );
+                self.preroll_fallback_candidate = Some(incoming_candidate);
+            }
+            PrerollFallbackCandidateDecision::ReplaceExisting => {
+                let replaced_candidate = self
+                    .preroll_fallback_candidate
+                    .replace(incoming_candidate)
+                    .expect("candidate exists when replacement was selected");
+                self.preroll_output_floor.record_candidate_replaced();
+                debug!(
+                    old_pts_ms = replaced_candidate.metadata.pts.as_millis(),
+                    new_pts_ms = pts.as_millis(),
+                    generation,
+                    candidate_replaced_count =
+                        self.preroll_output_floor.counters.candidate_replaced_count,
+                    "Replacing retained preroll fallback candidate"
+                );
+                self.return_frame_from_handle(replaced_candidate.handle);
+            }
+            PrerollFallbackCandidateDecision::DropIncoming => {
+                debug!(
+                    incoming_pts_ms = incoming_candidate.metadata.pts.as_millis(),
+                    retained_pts_ms = self
+                        .preroll_fallback_candidate
+                        .as_ref()
+                        .map(|candidate| candidate.metadata.pts.as_millis())
+                        .unwrap_or_default(),
+                    generation,
+                    "Dropping older preroll fallback candidate without DMA-BUF export"
+                );
+                self.return_frame_from_handle(incoming_candidate.handle);
+            }
+        }
+    }
+
+    /// Подавляет pre-floor ready frame без DMA-BUF export/publish.
+    fn suppress_ready_frame(
+        &mut self,
+        handle: VaapiDecodedFrameHandle,
+        generation: u64,
+        floor: ActivePrerollOutputFloor,
+    ) {
+        let pts = Duration::from_micros(handle.timestamp());
+        self.preroll_output_floor.record_suppressed_frame();
+        self.send_diagnostic_event(VideoDecoderDiagnosticEvent::SeekPrerollFrameSuppressed {
+            pts,
+            generation,
+            floor_pts: floor.floor_pts,
+        });
+
+        debug!(
+            pts_ms = pts.as_millis(),
+            generation,
+            floor_pts_ms = floor.floor_pts.as_millis(),
+            retain_latest_before_floor = floor.retain_latest_before_floor,
+            suppressed_frame_count = self.preroll_output_floor.counters.suppressed_frame_count,
+            "Suppressing decoder-ready preroll frame without DMA-BUF export"
+        );
+
+        if floor.retain_latest_before_floor {
+            self.retain_preroll_fallback_candidate(handle, pts, generation);
+        } else {
+            self.return_frame_from_handle(handle);
+        }
+    }
+
+    /// Отмечает successful publish target-or-after кадра и удаляет fallback candidate.
+    fn record_target_or_after_frame_published(&mut self, pts: Duration, generation: u64) {
+        if self
+            .preroll_output_floor
+            .record_target_or_after_published(pts, generation)
+        {
+            self.drop_preroll_fallback_candidate("target_or_after_published");
+            debug!(
+                pts_ms = pts.as_millis(),
+                generation,
+                target_published_after_floor_count = self
+                    .preroll_output_floor
+                    .counters
+                    .target_published_after_floor_count,
+                "Published target-or-after frame for active preroll floor"
+            );
+        }
+    }
+
+    /// Проверяет, должен ли matching target-or-after frame удалить retained candidate.
+    fn should_drop_preroll_candidate_before_publish(&self, pts: Duration, generation: u64) -> bool {
+        self.preroll_output_floor
+            .is_target_or_after_for_active_floor(pts, generation)
+    }
+
+    /// Promotes retained fallback candidate через обычный publish path при EOF.
+    fn promote_preroll_fallback_candidate_if_needed(&mut self, generation: u64) -> Result<()> {
+        if !self
+            .preroll_output_floor
+            .should_promote_candidate(generation)
+        {
+            return Ok(());
+        }
+
+        let Some(candidate) = self.preroll_fallback_candidate.take() else {
+            return Ok(());
+        };
+
+        if candidate.metadata.generation != generation {
+            debug!(
+                candidate_generation = candidate.metadata.generation,
+                drain_generation = generation,
+                "Dropping preroll fallback candidate with mismatched generation"
+            );
+            self.return_frame_from_handle(candidate.handle);
+            return Ok(());
+        }
+
+        let promoted_pts = candidate.metadata.pts;
+        self.process_ready_frame(candidate.handle, generation)?;
+        self.preroll_output_floor
+            .record_candidate_promoted(generation);
+        debug!(
+            pts_ms = promoted_pts.as_millis(),
+            generation,
+            candidate_promoted_count = self.preroll_output_floor.counters.candidate_promoted_count,
+            "Promoted preroll fallback candidate through normal ready-frame path"
+        );
+
+        Ok(())
     }
 
     /// Добавляет zero-copy кадр в decoder ready queue, сбрасывая самый старый backlog.
@@ -972,6 +1425,9 @@ impl VaapiVideoDecoder {
     fn handle_format_changed_event(&mut self) -> Result<()> {
         info!("Format changed, invalidating resource pool and frame pool");
 
+        // Retained candidate мог относиться к старому surface/format contract.
+        self.drop_preroll_fallback_candidate("format_changed");
+
         // Сначала освобождаем decoder-owned кадры из `ready_queue`.
         // Иначе `invalidate_all()` удалит mappings, а VA handles,
         // удерживаемые этими кадрами, останутся без release path.
@@ -1042,11 +1498,22 @@ impl VaapiVideoDecoder {
                     trace!(pts_ms = pts_ms, "DecoderEvent::FrameReady");
                     match policy {
                         DecoderEventDrainPolicy::Publish { generation } => {
+                            let pts = Duration::from_micros(handle.timestamp());
+                            if let Some(floor) = self.should_suppress_ready_frame(pts, generation) {
+                                self.suppress_ready_frame(handle, generation, floor);
+                                continue;
+                            }
+
+                            if self.should_drop_preroll_candidate_before_publish(pts, generation) {
+                                self.drop_preroll_fallback_candidate("target_or_after_ready_frame");
+                            }
                             if let Err(error) = self.process_ready_frame(handle, generation) {
                                 if is_fatal_decoder_error(&error) {
                                     return Err(error);
                                 }
                                 warn!(error = %error, "Failed to process ready frame");
+                            } else {
+                                self.record_target_or_after_frame_published(pts, generation);
                             }
                         }
                         DecoderEventDrainPolicy::Discard { reason } => {
@@ -1154,6 +1621,7 @@ impl VaapiVideoDecoder {
             .begin_end_of_stream_drain()
             .map_err(|error| anyhow::anyhow!("EOF drain error: {error}"))?;
         self.drain_decoder_events(DecoderEventDrainPolicy::Publish { generation })?;
+        self.promote_preroll_fallback_candidate_if_needed(generation)?;
         Ok(())
     }
 }
@@ -1207,6 +1675,7 @@ impl VideoDecoder for VaapiVideoDecoder {
             .flush()
             .map_err(|error| anyhow::anyhow!("Flush error: {error}"))?;
         self.drain_decoder_events(DecoderEventDrainPolicy::Discard { reason: "flush" })?;
+        self.drop_preroll_fallback_candidate("flush");
         self.release_decoder_owned_ready_frames("flush")?;
         Ok(())
     }
@@ -1505,6 +1974,168 @@ mod tests {
         );
         assert!(!decoder_owned_handles.contains(&renderer_owned_handle));
         assert!(ready_queue.is_empty());
+    }
+
+    /// Создаёт нейтральный floor policy для focused state-machine тестов.
+    fn preroll_floor_policy(
+        generation: u64,
+        floor_pts: Duration,
+        retain_latest_before_floor: bool,
+    ) -> VideoPrerollOutputFloor {
+        VideoPrerollOutputFloor {
+            generation,
+            floor_pts,
+            retain_latest_before_floor,
+        }
+    }
+
+    /// Проверяет set/clear states без concrete VA handle-а.
+    #[test]
+    fn preroll_output_floor_set_repeat_and_clear_preserve_distinct_results() {
+        let floor = preroll_floor_policy(7, Duration::from_millis(1_500), true);
+        let mut state = PrerollOutputFloorState::default();
+
+        assert_eq!(
+            state.set_floor(floor),
+            VideoPrerollOutputFloorResult::Applied
+        );
+        assert_eq!(
+            state.set_floor(floor),
+            VideoPrerollOutputFloorResult::Unchanged
+        );
+        assert_eq!(
+            state.clear_floor(VideoPrerollOutputFloorClear::MatchingGeneration(8)),
+            VideoPrerollOutputFloorResult::Unchanged
+        );
+        assert_eq!(
+            state.clear_floor(VideoPrerollOutputFloorClear::MatchingGeneration(7)),
+            VideoPrerollOutputFloorResult::Cleared
+        );
+        assert_eq!(
+            state.clear_floor(VideoPrerollOutputFloorClear::Any),
+            VideoPrerollOutputFloorResult::Unchanged
+        );
+    }
+
+    /// Проверяет, что pre-floor кадр подавляется и не считается published target-ом.
+    #[test]
+    fn preroll_output_floor_suppresses_pre_floor_frame_without_publish_marker() {
+        let mut state = PrerollOutputFloorState::default();
+        let floor = preroll_floor_policy(11, Duration::from_millis(1_000), true);
+        assert_eq!(
+            state.set_floor(floor),
+            VideoPrerollOutputFloorResult::Applied
+        );
+
+        let suppression_floor = state
+            .suppression_floor(Duration::from_millis(900), 11)
+            .expect("matching pre-floor frame must be suppressed");
+        state.record_suppressed_frame();
+
+        assert_eq!(suppression_floor.generation, 11);
+        assert_eq!(suppression_floor.floor_pts, Duration::from_millis(1_000));
+        assert_eq!(state.counters.suppressed_frame_count, 1);
+        assert!(!state.is_target_or_after_for_active_floor(Duration::from_millis(900), 11));
+        assert!(state.should_promote_candidate(11));
+    }
+
+    /// Проверяет normal publish path для target-or-after кадра и одноразовый counter.
+    #[test]
+    fn preroll_output_floor_target_or_after_publishes_and_closes_fallback_window() {
+        let mut state = PrerollOutputFloorState::default();
+        let floor = preroll_floor_policy(12, Duration::from_millis(1_000), true);
+        assert_eq!(
+            state.set_floor(floor),
+            VideoPrerollOutputFloorResult::Applied
+        );
+
+        assert!(
+            state
+                .suppression_floor(Duration::from_millis(1_000), 12)
+                .is_none()
+        );
+        assert!(state.is_target_or_after_for_active_floor(Duration::from_millis(1_000), 12));
+        assert!(state.record_target_or_after_published(Duration::from_millis(1_000), 12));
+        assert!(!state.record_target_or_after_published(Duration::from_millis(1_033), 12));
+        assert!(!state.should_promote_candidate(12));
+        assert_eq!(state.counters.target_published_after_floor_count, 1);
+    }
+
+    /// Проверяет, что generation mismatch не подавляет кадр и не трогает active fallback window.
+    #[test]
+    fn preroll_output_floor_generation_mismatch_publishes_normally() {
+        let mut state = PrerollOutputFloorState::default();
+        let floor = preroll_floor_policy(21, Duration::from_millis(2_000), true);
+        assert_eq!(
+            state.set_floor(floor),
+            VideoPrerollOutputFloorResult::Applied
+        );
+
+        assert!(
+            state
+                .suppression_floor(Duration::from_millis(1_000), 20)
+                .is_none()
+        );
+        assert!(!state.is_target_or_after_for_active_floor(Duration::from_millis(3_000), 20));
+        assert!(!state.record_target_or_after_published(Duration::from_millis(3_000), 20));
+        assert!(state.should_promote_candidate(21));
+    }
+
+    /// Проверяет candidate policy: backend хранит только самый поздний pre-floor кадр.
+    #[test]
+    fn preroll_fallback_candidate_replaces_only_with_latest_pts() {
+        let mut candidate = Some(PrerollFallbackCandidate::new(
+            "older",
+            Duration::from_millis(700),
+            31,
+        ));
+
+        let older_incoming = PrerollFallbackCandidateMetadata {
+            pts: Duration::from_millis(650),
+            generation: 31,
+        };
+        assert_eq!(
+            preroll_fallback_candidate_decision(candidate.as_ref(), older_incoming),
+            PrerollFallbackCandidateDecision::DropIncoming
+        );
+
+        let newer_candidate =
+            PrerollFallbackCandidate::new("newer", Duration::from_millis(900), 31);
+        assert_eq!(
+            preroll_fallback_candidate_decision(candidate.as_ref(), newer_candidate.metadata),
+            PrerollFallbackCandidateDecision::ReplaceExisting
+        );
+        let replaced_candidate = candidate
+            .replace(newer_candidate)
+            .expect("test starts with an older candidate");
+        assert_eq!(replaced_candidate.handle, "older");
+        assert_eq!(
+            candidate.as_ref().map(|candidate| candidate.handle),
+            Some("newer")
+        );
+    }
+
+    /// Проверяет EOF fallback semantics: promotion разрешена ровно один раз.
+    #[test]
+    fn preroll_fallback_candidate_promotes_exactly_once_after_eof_without_target() {
+        let mut state = PrerollOutputFloorState::default();
+        let floor = preroll_floor_policy(41, Duration::from_millis(5_000), true);
+        assert_eq!(
+            state.set_floor(floor),
+            VideoPrerollOutputFloorResult::Applied
+        );
+
+        assert!(state.should_promote_candidate(41));
+        if state.should_promote_candidate(41) {
+            state.record_candidate_promoted(41);
+        }
+
+        assert_eq!(state.counters.candidate_promoted_count, 1);
+        assert!(!state.should_promote_candidate(41));
+        if state.should_promote_candidate(41) {
+            state.record_candidate_promoted(41);
+        }
+        assert_eq!(state.counters.candidate_promoted_count, 1);
     }
 
     /// Проверяет, что VA 10-bit 4:2:0 surface становится P010 boundary contract.

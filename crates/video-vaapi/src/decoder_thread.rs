@@ -35,6 +35,9 @@ type ConfigureStreamAck = video_core::VideoStreamConfigResult;
 /// Результат, которым decoder thread подтверждает запуск EOF/DPB drain.
 type EndOfStreamDrainAck = video_core::VideoDecoderEndOfStreamDrainResult;
 
+/// Результат, которым decoder thread подтверждает set/clear preroll output floor.
+type PrerollOutputFloorAck = video_core::VideoPrerollOutputFloorResult;
+
 /// Подтверждение, что decoder thread уже обработал один packet из input channel.
 type DecodePacketAck = ();
 
@@ -373,6 +376,18 @@ enum ThreadControlMsg {
     /// Сбросить decoder state и подтвердить завершение операции.
     Flush(Sender<FlushAck>),
 
+    /// Установить decoder-side preroll output floor для accurate seek.
+    SetPrerollOutputFloor(
+        video_core::VideoPrerollOutputFloor,
+        Sender<PrerollOutputFloorAck>,
+    ),
+
+    /// Очистить decoder-side preroll output floor без изменения generation.
+    ClearPrerollOutputFloor(
+        video_core::VideoPrerollOutputFloorClear,
+        Sender<PrerollOutputFloorAck>,
+    ),
+
     /// Дожать codec tail/DPB без seek flush и generation reset.
     BeginEndOfStreamDrain(u64, Sender<EndOfStreamDrainAck>),
 }
@@ -386,6 +401,12 @@ enum DecoderControlOperation {
     /// Синхронный flush decoder thread-а.
     Flush,
 
+    /// Установка accurate-seek preroll output floor.
+    SetPrerollOutputFloor,
+
+    /// Очистка accurate-seek preroll output floor.
+    ClearPrerollOutputFloor,
+
     /// Explicit EOF/DPB drain без seek reset semantics.
     EofDrain,
 }
@@ -396,6 +417,8 @@ impl DecoderControlOperation {
         match self {
             Self::Release => "release",
             Self::Flush => "flush",
+            Self::SetPrerollOutputFloor => "set_preroll_output_floor",
+            Self::ClearPrerollOutputFloor => "clear_preroll_output_floor",
             Self::EofDrain => "eof_drain",
         }
     }
@@ -405,6 +428,8 @@ impl DecoderControlOperation {
         match self {
             Self::Release => "zero-copy release",
             Self::Flush => "decoder flush",
+            Self::SetPrerollOutputFloor => "preroll output-floor set",
+            Self::ClearPrerollOutputFloor => "preroll output-floor clear",
             Self::EofDrain => "decoder EOF drain",
         }
     }
@@ -442,6 +467,8 @@ impl DecoderControlChannelPressureCounters {
             DecoderControlOperation::Flush => {
                 self.flush_send_fail_count.fetch_add(1, Ordering::Relaxed);
             }
+            DecoderControlOperation::SetPrerollOutputFloor
+            | DecoderControlOperation::ClearPrerollOutputFloor => {}
             DecoderControlOperation::EofDrain => {}
         }
 
@@ -1252,6 +1279,98 @@ impl VideoDecodeThread {
         }
     }
 
+    /// Устанавливает decoder-side output floor для accurate seek preroll.
+    pub fn set_preroll_output_floor(
+        &self,
+        floor: video_core::VideoPrerollOutputFloor,
+    ) -> video_core::VideoPrerollOutputFloorResult {
+        if let Err(error) = self.ensure_thread_usable() {
+            return video_core::VideoPrerollOutputFloorResult::Fatal(error.into());
+        }
+
+        let (done_tx, done_rx) = bounded(1);
+        if let Err(error) = self
+            .control_tx
+            .try_send(ThreadControlMsg::SetPrerollOutputFloor(floor, done_tx))
+        {
+            return match error {
+                TrySendError::Full(_) => {
+                    let _message = record_decoder_control_send_failure(
+                        DecoderControlOperation::SetPrerollOutputFloor,
+                        &self.control_tx,
+                        &self.control_pressure,
+                        &error,
+                    );
+                    video_core::VideoPrerollOutputFloorResult::Backpressure(
+                        video_core::VideoDecoderControlBackpressureReason::ControlChannelFull {
+                            queued_messages: self.control_tx.len(),
+                            capacity: self.control_tx.capacity().unwrap_or(0),
+                        },
+                    )
+                }
+                TrySendError::Disconnected(_) => {
+                    let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(
+                        "Decoder thread disconnected before preroll output-floor set",
+                    ));
+                    video_core::VideoPrerollOutputFloorResult::Fatal(fatal_error.into())
+                }
+            };
+        }
+
+        wait_for_preroll_output_floor_ack(
+            done_rx,
+            self.config.flush_timeout,
+            &self.thread_state,
+            "preroll output-floor set",
+        )
+    }
+
+    /// Очищает decoder-side output floor без изменения seek generation.
+    pub fn clear_preroll_output_floor(
+        &self,
+        clear: video_core::VideoPrerollOutputFloorClear,
+    ) -> video_core::VideoPrerollOutputFloorResult {
+        if let Err(error) = self.ensure_thread_usable() {
+            return video_core::VideoPrerollOutputFloorResult::Fatal(error.into());
+        }
+
+        let (done_tx, done_rx) = bounded(1);
+        if let Err(error) = self
+            .control_tx
+            .try_send(ThreadControlMsg::ClearPrerollOutputFloor(clear, done_tx))
+        {
+            return match error {
+                TrySendError::Full(_) => {
+                    let _message = record_decoder_control_send_failure(
+                        DecoderControlOperation::ClearPrerollOutputFloor,
+                        &self.control_tx,
+                        &self.control_pressure,
+                        &error,
+                    );
+                    video_core::VideoPrerollOutputFloorResult::Backpressure(
+                        video_core::VideoDecoderControlBackpressureReason::ControlChannelFull {
+                            queued_messages: self.control_tx.len(),
+                            capacity: self.control_tx.capacity().unwrap_or(0),
+                        },
+                    )
+                }
+                TrySendError::Disconnected(_) => {
+                    let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(
+                        "Decoder thread disconnected before preroll output-floor clear",
+                    ));
+                    video_core::VideoPrerollOutputFloorResult::Fatal(fatal_error.into())
+                }
+            };
+        }
+
+        wait_for_preroll_output_floor_ack(
+            done_rx,
+            self.config.flush_timeout,
+            &self.thread_state,
+            "preroll output-floor clear",
+        )
+    }
+
     /// Запускает explicit EOF drain через decoder thread без seek flush semantics.
     pub fn begin_end_of_stream_drain(
         &self,
@@ -1697,6 +1816,31 @@ fn wait_for_end_of_stream_drain_ack(
     }
 }
 
+/// Ждёт ACK preroll floor control command без потери fatal state.
+fn wait_for_preroll_output_floor_ack(
+    done_rx: Receiver<PrerollOutputFloorAck>,
+    timeout: Duration,
+    thread_state: &DecoderThreadState,
+    operation: &'static str,
+) -> video_core::VideoPrerollOutputFloorResult {
+    match done_rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => {
+            let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(format!(
+                "Decoder thread did not confirm {operation} within {} ms",
+                timeout.as_millis()
+            )));
+            video_core::VideoPrerollOutputFloorResult::Fatal(fatal_error.into())
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            let fatal_error = thread_state.mark_fatal(DecodeThreadError::new(format!(
+                "Decoder thread did not confirm {operation}"
+            )));
+            video_core::VideoPrerollOutputFloorResult::Fatal(fatal_error.into())
+        }
+    }
+}
+
 /// Не показывает player-у `Drained`, пока decoded frame channel ещё несёт tail frames.
 fn player_visible_eof_drain_state(
     state: video_core::VideoDecoderEndOfStreamDrainState,
@@ -2061,6 +2205,24 @@ fn handle_decoder_control_message(
             }
             true
         }
+        ThreadControlMsg::SetPrerollOutputFloor(floor, done_tx) => {
+            let result = decoder.set_preroll_output_floor(floor);
+            if done_tx.send(result).is_err() {
+                tracing::warn!(
+                    "Decoder thread: preroll output-floor set completed, but caller dropped receiver"
+                );
+            }
+            true
+        }
+        ThreadControlMsg::ClearPrerollOutputFloor(clear, done_tx) => {
+            let result = decoder.clear_preroll_output_floor(clear);
+            if done_tx.send(result).is_err() {
+                tracing::warn!(
+                    "Decoder thread: preroll output-floor clear completed, but caller dropped receiver"
+                );
+            }
+            true
+        }
         ThreadControlMsg::BeginEndOfStreamDrain(generation, done_tx) => {
             if let Ok(state) = decoder_eof_drain_state(end_of_stream_drain_state) {
                 if decoder_eof_drain_state_matches_generation(&state, generation) {
@@ -2233,6 +2395,23 @@ fn decode_queued_packet(
     };
 
     let decode_result = decoder.decode_packet_for_thread(&packet, decode_packet.generation);
+
+    handle_decode_packet_outcome(
+        decode_result,
+        queued_packet,
+        packet_receive_latency,
+        decode_context,
+    )
+}
+
+/// Обрабатывает результат backend decode без повторного знания о VAAPI submit path.
+fn handle_decode_packet_outcome(
+    decode_result: anyhow::Result<VaapiDecodePacketOutcome>,
+    queued_packet: QueuedDecodePacket,
+    packet_receive_latency: Duration,
+    decode_context: DecodeQueuedPacketContext<'_>,
+) -> DecodeQueuedPacketResult {
+    let decode_packet = &queued_packet.packet;
 
     match decode_result {
         Ok(VaapiDecodePacketOutcome::OutputBackpressured) => {
@@ -2567,6 +2746,9 @@ mod tests {
             .expect("full frame channel should emit pressure diagnostics")
         {
             VideoDecoderDiagnosticEvent::DecodedFramePublishPressure { pressure } => pressure,
+            VideoDecoderDiagnosticEvent::SeekPrerollFrameSuppressed { .. } => {
+                panic!("publish pressure test should not emit preroll suppression diagnostics")
+            }
             VideoDecoderDiagnosticEvent::FrameDropped { .. } => {
                 panic!("publish pressure test should not emit frame drop diagnostics")
             }
@@ -2590,6 +2772,9 @@ mod tests {
             .expect("successful retry should emit retry diagnostics")
         {
             VideoDecoderDiagnosticEvent::DecodedFramePublishPressure { pressure } => pressure,
+            VideoDecoderDiagnosticEvent::SeekPrerollFrameSuppressed { .. } => {
+                panic!("publish retry test should not emit preroll suppression diagnostics")
+            }
             VideoDecoderDiagnosticEvent::FrameDropped { .. } => {
                 panic!("publish retry test should not emit frame drop diagnostics")
             }
@@ -2664,6 +2849,158 @@ mod tests {
         assert_eq!(after_flush.flush_control_send_fail_count, 1);
     }
 
+    /// Создаёт handle без фонового VA thread-а для sender-side control tests.
+    fn decoder_thread_for_control_tests(
+        control_tx: Sender<ThreadControlMsg>,
+        control_pressure: Arc<DecoderControlChannelPressureCounters>,
+        thread_state: DecoderThreadState,
+    ) -> VideoDecodeThread {
+        let (packet_tx, _packet_rx) = bounded(1);
+        let (_frame_tx, frame_rx) = bounded(1);
+        let (_packet_ack_tx, packet_ack_rx) = unbounded();
+        let (_error_tx, error_rx) = bounded(1);
+        let (_diagnostic_tx, diagnostic_rx) =
+            std::sync::mpsc::sync_channel(DECODER_DIAGNOSTIC_CHANNEL_CAPACITY);
+
+        VideoDecodeThread {
+            packet_tx,
+            control_tx,
+            control_pressure,
+            frame_rx,
+            packet_ack_rx,
+            error_rx,
+            diagnostic_rx,
+            resource_pool: Arc::new(Mutex::new(crate::resource_pool::FrameResourcePool::new())),
+            thread_state,
+            stream_config: Arc::new(Mutex::new(None)),
+            end_of_stream_drain_state: Arc::new(Mutex::new(
+                video_core::VideoDecoderEndOfStreamDrainState::Idle,
+            )),
+            config: VideoDecodeThreadConfig {
+                flush_timeout: Duration::from_millis(1),
+                ..VideoDecodeThreadConfig::default()
+            }
+            .normalized(),
+            backend_name: "VA-API test",
+        }
+    }
+
+    /// Проверяет, что set floor на full control channel возвращает typed Backpressure.
+    #[test]
+    fn preroll_output_floor_set_control_channel_full_returns_backpressure() {
+        let (control_tx, _control_rx) = bounded(1);
+        control_tx
+            .try_send(ThreadControlMsg::ReleaseZeroCopy(FrameResourceHandle(1)))
+            .expect("test control channel has one slot");
+        let control_pressure = Arc::new(DecoderControlChannelPressureCounters::default());
+        let decoder_thread = decoder_thread_for_control_tests(
+            control_tx,
+            Arc::clone(&control_pressure),
+            DecoderThreadState::new(),
+        );
+
+        let result = decoder_thread.set_preroll_output_floor(video_core::VideoPrerollOutputFloor {
+            generation: 7,
+            floor_pts: Duration::from_millis(1_000),
+            retain_latest_before_floor: true,
+        });
+
+        match result {
+            video_core::VideoPrerollOutputFloorResult::Backpressure(
+                video_core::VideoDecoderControlBackpressureReason::ControlChannelFull {
+                    queued_messages,
+                    capacity,
+                },
+            ) => {
+                assert_eq!(queued_messages, 1);
+                assert_eq!(capacity, 1);
+            }
+            other => panic!("full control channel must return Backpressure, got {other:?}"),
+        }
+        let pressure = decoder_thread.control_channel_pressure_stats();
+        assert_eq!(pressure.control_channel_full_count, 1);
+        assert_eq!(pressure.release_control_send_fail_count, 0);
+        assert_eq!(pressure.flush_control_send_fail_count, 0);
+    }
+
+    /// Проверяет, что clear floor использует тот же typed Backpressure reason.
+    #[test]
+    fn preroll_output_floor_clear_control_channel_full_returns_backpressure() {
+        let (control_tx, _control_rx) = bounded(1);
+        control_tx
+            .try_send(ThreadControlMsg::ReleaseZeroCopy(FrameResourceHandle(1)))
+            .expect("test control channel has one slot");
+        let decoder_thread = decoder_thread_for_control_tests(
+            control_tx,
+            Arc::new(DecoderControlChannelPressureCounters::default()),
+            DecoderThreadState::new(),
+        );
+
+        let result = decoder_thread
+            .clear_preroll_output_floor(video_core::VideoPrerollOutputFloorClear::Any);
+
+        assert!(matches!(
+            result,
+            video_core::VideoPrerollOutputFloorResult::Backpressure(
+                video_core::VideoDecoderControlBackpressureReason::ControlChannelFull {
+                    queued_messages: 1,
+                    capacity: 1,
+                },
+            )
+        ));
+    }
+
+    /// Проверяет fail-closed path: sticky fatal thread state не отправляет новую floor command.
+    #[test]
+    fn preroll_output_floor_control_returns_fatal_when_thread_is_fatal() {
+        let (control_tx, _control_rx) = bounded(1);
+        let thread_state = DecoderThreadState::new();
+        thread_state.mark_fatal(DecodeThreadError::new("test decoder fatal"));
+        let decoder_thread = decoder_thread_for_control_tests(
+            control_tx,
+            Arc::new(DecoderControlChannelPressureCounters::default()),
+            thread_state,
+        );
+
+        let result = decoder_thread
+            .clear_preroll_output_floor(video_core::VideoPrerollOutputFloorClear::Any);
+
+        match result {
+            video_core::VideoPrerollOutputFloorResult::Fatal(error) => {
+                assert_eq!(error.message(), "test decoder fatal");
+            }
+            other => panic!("fatal decoder thread must return Fatal, got {other:?}"),
+        }
+    }
+
+    /// Проверяет timeout ACK для floor command как fatal lifecycle error.
+    #[test]
+    fn preroll_output_floor_ack_timeout_marks_thread_fatal_once() {
+        let (_done_tx, done_rx) = bounded(1);
+        let thread_state = DecoderThreadState::new();
+
+        let result = wait_for_preroll_output_floor_ack(
+            done_rx,
+            Duration::from_millis(1),
+            &thread_state,
+            "preroll output-floor set",
+        );
+
+        match result {
+            video_core::VideoPrerollOutputFloorResult::Fatal(error) => {
+                assert!(
+                    error
+                        .to_string()
+                        .contains("Decoder thread did not confirm preroll output-floor set within")
+                );
+            }
+            other => panic!("empty preroll floor ACK channel must timeout, got {other:?}"),
+        }
+        assert!(thread_state.current_error().is_some());
+        assert!(thread_state.take_pending_error().is_some());
+        assert!(thread_state.take_pending_error().is_none());
+    }
+
     /// Проверяет seek/flush cancellation: старые packets не остаются после backend flush.
     #[test]
     fn flush_drops_queued_decode_packets() {
@@ -2688,6 +3025,58 @@ mod tests {
 
         assert_eq!(drain_queued_decode_packets(&packet_rx), 3);
         assert!(matches!(packet_rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    /// Проверяет packet-based ACK: отсутствие output frame не блокирует accounting.
+    #[test]
+    fn accepted_none_decode_outcome_acks_packet_without_publish() {
+        let (frame_tx, frame_rx) = bounded(1);
+        let (packet_ack_tx, packet_ack_rx) = bounded(1);
+        let (error_tx, error_rx) = bounded(1);
+        let (diagnostic_tx, diagnostic_rx) =
+            std::sync::mpsc::sync_channel(DECODER_DIAGNOSTIC_CHANNEL_CAPACITY);
+        let mut pending_publish = None;
+        let mut publish_pressure = FramePublishPressureCounters::default();
+        let mut latest_color_metadata = None;
+        let queued_packet = QueuedDecodePacket {
+            packet: DecodePacket {
+                track_id: media_core::TrackId::new(1),
+                pts: Duration::from_millis(900),
+                dts: None,
+                track_dts: None,
+                generation: 17,
+                encoded_bytes: Bytes::from_static(b"suppressed"),
+                keyframe: false,
+                resolved_color: Some(VideoColorMetadata::sdr_bt709_limited()),
+            },
+            enqueued_at: Instant::now(),
+        };
+
+        let result = handle_decode_packet_outcome(
+            Ok(VaapiDecodePacketOutcome::Accepted(None)),
+            queued_packet,
+            Duration::from_millis(2),
+            DecodeQueuedPacketContext {
+                frame_tx: &frame_tx,
+                packet_ack_tx: &packet_ack_tx,
+                error_tx: &error_tx,
+                pending_publish: &mut pending_publish,
+                publish_pressure: &mut publish_pressure,
+                diagnostic_tx: &diagnostic_tx,
+                latest_color_metadata: &mut latest_color_metadata,
+            },
+        );
+
+        assert!(matches!(result, DecodeQueuedPacketResult::Continue));
+        assert!(packet_ack_rx.try_recv().is_ok());
+        assert!(matches!(frame_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(matches!(error_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(diagnostic_rx.try_recv().is_err());
+        assert!(pending_publish.is_none());
+        assert_eq!(
+            latest_color_metadata,
+            Some(VideoColorMetadata::sdr_bt709_limited())
+        );
     }
 
     /// Проверяет, что timeout не блокируется бесконечно и становится fatal state.
