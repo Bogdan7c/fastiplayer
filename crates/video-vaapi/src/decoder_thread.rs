@@ -177,10 +177,10 @@ impl VideoDecodeThreadConfig {
     /// Возвращает backend-local config, который передаётся VA decoder wrapper-у.
     #[must_use]
     fn vaapi_decoder_config(self) -> VaapiDecoderRuntimeConfig {
-        VaapiDecoderRuntimeConfig {
-            surface_pool_frames: self.decoder_surface_pool_frames,
-            ready_queue_frames: self.decoder_ready_queue_frames,
-        }
+        VaapiDecoderRuntimeConfig::from_surface_accounting(
+            self.decoder_surface_pool_frames,
+            self.decoder_ready_queue_frames,
+        )
     }
 }
 

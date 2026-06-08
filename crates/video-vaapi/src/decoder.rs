@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::collections::{HashMap, VecDeque};
+use std::env;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -41,6 +42,32 @@ pub const DEFAULT_DECODER_SURFACE_POOL_FRAMES: usize = 24;
 /// growth: лимит явно прокидывается из config и виден в diagnostics.
 pub const DEFAULT_DECODER_READY_QUEUE_FRAMES: usize = 8;
 
+/// Validation-only override для Session E throughput замеров suppressed reclaim queue.
+///
+/// Это не user-facing TOML config: переменная нужна, чтобы быстро сравнить
+/// несколько bounds на одной сборке без изменения `video-core` API.
+const SUPPRESSED_RECLAIM_QUEUE_BOUND_OVERRIDE_ENV: &str =
+    "RUSTIPLAYER_VAAPI_MAX_SUPPRESSED_RECLAIM_FRAMES";
+
+/// Ориентировочный reserve под codec DPB/reference pressure.
+///
+/// Это не доказанный максимум для всех codec/driver комбинаций. Значение
+/// оставляет default pool 24 достаточно широким для accurate-preroll замеров,
+/// а Session E сможет проверить реальные bounds через env override.
+const SUPPRESSED_RECLAIM_REFERENCE_HEADROOM_FRAMES: usize = 5;
+
+/// Reserve под кадры, которые renderer ещё может удерживать через zero-copy guards.
+const SUPPRESSED_RECLAIM_RENDER_HELD_HEADROOM_FRAMES: usize = 2;
+
+/// Reserve под target frame, pending publish и небольшой ready-queue backlog.
+///
+/// Для suppressed preroll эта очередь не является основным sink-ом, поэтому
+/// здесь не резервируется вся `ready_queue_frames` capacity.
+const SUPPRESSED_RECLAIM_READY_PUBLISH_HEADROOM_FRAMES: usize = 2;
+
+/// Минимальный запас от off-by-one/in-flight accounting ошибок.
+const SUPPRESSED_RECLAIM_MARGIN_FRAMES: usize = 1;
+
 /// Runtime-limits VA-API decoder-а, которые относятся к backend-local очередям.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VaapiDecoderRuntimeConfig {
@@ -49,25 +76,132 @@ pub struct VaapiDecoderRuntimeConfig {
 
     /// Максимум готовых frames внутри backend ready queue до publish boundary.
     pub ready_queue_frames: usize,
+
+    /// Максимум suppressed VA handles, ожидающих non-blocking reclaim.
+    ///
+    /// Это главный backend-local throughput knob для accurate-preroll. Default
+    /// считается от surface accounting, а не как маленький safety лимит.
+    pub max_suppressed_reclaim_frames: usize,
 }
 
 impl Default for VaapiDecoderRuntimeConfig {
     /// Возвращает production defaults без unbounded backend-local очередей.
     fn default() -> Self {
-        Self {
-            surface_pool_frames: DEFAULT_DECODER_SURFACE_POOL_FRAMES,
-            ready_queue_frames: DEFAULT_DECODER_READY_QUEUE_FRAMES,
-        }
+        Self::from_surface_accounting(
+            DEFAULT_DECODER_SURFACE_POOL_FRAMES,
+            DEFAULT_DECODER_READY_QUEUE_FRAMES,
+        )
     }
 }
 
 impl VaapiDecoderRuntimeConfig {
+    /// Создаёт backend-local config, выводя suppressed reclaim bound из surface accounting.
+    #[must_use]
+    pub(crate) fn from_surface_accounting(
+        surface_pool_frames: usize,
+        ready_queue_frames: usize,
+    ) -> Self {
+        let normalized_surface_pool_frames = surface_pool_frames.max(1);
+        let normalized_ready_queue_frames = ready_queue_frames.max(1);
+        Self {
+            surface_pool_frames: normalized_surface_pool_frames,
+            ready_queue_frames: normalized_ready_queue_frames,
+            max_suppressed_reclaim_frames: default_max_suppressed_reclaim_frames(
+                normalized_surface_pool_frames,
+                normalized_ready_queue_frames,
+            ),
+        }
+    }
+
     /// Нормализует public config, чтобы прямой вызов backend API не создал нулевые очереди.
     #[must_use]
     fn normalized(self) -> Self {
+        let surface_pool_frames = self.surface_pool_frames.max(1);
+        let ready_queue_frames = self.ready_queue_frames.max(1);
+        let configured_suppressed_reclaim_frames = if self.max_suppressed_reclaim_frames == 0 {
+            default_max_suppressed_reclaim_frames(surface_pool_frames, ready_queue_frames)
+        } else {
+            self.max_suppressed_reclaim_frames
+        };
+        let max_suppressed_reclaim_frames = suppressed_reclaim_bound_with_validation_override(
+            configured_suppressed_reclaim_frames,
+            surface_pool_frames,
+        );
+
         Self {
-            surface_pool_frames: self.surface_pool_frames.max(1),
-            ready_queue_frames: self.ready_queue_frames.max(1),
+            surface_pool_frames,
+            ready_queue_frames,
+            max_suppressed_reclaim_frames,
+        }
+    }
+}
+
+/// Считает default bound suppressed reclaim queue из surface accounting.
+fn default_max_suppressed_reclaim_frames(
+    surface_pool_frames: usize,
+    ready_queue_frames: usize,
+) -> usize {
+    let ready_publish_headroom = ready_queue_frames
+        .min(SUPPRESSED_RECLAIM_READY_PUBLISH_HEADROOM_FRAMES)
+        .max(1);
+    let accounting_headroom = SUPPRESSED_RECLAIM_REFERENCE_HEADROOM_FRAMES
+        + SUPPRESSED_RECLAIM_RENDER_HELD_HEADROOM_FRAMES
+        + ready_publish_headroom
+        + SUPPRESSED_RECLAIM_MARGIN_FRAMES;
+
+    surface_pool_frames
+        .saturating_sub(accounting_headroom)
+        .clamp(1, surface_pool_frames.max(1))
+}
+
+/// Применяет validation-only env override без расширения user config/API.
+fn suppressed_reclaim_bound_with_validation_override(
+    configured_bound: usize,
+    surface_pool_frames: usize,
+) -> usize {
+    let normalized_configured_bound = configured_bound.clamp(1, surface_pool_frames.max(1));
+    let override_value = match env::var(SUPPRESSED_RECLAIM_QUEUE_BOUND_OVERRIDE_ENV) {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => return normalized_configured_bound,
+        Err(error) => {
+            warn!(
+                env = SUPPRESSED_RECLAIM_QUEUE_BOUND_OVERRIDE_ENV,
+                error = %error,
+                configured_bound = normalized_configured_bound,
+                "Ignoring invalid suppressed reclaim queue override"
+            );
+            return normalized_configured_bound;
+        }
+    };
+
+    match override_value.parse::<usize>() {
+        Ok(parsed_bound) if parsed_bound > 0 => {
+            let normalized_override = parsed_bound.clamp(1, surface_pool_frames.max(1));
+            if normalized_override != parsed_bound {
+                warn!(
+                    env = SUPPRESSED_RECLAIM_QUEUE_BOUND_OVERRIDE_ENV,
+                    requested_bound = parsed_bound,
+                    normalized_bound = normalized_override,
+                    surface_pool_frames,
+                    "Clamped suppressed reclaim queue override to surface pool accounting"
+                );
+            } else {
+                info!(
+                    env = SUPPRESSED_RECLAIM_QUEUE_BOUND_OVERRIDE_ENV,
+                    normalized_bound = normalized_override,
+                    "Using validation-only suppressed reclaim queue override"
+                );
+            }
+            normalized_override
+        }
+        Ok(_) | Err(_) => {
+            warn!(
+                env = SUPPRESSED_RECLAIM_QUEUE_BOUND_OVERRIDE_ENV,
+                value = %override_value,
+                configured_bound = normalized_configured_bound,
+                "Ignoring non-positive or non-numeric suppressed reclaim queue override"
+            );
+            normalized_configured_bound
         }
     }
 }
@@ -98,6 +232,74 @@ struct DecoderDrainReport {
 
     /// Был ли среди событий `FormatChanged`.
     format_changed: bool,
+}
+
+/// Накопительные counters backend-local suppressed reclaim queue.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct SuppressedReclaimCounters {
+    /// Сколько suppressed/candidate handles было поставлено в reclaim queue.
+    total_enqueued: usize,
+
+    /// Сколько handles было освобождено через readiness/sync reclaim path.
+    total_reclaimed: usize,
+
+    /// Сколько раз non-blocking readiness query вернул ошибку.
+    query_errors: usize,
+
+    /// Сколько blocking `sync()` вызвано forced reclaim path-ом.
+    forced_sync_count: usize,
+
+    /// Сколько раз queue была полной при попытке enqueue.
+    ring_full_count: usize,
+}
+
+/// Snapshot одного reclaim pass-а вместе с накопительными counters.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ReclaimPassReport {
+    /// Текущая глубина suppressed reclaim queue после pass-а.
+    current_depth: usize,
+
+    /// Сколько handles было поставлено в очередь за жизнь decoder-а.
+    total_enqueued: usize,
+
+    /// Сколько handles было освобождено за жизнь decoder-а.
+    total_reclaimed: usize,
+
+    /// Сколько readiness query errors было за жизнь decoder-а.
+    query_errors: usize,
+
+    /// Сколько forced `sync()` было за жизнь decoder-а.
+    forced_sync_count: usize,
+
+    /// Сколько overflow ситуаций было за жизнь decoder-а.
+    ring_full_count: usize,
+
+    /// Сколько handles освободил конкретный reclaim pass.
+    reclaimed_this_pass: usize,
+
+    /// Сколько query errors увидел конкретный reclaim pass.
+    query_errors_this_pass: usize,
+}
+
+impl SuppressedReclaimCounters {
+    /// Собирает report без раскрытия mutable counters наружу decoder-а.
+    fn report(
+        self,
+        current_depth: usize,
+        reclaimed_this_pass: usize,
+        query_errors_this_pass: usize,
+    ) -> ReclaimPassReport {
+        ReclaimPassReport {
+            current_depth,
+            total_enqueued: self.total_enqueued,
+            total_reclaimed: self.total_reclaimed,
+            query_errors: self.query_errors,
+            forced_sync_count: self.forced_sync_count,
+            ring_full_count: self.ring_full_count,
+            reclaimed_this_pass,
+            query_errors_this_pass,
+        }
+    }
 }
 
 /// Политика обработки `FrameReady` events во время drain-а decoder-а.
@@ -662,6 +864,205 @@ fn rt_format_for_decoded_format(decoded_format: VaapiDecodedFormat) -> Result<u3
     }
 }
 
+/// Возвращает backing frame в pool после того, как decoded handle больше не нужен.
+fn return_frame_to_pool_from_handle(
+    frame_pool: &mut DmaFramePool,
+    handle: VaapiDecodedFrameHandle,
+) {
+    let frame_arc = handle.video_frame();
+    drop(handle);
+
+    if let Ok(frame) = Arc::try_unwrap(frame_arc) {
+        frame_pool.return_frame(frame);
+        trace!("Frame returned to pool");
+    } else {
+        debug!("Frame still referenced by decoder, cannot return to pool yet");
+    }
+}
+
+/// Неблокирующе освобождает suppressed handles, чьи VA surfaces уже готовы.
+fn reclaim_ready_suppressed_surfaces_from_queue(
+    suppressed_reclaim_queue: &mut VecDeque<VaapiDecodedFrameHandle>,
+    suppressed_reclaim_counters: &mut SuppressedReclaimCounters,
+    frame_pool: &mut DmaFramePool,
+) -> Result<ReclaimPassReport> {
+    let queued_handles_to_scan = suppressed_reclaim_queue.len();
+    let mut reclaimed_this_pass = 0;
+    let mut query_errors_this_pass = 0;
+
+    for _ in 0..queued_handles_to_scan {
+        let Some(handle) = suppressed_reclaim_queue.pop_front() else {
+            break;
+        };
+        let pts_ms = handle.timestamp() / 1000;
+
+        match handle.surface_ready() {
+            Ok(true) => {
+                return_frame_to_pool_from_handle(frame_pool, handle);
+                suppressed_reclaim_counters.total_reclaimed += 1;
+                reclaimed_this_pass += 1;
+            }
+            Ok(false) => {
+                suppressed_reclaim_queue.push_back(handle);
+            }
+            Err(error) => {
+                suppressed_reclaim_counters.query_errors += 1;
+                query_errors_this_pass += 1;
+                warn!(
+                    error = %error,
+                    pts_ms,
+                    "Suppressed VA surface readiness query failed; keeping handle queued"
+                );
+                suppressed_reclaim_queue.push_back(handle);
+            }
+        }
+    }
+
+    let report = suppressed_reclaim_counters.report(
+        suppressed_reclaim_queue.len(),
+        reclaimed_this_pass,
+        query_errors_this_pass,
+    );
+    if report.reclaimed_this_pass > 0 || report.query_errors_this_pass > 0 {
+        debug!(
+            current_depth = report.current_depth,
+            total_enqueued = report.total_enqueued,
+            total_reclaimed = report.total_reclaimed,
+            query_errors = report.query_errors,
+            forced_sync_count = report.forced_sync_count,
+            ring_full_count = report.ring_full_count,
+            reclaimed_this_pass = report.reclaimed_this_pass,
+            query_errors_this_pass = report.query_errors_this_pass,
+            "Suppressed reclaim pass completed"
+        );
+    }
+
+    Ok(report)
+}
+
+/// Blocking fallback для одного oldest suppressed handle.
+fn force_reclaim_oldest_suppressed_surface_from_queue(
+    suppressed_reclaim_queue: &mut VecDeque<VaapiDecodedFrameHandle>,
+    suppressed_reclaim_counters: &mut SuppressedReclaimCounters,
+    frame_pool: &mut DmaFramePool,
+    reason: &'static str,
+) -> Result<bool> {
+    let Some(handle) = suppressed_reclaim_queue.pop_front() else {
+        return Ok(false);
+    };
+    let pts_ms = handle.timestamp() / 1000;
+    suppressed_reclaim_counters.forced_sync_count += 1;
+
+    if let Err(error) = handle.sync() {
+        suppressed_reclaim_queue.push_front(handle);
+        warn!(
+            error = %error,
+            pts_ms,
+            reason,
+            "Forced suppressed reclaim sync failed; keeping oldest handle queued"
+        );
+        return Err(anyhow::anyhow!(
+            "forced suppressed reclaim sync failed during {reason}: {error}"
+        ));
+    }
+
+    return_frame_to_pool_from_handle(frame_pool, handle);
+    suppressed_reclaim_counters.total_reclaimed += 1;
+    debug!(
+        pts_ms,
+        reason,
+        current_depth = suppressed_reclaim_queue.len(),
+        forced_sync_count = suppressed_reclaim_counters.forced_sync_count,
+        "Forced reclaimed oldest suppressed VA surface"
+    );
+    Ok(true)
+}
+
+/// Blocking lifecycle drain для suppressed handles, которые нельзя переносить дальше.
+fn force_drain_suppressed_surfaces_from_queue(
+    suppressed_reclaim_queue: &mut VecDeque<VaapiDecodedFrameHandle>,
+    suppressed_reclaim_counters: &mut SuppressedReclaimCounters,
+    frame_pool: &mut DmaFramePool,
+    reason: &'static str,
+) -> Result<()> {
+    while force_reclaim_oldest_suppressed_surface_from_queue(
+        suppressed_reclaim_queue,
+        suppressed_reclaim_counters,
+        frame_pool,
+        reason,
+    )? {}
+
+    Ok(())
+}
+
+/// Ставит suppressed/candidate handle в bounded reclaim queue.
+fn enqueue_suppressed_frame_for_reclaim_in_queue(
+    suppressed_reclaim_queue: &mut VecDeque<VaapiDecodedFrameHandle>,
+    suppressed_reclaim_counters: &mut SuppressedReclaimCounters,
+    frame_pool: &mut DmaFramePool,
+    max_suppressed_reclaim_frames: usize,
+    handle: VaapiDecodedFrameHandle,
+    reason: &'static str,
+    pts: Duration,
+    generation: u64,
+) -> Result<()> {
+    reclaim_ready_suppressed_surfaces_from_queue(
+        suppressed_reclaim_queue,
+        suppressed_reclaim_counters,
+        frame_pool,
+    )?;
+
+    let normalized_reclaim_bound = max_suppressed_reclaim_frames.max(1);
+    if suppressed_reclaim_queue.len() >= normalized_reclaim_bound {
+        suppressed_reclaim_counters.ring_full_count += 1;
+        debug!(
+            reason,
+            generation,
+            incoming_pts_ms = pts.as_millis(),
+            current_depth = suppressed_reclaim_queue.len(),
+            max_suppressed_reclaim_frames = normalized_reclaim_bound,
+            ring_full_count = suppressed_reclaim_counters.ring_full_count,
+            "Suppressed reclaim queue full; forcing oldest handle sync"
+        );
+
+        if let Err(error) = force_reclaim_oldest_suppressed_surface_from_queue(
+            suppressed_reclaim_queue,
+            suppressed_reclaim_counters,
+            frame_pool,
+            reason,
+        ) {
+            suppressed_reclaim_queue.push_back(handle);
+            suppressed_reclaim_counters.total_enqueued += 1;
+            warn!(
+                error = %error,
+                reason,
+                generation,
+                incoming_pts_ms = pts.as_millis(),
+                current_depth = suppressed_reclaim_queue.len(),
+                max_suppressed_reclaim_frames = normalized_reclaim_bound,
+                "Kept incoming suppressed handle queued after forced reclaim failure"
+            );
+            return Err(error);
+        }
+    }
+
+    suppressed_reclaim_queue.push_back(handle);
+    suppressed_reclaim_counters.total_enqueued += 1;
+    debug!(
+        reason,
+        generation,
+        pts_ms = pts.as_millis(),
+        current_depth = suppressed_reclaim_queue.len(),
+        max_suppressed_reclaim_frames = normalized_reclaim_bound,
+        total_enqueued = suppressed_reclaim_counters.total_enqueued,
+        total_reclaimed = suppressed_reclaim_counters.total_reclaimed,
+        forced_sync_count = suppressed_reclaim_counters.forced_sync_count,
+        ring_full_count = suppressed_reclaim_counters.ring_full_count,
+        "Queued suppressed VA handle for readiness-based reclaim"
+    );
+    Ok(())
+}
+
 /// VA-API hardware decoder с internal codec adapter shell.
 ///
 /// Активный adapter владеет concrete cros-codecs decoder-ом, а этот слой владеет
@@ -690,6 +1091,12 @@ pub struct VaapiVideoDecoder {
 
     /// Bounded backend-local лимиты очередей и surface pool-а.
     runtime_config: VaapiDecoderRuntimeConfig,
+
+    /// Suppressed pre-floor handles, которые ждут безопасного backend-local reclaim.
+    suppressed_reclaim_queue: VecDeque<VaapiDecodedFrameHandle>,
+
+    /// Накопительная статистика suppressed reclaim queue.
+    suppressed_reclaim_counters: SuppressedReclaimCounters,
 
     /// Handles кадров, которые сейчас удерживают decoded VA surface.
     ///
@@ -796,6 +1203,9 @@ impl VaapiVideoDecoder {
         info!(
             backend_name,
             codec = %adapter_codec,
+            surface_pool_frames = runtime_config.surface_pool_frames,
+            ready_queue_frames = runtime_config.ready_queue_frames,
+            max_suppressed_reclaim_frames = runtime_config.max_suppressed_reclaim_frames,
             "VA-API decoder initialized successfully"
         );
 
@@ -806,6 +1216,8 @@ impl VaapiVideoDecoder {
             resource_pool,
             ready_queue: VecDeque::new(),
             runtime_config,
+            suppressed_reclaim_queue: VecDeque::new(),
+            suppressed_reclaim_counters: SuppressedReclaimCounters::default(),
             zero_copy_guards: HashMap::new(),
             zero_copy_success_logged: false,
             diagnostic_tx,
@@ -868,7 +1280,13 @@ impl VaapiVideoDecoder {
     ) -> VideoPrerollOutputFloorResult {
         let result = self.preroll_output_floor.set_floor(policy);
         if result == VideoPrerollOutputFloorResult::Applied {
-            self.drop_preroll_fallback_candidate("set_preroll_output_floor");
+            if let Err(error) = self.drop_preroll_fallback_candidate("set_preroll_output_floor") {
+                warn!(
+                    error = %error,
+                    generation = policy.generation,
+                    "Failed to queue old preroll fallback candidate while setting new floor"
+                );
+            }
             debug!(
                 generation = policy.generation,
                 floor_pts_ms = policy.floor_pts.as_millis(),
@@ -886,7 +1304,13 @@ impl VaapiVideoDecoder {
     ) -> VideoPrerollOutputFloorResult {
         let result = self.preroll_output_floor.clear_floor(clear);
         if result == VideoPrerollOutputFloorResult::Cleared {
-            self.drop_preroll_fallback_candidate("clear_preroll_output_floor");
+            if let Err(error) = self.drop_preroll_fallback_candidate("clear_preroll_output_floor") {
+                warn!(
+                    error = %error,
+                    ?clear,
+                    "Failed to queue old preroll fallback candidate while clearing floor"
+                );
+            }
             debug!(?clear, "VAAPI preroll output floor cleared");
         }
         result
@@ -919,7 +1343,8 @@ impl VaapiVideoDecoder {
         if floor_clear_result == VideoPrerollOutputFloorResult::Cleared {
             debug!("Cleared VAAPI preroll output floor during stream reconfigure");
         }
-        self.drop_preroll_fallback_candidate("configure_stream");
+        self.drop_preroll_fallback_candidate("configure_stream")?;
+        self.force_drain_suppressed_surfaces("configure_stream")?;
         self.release_decoder_owned_ready_frames("configure_stream")?;
         self.invalidate_idle_resource_pool_after_format_change();
 
@@ -967,15 +1392,46 @@ impl VaapiVideoDecoder {
 
     /// Возвращает backing frame в pool после того, как decoded handle больше не нужен.
     fn return_frame_from_handle(&mut self, handle: VaapiDecodedFrameHandle) {
-        let frame_arc = handle.video_frame();
-        drop(handle);
+        return_frame_to_pool_from_handle(&mut self.frame_pool, handle);
+    }
 
-        if let Ok(frame) = Arc::try_unwrap(frame_arc) {
-            self.frame_pool.return_frame(frame);
-            trace!("Frame returned to pool");
-        } else {
-            debug!("Frame still referenced by decoder, cannot return to pool yet");
-        }
+    /// Неблокирующе освобождает ready suppressed surfaces из backend-local queue.
+    fn reclaim_ready_suppressed_surfaces(&mut self) -> Result<ReclaimPassReport> {
+        reclaim_ready_suppressed_surfaces_from_queue(
+            &mut self.suppressed_reclaim_queue,
+            &mut self.suppressed_reclaim_counters,
+            &mut self.frame_pool,
+        )
+    }
+
+    /// Принудительно дренирует suppressed queue перед lifecycle boundary.
+    fn force_drain_suppressed_surfaces(&mut self, reason: &'static str) -> Result<()> {
+        force_drain_suppressed_surfaces_from_queue(
+            &mut self.suppressed_reclaim_queue,
+            &mut self.suppressed_reclaim_counters,
+            &mut self.frame_pool,
+            reason,
+        )
+    }
+
+    /// Ставит suppressed/candidate frame в backend-local reclaim queue.
+    fn enqueue_suppressed_frame_for_reclaim(
+        &mut self,
+        handle: VaapiDecodedFrameHandle,
+        reason: &'static str,
+        pts: Duration,
+        generation: u64,
+    ) -> Result<()> {
+        enqueue_suppressed_frame_for_reclaim_in_queue(
+            &mut self.suppressed_reclaim_queue,
+            &mut self.suppressed_reclaim_counters,
+            &mut self.frame_pool,
+            self.runtime_config.max_suppressed_reclaim_frames,
+            handle,
+            reason,
+            pts,
+            generation,
+        )
     }
 
     /// Проверяет, должен ли `FrameReady` быть подавлен active output floor-ом.
@@ -989,18 +1445,24 @@ impl VaapiVideoDecoder {
     }
 
     /// Удаляет retained pre-floor candidate без sync/export/publish.
-    fn drop_preroll_fallback_candidate(&mut self, reason: &'static str) {
+    fn drop_preroll_fallback_candidate(&mut self, reason: &'static str) -> Result<()> {
         let Some(candidate) = self.preroll_fallback_candidate.take() else {
-            return;
+            return Ok(());
         };
+        let metadata = candidate.metadata;
 
         debug!(
-            pts_ms = candidate.metadata.pts.as_millis(),
-            generation = candidate.metadata.generation,
+            pts_ms = metadata.pts.as_millis(),
+            generation = metadata.generation,
             reason,
-            "Dropping retained preroll fallback candidate without DMA-BUF export"
+            "Queueing retained preroll fallback candidate for suppressed reclaim"
         );
-        self.return_frame_from_handle(candidate.handle);
+        self.enqueue_suppressed_frame_for_reclaim(
+            candidate.handle,
+            reason,
+            metadata.pts,
+            metadata.generation,
+        )
     }
 
     /// Сохраняет только самый поздний pre-floor candidate для EOF fallback.
@@ -1009,7 +1471,7 @@ impl VaapiVideoDecoder {
         handle: VaapiDecodedFrameHandle,
         pts: Duration,
         generation: u64,
-    ) {
+    ) -> Result<()> {
         let incoming_candidate = PrerollFallbackCandidate::new(handle, pts, generation);
         match preroll_fallback_candidate_decision(
             self.preroll_fallback_candidate.as_ref(),
@@ -1022,35 +1484,48 @@ impl VaapiVideoDecoder {
                     "Retaining first preroll fallback candidate"
                 );
                 self.preroll_fallback_candidate = Some(incoming_candidate);
+                Ok(())
             }
             PrerollFallbackCandidateDecision::ReplaceExisting => {
                 let replaced_candidate = self
                     .preroll_fallback_candidate
                     .replace(incoming_candidate)
                     .expect("candidate exists when replacement was selected");
+                let replaced_metadata = replaced_candidate.metadata;
                 self.preroll_output_floor.record_candidate_replaced();
                 debug!(
-                    old_pts_ms = replaced_candidate.metadata.pts.as_millis(),
+                    old_pts_ms = replaced_metadata.pts.as_millis(),
                     new_pts_ms = pts.as_millis(),
                     generation,
                     candidate_replaced_count =
                         self.preroll_output_floor.counters.candidate_replaced_count,
-                    "Replacing retained preroll fallback candidate"
+                    "Replacing retained preroll fallback candidate via suppressed reclaim queue"
                 );
-                self.return_frame_from_handle(replaced_candidate.handle);
+                self.enqueue_suppressed_frame_for_reclaim(
+                    replaced_candidate.handle,
+                    "replace_preroll_fallback_candidate",
+                    replaced_metadata.pts,
+                    replaced_metadata.generation,
+                )
             }
             PrerollFallbackCandidateDecision::DropIncoming => {
+                let incoming_metadata = incoming_candidate.metadata;
                 debug!(
-                    incoming_pts_ms = incoming_candidate.metadata.pts.as_millis(),
+                    incoming_pts_ms = incoming_metadata.pts.as_millis(),
                     retained_pts_ms = self
                         .preroll_fallback_candidate
                         .as_ref()
                         .map(|candidate| candidate.metadata.pts.as_millis())
                         .unwrap_or_default(),
                     generation,
-                    "Dropping older preroll fallback candidate without DMA-BUF export"
+                    "Queueing older incoming preroll fallback candidate for suppressed reclaim"
                 );
-                self.return_frame_from_handle(incoming_candidate.handle);
+                self.enqueue_suppressed_frame_for_reclaim(
+                    incoming_candidate.handle,
+                    "drop_incoming_preroll_fallback_candidate",
+                    incoming_metadata.pts,
+                    incoming_metadata.generation,
+                )
             }
         }
     }
@@ -1061,7 +1536,7 @@ impl VaapiVideoDecoder {
         handle: VaapiDecodedFrameHandle,
         generation: u64,
         floor: ActivePrerollOutputFloor,
-    ) {
+    ) -> Result<()> {
         let pts = Duration::from_micros(handle.timestamp());
         self.preroll_output_floor.record_suppressed_frame();
         self.send_diagnostic_event(VideoDecoderDiagnosticEvent::SeekPrerollFrameSuppressed {
@@ -1080,19 +1555,28 @@ impl VaapiVideoDecoder {
         );
 
         if floor.retain_latest_before_floor {
-            self.retain_preroll_fallback_candidate(handle, pts, generation);
+            self.retain_preroll_fallback_candidate(handle, pts, generation)
         } else {
-            self.return_frame_from_handle(handle);
+            self.enqueue_suppressed_frame_for_reclaim(
+                handle,
+                "suppress_ready_frame",
+                pts,
+                generation,
+            )
         }
     }
 
     /// Отмечает successful publish target-or-after кадра и удаляет fallback candidate.
-    fn record_target_or_after_frame_published(&mut self, pts: Duration, generation: u64) {
+    fn record_target_or_after_frame_published(
+        &mut self,
+        pts: Duration,
+        generation: u64,
+    ) -> Result<()> {
         if self
             .preroll_output_floor
             .record_target_or_after_published(pts, generation)
         {
-            self.drop_preroll_fallback_candidate("target_or_after_published");
+            self.drop_preroll_fallback_candidate("target_or_after_published")?;
             debug!(
                 pts_ms = pts.as_millis(),
                 generation,
@@ -1103,6 +1587,7 @@ impl VaapiVideoDecoder {
                 "Published target-or-after frame for active preroll floor"
             );
         }
+        Ok(())
     }
 
     /// Проверяет, должен ли matching target-or-after frame удалить retained candidate.
@@ -1130,8 +1615,12 @@ impl VaapiVideoDecoder {
                 drain_generation = generation,
                 "Dropping preroll fallback candidate with mismatched generation"
             );
-            self.return_frame_from_handle(candidate.handle);
-            return Ok(());
+            return self.enqueue_suppressed_frame_for_reclaim(
+                candidate.handle,
+                "promote_candidate_generation_mismatch",
+                candidate.metadata.pts,
+                candidate.metadata.generation,
+            );
         }
 
         let promoted_pts = candidate.metadata.pts;
@@ -1448,7 +1937,8 @@ impl VaapiVideoDecoder {
         info!("Format changed, invalidating resource pool and frame pool");
 
         // Retained candidate мог относиться к старому surface/format contract.
-        self.drop_preroll_fallback_candidate("format_changed");
+        self.drop_preroll_fallback_candidate("format_changed")?;
+        self.force_drain_suppressed_surfaces("format_changed")?;
 
         // Сначала освобождаем decoder-owned кадры из `ready_queue`.
         // Иначе `invalidate_all()` удалит mappings, а VA handles,
@@ -1511,6 +2001,7 @@ impl VaapiVideoDecoder {
         policy: DecoderEventDrainPolicy,
     ) -> Result<DecoderDrainReport> {
         let mut report = DecoderDrainReport::default();
+        self.reclaim_ready_suppressed_surfaces()?;
 
         while let Some(event) = self.adapter.next_event() {
             report.events_count += 1;
@@ -1522,12 +2013,14 @@ impl VaapiVideoDecoder {
                         DecoderEventDrainPolicy::Publish { generation } => {
                             let pts = Duration::from_micros(handle.timestamp());
                             if let Some(floor) = self.should_suppress_ready_frame(pts, generation) {
-                                self.suppress_ready_frame(handle, generation, floor);
+                                self.suppress_ready_frame(handle, generation, floor)?;
                                 continue;
                             }
 
                             if self.should_drop_preroll_candidate_before_publish(pts, generation) {
-                                self.drop_preroll_fallback_candidate("target_or_after_ready_frame");
+                                self.drop_preroll_fallback_candidate(
+                                    "target_or_after_ready_frame",
+                                )?;
                             }
                             if let Err(error) = self.process_ready_frame(handle, generation) {
                                 if is_fatal_decoder_error(&error) {
@@ -1535,7 +2028,7 @@ impl VaapiVideoDecoder {
                                 }
                                 warn!(error = %error, "Failed to process ready frame");
                             } else {
-                                self.record_target_or_after_frame_published(pts, generation);
+                                self.record_target_or_after_frame_published(pts, generation)?;
                             }
                         }
                         DecoderEventDrainPolicy::Discard { reason } => {
@@ -1550,6 +2043,7 @@ impl VaapiVideoDecoder {
             }
         }
 
+        self.reclaim_ready_suppressed_surfaces()?;
         Ok(report)
     }
 
@@ -1697,7 +2191,8 @@ impl VideoDecoder for VaapiVideoDecoder {
             .flush()
             .map_err(|error| anyhow::anyhow!("Flush error: {error}"))?;
         self.drain_decoder_events(DecoderEventDrainPolicy::Discard { reason: "flush" })?;
-        self.drop_preroll_fallback_candidate("flush");
+        self.drop_preroll_fallback_candidate("flush")?;
+        self.force_drain_suppressed_surfaces("flush")?;
         self.release_decoder_owned_ready_frames("flush")?;
         Ok(())
     }
@@ -1722,6 +2217,8 @@ impl VideoDecoder for VaapiVideoDecoder {
 mod tests {
     use super::*;
 
+    use crate::codec_adapter::test_support::{FakeSurfaceReadiness, fake_decoded_frame_handle};
+
     /// Создаёт neutral decoded frame без реального VA resource-а для ownership tests.
     fn decoded_frame_for_tests(resource_handle: FrameResourceHandle) -> DecodedFrame {
         DecodedFrame {
@@ -1740,6 +2237,71 @@ mod tests {
             resource_handle,
             diagnostics: VideoFrameDiagnostics::default(),
         }
+    }
+
+    /// Создаёт пустой frame pool для reclaim tests без реального VA display.
+    fn reclaim_frame_pool_for_tests() -> DmaFramePool {
+        DmaFramePool::new(16, 16, 0).expect("test frame pool должен создаваться")
+    }
+
+    /// Проверяет, что конкретный drop reason ставит handle в reclaim queue.
+    fn assert_reclaim_enqueue_for_reason(reason: &'static str) {
+        let mut suppressed_reclaim_queue = VecDeque::new();
+        let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
+        let mut frame_pool = reclaim_frame_pool_for_tests();
+        let initial_free_frames = frame_pool.num_free();
+        let (handle, sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+
+        enqueue_suppressed_frame_for_reclaim_in_queue(
+            &mut suppressed_reclaim_queue,
+            &mut suppressed_reclaim_counters,
+            &mut frame_pool,
+            4,
+            handle,
+            reason,
+            Duration::from_millis(700),
+            31,
+        )
+        .expect("enqueue suppressed handle должен пройти");
+
+        assert_eq!(
+            suppressed_reclaim_queue.len(),
+            1,
+            "drop path должен поставить handle в reclaim queue"
+        );
+        assert_eq!(
+            frame_pool.num_free(),
+            initial_free_frames,
+            "enqueue не должен освобождать surface сразу"
+        );
+        assert!(
+            !sync_called.get(),
+            "обычный enqueue не должен вызывать blocking sync"
+        );
+        assert_eq!(suppressed_reclaim_counters.total_enqueued, 1);
+        assert_eq!(suppressed_reclaim_counters.total_reclaimed, 0);
+    }
+
+    /// Проверяет, что default bound выводится из surface accounting, а не из малого magic limit.
+    #[test]
+    fn suppressed_reclaim_default_bound_uses_surface_accounting() {
+        let default_bound = default_max_suppressed_reclaim_frames(
+            DEFAULT_DECODER_SURFACE_POOL_FRAMES,
+            DEFAULT_DECODER_READY_QUEUE_FRAMES,
+        );
+
+        assert_eq!(
+            default_bound,
+            DEFAULT_DECODER_SURFACE_POOL_FRAMES
+                - SUPPRESSED_RECLAIM_REFERENCE_HEADROOM_FRAMES
+                - SUPPRESSED_RECLAIM_RENDER_HELD_HEADROOM_FRAMES
+                - SUPPRESSED_RECLAIM_READY_PUBLISH_HEADROOM_FRAMES
+                - SUPPRESSED_RECLAIM_MARGIN_FRAMES
+        );
+        assert!(
+            default_bound > 12,
+            "default pool 24 не должен снова закреплять bound в диапазоне 8..12 без замеров"
+        );
     }
 
     /// Test-only event type для проверки retry state machine без реальной VA-API.
@@ -2135,6 +2697,199 @@ mod tests {
             candidate.as_ref().map(|candidate| candidate.handle),
             Some("newer")
         );
+    }
+
+    /// Проверяет suppressed drop: handle ставится в queue и не освобождается сразу.
+    #[test]
+    fn suppressed_drop_frame_enqueues_for_reclaim_without_immediate_release() {
+        assert_reclaim_enqueue_for_reason("suppress_ready_frame");
+    }
+
+    /// Проверяет обычный reclaim pass: ready surface возвращается в frame pool.
+    #[test]
+    fn ready_suppressed_handle_reclaimed_by_nonblocking_pass() {
+        let mut suppressed_reclaim_queue = VecDeque::new();
+        let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
+        let mut frame_pool = reclaim_frame_pool_for_tests();
+        let initial_free_frames = frame_pool.num_free();
+        let (handle, sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(true));
+        suppressed_reclaim_queue.push_back(handle);
+
+        let report = reclaim_ready_suppressed_surfaces_from_queue(
+            &mut suppressed_reclaim_queue,
+            &mut suppressed_reclaim_counters,
+            &mut frame_pool,
+        )
+        .expect("ready reclaim pass должен пройти");
+
+        assert_eq!(suppressed_reclaim_queue.len(), 0);
+        assert_eq!(
+            frame_pool.num_free(),
+            initial_free_frames + 1,
+            "ready handle должен вернуться в frame pool"
+        );
+        assert!(
+            !sync_called.get(),
+            "non-blocking reclaim pass не должен вызывать sync"
+        );
+        assert_eq!(report.current_depth, 0);
+        assert_eq!(report.reclaimed_this_pass, 1);
+        assert_eq!(suppressed_reclaim_counters.total_reclaimed, 1);
+    }
+
+    /// Проверяет обычный reclaim pass: busy surface остаётся в queue.
+    #[test]
+    fn not_ready_suppressed_handle_stays_queued() {
+        let mut suppressed_reclaim_queue = VecDeque::new();
+        let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
+        let mut frame_pool = reclaim_frame_pool_for_tests();
+        let initial_free_frames = frame_pool.num_free();
+        let (handle, sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+        suppressed_reclaim_queue.push_back(handle);
+
+        let report = reclaim_ready_suppressed_surfaces_from_queue(
+            &mut suppressed_reclaim_queue,
+            &mut suppressed_reclaim_counters,
+            &mut frame_pool,
+        )
+        .expect("busy reclaim pass должен пройти без blocking sync");
+
+        assert_eq!(suppressed_reclaim_queue.len(), 1);
+        assert_eq!(frame_pool.num_free(), initial_free_frames);
+        assert!(
+            !sync_called.get(),
+            "busy reclaim pass не должен вызывать sync"
+        );
+        assert_eq!(report.current_depth, 1);
+        assert_eq!(report.reclaimed_this_pass, 0);
+        assert_eq!(suppressed_reclaim_counters.total_reclaimed, 0);
+    }
+
+    /// Проверяет query error: handle не теряется и не считается ready.
+    #[test]
+    fn query_error_keeps_suppressed_handle_queued() {
+        let mut suppressed_reclaim_queue = VecDeque::new();
+        let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
+        let mut frame_pool = reclaim_frame_pool_for_tests();
+        let initial_free_frames = frame_pool.num_free();
+        let (handle, sync_called) =
+            fake_decoded_frame_handle(FakeSurfaceReadiness::QueryError("query failed"));
+        suppressed_reclaim_queue.push_back(handle);
+
+        let report = reclaim_ready_suppressed_surfaces_from_queue(
+            &mut suppressed_reclaim_queue,
+            &mut suppressed_reclaim_counters,
+            &mut frame_pool,
+        )
+        .expect("query error должен остаться счетчиком, а не Result error");
+
+        assert_eq!(suppressed_reclaim_queue.len(), 1);
+        assert_eq!(frame_pool.num_free(), initial_free_frames);
+        assert!(
+            !sync_called.get(),
+            "query error path не должен делать blocking sync"
+        );
+        assert_eq!(report.current_depth, 1);
+        assert_eq!(report.query_errors_this_pass, 1);
+        assert_eq!(suppressed_reclaim_counters.query_errors, 1);
+        assert_eq!(suppressed_reclaim_counters.total_reclaimed, 0);
+    }
+
+    /// Проверяет ReplaceExisting path: replaced candidate уходит в reclaim queue.
+    #[test]
+    fn replaced_fallback_candidate_enqueues_for_reclaim() {
+        assert_reclaim_enqueue_for_reason("replace_preroll_fallback_candidate");
+    }
+
+    /// Проверяет DropIncoming path: older incoming candidate уходит в reclaim queue.
+    #[test]
+    fn dropped_incoming_older_candidate_enqueues_for_reclaim() {
+        assert_reclaim_enqueue_for_reason("drop_incoming_preroll_fallback_candidate");
+    }
+
+    /// Проверяет retained-candidate drop path: candidate уходит в reclaim queue.
+    #[test]
+    fn dropping_retained_candidate_enqueues_for_reclaim() {
+        assert_reclaim_enqueue_for_reason("target_or_after_ready_frame");
+    }
+
+    /// Проверяет, что bounded reclaim queue не растёт выше configured bound.
+    #[test]
+    fn suppressed_reclaim_queue_respects_bound() {
+        let mut suppressed_reclaim_queue = VecDeque::new();
+        let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
+        let mut frame_pool = reclaim_frame_pool_for_tests();
+
+        for generation in 1..=3 {
+            let (handle, _sync_called) =
+                fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+            enqueue_suppressed_frame_for_reclaim_in_queue(
+                &mut suppressed_reclaim_queue,
+                &mut suppressed_reclaim_counters,
+                &mut frame_pool,
+                2,
+                handle,
+                "bound_test",
+                Duration::from_millis(generation),
+                generation,
+            )
+            .expect("bounded enqueue должен пройти");
+        }
+
+        assert_eq!(suppressed_reclaim_queue.len(), 2);
+        assert_eq!(suppressed_reclaim_counters.total_enqueued, 3);
+        assert_eq!(suppressed_reclaim_counters.total_reclaimed, 1);
+        assert_eq!(suppressed_reclaim_counters.ring_full_count, 1);
+        assert_eq!(suppressed_reclaim_counters.forced_sync_count, 1);
+    }
+
+    /// Проверяет overflow fallback: sync вызывается только для oldest handle.
+    #[test]
+    fn overflow_forces_sync_of_oldest_only_as_fallback() {
+        let mut suppressed_reclaim_queue = VecDeque::new();
+        let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
+        let mut frame_pool = reclaim_frame_pool_for_tests();
+        let (oldest_handle, oldest_sync_called) =
+            fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+        let (incoming_handle, incoming_sync_called) =
+            fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+
+        enqueue_suppressed_frame_for_reclaim_in_queue(
+            &mut suppressed_reclaim_queue,
+            &mut suppressed_reclaim_counters,
+            &mut frame_pool,
+            1,
+            oldest_handle,
+            "overflow_test_first",
+            Duration::from_millis(1),
+            1,
+        )
+        .expect("первый enqueue должен пройти без overflow");
+        enqueue_suppressed_frame_for_reclaim_in_queue(
+            &mut suppressed_reclaim_queue,
+            &mut suppressed_reclaim_counters,
+            &mut frame_pool,
+            1,
+            incoming_handle,
+            "overflow_test_second",
+            Duration::from_millis(2),
+            2,
+        )
+        .expect("overflow enqueue должен освободить oldest и принять incoming");
+
+        assert_eq!(suppressed_reclaim_queue.len(), 1);
+        assert!(
+            oldest_sync_called.get(),
+            "overflow должен forced-sync только oldest handle"
+        );
+        assert!(
+            !incoming_sync_called.get(),
+            "incoming handle нельзя sync-ать как обычную per-frame policy"
+        );
+        assert_eq!(suppressed_reclaim_counters.ring_full_count, 1);
+        assert_eq!(suppressed_reclaim_counters.forced_sync_count, 1);
+        assert_eq!(suppressed_reclaim_counters.total_enqueued, 2);
+        assert_eq!(suppressed_reclaim_counters.total_reclaimed, 1);
     }
 
     /// Проверяет EOF fallback semantics: promotion разрешена ровно один раз.

@@ -165,7 +165,6 @@ impl VaapiDecodedFrameHandle {
     ///
     /// Наружу adapter boundary возвращает только `Result<bool>`: raw VA status
     /// остаётся внутри cros/libva слоя.
-    #[allow(dead_code)] // Session B начнёт вызывать этот boundary из reclaim queue.
     pub(crate) fn surface_ready(&self) -> Result<bool> {
         self.inner.try_is_ready()
     }
@@ -1469,76 +1468,18 @@ fn reject_optional_surface(
         )
 }
 
+/// Test support для backend-local tests без настоящего VA display.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use std::cell::Cell;
     use std::rc::Rc;
     use std::sync::Arc;
 
-    use bytes::Bytes;
-    use codec_core::{
-        H264NalLengthSize, H264Packetization, H264Profile, H265NalLengthSize, H265Profile,
-        VideoMemoryContract,
-    };
-    use media_core::TrackId;
-
     use super::*;
 
-    /// Test-only adapter, который использует default reuse policy из trait-а.
-    struct DefaultReusePolicyAdapter;
-
-    impl VaapiCodecAdapter for DefaultReusePolicyAdapter {
-        /// Возвращает codec только для полноты тестового adapter contract-а.
-        fn codec(&self) -> VideoCodec {
-            VideoCodec::H264
-        }
-
-        /// Возвращает стабильное имя fake backend-а.
-        fn backend_name(&self) -> &'static str {
-            "test"
-        }
-
-        /// Возвращает стабильный codec label для fake diagnostics.
-        fn codec_label(&self) -> &'static str {
-            "test"
-        }
-
-        /// Имитирует полный consume packet-а без VA-API.
-        fn submit_packet(
-            &mut self,
-            _timestamp_us: u64,
-            packet_data: &[u8],
-            _decode_hints: VaapiPacketDecodeHints,
-            _frame_pool: &mut DmaFramePool,
-        ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
-            Ok(packet_data.len())
-        }
-
-        /// Fake adapter не держит codec state.
-        fn flush(&mut self) -> std::result::Result<(), VaapiAdapterDecodeError> {
-            Ok(())
-        }
-
-        /// Fake adapter не держит DPB tail.
-        fn begin_end_of_stream_drain(
-            &mut self,
-        ) -> std::result::Result<(), VaapiAdapterDecodeError> {
-            Ok(())
-        }
-
-        /// Fake adapter не публикует events.
-        fn next_event(&mut self) -> Option<VaapiDecoderEvent> {
-            None
-        }
-
-        /// Fake adapter не сообщает stream info.
-        fn stream_info(&self) -> Option<VaapiAdapterStreamInfo> {
-            None
-        }
-    }
-
     /// Test-only результат readiness query без зависимости от реального VA display.
-    enum FakeSurfaceReadiness {
+    #[derive(Clone, Copy)]
+    pub(crate) enum FakeSurfaceReadiness {
         /// Surface query вернул обычное bool-состояние.
         Ready(bool),
         /// Surface query вернул ошибку, которую boundary обязан пробросить.
@@ -1628,7 +1569,7 @@ mod tests {
     }
 
     /// Собирает wrapper поверх fake cros handle и флаг вызова `sync()`.
-    fn fake_decoded_frame_handle(
+    pub(crate) fn fake_decoded_frame_handle(
         readiness: FakeSurfaceReadiness,
     ) -> (VaapiDecodedFrameHandle, Rc<Cell<bool>>) {
         let sync_called = Rc::new(Cell::new(false));
@@ -1638,6 +1579,72 @@ mod tests {
             VaapiDecodedFrameHandle::new(Box::new(fake_handle)),
             sync_called,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use codec_core::{
+        H264NalLengthSize, H264Packetization, H264Profile, H265NalLengthSize, H265Profile,
+        VideoMemoryContract,
+    };
+    use media_core::TrackId;
+
+    use super::test_support::{FakeSurfaceReadiness, fake_decoded_frame_handle};
+    use super::*;
+
+    /// Test-only adapter, который использует default reuse policy из trait-а.
+    struct DefaultReusePolicyAdapter;
+
+    impl VaapiCodecAdapter for DefaultReusePolicyAdapter {
+        /// Возвращает codec только для полноты тестового adapter contract-а.
+        fn codec(&self) -> VideoCodec {
+            VideoCodec::H264
+        }
+
+        /// Возвращает стабильное имя fake backend-а.
+        fn backend_name(&self) -> &'static str {
+            "test"
+        }
+
+        /// Возвращает стабильный codec label для fake diagnostics.
+        fn codec_label(&self) -> &'static str {
+            "test"
+        }
+
+        /// Имитирует полный consume packet-а без VA-API.
+        fn submit_packet(
+            &mut self,
+            _timestamp_us: u64,
+            packet_data: &[u8],
+            _decode_hints: VaapiPacketDecodeHints,
+            _frame_pool: &mut DmaFramePool,
+        ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
+            Ok(packet_data.len())
+        }
+
+        /// Fake adapter не держит codec state.
+        fn flush(&mut self) -> std::result::Result<(), VaapiAdapterDecodeError> {
+            Ok(())
+        }
+
+        /// Fake adapter не держит DPB tail.
+        fn begin_end_of_stream_drain(
+            &mut self,
+        ) -> std::result::Result<(), VaapiAdapterDecodeError> {
+            Ok(())
+        }
+
+        /// Fake adapter не публикует events.
+        fn next_event(&mut self) -> Option<VaapiDecoderEvent> {
+            None
+        }
+
+        /// Fake adapter не сообщает stream info.
+        fn stream_info(&self) -> Option<VaapiAdapterStreamInfo> {
+            None
+        }
     }
 
     /// Проверяет, что `surface_ready()` возвращает `true` без blocking sync.
