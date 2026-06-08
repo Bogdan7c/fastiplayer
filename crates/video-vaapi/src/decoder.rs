@@ -141,9 +141,8 @@ fn default_max_suppressed_reclaim_frames(
     surface_pool_frames: usize,
     ready_queue_frames: usize,
 ) -> usize {
-    let ready_publish_headroom = ready_queue_frames
-        .min(SUPPRESSED_RECLAIM_READY_PUBLISH_HEADROOM_FRAMES)
-        .max(1);
+    let ready_publish_headroom =
+        ready_queue_frames.clamp(1, SUPPRESSED_RECLAIM_READY_PUBLISH_HEADROOM_FRAMES);
     let accounting_headroom = SUPPRESSED_RECLAIM_REFERENCE_HEADROOM_FRAMES
         + SUPPRESSED_RECLAIM_RENDER_HELD_HEADROOM_FRAMES
         + ready_publish_headroom
@@ -183,12 +182,17 @@ fn suppressed_reclaim_bound_with_validation_override(
                     requested_bound = parsed_bound,
                     normalized_bound = normalized_override,
                     surface_pool_frames,
+                    approximate_reserved_surface_headroom_frames =
+                        surface_pool_frames.saturating_sub(normalized_override),
                     "Clamped suppressed reclaim queue override to surface pool accounting"
                 );
             } else {
                 info!(
                     env = SUPPRESSED_RECLAIM_QUEUE_BOUND_OVERRIDE_ENV,
                     normalized_bound = normalized_override,
+                    surface_pool_frames,
+                    approximate_reserved_surface_headroom_frames =
+                        surface_pool_frames.saturating_sub(normalized_override),
                     "Using validation-only suppressed reclaim queue override"
                 );
             }
@@ -253,11 +257,85 @@ struct SuppressedReclaimCounters {
     ring_full_count: usize,
 }
 
+/// Backend-local snapshot ёмкости suppressed reclaim queue для диагностики Session E.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct SuppressedReclaimCapacity {
+    /// Сколько output descriptors доступно VA decoder-у.
+    surface_pool_frames: usize,
+
+    /// Сколько frames может временно удерживать backend ready queue.
+    ready_queue_frames: usize,
+
+    /// Настроенный bound suppressed reclaim queue после env override/normalization.
+    max_suppressed_reclaim_frames: usize,
+}
+
+impl SuppressedReclaimCapacity {
+    /// Собирает snapshot из runtime config без чтения mutable decoder state.
+    #[must_use]
+    fn from_runtime_config(runtime_config: VaapiDecoderRuntimeConfig) -> Self {
+        Self::new(
+            runtime_config.surface_pool_frames,
+            runtime_config.ready_queue_frames,
+            runtime_config.max_suppressed_reclaim_frames,
+        )
+    }
+
+    /// Нормализует capacity поля так же, как decoder hot path нормализует queue bound.
+    #[must_use]
+    fn new(
+        surface_pool_frames: usize,
+        ready_queue_frames: usize,
+        max_suppressed_reclaim_frames: usize,
+    ) -> Self {
+        let normalized_surface_pool_frames = surface_pool_frames.max(1);
+        let normalized_ready_queue_frames = ready_queue_frames.max(1);
+        let normalized_reclaim_frames = max_suppressed_reclaim_frames
+            .max(1)
+            .min(normalized_surface_pool_frames);
+
+        Self {
+            surface_pool_frames: normalized_surface_pool_frames,
+            ready_queue_frames: normalized_ready_queue_frames,
+            max_suppressed_reclaim_frames: normalized_reclaim_frames,
+        }
+    }
+
+    /// Оценивает свободные места в reclaim queue без тяжёлых VA/resource-pool запросов.
+    #[must_use]
+    fn approximate_available_reclaim_slots(self, current_depth: usize) -> usize {
+        self.max_suppressed_reclaim_frames
+            .saturating_sub(current_depth)
+    }
+
+    /// Оценивает surface headroom, который не отдан suppressed reclaim queue.
+    #[must_use]
+    fn approximate_reserved_surface_headroom_frames(self) -> usize {
+        self.surface_pool_frames
+            .saturating_sub(self.max_suppressed_reclaim_frames)
+    }
+}
+
 /// Snapshot одного reclaim pass-а вместе с накопительными counters.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct ReclaimPassReport {
     /// Текущая глубина suppressed reclaim queue после pass-а.
     current_depth: usize,
+
+    /// Сколько output descriptors доступно VA decoder-у.
+    surface_pool_frames: usize,
+
+    /// Сколько frames может временно удерживать backend ready queue.
+    ready_queue_frames: usize,
+
+    /// Настроенный bound suppressed reclaim queue.
+    max_suppressed_reclaim_frames: usize,
+
+    /// Приблизительно свободные места в reclaim queue после pass-а.
+    approximate_available_reclaim_slots: usize,
+
+    /// Приблизительный reserve output descriptors вне reclaim queue.
+    approximate_reserved_surface_headroom_frames: usize,
 
     /// Сколько handles было поставлено в очередь за жизнь decoder-а.
     total_enqueued: usize,
@@ -286,11 +364,19 @@ impl SuppressedReclaimCounters {
     fn report(
         self,
         current_depth: usize,
+        capacity: SuppressedReclaimCapacity,
         reclaimed_this_pass: usize,
         query_errors_this_pass: usize,
     ) -> ReclaimPassReport {
         ReclaimPassReport {
             current_depth,
+            surface_pool_frames: capacity.surface_pool_frames,
+            ready_queue_frames: capacity.ready_queue_frames,
+            max_suppressed_reclaim_frames: capacity.max_suppressed_reclaim_frames,
+            approximate_available_reclaim_slots: capacity
+                .approximate_available_reclaim_slots(current_depth),
+            approximate_reserved_surface_headroom_frames: capacity
+                .approximate_reserved_surface_headroom_frames(),
             total_enqueued: self.total_enqueued,
             total_reclaimed: self.total_reclaimed,
             query_errors: self.query_errors,
@@ -958,6 +1044,7 @@ fn reclaim_ready_suppressed_surfaces_from_queue(
     suppressed_reclaim_queue: &mut VecDeque<VaapiDecodedFrameHandle>,
     suppressed_reclaim_counters: &mut SuppressedReclaimCounters,
     frame_pool: &mut DmaFramePool,
+    reclaim_capacity: SuppressedReclaimCapacity,
 ) -> Result<ReclaimPassReport> {
     let queued_handles_to_scan = suppressed_reclaim_queue.len();
     let mut reclaimed_this_pass = 0;
@@ -981,9 +1068,17 @@ fn reclaim_ready_suppressed_surfaces_from_queue(
             Err(error) => {
                 suppressed_reclaim_counters.query_errors += 1;
                 query_errors_this_pass += 1;
+                let retained_depth = suppressed_reclaim_queue.len() + 1;
                 warn!(
                     error = %error,
                     pts_ms,
+                    current_depth = retained_depth,
+                    max_suppressed_reclaim_frames =
+                        reclaim_capacity.max_suppressed_reclaim_frames,
+                    approximate_available_reclaim_slots = reclaim_capacity
+                        .approximate_available_reclaim_slots(retained_depth),
+                    approximate_reserved_surface_headroom_frames = reclaim_capacity
+                        .approximate_reserved_surface_headroom_frames(),
                     "Suppressed VA surface readiness query failed; keeping handle queued"
                 );
                 suppressed_reclaim_queue.push_back(handle);
@@ -993,12 +1088,23 @@ fn reclaim_ready_suppressed_surfaces_from_queue(
 
     let report = suppressed_reclaim_counters.report(
         suppressed_reclaim_queue.len(),
+        reclaim_capacity,
         reclaimed_this_pass,
         query_errors_this_pass,
     );
-    if report.reclaimed_this_pass > 0 || report.query_errors_this_pass > 0 {
+    if queued_handles_to_scan > 0
+        || report.reclaimed_this_pass > 0
+        || report.query_errors_this_pass > 0
+    {
         debug!(
+            scanned_this_pass = queued_handles_to_scan,
             current_depth = report.current_depth,
+            max_suppressed_reclaim_frames = report.max_suppressed_reclaim_frames,
+            approximate_available_reclaim_slots = report.approximate_available_reclaim_slots,
+            approximate_reserved_surface_headroom_frames =
+                report.approximate_reserved_surface_headroom_frames,
+            surface_pool_frames = report.surface_pool_frames,
+            ready_queue_frames = report.ready_queue_frames,
             total_enqueued = report.total_enqueued,
             total_reclaimed = report.total_reclaimed,
             query_errors = report.query_errors,
@@ -1019,6 +1125,7 @@ fn force_reclaim_oldest_suppressed_surface_from_queue(
     suppressed_reclaim_counters: &mut SuppressedReclaimCounters,
     frame_pool: &mut DmaFramePool,
     reason: &'static str,
+    reclaim_capacity: SuppressedReclaimCapacity,
 ) -> Result<bool> {
     let Some(handle) = suppressed_reclaim_queue.pop_front() else {
         return Ok(false);
@@ -1033,6 +1140,13 @@ fn force_reclaim_oldest_suppressed_surface_from_queue(
             error = %error,
             pts_ms,
             reason,
+            current_depth = suppressed_reclaim_queue.len(),
+            max_suppressed_reclaim_frames =
+                reclaim_capacity.max_suppressed_reclaim_frames,
+            approximate_available_reclaim_slots = reclaim_capacity
+                .approximate_available_reclaim_slots(suppressed_reclaim_queue.len()),
+            approximate_reserved_surface_headroom_frames = reclaim_capacity
+                .approximate_reserved_surface_headroom_frames(),
             "Forced suppressed reclaim sync failed; keeping oldest handle queued"
         );
         return Err(anyhow::Error::new(VaapiSurfaceLifecycleError::new(
@@ -1047,6 +1161,11 @@ fn force_reclaim_oldest_suppressed_surface_from_queue(
         pts_ms,
         reason,
         current_depth = suppressed_reclaim_queue.len(),
+        max_suppressed_reclaim_frames = reclaim_capacity.max_suppressed_reclaim_frames,
+        approximate_available_reclaim_slots =
+            reclaim_capacity.approximate_available_reclaim_slots(suppressed_reclaim_queue.len()),
+        approximate_reserved_surface_headroom_frames =
+            reclaim_capacity.approximate_reserved_surface_headroom_frames(),
         sync_us = sync_latency.as_micros(),
         forced_sync_count = suppressed_reclaim_counters.forced_sync_count,
         "Forced reclaimed oldest suppressed VA surface"
@@ -1060,13 +1179,45 @@ fn force_drain_suppressed_surfaces_from_queue(
     suppressed_reclaim_counters: &mut SuppressedReclaimCounters,
     frame_pool: &mut DmaFramePool,
     reason: &'static str,
+    reclaim_capacity: SuppressedReclaimCapacity,
 ) -> Result<()> {
+    let initial_depth = suppressed_reclaim_queue.len();
+    if initial_depth > 0 {
+        debug!(
+            reason,
+            initial_depth,
+            max_suppressed_reclaim_frames = reclaim_capacity.max_suppressed_reclaim_frames,
+            approximate_available_reclaim_slots =
+                reclaim_capacity.approximate_available_reclaim_slots(initial_depth),
+            approximate_reserved_surface_headroom_frames =
+                reclaim_capacity.approximate_reserved_surface_headroom_frames(),
+            "Force-draining suppressed reclaim queue"
+        );
+    }
+
     while force_reclaim_oldest_suppressed_surface_from_queue(
         suppressed_reclaim_queue,
         suppressed_reclaim_counters,
         frame_pool,
         reason,
+        reclaim_capacity,
     )? {}
+
+    if initial_depth > 0 {
+        debug!(
+            reason,
+            drained_handles = initial_depth,
+            current_depth = suppressed_reclaim_queue.len(),
+            max_suppressed_reclaim_frames = reclaim_capacity.max_suppressed_reclaim_frames,
+            approximate_available_reclaim_slots = reclaim_capacity
+                .approximate_available_reclaim_slots(suppressed_reclaim_queue.len()),
+            approximate_reserved_surface_headroom_frames =
+                reclaim_capacity.approximate_reserved_surface_headroom_frames(),
+            forced_sync_count = suppressed_reclaim_counters.forced_sync_count,
+            total_reclaimed = suppressed_reclaim_counters.total_reclaimed,
+            "Force-drained suppressed reclaim queue"
+        );
+    }
 
     Ok(())
 }
@@ -1076,27 +1227,31 @@ fn enqueue_suppressed_frame_for_reclaim_in_queue(
     suppressed_reclaim_queue: &mut VecDeque<VaapiDecodedFrameHandle>,
     suppressed_reclaim_counters: &mut SuppressedReclaimCounters,
     frame_pool: &mut DmaFramePool,
-    max_suppressed_reclaim_frames: usize,
+    reclaim_capacity: SuppressedReclaimCapacity,
     handle: VaapiDecodedFrameHandle,
     reason: &'static str,
-    pts: Duration,
-    generation: u64,
+    metadata: PrerollFallbackCandidateMetadata,
 ) -> Result<()> {
     reclaim_ready_suppressed_surfaces_from_queue(
         suppressed_reclaim_queue,
         suppressed_reclaim_counters,
         frame_pool,
+        reclaim_capacity,
     )?;
 
-    let normalized_reclaim_bound = max_suppressed_reclaim_frames.max(1);
+    let normalized_reclaim_bound = reclaim_capacity.max_suppressed_reclaim_frames;
     if suppressed_reclaim_queue.len() >= normalized_reclaim_bound {
         suppressed_reclaim_counters.ring_full_count += 1;
         debug!(
             reason,
-            generation,
-            incoming_pts_ms = pts.as_millis(),
+            generation = metadata.generation,
+            incoming_pts_ms = metadata.pts.as_millis(),
             current_depth = suppressed_reclaim_queue.len(),
             max_suppressed_reclaim_frames = normalized_reclaim_bound,
+            approximate_available_reclaim_slots = reclaim_capacity
+                .approximate_available_reclaim_slots(suppressed_reclaim_queue.len()),
+            approximate_reserved_surface_headroom_frames =
+                reclaim_capacity.approximate_reserved_surface_headroom_frames(),
             ring_full_count = suppressed_reclaim_counters.ring_full_count,
             "Suppressed reclaim queue full; forcing oldest handle sync"
         );
@@ -1106,16 +1261,21 @@ fn enqueue_suppressed_frame_for_reclaim_in_queue(
             suppressed_reclaim_counters,
             frame_pool,
             reason,
+            reclaim_capacity,
         ) {
             suppressed_reclaim_queue.push_back(handle);
             suppressed_reclaim_counters.total_enqueued += 1;
             warn!(
                 error = %error,
                 reason,
-                generation,
-                incoming_pts_ms = pts.as_millis(),
+                generation = metadata.generation,
+                incoming_pts_ms = metadata.pts.as_millis(),
                 current_depth = suppressed_reclaim_queue.len(),
                 max_suppressed_reclaim_frames = normalized_reclaim_bound,
+                approximate_available_reclaim_slots = reclaim_capacity
+                    .approximate_available_reclaim_slots(suppressed_reclaim_queue.len()),
+                approximate_reserved_surface_headroom_frames = reclaim_capacity
+                    .approximate_reserved_surface_headroom_frames(),
                 "Kept incoming suppressed handle queued after forced reclaim failure"
             );
             return Err(error);
@@ -1126,10 +1286,16 @@ fn enqueue_suppressed_frame_for_reclaim_in_queue(
     suppressed_reclaim_counters.total_enqueued += 1;
     debug!(
         reason,
-        generation,
-        pts_ms = pts.as_millis(),
+        generation = metadata.generation,
+        pts_ms = metadata.pts.as_millis(),
         current_depth = suppressed_reclaim_queue.len(),
         max_suppressed_reclaim_frames = normalized_reclaim_bound,
+        approximate_available_reclaim_slots =
+            reclaim_capacity.approximate_available_reclaim_slots(suppressed_reclaim_queue.len()),
+        approximate_reserved_surface_headroom_frames =
+            reclaim_capacity.approximate_reserved_surface_headroom_frames(),
+        surface_pool_frames = reclaim_capacity.surface_pool_frames,
+        ready_queue_frames = reclaim_capacity.ready_queue_frames,
         total_enqueued = suppressed_reclaim_counters.total_enqueued,
         total_reclaimed = suppressed_reclaim_counters.total_reclaimed,
         forced_sync_count = suppressed_reclaim_counters.forced_sync_count,
@@ -1238,6 +1404,7 @@ impl VaapiVideoDecoder {
         activity_notifier: Option<VideoDecoderActivityNotifier>,
     ) -> Result<Self> {
         let runtime_config = runtime_config.normalized();
+        let reclaim_capacity = SuppressedReclaimCapacity::from_runtime_config(runtime_config);
         info!("Opening VA-API display");
         if let Ok(resource_pool) = resource_pool.lock() {
             let reuse_contract = resource_pool.reuse_contract();
@@ -1282,6 +1449,10 @@ impl VaapiVideoDecoder {
             surface_pool_frames = runtime_config.surface_pool_frames,
             ready_queue_frames = runtime_config.ready_queue_frames,
             max_suppressed_reclaim_frames = runtime_config.max_suppressed_reclaim_frames,
+            approximate_available_reclaim_slots =
+                reclaim_capacity.approximate_available_reclaim_slots(0),
+            approximate_reserved_surface_headroom_frames =
+                reclaim_capacity.approximate_reserved_surface_headroom_frames(),
             "VA-API decoder initialized successfully"
         );
 
@@ -1492,6 +1663,7 @@ impl VaapiVideoDecoder {
             &mut self.suppressed_reclaim_queue,
             &mut self.suppressed_reclaim_counters,
             &mut self.frame_pool,
+            SuppressedReclaimCapacity::from_runtime_config(self.runtime_config),
         )
     }
 
@@ -1515,6 +1687,7 @@ impl VaapiVideoDecoder {
             &mut self.suppressed_reclaim_counters,
             &mut self.frame_pool,
             reason,
+            SuppressedReclaimCapacity::from_runtime_config(self.runtime_config),
         )
     }
 
@@ -1551,11 +1724,10 @@ impl VaapiVideoDecoder {
             &mut self.suppressed_reclaim_queue,
             &mut self.suppressed_reclaim_counters,
             &mut self.frame_pool,
-            self.runtime_config.max_suppressed_reclaim_frames,
+            SuppressedReclaimCapacity::from_runtime_config(self.runtime_config),
             handle,
             reason,
-            pts,
-            generation,
+            PrerollFallbackCandidateMetadata { pts, generation },
         )
     }
 
@@ -2204,8 +2376,11 @@ impl VaapiVideoDecoder {
                 pts_ms = packet.pts.as_millis(),
                 generation,
                 current_depth = reclaim_report.current_depth,
-                max_suppressed_reclaim_frames =
-                    self.runtime_config.max_suppressed_reclaim_frames.max(1),
+                max_suppressed_reclaim_frames = reclaim_report.max_suppressed_reclaim_frames,
+                approximate_available_reclaim_slots =
+                    reclaim_report.approximate_available_reclaim_slots,
+                approximate_reserved_surface_headroom_frames =
+                    reclaim_report.approximate_reserved_surface_headroom_frames,
                 reclaimed_this_pass = reclaim_report.reclaimed_this_pass,
                 query_errors_this_pass = reclaim_report.query_errors_this_pass,
                 reason = "pre_submit_suppressed_reclaim_full",
@@ -2408,6 +2583,17 @@ mod tests {
         DmaFramePool::new(16, 16, 0).expect("test frame pool должен создаваться")
     }
 
+    /// Создаёт diagnostics capacity для focused reclaim tests без runtime decoder-а.
+    fn reclaim_capacity_for_tests(
+        max_suppressed_reclaim_frames: usize,
+    ) -> SuppressedReclaimCapacity {
+        SuppressedReclaimCapacity::new(
+            max_suppressed_reclaim_frames.max(1),
+            1,
+            max_suppressed_reclaim_frames,
+        )
+    }
+
     /// Проверяет, что конкретный drop reason ставит handle в reclaim queue.
     fn assert_reclaim_enqueue_for_reason(reason: &'static str) {
         let mut suppressed_reclaim_queue = VecDeque::new();
@@ -2420,11 +2606,13 @@ mod tests {
             &mut suppressed_reclaim_queue,
             &mut suppressed_reclaim_counters,
             &mut frame_pool,
-            4,
+            reclaim_capacity_for_tests(4),
             handle,
             reason,
-            Duration::from_millis(700),
-            31,
+            PrerollFallbackCandidateMetadata {
+                pts: Duration::from_millis(700),
+                generation: 31,
+            },
         )
         .expect("enqueue suppressed handle должен пройти");
 
@@ -2466,14 +2654,58 @@ mod tests {
             default_bound > 12,
             "default pool 24 не должен снова закреплять bound в диапазоне 8..12 без замеров"
         );
+
+        let capacity = SuppressedReclaimCapacity::new(
+            DEFAULT_DECODER_SURFACE_POOL_FRAMES,
+            DEFAULT_DECODER_READY_QUEUE_FRAMES,
+            default_bound,
+        );
+        assert_eq!(
+            capacity.approximate_available_reclaim_slots(0),
+            default_bound,
+            "диагностика должна показывать стартовую ёмкость reclaim queue"
+        );
+        assert_eq!(
+            capacity.approximate_reserved_surface_headroom_frames(),
+            SUPPRESSED_RECLAIM_REFERENCE_HEADROOM_FRAMES
+                + SUPPRESSED_RECLAIM_RENDER_HELD_HEADROOM_FRAMES
+                + SUPPRESSED_RECLAIM_READY_PUBLISH_HEADROOM_FRAMES
+                + SUPPRESSED_RECLAIM_MARGIN_FRAMES,
+            "диагностика должна показывать surface headroom вне reclaim queue"
+        );
     }
 
     /// Проверяет pre-submit decision: full reclaim queue должна остановить submit.
     #[test]
     fn pre_submit_full_reclaim_queue_backpressures_before_packet_submit() {
+        let mut suppressed_reclaim_queue = VecDeque::new();
+        let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
+        let mut frame_pool = reclaim_frame_pool_for_tests();
+        let (busy_handle, sync_called) =
+            fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+        suppressed_reclaim_queue.push_back(busy_handle);
+
+        let report = reclaim_ready_suppressed_surfaces_from_queue(
+            &mut suppressed_reclaim_queue,
+            &mut suppressed_reclaim_counters,
+            &mut frame_pool,
+            reclaim_capacity_for_tests(1),
+        )
+        .expect("pre-submit reclaim должен оставить busy handle queued");
+
         assert!(
-            is_suppressed_reclaim_queue_full(2, 2),
-            "full queue должна дать OutputBackpressured до adapter submit"
+            !sync_called.get(),
+            "pre-submit full check не должен делать forced sync"
+        );
+        assert_eq!(report.current_depth, 1);
+        assert_eq!(report.max_suppressed_reclaim_frames, 1);
+        assert_eq!(report.approximate_available_reclaim_slots, 0);
+        assert!(
+            is_suppressed_reclaim_queue_full(
+                report.current_depth,
+                report.max_suppressed_reclaim_frames,
+            ),
+            "full queue после cheap reclaim должна дать OutputBackpressured до adapter submit"
         );
         assert!(
             !is_suppressed_reclaim_queue_full(1, 2),
@@ -2499,12 +2731,18 @@ mod tests {
             &mut suppressed_reclaim_queue,
             &mut suppressed_reclaim_counters,
             &mut frame_pool,
+            reclaim_capacity_for_tests(1),
         )
         .expect("pre-submit reclaim должен освободить ready handle");
 
         assert_eq!(report.current_depth, 0);
+        assert_eq!(report.max_suppressed_reclaim_frames, 1);
+        assert_eq!(report.approximate_available_reclaim_slots, 1);
         assert!(
-            !is_suppressed_reclaim_queue_full(report.current_depth, 1),
+            !is_suppressed_reclaim_queue_full(
+                report.current_depth,
+                report.max_suppressed_reclaim_frames,
+            ),
             "после reclaim submit снова разрешён"
         );
         assert!(
@@ -2949,6 +3187,7 @@ mod tests {
             &mut suppressed_reclaim_queue,
             &mut suppressed_reclaim_counters,
             &mut frame_pool,
+            reclaim_capacity_for_tests(4),
         )
         .expect("ready reclaim pass должен пройти");
 
@@ -2981,6 +3220,7 @@ mod tests {
             &mut suppressed_reclaim_queue,
             &mut suppressed_reclaim_counters,
             &mut frame_pool,
+            reclaim_capacity_for_tests(4),
         )
         .expect("busy reclaim pass должен пройти без blocking sync");
 
@@ -3010,6 +3250,7 @@ mod tests {
             &mut suppressed_reclaim_queue,
             &mut suppressed_reclaim_counters,
             &mut frame_pool,
+            reclaim_capacity_for_tests(4),
         )
         .expect("query error должен остаться счетчиком, а не Result error");
 
@@ -3057,11 +3298,13 @@ mod tests {
                 &mut suppressed_reclaim_queue,
                 &mut suppressed_reclaim_counters,
                 &mut frame_pool,
-                2,
+                reclaim_capacity_for_tests(2),
                 handle,
                 "bound_test",
-                Duration::from_millis(generation),
-                generation,
+                PrerollFallbackCandidateMetadata {
+                    pts: Duration::from_millis(generation),
+                    generation,
+                },
             )
             .expect("bounded enqueue должен пройти");
         }
@@ -3088,22 +3331,26 @@ mod tests {
             &mut suppressed_reclaim_queue,
             &mut suppressed_reclaim_counters,
             &mut frame_pool,
-            1,
+            reclaim_capacity_for_tests(1),
             oldest_handle,
             "overflow_test_first",
-            Duration::from_millis(1),
-            1,
+            PrerollFallbackCandidateMetadata {
+                pts: Duration::from_millis(1),
+                generation: 1,
+            },
         )
         .expect("первый enqueue должен пройти без overflow");
         enqueue_suppressed_frame_for_reclaim_in_queue(
             &mut suppressed_reclaim_queue,
             &mut suppressed_reclaim_counters,
             &mut frame_pool,
-            1,
+            reclaim_capacity_for_tests(1),
             incoming_handle,
             "overflow_test_second",
-            Duration::from_millis(2),
-            2,
+            PrerollFallbackCandidateMetadata {
+                pts: Duration::from_millis(2),
+                generation: 2,
+            },
         )
         .expect("overflow enqueue должен освободить oldest и принять incoming");
 
@@ -3151,6 +3398,7 @@ mod tests {
             &mut suppressed_reclaim_counters,
             &mut frame_pool,
             "flush",
+            reclaim_capacity_for_tests(4),
         )
         .expect("flush force-drain должен очистить queue");
 
@@ -3184,11 +3432,10 @@ mod tests {
             &mut suppressed_reclaim_queue,
             &mut suppressed_reclaim_counters,
             &mut frame_pool,
-            4,
+            reclaim_capacity_for_tests(4),
             retained_candidate.handle,
             reason,
-            retained_candidate.metadata.pts,
-            retained_candidate.metadata.generation,
+            retained_candidate.metadata,
         )
         .expect("candidate enqueue перед lifecycle drain должен пройти");
         force_drain_suppressed_surfaces_from_queue(
@@ -3196,6 +3443,7 @@ mod tests {
             &mut suppressed_reclaim_counters,
             &mut frame_pool,
             reason,
+            reclaim_capacity_for_tests(4),
         )
         .expect("lifecycle force-drain должен очистить suppressed state");
 
