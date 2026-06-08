@@ -630,10 +630,10 @@ impl VideoFrameResourceProvider {
 
     /// Освобождает frame после того, как caller уже дождался GPU completion.
     pub fn release_frame(&self, handle: video_core::FrameResourceHandle) {
-        trace!(handle_id = handle.0, "Releasing zero-copy frame to decoder");
-        match self.resource_pool.lock() {
+        let release_stats = match self.resource_pool.lock() {
             Ok(mut resource_pool) => {
                 if let Err(error) = resource_pool.release_without_gpu_submission(handle) {
+                    let resource_stats = resource_pool.stats();
                     let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(
                         format!("Zero-copy surface release lifecycle violation: {error}"),
                     ));
@@ -641,10 +641,30 @@ impl VideoFrameResourceProvider {
                         error = %error,
                         fatal = %fatal_error,
                         handle_id = handle.0,
+                        zero_copy_capacity = resource_stats.capacity,
+                        zero_copy_slots = resource_stats.slots,
+                        zero_copy_in_use = resource_stats.in_use,
+                        zero_copy_free_surfaces = resource_stats.free_surfaces,
+                        zero_copy_waiting_gpu_completion =
+                            resource_stats.waiting_gpu_completion,
+                        zero_copy_waiting_decoder_reuse =
+                            resource_stats.waiting_decoder_reuse,
                         "Failed to move zero-copy surface into decoder reuse state"
                     );
                     return;
                 }
+                let resource_stats = resource_pool.stats();
+                trace!(
+                    handle_id = handle.0,
+                    zero_copy_capacity = resource_stats.capacity,
+                    zero_copy_slots = resource_stats.slots,
+                    zero_copy_in_use = resource_stats.in_use,
+                    zero_copy_free_surfaces = resource_stats.free_surfaces,
+                    zero_copy_waiting_gpu_completion = resource_stats.waiting_gpu_completion,
+                    zero_copy_waiting_decoder_reuse = resource_stats.waiting_decoder_reuse,
+                    "Queued renderer-owned zero-copy frame for decoder reuse"
+                );
+                Some(resource_stats)
             }
             Err(error) => {
                 let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(format!(
@@ -658,7 +678,7 @@ impl VideoFrameResourceProvider {
                 );
                 return;
             }
-        }
+        };
 
         if let Err(error) = self
             .control_tx
@@ -677,6 +697,14 @@ impl VideoFrameResourceProvider {
                 error = %error,
                 fatal = %fatal_error,
                 handle_id = handle.0,
+                zero_copy_capacity = ?release_stats.map(|stats| stats.capacity),
+                zero_copy_slots = ?release_stats.map(|stats| stats.slots),
+                zero_copy_in_use = ?release_stats.map(|stats| stats.in_use),
+                zero_copy_free_surfaces = ?release_stats.map(|stats| stats.free_surfaces),
+                zero_copy_waiting_gpu_completion =
+                    ?release_stats.map(|stats| stats.waiting_gpu_completion),
+                zero_copy_waiting_decoder_reuse =
+                    ?release_stats.map(|stats| stats.waiting_decoder_reuse),
                 "Failed to send zero-copy release to decoder thread"
             );
         }
@@ -1465,9 +1493,10 @@ impl VideoDecodeThread {
     /// Используется для queued/present frames без active render lease. Такой frame
     /// можно вернуть decoder-у сразу: GPU completion уже не требуется.
     pub fn release_frame(&self, handle: video_core::FrameResourceHandle) {
-        match self.resource_pool.lock() {
+        let release_stats = match self.resource_pool.lock() {
             Ok(mut resource_pool) => {
                 if let Err(error) = resource_pool.release_without_gpu_submission(handle) {
+                    let resource_stats = resource_pool.stats();
                     let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(
                         format!("Zero-copy immediate release lifecycle violation: {error}"),
                     ));
@@ -1475,10 +1504,30 @@ impl VideoDecodeThread {
                         error = %error,
                         fatal = %fatal_error,
                         handle_id = handle.0,
+                        zero_copy_capacity = resource_stats.capacity,
+                        zero_copy_slots = resource_stats.slots,
+                        zero_copy_in_use = resource_stats.in_use,
+                        zero_copy_free_surfaces = resource_stats.free_surfaces,
+                        zero_copy_waiting_gpu_completion =
+                            resource_stats.waiting_gpu_completion,
+                        zero_copy_waiting_decoder_reuse =
+                            resource_stats.waiting_decoder_reuse,
                         "Failed to move zero-copy surface into decoder reuse state"
                     );
                     return;
                 }
+                let resource_stats = resource_pool.stats();
+                trace!(
+                    handle_id = handle.0,
+                    zero_copy_capacity = resource_stats.capacity,
+                    zero_copy_slots = resource_stats.slots,
+                    zero_copy_in_use = resource_stats.in_use,
+                    zero_copy_free_surfaces = resource_stats.free_surfaces,
+                    zero_copy_waiting_gpu_completion = resource_stats.waiting_gpu_completion,
+                    zero_copy_waiting_decoder_reuse = resource_stats.waiting_decoder_reuse,
+                    "Queued decoder-owned zero-copy frame for decoder reuse"
+                );
+                Some(resource_stats)
             }
             Err(error) => {
                 let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(format!(
@@ -1492,7 +1541,7 @@ impl VideoDecodeThread {
                 );
                 return;
             }
-        }
+        };
 
         if let Err(error) = self
             .control_tx
@@ -1511,6 +1560,14 @@ impl VideoDecodeThread {
                 error = %error,
                 fatal = %fatal_error,
                 handle_id = handle.0,
+                zero_copy_capacity = ?release_stats.map(|stats| stats.capacity),
+                zero_copy_slots = ?release_stats.map(|stats| stats.slots),
+                zero_copy_in_use = ?release_stats.map(|stats| stats.in_use),
+                zero_copy_free_surfaces = ?release_stats.map(|stats| stats.free_surfaces),
+                zero_copy_waiting_gpu_completion =
+                    ?release_stats.map(|stats| stats.waiting_gpu_completion),
+                zero_copy_waiting_decoder_reuse =
+                    ?release_stats.map(|stats| stats.waiting_decoder_reuse),
                 "Failed to send immediate zero-copy release to decoder thread"
             );
         }

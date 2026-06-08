@@ -520,16 +520,27 @@ struct TextureBusyFallbackReuseState {
     has_current_video_frame: bool,
 
     /// Был ли cached frame уже помечен stale при публикации lease-а.
+    ///
+    /// Для Busy fallback-а этот флаг не является lifecycle invalidation: stale frame
+    /// остаётся только визуальной заглушкой и не должен засчитываться как seek landing.
     cached_frame_is_stale: bool,
 
     /// Помечает ли session текущую картинку stale относительно seek/scrub состояния.
     ///
-    /// Pending scrub target сам по себе не выставляет этот флаг, пока cached frame остаётся
-    /// валидным относительно source и render generation.
+    /// Active seek/scrub может выставить этот флаг, пока decoder ещё не отдал target
+    /// frame. Это не запрещает визуальный reuse, если lifecycle identity всё ещё валиден.
     timeline_marks_frame_stale: bool,
 }
 
-/// Причина, по которой Busy fallback не имеет права повторить cached frame.
+impl TextureBusyFallbackReuseState {
+    /// Возвращает `true`, если reuse будет только визуальной заглушкой для stale seek state.
+    #[must_use]
+    fn carries_seek_stale_marker(self) -> bool {
+        self.cached_frame_is_stale || self.timeline_marks_frame_stale
+    }
+}
+
+/// Lifecycle-причина, по которой Busy fallback не имеет права повторить cached frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TextureBusyFallbackRejectReason {
     /// Cached frame относится к старому render generation.
@@ -540,15 +551,9 @@ enum TextureBusyFallbackRejectReason {
 
     /// Player snapshot больше не содержит текущий video frame.
     CurrentVideoFrameMissing,
-
-    /// Cached lease уже был помечен stale на render boundary.
-    CachedFrameStale,
-
-    /// Timeline сейчас считает текущий кадр stale относительно seek/scrub.
-    TimelineFrameStale,
 }
 
-/// Возвращает причину отказа Busy fallback-а или `None`, если reuse безопасен.
+/// Возвращает lifecycle-причину отказа Busy fallback-а или `None`, если reuse безопасен.
 fn texture_busy_fallback_reject_reason(
     state: TextureBusyFallbackReuseState,
 ) -> Option<TextureBusyFallbackRejectReason> {
@@ -560,12 +565,6 @@ fn texture_busy_fallback_reject_reason(
     }
     if !state.has_current_video_frame {
         return Some(TextureBusyFallbackRejectReason::CurrentVideoFrameMissing);
-    }
-    if state.cached_frame_is_stale {
-        return Some(TextureBusyFallbackRejectReason::CachedFrameStale);
-    }
-    if state.timeline_marks_frame_stale {
-        return Some(TextureBusyFallbackRejectReason::TimelineFrameStale);
     }
 
     None
@@ -1166,6 +1165,13 @@ impl AppState {
                 "Texture view Busy fallback rejected cached renderable frame"
             );
             return None;
+        }
+        if reuse_state.carries_seek_stale_marker() {
+            debug!(
+                cached_frame_is_stale = reuse_state.cached_frame_is_stale,
+                timeline_marks_frame_stale = reuse_state.timeline_marks_frame_stale,
+                "Texture view Busy fallback reusing stale cached renderable frame as visual placeholder"
+            );
         }
 
         Some(cached_renderable_frame.renderable_frame.clone())
@@ -2611,31 +2617,31 @@ mod tests {
         );
     }
 
-    /// Проверяет, что новый pending scrub target не запрещает reuse валидного previous frame-а.
+    /// Проверяет, что active seek stale markers не запрещают визуальный Busy placeholder.
     #[test]
-    fn texture_busy_fallback_reuses_previous_frame_while_target_is_pending() {
-        let valid_previous_frame_with_pending_target = TextureBusyFallbackReuseState {
+    fn texture_busy_fallback_reuses_previous_frame_while_seek_target_is_pending_and_stale() {
+        let stale_seek_visual_placeholder = TextureBusyFallbackReuseState {
             cached_generation: 5,
             current_generation: 5,
             source_matches: true,
             has_current_video_frame: true,
-            cached_frame_is_stale: false,
-            timeline_marks_frame_stale: false,
+            cached_frame_is_stale: true,
+            timeline_marks_frame_stale: true,
         };
 
         assert!(texture_busy_fallback_can_reuse_previous_frame(
-            valid_previous_frame_with_pending_target
+            stale_seek_visual_placeholder
         ));
         assert_eq!(
-            texture_busy_fallback_reject_reason(valid_previous_frame_with_pending_target),
+            texture_busy_fallback_reject_reason(stale_seek_visual_placeholder),
             None
         );
     }
 
-    /// Проверяет, что старый pre-scrub frame не маскируется как fresh при busy texture lock-е.
+    /// Проверяет, что timeline stale marker сам по себе не приводит к black clear на Busy.
     #[test]
-    fn texture_busy_fallback_rejects_stale_pre_scrub_frame_during_seek() {
-        let stale_pre_scrub_frame = TextureBusyFallbackReuseState {
+    fn texture_busy_fallback_reuses_previous_frame_when_timeline_marks_frame_stale() {
+        let timeline_stale_visual_placeholder = TextureBusyFallbackReuseState {
             cached_generation: 5,
             current_generation: 5,
             source_matches: true,
@@ -2644,12 +2650,12 @@ mod tests {
             timeline_marks_frame_stale: true,
         };
 
-        assert!(!texture_busy_fallback_can_reuse_previous_frame(
-            stale_pre_scrub_frame
+        assert!(texture_busy_fallback_can_reuse_previous_frame(
+            timeline_stale_visual_placeholder
         ));
         assert_eq!(
-            texture_busy_fallback_reject_reason(stale_pre_scrub_frame),
-            Some(TextureBusyFallbackRejectReason::TimelineFrameStale)
+            texture_busy_fallback_reject_reason(timeline_stale_visual_placeholder),
+            None
         );
     }
 
@@ -2664,71 +2670,50 @@ mod tests {
             cached_frame_is_stale: false,
             timeline_marks_frame_stale: false,
         };
+        let stale_visual_placeholder = TextureBusyFallbackReuseState {
+            cached_frame_is_stale: true,
+            timeline_marks_frame_stale: true,
+            ..valid_previous_frame
+        };
 
         assert!(!texture_busy_fallback_can_reuse_previous_frame(
             TextureBusyFallbackReuseState {
                 current_generation: 6,
-                ..valid_previous_frame
+                ..stale_visual_placeholder
             }
         ));
         assert_eq!(
             texture_busy_fallback_reject_reason(TextureBusyFallbackReuseState {
                 current_generation: 6,
-                ..valid_previous_frame
+                ..stale_visual_placeholder
             }),
             Some(TextureBusyFallbackRejectReason::RenderGenerationChanged)
         );
         assert!(!texture_busy_fallback_can_reuse_previous_frame(
             TextureBusyFallbackReuseState {
                 source_matches: false,
-                ..valid_previous_frame
+                ..stale_visual_placeholder
             }
         ));
         assert_eq!(
             texture_busy_fallback_reject_reason(TextureBusyFallbackReuseState {
                 source_matches: false,
-                ..valid_previous_frame
+                ..stale_visual_placeholder
             }),
             Some(TextureBusyFallbackRejectReason::SourceLabelChanged)
         );
         assert!(!texture_busy_fallback_can_reuse_previous_frame(
             TextureBusyFallbackReuseState {
                 has_current_video_frame: false,
-                ..valid_previous_frame
+                ..stale_visual_placeholder
             }
         ));
         assert_eq!(
             texture_busy_fallback_reject_reason(TextureBusyFallbackReuseState {
                 has_current_video_frame: false,
-                ..valid_previous_frame
+                ..stale_visual_placeholder
             }),
             Some(TextureBusyFallbackRejectReason::CurrentVideoFrameMissing)
-        );
-        assert!(!texture_busy_fallback_can_reuse_previous_frame(
-            TextureBusyFallbackReuseState {
-                cached_frame_is_stale: true,
-                ..valid_previous_frame
-            }
-        ));
-        assert_eq!(
-            texture_busy_fallback_reject_reason(TextureBusyFallbackReuseState {
-                cached_frame_is_stale: true,
-                ..valid_previous_frame
-            }),
-            Some(TextureBusyFallbackRejectReason::CachedFrameStale)
-        );
-        assert!(!texture_busy_fallback_can_reuse_previous_frame(
-            TextureBusyFallbackReuseState {
-                timeline_marks_frame_stale: true,
-                ..valid_previous_frame
-            }
-        ));
-        assert_eq!(
-            texture_busy_fallback_reject_reason(TextureBusyFallbackReuseState {
-                timeline_marks_frame_stale: true,
-                ..valid_previous_frame
-            }),
-            Some(TextureBusyFallbackRejectReason::TimelineFrameStale)
         );
     }
 }

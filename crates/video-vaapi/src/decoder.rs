@@ -2125,20 +2125,34 @@ impl VaapiVideoDecoder {
                     "Zero-copy resource pool mutex is poisoned during DMA-BUF registration: {error}"
                 ))
             })?;
-            let resource_handle = resource_pool
-                .register_dma_buf_image(dma_buf_image)
-                .map_err(|registration_error| {
+            let resource_handle = match resource_pool.register_dma_buf_image(dma_buf_image) {
+                Ok(resource_handle) => resource_handle,
+                Err(registration_error) => {
+                    let resource_stats = resource_pool.stats();
                     let registration_error_chain = format!("{:#}", registration_error);
                     warn!(
                         error = %registration_error_chain,
                         format = %decoded_contract.format,
+                            zero_copy_capacity = resource_stats.capacity,
+                            zero_copy_slots = resource_stats.slots,
+                            zero_copy_in_use = resource_stats.in_use,
+                            zero_copy_free_surfaces = resource_stats.free_surfaces,
+                            zero_copy_waiting_gpu_completion =
+                                resource_stats.waiting_gpu_completion,
+                            zero_copy_waiting_decoder_reuse =
+                                resource_stats.waiting_decoder_reuse,
+                            zero_copy_import_failures = resource_stats.import_failures,
+                            zero_copy_imports_created = resource_stats.imports_created,
+                            zero_copy_imports_reused = resource_stats.imports_reused,
+                            zero_copy_imports_replaced = resource_stats.imports_replaced,
                         "DMA-BUF zero-copy resource registration failed; CPU fallback is disabled"
                     );
-                    zero_copy_contract_violation(format!(
+                    return Err(zero_copy_contract_violation(format!(
                         "{} DMA-BUF zero-copy resource registration failed: {}",
                         decoded_contract.format, registration_error_chain
-                    ))
-                })?;
+                    )));
+                }
+            };
             let resource_stats = resource_pool.stats();
             (
                 resource_handle,

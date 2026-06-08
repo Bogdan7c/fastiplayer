@@ -757,25 +757,6 @@ mod tests {
         generation
     }
 
-    /// Запускает Accurate seek commit для wakeup tests без обязательного decoder backend-а.
-    fn start_accurate_seek_for_wakeup(
-        session: &mut PlayerSession,
-        target_position: Duration,
-    ) -> u64 {
-        session.set_playback_state(PlaybackState::Seeking);
-        let generation = session.pipeline.begin_seek_generation();
-        session.begin_seek_trace_for_tests(generation);
-        session.set_seek_commit_for_tests(Some(crate::seek_state::SeekCommitState {
-            generation,
-            seek_mode: crate::SeekMode::Accurate,
-            target_position: media_core::MediaTime::from_duration(target_position),
-            actual_position: media_core::MediaTime::from_duration(target_position),
-            started_at: Instant::now(),
-            resume_intent: PlaybackResumeIntent::Pause,
-        }));
-        generation
-    }
-
     /// Добавляет pending video packet для выбранного track-а текущей generation.
     fn enqueue_selected_video_packet(
         session: &mut PlayerSession,
@@ -1383,6 +1364,10 @@ mod tests {
     fn active_accurate_preroll_with_full_decoder_queue_waits_for_decoder_activity() {
         let (_activity_notifier, activity_subscription) =
             video_core::VideoDecoderActivityNotifier::new();
+        let tick_config = PlayerTickConfig {
+            max_pending_video_packets: 4,
+            ..PlayerTickConfig::default()
+        };
         let decoder_thread = RecordingVideoDecoderThread::new_with_activity_snapshot(
             activity_subscription.snapshot(),
         )
@@ -1394,10 +1379,16 @@ mod tests {
             decoder_thread,
             Duration::from_millis(500),
         );
+        enqueue_selected_video_packet(
+            &mut session,
+            Duration::from_millis(400),
+            Bytes::from_static(b"seek-preroll-full-queue"),
+            true,
+        );
 
         let plan = session.worker_wakeup_plan(
             Instant::now(),
-            &PlayerTickConfig::default(),
+            &tick_config,
             Duration::from_millis(2),
             Duration::from_millis(250),
         );
@@ -1408,7 +1399,133 @@ mod tests {
     }
 
     #[test]
+    fn active_accurate_preroll_with_decoder_queue_capacity_keeps_immediate_work() {
+        let (_activity_notifier, activity_subscription) =
+            video_core::VideoDecoderActivityNotifier::new();
+        let tick_config = PlayerTickConfig {
+            max_pending_video_packets: 4,
+            ..PlayerTickConfig::default()
+        };
+        let decoder_thread = RecordingVideoDecoderThread::new_with_activity_snapshot(
+            activity_subscription.snapshot(),
+        )
+        .with_packet_queue_depth(3);
+        let mut session = PlayerSession::new();
+        session.set_playback_state(PlaybackState::Seeking);
+        start_accurate_seek_for_decoder_io(
+            &mut session,
+            decoder_thread,
+            Duration::from_millis(500),
+        );
+        enqueue_selected_video_packet(
+            &mut session,
+            Duration::from_millis(400),
+            Bytes::from_static(b"seek-preroll-queue-has-capacity"),
+            true,
+        );
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &tick_config,
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+
+        assert_eq!(plan.reason, WorkerWakeupReason::SeekOrPreroll);
+        assert_eq!(plan.delay, Some(Duration::ZERO));
+        assert!(!plan.wait_for_decoder_activity);
+    }
+
+    #[test]
+    fn active_accurate_preroll_with_full_decoder_queue_keeps_immediate_drop_work() {
+        let (_activity_notifier, activity_subscription) =
+            video_core::VideoDecoderActivityNotifier::new();
+        let tick_config = PlayerTickConfig {
+            max_pending_video_packets: 4,
+            ..PlayerTickConfig::default()
+        };
+        let decoder_thread = RecordingVideoDecoderThread::new_with_activity_snapshot(
+            activity_subscription.snapshot(),
+        )
+        .with_packet_queue_depth(4);
+        let mut session = PlayerSession::new();
+        session.set_playback_state(PlaybackState::Seeking);
+        let active_generation = start_accurate_seek_for_decoder_io(
+            &mut session,
+            decoder_thread,
+            Duration::from_millis(500),
+        );
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                TrackId::new(1),
+                Duration::from_millis(400),
+                active_generation.saturating_sub(1),
+                Bytes::from_static(b"stale-seek-preroll-packet"),
+                true,
+            ));
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &tick_config,
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+
+        assert_eq!(plan.reason, WorkerWakeupReason::SeekOrPreroll);
+        assert_eq!(plan.delay, Some(Duration::ZERO));
+        assert!(!plan.wait_for_decoder_activity);
+    }
+
+    #[test]
+    fn active_accurate_preroll_with_full_decoder_queue_keeps_immediate_unknown_h264_drop_work() {
+        let (_activity_notifier, activity_subscription) =
+            video_core::VideoDecoderActivityNotifier::new();
+        let tick_config = PlayerTickConfig {
+            max_pending_video_packets: 4,
+            ..PlayerTickConfig::default()
+        };
+        let decoder_thread = RecordingVideoDecoderThread::new_with_activity_snapshot(
+            activity_subscription.snapshot(),
+        )
+        .with_packet_queue_depth(4);
+        let mut session = PlayerSession::new();
+        session.set_playback_state(PlaybackState::Seeking);
+        start_accurate_seek_for_decoder_io(
+            &mut session,
+            decoder_thread,
+            Duration::from_millis(500),
+        );
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::H264),
+        );
+        session.pipeline.require_video_decoder_keyframe();
+        enqueue_selected_video_packet(
+            &mut session,
+            Duration::from_millis(400),
+            Bytes::from_static(b"h264-unknown-seek-preroll-packet"),
+            PacketKeyframe::Unknown,
+        );
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &tick_config,
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+
+        assert_eq!(plan.reason, WorkerWakeupReason::SeekOrPreroll);
+        assert_eq!(plan.delay, Some(Duration::ZERO));
+        assert!(!plan.wait_for_decoder_activity);
+    }
+
+    #[test]
     fn unsupported_decoder_activity_uses_bounded_readiness_fallback() {
+        let tick_config = PlayerTickConfig {
+            max_pending_video_packets: 4,
+            ..PlayerTickConfig::default()
+        };
         let decoder_thread = RecordingVideoDecoderThread::new().with_packet_queue_depth(4);
         let mut session = PlayerSession::new();
         session.set_playback_state(PlaybackState::Seeking);
@@ -1417,10 +1534,16 @@ mod tests {
             decoder_thread,
             Duration::from_millis(500),
         );
+        enqueue_selected_video_packet(
+            &mut session,
+            Duration::from_millis(400),
+            Bytes::from_static(b"seek-preroll-unsupported-activity"),
+            true,
+        );
 
         let plan = session.worker_wakeup_plan(
             Instant::now(),
-            &PlayerTickConfig::default(),
+            &tick_config,
             Duration::from_millis(2),
             Duration::from_millis(250),
         );
@@ -1431,23 +1554,35 @@ mod tests {
     }
 
     #[test]
-    fn absent_decoder_activity_uses_bounded_seek_progress_fallback() {
+    fn absent_decoder_activity_status_uses_bounded_readiness_fallback() {
+        let tick_config = PlayerTickConfig {
+            max_pending_video_packets: 4,
+            ..PlayerTickConfig::default()
+        };
         let mut session = PlayerSession::new();
-        session.pipeline.select_video_track(
-            TrackId::new(1),
-            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        session.set_playback_state(PlaybackState::Seeking);
+        start_accurate_seek_for_decoder_io(
+            &mut session,
+            RecordingVideoDecoderThread::new().with_packet_queue_depth(4),
+            Duration::from_millis(500),
         );
-        start_accurate_seek_for_wakeup(&mut session, Duration::from_millis(500));
+        enqueue_selected_video_packet(
+            &mut session,
+            Duration::from_millis(400),
+            Bytes::from_static(b"seek-preroll-absent-activity-status"),
+            true,
+        );
 
-        let plan = session.worker_wakeup_plan(
+        let plan = session.worker_wakeup_plan_with_decoder_activity_status(
             Instant::now(),
-            &PlayerTickConfig::default(),
+            &tick_config,
             Duration::from_millis(2),
             Duration::from_millis(250),
+            &crate::pipeline::VideoDecoderActivityStatus::AbsentDecoder,
         );
 
-        assert_eq!(plan.reason, WorkerWakeupReason::SeekOrPreroll);
-        assert_eq!(plan.delay, Some(Duration::from_millis(250)));
+        assert_eq!(plan.reason, WorkerWakeupReason::DecodeReadiness);
+        assert_eq!(plan.delay, Some(Duration::from_millis(2)));
         assert!(!plan.wait_for_decoder_activity);
     }
 
@@ -1455,6 +1590,10 @@ mod tests {
     fn immediate_video_work_keeps_zero_wakeup_without_decoder_activity_wait() {
         let (_activity_notifier, activity_subscription) =
             video_core::VideoDecoderActivityNotifier::new();
+        let tick_config = PlayerTickConfig {
+            max_pending_video_packets: 4,
+            ..PlayerTickConfig::default()
+        };
         let decoder_thread = RecordingVideoDecoderThread::new_with_activity_snapshot(
             activity_subscription.snapshot(),
         )
@@ -1475,7 +1614,7 @@ mod tests {
 
         let plan = session.worker_wakeup_plan(
             Instant::now(),
-            &PlayerTickConfig::default(),
+            &tick_config,
             Duration::from_millis(2),
             Duration::from_millis(250),
         );

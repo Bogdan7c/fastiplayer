@@ -6,6 +6,9 @@
 
 use std::time::{Duration, Instant};
 
+use codec_core::VideoCodec;
+use media_core::PacketKeyframe;
+
 use super::{
     PlayerTickConfig,
     demux_admission::{
@@ -21,8 +24,8 @@ use super::{
     video_decoder_io::can_send_video_packet_to_decoder,
 };
 use crate::{
-    PlaybackState, WorkerFrameTimingSnapshot, WorkerWakeupDiagnosticsSnapshot, WorkerWakeupReason,
-    pipeline::VideoDecoderActivityStatus, session::PlayerSession,
+    PendingVideoPacket, PlaybackState, WorkerFrameTimingSnapshot, WorkerWakeupDiagnosticsSnapshot,
+    WorkerWakeupReason, pipeline::VideoDecoderActivityStatus, session::PlayerSession,
     session::audio_runtime::sanitize_audio_high_water_mark,
 };
 
@@ -348,6 +351,10 @@ pub(super) fn pending_video_work_available(
         return false;
     };
 
+    if accurate_seek_pending_video_waits_for_decoder_readiness(session, tick_config, packet) {
+        return false;
+    }
+
     if !session.pipeline.can_send_video_decode_packets() {
         return true;
     }
@@ -369,6 +376,79 @@ pub(super) fn pending_video_work_available(
         session.decoder_output_floor_applies_to_seek_preroll_packet(packet.pts, packet.generation),
         packet.pts,
     )
+}
+
+/// Проверяет, что Accurate seek уже упёрся в полный decoder send channel.
+///
+/// В этом состоянии очередной zero-delay tick не может отправить packet: он
+/// снова получит bounded-channel backpressure. Поэтому planner должен перейти
+/// к `DecodeReadiness`, где worker ждёт decoder activity или bounded fallback.
+fn accurate_seek_pending_video_waits_for_decoder_readiness(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+    packet: &PendingVideoPacket,
+) -> bool {
+    if !pending_video_packet_requires_decoder_send_capacity(session, packet) {
+        return false;
+    }
+
+    seek_fast_preroll_active(session, tick_config)
+        && decoder_send_queue_reached_tick_capacity(session, tick_config)
+}
+
+/// Проверяет read-only случаи, где tick может списать packet без decoder send capacity.
+fn pending_video_packet_requires_decoder_send_capacity(
+    session: &PlayerSession,
+    packet: &PendingVideoPacket,
+) -> bool {
+    if !session
+        .pipeline
+        .packet_generation_is_current(packet.generation)
+    {
+        return false;
+    }
+
+    if !session
+        .pipeline
+        .video_packet_belongs_to_selected_track(packet.track_id)
+    {
+        return false;
+    }
+
+    if !session.pipeline.video_decoder_needs_keyframe() {
+        return true;
+    }
+
+    match packet.keyframe {
+        PacketKeyframe::Keyframe => true,
+        PacketKeyframe::NotKeyframe => false,
+        PacketKeyframe::Unknown => !active_video_codec_requires_proven_decode_start(session),
+    }
+}
+
+/// Повторяет read-only часть bootstrap policy: H.264/H.265 ждут доказанный decode start.
+fn active_video_codec_requires_proven_decode_start(session: &PlayerSession) -> bool {
+    session
+        .pipeline
+        .active_video_requirement()
+        .is_some_and(|requirement| matches!(requirement.codec, VideoCodec::H264 | VideoCodec::H265))
+}
+
+/// Сравнивает neutral decoder queue depth с tick capacity без доступа к backend storage.
+///
+/// `max_pending_video_packets` приходит из `decoder_packet_channel_frames` и
+/// задаёт ту же границу, на которой `crossbeam-channel::bounded` создаёт
+/// backpressure для send-side decoder queue.
+fn decoder_send_queue_reached_tick_capacity(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+) -> bool {
+    let Some(decoder_packet_queue_depth) = session.pipeline.video_decoder_packet_queue_depth()
+    else {
+        return false;
+    };
+
+    decoder_packet_queue_depth >= tick_config.max_pending_video_packets
 }
 
 /// Проверяет, может ли demuxer прочитать следующий packet без downstream overflow.
