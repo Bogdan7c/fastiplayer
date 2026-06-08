@@ -1961,6 +1961,15 @@ fn decoder_thread_loop(mut decoder: crate::VaapiVideoDecoder, channels: DecoderT
     let mut latest_color_metadata: Option<VideoColorMetadata> = None;
 
     loop {
+        if let Err(error) = decoder.reclaim_suppressed_surfaces_for_thread() {
+            send_decoder_thread_error(
+                &error_tx,
+                format!("Video decoder stopped during suppressed reclaim: {error:#}"),
+                &activity_notifier,
+            );
+            break;
+        }
+
         let controls_drained = {
             let mut control_context = DecoderControlContext {
                 packet_rx: &packet_rx,
@@ -2267,21 +2276,31 @@ fn handle_decoder_control_message(
         }
         ThreadControlMsg::SetPrerollOutputFloor(floor, done_tx) => {
             let result = decoder.set_preroll_output_floor(floor);
+            let keep_running =
+                !matches!(result, video_core::VideoPrerollOutputFloorResult::Fatal(_));
+            if let video_core::VideoPrerollOutputFloorResult::Fatal(error) = &result {
+                send_decoder_thread_error(error_tx, error.message().to_string(), activity_notifier);
+            }
             if done_tx.send(result).is_err() {
                 tracing::warn!(
                     "Decoder thread: preroll output-floor set completed, but caller dropped receiver"
                 );
             }
-            true
+            keep_running
         }
         ThreadControlMsg::ClearPrerollOutputFloor(clear, done_tx) => {
             let result = decoder.clear_preroll_output_floor(clear);
+            let keep_running =
+                !matches!(result, video_core::VideoPrerollOutputFloorResult::Fatal(_));
+            if let video_core::VideoPrerollOutputFloorResult::Fatal(error) = &result {
+                send_decoder_thread_error(error_tx, error.message().to_string(), activity_notifier);
+            }
             if done_tx.send(result).is_err() {
                 tracing::warn!(
                     "Decoder thread: preroll output-floor clear completed, but caller dropped receiver"
                 );
             }
-            true
+            keep_running
         }
         ThreadControlMsg::BeginEndOfStreamDrain(generation, done_tx) => {
             if let Ok(state) = decoder_eof_drain_state(end_of_stream_drain_state) {

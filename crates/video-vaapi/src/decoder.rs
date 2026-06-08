@@ -755,8 +755,28 @@ struct ZeroCopyContractViolation {
     detail: String,
 }
 
+/// Фатальная ошибка безопасного release path-а для VA surfaces.
+///
+/// Если forced sync/discard не смог дождаться surface completion, decoder нельзя
+/// продолжать как будто handle безопасно освобождён: следующий reuse может
+/// получить stale/busy surface от старого stream или lifecycle boundary.
+#[derive(Debug)]
+struct VaapiSurfaceLifecycleError {
+    /// Человекочитаемая причина остановки decoder-а.
+    detail: String,
+}
+
 impl ZeroCopyContractViolation {
     /// Создаёт ошибку zero-copy boundary с понятной причиной для лога/UI.
+    fn new(detail: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+        }
+    }
+}
+
+impl VaapiSurfaceLifecycleError {
+    /// Создаёт ошибку lifecycle boundary с понятной причиной для лога/UI.
     fn new(detail: impl Into<String>) -> Self {
         Self {
             detail: detail.into(),
@@ -772,9 +792,18 @@ impl std::fmt::Display for ZeroCopyContractViolation {
 
 impl std::error::Error for ZeroCopyContractViolation {}
 
+impl std::fmt::Display for VaapiSurfaceLifecycleError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for VaapiSurfaceLifecycleError {}
+
 /// Проверяет, что decode error требует остановить decoder thread.
 pub(crate) fn is_fatal_decoder_error(error: &anyhow::Error) -> bool {
     error.downcast_ref::<ZeroCopyContractViolation>().is_some()
+        || error.downcast_ref::<VaapiSurfaceLifecycleError>().is_some()
 }
 
 /// Создаёт typed anyhow error для фатальной zero-copy boundary ошибки.
@@ -793,6 +822,14 @@ fn drain_decoder_owned_ready_frame_handles(
         .drain(..)
         .map(|frame| frame.resource_handle)
         .collect()
+}
+
+/// Проверяет fullness reclaim queue без чтения decoder fields извне.
+fn is_suppressed_reclaim_queue_full(
+    current_depth: usize,
+    max_suppressed_reclaim_frames: usize,
+) -> bool {
+    current_depth >= max_suppressed_reclaim_frames.max(1)
 }
 
 impl DecodedSurfaceContract {
@@ -880,6 +917,42 @@ fn return_frame_to_pool_from_handle(
     }
 }
 
+/// Синхронно выбрасывает ready handle из редкого discard/lifecycle path-а.
+///
+/// Обычный suppressed hot path сюда не заходит: там используется дешёвый
+/// `surface_ready()` pass. Этот helper нужен для flush/reconfigure tail events,
+/// где очередь reclaim после boundary должна остаться пустой.
+fn sync_discard_ready_frame(
+    frame_pool: &mut DmaFramePool,
+    handle: VaapiDecodedFrameHandle,
+    reason: &'static str,
+) -> Result<Duration> {
+    let pts_ms = handle.timestamp() / 1000;
+    let sync_start = std::time::Instant::now();
+
+    if let Err(error) = handle.sync() {
+        warn!(
+            error = %error,
+            pts_ms,
+            reason,
+            "Discarded ready VA surface sync failed"
+        );
+        return Err(anyhow::Error::new(VaapiSurfaceLifecycleError::new(
+            format!("discard ready VA surface sync failed during {reason}: {error}"),
+        )));
+    }
+
+    let sync_latency = sync_start.elapsed();
+    return_frame_to_pool_from_handle(frame_pool, handle);
+    debug!(
+        pts_ms,
+        reason,
+        sync_us = sync_latency.as_micros(),
+        "Discarded decoder-ready VA surface after sync"
+    );
+    Ok(sync_latency)
+}
+
 /// Неблокирующе освобождает suppressed handles, чьи VA surfaces уже готовы.
 fn reclaim_ready_suppressed_surfaces_from_queue(
     suppressed_reclaim_queue: &mut VecDeque<VaapiDecodedFrameHandle>,
@@ -952,6 +1025,7 @@ fn force_reclaim_oldest_suppressed_surface_from_queue(
     };
     let pts_ms = handle.timestamp() / 1000;
     suppressed_reclaim_counters.forced_sync_count += 1;
+    let sync_start = std::time::Instant::now();
 
     if let Err(error) = handle.sync() {
         suppressed_reclaim_queue.push_front(handle);
@@ -961,17 +1035,19 @@ fn force_reclaim_oldest_suppressed_surface_from_queue(
             reason,
             "Forced suppressed reclaim sync failed; keeping oldest handle queued"
         );
-        return Err(anyhow::anyhow!(
-            "forced suppressed reclaim sync failed during {reason}: {error}"
-        ));
+        return Err(anyhow::Error::new(VaapiSurfaceLifecycleError::new(
+            format!("forced suppressed reclaim sync failed during {reason}: {error}"),
+        )));
     }
 
+    let sync_latency = sync_start.elapsed();
     return_frame_to_pool_from_handle(frame_pool, handle);
     suppressed_reclaim_counters.total_reclaimed += 1;
     debug!(
         pts_ms,
         reason,
         current_depth = suppressed_reclaim_queue.len(),
+        sync_us = sync_latency.as_micros(),
         forced_sync_count = suppressed_reclaim_counters.forced_sync_count,
         "Forced reclaimed oldest suppressed VA surface"
     );
@@ -1280,12 +1356,20 @@ impl VaapiVideoDecoder {
     ) -> VideoPrerollOutputFloorResult {
         let result = self.preroll_output_floor.set_floor(policy);
         if result == VideoPrerollOutputFloorResult::Applied {
-            if let Err(error) = self.drop_preroll_fallback_candidate("set_preroll_output_floor") {
-                warn!(
-                    error = %error,
-                    generation = policy.generation,
-                    "Failed to queue old preroll fallback candidate while setting new floor"
+            if let Err(error) = self
+                .force_drain_preroll_candidate_and_suppressed_surfaces("set_preroll_output_floor")
+            {
+                let message = format!(
+                    "VAAPI preroll output-floor set failed while draining old suppressed state: {error:#}"
                 );
+                warn!(
+                    error = %message,
+                    generation = policy.generation,
+                    "Failed to safely clear old suppressed state while setting new floor"
+                );
+                return VideoPrerollOutputFloorResult::Fatal(video_core::DecodeThreadError::new(
+                    message,
+                ));
             }
             debug!(
                 generation = policy.generation,
@@ -1304,12 +1388,20 @@ impl VaapiVideoDecoder {
     ) -> VideoPrerollOutputFloorResult {
         let result = self.preroll_output_floor.clear_floor(clear);
         if result == VideoPrerollOutputFloorResult::Cleared {
-            if let Err(error) = self.drop_preroll_fallback_candidate("clear_preroll_output_floor") {
-                warn!(
-                    error = %error,
-                    ?clear,
-                    "Failed to queue old preroll fallback candidate while clearing floor"
+            if let Err(error) = self
+                .force_drain_preroll_candidate_and_suppressed_surfaces("clear_preroll_output_floor")
+            {
+                let message = format!(
+                    "VAAPI preroll output-floor clear failed while draining suppressed state: {error:#}"
                 );
+                warn!(
+                    error = %message,
+                    ?clear,
+                    "Failed to safely clear suppressed state while clearing floor"
+                );
+                return VideoPrerollOutputFloorResult::Fatal(video_core::DecodeThreadError::new(
+                    message,
+                ));
             }
             debug!(?clear, "VAAPI preroll output floor cleared");
         }
@@ -1343,8 +1435,7 @@ impl VaapiVideoDecoder {
         if floor_clear_result == VideoPrerollOutputFloorResult::Cleared {
             debug!("Cleared VAAPI preroll output floor during stream reconfigure");
         }
-        self.drop_preroll_fallback_candidate("configure_stream")?;
-        self.force_drain_suppressed_surfaces("configure_stream")?;
+        self.force_drain_preroll_candidate_and_suppressed_surfaces("configure_stream")?;
         self.release_decoder_owned_ready_frames("configure_stream")?;
         self.invalidate_idle_resource_pool_after_format_change();
 
@@ -1404,6 +1495,19 @@ impl VaapiVideoDecoder {
         )
     }
 
+    /// Дешёвый reclaim pass, доступный только decoder thread boundary.
+    pub(crate) fn reclaim_suppressed_surfaces_for_thread(&mut self) -> Result<()> {
+        self.reclaim_ready_suppressed_surfaces().map(|_| ())
+    }
+
+    /// Проверяет, заполнена ли suppressed reclaim queue после cheap reclaim pass-а.
+    fn suppressed_reclaim_queue_is_full(&self) -> bool {
+        is_suppressed_reclaim_queue_full(
+            self.suppressed_reclaim_queue.len(),
+            self.runtime_config.max_suppressed_reclaim_frames,
+        )
+    }
+
     /// Принудительно дренирует suppressed queue перед lifecycle boundary.
     fn force_drain_suppressed_surfaces(&mut self, reason: &'static str) -> Result<()> {
         force_drain_suppressed_surfaces_from_queue(
@@ -1412,6 +1516,27 @@ impl VaapiVideoDecoder {
             &mut self.frame_pool,
             reason,
         )
+    }
+
+    /// Очищает retained candidate и suppressed queue перед lifecycle boundary.
+    fn force_drain_preroll_candidate_and_suppressed_surfaces(
+        &mut self,
+        reason: &'static str,
+    ) -> Result<()> {
+        let candidate_result = self.drop_preroll_fallback_candidate(reason);
+        let drain_result = self.force_drain_suppressed_surfaces(reason);
+
+        match (candidate_result, drain_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(candidate_error), Ok(())) => Err(candidate_error),
+            (Ok(()), Err(drain_error)) => Err(drain_error),
+            (Err(candidate_error), Err(drain_error)) => Err(anyhow::Error::new(
+                VaapiSurfaceLifecycleError::new(format!(
+                    "failed to enqueue retained candidate during {reason}: {candidate_error:#}; \
+                     additional force-drain error: {drain_error:#}"
+                )),
+            )),
+        }
     }
 
     /// Ставит suppressed/candidate frame в backend-local reclaim queue.
@@ -1918,15 +2043,21 @@ impl VaapiVideoDecoder {
     /// Выбрасывает готовый backend frame без DMA-BUF export-а и publish-а.
     ///
     /// Seek flush использует этот путь для H.264 DPB tail, который `cros-codecs`
-    /// делает видимым через `FrameReady` после `flush()`. Handle остаётся
-    /// владельцем VA surface до конца этой функции и освобождается обычным drop path.
-    fn discard_ready_frame(&self, handle: VaapiDecodedFrameHandle, reason: &'static str) {
+    /// делает видимым через `FrameReady` после `flush()`. Это редкий lifecycle
+    /// path: handle синхронизируется и возвращает backing frame сразу, не через
+    /// обычную suppressed reclaim queue.
+    fn discard_ready_frame(
+        &mut self,
+        handle: VaapiDecodedFrameHandle,
+        reason: &'static str,
+    ) -> Result<()> {
         let pts_ms = handle.timestamp() / 1000;
         debug!(
             pts_ms,
             reason, "Discarding decoder-ready frame without DMA-BUF export"
         );
-        drop(handle);
+        sync_discard_ready_frame(&mut self.frame_pool, handle, reason)?;
+        Ok(())
     }
 
     /// Обрабатывает `FormatChanged` одинаково для publish и discard drain-а.
@@ -1937,8 +2068,7 @@ impl VaapiVideoDecoder {
         info!("Format changed, invalidating resource pool and frame pool");
 
         // Retained candidate мог относиться к старому surface/format contract.
-        self.drop_preroll_fallback_candidate("format_changed")?;
-        self.force_drain_suppressed_surfaces("format_changed")?;
+        self.force_drain_preroll_candidate_and_suppressed_surfaces("format_changed")?;
 
         // Сначала освобождаем decoder-owned кадры из `ready_queue`.
         // Иначе `invalidate_all()` удалит mappings, а VA handles,
@@ -2032,7 +2162,7 @@ impl VaapiVideoDecoder {
                             }
                         }
                         DecoderEventDrainPolicy::Discard { reason } => {
-                            self.discard_ready_frame(handle, reason);
+                            self.discard_ready_frame(handle, reason)?;
                         }
                     }
                 }
@@ -2065,6 +2195,24 @@ impl VaapiVideoDecoder {
             data_len = packet.data.len(),
             "decode() called"
         );
+
+        // Перед submit нельзя полагаться на adapter backpressure: если suppressed
+        // queue уже full, packet ещё не должен попасть внутрь codec adapter-а.
+        let reclaim_report = self.reclaim_ready_suppressed_surfaces()?;
+        if self.suppressed_reclaim_queue_is_full() {
+            debug!(
+                pts_ms = packet.pts.as_millis(),
+                generation,
+                current_depth = reclaim_report.current_depth,
+                max_suppressed_reclaim_frames =
+                    self.runtime_config.max_suppressed_reclaim_frames.max(1),
+                reclaimed_this_pass = reclaim_report.reclaimed_this_pass,
+                query_errors_this_pass = reclaim_report.query_errors_this_pass,
+                reason = "pre_submit_suppressed_reclaim_full",
+                "Output-backpressuring packet before decode submit"
+            );
+            return Ok(VaapiDecodePacketOutcome::OutputBackpressured);
+        }
 
         // Шаг 1-2: submit packet и drain pending events.
         // При `CheckEvents` тот же packet отправляется повторно после drain,
@@ -2133,6 +2281,7 @@ impl VaapiVideoDecoder {
 
     /// Запускает explicit EOF/DPB drain и оставляет tail frames в обычном publish path.
     pub(crate) fn begin_end_of_stream_drain_for_thread(&mut self, generation: u64) -> Result<()> {
+        self.reclaim_ready_suppressed_surfaces()?;
         self.adapter
             .begin_end_of_stream_drain()
             .map_err(|error| anyhow::anyhow!("EOF drain error: {error}"))?;
@@ -2187,12 +2336,12 @@ impl VideoDecoder for VaapiVideoDecoder {
     ///
     /// После flush decoder требует keyframe перед возобновлением декодирования.
     fn flush(&mut self) -> Result<()> {
+        self.force_drain_preroll_candidate_and_suppressed_surfaces("flush_before_adapter")?;
         self.adapter
             .flush()
             .map_err(|error| anyhow::anyhow!("Flush error: {error}"))?;
         self.drain_decoder_events(DecoderEventDrainPolicy::Discard { reason: "flush" })?;
-        self.drop_preroll_fallback_candidate("flush")?;
-        self.force_drain_suppressed_surfaces("flush")?;
+        self.force_drain_suppressed_surfaces("flush_after_discard")?;
         self.release_decoder_owned_ready_frames("flush")?;
         Ok(())
     }
@@ -2210,6 +2359,21 @@ impl VideoDecoder for VaapiVideoDecoder {
     /// Mutable downcast к конкретному типу.
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+impl Drop for VaapiVideoDecoder {
+    /// Best-effort cleanup для suppressed handles при остановке decoder-а.
+    fn drop(&mut self) {
+        if let Err(error) =
+            self.force_drain_preroll_candidate_and_suppressed_surfaces("decoder_drop")
+        {
+            warn!(
+                error = %error,
+                remaining_suppressed_handles = self.suppressed_reclaim_queue.len(),
+                "Failed to force-drain suppressed VA surfaces during decoder drop"
+            );
+        }
     }
 }
 
@@ -2301,6 +2465,72 @@ mod tests {
         assert!(
             default_bound > 12,
             "default pool 24 не должен снова закреплять bound в диапазоне 8..12 без замеров"
+        );
+    }
+
+    /// Проверяет pre-submit decision: full reclaim queue должна остановить submit.
+    #[test]
+    fn pre_submit_full_reclaim_queue_backpressures_before_packet_submit() {
+        assert!(
+            is_suppressed_reclaim_queue_full(2, 2),
+            "full queue должна дать OutputBackpressured до adapter submit"
+        );
+        assert!(
+            !is_suppressed_reclaim_queue_full(1, 2),
+            "queue с запасом не должна блокировать submit"
+        );
+        assert!(
+            is_suppressed_reclaim_queue_full(1, 0),
+            "нулевой bound нормализуется до 1 и не создаёт unbounded queue"
+        );
+    }
+
+    /// Проверяет pre-submit reclaim: ready handles освобождают место до submit.
+    #[test]
+    fn pre_submit_reclaim_that_frees_ready_handles_allows_packet_submit() {
+        let mut suppressed_reclaim_queue = VecDeque::new();
+        let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
+        let mut frame_pool = reclaim_frame_pool_for_tests();
+        let (ready_handle, sync_called) =
+            fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(true));
+        suppressed_reclaim_queue.push_back(ready_handle);
+
+        let report = reclaim_ready_suppressed_surfaces_from_queue(
+            &mut suppressed_reclaim_queue,
+            &mut suppressed_reclaim_counters,
+            &mut frame_pool,
+        )
+        .expect("pre-submit reclaim должен освободить ready handle");
+
+        assert_eq!(report.current_depth, 0);
+        assert!(
+            !is_suppressed_reclaim_queue_full(report.current_depth, 1),
+            "после reclaim submit снова разрешён"
+        );
+        assert!(
+            !sync_called.get(),
+            "pre-submit reclaim остаётся non-blocking"
+        );
+    }
+
+    /// Проверяет discard helper: flush tail frame синхронизируется и не попадает в reclaim queue.
+    #[test]
+    fn sync_discard_ready_frame_syncs_and_returns_handle_to_pool() {
+        let mut frame_pool = reclaim_frame_pool_for_tests();
+        let initial_free_frames = frame_pool.num_free();
+        let (handle, sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+
+        sync_discard_ready_frame(&mut frame_pool, handle, "flush")
+            .expect("flush discard должен sync-нуть ready tail frame");
+
+        assert!(
+            sync_called.get(),
+            "discard path обязан вызвать blocking sync перед release"
+        );
+        assert_eq!(
+            frame_pool.num_free(),
+            initial_free_frames + 1,
+            "discard path должен вернуть backing frame в pool"
         );
     }
 
@@ -2890,6 +3120,107 @@ mod tests {
         assert_eq!(suppressed_reclaim_counters.forced_sync_count, 1);
         assert_eq!(suppressed_reclaim_counters.total_enqueued, 2);
         assert_eq!(suppressed_reclaim_counters.total_reclaimed, 1);
+    }
+
+    /// Проверяет classification: forced sync failure должен идти в fatal decoder path.
+    #[test]
+    fn surface_lifecycle_sync_error_is_fatal_decoder_error() {
+        let error = anyhow::Error::new(VaapiSurfaceLifecycleError::new("synthetic sync failure"));
+
+        assert!(
+            is_fatal_decoder_error(&error),
+            "surface lifecycle errors нельзя продолжать как non-fatal decode warning"
+        );
+    }
+
+    /// Проверяет flush force-drain: lifecycle boundary не оставляет queued handles.
+    #[test]
+    fn flush_force_drain_leaves_suppressed_reclaim_queue_empty() {
+        let mut suppressed_reclaim_queue = VecDeque::new();
+        let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
+        let mut frame_pool = reclaim_frame_pool_for_tests();
+        let (first_handle, first_sync_called) =
+            fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+        let (second_handle, second_sync_called) =
+            fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+        suppressed_reclaim_queue.push_back(first_handle);
+        suppressed_reclaim_queue.push_back(second_handle);
+
+        force_drain_suppressed_surfaces_from_queue(
+            &mut suppressed_reclaim_queue,
+            &mut suppressed_reclaim_counters,
+            &mut frame_pool,
+            "flush",
+        )
+        .expect("flush force-drain должен очистить queue");
+
+        assert!(suppressed_reclaim_queue.is_empty());
+        assert!(first_sync_called.get());
+        assert!(second_sync_called.get());
+        assert_eq!(suppressed_reclaim_counters.forced_sync_count, 2);
+        assert_eq!(suppressed_reclaim_counters.total_reclaimed, 2);
+    }
+
+    /// Проверяет lifecycle cleanup retained candidate-а и queue перед сменой stream/resources.
+    fn assert_lifecycle_force_drain_clears_candidate_and_queue(reason: &'static str) {
+        let mut suppressed_reclaim_queue = VecDeque::new();
+        let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
+        let mut frame_pool = reclaim_frame_pool_for_tests();
+        let (candidate_handle, candidate_sync_called) =
+            fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+        let (queued_handle, queued_sync_called) =
+            fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+        let mut candidate = Some(PrerollFallbackCandidate::new(
+            candidate_handle,
+            Duration::from_millis(10),
+            7,
+        ));
+        suppressed_reclaim_queue.push_back(queued_handle);
+
+        let retained_candidate = candidate
+            .take()
+            .expect("test starts with retained candidate");
+        enqueue_suppressed_frame_for_reclaim_in_queue(
+            &mut suppressed_reclaim_queue,
+            &mut suppressed_reclaim_counters,
+            &mut frame_pool,
+            4,
+            retained_candidate.handle,
+            reason,
+            retained_candidate.metadata.pts,
+            retained_candidate.metadata.generation,
+        )
+        .expect("candidate enqueue перед lifecycle drain должен пройти");
+        force_drain_suppressed_surfaces_from_queue(
+            &mut suppressed_reclaim_queue,
+            &mut suppressed_reclaim_counters,
+            &mut frame_pool,
+            reason,
+        )
+        .expect("lifecycle force-drain должен очистить suppressed state");
+
+        assert!(candidate.is_none());
+        assert!(suppressed_reclaim_queue.is_empty());
+        assert!(candidate_sync_called.get());
+        assert!(queued_sync_called.get());
+    }
+
+    /// Проверяет configure_stream cleanup перед adapter replacement.
+    #[test]
+    fn configure_stream_force_drain_leaves_no_stale_suppressed_handles() {
+        assert_lifecycle_force_drain_clears_candidate_and_queue("configure_stream");
+    }
+
+    /// Проверяет clear output-floor cleanup при Cleared.
+    #[test]
+    fn clear_preroll_output_floor_force_drain_clears_candidate_and_queue() {
+        assert_lifecycle_force_drain_clears_candidate_and_queue("clear_preroll_output_floor");
+    }
+
+    /// Проверяет FormatChanged cleanup перед resize/invalidate.
+    #[test]
+    fn format_change_force_drain_leaves_no_stale_suppressed_handles() {
+        assert_lifecycle_force_drain_clears_candidate_and_queue("format_changed");
     }
 
     /// Проверяет EOF fallback semantics: promotion разрешена ровно один раз.
