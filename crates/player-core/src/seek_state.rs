@@ -439,7 +439,22 @@ impl SeekTraceState {
             return;
         }
 
+        increment_counter(&mut self.accurate_preroll_counters.seek_video_packets_sent);
         increment_counter(&mut self.accurate_preroll_counters.video_preroll_packets_sent);
+    }
+
+    /// Учитывает target-or-after video packet, отправленный decoder-у до landing frame.
+    pub(crate) fn record_target_or_after_video_packet_sent(&mut self) {
+        if self.active_generation.is_none() {
+            return;
+        }
+
+        increment_counter(&mut self.accurate_preroll_counters.seek_video_packets_sent);
+        increment_counter(
+            &mut self
+                .accurate_preroll_counters
+                .target_or_after_video_packets_sent,
+        );
     }
 
     /// Учитывает decoded pre-target frame, который не дошёл в обычный output path.
@@ -686,6 +701,11 @@ impl SeekRuntimeState {
     /// Учитывает pre-target video packet, отправленный decoder-у.
     pub(crate) fn record_video_preroll_packet_sent(&mut self) {
         self.trace.record_video_preroll_packet_sent();
+    }
+
+    /// Учитывает target-or-after video packet, отправленный decoder-у.
+    pub(crate) fn record_target_or_after_video_packet_sent(&mut self) {
+        self.trace.record_target_or_after_video_packet_sent();
     }
 
     /// Учитывает decoded pre-target frame, не попавший в обычный output path.

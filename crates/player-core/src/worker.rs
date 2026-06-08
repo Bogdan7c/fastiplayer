@@ -1753,7 +1753,10 @@ fn log_active_seek_stall(
         seek_preroll_demux_tracks_changed = preroll_demux.tracks_changed,
         seek_preroll_demux_errors = preroll_demux.errors,
         skipped_audio_preroll_packets = preroll_counters.skipped_audio_preroll_packets,
+        seek_video_packets_sent = preroll_counters.seek_video_packets_sent,
         video_preroll_packets_sent = preroll_counters.video_preroll_packets_sent,
+        target_or_after_video_packets_sent =
+            preroll_counters.target_or_after_video_packets_sent,
         decoded_pre_target_frames_dropped =
             preroll_counters.decoded_pre_target_frames_dropped,
         seek_preroll_decoder_backpressure_pauses =

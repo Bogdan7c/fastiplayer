@@ -361,6 +361,19 @@ impl PlayerSession {
         }
     }
 
+    /// Учитывает target-or-after video packet, отправленный до первого landing frame.
+    pub(crate) fn note_target_or_after_video_packet_sent_for_seek_diagnostics(&mut self) {
+        let Some(seek_commit) = self.seek_runtime.active_commit() else {
+            return;
+        };
+
+        if seek_commit.drops_decode_preroll_before_target()
+            && !self.seek_presented_frame_ready(seek_commit)
+        {
+            self.seek_runtime.record_target_or_after_video_packet_sent();
+        }
+    }
+
     /// Учитывает decoded pre-target frame, который не дошёл до обычного scheduler-а.
     pub(crate) fn note_decoded_pre_target_frame_dropped_for_seek_diagnostics(&mut self) {
         let Some(seek_commit) = self.seek_runtime.active_commit() else {
@@ -487,6 +500,23 @@ impl PlayerSession {
             && seek_commit.drops_decode_preroll_before_target()
             && !self.seek_presented_frame_ready(seek_commit)
             && packet_pts < seek_commit.target_position.as_duration()
+    }
+
+    /// Проверяет, должен ли active Accurate seek временно обойти audio-clock decode-ahead.
+    ///
+    /// До первого target-or-after landing frame decoder-у могут понадобиться не только
+    /// pre-target reference packets, но и несколько packets после target-а для DPB/reorder
+    /// output. Этот intent не обходит texture capacity, packet-channel backpressure,
+    /// generation checks или codec bootstrap; он снимает только audio-clock pacing.
+    #[must_use]
+    pub(crate) fn should_bypass_audio_clock_decode_ahead_for_active_seek(&self) -> bool {
+        let Some(seek_commit) = self.seek_runtime.active_commit() else {
+            return false;
+        };
+
+        self.pipeline.has_selected_video_track()
+            && seek_commit.drops_decode_preroll_before_target()
+            && !self.seek_presented_frame_ready(seek_commit)
     }
 
     /// Проверяет, может ли pre-target Accurate packet обойти только texture-capacity gate.

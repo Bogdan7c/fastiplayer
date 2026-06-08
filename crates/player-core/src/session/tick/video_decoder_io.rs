@@ -195,7 +195,7 @@ pub(super) fn can_send_video_packet_to_decoder(
         return false;
     }
 
-    if session.should_fast_decode_video_packet_for_seek_preroll(packet_pts) {
+    if session.should_bypass_audio_clock_decode_ahead_for_active_seek() {
         return true;
     }
 
@@ -541,6 +541,8 @@ pub(super) fn send_pending_video_packets_to_decoder(
                 if packet_is_seek_preroll {
                     session.note_video_preroll_packet_sent_for_seek_diagnostics();
                     seek_preroll_packets_sent = seek_preroll_packets_sent.saturating_add(1);
+                } else {
+                    session.note_target_or_after_video_packet_sent_for_seek_diagnostics();
                 }
             }
             Some(Err(DecodeSendError::Backpressure(reason))) => {

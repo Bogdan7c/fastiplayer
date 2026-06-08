@@ -93,6 +93,7 @@ fn seek_trace_records_accurate_preroll_stage_timings_and_counters() {
     seek_trace.record_accurate_preroll_demux_event(AccuratePrerollDemuxEventKind::TracksChanged);
     seek_trace.record_skipped_audio_preroll_packet();
     seek_trace.record_video_preroll_packet_sent();
+    seek_trace.record_target_or_after_video_packet_sent();
     seek_trace.record_decoded_pre_target_frame_dropped();
     seek_trace.record_decoder_backpressure_pause();
     seek_trace.record_accurate_preroll_decoded_frame(false, Duration::from_millis(4));
@@ -128,7 +129,9 @@ fn seek_trace_records_accurate_preroll_stage_timings_and_counters() {
     assert_eq!(diagnostics.counters.demux_events.video_packets, 1);
     assert_eq!(diagnostics.counters.demux_events.tracks_changed, 1);
     assert_eq!(diagnostics.counters.skipped_audio_preroll_packets, 1);
+    assert_eq!(diagnostics.counters.seek_video_packets_sent, 2);
     assert_eq!(diagnostics.counters.video_preroll_packets_sent, 1);
+    assert_eq!(diagnostics.counters.target_or_after_video_packets_sent, 1);
     assert_eq!(diagnostics.counters.decoded_pre_target_frames_dropped, 1);
     assert_eq!(diagnostics.counters.decoder_backpressure_pauses, 1);
     assert!(!seek_trace.accurate_preroll_snapshot(false).active);

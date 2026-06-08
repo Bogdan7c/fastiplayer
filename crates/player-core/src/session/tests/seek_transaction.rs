@@ -1670,8 +1670,112 @@ fn active_accurate_seek_sends_pre_target_video_packets_in_burst() {
         diagnostics
             .accurate_preroll
             .counters
+            .seek_video_packets_sent,
+        11
+    );
+    assert_eq!(
+        diagnostics
+            .accurate_preroll
+            .counters
             .video_preroll_packets_sent,
         10
+    );
+    assert_eq!(
+        diagnostics
+            .accurate_preroll
+            .counters
+            .target_or_after_video_packets_sent,
+        1
+    );
+}
+
+#[test]
+fn active_accurate_seek_bypasses_audio_decode_ahead_for_target_reorder_tail() {
+    let target_position = Duration::from_secs(2);
+    let video_track = fake_track(1, TrackKind::Video);
+    let audio_track = fake_track(2, TrackKind::Audio);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone(), audio_track.clone()],
+        target_position,
+        Duration::ZERO,
+        Vec::new(),
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track, audio_track], demuxer);
+    let _audio_handle = install_ready_audio_runtime(&mut harness.session, 0.0, None);
+
+    harness.start_final_seek(MediaTime::from_duration(target_position));
+    for (packet_pts, packet_keyframe) in [
+        (Duration::from_millis(1_800), PacketKeyframe::Keyframe),
+        (target_position, PacketKeyframe::NotKeyframe),
+        (Duration::from_millis(2_800), PacketKeyframe::NotKeyframe),
+        (Duration::from_millis(3_000), PacketKeyframe::NotKeyframe),
+    ] {
+        harness.session.pipeline.enqueue_pending_video_packet(
+            PendingVideoPacket::new_with_decode_timestamps(
+                TrackId::new(1),
+                packet_pts,
+                None,
+                None,
+                harness.session.pipeline.seek_generation(),
+                Bytes::from_static(b"seek-reorder-tail-video"),
+                packet_keyframe,
+            ),
+        );
+    }
+
+    let _tick_result = harness.session.tick(PlayerTickContext::with_config(
+        Instant::now(),
+        PlayerTickConfig {
+            max_demux_packets_per_tick: 0,
+            max_video_packets_sent_per_tick: 1,
+            max_decoded_video_frames_drained_per_tick: 1,
+            max_pending_video_packets: 1,
+            max_pending_video_packets_during_audio_catchup: 1,
+            max_video_decode_ahead: Duration::from_millis(500),
+            seek_fast_preroll_video_packet_burst: 8,
+            ..seek_regression_tick_config()
+        },
+    ));
+
+    assert_eq!(
+        harness
+            .sent_packets()
+            .iter()
+            .map(|packet| packet.pts)
+            .collect::<Vec<_>>(),
+        vec![
+            Duration::from_millis(1_800),
+            target_position,
+            Duration::from_millis(2_800),
+            Duration::from_millis(3_000),
+        ],
+        "active Accurate seek должен докачивать reorder tail после target без audio-clock pacing"
+    );
+
+    let diagnostics = harness
+        .session
+        .active_seek_diagnostics(Instant::now(), &seek_regression_tick_config())
+        .expect("seek должен ждать decoded landing frame");
+    assert_eq!(
+        diagnostics
+            .accurate_preroll
+            .counters
+            .seek_video_packets_sent,
+        4
+    );
+    assert_eq!(
+        diagnostics
+            .accurate_preroll
+            .counters
+            .video_preroll_packets_sent,
+        1
+    );
+    assert_eq!(
+        diagnostics
+            .accurate_preroll
+            .counters
+            .target_or_after_video_packets_sent,
+        3
     );
 }
 

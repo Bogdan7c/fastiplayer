@@ -637,8 +637,14 @@ pub struct SeekPrerollCountersSnapshot {
     /// Audio packets, целиком отброшенные до user target-а.
     pub skipped_audio_preroll_packets: u64,
 
+    /// Все current-seek video packets, отправленные decoder-у до закрытия video gate.
+    pub seek_video_packets_sent: u64,
+
     /// Pre-target video packets, отправленные decoder-у в fast-preroll режиме.
     pub video_preroll_packets_sent: u64,
+
+    /// Target-or-after video packets, отправленные decoder-у до первого landing frame.
+    pub target_or_after_video_packets_sent: u64,
 
     /// Pre-target decoded frames, не допущенные в обычный scheduler/output path.
     pub decoded_pre_target_frames_dropped: u64,
