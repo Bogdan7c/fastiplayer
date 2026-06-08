@@ -116,7 +116,17 @@ impl<V: VideoFrame> DecodedHandleTrait for DecodedHandle<V> {
     }
 
     fn is_ready(&self) -> bool {
-        self.borrow().state.is_ready().unwrap_or(true)
+        // Старый bool API намеренно сохраняет прежнюю совместимость: он не
+        // может вернуть ошибку VA query. Новые reclaim paths должны вызывать
+        // `try_is_ready()`, где ошибка не теряется.
+        self.try_is_ready().unwrap_or(true)
+    }
+
+    fn try_is_ready(&self) -> anyhow::Result<bool> {
+        self.borrow()
+            .state
+            .is_ready()
+            .context("while querying VA surface readiness")
     }
 
     fn sync(&self) -> anyhow::Result<()> {

@@ -177,6 +177,14 @@ pub trait DecodedHandle {
     /// Returns `true` if this handle has been completely decoded.
     fn is_ready(&self) -> bool;
 
+    /// Неблокирующая проверка готовности с сохранением ошибки backend-а.
+    ///
+    /// Default остаётся совместимым со старыми backend-ами: если backend не
+    /// умеет fallible query, он сообщает тот же bool, что и старый API.
+    fn try_is_ready(&self) -> anyhow::Result<bool> {
+        Ok(self.is_ready())
+    }
+
     /// Wait until this handle has been completely rendered.
     fn sync(&self) -> anyhow::Result<()>;
 
@@ -220,6 +228,10 @@ where
 
     fn is_ready(&self) -> bool {
         self.as_ref().is_ready()
+    }
+
+    fn try_is_ready(&self) -> anyhow::Result<bool> {
+        self.as_ref().try_is_ready()
     }
 
     fn sync(&self) -> anyhow::Result<()> {
