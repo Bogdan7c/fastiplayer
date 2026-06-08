@@ -1229,6 +1229,7 @@ impl SymphoniaDemuxer {
                         issue,
                         retry_index,
                         self.options.decode_point_before_preroll(),
+                        self.options.decode_point_before_max_accepted_preroll(),
                     ) else {
                         return Err(decode_point_before_verification_error(
                             requested_timestamp,
@@ -1670,6 +1671,7 @@ fn decode_point_before_retry_timestamp_for_issue(
     issue: DecodePointBeforeVerificationIssue,
     retry_index: usize,
     preroll: Duration,
+    max_accepted_preroll: Duration,
 ) -> Option<Duration> {
     match issue {
         DecodePointBeforeVerificationIssue::FirstVideoAfterTarget { packet } => {
@@ -1693,7 +1695,11 @@ fn decode_point_before_retry_timestamp_for_issue(
             }
         }
         DecodePointBeforeVerificationIssue::FirstVideoTooFarBeforeTarget { .. } => {
-            decode_point_before_rescue_retry_timestamp(backend_timestamp, requested_timestamp)
+            decode_point_before_rescue_retry_timestamp(
+                backend_timestamp,
+                requested_timestamp,
+                max_accepted_preroll,
+            )
         }
         DecodePointBeforeVerificationIssue::FirstVideoNotKeyframe { .. }
         | DecodePointBeforeVerificationIssue::NoVideoPacket { .. } => Some(
@@ -1706,8 +1712,22 @@ fn decode_point_before_retry_timestamp_for_issue(
 fn decode_point_before_rescue_retry_timestamp(
     backend_timestamp: Duration,
     requested_timestamp: Duration,
+    max_accepted_preroll: Duration,
 ) -> Option<Duration> {
-    (backend_timestamp < requested_timestamp).then_some(requested_timestamp)
+    if backend_timestamp >= requested_timestamp {
+        return None;
+    }
+
+    // Когда backend target ушёл раньше допустимого окна, возвращаемся к началу
+    // этого окна, а не в сам target. Для WebM/VP9 seek в target может стартовать
+    // уже после нужного keyframe-а, а bounded scan тогда снова уйдёт в after-target retry.
+    let accepted_window_start = requested_timestamp.saturating_sub(max_accepted_preroll);
+
+    if backend_timestamp < accepted_window_start {
+        Some(accepted_window_start)
+    } else {
+        Some(requested_timestamp)
+    }
 }
 
 /// Отодвигает backend target назад, когда packet prefix не дал usable video decode-start.
@@ -3100,6 +3120,7 @@ mod tests {
             issue,
             0,
             Duration::from_secs(5),
+            Duration::from_secs(10),
         )
         .expect("after-target packet должен дать retry timestamp");
 
@@ -3107,6 +3128,33 @@ mod tests {
             retry_timestamp,
             Duration::from_millis(19_225),
             "retry должен расширить pre-roll, а не отступить только на маленький overshoot"
+        );
+    }
+
+    #[test]
+    fn decode_point_before_too_far_rescue_targets_accepted_preroll_window() {
+        let issue = DecodePointBeforeVerificationIssue::FirstVideoTooFarBeforeTarget {
+            packet: DecodePointBeforeVideoPacket {
+                pts: Duration::from_millis(41_224),
+                track_pts: None,
+                keyframe: PacketKeyframe::NotKeyframe,
+            },
+        };
+
+        let retry_timestamp = decode_point_before_retry_timestamp_for_issue(
+            Duration::from_millis(31_931),
+            Duration::from_millis(66_932),
+            issue,
+            3,
+            Duration::from_secs(5),
+            Duration::from_secs(10),
+        )
+        .expect("too-far packet должен дать rescue retry timestamp");
+
+        assert_eq!(
+            retry_timestamp,
+            Duration::from_millis(56_932),
+            "rescue должен прыгать к началу допустимого окна, а не в сам target"
         );
     }
 
