@@ -23,7 +23,9 @@ use tracing::{debug, info, trace, warn};
 use crate::byte_source::ByteSourceMediaSource;
 use crate::error::DemuxError;
 use crate::matroska_metadata::{
-    MatroskaVideoTrack, extract_video_tracks_from_file, scan_video_tracks_from_bytes,
+    MATROSKA_CUES_SCAN_LIMIT_BYTES, MatroskaCueIndex, MatroskaVideoTrack,
+    extract_cue_index_from_cues_bytes, extract_cue_index_from_file, extract_video_tracks_from_file,
+    scan_cue_read_plan_from_bytes, scan_video_tracks_from_bytes,
 };
 use crate::options::DemuxerOptions;
 use crate::packet_mapper::{PacketConvertError, convert_packet};
@@ -107,6 +109,7 @@ pub struct SymphoniaDemuxer {
     duration: Option<Duration>,
     track_map: HashMap<u32, TrackEntry>,
     matroska_video_tracks_by_track: HashMap<TrackId, MatroskaVideoTrack>,
+    matroska_cue_index: MatroskaCueIndex,
     seekability: DemuxSeekability,
     options: DemuxerOptions,
     pending_events: VecDeque<DemuxReadEvent>,
@@ -140,12 +143,14 @@ impl SymphoniaDemuxer {
         let hint = symphonia_api::hint_from_path(path);
         let format = symphonia_api::probe_format_reader(&hint, media_source_stream)?;
         let video_tracks_by_track = extract_video_tracks_from_file_if_needed(path, format.tracks());
+        let matroska_cue_index = extract_cue_index_from_file_if_needed(path);
 
         Self::from_format_reader_with_probe_context(
             format,
             hint,
             &path.display().to_string(),
             video_tracks_by_track,
+            matroska_cue_index,
             DemuxSeekability::Seekable,
             options,
         )
@@ -200,6 +205,7 @@ impl SymphoniaDemuxer {
             hint,
             label,
             video_tracks_by_track,
+            MatroskaCueIndex::default(),
             DemuxSeekability::NotSeekable {
                 reason: TimelineNotSeekableReason::SourceNotSeekable,
             },
@@ -246,6 +252,11 @@ impl SymphoniaDemuxer {
             );
             HashMap::new()
         };
+        let matroska_cue_index = if extension_may_have_matroska_video_metadata(extension_hint) {
+            extract_cue_index_from_byte_source(&mut source, label)?
+        } else {
+            MatroskaCueIndex::default()
+        };
         let media_source = ByteSourceMediaSource::new(Box::new(source));
         let media_source_stream =
             MediaSourceStream::new(Box::new(media_source), Default::default());
@@ -258,6 +269,7 @@ impl SymphoniaDemuxer {
             hint,
             label,
             video_tracks_by_track,
+            matroska_cue_index,
             demux_seekability,
             options,
         )
@@ -277,6 +289,7 @@ impl SymphoniaDemuxer {
             Hint::default(),
             label,
             video_tracks_by_track,
+            MatroskaCueIndex::default(),
             seekability,
             options,
         )
@@ -288,6 +301,7 @@ impl SymphoniaDemuxer {
         probe_hint: Hint,
         label: &str,
         video_tracks_by_track: HashMap<TrackId, MatroskaVideoTrack>,
+        matroska_cue_index: MatroskaCueIndex,
         seekability: DemuxSeekability,
         options: DemuxerOptions,
     ) -> Result<Self, DemuxError> {
@@ -314,6 +328,7 @@ impl SymphoniaDemuxer {
             duration: track_state.duration,
             track_map: track_state.track_map,
             matroska_video_tracks_by_track: video_tracks_by_track,
+            matroska_cue_index,
             seekability,
             options,
             pending_events: VecDeque::new(),
@@ -938,6 +953,7 @@ impl Demuxer for SymphoniaDemuxer {
                 let seek_track_id = preferred_seek_track_id(&self.tracks);
                 self.seek_symphonia_once(
                     request,
+                    symphonia_seek_mode(request.mode),
                     seek_track_id,
                     request.timestamp,
                     was_at_end_of_stream,
@@ -959,6 +975,7 @@ impl SymphoniaDemuxer {
     fn seek_symphonia_once(
         &mut self,
         request: DemuxSeekRequest,
+        seek_mode: SymphoniaSeekMode,
         seek_track_id: Option<TrackId>,
         backend_timestamp: Duration,
         reprobe_before_seek: bool,
@@ -967,7 +984,6 @@ impl SymphoniaDemuxer {
             timestamp: backend_timestamp,
             mode: request.mode,
         };
-        let seek_mode = symphonia_seek_mode(request.mode);
         let mut rebuilt_before_seek = false;
         if reprobe_before_seek && self.can_reprobe_current_source() {
             self.rebuild_format_reader_from_source_start()?;
@@ -1047,7 +1063,6 @@ impl SymphoniaDemuxer {
         operation: &'static str,
     ) -> Result<std::result::Result<SeekedTo, SymphoniaError>> {
         let seek_target = symphonia_seek_target(backend_request, seek_track_id);
-
         Ok(self.format_mut(operation)?.seek(seek_mode, seek_target))
     }
 
@@ -1207,30 +1222,57 @@ impl SymphoniaDemuxer {
             requested_timestamp,
             DECODE_POINT_BEFORE_INITIAL_SEEK_MARGIN,
         );
+        let mut backend_seek_mode = symphonia_seek_mode(request.mode);
+        if let Some(video_track_id) = selected_video_track_id(&self.tracks) {
+            let (matroska_backend_timestamp, uses_matroska_cue_anchor) =
+                self.matroska_decode_point_before_anchor(video_track_id, backend_timestamp);
+            backend_timestamp = matroska_backend_timestamp;
+            if uses_matroska_cue_anchor {
+                backend_seek_mode = SymphoniaSeekMode::Coarse;
+            }
+        }
         let mut retained_lifecycle_events = VecDeque::new();
+        let mut minimum_video_timestamp = None;
 
         for retry_index in 0..=DECODE_POINT_BEFORE_MAX_RETRIES {
             let seek_track_id = preferred_seek_track_id(&self.tracks);
             let seek_result = self.seek_symphonia_once(
                 request,
+                backend_seek_mode,
                 seek_track_id,
                 backend_timestamp,
                 retry_index == 0 && reprobe_before_first_seek,
             )?;
 
             if let Some(video_track_id) = selected_video_track_id(&self.tracks) {
-                let verification =
-                    self.verify_decode_point_before_attempt(requested_timestamp, video_track_id)?;
+                let verification = self.verify_decode_point_before_attempt(
+                    requested_timestamp,
+                    video_track_id,
+                    minimum_video_timestamp,
+                )?;
 
                 if let Some(issue) = verification.issue {
-                    let Some(retry_timestamp) = decode_point_before_retry_timestamp_for_issue(
+                    let matroska_cue_retry_timestamp = matroska_decode_point_before_retry_timestamp(
+                        &self.matroska_cue_index,
+                        video_track_id,
                         backend_timestamp,
-                        requested_timestamp,
                         issue,
-                        retry_index,
-                        self.options.decode_point_before_preroll(),
-                        self.options.decode_point_before_max_accepted_preroll(),
-                    ) else {
+                    );
+                    let retry_timestamp =
+                        if let Some(cue_retry_timestamp) = matroska_cue_retry_timestamp {
+                            minimum_video_timestamp.get_or_insert(backend_timestamp);
+                            Some(cue_retry_timestamp)
+                        } else {
+                            decode_point_before_retry_timestamp_for_issue(
+                                backend_timestamp,
+                                requested_timestamp,
+                                issue,
+                                retry_index,
+                                self.options.decode_point_before_preroll(),
+                                self.options.decode_point_before_max_accepted_preroll(),
+                            )
+                        };
+                    let Some(retry_timestamp) = retry_timestamp else {
                         return Err(decode_point_before_verification_error(
                             requested_timestamp,
                             issue,
@@ -1250,6 +1292,7 @@ impl SymphoniaDemuxer {
                         ));
                     }
 
+                    let retry_uses_matroska_cue = matroska_cue_retry_timestamp.is_some();
                     debug!(
                         target_ms = requested_timestamp.as_millis(),
                         retry_ms = retry_timestamp.as_millis(),
@@ -1258,6 +1301,7 @@ impl SymphoniaDemuxer {
                         packets_checked = verification.packets_checked,
                         first_video_pts_ms = issue.first_video_pts().map(|pts| pts.as_millis()),
                         first_video_keyframe = ?issue.first_video_keyframe(),
+                        retry_uses_matroska_cue,
                         "Post-seek verification rejected DecodePointBefore; retrying earlier"
                     );
 
@@ -1266,6 +1310,11 @@ impl SymphoniaDemuxer {
                         verification.buffered_events,
                     );
                     backend_timestamp = retry_timestamp;
+                    backend_seek_mode = if retry_uses_matroska_cue {
+                        SymphoniaSeekMode::Coarse
+                    } else {
+                        symphonia_seek_mode(request.mode)
+                    };
                     continue;
                 }
 
@@ -1329,6 +1378,46 @@ impl SymphoniaDemuxer {
 
         unreachable!("bounded DecodePointBefore retry loop always returns")
     }
+
+    /// Выбирает Matroska/WebM cue anchor для первого `DecodePointBefore` backend seek-а.
+    fn matroska_decode_point_before_anchor(
+        &self,
+        video_track_id: TrackId,
+        initial_backend_timestamp: Duration,
+    ) -> (Duration, bool) {
+        let Some(cue_timestamp) = self
+            .matroska_cue_index
+            .nearest_cue_before_or_at(video_track_id, initial_backend_timestamp)
+        else {
+            return (initial_backend_timestamp, false);
+        };
+        debug!(
+            source = %self.source_label,
+            track = video_track_id.get(),
+            initial_backend_ms = initial_backend_timestamp.as_millis(),
+            cue_anchor_ms = cue_timestamp.as_millis(),
+            "Matroska/WebM DecodePointBefore использует ближайший video cue перед target"
+        );
+
+        (cue_timestamp, true)
+    }
+}
+
+/// Выбирает Matroska/WebM cue-retry только для ошибок, где более ранний cue может помочь.
+fn matroska_decode_point_before_retry_timestamp(
+    cue_index: &MatroskaCueIndex,
+    video_track_id: TrackId,
+    backend_timestamp: Duration,
+    issue: DecodePointBeforeVerificationIssue,
+) -> Option<Duration> {
+    if matches!(
+        issue,
+        DecodePointBeforeVerificationIssue::FirstVideoTooFarBeforeTarget { .. }
+    ) {
+        return None;
+    }
+
+    cue_index.nearest_cue_before(video_track_id, backend_timestamp)
 }
 
 /// Оставляет только lifecycle-события из rejected verification prefix-а.
@@ -1459,6 +1548,7 @@ impl SymphoniaDemuxer {
         &mut self,
         requested_timestamp: Duration,
         initial_video_track_id: TrackId,
+        minimum_video_timestamp: Option<Duration>,
     ) -> Result<DecodePointBeforeAttemptVerification> {
         let mut buffered_events = VecDeque::new();
         let mut packets_checked = 0_usize;
@@ -1473,6 +1563,12 @@ impl SymphoniaDemuxer {
             match &event {
                 DemuxReadEvent::Packet(packet) => {
                     packets_checked = packets_checked.saturating_add(1);
+
+                    if minimum_video_timestamp
+                        .is_some_and(|minimum_timestamp| packet.pts < minimum_timestamp)
+                    {
+                        continue;
+                    }
 
                     if packet.kind == TrackKind::Video && packet.track_id == video_track_id {
                         let video_packet = DecodePointBeforeVideoPacket::from_packet(packet);
@@ -1867,6 +1963,34 @@ fn extract_video_tracks_from_file_if_needed(
     }
 }
 
+/// Запускает Matroska cue pre-scan только там, где `DecodePointBefore` может выиграть от Cues.
+fn extract_cue_index_from_file_if_needed(path: &Path) -> MatroskaCueIndex {
+    let extension_hint = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+    if !extension_may_have_matroska_video_metadata(extension_hint) {
+        trace!(
+            path = %path.display(),
+            extension_hint,
+            "Matroska cue pre-scan skipped for file"
+        );
+        return MatroskaCueIndex::default();
+    }
+
+    match extract_cue_index_from_file(path) {
+        Ok(cue_index) => cue_index,
+        Err(error) => {
+            warn!(
+                error = %error,
+                path = %path.display(),
+                "Matroska cue pre-scan failed"
+            );
+            MatroskaCueIndex::default()
+        }
+    }
+}
+
 /// Решение о запуске Matroska/WebM scan после того, как Symphonia уже отдала track list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MatroskaVideoMetadataScanDecision {
@@ -1956,6 +2080,43 @@ where
     }
 }
 
+/// Читает Matroska cues из seekable byte source-а и возвращает source cursor назад.
+fn extract_cue_index_from_byte_source<S>(
+    source: &mut S,
+    label: &str,
+) -> Result<MatroskaCueIndex, DemuxError>
+where
+    S: ByteSource,
+{
+    if !source.seekability().is_seekable() {
+        debug!(
+            source = %label,
+            "Matroska cue byte-source pre-scan skipped for unseekable source"
+        );
+        return Ok(MatroskaCueIndex::default());
+    }
+
+    let original_position = source.position();
+    let scan_result = read_byte_source_cue_index(source);
+    let reset_result = source.seek(original_position);
+
+    if let Err(error) = reset_result {
+        return Err(source_error_to_demux_error(error));
+    }
+
+    match scan_result {
+        Ok(cue_index) => Ok(cue_index),
+        Err(error) => {
+            warn!(
+                error = %error,
+                source = %label,
+                "Matroska cue byte-source pre-scan failed"
+            );
+            Ok(MatroskaCueIndex::default())
+        }
+    }
+}
+
 /// Читает короткий prefix unseekable stream-а и потом replay-ит его перед основным reader-ом.
 fn read_stream_prefix<R>(
     reader: &mut R,
@@ -2018,6 +2179,56 @@ where
     Ok(scan_video_tracks_from_bytes(&metadata_prefix).video_tracks)
 }
 
+/// Читает bounded cue index из seekable byte source-а.
+fn read_byte_source_cue_index<S>(source: &mut S) -> SourceResult<MatroskaCueIndex>
+where
+    S: ByteSource,
+{
+    source.seek(0)?;
+    let metadata_prefix = read_byte_source_prefix(source, MATROSKA_BYTE_SOURCE_SCAN_LIMIT_BYTES)?;
+    let cue_plan = scan_cue_read_plan_from_bytes(&metadata_prefix);
+    let mut cue_index = cue_plan.cue_index;
+
+    if let Some(cues_absolute_position) = cue_plan.cues_absolute_position {
+        source.seek(cues_absolute_position)?;
+        let cues_prefix = read_byte_source_prefix(
+            source,
+            usize::try_from(MATROSKA_CUES_SCAN_LIMIT_BYTES).unwrap_or(usize::MAX),
+        )?;
+        if let Some(cues_index) =
+            extract_cue_index_from_cues_bytes(&cues_prefix, cue_plan.timestamp_scale_ns)
+        {
+            cue_index.merge(cues_index);
+        }
+    }
+
+    Ok(cue_index)
+}
+
+/// Читает bounded prefix из текущей позиции byte source-а.
+fn read_byte_source_prefix<S>(source: &mut S, limit_bytes: usize) -> SourceResult<Vec<u8>>
+where
+    S: ByteSource,
+{
+    let cancellation = CancellationToken::never_cancelled();
+    let mut prefix = Vec::new();
+    let mut read_buffer = [0_u8; 64 * 1024];
+
+    while prefix.len() < limit_bytes {
+        let remaining_bytes = limit_bytes - prefix.len();
+        let read_size = remaining_bytes.min(read_buffer.len());
+        let bytes_read = source.read(&mut read_buffer[..read_size], &cancellation)?;
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        prefix.extend_from_slice(&read_buffer[..bytes_read]);
+    }
+
+    Ok(prefix)
+}
+
 /// Конвертирует source-layer ошибку pre-scan-а в demux-level IO ошибку.
 fn source_error_to_demux_error(error: SourceError) -> DemuxError {
     DemuxError::Io(io::Error::other(error))
@@ -2076,7 +2287,7 @@ mod tests {
         read_stream_prefix,
     };
     use crate::error::DemuxError;
-    use crate::matroska_metadata::MatroskaVideoTrack;
+    use crate::matroska_metadata::{MatroskaCueIndex, MatroskaVideoTrack};
     use crate::options::DemuxerOptions;
 
     const MAX_UNIT_EVENTS_BEFORE_EOF: usize = 16_384;
@@ -2097,6 +2308,7 @@ mod tests {
         seek_packet_scripts: VecDeque<VecDeque<std::result::Result<Packet, SymphoniaError>>>,
         seek_mode_log: Option<Arc<Mutex<Vec<SeekMode>>>>,
         seek_track_log: Option<Arc<Mutex<Vec<u32>>>>,
+        seek_timestamp_log: Option<Arc<Mutex<Vec<i64>>>>,
         next_packet_call_count: Option<Arc<Mutex<usize>>>,
         seek_response_policy: FakeSeekResponsePolicy,
     }
@@ -2126,6 +2338,7 @@ mod tests {
                 seek_packet_scripts: VecDeque::new(),
                 seek_mode_log: None,
                 seek_track_log: None,
+                seek_timestamp_log: None,
                 next_packet_call_count: None,
                 seek_response_policy: FakeSeekResponsePolicy::Zero,
             }
@@ -2138,6 +2351,11 @@ mod tests {
 
         fn with_seek_track_log(mut self, seek_track_log: Arc<Mutex<Vec<u32>>>) -> Self {
             self.seek_track_log = Some(seek_track_log);
+            self
+        }
+
+        fn with_seek_timestamp_log(mut self, seek_timestamp_log: Arc<Mutex<Vec<i64>>>) -> Self {
+            self.seek_timestamp_log = Some(seek_timestamp_log);
             self
         }
 
@@ -2287,6 +2505,12 @@ mod tests {
                     .lock()
                     .expect("seek track log mutex should not be poisoned")
                     .push(seek_target_track_id(&self.tracks, &target));
+            }
+            if let Some(ref seek_timestamp_log) = self.seek_timestamp_log {
+                seek_timestamp_log
+                    .lock()
+                    .expect("seek timestamp log mutex should not be poisoned")
+                    .push(required_seek_timestamp(&self.tracks, &target).get());
             }
             if let Some(packets) = self.seek_packet_scripts.pop_front() {
                 self.packets = packets;
@@ -3176,6 +3400,143 @@ mod tests {
             requested.saturating_sub(initial) <= Duration::from_millis(2),
             "initial seek должен быть почти в target, а не на целый pre-roll раньше: {:?}",
             requested.saturating_sub(initial)
+        );
+    }
+
+    #[test]
+    fn decode_point_before_matroska_cue_index_overrides_initial_backend_target() {
+        let seek_timestamp_log = Arc::new(Mutex::new(Vec::new()));
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_seek_packet_scripts(vec![vec![Ok(small_vp9_keyframe_packet(1, 8_000))]])
+            .with_seek_timestamp_log(Arc::clone(&seek_timestamp_log));
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "matroska-cue-anchor",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+        demuxer.matroska_cue_index = MatroskaCueIndex::from_track_cues_for_tests(
+            TrackId::new(1),
+            [Duration::from_secs(2), Duration::from_secs(8)],
+        );
+
+        let seek_result = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::from_secs(
+                10,
+            )))
+            .expect("cue-backed DecodePointBefore должен принять keyframe перед target");
+
+        assert_eq!(
+            seek_timestamp_log
+                .lock()
+                .expect("seek timestamp log lock")
+                .as_slice(),
+            &[8_000],
+            "первый backend seek должен идти к ближайшему Matroska cue, а не к target-1ms"
+        );
+        assert_eq!(
+            seek_result.actual_position.as_duration(),
+            Duration::from_secs(8),
+            "actual остаётся verified decode anchor, public target хранится отдельно"
+        );
+        assert_eq!(
+            seek_result.requested_position.as_duration(),
+            Duration::from_secs(10),
+            "requested_position не должен превращаться в keyframe-before target"
+        );
+    }
+
+    #[test]
+    fn decode_point_before_matroska_retry_uses_previous_cue_before_backoff() {
+        let seek_timestamp_log = Arc::new(Mutex::new(Vec::new()));
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_seek_packet_scripts(vec![
+                vec![Ok(small_vp9_inter_frame_packet(1, 3_040))],
+                vec![
+                    Ok(small_vp9_keyframe_packet(1, 37)),
+                    Ok(small_vp9_keyframe_packet(1, 2_039)),
+                ],
+            ])
+            .with_seek_timestamp_log(Arc::clone(&seek_timestamp_log));
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "matroska-previous-cue-retry",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыться");
+        demuxer.matroska_cue_index = MatroskaCueIndex::from_track_cues_for_tests(
+            TrackId::new(1),
+            [Duration::from_millis(37), Duration::from_millis(2_039)],
+        );
+
+        let seek_result = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::from_secs(
+                3,
+            )))
+            .expect("previous cue retry должен найти keyframe перед target");
+
+        assert_eq!(
+            seek_timestamp_log
+                .lock()
+                .expect("seek timestamp log lock")
+                .as_slice(),
+            &[2_039, 37],
+            "rejected nearest cue должен перейти к предыдущему cue, а не к 5s backoff"
+        );
+        assert_eq!(
+            seek_result.actual_position.as_duration(),
+            Duration::from_millis(2_039),
+            "actual должен стать verified packet из previous-cue attempt"
+        );
+    }
+
+    #[test]
+    fn decode_point_before_matroska_too_far_uses_rescue_not_previous_cue() {
+        let seek_timestamp_log = Arc::new(Mutex::new(Vec::new()));
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_seek_packet_scripts(vec![
+                vec![Ok(small_vp9_keyframe_packet(1, 8_000))],
+                vec![Ok(small_vp9_keyframe_packet(1, 9_500))],
+            ])
+            .with_seek_timestamp_log(Arc::clone(&seek_timestamp_log));
+        let options = DemuxerOptions::default()
+            .with_decode_point_before_preroll(Duration::from_secs(1))
+            .with_decode_point_before_max_accepted_preroll(Duration::from_secs(1));
+        let mut demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "matroska-too-far-rescue",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            options,
+        )
+        .expect("fake demuxer должен открыться");
+        demuxer.matroska_cue_index = MatroskaCueIndex::from_track_cues_for_tests(
+            TrackId::new(1),
+            [Duration::from_secs(2), Duration::from_secs(8)],
+        );
+
+        let seek_result = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::from_secs(
+                10,
+            )))
+            .expect("too-far cue anchor должен перейти в rescue retry ближе к target");
+
+        assert_eq!(
+            seek_timestamp_log
+                .lock()
+                .expect("seek timestamp log lock")
+                .as_slice(),
+            &[8_000, 9_000],
+            "too-far ошибка должна использовать rescue window, а не предыдущий Matroska cue"
+        );
+        assert_eq!(
+            seek_result.actual_position.as_duration(),
+            Duration::from_millis(9_500),
+            "rescue retry должен принять keyframe внутри разрешённого pre-roll окна"
         );
     }
 

@@ -196,6 +196,21 @@ fn h264_bframe_startup_seek_to_zero_accepts_first_decode_point() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn h264_mkv_decode_point_before_seek_uses_near_cue_anchor() -> Result<()> {
+    let fixture_name = "4k60fps/LXb3EKWsInQ_2160p60_h264_high_l52_180mbps_bframes_aac.mkv";
+
+    for target in [
+        Duration::from_secs(3),
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+    ] {
+        assert_h264_decode_point_before_uses_near_mkv_cue(fixture_name, target)?;
+    }
+
+    Ok(())
+}
+
 fn open_h264_fixture(fixture_name: &str) -> Result<SymphoniaDemuxer> {
     let fixture_path = h264_fixture_path(fixture_name);
     SymphoniaDemuxer::from_file(&fixture_path)
@@ -211,6 +226,49 @@ fn first_h264_video_track(demuxer: &mut SymphoniaDemuxer) -> Option<TrackInfo> {
                 && VideoCodec::from_container_codec_id(&track.codec_id) == Some(VideoCodec::H264)
         })
         .cloned()
+}
+
+fn assert_h264_decode_point_before_uses_near_mkv_cue(
+    fixture_name: &str,
+    target: Duration,
+) -> Result<()> {
+    let mut demuxer = open_h264_fixture(fixture_name)?;
+    let video_track = first_h264_video_track(&mut demuxer)
+        .with_context(|| format!("{fixture_name}: expected H.264 video track"))?;
+
+    let seek_result = demuxer
+        .seek_with_request(DemuxSeekRequest::decode_point_before(target))
+        .with_context(|| {
+            format!("{fixture_name}: DecodePointBefore seek should use Matroska video cue")
+        })?;
+    let first_video_packet = collect_video_packets(&mut demuxer, video_track.id, 1)?
+        .into_iter()
+        .next()
+        .with_context(|| format!("{fixture_name}: expected post-seek video packet"))?;
+
+    assert!(
+        seek_result.actual_position.as_duration() <= target,
+        "{fixture_name}: DecodePointBefore actual position must not pass target"
+    );
+    assert_eq!(
+        seek_result.actual_position.as_duration(),
+        first_video_packet.pts,
+        "{fixture_name}: seek actual should match verified first video packet"
+    );
+    assert_eq!(
+        first_video_packet.keyframe,
+        PacketKeyframe::Keyframe,
+        "{fixture_name}: first video packet after seek should be proven H.264 decode-start"
+    );
+    assert!(
+        seek_result.actual_position.as_duration()
+            >= target.saturating_sub(Duration::from_millis(2_500)),
+        "{fixture_name}: MKV DecodePointBefore должен выбрать ближайший cue перед target, \
+         а не старый 5s backoff (actual={:?}, target={target:?})",
+        seek_result.actual_position.as_duration(),
+    );
+
+    Ok(())
 }
 
 fn collect_video_keyframe_states(

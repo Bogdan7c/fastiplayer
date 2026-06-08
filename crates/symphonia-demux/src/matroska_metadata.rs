@@ -6,8 +6,9 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::time::Duration;
 
 use codec_core::{
     BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, HdrMetadata, MatrixCoefficients,
@@ -18,7 +19,19 @@ use media_core::{TrackId, VideoTrackMetadata};
 /// Верхняя граница pre-scan: metadata обычно лежит перед первым Cluster.
 const MATROSKA_METADATA_SCAN_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Верхняя граница чтения `Cues`: index нужен только для bounded seek-anchor lookup.
+pub(crate) const MATROSKA_CUES_SCAN_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Matroska default `TimestampScale`: один tick равен одной миллисекунде.
+const MATROSKA_DEFAULT_TIMESTAMP_SCALE_NS: u64 = 1_000_000;
+
 const ID_SEGMENT: u64 = 0x1853_8067;
+const ID_SEEK_HEAD: u64 = 0x114D_9B74;
+const ID_SEEK: u64 = 0x4DBB;
+const ID_SEEK_ID: u64 = 0x53AB;
+const ID_SEEK_POSITION: u64 = 0x53AC;
+const ID_INFO: u64 = 0x1549_A966;
+const ID_TIMESTAMP_SCALE: u64 = 0x002A_D7B1;
 const ID_TRACKS: u64 = 0x1654_AE6B;
 const ID_TRACK_ENTRY: u64 = 0xAE;
 const ID_TRACK_NUMBER: u64 = 0xD7;
@@ -40,6 +53,11 @@ const ID_MAX_FALL: u64 = 0x55BD;
 const ID_MASTERING_METADATA: u64 = 0x55D0;
 const ID_LUMINANCE_MAX: u64 = 0x55D9;
 const ID_LUMINANCE_MIN: u64 = 0x55DA;
+const ID_CUES: u64 = 0x1C53_BB6B;
+const ID_CUE_POINT: u64 = 0xBB;
+const ID_CUE_TIME: u64 = 0xB3;
+const ID_CUE_TRACK_POSITIONS: u64 = 0xB7;
+const ID_CUE_TRACK: u64 = 0xF7;
 
 /// Matroska/WebM metadata одного video track-а, доступная до основного demux loop.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,17 +78,132 @@ pub(crate) struct MatroskaVideoTrackScan {
     pub tracks_found: bool,
 }
 
+/// Bounded Matroska/WebM cue index по track number.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct MatroskaCueIndex {
+    /// Список cue timestamps для каждого Matroska TrackNumber.
+    cues_by_track: HashMap<TrackId, Vec<Duration>>,
+}
+
+impl MatroskaCueIndex {
+    /// Возвращает ближайший cue выбранного video track-а не позже target.
+    pub(crate) fn nearest_cue_before_or_at(
+        &self,
+        track_id: TrackId,
+        target: Duration,
+    ) -> Option<Duration> {
+        self.cues_by_track
+            .get(&track_id)?
+            .iter()
+            .rev()
+            .copied()
+            .find(|cue_timestamp| *cue_timestamp <= target)
+    }
+
+    /// Возвращает предыдущий cue выбранного track-а строго раньше указанной backend-позиции.
+    pub(crate) fn nearest_cue_before(
+        &self,
+        track_id: TrackId,
+        timestamp: Duration,
+    ) -> Option<Duration> {
+        self.cues_by_track
+            .get(&track_id)?
+            .iter()
+            .rev()
+            .copied()
+            .find(|cue_timestamp| *cue_timestamp < timestamp)
+    }
+
+    /// Соединяет index-и, прочитанные из prefix-а и из отдельного `Cues` payload-а.
+    pub(crate) fn merge(&mut self, other: MatroskaCueIndex) {
+        for (track_id, mut cue_timestamps) in other.cues_by_track {
+            self.cues_by_track
+                .entry(track_id)
+                .or_default()
+                .append(&mut cue_timestamps);
+        }
+        self.normalize();
+    }
+
+    /// Сообщает, есть ли хотя бы один usable cue.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.cues_by_track.is_empty()
+    }
+
+    /// Создаёт test-only index без EBML parser-а.
+    #[cfg(test)]
+    pub(crate) fn from_track_cues_for_tests(
+        track_id: TrackId,
+        cue_timestamps: impl IntoIterator<Item = Duration>,
+    ) -> Self {
+        let mut cue_index = Self::default();
+        for cue_timestamp in cue_timestamps {
+            cue_index.insert(track_id, cue_timestamp);
+        }
+        cue_index.normalize();
+        cue_index
+    }
+
+    /// Добавляет один cue timestamp для track-а.
+    fn insert(&mut self, track_id: TrackId, cue_timestamp: Duration) {
+        self.cues_by_track
+            .entry(track_id)
+            .or_default()
+            .push(cue_timestamp);
+    }
+
+    /// Сортирует, dedup-ит и удаляет пустые списки, чтобы lookup был простым и быстрым.
+    fn normalize(&mut self) {
+        self.cues_by_track.retain(|_, cue_timestamps| {
+            cue_timestamps.sort_unstable();
+            cue_timestamps.dedup();
+            !cue_timestamps.is_empty()
+        });
+    }
+}
+
+/// План чтения Cues после prefix scan-а.
+pub(crate) struct MatroskaCueReadPlan {
+    /// Cues, которые уже полностью/частично попали в prefix.
+    pub(crate) cue_index: MatroskaCueIndex,
+
+    /// Абсолютная byte-позиция `Cues`, найденная через `SeekHead`.
+    pub(crate) cues_absolute_position: Option<u64>,
+
+    /// Matroska `TimestampScale` в наносекундах.
+    pub(crate) timestamp_scale_ns: u64,
+}
+
 /// Читает начало файла и возвращает video tracks по Matroska TrackNumber.
 pub(crate) fn extract_video_tracks_from_file(
     path: &Path,
 ) -> io::Result<HashMap<TrackId, MatroskaVideoTrack>> {
     let mut file = File::open(path)?;
-    let mut metadata_prefix = Vec::new();
-    file.by_ref()
-        .take(MATROSKA_METADATA_SCAN_LIMIT_BYTES)
-        .read_to_end(&mut metadata_prefix)?;
+    let metadata_prefix = read_prefix(&mut file, MATROSKA_METADATA_SCAN_LIMIT_BYTES)?;
 
     Ok(extract_video_tracks_from_bytes(&metadata_prefix))
+}
+
+/// Читает Matroska/WebM cues из seekable файла и возвращает bounded cue index.
+pub(crate) fn extract_cue_index_from_file(path: &Path) -> io::Result<MatroskaCueIndex> {
+    let mut file = File::open(path)?;
+    let metadata_prefix = read_prefix(&mut file, MATROSKA_METADATA_SCAN_LIMIT_BYTES)?;
+    let MatroskaCueReadPlan {
+        mut cue_index,
+        cues_absolute_position,
+        timestamp_scale_ns,
+    } = scan_cue_read_plan_from_bytes(&metadata_prefix);
+
+    if let Some(cues_absolute_position) = cues_absolute_position {
+        let cues_prefix = read_prefix_at(&mut file, cues_absolute_position)?;
+        if let Some(cues_index) =
+            extract_cue_index_from_cues_bytes(&cues_prefix, timestamp_scale_ns)
+        {
+            cue_index.merge(cues_index);
+        }
+    }
+
+    Ok(cue_index)
 }
 
 /// Извлекает video tracks из уже прочитанного EBML prefix-а.
@@ -78,6 +211,44 @@ pub(crate) fn extract_video_tracks_from_bytes(
     bytes: &[u8],
 ) -> HashMap<TrackId, MatroskaVideoTrack> {
     scan_video_tracks_from_bytes(bytes).video_tracks
+}
+
+/// Читает cue index из уже загруженного Matroska/WebM prefix-а.
+pub(crate) fn scan_cue_read_plan_from_bytes(bytes: &[u8]) -> MatroskaCueReadPlan {
+    let mut position = 0;
+
+    while let Some(header) = read_element_header(bytes, position, bytes.len()) {
+        if header.id == ID_SEGMENT {
+            return parse_segment_cue_read_plan(bytes, header.data_start, header.data_end);
+        }
+        position = header.next_position;
+    }
+
+    MatroskaCueReadPlan {
+        cue_index: MatroskaCueIndex::default(),
+        cues_absolute_position: None,
+        timestamp_scale_ns: MATROSKA_DEFAULT_TIMESTAMP_SCALE_NS,
+    }
+}
+
+/// Читает cue index из bytes, начинающихся с EBML element-а `Cues`.
+pub(crate) fn extract_cue_index_from_cues_bytes(
+    bytes: &[u8],
+    timestamp_scale_ns: u64,
+) -> Option<MatroskaCueIndex> {
+    let header = read_element_header(bytes, 0, bytes.len())?;
+    if header.id != ID_CUES {
+        return None;
+    }
+
+    let mut cue_index = parse_cues(
+        bytes,
+        header.data_start,
+        header.data_end,
+        timestamp_scale_ns,
+    );
+    cue_index.normalize();
+    (!cue_index.is_empty()).then_some(cue_index)
 }
 
 /// Сканирует EBML prefix и сообщает, найдено ли дерево `Tracks`.
@@ -102,6 +273,25 @@ pub(crate) fn scan_video_tracks_from_bytes(bytes: &[u8]) -> MatroskaVideoTrackSc
     }
 }
 
+/// Читает bounded prefix из текущей позиции reader-а.
+fn read_prefix<R>(reader: &mut R, limit_bytes: u64) -> io::Result<Vec<u8>>
+where
+    R: Read,
+{
+    let mut prefix = Vec::new();
+    reader.by_ref().take(limit_bytes).read_to_end(&mut prefix)?;
+    Ok(prefix)
+}
+
+/// Читает bounded `Cues` prefix из абсолютной позиции seekable reader-а.
+fn read_prefix_at<R>(reader: &mut R, position: u64) -> io::Result<Vec<u8>>
+where
+    R: Read + Seek,
+{
+    reader.seek(SeekFrom::Start(position))?;
+    read_prefix(reader, MATROSKA_CUES_SCAN_LIMIT_BYTES)
+}
+
 /// Ищет `Tracks` внутри Segment и прекращает scan после первого найденного дерева tracks.
 fn parse_segment(
     bytes: &[u8],
@@ -120,6 +310,181 @@ fn parse_segment(
     }
 
     false
+}
+
+/// Ищет `Info/TimestampScale`, `SeekHead -> Cues` и Cues, уже попавшие в prefix.
+fn parse_segment_cue_read_plan(bytes: &[u8], start: usize, end: usize) -> MatroskaCueReadPlan {
+    let mut timestamp_scale_ns = MATROSKA_DEFAULT_TIMESTAMP_SCALE_NS;
+    let mut cues_relative_position = None;
+    let mut cue_ranges = Vec::new();
+    let mut position = start;
+
+    while let Some(header) = read_element_header(bytes, position, end) {
+        match header.id {
+            ID_INFO => {
+                if let Some(scale) =
+                    parse_info_timestamp_scale(bytes, header.data_start, header.data_end)
+                {
+                    timestamp_scale_ns = scale;
+                }
+            }
+            ID_SEEK_HEAD => {
+                if cues_relative_position.is_none() {
+                    cues_relative_position =
+                        parse_seek_head_cues_position(bytes, header.data_start, header.data_end);
+                }
+            }
+            ID_CUES => cue_ranges.push((header.data_start, header.data_end)),
+            _ => {}
+        }
+        position = header.next_position;
+    }
+
+    let mut cue_index = MatroskaCueIndex::default();
+    for (cue_start, cue_end) in cue_ranges {
+        cue_index.merge(parse_cues(bytes, cue_start, cue_end, timestamp_scale_ns));
+    }
+
+    MatroskaCueReadPlan {
+        cue_index,
+        cues_absolute_position: cues_relative_position.and_then(|relative_position| {
+            u64::try_from(start)
+                .ok()
+                .and_then(|segment_data_start| segment_data_start.checked_add(relative_position))
+        }),
+        timestamp_scale_ns,
+    }
+}
+
+/// Читает `TimestampScale` из `Info`; отсутствующее значение остаётся Matroska default.
+fn parse_info_timestamp_scale(bytes: &[u8], start: usize, end: usize) -> Option<u64> {
+    let mut position = start;
+
+    while let Some(header) = read_element_header(bytes, position, end) {
+        if header.id == ID_TIMESTAMP_SCALE {
+            return read_unsigned(bytes, &header).filter(|timestamp_scale| *timestamp_scale > 0);
+        }
+        position = header.next_position;
+    }
+
+    None
+}
+
+/// Ищет в `SeekHead` позицию `Cues` относительно начала Segment payload-а.
+fn parse_seek_head_cues_position(bytes: &[u8], start: usize, end: usize) -> Option<u64> {
+    let mut position = start;
+
+    while let Some(header) = read_element_header(bytes, position, end) {
+        if header.id == ID_SEEK
+            && let Some(cues_position) =
+                parse_seek_entry_cues_position(bytes, header.data_start, header.data_end)
+        {
+            return Some(cues_position);
+        }
+        position = header.next_position;
+    }
+
+    None
+}
+
+/// Читает один `Seek` entry и возвращает position только для `Cues`.
+fn parse_seek_entry_cues_position(bytes: &[u8], start: usize, end: usize) -> Option<u64> {
+    let mut seek_id = None;
+    let mut seek_position = None;
+    let mut position = start;
+
+    while let Some(header) = read_element_header(bytes, position, end) {
+        match header.id {
+            ID_SEEK_ID => seek_id = read_unsigned(bytes, &header),
+            ID_SEEK_POSITION => seek_position = read_unsigned(bytes, &header),
+            _ => {}
+        }
+        position = header.next_position;
+    }
+
+    (seek_id == Some(ID_CUES)).then_some(seek_position?)
+}
+
+/// Читает все `CuePoint` children внутри `Cues`.
+fn parse_cues(bytes: &[u8], start: usize, end: usize, timestamp_scale_ns: u64) -> MatroskaCueIndex {
+    let mut cue_index = MatroskaCueIndex::default();
+    let mut position = start;
+
+    while let Some(header) = read_element_header(bytes, position, end) {
+        if header.id == ID_CUE_POINT {
+            parse_cue_point(
+                bytes,
+                header.data_start,
+                header.data_end,
+                timestamp_scale_ns,
+                &mut cue_index,
+            );
+        }
+        position = header.next_position;
+    }
+
+    cue_index.normalize();
+    cue_index
+}
+
+/// Читает один `CuePoint`: общий `CueTime` плюс один или несколько track positions.
+fn parse_cue_point(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    timestamp_scale_ns: u64,
+    cue_index: &mut MatroskaCueIndex,
+) {
+    let mut cue_time = None;
+    let mut cue_tracks = Vec::new();
+    let mut position = start;
+
+    while let Some(header) = read_element_header(bytes, position, end) {
+        match header.id {
+            ID_CUE_TIME => cue_time = read_unsigned(bytes, &header),
+            ID_CUE_TRACK_POSITIONS => {
+                if let Some(track_id) =
+                    parse_cue_track_position(bytes, header.data_start, header.data_end)
+                {
+                    cue_tracks.push(track_id);
+                }
+            }
+            _ => {}
+        }
+        position = header.next_position;
+    }
+
+    let Some(cue_timestamp) =
+        cue_time.and_then(|cue_time| duration_from_matroska_ticks(cue_time, timestamp_scale_ns))
+    else {
+        return;
+    };
+
+    for track_id in cue_tracks {
+        cue_index.insert(track_id, cue_timestamp);
+    }
+}
+
+/// Читает Matroska TrackNumber внутри `CueTrackPositions`.
+fn parse_cue_track_position(bytes: &[u8], start: usize, end: usize) -> Option<TrackId> {
+    let mut position = start;
+
+    while let Some(header) = read_element_header(bytes, position, end) {
+        if header.id == ID_CUE_TRACK {
+            return read_unsigned(bytes, &header)
+                .and_then(|track_number| u32::try_from(track_number).ok())
+                .map(TrackId::new);
+        }
+        position = header.next_position;
+    }
+
+    None
+}
+
+/// Конвертирует Matroska timestamp ticks в wall-clock `Duration`.
+fn duration_from_matroska_ticks(cue_time: u64, timestamp_scale_ns: u64) -> Option<Duration> {
+    let timestamp_ns = u128::from(cue_time).checked_mul(u128::from(timestamp_scale_ns))?;
+    u64::try_from(timestamp_ns).ok().map(Duration::from_nanos)
 }
 
 /// Читает все TrackEntry children внутри Matroska `Tracks`.
@@ -659,9 +1024,108 @@ mod tests {
         assert!(scan.video_tracks.is_empty());
     }
 
+    #[test]
+    fn cue_index_uses_timestamp_scale_and_selected_track() {
+        let info = master(ID_INFO, vec![unsigned(ID_TIMESTAMP_SCALE, 1_000_000_000)]);
+        let cues = master(
+            ID_CUES,
+            vec![
+                cue_point(2, vec![1, 2]),
+                cue_point(5, vec![2]),
+                cue_point(8, vec![1]),
+            ],
+        );
+        let bytes = master(ID_SEGMENT, vec![info, cues]);
+
+        let cue_plan = scan_cue_read_plan_from_bytes(&bytes);
+
+        assert_eq!(
+            cue_plan
+                .cue_index
+                .nearest_cue_before_or_at(TrackId::new(1), Duration::from_secs(7)),
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(
+            cue_plan
+                .cue_index
+                .nearest_cue_before_or_at(TrackId::new(1), Duration::from_secs(9)),
+            Some(Duration::from_secs(8))
+        );
+        assert_eq!(
+            cue_plan
+                .cue_index
+                .nearest_cue_before_or_at(TrackId::new(2), Duration::from_secs(7)),
+            Some(Duration::from_secs(5))
+        );
+    }
+
+    #[test]
+    fn cue_read_plan_uses_seek_head_position_for_external_cues() {
+        let seek_head = seek_head_to_cues(512);
+        let bytes = element_with_declared_size(ID_SEGMENT, 4096, &seek_head);
+        let segment_data_start = bytes.len() - seek_head.len();
+
+        let cue_plan = scan_cue_read_plan_from_bytes(&bytes);
+
+        assert_eq!(
+            cue_plan.cues_absolute_position,
+            Some(u64::try_from(segment_data_start + 512).expect("test offset fits"))
+        );
+        assert!(cue_plan.cue_index.is_empty());
+    }
+
+    #[test]
+    fn extract_cue_index_from_cues_bytes_rejects_non_cues_payload() {
+        let bytes = master(ID_TRACKS, Vec::new());
+
+        let cue_index =
+            extract_cue_index_from_cues_bytes(&bytes, MATROSKA_DEFAULT_TIMESTAMP_SCALE_NS);
+
+        assert!(cue_index.is_none());
+    }
+
+    #[test]
+    fn extracts_external_cues_from_h265_mkv_fixture() {
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../test-assets/h265/4k60fps/LXb3EKWsInQ_2160p60_sdr_hevc_main_8bit_mkv_118mbps_aac_20s.mkv",
+        );
+
+        let cue_index =
+            extract_cue_index_from_file(&fixture_path).expect("real H.265 MKV cues should parse");
+
+        assert_eq!(
+            cue_index.nearest_cue_before_or_at(TrackId::new(1), Duration::from_millis(9_999),),
+            Some(Duration::from_millis(8_045))
+        );
+    }
+
     fn master(id: u64, children: Vec<Vec<u8>>) -> Vec<u8> {
         let payload = children.into_iter().flatten().collect::<Vec<_>>();
         element(id, &payload)
+    }
+
+    fn cue_point(cue_time: u64, tracks: Vec<u64>) -> Vec<u8> {
+        let mut children = vec![unsigned(ID_CUE_TIME, cue_time)];
+        children.extend(tracks.into_iter().map(|track_number| {
+            master(
+                ID_CUE_TRACK_POSITIONS,
+                vec![unsigned(ID_CUE_TRACK, track_number)],
+            )
+        }));
+        master(ID_CUE_POINT, children)
+    }
+
+    fn seek_head_to_cues(relative_position: u64) -> Vec<u8> {
+        master(
+            ID_SEEK_HEAD,
+            vec![master(
+                ID_SEEK,
+                vec![
+                    binary(ID_SEEK_ID, &encode_id(ID_CUES)),
+                    unsigned(ID_SEEK_POSITION, relative_position),
+                ],
+            )],
+        )
     }
 
     fn unsigned(id: u64, value: u64) -> Vec<u8> {
@@ -681,6 +1145,10 @@ mod tests {
 
     fn ascii(id: u64, value: &str) -> Vec<u8> {
         element(id, value.as_bytes())
+    }
+
+    fn binary(id: u64, value: &[u8]) -> Vec<u8> {
+        element(id, value)
     }
 
     fn element(id: u64, payload: &[u8]) -> Vec<u8> {
