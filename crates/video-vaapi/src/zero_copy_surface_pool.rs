@@ -604,6 +604,16 @@ impl ZeroCopySurfacePool {
         }
 
         if self.slots.len() >= self.capacity {
+            // Capacity ограничивает storage slots, а не исторические VA surface id.
+            // Новый surface id может занять только полностью свободный старый slot.
+            if let Some(slot_index) = self
+                .slots
+                .iter()
+                .position(|slot| slot.state == ZeroCopySurfaceState::Free)
+            {
+                return Ok(ZeroCopyImportPlan::Replace { slot_index });
+            }
+
             return Err(ZeroCopySurfacePoolError::PoolExhausted {
                 capacity: self.capacity,
                 slots: self.slots.len(),
@@ -1106,6 +1116,142 @@ mod tests {
         assert_eq!(surface_pool.stats().imports_created, 2);
         assert_eq!(surface_pool.stats().imports_replaced, 1);
         assert_eq!(surface_pool.stats().imports_reused, 0);
+    }
+
+    #[test]
+    fn full_pool_replaces_free_slot_for_new_surface_id() {
+        let mut surface_pool = pool(2);
+        let released_handle = FrameResourceHandle(10);
+        let active_handle = FrameResourceHandle(11);
+        let replacement_handle = FrameResourceHandle(12);
+        let stale_lookup_handle = FrameResourceHandle(13);
+        let released_descriptor = descriptor(7);
+        let active_descriptor = descriptor(8);
+        let replacement_descriptor = descriptor(9);
+        let released_surface_id = released_descriptor.surface_id;
+        let active_surface_id = active_descriptor.surface_id;
+        let replacement_surface_id = replacement_descriptor.surface_id;
+
+        surface_pool
+            .begin_import_or_reuse(released_descriptor.clone(), released_handle)
+            .unwrap();
+        surface_pool
+            .register_imported_surface(released_descriptor.clone(), released_handle, 0)
+            .unwrap();
+        surface_pool
+            .release_without_gpu_submission(released_handle)
+            .unwrap();
+        surface_pool
+            .acknowledge_decoder_reuse(released_handle)
+            .unwrap();
+
+        surface_pool
+            .begin_import_or_reuse(active_descriptor.clone(), active_handle)
+            .unwrap();
+        surface_pool
+            .register_imported_surface(active_descriptor, active_handle, 1)
+            .unwrap();
+
+        let import_plan = surface_pool
+            .begin_import_or_reuse(replacement_descriptor.clone(), replacement_handle)
+            .unwrap();
+
+        assert_eq!(import_plan, ZeroCopyImportPlan::Replace { slot_index: 0 });
+        surface_pool
+            .register_replaced_surface(replacement_descriptor, replacement_handle, 0)
+            .unwrap();
+
+        assert!(
+            !surface_pool
+                .surface_to_slot
+                .contains_key(&released_surface_id)
+        );
+        assert_eq!(
+            surface_pool.surface_to_slot.get(&replacement_surface_id),
+            Some(&0)
+        );
+        assert_eq!(
+            surface_pool.surface_to_slot.get(&active_surface_id),
+            Some(&1)
+        );
+        assert_eq!(surface_pool.leased_slot_index(replacement_handle), Some(0));
+        assert_eq!(surface_pool.leased_slot_index(active_handle), Some(1));
+        assert!(surface_pool.leased_slot_index(released_handle).is_none());
+        assert!(matches!(
+            surface_pool
+                .release_without_gpu_submission(released_handle)
+                .unwrap_err(),
+            ZeroCopySurfacePoolError::UnknownHandle { .. }
+        ));
+        assert!(matches!(
+            surface_pool
+                .begin_import_or_reuse(released_descriptor, stale_lookup_handle)
+                .unwrap_err(),
+            ZeroCopySurfacePoolError::PoolExhausted {
+                capacity: 2,
+                slots: 2
+            }
+        ));
+
+        let stats = surface_pool.stats();
+        assert_eq!(stats.slots, 2);
+        assert_eq!(stats.active_surfaces, 2);
+        assert_eq!(stats.free_surfaces, 0);
+        assert_eq!(stats.imports_created, 3);
+        assert_eq!(stats.imports_replaced, 1);
+        assert_eq!(stats.imports_reused, 0);
+    }
+
+    #[test]
+    fn full_pool_without_free_slots_remains_exhausted_for_new_surface_id() {
+        let mut surface_pool = pool(2);
+        let leased_handle = FrameResourceHandle(10);
+        let waiting_handle = FrameResourceHandle(11);
+        let new_handle = FrameResourceHandle(12);
+        let leased_descriptor = descriptor(7);
+        let waiting_descriptor = descriptor(8);
+
+        surface_pool
+            .begin_import_or_reuse(leased_descriptor.clone(), leased_handle)
+            .unwrap();
+        surface_pool
+            .register_imported_surface(leased_descriptor.clone(), leased_handle, 0)
+            .unwrap();
+
+        surface_pool
+            .begin_import_or_reuse(waiting_descriptor.clone(), waiting_handle)
+            .unwrap();
+        surface_pool
+            .register_imported_surface(waiting_descriptor.clone(), waiting_handle, 1)
+            .unwrap();
+        surface_pool
+            .release_after_gpu_submission(waiting_handle)
+            .unwrap();
+
+        let error = surface_pool
+            .begin_import_or_reuse(descriptor(9), new_handle)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ZeroCopySurfacePoolError::PoolExhausted {
+                capacity: 2,
+                slots: 2
+            }
+        ));
+        assert_eq!(surface_pool.surface_to_slot.get(&7), Some(&0));
+        assert_eq!(surface_pool.surface_to_slot.get(&8), Some(&1));
+        assert_eq!(surface_pool.leased_slot_index(leased_handle), Some(0));
+        assert!(matches!(
+            surface_pool.slots[1].state,
+            ZeroCopySurfaceState::WaitingGpuCompletion { .. }
+        ));
+
+        let stats = surface_pool.stats();
+        assert_eq!(stats.active_surfaces, 2);
+        assert_eq!(stats.free_surfaces, 0);
+        assert_eq!(stats.waiting_gpu_completion, 1);
+        assert_eq!(stats.imports_replaced, 0);
     }
 
     #[test]

@@ -452,6 +452,49 @@ mod tests {
         assert!(descriptor.is_none());
     }
 
+    /// Проверяет replacement свободного storage slot-а без роста bounded capacity.
+    #[test]
+    fn register_dma_buf_image_replaces_free_slot_when_capacity_is_full() {
+        let mut resource_pool = FrameResourcePool::new_with_capacity(2);
+        let released_handle = resource_pool
+            .register_dma_buf_image(decoded_dma_buf_image(101))
+            .expect("first synthetic DMA-BUF image must register");
+        let active_handle = resource_pool
+            .register_dma_buf_image(decoded_dma_buf_image(102))
+            .expect("second synthetic DMA-BUF image must register");
+
+        resource_pool
+            .release_without_gpu_submission(released_handle)
+            .expect("released resource must enter decoder reuse wait");
+        resource_pool
+            .acknowledge_decoder_reuse(released_handle)
+            .expect("decoder reuse ack must make one storage slot free");
+
+        let replacement_handle = resource_pool
+            .register_dma_buf_image(decoded_dma_buf_image(103))
+            .expect("free storage slot must be replaceable for a new surface id");
+
+        assert_eq!(resource_pool.num_slots(), 2);
+        assert!(!resource_pool.is_registered_handle(released_handle));
+        assert!(resource_pool.is_registered_handle(active_handle));
+        assert!(resource_pool.is_registered_handle(replacement_handle));
+
+        let replacement_descriptor = resource_pool
+            .duplicate_descriptor(replacement_handle)
+            .expect("replacement descriptor lookup must not fail")
+            .expect("replacement handle must have descriptor");
+        let FrameResourceDescriptor::DmaBuf(replacement_dma_buf) = replacement_descriptor;
+        assert_eq!(replacement_dma_buf.resource_id, 103);
+
+        let stats = resource_pool.stats();
+        assert_eq!(stats.capacity, 2);
+        assert_eq!(stats.slots, 2);
+        assert_eq!(stats.in_use, 2);
+        assert_eq!(stats.free_surfaces, 0);
+        assert_eq!(stats.imports_created, 3);
+        assert_eq!(stats.imports_replaced, 1);
+    }
+
     /// Проверяет accounting submitted release path на уровне neutral resource pool-а.
     #[test]
     fn submitted_release_waits_for_gpu_then_decoder_reuse_ack() {
