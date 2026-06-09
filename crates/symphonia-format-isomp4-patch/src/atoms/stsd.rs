@@ -883,10 +883,11 @@ impl Atom for PaspAtom {
 mod tests {
     use std::io::Cursor;
 
+    use symphonia_core::codecs::audio::well_known::CODEC_ID_PCM_S16LE;
     use symphonia_core::io::MediaSourceStream;
 
     use super::{
-        Atom, AtomIterator, ColourInformationAtom, ContentLightLevelAtom,
+        Atom, AtomIterator, AudioSampleEntry, ColourInformationAtom, ContentLightLevelAtom,
         MasteringDisplayColourVolumeAtom, VisualSampleEntry,
     };
 
@@ -924,6 +925,31 @@ mod tests {
 
     fn push_u32(bytes: &mut Vec<u8>, value: u32) {
         bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn push_f64(bytes: &mut Vec<u8>, value: f64) {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn lpcm_v2_sample_entry_payload(frames_per_packet: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0; 6]);
+        push_u16(&mut payload, 1);
+        push_u16(&mut payload, 2);
+        payload.extend_from_slice(&[0; 6]);
+        push_u16(&mut payload, 2);
+        push_u16(&mut payload, 16);
+        payload.extend_from_slice(&[0; 4]);
+        push_u32(&mut payload, 48_000_u32 << 16);
+        payload.extend_from_slice(&[0; 4]);
+        push_f64(&mut payload, 48_000.0);
+        push_u32(&mut payload, 2);
+        push_u32(&mut payload, 0x7f00_0000);
+        push_u32(&mut payload, 16);
+        push_u32(&mut payload, 0x4);
+        push_u32(&mut payload, frames_per_packet * 4);
+        push_u32(&mut payload, frames_per_packet);
+        payload
     }
 
     fn nclx_colr_payload() -> Vec<u8> {
@@ -1027,5 +1053,19 @@ mod tests {
         assert!(sample_entry.colour_information.is_some());
         assert!(sample_entry.mastering_display_colour_volume.is_some());
         assert!(sample_entry.content_light_level.is_some());
+    }
+
+    #[test]
+    fn lpcm_v2_sample_entry_preserves_frames_per_packet() {
+        let sample_entry = read_atom_from_payload::<AudioSampleEntry>(
+            *b"lpcm",
+            lpcm_v2_sample_entry_payload(1024),
+        );
+
+        assert_eq!(sample_entry.codec_id, CODEC_ID_PCM_S16LE);
+        assert_eq!(sample_entry.frames_per_packet, Some(1024));
+
+        let codec_params = sample_entry.make_codec_params();
+        assert_eq!(codec_params.max_frames_per_packet, Some(1024));
     }
 }

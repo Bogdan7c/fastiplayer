@@ -6,6 +6,14 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use symphonia_core::codecs::CodecParameters;
+use symphonia_core::codecs::audio::AudioCodecId;
+use symphonia_core::codecs::audio::well_known::{
+    CODEC_ID_PCM_F32BE, CODEC_ID_PCM_F32LE, CODEC_ID_PCM_F64BE, CODEC_ID_PCM_F64LE,
+    CODEC_ID_PCM_S16BE, CODEC_ID_PCM_S16LE, CODEC_ID_PCM_S24BE, CODEC_ID_PCM_S24LE,
+    CODEC_ID_PCM_S32BE, CODEC_ID_PCM_S32LE, CODEC_ID_PCM_S8, CODEC_ID_PCM_U16BE,
+    CODEC_ID_PCM_U16LE, CODEC_ID_PCM_U24BE, CODEC_ID_PCM_U24LE, CODEC_ID_PCM_U32BE,
+    CODEC_ID_PCM_U32LE, CODEC_ID_PCM_U8,
+};
 use symphonia_core::support_format;
 
 use symphonia_core::errors::{
@@ -61,6 +69,7 @@ const RUSTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG: &str =
     "rustiplayer.video.hdr.max_content_light_level_nits";
 const RUSTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG: &str =
     "rustiplayer.video.hdr.max_frame_average_light_level_nits";
+const PCM_FRAMES_PER_READER_PACKET: u32 = 1024;
 
 pub struct TrackState {
     /// The track number.
@@ -139,6 +148,191 @@ struct SampleDataInfo {
     pos: u64,
     /// The length of the sample.
     len: u32,
+}
+
+/// Диапазон байтов и тайминга для одного packet, который отдаёт MP4 reader.
+#[derive(Debug, PartialEq, Eq)]
+struct PacketSampleSpan {
+    /// Позиция первого sample в media data.
+    pos: u64,
+    /// Общая длина всех samples в packet.
+    len: usize,
+    /// Сумма длительностей samples в timebase трека.
+    dur: Duration,
+    /// Сколько MP4 samples нужно продвинуть в `TrackState`.
+    sample_count: u32,
+}
+
+fn pcm_packet_sample_limit(track: &Track, sample_duration: Duration) -> Option<u32> {
+    let Some(CodecParameters::Audio(params)) = &track.codec_params else {
+        return None;
+    };
+
+    if !is_packet_coalescing_pcm_codec(params.codec) {
+        return None;
+    }
+
+    if sample_duration != Duration::from(1_u32) {
+        return None;
+    }
+
+    // QuickTime LPCM often describes one PCM frame per MP4 sample. Without reader-side
+    // chunking this creates 48_000 tiny packets per second and starves playback after seek.
+    let requested_sample_limit = params
+        .max_frames_per_packet
+        .filter(|max_frames_per_packet| *max_frames_per_packet > 1)
+        .unwrap_or(u64::from(PCM_FRAMES_PER_READER_PACKET));
+    let bounded_sample_limit =
+        requested_sample_limit.min(u64::from(PCM_FRAMES_PER_READER_PACKET));
+
+    Some(u32::try_from(bounded_sample_limit).unwrap_or(PCM_FRAMES_PER_READER_PACKET))
+}
+
+fn is_packet_coalescing_pcm_codec(codec: AudioCodecId) -> bool {
+    matches!(
+        codec,
+        CODEC_ID_PCM_S8
+            | CODEC_ID_PCM_U8
+            | CODEC_ID_PCM_S16BE
+            | CODEC_ID_PCM_S16LE
+            | CODEC_ID_PCM_U16BE
+            | CODEC_ID_PCM_U16LE
+            | CODEC_ID_PCM_S24BE
+            | CODEC_ID_PCM_S24LE
+            | CODEC_ID_PCM_U24BE
+            | CODEC_ID_PCM_U24LE
+            | CODEC_ID_PCM_S32BE
+            | CODEC_ID_PCM_S32LE
+            | CODEC_ID_PCM_U32BE
+            | CODEC_ID_PCM_U32LE
+            | CODEC_ID_PCM_F32BE
+            | CODEC_ID_PCM_F32LE
+            | CODEC_ID_PCM_F64BE
+            | CODEC_ID_PCM_F64LE
+    )
+}
+
+fn collect_pcm_packet_span(
+    seg: &dyn StreamSegment,
+    track_num: usize,
+    start_sample: u32,
+    start_sample_pos: u64,
+    max_samples_per_packet: u32,
+) -> Result<PacketSampleSpan> {
+    let sample_range = seg.track_sample_range(track_num);
+
+    if !sample_range.contains(&start_sample) {
+        return decode_error("isomp4: invalid sample index");
+    }
+
+    let sample_limit = max_samples_per_packet.min(sample_range.end - start_sample);
+    let mut span_pos = start_sample_pos;
+    let mut span_len = 0usize;
+    let mut span_dur = Duration::ZERO;
+    let mut sample_count = 0u32;
+    let mut next_sample_pos = start_sample_pos;
+    let mut first_base_pos = None;
+    let mut expected_pts = None;
+    let mut expected_dts = None;
+
+    while sample_count < sample_limit {
+        let sample_num = start_sample
+            .checked_add(sample_count)
+            .ok_or(Error::DecodeError("isomp4: sample index overflow"))?;
+
+        let Some(timing) = seg.sample_timing(track_num, sample_num)? else {
+            break;
+        };
+
+        // LPCM frame-samples должны быть соседними во времени. Если таблицы показывают разрыв,
+        // завершаем текущий packet до разрыва и не меняем семантику следующих samples.
+        if sample_count > 0 {
+            if expected_pts != Some(timing.pts) || expected_dts != Some(timing.dts) {
+                break;
+            }
+        }
+
+        let sample_data_desc = seg.sample_data(track_num, sample_num, false)?;
+
+        if let Some(base_pos) = first_base_pos {
+            // Не склеиваем через границу chunk: позиционирование в `stsc/stco/stsz` уже меняет
+            // базовую позицию, и безопаснее отдать остаток текущего chunk отдельным packet.
+            if base_pos != sample_data_desc.base_pos {
+                break;
+            }
+        } else {
+            first_base_pos = Some(sample_data_desc.base_pos);
+        }
+
+        let sample_pos = if sample_data_desc.base_pos > next_sample_pos {
+            sample_data_desc.base_pos
+        } else {
+            next_sample_pos
+        };
+
+        if sample_count == 0 {
+            span_pos = sample_pos;
+        } else if sample_pos != span_pos + u64::try_from(span_len).unwrap_or(u64::MAX) {
+            break;
+        }
+
+        let sample_len = usize::try_from(sample_data_desc.size)
+            .map_err(|_| Error::DecodeError("isomp4: sample size overflow"))?;
+
+        let Some(next_span_len) = span_len.checked_add(sample_len) else {
+            if sample_count == 0 {
+                return decode_error("isomp4: packet size overflow");
+            }
+            break;
+        };
+
+        let sample_dur = Duration::from(timing.dur);
+        let Some(next_span_dur) = span_dur.checked_add(sample_dur) else {
+            if sample_count == 0 {
+                return decode_error("isomp4: packet duration overflow");
+            }
+            break;
+        };
+
+        let Some(sample_end_pos) = sample_pos.checked_add(u64::from(sample_data_desc.size)) else {
+            if sample_count == 0 {
+                return decode_error("isomp4: sample position overflow");
+            }
+            break;
+        };
+
+        let Some(next_expected_pts) = timing.pts.checked_add(u64::from(timing.dur)) else {
+            if sample_count == 0 {
+                return decode_error("isomp4: sample timestamp overflow");
+            }
+            break;
+        };
+
+        let Some(next_expected_dts) = timing.dts.checked_add(u64::from(timing.dur)) else {
+            if sample_count == 0 {
+                return decode_error("isomp4: sample timestamp overflow");
+            }
+            break;
+        };
+
+        span_len = next_span_len;
+        span_dur = next_span_dur;
+        next_sample_pos = sample_end_pos;
+        expected_pts = Some(next_expected_pts);
+        expected_dts = Some(next_expected_dts);
+        sample_count += 1;
+    }
+
+    if sample_count == 0 {
+        return decode_error("isomp4: missing sample");
+    }
+
+    Ok(PacketSampleSpan {
+        pos: span_pos,
+        len: span_len,
+        dur: span_dur,
+        sample_count,
+    })
 }
 
 /// A representation of time, defining a duration relative to a specific frequency
@@ -478,6 +672,60 @@ impl<'s> IsoMp4Reader<'s> {
         }))
     }
 
+    fn consume_next_packet_span(&mut self, info: &NextSampleInfo) -> Result<PacketSampleSpan> {
+        if let Some(max_samples_per_packet) =
+            pcm_packet_sample_limit(&self.tracks[info.track_num], info.dur)
+        {
+            return self.consume_next_pcm_packet_span(info, max_samples_per_packet);
+        }
+
+        let sample_info = self.consume_next_sample(info)?.unwrap();
+
+        Ok(PacketSampleSpan {
+            pos: sample_info.pos,
+            len: usize::try_from(sample_info.len)
+                .map_err(|_| Error::DecodeError("isomp4: sample size overflow"))?,
+            dur: info.dur,
+            sample_count: 1,
+        })
+    }
+
+    fn consume_next_pcm_packet_span(
+        &mut self,
+        info: &NextSampleInfo,
+        max_samples_per_packet: u32,
+    ) -> Result<PacketSampleSpan> {
+        let track = &self.track_states[info.track_num];
+        let seg = &self.segs[info.seg_idx];
+
+        let packet_span = collect_pcm_packet_span(
+            seg.as_ref(),
+            track.track_num,
+            track.next_sample,
+            track.next_sample_pos,
+            max_samples_per_packet,
+        )?;
+
+        let packet_end_pos = packet_span
+            .pos
+            .checked_add(
+                u64::try_from(packet_span.len)
+                    .map_err(|_| Error::DecodeError("isomp4: packet size overflow"))?,
+            )
+            .ok_or(Error::DecodeError("isomp4: packet position overflow"))?;
+
+        let track = &mut self.track_states[info.track_num];
+
+        track.cur_seg = info.seg_idx;
+        track.next_sample = track
+            .next_sample
+            .checked_add(packet_span.sample_count)
+            .ok_or(Error::DecodeError("isomp4: sample index overflow"))?;
+        track.next_sample_pos = packet_end_pos;
+
+        Ok(packet_span)
+    }
+
     fn try_read_more_segments(&mut self) -> Result<bool> {
         // If all tracks ended in the last segment, then do not try to read anymore segments.
         //
@@ -803,18 +1051,18 @@ impl FormatReader for IsoMp4Reader<'_> {
             }
         };
 
-        // Get the position and length information of the next sample.
-        let sample_info = self.consume_next_sample(&next_sample_info)?.unwrap();
+        // Получаем позицию, длину и duration уже для packet-а, а не обязательно одного sample.
+        let packet_span = self.consume_next_packet_span(&next_sample_info)?;
 
         let data = self
             .iter
-            .read_raw_boxed_slice_exact(sample_info.pos, sample_info.len as usize)?;
+            .read_raw_boxed_slice_exact(packet_span.pos, packet_span.len)?;
 
         Ok(Some(
             PacketBuilder::new()
                 .track_id(next_sample_info.track_id)
                 .pts(next_sample_info.pts)
-                .dur(next_sample_info.dur)
+                .dur(packet_span.dur)
                 .data(data)
                 .dts(next_sample_info.dts)
                 .build(),
@@ -919,6 +1167,205 @@ impl From<AtomError> for Error {
             AtomError::Other(err) => return err,
         };
         Error::DecodeError(msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::Range;
+
+    use symphonia_core::codecs::audio::well_known::{CODEC_ID_AAC, CODEC_ID_PCM_S16LE};
+    use symphonia_core::codecs::audio::AudioCodecParameters;
+
+    use super::*;
+
+    struct FakeSegment {
+        sample_range: Range<u32>,
+        base_pos: u64,
+        sample_size: u32,
+        chunk_sample_count: u32,
+    }
+
+    impl FakeSegment {
+        fn new(sample_range: Range<u32>, base_pos: u64, sample_size: u32) -> Self {
+            Self {
+                sample_range,
+                base_pos,
+                sample_size,
+                chunk_sample_count: u32::MAX,
+            }
+        }
+
+        fn with_chunk_sample_count(mut self, chunk_sample_count: u32) -> Self {
+            self.chunk_sample_count = chunk_sample_count;
+            self
+        }
+    }
+
+    impl StreamSegment for FakeSegment {
+        fn sequence_num(&self) -> u32 {
+            0
+        }
+
+        fn all_tracks_ended(&self) -> bool {
+            true
+        }
+
+        fn track_sample_range(&self, _track_num: usize) -> Range<u32> {
+            self.sample_range.clone()
+        }
+
+        fn track_ts_range(&self, _track_num: usize) -> Range<u64> {
+            u64::from(self.sample_range.start)..u64::from(self.sample_range.end)
+        }
+
+        fn sample_timing(
+            &self,
+            _track_num: usize,
+            sample_num: u32,
+        ) -> Result<Option<SampleTiming>> {
+            if !self.sample_range.contains(&sample_num) {
+                return Ok(None);
+            }
+
+            Ok(Some(SampleTiming {
+                pts: u64::from(sample_num),
+                dts: u64::from(sample_num),
+                dur: 1,
+            }))
+        }
+
+        fn ts_sample(&self, _track_num: usize, ts: u64) -> Result<Option<u32>> {
+            let sample_num =
+                u32::try_from(ts).map_err(|_| Error::DecodeError("test timestamp overflow"))?;
+
+            Ok(self
+                .sample_range
+                .contains(&sample_num)
+                .then_some(sample_num))
+        }
+
+        fn sample_data(
+            &self,
+            _track_num: usize,
+            sample_num: u32,
+            get_offset: bool,
+        ) -> Result<SampleDataDesc> {
+            if !self.sample_range.contains(&sample_num) {
+                return decode_error("test sample out of range");
+            }
+
+            let sample_offset = sample_num - self.sample_range.start;
+            let chunk_index = sample_offset / self.chunk_sample_count;
+            let sample_in_chunk = sample_offset % self.chunk_sample_count;
+            let chunk_size = u64::from(self.chunk_sample_count) * u64::from(self.sample_size);
+            let base_pos = self.base_pos + u64::from(chunk_index) * chunk_size;
+            let offset =
+                get_offset.then_some(u64::from(sample_in_chunk) * u64::from(self.sample_size));
+
+            Ok(SampleDataDesc {
+                base_pos,
+                offset,
+                size: self.sample_size,
+            })
+        }
+    }
+
+    fn audio_track(codec: AudioCodecId, max_frames_per_packet: Option<u64>) -> Track {
+        let mut params = AudioCodecParameters::new();
+        params.codec = codec;
+        params.max_frames_per_packet = max_frames_per_packet;
+
+        let mut track = Track::new(1);
+        track.with_codec_params(CodecParameters::Audio(params));
+        track
+    }
+
+    #[test]
+    fn pcm_packet_sample_limit_uses_reader_chunk_for_single_frame_pcm() {
+        let pcm_track = audio_track(CODEC_ID_PCM_S16LE, Some(1024));
+        let single_frame_pcm_track = audio_track(CODEC_ID_PCM_S16LE, Some(1));
+        let unknown_packet_pcm_track = audio_track(CODEC_ID_PCM_S16LE, None);
+        let aac_track = audio_track(CODEC_ID_AAC, Some(1024));
+
+        assert_eq!(
+            pcm_packet_sample_limit(&pcm_track, Duration::from(1_u32)),
+            Some(1024)
+        );
+        assert_eq!(
+            pcm_packet_sample_limit(&pcm_track, Duration::from(1024_u32)),
+            None
+        );
+        assert_eq!(
+            pcm_packet_sample_limit(&single_frame_pcm_track, Duration::from(1_u32)),
+            Some(PCM_FRAMES_PER_READER_PACKET)
+        );
+        assert_eq!(
+            pcm_packet_sample_limit(&unknown_packet_pcm_track, Duration::from(1_u32)),
+            Some(PCM_FRAMES_PER_READER_PACKET)
+        );
+        assert_eq!(
+            pcm_packet_sample_limit(&single_frame_pcm_track, Duration::from(1024_u32)),
+            None
+        );
+        assert_eq!(
+            pcm_packet_sample_limit(&aac_track, Duration::from(1_u32)),
+            None
+        );
+    }
+
+    #[test]
+    fn pcm_packet_span_coalesces_contiguous_frame_samples() {
+        let segment = FakeSegment::new(0..1024, 1_000, 4);
+
+        let span = collect_pcm_packet_span(&segment, 0, 0, 1_000, 1024)
+            .expect("contiguous PCM frame-samples должны склеиваться");
+
+        assert_eq!(
+            span,
+            PacketSampleSpan {
+                pos: 1_000,
+                len: 4_096,
+                dur: Duration::from(1024_u32),
+                sample_count: 1024,
+            }
+        );
+    }
+
+    #[test]
+    fn pcm_packet_span_keeps_tail_packet_duration() {
+        let segment = FakeSegment::new(2048..2784, 9_000, 4);
+
+        let span = collect_pcm_packet_span(&segment, 0, 2048, 9_000, 1024)
+            .expect("tail PCM packet должен сохранить фактическую длину");
+
+        assert_eq!(
+            span,
+            PacketSampleSpan {
+                pos: 9_000,
+                len: 2_944,
+                dur: Duration::from(736_u32),
+                sample_count: 736,
+            }
+        );
+    }
+
+    #[test]
+    fn pcm_packet_span_stops_before_chunk_boundary() {
+        let segment = FakeSegment::new(0..1024, 20_000, 4).with_chunk_sample_count(512);
+
+        let span = collect_pcm_packet_span(&segment, 0, 0, 20_000, 1024)
+            .expect("PCM packet должен завершиться на границе chunk");
+
+        assert_eq!(
+            span,
+            PacketSampleSpan {
+                pos: 20_000,
+                len: 2_048,
+                dur: Duration::from(512_u32),
+                sample_count: 512,
+            }
+        );
     }
 }
 
