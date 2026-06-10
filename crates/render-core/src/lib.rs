@@ -6,8 +6,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::fmt;
-use std::time::Duration;
+use std::{borrow::Cow, collections::BTreeSet, error::Error, fmt, time::Duration};
 
 use codec_core::{
     BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction,
@@ -576,6 +575,727 @@ impl Default for ColorPipelineSettings {
     /// Сохраняет visual parity текущего SDR path при отсутствии пользовательского config.
     fn default() -> Self {
         Self::identity()
+    }
+}
+
+/// Стабильный id shader parameter-а в renderer-neutral live settings contract.
+///
+/// Id хранится строкой, потому что будущие shader controls будут добавляться без
+/// изменения enum-а. Значение всё равно типизируется через descriptor/value ниже.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ShaderParameterId(String);
+
+impl ShaderParameterId {
+    /// Создаёт новый стабильный id shader parameter-а.
+    #[must_use]
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// Возвращает id без аллокации для diagnostics и metadata mapping.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Стабильный id enum option-а внутри shader parameter descriptor-а.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ShaderParameterOptionId(String);
+
+impl ShaderParameterOptionId {
+    /// Создаёт новый стабильный id option-а.
+    #[must_use]
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// Возвращает id option-а без аллокации.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Тип значения shader parameter-а; UI и runtime не угадывают его из строки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShaderParameterValueType {
+    /// Boolean shader switch.
+    Bool,
+
+    /// Один scalar `f32`.
+    Float,
+
+    /// RGB/vector-like triplet из трёх `f32`.
+    Float3,
+
+    /// Одно значение из стабильного списка option ids.
+    Enum,
+}
+
+/// Числовой диапазон shader parameter-а.
+///
+/// Диапазон нейтральный: здесь нет slider/egui-представления, только контракт
+/// значений, которые adapter может безопасно принять.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ShaderNumericRange {
+    /// Минимальное допустимое значение включительно.
+    pub min: f32,
+
+    /// Максимальное допустимое значение включительно.
+    pub max: f32,
+
+    /// Optional step для UI/metadata; adapter не обязан квантовать значение.
+    pub step: Option<f32>,
+}
+
+impl ShaderNumericRange {
+    /// Проверяет один `f32` на конечность и попадание в диапазон.
+    #[must_use]
+    pub fn contains_float(self, value: f32) -> bool {
+        value.is_finite() && value >= self.min && value <= self.max
+    }
+
+    /// Проверяет `Float3`, применяя один диапазон ко всем каналам.
+    #[must_use]
+    pub fn contains_float3(self, values: [f32; 3]) -> bool {
+        values
+            .into_iter()
+            .all(|channel_value| self.contains_float(channel_value))
+    }
+}
+
+/// Типизированное значение shader parameter-а.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShaderParameterValue {
+    /// Boolean shader switch.
+    Bool(bool),
+
+    /// Один scalar `f32`.
+    Float(f32),
+
+    /// Три `f32`, например RGB gain/offset-like параметр.
+    Float3([f32; 3]),
+
+    /// Стабильный enum option id.
+    Enum(ShaderParameterOptionId),
+}
+
+impl ShaderParameterValue {
+    /// Возвращает тип значения без доступа к descriptor registry.
+    #[must_use]
+    pub const fn value_type(&self) -> ShaderParameterValueType {
+        match self {
+            Self::Bool(_) => ShaderParameterValueType::Bool,
+            Self::Float(_) => ShaderParameterValueType::Float,
+            Self::Float3(_) => ShaderParameterValueType::Float3,
+            Self::Enum(_) => ShaderParameterValueType::Enum,
+        }
+    }
+}
+
+/// Descriptor одного shader parameter-а.
+///
+/// Это schema для live shader controls: stable id, тип значения, optional range и
+/// default. Такой контракт не требует `HashMap<String, f32>` и остаётся
+/// расширяемым для будущих shader passes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ShaderParameterDescriptor {
+    /// Stable id parameter-а.
+    pub id: ShaderParameterId,
+
+    /// Ожидаемый тип значения.
+    pub value_type: ShaderParameterValueType,
+
+    /// Optional numeric range только для `Float`/`Float3`.
+    pub range: Option<ShaderNumericRange>,
+
+    /// Default value, который должен соответствовать `value_type` и `range`.
+    pub default_value: ShaderParameterValue,
+}
+
+impl ShaderParameterDescriptor {
+    /// Создаёт descriptor без backend-specific state.
+    #[must_use]
+    pub fn new(
+        id: ShaderParameterId,
+        value_type: ShaderParameterValueType,
+        range: Option<ShaderNumericRange>,
+        default_value: ShaderParameterValue,
+    ) -> Self {
+        Self {
+            id,
+            value_type,
+            range,
+            default_value,
+        }
+    }
+
+    /// Проверяет значение по типу и optional numeric range.
+    #[must_use]
+    pub fn accepts_value(&self, value: &ShaderParameterValue) -> bool {
+        if value.value_type() != self.value_type {
+            return false;
+        }
+
+        match (self.range, value) {
+            (Some(range), ShaderParameterValue::Float(value)) => range.contains_float(*value),
+            (Some(range), ShaderParameterValue::Float3(values)) => range.contains_float3(*values),
+            (Some(_), ShaderParameterValue::Bool(_) | ShaderParameterValue::Enum(_)) => false,
+            (None, _) => true,
+        }
+    }
+
+    /// Проверяет, что default value descriptor-а сам валиден.
+    #[must_use]
+    pub fn default_value_is_valid(&self) -> bool {
+        self.accepts_value(&self.default_value)
+    }
+}
+
+/// Одно текущее значение shader parameter-а.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ShaderParameter {
+    /// Stable id parameter-а.
+    pub id: ShaderParameterId,
+
+    /// Типизированное значение parameter-а.
+    pub value: ShaderParameterValue,
+}
+
+impl ShaderParameter {
+    /// Создаёт parameter value pair.
+    #[must_use]
+    pub fn new(id: ShaderParameterId, value: ShaderParameterValue) -> Self {
+        Self { id, value }
+    }
+}
+
+/// Набор shader parameter values без backend-specific storage.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ShaderParameterSet {
+    /// Ordered values. Это не `HashMap<String, f32>`: каждый value несёт свой тип.
+    pub parameters: Vec<ShaderParameter>,
+}
+
+impl ShaderParameterSet {
+    /// Возвращает пустой набор shader parameters.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            parameters: Vec::new(),
+        }
+    }
+
+    /// Проверяет, что shader parameters отсутствуют.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.parameters.is_empty()
+    }
+
+    /// Ищет parameter по stable id.
+    #[must_use]
+    pub fn get(&self, id: &ShaderParameterId) -> Option<&ShaderParameter> {
+        self.parameters.iter().find(|parameter| parameter.id == *id)
+    }
+
+    /// Возвращает stable ids shader parameters, отличающихся от baseline.
+    #[must_use]
+    pub fn changed_parameter_ids_from(&self, baseline: &Self) -> Vec<ShaderParameterId> {
+        let mut candidate_ids = BTreeSet::new();
+
+        for parameter in &self.parameters {
+            candidate_ids.insert(parameter.id.clone());
+        }
+
+        for parameter in &baseline.parameters {
+            candidate_ids.insert(parameter.id.clone());
+        }
+
+        candidate_ids
+            .into_iter()
+            .filter(|id| {
+                let current_value = self.get(id).map(|parameter| &parameter.value);
+                let baseline_value = baseline.get(id).map(|parameter| &parameter.value);
+
+                current_value != baseline_value
+            })
+            .collect()
+    }
+}
+
+/// Field-level id renderer live setting-а.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderLiveSettingId {
+    /// `render.color_adjustment.brightness`.
+    ColorAdjustmentBrightness,
+
+    /// `render.color_adjustment.contrast`.
+    ColorAdjustmentContrast,
+
+    /// `render.color_adjustment.saturation`.
+    ColorAdjustmentSaturation,
+
+    /// `render.color_adjustment.exposure`.
+    ColorAdjustmentExposure,
+
+    /// `render.color_adjustment.rgb_gain`.
+    ColorAdjustmentRgbGain,
+
+    /// `render.color_adjustment.rgb_offset`.
+    ColorAdjustmentRgbOffset,
+
+    /// Renderer-neutral tone mapping mode.
+    ColorPipelineToneMapping,
+
+    /// Renderer-neutral swapchain transfer mode.
+    ColorPipelineSwapchainTransfer,
+
+    /// `render.hdr_to_sdr.enabled`.
+    HdrToSdrEnabled,
+
+    /// `render.hdr_to_sdr.operator`.
+    HdrToSdrOperator,
+
+    /// `render.hdr_to_sdr.output_mode`.
+    HdrToSdrOutputMode,
+
+    /// `render.hdr_to_sdr.sdr_reference_white_nits`.
+    HdrToSdrSdrReferenceWhiteNits,
+
+    /// `render.hdr_to_sdr.hdr_reference_peak_nits`.
+    HdrToSdrHdrReferencePeakNits,
+
+    /// Future shader parameter, определённый typed descriptor-ом.
+    ShaderParameter(ShaderParameterId),
+}
+
+impl RenderLiveSettingId {
+    /// Возвращает stable id для reports/status.
+    #[must_use]
+    pub fn stable_id(&self) -> Cow<'_, str> {
+        match self {
+            Self::ColorAdjustmentBrightness => Cow::Borrowed("render.color_adjustment.brightness"),
+            Self::ColorAdjustmentContrast => Cow::Borrowed("render.color_adjustment.contrast"),
+            Self::ColorAdjustmentSaturation => Cow::Borrowed("render.color_adjustment.saturation"),
+            Self::ColorAdjustmentExposure => Cow::Borrowed("render.color_adjustment.exposure"),
+            Self::ColorAdjustmentRgbGain => Cow::Borrowed("render.color_adjustment.rgb_gain"),
+            Self::ColorAdjustmentRgbOffset => Cow::Borrowed("render.color_adjustment.rgb_offset"),
+            Self::ColorPipelineToneMapping => Cow::Borrowed("render.color_pipeline.tone_mapping"),
+            Self::ColorPipelineSwapchainTransfer => {
+                Cow::Borrowed("render.color_pipeline.swapchain_transfer")
+            }
+            Self::HdrToSdrEnabled => Cow::Borrowed("render.hdr_to_sdr.enabled"),
+            Self::HdrToSdrOperator => Cow::Borrowed("render.hdr_to_sdr.operator"),
+            Self::HdrToSdrOutputMode => Cow::Borrowed("render.hdr_to_sdr.output_mode"),
+            Self::HdrToSdrSdrReferenceWhiteNits => {
+                Cow::Borrowed("render.hdr_to_sdr.sdr_reference_white_nits")
+            }
+            Self::HdrToSdrHdrReferencePeakNits => {
+                Cow::Borrowed("render.hdr_to_sdr.hdr_reference_peak_nits")
+            }
+            Self::ShaderParameter(id) => Cow::Borrowed(id.as_str()),
+        }
+    }
+}
+
+/// Backend-neutral live settings snapshot, который можно применять без decode/session rebuild.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RenderLiveSettings {
+    /// Общие color pipeline settings.
+    pub color_pipeline: ColorPipelineSettings,
+
+    /// HDR-to-SDR settings для поддержанного HDR presentation path.
+    pub hdr_to_sdr: HdrToSdrSettings,
+
+    /// Future shader parameters с typed values.
+    pub shader_parameters: ShaderParameterSet,
+}
+
+impl RenderLiveSettings {
+    /// Возвращает field-level diff относительно baseline.
+    #[must_use]
+    pub fn changed_fields_from(&self, baseline: &Self) -> Vec<RenderLiveSettingId> {
+        let mut changed_fields = Vec::new();
+
+        push_color_pipeline_changed_fields(
+            &mut changed_fields,
+            &self.color_pipeline,
+            &baseline.color_pipeline,
+        );
+        push_hdr_to_sdr_changed_fields(&mut changed_fields, &self.hdr_to_sdr, &baseline.hdr_to_sdr);
+
+        changed_fields.extend(
+            self.shader_parameters
+                .changed_parameter_ids_from(&baseline.shader_parameters)
+                .into_iter()
+                .map(RenderLiveSettingId::ShaderParameter),
+        );
+
+        changed_fields
+    }
+}
+
+impl Default for RenderLiveSettings {
+    /// Default live settings совпадают с текущим renderer default contract.
+    fn default() -> Self {
+        Self {
+            color_pipeline: ColorPipelineSettings::default(),
+            hdr_to_sdr: HdrToSdrSettings::default(),
+            shader_parameters: ShaderParameterSet::default(),
+        }
+    }
+}
+
+/// Изменение live settings, отправляемое конкретному renderer adapter-у.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RenderLiveSettingsUpdate {
+    /// Новый полный snapshot, который должен стать active runtime state.
+    pub settings: RenderLiveSettings,
+
+    /// Field-level ids, изменённые в этом update-е.
+    pub changed_fields: Vec<RenderLiveSettingId>,
+}
+
+impl RenderLiveSettingsUpdate {
+    /// Создаёт update из готового settings snapshot и explicit diff.
+    #[must_use]
+    pub fn new(settings: RenderLiveSettings, changed_fields: Vec<RenderLiveSettingId>) -> Self {
+        Self {
+            settings,
+            changed_fields,
+        }
+    }
+
+    /// Создаёт update, вычисляя field-level diff относительно baseline.
+    #[must_use]
+    pub fn from_baseline(baseline: &RenderLiveSettings, settings: RenderLiveSettings) -> Self {
+        let changed_fields = settings.changed_fields_from(baseline);
+
+        Self {
+            settings,
+            changed_fields,
+        }
+    }
+}
+
+/// Фаза применения live settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderLiveApplyPhase {
+    /// Preview update во время draft transaction.
+    Preview,
+
+    /// Commit после Apply/OK.
+    Commit,
+
+    /// Rollback к baseline после Cancel/window close.
+    Rollback,
+}
+
+impl RenderLiveApplyPhase {
+    /// Возвращает stable id фазы для diagnostics.
+    #[must_use]
+    pub const fn stable_id(self) -> &'static str {
+        match self {
+            Self::Preview => "preview",
+            Self::Commit => "commit",
+            Self::Rollback => "rollback",
+        }
+    }
+}
+
+/// Успешный outcome применения live settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderLiveApplyOutcome {
+    /// Snapshot уже активен; adapter ничего не менял.
+    NoOp,
+
+    /// Adapter применил один или несколько field-level changes.
+    Applied,
+}
+
+/// Успешный report live settings adapter-а.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RenderLiveApplyReport {
+    /// Фаза применения, чтобы status layer не угадывал контекст.
+    pub phase: RenderLiveApplyPhase,
+
+    /// Итог успешной операции.
+    pub outcome: RenderLiveApplyOutcome,
+
+    /// Field-level ids, реально требовавшие изменения.
+    pub changed_fields: Vec<RenderLiveSettingId>,
+}
+
+impl RenderLiveApplyReport {
+    /// Создаёт no-op report.
+    #[must_use]
+    pub fn no_op(phase: RenderLiveApplyPhase) -> Self {
+        Self {
+            phase,
+            outcome: RenderLiveApplyOutcome::NoOp,
+            changed_fields: Vec::new(),
+        }
+    }
+
+    /// Создаёт applied report.
+    #[must_use]
+    pub fn applied(phase: RenderLiveApplyPhase, changed_fields: Vec<RenderLiveSettingId>) -> Self {
+        Self {
+            phase,
+            outcome: RenderLiveApplyOutcome::Applied,
+            changed_fields,
+        }
+    }
+}
+
+/// Категория ошибки live settings adapter-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderLiveSettingsErrorKind {
+    /// Adapter жив, но конкретные fields/values не поддерживаются.
+    Unsupported,
+
+    /// Нужный runtime resource отсутствует прямо сейчас.
+    AbsentResource,
+
+    /// Backend сообщил ошибку, после которой normal retry небезопасен.
+    Fatal,
+}
+
+/// Ошибка применения live settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderLiveSettingsError {
+    /// Adapter жив, но конкретные fields/values не поддерживаются.
+    Unsupported {
+        /// Фаза, в которой возникла ошибка.
+        phase: RenderLiveApplyPhase,
+
+        /// Affected field-level ids.
+        setting_ids: Vec<RenderLiveSettingId>,
+
+        /// Человекочитаемое объяснение для report/status.
+        reason: String,
+    },
+
+    /// Runtime resource отсутствует: например, renderer ещё не создан.
+    AbsentResource {
+        /// Фаза, в которой возникла ошибка.
+        phase: RenderLiveApplyPhase,
+
+        /// Человекочитаемое объяснение для report/status.
+        reason: String,
+    },
+
+    /// Fatal backend error.
+    Fatal {
+        /// Фаза, в которой возникла ошибка.
+        phase: RenderLiveApplyPhase,
+
+        /// Человекочитаемое объяснение для report/status.
+        reason: String,
+    },
+}
+
+impl RenderLiveSettingsError {
+    /// Создаёт unsupported error с явными affected fields.
+    #[must_use]
+    pub fn unsupported(
+        phase: RenderLiveApplyPhase,
+        setting_ids: Vec<RenderLiveSettingId>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::Unsupported {
+            phase,
+            setting_ids,
+            reason: reason.into(),
+        }
+    }
+
+    /// Создаёт absent-resource error.
+    #[must_use]
+    pub fn absent_resource(phase: RenderLiveApplyPhase, reason: impl Into<String>) -> Self {
+        Self::AbsentResource {
+            phase,
+            reason: reason.into(),
+        }
+    }
+
+    /// Создаёт fatal error.
+    #[must_use]
+    pub fn fatal(phase: RenderLiveApplyPhase, reason: impl Into<String>) -> Self {
+        Self::Fatal {
+            phase,
+            reason: reason.into(),
+        }
+    }
+
+    /// Возвращает фазу ошибки.
+    #[must_use]
+    pub const fn phase(&self) -> RenderLiveApplyPhase {
+        match self {
+            Self::Unsupported { phase, .. }
+            | Self::AbsentResource { phase, .. }
+            | Self::Fatal { phase, .. } => *phase,
+        }
+    }
+
+    /// Возвращает категорию ошибки без строкового parsing.
+    #[must_use]
+    pub const fn kind(&self) -> RenderLiveSettingsErrorKind {
+        match self {
+            Self::Unsupported { .. } => RenderLiveSettingsErrorKind::Unsupported,
+            Self::AbsentResource { .. } => RenderLiveSettingsErrorKind::AbsentResource,
+            Self::Fatal { .. } => RenderLiveSettingsErrorKind::Fatal,
+        }
+    }
+
+    /// Возвращает affected fields для unsupported error-а.
+    #[must_use]
+    pub fn setting_ids(&self) -> &[RenderLiveSettingId] {
+        match self {
+            Self::Unsupported { setting_ids, .. } => setting_ids,
+            Self::AbsentResource { .. } | Self::Fatal { .. } => &[],
+        }
+    }
+}
+
+impl fmt::Display for RenderLiveSettingsError {
+    /// Пишет короткий user-facing текст без backend-specific типов.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unsupported {
+                phase,
+                setting_ids,
+                reason,
+            } => write!(
+                formatter,
+                "render live settings {} unsupported for [{}]: {}",
+                phase.stable_id(),
+                setting_ids
+                    .iter()
+                    .map(RenderLiveSettingId::stable_id)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                reason
+            ),
+            Self::AbsentResource { phase, reason } => write!(
+                formatter,
+                "render live settings {} absent resource: {}",
+                phase.stable_id(),
+                reason
+            ),
+            Self::Fatal { phase, reason } => write!(
+                formatter,
+                "render live settings {} fatal error: {}",
+                phase.stable_id(),
+                reason
+            ),
+        }
+    }
+}
+
+impl Error for RenderLiveSettingsError {}
+
+/// Renderer-neutral live settings adapter boundary.
+pub trait RenderLiveSettingsAdapter {
+    /// Применяет preview update без TOML write и без pipeline/session rebuild.
+    fn preview_live_settings(
+        &mut self,
+        update: &RenderLiveSettingsUpdate,
+    ) -> Result<RenderLiveApplyReport, RenderLiveSettingsError>;
+
+    /// Фиксирует уже валидированный settings snapshot как committed runtime state.
+    fn commit_live_settings(
+        &mut self,
+        settings: &RenderLiveSettings,
+    ) -> Result<RenderLiveApplyReport, RenderLiveSettingsError>;
+
+    /// Откатывает renderer к baseline, захваченному preview transaction-ом.
+    fn rollback_live_settings(
+        &mut self,
+        baseline: &RenderLiveSettings,
+    ) -> Result<RenderLiveApplyReport, RenderLiveSettingsError>;
+}
+
+/// Добавляет field-level diff для color pipeline части live settings.
+fn push_color_pipeline_changed_fields(
+    changed_fields: &mut Vec<RenderLiveSettingId>,
+    settings: &ColorPipelineSettings,
+    baseline: &ColorPipelineSettings,
+) {
+    if settings.adjustment.brightness != baseline.adjustment.brightness {
+        changed_fields.push(RenderLiveSettingId::ColorAdjustmentBrightness);
+    }
+
+    if settings.adjustment.contrast != baseline.adjustment.contrast {
+        changed_fields.push(RenderLiveSettingId::ColorAdjustmentContrast);
+    }
+
+    if settings.adjustment.saturation != baseline.adjustment.saturation {
+        changed_fields.push(RenderLiveSettingId::ColorAdjustmentSaturation);
+    }
+
+    if settings.adjustment.exposure != baseline.adjustment.exposure {
+        changed_fields.push(RenderLiveSettingId::ColorAdjustmentExposure);
+    }
+
+    if settings.adjustment.rgb_gain != baseline.adjustment.rgb_gain {
+        changed_fields.push(RenderLiveSettingId::ColorAdjustmentRgbGain);
+    }
+
+    if settings.adjustment.rgb_offset != baseline.adjustment.rgb_offset {
+        changed_fields.push(RenderLiveSettingId::ColorAdjustmentRgbOffset);
+    }
+
+    if settings.tone_mapping != baseline.tone_mapping {
+        changed_fields.push(RenderLiveSettingId::ColorPipelineToneMapping);
+    }
+
+    if settings.swapchain_transfer != baseline.swapchain_transfer {
+        changed_fields.push(RenderLiveSettingId::ColorPipelineSwapchainTransfer);
+    }
+}
+
+/// Добавляет field-level diff для HDR-to-SDR части live settings.
+fn push_hdr_to_sdr_changed_fields(
+    changed_fields: &mut Vec<RenderLiveSettingId>,
+    settings: &HdrToSdrSettings,
+    baseline: &HdrToSdrSettings,
+) {
+    if settings.enabled != baseline.enabled {
+        changed_fields.push(RenderLiveSettingId::HdrToSdrEnabled);
+    }
+
+    if settings.operator != baseline.operator {
+        changed_fields.push(RenderLiveSettingId::HdrToSdrOperator);
+    }
+
+    if settings.output_mode != baseline.output_mode {
+        changed_fields.push(RenderLiveSettingId::HdrToSdrOutputMode);
+    }
+
+    if settings.sdr_reference_white_nits != baseline.sdr_reference_white_nits {
+        changed_fields.push(RenderLiveSettingId::HdrToSdrSdrReferenceWhiteNits);
+    }
+
+    if settings.hdr_reference_peak_nits != baseline.hdr_reference_peak_nits {
+        changed_fields.push(RenderLiveSettingId::HdrToSdrHdrReferencePeakNits);
     }
 }
 
@@ -1165,6 +1885,134 @@ mod tests {
         assert_eq!(settings.sdr_reference_white_nits, 100.0);
         assert_eq!(settings.hdr_reference_peak_nits, 1_000.0);
         assert!(settings.is_phase10_bt2446_c_sdr_bt709());
+    }
+
+    #[test]
+    fn render_live_settings_default_keeps_renderer_defaults() {
+        let settings = RenderLiveSettings::default();
+
+        assert_eq!(settings.color_pipeline, ColorPipelineSettings::default());
+        assert_eq!(settings.hdr_to_sdr, HdrToSdrSettings::default());
+        assert!(settings.shader_parameters.is_empty());
+        assert!(
+            settings
+                .changed_fields_from(&RenderLiveSettings::default())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn render_live_settings_update_tracks_changed_fields() {
+        let baseline = RenderLiveSettings::default();
+        let shader_parameter_id = ShaderParameterId::new("render.shader.test_gain");
+        let mut settings = baseline.clone();
+
+        settings.color_pipeline.adjustment.brightness = 0.25;
+        settings.color_pipeline.adjustment.rgb_gain = [1.0, 0.9, 0.8];
+        settings.hdr_to_sdr.sdr_reference_white_nits = 120.0;
+        settings
+            .shader_parameters
+            .parameters
+            .push(ShaderParameter::new(
+                shader_parameter_id.clone(),
+                ShaderParameterValue::Float(0.5),
+            ));
+
+        let update = RenderLiveSettingsUpdate::from_baseline(&baseline, settings);
+
+        assert_eq!(
+            update.changed_fields,
+            vec![
+                RenderLiveSettingId::ColorAdjustmentBrightness,
+                RenderLiveSettingId::ColorAdjustmentRgbGain,
+                RenderLiveSettingId::HdrToSdrSdrReferenceWhiteNits,
+                RenderLiveSettingId::ShaderParameter(shader_parameter_id),
+            ]
+        );
+    }
+
+    #[test]
+    fn shader_parameter_descriptor_keeps_typed_value_contract() {
+        let descriptor = ShaderParameterDescriptor::new(
+            ShaderParameterId::new("render.shader.preview_strength"),
+            ShaderParameterValueType::Float,
+            Some(ShaderNumericRange {
+                min: 0.0,
+                max: 1.0,
+                step: Some(0.01),
+            }),
+            ShaderParameterValue::Float(0.5),
+        );
+
+        assert!(descriptor.default_value_is_valid());
+        assert!(descriptor.accepts_value(&ShaderParameterValue::Float(1.0)));
+        assert!(!descriptor.accepts_value(&ShaderParameterValue::Float(1.5)));
+        assert!(!descriptor.accepts_value(&ShaderParameterValue::Float3([0.5, 0.5, 0.5])));
+    }
+
+    #[test]
+    fn live_settings_errors_keep_noop_unsupported_absent_and_fatal_distinct() {
+        let no_op_report = RenderLiveApplyReport::no_op(RenderLiveApplyPhase::Preview);
+        let unsupported_error = RenderLiveSettingsError::unsupported(
+            RenderLiveApplyPhase::Preview,
+            vec![RenderLiveSettingId::ShaderParameter(
+                ShaderParameterId::new("render.shader.unknown"),
+            )],
+            "shader parameter is not supported by this backend",
+        );
+        let absent_resource_error = RenderLiveSettingsError::absent_resource(
+            RenderLiveApplyPhase::Rollback,
+            "renderer is not initialized",
+        );
+        let fatal_error =
+            RenderLiveSettingsError::fatal(RenderLiveApplyPhase::Commit, "device lost");
+
+        assert_eq!(no_op_report.outcome, RenderLiveApplyOutcome::NoOp);
+        assert_eq!(
+            unsupported_error.kind(),
+            RenderLiveSettingsErrorKind::Unsupported
+        );
+        assert_eq!(
+            absent_resource_error.kind(),
+            RenderLiveSettingsErrorKind::AbsentResource
+        );
+        assert_eq!(fatal_error.kind(), RenderLiveSettingsErrorKind::Fatal);
+        assert_ne!(unsupported_error.kind(), fatal_error.kind());
+        assert_eq!(
+            unsupported_error.setting_ids(),
+            &[RenderLiveSettingId::ShaderParameter(
+                ShaderParameterId::new("render.shader.unknown",)
+            )]
+        );
+    }
+
+    #[test]
+    fn neutral_render_settings_crates_do_not_depend_on_wgpu_specific_crates() {
+        let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("render-core crate has crates parent");
+        let neutral_manifests = ["render-core/Cargo.toml", "settings-core/Cargo.toml"];
+
+        for manifest in neutral_manifests {
+            let manifest_path = crates_dir.join(manifest);
+            let manifest_text =
+                std::fs::read_to_string(&manifest_path).expect("neutral manifest is readable");
+
+            for dependency_name in ["wgpu", "wgpu-types", "egui", "egui-wgpu", "render-wgpu"] {
+                let has_disallowed_dependency = manifest_text.lines().any(|line| {
+                    let trimmed_line = line.trim_start();
+
+                    trimmed_line.starts_with(&format!("{dependency_name}."))
+                        || trimmed_line.starts_with(&format!("{dependency_name} "))
+                        || trimmed_line.starts_with(&format!("{dependency_name}="))
+                });
+
+                assert!(
+                    !has_disallowed_dependency,
+                    "{manifest} must stay renderer/UI neutral and not depend on {dependency_name}"
+                );
+            }
+        }
     }
 
     #[test]

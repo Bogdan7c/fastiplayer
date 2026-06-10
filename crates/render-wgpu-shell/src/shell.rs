@@ -20,7 +20,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use render_core::{ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics};
+use render_core::{
+    ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics,
+    RenderLiveApplyReport, RenderLiveSettings, RenderLiveSettingsAdapter, RenderLiveSettingsError,
+    RenderLiveSettingsUpdate,
+};
 use render_wgpu_video::{
     WgpuRenderableFrame, WgpuVideoRenderer, required_wgpu_video_texture_features,
 };
@@ -538,6 +542,32 @@ impl Renderer {
             stages,
             renderer_started_at.elapsed(),
         ))
+    }
+}
+
+impl RenderLiveSettingsAdapter for Renderer {
+    /// Делегирует preview во внутренний WGPU video renderer без surface/pipeline rebuild.
+    fn preview_live_settings(
+        &mut self,
+        update: &RenderLiveSettingsUpdate,
+    ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.video_renderer.preview_live_settings(update)
+    }
+
+    /// Делегирует committed apply во внутренний WGPU video renderer.
+    fn commit_live_settings(
+        &mut self,
+        settings: &RenderLiveSettings,
+    ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.video_renderer.commit_live_settings(settings)
+    }
+
+    /// Делегирует rollback к preview baseline во внутренний WGPU video renderer.
+    fn rollback_live_settings(
+        &mut self,
+        baseline: &RenderLiveSettings,
+    ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.video_renderer.rollback_live_settings(baseline)
     }
 }
 

@@ -6,7 +6,9 @@ use anyhow::{Result, bail, ensure};
 use codec_core::VideoDisplayOrientation;
 use render_core::{
     ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics,
-    RenderableFrame, VideoFrameFormat,
+    RenderLiveApplyPhase, RenderLiveApplyReport, RenderLiveSettingId, RenderLiveSettings,
+    RenderLiveSettingsAdapter, RenderLiveSettingsError, RenderLiveSettingsUpdate, RenderableFrame,
+    SwapchainTransferMode, ToneMappingMode, VideoFrameFormat,
 };
 use video_backend_api::{PresentFrameResourceDescriptorLookup, PresentFrameResourceProviderHandle};
 use video_core::{
@@ -425,6 +427,63 @@ pub struct WgpuVideoRenderer {
 
     /// Последняя renderer-neutral диагностика без GPU handles.
     diagnostics: RenderDiagnostics,
+
+    /// Текущий live settings snapshot, применённый к renderer state.
+    live_settings: RenderLiveSettings,
+}
+
+/// Проверяет, какие live settings текущий WGPU renderer ещё не умеет применять.
+fn unsupported_wgpu_live_settings_fields(
+    settings: &RenderLiveSettings,
+    changed_fields: &[RenderLiveSettingId],
+) -> Vec<RenderLiveSettingId> {
+    let mut unsupported_fields = Vec::new();
+
+    for changed_field in changed_fields {
+        if matches!(changed_field, RenderLiveSettingId::ShaderParameter(_)) {
+            unsupported_fields.push(changed_field.clone());
+        }
+    }
+
+    if changed_fields.contains(&RenderLiveSettingId::ColorPipelineToneMapping)
+        && settings.color_pipeline.tone_mapping != ToneMappingMode::Off
+    {
+        unsupported_fields.push(RenderLiveSettingId::ColorPipelineToneMapping);
+    }
+
+    if changed_fields.contains(&RenderLiveSettingId::ColorPipelineSwapchainTransfer)
+        && settings.color_pipeline.swapchain_transfer != SwapchainTransferMode::PreserveCurrentUnorm
+    {
+        unsupported_fields.push(RenderLiveSettingId::ColorPipelineSwapchainTransfer);
+    }
+
+    let hdr_to_sdr_changed = changed_fields.iter().any(|changed_field| {
+        matches!(
+            changed_field,
+            RenderLiveSettingId::HdrToSdrEnabled
+                | RenderLiveSettingId::HdrToSdrOperator
+                | RenderLiveSettingId::HdrToSdrOutputMode
+                | RenderLiveSettingId::HdrToSdrSdrReferenceWhiteNits
+                | RenderLiveSettingId::HdrToSdrHdrReferencePeakNits
+        )
+    });
+
+    if hdr_to_sdr_changed && !settings.hdr_to_sdr.is_phase10_bt2446_c_sdr_bt709() {
+        unsupported_fields.extend(changed_fields.iter().filter_map(|changed_field| {
+            match changed_field {
+                RenderLiveSettingId::HdrToSdrEnabled
+                | RenderLiveSettingId::HdrToSdrOperator
+                | RenderLiveSettingId::HdrToSdrOutputMode
+                | RenderLiveSettingId::HdrToSdrSdrReferenceWhiteNits
+                | RenderLiveSettingId::HdrToSdrHdrReferencePeakNits => Some(changed_field.clone()),
+                _ => None,
+            }
+        }));
+    }
+
+    unsupported_fields.sort();
+    unsupported_fields.dedup();
+    unsupported_fields
 }
 
 impl WgpuVideoRenderer {
@@ -439,6 +498,7 @@ impl WgpuVideoRenderer {
             p010_renderer: P010VideoRenderer::new(device, surface_format),
             capabilities,
             diagnostics: RenderDiagnostics::default(),
+            live_settings: RenderLiveSettings::default(),
         }
     }
 
@@ -458,11 +518,47 @@ impl WgpuVideoRenderer {
     pub fn set_color_pipeline_settings(&mut self, settings: ColorPipelineSettings) {
         self.nv12_renderer.set_color_pipeline_settings(settings);
         self.p010_renderer.set_color_pipeline_settings(settings);
+        self.live_settings.color_pipeline = settings;
     }
 
     /// Обновляет HDR-to-SDR settings для P010 HDR renderer-а.
     pub fn set_hdr_to_sdr_settings(&mut self, settings: HdrToSdrSettings) {
         self.p010_renderer.set_hdr_to_sdr_settings(settings);
+        self.live_settings.hdr_to_sdr = settings;
+    }
+
+    /// Применяет renderer-neutral live settings через существующие WGPU setters.
+    fn apply_live_settings_snapshot(
+        &mut self,
+        phase: RenderLiveApplyPhase,
+        settings: &RenderLiveSettings,
+    ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        let changed_fields = settings.changed_fields_from(&self.live_settings);
+
+        if changed_fields.is_empty() {
+            return Ok(RenderLiveApplyReport::no_op(phase));
+        }
+
+        let unsupported_fields = unsupported_wgpu_live_settings_fields(settings, &changed_fields);
+        if !unsupported_fields.is_empty() {
+            return Err(RenderLiveSettingsError::unsupported(
+                phase,
+                unsupported_fields,
+                "WGPU adapter supports color adjustment and current HDR-to-SDR settings; custom shader parameters and future color pipeline modes are not implemented yet",
+            ));
+        }
+
+        if settings.color_pipeline != self.live_settings.color_pipeline {
+            self.set_color_pipeline_settings(settings.color_pipeline);
+        }
+
+        if settings.hdr_to_sdr != self.live_settings.hdr_to_sdr {
+            self.set_hdr_to_sdr_settings(settings.hdr_to_sdr);
+        }
+
+        self.live_settings.shader_parameters = settings.shader_parameters.clone();
+
+        Ok(RenderLiveApplyReport::applied(phase, changed_fields))
     }
 
     /// Обновляет размер swapchain для расчёта letterbox.
@@ -532,6 +628,32 @@ impl WgpuVideoRenderer {
                 Ok(true)
             }
         }
+    }
+}
+
+impl RenderLiveSettingsAdapter for WgpuVideoRenderer {
+    /// Применяет preview update без пересоздания WGPU pipeline.
+    fn preview_live_settings(
+        &mut self,
+        update: &RenderLiveSettingsUpdate,
+    ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.apply_live_settings_snapshot(RenderLiveApplyPhase::Preview, &update.settings)
+    }
+
+    /// Фиксирует live settings как committed runtime state.
+    fn commit_live_settings(
+        &mut self,
+        settings: &RenderLiveSettings,
+    ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.apply_live_settings_snapshot(RenderLiveApplyPhase::Commit, settings)
+    }
+
+    /// Откатывает live settings к baseline preview transaction-а.
+    fn rollback_live_settings(
+        &mut self,
+        baseline: &RenderLiveSettings,
+    ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.apply_live_settings_snapshot(RenderLiveApplyPhase::Rollback, baseline)
     }
 }
 
@@ -666,6 +788,83 @@ mod tests {
             .expect("NV12 frame dispatches");
 
         assert_eq!(dispatch, RendererDispatch::Nv12);
+    }
+
+    #[test]
+    fn live_settings_adapter_accepts_current_color_and_hdr_fields() {
+        let baseline = RenderLiveSettings::default();
+        let mut settings = baseline.clone();
+
+        settings.color_pipeline.adjustment.contrast = 1.1;
+        settings.hdr_to_sdr.hdr_reference_peak_nits = 900.0;
+
+        let update = RenderLiveSettingsUpdate::from_baseline(&baseline, settings);
+        let unsupported_fields =
+            unsupported_wgpu_live_settings_fields(&update.settings, &update.changed_fields);
+
+        assert!(unsupported_fields.is_empty());
+    }
+
+    #[test]
+    fn live_settings_adapter_rejects_unimplemented_shader_parameters() {
+        let baseline = RenderLiveSettings::default();
+        let mut settings = baseline.clone();
+        let shader_parameter_id = render_core::ShaderParameterId::new("render.shader.test_gain");
+
+        settings
+            .shader_parameters
+            .parameters
+            .push(render_core::ShaderParameter::new(
+                shader_parameter_id.clone(),
+                render_core::ShaderParameterValue::Float(0.5),
+            ));
+
+        let update = RenderLiveSettingsUpdate::from_baseline(&baseline, settings);
+        let unsupported_fields =
+            unsupported_wgpu_live_settings_fields(&update.settings, &update.changed_fields);
+
+        assert_eq!(
+            unsupported_fields,
+            vec![RenderLiveSettingId::ShaderParameter(shader_parameter_id)]
+        );
+    }
+
+    #[test]
+    fn live_settings_adapter_rejects_future_color_pipeline_modes() {
+        let baseline = RenderLiveSettings::default();
+        let mut settings = baseline.clone();
+
+        settings.color_pipeline.tone_mapping = ToneMappingMode::Reinhard;
+        settings.color_pipeline.swapchain_transfer = SwapchainTransferMode::SrgbRenderTarget;
+
+        let update = RenderLiveSettingsUpdate::from_baseline(&baseline, settings);
+        let unsupported_fields =
+            unsupported_wgpu_live_settings_fields(&update.settings, &update.changed_fields);
+
+        assert_eq!(
+            unsupported_fields,
+            vec![
+                RenderLiveSettingId::ColorPipelineToneMapping,
+                RenderLiveSettingId::ColorPipelineSwapchainTransfer,
+            ]
+        );
+    }
+
+    #[test]
+    fn live_settings_adapter_rejects_hdr_to_sdr_values_outside_phase10_contract() {
+        let baseline = RenderLiveSettings::default();
+        let mut settings = baseline.clone();
+
+        settings.hdr_to_sdr.enabled = false;
+
+        let update = RenderLiveSettingsUpdate::from_baseline(&baseline, settings);
+        let unsupported_fields =
+            unsupported_wgpu_live_settings_fields(&update.settings, &update.changed_fields);
+
+        assert_eq!(
+            unsupported_fields,
+            vec![RenderLiveSettingId::HdrToSdrEnabled]
+        );
     }
 
     #[test]
