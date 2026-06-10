@@ -12,13 +12,10 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::render_settings::{
-    color_pipeline_settings_from_config, hdr_to_sdr_settings_from_config,
-    warn_legacy_tone_mapping_config,
-};
+use crate::render_settings::warn_legacy_tone_mapping_config;
 use crate::system_capabilities::probe_system_capabilities;
 use render_wgpu_shell::Renderer;
-use rustiplayer_config::AppConfig;
+use rustiplayer_config::LoadedConfig;
 use tracing::{debug, info, instrument};
 use winit::{
     application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
@@ -29,6 +26,7 @@ use crate::frame_prepare::render_frame;
 use crate::redraw_pacing::{
     BackgroundPollScheduler, RedrawControlAction, should_request_redraw_after_window_event,
 };
+use crate::settings_runtime::SettingsRuntime;
 use crate::startup_media::{InitialMedia, StartupMediaController};
 use crate::state::AppState;
 use crate::telemetry::Telemetry;
@@ -57,8 +55,8 @@ pub(crate) struct AppShell {
     /// Controller стартового media и фоновой подготовки CLI YouTube URL.
     startup_media: StartupMediaController,
 
-    /// Валидированная пользовательская конфигурация.
-    app_config: AppConfig,
+    /// Authoritative runtime owner пользовательских настроек.
+    settings_runtime: SettingsRuntime,
 
     /// Scheduler idle wakeup-ов для shell background jobs.
     background_poll_scheduler: BackgroundPollScheduler,
@@ -71,17 +69,17 @@ impl AppShell {
     pub(crate) fn new(
         initial_media: Option<InitialMedia>,
         startup_error: Option<String>,
-        app_config: AppConfig,
-    ) -> Self {
-        Self {
+        loaded_config: LoadedConfig,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
             window: None,
             renderer: None,
             app_state: None,
             telemetry: Arc::new(Telemetry::new()),
             startup_media: StartupMediaController::new(initial_media, startup_error),
-            app_config,
+            settings_runtime: SettingsRuntime::from_loaded_config(loaded_config)?,
             background_poll_scheduler: BackgroundPollScheduler::new(),
-        }
+        })
     }
 
     /// Создаёт или пересоздаёт runtime-ресурсы, завязанные на активное окно.
@@ -103,7 +101,7 @@ impl AppShell {
                 return;
             }
         };
-        let color_pipeline_settings = match color_pipeline_settings_from_config(&self.app_config) {
+        let initial_render_settings = match self.settings_runtime.initial_render_settings() {
             Ok(settings) => settings,
             Err(error) => {
                 tracing::error!(error = %error, "Некорректные render color settings");
@@ -111,15 +109,14 @@ impl AppShell {
                 return;
             }
         };
-        let hdr_to_sdr_settings = hdr_to_sdr_settings_from_config(&self.app_config);
-        warn_legacy_tone_mapping_config(&self.app_config);
-        renderer.set_color_pipeline_settings(color_pipeline_settings);
-        renderer.set_hdr_to_sdr_settings(hdr_to_sdr_settings);
+        warn_legacy_tone_mapping_config(self.settings_runtime.committed_config());
+        renderer.set_color_pipeline_settings(initial_render_settings.color_pipeline);
+        renderer.set_hdr_to_sdr_settings(initial_render_settings.hdr_to_sdr);
 
         let mut app_state = match AppState::new(
             &window,
             self.telemetry.clone(),
-            self.app_config.clone(),
+            self.settings_runtime.committed_snapshot(),
             self.startup_media.startup_error_message(),
         ) {
             Ok(app_state) => app_state,
@@ -141,7 +138,7 @@ impl AppShell {
 
         self.startup_media.start_pending_initial_media(
             &mut app_state,
-            &self.app_config,
+            self.settings_runtime.committed_config(),
             &system_capabilities,
         );
         self.startup_media.poll_startup_jobs(&mut app_state);
@@ -264,6 +261,7 @@ impl ApplicationHandler for AppShell {
         let (Some(renderer), Some(app_state)) = (&mut self.renderer, &mut self.app_state) else {
             return;
         };
+        app_state.sync_committed_config_snapshot(self.settings_runtime.committed_snapshot());
 
         // Передаём событие в egui_winit для обработки ввода
         let egui_response = app_state.egui_winit_state.on_window_event(&window, &event);

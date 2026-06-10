@@ -20,7 +20,6 @@ use render_wgpu_video::{
     DmaBufWgpuFrameMaterializer, WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
     wrap_video_backend_for_wgpu_submission,
 };
-use rustiplayer_config::AppConfig;
 use tracing::{debug, instrument, warn};
 use video_vaapi::VaapiVideoBackendFactory;
 use winit::window::Window;
@@ -30,6 +29,7 @@ use crate::local_file_open::{
     preparing_local_file_message,
 };
 use crate::local_media;
+use crate::settings_runtime::CommittedConfigSnapshot;
 use crate::telemetry::Telemetry;
 use crate::ui::animation::AnimationState;
 use crate::ui::player_controls::{self, ControlAction};
@@ -629,8 +629,8 @@ pub struct AppState {
     /// Телеметрия — общие счётчики производительности.
     pub telemetry: Arc<Telemetry>,
 
-    /// Валидированная пользовательская конфигурация.
-    pub app_config: AppConfig,
+    /// Read-only snapshot последнего committed config-а от authoritative settings runtime.
+    committed_config_snapshot: CommittedConfigSnapshot,
 
     /// Startup-ошибка shell-слоя, которую нужно показать без перевода player в Failed.
     pub startup_error: Option<String>,
@@ -668,11 +668,11 @@ pub struct AppState {
 
 impl AppState {
     /// Создаёт новое состояние приложения и запускает playback worker.
-    #[instrument(skip(window, telemetry, app_config, startup_error))]
+    #[instrument(skip(window, telemetry, committed_config_snapshot, startup_error))]
     pub fn new(
         window: &Window,
         telemetry: Arc<Telemetry>,
-        app_config: AppConfig,
+        committed_config_snapshot: CommittedConfigSnapshot,
         startup_error: Option<String>,
     ) -> anyhow::Result<Self> {
         let egui_ctx = egui::Context::default();
@@ -687,9 +687,10 @@ impl AppState {
             Some(winit::window::Theme::Dark),
             None,
         );
-        let worker_config = PlayerWorkerConfig::from_app_config(&app_config)
-            .with_audio_decoder_factory(Arc::new(audio::ProductionAudioDecoderFactory))
-            .with_audio_output_factory(Arc::new(audio::CpalAudioOutputFactory));
+        let worker_config =
+            PlayerWorkerConfig::from_app_config(committed_config_snapshot.as_config())
+                .with_audio_decoder_factory(Arc::new(audio::ProductionAudioDecoderFactory))
+                .with_audio_output_factory(Arc::new(audio::CpalAudioOutputFactory));
         let player_worker = PlayerWorker::spawn(worker_config)?;
         let desktop_integration = match DesktopIntegration::spawn(player_worker.command_sender()) {
             Ok(desktop_integration) => Some(desktop_integration),
@@ -698,9 +699,9 @@ impl AppState {
                 None
             }
         };
-        if let Err(error) =
-            player_worker.try_send_command(PlayerCommand::SetVolume(app_config.audio.volume as f32))
-        {
+        if let Err(error) = player_worker.try_send_command(PlayerCommand::SetVolume(
+            committed_config_snapshot.default_volume_for_new_media(),
+        )) {
             warn!(error = %error, "Не удалось применить начальную громкость из config");
         }
 
@@ -712,7 +713,7 @@ impl AppState {
             frame_index: 0,
             start_time: std::time::Instant::now(),
             telemetry,
-            app_config,
+            committed_config_snapshot,
             startup_error,
             startup_pending: None,
             last_player_snapshot: PlayerSnapshot::empty(),
@@ -725,6 +726,11 @@ impl AppState {
             telemetry_panel_cache: TelemetryPanelCache::default(),
             app_version: env!("CARGO_PKG_VERSION"),
         })
+    }
+
+    /// Обновляет read-only config snapshot из authoritative settings runtime.
+    pub(crate) fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
+        self.committed_config_snapshot = snapshot;
     }
 
     /// Переключает состояние воспроизведения через playback worker.
@@ -847,12 +853,15 @@ impl AppState {
 
     /// Загружает локальный файл через playback worker.
     pub fn load_file(&mut self, path: &Path) {
-        let autoplay = !self.app_config.player.start_paused;
+        let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.clear_startup_status();
         self.current_local_file = Some(path.to_path_buf());
 
-        match local_media::prepare_local_file(path, &self.app_config.player.demux) {
+        match local_media::prepare_local_file(
+            path,
+            &self.committed_config_snapshot.demux_config_for_open(),
+        ) {
             Ok(prepared_media) => {
                 if let Err(error) = self
                     .player_worker
@@ -883,7 +892,7 @@ impl AppState {
 
     /// Доставляет уже подготовленный локальный media в worker после async UI opening-а.
     fn load_prepared_local_file(&mut self, path: PathBuf, prepared_media: PreparedMedia) {
-        let autoplay = !self.app_config.player.start_paused;
+        let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
 
         if let Err(error) = self
             .player_worker
@@ -909,7 +918,7 @@ impl AppState {
         label: String,
         demuxer: Box<dyn symphonia_demux::Demuxer + Send>,
     ) {
-        let autoplay = !self.app_config.player.start_paused;
+        let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.clear_startup_status();
         self.current_local_file = None;
@@ -923,7 +932,7 @@ impl AppState {
 
     /// Загружает уже подготовленный внешний media source через PreparedMedia boundary.
     pub fn load_prepared_external_media(&mut self, label: String, prepared_media: PreparedMedia) {
-        let autoplay = !self.app_config.player.start_paused;
+        let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.clear_startup_status();
         self.current_local_file = None;
@@ -1320,15 +1329,16 @@ impl AppState {
             None
         };
         let render_diagnostics = frame_context.render_diagnostics();
-        let selected_skin = skin::skin_from_config(&self.app_config.ui.skin).unwrap_or_else(|| {
+        let selected_skin =
+            skin::skin_from_config(self.committed_config_snapshot.ui_skin()).unwrap_or_else(|| {
             warn!(
-                skin = %self.app_config.ui.skin,
+                skin = %self.committed_config_snapshot.ui_skin(),
                 "Config validation должна была отклонить неизвестный UI skin; используем minimal"
             );
             skin::MinimalSkin
         });
         let animation_state = AnimationState::from_timeline(&player_snapshot.timeline);
-        let show_telemetry = self.app_config.ui.show_telemetry;
+        let show_telemetry = self.committed_config_snapshot.show_telemetry();
         let mut control_actions = Vec::new();
         let mut timeline_ui_state = std::mem::take(&mut self.timeline_ui_state);
         let pre_ui_setup_elapsed = pre_ui_setup_started_at.elapsed();
@@ -1501,7 +1511,8 @@ impl AppState {
                 let next_volume = if current_volume > 0.0 {
                     0.0
                 } else {
-                    self.app_config.audio.volume as f32
+                    self.committed_config_snapshot
+                        .default_volume_for_new_media()
                 };
                 if let Err(error) = self
                     .player_worker
@@ -1524,7 +1535,10 @@ impl AppState {
             return;
         }
 
-        match LocalFileOpenJob::spawn(window, self.app_config.player.demux) {
+        match LocalFileOpenJob::spawn(
+            window,
+            self.committed_config_snapshot.demux_config_for_open(),
+        ) {
             Ok(job) => {
                 self.local_file_open_job = Some(job);
                 self.set_startup_pending("Выбор media-файла...".to_string());

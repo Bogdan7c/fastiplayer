@@ -13,6 +13,7 @@ mod local_file_open;
 mod local_media;
 mod redraw_pacing;
 mod render_settings;
+mod settings_runtime;
 mod startup_media;
 mod state;
 mod system_capabilities;
@@ -64,7 +65,8 @@ fn main() -> Result<()> {
         info!(path = %path.display(), "CLI аргумент: файл для воспроизведения");
     }
 
-    let mut app = AppShell::new(initial_media, cli_startup_error, loaded_config.config);
+    let mut app = AppShell::new(initial_media, cli_startup_error, loaded_config)
+        .context("Не удалось создать settings runtime app shell")?;
     event_loop.run_app(&mut app)?;
 
     info!("Приложение завершено");
