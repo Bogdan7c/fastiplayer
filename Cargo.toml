@@ -11,6 +11,7 @@ members = [
     "crates/service-direct-media",
     "crates/settings-core",
     "crates/settings-derive",
+    "crates/rustiplayer-settings",
     "crates/player-core",
     "crates/media-core",
     "crates/symphonia-demux",
@@ -95,6 +96,7 @@ source-core = { path = "crates/source-core" }
 media-prefetch = { path = "crates/media-prefetch" }
 settings-core = { path = "crates/settings-core" }
 settings-derive = { path = "crates/settings-derive" }
+rustiplayer-settings = { path = "crates/rustiplayer-settings" }
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = "2.0"
