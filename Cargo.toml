@@ -9,6 +9,7 @@ members = [
     "crates/source-core",
     "crates/media-prefetch",
     "crates/service-direct-media",
+    "crates/settings-core",
     "crates/player-core",
     "crates/media-core",
     "crates/symphonia-demux",
@@ -91,4 +92,5 @@ service-direct-media = { path = "crates/service-direct-media" }
 service-youtube = { path = "crates/service-youtube" }
 source-core = { path = "crates/source-core" }
 media-prefetch = { path = "crates/media-prefetch" }
+settings-core = { path = "crates/settings-core" }
 url = "2.5"
