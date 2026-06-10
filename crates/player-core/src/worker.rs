@@ -21,14 +21,18 @@ use crate::render_lease_bridge::{
 use crate::render_lease_bridge::{
     PlayerPresentFrame, PresentFrameLease, RenderLeaseBridge, RenderLeaseBridgeClient,
 };
+use crate::runtime_settings::{validate_runtime_default_volume, validate_runtime_tick_config};
 use crate::worker_scheduler::{PlannedWorkerWakeup, WorkerScheduler, WorkerWakeupDeadline};
 use crate::{
     ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory, FrameCounters,
     LatencyCounterSnapshot, MediaOpenRequest, MediaSource, PlayerCommand, PlayerError,
-    PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSession, PlayerSnapshot, PlayerTickConfig,
-    PlayerTickContext, PlayerTickResult, PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan,
-    PreparedMedia, SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend,
-    scheduler_timing_diagnostics,
+    PlayerErrorKind, PlayerEvent, PlayerResult, PlayerRuntimeAcceptedChange,
+    PlayerRuntimeApplyError, PlayerRuntimeApplyGroup, PlayerRuntimeApplyGroupReport,
+    PlayerRuntimeApplyReport, PlayerRuntimeApplyResult, PlayerRuntimeDecoderThreadConfigUpdate,
+    PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeSettingsUpdate, PlayerRuntimeTickConfigUpdate,
+    PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
+    PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan, PreparedMedia,
+    SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend, scheduler_timing_diagnostics,
 };
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
@@ -76,6 +80,9 @@ pub struct PlayerWorkerConfig {
     /// Bounded queue/runtime limits decoder thread-а.
     pub decoder_thread_config: PlayerVideoDecoderThreadConfig,
 
+    /// Default startup/future-media volume policy, не текущая runtime громкость.
+    pub default_volume: f32,
+
     /// Factory audio decoder-а, которую composition layer устанавливает без backend deps в core.
     pub audio_decoder_factory: Arc<dyn AudioDecoderFactory>,
 
@@ -95,6 +102,7 @@ impl fmt::Debug for PlayerWorkerConfig {
             )
             .field("tick_config", &self.tick_config)
             .field("decoder_thread_config", &self.decoder_thread_config)
+            .field("default_volume", &self.default_volume)
             .field("audio_decoder_factory", &"<dyn AudioDecoderFactory>")
             .field("audio_output_factory", &"<dyn AudioOutputFactory>")
             .finish()
@@ -110,6 +118,7 @@ impl PlayerWorkerConfig {
             decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config,
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
+            default_volume: 1.0,
             audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
         }
@@ -123,6 +132,7 @@ impl PlayerWorkerConfig {
             decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config: PlayerTickConfig::from(config),
             decoder_thread_config: decoder_thread_config_from_app_config(config),
+            default_volume: config.audio.volume as f32,
             audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
         }
@@ -357,6 +367,34 @@ impl PlayerCommandSender {
             .try_send(WorkerCommand::Player(command))
             .map_err(PlayerWorkerSendError::from)
     }
+
+    /// Применяет committed runtime settings и ждёт реальный worker report.
+    ///
+    /// Это settings-specific API: caller получает результат применения, а не
+    /// только факт, что команда поместилась в bounded очередь worker-а.
+    pub fn apply_runtime_settings(
+        &self,
+        update: PlayerRuntimeSettingsUpdate,
+    ) -> PlayerRuntimeApplyResult {
+        let (response_tx, response_rx) = bounded(1);
+
+        match self
+            .command_tx
+            .try_send(WorkerCommand::ApplyRuntimeSettings {
+                update,
+                response_tx,
+            }) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_command)) => return Err(PlayerRuntimeApplyError::Backpressure),
+            Err(TrySendError::Disconnected(_command)) => {
+                return Err(PlayerRuntimeApplyError::Disconnected);
+            }
+        }
+
+        response_rx
+            .recv()
+            .map_err(|_error| PlayerRuntimeApplyError::Disconnected)
+    }
 }
 
 /// Playback worker boundary, которым владеет app shell.
@@ -389,6 +427,13 @@ pub struct PlayerWorker {
 impl PlayerWorker {
     /// Запускает worker thread и сразу публикует empty snapshot.
     pub fn spawn(config: PlayerWorkerConfig) -> PlayerResult<Self> {
+        validate_runtime_default_volume(config.default_volume).map_err(|message| {
+            PlayerError::new(
+                PlayerErrorKind::InvalidCommand,
+                format!("invalid player worker default volume: {message}"),
+            )
+        })?;
+
         let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
         let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
         let (event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
@@ -405,11 +450,19 @@ impl PlayerWorker {
         let join_handle = thread::Builder::new()
             .name("player-worker".into())
             .spawn(move || {
+                let mut session = PlayerSession::with_audio_factories(
+                    audio_decoder_factory,
+                    audio_output_factory,
+                );
+                if let Err(error) =
+                    session.dispatch_command(PlayerCommand::SetVolume(config.default_volume))
+                {
+                    warn!(error = %error, "Не удалось применить worker default volume при старте");
+                    session.mark_fatal_error(error);
+                }
+
                 let runtime = PlayerWorkerRuntime {
-                    session: PlayerSession::with_audio_factories(
-                        audio_decoder_factory,
-                        audio_output_factory,
-                    ),
+                    session,
                     worker_scheduler: WorkerScheduler,
                     decoder_activity: WorkerDecoderActivityState::default(),
                     command_rx,
@@ -462,6 +515,14 @@ impl PlayerWorker {
     /// Отправляет обычную player command без блокировки.
     pub fn try_send_command(&self, command: PlayerCommand) -> Result<(), PlayerWorkerSendError> {
         self.command_sender.try_send(command)
+    }
+
+    /// Применяет committed runtime settings через request/reply worker boundary.
+    pub fn apply_runtime_settings(
+        &self,
+        update: PlayerRuntimeSettingsUpdate,
+    ) -> PlayerRuntimeApplyResult {
+        self.command_sender.apply_runtime_settings(update)
     }
 
     /// Передаёт уже подготовленный media во владение worker thread.
@@ -638,6 +699,15 @@ enum WorkerCommand {
 
     /// Typed render bridge error.
     RenderError(PlayerRenderError),
+
+    /// Settings-specific command с обязательным response/report.
+    ApplyRuntimeSettings {
+        /// Typed update, собранный settings binding layer без чтения TOML в player-core.
+        update: PlayerRuntimeSettingsUpdate,
+
+        /// One-shot response channel для реального apply report-а.
+        response_tx: Sender<PlayerRuntimeApplyReport>,
+    },
 }
 
 /// Publisher latest snapshot поверх bounded channel.
@@ -1417,7 +1487,138 @@ impl PlayerWorkerRuntime {
             WorkerCommand::RenderError(error) => {
                 self.handle_render_error(error);
             }
+            WorkerCommand::ApplyRuntimeSettings {
+                update,
+                response_tx,
+            } => {
+                let report = self.apply_runtime_settings(update);
+                if response_tx.send(report).is_err() {
+                    warn!("Settings runtime apply report receiver was dropped");
+                }
+            }
         }
+    }
+
+    /// Применяет typed runtime settings, которыми владеет worker.
+    fn apply_runtime_settings(
+        &mut self,
+        update: PlayerRuntimeSettingsUpdate,
+    ) -> PlayerRuntimeApplyReport {
+        let mut report = PlayerRuntimeApplyReport::empty();
+
+        if update.is_empty() {
+            report.push(PlayerRuntimeApplyGroupReport::invalid(
+                PlayerRuntimeApplyGroup::Request,
+                std::iter::empty(),
+                "player runtime settings update is empty",
+            ));
+            return report;
+        }
+
+        if let Some(tick_update) = update.tick_config {
+            self.apply_runtime_tick_config(tick_update, &mut report);
+        }
+
+        if let Some(default_volume_update) = update.default_volume {
+            self.apply_runtime_default_volume(default_volume_update, &mut report);
+        }
+
+        if let Some(decoder_thread_update) = update.decoder_thread_config {
+            self.report_decoder_thread_runtime_update(decoder_thread_update, &mut report);
+        }
+
+        if !update.unsupported_settings.is_empty() {
+            report.push(PlayerRuntimeApplyGroupReport::unsupported(
+                PlayerRuntimeApplyGroup::UnsupportedSettings,
+                update.unsupported_settings,
+                "player-core has no runtime apply boundary for these settings yet",
+            ));
+        }
+
+        report
+    }
+
+    /// In-place применяет только worker-owned tick config.
+    fn apply_runtime_tick_config(
+        &mut self,
+        update: PlayerRuntimeTickConfigUpdate,
+        report: &mut PlayerRuntimeApplyReport,
+    ) {
+        if let Err(message) = validate_runtime_tick_config(&update.tick_config) {
+            report.push(PlayerRuntimeApplyGroupReport::invalid(
+                PlayerRuntimeApplyGroup::TickConfig,
+                update.affected_settings,
+                message,
+            ));
+            return;
+        }
+
+        let change = if self.config.tick_config == update.tick_config {
+            PlayerRuntimeAcceptedChange::Unchanged
+        } else {
+            self.config.tick_config = update.tick_config;
+            PlayerRuntimeAcceptedChange::Applied
+        };
+
+        report.push(PlayerRuntimeApplyGroupReport::accepted(
+            PlayerRuntimeApplyGroup::TickConfig,
+            update.affected_settings,
+            change,
+            "player worker tick config updated in-place",
+        ));
+    }
+
+    /// Обновляет default-volume policy без изменения текущей громкости session.
+    fn apply_runtime_default_volume(
+        &mut self,
+        update: PlayerRuntimeDefaultVolumeUpdate,
+        report: &mut PlayerRuntimeApplyReport,
+    ) {
+        if let Err(message) = validate_runtime_default_volume(update.default_volume) {
+            report.push(PlayerRuntimeApplyGroupReport::invalid(
+                PlayerRuntimeApplyGroup::DefaultVolume,
+                update.affected_settings,
+                message,
+            ));
+            return;
+        }
+
+        let change = if (self.config.default_volume - update.default_volume).abs() <= f32::EPSILON {
+            PlayerRuntimeAcceptedChange::Unchanged
+        } else {
+            self.config.default_volume = update.default_volume;
+            PlayerRuntimeAcceptedChange::Applied
+        };
+
+        report.push(PlayerRuntimeApplyGroupReport::accepted(
+            PlayerRuntimeApplyGroup::DefaultVolume,
+            update.affected_settings,
+            change,
+            "player default volume policy updated; current playback volume is unchanged",
+        ));
+    }
+
+    /// Честно репортит decoder/channel/pool changes как future controlled rebuild.
+    fn report_decoder_thread_runtime_update(
+        &mut self,
+        update: PlayerRuntimeDecoderThreadConfigUpdate,
+        report: &mut PlayerRuntimeApplyReport,
+    ) {
+        if self.config.decoder_thread_config == update.decoder_thread_config {
+            report.push(PlayerRuntimeApplyGroupReport::accepted(
+                PlayerRuntimeApplyGroup::DecoderThreadConfig,
+                update.affected_settings,
+                PlayerRuntimeAcceptedChange::Unchanged,
+                "decoder thread config already matches requested settings",
+            ));
+            return;
+        }
+
+        report.push(PlayerRuntimeApplyGroupReport::requires_controlled_rebuild(
+            PlayerRuntimeApplyGroup::DecoderThreadConfig,
+            update.affected_settings,
+            "decoder queue/channel/pool settings require controlled rebuild; no internals were mutated",
+        ));
     }
 
     /// Сохраняет typed render error в snapshot и публикует worker event.
@@ -1817,7 +2018,10 @@ mod tests {
     };
 
     use super::*;
-    use crate::{MediaSource, PlaybackState, ScrubCommitPolicy, SeekRequest};
+    use crate::{
+        MediaSource, PlaybackState, PlayerRuntimeApplyOutcome, PlayerRuntimeSettingId,
+        ScrubCommitPolicy, SeekRequest,
+    };
 
     fn worker_config_for_tests() -> PlayerWorkerConfig {
         PlayerWorkerConfig {
@@ -1825,6 +2029,7 @@ mod tests {
             decoder_readiness_poll_interval: Duration::from_millis(2),
             tick_config: PlayerTickConfig::default(),
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
+            default_volume: 1.0,
             audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
         }
@@ -2176,6 +2381,17 @@ mod tests {
         }
     }
 
+    fn apply_group_report(
+        report: &PlayerRuntimeApplyReport,
+        group: PlayerRuntimeApplyGroup,
+    ) -> &PlayerRuntimeApplyGroupReport {
+        report
+            .groups
+            .iter()
+            .find(|group_report| group_report.group == group)
+            .expect("runtime apply group report must exist")
+    }
+
     fn decoded_frame_for_tests(resource_handle: FrameResourceHandle) -> DecodedFrame {
         decoded_frame_with_pts_for_tests(Duration::ZERO, resource_handle)
     }
@@ -2285,6 +2501,160 @@ mod tests {
 
         assert_eq!(worker.decoder_thread_config(), decoder_thread_config);
         worker.shutdown().unwrap();
+    }
+
+    #[test]
+    fn runtime_apply_tick_config_updates_worker_owned_config() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let mut tick_config = runtime.config.tick_config;
+        tick_config.max_demux_packets_per_tick += 1;
+
+        let report =
+            runtime.apply_runtime_settings(PlayerRuntimeSettingsUpdate::empty().with_tick_config(
+                tick_config,
+                [PlayerRuntimeSettingId::VideoSchedulerDemuxPacketsPerTick],
+            ));
+
+        assert_eq!(runtime.config.tick_config, tick_config);
+        let tick_report = apply_group_report(&report, PlayerRuntimeApplyGroup::TickConfig);
+        assert_eq!(
+            tick_report.outcome,
+            PlayerRuntimeApplyOutcome::Accepted(PlayerRuntimeAcceptedChange::Applied)
+        );
+        assert_eq!(
+            tick_report.affected_settings,
+            vec![PlayerRuntimeSettingId::VideoSchedulerDemuxPacketsPerTick]
+        );
+    }
+
+    #[test]
+    fn runtime_apply_default_volume_does_not_mutate_current_playback_volume() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        runtime
+            .session
+            .dispatch_command(PlayerCommand::SetVolume(0.25))
+            .unwrap();
+
+        let report = runtime.apply_runtime_settings(
+            PlayerRuntimeSettingsUpdate::empty()
+                .with_default_volume(0.75, [PlayerRuntimeSettingId::AudioDefaultVolume]),
+        );
+
+        assert_eq!(runtime.config.default_volume, 0.75);
+        assert_eq!(runtime.session.snapshot().volume, 0.25);
+        let volume_report = apply_group_report(&report, PlayerRuntimeApplyGroup::DefaultVolume);
+        assert_eq!(
+            volume_report.outcome,
+            PlayerRuntimeApplyOutcome::Accepted(PlayerRuntimeAcceptedChange::Applied)
+        );
+    }
+
+    #[test]
+    fn runtime_apply_invalid_and_unsupported_settings_are_reported() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let original_tick_config = runtime.config.tick_config;
+        let mut invalid_tick_config = original_tick_config;
+        invalid_tick_config.max_demux_packets_per_tick = 0;
+
+        let report = runtime.apply_runtime_settings(
+            PlayerRuntimeSettingsUpdate::empty()
+                .with_tick_config(
+                    invalid_tick_config,
+                    [PlayerRuntimeSettingId::VideoSchedulerDemuxPacketsPerTick],
+                )
+                .with_unsupported_settings([
+                    PlayerRuntimeSettingId::PlayerPreferredVideoCodecOrder,
+                ]),
+        );
+
+        assert_eq!(runtime.config.tick_config, original_tick_config);
+        let tick_report = apply_group_report(&report, PlayerRuntimeApplyGroup::TickConfig);
+        assert_eq!(tick_report.outcome, PlayerRuntimeApplyOutcome::Invalid);
+        let unsupported_report =
+            apply_group_report(&report, PlayerRuntimeApplyGroup::UnsupportedSettings);
+        assert_eq!(
+            unsupported_report.outcome,
+            PlayerRuntimeApplyOutcome::Unsupported
+        );
+        assert_eq!(
+            unsupported_report.affected_settings,
+            vec![PlayerRuntimeSettingId::PlayerPreferredVideoCodecOrder]
+        );
+    }
+
+    #[test]
+    fn runtime_apply_decoder_thread_config_requires_controlled_rebuild_without_mutation() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let original_decoder_thread_config = runtime.config.decoder_thread_config;
+        let requested_decoder_thread_config = PlayerVideoDecoderThreadConfig {
+            packet_channel_frames: original_decoder_thread_config.packet_channel_frames + 1,
+            ..original_decoder_thread_config
+        };
+
+        let report = runtime.apply_runtime_settings(
+            PlayerRuntimeSettingsUpdate::empty().with_decoder_thread_config(
+                requested_decoder_thread_config,
+                [PlayerRuntimeSettingId::VideoDecoderPacketChannelFrames],
+            ),
+        );
+
+        assert_eq!(
+            runtime.config.decoder_thread_config,
+            original_decoder_thread_config
+        );
+        let decoder_report =
+            apply_group_report(&report, PlayerRuntimeApplyGroup::DecoderThreadConfig);
+        assert_eq!(
+            decoder_report.outcome,
+            PlayerRuntimeApplyOutcome::RequiresControlledRebuild
+        );
+    }
+
+    #[test]
+    fn worker_apply_runtime_settings_command_sends_real_report_response() {
+        let mut runtime = runtime_for_tests(Instant::now());
+        let (response_tx, response_rx) = bounded(1);
+
+        runtime.handle_worker_command(WorkerCommand::ApplyRuntimeSettings {
+            update: PlayerRuntimeSettingsUpdate::empty()
+                .with_default_volume(0.5, [PlayerRuntimeSettingId::AudioDefaultVolume]),
+            response_tx,
+        });
+
+        let report = response_rx.recv().unwrap();
+        let volume_report = apply_group_report(&report, PlayerRuntimeApplyGroup::DefaultVolume);
+        assert_eq!(
+            volume_report.outcome,
+            PlayerRuntimeApplyOutcome::Accepted(PlayerRuntimeAcceptedChange::Applied)
+        );
+    }
+
+    #[test]
+    fn apply_runtime_settings_sender_distinguishes_backpressure_and_disconnected() {
+        let (full_command_tx, _full_command_rx) = bounded(1);
+        let full_command_sender = PlayerCommandSender {
+            command_tx: full_command_tx,
+        };
+        full_command_sender.try_send(PlayerCommand::Play).unwrap();
+
+        let update = PlayerRuntimeSettingsUpdate::empty()
+            .with_default_volume(0.5, [PlayerRuntimeSettingId::AudioDefaultVolume]);
+        let full_result = full_command_sender.apply_runtime_settings(update.clone());
+
+        assert_eq!(full_result, Err(PlayerRuntimeApplyError::Backpressure));
+
+        let (disconnected_command_tx, disconnected_command_rx) = bounded(1);
+        drop(disconnected_command_rx);
+        let disconnected_command_sender = PlayerCommandSender {
+            command_tx: disconnected_command_tx,
+        };
+
+        let disconnected_result = disconnected_command_sender.apply_runtime_settings(update);
+
+        assert_eq!(
+            disconnected_result,
+            Err(PlayerRuntimeApplyError::Disconnected)
+        );
     }
 
     #[test]

@@ -79,7 +79,7 @@ impl PlayerTickContext {
 }
 
 /// Конфигурация playback tick, backpressure и A/V scheduler.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlayerTickConfig {
     /// Сколько container packets можно прочитать за один tick.
     pub max_demux_packets_per_tick: usize,

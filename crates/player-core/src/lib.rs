@@ -14,6 +14,7 @@ mod event;
 mod media_opening;
 mod pipeline;
 mod render_lease_bridge;
+mod runtime_settings;
 mod seek_state;
 mod session;
 mod snapshot;
@@ -65,6 +66,13 @@ pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeli
 pub use render_lease_bridge::{
     PlayerPresentFrame, PresentFrameLease, PresentFrameResourceDescriptor,
     PresentFrameResourceKind, PresentFrameResourceLookup,
+};
+pub use runtime_settings::{
+    PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
+    PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyOutcome, PlayerRuntimeApplyReport,
+    PlayerRuntimeApplyResult, PlayerRuntimeDecoderThreadConfigUpdate,
+    PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate,
+    PlayerRuntimeTickConfigUpdate,
 };
 pub use seek_state::PlaybackResumeIntent;
 pub use session::{

@@ -44,6 +44,20 @@ fn invalid_volume_is_reported_and_preserves_previous_value() {
 }
 
 #[test]
+fn reload_config_command_preserves_compatibility_event_behavior() {
+    let mut session = PlayerSession::new();
+
+    session
+        .dispatch_command(PlayerCommand::ReloadConfig)
+        .unwrap();
+
+    assert_eq!(
+        session.take_events(),
+        vec![PlayerEvent::ConfigReloadRequested]
+    );
+}
+
+#[test]
 fn autoplay_audio_readiness_policy_preserves_slot_blockers() {
     assert_eq!(
         classify_autoplay_audio_readiness(AudioSeekRuntimeState::NoSelectedAudio, None, 50.0),
