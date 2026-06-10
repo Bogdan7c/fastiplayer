@@ -64,6 +64,66 @@ pub enum ConfigError {
         source: io::Error,
     },
 
+    /// Не удалось создать временный файл рядом с целевым config-файлом.
+    #[error("не удалось создать временный config-файл {path}: {source}")]
+    CreateConfigTempFile {
+        /// Путь временного файла.
+        path: PathBuf,
+
+        /// Исходная I/O ошибка.
+        #[source]
+        source: io::Error,
+    },
+
+    /// Не удалось записать весь сгенерированный TOML во временный файл.
+    #[error("не удалось записать временный config-файл {path}: {source}")]
+    WriteConfigTempFile {
+        /// Путь временного файла.
+        path: PathBuf,
+
+        /// Исходная I/O ошибка.
+        #[source]
+        source: io::Error,
+    },
+
+    /// Не удалось сбросить userspace buffer временного config-файла.
+    #[error("не удалось flush временного config-файла {path}: {source}")]
+    FlushConfigTempFile {
+        /// Путь временного файла.
+        path: PathBuf,
+
+        /// Исходная I/O ошибка.
+        #[source]
+        source: io::Error,
+    },
+
+    /// Не удалось синхронизировать временный config-файл с диском.
+    #[error("не удалось sync временного config-файла {path}: {source}")]
+    SyncConfigTempFile {
+        /// Путь временного файла.
+        path: PathBuf,
+
+        /// Исходная I/O ошибка.
+        #[source]
+        source: io::Error,
+    },
+
+    /// Не удалось заменить целевой config временным файлом через rename.
+    #[error(
+        "не удалось атомарно заменить config {target_path} временным файлом {source_path}: {source}"
+    )]
+    RenameConfigFile {
+        /// Временный файл, уже записанный и синхронизированный.
+        source_path: PathBuf,
+
+        /// Целевой config-файл.
+        target_path: PathBuf,
+
+        /// Исходная I/O ошибка.
+        #[source]
+        source: io::Error,
+    },
+
     /// Не удалось прочитать существующий config.
     #[error("не удалось прочитать config {path}: {source}")]
     ReadConfigFile {
@@ -86,8 +146,26 @@ pub enum ConfigError {
         source: toml::de::Error,
     },
 
-    /// Default config не удалось сериализовать в TOML.
-    #[error("не удалось сериализовать default config: {source}")]
+    /// Сгенерированный TOML не смог пройти roundtrip parse обратно в `AppConfig`.
+    #[error("сгенерированный config {path} не проходит TOML roundtrip: {source}")]
+    ParseSerializedConfig {
+        /// Целевой путь config-файла, для которого готовился save.
+        path: PathBuf,
+
+        /// Ошибка TOML/Serde deserialization.
+        #[source]
+        source: toml::de::Error,
+    },
+
+    /// Сгенерированный TOML распарсился, но вернул другую структуру config.
+    #[error("сгенерированный config {path} изменил значения при TOML roundtrip")]
+    SerializedConfigRoundtripMismatch {
+        /// Целевой путь config-файла, для которого готовился save.
+        path: PathBuf,
+    },
+
+    /// Config не удалось сериализовать в TOML.
+    #[error("не удалось сериализовать config: {source}")]
     SerializeDefaultConfig {
         /// Ошибка TOML/Serde serialization.
         #[source]

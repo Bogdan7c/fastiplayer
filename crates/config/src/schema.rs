@@ -47,7 +47,7 @@ impl AppConfig {
         validation::validate_app_config(self)
     }
 
-    /// Сериализует config в читаемый TOML для записи default-файла.
+    /// Сериализует config в читаемый generated TOML для записи user config-файла.
     pub fn to_pretty_toml(&self) -> ConfigResult<String> {
         let mut toml_text = toml::to_string_pretty(self)
             .map_err(|source| crate::ConfigError::SerializeDefaultConfig { source })?;
@@ -247,6 +247,16 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
         toml_text,
         "skin = \"minimal\"",
         "# UI skin id; unknown id является config error.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "[ui.settings]",
+        "# Настройки поведения окна Settings UI.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "live_preview_max_hz = 60",
+        "# Максимальная частота live preview updates в Settings UI.",
     );
 }
 
@@ -874,6 +884,10 @@ pub struct UiConfig {
 
     /// Идентификатор skin-а UI.
     pub skin: String,
+
+    /// Настройки будущего Settings UI.
+    #[serde(default)]
+    pub settings: UiSettingsConfig,
 }
 
 impl Default for UiConfig {
@@ -883,6 +897,24 @@ impl Default for UiConfig {
             show_telemetry: true,
             language: "ru".to_string(),
             skin: "minimal".to_string(),
+            settings: UiSettingsConfig::default(),
+        }
+    }
+}
+
+/// Настройки поведения Settings UI, которые применяются только после Apply/OK.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UiSettingsConfig {
+    /// Верхняя граница частоты live preview updates, чтобы slider не перегружал runtime.
+    pub live_preview_max_hz: u16,
+}
+
+impl Default for UiSettingsConfig {
+    /// Возвращает плавный default без привязки к конкретному refresh rate монитора.
+    fn default() -> Self {
+        Self {
+            live_preview_max_hz: 60,
         }
     }
 }

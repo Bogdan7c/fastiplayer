@@ -78,6 +78,12 @@ const MAX_VULKAN_FRAME_LATENCY: u32 = 8;
 /// Единственный skin, для которого текущий UI гарантирует layout contract.
 const DEFAULT_UI_SKIN: &str = "minimal";
 
+/// Минимальная частота live preview: ноль означал бы выключенный pacing, а не валидную частоту.
+const MIN_LIVE_PREVIEW_MAX_HZ: u16 = 1;
+
+/// Верхняя граница live preview защищает runtime от слишком частых preview updates.
+const MAX_LIVE_PREVIEW_MAX_HZ: u16 = 240;
+
 /// Верхний предел reference luminance для Phase 10 SDR/HDR nits fields.
 const MAX_HDR_TO_SDR_REFERENCE_NITS: f32 = 10_000.0;
 
@@ -540,6 +546,13 @@ fn validate_ui_section(config: &AppConfig) -> ConfigResult<()> {
         ));
     }
 
+    validate_u16_range(
+        "ui.settings.live_preview_max_hz",
+        config.ui.settings.live_preview_max_hz,
+        MIN_LIVE_PREVIEW_MAX_HZ,
+        MAX_LIVE_PREVIEW_MAX_HZ,
+    )?;
+
     Ok(())
 }
 
@@ -569,6 +582,18 @@ fn validate_u64_range(field: &'static str, value: u64, min: u64, max: u64) -> Co
 
 /// Проверяет `u32` диапазон с единым сообщением.
 fn validate_u32_range(field: &'static str, value: u32, min: u32, max: u32) -> ConfigResult<()> {
+    if (min..=max).contains(&value) {
+        return Ok(());
+    }
+
+    Err(invalid_value(
+        field,
+        format!("значение должно быть в диапазоне {min}..={max}, получено {value}"),
+    ))
+}
+
+/// Проверяет `u16` диапазон с единым сообщением.
+fn validate_u16_range(field: &'static str, value: u16, min: u16, max: u16) -> ConfigResult<()> {
     if (min..=max).contains(&value) {
         return Ok(());
     }

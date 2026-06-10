@@ -1,10 +1,14 @@
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{AppConfig, ConfigError, ConfigPaths, ConfigResult};
+
+/// Сколько разных имён temp-файла пробуем перед явной ошибкой collision-а.
+const MAX_TEMP_CONFIG_CREATE_ATTEMPTS: u32 = 32;
 
 /// Config, загруженный из user path или созданный из defaults.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +45,35 @@ pub fn load_or_create_at(path: impl AsRef<Path>) -> ConfigResult<LoadedConfig> {
 pub fn load_from_path(path: impl AsRef<Path>) -> ConfigResult<LoadedConfig> {
     let path = path.as_ref().to_path_buf();
     load_existing_config(path, false)
+}
+
+/// Валидирует config и атомарно заменяет TOML-файл сгенерированным pretty TOML.
+pub fn save_validated_atomic_at(path: impl AsRef<Path>, config: &AppConfig) -> ConfigResult<()> {
+    let path = path.as_ref().to_path_buf();
+    let toml_text = prepare_validated_toml_for_save(&path, config)?;
+
+    create_parent_dir_if_needed(&path)?;
+
+    let (temp_path, mut temp_file) = create_config_temp_file(&path)?;
+    let write_result = write_and_sync_temp_config(&temp_path, &mut temp_file, &toml_text);
+
+    // На Windows rename открытого файла может не сработать, поэтому handle закрывается до rename.
+    drop(temp_file);
+
+    if let Err(error) = write_result {
+        remove_temp_config_after_error(&temp_path);
+        return Err(error);
+    }
+
+    if let Err(error) = rename_temp_config(&temp_path, &path) {
+        remove_temp_config_after_error(&temp_path);
+        return Err(error);
+    }
+
+    sync_parent_directory_best_effort(&path);
+    info!(path = %path.display(), "Сохранён config rustiplayer через atomic rename");
+
+    Ok(())
 }
 
 /// Читает, парсит и валидирует существующий config-файл.
@@ -117,6 +150,158 @@ fn write_new_config_file(path: &Path, toml_text: &str) -> ConfigResult<()> {
         })
 }
 
+/// Готовит TOML для save и проверяет, что сгенерированный текст сам читается как `AppConfig`.
+fn prepare_validated_toml_for_save(path: &Path, config: &AppConfig) -> ConfigResult<String> {
+    config
+        .validate()
+        .map_err(|source| ConfigError::ValidateConfigFile {
+            path: path.to_path_buf(),
+            source: Box::new(source),
+        })?;
+
+    let toml_text = config.to_pretty_toml()?;
+    let reparsed = toml::from_str::<AppConfig>(&toml_text).map_err(|source| {
+        ConfigError::ParseSerializedConfig {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+
+    if reparsed != *config {
+        return Err(ConfigError::SerializedConfigRoundtripMismatch {
+            path: path.to_path_buf(),
+        });
+    }
+
+    Ok(toml_text)
+}
+
+/// Создаёт временный файл в той же директории, чтобы `rename` не пересёк filesystem boundary.
+fn create_config_temp_file(path: &Path) -> ConfigResult<(PathBuf, fs::File)> {
+    for attempt in 0..MAX_TEMP_CONFIG_CREATE_ATTEMPTS {
+        let temp_path = config_temp_path(path, attempt);
+        let open_result = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path);
+
+        match open_result {
+            Ok(file) => return Ok((temp_path, file)),
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(source) => {
+                return Err(ConfigError::CreateConfigTempFile {
+                    path: temp_path,
+                    source,
+                });
+            }
+        }
+    }
+
+    Err(ConfigError::CreateConfigTempFile {
+        path: config_temp_path(path, MAX_TEMP_CONFIG_CREATE_ATTEMPTS),
+        source: io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "все candidate имена временного config-файла уже существуют",
+        ),
+    })
+}
+
+/// Строит имя temp-файла, сохраняя его в parent-директории целевого config.
+fn config_temp_path(path: &Path, attempt: u32) -> PathBuf {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .unwrap_or_else(|| OsStr::new("config.toml"));
+
+    let mut temp_file_name = OsString::from(".");
+    temp_file_name.push(file_name);
+    temp_file_name.push(format!(".{}.{}.tmp", std::process::id(), attempt));
+
+    parent.join(temp_file_name)
+}
+
+/// Записывает весь TOML и синхронизирует temp-файл до rename.
+fn write_and_sync_temp_config(
+    temp_path: &Path,
+    temp_file: &mut fs::File,
+    toml_text: &str,
+) -> ConfigResult<()> {
+    temp_file
+        .write_all(toml_text.as_bytes())
+        .map_err(|source| ConfigError::WriteConfigTempFile {
+            path: temp_path.to_path_buf(),
+            source,
+        })?;
+    temp_file
+        .flush()
+        .map_err(|source| ConfigError::FlushConfigTempFile {
+            path: temp_path.to_path_buf(),
+            source,
+        })?;
+    temp_file
+        .sync_all()
+        .map_err(|source| ConfigError::SyncConfigTempFile {
+            path: temp_path.to_path_buf(),
+            source,
+        })
+}
+
+/// Делает atomic replace: temp уже лежит рядом с target, поэтому rename остаётся в той же FS.
+fn rename_temp_config(temp_path: &Path, target_path: &Path) -> ConfigResult<()> {
+    fs::rename(temp_path, target_path).map_err(|source| ConfigError::RenameConfigFile {
+        source_path: temp_path.to_path_buf(),
+        target_path: target_path.to_path_buf(),
+        source,
+    })
+}
+
+/// После ошибки save удаляет temp-файл, не маскируя первичную причину отказа.
+fn remove_temp_config_after_error(temp_path: &Path) {
+    match fs::remove_file(temp_path) {
+        Ok(()) => {}
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            warn!(
+                path = %temp_path.display(),
+                error = %source,
+                "Не удалось удалить временный config после ошибки save"
+            );
+        }
+    }
+}
+
+/// Best-effort sync parent directory после rename: failure логируется как durability warning.
+fn sync_parent_directory_best_effort(path: &Path) {
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return;
+    };
+
+    match OpenOptions::new().read(true).open(parent) {
+        Ok(parent_directory) => {
+            if let Err(source) = parent_directory.sync_all() {
+                warn!(
+                    path = %parent.display(),
+                    error = %source,
+                    "Не удалось sync директорию config после atomic rename"
+                );
+            }
+        }
+        Err(source) => {
+            warn!(
+                path = %parent.display(),
+                error = %source,
+                "Не удалось открыть директорию config для best-effort sync"
+            );
+        }
+    }
+}
+
 /// Превращает TOML text в validated `AppConfig`.
 fn parse_config_text(path: &Path, toml_text: &str) -> ConfigResult<AppConfig> {
     let config =
@@ -136,6 +321,8 @@ fn parse_config_text(path: &Path, toml_text: &str) -> ConfigResult<AppConfig> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::{
         CURRENT_SCHEMA_VERSION, HdrToSdrOperatorConfig, PausedCommitBehavior, ToneMappingMode,
@@ -220,6 +407,7 @@ mod tests {
         assert_eq!(config.network.read_timeout_ms, 15_000);
         assert_eq!(config.youtube.resolve_timeout_ms, 30_000);
         assert_eq!(config.ui.skin, "minimal");
+        assert_eq!(config.ui.settings.live_preview_max_hz, 60);
     }
 
     /// Проверяет, что demux skip-window не может быть нулевым.
@@ -355,12 +543,90 @@ mod tests {
         assert!(!created_toml.contains("index_fingerprint_sample_kb"));
         assert!(created_toml.contains("# UI skin id"));
         assert!(created_toml.contains("skin = \"minimal\""));
+        assert!(created_toml.contains("[ui.settings]"));
+        assert!(created_toml.contains("live_preview_max_hz = 60"));
         assert!(created_toml.contains("[render.hdr_to_sdr]"));
         assert!(created_toml.contains("operator = \"bt2446_c\""));
 
         let reparsed = toml::from_str::<AppConfig>(&created_toml)
             .expect("documented default config remains valid TOML");
         assert_eq!(reparsed, AppConfig::default());
+    }
+
+    /// Проверяет atomic save happy path: файл заменяется generated TOML и потом читается обратно.
+    #[test]
+    fn save_validated_atomic_at_writes_roundtrippable_generated_toml() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "# Пользовательский комментарий, который save не обязан сохранять.\nschema_version = 2\n",
+        )
+        .expect("old config written");
+
+        let mut config = AppConfig::default();
+        config.ui.settings.live_preview_max_hz = 144;
+
+        save_validated_atomic_at(&config_path, &config).expect("valid config saved atomically");
+
+        let saved_toml = fs::read_to_string(&config_path).expect("saved config readable");
+        assert!(!saved_toml.contains("Пользовательский комментарий"));
+        assert!(saved_toml.contains("[ui.settings]"));
+        assert!(saved_toml.contains("live_preview_max_hz = 144"));
+        assert_no_save_temp_files(temp_dir.path());
+
+        let loaded = load_from_path(&config_path).expect("saved config loads");
+        assert_eq!(loaded.config, config);
+    }
+
+    /// Проверяет, что invalid config отбрасывается до любых операций записи.
+    #[test]
+    fn save_validated_atomic_at_does_not_touch_file_when_config_is_invalid() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        let original_toml = "это неважное старое содержимое, которое нельзя перетереть\n";
+        fs::write(&config_path, original_toml).expect("old config written");
+
+        let mut config = AppConfig::default();
+        config.ui.settings.live_preview_max_hz = 0;
+
+        let error = save_validated_atomic_at(&config_path, &config)
+            .expect_err("invalid config rejected before write");
+
+        assert!(
+            error
+                .to_string()
+                .contains("ui.settings.live_preview_max_hz")
+        );
+        assert_eq!(
+            fs::read_to_string(&config_path).expect("old config still readable"),
+            original_toml
+        );
+        assert_no_save_temp_files(temp_dir.path());
+    }
+
+    /// Проверяет compatibility: старый `[ui]` без `[ui.settings]` получает defaults.
+    #[test]
+    fn existing_ui_config_without_settings_gets_live_preview_defaults() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[ui]
+show_telemetry = false
+language = "ru"
+skin = "minimal"
+"#,
+        )
+        .expect("legacy ui config written");
+
+        let loaded = load_from_path(&config_path).expect("legacy ui config accepted");
+
+        assert!(!loaded.config.ui.show_telemetry);
+        assert_eq!(loaded.config.ui.settings.live_preview_max_hz, 60);
     }
 
     /// Проверяет, что старые index-only network поля больше не принимаются.
@@ -929,6 +1195,58 @@ skin = "dense"
         assert!(error.to_string().contains("ui.skin"));
     }
 
+    /// Проверяет, что Settings UI не принимает нулевой или чрезмерный preview rate.
+    #[test]
+    fn invalid_ui_settings_live_preview_hz_fails_validation() {
+        for invalid_live_preview_max_hz in [0_u16, 241_u16] {
+            let temp_dir = tempfile::tempdir().expect("temp dir created");
+            let config_path = temp_dir.path().join("config.toml");
+            fs::write(
+                &config_path,
+                format!(
+                    r#"
+schema_version = 2
+
+[ui.settings]
+live_preview_max_hz = {invalid_live_preview_max_hz}
+"#
+                ),
+            )
+            .expect("invalid config written");
+
+            let error = load_from_path(&config_path).expect_err("invalid preview Hz rejected");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("ui.settings.live_preview_max_hz")
+            );
+        }
+    }
+
+    /// Проверяет, что новые nested settings тоже сохраняют strict deny_unknown_fields.
+    #[test]
+    fn unknown_ui_settings_field_is_parse_error() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[ui.settings]
+live_preview_max_hz = 60
+unexpected = true
+"#,
+        )
+        .expect("invalid config written");
+
+        let error = load_from_path(&config_path).expect_err("unknown ui settings field rejected");
+
+        assert!(error.to_string().contains("TOML-схеме"));
+        assert!(error.to_string().contains("unexpected"));
+    }
+
     /// Проверяет validation error для RGB-массива неверной длины.
     #[test]
     fn invalid_rgb_gain_array_fails_validation() {
@@ -1008,5 +1326,21 @@ unexpected = true
         let error = load_from_path(&config_path).expect_err("unknown field rejected");
 
         assert!(error.to_string().contains("TOML-схеме"));
+    }
+
+    /// Проверяет, что atomic save не оставил временных файлов рядом с config.
+    fn assert_no_save_temp_files(config_directory: &Path) {
+        let leftover_temp_file_count = fs::read_dir(config_directory)
+            .expect("config directory readable")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".config.toml.")
+            })
+            .count();
+
+        assert_eq!(leftover_temp_file_count, 0);
     }
 }
