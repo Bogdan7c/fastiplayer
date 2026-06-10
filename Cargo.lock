@@ -3439,6 +3439,8 @@ version = "0.1.0"
 dependencies = [
  "directories",
  "serde",
+ "settings-core",
+ "settings-derive",
  "tempfile",
  "thiserror 2.0.18",
  "toml 0.9.12+spec-1.1.0",

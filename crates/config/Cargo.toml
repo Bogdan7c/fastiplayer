@@ -11,6 +11,8 @@ path = "src/lib.rs"
 [dependencies]
 directories.workspace = true
 serde.workspace = true
+settings-core.workspace = true
+settings-derive.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true

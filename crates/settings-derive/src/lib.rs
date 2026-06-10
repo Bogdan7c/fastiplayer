@@ -227,6 +227,7 @@ enum EditorMetadata {
     Integer,
     Float,
     Select,
+    SelectList,
     Text,
     Vector,
     ReadOnly,
@@ -411,13 +412,14 @@ fn parse_editor(value: LitStr) -> syn::Result<EditorMetadata> {
         "integer" | "int" => EditorMetadata::Integer,
         "float" | "number" => EditorMetadata::Float,
         "select" => EditorMetadata::Select,
+        "select_list" | "ordered_select" | "select_sequence" => EditorMetadata::SelectList,
         "text" => EditorMetadata::Text,
         "vector" | "numeric_vector" => EditorMetadata::Vector,
         "read_only" | "readonly" => EditorMetadata::ReadOnly,
         _ => {
             return Err(syn::Error::new_spanned(
                 value,
-                "unknown settings editor; expected toggle, integer, float, select, text, vector or read_only",
+                "unknown settings editor; expected toggle, integer, float, select, select_list, text, vector or read_only",
             ));
         }
     };
@@ -546,6 +548,8 @@ enum AccessKind {
     Text,
     SelectString,
     SelectEnum(Vec<SelectOptionMetadata>),
+    SelectListString,
+    SelectListEnum(Vec<SelectOptionMetadata>),
     NumericVector(Type),
 }
 
@@ -578,6 +582,7 @@ fn infer_access_kind(field: &Field, metadata: &CompleteFieldMetadata) -> syn::Re
             Ok(AccessKind::Text)
         }
         EditorMetadata::Select => infer_select_access_kind(field, metadata),
+        EditorMetadata::SelectList => infer_select_list_access_kind(field, metadata),
         EditorMetadata::Vector => {
             let element_type = vec_element_type(&field.ty).ok_or_else(|| {
                 syn::Error::new_spanned(field, "vector editor requires Vec<f32> or Vec<f64>")
@@ -627,6 +632,48 @@ fn infer_select_access_kind(
     Err(syn::Error::new_spanned(
         field,
         "select editor for non-String fields requires options(option(id = ..., value = Type::Variant), ...)",
+    ))
+}
+
+fn infer_select_list_access_kind(
+    field: &Field,
+    metadata: &CompleteFieldMetadata,
+) -> syn::Result<AccessKind> {
+    if metadata.option_provider.is_some() {
+        return Err(syn::Error::new_spanned(
+            field,
+            "select_list editor currently supports only static options",
+        ));
+    }
+    if metadata.options.is_empty() {
+        return Err(syn::Error::new_spanned(
+            field,
+            "select_list editor requires options(...)",
+        ));
+    }
+
+    let Some(element_type) = vec_element_type(&field.ty) else {
+        return Err(syn::Error::new_spanned(
+            field,
+            "select_list editor requires Vec<String> or Vec<Enum>",
+        ));
+    };
+
+    if is_string_type(element_type) {
+        return Ok(AccessKind::SelectListString);
+    }
+
+    let all_options_have_values = metadata
+        .options
+        .iter()
+        .all(|option| option.value_path.is_some());
+    if all_options_have_values {
+        return Ok(AccessKind::SelectListEnum(metadata.options.clone()));
+    }
+
+    Err(syn::Error::new_spanned(
+        field,
+        "select_list editor for Vec<Enum> requires options(option(id = ..., value = Type::Variant), ...)",
     ))
 }
 
@@ -861,6 +908,9 @@ fn value_type_tokens(access_kind: &AccessKind) -> TokenStream2 {
         AccessKind::SelectString | AccessKind::SelectEnum(_) => {
             quote! { ::settings_core::SettingValueType::Select }
         }
+        AccessKind::SelectListString | AccessKind::SelectListEnum(_) => {
+            quote! { ::settings_core::SettingValueType::SelectList }
+        }
         AccessKind::NumericVector(_) => {
             quote! { ::settings_core::SettingValueType::NumericVector }
         }
@@ -880,6 +930,10 @@ fn editor_tokens(
         EditorMetadata::Select => {
             let select_descriptor = select_descriptor_tokens(metadata)?;
             Ok(quote! { ::settings_core::SettingEditor::Select(#select_descriptor) })
+        }
+        EditorMetadata::SelectList => {
+            let select_list_descriptor = select_list_descriptor_tokens(metadata)?;
+            Ok(quote! { ::settings_core::SettingEditor::SelectList(#select_list_descriptor) })
         }
         EditorMetadata::Text => {
             let text_descriptor = text_descriptor_tokens(metadata);
@@ -990,6 +1044,39 @@ fn select_descriptor_tokens(metadata: &CompleteFieldMetadata) -> syn::Result<Tok
             options: vec![#(#options),*],
         }
     })
+}
+
+fn select_list_descriptor_tokens(metadata: &CompleteFieldMetadata) -> syn::Result<TokenStream2> {
+    if metadata.option_provider.is_some() {
+        return Err(syn::Error::new_spanned(
+            &metadata.id,
+            "select_list editor currently supports only static options",
+        ));
+    }
+
+    let options = metadata.options.iter().map(|option| {
+        let id = &option.id;
+        let label_id = option.label_id.as_ref().unwrap_or(id);
+        let label_ru = option.label_ru.as_ref().unwrap_or(id);
+        quote! {
+            ::settings_core::SettingOption::new(
+                #id,
+                ::settings_core::SettingText::new(#label_id, #label_ru),
+            )
+        }
+    });
+
+    let mut descriptor = quote! {
+        ::settings_core::SelectListDescriptor::new(vec![#(#options),*])
+    };
+    if let Some(min_len) = &metadata.min_len {
+        descriptor = quote! { #descriptor.with_min_len((#min_len) as usize) };
+    }
+    if let Some(max_len) = &metadata.max_len {
+        descriptor = quote! { #descriptor.with_max_len((#max_len) as usize) };
+    }
+
+    Ok(descriptor)
 }
 
 fn text_descriptor_tokens(metadata: &CompleteFieldMetadata) -> TokenStream2 {
@@ -1164,6 +1251,39 @@ fn accessor_get_body(field_ident: &Ident, access_kind: &AccessKind) -> TokenStre
                 }
             }
         }
+        AccessKind::SelectListString => quote! {
+            Ok(::settings_core::SettingValue::SelectList(
+                document.#field_ident
+                    .iter()
+                    .cloned()
+                    .map(::settings_core::SettingOptionId::from)
+                    .collect()
+            ))
+        },
+        AccessKind::SelectListEnum(options) => {
+            let arms = options.iter().map(|option| {
+                let option_id = &option.id;
+                let value_path = option
+                    .value_path
+                    .as_ref()
+                    .expect("select list enum options are validated before codegen");
+                quote! {
+                    &#value_path => ::core::result::Result::Ok(
+                        ::settings_core::SettingOptionId::from(#option_id)
+                    ),
+                }
+            });
+            quote! {
+                let mut selected_options = Vec::with_capacity(document.#field_ident.len());
+                for selected_value in &document.#field_ident {
+                    let selected_option = match selected_value {
+                        #(#arms)*
+                    }?;
+                    selected_options.push(selected_option);
+                }
+                Ok(::settings_core::SettingValue::SelectList(selected_options))
+            }
+        }
         AccessKind::NumericVector(_) => quote! {
             Ok(::settings_core::SettingValue::NumericVector(
                 document.#field_ident.iter().copied().map(::core::convert::Into::<f64>::into).collect()
@@ -1242,6 +1362,45 @@ fn accessor_set_body(
                 Ok(())
             }
         }
+        AccessKind::SelectListString => quote! {
+            let ::settings_core::SettingValue::SelectList(setting_value) = value else {
+                return Err(::settings_core::SettingsError::access_failed(#expected_message));
+            };
+            document.#field_ident = setting_value
+                .into_iter()
+                .map(::settings_core::SettingOptionId::into_string)
+                .collect();
+            Ok(())
+        },
+        AccessKind::SelectListEnum(options) => {
+            let arms = options.iter().map(|option| {
+                let option_id = &option.id;
+                let value_path = option
+                    .value_path
+                    .as_ref()
+                    .expect("select list enum options are validated before codegen");
+                quote! { #option_id => #value_path, }
+            });
+            quote! {
+                let ::settings_core::SettingValue::SelectList(setting_value) = value else {
+                    return Err(::settings_core::SettingsError::access_failed(#expected_message));
+                };
+                let mut selected_values = Vec::with_capacity(setting_value.len());
+                for selected_option in setting_value {
+                    let selected_value = match selected_option.as_str() {
+                        #(#arms)*
+                        _ => {
+                            return Err(::settings_core::SettingsError::access_failed(
+                                format!("{} cannot map unknown option {}", #setting_id, selected_option)
+                            ));
+                        }
+                    };
+                    selected_values.push(selected_value);
+                }
+                document.#field_ident = selected_values;
+                Ok(())
+            }
+        }
         AccessKind::NumericVector(element_type) => quote! {
             let ::settings_core::SettingValue::NumericVector(setting_value) = value else {
                 return Err(::settings_core::SettingsError::access_failed(#expected_message));
@@ -1269,6 +1428,7 @@ fn setting_value_name(access_kind: &AccessKind) -> &'static str {
         AccessKind::Float => "float",
         AccessKind::Text => "text",
         AccessKind::SelectString | AccessKind::SelectEnum(_) => "select",
+        AccessKind::SelectListString | AccessKind::SelectListEnum(_) => "select list",
         AccessKind::NumericVector(_) => "numeric vector",
     }
 }

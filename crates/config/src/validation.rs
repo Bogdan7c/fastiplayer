@@ -7,88 +7,145 @@ use crate::{
 };
 
 /// Минимальный decode-ahead: ноль ломает смысл backpressure окна.
-const MIN_DECODE_AHEAD_MS: u64 = 1;
+pub(crate) const MIN_DECODE_AHEAD_MS: u64 = 1;
 
 /// Максимальный decode-ahead, который ещё не превращает video queue в cache.
-const MAX_DECODE_AHEAD_MS: u64 = 10_000;
+pub(crate) const MAX_DECODE_AHEAD_MS: u64 = 10_000;
 
 /// Минимальный размер presentation queue.
-const MIN_PRESENT_QUEUE_FRAMES: usize = 1;
+pub(crate) const MIN_PRESENT_QUEUE_FRAMES: usize = 1;
 
 /// Верхний предел, чтобы ошибочный config не удерживал слишком много GPU textures.
-const MAX_PRESENT_QUEUE_FRAMES: usize = 64;
+pub(crate) const MAX_PRESENT_QUEUE_FRAMES: usize = 64;
 
 /// Минимум bounded decoder queue/pool capacity.
-const MIN_DECODER_QUEUE_FRAMES: usize = 1;
+pub(crate) const MIN_DECODER_QUEUE_FRAMES: usize = 1;
 
 /// Верхний предел decoder packet/frame queues, чтобы config не стал memory cache.
-const MAX_DECODER_QUEUE_FRAMES: usize = 128;
+pub(crate) const MAX_DECODER_QUEUE_FRAMES: usize = 128;
 
 /// Верхний предел VA output surface descriptors.
-const MAX_DECODER_SURFACE_POOL_FRAMES: usize = 64;
+pub(crate) const MAX_DECODER_SURFACE_POOL_FRAMES: usize = 64;
 
 /// Верхний предел zero-copy import slots.
-const MAX_ZERO_COPY_SURFACE_POOL_SLOTS: usize = 64;
+pub(crate) const MAX_ZERO_COPY_SURFACE_POOL_SLOTS: usize = 64;
 
 /// Верхний предел demux work за tick, чтобы ошибочный config не блокировал worker.
-const MAX_SCHEDULER_DEMUX_PACKETS_PER_TICK: usize = 512;
+pub(crate) const MAX_SCHEDULER_DEMUX_PACKETS_PER_TICK: usize = 512;
 
 /// Верхний предел packet submit work за tick.
-const MAX_SCHEDULER_VIDEO_PACKETS_PER_TICK: usize = MAX_DECODER_QUEUE_FRAMES;
+pub(crate) const MAX_SCHEDULER_VIDEO_PACKETS_PER_TICK: usize = MAX_DECODER_QUEUE_FRAMES;
 
 /// Верхний предел drain work за tick.
-const MAX_SCHEDULER_DECODED_FRAMES_PER_TICK: usize = MAX_DECODER_QUEUE_FRAMES;
+pub(crate) const MAX_SCHEDULER_DECODED_FRAMES_PER_TICK: usize = MAX_DECODER_QUEUE_FRAMES;
 
 /// Верхний предел catch-up окна; worker не должен занимать весь frame interval.
-const MAX_SCHEDULER_CATCH_UP_BUDGET_MS: u64 = 16;
+pub(crate) const MAX_SCHEDULER_CATCH_UP_BUDGET_MS: u64 = 16;
 
 /// Минимальный audio high-water mark.
-const MIN_AUDIO_BUFFER_TARGET_MS: u64 = 1;
+pub(crate) const MIN_AUDIO_BUFFER_TARGET_MS: u64 = 1;
 
 /// Верхний предел audio buffer target для интерактивного player-а.
-const MAX_AUDIO_BUFFER_TARGET_MS: u64 = 10_000;
+pub(crate) const MAX_AUDIO_BUFFER_TARGET_MS: u64 = 10_000;
 
 /// Верхний предел video preroll перед seek resume, чтобы config не удерживал лишние GPU frames.
-const MAX_SEEK_RESUME_VIDEO_READY_FRAMES: usize = MAX_PRESENT_QUEUE_FRAMES + 1;
+pub(crate) const MAX_SEEK_RESUME_VIDEO_READY_FRAMES: usize = MAX_PRESENT_QUEUE_FRAMES + 1;
 
 /// Верхний предел seek-only preroll work window; это интерактивный bounded burst, не idle loop.
-const MAX_SEEK_FAST_PREROLL_BUDGET_MS: u64 = 250;
+pub(crate) const MAX_SEEK_FAST_PREROLL_BUDGET_MS: u64 = 250;
 
 /// Верхний предел GOP preroll burst-а; реальные decoder/resource лимиты остаются ниже.
-const MAX_SEEK_FAST_PREROLL_VIDEO_PACKET_BURST: usize = 4096;
+pub(crate) const MAX_SEEK_FAST_PREROLL_VIDEO_PACKET_BURST: usize = 4096;
 
 /// Верхний предел demux skip-window, чтобы повреждённый stream не держал worker слишком долго.
-const MAX_CONSECUTIVE_CORRUPTED_PACKETS: usize = 4096;
+pub(crate) const MAX_CONSECUTIVE_CORRUPTED_PACKETS: usize = 4096;
 
 /// Верхний предел network read-ahead на раннем этапе без полноценного cache manager.
-const MAX_NETWORK_READ_AHEAD_MB: u64 = 4096;
+pub(crate) const MAX_NETWORK_READ_AHEAD_MB: u64 = 4096;
 
 /// Верхний предел начального prefetch chunk-а в КиБ, привязанный к общему read-ahead budget.
-const MAX_NETWORK_PREFETCH_INITIAL_CHUNK_KB: u64 = MAX_NETWORK_READ_AHEAD_MB * 1024;
+pub(crate) const MAX_NETWORK_PREFETCH_INITIAL_CHUNK_KB: u64 = MAX_NETWORK_READ_AHEAD_MB * 1024;
 
 /// Верхний предел RAM cache, чтобы ошибочный config не занял всю память.
-const MAX_NETWORK_MEMORY_CACHE_MB: u64 = 4096;
+pub(crate) const MAX_NETWORK_MEMORY_CACHE_MB: u64 = 4096;
 
 /// Верхний предел ожидания `yt-dlp`, чтобы зависший resolver не жил бесконечно.
-const MAX_YOUTUBE_RESOLVE_TIMEOUT_MS: u64 = 300_000;
+pub(crate) const MAX_YOUTUBE_RESOLVE_TIMEOUT_MS: u64 = 300_000;
 
 /// Верхний предел render latency, выше которого config почти наверняка ошибочен.
-const MAX_VULKAN_FRAME_LATENCY: u32 = 8;
+pub(crate) const MAX_VULKAN_FRAME_LATENCY: u32 = 8;
 
 /// Единственный skin, для которого текущий UI гарантирует layout contract.
-const DEFAULT_UI_SKIN: &str = "minimal";
+pub(crate) const DEFAULT_UI_SKIN: &str = "minimal";
 
 /// Минимальная частота live preview: ноль означал бы выключенный pacing, а не валидную частоту.
-const MIN_LIVE_PREVIEW_MAX_HZ: u16 = 1;
+pub(crate) const MIN_LIVE_PREVIEW_MAX_HZ: u16 = 1;
 
 /// Верхняя граница live preview защищает runtime от слишком частых preview updates.
-const MAX_LIVE_PREVIEW_MAX_HZ: u16 = 240;
+pub(crate) const MAX_LIVE_PREVIEW_MAX_HZ: u16 = 240;
+
+/// Нижний предел reference luminance: значения ниже 1 nit не имеют полезного UI-смысла.
+pub(crate) const MIN_HDR_TO_SDR_REFERENCE_NITS: f32 = 1.0;
 
 /// Верхний предел reference luminance для Phase 10 SDR/HDR nits fields.
-const MAX_HDR_TO_SDR_REFERENCE_NITS: f32 = 10_000.0;
+pub(crate) const MAX_HDR_TO_SDR_REFERENCE_NITS: f32 = 10_000.0;
+
+/// Нижний предел default startup volume.
+pub(crate) const MIN_AUDIO_VOLUME: f64 = 0.0;
+
+/// Верхний предел default startup volume.
+pub(crate) const MAX_AUDIO_VOLUME: f64 = 1.0;
+
+/// Минимальная длина кода языка UI.
+pub(crate) const MIN_UI_LANGUAGE_LEN: usize = 1;
+
+/// Максимальная длина кода языка UI.
+pub(crate) const MAX_UI_LANGUAGE_LEN: usize = 16;
+
+/// Минимум для положительных `u64` полей без более узкой доменной границы.
+pub(crate) const MIN_POSITIVE_U64_SETTING_VALUE: u64 = 1;
+
+/// Максимум, который settings registry может представить как signed integer.
+pub(crate) const MAX_POSITIVE_U64_SETTING_VALUE: u64 = i64::MAX as u64;
+
+/// Минимальное additive brightness смещение SDR shader-а.
+pub(crate) const MIN_RENDER_COLOR_BRIGHTNESS: f32 = -1.0;
+
+/// Максимальное additive brightness смещение SDR shader-а.
+pub(crate) const MAX_RENDER_COLOR_BRIGHTNESS: f32 = 1.0;
+
+/// Минимальный contrast multiplier.
+pub(crate) const MIN_RENDER_COLOR_CONTRAST: f32 = 0.0;
+
+/// Максимальный contrast multiplier.
+pub(crate) const MAX_RENDER_COLOR_CONTRAST: f32 = 4.0;
+
+/// Минимальный saturation multiplier.
+pub(crate) const MIN_RENDER_COLOR_SATURATION: f32 = 0.0;
+
+/// Максимальный saturation multiplier.
+pub(crate) const MAX_RENDER_COLOR_SATURATION: f32 = 4.0;
+
+/// Минимальное exposure offset значение.
+pub(crate) const MIN_RENDER_COLOR_EXPOSURE: f32 = -4.0;
+
+/// Максимальное exposure offset значение.
+pub(crate) const MAX_RENDER_COLOR_EXPOSURE: f32 = 4.0;
+
+/// Минимальный поканальный RGB gain.
+pub(crate) const MIN_RENDER_RGB_GAIN: f32 = 0.0;
+
+/// Максимальный поканальный RGB gain.
+pub(crate) const MAX_RENDER_RGB_GAIN: f32 = 4.0;
+
+/// Минимальный поканальный RGB offset.
+pub(crate) const MIN_RENDER_RGB_OFFSET: f32 = -1.0;
+
+/// Максимальный поканальный RGB offset.
+pub(crate) const MAX_RENDER_RGB_OFFSET: f32 = 1.0;
 
 /// Количество каналов в пользовательских RGB triplet-полях.
-const RGB_CHANNEL_COUNT: usize = 3;
+pub(crate) const RGB_CHANNEL_COUNT: usize = 3;
 
 /// Проверяет весь config после TOML/Serde deserialization.
 pub(crate) fn validate_app_config(config: &AppConfig) -> ConfigResult<()> {
@@ -330,12 +387,14 @@ fn validate_scheduler_surface_watermarks(
 
 /// Проверяет audio section.
 fn validate_audio_section(config: &AppConfig) -> ConfigResult<()> {
-    if !config.audio.volume.is_finite() || !(0.0..=1.0).contains(&config.audio.volume) {
+    if !config.audio.volume.is_finite()
+        || !(MIN_AUDIO_VOLUME..=MAX_AUDIO_VOLUME).contains(&config.audio.volume)
+    {
         return Err(invalid_value(
             "audio.volume",
             format!(
-                "громкость должна быть конечным числом в диапазоне 0.0..=1.0, получено {}",
-                config.audio.volume
+                "громкость должна быть конечным числом в диапазоне {MIN_AUDIO_VOLUME}..={MAX_AUDIO_VOLUME}, получено {}",
+                config.audio.volume,
             ),
         ));
     }
@@ -475,14 +534,16 @@ fn validate_hdr_to_sdr_config(hdr_to_sdr: &HdrToSdrConfig) -> ConfigResult<()> {
 
 /// Проверяет положительное конечное значение luminance в nits.
 fn validate_positive_reference_nits(field: &'static str, value: f32) -> ConfigResult<()> {
-    if value.is_finite() && value > 0.0 && value <= MAX_HDR_TO_SDR_REFERENCE_NITS {
+    if value.is_finite()
+        && (MIN_HDR_TO_SDR_REFERENCE_NITS..=MAX_HDR_TO_SDR_REFERENCE_NITS).contains(&value)
+    {
         return Ok(());
     }
 
     Err(invalid_value(
         field,
         format!(
-            "значение должно быть конечным числом в диапазоне (0, {MAX_HDR_TO_SDR_REFERENCE_NITS}], получено {value}"
+            "значение должно быть конечным числом в диапазоне {MIN_HDR_TO_SDR_REFERENCE_NITS}..={MAX_HDR_TO_SDR_REFERENCE_NITS}, получено {value}"
         ),
     ))
 }
@@ -491,29 +552,41 @@ fn validate_positive_reference_nits(field: &'static str, value: f32) -> ConfigRe
 fn validate_render_color_adjustment(
     color_adjustment: &RenderColorAdjustmentConfig,
 ) -> ConfigResult<()> {
-    validate_f32_finite(
+    validate_f32_range(
         "render.color_adjustment.brightness",
         color_adjustment.brightness,
+        MIN_RENDER_COLOR_BRIGHTNESS,
+        MAX_RENDER_COLOR_BRIGHTNESS,
     )?;
-    validate_f32_finite(
+    validate_f32_range(
         "render.color_adjustment.contrast",
         color_adjustment.contrast,
+        MIN_RENDER_COLOR_CONTRAST,
+        MAX_RENDER_COLOR_CONTRAST,
     )?;
-    validate_f32_finite(
+    validate_f32_range(
         "render.color_adjustment.saturation",
         color_adjustment.saturation,
+        MIN_RENDER_COLOR_SATURATION,
+        MAX_RENDER_COLOR_SATURATION,
     )?;
-    validate_f32_finite(
+    validate_f32_range(
         "render.color_adjustment.exposure",
         color_adjustment.exposure,
+        MIN_RENDER_COLOR_EXPOSURE,
+        MAX_RENDER_COLOR_EXPOSURE,
     )?;
     validate_rgb_triplet(
         "render.color_adjustment.rgb_gain",
         &color_adjustment.rgb_gain,
+        MIN_RENDER_RGB_GAIN,
+        MAX_RENDER_RGB_GAIN,
     )?;
     validate_rgb_triplet(
         "render.color_adjustment.rgb_offset",
         &color_adjustment.rgb_offset,
+        MIN_RENDER_RGB_OFFSET,
+        MAX_RENDER_RGB_OFFSET,
     )?;
 
     Ok(())
@@ -522,14 +595,14 @@ fn validate_render_color_adjustment(
 /// Проверяет UI section.
 fn validate_ui_section(config: &AppConfig) -> ConfigResult<()> {
     let language = config.ui.language.trim();
-    if language.is_empty() {
+    if language.chars().count() < MIN_UI_LANGUAGE_LEN {
         return Err(invalid_value(
             "ui.language",
             "язык UI не должен быть пустым".to_string(),
         ));
     }
 
-    if language.len() > 16 {
+    if language.chars().count() > MAX_UI_LANGUAGE_LEN {
         return Err(invalid_value(
             "ui.language",
             "язык UI должен быть коротким кодом, например `ru` или `en`".to_string(),
@@ -558,14 +631,12 @@ fn validate_ui_section(config: &AppConfig) -> ConfigResult<()> {
 
 /// Проверяет, что `u64` значение положительное.
 fn validate_positive_u64(field: &'static str, value: u64) -> ConfigResult<()> {
-    if value > 0 {
-        return Ok(());
-    }
-
-    Err(invalid_value(
+    validate_u64_range(
         field,
-        format!("значение должно быть положительным, получено {value}"),
-    ))
+        value,
+        MIN_POSITIVE_U64_SETTING_VALUE,
+        MAX_POSITIVE_U64_SETTING_VALUE,
+    )
 }
 
 /// Проверяет `u64` диапазон с единым сообщением.
@@ -621,20 +692,25 @@ fn validate_usize_range(
     ))
 }
 
-/// Проверяет, что `f32` поле можно безопасно отправить в shader uniforms.
-fn validate_f32_finite(field: &'static str, value: f32) -> ConfigResult<()> {
-    if value.is_finite() {
+/// Проверяет `f32` диапазон с защитой от NaN/Inf перед отправкой в shader uniforms.
+fn validate_f32_range(field: &'static str, value: f32, min: f32, max: f32) -> ConfigResult<()> {
+    if value.is_finite() && (min..=max).contains(&value) {
         return Ok(());
     }
 
     Err(invalid_value(
         field,
-        format!("значение должно быть конечным числом, получено {value}"),
+        format!("значение должно быть конечным числом в диапазоне {min}..={max}, получено {value}"),
     ))
 }
 
 /// Проверяет RGB-массив: ровно три конечных значения в порядке R, G, B.
-fn validate_rgb_triplet(field: &'static str, values: &[f32]) -> ConfigResult<()> {
+fn validate_rgb_triplet(
+    field: &'static str,
+    values: &[f32],
+    min: f32,
+    max: f32,
+) -> ConfigResult<()> {
     if values.len() != RGB_CHANNEL_COUNT {
         return Err(invalid_value(
             field,
@@ -646,11 +722,11 @@ fn validate_rgb_triplet(field: &'static str, values: &[f32]) -> ConfigResult<()>
     }
 
     for (channel_index, channel_value) in values.iter().copied().enumerate() {
-        if !channel_value.is_finite() {
+        if !channel_value.is_finite() || !(min..=max).contains(&channel_value) {
             return Err(invalid_value(
                 field,
                 format!(
-                    "RGB-канал #{channel_index} должен быть конечным числом, получено {channel_value}"
+                    "RGB-канал #{channel_index} должен быть конечным числом в диапазоне {min}..={max}, получено {channel_value}"
                 ),
             ));
         }

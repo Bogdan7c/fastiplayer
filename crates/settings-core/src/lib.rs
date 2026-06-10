@@ -27,14 +27,16 @@ pub use controller::{
 };
 pub use diff::{SettingChange, SettingsDiff};
 pub use error::{
-    SettingValueError, SettingsError, SettingsResult, TextLengthLimitKind, ValueRangeLimit,
+    ListLengthLimitKind, SettingValueError, SettingsError, SettingsResult, TextLengthLimitKind,
+    ValueRangeLimit,
 };
 pub use metadata::{
-    DefaultBehavior, NumericDescriptor, NumericRange, NumericStep, SelectDescriptor, SettingAccess,
-    SettingApplyMode, SettingDescriptor, SettingDescriptorText, SettingEditor, SettingGroupId,
-    SettingId, SettingPath, SettingPlacement, SettingRouteId, SettingSectionId, SettingText,
-    SettingTextId, SettingUnit, SettingValue, SettingValueKind, SettingValueType,
-    SettingsSurfaceId, TextDescriptor, TextFormat, VectorDescriptor,
+    DefaultBehavior, NumericDescriptor, NumericRange, NumericStep, SelectDescriptor,
+    SelectListDescriptor, SettingAccess, SettingApplyMode, SettingDescriptor,
+    SettingDescriptorText, SettingEditor, SettingGroupId, SettingId, SettingPath, SettingPlacement,
+    SettingRouteId, SettingSectionId, SettingText, SettingTextId, SettingUnit, SettingValue,
+    SettingValueKind, SettingValueType, SettingsSurfaceId, TextDescriptor, TextFormat,
+    VectorDescriptor,
 };
 pub use options::{
     OptionProviderId, SettingOption, SettingOptionCurrentValue, SettingOptionId,

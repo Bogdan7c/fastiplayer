@@ -135,6 +135,21 @@ pub enum SettingValueError {
         actual: usize,
     },
 
+    /// Ordered select-list length violates descriptor constraints.
+    InvalidListLength {
+        /// Which side of the length range failed.
+        limit: ListLengthLimitKind,
+
+        /// Expected bound.
+        expected: usize,
+
+        /// Actual item count.
+        actual: usize,
+    },
+
+    /// Ordered select-list contains the same option more than once.
+    DuplicateListOption { option_id: SettingOptionId },
+
     /// Text length violates the descriptor constraints.
     InvalidTextLength {
         /// Which side of the length range failed.
@@ -175,6 +190,17 @@ impl fmt::Display for SettingValueError {
             Self::InvalidVectorLength { expected, actual } => {
                 write!(formatter, "expected vector length {expected}, got {actual}")
             }
+            Self::InvalidListLength {
+                limit,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "{limit} list length violation: expected {expected}, got {actual}"
+            ),
+            Self::DuplicateListOption { option_id } => {
+                write!(formatter, "duplicate list option `{option_id}`")
+            }
             Self::InvalidTextLength {
                 limit,
                 expected,
@@ -200,6 +226,25 @@ pub enum ValueRangeLimit {
 }
 
 impl fmt::Display for ValueRangeLimit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Minimum => formatter.write_str("minimum"),
+            Self::Maximum => formatter.write_str("maximum"),
+        }
+    }
+}
+
+/// Side of an ordered list length range that failed validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListLengthLimitKind {
+    /// List is shorter than minimum.
+    Minimum,
+
+    /// List is longer than maximum.
+    Maximum,
+}
+
+impl fmt::Display for ListLengthLimitKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Minimum => formatter.write_str("minimum"),

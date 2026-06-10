@@ -326,6 +326,7 @@ mod tests {
     use super::*;
     use crate::{
         CURRENT_SCHEMA_VERSION, HdrToSdrOperatorConfig, PausedCommitBehavior, ToneMappingMode,
+        validation,
     };
 
     /// Проверяет, что default schema остаётся самосогласованной.
@@ -348,6 +349,41 @@ mod tests {
         assert_eq!(config.render.color_adjustment.exposure, 0.0);
         assert_eq!(config.render.color_adjustment.rgb_gain, [1.0, 1.0, 1.0]);
         assert_eq!(config.render.color_adjustment.rgb_offset, [0.0, 0.0, 0.0]);
+    }
+
+    /// Проверяет, что render color metadata ranges являются authoritative validation.
+    #[test]
+    fn invalid_render_color_adjustment_range_fails_validation() {
+        let mut config = AppConfig::default();
+        config.render.color_adjustment.brightness = validation::MAX_RENDER_COLOR_BRIGHTNESS + 0.1;
+
+        let error = config
+            .validate()
+            .expect_err("brightness above metadata range rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("render.color_adjustment.brightness")
+        );
+    }
+
+    /// Проверяет, что RGB channels проверяются не только по длине, но и по range.
+    #[test]
+    fn invalid_render_rgb_channel_range_fails_validation() {
+        let mut config = AppConfig::default();
+        config.render.color_adjustment.rgb_gain =
+            vec![validation::MAX_RENDER_RGB_GAIN + 0.1, 1.0, 1.0];
+
+        let error = config
+            .validate()
+            .expect_err("RGB gain channel above metadata range rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("render.color_adjustment.rgb_gain")
+        );
     }
 
     /// Проверяет documented HDR-to-SDR defaults для Phase 10.

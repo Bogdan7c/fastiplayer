@@ -1,6 +1,6 @@
-use std::fmt;
+use std::{collections::HashSet, fmt};
 
-use crate::error::{SettingValueError, TextLengthLimitKind, ValueRangeLimit};
+use crate::error::{ListLengthLimitKind, SettingValueError, TextLengthLimitKind, ValueRangeLimit};
 use crate::options::{OptionProviderId, SettingOption, SettingOptionId};
 
 macro_rules! owned_string_id {
@@ -103,6 +103,9 @@ pub enum SettingValue {
     /// Stable selected option id.
     Select(SettingOptionId),
 
+    /// Ordered list of stable selected option ids.
+    SelectList(Vec<SettingOptionId>),
+
     /// Fixed-length vector of numeric values, for example RGB coefficients.
     NumericVector(Vec<f64>),
 }
@@ -117,6 +120,7 @@ impl SettingValue {
             Self::Float(_) => SettingValueKind::Float,
             Self::Text(_) => SettingValueKind::Text,
             Self::Select(_) => SettingValueKind::Select,
+            Self::SelectList(_) => SettingValueKind::SelectList,
             Self::NumericVector(_) => SettingValueKind::NumericVector,
         }
     }
@@ -140,6 +144,9 @@ pub enum SettingValueKind {
     /// Select option id.
     Select,
 
+    /// Ordered list of selected option ids.
+    SelectList,
+
     /// Numeric vector.
     NumericVector,
 }
@@ -152,6 +159,7 @@ impl fmt::Display for SettingValueKind {
             Self::Float => "float",
             Self::Text => "text",
             Self::Select => "select",
+            Self::SelectList => "select_list",
             Self::NumericVector => "numeric_vector",
         };
         formatter.write_str(name)
@@ -176,6 +184,9 @@ pub enum SettingValueType {
     /// Stable selected option id.
     Select,
 
+    /// Ordered list of stable selected option ids.
+    SelectList,
+
     /// Fixed-length numeric vector.
     NumericVector,
 }
@@ -188,6 +199,7 @@ impl fmt::Display for SettingValueType {
             Self::Float => "float",
             Self::Text => "text",
             Self::Select => "select",
+            Self::SelectList => "select_list",
             Self::NumericVector => "numeric_vector",
         };
         formatter.write_str(name)
@@ -374,6 +386,9 @@ pub enum SettingEditor {
     /// Select/dropdown editor.
     Select(SelectDescriptor),
 
+    /// Ordered list editor over stable option ids.
+    SelectList(SelectListDescriptor),
+
     /// Text input editor.
     Text(TextDescriptor),
 
@@ -395,6 +410,7 @@ impl SettingEditor {
             Self::Toggle => validate_value_type(value_type, SettingValueType::Bool, value),
             Self::Numeric(descriptor) => descriptor.validate_value(value_type, value),
             Self::Select(descriptor) => descriptor.validate_value(value_type, value),
+            Self::SelectList(descriptor) => descriptor.validate_value(value_type, value),
             Self::Text(descriptor) => descriptor.validate_value(value_type, value),
             Self::Vector(descriptor) => descriptor.validate_value(value_type, value),
             Self::ReadOnly => validate_read_only_value_type(value_type, value),
@@ -536,6 +552,105 @@ impl SelectDescriptor {
             }
             Self::Dynamic { .. } => Ok(()),
         }
+    }
+}
+
+/// Ordered static select-list editor metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectListDescriptor {
+    /// Options that may appear in the ordered list.
+    pub options: Vec<SettingOption>,
+
+    /// Minimum number of selected options.
+    pub min_len: usize,
+
+    /// Optional maximum number of selected options.
+    pub max_len: Option<usize>,
+
+    /// Whether one option id may appear more than once.
+    pub allow_duplicates: bool,
+}
+
+impl SelectListDescriptor {
+    /// Creates a unique ordered-list descriptor with no length bounds.
+    #[must_use]
+    pub fn new(options: Vec<SettingOption>) -> Self {
+        Self {
+            options,
+            min_len: 0,
+            max_len: None,
+            allow_duplicates: false,
+        }
+    }
+
+    /// Adds a minimum list length.
+    #[must_use]
+    pub const fn with_min_len(mut self, min_len: usize) -> Self {
+        self.min_len = min_len;
+        self
+    }
+
+    /// Adds a maximum list length.
+    #[must_use]
+    pub const fn with_max_len(mut self, max_len: usize) -> Self {
+        self.max_len = Some(max_len);
+        self
+    }
+
+    /// Allows repeated option ids when a future setting explicitly needs them.
+    #[must_use]
+    pub const fn with_duplicates_allowed(mut self) -> Self {
+        self.allow_duplicates = true;
+        self
+    }
+
+    fn validate_value(
+        &self,
+        value_type: SettingValueType,
+        value: &SettingValue,
+    ) -> Result<(), SettingValueError> {
+        validate_value_type(value_type, SettingValueType::SelectList, value)?;
+        let SettingValue::SelectList(selected_ids) = value else {
+            return Err(SettingValueError::UnexpectedType {
+                expected: SettingValueType::SelectList,
+                actual: value.kind(),
+            });
+        };
+
+        if selected_ids.len() < self.min_len {
+            return Err(SettingValueError::InvalidListLength {
+                limit: ListLengthLimitKind::Minimum,
+                expected: self.min_len,
+                actual: selected_ids.len(),
+            });
+        }
+
+        if let Some(max_len) = self.max_len {
+            if selected_ids.len() > max_len {
+                return Err(SettingValueError::InvalidListLength {
+                    limit: ListLengthLimitKind::Maximum,
+                    expected: max_len,
+                    actual: selected_ids.len(),
+                });
+            }
+        }
+
+        let mut seen_ids = HashSet::new();
+        for selected_id in selected_ids {
+            if self.options.iter().all(|option| option.id != *selected_id) {
+                return Err(SettingValueError::UnknownStaticOption {
+                    option_id: selected_id.clone(),
+                });
+            }
+
+            if !self.allow_duplicates && !seen_ids.insert(selected_id) {
+                return Err(SettingValueError::DuplicateListOption {
+                    option_id: selected_id.clone(),
+                });
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -695,6 +810,7 @@ fn validate_value_type(
         SettingValueKind::Float => SettingValueType::Float,
         SettingValueKind::Text => SettingValueType::Text,
         SettingValueKind::Select => SettingValueType::Select,
+        SettingValueKind::SelectList => SettingValueType::SelectList,
         SettingValueKind::NumericVector => SettingValueType::NumericVector,
     };
 
@@ -718,6 +834,7 @@ fn validate_read_only_value_type(
         SettingValueKind::Float => SettingValueType::Float,
         SettingValueKind::Text => SettingValueType::Text,
         SettingValueKind::Select => SettingValueType::Select,
+        SettingValueKind::SelectList => SettingValueType::SelectList,
         SettingValueKind::NumericVector => SettingValueType::NumericVector,
     };
 

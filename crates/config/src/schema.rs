@@ -6,38 +6,61 @@ use crate::{ConfigResult, validation};
 pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// Полная пользовательская конфигурация приложения.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, settings_derive::SettingsSchema)]
+#[settings(require_all_fields)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
     /// Версия TOML-схемы; обязательна для будущих миграций config.
+    #[setting(
+        id = "schema_version",
+        path = "schema_version",
+        section = "system",
+        group = "schema",
+        surface = "main-settings-window",
+        label_id = "settings.system.schema_version.label",
+        label_ru = "Версия схемы",
+        description_id = "settings.system.schema_version.description",
+        description_ru = "Read-only версия TOML-схемы для будущих миграций.",
+        editor = "read_only",
+        apply = "system.apply",
+        read_only,
+        default = "no_reset"
+    )]
     pub schema_version: u32,
 
     /// Поведение playback state machine и выбора потоков.
     #[serde(default)]
+    #[setting(nested)]
     pub player: PlayerConfig,
 
     /// Decode-ограничения и backend preference.
     #[serde(default)]
+    #[setting(nested)]
     pub video: VideoConfig,
 
     /// Render-профиль и backend-specific настройки.
     #[serde(default)]
+    #[setting(nested)]
     pub render: RenderConfig,
 
     /// Настройки аудиовыхода.
     #[serde(default)]
+    #[setting(nested)]
     pub audio: AudioConfig,
 
     /// Настройки сетевого read-ahead/cache слоя.
     #[serde(default)]
+    #[setting(nested)]
     pub network: NetworkConfig,
 
     /// Настройки YouTube/service слоя.
     #[serde(default)]
+    #[setting(nested)]
     pub youtube: YoutubeConfig,
 
     /// Настройки shell UI.
     #[serde(default)]
+    #[setting(nested)]
     pub ui: UiConfig,
 }
 
@@ -286,22 +309,75 @@ impl Default for AppConfig {
 }
 
 /// Настройки поведения player layer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct PlayerConfig {
     /// Открывать media в паузе.
+    #[setting(
+        id = "player.start_paused",
+        path = "player.start_paused",
+        section = "player",
+        group = "playback",
+        surface = "main-settings-window",
+        label_id = "settings.player.start_paused.label",
+        label_ru = "Запускать на паузе",
+        description_id = "settings.player.start_paused.description",
+        description_ru = "Новое media открывается в paused состоянии.",
+        editor = "toggle",
+        apply = "player.apply"
+    )]
     pub start_paused: bool,
 
     /// Зарезервировано для будущего восстановления позиции.
+    #[setting(
+        id = "player.resume_last_position",
+        path = "player.resume_last_position",
+        section = "player",
+        group = "playback",
+        surface = "main-settings-window",
+        label_id = "settings.player.resume_last_position.label",
+        label_ru = "Восстанавливать позицию",
+        description_id = "settings.player.resume_last_position.description",
+        description_ru = "Persistent policy для будущего восстановления последней позиции.",
+        editor = "toggle",
+        apply = "player.apply"
+    )]
     pub resume_last_position: bool,
 
     /// Настройки seek/scrub поведения.
+    #[setting(nested)]
     pub seek: PlayerSeekConfig,
 
     /// Настройки demuxer fail-safe поведения.
+    #[setting(nested)]
     pub demux: PlayerDemuxConfig,
 
     /// Приоритет codec candidates при выборе video stream.
+    #[setting(
+        id = "player.preferred_video_codec_order",
+        path = "player.preferred_video_codec_order",
+        section = "player",
+        group = "codec",
+        surface = "main-settings-window",
+        label_id = "settings.player.preferred_video_codec_order.label",
+        label_ru = "Приоритет видеокодеков",
+        description_id = "settings.player.preferred_video_codec_order.description",
+        description_ru = "Упорядоченный список codec ids для выбора video stream.",
+        help_id = "settings.player.preferred_video_codec_order.help",
+        help_ru = "Каждый codec id должен встречаться не больше одного раза; первый поддержанный вариант имеет больший приоритет.",
+        editor = "select_list",
+        min_len = 1,
+        max_len = 5,
+        apply = "player.apply",
+        options(
+            option(id = "vp9", label_id = "settings.codec.vp9", label_ru = "VP9", value = VideoCodec::Vp9),
+            option(id = "av1", label_id = "settings.codec.av1", label_ru = "AV1", value = VideoCodec::Av1),
+            option(id = "h264", label_id = "settings.codec.h264", label_ru = "H.264", value = VideoCodec::H264),
+            option(id = "h265", label_id = "settings.codec.h265", label_ru = "H.265", value = VideoCodec::H265),
+            option(id = "vp8", label_id = "settings.codec.vp8", label_ru = "VP8", value = VideoCodec::Vp8),
+        )
+    )]
     pub preferred_video_codec_order: Vec<VideoCodec>,
 }
 
@@ -325,10 +401,30 @@ impl Default for PlayerConfig {
 }
 
 /// Настройки fail-safe поведения demuxer-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema,
+)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct PlayerDemuxConfig {
     /// Сколько corrupted packets подряд demuxer может пропустить до fatal ошибки.
+    #[setting(
+        id = "player.demux.max_consecutive_corrupted_packets",
+        path = "player.demux.max_consecutive_corrupted_packets",
+        section = "player",
+        group = "demux",
+        surface = "main-settings-window",
+        label_id = "settings.player.demux.max_consecutive_corrupted_packets.label",
+        label_ru = "Лимит повреждённых packets",
+        description_id = "settings.player.demux.max_consecutive_corrupted_packets.description",
+        description_ru = "Сколько corrupted packets подряд можно пропустить до fatal ошибки.",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_CONSECUTIVE_CORRUPTED_PACKETS,
+        step = 1,
+        unit = "packets",
+        apply = "player.apply"
+    )]
     pub max_consecutive_corrupted_packets: usize,
 }
 
@@ -342,34 +438,189 @@ impl Default for PlayerDemuxConfig {
 }
 
 /// Настройки seek commit, resume после seek и hotkey-шагов.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema,
+)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct PlayerSeekConfig {
     /// Timeout финального commit-а seek/scrub.
+    #[setting(
+        id = "player.seek.commit_timeout_ms",
+        path = "player.seek.commit_timeout_ms",
+        section = "player",
+        group = "seek",
+        surface = "main-settings-window",
+        label_id = "settings.player.seek.commit_timeout_ms.label",
+        label_ru = "Timeout seek commit",
+        description_id = "settings.player.seek.commit_timeout_ms.description",
+        description_ru = "Максимальное время финального seek/scrub commit-а.",
+        editor = "integer",
+        min = crate::validation::MIN_POSITIVE_U64_SETTING_VALUE,
+        max = crate::validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        step = 100,
+        unit = "ms",
+        apply = "player.apply"
+    )]
     pub commit_timeout_ms: u64,
 
     /// Минимальный audio buffer перед resume после commit-а.
+    #[setting(
+        id = "player.seek.resume_audio_min_buffer_ms",
+        path = "player.seek.resume_audio_min_buffer_ms",
+        section = "player",
+        group = "seek",
+        surface = "main-settings-window",
+        label_id = "settings.player.seek.resume_audio_min_buffer_ms.label",
+        label_ru = "Минимальный audio buffer",
+        description_id = "settings.player.seek.resume_audio_min_buffer_ms.description",
+        description_ru = "Минимальный audio buffer перед resume после seek commit.",
+        editor = "integer",
+        min = crate::validation::MIN_POSITIVE_U64_SETTING_VALUE,
+        max = crate::validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        step = 10,
+        unit = "ms",
+        apply = "player.apply"
+    )]
     pub resume_audio_min_buffer_ms: u64,
 
     /// Soft timeout audio gate-а после показанного target video frame.
+    #[setting(
+        id = "player.seek.resume_audio_gate_timeout_ms",
+        path = "player.seek.resume_audio_gate_timeout_ms",
+        section = "player",
+        group = "seek",
+        surface = "main-settings-window",
+        label_id = "settings.player.seek.resume_audio_gate_timeout_ms.label",
+        label_ru = "Timeout audio gate",
+        description_id = "settings.player.seek.resume_audio_gate_timeout_ms.description",
+        description_ru = "Soft timeout audio gate-а после показа target video frame.",
+        editor = "integer",
+        min = crate::validation::MIN_POSITIVE_U64_SETTING_VALUE,
+        max = crate::validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        step = 10,
+        unit = "ms",
+        apply = "player.apply"
+    )]
     pub resume_audio_gate_timeout_ms: u64,
 
     /// Минимальный запас готовых video frames перед resume после commit-а.
+    #[setting(
+        id = "player.seek.resume_video_min_ready_frames",
+        path = "player.seek.resume_video_min_ready_frames",
+        section = "player",
+        group = "seek",
+        surface = "main-settings-window",
+        label_id = "settings.player.seek.resume_video_min_ready_frames.label",
+        label_ru = "Готовые video frames перед resume",
+        description_id = "settings.player.seek.resume_video_min_ready_frames.description",
+        description_ru = "Минимальный запас decoded frames перед resume после seek commit.",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_SEEK_RESUME_VIDEO_READY_FRAMES,
+        step = 1,
+        unit = "frames",
+        apply = "player.apply"
+    )]
     pub resume_video_min_ready_frames: usize,
 
     /// Bounded окно worker work для accurate seek decode-preroll до target frame.
+    #[setting(
+        id = "player.seek.fast_preroll_budget_ms",
+        path = "player.seek.fast_preroll_budget_ms",
+        section = "player",
+        group = "seek",
+        surface = "main-settings-window",
+        label_id = "settings.player.seek.fast_preroll_budget_ms.label",
+        label_ru = "Budget fast preroll",
+        description_id = "settings.player.seek.fast_preroll_budget_ms.description",
+        description_ru = "Bounded окно worker work для accurate seek decode-preroll.",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_SEEK_FAST_PREROLL_BUDGET_MS,
+        step = 1,
+        unit = "ms",
+        apply = "player.apply"
+    )]
     pub fast_preroll_budget_ms: u64,
 
     /// Burst-лимит video packets/frames для accurate seek GOP preroll.
+    #[setting(
+        id = "player.seek.fast_preroll_video_packet_burst",
+        path = "player.seek.fast_preroll_video_packet_burst",
+        section = "player",
+        group = "seek",
+        surface = "main-settings-window",
+        label_id = "settings.player.seek.fast_preroll_video_packet_burst.label",
+        label_ru = "Burst packets для preroll",
+        description_id = "settings.player.seek.fast_preroll_video_packet_burst.description",
+        description_ru = "Лимит video packets/frames для accurate seek GOP preroll.",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_SEEK_FAST_PREROLL_VIDEO_PACKET_BURST,
+        step = 1,
+        unit = "packets",
+        apply = "player.apply"
+    )]
     pub fast_preroll_video_packet_burst: usize,
 
     /// Поведение commit-а, если playback был на паузе.
+    #[setting(
+        id = "player.seek.paused_commit_behavior",
+        path = "player.seek.paused_commit_behavior",
+        section = "player",
+        group = "seek",
+        surface = "main-settings-window",
+        label_id = "settings.player.seek.paused_commit_behavior.label",
+        label_ru = "Поведение seek из паузы",
+        description_id = "settings.player.seek.paused_commit_behavior.description",
+        description_ru = "Что делать после seek commit, начатого из paused состояния.",
+        editor = "select",
+        apply = "player.apply",
+        options(
+            option(id = "stay_paused", label_id = "settings.player.seek.paused_commit_behavior.stay_paused", label_ru = "Оставаться на паузе", value = PausedCommitBehavior::StayPaused),
+        )
+    )]
     pub paused_commit_behavior: PausedCommitBehavior,
 
     /// Малый шаг горячих клавиш seek.
+    #[setting(
+        id = "player.seek.hotkey_small_step_secs",
+        path = "player.seek.hotkey_small_step_secs",
+        section = "player",
+        group = "seek",
+        surface = "main-settings-window",
+        label_id = "settings.player.seek.hotkey_small_step_secs.label",
+        label_ru = "Малый шаг seek",
+        description_id = "settings.player.seek.hotkey_small_step_secs.description",
+        description_ru = "Малый шаг seek hotkey в секундах.",
+        editor = "integer",
+        min = crate::validation::MIN_POSITIVE_U64_SETTING_VALUE,
+        max = crate::validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        step = 1,
+        unit = "seconds",
+        apply = "player.apply"
+    )]
     pub hotkey_small_step_secs: u64,
 
     /// Большой шаг горячих клавиш seek.
+    #[setting(
+        id = "player.seek.hotkey_large_step_secs",
+        path = "player.seek.hotkey_large_step_secs",
+        section = "player",
+        group = "seek",
+        surface = "main-settings-window",
+        label_id = "settings.player.seek.hotkey_large_step_secs.label",
+        label_ru = "Большой шаг seek",
+        description_id = "settings.player.seek.hotkey_large_step_secs.description",
+        description_ru = "Большой шаг seek hotkey в секундах.",
+        editor = "integer",
+        min = crate::validation::MIN_POSITIVE_U64_SETTING_VALUE,
+        max = crate::validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        step = 1,
+        unit = "seconds",
+        apply = "player.apply"
+    )]
     pub hotkey_large_step_secs: u64,
 }
 
@@ -426,37 +677,189 @@ pub enum VideoCodec {
 }
 
 /// Decode-настройки video pipeline.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct VideoConfig {
     /// Запрещает silent fallback на software video decode.
+    #[setting(
+        id = "video.hardware_decode_only",
+        path = "video.hardware_decode_only",
+        section = "video",
+        group = "decode",
+        surface = "main-settings-window",
+        label_id = "settings.video.hardware_decode_only.label",
+        label_ru = "Только hardware decode",
+        description_id = "settings.video.hardware_decode_only.description",
+        description_ru = "Запрещает silent fallback на software video decode.",
+        editor = "toggle",
+        apply = "video.apply"
+    )]
     pub hardware_decode_only: bool,
 
     /// Предпочитаемый decode backend.
+    #[setting(
+        id = "video.preferred_backend",
+        path = "video.preferred_backend",
+        section = "video",
+        group = "decode",
+        surface = "main-settings-window",
+        label_id = "settings.video.preferred_backend.label",
+        label_ru = "Decode backend",
+        description_id = "settings.video.preferred_backend.description",
+        description_ru = "Предпочитаемый backend для hardware decode.",
+        editor = "select",
+        apply = "video.apply",
+        options(
+            option(id = "auto", label_id = "settings.video.preferred_backend.auto", label_ru = "Авто", value = VideoBackendPreference::Auto),
+            option(id = "vaapi", label_id = "settings.video.preferred_backend.vaapi", label_ru = "VA-API", value = VideoBackendPreference::Vaapi),
+            option(id = "vulkan", label_id = "settings.video.preferred_backend.vulkan", label_ru = "Vulkan", value = VideoBackendPreference::Vulkan),
+        )
+    )]
     pub preferred_backend: VideoBackendPreference,
 
     /// Максимальный video decode-ahead относительно audio clock.
+    #[setting(
+        id = "video.max_decode_ahead_ms",
+        path = "video.max_decode_ahead_ms",
+        section = "video",
+        group = "decode",
+        surface = "main-settings-window",
+        label_id = "settings.video.max_decode_ahead_ms.label",
+        label_ru = "Максимальный decode-ahead",
+        description_id = "settings.video.max_decode_ahead_ms.description",
+        description_ru = "Максимальный video decode-ahead относительно audio clock.",
+        editor = "integer",
+        min = crate::validation::MIN_DECODE_AHEAD_MS,
+        max = crate::validation::MAX_DECODE_AHEAD_MS,
+        step = 10,
+        unit = "ms",
+        apply = "video.apply"
+    )]
     pub max_decode_ahead_ms: u64,
 
     /// Максимум decoded frames в presentation queue.
+    #[setting(
+        id = "video.present_queue_frames",
+        path = "video.present_queue_frames",
+        section = "video",
+        group = "decode",
+        surface = "main-settings-window",
+        label_id = "settings.video.present_queue_frames.label",
+        label_ru = "Presentation queue",
+        description_id = "settings.video.present_queue_frames.description",
+        description_ru = "Максимум decoded frames в presentation queue.",
+        editor = "integer",
+        min = crate::validation::MIN_PRESENT_QUEUE_FRAMES,
+        max = crate::validation::MAX_PRESENT_QUEUE_FRAMES,
+        step = 1,
+        unit = "frames",
+        apply = "video.apply"
+    )]
     pub present_queue_frames: usize,
 
     /// Bounded packet channel между worker и decoder thread.
+    #[setting(
+        id = "video.decoder_packet_channel_frames",
+        path = "video.decoder_packet_channel_frames",
+        section = "video",
+        group = "decode",
+        surface = "main-settings-window",
+        label_id = "settings.video.decoder_packet_channel_frames.label",
+        label_ru = "Очередь decoder packets",
+        description_id = "settings.video.decoder_packet_channel_frames.description",
+        description_ru = "Bounded packet channel между worker и decoder thread.",
+        editor = "integer",
+        min = crate::validation::MIN_DECODER_QUEUE_FRAMES,
+        max = crate::validation::MAX_DECODER_QUEUE_FRAMES,
+        step = 1,
+        unit = "frames",
+        apply = "video.apply"
+    )]
     pub decoder_packet_channel_frames: usize,
 
     /// Bounded decoded frame channel между decoder thread и worker.
+    #[setting(
+        id = "video.decoder_frame_channel_frames",
+        path = "video.decoder_frame_channel_frames",
+        section = "video",
+        group = "decode",
+        surface = "main-settings-window",
+        label_id = "settings.video.decoder_frame_channel_frames.label",
+        label_ru = "Очередь decoded frames",
+        description_id = "settings.video.decoder_frame_channel_frames.description",
+        description_ru = "Bounded decoded frame channel между decoder thread и worker.",
+        editor = "integer",
+        min = crate::validation::MIN_DECODER_QUEUE_FRAMES,
+        max = crate::validation::MAX_DECODER_QUEUE_FRAMES,
+        step = 1,
+        unit = "frames",
+        apply = "video.apply"
+    )]
     pub decoder_frame_channel_frames: usize,
 
     /// Backend-local ready queue для burst `FrameReady` events.
+    #[setting(
+        id = "video.decoder_ready_queue_frames",
+        path = "video.decoder_ready_queue_frames",
+        section = "video",
+        group = "decode",
+        surface = "main-settings-window",
+        label_id = "settings.video.decoder_ready_queue_frames.label",
+        label_ru = "Ready queue frames",
+        description_id = "settings.video.decoder_ready_queue_frames.description",
+        description_ru = "Backend-local ready queue для burst FrameReady events.",
+        editor = "integer",
+        min = crate::validation::MIN_DECODER_QUEUE_FRAMES,
+        max = crate::validation::MAX_DECODER_QUEUE_FRAMES,
+        step = 1,
+        unit = "frames",
+        apply = "video.apply"
+    )]
     pub decoder_ready_queue_frames: usize,
 
     /// Количество VA output surface descriptors для hardware decoder-а.
+    #[setting(
+        id = "video.decoder_surface_pool_frames",
+        path = "video.decoder_surface_pool_frames",
+        section = "video",
+        group = "decode",
+        surface = "main-settings-window",
+        label_id = "settings.video.decoder_surface_pool_frames.label",
+        label_ru = "Decoder surface pool",
+        description_id = "settings.video.decoder_surface_pool_frames.description",
+        description_ru = "Количество VA output surface descriptors для hardware decoder.",
+        editor = "integer",
+        min = crate::validation::MIN_DECODER_QUEUE_FRAMES,
+        max = crate::validation::MAX_DECODER_SURFACE_POOL_FRAMES,
+        step = 1,
+        unit = "frames",
+        apply = "video.apply"
+    )]
     pub decoder_surface_pool_frames: usize,
 
     /// Количество zero-copy external import slots.
+    #[setting(
+        id = "video.zero_copy_surface_pool_slots",
+        path = "video.zero_copy_surface_pool_slots",
+        section = "video",
+        group = "decode",
+        surface = "main-settings-window",
+        label_id = "settings.video.zero_copy_surface_pool_slots.label",
+        label_ru = "Zero-copy import slots",
+        description_id = "settings.video.zero_copy_surface_pool_slots.description",
+        description_ru = "Количество zero-copy external import slots.",
+        editor = "integer",
+        min = crate::validation::MIN_DECODER_QUEUE_FRAMES,
+        max = crate::validation::MAX_ZERO_COPY_SURFACE_POOL_SLOTS,
+        step = 1,
+        unit = "slots",
+        apply = "video.apply"
+    )]
     pub zero_copy_surface_pool_slots: usize,
 
     /// Настройки worker scheduler-а и bounded catch-up policy.
+    #[setting(nested)]
     pub scheduler: VideoSchedulerConfig,
 }
 
@@ -479,34 +882,190 @@ impl Default for VideoConfig {
 }
 
 /// Scheduler-настройки video pipeline без codec/backend-specific имён.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema,
+)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct VideoSchedulerConfig {
     /// Базовый budget чтения container packets за один worker tick.
+    #[setting(
+        id = "video.scheduler.demux_packets_per_tick",
+        path = "video.scheduler.demux_packets_per_tick",
+        section = "video",
+        group = "scheduler",
+        surface = "main-settings-window",
+        label_id = "settings.video.scheduler.demux_packets_per_tick.label",
+        label_ru = "Demux packets за tick",
+        description_id = "settings.video.scheduler.demux_packets_per_tick.description",
+        description_ru = "Базовый budget чтения container packets за один worker tick.",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_SCHEDULER_DEMUX_PACKETS_PER_TICK,
+        step = 1,
+        unit = "packets",
+        apply = "video.apply"
+    )]
     pub demux_packets_per_tick: usize,
 
     /// Базовый budget отправки video packets в decoder thread за tick.
+    #[setting(
+        id = "video.scheduler.video_packets_per_tick",
+        path = "video.scheduler.video_packets_per_tick",
+        section = "video",
+        group = "scheduler",
+        surface = "main-settings-window",
+        label_id = "settings.video.scheduler.video_packets_per_tick.label",
+        label_ru = "Video packets за tick",
+        description_id = "settings.video.scheduler.video_packets_per_tick.description",
+        description_ru = "Базовый budget отправки video packets в decoder thread за tick.",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_SCHEDULER_VIDEO_PACKETS_PER_TICK,
+        step = 1,
+        unit = "packets",
+        apply = "video.apply"
+    )]
     pub video_packets_per_tick: usize,
 
     /// Базовый budget приёма decoded frames из decoder thread за tick.
+    #[setting(
+        id = "video.scheduler.decoded_frames_per_tick",
+        path = "video.scheduler.decoded_frames_per_tick",
+        section = "video",
+        group = "scheduler",
+        surface = "main-settings-window",
+        label_id = "settings.video.scheduler.decoded_frames_per_tick.label",
+        label_ru = "Decoded frames за tick",
+        description_id = "settings.video.scheduler.decoded_frames_per_tick.description",
+        description_ru = "Базовый budget приёма decoded frames из decoder thread за tick.",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_SCHEDULER_DECODED_FRAMES_PER_TICK,
+        step = 1,
+        unit = "frames",
+        apply = "video.apply"
+    )]
     pub decoded_frames_per_tick: usize,
 
     /// Дополнительное bounded окно catch-up work после обычного tick.
+    #[setting(
+        id = "video.scheduler.catch_up_budget_ms",
+        path = "video.scheduler.catch_up_budget_ms",
+        section = "video",
+        group = "scheduler",
+        surface = "main-settings-window",
+        label_id = "settings.video.scheduler.catch_up_budget_ms.label",
+        label_ru = "Catch-up budget",
+        description_id = "settings.video.scheduler.catch_up_budget_ms.description",
+        description_ru = "Дополнительное bounded окно catch-up work после обычного tick.",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_SCHEDULER_CATCH_UP_BUDGET_MS,
+        step = 1,
+        unit = "ms",
+        apply = "video.apply"
+    )]
     pub catch_up_budget_ms: u64,
 
     /// Минимальный запас ready frames, ниже которого pipeline считается starvation-prone.
+    #[setting(
+        id = "video.scheduler.present_queue_min_frames",
+        path = "video.scheduler.present_queue_min_frames",
+        section = "video",
+        group = "scheduler",
+        surface = "main-settings-window",
+        label_id = "settings.video.scheduler.present_queue_min_frames.label",
+        label_ru = "Минимум ready frames",
+        description_id = "settings.video.scheduler.present_queue_min_frames.description",
+        description_ru = "Минимальный запас ready frames; верхняя граница дополнительно зависит от video.present_queue_frames.",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_PRESENT_QUEUE_FRAMES,
+        step = 1,
+        unit = "frames",
+        apply = "video.apply"
+    )]
     pub present_queue_min_frames: usize,
 
     /// Целевой запас ready frames; max задаётся `VideoConfig::present_queue_frames`.
+    #[setting(
+        id = "video.scheduler.present_queue_target_frames",
+        path = "video.scheduler.present_queue_target_frames",
+        section = "video",
+        group = "scheduler",
+        surface = "main-settings-window",
+        label_id = "settings.video.scheduler.present_queue_target_frames.label",
+        label_ru = "Цель ready frames",
+        description_id = "settings.video.scheduler.present_queue_target_frames.description",
+        description_ru = "Целевой запас ready frames; cross-field min/max проверяет AppConfig::validate().",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_PRESENT_QUEUE_FRAMES,
+        step = 1,
+        unit = "frames",
+        apply = "video.apply"
+    )]
     pub present_queue_target_frames: usize,
 
     /// Целевой decode-ahead; max задаётся `VideoConfig::max_decode_ahead_ms`.
+    #[setting(
+        id = "video.scheduler.decode_ahead_target_ms",
+        path = "video.scheduler.decode_ahead_target_ms",
+        section = "video",
+        group = "scheduler",
+        surface = "main-settings-window",
+        label_id = "settings.video.scheduler.decode_ahead_target_ms.label",
+        label_ru = "Целевой decode-ahead",
+        description_id = "settings.video.scheduler.decode_ahead_target_ms.description",
+        description_ru = "Целевой decode-ahead; max дополнительно ограничен video.max_decode_ahead_ms.",
+        editor = "integer",
+        min = crate::validation::MIN_DECODE_AHEAD_MS,
+        max = crate::validation::MAX_DECODE_AHEAD_MS,
+        step = 10,
+        unit = "ms",
+        apply = "video.apply"
+    )]
     pub decode_ahead_target_ms: u64,
 
     /// Минимальный резерв свободных zero-copy surface/import slots перед decode.
+    #[setting(
+        id = "video.scheduler.surface_free_slots_min",
+        path = "video.scheduler.surface_free_slots_min",
+        section = "video",
+        group = "scheduler",
+        surface = "main-settings-window",
+        label_id = "settings.video.scheduler.surface_free_slots_min.label",
+        label_ru = "Минимум свободных slots",
+        description_id = "settings.video.scheduler.surface_free_slots_min.description",
+        description_ru = "Минимальный резерв свободных zero-copy surface/import slots.",
+        editor = "integer",
+        min = 0,
+        max = crate::validation::MAX_ZERO_COPY_SURFACE_POOL_SLOTS,
+        step = 1,
+        unit = "slots",
+        apply = "video.apply"
+    )]
     pub surface_free_slots_min: usize,
 
     /// Целевой резерв свободных zero-copy surface/import slots для catch-up.
+    #[setting(
+        id = "video.scheduler.surface_free_slots_target",
+        path = "video.scheduler.surface_free_slots_target",
+        section = "video",
+        group = "scheduler",
+        surface = "main-settings-window",
+        label_id = "settings.video.scheduler.surface_free_slots_target.label",
+        label_ru = "Цель свободных slots",
+        description_id = "settings.video.scheduler.surface_free_slots_target.description",
+        description_ru = "Целевой резерв свободных zero-copy slots; cross-field min проверяет AppConfig::validate().",
+        editor = "integer",
+        min = 0,
+        max = crate::validation::MAX_ZERO_COPY_SURFACE_POOL_SLOTS,
+        step = 1,
+        unit = "slots",
+        apply = "video.apply"
+    )]
     pub surface_free_slots_target: usize,
 }
 
@@ -542,26 +1101,66 @@ pub enum VideoBackendPreference {
 }
 
 /// Render-настройки верхнего уровня.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, settings_derive::SettingsSchema)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct RenderConfig {
     /// Активный render profile.
+    #[setting(
+        id = "render.profile",
+        path = "render.profile",
+        section = "render",
+        group = "profile",
+        surface = "main-settings-window",
+        label_id = "settings.render.profile.label",
+        label_ru = "Render profile",
+        description_id = "settings.render.profile.description",
+        description_ru = "Активный render profile для backend selection.",
+        editor = "select",
+        apply = "render.apply",
+        options(
+            option(id = "auto", label_id = "settings.render.profile.auto", label_ru = "Авто", value = RenderProfile::Auto),
+            option(id = "vulkan", label_id = "settings.render.profile.vulkan", label_ru = "Vulkan", value = RenderProfile::Vulkan),
+            option(id = "opengles", label_id = "settings.render.profile.opengles", label_ru = "OpenGL ES", value = RenderProfile::OpenGles),
+        )
+    )]
     pub profile: RenderProfile,
 
     /// Typed HDR-to-SDR baseline config для Phase 10.
     #[serde(default, deserialize_with = "deserialize_hdr_to_sdr_config")]
+    #[setting(nested)]
     pub hdr_to_sdr: HdrToSdrConfig,
 
     /// Compatibility placeholder для будущего HDR tone mapping; Phase 8.5 держит `Disabled`.
+    #[setting(
+        id = "render.tone_mapping",
+        path = "render.tone_mapping",
+        section = "render",
+        group = "profile",
+        surface = "main-settings-window",
+        label_id = "settings.render.tone_mapping.label",
+        label_ru = "Tone mapping",
+        description_id = "settings.render.tone_mapping.description",
+        description_ru = "Compatibility placeholder; текущий production path держит Disabled.",
+        editor = "select",
+        apply = "render.apply",
+        options(
+            option(id = "auto", label_id = "settings.render.tone_mapping.auto", label_ru = "Авто", value = ToneMappingMode::Auto),
+            option(id = "disabled", label_id = "settings.render.tone_mapping.disabled", label_ru = "Отключён", value = ToneMappingMode::Disabled),
+        )
+    )]
     pub tone_mapping: ToneMappingMode,
 
     /// Пользовательские SDR/RGB корректировки без HDR controls.
+    #[setting(nested)]
     pub color_adjustment: RenderColorAdjustmentConfig,
 
     /// Vulkan-specific параметры.
+    #[setting(nested)]
     pub vulkan: VulkanConfig,
 
     /// OpenGL ES fallback-параметры.
+    #[setting(nested)]
     pub opengles: OpenGlesConfig,
 }
 
@@ -583,19 +1182,83 @@ impl Default for RenderConfig {
 ///
 /// Схема намеренно не содержит alternative tone mapping presets и native HDR
 /// output mode: Phase 10 поддерживает только BT.2446-C в SDR BT.709 output.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, settings_derive::SettingsSchema)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct HdrToSdrConfig {
     /// Разрешает HDR-to-SDR path, если renderer capabilities тоже подтверждают support.
+    #[setting(
+        id = "render.hdr_to_sdr.enabled",
+        path = "render.hdr_to_sdr.enabled",
+        section = "render",
+        group = "hdr_to_sdr",
+        surface = "main-settings-window",
+        label_id = "settings.render.hdr_to_sdr.enabled.label",
+        label_ru = "HDR-to-SDR",
+        description_id = "settings.render.hdr_to_sdr.enabled.description",
+        description_ru = "Включает HDR-to-SDR path при поддержке renderer capabilities.",
+        editor = "toggle",
+        apply = "render.preview"
+    )]
     pub enabled: bool,
 
     /// Единственный production operator Phase 10.
+    #[setting(
+        id = "render.hdr_to_sdr.operator",
+        path = "render.hdr_to_sdr.operator",
+        section = "render",
+        group = "hdr_to_sdr",
+        surface = "main-settings-window",
+        label_id = "settings.render.hdr_to_sdr.operator.label",
+        label_ru = "HDR operator",
+        description_id = "settings.render.hdr_to_sdr.operator.description",
+        description_ru = "Tone mapping operator для HDR-to-SDR conversion.",
+        editor = "select",
+        apply = "render.preview",
+        options(
+            option(id = "bt2446_c", label_id = "settings.render.hdr_to_sdr.operator.bt2446_c", label_ru = "BT.2446-C", value = HdrToSdrOperatorConfig::Bt2446C),
+        )
+    )]
     pub operator: HdrToSdrOperatorConfig,
 
     /// SDR reference white в nits для BT.2446-C.
+    #[setting(
+        id = "render.hdr_to_sdr.sdr_reference_white_nits",
+        path = "render.hdr_to_sdr.sdr_reference_white_nits",
+        section = "render",
+        group = "hdr_to_sdr",
+        surface = "main-settings-window",
+        label_id = "settings.render.hdr_to_sdr.sdr_reference_white_nits.label",
+        label_ru = "SDR reference white",
+        description_id = "settings.render.hdr_to_sdr.sdr_reference_white_nits.description",
+        description_ru = "SDR reference white в nits для BT.2446-C.",
+        editor = "float",
+        min = crate::validation::MIN_HDR_TO_SDR_REFERENCE_NITS,
+        max = crate::validation::MAX_HDR_TO_SDR_REFERENCE_NITS,
+        step = 1.0,
+        unit = "nits",
+        apply = "render.preview"
+    )]
     pub sdr_reference_white_nits: f32,
 
     /// HDR reference peak в nits для BT.2446-C.
+    #[setting(
+        id = "render.hdr_to_sdr.hdr_reference_peak_nits",
+        path = "render.hdr_to_sdr.hdr_reference_peak_nits",
+        section = "render",
+        group = "hdr_to_sdr",
+        surface = "main-settings-window",
+        label_id = "settings.render.hdr_to_sdr.hdr_reference_peak_nits.label",
+        label_ru = "HDR reference peak",
+        description_id = "settings.render.hdr_to_sdr.hdr_reference_peak_nits.description",
+        description_ru = "HDR reference peak в nits; должен быть выше SDR reference white.",
+        editor = "float",
+        min = crate::validation::MIN_HDR_TO_SDR_REFERENCE_NITS,
+        max = crate::validation::MAX_HDR_TO_SDR_REFERENCE_NITS,
+        step = 10.0,
+        unit = "nits",
+        apply = "render.preview"
+    )]
     pub hdr_reference_peak_nits: f32,
 }
 
@@ -677,25 +1340,126 @@ pub enum ToneMappingMode {
 ///
 /// RGB-массивы хранятся как `Vec<f32>`, чтобы validation-слой мог выдать
 /// понятную ошибку для неверной длины, а не прятать её внутри Serde parsing.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, settings_derive::SettingsSchema)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct RenderColorAdjustmentConfig {
     /// Аддитивное смещение яркости; `0.0` не меняет картинку.
+    #[setting(
+        id = "render.color_adjustment.brightness",
+        path = "render.color_adjustment.brightness",
+        section = "render",
+        group = "color",
+        surface = "main-settings-window",
+        label_id = "settings.render.color_adjustment.brightness.label",
+        label_ru = "Яркость",
+        description_id = "settings.render.color_adjustment.brightness.description",
+        description_ru = "Аддитивное смещение яркости SDR shader-а.",
+        editor = "float",
+        min = crate::validation::MIN_RENDER_COLOR_BRIGHTNESS,
+        max = crate::validation::MAX_RENDER_COLOR_BRIGHTNESS,
+        step = 0.01,
+        apply = "render.preview"
+    )]
     pub brightness: f32,
 
     /// Множитель контраста; `1.0` не меняет картинку.
+    #[setting(
+        id = "render.color_adjustment.contrast",
+        path = "render.color_adjustment.contrast",
+        section = "render",
+        group = "color",
+        surface = "main-settings-window",
+        label_id = "settings.render.color_adjustment.contrast.label",
+        label_ru = "Контраст",
+        description_id = "settings.render.color_adjustment.contrast.description",
+        description_ru = "Множитель контраста вокруг нейтральной середины.",
+        editor = "float",
+        min = crate::validation::MIN_RENDER_COLOR_CONTRAST,
+        max = crate::validation::MAX_RENDER_COLOR_CONTRAST,
+        step = 0.01,
+        apply = "render.preview"
+    )]
     pub contrast: f32,
 
     /// Множитель насыщенности; `1.0` не меняет картинку.
+    #[setting(
+        id = "render.color_adjustment.saturation",
+        path = "render.color_adjustment.saturation",
+        section = "render",
+        group = "color",
+        surface = "main-settings-window",
+        label_id = "settings.render.color_adjustment.saturation.label",
+        label_ru = "Насыщенность",
+        description_id = "settings.render.color_adjustment.saturation.description",
+        description_ru = "Множитель насыщенности SDR изображения.",
+        editor = "float",
+        min = crate::validation::MIN_RENDER_COLOR_SATURATION,
+        max = crate::validation::MAX_RENDER_COLOR_SATURATION,
+        step = 0.01,
+        apply = "render.preview"
+    )]
     pub saturation: f32,
 
     /// Exposure offset для будущего SDR/HDR pipeline; `0.0` не меняет картинку.
+    #[setting(
+        id = "render.color_adjustment.exposure",
+        path = "render.color_adjustment.exposure",
+        section = "render",
+        group = "color",
+        surface = "main-settings-window",
+        label_id = "settings.render.color_adjustment.exposure.label",
+        label_ru = "Exposure",
+        description_id = "settings.render.color_adjustment.exposure.description",
+        description_ru = "Exposure offset для SDR/HDR pipeline.",
+        editor = "float",
+        min = crate::validation::MIN_RENDER_COLOR_EXPOSURE,
+        max = crate::validation::MAX_RENDER_COLOR_EXPOSURE,
+        step = 0.01,
+        apply = "render.preview"
+    )]
     pub exposure: f32,
 
     /// Поканальный RGB gain в порядке R, G, B.
+    #[setting(
+        id = "render.color_adjustment.rgb_gain",
+        path = "render.color_adjustment.rgb_gain",
+        section = "render",
+        group = "color",
+        surface = "main-settings-window",
+        label_id = "settings.render.color_adjustment.rgb_gain.label",
+        label_ru = "RGB gain",
+        description_id = "settings.render.color_adjustment.rgb_gain.description",
+        description_ru = "Поканальный RGB gain в порядке R, G, B.",
+        editor = "vector",
+        min = crate::validation::MIN_RENDER_RGB_GAIN,
+        max = crate::validation::MAX_RENDER_RGB_GAIN,
+        step = 0.01,
+        expected_len = crate::validation::RGB_CHANNEL_COUNT,
+        vector_labels("Красный", "Зелёный", "Синий"),
+        apply = "render.preview"
+    )]
     pub rgb_gain: Vec<f32>,
 
     /// Поканальный RGB offset в порядке R, G, B.
+    #[setting(
+        id = "render.color_adjustment.rgb_offset",
+        path = "render.color_adjustment.rgb_offset",
+        section = "render",
+        group = "color",
+        surface = "main-settings-window",
+        label_id = "settings.render.color_adjustment.rgb_offset.label",
+        label_ru = "RGB offset",
+        description_id = "settings.render.color_adjustment.rgb_offset.description",
+        description_ru = "Поканальный RGB offset в порядке R, G, B.",
+        editor = "vector",
+        min = crate::validation::MIN_RENDER_RGB_OFFSET,
+        max = crate::validation::MAX_RENDER_RGB_OFFSET,
+        step = 0.01,
+        expected_len = crate::validation::RGB_CHANNEL_COUNT,
+        vector_labels("Красный", "Зелёный", "Синий"),
+        apply = "render.preview"
+    )]
     pub rgb_offset: Vec<f32>,
 }
 
@@ -727,13 +1491,50 @@ impl Default for RenderColorAdjustmentConfig {
 }
 
 /// Vulkan-specific настройки.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct VulkanConfig {
     /// Present mode swapchain.
+    #[setting(
+        id = "render.vulkan.present_mode",
+        path = "render.vulkan.present_mode",
+        section = "render",
+        group = "vulkan",
+        surface = "main-settings-window",
+        label_id = "settings.render.vulkan.present_mode.label",
+        label_ru = "Vulkan present mode",
+        description_id = "settings.render.vulkan.present_mode.description",
+        description_ru = "Present mode swapchain для Vulkan/wgpu renderer.",
+        editor = "select",
+        apply = "render.apply",
+        options(
+            option(id = "auto", label_id = "settings.render.vulkan.present_mode.auto", label_ru = "Авто", value = VulkanPresentMode::Auto),
+            option(id = "fifo", label_id = "settings.render.vulkan.present_mode.fifo", label_ru = "FIFO/VSync", value = VulkanPresentMode::Fifo),
+            option(id = "mailbox", label_id = "settings.render.vulkan.present_mode.mailbox", label_ru = "Mailbox", value = VulkanPresentMode::Mailbox),
+            option(id = "immediate", label_id = "settings.render.vulkan.present_mode.immediate", label_ru = "Immediate", value = VulkanPresentMode::Immediate),
+        )
+    )]
     pub present_mode: VulkanPresentMode,
 
     /// Максимальная задержка кадра в render backend.
+    #[setting(
+        id = "render.vulkan.max_frame_latency",
+        path = "render.vulkan.max_frame_latency",
+        section = "render",
+        group = "vulkan",
+        surface = "main-settings-window",
+        label_id = "settings.render.vulkan.max_frame_latency.label",
+        label_ru = "Max frame latency",
+        description_id = "settings.render.vulkan.max_frame_latency.description",
+        description_ru = "Максимальная задержка кадра в render backend.",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_VULKAN_FRAME_LATENCY,
+        step = 1,
+        unit = "frames",
+        apply = "render.apply"
+    )]
     pub max_frame_latency: u32,
 }
 
@@ -765,13 +1566,40 @@ pub enum VulkanPresentMode {
 }
 
 /// OpenGL ES fallback-настройки.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct OpenGlesConfig {
     /// Разрешает будущий OpenGL ES renderer.
+    #[setting(
+        id = "render.opengles.enabled",
+        path = "render.opengles.enabled",
+        section = "render",
+        group = "opengles",
+        surface = "main-settings-window",
+        label_id = "settings.render.opengles.enabled.label",
+        label_ru = "OpenGL ES renderer",
+        description_id = "settings.render.opengles.enabled.description",
+        description_ru = "Разрешает будущий OpenGL ES fallback renderer.",
+        editor = "toggle",
+        apply = "render.apply"
+    )]
     pub enabled: bool,
 
     /// Включает упрощённый UI для слабого renderer-а.
+    #[setting(
+        id = "render.opengles.simple_ui",
+        path = "render.opengles.simple_ui",
+        section = "render",
+        group = "opengles",
+        surface = "main-settings-window",
+        label_id = "settings.render.opengles.simple_ui.label",
+        label_ru = "Упрощённый UI",
+        description_id = "settings.render.opengles.simple_ui.description",
+        description_ru = "Включает упрощённый UI для слабого renderer-а.",
+        editor = "toggle",
+        apply = "render.apply"
+    )]
     pub simple_ui: bool,
 }
 
@@ -786,16 +1614,67 @@ impl Default for OpenGlesConfig {
 }
 
 /// Настройки аудио.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, settings_derive::SettingsSchema)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct AudioConfig {
     /// Начальная громкость в диапазоне `0.0..=1.0`.
+    #[setting(
+        id = "audio.volume",
+        path = "audio.volume",
+        section = "audio",
+        group = "output",
+        surface = "main-settings-window",
+        label_id = "settings.audio.volume.label",
+        label_ru = "Громкость по умолчанию",
+        description_id = "settings.audio.volume.description",
+        description_ru = "Стартовая громкость для нового media, не текущая runtime громкость.",
+        help_id = "settings.audio.volume.help",
+        help_ru = "Изменение применяется как default volume после Apply и не перезаписывает текущую громкость воспроизведения.",
+        editor = "float",
+        min = crate::validation::MIN_AUDIO_VOLUME,
+        max = crate::validation::MAX_AUDIO_VOLUME,
+        step = 0.01,
+        unit = "ratio",
+        apply = "audio.apply"
+    )]
     pub volume: f64,
 
     /// Имя audio output device или `default`.
+    #[setting(
+        id = "audio.output_device",
+        path = "audio.output_device",
+        section = "audio",
+        group = "output",
+        surface = "main-settings-window",
+        label_id = "settings.audio.output_device.label",
+        label_ru = "Audio output device",
+        description_id = "settings.audio.output_device.description",
+        description_ru = "Stable id audio output device; `default` означает системное устройство.",
+        editor = "select",
+        option_provider = "audio.output_device",
+        apply = "audio.apply"
+    )]
     pub output_device: String,
 
     /// Целевой high-water mark audio buffer.
+    #[setting(
+        id = "audio.buffer_target_ms",
+        path = "audio.buffer_target_ms",
+        section = "audio",
+        group = "buffer",
+        surface = "main-settings-window",
+        label_id = "settings.audio.buffer_target_ms.label",
+        label_ru = "Audio buffer target",
+        description_id = "settings.audio.buffer_target_ms.description",
+        description_ru = "Целевой high-water mark audio buffer.",
+        editor = "integer",
+        min = crate::validation::MIN_AUDIO_BUFFER_TARGET_MS,
+        max = crate::validation::MAX_AUDIO_BUFFER_TARGET_MS,
+        step = 10,
+        unit = "ms",
+        apply = "audio.apply"
+    )]
     pub buffer_target_ms: u64,
 }
 
@@ -811,25 +1690,128 @@ impl Default for AudioConfig {
 }
 
 /// Настройки network/cache слоя.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct NetworkConfig {
     /// Размер RAM cache; `0` явно отключает RAM cache.
+    #[setting(
+        id = "network.memory_cache_mb",
+        path = "network.memory_cache_mb",
+        section = "network",
+        group = "cache",
+        surface = "main-settings-window",
+        label_id = "settings.network.memory_cache_mb.label",
+        label_ru = "RAM cache",
+        description_id = "settings.network.memory_cache_mb.description",
+        description_ru = "Размер RAM cache; 0 явно отключает RAM cache.",
+        editor = "integer",
+        min = 0,
+        max = crate::validation::MAX_NETWORK_MEMORY_CACHE_MB,
+        step = 1,
+        unit = "mb",
+        apply = "network.apply"
+    )]
     pub memory_cache_mb: u64,
 
     /// RAM window, которое prefetch держит впереди foreground cursor-а.
+    #[setting(
+        id = "network.read_ahead_mb",
+        path = "network.read_ahead_mb",
+        section = "network",
+        group = "prefetch",
+        surface = "main-settings-window",
+        label_id = "settings.network.read_ahead_mb.label",
+        label_ru = "Read-ahead window",
+        description_id = "settings.network.read_ahead_mb.description",
+        description_ru = "RAM window, которое prefetch держит впереди foreground cursor-а.",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_NETWORK_READ_AHEAD_MB,
+        step = 1,
+        unit = "mb",
+        apply = "network.apply"
+    )]
     pub read_ahead_mb: u64,
 
     /// Размер ПЕРВОГО фонового prefetch-чтения после open/seek, в КиБ.
+    #[setting(
+        id = "network.prefetch_initial_chunk_kb",
+        path = "network.prefetch_initial_chunk_kb",
+        section = "network",
+        group = "prefetch",
+        surface = "main-settings-window",
+        label_id = "settings.network.prefetch_initial_chunk_kb.label",
+        label_ru = "Initial prefetch chunk",
+        description_id = "settings.network.prefetch_initial_chunk_kb.description",
+        description_ru = "Размер первого фонового prefetch-чтения после open/seek.",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_NETWORK_PREFETCH_INITIAL_CHUNK_KB,
+        step = 1,
+        unit = "kb",
+        apply = "network.apply"
+    )]
     pub prefetch_initial_chunk_kb: u64,
 
     /// Максимальный размер одного фонового prefetch-чтения.
+    #[setting(
+        id = "network.prefetch_chunk_mb",
+        path = "network.prefetch_chunk_mb",
+        section = "network",
+        group = "prefetch",
+        surface = "main-settings-window",
+        label_id = "settings.network.prefetch_chunk_mb.label",
+        label_ru = "Prefetch chunk",
+        description_id = "settings.network.prefetch_chunk_mb.description",
+        description_ru = "Максимальный размер одного фонового prefetch-чтения.",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_NETWORK_READ_AHEAD_MB,
+        step = 1,
+        unit = "mb",
+        apply = "network.apply"
+    )]
     pub prefetch_chunk_mb: u64,
 
     /// Timeout подключения к сетевому источнику.
+    #[setting(
+        id = "network.connect_timeout_ms",
+        path = "network.connect_timeout_ms",
+        section = "network",
+        group = "timeout",
+        surface = "main-settings-window",
+        label_id = "settings.network.connect_timeout_ms.label",
+        label_ru = "Connect timeout",
+        description_id = "settings.network.connect_timeout_ms.description",
+        description_ru = "Timeout подключения к сетевому источнику.",
+        editor = "integer",
+        min = crate::validation::MIN_POSITIVE_U64_SETTING_VALUE,
+        max = crate::validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        step = 100,
+        unit = "ms",
+        apply = "network.apply"
+    )]
     pub connect_timeout_ms: u64,
 
     /// Timeout чтения из сетевого источника.
+    #[setting(
+        id = "network.read_timeout_ms",
+        path = "network.read_timeout_ms",
+        section = "network",
+        group = "timeout",
+        surface = "main-settings-window",
+        label_id = "settings.network.read_timeout_ms.label",
+        label_ru = "Read timeout",
+        description_id = "settings.network.read_timeout_ms.description",
+        description_ru = "Timeout чтения из сетевого источника.",
+        editor = "integer",
+        min = crate::validation::MIN_POSITIVE_U64_SETTING_VALUE,
+        max = crate::validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        step = 100,
+        unit = "ms",
+        apply = "network.apply"
+    )]
     pub read_timeout_ms: u64,
 }
 
@@ -848,16 +1830,60 @@ impl Default for NetworkConfig {
 }
 
 /// Настройки YouTube/service слоя.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct YoutubeConfig {
     /// Разрешает YouTube adapter.
+    #[setting(
+        id = "youtube.enabled",
+        path = "youtube.enabled",
+        section = "youtube",
+        group = "service",
+        surface = "main-settings-window",
+        label_id = "settings.youtube.enabled.label",
+        label_ru = "YouTube adapter",
+        description_id = "settings.youtube.enabled.description",
+        description_ru = "Разрешает YouTube service adapter.",
+        editor = "toggle",
+        apply = "youtube.apply"
+    )]
     pub enabled: bool,
 
     /// Предпочитать account/session cookies, если service adapter их поддерживает.
+    #[setting(
+        id = "youtube.prefer_account_session",
+        path = "youtube.prefer_account_session",
+        section = "youtube",
+        group = "service",
+        surface = "main-settings-window",
+        label_id = "settings.youtube.prefer_account_session.label",
+        label_ru = "Использовать account session",
+        description_id = "settings.youtube.prefer_account_session.description",
+        description_ru = "Предпочитать account/session cookies, если adapter их поддерживает.",
+        editor = "toggle",
+        apply = "youtube.apply"
+    )]
     pub prefer_account_session: bool,
 
     /// Максимальное время подготовки direct stream metadata через `yt-dlp`.
+    #[setting(
+        id = "youtube.resolve_timeout_ms",
+        path = "youtube.resolve_timeout_ms",
+        section = "youtube",
+        group = "service",
+        surface = "main-settings-window",
+        label_id = "settings.youtube.resolve_timeout_ms.label",
+        label_ru = "YouTube resolve timeout",
+        description_id = "settings.youtube.resolve_timeout_ms.description",
+        description_ru = "Максимальное время подготовки direct stream metadata через yt-dlp.",
+        editor = "integer",
+        min = 1,
+        max = crate::validation::MAX_YOUTUBE_RESOLVE_TIMEOUT_MS,
+        step = 100,
+        unit = "ms",
+        apply = "youtube.apply"
+    )]
     pub resolve_timeout_ms: u64,
 }
 
@@ -873,20 +1899,68 @@ impl Default for YoutubeConfig {
 }
 
 /// Настройки UI shell.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiConfig {
     /// Показывать диагностическую панель telemetry.
+    #[setting(
+        id = "ui.show_telemetry",
+        path = "ui.show_telemetry",
+        section = "ui",
+        group = "shell",
+        surface = "main-settings-window",
+        label_id = "settings.ui.show_telemetry.label",
+        label_ru = "Показывать telemetry",
+        description_id = "settings.ui.show_telemetry.description",
+        description_ru = "Показывать диагностическую панель telemetry.",
+        editor = "toggle",
+        apply = "ui.apply"
+    )]
     pub show_telemetry: bool,
 
     /// Язык UI.
+    #[setting(
+        id = "ui.language",
+        path = "ui.language",
+        section = "ui",
+        group = "shell",
+        surface = "main-settings-window",
+        label_id = "settings.ui.language.label",
+        label_ru = "Язык UI",
+        description_id = "settings.ui.language.description",
+        description_ru = "Короткий код языка UI, например `ru` или `en`.",
+        editor = "text",
+        min_len = crate::validation::MIN_UI_LANGUAGE_LEN,
+        max_len = crate::validation::MAX_UI_LANGUAGE_LEN,
+        apply = "ui.apply"
+    )]
     pub language: String,
 
     /// Идентификатор skin-а UI.
+    #[setting(
+        id = "ui.skin",
+        path = "ui.skin",
+        section = "ui",
+        group = "shell",
+        surface = "main-settings-window",
+        label_id = "settings.ui.skin.label",
+        label_ru = "Skin UI",
+        description_id = "settings.ui.skin.description",
+        description_ru = "Stable id UI skin; неизвестный id является config error.",
+        editor = "select",
+        apply = "ui.apply",
+        options(option(
+            id = "minimal",
+            label_id = "settings.ui.skin.minimal",
+            label_ru = "Minimal"
+        ),)
+    )]
     pub skin: String,
 
     /// Настройки будущего Settings UI.
     #[serde(default)]
+    #[setting(nested)]
     pub settings: UiSettingsConfig,
 }
 
@@ -903,10 +1977,32 @@ impl Default for UiConfig {
 }
 
 /// Настройки поведения Settings UI, которые применяются только после Apply/OK.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema,
+)]
+#[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiSettingsConfig {
     /// Верхняя граница частоты live preview updates, чтобы slider не перегружал runtime.
+    #[setting(
+        id = "ui.settings.live_preview_max_hz",
+        path = "ui.settings.live_preview_max_hz",
+        section = "ui",
+        group = "settings_runtime",
+        surface = "main-settings-window",
+        label_id = "settings.ui.settings.live_preview_max_hz.label",
+        label_ru = "Частота live preview",
+        description_id = "settings.ui.settings.live_preview_max_hz.description",
+        description_ru = "Максимальная частота live preview updates после Apply.",
+        help_id = "settings.ui.settings.live_preview_max_hz.help",
+        help_ru = "Это committed setting: открытая draft/preview transaction продолжает использовать последнее применённое значение.",
+        editor = "integer",
+        min = crate::validation::MIN_LIVE_PREVIEW_MAX_HZ,
+        max = crate::validation::MAX_LIVE_PREVIEW_MAX_HZ,
+        step = 1,
+        unit = "hz",
+        apply = "ui.apply"
+    )]
     pub live_preview_max_hz: u16,
 }
 
@@ -916,5 +2012,696 @@ impl Default for UiSettingsConfig {
         Self {
             live_preview_max_hz: 60,
         }
+    }
+}
+
+#[cfg(test)]
+mod settings_metadata_tests {
+    use std::collections::BTreeSet;
+
+    use settings_core::{
+        DefaultBehavior, NumericRange, SelectDescriptor, SelectListDescriptor, SettingAccess,
+        SettingApplyMode, SettingEditor, SettingId, SettingOptionId, SettingValue, SettingsError,
+        SettingsRegistry, SettingsSchema, TextFormat,
+    };
+
+    use super::*;
+    use crate::validation;
+
+    const EXPECTED_SETTING_IDS: &[&str] = &[
+        "schema_version",
+        "player.start_paused",
+        "player.resume_last_position",
+        "player.seek.commit_timeout_ms",
+        "player.seek.resume_audio_min_buffer_ms",
+        "player.seek.resume_audio_gate_timeout_ms",
+        "player.seek.resume_video_min_ready_frames",
+        "player.seek.fast_preroll_budget_ms",
+        "player.seek.fast_preroll_video_packet_burst",
+        "player.seek.paused_commit_behavior",
+        "player.seek.hotkey_small_step_secs",
+        "player.seek.hotkey_large_step_secs",
+        "player.demux.max_consecutive_corrupted_packets",
+        "player.preferred_video_codec_order",
+        "video.hardware_decode_only",
+        "video.preferred_backend",
+        "video.max_decode_ahead_ms",
+        "video.present_queue_frames",
+        "video.decoder_packet_channel_frames",
+        "video.decoder_frame_channel_frames",
+        "video.decoder_ready_queue_frames",
+        "video.decoder_surface_pool_frames",
+        "video.zero_copy_surface_pool_slots",
+        "video.scheduler.demux_packets_per_tick",
+        "video.scheduler.video_packets_per_tick",
+        "video.scheduler.decoded_frames_per_tick",
+        "video.scheduler.catch_up_budget_ms",
+        "video.scheduler.present_queue_min_frames",
+        "video.scheduler.present_queue_target_frames",
+        "video.scheduler.decode_ahead_target_ms",
+        "video.scheduler.surface_free_slots_min",
+        "video.scheduler.surface_free_slots_target",
+        "render.profile",
+        "render.hdr_to_sdr.enabled",
+        "render.hdr_to_sdr.operator",
+        "render.hdr_to_sdr.sdr_reference_white_nits",
+        "render.hdr_to_sdr.hdr_reference_peak_nits",
+        "render.tone_mapping",
+        "render.color_adjustment.brightness",
+        "render.color_adjustment.contrast",
+        "render.color_adjustment.saturation",
+        "render.color_adjustment.exposure",
+        "render.color_adjustment.rgb_gain",
+        "render.color_adjustment.rgb_offset",
+        "render.vulkan.present_mode",
+        "render.vulkan.max_frame_latency",
+        "render.opengles.enabled",
+        "render.opengles.simple_ui",
+        "audio.volume",
+        "audio.output_device",
+        "audio.buffer_target_ms",
+        "network.memory_cache_mb",
+        "network.read_ahead_mb",
+        "network.prefetch_initial_chunk_kb",
+        "network.prefetch_chunk_mb",
+        "network.connect_timeout_ms",
+        "network.read_timeout_ms",
+        "youtube.enabled",
+        "youtube.prefer_account_session",
+        "youtube.resolve_timeout_ms",
+        "ui.show_telemetry",
+        "ui.language",
+        "ui.skin",
+        "ui.settings.live_preview_max_hz",
+    ];
+
+    #[test]
+    fn app_config_registry_covers_all_current_leaf_fields() {
+        let registry = registry();
+        let actual_ids = registry
+            .descriptors()
+            .map(|descriptor| descriptor.id.as_str().to_owned())
+            .collect::<BTreeSet<_>>();
+        let expected_ids = EXPECTED_SETTING_IDS
+            .iter()
+            .map(|id| (*id).to_owned())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(actual_ids, expected_ids);
+    }
+
+    #[test]
+    fn schema_version_is_read_only_system_setting() {
+        let registry = registry();
+        let descriptor = descriptor(&registry, "schema_version");
+
+        assert_eq!(descriptor.access, SettingAccess::ReadOnly);
+        assert_eq!(descriptor.default_behavior, DefaultBehavior::NoReset);
+        assert_eq!(descriptor.placement.section.as_str(), "system");
+        assert_eq!(descriptor.placement.group.as_str(), "schema");
+        assert!(matches!(descriptor.editor, SettingEditor::ReadOnly));
+
+        let mut config = AppConfig::default();
+        let error = registry
+            .set_value(
+                &mut config,
+                &SettingId::from("schema_version"),
+                SettingValue::Integer(3),
+            )
+            .expect_err("schema_version must reject writes");
+        assert_eq!(
+            error,
+            SettingsError::ReadOnlySetting {
+                id: SettingId::from("schema_version"),
+            }
+        );
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn user_visible_metadata_has_text_and_placement() {
+        let registry = registry();
+
+        for descriptor in registry.descriptors() {
+            assert!(
+                descriptor
+                    .text
+                    .label
+                    .text_id
+                    .as_str()
+                    .starts_with("settings."),
+                "{} label text id must be stable",
+                descriptor.id,
+            );
+            assert!(
+                !descriptor.text.label.fallback_ru.trim().is_empty(),
+                "{} label fallback must be present",
+                descriptor.id,
+            );
+            assert!(
+                !descriptor.placement.section.as_str().is_empty(),
+                "{} section must be present",
+                descriptor.id,
+            );
+            assert!(
+                !descriptor.placement.group.as_str().is_empty(),
+                "{} group must be present",
+                descriptor.id,
+            );
+            assert_eq!(
+                descriptor.placement.preferred_surface.as_str(),
+                "main-settings-window"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_volume_metadata_names_default_volume_not_current_runtime_volume() {
+        let registry = registry();
+        let descriptor = descriptor(&registry, "audio.volume");
+
+        assert!(descriptor.text.label.fallback_ru.contains("по умолчанию"));
+        let description = descriptor
+            .text
+            .description
+            .as_ref()
+            .expect("audio.volume description must exist");
+        assert!(description.fallback_ru.contains("Стартовая громкость"));
+        let help = descriptor
+            .text
+            .help
+            .as_ref()
+            .expect("audio.volume help must exist");
+        assert!(
+            help.fallback_ru
+                .contains("не перезаписывает текущую громкость")
+        );
+    }
+
+    #[test]
+    fn live_preview_mode_is_limited_to_render_color_and_hdr_fields() {
+        let registry = registry();
+        let preview_ids = registry
+            .descriptors()
+            .filter(|descriptor| descriptor.apply_mode == SettingApplyMode::ImmediatePreview)
+            .map(|descriptor| descriptor.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(!preview_ids.is_empty());
+        for id in preview_ids {
+            assert!(
+                id.starts_with("render.color_adjustment.") || id.starts_with("render.hdr_to_sdr."),
+                "{id} must not be live preview"
+            );
+        }
+
+        assert_eq!(
+            descriptor(&registry, "ui.settings.live_preview_max_hz").apply_mode,
+            SettingApplyMode::CommittedApply
+        );
+    }
+
+    #[test]
+    fn rgb_fields_are_fixed_length_three_vectors() {
+        let registry = registry();
+
+        assert_vector_range(
+            &registry,
+            "render.color_adjustment.rgb_gain",
+            validation::MIN_RENDER_RGB_GAIN,
+            validation::MAX_RENDER_RGB_GAIN,
+            validation::RGB_CHANNEL_COUNT,
+        );
+        assert_vector_range(
+            &registry,
+            "render.color_adjustment.rgb_offset",
+            validation::MIN_RENDER_RGB_OFFSET,
+            validation::MAX_RENDER_RGB_OFFSET,
+            validation::RGB_CHANNEL_COUNT,
+        );
+    }
+
+    #[test]
+    fn metadata_ranges_match_validation_constants() {
+        let registry = registry();
+
+        assert_integer_range(
+            &registry,
+            "player.seek.commit_timeout_ms",
+            validation::MIN_POSITIVE_U64_SETTING_VALUE,
+            validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        );
+        assert_integer_range(
+            &registry,
+            "player.seek.resume_video_min_ready_frames",
+            1_usize,
+            validation::MAX_SEEK_RESUME_VIDEO_READY_FRAMES,
+        );
+        assert_integer_range(
+            &registry,
+            "player.seek.resume_audio_min_buffer_ms",
+            validation::MIN_POSITIVE_U64_SETTING_VALUE,
+            validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        );
+        assert_integer_range(
+            &registry,
+            "player.seek.resume_audio_gate_timeout_ms",
+            validation::MIN_POSITIVE_U64_SETTING_VALUE,
+            validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        );
+        assert_integer_range(
+            &registry,
+            "player.seek.fast_preroll_budget_ms",
+            1_u64,
+            validation::MAX_SEEK_FAST_PREROLL_BUDGET_MS,
+        );
+        assert_integer_range(
+            &registry,
+            "player.seek.fast_preroll_video_packet_burst",
+            1_usize,
+            validation::MAX_SEEK_FAST_PREROLL_VIDEO_PACKET_BURST,
+        );
+        assert_integer_range(
+            &registry,
+            "player.seek.hotkey_small_step_secs",
+            validation::MIN_POSITIVE_U64_SETTING_VALUE,
+            validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        );
+        assert_integer_range(
+            &registry,
+            "player.seek.hotkey_large_step_secs",
+            validation::MIN_POSITIVE_U64_SETTING_VALUE,
+            validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        );
+        assert_integer_range(
+            &registry,
+            "player.demux.max_consecutive_corrupted_packets",
+            1_usize,
+            validation::MAX_CONSECUTIVE_CORRUPTED_PACKETS,
+        );
+        assert_integer_range(
+            &registry,
+            "video.max_decode_ahead_ms",
+            validation::MIN_DECODE_AHEAD_MS,
+            validation::MAX_DECODE_AHEAD_MS,
+        );
+        assert_integer_range(
+            &registry,
+            "video.present_queue_frames",
+            validation::MIN_PRESENT_QUEUE_FRAMES,
+            validation::MAX_PRESENT_QUEUE_FRAMES,
+        );
+        assert_integer_range(
+            &registry,
+            "video.decoder_packet_channel_frames",
+            validation::MIN_DECODER_QUEUE_FRAMES,
+            validation::MAX_DECODER_QUEUE_FRAMES,
+        );
+        assert_integer_range(
+            &registry,
+            "video.decoder_frame_channel_frames",
+            validation::MIN_DECODER_QUEUE_FRAMES,
+            validation::MAX_DECODER_QUEUE_FRAMES,
+        );
+        assert_integer_range(
+            &registry,
+            "video.decoder_ready_queue_frames",
+            validation::MIN_DECODER_QUEUE_FRAMES,
+            validation::MAX_DECODER_QUEUE_FRAMES,
+        );
+        assert_integer_range(
+            &registry,
+            "video.decoder_surface_pool_frames",
+            validation::MIN_DECODER_QUEUE_FRAMES,
+            validation::MAX_DECODER_SURFACE_POOL_FRAMES,
+        );
+        assert_integer_range(
+            &registry,
+            "video.zero_copy_surface_pool_slots",
+            validation::MIN_DECODER_QUEUE_FRAMES,
+            validation::MAX_ZERO_COPY_SURFACE_POOL_SLOTS,
+        );
+        assert_integer_range(
+            &registry,
+            "video.scheduler.demux_packets_per_tick",
+            1_usize,
+            validation::MAX_SCHEDULER_DEMUX_PACKETS_PER_TICK,
+        );
+        assert_integer_range(
+            &registry,
+            "video.scheduler.video_packets_per_tick",
+            1_usize,
+            validation::MAX_SCHEDULER_VIDEO_PACKETS_PER_TICK,
+        );
+        assert_integer_range(
+            &registry,
+            "video.scheduler.decoded_frames_per_tick",
+            1_usize,
+            validation::MAX_SCHEDULER_DECODED_FRAMES_PER_TICK,
+        );
+        assert_integer_range(
+            &registry,
+            "video.scheduler.catch_up_budget_ms",
+            1_u64,
+            validation::MAX_SCHEDULER_CATCH_UP_BUDGET_MS,
+        );
+        assert_integer_range(
+            &registry,
+            "video.scheduler.present_queue_min_frames",
+            1_usize,
+            validation::MAX_PRESENT_QUEUE_FRAMES,
+        );
+        assert_integer_range(
+            &registry,
+            "video.scheduler.present_queue_target_frames",
+            1_usize,
+            validation::MAX_PRESENT_QUEUE_FRAMES,
+        );
+        assert_integer_range(
+            &registry,
+            "video.scheduler.decode_ahead_target_ms",
+            validation::MIN_DECODE_AHEAD_MS,
+            validation::MAX_DECODE_AHEAD_MS,
+        );
+        assert_integer_range(
+            &registry,
+            "video.scheduler.surface_free_slots_min",
+            0_usize,
+            validation::MAX_ZERO_COPY_SURFACE_POOL_SLOTS,
+        );
+        assert_integer_range(
+            &registry,
+            "video.scheduler.surface_free_slots_target",
+            0_usize,
+            validation::MAX_ZERO_COPY_SURFACE_POOL_SLOTS,
+        );
+        assert_float_range(
+            &registry,
+            "render.hdr_to_sdr.sdr_reference_white_nits",
+            validation::MIN_HDR_TO_SDR_REFERENCE_NITS,
+            validation::MAX_HDR_TO_SDR_REFERENCE_NITS,
+        );
+        assert_float_range(
+            &registry,
+            "render.hdr_to_sdr.hdr_reference_peak_nits",
+            validation::MIN_HDR_TO_SDR_REFERENCE_NITS,
+            validation::MAX_HDR_TO_SDR_REFERENCE_NITS,
+        );
+        assert_float_range(
+            &registry,
+            "render.color_adjustment.brightness",
+            validation::MIN_RENDER_COLOR_BRIGHTNESS,
+            validation::MAX_RENDER_COLOR_BRIGHTNESS,
+        );
+        assert_float_range(
+            &registry,
+            "render.color_adjustment.contrast",
+            validation::MIN_RENDER_COLOR_CONTRAST,
+            validation::MAX_RENDER_COLOR_CONTRAST,
+        );
+        assert_float_range(
+            &registry,
+            "render.color_adjustment.saturation",
+            validation::MIN_RENDER_COLOR_SATURATION,
+            validation::MAX_RENDER_COLOR_SATURATION,
+        );
+        assert_float_range(
+            &registry,
+            "render.color_adjustment.exposure",
+            validation::MIN_RENDER_COLOR_EXPOSURE,
+            validation::MAX_RENDER_COLOR_EXPOSURE,
+        );
+        assert_vector_range(
+            &registry,
+            "render.color_adjustment.rgb_gain",
+            validation::MIN_RENDER_RGB_GAIN,
+            validation::MAX_RENDER_RGB_GAIN,
+            validation::RGB_CHANNEL_COUNT,
+        );
+        assert_vector_range(
+            &registry,
+            "render.color_adjustment.rgb_offset",
+            validation::MIN_RENDER_RGB_OFFSET,
+            validation::MAX_RENDER_RGB_OFFSET,
+            validation::RGB_CHANNEL_COUNT,
+        );
+        assert_integer_range(
+            &registry,
+            "render.vulkan.max_frame_latency",
+            1_u32,
+            validation::MAX_VULKAN_FRAME_LATENCY,
+        );
+        assert_float_range(
+            &registry,
+            "audio.volume",
+            validation::MIN_AUDIO_VOLUME,
+            validation::MAX_AUDIO_VOLUME,
+        );
+        assert_integer_range(
+            &registry,
+            "audio.buffer_target_ms",
+            validation::MIN_AUDIO_BUFFER_TARGET_MS,
+            validation::MAX_AUDIO_BUFFER_TARGET_MS,
+        );
+        assert_integer_range(
+            &registry,
+            "network.memory_cache_mb",
+            0_u64,
+            validation::MAX_NETWORK_MEMORY_CACHE_MB,
+        );
+        assert_integer_range(
+            &registry,
+            "network.read_ahead_mb",
+            1_u64,
+            validation::MAX_NETWORK_READ_AHEAD_MB,
+        );
+        assert_integer_range(
+            &registry,
+            "network.prefetch_initial_chunk_kb",
+            1_u64,
+            validation::MAX_NETWORK_PREFETCH_INITIAL_CHUNK_KB,
+        );
+        assert_integer_range(
+            &registry,
+            "network.prefetch_chunk_mb",
+            1_u64,
+            validation::MAX_NETWORK_READ_AHEAD_MB,
+        );
+        assert_integer_range(
+            &registry,
+            "network.connect_timeout_ms",
+            validation::MIN_POSITIVE_U64_SETTING_VALUE,
+            validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        );
+        assert_integer_range(
+            &registry,
+            "network.read_timeout_ms",
+            validation::MIN_POSITIVE_U64_SETTING_VALUE,
+            validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        );
+        assert_integer_range(
+            &registry,
+            "youtube.resolve_timeout_ms",
+            1_u64,
+            validation::MAX_YOUTUBE_RESOLVE_TIMEOUT_MS,
+        );
+        assert_text_len(
+            &registry,
+            "ui.language",
+            validation::MIN_UI_LANGUAGE_LEN,
+            validation::MAX_UI_LANGUAGE_LEN,
+        );
+        assert_integer_range(
+            &registry,
+            "ui.settings.live_preview_max_hz",
+            validation::MIN_LIVE_PREVIEW_MAX_HZ,
+            validation::MAX_LIVE_PREVIEW_MAX_HZ,
+        );
+    }
+
+    #[test]
+    fn static_enum_and_string_options_use_stable_ids() {
+        let registry = registry();
+
+        assert_select_options(
+            &registry,
+            "player.seek.paused_commit_behavior",
+            &["stay_paused"],
+        );
+        assert_select_list_options(
+            &registry,
+            "player.preferred_video_codec_order",
+            &["vp9", "av1", "h264", "h265", "vp8"],
+        );
+        assert_select_options(
+            &registry,
+            "video.preferred_backend",
+            &["auto", "vaapi", "vulkan"],
+        );
+        assert_select_options(&registry, "render.profile", &["auto", "vulkan", "opengles"]);
+        assert_select_options(&registry, "render.hdr_to_sdr.operator", &["bt2446_c"]);
+        assert_select_options(&registry, "render.tone_mapping", &["auto", "disabled"]);
+        assert_select_options(
+            &registry,
+            "render.vulkan.present_mode",
+            &["auto", "fifo", "mailbox", "immediate"],
+        );
+        assert_select_options(&registry, "ui.skin", &[validation::DEFAULT_UI_SKIN]);
+    }
+
+    #[test]
+    fn generated_accessors_read_and_reset_values_from_default_documents() {
+        let registry = registry();
+        let default_config = AppConfig::default();
+
+        assert_eq!(
+            registry
+                .get_value(&default_config, &SettingId::from("audio.volume"))
+                .expect("default audio.volume should be readable"),
+            SettingValue::Float(default_config.audio.volume)
+        );
+        assert_eq!(
+            registry
+                .get_value(
+                    &default_config,
+                    &SettingId::from("player.preferred_video_codec_order"),
+                )
+                .expect("default codec order should be readable"),
+            SettingValue::SelectList(vec![
+                SettingOptionId::from("vp9"),
+                SettingOptionId::from("av1"),
+                SettingOptionId::from("h264"),
+                SettingOptionId::from("h265"),
+                SettingOptionId::from("vp8"),
+            ])
+        );
+
+        let mut config = AppConfig::default();
+        config.audio.volume = 0.25;
+        let mut custom_default = AppConfig::default();
+        custom_default.audio.volume = 0.5;
+
+        registry
+            .reset_value(
+                &mut config,
+                &custom_default,
+                &SettingId::from("audio.volume"),
+            )
+            .expect("reset should read from provided default document");
+        assert_eq!(config.audio.volume, custom_default.audio.volume);
+    }
+
+    fn registry() -> SettingsRegistry<AppConfig> {
+        AppConfig::settings_registry().expect("AppConfig registry should be generated")
+    }
+
+    fn descriptor<'registry>(
+        registry: &'registry SettingsRegistry<AppConfig>,
+        id: &str,
+    ) -> &'registry settings_core::SettingDescriptor {
+        registry
+            .descriptor(&SettingId::from(id))
+            .unwrap_or_else(|| panic!("{id} descriptor should exist"))
+    }
+
+    fn assert_integer_range<Min, Max>(
+        registry: &SettingsRegistry<AppConfig>,
+        id: &str,
+        expected_min: Min,
+        expected_max: Max,
+    ) where
+        Min: TryInto<i64>,
+        Max: TryInto<i64>,
+        Min::Error: std::fmt::Debug,
+        Max::Error: std::fmt::Debug,
+    {
+        let SettingEditor::Numeric(numeric) = &descriptor(registry, id).editor else {
+            panic!("{id} must use numeric editor");
+        };
+        let NumericRange::Integer { min, max } = &numeric.range else {
+            panic!("{id} must use integer range");
+        };
+        assert_eq!(*min, expected_min.try_into().expect("min must fit i64"));
+        assert_eq!(*max, expected_max.try_into().expect("max must fit i64"));
+    }
+
+    fn assert_float_range<Min, Max>(
+        registry: &SettingsRegistry<AppConfig>,
+        id: &str,
+        expected_min: Min,
+        expected_max: Max,
+    ) where
+        Min: Into<f64>,
+        Max: Into<f64>,
+    {
+        let SettingEditor::Numeric(numeric) = &descriptor(registry, id).editor else {
+            panic!("{id} must use numeric editor");
+        };
+        let NumericRange::Float { min, max } = &numeric.range else {
+            panic!("{id} must use float range");
+        };
+        assert_eq!(*min, expected_min.into());
+        assert_eq!(*max, expected_max.into());
+    }
+
+    fn assert_vector_range<Min, Max>(
+        registry: &SettingsRegistry<AppConfig>,
+        id: &str,
+        expected_min: Min,
+        expected_max: Max,
+        expected_len: usize,
+    ) where
+        Min: Into<f64>,
+        Max: Into<f64>,
+    {
+        let SettingEditor::Vector(vector) = &descriptor(registry, id).editor else {
+            panic!("{id} must use vector editor");
+        };
+        let NumericRange::Float { min, max } = &vector.element.range else {
+            panic!("{id} vector elements must use float range");
+        };
+        assert_eq!(*min, expected_min.into());
+        assert_eq!(*max, expected_max.into());
+        assert_eq!(vector.expected_len, expected_len);
+    }
+
+    fn assert_text_len(
+        registry: &SettingsRegistry<AppConfig>,
+        id: &str,
+        expected_min_len: usize,
+        expected_max_len: usize,
+    ) {
+        let SettingEditor::Text(text) = &descriptor(registry, id).editor else {
+            panic!("{id} must use text editor");
+        };
+        assert_eq!(text.format, TextFormat::SingleLine);
+        assert_eq!(text.min_len, Some(expected_min_len));
+        assert_eq!(text.max_len, Some(expected_max_len));
+    }
+
+    fn assert_select_options(registry: &SettingsRegistry<AppConfig>, id: &str, expected: &[&str]) {
+        let SettingEditor::Select(SelectDescriptor::Static { options }) =
+            &descriptor(registry, id).editor
+        else {
+            panic!("{id} must use static select editor");
+        };
+        assert_eq!(option_ids(options), expected);
+    }
+
+    fn assert_select_list_options(
+        registry: &SettingsRegistry<AppConfig>,
+        id: &str,
+        expected: &[&str],
+    ) {
+        let SettingEditor::SelectList(SelectListDescriptor { options, .. }) =
+            &descriptor(registry, id).editor
+        else {
+            panic!("{id} must use static select-list editor");
+        };
+        assert_eq!(option_ids(options), expected);
+    }
+
+    fn option_ids(options: &[settings_core::SettingOption]) -> Vec<&str> {
+        options.iter().map(|option| option.id.as_str()).collect()
     }
 }

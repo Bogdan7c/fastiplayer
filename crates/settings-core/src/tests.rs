@@ -1,14 +1,14 @@
 use crate::{
     ApplyFinalState, ApplyRouteReport, ApplyRouteResult, CommittedApplyRequest,
-    CommittedSettingsApplier, DefaultBehavior, NumericDescriptor, NumericRange, NumericStep,
-    PersistReport, PersistRequest, PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult,
-    PreviewRollbackRequest, PreviewRollbacker, PreviewSettingsApplier, RollbackReport,
-    RouteGeneration, SettingAccess, SettingApplyMode, SettingDescriptor, SettingDescriptorText,
-    SettingEditor, SettingId, SettingOption, SettingOptionCurrentValue, SettingOptionId,
-    SettingOptions, SettingPlacement, SettingRouteId, SettingText, SettingValue, SettingValueError,
-    SettingValueType, SettingsController, SettingsError, SettingsPersister, SettingsRegistry,
-    SettingsValidator, TextDescriptor, TextFormat, ValidationReport, ValidationRequest,
-    VectorDescriptor,
+    CommittedSettingsApplier, DefaultBehavior, ListLengthLimitKind, NumericDescriptor,
+    NumericRange, NumericStep, PersistReport, PersistRequest, PreviewApplyReport,
+    PreviewApplyRequest, PreviewApplyResult, PreviewRollbackRequest, PreviewRollbacker,
+    PreviewSettingsApplier, RollbackReport, RouteGeneration, SelectListDescriptor, SettingAccess,
+    SettingApplyMode, SettingDescriptor, SettingDescriptorText, SettingEditor, SettingId,
+    SettingOption, SettingOptionCurrentValue, SettingOptionId, SettingOptions, SettingPlacement,
+    SettingRouteId, SettingText, SettingValue, SettingValueError, SettingValueType,
+    SettingsController, SettingsError, SettingsPersister, SettingsRegistry, SettingsValidator,
+    TextDescriptor, TextFormat, ValidationReport, ValidationRequest, VectorDescriptor,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -377,6 +377,53 @@ fn vector_length_validation_rejects_wrong_length() {
         }
     );
     assert_eq!(document.rgb, vec![1.0, 1.0, 1.0]);
+}
+
+#[test]
+fn select_list_validation_rejects_unknown_duplicate_and_out_of_range_items() {
+    let descriptor = codec_order_descriptor();
+
+    descriptor
+        .validate_value(&SettingValue::SelectList(vec![
+            SettingOptionId::from("vp9"),
+            SettingOptionId::from("h264"),
+        ]))
+        .expect("known unique codec ids should pass");
+
+    assert_eq!(
+        descriptor
+            .validate_value(&SettingValue::SelectList(vec![
+                SettingOptionId::from("vp9"),
+                SettingOptionId::from("unknown"),
+            ]))
+            .expect_err("unknown option id must be rejected"),
+        SettingValueError::UnknownStaticOption {
+            option_id: SettingOptionId::from("unknown"),
+        }
+    );
+
+    assert_eq!(
+        descriptor
+            .validate_value(&SettingValue::SelectList(vec![
+                SettingOptionId::from("vp9"),
+                SettingOptionId::from("vp9"),
+            ]))
+            .expect_err("duplicate option id must be rejected"),
+        SettingValueError::DuplicateListOption {
+            option_id: SettingOptionId::from("vp9"),
+        }
+    );
+
+    assert_eq!(
+        descriptor
+            .validate_value(&SettingValue::SelectList(Vec::new()))
+            .expect_err("empty codec order must be rejected"),
+        SettingValueError::InvalidListLength {
+            limit: ListLengthLimitKind::Minimum,
+            expected: 1,
+            actual: 0,
+        }
+    );
 }
 
 #[test]
@@ -943,5 +990,30 @@ fn rgb_descriptor() -> SettingDescriptor {
         default_behavior: DefaultBehavior::FromDefaultDocument,
         route: SettingRouteId::from("render"),
         apply_mode: SettingApplyMode::ImmediatePreview,
+    }
+}
+
+fn codec_order_descriptor() -> SettingDescriptor {
+    SettingDescriptor {
+        id: SettingId::from("player.preferred_video_codec_order"),
+        path: "player.preferred_video_codec_order".into(),
+        text: SettingDescriptorText::new(SettingText::new(
+            "settings.player.preferred_video_codec_order.label",
+            "Приоритет видеокодеков",
+        )),
+        placement: SettingPlacement::new("player", "codec", "main-settings-window"),
+        value_type: SettingValueType::SelectList,
+        editor: SettingEditor::SelectList(
+            SelectListDescriptor::new(vec![
+                SettingOption::new("vp9", SettingText::new("settings.codec.vp9", "VP9")),
+                SettingOption::new("h264", SettingText::new("settings.codec.h264", "H.264")),
+            ])
+            .with_min_len(1)
+            .with_max_len(2),
+        ),
+        access: SettingAccess::ReadWrite,
+        default_behavior: DefaultBehavior::FromDefaultDocument,
+        route: SettingRouteId::from("player"),
+        apply_mode: SettingApplyMode::CommittedApply,
     }
 }
