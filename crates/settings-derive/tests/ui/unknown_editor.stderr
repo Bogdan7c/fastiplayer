@@ -1,0 +1,5 @@
+error: unknown settings editor; expected toggle, integer, float, select, text, vector or read_only
+  --> tests/ui/unknown_editor.rs:12:18
+   |
+12 |         editor = "slider",
+   |                  ^^^^^^^^

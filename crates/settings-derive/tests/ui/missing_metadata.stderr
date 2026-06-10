@@ -1,0 +1,5 @@
+error: missing #[setting(...)] metadata; add metadata or mark the field #[setting(nested)]
+  --> tests/ui/missing_metadata.rs:19:5
+   |
+19 |     missing_metadata: bool,
+   |     ^^^^^^^^^^^^^^^^^^^^^^

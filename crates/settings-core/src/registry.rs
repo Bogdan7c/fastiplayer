@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::diff::{SettingChange, SettingsDiff};
 use crate::error::{SettingsError, SettingsResult};
@@ -14,6 +14,12 @@ pub trait SettingAccessor<D>: Send + Sync {
 
     /// Resets the setting from the provided default document.
     fn reset(&self, document: &mut D, default_document: &D) -> SettingsResult<()>;
+}
+
+/// Boundary implemented by generated or hand-written document schemas.
+pub trait SettingsSchema: Sized {
+    /// Builds a neutral registry for this document type.
+    fn settings_registry() -> SettingsResult<SettingsRegistry<Self>>;
 }
 
 /// One registry entry: descriptor plus accessor boundary.
@@ -90,6 +96,53 @@ impl<D> SettingsRegistry<D> {
         self.entries.push(entry);
         self.index_by_id.insert(setting_id, next_index);
         Ok(())
+    }
+
+    /// Moves all entries from another registry and rejects duplicate ids.
+    pub fn extend(&mut self, other: Self) -> SettingsResult<()> {
+        for entry in other.entries {
+            self.register_entry(entry)?;
+        }
+
+        Ok(())
+    }
+
+    /// Rebinds a nested document registry to a root document through owner accessors.
+    ///
+    /// Русский комментарий: вложенный struct сам владеет своими accessors, а этот
+    /// adapter только показывает, как добраться до него из родительского document.
+    #[must_use]
+    pub fn map_document<Root, GetChild, GetChildMut>(
+        self,
+        get_child: GetChild,
+        get_child_mut: GetChildMut,
+    ) -> SettingsRegistry<Root>
+    where
+        GetChild: for<'a> Fn(&'a Root) -> &'a D + Send + Sync + 'static,
+        GetChildMut: for<'a> Fn(&'a mut Root) -> &'a mut D + Send + Sync + 'static,
+        D: 'static,
+        Root: 'static,
+    {
+        let get_child: Arc<dyn for<'a> Fn(&'a Root) -> &'a D + Send + Sync> = Arc::new(get_child);
+        let get_child_mut: Arc<dyn for<'a> Fn(&'a mut Root) -> &'a mut D + Send + Sync> =
+            Arc::new(get_child_mut);
+        let entries = self
+            .entries
+            .into_iter()
+            .map(|entry| RegisteredSetting {
+                descriptor: entry.descriptor,
+                accessor: Box::new(NestedSettingAccessor {
+                    nested_accessor: entry.accessor,
+                    get_child: Arc::clone(&get_child),
+                    get_child_mut: Arc::clone(&get_child_mut),
+                }),
+            })
+            .collect();
+
+        SettingsRegistry {
+            entries,
+            index_by_id: self.index_by_id,
+        }
     }
 
     /// Returns all descriptors in stable registry order.
@@ -196,5 +249,29 @@ impl<D> SettingsRegistry<D> {
     fn required_entry(&self, id: &SettingId) -> SettingsResult<&RegisteredSetting<D>> {
         self.entry(id)
             .ok_or_else(|| SettingsError::UnknownSetting { id: id.clone() })
+    }
+}
+
+struct NestedSettingAccessor<Root, Nested> {
+    nested_accessor: Box<dyn SettingAccessor<Nested>>,
+    get_child: Arc<dyn for<'a> Fn(&'a Root) -> &'a Nested + Send + Sync>,
+    get_child_mut: Arc<dyn for<'a> Fn(&'a mut Root) -> &'a mut Nested + Send + Sync>,
+}
+
+impl<Root, Nested> SettingAccessor<Root> for NestedSettingAccessor<Root, Nested> {
+    fn get(&self, document: &Root) -> SettingsResult<SettingValue> {
+        self.nested_accessor.get((self.get_child)(document))
+    }
+
+    fn set(&self, document: &mut Root, value: SettingValue) -> SettingsResult<()> {
+        self.nested_accessor
+            .set((self.get_child_mut)(document), value)
+    }
+
+    fn reset(&self, document: &mut Root, default_document: &Root) -> SettingsResult<()> {
+        self.nested_accessor.reset(
+            (self.get_child_mut)(document),
+            (self.get_child)(default_document),
+        )
     }
 }

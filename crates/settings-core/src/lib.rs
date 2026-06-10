@@ -41,4 +41,4 @@ pub use options::{
     SettingOptionProvider, SettingOptions, SettingOptionsError, SettingOptionsRequest,
     SettingOptionsStatus,
 };
-pub use registry::{RegisteredSetting, SettingAccessor, SettingsRegistry};
+pub use registry::{RegisteredSetting, SettingAccessor, SettingsRegistry, SettingsSchema};
