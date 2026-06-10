@@ -1,12 +1,17 @@
 use crate::{
-    DefaultBehavior, NumericDescriptor, NumericRange, NumericStep, SettingAccess, SettingApplyMode,
-    SettingDescriptor, SettingDescriptorText, SettingEditor, SettingId, SettingOption,
-    SettingOptionCurrentValue, SettingOptionId, SettingOptions, SettingPlacement, SettingRouteId,
-    SettingText, SettingValue, SettingValueError, SettingValueType, SettingsError,
-    SettingsRegistry, TextDescriptor, TextFormat, VectorDescriptor,
+    ApplyFinalState, ApplyRouteReport, ApplyRouteResult, CommittedApplyRequest,
+    CommittedSettingsApplier, DefaultBehavior, NumericDescriptor, NumericRange, NumericStep,
+    PersistReport, PersistRequest, PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult,
+    PreviewRollbackRequest, PreviewRollbacker, PreviewSettingsApplier, RollbackReport,
+    RouteGeneration, SettingAccess, SettingApplyMode, SettingDescriptor, SettingDescriptorText,
+    SettingEditor, SettingId, SettingOption, SettingOptionCurrentValue, SettingOptionId,
+    SettingOptions, SettingPlacement, SettingRouteId, SettingText, SettingValue, SettingValueError,
+    SettingValueType, SettingsController, SettingsError, SettingsPersister, SettingsRegistry,
+    SettingsValidator, TextDescriptor, TextFormat, ValidationReport, ValidationRequest,
+    VectorDescriptor,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct TestDocument {
     brightness: f64,
     schema_version: i64,
@@ -124,6 +129,112 @@ impl crate::SettingAccessor<TestDocument> for RgbAccessor {
     ) -> crate::SettingsResult<()> {
         document.rgb.clone_from(&default_document.rgb);
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct RecordingApplyDelegate {
+    calls: Vec<&'static str>,
+    validate_error: Option<SettingsError>,
+    persist_error: Option<SettingsError>,
+    apply_error: Option<SettingsError>,
+    route_reports: Option<Vec<ApplyRouteReport>>,
+}
+
+impl SettingsValidator<TestDocument> for RecordingApplyDelegate {
+    fn validate(
+        &mut self,
+        request: ValidationRequest<'_, TestDocument>,
+    ) -> crate::SettingsResult<ValidationReport> {
+        self.calls.push("validate");
+        if let Some(error) = self.validate_error.clone() {
+            return Err(error);
+        }
+
+        Ok(ValidationReport::valid(
+            request
+                .changed_settings
+                .changes()
+                .iter()
+                .map(|change| change.id.clone())
+                .collect(),
+        ))
+    }
+}
+
+impl SettingsPersister<TestDocument> for RecordingApplyDelegate {
+    fn persist(
+        &mut self,
+        _request: PersistRequest<'_, TestDocument>,
+    ) -> crate::SettingsResult<PersistReport> {
+        self.calls.push("persist");
+        if let Some(error) = self.persist_error.clone() {
+            return Err(error);
+        }
+
+        Ok(PersistReport::persisted())
+    }
+}
+
+impl CommittedSettingsApplier<TestDocument> for RecordingApplyDelegate {
+    fn apply_committed(
+        &mut self,
+        request: CommittedApplyRequest<'_, TestDocument>,
+    ) -> crate::SettingsResult<Vec<ApplyRouteReport>> {
+        self.calls.push("apply");
+        if let Some(error) = self.apply_error.clone() {
+            return Err(error);
+        }
+        if let Some(route_reports) = self.route_reports.clone() {
+            return Ok(route_reports);
+        }
+
+        Ok(request
+            .route_updates
+            .iter()
+            .map(|update| {
+                ApplyRouteReport::applied(update.route.clone(), update.affected_settings.clone())
+            })
+            .collect())
+    }
+}
+
+#[derive(Default)]
+struct RecordingRollbacker {
+    rolled_back_routes: Vec<SettingRouteId>,
+}
+
+impl PreviewRollbacker<TestDocument> for RecordingRollbacker {
+    fn rollback_preview(
+        &mut self,
+        request: PreviewRollbackRequest<'_, TestDocument>,
+    ) -> crate::SettingsResult<RollbackReport> {
+        self.rolled_back_routes.push(request.route.clone());
+        Ok(RollbackReport::rolled_back(
+            request.route.clone(),
+            request.affected_settings.to_vec(),
+        ))
+    }
+}
+
+#[derive(Default)]
+struct RecordingPreviewer {
+    result: Option<PreviewApplyResult>,
+    applied_documents: Vec<TestDocument>,
+}
+
+impl PreviewSettingsApplier<TestDocument> for RecordingPreviewer {
+    fn apply_preview(
+        &mut self,
+        request: PreviewApplyRequest<'_, TestDocument>,
+    ) -> crate::SettingsResult<PreviewApplyReport> {
+        self.applied_documents.push(request.update.document.clone());
+        let result = self.result.clone().unwrap_or(PreviewApplyResult::Applied);
+        Ok(PreviewApplyReport {
+            route: request.update.route.clone(),
+            result,
+            affected_settings: request.update.affected_settings.clone(),
+        })
     }
 }
 
@@ -291,6 +402,455 @@ fn dynamic_unavailable_current_value_is_explicit() {
     };
     assert_eq!(id.as_str(), "usb-dac-42");
     assert_eq!(label.fallback_ru, "USB DAC 42 (сейчас недоступно)");
+}
+
+#[test]
+fn controller_draft_edit_does_not_mutate_committed_document() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+
+    let report = controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Черновое имя".to_owned()),
+        )
+        .expect("draft edit should pass through registry accessor");
+
+    assert!(report.draft_changed);
+    assert!(!report.preview_queued);
+    assert_eq!(controller.committed().title, "Исходное имя");
+    assert_eq!(controller.draft().title, "Черновое имя");
+    assert_eq!(
+        controller
+            .diff()
+            .expect("controller diff should be readable")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn controller_lazy_preview_baseline_captures_only_on_actual_preview_change() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    let render_route = SettingRouteId::from("render");
+
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Не preview".to_owned()),
+        )
+        .expect("committed-only draft edit should succeed");
+    assert!(controller.preview().is_empty());
+
+    let no_change_report = controller
+        .set_value(
+            SettingId::from("render.brightness"),
+            SettingValue::Float(0.5),
+        )
+        .expect("setting the existing value should succeed");
+    assert!(!no_change_report.draft_changed);
+    assert!(controller.preview().is_empty());
+
+    controller.set_route_generation(render_route.clone(), RouteGeneration::new(7));
+    controller
+        .set_value(
+            SettingId::from("render.brightness"),
+            SettingValue::Float(0.75),
+        )
+        .expect("first actual preview edit should queue update");
+    controller.set_route_generation(render_route.clone(), RouteGeneration::new(9));
+    controller
+        .set_value(
+            SettingId::from("render.rgb"),
+            SettingValue::NumericVector(vec![0.9, 0.8, 0.7]),
+        )
+        .expect("second preview edit on same route should not replace baseline");
+
+    let route_state = controller
+        .preview()
+        .route_state(&render_route)
+        .expect("preview baseline should be captured for render route");
+    assert_eq!(route_state.baseline_document.brightness, 0.5);
+    assert_eq!(route_state.baseline_generation, RouteGeneration::new(7));
+    assert_eq!(
+        controller.route_generation_baseline(&render_route),
+        Some(RouteGeneration::new(7))
+    );
+}
+
+#[test]
+fn controller_cancel_rolls_back_only_routes_with_preview_baseline() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    let render_route = SettingRouteId::from("render");
+
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Черновое имя".to_owned()),
+        )
+        .expect("committed-only draft edit should succeed");
+    controller
+        .set_value(
+            SettingId::from("render.brightness"),
+            SettingValue::Float(0.2),
+        )
+        .expect("preview draft edit should succeed");
+
+    let mut previewer = RecordingPreviewer::default();
+    controller
+        .apply_pending_preview(&render_route, &mut previewer)
+        .expect("preview delegate should run")
+        .expect("render preview should be pending");
+
+    let mut rollbacker = RecordingRollbacker::default();
+    let cancel_report = controller
+        .cancel(&mut rollbacker)
+        .expect("cancel should rollback preview and discard draft");
+
+    assert_eq!(rollbacker.rolled_back_routes, vec![render_route.clone()]);
+    assert_eq!(cancel_report.rolled_back_routes.len(), 1);
+    assert_eq!(controller.draft(), controller.committed());
+    assert!(controller.preview().is_empty());
+}
+
+#[test]
+fn controller_reset_field_uses_default_document() {
+    let registry = controller_registry();
+    let committed = TestDocument {
+        title: "Сохранённое имя".to_owned(),
+        ..TestDocument::default()
+    };
+    let mut controller = SettingsController::new(committed, registry);
+
+    let report = controller
+        .reset_value(SettingId::from("ui.title"))
+        .expect("field reset should use default document through accessor");
+
+    assert_eq!(controller.committed().title, "Сохранённое имя");
+    assert_eq!(controller.draft().title, "Исходное имя");
+    assert_eq!(report.affected_settings, vec![SettingId::from("ui.title")]);
+}
+
+#[test]
+fn controller_reset_group_and_surface_use_registered_scopes() {
+    let registry = controller_registry();
+    let committed = TestDocument {
+        brightness: 0.1,
+        rgb: vec![0.1, 0.2, 0.3],
+        title: "Сохранённое имя".to_owned(),
+        ..TestDocument::default()
+    };
+    let mut controller = SettingsController::new(committed, registry);
+
+    controller
+        .reset_group("render".into(), "color".into())
+        .expect("group reset should reset render color fields");
+    assert_eq!(controller.draft().brightness, 0.5);
+    assert_eq!(controller.draft().rgb, vec![1.0, 1.0, 1.0]);
+    assert_eq!(controller.draft().title, "Сохранённое имя");
+    assert_eq!(
+        controller.preview().pending_routes(),
+        vec![SettingRouteId::from("render")]
+    );
+
+    controller
+        .reset_surface("main-settings-window".into())
+        .expect("surface reset should reset all resettable settings on the surface");
+    assert_eq!(controller.draft(), &TestDocument::default());
+}
+
+#[test]
+fn controller_reset_all_replaces_draft_with_default_document() {
+    let registry = controller_registry();
+    let committed = TestDocument {
+        brightness: 0.1,
+        title: "Сохранённое имя".to_owned(),
+        ..TestDocument::default()
+    };
+    let mut controller = SettingsController::new(committed, registry);
+
+    controller
+        .set_value(
+            SettingId::from("render.rgb"),
+            SettingValue::NumericVector(vec![0.2, 0.3, 0.4]),
+        )
+        .expect("draft edit should succeed before reset all");
+
+    let report = controller
+        .reset_all()
+        .expect("reset all should replace the whole draft document");
+
+    assert_eq!(controller.draft(), &TestDocument::default());
+    assert!(
+        report
+            .affected_settings
+            .contains(&SettingId::from("ui.title"))
+    );
+    assert!(
+        report
+            .affected_settings
+            .contains(&SettingId::from("render.brightness"))
+    );
+}
+
+#[test]
+fn controller_apply_runs_validate_persist_then_runtime_apply() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    let ui_route = SettingRouteId::from("ui");
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Применённое имя".to_owned()),
+        )
+        .expect("draft edit should succeed");
+
+    let mut delegate = RecordingApplyDelegate::default();
+    let report = controller
+        .apply(&mut delegate)
+        .expect("apply should return a detailed report");
+
+    assert_eq!(delegate.calls, vec!["validate", "persist", "apply"]);
+    assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
+    assert_eq!(controller.committed().title, "Применённое имя");
+    assert_eq!(controller.draft(), controller.committed());
+    assert_eq!(
+        controller.route_generation(&ui_route),
+        RouteGeneration::new(1)
+    );
+}
+
+#[test]
+fn controller_persist_failure_stops_runtime_apply() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Не сохранено".to_owned()),
+        )
+        .expect("draft edit should succeed");
+    let mut delegate = RecordingApplyDelegate {
+        persist_error: Some(SettingsError::access_failed("disk is unavailable")),
+        ..RecordingApplyDelegate::default()
+    };
+
+    let report = controller
+        .apply(&mut delegate)
+        .expect("persist failure should be represented as apply report");
+
+    assert_eq!(delegate.calls, vec!["validate", "persist"]);
+    assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
+    assert_eq!(controller.committed().title, "Исходное имя");
+    assert_eq!(controller.draft().title, "Не сохранено");
+}
+
+#[test]
+fn controller_runtime_partial_failure_reports_persisted_runtime_divergence() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Сохранено частично".to_owned()),
+        )
+        .expect("draft edit should succeed");
+    let mut delegate = RecordingApplyDelegate {
+        route_reports: Some(vec![ApplyRouteReport::partial_failure(
+            SettingRouteId::from("ui"),
+            vec![SettingId::from("ui.title")],
+            "runtime owner accepted only part of the update",
+        )]),
+        ..RecordingApplyDelegate::default()
+    };
+
+    let report = controller
+        .apply(&mut delegate)
+        .expect("partial runtime failure should be reported");
+
+    assert_eq!(
+        report.final_state,
+        ApplyFinalState::PersistedRuntimeDiverged
+    );
+    assert_eq!(controller.committed().title, "Сохранено частично");
+    assert_eq!(controller.draft(), controller.committed());
+    let divergence = controller
+        .runtime_divergence()
+        .expect("controller should retain explicit divergence state");
+    assert_eq!(divergence.persisted_document.title, "Сохранено частично");
+    assert_eq!(divergence.last_fully_active_document.title, "Исходное имя");
+    assert!(matches!(
+        divergence.route_reports[0].result,
+        ApplyRouteResult::PartialFailure { .. }
+    ));
+}
+
+#[test]
+fn controller_runtime_divergence_retry_reapplies_saved_document() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Нужно применить повторно".to_owned()),
+        )
+        .expect("draft edit should succeed");
+    let mut first_delegate = RecordingApplyDelegate {
+        route_reports: Some(vec![ApplyRouteReport::partial_failure(
+            SettingRouteId::from("ui"),
+            vec![SettingId::from("ui.title")],
+            "runtime owner failed once",
+        )]),
+        ..RecordingApplyDelegate::default()
+    };
+    controller
+        .apply(&mut first_delegate)
+        .expect("first apply should persist and report runtime divergence");
+    controller.begin_edit();
+    assert!(
+        controller.runtime_divergence().is_some(),
+        "opening a fresh edit transaction must keep saved/runtime divergence"
+    );
+
+    let mut retry_delegate = RecordingApplyDelegate::default();
+    let retry_report = controller
+        .apply(&mut retry_delegate)
+        .expect("retry should apply saved document to runtime");
+
+    assert_eq!(retry_delegate.calls, vec!["validate", "apply"]);
+    assert_eq!(retry_report.final_state, ApplyFinalState::FullyApplied);
+    assert_eq!(
+        retry_report
+            .persistence
+            .expect("retry should still report persistence state")
+            .outcome,
+        crate::PersistOutcome::SkippedNoChanges
+    );
+    assert!(controller.runtime_divergence().is_none());
+    assert_eq!(controller.committed().title, "Нужно применить повторно");
+}
+
+#[test]
+fn controller_preview_baseline_after_divergence_uses_last_fully_active_runtime() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    let render_route = SettingRouteId::from("render");
+    controller
+        .set_value(
+            SettingId::from("render.brightness"),
+            SettingValue::Float(0.8),
+        )
+        .expect("preview edit should succeed");
+    let mut delegate = RecordingApplyDelegate {
+        route_reports: Some(vec![ApplyRouteReport::partial_failure(
+            render_route.clone(),
+            vec![SettingId::from("render.brightness")],
+            "render runtime did not accept committed brightness",
+        )]),
+        ..RecordingApplyDelegate::default()
+    };
+    controller
+        .apply(&mut delegate)
+        .expect("partial render apply should create runtime divergence");
+
+    assert_eq!(controller.committed().brightness, 0.8);
+    controller.begin_edit();
+    controller
+        .set_value(
+            SettingId::from("render.rgb"),
+            SettingValue::NumericVector(vec![0.2, 0.3, 0.4]),
+        )
+        .expect("new preview edit should capture active runtime baseline");
+
+    let route_state = controller
+        .preview()
+        .route_state(&render_route)
+        .expect("render preview baseline should be captured again after begin_edit");
+    assert_eq!(route_state.baseline_document.brightness, 0.5);
+    assert_eq!(route_state.baseline_document.rgb, vec![1.0, 1.0, 1.0]);
+}
+
+#[test]
+fn controller_route_generation_conflict_blocks_last_writer_wins() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    let ui_route = SettingRouteId::from("ui");
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Локальный черновик".to_owned()),
+        )
+        .expect("draft edit should capture route generation baseline");
+    controller.set_route_generation(ui_route.clone(), RouteGeneration::new(1));
+
+    let mut delegate = RecordingApplyDelegate::default();
+    let report = controller
+        .apply(&mut delegate)
+        .expect("conflict should be represented as apply report");
+
+    assert!(delegate.calls.is_empty());
+    assert_eq!(report.final_state, ApplyFinalState::BlockedByConflicts);
+    assert_eq!(report.conflicts[0].route, ui_route);
+    assert_eq!(report.conflicts[0].baseline, RouteGeneration::new(0));
+    assert_eq!(report.conflicts[0].current, RouteGeneration::new(1));
+    assert_eq!(controller.committed().title, "Исходное имя");
+    assert_eq!(controller.draft().title, "Локальный черновик");
+}
+
+#[test]
+fn controller_preview_coalescing_keeps_latest_update_per_route() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    let render_route = SettingRouteId::from("render");
+
+    controller
+        .set_value(
+            SettingId::from("render.brightness"),
+            SettingValue::Float(0.4),
+        )
+        .expect("first preview edit should queue render update");
+    controller
+        .set_value(
+            SettingId::from("render.brightness"),
+            SettingValue::Float(0.9),
+        )
+        .expect("second preview edit should replace pending render update");
+    controller
+        .set_value(
+            SettingId::from("render.rgb"),
+            SettingValue::NumericVector(vec![0.2, 0.3, 0.4]),
+        )
+        .expect("same route preview edit should remain coalesced");
+
+    assert_eq!(
+        controller.preview().pending_routes(),
+        vec![render_route.clone()]
+    );
+    let pending = controller
+        .preview()
+        .pending_update(&render_route)
+        .expect("render route should have latest pending preview update");
+    assert_eq!(pending.document.brightness, 0.9);
+    assert_eq!(pending.document.rgb, vec![0.2, 0.3, 0.4]);
+    assert_eq!(
+        pending.affected_settings,
+        vec![
+            SettingId::from("render.brightness"),
+            SettingId::from("render.rgb")
+        ]
+    );
+}
+
+fn controller_registry() -> SettingsRegistry<TestDocument> {
+    SettingsRegistry::new(vec![
+        crate::RegisteredSetting::new(brightness_descriptor(), BrightnessAccessor),
+        crate::RegisteredSetting::new(schema_descriptor(), SchemaVersionAccessor),
+        crate::RegisteredSetting::new(title_descriptor(), TitleAccessor),
+        crate::RegisteredSetting::new(rgb_descriptor(), RgbAccessor),
+    ])
+    .expect("test controller registry should be valid")
 }
 
 fn brightness_descriptor() -> SettingDescriptor {
