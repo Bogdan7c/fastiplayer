@@ -7,22 +7,41 @@ use super::{
     SettingsUiAction, SettingsUiCommandState, SettingsUiModel, field_widget, section_list,
 };
 
-/// Минимальная высота прокручиваемой области, чтобы список не превращался в узкую полоску.
-const SETTINGS_LIST_MIN_HEIGHT: f32 = 240.0;
+/// Дополнительный вертикальный запас под separator и отступы вокруг footer-а.
+const FOOTER_VERTICAL_SPACING_ROWS: f32 = 3.0;
 
 /// Рисует всё содержимое settings window без прямого доступа к runtime.
 pub fn show(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAction>) {
     render_status(ui, model);
 
+    let settings_list_max_height =
+        settings_list_max_height(ui.available_height(), footer_reserved_height(ui));
+
     ScrollArea::vertical()
         .auto_shrink([false, false])
-        .min_scrolled_height(SETTINGS_LIST_MIN_HEIGHT)
+        .max_height(settings_list_max_height)
         .show(ui, |ui| {
             render_settings_list(ui, model, actions);
         });
 
     ui.separator();
     render_footer(ui, model.command_state, actions);
+}
+
+/// Считает высоту, которую можно отдать scroll list-у, не выталкивая footer из окна.
+#[must_use]
+pub(crate) fn settings_list_max_height(available_height: f32, footer_reserved_height: f32) -> f32 {
+    if available_height.is_finite() {
+        (available_height - footer_reserved_height).max(0.0)
+    } else {
+        f32::INFINITY
+    }
+}
+
+/// Оценивает место под нижнюю строку команд через текущие spacing-настройки egui.
+fn footer_reserved_height(ui: &Ui) -> f32 {
+    let spacing = ui.spacing();
+    spacing.interact_size.y + spacing.item_spacing.y * FOOTER_VERTICAL_SPACING_ROWS
 }
 
 /// Рисует общий status snapshot, если runtime передал его в модель.

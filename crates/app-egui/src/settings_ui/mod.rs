@@ -354,6 +354,13 @@ mod tests {
     }
 
     #[test]
+    fn settings_scroll_height_reserves_footer_space() {
+        assert_eq!(layout::settings_list_max_height(420.0, 64.0), 356.0);
+        assert_eq!(layout::settings_list_max_height(40.0, 64.0), 0.0);
+        assert!(layout::settings_list_max_height(f32::INFINITY, 64.0).is_infinite());
+    }
+
+    #[test]
     fn reset_group_and_reset_all_emit_distinct_actions() {
         let reset_group = layout::reset_group_action(
             &SettingSectionId::from("render"),
