@@ -219,13 +219,6 @@ impl SettingsUiModel {
     }
 }
 
-/// Небольшое visual-only состояние самого окна.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SettingsUiState {
-    /// Выбранный section id; runtime settings state этим не владеет.
-    pub selected_section: Option<SettingSectionId>,
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;

@@ -2,21 +2,19 @@
 
 use egui::{Context, Id, Window};
 
-use super::{SettingsUiAction, SettingsUiModel, SettingsUiState, layout};
+use super::{SettingsUiAction, SettingsUiModel, layout};
 
 /// Stable egui id окна настроек.
 const SETTINGS_WINDOW_ID: &str = "rustiplayer_settings_window";
 
 /// Default размер окна: достаточно широкий для списка sections и редакторов.
-const DEFAULT_WINDOW_SIZE: egui::Vec2 = egui::Vec2::new(760.0, 560.0);
+const DEFAULT_WINDOW_SIZE: egui::Vec2 = egui::Vec2::new(560.0, 640.0);
+
+/// Минимальный размер оставляет footer доступным и не даёт редакторам схлопнуться.
+const MIN_WINDOW_SIZE: egui::Vec2 = egui::Vec2::new(360.0, 320.0);
 
 /// Рисует resizable settings window и возвращает только visual actions.
-pub fn show(
-    ctx: &Context,
-    model: &SettingsUiModel,
-    state: &mut SettingsUiState,
-    actions: &mut Vec<SettingsUiAction>,
-) {
+pub fn show(ctx: &Context, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAction>) {
     if !model.is_open {
         return;
     }
@@ -27,10 +25,12 @@ pub fn show(
         .id(Id::new(SETTINGS_WINDOW_ID))
         .open(&mut open_after_egui)
         .resizable(true)
+        .constrain(false)
         .collapsible(false)
+        .min_size(MIN_WINDOW_SIZE)
         .default_size(DEFAULT_WINDOW_SIZE)
         .show(ctx, |ui| {
-            layout::show(ui, model, state, actions);
+            layout::show(ui, model, actions);
         });
 
     if let Some(action) = close_action_from_open_flag(model.is_open, open_after_egui) {

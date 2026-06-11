@@ -33,7 +33,7 @@ use crate::local_file_open::{
 };
 use crate::local_media;
 use crate::settings_runtime::CommittedConfigSnapshot;
-use crate::settings_ui::{SettingsUiAction, SettingsUiModel, SettingsUiState};
+use crate::settings_ui::{SettingsUiAction, SettingsUiModel};
 use crate::settings_ui::{launcher_button, window as settings_window};
 use crate::telemetry::Telemetry;
 use crate::ui::animation::AnimationState;
@@ -683,9 +683,6 @@ pub struct AppState {
     /// Transient pointer state timeline; player position здесь не хранится.
     timeline_ui_state: TimelineUiState,
 
-    /// Transient visual state settings window-а; runtime draft здесь не хранится.
-    settings_ui_state: SettingsUiState,
-
     /// Кэш строк telemetry panel; живёт в UI-слое и не владеет playback/render state.
     telemetry_panel_cache: TelemetryPanelCache,
 
@@ -754,7 +751,6 @@ impl AppState {
             active_media_source: None,
             local_file_open_job: None,
             timeline_ui_state: TimelineUiState::default(),
-            settings_ui_state: SettingsUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
             app_version: env!("CARGO_PKG_VERSION"),
         })
@@ -1497,7 +1493,6 @@ impl AppState {
         let mut control_actions = Vec::new();
         let mut settings_actions = Vec::new();
         let mut timeline_ui_state = std::mem::take(&mut self.timeline_ui_state);
-        let mut settings_ui_state = std::mem::take(&mut self.settings_ui_state);
         let pre_ui_setup_elapsed = pre_ui_setup_started_at.elapsed();
         let mut telemetry_panel_cache_elapsed = Duration::ZERO;
         let telemetry_panel_rows = if show_telemetry {
@@ -1559,18 +1554,12 @@ impl AppState {
             center_overlay_elapsed = stage_started_at.elapsed();
 
             launcher_button::show(ui.ctx(), &mut settings_actions);
-            settings_window::show(
-                ui.ctx(),
-                settings_ui_model,
-                &mut settings_ui_state,
-                &mut settings_actions,
-            );
+            settings_window::show(ui.ctx(), settings_ui_model, &mut settings_actions);
         });
         let egui_run_elapsed = egui_run_started_at.elapsed();
 
         let post_ui_actions_started_at = Instant::now();
         self.timeline_ui_state = timeline_ui_state;
-        self.settings_ui_state = settings_ui_state;
         self.handle_control_actions(window, control_actions);
         let post_ui_actions_elapsed = post_ui_actions_started_at.elapsed();
 

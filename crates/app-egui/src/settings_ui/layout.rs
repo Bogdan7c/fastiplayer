@@ -1,36 +1,25 @@
-//! Layout окна настроек: sections, scrollable content и command footer.
+//! Layout окна настроек: единый vertical settings list и command footer.
 
 use egui::{Button, Layout, RichText, ScrollArea, Ui};
 use settings_core::{SettingGroupId, SettingSectionId};
 
 use super::{
-    SettingsUiAction, SettingsUiCommandState, SettingsUiModel, SettingsUiState, field_widget,
-    section_list,
+    SettingsUiAction, SettingsUiCommandState, SettingsUiModel, field_widget, section_list,
 };
 
+/// Минимальная высота прокручиваемой области, чтобы список не превращался в узкую полоску.
+const SETTINGS_LIST_MIN_HEIGHT: f32 = 240.0;
+
 /// Рисует всё содержимое settings window без прямого доступа к runtime.
-pub fn show(
-    ui: &mut Ui,
-    model: &SettingsUiModel,
-    state: &mut SettingsUiState,
-    actions: &mut Vec<SettingsUiAction>,
-) {
-    section_list::ensure_valid_selected_section(state, &model.fields);
+pub fn show(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAction>) {
     render_status(ui, model);
 
-    ui.horizontal(|ui| {
-        ui.set_min_height(400.0);
-        ui.vertical(|ui| {
-            ui.set_width(180.0);
-            section_list::show(ui, &model.fields, state, actions);
+    ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .min_scrolled_height(SETTINGS_LIST_MIN_HEIGHT)
+        .show(ui, |ui| {
+            render_settings_list(ui, model, actions);
         });
-        ui.separator();
-        ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                render_selected_section(ui, model, state, actions);
-            });
-    });
 
     ui.separator();
     render_footer(ui, model.command_state, actions);
@@ -47,30 +36,39 @@ fn render_status(ui: &mut Ui, model: &SettingsUiModel) {
     }
 }
 
-/// Рисует fields выбранного section-а, сгруппированные по descriptor placement.
-fn render_selected_section(
-    ui: &mut Ui,
-    model: &SettingsUiModel,
-    state: &SettingsUiState,
-    actions: &mut Vec<SettingsUiAction>,
-) {
-    let Some(selected_section) = section_list::selected_section(state, &model.fields) else {
+/// Рисует все settings fields одним вертикальным списком, сгруппированным по section/group.
+fn render_settings_list(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAction>) {
+    let sections = section_list::sections_for_fields(&model.fields);
+    if sections.is_empty() {
         ui.label("Настройки недоступны");
         return;
-    };
+    }
+
+    for section in &sections {
+        render_section(ui, model, section, actions);
+    }
+}
+
+/// Рисует один section: заголовок, reset surface и все его группы.
+fn render_section(
+    ui: &mut Ui,
+    model: &SettingsUiModel,
+    section: &section_list::SettingsUiSection,
+    actions: &mut Vec<SettingsUiAction>,
+) {
+    render_section_header(ui, section, actions);
 
     let mut current_group: Option<SettingGroupId> = None;
-
     for field in model
         .fields
         .iter()
-        .filter(|field| field.descriptor.placement.section == *selected_section)
+        .filter(|field| field.descriptor.placement.section == section.section)
     {
         if current_group.as_ref() != Some(&field.descriptor.placement.group) {
             current_group = Some(field.descriptor.placement.group.clone());
             render_group_header(
                 ui,
-                selected_section,
+                &section.section,
                 &field.descriptor.placement.group,
                 actions,
             );
@@ -79,6 +77,24 @@ fn render_selected_section(
         field_widget::show(ui, field, actions);
         ui.add_space(8.0);
     }
+
+    ui.separator();
+}
+
+/// Рисует заголовок section-а и surface reset action для всего экрана настроек.
+fn render_section_header(
+    ui: &mut Ui,
+    section: &section_list::SettingsUiSection,
+    actions: &mut Vec<SettingsUiAction>,
+) {
+    ui.horizontal(|ui| {
+        ui.heading(section_list::section_label(section));
+        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("Сбросить экран").clicked() {
+                actions.push(section_list::reset_surface_action(&section.surface));
+            }
+        });
+    });
 }
 
 /// Рисует заголовок группы и group reset action.
