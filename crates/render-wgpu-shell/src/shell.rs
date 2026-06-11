@@ -34,7 +34,7 @@ use winit::window::Window;
 use crate::egui_compositor::EguiCompositor;
 use crate::frame::{
     RenderFrameDropReason, RenderFrameFailure, RenderFrameInput, RenderFrameOutcome,
-    RenderFrameStageTimings, RenderFrameTiming,
+    RenderFrameStageTimings, RenderFrameTiming, clamp_video_viewport_to_screen,
 };
 
 /// Превращает длительность в миллисекунды для числовых tracing fields.
@@ -357,8 +357,10 @@ impl Renderer {
             egui_paint_jobs,
             egui_textures_delta,
             screen,
+            video_viewport,
         } = input;
         let video_frame: Option<&WgpuRenderableFrame<'_>> = video_frame;
+        let clamped_video_viewport = clamp_video_viewport_to_screen(video_viewport, &screen);
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: screen.size_in_pixels,
             pixels_per_point: screen.pixels_per_point,
@@ -478,6 +480,7 @@ impl Renderer {
         let stage_started_at = Instant::now();
         match self.video_renderer.render_or_clear(
             video_frame,
+            clamped_video_viewport,
             &surface_view,
             &mut encoder,
             &self.gpu.device,

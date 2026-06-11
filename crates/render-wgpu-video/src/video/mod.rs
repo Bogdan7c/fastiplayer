@@ -7,8 +7,8 @@ use codec_core::VideoDisplayOrientation;
 use render_core::{
     ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics,
     RenderLiveApplyPhase, RenderLiveApplyReport, RenderLiveSettingId, RenderLiveSettings,
-    RenderLiveSettingsAdapter, RenderLiveSettingsError, RenderLiveSettingsUpdate, RenderableFrame,
-    SwapchainTransferMode, ToneMappingMode, VideoFrameFormat,
+    RenderLiveSettingsAdapter, RenderLiveSettingsError, RenderLiveSettingsUpdate, RenderViewport,
+    RenderableFrame, SwapchainTransferMode, ToneMappingMode, VideoFrameFormat,
 };
 use video_backend_api::{PresentFrameResourceDescriptorLookup, PresentFrameResourceProviderHandle};
 use video_core::{
@@ -282,6 +282,9 @@ pub(crate) struct VideoRenderPassContext<'pass> {
 
     /// WGPU queue для обновления uniform buffers.
     pub(crate) queue: &'pass wgpu::Queue,
+
+    /// Уже зажатая область video draw внутри swapchain target-а.
+    pub(crate) viewport: RenderViewport,
 }
 
 /// Backend-specific texture resources для одного кадра.
@@ -428,6 +431,9 @@ pub struct WgpuVideoRenderer {
     /// Последняя renderer-neutral диагностика без GPU handles.
     diagnostics: RenderDiagnostics,
 
+    /// Текущий размер surface target-а; нужен только для защитного clamp-а viewport-а.
+    surface_size: (u32, u32),
+
     /// Текущий live settings snapshot, применённый к renderer state.
     live_settings: RenderLiveSettings,
 }
@@ -498,6 +504,7 @@ impl WgpuVideoRenderer {
             p010_renderer: P010VideoRenderer::new(device, surface_format),
             capabilities,
             diagnostics: RenderDiagnostics::default(),
+            surface_size: (1, 1),
             live_settings: RenderLiveSettings::default(),
         }
     }
@@ -561,10 +568,9 @@ impl WgpuVideoRenderer {
         Ok(RenderLiveApplyReport::applied(phase, changed_fields))
     }
 
-    /// Обновляет размер swapchain для расчёта letterbox.
+    /// Обновляет размер swapchain для защитного clamp-а video viewport-а.
     pub fn resize(&mut self, width: u32, height: u32) {
-        self.nv12_renderer.set_window_size(width, height);
-        self.p010_renderer.set_window_size(width, height);
+        self.surface_size = (width.max(1), height.max(1));
     }
 
     /// Рендерит video frame или очищает target в чёрный цвет, если кадра нет.
@@ -573,6 +579,7 @@ impl WgpuVideoRenderer {
     pub fn render_or_clear(
         &mut self,
         frame: Option<&WgpuRenderableFrame<'_>>,
+        video_viewport: RenderViewport,
         target: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
         device: &wgpu::Device,
@@ -584,11 +591,14 @@ impl WgpuVideoRenderer {
             return Ok(false);
         };
         self.diagnostics = RenderDiagnostics::default();
+        let video_viewport =
+            video_viewport.clamp_to_surface(self.surface_size.0, self.surface_size.1);
         let mut pass_context = VideoRenderPassContext {
             target,
             encoder,
             device,
             queue,
+            viewport: video_viewport,
         };
 
         if !frame.metadata.has_display_size() {
@@ -690,9 +700,9 @@ enum RendererDispatch {
 /// Считает letterbox `uv_scale`/`uv_offset` для NV12 и P010 shader-ов.
 ///
 /// Оба shader-а вычисляют display UV через `uv * uv_scale + uv_offset`, где `uv`
-/// пробегает `[0, 1]` по всей цели рендера, а семплы за пределами `[0, 1]`
+/// пробегает `[0, 1]` внутри active video viewport-а, а семплы за пределами `[0, 1]`
 /// красятся чёрным до применения source orientation transform.
-/// Чтобы кадр целиком уместился в окно с сохранением пропорций (letterbox), масштаб
+/// Чтобы кадр целиком уместился в viewport с сохранением пропорций (letterbox), масштаб
 /// по "лишней" оси должен быть `> 1`: тогда края экрана отображаются в координаты
 /// текстуры за пределами `[0, 1]` и превращаются в чёрные полосы, а смещение
 /// `(1 - scale) * 0.5` центрирует видимую часть кадра.
@@ -701,21 +711,21 @@ enum RendererDispatch {
 /// не расходились в формуле.
 pub(super) fn letterbox_scale_and_offset(
     frame: &RenderableFrame,
-    window_size: (u32, u32),
+    viewport_size: (u32, u32),
 ) -> ([f32; 2], [f32; 2]) {
     // Соотношение сторон кадра после container display orientation.
     let video_aspect =
         frame.oriented_display_width() as f32 / frame.oriented_display_height().max(1) as f32;
-    // Соотношение сторон цели рендера (всё окно/swapchain).
-    let window_aspect = window_size.0 as f32 / window_size.1.max(1) as f32;
+    // Соотношение сторон области video draw, уже ужатой app layout-ом.
+    let viewport_aspect = viewport_size.0 as f32 / viewport_size.1.max(1) as f32;
 
-    if video_aspect > window_aspect {
-        // Видео шире окна: чёрные полосы сверху и снизу, масштабируем по вертикали.
-        let scale_y = video_aspect / window_aspect;
+    if video_aspect > viewport_aspect {
+        // Видео шире viewport-а: чёрные полосы сверху и снизу, масштабируем по вертикали.
+        let scale_y = video_aspect / viewport_aspect;
         ([1.0, scale_y], [0.0, (1.0 - scale_y) * 0.5])
     } else {
-        // Видео уже окна (или равно): чёрные полосы слева и справа, масштаб по горизонтали.
-        let scale_x = window_aspect / video_aspect;
+        // Видео уже viewport-а (или равно): чёрные полосы слева и справа.
+        let scale_x = viewport_aspect / video_aspect;
         ([scale_x, 1.0], [(1.0 - scale_x) * 0.5, 0.0])
     }
 }
@@ -961,12 +971,12 @@ mod tests {
     }
 
     #[test]
-    fn letterbox_wide_video_adds_top_bottom_bars() {
-        // Видео 16:9 (1.778) в почти квадратном окне (1.0): кадр шире окна.
+    fn letterbox_wide_video_uses_viewport_size_for_top_bottom_bars() {
+        // Видео 16:9 (1.778) в почти квадратном viewport-е (1.0): кадр шире области.
         let frame = renderable_test_frame(1920, 1080);
         let (uv_scale, uv_offset) = letterbox_scale_and_offset(&frame, (1000, 1000));
 
-        // По горизонтали кадр занимает всё окно, по вертикали — сжимается с полосами.
+        // По горизонтали кадр занимает весь viewport, по вертикали — сжимается с полосами.
         assert_eq!(uv_scale[0], 1.0);
         assert_eq!(uv_offset[0], 0.0);
         // Масштаб > 1 и отрицательное смещение => шейдер уводит края за [0, 1] и красит чёрным.
@@ -980,19 +990,19 @@ mod tests {
             "ожидали offset_y < 0, получили {}",
             uv_offset[1]
         );
-        // Видимая по вертикали доля = window_aspect / video_aspect = 1.0 / 1.778.
+        // Видимая по вертикали доля = viewport_aspect / video_aspect = 1.0 / 1.778.
         let video_aspect = 1920.0_f32 / 1080.0;
-        let window_aspect = 1.0_f32;
-        assert!((visible_axis_fraction(uv_scale[1]) - window_aspect / video_aspect).abs() < 1e-4);
+        let viewport_aspect = 1.0_f32;
+        assert!((visible_axis_fraction(uv_scale[1]) - viewport_aspect / video_aspect).abs() < 1e-4);
     }
 
     #[test]
-    fn letterbox_tall_video_adds_left_right_bars() {
-        // Портретное видео 9:16 (0.5625) в широком окне 16:9 (1.778): кадр уже окна.
+    fn letterbox_portrait_video_uses_wide_viewport_size_for_left_right_bars() {
+        // Портретное видео 9:16 (0.5625) в широком viewport-е 16:9 (1.778).
         let frame = renderable_test_frame(1080, 1920);
         let (uv_scale, uv_offset) = letterbox_scale_and_offset(&frame, (1920, 1080));
 
-        // По вертикали кадр занимает всё окно, по горизонтали — полосы слева и справа.
+        // По вертикали кадр занимает весь viewport, по горизонтали — полосы слева и справа.
         assert_eq!(uv_scale[1], 1.0);
         assert_eq!(uv_offset[1], 0.0);
         assert!(
@@ -1006,12 +1016,12 @@ mod tests {
             uv_offset[0]
         );
         let video_aspect = 1080.0_f32 / 1920.0;
-        let window_aspect = 1920.0_f32 / 1080.0;
-        assert!((visible_axis_fraction(uv_scale[0]) - video_aspect / window_aspect).abs() < 1e-4);
+        let viewport_aspect = 1920.0_f32 / 1080.0;
+        assert!((visible_axis_fraction(uv_scale[0]) - video_aspect / viewport_aspect).abs() < 1e-4);
     }
 
     #[test]
-    fn letterbox_uses_oriented_display_size_for_rotated_phone_video() {
+    fn letterbox_rotated_phone_video_uses_oriented_display_size_inside_viewport() {
         let mut frame = renderable_test_frame(3840, 2160);
         frame.display_orientation = VideoDisplayOrientation::Rotate270Clockwise;
 
@@ -1037,7 +1047,7 @@ mod tests {
 
     #[test]
     fn letterbox_matching_aspect_is_identity() {
-        // Кадр 16:9 в окне 16:9: ни полос, ни масштабирования.
+        // Кадр 16:9 во viewport-е 16:9: ни полос, ни масштабирования.
         let frame = renderable_test_frame(1920, 1080);
         let (uv_scale, uv_offset) = letterbox_scale_and_offset(&frame, (1280, 720));
 

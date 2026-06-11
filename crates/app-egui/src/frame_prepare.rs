@@ -9,7 +9,7 @@ use player_core::{
 };
 use render_core::{
     RenderLiveApplyReport, RenderLiveSettings, RenderLiveSettingsAdapter, RenderLiveSettingsError,
-    RenderLiveSettingsUpdate,
+    RenderLiveSettingsUpdate, RenderViewport,
 };
 use render_wgpu_shell::{RenderFrameDropReason, RenderFrameOutcome, RenderFrameTiming, Renderer};
 use render_wgpu_video::{WgpuFrameTextureViewLookup, WgpuRenderableFrame};
@@ -38,6 +38,9 @@ struct PreparedUiFrame {
     /// Размер surface target-а и UI scale без раскрытия `egui-wgpu` наружу.
     screen: render_wgpu_shell::RenderScreenDescriptor,
 
+    /// Физическая область video pass-а после app layout.
+    video_viewport: RenderViewport,
+
     /// Признак, что egui попросил следующий repaint.
     requested_repaint: bool,
 
@@ -55,6 +58,43 @@ struct FrameSettingsRuntimeAdapter<'frame> {
 
     /// Renderer владеет WGPU context и live render settings.
     renderer: &'frame mut Renderer,
+}
+
+/// Переводит egui coordinate в physical pixel с защитой от невалидного scale.
+fn physical_pixel_floor(point: f32, pixels_per_point: f32) -> u32 {
+    let scaled_point = point.max(0.0) * pixels_per_point;
+    scaled_point.floor() as u32
+}
+
+/// Верхнюю/правую границу округляем вверх, чтобы viewport не терял крайний pixel.
+fn physical_pixel_ceil(point: f32, pixels_per_point: f32) -> u32 {
+    let scaled_point = point.max(0.0) * pixels_per_point;
+    scaled_point.ceil() as u32
+}
+
+/// Конвертирует центральный egui rect в renderer-neutral physical viewport.
+fn video_viewport_from_ui_rect(
+    video_rect: egui::Rect,
+    screen_size_in_pixels: [u32; 2],
+    pixels_per_point: f32,
+) -> RenderViewport {
+    let safe_pixels_per_point = if pixels_per_point.is_finite() && pixels_per_point > 0.0 {
+        pixels_per_point
+    } else {
+        1.0
+    };
+
+    let min_x = physical_pixel_floor(video_rect.min.x, safe_pixels_per_point);
+    let min_y = physical_pixel_floor(video_rect.min.y, safe_pixels_per_point);
+    let max_x = physical_pixel_ceil(video_rect.max.x, safe_pixels_per_point);
+    let max_y = physical_pixel_ceil(video_rect.max.y, safe_pixels_per_point);
+    RenderViewport::new(
+        min_x,
+        min_y,
+        max_x.saturating_sub(min_x),
+        max_y.saturating_sub(min_y),
+    )
+    .clamp_to_surface(screen_size_in_pixels[0], screen_size_in_pixels[1])
 }
 
 impl RenderLiveSettingsAdapter for FrameSettingsRuntimeAdapter<'_> {
@@ -569,7 +609,12 @@ fn prepare_ui_frame(
     let settings_ui_model = settings_runtime.ui_model();
     let rendered_app_ui =
         app_state.render_ui(window, egui_input, frame_context, &settings_ui_model);
-    let egui_full_output = rendered_app_ui.full_output;
+    let crate::state::RenderedAppUi {
+        full_output: egui_full_output,
+        settings_actions,
+        video_viewport_rect,
+        timings: app_ui_timings,
+    } = rendered_app_ui;
 
     let stage_started_at = Instant::now();
     let requested_repaint = app_state.egui_ctx.has_requested_repaint();
@@ -585,6 +630,8 @@ fn prepare_ui_frame(
     let pixels_per_point = app_state.egui_ctx.pixels_per_point();
     let size = window.inner_size();
     let screen_size_in_pixels = [size.width.max(1), size.height.max(1)];
+    let video_viewport =
+        video_viewport_from_ui_rect(video_viewport_rect, screen_size_in_pixels, pixels_per_point);
     let screen_descriptor_elapsed = stage_started_at.elapsed();
 
     let stage_started_at = Instant::now();
@@ -600,11 +647,12 @@ fn prepare_ui_frame(
             size_in_pixels: screen_size_in_pixels,
             pixels_per_point,
         },
+        video_viewport,
         requested_repaint,
-        settings_actions: rendered_app_ui.settings_actions,
+        settings_actions,
         timings: UiPrepareTimings {
             total: ui_prepare_started_at.elapsed(),
-            app_ui: rendered_app_ui.timings,
+            app_ui: app_ui_timings,
             repaint_query: repaint_query_elapsed,
             platform_output: platform_output_elapsed,
             tessellate: tessellate_elapsed,
@@ -1106,6 +1154,7 @@ fn submit_render_frame(
         egui_paint_jobs: prepared_ui_frame.paint_jobs,
         egui_textures_delta: prepared_ui_frame.textures_delta,
         screen: prepared_ui_frame.screen,
+        video_viewport: prepared_ui_frame.video_viewport,
     }) {
         RenderFrameOutcome::Presented(timing) => {
             if submitted_video_frame {
@@ -1277,6 +1326,25 @@ mod tests {
 
     use player_core::{PlayerRenderErrorKind, PlayerVideoFrameDrop};
     use render_wgpu_shell::{RenderFrameDropReason, RenderFrameFailure};
+
+    #[test]
+    fn video_viewport_from_ui_rect_converts_points_to_physical_pixels() {
+        let video_rect =
+            egui::Rect::from_min_max(egui::pos2(100.25, 50.25), egui::pos2(300.5, 250.5));
+
+        let viewport = video_viewport_from_ui_rect(video_rect, [1000, 800], 2.0);
+
+        assert_eq!(viewport, RenderViewport::new(200, 100, 401, 401));
+    }
+
+    #[test]
+    fn invalid_video_viewport_from_ui_rect_defaults_to_full_surface() {
+        let empty_rect = egui::Rect::from_min_max(egui::pos2(40.0, 40.0), egui::pos2(40.0, 80.0));
+
+        let viewport = video_viewport_from_ui_rect(empty_rect, [640, 360], f32::NAN);
+
+        assert_eq!(viewport, RenderViewport::full_surface(640, 360));
+    }
 
     /// Проверяет, что renderer error становится fatal media error, а не silent fallback.
     #[test]

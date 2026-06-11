@@ -165,7 +165,6 @@ pub(crate) struct P010VideoRenderer {
     sampler: wgpu::Sampler,
     color_settings: ColorPipelineSettings,
     hdr_to_sdr_settings: HdrToSdrSettings,
-    window_size: (u32, u32),
 }
 
 /// Возвращает non-zero binding size для P010 uniform buffer-а.
@@ -296,13 +295,7 @@ impl P010VideoRenderer {
             sampler,
             color_settings: ColorPipelineSettings::default(),
             hdr_to_sdr_settings: HdrToSdrSettings::default(),
-            window_size: (1280, 720),
         }
-    }
-
-    /// Обновляет размер surface для расчёта letterbox.
-    pub fn set_window_size(&mut self, width: u32, height: u32) {
-        self.window_size = (width, height);
     }
 
     /// Обновляет color settings, которые P010 diagnostics наследуют от общего renderer config.
@@ -327,7 +320,7 @@ impl P010VideoRenderer {
             frame,
             &self.color_settings,
             self.hdr_to_sdr_settings,
-            self.window_size,
+            pass_context.viewport.size(),
         )?;
         log_first_p010_render_dispatch(frame, &prepared_p010_render);
 
@@ -385,6 +378,20 @@ impl P010VideoRenderer {
 
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_viewport(
+            pass_context.viewport.x as f32,
+            pass_context.viewport.y as f32,
+            pass_context.viewport.width as f32,
+            pass_context.viewport.height as f32,
+            0.0,
+            1.0,
+        );
+        pass.set_scissor_rect(
+            pass_context.viewport.x,
+            pass_context.viewport.y,
+            pass_context.viewport.width,
+            pass_context.viewport.height,
+        );
         pass.draw(0..3, 0..1);
 
         Ok(P010RenderFrameDiagnostics {
@@ -399,13 +406,13 @@ fn prepare_p010_render(
     frame: &RenderableFrame,
     color_settings: &ColorPipelineSettings,
     hdr_to_sdr_settings: HdrToSdrSettings,
-    window_size: (u32, u32),
+    viewport_size: (u32, u32),
 ) -> Result<PreparedP010Render> {
     validate_p010_renderable_frame(frame)?;
 
     let color_path = select_p010_color_path(frame)?;
     validate_hdr_to_sdr_settings_for_p010(hdr_to_sdr_settings, color_path)?;
-    let (uv_scale, uv_offset) = super::letterbox_scale_and_offset(frame, window_size);
+    let (uv_scale, uv_offset) = super::letterbox_scale_and_offset(frame, viewport_size);
     let orientation_transform = super::display_orientation_uv_transform(frame.display_orientation);
     let active_path =
         active_color_path_for_p010(frame, color_settings, hdr_to_sdr_settings, color_path);

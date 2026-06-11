@@ -33,11 +33,12 @@ use crate::local_file_open::{
 };
 use crate::local_media;
 use crate::settings_runtime::CommittedConfigSnapshot;
+use crate::settings_ui::launcher_button;
 use crate::settings_ui::{SettingsUiAction, SettingsUiModel};
-use crate::settings_ui::{launcher_button, window as settings_window};
 use crate::telemetry::Telemetry;
 use crate::ui::animation::AnimationState;
 use crate::ui::player_controls::{self, ControlAction};
+use crate::ui::sidebar::{self, AppSidebarContent};
 use crate::ui::skin::{self, PlayerSkin};
 use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
 
@@ -314,6 +315,9 @@ pub(crate) struct RenderedAppUi {
 
     /// Visual settings actions, которые shell передаст authoritative runtime owner-у.
     pub(crate) settings_actions: Vec<SettingsUiAction>,
+
+    /// Центральная область video/overlay в egui points после всех app panels.
+    pub(crate) video_viewport_rect: egui::Rect,
 
     /// Timing внутренних участков `render_ui`.
     pub(crate) timings: AppUiRenderTimings,
@@ -1519,6 +1523,8 @@ impl AppState {
         let mut bottom_controls_elapsed = Duration::ZERO;
         let mut telemetry_panel_elapsed = Duration::ZERO;
         let mut center_overlay_elapsed = Duration::ZERO;
+        let mut video_viewport_rect =
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(0.0, 0.0));
 
         let egui_run_started_at = Instant::now();
         let full_output = self.egui_ctx.run_ui(egui_input, |ui| {
@@ -1535,6 +1541,14 @@ impl AppState {
             );
             bottom_controls_elapsed = stage_started_at.elapsed();
 
+            sidebar::show(
+                ui,
+                AppSidebarContent::Settings {
+                    model: settings_ui_model,
+                },
+                &mut settings_actions,
+            );
+
             if let Some(telemetry_panel_rows) = telemetry_panel_rows.as_ref() {
                 let stage_started_at = Instant::now();
                 Self::render_telemetry_panel(ui, telemetry_panel_rows);
@@ -1543,7 +1557,7 @@ impl AppState {
             }
 
             let stage_started_at = Instant::now();
-            Self::render_center_overlay(
+            video_viewport_rect = Self::render_center_overlay(
                 ui,
                 is_playing,
                 error_message,
@@ -1554,7 +1568,6 @@ impl AppState {
             center_overlay_elapsed = stage_started_at.elapsed();
 
             launcher_button::show(ui.ctx(), &mut settings_actions);
-            settings_window::show(ui.ctx(), settings_ui_model, &mut settings_actions);
         });
         let egui_run_elapsed = egui_run_started_at.elapsed();
 
@@ -1566,6 +1579,7 @@ impl AppState {
         RenderedAppUi {
             full_output,
             settings_actions,
+            video_viewport_rect,
             timings: AppUiRenderTimings {
                 total: render_ui_started_at.elapsed(),
                 pre_ui_setup: pre_ui_setup_elapsed,
@@ -2285,12 +2299,16 @@ impl AppState {
         pending_message: Option<&str>,
         skin: &impl PlayerSkin,
         animation_state: AnimationState,
-    ) {
+    ) -> egui::Rect {
+        let mut central_rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(0.0, 0.0));
+
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
+                central_rect = ui.max_rect();
+
                 if let Some(dim_color) = skin.stale_frame_dim_color(animation_state) {
-                    ui.painter().rect_filled(ui.max_rect(), 0.0, dim_color);
+                    ui.painter().rect_filled(central_rect, 0.0, dim_color);
                 }
 
                 if let Some(error) = error_message {
@@ -2310,6 +2328,8 @@ impl AppState {
                     });
                 }
             });
+
+        central_rect
     }
 }
 
@@ -2562,6 +2582,25 @@ mod tests {
         assert!(!include_str!("state.rs").contains(forbidden_member));
         assert!(!include_str!("main.rs").contains(forbidden_member));
         assert!(!include_str!("app_shell/mod.rs").contains(forbidden_member));
+    }
+
+    #[test]
+    fn app_layout_uses_sidebar_instead_of_floating_settings_window() {
+        let state_source = include_str!("state.rs");
+        let render_ui_section = source_section_between(
+            state_source,
+            "pub fn render_ui(",
+            "let egui_run_elapsed = egui_run_started_at.elapsed();",
+        );
+
+        assert!(
+            render_ui_section.contains("sidebar::show"),
+            "AppState::render_ui должен рисовать настройки через app sidebar"
+        );
+        assert!(
+            !render_ui_section.contains("settings_window::show"),
+            "AppState::render_ui не должен возвращать floating settings window"
+        );
     }
 
     /// Фиксирует явную границу refresh/publish вместо getter-like API с side effects.

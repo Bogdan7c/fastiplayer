@@ -406,6 +406,78 @@ impl RenderDiagnostics {
     }
 }
 
+/// Renderer-neutral область видео в физических пикселях surface target-а.
+///
+/// App layer вычисляет эту область из layout-а, а concrete renderer сам решает,
+/// как применить её к своему backend-у. Поэтому тип не содержит `egui`, `wgpu`
+/// или windowing-объекты.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RenderViewport {
+    /// Левый край области видео в physical pixels.
+    pub x: u32,
+
+    /// Верхний край области видео в physical pixels.
+    pub y: u32,
+
+    /// Ширина области видео в physical pixels.
+    pub width: u32,
+
+    /// Высота области видео в physical pixels.
+    pub height: u32,
+}
+
+impl RenderViewport {
+    /// Создаёт viewport без clamp-а; владелец surface должен зажать его перед render pass.
+    #[must_use]
+    pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// Возвращает viewport на всю surface.
+    #[must_use]
+    pub const fn full_surface(surface_width: u32, surface_height: u32) -> Self {
+        Self::new(0, 0, surface_width, surface_height)
+    }
+
+    /// Размер viewport-а как `(width, height)` для letterbox расчётов.
+    #[must_use]
+    pub const fn size(self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Возвращает `true`, если viewport не может безопасно принять draw.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+
+    /// Зажимает viewport к surface; некорректный запрос возвращает full-surface fallback.
+    ///
+    /// Fallback нужен, чтобы отсутствие/сбой layout rect-а не создавали нулевой scissor
+    /// и не меняли старое поведение рендера полного окна.
+    #[must_use]
+    pub fn clamp_to_surface(self, surface_width: u32, surface_height: u32) -> Self {
+        let full_surface = Self::full_surface(surface_width, surface_height);
+        if self.is_empty() || self.x >= surface_width || self.y >= surface_height {
+            return full_surface;
+        }
+
+        let clamped_width = self.width.min(surface_width - self.x);
+        let clamped_height = self.height.min(surface_height - self.y);
+        if clamped_width == 0 || clamped_height == 0 {
+            return full_surface;
+        }
+
+        Self::new(self.x, self.y, clamped_width, clamped_height)
+    }
+}
+
 /// Поведение swapchain transfer на финальной записи в render target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1928,6 +2000,36 @@ mod tests {
                 RenderLiveSettingId::HdrToSdrSdrReferenceWhiteNits,
                 RenderLiveSettingId::ShaderParameter(shader_parameter_id),
             ]
+        );
+    }
+
+    #[test]
+    fn render_viewport_full_surface_covers_target() {
+        let viewport = RenderViewport::full_surface(1920, 1080);
+
+        assert_eq!(viewport, RenderViewport::new(0, 0, 1920, 1080));
+        assert_eq!(viewport.size(), (1920, 1080));
+        assert!(!viewport.is_empty());
+    }
+
+    #[test]
+    fn render_viewport_clamps_partial_overflow_to_surface() {
+        let viewport = RenderViewport::new(100, 50, 1000, 800).clamp_to_surface(640, 360);
+
+        assert_eq!(viewport, RenderViewport::new(100, 50, 540, 310));
+    }
+
+    #[test]
+    fn render_viewport_invalid_request_defaults_to_full_surface() {
+        let full_surface = RenderViewport::full_surface(640, 360);
+
+        assert_eq!(
+            RenderViewport::new(10, 10, 0, 200).clamp_to_surface(640, 360),
+            full_surface
+        );
+        assert_eq!(
+            RenderViewport::new(640, 10, 100, 100).clamp_to_surface(640, 360),
+            full_surface
         );
     }
 

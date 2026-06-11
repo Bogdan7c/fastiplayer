@@ -1,21 +1,20 @@
-//! Visual-only слой окна настроек.
+//! Visual-only слой настроек.
 //!
 //! Этот модуль намеренно работает только с neutral settings descriptor-ами,
 //! draft-значениями, статусами и cached option snapshots. Runtime owner
-//! применяет эти действия отдельно и будет подключён к окну в следующей фазе.
+//! применяет эти действия отдельно.
 
 pub mod field_widget;
 pub mod launcher_button;
 pub mod layout;
 pub mod section_list;
-pub mod window;
 
 use settings_core::{
     OptionProviderId, SettingDescriptor, SettingGroupId, SettingId, SettingOptions,
     SettingSectionId, SettingValue, SettingsSurfaceId,
 };
 
-/// Visual action, который окно настроек отдаёт наружу вместо прямой работы с runtime.
+/// Visual action, который UI настроек отдаёт наружу вместо прямой работы с runtime.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsUiAction {
     /// Пользователь запросил открытие окна настроек.
@@ -291,16 +290,6 @@ mod tests {
             Some(SettingsUiAction::Open)
         );
         assert_eq!(launcher_button::launcher_action_for_button(false), None);
-    }
-
-    #[test]
-    fn close_as_cancel_maps_window_cross_to_cancel_action() {
-        assert_eq!(
-            window::close_action_from_open_flag(true, false),
-            Some(SettingsUiAction::Cancel)
-        );
-        assert_eq!(window::close_action_from_open_flag(true, true), None);
-        assert_eq!(window::close_action_from_open_flag(false, false), None);
     }
 
     #[test]

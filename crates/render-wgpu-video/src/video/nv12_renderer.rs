@@ -14,7 +14,6 @@ pub(crate) struct Nv12VideoRenderer {
     uniform_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
     color_settings: ColorPipelineSettings,
-    window_size: (u32, u32),
 }
 
 /// Возвращает non-zero binding size для uniform buffer-а.
@@ -153,13 +152,7 @@ impl Nv12VideoRenderer {
             uniform_buffer,
             sampler,
             color_settings: ColorPipelineSettings::default(),
-            window_size: (1280, 720),
         }
-    }
-
-    /// Обновляет размер surface для расчёта letterbox.
-    pub fn set_window_size(&mut self, width: u32, height: u32) {
-        self.window_size = (width, height);
     }
 
     /// Обновляет SDR color settings без пересоздания GPU pipeline.
@@ -177,7 +170,8 @@ impl Nv12VideoRenderer {
     ) -> Result<ActiveColorPath> {
         // Letterbox uv_scale/uv_offset считаем в общей функции video::letterbox_scale_and_offset,
         // чтобы NV12 и P010 не расходились в формуле сохранения пропорций.
-        let (uv_scale, uv_offset) = super::letterbox_scale_and_offset(frame, self.window_size);
+        let (uv_scale, uv_offset) =
+            super::letterbox_scale_and_offset(frame, pass_context.viewport.size());
         let orientation_transform =
             super::display_orientation_uv_transform(frame.display_orientation);
 
@@ -247,6 +241,20 @@ impl Nv12VideoRenderer {
 
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_viewport(
+            pass_context.viewport.x as f32,
+            pass_context.viewport.y as f32,
+            pass_context.viewport.width as f32,
+            pass_context.viewport.height as f32,
+            0.0,
+            1.0,
+        );
+        pass.set_scissor_rect(
+            pass_context.viewport.x,
+            pass_context.viewport.y,
+            pass_context.viewport.width,
+            pass_context.viewport.height,
+        );
         pass.draw(0..3, 0..1);
 
         Ok(prepared_color_pipeline.active_path)

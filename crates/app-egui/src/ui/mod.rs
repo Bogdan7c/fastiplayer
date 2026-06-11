@@ -7,5 +7,6 @@
 pub mod animation;
 pub mod assets;
 pub mod player_controls;
+pub mod sidebar;
 pub mod skin;
 pub mod timeline;
