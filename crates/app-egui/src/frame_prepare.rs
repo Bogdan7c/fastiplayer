@@ -2,18 +2,29 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use player_core::{
-    LatencyCounterSnapshot, PlayerRenderError, PlayerSnapshot, PlayerTickResult,
-    PlayerVideoDropReason, PlayerWorkerEvent,
+    LatencyCounterSnapshot, PlayerRenderError, PlayerRuntimeApplyGroup,
+    PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyReport, PlayerRuntimeApplyResult,
+    PlayerRuntimeDecoderThreadConfigUpdate, PlayerRuntimeSettingsUpdate, PlayerSnapshot,
+    PlayerTickResult, PlayerVideoDropReason, PlayerWorkerEvent, PreparedMedia,
+};
+use render_core::{
+    RenderLiveApplyReport, RenderLiveSettings, RenderLiveSettingsAdapter, RenderLiveSettingsError,
+    RenderLiveSettingsUpdate,
 };
 use render_wgpu_shell::{RenderFrameDropReason, RenderFrameOutcome, RenderFrameTiming, Renderer};
 use render_wgpu_video::{WgpuFrameTextureViewLookup, WgpuRenderableFrame};
+use rustiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
 use tracing::{debug, instrument, trace};
 use video_core::DecodedPixelFormat;
 use winit::window::Window;
 
 use crate::redraw_pacing::RedrawPacing;
-use crate::settings_runtime::SettingsRuntime;
-use crate::state::{AppFrameContext, AppState, AppUiRenderTimings, RenderablePresentFrame};
+use crate::settings_runtime::{SettingsRuntime, SettingsRuntimeReconfigureHost};
+use crate::startup_media::{resolve_direct_media_startup_media, resolve_youtube_startup_media};
+use crate::state::{
+    ActiveMediaSource, AppFrameContext, AppState, AppUiRenderTimings, RenderablePresentFrame,
+};
+use crate::system_capabilities::probe_system_capabilities;
 use crate::telemetry::{SeekDiscardReason, Telemetry, VideoDropReason, VideoFrameTelemetryEvent};
 
 /// Результат UI stage до входа в renderer/surface critical path.
@@ -35,6 +46,157 @@ struct PreparedUiFrame {
 
     /// Подробная CPU-разбивка app-owned UI stage.
     timings: UiPrepareTimings,
+}
+
+/// Runtime adapter одного frame-а: render live preview + committed runtime owners.
+struct FrameSettingsRuntimeAdapter<'frame> {
+    /// App state владеет player worker и app-level media/source identity.
+    app_state: &'frame mut AppState,
+
+    /// Renderer владеет WGPU context и live render settings.
+    renderer: &'frame mut Renderer,
+}
+
+impl RenderLiveSettingsAdapter for FrameSettingsRuntimeAdapter<'_> {
+    fn preview_live_settings(
+        &mut self,
+        update: &RenderLiveSettingsUpdate,
+    ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.renderer.preview_live_settings(update)
+    }
+
+    fn commit_live_settings(
+        &mut self,
+        settings: &RenderLiveSettings,
+    ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.renderer.commit_live_settings(settings)
+    }
+
+    fn rollback_live_settings(
+        &mut self,
+        baseline: &RenderLiveSettings,
+    ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.renderer.rollback_live_settings(baseline)
+    }
+}
+
+impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
+    fn apply_player_runtime_settings(
+        &mut self,
+        update: PlayerRuntimeSettingsUpdate,
+    ) -> PlayerRuntimeApplyResult {
+        if let Some(decoder_update) = &update.decoder_thread_config {
+            if let Err(message) = self.app_state.rebuild_video_pipeline_with_decoder_config(
+                decoder_update.decoder_thread_config,
+                self.renderer.instance(),
+                self.renderer.adapter(),
+                self.renderer.device(),
+                self.renderer.queue(),
+            ) {
+                return Ok(player_decoder_rebuild_failure_report(
+                    decoder_update,
+                    message,
+                ));
+            }
+        }
+
+        self.app_state.apply_player_runtime_settings(update)
+    }
+
+    fn apply_media_service_runtime_settings(
+        &mut self,
+        update: &MediaServiceRuntimeSettingsUpdate,
+    ) -> AppRouteApplyResult {
+        let Some(active_source) = self.app_state.active_media_source() else {
+            return self.app_state.apply_media_service_runtime_settings(update);
+        };
+        let playback_snapshot = self.app_state.refresh_player_snapshot();
+        let demux_config = self.app_state.demux_config_for_open();
+
+        let rebuild_result = match active_source {
+            ActiveMediaSource::LocalFile(_path) => {
+                return self.app_state.apply_media_service_runtime_settings(update);
+            }
+            ActiveMediaSource::DirectMediaUrl(source_url) => {
+                match resolve_direct_media_startup_media(
+                    &source_url,
+                    &update.network,
+                    &demux_config,
+                ) {
+                    Ok(opened_media) => {
+                        let source_label = opened_media.source_label().to_string();
+                        let prepared_media = PreparedMedia::from_external_label(
+                            source_label.clone(),
+                            opened_media.into_demuxer(),
+                        );
+                        let media_loaded = self.app_state.load_prepared_direct_media(
+                            source_url,
+                            source_label,
+                            prepared_media,
+                        );
+                        if media_loaded {
+                            Ok(())
+                        } else {
+                            Err("direct media rebuild failed while sending media to worker"
+                                .to_string())
+                        }
+                    }
+                    Err(error) => Err(format!("direct media rebuild failed: {error}")),
+                }
+            }
+            ActiveMediaSource::YouTubeUrl(source_url) => {
+                let system_capabilities =
+                    probe_system_capabilities(self.renderer.render_capabilities());
+                match resolve_youtube_startup_media(
+                    &source_url,
+                    &update.network,
+                    &update.youtube,
+                    &demux_config,
+                    &system_capabilities,
+                ) {
+                    Ok(streaming_media) => {
+                        let media_loaded = self.app_state.load_youtube_demuxer(
+                            source_url,
+                            streaming_media.description,
+                            streaming_media.demuxer,
+                        );
+                        if media_loaded {
+                            Ok(())
+                        } else {
+                            Err(
+                                "YouTube media rebuild failed while sending demuxer to worker"
+                                    .to_string(),
+                            )
+                        }
+                    }
+                    Err(error) => Err(format!("YouTube media rebuild failed: {error}")),
+                }
+            }
+        };
+
+        match rebuild_result {
+            Ok(()) => {
+                self.app_state
+                    .restore_playback_after_media_reconfigure(&playback_snapshot);
+                AppRouteApplyResult::Applied
+            }
+            Err(message) => AppRouteApplyResult::Failed { message },
+        }
+    }
+}
+
+/// Строит typed player report, если app-owned backend rebuild не стартовал.
+fn player_decoder_rebuild_failure_report(
+    update: &PlayerRuntimeDecoderThreadConfigUpdate,
+    message: String,
+) -> PlayerRuntimeApplyReport {
+    let mut report = PlayerRuntimeApplyReport::empty();
+    report.push(PlayerRuntimeApplyGroupReport::fatal(
+        PlayerRuntimeApplyGroup::DecoderThreadConfig,
+        update.affected_settings.clone(),
+        message,
+    ));
+    report
 }
 
 /// Video stage, подготовленный до финального `render_wgpu_shell::RenderFrameInput`.
@@ -1031,15 +1193,22 @@ pub(crate) fn render_frame(
     let mut ui_prepare_timings = prepared_ui_frame.timings;
     ui_prepare_timings.total = stage_started_at.elapsed();
 
-    let settings_action_requested_repaint =
-        match settings_runtime.handle_ui_actions(settings_actions, renderer) {
+    let settings_action_requested_repaint = {
+        let mut runtime_adapter = FrameSettingsRuntimeAdapter {
+            app_state,
+            renderer,
+        };
+        match settings_runtime
+            .handle_ui_actions_with_runtime_adapter(settings_actions, &mut runtime_adapter)
+        {
             Ok(requested_repaint) => requested_repaint,
             Err(error) => {
                 settings_runtime
                     .report_runtime_error("Не удалось обработать действие settings UI", error);
                 true
             }
-        };
+        }
+    };
 
     let settings_preview_tick = match settings_runtime.apply_due_preview(renderer, Instant::now()) {
         Ok(tick) => tick,

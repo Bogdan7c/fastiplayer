@@ -352,7 +352,7 @@ enum YoutubeStartupSelectionError {
 }
 
 /// Выполняет production chain: service candidates -> capability selection -> demux open.
-fn resolve_youtube_startup_media(
+pub(crate) fn resolve_youtube_startup_media(
     source_url: &str,
     network_config: &NetworkConfig,
     youtube_config: &YoutubeConfig,
@@ -382,7 +382,7 @@ fn resolve_youtube_startup_media(
 }
 
 /// Выполняет generic direct media open chain без YouTube-specific semantics.
-fn resolve_direct_media_startup_media(
+pub(crate) fn resolve_direct_media_startup_media(
     source_url: &str,
     network_config: &NetworkConfig,
     demux_config: &PlayerDemuxConfig,
@@ -493,7 +493,11 @@ fn poll_youtube_startup_job(
                 description = %streaming_media.description,
                 "YouTube media подготовлен для streaming playback"
             );
-            app_state.load_youtube_demuxer(streaming_media.description, streaming_media.demuxer);
+            app_state.load_youtube_demuxer(
+                source_url,
+                streaming_media.description,
+                streaming_media.demuxer,
+            );
         }
         Err(error) => {
             warn!(source = %source_url, error = %error, "Не удалось подготовить YouTube URL");
@@ -532,7 +536,7 @@ fn poll_direct_media_startup_job(
                 label = %source_label,
                 "Direct media URL подготовлен для playback"
             );
-            app_state.load_prepared_external_media(source_label, prepared_media);
+            app_state.load_prepared_direct_media(source_url, source_label, prepared_media);
         }
         Err(error) => {
             warn!(source = %source_url, error = %error, "Не удалось подготовить direct media URL");

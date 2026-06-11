@@ -1524,7 +1524,7 @@ impl PlayerWorkerRuntime {
         }
 
         if let Some(decoder_thread_update) = update.decoder_thread_config {
-            self.report_decoder_thread_runtime_update(decoder_thread_update, &mut report);
+            self.apply_runtime_decoder_thread_config(decoder_thread_update, &mut report);
         }
 
         if !update.unsupported_settings.is_empty() {
@@ -1598,8 +1598,8 @@ impl PlayerWorkerRuntime {
         ));
     }
 
-    /// Честно репортит decoder/channel/pool changes как future controlled rebuild.
-    fn report_decoder_thread_runtime_update(
+    /// Принимает новый decoder-thread config после app-owned backend rebuild.
+    fn apply_runtime_decoder_thread_config(
         &mut self,
         update: PlayerRuntimeDecoderThreadConfigUpdate,
         report: &mut PlayerRuntimeApplyReport,
@@ -1614,10 +1614,12 @@ impl PlayerWorkerRuntime {
             return;
         }
 
-        report.push(PlayerRuntimeApplyGroupReport::requires_controlled_rebuild(
+        self.config.decoder_thread_config = update.decoder_thread_config;
+        report.push(PlayerRuntimeApplyGroupReport::accepted(
             PlayerRuntimeApplyGroup::DecoderThreadConfig,
             update.affected_settings,
-            "decoder queue/channel/pool settings require controlled rebuild; no internals were mutated",
+            PlayerRuntimeAcceptedChange::Applied,
+            "decoder thread config accepted after controlled backend rebuild",
         ));
     }
 
@@ -2583,7 +2585,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_apply_decoder_thread_config_requires_controlled_rebuild_without_mutation() {
+    fn runtime_apply_decoder_thread_config_accepts_controlled_rebuild() {
         let mut runtime = runtime_for_tests(Instant::now());
         let original_decoder_thread_config = runtime.config.decoder_thread_config;
         let requested_decoder_thread_config = PlayerVideoDecoderThreadConfig {
@@ -2600,13 +2602,13 @@ mod tests {
 
         assert_eq!(
             runtime.config.decoder_thread_config,
-            original_decoder_thread_config
+            requested_decoder_thread_config
         );
         let decoder_report =
             apply_group_report(&report, PlayerRuntimeApplyGroup::DecoderThreadConfig);
         assert_eq!(
             decoder_report.outcome,
-            PlayerRuntimeApplyOutcome::RequiresControlledRebuild
+            PlayerRuntimeApplyOutcome::Accepted(PlayerRuntimeAcceptedChange::Applied)
         );
     }
 

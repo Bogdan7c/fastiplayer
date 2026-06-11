@@ -12,14 +12,17 @@ use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
 use media_core::TrackKind;
 use player_core::{
     FrameCounters, MediaOpenRequest, MediaSource, PlaybackState, PlayerCommand, PlayerError,
-    PlayerErrorKind, PlayerEvent, PlayerPresentFrame, PlayerRenderError, PlayerSnapshot,
-    PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PreparedMedia, SeekRequest,
+    PlayerErrorKind, PlayerEvent, PlayerPresentFrame, PlayerRenderError, PlayerRuntimeApplyResult,
+    PlayerRuntimeSettingsUpdate, PlayerSnapshot, PlayerVideoDecoderThreadConfig, PlayerWorker,
+    PlayerWorkerConfig, PlayerWorkerEvent, PreparedMedia, QualitySelection, SeekRequest,
 };
 use render_core::RenderDiagnostics;
 use render_wgpu_video::{
     DmaBufWgpuFrameMaterializer, WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
     wrap_video_backend_for_wgpu_submission,
 };
+use rustiplayer_config::PlayerDemuxConfig;
+use rustiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
 use tracing::{debug, instrument, warn};
 use video_vaapi::VaapiVideoBackendFactory;
 use winit::window::Window;
@@ -78,6 +81,19 @@ struct TelemetryPanelCache {
 
     /// Момент, после которого diagnostics нужно перечитать и переформатировать.
     next_refresh_at: Option<Instant>,
+}
+
+/// Восстановимый пользовательский source intent для controlled media rebuild.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ActiveMediaSource {
+    /// Локальный файл можно переоткрыть через local media owner.
+    LocalFile(PathBuf),
+
+    /// YouTube URL переоткрывается через service-youtube startup flow.
+    YouTubeUrl(String),
+
+    /// Direct HTTP media URL переоткрывается через service-direct-media flow.
+    DirectMediaUrl(String),
 }
 
 impl Default for TelemetryPanelCache {
@@ -658,6 +674,9 @@ pub struct AppState {
     /// Последний локальный файл, открытый shell-ом, для восстановления после suspend.
     current_local_file: Option<PathBuf>,
 
+    /// Последний восстановимый media source intent для runtime source rebuild.
+    active_media_source: Option<ActiveMediaSource>,
+
     /// Активный async dialog/prepare job для локального файла.
     local_file_open_job: Option<LocalFileOpenJob>,
 
@@ -732,6 +751,7 @@ impl AppState {
             cached_renderable_present_frame: None,
             wgpu_frame_materializer: None,
             current_local_file: None,
+            active_media_source: None,
             local_file_open_job: None,
             timeline_ui_state: TimelineUiState::default(),
             settings_ui_state: SettingsUiState::default(),
@@ -743,6 +763,22 @@ impl AppState {
     /// Обновляет read-only config snapshot из authoritative settings runtime.
     pub(crate) fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
         self.committed_config_snapshot = snapshot;
+    }
+
+    /// Применяет player runtime settings через request/reply worker boundary.
+    pub(crate) fn apply_player_runtime_settings(
+        &mut self,
+        update: PlayerRuntimeSettingsUpdate,
+    ) -> PlayerRuntimeApplyResult {
+        self.player_worker.apply_runtime_settings(update)
+    }
+
+    /// Применяет media/source policy через app-level owner.
+    pub(crate) fn apply_media_service_runtime_settings(
+        &mut self,
+        _update: &MediaServiceRuntimeSettingsUpdate,
+    ) -> AppRouteApplyResult {
+        AppRouteApplyResult::Applied
     }
 
     /// Переключает состояние воспроизведения через playback worker.
@@ -882,6 +918,7 @@ impl AppState {
                     warn!(error = %error, "Не удалось отправить подготовленный файл в worker");
                     return;
                 }
+                self.active_media_source = Some(ActiveMediaSource::LocalFile(path.to_path_buf()));
             }
             Err(error) => {
                 warn!(error = %error, "Не удалось открыть файл");
@@ -920,30 +957,41 @@ impl AppState {
 
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.clear_startup_status();
-        self.current_local_file = Some(path);
+        self.current_local_file = Some(path.clone());
+        self.active_media_source = Some(ActiveMediaSource::LocalFile(path));
         self.mark_pending_worker_redraw();
     }
 
     /// Загружает YouTube demuxer без долговременного database/cache слоя.
     pub fn load_youtube_demuxer(
         &mut self,
+        source_url: String,
         label: String,
         demuxer: Box<dyn symphonia_demux::Demuxer + Send>,
-    ) {
+    ) -> bool {
         let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.clear_startup_status();
         self.current_local_file = None;
         if let Err(error) = self.player_worker.load_demuxer(label, demuxer, autoplay) {
             warn!(error = %error, "Не удалось отправить YouTube demuxer в worker");
-            return;
+            self.set_startup_error(format!(
+                "WorkerUnavailable: YouTube worker недоступен для {source_url}: {error}"
+            ));
+            return false;
         }
 
+        self.active_media_source = Some(ActiveMediaSource::YouTubeUrl(source_url));
         self.mark_pending_worker_redraw();
+        true
     }
 
     /// Загружает уже подготовленный внешний media source через PreparedMedia boundary.
-    pub fn load_prepared_external_media(&mut self, label: String, prepared_media: PreparedMedia) {
+    pub fn load_prepared_external_media(
+        &mut self,
+        label: String,
+        prepared_media: PreparedMedia,
+    ) -> bool {
         let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.clear_startup_status();
@@ -957,10 +1005,26 @@ impl AppState {
             self.set_startup_error(format!(
                 "WorkerUnavailable: direct media worker недоступен для {label}: {error}"
             ));
-            return;
+            return false;
         }
 
         self.mark_pending_worker_redraw();
+        true
+    }
+
+    /// Загружает подготовленный direct media URL и запоминает восстановимый source intent.
+    pub fn load_prepared_direct_media(
+        &mut self,
+        source_url: String,
+        label: String,
+        prepared_media: PreparedMedia,
+    ) -> bool {
+        if self.load_prepared_external_media(label, prepared_media) {
+            self.active_media_source = Some(ActiveMediaSource::DirectMediaUrl(source_url));
+            true
+        } else {
+            false
+        }
     }
 
     /// Инициализирует video pipeline и сохраняет WGPU materializer в shell layer-е.
@@ -972,32 +1036,48 @@ impl AppState {
         queue: &wgpu::Queue,
     ) {
         let decoder_thread_config = self.player_worker.decoder_thread_config();
+        if let Err(error) = self.rebuild_video_pipeline_with_decoder_config(
+            decoder_thread_config,
+            instance,
+            adapter,
+            device,
+            queue,
+        ) {
+            warn!(error = %error, "Video backend unavailable, no hardware decode");
+        }
+    }
+
+    /// Пересоздаёт concrete video backend через app-owned composition boundary.
+    pub(crate) fn rebuild_video_pipeline_with_decoder_config(
+        &mut self,
+        decoder_thread_config: PlayerVideoDecoderThreadConfig,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Result<(), String> {
         let backend_factory =
             VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config);
 
         let started_backend = match backend_factory.start_for_composition() {
             Ok(started_backend) => started_backend,
             Err(error) => {
-                warn!(error = %error, "Video backend unavailable, no hardware decode");
-                return;
+                return Err(format!("video backend startup failed: {error}"));
             }
         };
         let (player_backend, frame_resource_provider) =
             wrap_video_backend_for_wgpu_submission(started_backend, queue);
-        self.wgpu_frame_materializer = Some(Arc::new(DmaBufWgpuFrameMaterializer::new(
-            instance,
-            adapter,
-            device,
-            frame_resource_provider,
-        )));
+        let frame_materializer: Arc<dyn WgpuFrameTextureViewMaterializer> = Arc::new(
+            DmaBufWgpuFrameMaterializer::new(instance, adapter, device, frame_resource_provider),
+        );
 
         if let Err(error) = self.player_worker.set_video_backend(player_backend) {
-            self.wgpu_frame_materializer = None;
-            warn!(error = %error, "Не удалось отправить video backend в worker");
-            return;
+            return Err(format!("video backend command delivery failed: {error}"));
         }
 
+        self.wgpu_frame_materializer = Some(frame_materializer);
         self.mark_pending_worker_redraw();
+        Ok(())
     }
 
     /// Возвращает WGPU materializer текущего concrete video backend-а.
@@ -1230,6 +1310,68 @@ impl AppState {
     #[must_use]
     pub fn current_local_file(&self) -> Option<&Path> {
         self.current_local_file.as_deref()
+    }
+
+    /// Возвращает восстановимый active source intent для controlled media rebuild.
+    #[must_use]
+    pub(crate) fn active_media_source(&self) -> Option<ActiveMediaSource> {
+        self.active_media_source.clone()
+    }
+
+    /// Возвращает текущий demux config snapshot для повторного открытия source.
+    #[must_use]
+    pub(crate) fn demux_config_for_open(&self) -> PlayerDemuxConfig {
+        self.committed_config_snapshot.demux_config_for_open()
+    }
+
+    /// Восстанавливает runtime playback controls после controlled media reopen.
+    pub(crate) fn restore_playback_after_media_reconfigure(&mut self, snapshot: &PlayerSnapshot) {
+        self.send_restore_command(PlayerCommand::SetVolume(snapshot.volume));
+
+        if let Some(track_id) = snapshot.selected_tracks.video_track {
+            self.send_restore_command(PlayerCommand::SelectVideoTrack(track_id));
+        }
+        if let Some(track_id) = snapshot.selected_tracks.audio_track {
+            self.send_restore_command(PlayerCommand::SelectAudioTrack(track_id));
+        }
+        if let Some(track_id) = snapshot.selected_tracks.subtitle_track {
+            self.send_restore_command(PlayerCommand::SelectSubtitleTrack(Some(track_id)));
+        }
+        if let Some(selected_quality) = snapshot
+            .available_qualities
+            .iter()
+            .find(|quality| quality.selected)
+        {
+            self.send_restore_command(PlayerCommand::SelectQuality(QualitySelection::Specific(
+                selected_quality.id.clone(),
+            )));
+        }
+
+        if snapshot.current_position > Duration::ZERO {
+            self.send_restore_command(PlayerCommand::Seek(SeekRequest::absolute(
+                snapshot.current_position.into(),
+            )));
+        }
+
+        match snapshot.playback_state {
+            PlaybackState::Playing
+            | PlaybackState::Buffering
+            | PlaybackState::Seeking
+            | PlaybackState::Draining => self.send_restore_command(PlayerCommand::Play),
+            PlaybackState::Paused => self.send_restore_command(PlayerCommand::Pause),
+            PlaybackState::Idle
+            | PlaybackState::Opening
+            | PlaybackState::Stopped
+            | PlaybackState::Ended
+            | PlaybackState::Failed => {}
+        }
+    }
+
+    /// Отправляет restore command, сохраняя ошибки доставки видимыми в логах.
+    fn send_restore_command(&mut self, command: PlayerCommand) {
+        if let Err(error) = self.player_worker.try_send_command(command) {
+            warn!(error = %error, "Не удалось восстановить playback state после media reconfigure");
+        }
     }
 
     /// Возвращает `true`, пока shell ждёт file dialog или подготовку локального media.

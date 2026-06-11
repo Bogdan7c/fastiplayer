@@ -196,13 +196,13 @@ impl PlayerRuntimeDefaultVolumeUpdate {
     }
 }
 
-/// Decoder/channel/pool settings, которые в S07 нельзя менять прямой мутацией.
+/// Decoder/channel/pool settings, которые применяются через controlled rebuild.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerRuntimeDecoderThreadConfigUpdate {
-    /// Новый decoder-thread config, который требует controlled rebuild.
+    /// Новый decoder-thread config для следующего backend lifecycle.
     pub decoder_thread_config: PlayerVideoDecoderThreadConfig,
 
-    /// Конкретные settings ids, которые привели к controlled-rebuild request.
+    /// Конкретные settings ids, которые привели к controlled rebuild request.
     pub affected_settings: Vec<PlayerRuntimeSettingId>,
 }
 
@@ -235,7 +235,7 @@ pub struct PlayerRuntimeSettingsUpdate {
     /// Worker-owned default volume policy; не меняет current session volume.
     pub default_volume: Option<PlayerRuntimeDefaultVolumeUpdate>,
 
-    /// Decoder/channel/pool settings, требующие controlled rebuild.
+    /// Decoder/channel/pool settings, которые применяются через controlled rebuild.
     pub decoder_thread_config: Option<PlayerRuntimeDecoderThreadConfigUpdate>,
 
     /// Settings, которые player-core пока не умеет применять.

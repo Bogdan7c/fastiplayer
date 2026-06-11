@@ -8,10 +8,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use player_core::{
+    PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
+    PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyOutcome, PlayerRuntimeApplyReport,
+    PlayerRuntimeApplyResult, PlayerRuntimeSettingsUpdate,
+};
 use render_core::{
     ColorPipelineSettings, HdrToSdrSettings, RenderLiveApplyOutcome, RenderLiveSettings,
     RenderLiveSettingsAdapter, RenderLiveSettingsErrorKind, RenderLiveSettingsUpdate,
 };
+#[cfg(test)]
+use render_core::{RenderLiveApplyReport, RenderLiveSettingsError};
 use rustiplayer_config::{
     AppConfig, LoadedConfig, NetworkConfig, PlayerDemuxConfig, RenderProfile, ToneMappingMode,
     UiConfig, VulkanConfig, YoutubeConfig,
@@ -150,6 +157,161 @@ pub(crate) struct SettingsPreviewTick {
     pub(crate) repaint_after: Option<Duration>,
 }
 
+/// Boundary для runtime owners, которые живут снаружи settings controller-а.
+///
+/// Visual settings UI не знает про worker, source jobs или concrete backend.
+/// Этот trait передаётся только из app composition/frame слоя, где эти owners
+/// реально доступны и где можно сохранить порядок команд.
+pub(crate) trait SettingsRuntimeReconfigureHost {
+    /// Применяет typed player update через owner-level worker boundary.
+    fn apply_player_runtime_settings(
+        &mut self,
+        update: PlayerRuntimeSettingsUpdate,
+    ) -> PlayerRuntimeApplyResult;
+
+    /// Применяет media/source policy и при необходимости запускает controlled rebuild.
+    fn apply_media_service_runtime_settings(
+        &mut self,
+        update: &MediaServiceRuntimeSettingsUpdate,
+    ) -> AppRouteApplyResult;
+}
+
+/// Fallback host для unit tests и UI-only paths без active `AppState`.
+struct NoopSettingsRuntimeReconfigureHost;
+
+impl SettingsRuntimeReconfigureHost for NoopSettingsRuntimeReconfigureHost {
+    fn apply_player_runtime_settings(
+        &mut self,
+        update: PlayerRuntimeSettingsUpdate,
+    ) -> PlayerRuntimeApplyResult {
+        Ok(simulated_player_runtime_report(update))
+    }
+
+    fn apply_media_service_runtime_settings(
+        &mut self,
+        _update: &MediaServiceRuntimeSettingsUpdate,
+    ) -> AppRouteApplyResult {
+        AppRouteApplyResult::Applied
+    }
+}
+
+/// Adapter для старых call sites, которым нужен только render live adapter.
+#[cfg(test)]
+struct RenderOnlySettingsRuntimeAdapter<'adapter, A> {
+    /// Реальный renderer-neutral adapter.
+    render_adapter: &'adapter mut A,
+}
+
+#[cfg(test)]
+impl<A> RenderLiveSettingsAdapter for RenderOnlySettingsRuntimeAdapter<'_, A>
+where
+    A: RenderLiveSettingsAdapter,
+{
+    fn preview_live_settings(
+        &mut self,
+        update: &RenderLiveSettingsUpdate,
+    ) -> Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.render_adapter.preview_live_settings(update)
+    }
+
+    fn commit_live_settings(
+        &mut self,
+        settings: &RenderLiveSettings,
+    ) -> Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.render_adapter.commit_live_settings(settings)
+    }
+
+    fn rollback_live_settings(
+        &mut self,
+        baseline: &RenderLiveSettings,
+    ) -> Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.render_adapter.rollback_live_settings(baseline)
+    }
+}
+
+#[cfg(test)]
+impl<A> SettingsRuntimeReconfigureHost for RenderOnlySettingsRuntimeAdapter<'_, A>
+where
+    A: RenderLiveSettingsAdapter,
+{
+    fn apply_player_runtime_settings(
+        &mut self,
+        update: PlayerRuntimeSettingsUpdate,
+    ) -> PlayerRuntimeApplyResult {
+        let mut host = NoopSettingsRuntimeReconfigureHost;
+        host.apply_player_runtime_settings(update)
+    }
+
+    fn apply_media_service_runtime_settings(
+        &mut self,
+        update: &MediaServiceRuntimeSettingsUpdate,
+    ) -> AppRouteApplyResult {
+        let mut host = NoopSettingsRuntimeReconfigureHost;
+        host.apply_media_service_runtime_settings(update)
+    }
+}
+
+/// Строит успешный report для tests, где нет real worker-а.
+fn simulated_player_runtime_report(
+    update: PlayerRuntimeSettingsUpdate,
+) -> PlayerRuntimeApplyReport {
+    let mut report = PlayerRuntimeApplyReport::empty();
+
+    if let Some(tick_update) = update.tick_config {
+        report.push(simulated_player_group(
+            PlayerRuntimeApplyGroup::TickConfig,
+            tick_update.affected_settings,
+            "player tick config accepted by test host",
+        ));
+    }
+    if let Some(default_volume_update) = update.default_volume {
+        report.push(simulated_player_group(
+            PlayerRuntimeApplyGroup::DefaultVolume,
+            default_volume_update.affected_settings,
+            "default volume accepted by test host",
+        ));
+    }
+    if let Some(decoder_thread_update) = update.decoder_thread_config {
+        report.push(simulated_player_group(
+            PlayerRuntimeApplyGroup::DecoderThreadConfig,
+            decoder_thread_update.affected_settings,
+            "decoder thread config accepted by test host",
+        ));
+    }
+    if !update.unsupported_settings.is_empty() {
+        report.push(PlayerRuntimeApplyGroupReport::unsupported(
+            PlayerRuntimeApplyGroup::UnsupportedSettings,
+            update.unsupported_settings,
+            "test host preserves unsupported player settings as owner failure",
+        ));
+    }
+
+    if report.groups.is_empty() {
+        report.push(PlayerRuntimeApplyGroupReport::accepted(
+            PlayerRuntimeApplyGroup::Request,
+            std::iter::empty(),
+            PlayerRuntimeAcceptedChange::Unchanged,
+            "no player-core settings in update",
+        ));
+    }
+
+    report
+}
+
+/// Создаёт accepted group report для fallback/test host-а.
+fn simulated_player_group(
+    group: PlayerRuntimeApplyGroup,
+    affected_settings: Vec<player_core::PlayerRuntimeSettingId>,
+    message: &'static str,
+) -> PlayerRuntimeApplyGroupReport {
+    PlayerRuntimeApplyGroupReport::accepted(
+        group,
+        affected_settings,
+        PlayerRuntimeAcceptedChange::Applied,
+        message,
+    )
+}
+
 impl SettingsRuntime {
     /// Создаёт runtime owner из startup config-а и забирает ownership у bootstrap-а.
     pub(crate) fn from_loaded_config(loaded_config: LoadedConfig) -> SettingsResult<Self> {
@@ -256,6 +418,7 @@ impl SettingsRuntime {
     }
 
     /// Обрабатывает visual actions и возвращает true, если shell должен запросить redraw.
+    #[cfg(test)]
     pub(crate) fn handle_ui_actions<A>(
         &mut self,
         actions: Vec<SettingsUiAction>,
@@ -264,9 +427,22 @@ impl SettingsRuntime {
     where
         A: RenderLiveSettingsAdapter,
     {
+        let mut runtime_adapter = RenderOnlySettingsRuntimeAdapter { render_adapter };
+        self.handle_ui_actions_with_runtime_adapter(actions, &mut runtime_adapter)
+    }
+
+    /// Обрабатывает visual actions с доступом к runtime owners для committed apply.
+    pub(crate) fn handle_ui_actions_with_runtime_adapter<A>(
+        &mut self,
+        actions: Vec<SettingsUiAction>,
+        runtime_adapter: &mut A,
+    ) -> SettingsResult<bool>
+    where
+        A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
+    {
         let mut needs_redraw = false;
         for action in actions {
-            needs_redraw |= self.handle_ui_action(action, render_adapter)?;
+            needs_redraw |= self.handle_ui_action(action, runtime_adapter)?;
         }
         Ok(needs_redraw)
     }
@@ -332,15 +508,28 @@ impl SettingsRuntime {
     }
 
     /// Apply path для settings UI: validate -> persist -> route apply.
+    #[cfg(test)]
     pub(crate) fn apply_draft<A>(&mut self, render_adapter: &mut A) -> SettingsResult<ApplyReport>
     where
         A: RenderLiveSettingsAdapter,
+    {
+        let mut runtime_adapter = RenderOnlySettingsRuntimeAdapter { render_adapter };
+        self.apply_draft_with_runtime_adapter(&mut runtime_adapter)
+    }
+
+    /// Apply path для production runtime owners.
+    pub(crate) fn apply_draft_with_runtime_adapter<A>(
+        &mut self,
+        runtime_adapter: &mut A,
+    ) -> SettingsResult<ApplyReport>
+    where
+        A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
         let mut delegate = SettingsRuntimeApplyDelegate {
             validator: AppConfigValidator,
             store: &mut self.store,
             route_appliers: &mut self.route_appliers,
-            render_adapter,
+            runtime_adapter,
         };
         let report = self.controller.apply(&mut delegate)?;
         self.latest_apply_report = Some(report.clone());
@@ -478,10 +667,10 @@ impl SettingsRuntime {
     fn handle_ui_action<A>(
         &mut self,
         action: SettingsUiAction,
-        render_adapter: &mut A,
+        runtime_adapter: &mut A,
     ) -> SettingsResult<bool>
     where
-        A: RenderLiveSettingsAdapter,
+        A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
         match action {
             SettingsUiAction::Open => {
@@ -489,7 +678,7 @@ impl SettingsRuntime {
                 self.refresh_all_dynamic_options()?;
                 Ok(true)
             }
-            SettingsUiAction::Cancel => self.cancel_edit(render_adapter),
+            SettingsUiAction::Cancel => self.cancel_edit(runtime_adapter),
             SettingsUiAction::SetValue { setting_id, value } => {
                 self.set_draft_value(setting_id, value)
             }
@@ -505,14 +694,14 @@ impl SettingsRuntime {
                 if self.block_apply_when_field_errors_exist() {
                     return Ok(true);
                 }
-                self.apply_draft(render_adapter)?;
+                self.apply_draft_with_runtime_adapter(runtime_adapter)?;
                 Ok(true)
             }
             SettingsUiAction::Ok => {
                 if self.block_apply_when_field_errors_exist() {
                     return Ok(true);
                 }
-                let report = self.apply_draft(render_adapter)?;
+                let report = self.apply_draft_with_runtime_adapter(runtime_adapter)?;
                 if report.final_state == ApplyFinalState::FullyApplied
                     || report.final_state == ApplyFinalState::NoChanges
                 {
@@ -783,7 +972,7 @@ fn current_option_value(
         return SettingOptionCurrentValue::None;
     };
 
-    if options.iter().any(|option| &option.id == &current_id) {
+    if options.iter().any(|option| option.id == current_id) {
         SettingOptionCurrentValue::Available(current_id)
     } else {
         SettingOptionCurrentValue::UnavailableCurrent {
@@ -812,8 +1001,8 @@ struct SettingsRuntimeApplyDelegate<'runtime, A> {
     /// Route appliers остаются owned by `SettingsRuntime`.
     route_appliers: &'runtime mut SettingsRuntimeRouteAppliers,
 
-    /// Renderer проходит только через renderer-neutral live settings adapter.
-    render_adapter: &'runtime mut A,
+    /// Renderer/player/media owners проходят только через narrow runtime traits.
+    runtime_adapter: &'runtime mut A,
 }
 
 impl<A> SettingsValidator<AppConfig> for SettingsRuntimeApplyDelegate<'_, A> {
@@ -833,7 +1022,7 @@ impl<A> SettingsPersister<AppConfig> for SettingsRuntimeApplyDelegate<'_, A> {
 
 impl<A> CommittedSettingsApplier<AppConfig> for SettingsRuntimeApplyDelegate<'_, A>
 where
-    A: RenderLiveSettingsAdapter,
+    A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
 {
     fn apply_committed(
         &mut self,
@@ -850,7 +1039,7 @@ where
             for route in routes {
                 reports.push(
                     self.route_appliers
-                        .apply_committed_route_with_render_adapter(route, self.render_adapter)?
+                        .apply_committed_route_with_render_adapter(route, self.runtime_adapter)?
                         .into_core_report(),
                 );
             }
@@ -918,33 +1107,17 @@ impl AppRuntimeRouteApplier for SettingsRuntimeRouteAppliers {
         &mut self,
         route: RuntimeCommittedRoute,
     ) -> SettingsResult<AppRouteApplyReport> {
-        match route.update.clone() {
-            RuntimeCommittedUpdate::Ui(update) => {
-                let result = self.apply_ui_update(&update);
-                Ok(Self::route_report(route, result, ApplyMechanism::InPlace))
-            }
-            RuntimeCommittedUpdate::RenderPreview(update) => {
-                self.render_live = update.live_settings.settings.clone();
-                Ok(Self::route_report(
-                    route,
-                    AppRouteApplyResult::PreviewPromoted,
-                    ApplyMechanism::PreviewPromoted,
-                ))
-            }
-            RuntimeCommittedUpdate::RenderCommitted(update) => {
-                let result = self.apply_render_committed_update(&update);
-                Ok(Self::route_report(
-                    route,
-                    result,
-                    ApplyMechanism::DeferredTechnicalDebt,
-                ))
-            }
-            RuntimeCommittedUpdate::Player(update) => Ok(self.apply_player_route(route, &update)),
-            RuntimeCommittedUpdate::MediaService(update) => {
-                let result = self.apply_media_service_update(&update);
-                Ok(Self::route_report(route, result, ApplyMechanism::InPlace))
-            }
+        if let RuntimeCommittedUpdate::RenderPreview(update) = route.update.clone() {
+            self.render_live = update.live_settings.settings.clone();
+            return Ok(Self::route_report(
+                route,
+                AppRouteApplyResult::PreviewPromoted,
+                ApplyMechanism::PreviewPromoted,
+            ));
         }
+
+        let mut reconfigure_host = NoopSettingsRuntimeReconfigureHost;
+        self.apply_committed_route_with_reconfigure_host(route, &mut reconfigure_host)
     }
 }
 
@@ -953,22 +1126,60 @@ impl SettingsRuntimeRouteAppliers {
     fn apply_committed_route_with_render_adapter<A>(
         &mut self,
         route: RuntimeCommittedRoute,
-        render_adapter: &mut A,
+        runtime_adapter: &mut A,
     ) -> SettingsResult<AppRouteApplyReport>
     where
-        A: RenderLiveSettingsAdapter,
+        A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
         match route.update.clone() {
             RuntimeCommittedUpdate::RenderPreview(update) => {
                 let result = self
-                    .commit_render_preview_update(&update.live_settings.settings, render_adapter);
+                    .commit_render_preview_update(&update.live_settings.settings, runtime_adapter);
                 Ok(Self::route_report(
                     route,
                     result,
                     ApplyMechanism::PreviewPromoted,
                 ))
             }
-            _ => self.apply_committed_route(route),
+            _ => self.apply_committed_route_with_reconfigure_host(route, runtime_adapter),
+        }
+    }
+
+    /// Применяет committed route с доступом к app/player/source owners.
+    fn apply_committed_route_with_reconfigure_host(
+        &mut self,
+        route: RuntimeCommittedRoute,
+        reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
+    ) -> SettingsResult<AppRouteApplyReport> {
+        match route.update.clone() {
+            RuntimeCommittedUpdate::Ui(update) => {
+                let result = self.apply_ui_update(&update);
+                Ok(Self::route_report(route, result, ApplyMechanism::InPlace))
+            }
+            RuntimeCommittedUpdate::RenderCommitted(update) => {
+                let result = self.apply_render_committed_update(&update);
+                let mechanism =
+                    if matches!(result, AppRouteApplyResult::DeferredTechnicalDebt { .. }) {
+                        ApplyMechanism::DeferredTechnicalDebt
+                    } else {
+                        ApplyMechanism::RendererRecreate
+                    };
+                Ok(Self::route_report(route, result, mechanism))
+            }
+            RuntimeCommittedUpdate::Player(update) => {
+                Ok(self.apply_player_route(route, &update, reconfigure_host))
+            }
+            RuntimeCommittedUpdate::MediaService(update) => {
+                let result = self.apply_media_service_update(&update, reconfigure_host);
+                Ok(Self::route_report(
+                    route,
+                    result,
+                    ApplyMechanism::WorkerReconfigure,
+                ))
+            }
+            RuntimeCommittedUpdate::RenderPreview(_update) => unreachable!(
+                "render preview committed route requires render adapter promotion path"
+            ),
         }
     }
 
@@ -1004,19 +1215,23 @@ impl SettingsRuntimeRouteAppliers {
         &mut self,
         route: RuntimeCommittedRoute,
         update: &PlayerCommittedSettingsUpdate,
+        reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
     ) -> AppRouteApplyReport {
-        let default_volume_result = self.apply_player_default_volume(update);
+        let player_core_result = self.apply_player_core_update(update, reconfigure_host);
+        if player_core_result.is_success() {
+            self.commit_player_default_volume_snapshot(update);
+        }
         let audio_output_device_result = self.apply_player_audio_output_device(update);
         let in_place_result = combine_player_in_place_results([
-            default_volume_result.clone(),
+            player_core_result.clone(),
             audio_output_device_result.clone(),
         ]);
         let deferred_message = player_deferred_message(update);
         let route_result = player_route_result(in_place_result, deferred_message.as_deref());
         let mechanism = if route_result.is_success() {
-            ApplyMechanism::InPlace
+            player_apply_mechanism(update)
         } else {
-            ApplyMechanism::DeferredTechnicalDebt
+            ApplyMechanism::WorkerReconfigure
         };
         let groups = route
             .groups
@@ -1024,7 +1239,7 @@ impl SettingsRuntimeRouteAppliers {
             .map(|group| AppRouteGroupReport {
                 result: player_group_result(
                     &group.group,
-                    &default_volume_result,
+                    &player_core_result,
                     &audio_output_device_result,
                     &route_result,
                 ),
@@ -1043,21 +1258,33 @@ impl SettingsRuntimeRouteAppliers {
         }
     }
 
-    /// Применяет default-volume policy snapshot без команды `SetVolume` в текущий playback.
-    fn apply_player_default_volume(
+    /// Применяет player-core update через request/reply worker boundary.
+    fn apply_player_core_update(
         &mut self,
         update: &PlayerCommittedSettingsUpdate,
+        reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
     ) -> AppRouteApplyResult {
-        let Some(default_volume_update) = &update.player_core.default_volume else {
+        if update.player_core.is_empty() {
             return AppRouteApplyResult::Noop;
         };
-        let next_default_volume = default_volume_update.default_volume;
-        if (self.player.default_volume - next_default_volume).abs() <= f32::EPSILON {
-            return AppRouteApplyResult::Noop;
-        }
 
-        self.player.default_volume = next_default_volume;
-        AppRouteApplyResult::Applied
+        match reconfigure_host.apply_player_runtime_settings(update.player_core.clone()) {
+            Ok(report) => player_runtime_report_result(&report),
+            Err(error) => AppRouteApplyResult::Failed {
+                message: player_runtime_error_message(error),
+            },
+        }
+    }
+
+    /// Обновляет локальный policy snapshot только после успешного worker apply.
+    fn commit_player_default_volume_snapshot(&mut self, update: &PlayerCommittedSettingsUpdate) {
+        let Some(default_volume_update) = &update.player_core.default_volume else {
+            return;
+        };
+        let next_default_volume = default_volume_update.default_volume;
+        if (self.player.default_volume - next_default_volume).abs() > f32::EPSILON {
+            self.player.default_volume = next_default_volume;
+        }
     }
 
     /// Применяет выбранный audio output device через owner API concrete audio crate.
@@ -1094,14 +1321,20 @@ impl SettingsRuntimeRouteAppliers {
     fn apply_media_service_update(
         &mut self,
         update: &MediaServiceRuntimeSettingsUpdate,
+        reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
     ) -> AppRouteApplyResult {
         let next_snapshot = MediaServiceRuntimeSnapshot::from_update(update);
         if self.media_service == next_snapshot {
             return AppRouteApplyResult::Noop;
         }
 
+        let result = reconfigure_host.apply_media_service_runtime_settings(update);
+        if !result.is_success() {
+            return result;
+        }
+
         self.media_service = next_snapshot;
-        AppRouteApplyResult::Applied
+        result
     }
 
     /// Отправляет live preview update в renderer и фиксирует active preview snapshot.
@@ -1236,24 +1469,13 @@ where
     }
 }
 
-/// Возвращает причину, по которой player route нельзя полностью применить в S09.
+/// Возвращает причину для явно будущих player/backend settings.
 fn player_deferred_message(update: &PlayerCommittedSettingsUpdate) -> Option<String> {
     if !update.deferred_boundary_settings.is_empty() {
         return Some(format!(
-            "Player settings требуют будущего controlled rebuild: {}",
+            "Player settings требуют будущего backend boundary: {}",
             setting_ids_text(&update.deferred_boundary_settings)
         ));
-    }
-    if update.player_core.tick_config.is_some() {
-        return Some(
-            "Player tick/runtime update построен, но S09 не владеет active PlayerWorker target"
-                .to_string(),
-        );
-    }
-    if update.player_core.decoder_thread_config.is_some() {
-        return Some(
-            "Player decoder-thread settings требуют controlled PlayerWorker rebuild".to_string(),
-        );
     }
     if !update.player_core.unsupported_settings.is_empty() {
         return Some(format!(
@@ -1271,6 +1493,20 @@ fn player_deferred_message(update: &PlayerCommittedSettingsUpdate) -> Option<Str
     None
 }
 
+/// Выбирает mechanism по самому тяжёлому player operation в route.
+fn player_apply_mechanism(update: &PlayerCommittedSettingsUpdate) -> ApplyMechanism {
+    if update.player_core.decoder_thread_config.is_some() {
+        ApplyMechanism::PipelineRebuild
+    } else if update.player_core.tick_config.is_some()
+        || update.player_core.default_volume.is_some()
+        || update.audio_output_device_id.is_some()
+    {
+        ApplyMechanism::WorkerReconfigure
+    } else {
+        ApplyMechanism::InPlace
+    }
+}
+
 /// Вычисляет route-level result с честным partial status.
 fn player_route_result(
     in_place_result: AppRouteApplyResult,
@@ -1285,6 +1521,42 @@ fn player_route_result(
         },
         None => in_place_result,
     }
+}
+
+/// Преобразует worker report в route-level result без потери failure messages.
+fn player_runtime_report_result(report: &PlayerRuntimeApplyReport) -> AppRouteApplyResult {
+    combine_player_in_place_results(report.groups.iter().map(player_runtime_group_report_result))
+}
+
+/// Преобразует одну player group в app route result.
+fn player_runtime_group_report_result(
+    report: &PlayerRuntimeApplyGroupReport,
+) -> AppRouteApplyResult {
+    match report.outcome {
+        PlayerRuntimeApplyOutcome::Accepted(PlayerRuntimeAcceptedChange::Applied) => {
+            AppRouteApplyResult::Applied
+        }
+        PlayerRuntimeApplyOutcome::Accepted(PlayerRuntimeAcceptedChange::Unchanged) => {
+            AppRouteApplyResult::Noop
+        }
+        PlayerRuntimeApplyOutcome::RequiresControlledRebuild => AppRouteApplyResult::Failed {
+            message: format!(
+                "player-core still requires controlled rebuild for {:?}: {}",
+                report.group, report.message
+            ),
+        },
+        PlayerRuntimeApplyOutcome::Unsupported
+        | PlayerRuntimeApplyOutcome::AbsentResource
+        | PlayerRuntimeApplyOutcome::Invalid
+        | PlayerRuntimeApplyOutcome::Fatal => AppRouteApplyResult::Failed {
+            message: format!("{:?}: {}", report.group, report.message),
+        },
+    }
+}
+
+/// Форматирует request/reply error без silent collapse.
+fn player_runtime_error_message(error: PlayerRuntimeApplyError) -> String {
+    format!("player runtime apply failed: {error}")
 }
 
 /// Собирает результат independent in-place player updates без потери error details.
@@ -1331,25 +1603,16 @@ fn combine_player_in_place_results(
 /// Возвращает group-level player result без слияния разных owner semantics.
 fn player_group_result(
     group: &AppRuntimeRouteGroup,
-    default_volume_result: &AppRouteApplyResult,
+    player_core_result: &AppRouteApplyResult,
     audio_output_device_result: &AppRouteApplyResult,
     route_result: &AppRouteApplyResult,
 ) -> AppRouteApplyResult {
     match group {
-        AppRuntimeRouteGroup::PlayerDefaultVolume => default_volume_result.clone(),
+        AppRuntimeRouteGroup::PlayerDefaultVolume
+        | AppRuntimeRouteGroup::PlayerTickConfig
+        | AppRuntimeRouteGroup::PlayerDecoderThreadConfig
+        | AppRuntimeRouteGroup::PlayerDeferredBoundary => player_core_result.clone(),
         AppRuntimeRouteGroup::PlayerAudioOutputDevice => audio_output_device_result.clone(),
-        AppRuntimeRouteGroup::PlayerTickConfig => match route_result {
-            AppRouteApplyResult::Applied | AppRouteApplyResult::Noop => AppRouteApplyResult::Noop,
-            _ => AppRouteApplyResult::DeferredTechnicalDebt {
-                message: "Player tick/runtime update требует active PlayerWorker target после S09"
-                    .to_string(),
-            },
-        },
-        AppRuntimeRouteGroup::PlayerDecoderThreadConfig
-        | AppRuntimeRouteGroup::PlayerDeferredBoundary => match route_result {
-            AppRouteApplyResult::Applied | AppRouteApplyResult::Noop => AppRouteApplyResult::Noop,
-            _ => route_result.clone(),
-        },
         _ => route_result.clone(),
     }
 }
@@ -1692,7 +1955,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use player_core::{PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate};
+    use player_core::{
+        PlayerRuntimeApplyResult, PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate,
+    };
     use render_core::{
         RenderLiveApplyPhase, RenderLiveApplyReport, RenderLiveSettingId, RenderLiveSettings,
         RenderLiveSettingsAdapter, RenderLiveSettingsError, RenderLiveSettingsUpdate,
@@ -1700,18 +1965,19 @@ mod tests {
     use rustiplayer_config::{AppConfig, LoadedConfig};
     use rustiplayer_settings::{
         AppRouteApplyResult, AppRuntimeRoute, AppRuntimeRouteApplier, AppRuntimeRouteGroup,
-        AppRuntimeRouteGroupUpdate, PlayerCommittedSettingsUpdate, RuntimeCommittedRoute,
-        RuntimeCommittedUpdate, render_live_settings_from_config,
+        AppRuntimeRouteGroupUpdate, MediaServiceRuntimeSettingsUpdate,
+        PlayerCommittedSettingsUpdate, RuntimeCommittedRoute, RuntimeCommittedUpdate,
+        render_live_settings_from_config,
     };
     use settings_core::{
-        ApplyFinalState, OptionProviderId, SettingId, SettingOption, SettingOptionCurrentValue,
-        SettingOptions, SettingOptionsError, SettingOptionsRequest, SettingOptionsStatus,
-        SettingRouteId, SettingText, SettingValue, SettingsResult,
+        ApplyFinalState, ApplyMechanism, OptionProviderId, SettingId, SettingOption,
+        SettingOptionCurrentValue, SettingOptions, SettingOptionsError, SettingOptionsRequest,
+        SettingOptionsStatus, SettingRouteId, SettingText, SettingValue, SettingsResult,
     };
 
     use super::{
-        CommittedConfigSnapshot, SettingsRuntime, SettingsRuntimeRouteAppliers,
-        current_option_value,
+        CommittedConfigSnapshot, SettingsRuntime, SettingsRuntimeReconfigureHost,
+        SettingsRuntimeRouteAppliers, current_option_value,
     };
     use crate::render_settings::{
         color_pipeline_settings_from_config, hdr_to_sdr_settings_from_config,
@@ -1931,6 +2197,75 @@ mod tests {
         }
     }
 
+    struct RecordingRuntimeAdapter {
+        render: RecordingRenderAdapter,
+        player_updates: Vec<PlayerRuntimeSettingsUpdate>,
+        media_updates: usize,
+        fail_player: bool,
+        fail_media: bool,
+    }
+
+    impl RecordingRuntimeAdapter {
+        fn from_config(config: &AppConfig) -> SettingsResult<Self> {
+            Ok(Self {
+                render: RecordingRenderAdapter::from_config(config)?,
+                player_updates: Vec::new(),
+                media_updates: 0,
+                fail_player: false,
+                fail_media: false,
+            })
+        }
+    }
+
+    impl RenderLiveSettingsAdapter for RecordingRuntimeAdapter {
+        fn preview_live_settings(
+            &mut self,
+            update: &RenderLiveSettingsUpdate,
+        ) -> Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+            self.render.preview_live_settings(update)
+        }
+
+        fn commit_live_settings(
+            &mut self,
+            settings: &RenderLiveSettings,
+        ) -> Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+            self.render.commit_live_settings(settings)
+        }
+
+        fn rollback_live_settings(
+            &mut self,
+            baseline: &RenderLiveSettings,
+        ) -> Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+            self.render.rollback_live_settings(baseline)
+        }
+    }
+
+    impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
+        fn apply_player_runtime_settings(
+            &mut self,
+            update: PlayerRuntimeSettingsUpdate,
+        ) -> PlayerRuntimeApplyResult {
+            self.player_updates.push(update.clone());
+            if self.fail_player {
+                return Err(player_core::PlayerRuntimeApplyError::Backpressure);
+            }
+            Ok(super::simulated_player_runtime_report(update))
+        }
+
+        fn apply_media_service_runtime_settings(
+            &mut self,
+            _update: &MediaServiceRuntimeSettingsUpdate,
+        ) -> AppRouteApplyResult {
+            self.media_updates += 1;
+            if self.fail_media {
+                return AppRouteApplyResult::Failed {
+                    message: "media owner failed".to_string(),
+                };
+            }
+            AppRouteApplyResult::Applied
+        }
+    }
+
     fn custom_config_for_test() -> AppConfig {
         let mut config = AppConfig::default();
         config.player.start_paused = false;
@@ -2062,6 +2397,119 @@ mod tests {
         );
         assert_eq!(report.result, AppRouteApplyResult::Applied);
         assert_eq!(report.groups[0].result, AppRouteApplyResult::Applied);
+    }
+
+    #[test]
+    fn player_decoder_route_uses_runtime_host_without_deferred_debt() {
+        let config = custom_config_for_test();
+        let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
+            .expect("route appliers должны принять валидированный config");
+        let mut runtime_adapter =
+            RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        let requested_decoder_config = player_core::PlayerVideoDecoderThreadConfig {
+            packet_channel_frames: 64,
+            ..player_core::PlayerVideoDecoderThreadConfig::default()
+        };
+        let route = RuntimeCommittedRoute {
+            route: AppRuntimeRoute::Player,
+            source_routes: vec![SettingRouteId::from("video")],
+            affected_settings: vec![SettingId::from("video.decoder_packet_channel_frames")],
+            groups: vec![AppRuntimeRouteGroupUpdate {
+                group: AppRuntimeRouteGroup::PlayerDecoderThreadConfig,
+                affected_settings: vec![SettingId::from("video.decoder_packet_channel_frames")],
+            }],
+            update: RuntimeCommittedUpdate::Player(Box::new(PlayerCommittedSettingsUpdate {
+                player_core: PlayerRuntimeSettingsUpdate::empty().with_decoder_thread_config(
+                    requested_decoder_config,
+                    [PlayerRuntimeSettingId::VideoDecoderPacketChannelFrames],
+                ),
+                audio_output_device_id: None,
+                deferred_boundary_settings: Vec::new(),
+            })),
+        };
+
+        let report = appliers
+            .apply_committed_route_with_render_adapter(route, &mut runtime_adapter)
+            .expect("decoder route должен построить report");
+
+        assert_eq!(runtime_adapter.player_updates.len(), 1);
+        assert_eq!(report.result, AppRouteApplyResult::Applied);
+        assert_eq!(report.mechanism, ApplyMechanism::PipelineRebuild);
+        assert_eq!(report.groups[0].result, AppRouteApplyResult::Applied);
+    }
+
+    #[test]
+    fn media_service_route_uses_app_owner_without_deferred_debt() {
+        let config = custom_config_for_test();
+        let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
+            .expect("route appliers должны принять валидированный config");
+        let mut runtime_adapter =
+            RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        let mut next_network = config.network.clone();
+        next_network.read_ahead_mb += 1;
+        let route = RuntimeCommittedRoute {
+            route: AppRuntimeRoute::MediaService,
+            source_routes: vec![SettingRouteId::from("network")],
+            affected_settings: vec![SettingId::from("network.read_ahead_mb")],
+            groups: vec![AppRuntimeRouteGroupUpdate {
+                group: AppRuntimeRouteGroup::MediaNetwork,
+                affected_settings: vec![SettingId::from("network.read_ahead_mb")],
+            }],
+            update: RuntimeCommittedUpdate::MediaService(MediaServiceRuntimeSettingsUpdate {
+                network: next_network,
+                youtube: config.youtube.clone(),
+            }),
+        };
+
+        let report = appliers
+            .apply_committed_route_with_render_adapter(route, &mut runtime_adapter)
+            .expect("media route должен построить report");
+
+        assert_eq!(runtime_adapter.media_updates, 1);
+        assert_eq!(report.result, AppRouteApplyResult::Applied);
+        assert_eq!(report.mechanism, ApplyMechanism::WorkerReconfigure);
+        assert_eq!(report.groups[0].result, AppRouteApplyResult::Applied);
+    }
+
+    #[test]
+    fn media_service_route_keeps_snapshot_when_owner_rebuild_fails() {
+        let config = custom_config_for_test();
+        let original_snapshot = super::MediaServiceRuntimeSnapshot::from_config(&config);
+        let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
+            .expect("route appliers должны принять валидированный config");
+        let mut runtime_adapter =
+            RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        runtime_adapter.fail_media = true;
+        let mut next_network = config.network.clone();
+        next_network.read_ahead_mb += 1;
+        let route = RuntimeCommittedRoute {
+            route: AppRuntimeRoute::MediaService,
+            source_routes: vec![SettingRouteId::from("network")],
+            affected_settings: vec![SettingId::from("network.read_ahead_mb")],
+            groups: vec![AppRuntimeRouteGroupUpdate {
+                group: AppRuntimeRouteGroup::MediaNetwork,
+                affected_settings: vec![SettingId::from("network.read_ahead_mb")],
+            }],
+            update: RuntimeCommittedUpdate::MediaService(MediaServiceRuntimeSettingsUpdate {
+                network: next_network,
+                youtube: config.youtube.clone(),
+            }),
+        };
+
+        let report = appliers
+            .apply_committed_route_with_render_adapter(route, &mut runtime_adapter)
+            .expect("media route должен построить failure report");
+
+        assert_eq!(runtime_adapter.media_updates, 1);
+        assert_eq!(
+            report.result,
+            AppRouteApplyResult::Failed {
+                message: "media owner failed".to_string()
+            }
+        );
+        assert_eq!(report.mechanism, ApplyMechanism::WorkerReconfigure);
+        assert_eq!(report.groups[0].result, report.result);
+        assert_eq!(appliers.media_service, original_snapshot);
     }
 
     #[test]
