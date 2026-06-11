@@ -316,8 +316,11 @@ pub(crate) struct RenderedAppUi {
     /// Visual settings actions, которые shell передаст authoritative runtime owner-у.
     pub(crate) settings_actions: Vec<SettingsUiAction>,
 
-    /// Центральная область video/overlay в egui points после всех app panels.
+    /// Область video underlay в egui points; overlay-панели её не уменьшают.
     pub(crate) video_viewport_rect: egui::Rect,
+
+    /// UI-области, под которыми video pass не должен рисовать кадр.
+    pub(crate) video_exclusion_rects: Vec<egui::Rect>,
 
     /// Timing внутренних участков `render_ui`.
     pub(crate) timings: AppUiRenderTimings,
@@ -1525,9 +1528,12 @@ impl AppState {
         let mut center_overlay_elapsed = Duration::ZERO;
         let mut video_viewport_rect =
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(0.0, 0.0));
+        let mut video_exclusion_rects = Vec::new();
 
         let egui_run_started_at = Instant::now();
         let full_output = self.egui_ctx.run_ui(egui_input, |ui| {
+            video_viewport_rect = ui.max_rect();
+
             let stage_started_at = Instant::now();
             player_controls::render_top_bar(ui, app_version, &selected_skin);
             top_bar_elapsed = stage_started_at.elapsed();
@@ -1541,13 +1547,16 @@ impl AppState {
             );
             bottom_controls_elapsed = stage_started_at.elapsed();
 
-            sidebar::show(
+            let sidebar_rect = sidebar::show(
                 ui,
                 AppSidebarContent::Settings {
                     model: settings_ui_model,
                 },
                 &mut settings_actions,
             );
+            if let Some(sidebar_rect) = sidebar_rect {
+                video_exclusion_rects.push(sidebar_rect);
+            }
 
             if let Some(telemetry_panel_rows) = telemetry_panel_rows.as_ref() {
                 let stage_started_at = Instant::now();
@@ -1557,7 +1566,7 @@ impl AppState {
             }
 
             let stage_started_at = Instant::now();
-            video_viewport_rect = Self::render_center_overlay(
+            Self::render_center_overlay(
                 ui,
                 is_playing,
                 error_message,
@@ -1580,6 +1589,7 @@ impl AppState {
             full_output,
             settings_actions,
             video_viewport_rect,
+            video_exclusion_rects,
             timings: AppUiRenderTimings {
                 total: render_ui_started_at.elapsed(),
                 pre_ui_setup: pre_ui_setup_elapsed,
@@ -2299,16 +2309,12 @@ impl AppState {
         pending_message: Option<&str>,
         skin: &impl PlayerSkin,
         animation_state: AnimationState,
-    ) -> egui::Rect {
-        let mut central_rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(0.0, 0.0));
-
+    ) {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
-                central_rect = ui.max_rect();
-
                 if let Some(dim_color) = skin.stale_frame_dim_color(animation_state) {
-                    ui.painter().rect_filled(central_rect, 0.0, dim_color);
+                    ui.painter().rect_filled(ui.max_rect(), 0.0, dim_color);
                 }
 
                 if let Some(error) = error_message {
@@ -2328,8 +2334,6 @@ impl AppState {
                     });
                 }
             });
-
-        central_rect
     }
 }
 
@@ -2600,6 +2604,29 @@ mod tests {
         assert!(
             !render_ui_section.contains("settings_window::show"),
             "AppState::render_ui не должен возвращать floating settings window"
+        );
+    }
+
+    #[test]
+    fn app_layout_keeps_video_underlay_full_and_excludes_only_sidebar_rect() {
+        let state_source = include_str!("state.rs");
+        let render_ui_section = source_section_between(
+            state_source,
+            "pub fn render_ui(",
+            "let egui_run_elapsed = egui_run_started_at.elapsed();",
+        );
+
+        assert!(
+            render_ui_section.contains("video_viewport_rect = ui.max_rect();"),
+            "video underlay должен начинаться с полного egui root rect"
+        );
+        assert!(
+            render_ui_section.contains("video_exclusion_rects.push(sidebar_rect);"),
+            "sidebar должен становиться exclusion rect для video pass"
+        );
+        assert!(
+            !render_ui_section.contains("video_viewport_rect_after_sidebar"),
+            "sidebar не должен сжимать full video underlay rect в app-egui"
         );
     }
 

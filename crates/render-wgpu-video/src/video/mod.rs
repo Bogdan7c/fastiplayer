@@ -283,8 +283,11 @@ pub(crate) struct VideoRenderPassContext<'pass> {
     /// WGPU queue для обновления uniform buffers.
     pub(crate) queue: &'pass wgpu::Queue,
 
-    /// Уже зажатая область video draw внутри swapchain target-а.
+    /// Уже зажатая область, по которой video shader сохраняет aspect ratio.
     pub(crate) viewport: RenderViewport,
+
+    /// Видимые scissor-области, в которых video pass реально рисует кадр.
+    pub(crate) draw_rects: Vec<RenderViewport>,
 }
 
 /// Backend-specific texture resources для одного кадра.
@@ -580,6 +583,7 @@ impl WgpuVideoRenderer {
         &mut self,
         frame: Option<&WgpuRenderableFrame<'_>>,
         video_viewport: RenderViewport,
+        video_exclusion_rects: &[RenderViewport],
         target: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
         device: &wgpu::Device,
@@ -593,12 +597,14 @@ impl WgpuVideoRenderer {
         self.diagnostics = RenderDiagnostics::default();
         let video_viewport =
             video_viewport.clamp_to_surface(self.surface_size.0, self.surface_size.1);
+        let draw_rects = visible_video_draw_rects(video_viewport, video_exclusion_rects);
         let mut pass_context = VideoRenderPassContext {
             target,
             encoder,
             device,
             queue,
             viewport: video_viewport,
+            draw_rects,
         };
 
         if !frame.metadata.has_display_size() {
@@ -754,6 +760,31 @@ fn select_renderer_dispatch(
         (VideoFrameFormat::P010, WgpuFramePlaneKind::P010) => Ok(RendererDispatch::P010),
         (format, _) => bail!("WGPU renderer frame metadata/plane mismatch for format: {format}"),
     }
+}
+
+/// Возвращает scissor-rects, в которых video pass должен рисовать кадр.
+fn visible_video_draw_rects(
+    video_viewport: RenderViewport,
+    video_exclusion_rects: &[RenderViewport],
+) -> Vec<RenderViewport> {
+    let mut visible_rects = vec![video_viewport];
+
+    for exclusion_rect in video_exclusion_rects {
+        let Some(exclusion_rect) = exclusion_rect.intersection(video_viewport) else {
+            continue;
+        };
+
+        visible_rects = visible_rects
+            .into_iter()
+            .flat_map(|visible_rect| visible_rect.subtract(exclusion_rect))
+            .collect();
+
+        if visible_rects.is_empty() {
+            break;
+        }
+    }
+
+    visible_rects
 }
 
 /// Очищает swapchain target в чёрный цвет, когда video frame ещё не готов.
@@ -955,6 +986,34 @@ mod tests {
         _storage_layout: TestP010StorageLayout,
     ) -> WgpuFramePlaneKind {
         WgpuFramePlaneKind::P010
+    }
+
+    #[test]
+    fn visible_video_draw_rects_exclude_sidebar_without_changing_viewport_size() {
+        let video_viewport = RenderViewport::full_surface(1280, 720);
+        let sidebar = RenderViewport::new(0, 64, 420, 576);
+
+        let draw_rects = visible_video_draw_rects(video_viewport, &[sidebar]);
+
+        assert_eq!(
+            draw_rects,
+            vec![
+                RenderViewport::new(0, 0, 1280, 64),
+                RenderViewport::new(0, 640, 1280, 80),
+                RenderViewport::new(420, 64, 860, 576),
+            ]
+        );
+        assert_eq!(video_viewport.size(), (1280, 720));
+    }
+
+    #[test]
+    fn visible_video_draw_rects_keep_full_viewport_without_exclusions() {
+        let video_viewport = RenderViewport::full_surface(1280, 720);
+
+        assert_eq!(
+            visible_video_draw_rects(video_viewport, &[]),
+            vec![video_viewport]
+        );
     }
 
     /// Строит renderer-neutral frame с заданным render-размером для letterbox тестов.

@@ -386,13 +386,10 @@ impl P010VideoRenderer {
             0.0,
             1.0,
         );
-        pass.set_scissor_rect(
-            pass_context.viewport.x,
-            pass_context.viewport.y,
-            pass_context.viewport.width,
-            pass_context.viewport.height,
-        );
-        pass.draw(0..3, 0..1);
+        for draw_rect in &pass_context.draw_rects {
+            pass.set_scissor_rect(draw_rect.x, draw_rect.y, draw_rect.width, draw_rect.height);
+            pass.draw(0..3, 0..1);
+        }
 
         Ok(P010RenderFrameDiagnostics {
             active_color_path: prepared_p010_render.active_path,

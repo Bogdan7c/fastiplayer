@@ -23,28 +23,30 @@ const MIN_SIDEBAR_WIDTH: f32 = 320.0;
 /// Максимальная ширина не даёт sidebar-у съесть весь video viewport на обычных окнах.
 const MAX_SIDEBAR_WIDTH: f32 = 560.0;
 
-/// Рисует левый app sidebar и возвращает только visual actions.
+/// Рисует левый app sidebar и возвращает его фактическую область, если он открыт.
+#[must_use]
 pub(crate) fn show(
     ui: &mut Ui,
     content: AppSidebarContent<'_>,
     actions: &mut Vec<SettingsUiAction>,
-) {
+) -> Option<egui::Rect> {
     match content {
         AppSidebarContent::Settings { model } => show_settings_sidebar(ui, model, actions),
     }
 }
 
 /// Рисует settings sidebar только когда settings runtime считает его открытым.
+#[must_use]
 fn show_settings_sidebar(
     ui: &mut Ui,
     model: &SettingsUiModel,
     actions: &mut Vec<SettingsUiAction>,
-) {
+) -> Option<egui::Rect> {
     if !model.is_open {
-        return;
+        return None;
     }
 
-    egui::Panel::left("app_sidebar_settings")
+    let sidebar_response = egui::Panel::left("app_sidebar_settings")
         .resizable(true)
         .default_size(DEFAULT_SIDEBAR_WIDTH)
         .size_range(MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH)
@@ -54,6 +56,8 @@ fn show_settings_sidebar(
             ui.separator();
             layout::show(ui, model, actions);
         });
+
+    Some(sidebar_response.response.rect)
 }
 
 /// Рисует заголовок sidebar-а и мапит close button в settings cancel action.

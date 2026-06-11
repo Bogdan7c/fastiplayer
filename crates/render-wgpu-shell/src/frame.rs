@@ -160,8 +160,11 @@ pub struct RenderFrameInput<'frame> {
     /// Размер target-а и UI scale для egui-wgpu.
     pub screen: RenderScreenDescriptor,
 
-    /// Renderer-neutral область, в которой video pass должен рисовать кадр.
+    /// Renderer-neutral content viewport, по которому video pass сохраняет aspect ratio.
     pub video_viewport: RenderViewport,
+
+    /// Renderer-neutral области, где video pass не должен рисовать кадр.
+    pub video_exclusion_rects: Vec<RenderViewport>,
 }
 
 /// Зажимает app-computed video viewport к текущему swapchain target-у.
@@ -171,6 +174,21 @@ pub(crate) fn clamp_video_viewport_to_screen(
     screen: &RenderScreenDescriptor,
 ) -> RenderViewport {
     video_viewport.clamp_to_surface(screen.size_in_pixels[0], screen.size_in_pixels[1])
+}
+
+/// Зажимает app-computed video exclusion rects к текущему swapchain target-у.
+#[must_use]
+pub(crate) fn clamp_video_exclusion_rects_to_screen(
+    video_exclusion_rects: Vec<RenderViewport>,
+    screen: &RenderScreenDescriptor,
+) -> Vec<RenderViewport> {
+    let full_surface =
+        RenderViewport::full_surface(screen.size_in_pixels[0], screen.size_in_pixels[1]);
+
+    video_exclusion_rects
+        .into_iter()
+        .filter_map(|exclusion_rect| exclusion_rect.intersection(full_surface))
+        .collect()
 }
 
 /// Ошибка video render path, которую app/player layer не должен превращать в fallback.
@@ -271,5 +289,23 @@ mod tests {
 
         assert_eq!(viewport, RenderViewport::full_surface(800, 600));
         assert_eq!(screen.pixels_per_point, 2.0);
+    }
+
+    #[test]
+    fn video_exclusion_clamp_intersects_screen_without_fullscreen_fallback() {
+        let screen = RenderScreenDescriptor {
+            size_in_pixels: [800, 600],
+            pixels_per_point: 1.0,
+        };
+
+        let exclusions = clamp_video_exclusion_rects_to_screen(
+            vec![
+                RenderViewport::new(0, 50, 420, 700),
+                RenderViewport::new(900, 0, 100, 100),
+            ],
+            &screen,
+        );
+
+        assert_eq!(exclusions, vec![RenderViewport::new(0, 50, 420, 550)]);
     }
 }

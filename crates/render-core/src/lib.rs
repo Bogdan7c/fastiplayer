@@ -457,6 +457,87 @@ impl RenderViewport {
         self.width == 0 || self.height == 0
     }
 
+    /// Правый край viewport-а с защитой от переполнения.
+    #[must_use]
+    pub const fn right(self) -> u32 {
+        self.x.saturating_add(self.width)
+    }
+
+    /// Нижний край viewport-а с защитой от переполнения.
+    #[must_use]
+    pub const fn bottom(self) -> u32 {
+        self.y.saturating_add(self.height)
+    }
+
+    /// Возвращает пересечение двух viewport-ов или `None`, если они не пересекаются.
+    #[must_use]
+    pub fn intersection(self, other: Self) -> Option<Self> {
+        if self.is_empty() || other.is_empty() {
+            return None;
+        }
+
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        let right = self.right().min(other.right());
+        let bottom = self.bottom().min(other.bottom());
+
+        if right <= x || bottom <= y {
+            return None;
+        }
+
+        Some(Self::new(x, y, right - x, bottom - y))
+    }
+
+    /// Разбивает viewport на видимые прямоугольники после вычитания `excluded`.
+    ///
+    /// Метод нужен для UI overlay-ов: video shader сохраняет пропорции по исходному
+    /// `self`, а concrete renderer рисует только в возвращённых scissor-областях.
+    #[must_use]
+    pub fn subtract(self, excluded: Self) -> Vec<Self> {
+        let Some(excluded) = self.intersection(excluded) else {
+            return vec![self];
+        };
+
+        let mut visible_rects = Vec::with_capacity(4);
+        let self_right = self.right();
+        let self_bottom = self.bottom();
+        let excluded_right = excluded.right();
+        let excluded_bottom = excluded.bottom();
+
+        if excluded.y > self.y {
+            visible_rects.push(Self::new(self.x, self.y, self.width, excluded.y - self.y));
+        }
+
+        if excluded_bottom < self_bottom {
+            visible_rects.push(Self::new(
+                self.x,
+                excluded_bottom,
+                self.width,
+                self_bottom - excluded_bottom,
+            ));
+        }
+
+        if excluded.x > self.x {
+            visible_rects.push(Self::new(
+                self.x,
+                excluded.y,
+                excluded.x - self.x,
+                excluded.height,
+            ));
+        }
+
+        if excluded_right < self_right {
+            visible_rects.push(Self::new(
+                excluded_right,
+                excluded.y,
+                self_right - excluded_right,
+                excluded.height,
+            ));
+        }
+
+        visible_rects
+    }
+
     /// Зажимает viewport к surface; некорректный запрос возвращает full-surface fallback.
     ///
     /// Fallback нужен, чтобы отсутствие/сбой layout rect-а не создавали нулевой scissor
@@ -2031,6 +2112,39 @@ mod tests {
             RenderViewport::new(640, 10, 100, 100).clamp_to_surface(640, 360),
             full_surface
         );
+    }
+
+    #[test]
+    fn render_viewport_subtracts_left_sidebar_without_changing_content_viewport() {
+        let viewport = RenderViewport::full_surface(1280, 720);
+        let sidebar = RenderViewport::new(0, 64, 420, 576);
+
+        let visible_rects = viewport.subtract(sidebar);
+
+        assert_eq!(
+            visible_rects,
+            vec![
+                RenderViewport::new(0, 0, 1280, 64),
+                RenderViewport::new(0, 640, 1280, 80),
+                RenderViewport::new(420, 64, 860, 576),
+            ]
+        );
+        assert_eq!(viewport.size(), (1280, 720));
+    }
+
+    #[test]
+    fn render_viewport_subtract_keeps_original_when_exclusion_is_outside() {
+        let viewport = RenderViewport::full_surface(1280, 720);
+        let outside = RenderViewport::new(1400, 0, 100, 100);
+
+        assert_eq!(viewport.subtract(outside), vec![viewport]);
+    }
+
+    #[test]
+    fn render_viewport_subtract_returns_no_rects_when_fully_excluded() {
+        let viewport = RenderViewport::full_surface(1280, 720);
+
+        assert!(viewport.subtract(viewport).is_empty());
     }
 
     #[test]

@@ -38,8 +38,11 @@ struct PreparedUiFrame {
     /// Размер surface target-а и UI scale без раскрытия `egui-wgpu` наружу.
     screen: render_wgpu_shell::RenderScreenDescriptor,
 
-    /// Физическая область video pass-а после app layout.
+    /// Физическая область, по которой renderer сохраняет video aspect ratio.
     video_viewport: RenderViewport,
+
+    /// Физические области UI, из которых video pass должен быть исключён.
+    video_exclusion_rects: Vec<RenderViewport>,
 
     /// Признак, что egui попросил следующий repaint.
     requested_repaint: bool,
@@ -72,29 +75,51 @@ fn physical_pixel_ceil(point: f32, pixels_per_point: f32) -> u32 {
     scaled_point.ceil() as u32
 }
 
-/// Конвертирует центральный egui rect в renderer-neutral physical viewport.
-fn video_viewport_from_ui_rect(
-    video_rect: egui::Rect,
-    screen_size_in_pixels: [u32; 2],
-    pixels_per_point: f32,
-) -> RenderViewport {
-    let safe_pixels_per_point = if pixels_per_point.is_finite() && pixels_per_point > 0.0 {
+/// Возвращает безопасный UI scale для конвертации egui points в physical pixels.
+fn safe_pixels_per_point(pixels_per_point: f32) -> f32 {
+    if pixels_per_point.is_finite() && pixels_per_point > 0.0 {
         pixels_per_point
     } else {
         1.0
-    };
+    }
+}
 
-    let min_x = physical_pixel_floor(video_rect.min.x, safe_pixels_per_point);
-    let min_y = physical_pixel_floor(video_rect.min.y, safe_pixels_per_point);
-    let max_x = physical_pixel_ceil(video_rect.max.x, safe_pixels_per_point);
-    let max_y = physical_pixel_ceil(video_rect.max.y, safe_pixels_per_point);
+/// Конвертирует egui rect в renderer-neutral physical viewport без surface fallback-а.
+fn raw_viewport_from_ui_rect(video_rect: egui::Rect, pixels_per_point: f32) -> RenderViewport {
+    let safe_scale = safe_pixels_per_point(pixels_per_point);
+    let min_x = physical_pixel_floor(video_rect.min.x, safe_scale);
+    let min_y = physical_pixel_floor(video_rect.min.y, safe_scale);
+    let max_x = physical_pixel_ceil(video_rect.max.x, safe_scale);
+    let max_y = physical_pixel_ceil(video_rect.max.y, safe_scale);
+
     RenderViewport::new(
         min_x,
         min_y,
         max_x.saturating_sub(min_x),
         max_y.saturating_sub(min_y),
     )
-    .clamp_to_surface(screen_size_in_pixels[0], screen_size_in_pixels[1])
+}
+
+/// Конвертирует app-owned video underlay rect в renderer-neutral physical viewport.
+fn video_viewport_from_ui_rect(
+    video_rect: egui::Rect,
+    screen_size_in_pixels: [u32; 2],
+    pixels_per_point: f32,
+) -> RenderViewport {
+    raw_viewport_from_ui_rect(video_rect, pixels_per_point)
+        .clamp_to_surface(screen_size_in_pixels[0], screen_size_in_pixels[1])
+}
+
+/// Конвертирует UI exclusion rect в physical viewport; невалидный rect просто игнорируется.
+fn video_exclusion_from_ui_rect(
+    exclusion_rect: egui::Rect,
+    screen_size_in_pixels: [u32; 2],
+    pixels_per_point: f32,
+) -> Option<RenderViewport> {
+    let full_surface =
+        RenderViewport::full_surface(screen_size_in_pixels[0], screen_size_in_pixels[1]);
+
+    raw_viewport_from_ui_rect(exclusion_rect, pixels_per_point).intersection(full_surface)
 }
 
 impl RenderLiveSettingsAdapter for FrameSettingsRuntimeAdapter<'_> {
@@ -613,6 +638,7 @@ fn prepare_ui_frame(
         full_output: egui_full_output,
         settings_actions,
         video_viewport_rect,
+        video_exclusion_rects,
         timings: app_ui_timings,
     } = rendered_app_ui;
 
@@ -632,6 +658,12 @@ fn prepare_ui_frame(
     let screen_size_in_pixels = [size.width.max(1), size.height.max(1)];
     let video_viewport =
         video_viewport_from_ui_rect(video_viewport_rect, screen_size_in_pixels, pixels_per_point);
+    let video_exclusion_rects = video_exclusion_rects
+        .into_iter()
+        .filter_map(|exclusion_rect| {
+            video_exclusion_from_ui_rect(exclusion_rect, screen_size_in_pixels, pixels_per_point)
+        })
+        .collect();
     let screen_descriptor_elapsed = stage_started_at.elapsed();
 
     let stage_started_at = Instant::now();
@@ -648,6 +680,7 @@ fn prepare_ui_frame(
             pixels_per_point,
         },
         video_viewport,
+        video_exclusion_rects,
         requested_repaint,
         settings_actions,
         timings: UiPrepareTimings {
@@ -1155,6 +1188,7 @@ fn submit_render_frame(
         egui_textures_delta: prepared_ui_frame.textures_delta,
         screen: prepared_ui_frame.screen,
         video_viewport: prepared_ui_frame.video_viewport,
+        video_exclusion_rects: prepared_ui_frame.video_exclusion_rects,
     }) {
         RenderFrameOutcome::Presented(timing) => {
             if submitted_video_frame {
@@ -1344,6 +1378,25 @@ mod tests {
         let viewport = video_viewport_from_ui_rect(empty_rect, [640, 360], f32::NAN);
 
         assert_eq!(viewport, RenderViewport::full_surface(640, 360));
+    }
+
+    #[test]
+    fn video_exclusion_from_ui_rect_converts_sidebar_to_physical_pixels() {
+        let sidebar_rect =
+            egui::Rect::from_min_max(egui::pos2(0.0, 64.0), egui::pos2(420.0, 640.0));
+
+        let exclusion = video_exclusion_from_ui_rect(sidebar_rect, [1280, 720], 1.0);
+
+        assert_eq!(exclusion, Some(RenderViewport::new(0, 64, 420, 576)));
+    }
+
+    #[test]
+    fn invalid_video_exclusion_from_ui_rect_is_ignored() {
+        let empty_rect = egui::Rect::from_min_max(egui::pos2(40.0, 40.0), egui::pos2(40.0, 80.0));
+
+        let exclusion = video_exclusion_from_ui_rect(empty_rect, [640, 360], f32::NAN);
+
+        assert_eq!(exclusion, None);
     }
 
     /// Проверяет, что renderer error становится fatal media error, а не silent fallback.
