@@ -14,6 +14,7 @@ mod local_media;
 mod redraw_pacing;
 mod render_settings;
 mod settings_runtime;
+pub mod settings_ui;
 mod startup_media;
 mod state;
 mod system_capabilities;
