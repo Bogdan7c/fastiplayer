@@ -12,6 +12,7 @@ use video_core::DecodedPixelFormat;
 use winit::window::Window;
 
 use crate::redraw_pacing::RedrawPacing;
+use crate::settings_runtime::SettingsRuntime;
 use crate::state::{AppFrameContext, AppState, AppUiRenderTimings, RenderablePresentFrame};
 use crate::telemetry::{SeekDiscardReason, Telemetry, VideoDropReason, VideoFrameTelemetryEvent};
 
@@ -28,6 +29,9 @@ struct PreparedUiFrame {
 
     /// Признак, что egui попросил следующий repaint.
     requested_repaint: bool,
+
+    /// Visual settings actions, собранные в egui frame-е.
+    settings_actions: Vec<crate::settings_ui::SettingsUiAction>,
 
     /// Подробная CPU-разбивка app-owned UI stage.
     timings: UiPrepareTimings,
@@ -394,12 +398,15 @@ fn map_video_frame_telemetry_event(reason: PlayerVideoDropReason) -> VideoFrameT
 fn prepare_ui_frame(
     window: &Window,
     app_state: &mut AppState,
+    settings_runtime: &SettingsRuntime,
     egui_input: egui::RawInput,
     frame_context: &AppFrameContext,
 ) -> PreparedUiFrame {
     let ui_prepare_started_at = Instant::now();
 
-    let rendered_app_ui = app_state.render_ui(window, egui_input, frame_context);
+    let settings_ui_model = settings_runtime.ui_model();
+    let rendered_app_ui =
+        app_state.render_ui(window, egui_input, frame_context, &settings_ui_model);
     let egui_full_output = rendered_app_ui.full_output;
 
     let stage_started_at = Instant::now();
@@ -432,6 +439,7 @@ fn prepare_ui_frame(
             pixels_per_point,
         },
         requested_repaint,
+        settings_actions: rendered_app_ui.settings_actions,
         timings: UiPrepareTimings {
             total: ui_prepare_started_at.elapsed(),
             app_ui: rendered_app_ui.timings,
@@ -968,12 +976,13 @@ fn submit_render_frame(
 ///
 /// Измеряет время кадра, обновляет телеметрию,
 /// и вызывает renderer.render_frame().
-#[instrument(skip(telemetry, window, renderer, app_state))]
+#[instrument(skip(telemetry, window, renderer, app_state, settings_runtime))]
 pub(crate) fn render_frame(
     telemetry: &Telemetry,
     window: &Window,
     renderer: &mut Renderer,
     app_state: &mut AppState,
+    settings_runtime: &mut SettingsRuntime,
 ) -> RedrawPacing {
     let frame_start = Instant::now();
 
@@ -1010,10 +1019,38 @@ pub(crate) fn render_frame(
     };
 
     let stage_started_at = Instant::now();
-    let prepared_ui_frame = prepare_ui_frame(window, app_state, egui_input, &frame_context);
+    let mut prepared_ui_frame = prepare_ui_frame(
+        window,
+        app_state,
+        settings_runtime,
+        egui_input,
+        &frame_context,
+    );
     let egui_requested_repaint = prepared_ui_frame.requested_repaint;
+    let settings_actions = std::mem::take(&mut prepared_ui_frame.settings_actions);
     let mut ui_prepare_timings = prepared_ui_frame.timings;
     ui_prepare_timings.total = stage_started_at.elapsed();
+
+    let settings_action_requested_repaint =
+        match settings_runtime.handle_ui_actions(settings_actions, renderer) {
+            Ok(requested_repaint) => requested_repaint,
+            Err(error) => {
+                settings_runtime
+                    .report_runtime_error("Не удалось обработать действие settings UI", error);
+                true
+            }
+        };
+
+    let settings_preview_tick = match settings_runtime.apply_due_preview(renderer, Instant::now()) {
+        Ok(tick) => tick,
+        Err(error) => {
+            settings_runtime.report_runtime_error("Не удалось применить live preview", error);
+            crate::settings_runtime::SettingsPreviewTick::default()
+        }
+    };
+    if let Some(repaint_after) = settings_preview_tick.repaint_after {
+        app_state.egui_ctx.request_repaint_after(repaint_after);
+    }
 
     let stage_started_at = Instant::now();
     let prepared_video_frame =
@@ -1058,7 +1095,9 @@ pub(crate) fn render_frame(
 
     RedrawPacing::new(
         app_state.wants_continuous_redraw(),
-        app_state.take_pending_worker_redraw() || egui_requested_repaint,
+        app_state.take_pending_worker_redraw()
+            || egui_requested_repaint
+            || settings_action_requested_repaint,
     )
 }
 

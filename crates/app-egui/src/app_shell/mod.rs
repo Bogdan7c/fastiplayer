@@ -316,7 +316,13 @@ impl ApplicationHandler for AppShell {
             WindowEvent::RedrawRequested => {
                 self.startup_media.poll_startup_jobs(app_state);
                 app_state.poll_local_file_open_job();
-                let pacing = render_frame(&self.telemetry, &window, renderer, app_state);
+                let pacing = render_frame(
+                    &self.telemetry,
+                    &window,
+                    renderer,
+                    app_state,
+                    &mut self.settings_runtime,
+                );
                 let has_pending_background_job = self.startup_media.has_pending_startup_job()
                     || app_state.has_pending_local_file_open();
                 let action = self.background_poll_scheduler.after_render(

@@ -30,6 +30,8 @@ use crate::local_file_open::{
 };
 use crate::local_media;
 use crate::settings_runtime::CommittedConfigSnapshot;
+use crate::settings_ui::{SettingsUiAction, SettingsUiModel, SettingsUiState};
+use crate::settings_ui::{launcher_button, window as settings_window};
 use crate::telemetry::Telemetry;
 use crate::ui::animation::AnimationState;
 use crate::ui::player_controls::{self, ControlAction};
@@ -293,6 +295,9 @@ pub(crate) struct AppUiRenderTimings {
 pub(crate) struct RenderedAppUi {
     /// Полный output egui за текущий кадр.
     pub(crate) full_output: egui::FullOutput,
+
+    /// Visual settings actions, которые shell передаст authoritative runtime owner-у.
+    pub(crate) settings_actions: Vec<SettingsUiAction>,
 
     /// Timing внутренних участков `render_ui`.
     pub(crate) timings: AppUiRenderTimings,
@@ -659,6 +664,9 @@ pub struct AppState {
     /// Transient pointer state timeline; player position здесь не хранится.
     timeline_ui_state: TimelineUiState,
 
+    /// Transient visual state settings window-а; runtime draft здесь не хранится.
+    settings_ui_state: SettingsUiState,
+
     /// Кэш строк telemetry panel; живёт в UI-слое и не владеет playback/render state.
     telemetry_panel_cache: TelemetryPanelCache,
 
@@ -723,6 +731,7 @@ impl AppState {
             current_local_file: None,
             local_file_open_job: None,
             timeline_ui_state: TimelineUiState::default(),
+            settings_ui_state: SettingsUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
             app_version: env!("CARGO_PKG_VERSION"),
         })
@@ -1295,6 +1304,7 @@ impl AppState {
         window: &Window,
         egui_input: egui::RawInput,
         frame_context: &AppFrameContext,
+        settings_ui_model: &SettingsUiModel,
     ) -> RenderedAppUi {
         let render_ui_started_at = Instant::now();
 
@@ -1340,7 +1350,9 @@ impl AppState {
         let animation_state = AnimationState::from_timeline(&player_snapshot.timeline);
         let show_telemetry = self.committed_config_snapshot.show_telemetry();
         let mut control_actions = Vec::new();
+        let mut settings_actions = Vec::new();
         let mut timeline_ui_state = std::mem::take(&mut self.timeline_ui_state);
+        let mut settings_ui_state = std::mem::take(&mut self.settings_ui_state);
         let pre_ui_setup_elapsed = pre_ui_setup_started_at.elapsed();
         let mut telemetry_panel_cache_elapsed = Duration::ZERO;
         let telemetry_panel_rows = if show_telemetry {
@@ -1400,16 +1412,26 @@ impl AppState {
                 animation_state,
             );
             center_overlay_elapsed = stage_started_at.elapsed();
+
+            launcher_button::show(ui.ctx(), &mut settings_actions);
+            settings_window::show(
+                ui.ctx(),
+                settings_ui_model,
+                &mut settings_ui_state,
+                &mut settings_actions,
+            );
         });
         let egui_run_elapsed = egui_run_started_at.elapsed();
 
         let post_ui_actions_started_at = Instant::now();
         self.timeline_ui_state = timeline_ui_state;
+        self.settings_ui_state = settings_ui_state;
         self.handle_control_actions(window, control_actions);
         let post_ui_actions_elapsed = post_ui_actions_started_at.elapsed();
 
         RenderedAppUi {
             full_output,
+            settings_actions,
             timings: AppUiRenderTimings {
                 total: render_ui_started_at.elapsed(),
                 pre_ui_setup: pre_ui_setup_elapsed,
@@ -2473,7 +2495,7 @@ mod tests {
             .find("app_state.publish_desktop_snapshot(frame_context.player_snapshot());")
             .expect("render_frame должен явно публиковать snapshot текущего frame-а");
         let ui_prepare_position = frame_prepare_source
-            .find("let prepared_ui_frame = prepare_ui_frame(window, app_state, egui_input, &frame_context);")
+            .find("let mut prepared_ui_frame = prepare_ui_frame(")
             .expect("render_frame должен готовить UI через тот же AppFrameContext");
 
         assert!(

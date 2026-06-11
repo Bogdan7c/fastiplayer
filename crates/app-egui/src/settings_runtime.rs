@@ -4,9 +4,14 @@
 //! `AppConfig` runtime state на уровне shell и выдавать остальным слоям только
 //! read-only snapshots или intent-level apply boundary.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use render_core::{ColorPipelineSettings, HdrToSdrSettings, RenderLiveSettings};
+use render_core::{
+    ColorPipelineSettings, HdrToSdrSettings, RenderLiveApplyOutcome, RenderLiveSettings,
+    RenderLiveSettingsAdapter, RenderLiveSettingsErrorKind, RenderLiveSettingsUpdate,
+};
 use rustiplayer_config::{
     AppConfig, LoadedConfig, NetworkConfig, PlayerDemuxConfig, RenderProfile, ToneMappingMode,
     UiConfig, VulkanConfig, YoutubeConfig,
@@ -14,20 +19,25 @@ use rustiplayer_config::{
 use rustiplayer_settings::{
     AppConfigStore, AppConfigValidator, AppRouteApplyReport, AppRouteApplyResult,
     AppRouteGroupReport, AppRuntimeRouteApplier, AppRuntimeRouteGroup, AppRuntimeRouteGroupUpdate,
-    MediaServiceRuntimeSettingsUpdate, PlayerCommittedSettingsUpdate,
+    MediaServiceRuntimeSettingsUpdate, PlayerCommittedSettingsUpdate, RENDER_PREVIEW_ROUTE_ID,
     RenderCommittedSettingsUpdate, RuntimeCommittedRoute, RuntimeCommittedUpdate,
     UiRuntimeSettingsUpdate, app_config_registry, committed_routes_from_update,
     render_live_settings_from_config,
 };
 use settings_core::{
-    ApplyMechanism, ApplyReport, ApplyRouteReport, CommittedApplyRequest, CommittedSettingsApplier,
-    PersistReport, PersistRequest, SettingId, SettingsController, SettingsPersister,
-    SettingsRegistry, SettingsResult, SettingsValidator, ValidationReport, ValidationRequest,
+    ApplyFinalState, ApplyMechanism, ApplyReport, ApplyRouteReport, ApplyRouteResult, CancelReport,
+    CommittedApplyRequest, CommittedSettingsApplier, PersistOutcome, PersistReport, PersistRequest,
+    PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult, PreviewRollbackRequest,
+    PreviewRollbacker, PreviewSettingsApplier, ResetReport, RollbackReport, RollbackResult,
+    SettingGroupId, SettingId, SettingRouteId, SettingValue, SettingsController, SettingsPersister,
+    SettingsRegistry, SettingsResult, SettingsSurfaceId, SettingsValidator, ValidationReport,
+    ValidationRequest,
 };
 
 use crate::render_settings::{
     color_pipeline_settings_from_config, hdr_to_sdr_settings_from_config,
 };
+use crate::settings_ui::{SettingsUiAction, SettingsUiField, SettingsUiModel, SettingsUiStatus};
 
 /// Read-only snapshot committed config-а для слоёв, которые не должны владеть `AppConfig`.
 #[derive(Debug, Clone, PartialEq)]
@@ -111,6 +121,25 @@ pub(crate) struct SettingsRuntime {
 
     /// Последний apply report остаётся в runtime, чтобы будущий UI мог показать статус.
     latest_apply_report: Option<ApplyReport>,
+
+    /// Открыто ли visual settings window; draft transaction начинается при `Open`.
+    settings_window_open: bool,
+
+    /// Field-level errors от lightweight metadata validation до full document apply.
+    field_validation_errors: BTreeMap<SettingId, String>,
+
+    /// Последний status snapshot, который visual UI только отображает.
+    status: SettingsUiStatus,
+
+    /// Последняя попытка отправить preview update; pacing берётся из committed config.
+    last_preview_sent_at: Option<Instant>,
+}
+
+/// Результат preview tick-а, по которому shell решает, нужен ли timed repaint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SettingsPreviewTick {
+    /// Следующий wake-up для retry/coalesced update, если pending preview ещё есть.
+    pub(crate) repaint_after: Option<Duration>,
 }
 
 impl SettingsRuntime {
@@ -130,6 +159,10 @@ impl SettingsRuntime {
             store,
             route_appliers,
             latest_apply_report: None,
+            settings_window_open: false,
+            field_validation_errors: BTreeMap::new(),
+            status: SettingsUiStatus::default(),
+            last_preview_sent_at: None,
         };
 
         debug_assert_eq!(runtime.config_path(), runtime.store_path());
@@ -175,6 +208,26 @@ impl SettingsRuntime {
         self.latest_apply_report.as_ref()
     }
 
+    /// Возвращает true, когда settings window должно быть показано visual слоем.
+    #[must_use]
+    pub(crate) const fn is_settings_window_open(&self) -> bool {
+        self.settings_window_open
+    }
+
+    /// Собирает visual model из draft document-а без передачи `AppConfig` в UI modules.
+    #[must_use]
+    pub(crate) fn ui_model(&self) -> SettingsUiModel {
+        match self.ui_fields() {
+            Ok(fields) => SettingsUiModel::new(self.is_settings_window_open(), fields, false)
+                .with_status(self.status.clone()),
+            Err(error) => SettingsUiModel::new(self.is_settings_window_open(), Vec::new(), false)
+                .with_status(SettingsUiStatus {
+                    summary: Some("Не удалось собрать модель настроек".to_string()),
+                    details: vec![error.to_string()],
+                }),
+        }
+    }
+
     /// Возвращает initial render settings без передачи `AppConfig` renderer-у.
     pub(crate) fn initial_render_settings(&self) -> SettingsResult<InitialRenderSettings> {
         Ok(InitialRenderSettings {
@@ -184,23 +237,302 @@ impl SettingsRuntime {
         })
     }
 
-    /// Apply path для будущего settings UI: validate -> persist -> route apply.
-    #[allow(dead_code)]
-    pub(crate) fn apply_draft(&mut self) -> SettingsResult<ApplyReport> {
+    /// Обрабатывает visual actions и возвращает true, если shell должен запросить redraw.
+    pub(crate) fn handle_ui_actions<A>(
+        &mut self,
+        actions: Vec<SettingsUiAction>,
+        render_adapter: &mut A,
+    ) -> SettingsResult<bool>
+    where
+        A: RenderLiveSettingsAdapter,
+    {
+        let mut needs_redraw = false;
+        for action in actions {
+            needs_redraw |= self.handle_ui_action(action, render_adapter)?;
+        }
+        Ok(needs_redraw)
+    }
+
+    /// Отправляет pending live preview update, если pacing разрешает runtime apply сейчас.
+    pub(crate) fn apply_due_preview<A>(
+        &mut self,
+        render_adapter: &mut A,
+        now: Instant,
+    ) -> SettingsResult<SettingsPreviewTick>
+    where
+        A: RenderLiveSettingsAdapter,
+    {
+        let pending_routes = self.controller.preview().pending_routes();
+        if pending_routes.is_empty() {
+            return Ok(SettingsPreviewTick::default());
+        }
+
+        let preview_interval = self.live_preview_interval();
+        if let Some(last_sent_at) = self.last_preview_sent_at {
+            let elapsed = now.saturating_duration_since(last_sent_at);
+            if elapsed < preview_interval {
+                return Ok(SettingsPreviewTick {
+                    repaint_after: Some(preview_interval - elapsed),
+                });
+            }
+        }
+
+        let mut delegate = SettingsRuntimePreviewDelegate {
+            route_appliers: &mut self.route_appliers,
+            render_adapter,
+        };
+        let mut reports = Vec::new();
+        for route in pending_routes {
+            if let Some(report) = self
+                .controller
+                .apply_pending_preview(&route, &mut delegate)?
+            {
+                reports.push(report);
+            }
+        }
+
+        if !reports.is_empty() {
+            self.last_preview_sent_at = Some(now);
+            self.status = status_from_preview_reports(&reports);
+        }
+
+        let repaint_after =
+            (!self.controller.preview().pending_routes().is_empty()).then_some(preview_interval);
+        Ok(SettingsPreviewTick { repaint_after })
+    }
+
+    /// Сохраняет runtime error в status snapshot без изменения draft document-а.
+    pub(crate) fn report_runtime_error(
+        &mut self,
+        summary: impl Into<String>,
+        error: impl ToString,
+    ) {
+        self.status = SettingsUiStatus {
+            summary: Some(summary.into()),
+            details: vec![error.to_string()],
+        };
+    }
+
+    /// Apply path для settings UI: validate -> persist -> route apply.
+    pub(crate) fn apply_draft<A>(&mut self, render_adapter: &mut A) -> SettingsResult<ApplyReport>
+    where
+        A: RenderLiveSettingsAdapter,
+    {
         let mut delegate = SettingsRuntimeApplyDelegate {
             validator: AppConfigValidator,
             store: &mut self.store,
             route_appliers: &mut self.route_appliers,
+            render_adapter,
         };
         let report = self.controller.apply(&mut delegate)?;
         self.latest_apply_report = Some(report.clone());
+        self.status = status_from_apply_report(&report);
 
         Ok(report)
+    }
+
+    /// Собирает field list в registry order, отмечая dirty и field validation state.
+    fn ui_fields(&self) -> SettingsResult<Vec<SettingsUiField>> {
+        let dirty_ids = self
+            .controller
+            .diff()?
+            .changes()
+            .iter()
+            .map(|change| change.id.clone())
+            .collect::<BTreeSet<_>>();
+        self.registry()
+            .descriptors()
+            .map(|descriptor| {
+                let draft_value = self
+                    .registry()
+                    .get_value(self.controller.draft(), &descriptor.id)?;
+                let mut field = SettingsUiField::new(descriptor.clone(), draft_value)
+                    .dirty(dirty_ids.contains(&descriptor.id));
+                if let Some(error) = self.field_validation_errors.get(&descriptor.id) {
+                    field = field.with_validation_error(error.clone());
+                }
+                Ok(field)
+            })
+            .collect()
+    }
+
+    /// Обрабатывает одно visual action на уровне authoritative runtime owner-а.
+    fn handle_ui_action<A>(
+        &mut self,
+        action: SettingsUiAction,
+        render_adapter: &mut A,
+    ) -> SettingsResult<bool>
+    where
+        A: RenderLiveSettingsAdapter,
+    {
+        match action {
+            SettingsUiAction::Open => {
+                self.begin_edit();
+                Ok(true)
+            }
+            SettingsUiAction::Cancel => self.cancel_edit(render_adapter),
+            SettingsUiAction::SetValue { setting_id, value } => {
+                self.set_draft_value(setting_id, value)
+            }
+            SettingsUiAction::ResetField { setting_id } => self.reset_field(setting_id),
+            SettingsUiAction::ResetGroup { section, group } => self.reset_group(section, group),
+            SettingsUiAction::ResetSurface { surface } => self.reset_surface(surface),
+            SettingsUiAction::ResetAll => self.reset_all(),
+            SettingsUiAction::Apply => {
+                if self.block_apply_when_field_errors_exist() {
+                    return Ok(true);
+                }
+                self.apply_draft(render_adapter)?;
+                Ok(true)
+            }
+            SettingsUiAction::Ok => {
+                if self.block_apply_when_field_errors_exist() {
+                    return Ok(true);
+                }
+                let report = self.apply_draft(render_adapter)?;
+                if report.final_state == ApplyFinalState::FullyApplied
+                    || report.final_state == ApplyFinalState::NoChanges
+                {
+                    self.settings_window_open = false;
+                }
+                Ok(true)
+            }
+        }
+    }
+
+    /// Блокирует программный Apply/OK, если field-level validation уже нашла ошибки.
+    fn block_apply_when_field_errors_exist(&mut self) -> bool {
+        if self.field_validation_errors.is_empty() {
+            return false;
+        }
+
+        self.status = SettingsUiStatus {
+            summary: Some("Сначала исправьте ошибки в полях".to_string()),
+            details: self
+                .field_validation_errors
+                .iter()
+                .map(|(setting_id, error)| format!("{setting_id}: {error}"))
+                .collect(),
+        };
+        true
+    }
+
+    /// Начинает fresh draft transaction от текущего committed document-а.
+    fn begin_edit(&mut self) {
+        self.controller.begin_edit();
+        self.field_validation_errors.clear();
+        self.settings_window_open = true;
+        self.status = SettingsUiStatus::default();
+        self.last_preview_sent_at = None;
+    }
+
+    /// Валидирует field через metadata и пишет значение только в draft document.
+    fn set_draft_value(
+        &mut self,
+        setting_id: SettingId,
+        value: SettingValue,
+    ) -> SettingsResult<bool> {
+        let Some(descriptor) = self.registry().descriptor(&setting_id) else {
+            self.field_validation_errors.insert(
+                setting_id.clone(),
+                format!("Неизвестная настройка `{setting_id}`"),
+            );
+            return Ok(true);
+        };
+
+        if let Err(error) = descriptor.validate_value(&value) {
+            self.field_validation_errors
+                .insert(setting_id.clone(), error.to_string());
+            self.status = SettingsUiStatus {
+                summary: Some("Поле содержит недопустимое значение".to_string()),
+                details: vec![format!("{setting_id}: {error}")],
+            };
+            return Ok(true);
+        }
+
+        self.field_validation_errors.remove(&setting_id);
+        let report = self.controller.set_value(setting_id, value)?;
+        if report.draft_changed {
+            self.status = SettingsUiStatus::default();
+        }
+        Ok(report.draft_changed || report.preview_queued)
+    }
+
+    /// Сбрасывает одно поле к default document-у и оставляет изменение только в draft.
+    fn reset_field(&mut self, setting_id: SettingId) -> SettingsResult<bool> {
+        self.field_validation_errors.remove(&setting_id);
+        let report = self.controller.reset_value(setting_id)?;
+        self.status = status_from_reset("Поле сброшено к значению по умолчанию", &report);
+        Ok(true)
+    }
+
+    /// Сбрасывает группу настроек к default document-у.
+    fn reset_group(
+        &mut self,
+        section: settings_core::SettingSectionId,
+        group: SettingGroupId,
+    ) -> SettingsResult<bool> {
+        let report = self.controller.reset_group(section, group)?;
+        self.remove_validation_errors_for(&report.affected_settings);
+        self.status = status_from_reset("Группа сброшена к значениям по умолчанию", &report);
+        Ok(true)
+    }
+
+    /// Сбрасывает настройки одного visual surface к default document-у.
+    fn reset_surface(&mut self, surface: SettingsSurfaceId) -> SettingsResult<bool> {
+        let report = self.controller.reset_surface(surface)?;
+        self.remove_validation_errors_for(&report.affected_settings);
+        self.status = status_from_reset("Раздел сброшен к значениям по умолчанию", &report);
+        Ok(true)
+    }
+
+    /// Сбрасывает весь draft document к default document-у.
+    fn reset_all(&mut self) -> SettingsResult<bool> {
+        let report = self.controller.reset_all()?;
+        self.field_validation_errors.clear();
+        self.status = status_from_reset("Все настройки сброшены к значениям по умолчанию", &report);
+        Ok(true)
+    }
+
+    /// Откатывает live preview routes и закрывает окно только после успешного rollback.
+    fn cancel_edit<A>(&mut self, render_adapter: &mut A) -> SettingsResult<bool>
+    where
+        A: RenderLiveSettingsAdapter,
+    {
+        let mut rollbacker = SettingsRuntimeRollbackDelegate {
+            route_appliers: &mut self.route_appliers,
+            render_adapter,
+        };
+        let report = self.controller.cancel(&mut rollbacker)?;
+        self.settings_window_open = false;
+        self.field_validation_errors.clear();
+        self.status = status_from_cancel(&report);
+        self.last_preview_sent_at = None;
+        Ok(true)
+    }
+
+    /// Удаляет field validation errors для settings, которые reset уже переписал.
+    fn remove_validation_errors_for(&mut self, setting_ids: &[SettingId]) {
+        for setting_id in setting_ids {
+            self.field_validation_errors.remove(setting_id);
+        }
+    }
+
+    /// Возвращает интервал preview pacing из committed config-а, а не из draft.
+    fn live_preview_interval(&self) -> Duration {
+        let max_hz = self
+            .controller
+            .committed()
+            .ui
+            .settings
+            .live_preview_max_hz
+            .max(1);
+        Duration::from_secs_f64(1.0 / f64::from(max_hz))
     }
 }
 
 /// Delegate, который позволяет controller-у использовать store/appliers без передачи ownership.
-struct SettingsRuntimeApplyDelegate<'runtime> {
+struct SettingsRuntimeApplyDelegate<'runtime, A> {
     /// Authoritative AppConfig validator из settings binding crate.
     validator: AppConfigValidator,
 
@@ -209,9 +541,12 @@ struct SettingsRuntimeApplyDelegate<'runtime> {
 
     /// Route appliers остаются owned by `SettingsRuntime`.
     route_appliers: &'runtime mut SettingsRuntimeRouteAppliers,
+
+    /// Renderer проходит только через renderer-neutral live settings adapter.
+    render_adapter: &'runtime mut A,
 }
 
-impl SettingsValidator<AppConfig> for SettingsRuntimeApplyDelegate<'_> {
+impl<A> SettingsValidator<AppConfig> for SettingsRuntimeApplyDelegate<'_, A> {
     fn validate(
         &mut self,
         request: ValidationRequest<'_, AppConfig>,
@@ -220,13 +555,16 @@ impl SettingsValidator<AppConfig> for SettingsRuntimeApplyDelegate<'_> {
     }
 }
 
-impl SettingsPersister<AppConfig> for SettingsRuntimeApplyDelegate<'_> {
+impl<A> SettingsPersister<AppConfig> for SettingsRuntimeApplyDelegate<'_, A> {
     fn persist(&mut self, request: PersistRequest<'_, AppConfig>) -> SettingsResult<PersistReport> {
         self.store.persist(request)
     }
 }
 
-impl CommittedSettingsApplier<AppConfig> for SettingsRuntimeApplyDelegate<'_> {
+impl<A> CommittedSettingsApplier<AppConfig> for SettingsRuntimeApplyDelegate<'_, A>
+where
+    A: RenderLiveSettingsAdapter,
+{
     fn apply_committed(
         &mut self,
         request: CommittedApplyRequest<'_, AppConfig>,
@@ -242,7 +580,7 @@ impl CommittedSettingsApplier<AppConfig> for SettingsRuntimeApplyDelegate<'_> {
             for route in routes {
                 reports.push(
                     self.route_appliers
-                        .apply_committed_route(route)?
+                        .apply_committed_route_with_render_adapter(route, self.render_adapter)?
                         .into_core_report(),
                 );
             }
@@ -335,6 +673,29 @@ impl AppRuntimeRouteApplier for SettingsRuntimeRouteAppliers {
 }
 
 impl SettingsRuntimeRouteAppliers {
+    /// Применяет committed route с доступом к renderer-neutral live adapter.
+    fn apply_committed_route_with_render_adapter<A>(
+        &mut self,
+        route: RuntimeCommittedRoute,
+        render_adapter: &mut A,
+    ) -> SettingsResult<AppRouteApplyReport>
+    where
+        A: RenderLiveSettingsAdapter,
+    {
+        match route.update.clone() {
+            RuntimeCommittedUpdate::RenderPreview(update) => {
+                let result = self
+                    .commit_render_preview_update(&update.live_settings.settings, render_adapter);
+                Ok(Self::route_report(
+                    route,
+                    result,
+                    ApplyMechanism::PreviewPromoted,
+                ))
+            }
+            _ => self.apply_committed_route(route),
+        }
+    }
+
     /// Применяет UI shell/settings-runtime snapshot.
     fn apply_ui_update(&mut self, update: &UiRuntimeSettingsUpdate) -> AppRouteApplyResult {
         if self.ui == update.ui {
@@ -427,6 +788,137 @@ impl SettingsRuntimeRouteAppliers {
         self.media_service = next_snapshot;
         AppRouteApplyResult::Applied
     }
+
+    /// Отправляет live preview update в renderer и фиксирует active preview snapshot.
+    fn preview_render_live_settings<A>(
+        &mut self,
+        document: &AppConfig,
+        render_adapter: &mut A,
+    ) -> PreviewApplyResult
+    where
+        A: RenderLiveSettingsAdapter,
+    {
+        let next_settings = match render_live_settings_from_config(document) {
+            Ok(settings) => settings,
+            Err(error) => {
+                return PreviewApplyResult::Fatal {
+                    message: error.to_string(),
+                };
+            }
+        };
+        let update = RenderLiveSettingsUpdate::from_baseline(&self.render_live, next_settings);
+        match render_adapter.preview_live_settings(&update) {
+            Ok(report) => {
+                self.render_live = update.settings;
+                preview_result_from_render_report(report.outcome)
+            }
+            Err(error) => preview_result_from_render_error(&error),
+        }
+    }
+
+    /// Откатывает renderer preview route к captured baseline document-у.
+    fn rollback_render_live_settings<A>(
+        &mut self,
+        baseline_document: &AppConfig,
+        render_adapter: &mut A,
+    ) -> SettingsResult<RollbackResult>
+    where
+        A: RenderLiveSettingsAdapter,
+    {
+        let baseline_settings = render_live_settings_from_config(baseline_document)?;
+        let report = render_adapter
+            .rollback_live_settings(&baseline_settings)
+            .map_err(|error| settings_core::SettingsError::access_failed(error.to_string()))?;
+        self.render_live = baseline_settings;
+        Ok(rollback_result_from_render_report(report.outcome))
+    }
+
+    /// Фиксирует preview-capable render settings как committed renderer state.
+    fn commit_render_preview_update<A>(
+        &mut self,
+        settings: &RenderLiveSettings,
+        render_adapter: &mut A,
+    ) -> AppRouteApplyResult
+    where
+        A: RenderLiveSettingsAdapter,
+    {
+        match render_adapter.commit_live_settings(settings) {
+            Ok(_) => {
+                self.render_live = settings.clone();
+                AppRouteApplyResult::PreviewPromoted
+            }
+            Err(error) => AppRouteApplyResult::Failed {
+                message: error.to_string(),
+            },
+        }
+    }
+}
+
+/// Delegate preview-а: controller отвечает за coalescing, runtime - за renderer boundary.
+struct SettingsRuntimePreviewDelegate<'runtime, A> {
+    /// App-owned route snapshots.
+    route_appliers: &'runtime mut SettingsRuntimeRouteAppliers,
+
+    /// Renderer-neutral adapter без WGPU типов в settings/runtime controller.
+    render_adapter: &'runtime mut A,
+}
+
+impl<A> PreviewSettingsApplier<AppConfig> for SettingsRuntimePreviewDelegate<'_, A>
+where
+    A: RenderLiveSettingsAdapter,
+{
+    fn apply_preview(
+        &mut self,
+        request: PreviewApplyRequest<'_, AppConfig>,
+    ) -> SettingsResult<PreviewApplyReport> {
+        let result = if request.update.route == SettingRouteId::from(RENDER_PREVIEW_ROUTE_ID) {
+            self.route_appliers
+                .preview_render_live_settings(&request.update.document, self.render_adapter)
+        } else {
+            PreviewApplyResult::Unsupported {
+                message: format!(
+                    "Preview route `{}` не поддержан settings runtime",
+                    request.update.route
+                ),
+            }
+        };
+        Ok(PreviewApplyReport {
+            route: request.update.route.clone(),
+            result,
+            affected_settings: request.update.affected_settings.clone(),
+        })
+    }
+}
+
+/// Delegate rollback-а: controller хранит baseline, runtime применяет его к renderer.
+struct SettingsRuntimeRollbackDelegate<'runtime, A> {
+    /// App-owned route snapshots.
+    route_appliers: &'runtime mut SettingsRuntimeRouteAppliers,
+
+    /// Renderer-neutral adapter без зависимости UI от renderer backend-а.
+    render_adapter: &'runtime mut A,
+}
+
+impl<A> PreviewRollbacker<AppConfig> for SettingsRuntimeRollbackDelegate<'_, A>
+where
+    A: RenderLiveSettingsAdapter,
+{
+    fn rollback_preview(
+        &mut self,
+        request: PreviewRollbackRequest<'_, AppConfig>,
+    ) -> SettingsResult<RollbackReport> {
+        let result = if request.route == &SettingRouteId::from(RENDER_PREVIEW_ROUTE_ID) {
+            self.route_appliers
+                .rollback_render_live_settings(request.baseline_document, self.render_adapter)?
+        } else {
+            RollbackResult::Noop
+        };
+        Ok(RollbackReport {
+            route: request.route.clone(),
+            result,
+            affected_settings: request.affected_settings.to_vec(),
+        })
+    }
 }
 
 /// Возвращает причину, по которой player route нельзя полностью применить в S09.
@@ -503,6 +995,208 @@ fn player_group_result(
             _ => route_result.clone(),
         },
         _ => route_result.clone(),
+    }
+}
+
+/// Переводит успешный render-core preview report в neutral settings-core result.
+fn preview_result_from_render_report(outcome: RenderLiveApplyOutcome) -> PreviewApplyResult {
+    match outcome {
+        RenderLiveApplyOutcome::Applied => PreviewApplyResult::Applied,
+        RenderLiveApplyOutcome::NoOp => PreviewApplyResult::Noop,
+    }
+}
+
+/// Переводит render-core error taxonomy в retry/non-retry preview status.
+fn preview_result_from_render_error(
+    error: &render_core::RenderLiveSettingsError,
+) -> PreviewApplyResult {
+    match error.kind() {
+        RenderLiveSettingsErrorKind::AbsentResource => PreviewApplyResult::Backpressured,
+        RenderLiveSettingsErrorKind::Unsupported => PreviewApplyResult::Unsupported {
+            message: error.to_string(),
+        },
+        RenderLiveSettingsErrorKind::Fatal => PreviewApplyResult::Fatal {
+            message: error.to_string(),
+        },
+    }
+}
+
+/// Переводит successful renderer rollback outcome в settings-core rollback result.
+fn rollback_result_from_render_report(outcome: RenderLiveApplyOutcome) -> RollbackResult {
+    match outcome {
+        RenderLiveApplyOutcome::Applied => RollbackResult::RolledBack,
+        RenderLiveApplyOutcome::NoOp => RollbackResult::Noop,
+    }
+}
+
+/// Формирует UI status по field reset report-у.
+fn status_from_reset(summary: &str, report: &ResetReport) -> SettingsUiStatus {
+    SettingsUiStatus {
+        summary: Some(summary.to_string()),
+        details: vec![format!(
+            "Изменены draft fields: {}",
+            setting_ids_text(&report.affected_settings)
+        )],
+    }
+}
+
+/// Формирует UI status по cancel/rollback report-у.
+fn status_from_cancel(report: &CancelReport) -> SettingsUiStatus {
+    let mut details = Vec::new();
+    if !report.discarded_changes.is_empty() {
+        details.push(format!(
+            "Отброшены draft changes: {}",
+            setting_ids_text(
+                &report
+                    .discarded_changes
+                    .changes()
+                    .iter()
+                    .map(|change| change.id.clone())
+                    .collect::<Vec<_>>()
+            )
+        ));
+    }
+    for rollback in &report.rolled_back_routes {
+        details.push(format!(
+            "Rollback route `{}`: {:?} ({})",
+            rollback.route,
+            rollback.result,
+            setting_ids_text(&rollback.affected_settings)
+        ));
+    }
+
+    SettingsUiStatus {
+        summary: Some("Изменения отменены".to_string()),
+        details,
+    }
+}
+
+/// Формирует UI status по preview attempts, включая backpressure и non-retry errors.
+fn status_from_preview_reports(reports: &[PreviewApplyReport]) -> SettingsUiStatus {
+    let has_error = reports.iter().any(|report| {
+        matches!(
+            report.result,
+            PreviewApplyResult::Unsupported { .. } | PreviewApplyResult::Fatal { .. }
+        )
+    });
+    let has_backpressure = reports
+        .iter()
+        .any(|report| report.result == PreviewApplyResult::Backpressured);
+    let summary = if has_error {
+        "Live preview не применён полностью"
+    } else if has_backpressure {
+        "Live preview ждёт renderer"
+    } else {
+        "Live preview применён"
+    };
+    SettingsUiStatus {
+        summary: Some(summary.to_string()),
+        details: reports.iter().map(preview_report_text).collect(),
+    }
+}
+
+/// Формирует UI status по full apply report-у.
+fn status_from_apply_report(report: &ApplyReport) -> SettingsUiStatus {
+    let mut details = Vec::new();
+    if let Some(persistence) = &report.persistence {
+        details.push(persist_report_text(persistence));
+    }
+    for route in &report.routes {
+        details.push(route_report_text(route));
+    }
+    for conflict in &report.conflicts {
+        details.push(format!(
+            "Conflict route `{}`: baseline {}, current {}, settings {}",
+            conflict.route,
+            conflict.baseline.value(),
+            conflict.current.value(),
+            setting_ids_text(&conflict.affected_settings)
+        ));
+    }
+    for error in &report.errors {
+        details.push(error.to_string());
+    }
+
+    SettingsUiStatus {
+        summary: Some(apply_final_state_text(report.final_state).to_string()),
+        details,
+    }
+}
+
+/// Человекочитаемое резюме final state.
+fn apply_final_state_text(final_state: ApplyFinalState) -> &'static str {
+    match final_state {
+        ApplyFinalState::NoChanges => "Нет изменений для применения",
+        ApplyFinalState::ValidationFailed => "Настройки не прошли полную проверку",
+        ApplyFinalState::PersistFailed => "Не удалось сохранить TOML",
+        ApplyFinalState::BlockedByConflicts => "Применение заблокировано конфликтом runtime route",
+        ApplyFinalState::PersistedRuntimeDiverged => {
+            "TOML сохранён, но runtime применился не полностью"
+        }
+        ApplyFinalState::FullyApplied => "Настройки сохранены и применены",
+    }
+}
+
+/// Форматирует persistence outcome для status details.
+fn persist_report_text(report: &PersistReport) -> String {
+    let outcome = match report.outcome {
+        PersistOutcome::Persisted => "TOML сохранён atomically",
+        PersistOutcome::SkippedNoChanges => "TOML не записывался: durable changes отсутствуют",
+    };
+    match &report.durability_warning {
+        Some(warning) => format!("{outcome}; durability warning: {warning}"),
+        None => outcome.to_string(),
+    }
+}
+
+/// Форматирует route apply result без потери partial/error semantics.
+fn route_report_text(report: &ApplyRouteReport) -> String {
+    format!(
+        "Route `{}`: {} ({})",
+        report.route,
+        apply_route_result_text(&report.result),
+        setting_ids_text(&report.affected_settings)
+    )
+}
+
+/// Форматирует preview result без слияния backpressure и fatal errors.
+fn preview_report_text(report: &PreviewApplyReport) -> String {
+    format!(
+        "Preview route `{}`: {} ({})",
+        report.route,
+        preview_apply_result_text(&report.result),
+        setting_ids_text(&report.affected_settings)
+    )
+}
+
+/// Человекочитаемый route apply result.
+fn apply_route_result_text(result: &ApplyRouteResult) -> String {
+    match result {
+        ApplyRouteResult::Applied => "applied".to_string(),
+        ApplyRouteResult::Noop => "no-op".to_string(),
+        ApplyRouteResult::PreviewPromoted => "preview promoted".to_string(),
+        ApplyRouteResult::PartialFailure { message } => format!("partial failure: {message}"),
+        ApplyRouteResult::Failed { message } => format!("failed: {message}"),
+        ApplyRouteResult::Conflict { baseline, current } => {
+            format!(
+                "conflict: baseline {}, current {}",
+                baseline.value(),
+                current.value()
+            )
+        }
+    }
+}
+
+/// Человекочитаемый preview apply result.
+fn preview_apply_result_text(result: &PreviewApplyResult) -> String {
+    match result {
+        PreviewApplyResult::Applied => "applied".to_string(),
+        PreviewApplyResult::Noop => "no-op".to_string(),
+        PreviewApplyResult::Backpressured => {
+            "backpressured; latest update remains pending".to_string()
+        }
+        PreviewApplyResult::Unsupported { message } => format!("unsupported: {message}"),
+        PreviewApplyResult::Fatal { message } => format!("fatal: {message}"),
     }
 }
 
@@ -632,27 +1326,154 @@ fn setting_ids_text(setting_ids: &[SettingId]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::io::ErrorKind;
     use std::path::PathBuf;
+    use std::time::{Duration, Instant};
 
     use player_core::{PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate};
+    use render_core::{
+        RenderLiveApplyPhase, RenderLiveApplyReport, RenderLiveSettingId, RenderLiveSettings,
+        RenderLiveSettingsAdapter, RenderLiveSettingsError, RenderLiveSettingsUpdate,
+    };
     use rustiplayer_config::{AppConfig, LoadedConfig};
     use rustiplayer_settings::{
         AppRouteApplyResult, AppRuntimeRoute, AppRuntimeRouteApplier, AppRuntimeRouteGroup,
         AppRuntimeRouteGroupUpdate, PlayerCommittedSettingsUpdate, RuntimeCommittedRoute,
-        RuntimeCommittedUpdate,
+        RuntimeCommittedUpdate, render_live_settings_from_config,
     };
-    use settings_core::{SettingId, SettingRouteId};
+    use settings_core::{ApplyFinalState, SettingId, SettingRouteId, SettingValue, SettingsResult};
 
     use super::{CommittedConfigSnapshot, SettingsRuntime, SettingsRuntimeRouteAppliers};
     use crate::render_settings::{
         color_pipeline_settings_from_config, hdr_to_sdr_settings_from_config,
     };
+    use crate::settings_ui::SettingsUiAction;
 
     fn loaded_config_for_test(config: AppConfig) -> LoadedConfig {
         LoadedConfig {
             config,
             path: PathBuf::from("/tmp/rustiplayer-settings-runtime-test.toml"),
             created: false,
+        }
+    }
+
+    fn loaded_config_for_test_at(config: AppConfig, path: PathBuf) -> LoadedConfig {
+        LoadedConfig {
+            config,
+            path,
+            created: false,
+        }
+    }
+
+    fn temp_config_path(test_name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "rustiplayer-settings-runtime-{test_name}-{}.toml",
+            std::process::id()
+        ))
+    }
+
+    fn remove_file_if_exists(path: &PathBuf) {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => panic!("test config file must be removable: {error}"),
+        }
+    }
+
+    fn brightness_action(value: f64) -> SettingsUiAction {
+        SettingsUiAction::SetValue {
+            setting_id: SettingId::from("render.color_adjustment.brightness"),
+            value: SettingValue::Float(value),
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecordingRenderAdapter {
+        active: RenderLiveSettings,
+        preview_updates: Vec<RenderLiveSettingsUpdate>,
+        commits: Vec<RenderLiveSettings>,
+        rollbacks: Vec<RenderLiveSettings>,
+        fail_commit: bool,
+        backpressured_preview_attempts: usize,
+    }
+
+    impl RecordingRenderAdapter {
+        fn from_config(config: &AppConfig) -> SettingsResult<Self> {
+            Ok(Self {
+                active: render_live_settings_from_config(config)?,
+                preview_updates: Vec::new(),
+                commits: Vec::new(),
+                rollbacks: Vec::new(),
+                fail_commit: false,
+                backpressured_preview_attempts: 0,
+            })
+        }
+
+        fn fail_commit_from_config(config: &AppConfig) -> SettingsResult<Self> {
+            let mut adapter = Self::from_config(config)?;
+            adapter.fail_commit = true;
+            Ok(adapter)
+        }
+
+        fn backpressured_once_from_config(config: &AppConfig) -> SettingsResult<Self> {
+            let mut adapter = Self::from_config(config)?;
+            adapter.backpressured_preview_attempts = 1;
+            Ok(adapter)
+        }
+    }
+
+    impl RenderLiveSettingsAdapter for RecordingRenderAdapter {
+        fn preview_live_settings(
+            &mut self,
+            update: &RenderLiveSettingsUpdate,
+        ) -> Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+            if self.backpressured_preview_attempts > 0 {
+                self.backpressured_preview_attempts -= 1;
+                return Err(RenderLiveSettingsError::absent_resource(
+                    RenderLiveApplyPhase::Preview,
+                    "test renderer busy",
+                ));
+            }
+            self.preview_updates.push(update.clone());
+            self.active = update.settings.clone();
+            Ok(RenderLiveApplyReport::applied(
+                RenderLiveApplyPhase::Preview,
+                update.changed_fields.clone(),
+            ))
+        }
+
+        fn commit_live_settings(
+            &mut self,
+            settings: &RenderLiveSettings,
+        ) -> Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+            if self.fail_commit {
+                return Err(RenderLiveSettingsError::fatal(
+                    RenderLiveApplyPhase::Commit,
+                    "test commit failure",
+                ));
+            }
+            let changed_fields = self.active.changed_fields_from(settings);
+            self.commits.push(settings.clone());
+            self.active = settings.clone();
+            Ok(RenderLiveApplyReport::applied(
+                RenderLiveApplyPhase::Commit,
+                changed_fields,
+            ))
+        }
+
+        fn rollback_live_settings(
+            &mut self,
+            baseline: &RenderLiveSettings,
+        ) -> Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+            let changed_fields: Vec<RenderLiveSettingId> =
+                self.active.changed_fields_from(baseline);
+            self.rollbacks.push(baseline.clone());
+            self.active = baseline.clone();
+            Ok(RenderLiveApplyReport::applied(
+                RenderLiveApplyPhase::Rollback,
+                changed_fields,
+            ))
         }
     }
 
@@ -750,6 +1571,356 @@ mod tests {
         assert_eq!(appliers.player.default_volume, 0.25);
         assert_eq!(report.result, AppRouteApplyResult::Applied);
         assert_eq!(report.groups[0].result, AppRouteApplyResult::Applied);
+    }
+
+    #[test]
+    fn preview_does_not_persist_toml_on_field_change() {
+        let path = temp_config_path("preview-does-not-persist");
+        remove_file_if_exists(&path);
+        let config = AppConfig::default();
+        let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+            config.clone(),
+            path.clone(),
+        ))
+        .expect("settings runtime должен построиться");
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+
+        runtime
+            .handle_ui_actions(
+                vec![SettingsUiAction::Open, brightness_action(0.25)],
+                &mut render_adapter,
+            )
+            .expect("draft edit не должен писать TOML");
+        runtime
+            .apply_due_preview(&mut render_adapter, Instant::now())
+            .expect("preview должен примениться без persist");
+
+        assert_eq!(render_adapter.preview_updates.len(), 1);
+        assert!(
+            !path.exists(),
+            "slider/input movement и preview не должны создавать TOML"
+        );
+        remove_file_if_exists(&path);
+    }
+
+    #[test]
+    fn multiple_color_changes_coalesce_to_last_preview_value() {
+        let config = AppConfig::default();
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+
+        runtime
+            .handle_ui_actions(
+                vec![
+                    SettingsUiAction::Open,
+                    brightness_action(0.10),
+                    brightness_action(0.40),
+                ],
+                &mut render_adapter,
+            )
+            .expect("draft changes должны coalesce pending preview");
+        runtime
+            .apply_due_preview(&mut render_adapter, Instant::now())
+            .expect("preview должен примениться");
+
+        assert_eq!(render_adapter.preview_updates.len(), 1);
+        assert_eq!(
+            render_adapter.preview_updates[0]
+                .settings
+                .color_pipeline
+                .adjustment
+                .brightness,
+            0.40
+        );
+    }
+
+    #[test]
+    fn preview_pacing_uses_committed_live_preview_max_hz() {
+        let mut config = AppConfig::default();
+        config.ui.settings.live_preview_max_hz = 2;
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        let first_tick = Instant::now();
+
+        runtime
+            .handle_ui_actions(
+                vec![SettingsUiAction::Open, brightness_action(0.10)],
+                &mut render_adapter,
+            )
+            .expect("первое draft change должно пройти");
+        runtime
+            .apply_due_preview(&mut render_adapter, first_tick)
+            .expect("первый preview должен примениться сразу");
+        runtime
+            .handle_ui_actions(vec![brightness_action(0.20)], &mut render_adapter)
+            .expect("второе draft change должно пройти");
+
+        let early_tick = runtime
+            .apply_due_preview(&mut render_adapter, first_tick + Duration::from_millis(100))
+            .expect("ранний preview tick должен только запланировать retry");
+
+        assert_eq!(
+            render_adapter.preview_updates.len(),
+            1,
+            "runtime не должен отправлять preview чаще committed max_hz"
+        );
+        assert_eq!(early_tick.repaint_after, Some(Duration::from_millis(400)));
+
+        runtime
+            .apply_due_preview(&mut render_adapter, first_tick + Duration::from_millis(500))
+            .expect("preview должен примениться после config-paced интервала");
+        assert_eq!(render_adapter.preview_updates.len(), 2);
+        assert_eq!(
+            render_adapter.preview_updates[1]
+                .settings
+                .color_pipeline
+                .adjustment
+                .brightness,
+            0.20
+        );
+    }
+
+    #[test]
+    fn field_validation_error_does_not_mutate_draft_or_queue_preview() {
+        let config = AppConfig::default();
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+
+        runtime
+            .handle_ui_actions(
+                vec![SettingsUiAction::Open, brightness_action(99.0)],
+                &mut render_adapter,
+            )
+            .expect("field validation error должен стать UI state, а не hard error");
+
+        let brightness_field = runtime
+            .ui_model()
+            .fields
+            .into_iter()
+            .find(|field| {
+                field.descriptor.id == SettingId::from("render.color_adjustment.brightness")
+            })
+            .expect("brightness field должен быть в visual model");
+        assert!(brightness_field.validation_error.is_some());
+        assert!(
+            runtime
+                .controller
+                .diff()
+                .expect("draft и committed должны сравниваться")
+                .is_empty(),
+            "invalid field value не должен мутировать draft"
+        );
+        assert!(
+            runtime.controller.preview().pending_routes().is_empty(),
+            "invalid field value не должен queue-ить preview"
+        );
+
+        runtime
+            .handle_ui_actions(vec![SettingsUiAction::Apply], &mut render_adapter)
+            .expect("Apply с field error должен стать UI status, а не hard error");
+        assert!(
+            runtime.latest_apply_report().is_none(),
+            "field validation error должен блокировать persist/apply pipeline"
+        );
+    }
+
+    #[test]
+    fn backpressure_keeps_latest_pending_preview_update() {
+        let config = AppConfig::default();
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        let mut render_adapter = RecordingRenderAdapter::backpressured_once_from_config(&config)
+            .expect("adapter должен стартовать");
+        let first_tick = Instant::now();
+
+        runtime
+            .handle_ui_actions(
+                vec![SettingsUiAction::Open, brightness_action(0.10)],
+                &mut render_adapter,
+            )
+            .expect("draft edit должен пройти");
+        let backpressure_tick = runtime
+            .apply_due_preview(&mut render_adapter, first_tick)
+            .expect("backpressure должен быть retryable preview state");
+
+        assert_eq!(render_adapter.preview_updates.len(), 0);
+        assert!(
+            runtime
+                .controller
+                .preview()
+                .pending_routes()
+                .contains(&SettingRouteId::from("render")),
+            "backpressure должен оставить latest preview pending"
+        );
+        assert!(backpressure_tick.repaint_after.is_some());
+
+        runtime
+            .handle_ui_actions(vec![brightness_action(0.50)], &mut render_adapter)
+            .expect("новое draft значение должно заменить pending preview");
+        runtime
+            .apply_due_preview(&mut render_adapter, first_tick + Duration::from_secs(1))
+            .expect("retry должен отправить latest pending preview");
+
+        assert_eq!(render_adapter.preview_updates.len(), 1);
+        assert_eq!(
+            render_adapter.preview_updates[0]
+                .settings
+                .color_pipeline
+                .adjustment
+                .brightness,
+            0.50
+        );
+    }
+
+    #[test]
+    fn cancel_rolls_back_lazy_preview_baseline_and_discards_draft() {
+        let config = AppConfig::default();
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+
+        runtime
+            .handle_ui_actions(
+                vec![SettingsUiAction::Open, brightness_action(0.35)],
+                &mut render_adapter,
+            )
+            .expect("draft edit должен пройти");
+        runtime
+            .apply_due_preview(&mut render_adapter, Instant::now())
+            .expect("preview должен примениться");
+        runtime
+            .handle_ui_actions(vec![SettingsUiAction::Cancel], &mut render_adapter)
+            .expect("cancel должен откатить preview");
+
+        assert_eq!(render_adapter.rollbacks.len(), 1);
+        assert_eq!(
+            render_adapter.active.color_pipeline.adjustment.brightness,
+            config.render.color_adjustment.brightness
+        );
+        assert!(
+            runtime
+                .controller
+                .diff()
+                .expect("draft и committed должны сравниваться")
+                .is_empty(),
+            "cancel должен отбросить draft changes"
+        );
+        assert!(!runtime.is_settings_window_open());
+    }
+
+    #[test]
+    fn apply_promotes_active_preview_to_committed_runtime_and_persists() {
+        let path = temp_config_path("apply-promotes-preview");
+        remove_file_if_exists(&path);
+        let config = AppConfig::default();
+        let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+            config.clone(),
+            path.clone(),
+        ))
+        .expect("settings runtime должен построиться");
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+
+        runtime
+            .handle_ui_actions(
+                vec![SettingsUiAction::Open, brightness_action(0.45)],
+                &mut render_adapter,
+            )
+            .expect("draft edit должен пройти");
+        runtime
+            .apply_due_preview(&mut render_adapter, Instant::now())
+            .expect("preview должен примениться");
+        let report = runtime
+            .apply_draft(&mut render_adapter)
+            .expect("apply должен вернуть report");
+
+        assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
+        assert_eq!(
+            report.routes[0].result,
+            settings_core::ApplyRouteResult::PreviewPromoted
+        );
+        assert_eq!(render_adapter.commits.len(), 1);
+        assert!(path.exists(), "Apply должен сохранить TOML atomically");
+        assert_eq!(
+            runtime
+                .controller
+                .committed()
+                .render
+                .color_adjustment
+                .brightness,
+            0.45
+        );
+        remove_file_if_exists(&path);
+    }
+
+    #[test]
+    fn ok_closes_only_after_full_success() {
+        let success_path = temp_config_path("ok-success");
+        let failure_path = temp_config_path("ok-failure");
+        remove_file_if_exists(&success_path);
+        remove_file_if_exists(&failure_path);
+        let config = AppConfig::default();
+
+        let mut success_runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+            config.clone(),
+            success_path.clone(),
+        ))
+        .expect("settings runtime должен построиться");
+        let mut success_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        success_runtime
+            .handle_ui_actions(
+                vec![
+                    SettingsUiAction::Open,
+                    brightness_action(0.20),
+                    SettingsUiAction::Ok,
+                ],
+                &mut success_adapter,
+            )
+            .expect("OK должен применить успешный draft");
+        assert!(!success_runtime.is_settings_window_open());
+
+        let mut failure_runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+            config.clone(),
+            failure_path.clone(),
+        ))
+        .expect("settings runtime должен построиться");
+        let mut failure_adapter = RecordingRenderAdapter::fail_commit_from_config(&config)
+            .expect("adapter должен стартовать");
+        failure_runtime
+            .handle_ui_actions(
+                vec![
+                    SettingsUiAction::Open,
+                    brightness_action(0.30),
+                    SettingsUiAction::Ok,
+                ],
+                &mut failure_adapter,
+            )
+            .expect("OK должен вернуть report, а не падать");
+
+        assert!(failure_runtime.is_settings_window_open());
+        assert_eq!(
+            failure_runtime
+                .latest_apply_report()
+                .expect("failure должен сохранить apply report")
+                .final_state,
+            ApplyFinalState::PersistedRuntimeDiverged
+        );
+        remove_file_if_exists(&success_path);
+        remove_file_if_exists(&failure_path);
     }
 
     #[test]
