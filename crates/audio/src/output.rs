@@ -17,13 +17,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tracing::{info, warn};
 
 use crate::clock::AudioClock;
+use crate::devices::{DEFAULT_AUDIO_OUTPUT_DEVICE_ID, output_device_from_stable_id};
 
 /// Аудиовыход с CPAL stream и ring buffer.
 pub struct AudioOutput {
@@ -409,24 +410,37 @@ fn pause_stream_with_policy(stream: &cpal::Stream) -> Result<PauseStreamOutcome>
 }
 
 impl AudioOutput {
-    /// Создаёт audio output.
+    /// Создаёт audio output на системном output device по умолчанию.
+    pub fn new(decoder_rate: u32, decoder_channels: u32) -> Result<Self> {
+        Self::new_with_device_id(
+            decoder_rate,
+            decoder_channels,
+            DEFAULT_AUDIO_OUTPUT_DEVICE_ID,
+        )
+    }
+
+    /// Создаёт audio output на выбранном stable device id.
     ///
     /// decoder_rate — sample rate декодера (48000 для Opus).
     /// decoder_channels — количество каналов декодера.
-    pub fn new(decoder_rate: u32, decoder_channels: u32) -> Result<Self> {
+    pub fn new_with_device_id(
+        decoder_rate: u32,
+        decoder_channels: u32,
+        output_device_id: &str,
+    ) -> Result<Self> {
         if decoder_channels == 0 {
             anyhow::bail!("Количество каналов декодера не может быть 0");
         }
 
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .context("No default audio output device found")?;
+        let device = output_device_from_stable_id(&host, output_device_id)
+            .with_context(|| format!("Audio output device `{output_device_id}` is unavailable"))?;
 
         let output_config = choose_supported_output_config(&device)?;
 
         let device_name = device.name().unwrap_or_else(|_| "unknown".to_string());
         info!(
+            stable_id = %output_device_id,
             device = %device_name,
             stream_rate = output_config.sample_rate().0,
             stream_channels = output_config.channels(),

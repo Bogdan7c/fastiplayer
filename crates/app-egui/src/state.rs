@@ -681,6 +681,7 @@ impl AppState {
         window: &Window,
         telemetry: Arc<Telemetry>,
         committed_config_snapshot: CommittedConfigSnapshot,
+        audio_output_device_controller: audio::AudioOutputDeviceController,
         startup_error: Option<String>,
     ) -> anyhow::Result<Self> {
         let egui_ctx = egui::Context::default();
@@ -698,7 +699,9 @@ impl AppState {
         let worker_config =
             PlayerWorkerConfig::from_app_config(committed_config_snapshot.as_config())
                 .with_audio_decoder_factory(Arc::new(audio::ProductionAudioDecoderFactory))
-                .with_audio_output_factory(Arc::new(audio::CpalAudioOutputFactory));
+                .with_audio_output_factory(Arc::new(audio::CpalAudioOutputFactory::new(
+                    audio_output_device_controller,
+                )));
         let player_worker = PlayerWorker::spawn(worker_config)?;
         let desktop_integration = match DesktopIntegration::spawn(player_worker.command_sender()) {
             Ok(desktop_integration) => Some(desktop_integration),

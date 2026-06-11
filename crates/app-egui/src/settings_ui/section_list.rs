@@ -1,7 +1,9 @@
 //! Section list для descriptor-driven settings UI.
 
+use std::collections::BTreeSet;
+
 use egui::Ui;
-use settings_core::{SettingSectionId, SettingsSurfaceId};
+use settings_core::{SelectDescriptor, SettingEditor, SettingSectionId, SettingsSurfaceId};
 
 use super::{SettingsUiAction, SettingsUiField, SettingsUiState};
 
@@ -32,6 +34,7 @@ pub fn show(
         let label = section_label(section);
         if ui.selectable_label(is_selected, label).clicked() {
             state.selected_section = Some(section.section.clone());
+            actions.extend(refresh_actions_for_section(fields, &section.section));
         }
     }
 
@@ -123,4 +126,26 @@ fn selected_surface<'sections>(
         .iter()
         .find(|section| &section.section == selected_section)
         .map(|section| &section.surface)
+}
+
+/// Создаёт refresh actions для dynamic providers выбранной секции.
+fn refresh_actions_for_section(
+    fields: &[SettingsUiField],
+    section: &SettingSectionId,
+) -> Vec<SettingsUiAction> {
+    let provider_ids = fields
+        .iter()
+        .filter(|field| &field.descriptor.placement.section == section)
+        .filter_map(|field| match &field.descriptor.editor {
+            SettingEditor::Select(SelectDescriptor::Dynamic { provider_id }) => {
+                Some(provider_id.clone())
+            }
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+
+    provider_ids
+        .into_iter()
+        .map(|provider_id| SettingsUiAction::RefreshOptions { provider_id })
+        .collect()
 }

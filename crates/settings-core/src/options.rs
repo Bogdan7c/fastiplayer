@@ -120,6 +120,9 @@ impl SettingOptionsRequest {
 /// Dynamic option cache/provider state as seen by neutral UI code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingOptionsStatus {
+    /// Runtime owner уже знает provider, но snapshot ещё не загружен.
+    Loading,
+
     /// Options are fresh enough for current UI.
     Ready,
 

@@ -26,12 +26,14 @@ use rustiplayer_settings::{
 };
 use settings_core::{
     ApplyFinalState, ApplyMechanism, ApplyReport, ApplyRouteReport, ApplyRouteResult, CancelReport,
-    CommittedApplyRequest, CommittedSettingsApplier, PersistOutcome, PersistReport, PersistRequest,
-    PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult, PreviewRollbackRequest,
-    PreviewRollbacker, PreviewSettingsApplier, ResetReport, RollbackReport, RollbackResult,
-    SettingGroupId, SettingId, SettingRouteId, SettingValue, SettingsController, SettingsPersister,
-    SettingsRegistry, SettingsResult, SettingsSurfaceId, SettingsValidator, ValidationReport,
-    ValidationRequest,
+    CommittedApplyRequest, CommittedSettingsApplier, OptionProviderId, PersistOutcome,
+    PersistReport, PersistRequest, PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult,
+    PreviewRollbackRequest, PreviewRollbacker, PreviewSettingsApplier, ResetReport, RollbackReport,
+    RollbackResult, SelectDescriptor, SettingEditor, SettingGroupId, SettingId, SettingOption,
+    SettingOptionCurrentValue, SettingOptionId, SettingOptionProvider, SettingOptions,
+    SettingOptionsError, SettingOptionsRequest, SettingOptionsStatus, SettingRouteId, SettingText,
+    SettingValue, SettingsController, SettingsPersister, SettingsRegistry, SettingsResult,
+    SettingsSurfaceId, SettingsValidator, ValidationReport, ValidationRequest,
 };
 
 use crate::render_settings::{
@@ -131,6 +133,12 @@ pub(crate) struct SettingsRuntime {
     /// Последний status snapshot, который visual UI только отображает.
     status: SettingsUiStatus,
 
+    /// Runtime-owned dynamic option providers; visual UI никогда не вызывает их напрямую.
+    option_providers: BTreeMap<OptionProviderId, Box<dyn SettingOptionProvider>>,
+
+    /// Cached provider snapshots, которые можно безопасно читать во время egui rendering.
+    option_cache: BTreeMap<OptionProviderId, SettingOptions>,
+
     /// Последняя попытка отправить preview update; pacing берётся из committed config.
     last_preview_sent_at: Option<Instant>,
 }
@@ -150,6 +158,8 @@ impl SettingsRuntime {
         let registry = app_config_registry()?;
         let controller = SettingsController::new(config, controller_registry);
         let route_appliers = SettingsRuntimeRouteAppliers::from_config(controller.committed())?;
+        let option_providers =
+            default_option_providers(route_appliers.audio_output_device_controller.clone());
         let store = AppConfigStore::new(path.clone());
 
         let runtime = Self {
@@ -162,6 +172,8 @@ impl SettingsRuntime {
             settings_window_open: false,
             field_validation_errors: BTreeMap::new(),
             status: SettingsUiStatus::default(),
+            option_providers,
+            option_cache: BTreeMap::new(),
             last_preview_sent_at: None,
         };
 
@@ -212,6 +224,12 @@ impl SettingsRuntime {
     #[must_use]
     pub(crate) const fn is_settings_window_open(&self) -> bool {
         self.settings_window_open
+    }
+
+    /// Возвращает shared audio device selection owner для playback factory.
+    #[must_use]
+    pub(crate) fn audio_output_device_controller(&self) -> audio::AudioOutputDeviceController {
+        self.route_appliers.audio_output_device_controller.clone()
     }
 
     /// Собирает visual model из draft document-а без передачи `AppConfig` в UI modules.
@@ -351,8 +369,108 @@ impl SettingsRuntime {
                 if let Some(error) = self.field_validation_errors.get(&descriptor.id) {
                     field = field.with_validation_error(error.clone());
                 }
+                if let Some(options) = self.cached_options_for_descriptor(descriptor, &field) {
+                    field = field.with_options(options);
+                }
                 Ok(field)
             })
+            .collect()
+    }
+
+    /// Возвращает cached snapshot или neutral loading snapshot для dynamic select-а.
+    fn cached_options_for_descriptor(
+        &self,
+        descriptor: &settings_core::SettingDescriptor,
+        field: &SettingsUiField,
+    ) -> Option<SettingOptions> {
+        let SettingEditor::Select(SelectDescriptor::Dynamic { provider_id }) = &descriptor.editor
+        else {
+            return None;
+        };
+
+        self.option_cache.get(provider_id).cloned().or_else(|| {
+            Some(options_snapshot_from_status(
+                provider_id.clone(),
+                SettingOptionsStatus::Loading,
+                Vec::new(),
+                Some(field.draft_value.clone()),
+            ))
+        })
+    }
+
+    /// Обновляет все dynamic option providers, известные registry.
+    fn refresh_all_dynamic_options(&mut self) -> SettingsResult<()> {
+        let provider_ids = self.dynamic_option_provider_ids();
+        for provider_id in provider_ids {
+            self.refresh_dynamic_options(provider_id)?;
+        }
+        Ok(())
+    }
+
+    /// Обновляет один dynamic option provider и кладёт результат в cache.
+    fn refresh_dynamic_options(&mut self, provider_id: OptionProviderId) -> SettingsResult<()> {
+        let request = self.option_request_for_provider(&provider_id)?;
+        let current_value = request.current_value.clone();
+        let snapshot = match self.option_providers.get(&provider_id) {
+            Some(provider) => match provider.options(request) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    options_snapshot_from_error(provider_id.clone(), current_value, error)
+                }
+            },
+            None => options_snapshot_from_error(
+                provider_id.clone(),
+                current_value,
+                SettingOptionsError::ProviderUnavailable {
+                    provider_id: provider_id.clone(),
+                },
+            ),
+        };
+
+        self.option_cache.insert(provider_id, snapshot);
+        Ok(())
+    }
+
+    /// Собирает request для provider-а из текущего draft value.
+    fn option_request_for_provider(
+        &self,
+        provider_id: &OptionProviderId,
+    ) -> SettingsResult<SettingOptionsRequest> {
+        for descriptor in self.registry().descriptors() {
+            let SettingEditor::Select(SelectDescriptor::Dynamic {
+                provider_id: descriptor_provider_id,
+            }) = &descriptor.editor
+            else {
+                continue;
+            };
+            if descriptor_provider_id != provider_id {
+                continue;
+            }
+
+            let current_value = self
+                .registry()
+                .get_value(self.controller.draft(), &descriptor.id)?;
+            return Ok(SettingOptionsRequest::new(
+                descriptor.id.clone(),
+                Some(current_value),
+            ));
+        }
+
+        Ok(SettingOptionsRequest::new(provider_id.as_str(), None))
+    }
+
+    /// Возвращает provider ids из registry без дублей.
+    fn dynamic_option_provider_ids(&self) -> Vec<OptionProviderId> {
+        self.registry()
+            .descriptors()
+            .filter_map(|descriptor| match &descriptor.editor {
+                SettingEditor::Select(SelectDescriptor::Dynamic { provider_id }) => {
+                    Some(provider_id.clone())
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect()
     }
 
@@ -368,6 +486,7 @@ impl SettingsRuntime {
         match action {
             SettingsUiAction::Open => {
                 self.begin_edit();
+                self.refresh_all_dynamic_options()?;
                 Ok(true)
             }
             SettingsUiAction::Cancel => self.cancel_edit(render_adapter),
@@ -378,6 +497,10 @@ impl SettingsRuntime {
             SettingsUiAction::ResetGroup { section, group } => self.reset_group(section, group),
             SettingsUiAction::ResetSurface { surface } => self.reset_surface(surface),
             SettingsUiAction::ResetAll => self.reset_all(),
+            SettingsUiAction::RefreshOptions { provider_id } => {
+                self.refresh_dynamic_options(provider_id)?;
+                Ok(true)
+            }
             SettingsUiAction::Apply => {
                 if self.block_apply_when_field_errors_exist() {
                     return Ok(true);
@@ -531,6 +654,153 @@ impl SettingsRuntime {
     }
 }
 
+/// Создаёт production dynamic option providers.
+#[cfg(not(test))]
+fn default_option_providers(
+    audio_output_device_controller: audio::AudioOutputDeviceController,
+) -> BTreeMap<OptionProviderId, Box<dyn SettingOptionProvider>> {
+    let provider = AudioOutputDeviceOptionProvider::new(audio_output_device_controller);
+    let provider_id = provider.provider_id();
+    let mut providers: BTreeMap<OptionProviderId, Box<dyn SettingOptionProvider>> = BTreeMap::new();
+    providers.insert(provider_id, Box::new(provider));
+    providers
+}
+
+/// В unit tests providers подставляются явно, чтобы unrelated tests не трогали CPAL/ALSA.
+#[cfg(test)]
+fn default_option_providers(
+    _audio_output_device_controller: audio::AudioOutputDeviceController,
+) -> BTreeMap<OptionProviderId, Box<dyn SettingOptionProvider>> {
+    BTreeMap::new()
+}
+
+/// Dynamic options provider для `audio.output_device`.
+#[cfg(not(test))]
+struct AudioOutputDeviceOptionProvider {
+    /// Audio owner API без CPAL types в settings runtime/UI.
+    audio_output_device_controller: audio::AudioOutputDeviceController,
+}
+
+#[cfg(not(test))]
+impl AudioOutputDeviceOptionProvider {
+    /// Создаёт provider поверх shared audio output device controller-а.
+    fn new(audio_output_device_controller: audio::AudioOutputDeviceController) -> Self {
+        Self {
+            audio_output_device_controller,
+        }
+    }
+}
+
+#[cfg(not(test))]
+impl SettingOptionProvider for AudioOutputDeviceOptionProvider {
+    fn provider_id(&self) -> OptionProviderId {
+        OptionProviderId::from("audio.output_device")
+    }
+
+    fn options(
+        &self,
+        request: SettingOptionsRequest,
+    ) -> Result<SettingOptions, SettingOptionsError> {
+        let provider_id = self.provider_id();
+        let mut options = vec![SettingOption::new(
+            audio::DEFAULT_AUDIO_OUTPUT_DEVICE_ID,
+            SettingText::new(
+                "settings.audio.output_device.default",
+                "Системное устройство",
+            ),
+        )];
+
+        let devices = self
+            .audio_output_device_controller
+            .output_devices()
+            .map_err(|error| SettingOptionsError::Failed {
+                provider_id: provider_id.clone(),
+                message: error.to_string(),
+            })?;
+        options.extend(devices.into_iter().map(audio_output_device_option));
+
+        Ok(SettingOptions::ready(
+            provider_id,
+            options.clone(),
+            current_option_value(request.current_value, &options),
+        ))
+    }
+}
+
+/// Преобразует neutral audio device snapshot в settings option.
+#[cfg(not(test))]
+fn audio_output_device_option(device: audio::AudioOutputDeviceInfo) -> SettingOption {
+    let label = if device.is_system_default {
+        format!("{} (текущее системное)", device.display_name)
+    } else {
+        device.display_name
+    };
+
+    SettingOption::new(
+        device.stable_id,
+        SettingText::new("settings.audio.output_device.detected", label),
+    )
+}
+
+/// Создаёт snapshot с заданным status, сохраняя current select id.
+fn options_snapshot_from_status(
+    provider_id: OptionProviderId,
+    status: SettingOptionsStatus,
+    options: Vec<SettingOption>,
+    current_value: Option<SettingValue>,
+) -> SettingOptions {
+    let current = current_option_value(current_value, &options);
+    SettingOptions {
+        provider_id,
+        status,
+        options,
+        current,
+    }
+}
+
+/// Создаёт error snapshot, который visual UI покажет как option-provider error.
+fn options_snapshot_from_error(
+    provider_id: OptionProviderId,
+    current_value: Option<SettingValue>,
+    error: SettingOptionsError,
+) -> SettingOptions {
+    options_snapshot_from_status(
+        provider_id,
+        SettingOptionsStatus::Unavailable {
+            message: format!("Option-provider error: {error}"),
+        },
+        Vec::new(),
+        current_value,
+    )
+}
+
+/// Вычисляет current dynamic option state без замены unavailable id на default.
+fn current_option_value(
+    current_value: Option<SettingValue>,
+    options: &[SettingOption],
+) -> SettingOptionCurrentValue {
+    let Some(SettingValue::Select(current_id)) = current_value else {
+        return SettingOptionCurrentValue::None;
+    };
+
+    if options.iter().any(|option| &option.id == &current_id) {
+        SettingOptionCurrentValue::Available(current_id)
+    } else {
+        SettingOptionCurrentValue::UnavailableCurrent {
+            label: unavailable_current_label(&current_id),
+            id: current_id,
+        }
+    }
+}
+
+/// Формирует label для сохранённого, но сейчас недоступного dynamic option id.
+fn unavailable_current_label(current_id: &SettingOptionId) -> SettingText {
+    SettingText::new(
+        "settings.dynamic_options.unavailable_current",
+        format!("{} (сейчас недоступно)", current_id.as_str()),
+    )
+}
+
 /// Delegate, который позволяет controller-у использовать store/appliers без передачи ownership.
 struct SettingsRuntimeApplyDelegate<'runtime, A> {
     /// Authoritative AppConfig validator из settings binding crate.
@@ -604,6 +874,9 @@ struct SettingsRuntimeRouteAppliers {
     /// Последний player settings snapshot, не смешанный с current playback controls.
     player: PlayerRuntimeSnapshot,
 
+    /// Shared audio output device selection owner из concrete audio crate.
+    audio_output_device_controller: audio::AudioOutputDeviceController,
+
     /// Последний media/service policy snapshot.
     media_service: MediaServiceRuntimeSnapshot,
 }
@@ -616,6 +889,9 @@ impl SettingsRuntimeRouteAppliers {
             render_live: render_live_settings_from_config(config)?,
             render_committed: RenderCommittedRuntimeSnapshot::from_config(config),
             player: PlayerRuntimeSnapshot::from_config(config),
+            audio_output_device_controller: audio::AudioOutputDeviceController::new(
+                config.audio.output_device.clone(),
+            ),
             media_service: MediaServiceRuntimeSnapshot::from_config(config),
         })
     }
@@ -730,9 +1006,13 @@ impl SettingsRuntimeRouteAppliers {
         update: &PlayerCommittedSettingsUpdate,
     ) -> AppRouteApplyReport {
         let default_volume_result = self.apply_player_default_volume(update);
+        let audio_output_device_result = self.apply_player_audio_output_device(update);
+        let in_place_result = combine_player_in_place_results([
+            default_volume_result.clone(),
+            audio_output_device_result.clone(),
+        ]);
         let deferred_message = player_deferred_message(update);
-        let route_result =
-            player_route_result(default_volume_result.clone(), deferred_message.as_deref());
+        let route_result = player_route_result(in_place_result, deferred_message.as_deref());
         let mechanism = if route_result.is_success() {
             ApplyMechanism::InPlace
         } else {
@@ -742,7 +1022,12 @@ impl SettingsRuntimeRouteAppliers {
             .groups
             .into_iter()
             .map(|group| AppRouteGroupReport {
-                result: player_group_result(&group.group, &default_volume_result, &route_result),
+                result: player_group_result(
+                    &group.group,
+                    &default_volume_result,
+                    &audio_output_device_result,
+                    &route_result,
+                ),
                 group: group.group,
                 affected_settings: group.affected_settings,
             })
@@ -773,6 +1058,36 @@ impl SettingsRuntimeRouteAppliers {
 
         self.player.default_volume = next_default_volume;
         AppRouteApplyResult::Applied
+    }
+
+    /// Применяет выбранный audio output device через owner API concrete audio crate.
+    fn apply_player_audio_output_device(
+        &mut self,
+        update: &PlayerCommittedSettingsUpdate,
+    ) -> AppRouteApplyResult {
+        let Some(next_device_id) = &update.audio_output_device_id else {
+            return AppRouteApplyResult::Noop;
+        };
+        if &self.player.audio_output_device_id == next_device_id {
+            return AppRouteApplyResult::Noop;
+        }
+
+        match self
+            .audio_output_device_controller
+            .select_output_device(next_device_id.clone())
+        {
+            Ok(audio::AudioOutputDeviceSelectionChange::Applied) => {
+                self.player.audio_output_device_id = next_device_id.clone();
+                AppRouteApplyResult::Applied
+            }
+            Ok(audio::AudioOutputDeviceSelectionChange::Noop) => {
+                self.player.audio_output_device_id = next_device_id.clone();
+                AppRouteApplyResult::Noop
+            }
+            Err(error) => AppRouteApplyResult::Failed {
+                message: error.to_string(),
+            },
+        }
     }
 
     /// Применяет media/service policy snapshot на уровне app settings runtime.
@@ -958,19 +1273,58 @@ fn player_deferred_message(update: &PlayerCommittedSettingsUpdate) -> Option<Str
 
 /// Вычисляет route-level result с честным partial status.
 fn player_route_result(
-    default_volume_result: AppRouteApplyResult,
+    in_place_result: AppRouteApplyResult,
     deferred_message: Option<&str>,
 ) -> AppRouteApplyResult {
     match deferred_message {
-        Some(message) if default_volume_result.is_success() => {
-            AppRouteApplyResult::PartialFailure {
-                message: message.to_string(),
-            }
-        }
+        Some(message) if in_place_result.is_success() => AppRouteApplyResult::PartialFailure {
+            message: message.to_string(),
+        },
         Some(message) => AppRouteApplyResult::DeferredTechnicalDebt {
             message: message.to_string(),
         },
-        None => default_volume_result,
+        None => in_place_result,
+    }
+}
+
+/// Собирает результат independent in-place player updates без потери error details.
+fn combine_player_in_place_results(
+    results: impl IntoIterator<Item = AppRouteApplyResult>,
+) -> AppRouteApplyResult {
+    let mut applied = false;
+    let mut failures = Vec::new();
+
+    for result in results {
+        match result {
+            AppRouteApplyResult::Applied | AppRouteApplyResult::PreviewPromoted => {
+                applied = true;
+            }
+            AppRouteApplyResult::Noop => {}
+            AppRouteApplyResult::Failed { message }
+            | AppRouteApplyResult::PartialFailure { message }
+            | AppRouteApplyResult::DeferredTechnicalDebt { message } => failures.push(message),
+            AppRouteApplyResult::Conflict { baseline, current } => failures.push(format!(
+                "conflict: baseline {}, current {}",
+                baseline.value(),
+                current.value()
+            )),
+        }
+    }
+
+    if failures.is_empty() {
+        if applied {
+            AppRouteApplyResult::Applied
+        } else {
+            AppRouteApplyResult::Noop
+        }
+    } else if applied {
+        AppRouteApplyResult::PartialFailure {
+            message: failures.join("; "),
+        }
+    } else {
+        AppRouteApplyResult::Failed {
+            message: failures.join("; "),
+        }
     }
 }
 
@@ -978,10 +1332,12 @@ fn player_route_result(
 fn player_group_result(
     group: &AppRuntimeRouteGroup,
     default_volume_result: &AppRouteApplyResult,
+    audio_output_device_result: &AppRouteApplyResult,
     route_result: &AppRouteApplyResult,
 ) -> AppRouteApplyResult {
     match group {
         AppRuntimeRouteGroup::PlayerDefaultVolume => default_volume_result.clone(),
+        AppRuntimeRouteGroup::PlayerAudioOutputDevice => audio_output_device_result.clone(),
         AppRuntimeRouteGroup::PlayerTickConfig => match route_result {
             AppRouteApplyResult::Applied | AppRouteApplyResult::Noop => AppRouteApplyResult::Noop,
             _ => AppRouteApplyResult::DeferredTechnicalDebt {
@@ -1243,6 +1599,9 @@ impl RenderCommittedRuntimeSnapshot {
 struct PlayerRuntimeSnapshot {
     /// Default volume policy для будущих media.
     default_volume: f32,
+
+    /// Stable audio output device id для будущих audio outputs.
+    audio_output_device_id: String,
 }
 
 impl PlayerRuntimeSnapshot {
@@ -1250,6 +1609,7 @@ impl PlayerRuntimeSnapshot {
     fn from_config(config: &AppConfig) -> Self {
         Self {
             default_volume: config.audio.volume as f32,
+            audio_output_device_id: config.audio.output_device.clone(),
         }
     }
 }
@@ -1329,6 +1689,7 @@ mod tests {
     use std::fs;
     use std::io::ErrorKind;
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use player_core::{PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate};
@@ -1342,9 +1703,16 @@ mod tests {
         AppRuntimeRouteGroupUpdate, PlayerCommittedSettingsUpdate, RuntimeCommittedRoute,
         RuntimeCommittedUpdate, render_live_settings_from_config,
     };
-    use settings_core::{ApplyFinalState, SettingId, SettingRouteId, SettingValue, SettingsResult};
+    use settings_core::{
+        ApplyFinalState, OptionProviderId, SettingId, SettingOption, SettingOptionCurrentValue,
+        SettingOptions, SettingOptionsError, SettingOptionsRequest, SettingOptionsStatus,
+        SettingRouteId, SettingText, SettingValue, SettingsResult,
+    };
 
-    use super::{CommittedConfigSnapshot, SettingsRuntime, SettingsRuntimeRouteAppliers};
+    use super::{
+        CommittedConfigSnapshot, SettingsRuntime, SettingsRuntimeRouteAppliers,
+        current_option_value,
+    };
     use crate::render_settings::{
         color_pipeline_settings_from_config, hdr_to_sdr_settings_from_config,
     };
@@ -1386,6 +1754,92 @@ mod tests {
             setting_id: SettingId::from("render.color_adjustment.brightness"),
             value: SettingValue::Float(value),
         }
+    }
+
+    fn audio_output_provider_id() -> OptionProviderId {
+        OptionProviderId::from("audio.output_device")
+    }
+
+    fn audio_output_field(runtime: &SettingsRuntime) -> crate::settings_ui::SettingsUiField {
+        runtime
+            .ui_model()
+            .fields
+            .into_iter()
+            .find(|field| field.descriptor.id == SettingId::from("audio.output_device"))
+            .expect("audio.output_device field должен быть в visual model")
+    }
+
+    fn setting_text(text: &str) -> SettingText {
+        SettingText::new("settings.test.option", text)
+    }
+
+    fn ready_audio_options(
+        current_value: Option<SettingValue>,
+        extra_options: Vec<SettingOption>,
+    ) -> SettingOptions {
+        let mut options = vec![SettingOption::new(
+            audio::DEFAULT_AUDIO_OUTPUT_DEVICE_ID,
+            setting_text("Системное устройство"),
+        )];
+        options.extend(extra_options);
+
+        SettingOptions::ready(
+            audio_output_provider_id(),
+            options.clone(),
+            current_option_value(current_value, &options),
+        )
+    }
+
+    struct ScriptedOptionProvider {
+        provider_id: OptionProviderId,
+        responses: Arc<Mutex<Vec<Result<SettingOptions, SettingOptionsError>>>>,
+    }
+
+    impl ScriptedOptionProvider {
+        fn new(responses: Vec<Result<SettingOptions, SettingOptionsError>>) -> Self {
+            Self {
+                provider_id: audio_output_provider_id(),
+                responses: Arc::new(Mutex::new(responses)),
+            }
+        }
+    }
+
+    impl settings_core::SettingOptionProvider for ScriptedOptionProvider {
+        fn provider_id(&self) -> OptionProviderId {
+            self.provider_id.clone()
+        }
+
+        fn options(
+            &self,
+            request: SettingOptionsRequest,
+        ) -> Result<SettingOptions, SettingOptionsError> {
+            let mut responses = self
+                .responses
+                .lock()
+                .expect("scripted provider responses mutex не должен ломаться");
+            let response = if responses.len() > 1 {
+                responses.remove(0)
+            } else {
+                responses
+                    .first()
+                    .cloned()
+                    .expect("scripted provider должен иметь хотя бы один response")
+            };
+
+            response.map(|mut options| {
+                options.current = current_option_value(request.current_value, &options.options);
+                options
+            })
+        }
+    }
+
+    fn replace_audio_option_provider(
+        runtime: &mut SettingsRuntime,
+        provider: ScriptedOptionProvider,
+    ) {
+        runtime
+            .option_providers
+            .insert(audio_output_provider_id(), Box::new(provider));
     }
 
     #[derive(Debug)]
@@ -1560,6 +2014,7 @@ mod tests {
             update: RuntimeCommittedUpdate::Player(Box::new(PlayerCommittedSettingsUpdate {
                 player_core: PlayerRuntimeSettingsUpdate::empty()
                     .with_default_volume(0.25, [PlayerRuntimeSettingId::AudioDefaultVolume]),
+                audio_output_device_id: None,
                 deferred_boundary_settings: Vec::new(),
             })),
         };
@@ -1571,6 +2026,199 @@ mod tests {
         assert_eq!(appliers.player.default_volume, 0.25);
         assert_eq!(report.result, AppRouteApplyResult::Applied);
         assert_eq!(report.groups[0].result, AppRouteApplyResult::Applied);
+    }
+
+    #[test]
+    fn selected_available_audio_device_is_passed_to_audio_owner() {
+        let config = custom_config_for_test();
+        let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
+            .expect("route appliers должны принять валидированный config");
+        let selected_device_id = "cpal-0.15-name:USB%20DAC".to_string();
+        let route = RuntimeCommittedRoute {
+            route: AppRuntimeRoute::Player,
+            source_routes: vec![SettingRouteId::from("audio")],
+            affected_settings: vec![SettingId::from("audio.output_device")],
+            groups: vec![AppRuntimeRouteGroupUpdate {
+                group: AppRuntimeRouteGroup::PlayerAudioOutputDevice,
+                affected_settings: vec![SettingId::from("audio.output_device")],
+            }],
+            update: RuntimeCommittedUpdate::Player(Box::new(PlayerCommittedSettingsUpdate {
+                player_core: PlayerRuntimeSettingsUpdate::empty(),
+                audio_output_device_id: Some(selected_device_id.clone()),
+                deferred_boundary_settings: Vec::new(),
+            })),
+        };
+
+        let report = appliers
+            .apply_committed_route(route)
+            .expect("audio device route должен построить report");
+
+        assert_eq!(
+            appliers
+                .audio_output_device_controller
+                .selected_device_id()
+                .expect("audio owner должен вернуть selected id"),
+            selected_device_id
+        );
+        assert_eq!(report.result, AppRouteApplyResult::Applied);
+        assert_eq!(report.groups[0].result, AppRouteApplyResult::Applied);
+    }
+
+    #[test]
+    fn dynamic_options_preserve_unavailable_current_value() {
+        let mut config = custom_config_for_test();
+        config.audio.output_device = "cpal-0.15-name:Missing%20DAC".to_string();
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        replace_audio_option_provider(
+            &mut runtime,
+            ScriptedOptionProvider::new(vec![Ok(ready_audio_options(None, Vec::new()))]),
+        );
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+
+        runtime
+            .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
+            .expect("open должен refresh-нуть provider без hard error");
+
+        let field = audio_output_field(&runtime);
+        let options = field.options.expect("dynamic options должны быть в model");
+        let SettingOptionCurrentValue::UnavailableCurrent { id, .. } = options.current else {
+            panic!("saved unavailable current должен сохраниться в snapshot");
+        };
+
+        assert_eq!(id.as_str(), "cpal-0.15-name:Missing%20DAC");
+        assert_eq!(
+            runtime.controller.draft().audio.output_device,
+            "cpal-0.15-name:Missing%20DAC"
+        );
+        assert!(field.validation_error.is_none());
+    }
+
+    #[test]
+    fn provider_error_is_reported_without_breaking_settings_window() {
+        let config = custom_config_for_test();
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        replace_audio_option_provider(
+            &mut runtime,
+            ScriptedOptionProvider::new(vec![Err(SettingOptionsError::Failed {
+                provider_id: audio_output_provider_id(),
+                message: "test provider failed".to_string(),
+            })]),
+        );
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+
+        runtime
+            .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
+            .expect("provider error должен стать cached status, а не hard error");
+
+        let model = runtime.ui_model();
+        let field = model
+            .fields
+            .into_iter()
+            .find(|field| field.descriptor.id == SettingId::from("audio.output_device"))
+            .expect("settings window должен продолжать строить fields");
+        let options = field.options.expect("error snapshot должен быть в model");
+
+        assert!(runtime.is_settings_window_open());
+        assert!(matches!(
+            options.status,
+            SettingOptionsStatus::Unavailable { ref message }
+                if message.contains("Option-provider error")
+                    && message.contains("test provider failed")
+        ));
+    }
+
+    #[test]
+    fn missing_provider_does_not_invalidate_saved_current_value() {
+        let mut config = custom_config_for_test();
+        config.audio.output_device = "cpal-0.15-name:Offline".to_string();
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        runtime.option_providers.remove(&audio_output_provider_id());
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+
+        runtime
+            .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
+            .expect("missing provider должен стать cached status");
+
+        let field = audio_output_field(&runtime);
+        let options = field
+            .options
+            .expect("missing provider snapshot должен быть");
+
+        assert!(matches!(
+            options.status,
+            SettingOptionsStatus::Unavailable { ref message }
+                if message.contains("ProviderUnavailable")
+                    || message.contains("unavailable")
+        ));
+        assert!(options.current.is_unavailable_current());
+        assert_eq!(
+            runtime.controller.draft().audio.output_device,
+            "cpal-0.15-name:Offline"
+        );
+        assert!(field.validation_error.is_none());
+    }
+
+    #[test]
+    fn manual_refresh_updates_cached_dynamic_options() {
+        let config = custom_config_for_test();
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        replace_audio_option_provider(
+            &mut runtime,
+            ScriptedOptionProvider::new(vec![
+                Ok(ready_audio_options(None, Vec::new())),
+                Ok(ready_audio_options(
+                    None,
+                    vec![SettingOption::new(
+                        "cpal-0.15-name:USB%20DAC",
+                        setting_text("USB DAC"),
+                    )],
+                )),
+            ]),
+        );
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+
+        runtime
+            .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
+            .expect("open должен сделать initial refresh");
+        assert_eq!(
+            audio_output_field(&runtime)
+                .options
+                .expect("initial options должны быть")
+                .options
+                .len(),
+            1
+        );
+
+        runtime
+            .handle_ui_actions(
+                vec![SettingsUiAction::RefreshOptions {
+                    provider_id: audio_output_provider_id(),
+                }],
+                &mut render_adapter,
+            )
+            .expect("manual refresh должен обновить cache");
+
+        let options = audio_output_field(&runtime)
+            .options
+            .expect("refreshed options должны быть");
+        assert!(
+            options
+                .options
+                .iter()
+                .any(|option| option.id.as_str() == "cpal-0.15-name:USB%20DAC")
+        );
     }
 
     #[test]

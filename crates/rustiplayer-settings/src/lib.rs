@@ -235,6 +235,9 @@ pub enum AppRuntimeRouteGroup {
     /// Default-volume policy for future media, not current playback volume.
     PlayerDefaultVolume,
 
+    /// Selected audio output device policy for future audio outputs.
+    PlayerAudioOutputDevice,
+
     /// Decoder/channel/pool settings that require controlled rebuild.
     PlayerDecoderThreadConfig,
 
@@ -367,6 +370,9 @@ pub struct RenderCommittedSettingsUpdate {
 pub struct PlayerCommittedSettingsUpdate {
     /// Typed player-core update for supported runtime groups.
     pub player_core: PlayerRuntimeSettingsUpdate,
+
+    /// Stable audio output device id selected through the audio owner boundary.
+    pub audio_output_device_id: Option<String>,
 
     /// Settings in this route without a concrete S07 player-core update group.
     pub deferred_boundary_settings: Vec<SettingId>,
@@ -799,9 +805,15 @@ fn player_update_from_settings(
     let mut decoder_settings = Vec::new();
     let mut deferred_settings = Vec::new();
     let mut default_volume_changed = false;
+    let mut audio_output_device_changed = false;
 
     for setting_id in affected_settings {
         let setting_name = setting_id.as_str();
+        if setting_name == "audio.output_device" {
+            audio_output_device_changed = true;
+            continue;
+        }
+
         match player_runtime_setting_id(setting_name) {
             Some(PlayerRuntimeSettingId::AudioDefaultVolume) => {
                 default_volume_changed = true;
@@ -838,6 +850,8 @@ fn player_update_from_settings(
 
     PlayerCommittedSettingsUpdate {
         player_core,
+        audio_output_device_id: audio_output_device_changed
+            .then(|| current.audio.output_device.clone()),
         deferred_boundary_settings: deferred_settings,
     }
 }
@@ -930,6 +944,9 @@ fn group_for_setting(route: AppRuntimeRoute, setting_id: &str) -> AppRuntimeRout
         AppRuntimeRoute::RenderCommitted => AppRuntimeRouteGroup::RenderBackendLifecycle,
         AppRuntimeRoute::Player if setting_id == "audio.volume" => {
             AppRuntimeRouteGroup::PlayerDefaultVolume
+        }
+        AppRuntimeRoute::Player if setting_id == "audio.output_device" => {
+            AppRuntimeRouteGroup::PlayerAudioOutputDevice
         }
         AppRuntimeRoute::Player if player_tick_setting(setting_id) => {
             AppRuntimeRouteGroup::PlayerTickConfig
@@ -1260,6 +1277,41 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn audio_output_device_route_uses_owner_payload_not_deferred_boundary() {
+        let registry = app_config_registry().expect("registry builds");
+        let mut current = AppConfig::default();
+        current.audio.output_device = "cpal-0.15-name:USB%20DAC".to_string();
+
+        let diff = registry
+            .diff(&AppConfig::default(), &current)
+            .expect("diff succeeds");
+        let plan = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
+            .expect("route plan builds");
+
+        let player_route = plan
+            .committed_routes
+            .iter()
+            .find(|route| route.route == AppRuntimeRoute::Player)
+            .expect("player route exists");
+        let RuntimeCommittedUpdate::Player(update) = &player_route.update else {
+            panic!("audio.output_device должен попасть в player route update");
+        };
+
+        assert_eq!(
+            player_route.groups,
+            vec![AppRuntimeRouteGroupUpdate {
+                group: AppRuntimeRouteGroup::PlayerAudioOutputDevice,
+                affected_settings: vec![SettingId::from("audio.output_device")],
+            }]
+        );
+        assert_eq!(
+            update.audio_output_device_id.as_deref(),
+            Some("cpal-0.15-name:USB%20DAC")
+        );
+        assert!(update.deferred_boundary_settings.is_empty());
     }
 
     #[test]

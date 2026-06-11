@@ -2,8 +2,8 @@
 
 use egui::{ComboBox, RichText, Slider, TextEdit, Ui};
 use settings_core::{
-    DefaultBehavior, NumericDescriptor, NumericRange, NumericStep, SelectDescriptor,
-    SelectListDescriptor, SettingAccess, SettingEditor, SettingId, SettingOption,
+    DefaultBehavior, NumericDescriptor, NumericRange, NumericStep, OptionProviderId,
+    SelectDescriptor, SelectListDescriptor, SettingAccess, SettingEditor, SettingId, SettingOption,
     SettingOptionCurrentValue, SettingOptionId, SettingOptions, SettingOptionsStatus, SettingValue,
     TextDescriptor, TextFormat, VectorDescriptor,
 };
@@ -173,6 +173,10 @@ fn render_select(
         SelectDescriptor::Static { options } => options.as_slice(),
         SelectDescriptor::Dynamic { .. } => &[],
     };
+    let dynamic_provider_id = match descriptor {
+        SelectDescriptor::Dynamic { provider_id } => Some(provider_id),
+        SelectDescriptor::Static { .. } => None,
+    };
     let dynamic_options = match descriptor {
         SelectDescriptor::Dynamic { .. } => field.options.as_ref(),
         SelectDescriptor::Static { .. } => None,
@@ -180,7 +184,12 @@ fn render_select(
     let display_options = select_display_options(static_options, dynamic_options, Some(current_id));
 
     if display_options.is_empty() {
-        ui.label("Опции недоступны");
+        ui.horizontal(|ui| {
+            ui.label("Опции недоступны");
+            if let Some(provider_id) = dynamic_provider_id {
+                render_refresh_options_button(ui, provider_id, actions);
+            }
+        });
         render_options_status(ui, dynamic_options);
         return;
     }
@@ -188,21 +197,27 @@ fn render_select(
     let mut selected_id = current_id.clone();
     let selected_label = select_label_for_value(&selected_id, &display_options);
 
-    ComboBox::from_id_salt(field.descriptor.id.as_str())
-        .selected_text(selected_label)
-        .show_ui(ui, |ui| {
-            for display_option in &display_options {
-                if display_option.available {
-                    ui.selectable_value(
-                        &mut selected_id,
-                        display_option.id.clone(),
-                        display_option.label.as_str(),
-                    );
-                } else {
-                    ui.label(format!("{} (недоступно)", display_option.label));
+    ui.horizontal(|ui| {
+        ComboBox::from_id_salt(field.descriptor.id.as_str())
+            .selected_text(selected_label)
+            .show_ui(ui, |ui| {
+                for display_option in &display_options {
+                    if display_option.available {
+                        ui.selectable_value(
+                            &mut selected_id,
+                            display_option.id.clone(),
+                            display_option.label.as_str(),
+                        );
+                    } else {
+                        ui.label(&display_option.label);
+                    }
                 }
-            }
-        });
+            });
+
+        if let Some(provider_id) = dynamic_provider_id {
+            render_refresh_options_button(ui, provider_id, actions);
+        }
+    });
 
     if selected_id != *current_id {
         actions.push(set_value_action(
@@ -212,6 +227,19 @@ fn render_select(
     }
 
     render_options_status(ui, dynamic_options);
+}
+
+/// Рисует explicit refresh action для dynamic options.
+fn render_refresh_options_button(
+    ui: &mut Ui,
+    provider_id: &OptionProviderId,
+    actions: &mut Vec<SettingsUiAction>,
+) {
+    if ui.small_button("Обновить").clicked() {
+        actions.push(SettingsUiAction::RefreshOptions {
+            provider_id: provider_id.clone(),
+        });
+    }
 }
 
 /// Рисует ordered select-list как набор checkbox-ов по static descriptor options.
@@ -421,6 +449,9 @@ fn render_options_status(ui: &mut Ui, dynamic_options: Option<&SettingOptions>) 
     };
 
     match &options_snapshot.status {
+        SettingOptionsStatus::Loading => {
+            ui.label("Список опций загружается");
+        }
         SettingOptionsStatus::Ready => {}
         SettingOptionsStatus::Stale => {
             ui.label("Список опций устарел");

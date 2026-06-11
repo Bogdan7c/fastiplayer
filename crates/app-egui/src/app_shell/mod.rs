@@ -117,6 +117,7 @@ impl AppShell {
             &window,
             self.telemetry.clone(),
             self.settings_runtime.committed_snapshot(),
+            self.settings_runtime.audio_output_device_controller(),
             self.startup_media.startup_error_message(),
         ) {
             Ok(app_state) => app_state,

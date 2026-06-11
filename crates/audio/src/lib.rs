@@ -15,6 +15,7 @@
 
 pub mod clock;
 pub mod decoder;
+pub mod devices;
 pub mod output;
 mod output_adapter;
 
@@ -25,5 +26,9 @@ pub use audio_core::{
 };
 pub use clock::AudioClock;
 pub use decoder::{ProductionAudioDecoderFactory, SymphoniaAudioDecoder, create_audio_decoder};
+pub use devices::{
+    AudioOutputDeviceController, AudioOutputDeviceError, AudioOutputDeviceInfo,
+    AudioOutputDeviceSelectionChange, DEFAULT_AUDIO_OUTPUT_DEVICE_ID, list_output_devices,
+};
 pub use output::AudioOutput;
 pub use output_adapter::CpalAudioOutputFactory;

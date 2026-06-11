@@ -11,8 +11,8 @@ pub mod section_list;
 pub mod window;
 
 use settings_core::{
-    SettingDescriptor, SettingGroupId, SettingId, SettingOptions, SettingSectionId, SettingValue,
-    SettingsSurfaceId,
+    OptionProviderId, SettingDescriptor, SettingGroupId, SettingId, SettingOptions,
+    SettingSectionId, SettingValue, SettingsSurfaceId,
 };
 
 /// Visual action, который окно настроек отдаёт наружу вместо прямой работы с runtime.
@@ -56,6 +56,12 @@ pub enum SettingsUiAction {
 
     /// Пользователь запросил reset всего settings document-а.
     ResetAll,
+
+    /// Пользователь запросил refresh cached dynamic options у runtime owner-а.
+    RefreshOptions {
+        /// Stable id provider-а, который нужно обновить.
+        provider_id: OptionProviderId,
+    },
 
     /// Пользователь нажал Apply; окно остаётся открытым до решения runtime-слоя.
     Apply,
