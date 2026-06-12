@@ -708,6 +708,7 @@ impl SettingsRuntime {
     where
         A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
+        tracing::debug!(target: "rustiplayer::settings_actions", ?action, "settings UI action");
         match action {
             SettingsUiAction::Open => {
                 self.begin_edit();
@@ -2007,8 +2008,9 @@ mod tests {
     };
     use settings_core::{
         ApplyFinalState, ApplyMechanism, OptionProviderId, SettingId, SettingOption,
-        SettingOptionCurrentValue, SettingOptions, SettingOptionsError, SettingOptionsRequest,
-        SettingOptionsStatus, SettingRouteId, SettingText, SettingValue, SettingsResult,
+        SettingOptionCurrentValue, SettingOptionId, SettingOptions, SettingOptionsError,
+        SettingOptionsRequest, SettingOptionsStatus, SettingRouteId, SettingText, SettingValue,
+        SettingsResult, SettingsSurfaceId,
     };
 
     use super::{
@@ -2736,6 +2738,160 @@ mod tests {
             "slider/input movement и preview не должны создавать TOML"
         );
         remove_file_if_exists(&path);
+    }
+
+    #[test]
+    fn reset_surface_resets_settings_from_all_sections_because_surface_is_global() {
+        let config = AppConfig::default();
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        let default_volume = AppConfig::default().audio.volume;
+
+        runtime
+            .handle_ui_actions(
+                vec![
+                    SettingsUiAction::Open,
+                    SettingsUiAction::SetValue {
+                        setting_id: SettingId::from("audio.volume"),
+                        value: SettingValue::Float(default_volume / 2.0 + 0.01),
+                    },
+                    brightness_action(0.40),
+                    // «Сбросить экран» из заголовка ЛЮБОЙ секции шлёт общий surface.
+                    SettingsUiAction::ResetSurface {
+                        surface: SettingsSurfaceId::from("main-settings-window"),
+                    },
+                ],
+                &mut render_adapter,
+            )
+            .expect("actions должны пройти");
+
+        let audio_value = runtime
+            .registry()
+            .get_value(runtime.controller.draft(), &SettingId::from("audio.volume"))
+            .expect("audio.volume должен читаться");
+        let brightness_value = runtime
+            .registry()
+            .get_value(
+                runtime.controller.draft(),
+                &SettingId::from("render.color_adjustment.brightness"),
+            )
+            .expect("brightness должен читаться");
+        // Документируем текущее поведение: один surface на всю панель, поэтому
+        // section header reset сбрасывает настройки ВСЕХ секций, не только своей.
+        assert_eq!(audio_value, SettingValue::Float(default_volume));
+        assert_eq!(brightness_value, SettingValue::Float(0.0));
+    }
+
+    #[test]
+    fn reset_group_profile_hits_both_visual_profile_groups() {
+        let config = AppConfig::default();
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+
+        runtime
+            .handle_ui_actions(
+                vec![
+                    SettingsUiAction::Open,
+                    SettingsUiAction::SetValue {
+                        setting_id: SettingId::from("render.profile"),
+                        value: SettingValue::Select(SettingOptionId::from("opengles")),
+                    },
+                    SettingsUiAction::SetValue {
+                        setting_id: SettingId::from("render.tone_mapping"),
+                        value: SettingValue::Select(SettingOptionId::from("auto")),
+                    },
+                    // UI кнопка «Сбросить группу» у ЛЮБОГО из двух визуальных
+                    // заголовков "profile" шлёт один и тот же group id.
+                    SettingsUiAction::ResetGroup {
+                        section: settings_core::SettingSectionId::from("render"),
+                        group: settings_core::SettingGroupId::from("profile"),
+                    },
+                ],
+                &mut render_adapter,
+            )
+            .expect("actions должны пройти");
+
+        let profile_value = runtime
+            .registry()
+            .get_value(
+                runtime.controller.draft(),
+                &SettingId::from("render.profile"),
+            )
+            .expect("render.profile должен читаться");
+        let tone_mapping_value = runtime
+            .registry()
+            .get_value(
+                runtime.controller.draft(),
+                &SettingId::from("render.tone_mapping"),
+            )
+            .expect("render.tone_mapping должен читаться");
+        // Документируем текущее поведение: render.profile и render.tone_mapping
+        // делят group id "profile", поэтому один reset бьёт по обоим визуальным
+        // группам сразу. Дефолты: profile=vulkan, tone_mapping=disabled.
+        assert_eq!(
+            profile_value,
+            SettingValue::Select(SettingOptionId::from("vulkan"))
+        );
+        assert_eq!(
+            tone_mapping_value,
+            SettingValue::Select(SettingOptionId::from("disabled"))
+        );
+    }
+
+    #[test]
+    fn reset_live_field_previews_default_value() {
+        let config = AppConfig::default();
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        let first_tick = Instant::now();
+
+        runtime
+            .handle_ui_actions(
+                vec![SettingsUiAction::Open, brightness_action(0.40)],
+                &mut render_adapter,
+            )
+            .expect("draft change должен пройти");
+        runtime
+            .apply_due_preview(&mut render_adapter, first_tick)
+            .expect("первый preview должен примениться");
+        assert_eq!(
+            render_adapter
+                .preview_updates
+                .last()
+                .map(|update| { update.settings.color_pipeline.adjustment.brightness }),
+            Some(0.40)
+        );
+
+        runtime
+            .handle_ui_actions(
+                vec![SettingsUiAction::ResetField {
+                    setting_id: SettingId::from("render.color_adjustment.brightness"),
+                }],
+                &mut render_adapter,
+            )
+            .expect("reset field должен пройти");
+        runtime
+            .apply_due_preview(&mut render_adapter, first_tick + Duration::from_secs(1))
+            .expect("preview после reset должен примениться");
+
+        let default_brightness = AppConfig::default().render.color_adjustment.brightness;
+        assert_eq!(
+            render_adapter
+                .preview_updates
+                .last()
+                .map(|update| { update.settings.color_pipeline.adjustment.brightness }),
+            Some(default_brightness),
+            "reset live поля должен отправить default в renderer preview"
+        );
     }
 
     #[test]

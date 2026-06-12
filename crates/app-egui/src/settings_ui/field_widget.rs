@@ -140,13 +140,15 @@ fn render_numeric(
             }
         }
         (NumericRange::Float { min, max }, SettingValue::Float(current_value)) => {
+            let step = float_step(descriptor);
             let mut edited_value = *current_value;
-            let mut slider =
-                Slider::new(&mut edited_value, *min..=*max).step_by(float_step(descriptor));
+            let mut slider = Slider::new(&mut edited_value, *min..=*max).step_by(step);
             if let Some(unit) = &descriptor.unit {
                 slider = slider.text(unit.as_str());
             }
-            if ui.add(slider).changed() {
+            if ui.add(slider).changed()
+                && slider_value_really_changed(*current_value, edited_value, step)
+            {
                 actions.push(set_value_action(
                     &field.descriptor.id,
                     SettingValue::Float(edited_value),
@@ -155,6 +157,17 @@ fn render_numeric(
         }
         _ => render_type_mismatch(ui),
     }
+}
+
+/// Отличает реальное изменение слайдера от фантомного snap-а к step grid.
+///
+/// Config может хранить float как `f32`; модель отдаёт `f64` после roundtrip-а,
+/// slider snap-ит его к step grid и сообщает `changed()` каждый кадр, хотя
+/// пользователь ничего не трогал. Фантомный SetValue затирал ResetField и
+/// заставлял runtime клонировать draft на каждом кадре. Реальное изменение
+/// всегда не меньше шага, фантомное — порядка f32 quantization noise.
+fn slider_value_really_changed(previous: f64, edited: f64, step: f64) -> bool {
+    (edited - previous).abs() >= step * 0.5
 }
 
 /// Рисует static или dynamic select.
@@ -351,11 +364,13 @@ fn render_vector_component(ui: &mut Ui, value: &mut f64, descriptor: &NumericDes
         return false;
     };
 
-    let mut slider = Slider::new(value, min..=max).step_by(float_step(descriptor));
+    let step = float_step(descriptor);
+    let previous_value = *value;
+    let mut slider = Slider::new(value, min..=max).step_by(step);
     if let Some(unit) = &descriptor.unit {
         slider = slider.text(unit.as_str());
     }
-    ui.add(slider).changed()
+    ui.add(slider).changed() && slider_value_really_changed(previous_value, *value, step)
 }
 
 /// Рисует read-only representation neutral value-а.
