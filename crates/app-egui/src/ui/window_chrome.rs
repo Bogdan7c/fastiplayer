@@ -157,10 +157,8 @@ struct WindowChromeLayout {
     maximize_button_rect: Rect,
     /// Кнопка close.
     close_button_rect: Rect,
-    /// Пустая зона слева от title.
-    left_drag_rect: Option<Rect>,
-    /// Пустая зона справа от title до кнопок.
-    right_drag_rect: Option<Rect>,
+    /// Зона перетаскивания titlebar без блока системных кнопок справа.
+    drag_rect: Option<Rect>,
 }
 
 /// Рисует titlebar и resize hit-zones, возвращая только действия пользователя.
@@ -176,7 +174,7 @@ pub(crate) fn show(ui: &mut Ui, input: WindowChromeInput<'_>) -> Vec<WindowChrom
             let chrome_rect = ui.max_rect();
             let layout = WindowChromeLayout::new(chrome_rect);
             paint_title(ui, input.title, input.style, layout.title_rect);
-            collect_drag_actions(ui, layout, &mut actions);
+            collect_drag_actions(ui, layout, input.is_maximized, &mut actions);
             collect_button_action(
                 ui,
                 layout.minimize_button_rect,
@@ -226,17 +224,14 @@ impl WindowChromeLayout {
             chrome_rect.center(),
             vec2(title_width, chrome_rect.height()),
         );
-        let left_drag_rect = optional_rect(chrome_rect.left(), title_rect.left(), chrome_rect);
-        let right_drag_rect =
-            optional_rect(title_rect.right(), minimize_button_rect.left(), chrome_rect);
+        let drag_rect = optional_rect(chrome_rect.left(), minimize_button_rect.left(), chrome_rect);
 
         Self {
             title_rect,
             minimize_button_rect,
             maximize_button_rect,
             close_button_rect,
-            left_drag_rect,
-            right_drag_rect,
+            drag_rect,
         }
     }
 }
@@ -263,31 +258,46 @@ fn paint_title(ui: &Ui, title: &str, style: WindowChromeStyle, title_rect: Rect)
     );
 }
 
-/// Собирает drag/double-click actions из пустых частей titlebar.
+/// Собирает drag/double-click actions из всей свободной части titlebar.
 fn collect_drag_actions(
     ui: &mut Ui,
     layout: WindowChromeLayout,
+    is_maximized: bool,
     actions: &mut Vec<WindowChromeAction>,
 ) {
-    for (index, drag_rect) in [layout.left_drag_rect, layout.right_drag_rect]
-        .into_iter()
-        .flatten()
-        .enumerate()
-    {
-        let response = ui
-            .interact(
-                drag_rect,
-                ui.id().with(("window_chrome_drag", index)),
-                Sense::click_and_drag(),
-            )
-            .on_hover_and_drag_cursor(CursorIcon::Grab);
+    let Some(drag_rect) = layout.drag_rect else {
+        return;
+    };
+    let Some(active_drag_rect) = drag_interaction_rect(drag_rect, is_maximized) else {
+        return;
+    };
 
-        if response.double_clicked() {
-            actions.push(WindowChromeAction::ToggleMaximize);
-        } else if primary_pressed_on(ui, &response) {
-            actions.push(WindowChromeAction::StartDrag);
-        }
+    let response = ui
+        .interact(
+            active_drag_rect,
+            ui.id().with("window_chrome_drag"),
+            Sense::click_and_drag(),
+        )
+        .on_hover_and_drag_cursor(CursorIcon::Grab);
+
+    if response.double_clicked() {
+        actions.push(WindowChromeAction::ToggleMaximize);
+    } else if primary_pressed_on(ui, &response) {
+        actions.push(WindowChromeAction::StartDrag);
     }
+}
+
+/// Сужает drag-zone так, чтобы resize border оставался владельцем краёв окна.
+fn drag_interaction_rect(drag_rect: Rect, is_maximized: bool) -> Option<Rect> {
+    if is_maximized {
+        return Some(drag_rect);
+    }
+
+    let drag_left = drag_rect.left() + RESIZE_CORNER_POINTS;
+    let drag_top = drag_rect.top() + RESIZE_EDGE_POINTS;
+
+    (drag_rect.right() > drag_left && drag_rect.bottom() > drag_top)
+        .then(|| Rect::from_min_max(pos2(drag_left, drag_top), drag_rect.max))
 }
 
 /// Регистрирует кнопку и добавляет action при primary click.
@@ -545,10 +555,37 @@ mod tests {
 
         assert_eq!(layout.title_rect.center().x, chrome_rect.center().x);
         assert!(layout.title_rect.right() < layout.minimize_button_rect.left());
+        assert!(
+            layout
+                .drag_rect
+                .expect("wide titlebar should have drag rect")
+                .contains(layout.title_rect.center())
+        );
         assert_eq!(
             layout.close_button_rect.width(),
             TITLEBAR_BUTTON_WIDTH_POINTS
         );
+    }
+
+    #[test]
+    fn drag_rect_covers_titlebar_without_stealing_buttons_or_resize_edges() {
+        let chrome_rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 40.0));
+        let layout = WindowChromeLayout::new(chrome_rect);
+        let drag_rect = layout
+            .drag_rect
+            .expect("wide titlebar should have drag rect before buttons");
+        let active_drag_rect = drag_interaction_rect(drag_rect, false)
+            .expect("normal titlebar should keep a drag rect after resize insets");
+        let maximized_drag_rect = drag_interaction_rect(drag_rect, true)
+            .expect("maximized titlebar should keep the full drag rect");
+
+        assert_eq!(drag_rect.right(), layout.minimize_button_rect.left());
+        assert!(drag_rect.contains(layout.title_rect.center()));
+        assert!(!drag_rect.contains(layout.minimize_button_rect.center()));
+        assert!(!active_drag_rect.contains(pos2(20.0, 2.0)));
+        assert!(!active_drag_rect.contains(pos2(2.0, 20.0)));
+        assert!(active_drag_rect.contains(pos2(chrome_rect.center().x, 20.0)));
+        assert_eq!(maximized_drag_rect, drag_rect);
     }
 
     #[test]
