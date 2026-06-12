@@ -50,7 +50,9 @@ fn show_settings_sidebar(
         .resizable(true)
         .default_size(DEFAULT_SIDEBAR_WIDTH)
         .size_range(MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH)
-        .frame(egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(18, 18, 18, 230)))
+        // Непрозрачная заливка: видео под панелью вырезано exclusion rect-ом,
+        // полупрозрачность давала только лишний blending по всей площади панели.
+        .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(18, 18, 18)))
         .show_inside(ui, |ui| {
             render_settings_header(ui, actions);
             ui.separator();

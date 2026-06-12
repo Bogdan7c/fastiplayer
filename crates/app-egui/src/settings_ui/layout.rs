@@ -1,5 +1,6 @@
 //! Layout окна настроек: единый vertical settings list и command footer.
 
+use egui::collapsing_header::CollapsingState;
 use egui::{Button, Layout, RichText, ScrollArea, Ui};
 use settings_core::{SettingGroupId, SettingSectionId};
 
@@ -12,21 +13,77 @@ use super::{
 const FOOTER_VERTICAL_SPACING_ROWS: f32 = 3.0;
 
 /// Рисует всё содержимое settings window без прямого доступа к runtime.
+///
+/// Раскладка: ряд табов секций, затем scroll list только выбранной секции
+/// со сворачиваемыми группами — egui строит и tessellate-ит лишь видимую часть.
 pub fn show(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAction>) {
     render_status(ui, model);
 
-    let settings_list_max_height =
-        settings_list_max_height(ui.available_height(), footer_reserved_height(ui));
+    let sections = section_list::sections_for_fields(&model.fields);
+    if sections.is_empty() {
+        ui.label("Настройки недоступны");
+    } else {
+        let selected_section = &sections[render_section_tabs(ui, &sections)];
+        ui.separator();
 
-    ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .max_height(settings_list_max_height)
-        .show(ui, |ui| {
-            render_settings_list(ui, model, actions);
-        });
+        let settings_list_max_height =
+            settings_list_max_height(ui.available_height(), footer_reserved_height(ui));
+
+        let section_fields: Vec<&SettingsUiField> = model
+            .fields
+            .iter()
+            .filter(|field| field.descriptor.placement.section == selected_section.section)
+            .collect();
+
+        ScrollArea::vertical()
+            .id_salt(selected_section.section.as_str())
+            .auto_shrink([false, false])
+            .max_height(settings_list_max_height)
+            .show(ui, |ui| {
+                render_section(ui, &section_fields, selected_section, actions);
+            });
+    }
 
     ui.separator();
     render_footer(ui, model.command_state, actions);
+}
+
+/// Рисует ряд табов секций и возвращает индекс выбранной.
+///
+/// Выбор — чистое view state, поэтому живёт в egui temp memory, а не в runtime.
+fn render_section_tabs(ui: &mut Ui, sections: &[section_list::SettingsUiSection]) -> usize {
+    let selection_id = ui.make_persistent_id("settings_section_tab");
+    let stored_section: Option<String> = ui.data_mut(|data| data.get_temp(selection_id));
+    let mut selected_index = stored_section
+        .and_then(|stored| {
+            sections
+                .iter()
+                .position(|section| section.section.as_str() == stored)
+        })
+        .unwrap_or(0);
+
+    ui.horizontal_wrapped(|ui| {
+        for (index, section) in sections.iter().enumerate() {
+            if ui
+                .selectable_label(
+                    index == selected_index,
+                    section_list::section_label(section),
+                )
+                .clicked()
+            {
+                selected_index = index;
+            }
+        }
+    });
+
+    ui.data_mut(|data| {
+        data.insert_temp(
+            selection_id,
+            sections[selected_index].section.as_str().to_string(),
+        );
+    });
+
+    selected_index
 }
 
 /// Считает высоту, которую можно отдать scroll list-у, не выталкивая footer из окна.
@@ -56,31 +113,7 @@ fn render_status(ui: &mut Ui, model: &SettingsUiModel) {
     }
 }
 
-/// Рисует все settings fields одним вертикальным списком, сгруппированным по section/group.
-fn render_settings_list(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAction>) {
-    let sections = section_list::sections_for_fields(&model.fields);
-    if sections.is_empty() {
-        ui.label("Настройки недоступны");
-        return;
-    }
-
-    // sections отсортированы и уникальны по id (см. sections_for_fields),
-    // поэтому распределяем fields по секциям одним проходом через binary search.
-    let mut section_fields: Vec<Vec<&SettingsUiField>> = vec![Vec::new(); sections.len()];
-    for field in &model.fields {
-        if let Ok(index) = sections
-            .binary_search_by(|section| section.section.cmp(&field.descriptor.placement.section))
-        {
-            section_fields[index].push(field);
-        }
-    }
-
-    for (section, fields) in sections.iter().zip(&section_fields) {
-        render_section(ui, fields, section, actions);
-    }
-}
-
-/// Рисует один section: заголовок, reset surface и все его группы.
+/// Рисует выбранный section: заголовок с surface reset и группы как сворачиваемые блоки.
 fn render_section(
     ui: &mut Ui,
     fields: &[&SettingsUiField],
@@ -89,23 +122,31 @@ fn render_section(
 ) {
     render_section_header(ui, section, actions);
 
-    let mut current_group: Option<SettingGroupId> = None;
-    for field in fields {
-        if current_group.as_ref() != Some(&field.descriptor.placement.group) {
-            current_group = Some(field.descriptor.placement.group.clone());
-            render_group_header(
-                ui,
-                &section.section,
-                &field.descriptor.placement.group,
-                actions,
-            );
+    let mut groups: Vec<(&SettingGroupId, Vec<&SettingsUiField>)> = Vec::new();
+    for field in fields.iter().copied() {
+        let group = &field.descriptor.placement.group;
+        match groups.last_mut() {
+            Some((current_group, group_fields)) if *current_group == group => {
+                group_fields.push(field);
+            }
+            _ => groups.push((group, vec![field])),
         }
-
-        field_widget::show(ui, field, actions);
-        ui.add_space(8.0);
     }
 
-    ui.separator();
+    for (group_index, (group, group_fields)) in groups.iter().enumerate() {
+        let group_state_id =
+            ui.make_persistent_id(("settings_group", section.section.as_str(), group.as_str()));
+        CollapsingState::load_with_default_open(ui.ctx(), group_state_id, group_index == 0)
+            .show_header(ui, |ui| {
+                render_group_header(ui, &section.section, group, actions);
+            })
+            .body(|ui| {
+                for field in group_fields {
+                    field_widget::show(ui, field, actions);
+                    ui.add_space(8.0);
+                }
+            });
+    }
 }
 
 /// Рисует заголовок section-а и surface reset action для всего экрана настроек.
