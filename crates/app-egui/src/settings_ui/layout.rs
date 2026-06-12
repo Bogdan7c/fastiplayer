@@ -9,58 +9,56 @@ use super::{
     section_list,
 };
 
-/// Дополнительный вертикальный запас под separator и отступы вокруг footer-а.
-const FOOTER_VERTICAL_SPACING_ROWS: f32 = 3.0;
-
 /// Рисует всё содержимое settings window без прямого доступа к runtime.
 ///
-/// Раскладка: ряд табов секций, scroll list выбранной секции, затем status
-/// в зоне фиксированной высоты и footer. Статус намеренно рисуется внизу в
-/// зарезервированном блоке: его появление/смена текста (preview/reset ticks)
-/// не должны менять позиции полей и дёргать панель во время drag-а слайдера.
+/// Footer и status-зона раскладываются снизу вверх (`Layout::bottom_up`),
+/// поэтому список полей физически не может вытеснить кнопки за край панели.
+/// Статус живёт в блоке фиксированной высоты: его появление/смена текста
+/// (preview/reset ticks) не сдвигают поля и не дёргают панель при drag-е.
 pub fn show(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAction>) {
     let status_height = status_reserved_height(ui);
 
-    let sections = section_list::sections_for_fields(&model.fields);
-    if sections.is_empty() {
-        ui.label("Настройки недоступны");
-    } else {
-        let selected_section = &sections[render_section_tabs(ui, &sections)];
+    ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
+        render_footer(ui, model.command_state, actions);
         ui.separator();
-
-        let settings_list_max_height = settings_list_max_height(
-            ui.available_height(),
-            footer_reserved_height(ui) + status_height,
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), status_height),
+            Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_min_height(status_height);
+                ScrollArea::vertical()
+                    .id_salt("settings_status")
+                    .auto_shrink([false, false])
+                    .max_height(status_height)
+                    .show(ui, |ui| {
+                        render_status(ui, model);
+                    });
+            },
         );
+        ui.separator();
+        ui.with_layout(Layout::top_down(egui::Align::Min), |ui| {
+            let sections = section_list::sections_for_fields(&model.fields);
+            if sections.is_empty() {
+                ui.label("Настройки недоступны");
+                return;
+            }
+            let selected_section = &sections[render_section_tabs(ui, &sections)];
+            ui.separator();
 
-        let section_fields: Vec<&SettingsUiField> = model
-            .fields
-            .iter()
-            .filter(|field| field.descriptor.placement.section == selected_section.section)
-            .collect();
+            let section_fields: Vec<&SettingsUiField> = model
+                .fields
+                .iter()
+                .filter(|field| field.descriptor.placement.section == selected_section.section)
+                .collect();
 
-        ScrollArea::vertical()
-            .id_salt(selected_section.section.as_str())
-            .auto_shrink([false, false])
-            .max_height(settings_list_max_height)
-            .show(ui, |ui| {
-                render_section(ui, &section_fields, selected_section, actions);
-            });
-    }
-
-    ui.separator();
-    ui.allocate_ui(egui::vec2(ui.available_width(), status_height), |ui| {
-        ui.set_min_height(status_height);
-        ScrollArea::vertical()
-            .id_salt("settings_status")
-            .auto_shrink([false, false])
-            .max_height(status_height)
-            .show(ui, |ui| {
-                render_status(ui, model);
-            });
+            ScrollArea::vertical()
+                .id_salt(selected_section.section.as_str())
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    render_section(ui, &section_fields, selected_section, actions);
+                });
+        });
     });
-    ui.separator();
-    render_footer(ui, model.command_state, actions);
 }
 
 /// Строки, резервируемые под status snapshot между списком и footer-ом.
@@ -108,22 +106,6 @@ fn render_section_tabs(ui: &mut Ui, sections: &[section_list::SettingsUiSection]
     });
 
     selected_index
-}
-
-/// Считает высоту, которую можно отдать scroll list-у, не выталкивая footer из окна.
-#[must_use]
-pub(crate) fn settings_list_max_height(available_height: f32, footer_reserved_height: f32) -> f32 {
-    if available_height.is_finite() {
-        (available_height - footer_reserved_height).max(0.0)
-    } else {
-        f32::INFINITY
-    }
-}
-
-/// Оценивает место под нижнюю строку команд через текущие spacing-настройки egui.
-fn footer_reserved_height(ui: &Ui) -> f32 {
-    let spacing = ui.spacing();
-    spacing.interact_size.y + spacing.item_spacing.y * FOOTER_VERTICAL_SPACING_ROWS
 }
 
 /// Рисует общий status snapshot, если runtime передал его в модель.
