@@ -14,10 +14,12 @@ const FOOTER_VERTICAL_SPACING_ROWS: f32 = 3.0;
 
 /// Рисует всё содержимое settings window без прямого доступа к runtime.
 ///
-/// Раскладка: ряд табов секций, затем scroll list только выбранной секции
-/// со сворачиваемыми группами — egui строит и tessellate-ит лишь видимую часть.
+/// Раскладка: ряд табов секций, scroll list выбранной секции, затем status
+/// в зоне фиксированной высоты и footer. Статус намеренно рисуется внизу в
+/// зарезервированном блоке: его появление/смена текста (preview/reset ticks)
+/// не должны менять позиции полей и дёргать панель во время drag-а слайдера.
 pub fn show(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAction>) {
-    render_status(ui, model);
+    let status_height = status_reserved_height(ui);
 
     let sections = section_list::sections_for_fields(&model.fields);
     if sections.is_empty() {
@@ -26,8 +28,10 @@ pub fn show(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAc
         let selected_section = &sections[render_section_tabs(ui, &sections)];
         ui.separator();
 
-        let settings_list_max_height =
-            settings_list_max_height(ui.available_height(), footer_reserved_height(ui));
+        let settings_list_max_height = settings_list_max_height(
+            ui.available_height(),
+            footer_reserved_height(ui) + status_height,
+        );
 
         let section_fields: Vec<&SettingsUiField> = model
             .fields
@@ -45,7 +49,27 @@ pub fn show(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAc
     }
 
     ui.separator();
+    ui.allocate_ui(egui::vec2(ui.available_width(), status_height), |ui| {
+        ui.set_min_height(status_height);
+        ScrollArea::vertical()
+            .id_salt("settings_status")
+            .auto_shrink([false, false])
+            .max_height(status_height)
+            .show(ui, |ui| {
+                render_status(ui, model);
+            });
+    });
+    ui.separator();
     render_footer(ui, model.command_state, actions);
+}
+
+/// Строки, резервируемые под status snapshot между списком и footer-ом.
+const STATUS_RESERVED_ROWS: f32 = 3.0;
+
+/// Фиксированная высота status-зоны, не зависящая от текущего текста статуса.
+fn status_reserved_height(ui: &Ui) -> f32 {
+    let row_height = ui.text_style_height(&egui::TextStyle::Body);
+    (row_height + ui.spacing().item_spacing.y) * STATUS_RESERVED_ROWS
 }
 
 /// Рисует ряд табов секций и возвращает индекс выбранной.
