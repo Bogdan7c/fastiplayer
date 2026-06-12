@@ -625,15 +625,14 @@ fn map_video_frame_telemetry_event(reason: PlayerVideoDropReason) -> VideoFrameT
 fn prepare_ui_frame(
     window: &Window,
     app_state: &mut AppState,
-    settings_runtime: &SettingsRuntime,
+    settings_runtime: &mut SettingsRuntime,
     egui_input: egui::RawInput,
     frame_context: &AppFrameContext,
 ) -> PreparedUiFrame {
     let ui_prepare_started_at = Instant::now();
 
     let settings_ui_model = settings_runtime.ui_model();
-    let rendered_app_ui =
-        app_state.render_ui(window, egui_input, frame_context, &settings_ui_model);
+    let rendered_app_ui = app_state.render_ui(window, egui_input, frame_context, settings_ui_model);
     let crate::state::RenderedAppUi {
         full_output: egui_full_output,
         settings_actions,

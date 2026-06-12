@@ -148,6 +148,9 @@ pub(crate) struct SettingsRuntime {
 
     /// Последняя попытка отправить preview update; pacing берётся из committed config.
     last_preview_sent_at: Option<Instant>,
+
+    /// Memoized visual model; сбрасывается при любой мутации settings state.
+    ui_model_cache: Option<SettingsUiModel>,
 }
 
 /// Результат preview tick-а, по которому shell решает, нужен ли timed repaint.
@@ -337,6 +340,7 @@ impl SettingsRuntime {
             option_providers,
             option_cache: BTreeMap::new(),
             last_preview_sent_at: None,
+            ui_model_cache: None,
         };
 
         debug_assert_eq!(runtime.config_path(), runtime.store_path());
@@ -394,11 +398,30 @@ impl SettingsRuntime {
         self.route_appliers.audio_output_device_controller.clone()
     }
 
-    /// Собирает visual model из draft document-а без передачи `AppConfig` в UI modules.
+    /// Возвращает visual model, пересобирая её только после мутаций settings state.
     #[must_use]
-    pub(crate) fn ui_model(&self) -> SettingsUiModel {
-        // Hot path: вызывается каждый кадр playback. При закрытой панели field list
-        // никем не читается, поэтому diff/клоны descriptors не выполняем.
+    pub(crate) fn ui_model(&mut self) -> &SettingsUiModel {
+        // Hot path: вызывается каждый кадр playback. Model зависит только от
+        // внутреннего state runtime-а, поэтому memoization безопасна: все
+        // мутирующие методы вызывают invalidate_ui_model().
+        if self.ui_model_cache.is_none() {
+            let model = self.build_ui_model();
+            self.ui_model_cache = Some(model);
+        }
+        self.ui_model_cache
+            .as_ref()
+            .expect("ui_model_cache заполнен выше")
+    }
+
+    /// Сбрасывает memoized visual model; обязан вызываться после любой мутации.
+    fn invalidate_ui_model(&mut self) {
+        self.ui_model_cache = None;
+    }
+
+    /// Собирает visual model из draft document-а без передачи `AppConfig` в UI modules.
+    fn build_ui_model(&self) -> SettingsUiModel {
+        // При закрытой панели field list никем не читается,
+        // поэтому diff/клоны descriptors не выполняем.
         if !self.is_settings_window_open() {
             return SettingsUiModel::new(false, Vec::new(), false).with_status(self.status.clone());
         }
@@ -447,6 +470,9 @@ impl SettingsRuntime {
     where
         A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
+        if !actions.is_empty() {
+            self.invalidate_ui_model();
+        }
         let mut needs_redraw = false;
         for action in actions {
             needs_redraw |= self.handle_ui_action(action, runtime_adapter)?;
@@ -478,6 +504,7 @@ impl SettingsRuntime {
             }
         }
 
+        self.invalidate_ui_model();
         let mut delegate = SettingsRuntimePreviewDelegate {
             route_appliers: &mut self.route_appliers,
             render_adapter,
@@ -508,6 +535,7 @@ impl SettingsRuntime {
         summary: impl Into<String>,
         error: impl ToString,
     ) {
+        self.invalidate_ui_model();
         self.status = SettingsUiStatus {
             summary: Some(summary.into()),
             details: vec![error.to_string()],
@@ -532,6 +560,7 @@ impl SettingsRuntime {
     where
         A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
+        self.invalidate_ui_model();
         let mut delegate = SettingsRuntimeApplyDelegate {
             validator: AppConfigValidator,
             store: &mut self.store,
@@ -2033,12 +2062,13 @@ mod tests {
         OptionProviderId::from("audio.output_device")
     }
 
-    fn audio_output_field(runtime: &SettingsRuntime) -> crate::settings_ui::SettingsUiField {
+    fn audio_output_field(runtime: &mut SettingsRuntime) -> crate::settings_ui::SettingsUiField {
         runtime
             .ui_model()
             .fields
-            .into_iter()
+            .iter()
             .find(|field| field.descriptor.id == SettingId::from("audio.output_device"))
+            .cloned()
             .expect("audio.output_device field должен быть в visual model")
     }
 
@@ -2537,7 +2567,7 @@ mod tests {
             .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
             .expect("open должен refresh-нуть provider без hard error");
 
-        let field = audio_output_field(&runtime);
+        let field = audio_output_field(&mut runtime);
         let options = field.options.expect("dynamic options должны быть в model");
         let SettingOptionCurrentValue::UnavailableCurrent { id, .. } = options.current else {
             panic!("saved unavailable current должен сохраниться в snapshot");
@@ -2574,8 +2604,9 @@ mod tests {
         let model = runtime.ui_model();
         let field = model
             .fields
-            .into_iter()
+            .iter()
             .find(|field| field.descriptor.id == SettingId::from("audio.output_device"))
+            .cloned()
             .expect("settings window должен продолжать строить fields");
         let options = field.options.expect("error snapshot должен быть в model");
 
@@ -2603,7 +2634,7 @@ mod tests {
             .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
             .expect("missing provider должен стать cached status");
 
-        let field = audio_output_field(&runtime);
+        let field = audio_output_field(&mut runtime);
         let options = field
             .options
             .expect("missing provider snapshot должен быть");
@@ -2648,7 +2679,7 @@ mod tests {
             .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
             .expect("open должен сделать initial refresh");
         assert_eq!(
-            audio_output_field(&runtime)
+            audio_output_field(&mut runtime)
                 .options
                 .expect("initial options должны быть")
                 .options
@@ -2665,7 +2696,7 @@ mod tests {
             )
             .expect("manual refresh должен обновить cache");
 
-        let options = audio_output_field(&runtime)
+        let options = audio_output_field(&mut runtime)
             .options
             .expect("refreshed options должны быть");
         assert!(
@@ -2809,10 +2840,11 @@ mod tests {
         let brightness_field = runtime
             .ui_model()
             .fields
-            .into_iter()
+            .iter()
             .find(|field| {
                 field.descriptor.id == SettingId::from("render.color_adjustment.brightness")
             })
+            .cloned()
             .expect("brightness field должен быть в visual model");
         assert!(brightness_field.validation_error.is_some());
         assert!(
