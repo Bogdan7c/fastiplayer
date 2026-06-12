@@ -38,8 +38,15 @@ resolver = "2"
 # H.264 B-frames в MP4 из-за этого получают decode-order PTS и дергаются при playback.
 "symphonia-format-isomp4:0.6.0" = { path = "crates/symphonia-format-isomp4-patch" }
 
-# Debug/dev H.264 4K60 упирается в CPU-heavy adapter/parser/VAAPI submit path.
-# Эти overrides ускоряют только dev build горячих decode crates и не меняют release profile.
+# Все внешние зависимости в dev собираются оптимизированными: egui/wgpu/symphonia/cpal
+# на opt-level 0 не вытягивают realtime пути (UI tessellation, GPU submit/validation,
+# demux и audio decode). Wildcard не затрагивает workspace members, поэтому
+# инкрементальная пересборка своего кода не замедляется; зависимости компилируются один раз.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Горячие workspace-крейты (per-frame/per-packet пути) тоже оптимизируем в dev.
+# Если нужно дебажить один из них степпингом — временно убери его override.
 [profile.dev.package.codec-core]
 opt-level = 3
 
@@ -50,6 +57,21 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.cros-libva]
+opt-level = 3
+
+[profile.dev.package.vp9-parser]
+opt-level = 3
+
+[profile.dev.package.webm-demux]
+opt-level = 3
+
+[profile.dev.package.symphonia-demux]
+opt-level = 3
+
+[profile.dev.package.media-prefetch]
+opt-level = 3
+
+[profile.dev.package.audio]
 opt-level = 3
 
 [workspace.package]
