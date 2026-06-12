@@ -20,6 +20,11 @@ pub enum SettingsUiAction {
     /// Пользователь запросил открытие окна настроек.
     Open,
 
+    /// Пользователь нажал launcher: открыть настройки, если они закрыты,
+    /// иначе закрыть (с теми же rollback/discard семантиками, что и `Cancel`).
+    /// Visual слой не знает текущее open-state — решение принимает runtime owner.
+    ToggleOpen,
+
     /// Пользователь закрыл окно или нажал отмену; draft должен быть отброшен runtime-слоем.
     Cancel,
 
@@ -284,10 +289,10 @@ mod tests {
     }
 
     #[test]
-    fn launcher_click_maps_to_open_action() {
+    fn launcher_click_maps_to_toggle_action() {
         assert_eq!(
             launcher_button::launcher_action_for_button(true),
-            Some(SettingsUiAction::Open)
+            Some(SettingsUiAction::ToggleOpen)
         );
         assert_eq!(launcher_button::launcher_action_for_button(false), None);
     }

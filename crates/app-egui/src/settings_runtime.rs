@@ -819,10 +819,15 @@ impl SettingsRuntime {
     {
         tracing::debug!(target: "rustiplayer::settings_actions", ?action, "settings UI action");
         match action {
-            SettingsUiAction::Open => {
-                self.begin_edit();
-                self.refresh_all_dynamic_options()?;
-                Ok(true)
+            SettingsUiAction::Open => self.open_settings(),
+            SettingsUiAction::ToggleOpen => {
+                if self.settings_window_open {
+                    // Закрытие launcher-ом — тот же intent, что крестик/`Отмена`:
+                    // rollback live preview и отброс draft.
+                    self.cancel_edit(runtime_adapter)
+                } else {
+                    self.open_settings()
+                }
             }
             SettingsUiAction::Cancel => self.cancel_edit(runtime_adapter),
             SettingsUiAction::SetValue { setting_id, value } => {
@@ -882,6 +887,13 @@ impl SettingsRuntime {
         self.settings_window_open = true;
         self.status = SettingsUiStatus::default();
         self.last_preview_sent_at = None;
+    }
+
+    /// Открывает settings window: fresh draft transaction + фоновый refresh options.
+    fn open_settings(&mut self) -> SettingsResult<bool> {
+        self.begin_edit();
+        self.refresh_all_dynamic_options()?;
+        Ok(true)
     }
 
     /// Валидирует field через metadata и пишет значение только в draft document.
@@ -2842,6 +2854,43 @@ mod tests {
             "cpal-0.15-name:Offline"
         );
         assert!(field.validation_error.is_none());
+    }
+
+    /// Launcher toggle: закрытая панель открывается, открытая — закрывается
+    /// с теми же rollback/discard семантиками, что и `Cancel` (крестик).
+    #[test]
+    fn toggle_open_opens_closed_settings_and_cancels_open_settings() {
+        let config = custom_config_for_test();
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+
+        // Закрыто -> toggle открывает (fresh draft transaction).
+        runtime
+            .handle_ui_actions(vec![SettingsUiAction::ToggleOpen], &mut render_adapter)
+            .expect("toggle на закрытой панели должен открыть настройки");
+        assert!(runtime.is_settings_window_open());
+
+        // Меняем draft-значение, чтобы проверить discard при toggle-закрытии.
+        runtime
+            .handle_ui_actions(
+                vec![SettingsUiAction::SetValue {
+                    setting_id: SettingId::from("ui.show_telemetry"),
+                    value: SettingValue::Bool(true),
+                }],
+                &mut render_adapter,
+            )
+            .expect("draft change должен пройти");
+        assert_ne!(runtime.controller.draft(), runtime.committed_config());
+
+        // Открыто -> toggle закрывает и отбрасывает draft, как `Отмена`.
+        runtime
+            .handle_ui_actions(vec![SettingsUiAction::ToggleOpen], &mut render_adapter)
+            .expect("toggle на открытой панели должен закрыть настройки");
+        assert!(!runtime.is_settings_window_open());
+        assert_eq!(runtime.controller.draft(), runtime.committed_config());
     }
 
     /// Open не выполняет опрос провайдеров на UI-потоке (источник фриза при

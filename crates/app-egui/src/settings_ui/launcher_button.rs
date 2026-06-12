@@ -10,7 +10,7 @@ const LAUNCHER_AREA_ID: &str = "rustiplayer_settings_launcher";
 /// Отступ launcher-а от правого нижнего угла viewport-а.
 const LAUNCHER_OFFSET: egui::Vec2 = egui::Vec2::new(-16.0, -16.0);
 
-/// Рисует кнопку открытия настроек в правом нижнем углу.
+/// Рисует кнопку настроек в правом нижнем углу: открывает панель и закрывает её.
 pub fn show(ctx: &Context, actions: &mut Vec<SettingsUiAction>) {
     Area::new(Id::new(LAUNCHER_AREA_ID))
         .anchor(Align2::RIGHT_BOTTOM, LAUNCHER_OFFSET)
@@ -22,8 +22,9 @@ pub fn show(ctx: &Context, actions: &mut Vec<SettingsUiAction>) {
         });
 }
 
-/// Pure mapping для тестов: click на launcher всегда означает open action.
+/// Pure mapping для тестов: click на launcher — это toggle intent.
+/// Открыто или закрыто сейчас — знает и решает только runtime owner.
 #[must_use]
 pub(crate) fn launcher_action_for_button(clicked: bool) -> Option<SettingsUiAction> {
-    clicked.then_some(SettingsUiAction::Open)
+    clicked.then_some(SettingsUiAction::ToggleOpen)
 }
