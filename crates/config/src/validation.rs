@@ -90,6 +90,12 @@ pub(crate) const MIN_SIDEBAR_SLIDE_DURATION_MS: u16 = 0;
 /// Верхняя граница времени анимации sidebar: дольше 5 секунд UI ощущается сломанным.
 pub(crate) const MAX_SIDEBAR_SLIDE_DURATION_MS: u16 = 5000;
 
+/// Минимальная высота кастомного titlebar: ниже кнопки окна становятся слишком мелкими.
+pub(crate) const MIN_TITLEBAR_HEIGHT_PX: u16 = 32;
+
+/// Максимальная высота кастомного titlebar: выше этого overlay начинает занимать слишком много видео.
+pub(crate) const MAX_TITLEBAR_HEIGHT_PX: u16 = 96;
+
 /// Нижний предел reference luminance: значения ниже 1 nit не имеют полезного UI-смысла.
 pub(crate) const MIN_HDR_TO_SDR_REFERENCE_NITS: f32 = 1.0;
 
@@ -637,6 +643,13 @@ fn validate_ui_section(config: &AppConfig) -> ConfigResult<()> {
         config.ui.animations.sidebar_slide_duration_ms,
         MIN_SIDEBAR_SLIDE_DURATION_MS,
         MAX_SIDEBAR_SLIDE_DURATION_MS,
+    )?;
+
+    validate_u16_range(
+        "ui.window.titlebar_height_px",
+        config.ui.window.titlebar_height_px,
+        MIN_TITLEBAR_HEIGHT_PX,
+        MAX_TITLEBAR_HEIGHT_PX,
     )?;
 
     Ok(())

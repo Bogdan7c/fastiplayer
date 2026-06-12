@@ -443,6 +443,7 @@ mod tests {
         assert_eq!(config.network.read_timeout_ms, 15_000);
         assert_eq!(config.youtube.resolve_timeout_ms, 30_000);
         assert_eq!(config.ui.skin, "minimal");
+        assert_eq!(config.ui.window.titlebar_height_px, 40);
         assert_eq!(config.ui.settings.live_preview_max_hz, 60);
     }
 
@@ -579,6 +580,8 @@ mod tests {
         assert!(!created_toml.contains("index_fingerprint_sample_kb"));
         assert!(created_toml.contains("# UI skin id"));
         assert!(created_toml.contains("skin = \"minimal\""));
+        assert!(created_toml.contains("[ui.window]"));
+        assert!(created_toml.contains("titlebar_height_px = 40"));
         assert!(created_toml.contains("[ui.settings]"));
         assert!(created_toml.contains("live_preview_max_hz = 60"));
         assert!(created_toml.contains("[render.hdr_to_sdr]"));
@@ -662,8 +665,34 @@ skin = "minimal"
         let loaded = load_from_path(&config_path).expect("legacy ui config accepted");
 
         assert!(!loaded.config.ui.show_telemetry);
+        assert_eq!(loaded.config.ui.window.titlebar_height_px, 40);
         assert_eq!(loaded.config.ui.settings.live_preview_max_hz, 60);
         assert_eq!(loaded.config.ui.animations.sidebar_slide_duration_ms, 500);
+    }
+
+    /// Проверяет, что кастомный titlebar остаётся в понятном desktop диапазоне.
+    #[test]
+    fn invalid_ui_window_titlebar_height_fails_validation() {
+        for invalid_titlebar_height_px in [31_u16, 97_u16] {
+            let temp_dir = tempfile::tempdir().expect("temp dir created");
+            let config_path = temp_dir.path().join("config.toml");
+            fs::write(
+                &config_path,
+                format!(
+                    r#"
+schema_version = 2
+
+[ui.window]
+titlebar_height_px = {invalid_titlebar_height_px}
+"#
+                ),
+            )
+            .expect("invalid config written");
+
+            let error = load_from_path(&config_path).expect_err("invalid titlebar height rejected");
+
+            assert!(error.to_string().contains("ui.window.titlebar_height_px"));
+        }
     }
 
     /// Проверяет валидацию времени анимации sidebar: 0 валиден («без анимации»),

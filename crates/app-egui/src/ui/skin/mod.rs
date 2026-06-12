@@ -104,13 +104,6 @@ pub trait PlayerSkin: AssetProvider {
     #[must_use]
     fn controls_style(&self) -> ControlsStyle;
 
-    /// Возвращает frame верхней панели.
-    fn top_panel_frame(&self) -> Frame {
-        Frame::NONE
-            .fill(self.controls_style().top_panel_fill)
-            .inner_margin(self.controls_style().panel_margin)
-    }
-
     /// Возвращает frame нижней панели.
     fn bottom_panel_frame(&self) -> Frame {
         Frame::NONE

@@ -168,6 +168,13 @@ impl AppShell {
         self.renderer = None;
     }
 
+    /// Закрывает приложение через единый cleanup path shell-а.
+    fn close_runtime_and_exit(&mut self, event_loop: &ActiveEventLoop, reason: &'static str) {
+        info!("{reason}");
+        self.drop_runtime();
+        event_loop.exit();
+    }
+
     /// Применяет уже принятое scheduler-ом решение к winit и окну.
     fn apply_redraw_control_action(
         event_loop: &ActiveEventLoop,
@@ -224,8 +231,9 @@ impl ApplicationHandler for AppShell {
         info!("Resumed: создание окна");
 
         let window_attributes = Window::default_attributes()
-            .with_title("rustiplayer")
+            .with_title("Rustiplayer")
             .with_inner_size(winit::dpi::PhysicalSize::new(1280, 720))
+            .with_decorations(false)
             .with_visible(true);
 
         let window = match event_loop.create_window(window_attributes) {
@@ -279,9 +287,7 @@ impl ApplicationHandler for AppShell {
 
         match event {
             WindowEvent::CloseRequested => {
-                info!("Закрытие окна по запросу пользователя");
-                self.drop_runtime();
-                event_loop.exit();
+                self.close_runtime_and_exit(event_loop, "Закрытие окна по запросу пользователя");
                 return;
             }
 
@@ -305,9 +311,7 @@ impl ApplicationHandler for AppShell {
                 ..
             } => match key_code {
                 winit::keyboard::KeyCode::Escape => {
-                    info!("Выход по Escape");
-                    self.drop_runtime();
-                    event_loop.exit();
+                    self.close_runtime_and_exit(event_loop, "Выход по Escape");
                     return;
                 }
                 other => {
@@ -318,18 +322,25 @@ impl ApplicationHandler for AppShell {
             WindowEvent::RedrawRequested => {
                 self.startup_media.poll_startup_jobs(app_state);
                 app_state.poll_local_file_open_job();
-                let pacing = render_frame(
+                let frame_result = render_frame(
                     &self.telemetry,
                     &window,
                     renderer,
                     app_state,
                     &mut self.settings_runtime,
                 );
+                if frame_result.close_requested {
+                    self.close_runtime_and_exit(
+                        event_loop,
+                        "Закрытие окна через кастомный titlebar",
+                    );
+                    return;
+                }
                 let has_pending_background_job = self.startup_media.has_pending_startup_job()
                     || app_state.has_pending_local_file_open()
                     || self.settings_runtime.has_pending_options_refresh();
                 let action = self.background_poll_scheduler.after_render(
-                    pacing,
+                    frame_result.pacing,
                     has_pending_background_job,
                     Instant::now(),
                 );

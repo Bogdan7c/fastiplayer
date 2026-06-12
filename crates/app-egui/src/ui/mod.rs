@@ -10,3 +10,4 @@ pub mod player_controls;
 pub mod sidebar;
 pub mod skin;
 pub mod timeline;
+pub mod window_chrome;

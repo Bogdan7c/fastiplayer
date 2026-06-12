@@ -273,6 +273,16 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "[ui.window]",
+        "# Настройки кастомного заголовка окна Rustiplayer.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "titlebar_height_px = 40",
+        "# Высота кастомного titlebar в логических UI px.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "[ui.settings]",
         "# Настройки поведения окна Settings UI.",
     );
@@ -281,11 +291,7 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
         "live_preview_max_hz = 60",
         "# Максимальная частота live preview updates в Settings UI.",
     );
-    insert_default_config_comment(
-        toml_text,
-        "[ui.animations]",
-        "# Настройки UI-анимаций.",
-    );
+    insert_default_config_comment(toml_text, "[ui.animations]", "# Настройки UI-анимаций.");
     insert_default_config_comment(
         toml_text,
         "sidebar_slide_duration_ms = 500",
@@ -1968,6 +1974,11 @@ pub struct UiConfig {
     )]
     pub skin: String,
 
+    /// Настройки кастомного заголовка окна.
+    #[serde(default)]
+    #[setting(nested)]
+    pub window: UiWindowConfig,
+
     /// Настройки будущего Settings UI.
     #[serde(default)]
     #[setting(nested)]
@@ -1986,8 +1997,48 @@ impl Default for UiConfig {
             show_telemetry: true,
             language: "ru".to_string(),
             skin: "minimal".to_string(),
+            window: UiWindowConfig::default(),
             settings: UiSettingsConfig::default(),
             animations: UiAnimationsConfig::default(),
+        }
+    }
+}
+
+/// Настройки кастомного window chrome; применяются после Apply/OK.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema,
+)]
+#[settings(require_all_fields)]
+#[serde(default, deny_unknown_fields)]
+pub struct UiWindowConfig {
+    /// Высота titlebar в логических UI pixels/egui points.
+    #[setting(
+        id = "ui.window.titlebar_height_px",
+        path = "ui.window.titlebar_height_px",
+        section = "ui",
+        group = "window",
+        surface = "main-settings-window",
+        label_id = "settings.ui.window.titlebar_height_px.label",
+        label_ru = "Высота заголовка окна",
+        description_id = "settings.ui.window.titlebar_height_px.description",
+        description_ru = "Высота кастомного titlebar Rustiplayer в логических UI pixels.",
+        help_id = "settings.ui.window.titlebar_height_px.help",
+        help_ru = "Панель остаётся overlay поверх видео: viewport не сжимается и exclusion rect не добавляется.",
+        editor = "integer",
+        min = crate::validation::MIN_TITLEBAR_HEIGHT_PX,
+        max = crate::validation::MAX_TITLEBAR_HEIGHT_PX,
+        step = 1,
+        unit = "px",
+        apply = "ui.apply"
+    )]
+    pub titlebar_height_px: u16,
+}
+
+impl Default for UiWindowConfig {
+    /// Возвращает высоту titlebar, близкую к обычным desktop chrome controls.
+    fn default() -> Self {
+        Self {
+            titlebar_height_px: 40,
         }
     }
 }
@@ -2147,6 +2198,7 @@ mod settings_metadata_tests {
         "ui.show_telemetry",
         "ui.language",
         "ui.skin",
+        "ui.window.titlebar_height_px",
         "ui.settings.live_preview_max_hz",
         "ui.animations.sidebar_slide_duration_ms",
     ];
@@ -2578,6 +2630,12 @@ mod settings_metadata_tests {
             "ui.animations.sidebar_slide_duration_ms",
             validation::MIN_SIDEBAR_SLIDE_DURATION_MS,
             validation::MAX_SIDEBAR_SLIDE_DURATION_MS,
+        );
+        assert_integer_range(
+            &registry,
+            "ui.window.titlebar_height_px",
+            validation::MIN_TITLEBAR_HEIGHT_PX,
+            validation::MAX_TITLEBAR_HEIGHT_PX,
         );
     }
 

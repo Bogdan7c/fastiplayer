@@ -26,23 +26,6 @@ pub enum ControlAction {
     Timeline(TimelineAction),
 }
 
-/// Рисует компактную верхнюю панель без diagnostics.
-pub fn render_top_bar(ui: &mut Ui, app_version: &str, skin: &impl PlayerSkin) {
-    let controls_style = skin.controls_style();
-    let panel_id = top_panel_id(skin.id());
-
-    egui::Panel::top(panel_id)
-        .frame(skin.top_panel_frame())
-        .show_inside(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.colored_label(controls_style.text_color, "rustiplayer");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.monospace(format!("v{app_version}"));
-                });
-            });
-        });
-}
-
 /// Рисует нижнюю player controls панель и возвращает действия пользователя.
 #[must_use]
 pub fn render_bottom_controls(
@@ -143,13 +126,6 @@ fn fixed_button(ui: &mut Ui, text: impl Into<RichText>, skin: &impl PlayerSkin) 
         [controls_style.button_width, controls_style.button_height],
         Button::new(button_text),
     )
-}
-
-/// Возвращает panel id верхней панели для выбранного skin-а.
-fn top_panel_id(skin_id: SkinId) -> &'static str {
-    match skin_id {
-        SkinId::Minimal => "top_bar_minimal",
-    }
 }
 
 /// Возвращает panel id нижней панели для выбранного skin-а.

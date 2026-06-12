@@ -107,6 +107,12 @@ impl CommittedConfigSnapshot {
     pub(crate) fn sidebar_slide_duration_seconds(&self) -> f32 {
         f32::from(self.config.ui.animations.sidebar_slide_duration_ms) / 1000.0
     }
+
+    /// Высота кастомного titlebar в egui points; config хранит те же логические UI px.
+    #[must_use]
+    pub(crate) fn titlebar_height_points(&self) -> f32 {
+        f32::from(self.config.ui.window.titlebar_height_px)
+    }
 }
 
 /// Renderer settings, которые применяются один раз при создании runtime renderer-а.
@@ -2534,6 +2540,18 @@ mod tests {
         config.ui.animations.sidebar_slide_duration_ms = 0;
         let snapshot = CommittedConfigSnapshot::from_config(&config);
         assert_eq!(snapshot.sidebar_slide_duration_seconds(), 0.0);
+    }
+
+    /// Snapshot отдаёт высоту titlebar в egui points из committed config.
+    #[test]
+    fn committed_snapshot_maps_titlebar_height_to_points() {
+        let mut config = custom_config_for_test();
+        let default_snapshot = CommittedConfigSnapshot::from_config(&config);
+        assert_eq!(default_snapshot.titlebar_height_points(), 40.0);
+
+        config.ui.window.titlebar_height_px = 64;
+        let custom_snapshot = CommittedConfigSnapshot::from_config(&config);
+        assert_eq!(custom_snapshot.titlebar_height_points(), 64.0);
     }
 
     #[test]

@@ -42,6 +42,7 @@ use crate::ui::player_controls::{self, ControlAction};
 use crate::ui::sidebar::{self, AppSidebarContent};
 use crate::ui::skin::{self, PlayerSkin};
 use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
+use crate::ui::window_chrome::{self, WindowChromeAction, WindowChromeInput, WindowChromeStyle};
 
 /// Частота обновления тяжёлого текста telemetry panel.
 ///
@@ -316,6 +317,9 @@ pub(crate) struct RenderedAppUi {
 
     /// Visual settings actions, которые shell передаст authoritative runtime owner-у.
     pub(crate) settings_actions: Vec<SettingsUiAction>,
+
+    /// Window chrome actions, которые shell применит через winit boundary.
+    pub(crate) window_chrome_actions: Vec<WindowChromeAction>,
 
     /// Область video underlay в egui points; overlay-панели её не уменьшают.
     pub(crate) video_viewport_rect: egui::Rect,
@@ -699,9 +703,6 @@ pub struct AppState {
 
     /// Момент последнего advance анимации sidebar для вычисления дельты времени кадра.
     sidebar_slide_last_tick: Option<Instant>,
-
-    /// Версия приложения для отображения в UI.
-    pub app_version: &'static str,
 }
 
 /// Кап дельты времени кадра для анимации sidebar: после паузы/лага кадров
@@ -772,7 +773,6 @@ impl AppState {
             telemetry_panel_cache: TelemetryPanelCache::default(),
             sidebar_slide: SlideTransition::closed(),
             sidebar_slide_last_tick: None,
-            app_version: env!("CARGO_PKG_VERSION"),
         })
     }
 
@@ -1511,7 +1511,6 @@ impl AppState {
             .name
             .clone()
             .unwrap_or_else(|| "Synthetic (test)".to_string());
-        let app_version = self.app_version;
         let telemetry = Arc::clone(&self.telemetry);
         let start_time = self.start_time;
         let frame_duration_estimate_ms =
@@ -1541,8 +1540,11 @@ impl AppState {
         // Позиция анимации продвинута раньше в prepare_ui_frame; здесь только чтение.
         let sidebar_slide_progress = self.sidebar_slide.eased_progress(Easing::EaseInOutCubic);
         let show_telemetry = self.committed_config_snapshot.show_telemetry();
+        let titlebar_height_points = self.committed_config_snapshot.titlebar_height_points();
+        let window_is_maximized = window.is_maximized();
         let mut control_actions = Vec::new();
         let mut settings_actions = Vec::new();
+        let mut window_chrome_actions = Vec::new();
         let mut timeline_ui_state = std::mem::take(&mut self.timeline_ui_state);
         let pre_ui_setup_elapsed = pre_ui_setup_started_at.elapsed();
         let mut telemetry_panel_cache_elapsed = Duration::ZERO;
@@ -1581,7 +1583,15 @@ impl AppState {
             video_viewport_rect = ui.max_rect();
 
             let stage_started_at = Instant::now();
-            player_controls::render_top_bar(ui, app_version, &selected_skin);
+            window_chrome_actions = window_chrome::show(
+                ui,
+                WindowChromeInput {
+                    title: "Rustiplayer",
+                    height_points: titlebar_height_points,
+                    is_maximized: window_is_maximized,
+                    style: WindowChromeStyle::from_controls_style(selected_skin.controls_style()),
+                },
+            );
             top_bar_elapsed = stage_started_at.elapsed();
 
             let stage_started_at = Instant::now();
@@ -1645,6 +1655,7 @@ impl AppState {
         RenderedAppUi {
             full_output,
             settings_actions,
+            window_chrome_actions,
             video_viewport_rect,
             video_exclusion_rects,
             timings: AppUiRenderTimings {

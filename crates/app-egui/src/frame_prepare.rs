@@ -14,9 +14,9 @@ use render_core::{
 use render_wgpu_shell::{RenderFrameDropReason, RenderFrameOutcome, RenderFrameTiming, Renderer};
 use render_wgpu_video::{WgpuFrameTextureViewLookup, WgpuRenderableFrame};
 use rustiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
-use tracing::{debug, instrument, trace};
+use tracing::{debug, instrument, trace, warn};
 use video_core::DecodedPixelFormat;
-use winit::window::Window;
+use winit::window::{ResizeDirection, Window};
 
 use crate::redraw_pacing::RedrawPacing;
 use crate::settings_runtime::{SettingsRuntime, SettingsRuntimeReconfigureHost};
@@ -26,6 +26,7 @@ use crate::state::{
 };
 use crate::system_capabilities::probe_system_capabilities;
 use crate::telemetry::{SeekDiscardReason, Telemetry, VideoDropReason, VideoFrameTelemetryEvent};
+use crate::ui::window_chrome::{WindowChromeAction, WindowChromeResizeDirection};
 
 /// Результат UI stage до входа в renderer/surface critical path.
 struct PreparedUiFrame {
@@ -50,8 +51,20 @@ struct PreparedUiFrame {
     /// Visual settings actions, собранные в egui frame-е.
     settings_actions: Vec<crate::settings_ui::SettingsUiAction>,
 
+    /// Window chrome actions, собранные в egui frame-е.
+    window_chrome_actions: Vec<WindowChromeAction>,
+
     /// Подробная CPU-разбивка app-owned UI stage.
     timings: UiPrepareTimings,
+}
+
+/// Результат полного render frame-а с shell-level запросами от window chrome.
+pub(crate) struct AppRenderFrameResult {
+    /// Redraw pacing после рендера кадра.
+    pub(crate) pacing: RedrawPacing,
+
+    /// Пользователь запросил закрытие через кастомный titlebar.
+    pub(crate) close_requested: bool,
 }
 
 /// Runtime adapter одного frame-а: render live preview + committed runtime owners.
@@ -647,6 +660,7 @@ fn prepare_ui_frame(
     let crate::state::RenderedAppUi {
         full_output: egui_full_output,
         settings_actions,
+        window_chrome_actions,
         video_viewport_rect,
         video_exclusion_rects,
         timings: app_ui_timings,
@@ -693,6 +707,7 @@ fn prepare_ui_frame(
         video_exclusion_rects,
         requested_repaint,
         settings_actions,
+        window_chrome_actions,
         timings: UiPrepareTimings {
             total: ui_prepare_started_at.elapsed(),
             app_ui: app_ui_timings,
@@ -701,6 +716,49 @@ fn prepare_ui_frame(
             tessellate: tessellate_elapsed,
             screen_descriptor: screen_descriptor_elapsed,
         },
+    }
+}
+
+/// Применяет window chrome actions, которые не владеют lifecycle закрытия приложения.
+fn apply_window_chrome_actions(window: &Window, actions: Vec<WindowChromeAction>) -> bool {
+    let mut close_requested = false;
+
+    for action in actions {
+        match action {
+            WindowChromeAction::Minimize => window.set_minimized(true),
+            WindowChromeAction::ToggleMaximize => window.set_maximized(!window.is_maximized()),
+            WindowChromeAction::Close => close_requested = true,
+            WindowChromeAction::StartDrag => {
+                if let Err(error) = window.drag_window() {
+                    warn!(error = %error, "Не удалось начать перетаскивание окна");
+                }
+            }
+            WindowChromeAction::BeginResize(direction) => {
+                if let Err(error) = window.drag_resize_window(winit_resize_direction(direction)) {
+                    warn!(
+                        error = %error,
+                        ?direction,
+                        "Не удалось начать resize окна"
+                    );
+                }
+            }
+        }
+    }
+
+    close_requested
+}
+
+/// Маппит visual resize direction в winit API на shell boundary.
+fn winit_resize_direction(direction: WindowChromeResizeDirection) -> ResizeDirection {
+    match direction {
+        WindowChromeResizeDirection::North => ResizeDirection::North,
+        WindowChromeResizeDirection::NorthEast => ResizeDirection::NorthEast,
+        WindowChromeResizeDirection::East => ResizeDirection::East,
+        WindowChromeResizeDirection::SouthEast => ResizeDirection::SouthEast,
+        WindowChromeResizeDirection::South => ResizeDirection::South,
+        WindowChromeResizeDirection::SouthWest => ResizeDirection::SouthWest,
+        WindowChromeResizeDirection::West => ResizeDirection::West,
+        WindowChromeResizeDirection::NorthWest => ResizeDirection::NorthWest,
     }
 }
 
@@ -1238,7 +1296,7 @@ pub(crate) fn render_frame(
     renderer: &mut Renderer,
     app_state: &mut AppState,
     settings_runtime: &mut SettingsRuntime,
-) -> RedrawPacing {
+) -> AppRenderFrameResult {
     let frame_start = Instant::now();
 
     let input_snapshot_started_at = Instant::now();
@@ -1283,6 +1341,7 @@ pub(crate) fn render_frame(
     );
     let egui_requested_repaint = prepared_ui_frame.requested_repaint;
     let settings_actions = std::mem::take(&mut prepared_ui_frame.settings_actions);
+    let window_chrome_actions = std::mem::take(&mut prepared_ui_frame.window_chrome_actions);
     let mut ui_prepare_timings = prepared_ui_frame.timings;
     ui_prepare_timings.total = stage_started_at.elapsed();
 
@@ -1302,6 +1361,7 @@ pub(crate) fn render_frame(
             }
         }
     };
+    let chrome_close_requested = apply_window_chrome_actions(window, window_chrome_actions);
 
     let settings_preview_tick = match settings_runtime.apply_due_preview(renderer, Instant::now()) {
         Ok(tick) => tick,
@@ -1355,12 +1415,15 @@ pub(crate) fn render_frame(
         renderer_timing,
     );
 
-    RedrawPacing::new(
-        app_state.wants_continuous_redraw(),
-        app_state.take_pending_worker_redraw()
-            || egui_requested_repaint
-            || settings_action_requested_repaint,
-    )
+    AppRenderFrameResult {
+        pacing: RedrawPacing::new(
+            app_state.wants_continuous_redraw(),
+            app_state.take_pending_worker_redraw()
+                || egui_requested_repaint
+                || settings_action_requested_repaint,
+        ),
+        close_requested: chrome_close_requested,
+    }
 }
 
 #[cfg(test)]
