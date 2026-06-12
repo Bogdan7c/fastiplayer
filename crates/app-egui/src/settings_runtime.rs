@@ -397,14 +397,21 @@ impl SettingsRuntime {
     /// Собирает visual model из draft document-а без передачи `AppConfig` в UI modules.
     #[must_use]
     pub(crate) fn ui_model(&self) -> SettingsUiModel {
+        // Hot path: вызывается каждый кадр playback. При закрытой панели field list
+        // никем не читается, поэтому diff/клоны descriptors не выполняем.
+        if !self.is_settings_window_open() {
+            return SettingsUiModel::new(false, Vec::new(), false).with_status(self.status.clone());
+        }
         match self.ui_fields() {
-            Ok(fields) => SettingsUiModel::new(self.is_settings_window_open(), fields, false)
-                .with_status(self.status.clone()),
-            Err(error) => SettingsUiModel::new(self.is_settings_window_open(), Vec::new(), false)
-                .with_status(SettingsUiStatus {
+            Ok(fields) => {
+                SettingsUiModel::new(true, fields, false).with_status(self.status.clone())
+            }
+            Err(error) => {
+                SettingsUiModel::new(true, Vec::new(), false).with_status(SettingsUiStatus {
                     summary: Some("Не удалось собрать модель настроек".to_string()),
                     details: vec![error.to_string()],
-                }),
+                })
+            }
         }
     }
 

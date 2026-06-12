@@ -2013,6 +2013,12 @@ impl AppState {
                 "HDR metadata: {reference_defaults_text}"
             )));
         }
+        if panel_state.render_diagnostics.video_draw_rect_count > 0 {
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "video_draw_rect_count: {}",
+                panel_state.render_diagnostics.video_draw_rect_count
+            )));
+        }
 
         panel_rows.push(TelemetryPanelRow::normal(format!(
             "Decoded: {}",
@@ -2483,6 +2489,7 @@ mod tests {
                 max_content_light_level: HdrMetadataDiagnosticMarker::ReferenceDefault,
                 max_frame_average_light_level: HdrMetadataDiagnosticMarker::ReferenceDefault,
             }),
+            ..RenderDiagnostics::default()
         };
 
         assert_eq!(

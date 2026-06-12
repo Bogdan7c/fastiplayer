@@ -598,6 +598,7 @@ impl WgpuVideoRenderer {
         let video_viewport =
             video_viewport.clamp_to_surface(self.surface_size.0, self.surface_size.1);
         let draw_rects = visible_video_draw_rects(video_viewport, video_exclusion_rects);
+        self.diagnostics.video_draw_rect_count = draw_rects.len();
         let mut pass_context = VideoRenderPassContext {
             target,
             encoder,

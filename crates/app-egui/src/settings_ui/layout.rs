@@ -4,7 +4,8 @@ use egui::{Button, Layout, RichText, ScrollArea, Ui};
 use settings_core::{SettingGroupId, SettingSectionId};
 
 use super::{
-    SettingsUiAction, SettingsUiCommandState, SettingsUiModel, field_widget, section_list,
+    SettingsUiAction, SettingsUiCommandState, SettingsUiField, SettingsUiModel, field_widget,
+    section_list,
 };
 
 /// Дополнительный вертикальный запас под separator и отступы вокруг footer-а.
@@ -63,26 +64,33 @@ fn render_settings_list(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<
         return;
     }
 
-    for section in &sections {
-        render_section(ui, model, section, actions);
+    // sections отсортированы и уникальны по id (см. sections_for_fields),
+    // поэтому распределяем fields по секциям одним проходом через binary search.
+    let mut section_fields: Vec<Vec<&SettingsUiField>> = vec![Vec::new(); sections.len()];
+    for field in &model.fields {
+        if let Ok(index) = sections
+            .binary_search_by(|section| section.section.cmp(&field.descriptor.placement.section))
+        {
+            section_fields[index].push(field);
+        }
+    }
+
+    for (section, fields) in sections.iter().zip(&section_fields) {
+        render_section(ui, fields, section, actions);
     }
 }
 
 /// Рисует один section: заголовок, reset surface и все его группы.
 fn render_section(
     ui: &mut Ui,
-    model: &SettingsUiModel,
+    fields: &[&SettingsUiField],
     section: &section_list::SettingsUiSection,
     actions: &mut Vec<SettingsUiAction>,
 ) {
     render_section_header(ui, section, actions);
 
     let mut current_group: Option<SettingGroupId> = None;
-    for field in model
-        .fields
-        .iter()
-        .filter(|field| field.descriptor.placement.section == section.section)
-    {
+    for field in fields {
         if current_group.as_ref() != Some(&field.descriptor.placement.group) {
             current_group = Some(field.descriptor.placement.group.clone());
             render_group_header(

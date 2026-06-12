@@ -386,6 +386,11 @@ pub struct RenderDiagnostics {
     /// Source markers optional HDR metadata для последнего HDR-to-SDR frame.
     #[serde(default)]
     pub hdr_reference_defaults: Option<HdrReferenceDefaultDiagnostics>,
+
+    /// Количество scissor draw rects последнего video pass (1 без exclusion rects,
+    /// 0 если video pass не рисовал кадр).
+    #[serde(default)]
+    pub video_draw_rect_count: usize,
 }
 
 impl RenderDiagnostics {
@@ -2409,7 +2414,7 @@ mod tests {
         );
         let diagnostics = RenderDiagnostics {
             active_color_path: Some(active_path),
-            hdr_reference_defaults: None,
+            ..RenderDiagnostics::default()
         };
 
         assert_eq!(
