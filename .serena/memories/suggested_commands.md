@@ -9,6 +9,8 @@
 - Refactor dependency guardrails: `scripts/check-refactor-guardrails.py`.
 - Local pre-PR path: `scripts/pre-pr-checks.sh` (runs `cargo metadata --no-deps --format-version 1`, guardrails, `cargo fmt --all --check`, `cargo check --workspace`, `cargo clippy --workspace --all-targets`).
 - Format check: `cargo fmt --all --check`; apply formatting with `cargo fmt --all` when editing Rust.
+- Render frame timing trace (perf analysis closed/open settings, segment parser idea in user memory project_settings_sidebar_perf.md): `RUST_LOG=info,rustiplayer::render_frame_timing=trace cargo run --release -p app-egui -- /path/to/media.webm > /tmp/timing.log 2>&1`; log lines are ANSI-colored even when redirected.
+- Perf must be judged on release builds only; dev profile has opt-level 3 overrides for all external deps (`[profile.dev.package."*"]`) plus hot workspace crates (codec-core, video-vaapi, cros-*, vp9-parser, webm-demux, symphonia-demux, media-prefetch, audio) — debug now holds 4k60 VP9 at 60fps; if debug lags again, check whether a new hot member crate needs an override.
 - Seek diagnostics local trace: `RUST_LOG=player_core=debug,symphonia_demux=debug,app_egui=debug cargo run -p app-egui -- /path/to/media.webm`.
 - Seek diagnostics parser: `scripts/parse-seek-diagnostics.py --scenario "<name>" /tmp/rustiplayer-seek.log`; supports `--format csv` and `--format json`.
 - Local Sonar scan only on explicit request and with token in env, not files/history: `SONAR_USER_HOME=/tmp/rustiplayer-sonar-user-home scripts/sonar-local-analysis.sh`.
