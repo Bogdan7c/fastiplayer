@@ -99,6 +99,12 @@ impl CommittedConfigSnapshot {
     pub(crate) fn show_telemetry(&self) -> bool {
         self.config.ui.show_telemetry
     }
+
+    /// Длительность анимации выезда settings sidebar в секундах; `0` — без анимации.
+    #[must_use]
+    pub(crate) fn sidebar_slide_duration_seconds(&self) -> f32 {
+        f32::from(self.config.ui.animations.sidebar_slide_duration_ms) / 1000.0
+    }
 }
 
 /// Renderer settings, которые применяются один раз при создании runtime renderer-а.
@@ -133,6 +139,10 @@ pub(crate) struct SettingsRuntime {
 
     /// Открыто ли visual settings window; draft transaction начинается при `Open`.
     settings_window_open: bool,
+
+    /// Держит field list собранным, пока закрытая панель ещё видна (анимация закрытия).
+    /// Это view-level hint от shell; источником open-state не является.
+    visual_hold: bool,
 
     /// Field-level errors от lightweight metadata validation до full document apply.
     field_validation_errors: BTreeMap<SettingId, String>,
@@ -341,6 +351,7 @@ impl SettingsRuntime {
             option_cache: BTreeMap::new(),
             last_preview_sent_at: None,
             ui_model_cache: None,
+            visual_hold: false,
         };
 
         debug_assert_eq!(runtime.config_path(), runtime.store_path());
@@ -418,19 +429,31 @@ impl SettingsRuntime {
         self.ui_model_cache = None;
     }
 
+    /// View-level hint от shell: панель закрыта, но ещё видна (анимация закрытия),
+    /// поэтому field list должен оставаться собранным до конца анимации.
+    /// Hint не является вторым open-state: runtime open-state остаётся authoritative.
+    pub(crate) fn set_visual_hold(&mut self, visual_hold: bool) {
+        if self.visual_hold != visual_hold {
+            self.visual_hold = visual_hold;
+            self.invalidate_ui_model();
+        }
+    }
+
     /// Собирает visual model из draft document-а без передачи `AppConfig` в UI modules.
     fn build_ui_model(&self) -> SettingsUiModel {
         // При закрытой панели field list никем не читается,
-        // поэтому diff/клоны descriptors не выполняем.
-        if !self.is_settings_window_open() {
+        // поэтому diff/клоны descriptors не выполняем. Исключение — visual hold:
+        // панель ещё видна во время анимации закрытия и должна показывать поля.
+        if !self.is_settings_window_open() && !self.visual_hold {
             return SettingsUiModel::new(false, Vec::new(), false).with_status(self.status.clone());
         }
+        let is_open = self.is_settings_window_open();
         match self.ui_fields() {
             Ok(fields) => {
-                SettingsUiModel::new(true, fields, false).with_status(self.status.clone())
+                SettingsUiModel::new(is_open, fields, false).with_status(self.status.clone())
             }
             Err(error) => {
-                SettingsUiModel::new(true, Vec::new(), false).with_status(SettingsUiStatus {
+                SettingsUiModel::new(is_open, Vec::new(), false).with_status(SettingsUiStatus {
                     summary: Some("Не удалось собрать модель настроек".to_string()),
                     details: vec![error.to_string()],
                 })
@@ -2336,6 +2359,58 @@ mod tests {
                 .is_some(),
             "settings runtime должен владеть registry view для будущего UI"
         );
+    }
+
+    /// Visual hold держит field list собранным во время анимации закрытия sidebar-а,
+    /// а устойчиво закрытая панель остаётся дешёвой: поля не строятся вообще.
+    #[test]
+    fn visual_hold_keeps_fields_built_only_while_closing_animation_runs() {
+        let config = custom_config_for_test();
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+
+        runtime
+            .handle_ui_actions(
+                vec![SettingsUiAction::Open, SettingsUiAction::Cancel],
+                &mut render_adapter,
+            )
+            .expect("open + cancel должны пройти без ошибок");
+        assert!(!runtime.is_settings_window_open());
+
+        // Панель ещё видна (анимация закрытия): поля собраны, open-state не врёт.
+        runtime.set_visual_hold(true);
+        let held_model = runtime.ui_model();
+        assert!(!held_model.is_open);
+        assert!(
+            !held_model.fields.is_empty(),
+            "во время visual hold уезжающая панель должна показывать поля"
+        );
+
+        // Анимация закончилась: закрытая панель снова не строит field list.
+        runtime.set_visual_hold(false);
+        let closed_model = runtime.ui_model();
+        assert!(!closed_model.is_open);
+        assert!(
+            closed_model.fields.is_empty(),
+            "устойчиво закрытая панель не должна строить поля (perf-инвариант)"
+        );
+    }
+
+    /// Snapshot отдаёт длительность анимации sidebar в секундах из committed config.
+    #[test]
+    fn committed_snapshot_maps_sidebar_slide_duration_to_seconds() {
+        let mut config = custom_config_for_test();
+        config.ui.animations.sidebar_slide_duration_ms = 250;
+        let snapshot = CommittedConfigSnapshot::from_config(&config);
+
+        assert!((snapshot.sidebar_slide_duration_seconds() - 0.25).abs() < f32::EPSILON);
+
+        config.ui.animations.sidebar_slide_duration_ms = 0;
+        let snapshot = CommittedConfigSnapshot::from_config(&config);
+        assert_eq!(snapshot.sidebar_slide_duration_seconds(), 0.0);
     }
 
     #[test]

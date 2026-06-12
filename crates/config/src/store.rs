@@ -663,6 +663,28 @@ skin = "minimal"
 
         assert!(!loaded.config.ui.show_telemetry);
         assert_eq!(loaded.config.ui.settings.live_preview_max_hz, 60);
+        assert_eq!(loaded.config.ui.animations.sidebar_slide_duration_ms, 500);
+    }
+
+    /// Проверяет валидацию времени анимации sidebar: 0 валиден («без анимации»),
+    /// значение выше верхней границы отклоняется до записи.
+    #[test]
+    fn sidebar_slide_duration_validation_accepts_zero_and_rejects_above_max() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+
+        let mut config = AppConfig::default();
+        config.ui.animations.sidebar_slide_duration_ms = 0;
+        save_validated_atomic_at(&config_path, &config).expect("0 = «без анимации» валиден");
+
+        config.ui.animations.sidebar_slide_duration_ms = 5001;
+        let error = save_validated_atomic_at(&config_path, &config)
+            .expect_err("слишком долгая анимация отклоняется");
+        assert!(
+            error
+                .to_string()
+                .contains("ui.animations.sidebar_slide_duration_ms")
+        );
     }
 
     /// Проверяет, что старые index-only network поля больше не принимаются.

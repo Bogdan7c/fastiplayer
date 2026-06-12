@@ -84,6 +84,12 @@ pub(crate) const MIN_LIVE_PREVIEW_MAX_HZ: u16 = 1;
 /// Верхняя граница live preview защищает runtime от слишком частых preview updates.
 pub(crate) const MAX_LIVE_PREVIEW_MAX_HZ: u16 = 240;
 
+/// Нижняя граница времени анимации sidebar: ноль валиден и означает «без анимации».
+pub(crate) const MIN_SIDEBAR_SLIDE_DURATION_MS: u16 = 0;
+
+/// Верхняя граница времени анимации sidebar: дольше 5 секунд UI ощущается сломанным.
+pub(crate) const MAX_SIDEBAR_SLIDE_DURATION_MS: u16 = 5000;
+
 /// Нижний предел reference luminance: значения ниже 1 nit не имеют полезного UI-смысла.
 pub(crate) const MIN_HDR_TO_SDR_REFERENCE_NITS: f32 = 1.0;
 
@@ -624,6 +630,13 @@ fn validate_ui_section(config: &AppConfig) -> ConfigResult<()> {
         config.ui.settings.live_preview_max_hz,
         MIN_LIVE_PREVIEW_MAX_HZ,
         MAX_LIVE_PREVIEW_MAX_HZ,
+    )?;
+
+    validate_u16_range(
+        "ui.animations.sidebar_slide_duration_ms",
+        config.ui.animations.sidebar_slide_duration_ms,
+        MIN_SIDEBAR_SLIDE_DURATION_MS,
+        MAX_SIDEBAR_SLIDE_DURATION_MS,
     )?;
 
     Ok(())

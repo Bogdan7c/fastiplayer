@@ -281,6 +281,16 @@ fn document_schema_version_2_defaults(toml_text: &mut String) {
         "live_preview_max_hz = 60",
         "# Максимальная частота live preview updates в Settings UI.",
     );
+    insert_default_config_comment(
+        toml_text,
+        "[ui.animations]",
+        "# Настройки UI-анимаций.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "sidebar_slide_duration_ms = 500",
+        "# Длительность выезда settings sidebar и сжатия видео, мс; 0 отключает анимацию.",
+    );
 }
 
 /// Вставляет комментарий перед ожидаемой строкой default TOML, не дублируя его.
@@ -1962,6 +1972,11 @@ pub struct UiConfig {
     #[serde(default)]
     #[setting(nested)]
     pub settings: UiSettingsConfig,
+
+    /// Настройки UI-анимаций.
+    #[serde(default)]
+    #[setting(nested)]
+    pub animations: UiAnimationsConfig,
 }
 
 impl Default for UiConfig {
@@ -1972,6 +1987,7 @@ impl Default for UiConfig {
             language: "ru".to_string(),
             skin: "minimal".to_string(),
             settings: UiSettingsConfig::default(),
+            animations: UiAnimationsConfig::default(),
         }
     }
 }
@@ -2011,6 +2027,45 @@ impl Default for UiSettingsConfig {
     fn default() -> Self {
         Self {
             live_preview_max_hz: 60,
+        }
+    }
+}
+
+/// Настройки UI-анимаций; применяются после Apply/OK, идущую анимацию не перезапускают.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema,
+)]
+#[settings(require_all_fields)]
+#[serde(default, deny_unknown_fields)]
+pub struct UiAnimationsConfig {
+    /// Длительность выезда/заезда settings sidebar; `0` отключает анимацию.
+    #[setting(
+        id = "ui.animations.sidebar_slide_duration_ms",
+        path = "ui.animations.sidebar_slide_duration_ms",
+        section = "ui",
+        group = "animations",
+        surface = "main-settings-window",
+        label_id = "settings.ui.animations.sidebar_slide_duration_ms.label",
+        label_ru = "Анимация сайдбара",
+        description_id = "settings.ui.animations.sidebar_slide_duration_ms.description",
+        description_ru = "Длительность выезда панели настроек и сжатия видео, мс.",
+        help_id = "settings.ui.animations.sidebar_slide_duration_ms.help",
+        help_ru = "0 отключает анимацию: панель появляется мгновенно.",
+        editor = "integer",
+        min = crate::validation::MIN_SIDEBAR_SLIDE_DURATION_MS,
+        max = crate::validation::MAX_SIDEBAR_SLIDE_DURATION_MS,
+        step = 50,
+        unit = "ms",
+        apply = "ui.apply"
+    )]
+    pub sidebar_slide_duration_ms: u16,
+}
+
+impl Default for UiAnimationsConfig {
+    /// Default 0,5 сек: заметная, но не затягивающая UI анимация.
+    fn default() -> Self {
+        Self {
+            sidebar_slide_duration_ms: 500,
         }
     }
 }
@@ -2093,6 +2148,7 @@ mod settings_metadata_tests {
         "ui.language",
         "ui.skin",
         "ui.settings.live_preview_max_hz",
+        "ui.animations.sidebar_slide_duration_ms",
     ];
 
     #[test]
@@ -2516,6 +2572,12 @@ mod settings_metadata_tests {
             "ui.settings.live_preview_max_hz",
             validation::MIN_LIVE_PREVIEW_MAX_HZ,
             validation::MAX_LIVE_PREVIEW_MAX_HZ,
+        );
+        assert_integer_range(
+            &registry,
+            "ui.animations.sidebar_slide_duration_ms",
+            validation::MIN_SIDEBAR_SLIDE_DURATION_MS,
+            validation::MAX_SIDEBAR_SLIDE_DURATION_MS,
         );
     }
 

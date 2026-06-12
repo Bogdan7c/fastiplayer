@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use animation_core::{Easing, SlideTransition};
 use capability_core::SystemCapabilities;
 use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
 use media_core::TrackKind;
@@ -693,9 +694,19 @@ pub struct AppState {
     /// Кэш строк telemetry panel; живёт в UI-слое и не владеет playback/render state.
     telemetry_panel_cache: TelemetryPanelCache,
 
+    /// Анимация выезда settings sidebar; runtime open-state остаётся целью перехода.
+    sidebar_slide: SlideTransition,
+
+    /// Момент последнего advance анимации sidebar для вычисления дельты времени кадра.
+    sidebar_slide_last_tick: Option<Instant>,
+
     /// Версия приложения для отображения в UI.
     pub app_version: &'static str,
 }
+
+/// Кап дельты времени кадра для анимации sidebar: после паузы/лага кадров
+/// анимация продолжается плавно, а не прыгает к концу.
+const MAX_SIDEBAR_SLIDE_FRAME_DT_SECONDS: f32 = 0.1;
 
 impl AppState {
     /// Создаёт новое состояние приложения и запускает playback worker.
@@ -759,8 +770,39 @@ impl AppState {
             local_file_open_job: None,
             timeline_ui_state: TimelineUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
+            sidebar_slide: SlideTransition::closed(),
+            sidebar_slide_last_tick: None,
             app_version: env!("CARGO_PKG_VERSION"),
         })
+    }
+
+    /// Продвигает анимацию выезда settings sidebar к runtime open-state.
+    ///
+    /// Вызывается один раз за кадр до сборки settings UI model, чтобы видимость
+    /// панели и video viewport считались по уже актуальной позиции анимации.
+    pub(crate) fn advance_sidebar_slide(&mut self, settings_open: bool, now: Instant) {
+        self.sidebar_slide.set_target_open(settings_open);
+
+        let dt_seconds = self
+            .sidebar_slide_last_tick
+            .map(|last_tick| {
+                now.saturating_duration_since(last_tick)
+                    .as_secs_f32()
+                    .min(MAX_SIDEBAR_SLIDE_FRAME_DT_SECONDS)
+            })
+            .unwrap_or(0.0);
+        self.sidebar_slide_last_tick = Some(now);
+
+        let duration_seconds = self
+            .committed_config_snapshot
+            .sidebar_slide_duration_seconds();
+        self.sidebar_slide.advance(dt_seconds, duration_seconds);
+    }
+
+    /// `true`, пока анимация sidebar не достигла цели (нужен visual hold и repaint).
+    #[must_use]
+    pub(crate) fn sidebar_slide_is_animating(&self) -> bool {
+        self.sidebar_slide.is_animating()
     }
 
     /// Обновляет read-only config snapshot из authoritative settings runtime.
@@ -1496,6 +1538,8 @@ impl AppState {
             skin::MinimalSkin
         });
         let animation_state = AnimationState::from_timeline(&player_snapshot.timeline);
+        // Позиция анимации продвинута раньше в prepare_ui_frame; здесь только чтение.
+        let sidebar_slide_progress = self.sidebar_slide.eased_progress(Easing::EaseInOutCubic);
         let show_telemetry = self.committed_config_snapshot.show_telemetry();
         let mut control_actions = Vec::new();
         let mut settings_actions = Vec::new();
@@ -1528,7 +1572,9 @@ impl AppState {
         let mut center_overlay_elapsed = Duration::ZERO;
         let mut video_viewport_rect =
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(0.0, 0.0));
-        let mut video_exclusion_rects = Vec::new();
+        // Exclusion-механизм остаётся в боундари рендера, но sidebar им больше
+        // не пользуется: он сжимает video viewport, а не вырезает видео под собой.
+        let video_exclusion_rects = Vec::new();
 
         let egui_run_started_at = Instant::now();
         let full_output = self.egui_ctx.run_ui(egui_input, |ui| {
@@ -1552,10 +1598,15 @@ impl AppState {
                 AppSidebarContent::Settings {
                     model: settings_ui_model,
                 },
+                sidebar_slide_progress,
                 &mut settings_actions,
             );
             if let Some(sidebar_rect) = sidebar_rect {
-                video_exclusion_rects.push(sidebar_rect);
+                // Sidebar вытесняет видео: content viewport начинается от правого
+                // края панели, letterbox/aspect ratio рендер пересчитает сам.
+                video_viewport_rect.min.x = sidebar_rect
+                    .right()
+                    .clamp(video_viewport_rect.min.x, video_viewport_rect.max.x);
             }
 
             if let Some(telemetry_panel_rows) = telemetry_panel_rows.as_ref() {
@@ -1579,6 +1630,12 @@ impl AppState {
             launcher_button::show(ui.ctx(), &mut settings_actions);
         });
         let egui_run_elapsed = egui_run_started_at.elapsed();
+
+        if self.sidebar_slide.is_animating() {
+            // Пока анимация sidebar активна, просим следующий кадр явно:
+            // без playback нет другого источника непрерывных redraw-ов.
+            self.egui_ctx.request_repaint();
+        }
 
         let post_ui_actions_started_at = Instant::now();
         self.timeline_ui_state = timeline_ui_state;
@@ -2615,7 +2672,7 @@ mod tests {
     }
 
     #[test]
-    fn app_layout_keeps_video_underlay_full_and_excludes_only_sidebar_rect() {
+    fn app_layout_shrinks_video_viewport_by_sidebar_without_exclusion_rects() {
         let state_source = include_str!("state.rs");
         let render_ui_section = source_section_between(
             state_source,
@@ -2628,12 +2685,12 @@ mod tests {
             "video underlay должен начинаться с полного egui root rect"
         );
         assert!(
-            render_ui_section.contains("video_exclusion_rects.push(sidebar_rect);"),
-            "sidebar должен становиться exclusion rect для video pass"
+            render_ui_section.contains("video_viewport_rect.min.x = sidebar_rect"),
+            "sidebar должен вытеснять видео: viewport начинается от правого края панели"
         );
         assert!(
-            !render_ui_section.contains("video_viewport_rect_after_sidebar"),
-            "sidebar не должен сжимать full video underlay rect в app-egui"
+            !render_ui_section.contains("video_exclusion_rects.push("),
+            "sidebar больше не должен становиться exclusion rect: он сжимает viewport"
         );
     }
 

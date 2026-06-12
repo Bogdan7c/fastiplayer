@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/animation-core",
     "crates/app-egui",
     "crates/audio-core",
     "crates/capability-core",
@@ -89,6 +90,7 @@ pollster = "0.4"
 anyhow = "1.0"
 directories = "6.0"
 rustiplayer-config = { path = "crates/config" }
+animation-core = { path = "crates/animation-core" }
 audio-core = { path = "crates/audio-core" }
 capability-core = { path = "crates/capability-core" }
 codec-core = { path = "crates/codec-core" }

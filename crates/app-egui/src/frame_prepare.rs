@@ -631,6 +631,13 @@ fn prepare_ui_frame(
 ) -> PreparedUiFrame {
     let ui_prepare_started_at = Instant::now();
 
+    // Анимация sidebar продвигается до сборки ui_model: visual hold должен знать,
+    // видна ли ещё закрытая панель, чтобы field list не пропадал во время закрытия.
+    let settings_panel_open = settings_runtime.is_settings_window_open();
+    app_state.advance_sidebar_slide(settings_panel_open, Instant::now());
+    settings_runtime
+        .set_visual_hold(!settings_panel_open && app_state.sidebar_slide_is_animating());
+
     let settings_ui_model = settings_runtime.ui_model();
     let rendered_app_ui = app_state.render_ui(window, egui_input, frame_context, settings_ui_model);
     let crate::state::RenderedAppUi {

@@ -23,40 +23,107 @@ const MIN_SIDEBAR_WIDTH: f32 = 320.0;
 /// Максимальная ширина не даёт sidebar-у съесть весь video viewport на обычных окнах.
 const MAX_SIDEBAR_WIDTH: f32 = 560.0;
 
-/// Рисует левый app sidebar и возвращает его фактическую область, если он открыт.
+/// Egui temp-memory ключ последней пользовательской ширины открытого sidebar-а.
+/// Нужен анимации, чтобы выезжать к той же ширине, к которой панель открыта.
+fn sidebar_open_width_memory_id() -> egui::Id {
+    egui::Id::new("app_sidebar_settings_open_width")
+}
+
+/// Непрозрачная заливка: видео не рисуется под панелью (viewport сжат),
+/// полупрозрачность давала бы только лишний blending по всей площади панели.
+const SIDEBAR_FILL: egui::Color32 = egui::Color32::from_rgb(18, 18, 18);
+
+/// Рисует левый app sidebar и возвращает его фактическую область, если он виден.
+///
+/// `slide_progress` — сглаженный прогресс анимации выезда `0.0..=1.0`:
+/// `0.0` — панель скрыта, `1.0` — полностью открыта, промежуточные значения —
+/// панель в движении (открывается или закрывается).
 #[must_use]
 pub(crate) fn show(
     ui: &mut Ui,
     content: AppSidebarContent<'_>,
+    slide_progress: f32,
     actions: &mut Vec<SettingsUiAction>,
 ) -> Option<egui::Rect> {
     match content {
-        AppSidebarContent::Settings { model } => show_settings_sidebar(ui, model, actions),
+        AppSidebarContent::Settings { model } => {
+            show_settings_sidebar(ui, model, slide_progress, actions)
+        }
     }
 }
 
-/// Рисует settings sidebar только когда settings runtime считает его открытым.
+/// Рисует settings sidebar, пока он визуально виден (открыт или анимируется).
 #[must_use]
 fn show_settings_sidebar(
     ui: &mut Ui,
     model: &SettingsUiModel,
+    slide_progress: f32,
     actions: &mut Vec<SettingsUiAction>,
 ) -> Option<egui::Rect> {
-    if !model.is_open {
+    if slide_progress <= 0.0 {
         return None;
     }
 
-    let sidebar_response = egui::Panel::left("app_sidebar_settings")
-        .resizable(true)
-        .default_size(DEFAULT_SIDEBAR_WIDTH)
-        .size_range(MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH)
-        // Непрозрачная заливка: видео под панелью вырезано exclusion rect-ом,
-        // полупрозрачность давала только лишний blending по всей площади панели.
-        .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(18, 18, 18)))
+    if slide_progress >= 1.0 {
+        let sidebar_response = egui::Panel::left("app_sidebar_settings")
+            .resizable(true)
+            .default_size(DEFAULT_SIDEBAR_WIDTH)
+            .size_range(MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH)
+            .frame(egui::Frame::NONE.fill(SIDEBAR_FILL))
+            .show_inside(ui, |ui| {
+                render_settings_header(ui, actions);
+                ui.separator();
+                layout::show(ui, model, actions);
+            });
+
+        let sidebar_rect = sidebar_response.response.rect;
+        // Запоминаем пользовательскую ширину: к ней панель будет выезжать/уезжать.
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(sidebar_open_width_memory_id(), sidebar_rect.width());
+        });
+        return Some(sidebar_rect);
+    }
+
+    show_animating_settings_sidebar(ui, model, slide_progress, actions)
+}
+
+/// Рисует панель в промежуточном состоянии анимации выезда/заезда.
+///
+/// Контент НЕ переверстывается под промежуточную ширину: он раскладывается на
+/// полную целевую ширину и прижимается к правому краю панели, поэтому левая
+/// часть уходит за край окна — эффект выезда слева без re-wrap текста.
+#[must_use]
+fn show_animating_settings_sidebar(
+    ui: &mut Ui,
+    model: &SettingsUiModel,
+    slide_progress: f32,
+    actions: &mut Vec<SettingsUiAction>,
+) -> Option<egui::Rect> {
+    let target_width = ui
+        .ctx()
+        .data(|data| data.get_temp::<f32>(sidebar_open_width_memory_id()))
+        .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
+        .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+    // Минимум 1pt: панель нулевой ширины egui рисовать не должен.
+    let animated_width = (slide_progress * target_width).max(1.0);
+
+    let sidebar_response = egui::Panel::left("app_sidebar_settings_animating")
+        .resizable(false)
+        .exact_size(animated_width)
+        .frame(egui::Frame::NONE.fill(SIDEBAR_FILL))
         .show_inside(ui, |ui| {
-            render_settings_header(ui, actions);
-            ui.separator();
-            layout::show(ui, model, actions);
+            let panel_rect = ui.max_rect();
+            // Контент фиксированной целевой ширины, прижатый к правому краю панели.
+            let content_rect = egui::Rect::from_min_max(
+                egui::pos2(panel_rect.right() - target_width, panel_rect.top()),
+                panel_rect.max,
+            );
+            let mut content_ui = ui.new_child(egui::UiBuilder::new().max_rect(content_rect));
+            // Клип по панели: выехавшая часть контента не рисуется за её пределами.
+            content_ui.set_clip_rect(panel_rect.intersect(ui.clip_rect()));
+            render_settings_header(&mut content_ui, actions);
+            content_ui.separator();
+            layout::show(&mut content_ui, model, actions);
         });
 
     Some(sidebar_response.response.rect)

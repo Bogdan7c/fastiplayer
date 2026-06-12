@@ -9,6 +9,7 @@ name = "rustiplayer"
 path = "src/main.rs"
 
 [dependencies]
+animation-core.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 egui.workspace = true
