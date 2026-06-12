@@ -197,6 +197,7 @@ impl AppShell {
                 .app_state
                 .as_ref()
                 .is_some_and(AppState::has_pending_local_file_open)
+            || self.settings_runtime.has_pending_options_refresh()
     }
 }
 
@@ -325,7 +326,8 @@ impl ApplicationHandler for AppShell {
                     &mut self.settings_runtime,
                 );
                 let has_pending_background_job = self.startup_media.has_pending_startup_job()
-                    || app_state.has_pending_local_file_open();
+                    || app_state.has_pending_local_file_open()
+                    || self.settings_runtime.has_pending_options_refresh();
                 let action = self.background_poll_scheduler.after_render(
                     pacing,
                     has_pending_background_job,

@@ -631,6 +631,10 @@ fn prepare_ui_frame(
 ) -> PreparedUiFrame {
     let ui_prepare_started_at = Instant::now();
 
+    // Фоновый refresh dynamic options подбирается до сборки ui_model,
+    // чтобы готовые списки попали в model этого же кадра.
+    settings_runtime.poll_dynamic_options_refresh();
+
     // Анимация sidebar продвигается до сборки ui_model: visual hold должен знать,
     // видна ли ещё закрытая панель, чтобы field list не пропадал во время закрытия.
     let settings_panel_open = settings_runtime.is_settings_window_open();

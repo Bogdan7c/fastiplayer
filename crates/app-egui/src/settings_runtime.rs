@@ -6,6 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use player_core::{
@@ -151,10 +153,15 @@ pub(crate) struct SettingsRuntime {
     status: SettingsUiStatus,
 
     /// Runtime-owned dynamic option providers; visual UI никогда не вызывает их напрямую.
-    option_providers: BTreeMap<OptionProviderId, Box<dyn SettingOptionProvider>>,
+    option_providers: BTreeMap<OptionProviderId, Arc<dyn SettingOptionProvider>>,
 
     /// Cached provider snapshots, которые можно безопасно читать во время egui rendering.
     option_cache: BTreeMap<OptionProviderId, SettingOptions>,
+
+    /// Активный фоновый refresh dynamic options. Опрос провайдеров (например,
+    /// CPAL/ALSA устройств) занимает сотни мс и НЕ должен блокировать UI-поток
+    /// в кадре открытия панели; результат подбирается poll-ом перед сборкой model.
+    pending_options_refresh: Option<mpsc::Receiver<Vec<(OptionProviderId, SettingOptions)>>>,
 
     /// Последняя попытка отправить preview update; pacing берётся из committed config.
     last_preview_sent_at: Option<Instant>,
@@ -349,6 +356,7 @@ impl SettingsRuntime {
             status: SettingsUiStatus::default(),
             option_providers,
             option_cache: BTreeMap::new(),
+            pending_options_refresh: None,
             last_preview_sent_at: None,
             ui_model_cache: None,
             visual_hold: false,
@@ -649,34 +657,112 @@ impl SettingsRuntime {
     /// Обновляет все dynamic option providers, известные registry.
     fn refresh_all_dynamic_options(&mut self) -> SettingsResult<()> {
         let provider_ids = self.dynamic_option_provider_ids();
-        for provider_id in provider_ids {
-            self.refresh_dynamic_options(provider_id)?;
+        self.start_dynamic_options_refresh(provider_ids)
+    }
+
+    /// Запускает фоновый refresh одного dynamic option provider-а.
+    fn refresh_dynamic_options(&mut self, provider_id: OptionProviderId) -> SettingsResult<()> {
+        self.start_dynamic_options_refresh(vec![provider_id])
+    }
+
+    /// Стартует фоновый поток опроса providers, не блокируя UI-поток.
+    ///
+    /// Requests собираются здесь (дёшево, нужен доступ к draft), а сам опрос
+    /// устройств уходит в поток. Повторный старт заменяет pending refresh:
+    /// старый receiver выбрасывается, результат устаревшего потока игнорируется.
+    fn start_dynamic_options_refresh(
+        &mut self,
+        provider_ids: Vec<OptionProviderId>,
+    ) -> SettingsResult<()> {
+        if provider_ids.is_empty() {
+            return Ok(());
         }
+
+        let mut refresh_jobs = Vec::with_capacity(provider_ids.len());
+        for provider_id in provider_ids {
+            let request = self.option_request_for_provider(&provider_id)?;
+            let provider = self.option_providers.get(&provider_id).cloned();
+            refresh_jobs.push((provider_id, request, provider));
+        }
+
+        let (result_sender, result_receiver) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("settings-options-refresh".to_string())
+            .spawn(move || {
+                let snapshots = refresh_jobs
+                    .into_iter()
+                    .map(|(provider_id, request, provider)| {
+                        let snapshot = collect_provider_snapshot(&provider_id, request, provider);
+                        (provider_id, snapshot)
+                    })
+                    .collect::<Vec<_>>();
+                // Получатель мог исчезнуть (новый refresh заменил этот) — не ошибка.
+                let _ = result_sender.send(snapshots);
+            })
+            .map_err(|error| {
+                settings_core::SettingsError::access_failed(format!(
+                    "не удалось запустить фоновый refresh dynamic options: {error}"
+                ))
+            })?;
+
+        self.pending_options_refresh = Some(result_receiver);
         Ok(())
     }
 
-    /// Обновляет один dynamic option provider и кладёт результат в cache.
-    fn refresh_dynamic_options(&mut self, provider_id: OptionProviderId) -> SettingsResult<()> {
-        let request = self.option_request_for_provider(&provider_id)?;
-        let current_value = request.current_value.clone();
-        let snapshot = match self.option_providers.get(&provider_id) {
-            Some(provider) => match provider.options(request) {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    options_snapshot_from_error(provider_id.clone(), current_value, error)
-                }
-            },
-            None => options_snapshot_from_error(
-                provider_id.clone(),
-                current_value,
-                SettingOptionsError::ProviderUnavailable {
-                    provider_id: provider_id.clone(),
-                },
-            ),
-        };
+    /// `true`, пока фоновый refresh dynamic options ещё не доставил результат.
+    /// Shell использует это для пробуждения idle loop под background polling.
+    #[must_use]
+    pub(crate) fn has_pending_options_refresh(&self) -> bool {
+        self.pending_options_refresh.is_some()
+    }
 
-        self.option_cache.insert(provider_id, snapshot);
-        Ok(())
+    /// Подбирает результат фонового refresh-а, если он готов.
+    ///
+    /// Возвращает `true`, когда cache обновился и model была инвалидирована.
+    /// Вызывается на каждом кадре перед сборкой `ui_model`; `try_recv` дешёвый.
+    pub(crate) fn poll_dynamic_options_refresh(&mut self) -> bool {
+        let Some(result_receiver) = self.pending_options_refresh.as_ref() else {
+            return false;
+        };
+        match result_receiver.try_recv() {
+            Ok(snapshots) => {
+                self.pending_options_refresh = None;
+                self.apply_dynamic_options_snapshots(snapshots);
+                true
+            }
+            Err(mpsc::TryRecvError::Empty) => false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                // Поток умер, не отправив результат (panic). Pending снимаем,
+                // чтобы не будить idle loop вечно; старый cache остаётся валидным.
+                self.pending_options_refresh = None;
+                tracing::warn!(
+                    "фоновый refresh dynamic options завершился без результата (panic потока?)"
+                );
+                false
+            }
+        }
+    }
+
+    /// Кладёт готовые snapshots провайдеров в cache и инвалидирует visual model.
+    fn apply_dynamic_options_snapshots(
+        &mut self,
+        snapshots: Vec<(OptionProviderId, SettingOptions)>,
+    ) {
+        for (provider_id, snapshot) in snapshots {
+            self.option_cache.insert(provider_id, snapshot);
+        }
+        self.invalidate_ui_model();
+    }
+
+    /// Блокирующее ожидание фонового refresh-а для детерминированных тестов.
+    #[cfg(test)]
+    pub(crate) fn wait_for_options_refresh_for_test(&mut self) {
+        if let Some(result_receiver) = self.pending_options_refresh.take() {
+            let snapshots = result_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .expect("фоновый refresh dynamic options должен завершиться в тесте");
+            self.apply_dynamic_options_snapshots(snapshots);
+        }
     }
 
     /// Собирает request для provider-а из текущего draft value.
@@ -903,15 +989,40 @@ impl SettingsRuntime {
     }
 }
 
+/// Опрашивает один provider; выполняется в фоновом потоке refresh-а.
+///
+/// Ошибки провайдера и его отсутствие превращаются в error-snapshot —
+/// семантика идентична прежнему синхронному refresh-у.
+fn collect_provider_snapshot(
+    provider_id: &OptionProviderId,
+    request: SettingOptionsRequest,
+    provider: Option<Arc<dyn SettingOptionProvider>>,
+) -> SettingOptions {
+    let current_value = request.current_value.clone();
+    match provider {
+        Some(provider) => match provider.options(request) {
+            Ok(snapshot) => snapshot,
+            Err(error) => options_snapshot_from_error(provider_id.clone(), current_value, error),
+        },
+        None => options_snapshot_from_error(
+            provider_id.clone(),
+            current_value,
+            SettingOptionsError::ProviderUnavailable {
+                provider_id: provider_id.clone(),
+            },
+        ),
+    }
+}
+
 /// Создаёт production dynamic option providers.
 #[cfg(not(test))]
 fn default_option_providers(
     audio_output_device_controller: audio::AudioOutputDeviceController,
-) -> BTreeMap<OptionProviderId, Box<dyn SettingOptionProvider>> {
+) -> BTreeMap<OptionProviderId, Arc<dyn SettingOptionProvider>> {
     let provider = AudioOutputDeviceOptionProvider::new(audio_output_device_controller);
     let provider_id = provider.provider_id();
-    let mut providers: BTreeMap<OptionProviderId, Box<dyn SettingOptionProvider>> = BTreeMap::new();
-    providers.insert(provider_id, Box::new(provider));
+    let mut providers: BTreeMap<OptionProviderId, Arc<dyn SettingOptionProvider>> = BTreeMap::new();
+    providers.insert(provider_id, Arc::new(provider));
     providers
 }
 
@@ -919,7 +1030,7 @@ fn default_option_providers(
 #[cfg(test)]
 fn default_option_providers(
     _audio_output_device_controller: audio::AudioOutputDeviceController,
-) -> BTreeMap<OptionProviderId, Box<dyn SettingOptionProvider>> {
+) -> BTreeMap<OptionProviderId, Arc<dyn SettingOptionProvider>> {
     BTreeMap::new()
 }
 
@@ -2167,7 +2278,7 @@ mod tests {
     ) {
         runtime
             .option_providers
-            .insert(audio_output_provider_id(), Box::new(provider));
+            .insert(audio_output_provider_id(), Arc::new(provider));
     }
 
     #[derive(Debug)]
@@ -2642,7 +2753,8 @@ mod tests {
 
         runtime
             .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
-            .expect("open должен refresh-нуть provider без hard error");
+            .expect("open должен запустить refresh provider-а без hard error");
+        runtime.wait_for_options_refresh_for_test();
 
         let field = audio_output_field(&mut runtime);
         let options = field.options.expect("dynamic options должны быть в model");
@@ -2677,6 +2789,7 @@ mod tests {
         runtime
             .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
             .expect("provider error должен стать cached status, а не hard error");
+        runtime.wait_for_options_refresh_for_test();
 
         let model = runtime.ui_model();
         let field = model
@@ -2710,6 +2823,7 @@ mod tests {
         runtime
             .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
             .expect("missing provider должен стать cached status");
+        runtime.wait_for_options_refresh_for_test();
 
         let field = audio_output_field(&mut runtime);
         let options = field
@@ -2728,6 +2842,47 @@ mod tests {
             "cpal-0.15-name:Offline"
         );
         assert!(field.validation_error.is_none());
+    }
+
+    /// Open не выполняет опрос провайдеров на UI-потоке (источник фриза при
+    /// открытии панели): refresh уходит в фон, результат подбирается poll-ом.
+    #[test]
+    fn open_starts_background_options_refresh_and_poll_applies_result() {
+        let config = custom_config_for_test();
+        let mut runtime =
+            SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+                .expect("settings runtime должен построиться");
+        replace_audio_option_provider(
+            &mut runtime,
+            ScriptedOptionProvider::new(vec![Ok(ready_audio_options(None, Vec::new()))]),
+        );
+        let mut render_adapter =
+            RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+
+        runtime
+            .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
+            .expect("open должен пройти мгновенно");
+        assert!(
+            runtime.has_pending_options_refresh(),
+            "после Open refresh должен быть фоновым pending job-ом, а не синхронным вызовом"
+        );
+
+        // Фоновый поток быстрый, но не мгновенный: poll-им с дедлайном.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !runtime.poll_dynamic_options_refresh() {
+            assert!(
+                Instant::now() < deadline,
+                "фоновый refresh должен завершиться в разумное время"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(!runtime.has_pending_options_refresh());
+        let field = audio_output_field(&mut runtime);
+        assert!(
+            field.options.is_some(),
+            "после poll-а options snapshot должен попасть в model"
+        );
     }
 
     #[test]
@@ -2754,7 +2909,8 @@ mod tests {
 
         runtime
             .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
-            .expect("open должен сделать initial refresh");
+            .expect("open должен запустить initial refresh");
+        runtime.wait_for_options_refresh_for_test();
         assert_eq!(
             audio_output_field(&mut runtime)
                 .options
@@ -2772,6 +2928,7 @@ mod tests {
                 &mut render_adapter,
             )
             .expect("manual refresh должен обновить cache");
+        runtime.wait_for_options_refresh_for_test();
 
         let options = audio_output_field(&mut runtime)
             .options
