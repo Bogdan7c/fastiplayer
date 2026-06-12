@@ -134,8 +134,14 @@ fn render_section(
     }
 
     for (group_index, (group, group_fields)) in groups.iter().enumerate() {
-        let group_state_id =
-            ui.make_persistent_id(("settings_group", section.section.as_str(), group.as_str()));
+        // group.as_str() не уникален внутри секции (например, два разных
+        // "profile" в render), поэтому в ID входит и порядковый номер группы.
+        let group_state_id = ui.make_persistent_id((
+            "settings_group",
+            section.section.as_str(),
+            group.as_str(),
+            group_index,
+        ));
         CollapsingState::load_with_default_open(ui.ctx(), group_state_id, group_index == 0)
             .show_header(ui, |ui| {
                 render_group_header(ui, &section.section, group, actions);
