@@ -1387,6 +1387,9 @@ pub struct VaapiVideoDecoder {
     /// Имя бэкенда для отображения в UI.
     backend_name: &'static str,
 
+    /// Frame contract, выбранный capability layer и обязательный для export-а.
+    expected_frame_contract: VideoFrameContract,
+
     /// Display orientation текущего stream-а; применяется renderer-ом, не decoder-ом.
     display_orientation: VideoDisplayOrientation,
 
@@ -1497,6 +1500,9 @@ impl VaapiVideoDecoder {
             activity_notifier,
             p010_boundary_verified_logged: false,
             backend_name,
+            expected_frame_contract: VideoFrameContract::dma_buf_nv12(
+                DmaBufImageLayout::SeparateLayers,
+            ),
             display_orientation: VideoDisplayOrientation::Identity,
             preroll_output_floor: PrerollOutputFloorState::default(),
             preroll_fallback_candidate: None,
@@ -1621,6 +1627,7 @@ impl VaapiVideoDecoder {
     /// Переключает active codec adapter под уже валидированный stream config.
     pub(crate) fn configure_stream(&mut self, config: &VideoStreamDecodeConfig) -> Result<()> {
         self.display_orientation = config.display_orientation;
+        self.expected_frame_contract = config.frame_contract;
 
         if self.adapter.can_reuse_for_config(config) {
             return Ok(());
@@ -2146,6 +2153,13 @@ impl VaapiVideoDecoder {
             decoded_contract.format,
             dma_buf_image.export_layout,
         )?;
+        if frame_contract != self.expected_frame_contract {
+            return Err(zero_copy_contract_violation(format!(
+                "VA surface DMA-BUF export produced {}, but selected stream contract requires {}",
+                frame_contract.diagnostic_label(),
+                self.expected_frame_contract.diagnostic_label()
+            )));
+        }
         let dma_buf_export_latency = export_start.elapsed();
 
         // Шаг 3: Регистрируем descriptor; renderer сам выполнит graphics import.

@@ -25,7 +25,7 @@ use crate::{
 };
 use bytes::Bytes;
 use capability_core::{
-    BackendCapabilities, BackendDriverInfo, BackendProbeStatus, DmaBufImageLayout, VideoExportPath,
+    BackendCapabilities, BackendDriverInfo, BackendProbeStatus, SupportedVideoOutput,
 };
 use codec_core::{
     BitDepth, ChromaSubsampling, DecodeBackendId, H264Profile, SupportedVideoDecodeFormat,
@@ -38,6 +38,7 @@ use media_core::{
     VideoTrackMetadata,
 };
 use render_core::RenderCapabilities;
+use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
 mod test_support;
 

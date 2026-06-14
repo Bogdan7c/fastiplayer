@@ -5,12 +5,16 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use codec_core::VideoDecodeRequirement;
+#[cfg(test)]
+use codec_core::video_frame_pixel_layout_from_decode_requirement;
 use media_core::{
     DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, Demuxer, PacketKeyframe, TrackId, TrackInfo,
     TrackTimestamp,
 };
 use video_core::{VideoDecoderActivitySnapshot, VideoDecoderActivityUnavailableReason};
 use video_frame_contract::VideoFrameContract;
+#[cfg(test)]
+use video_frame_contract::{DmaBufImageLayout, VideoFramePixelLayout};
 
 use crate::{
     DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
@@ -792,12 +796,23 @@ impl PlaybackPipeline {
     }
 
     /// Выбирает video track вместе с уже принятым session policy decode requirement.
+    #[cfg(test)]
     pub(crate) fn select_video_track(
         &mut self,
         track_id: TrackId,
         requirement: VideoDecodeRequirement,
     ) {
-        let frame_contract = VideoStreamDecodeConfig::frame_contract_from_requirement(&requirement);
+        let frame_contract = fallback_frame_contract_for_unprobed_requirement(&requirement);
+        self.select_video_track_with_frame_contract(track_id, requirement, frame_contract);
+    }
+
+    /// Выбирает video track вместе с frame contract из capability output.
+    pub(crate) fn select_video_track_with_frame_contract(
+        &mut self,
+        track_id: TrackId,
+        requirement: VideoDecodeRequirement,
+        frame_contract: VideoFrameContract,
+    ) {
         self.video_track_id = Some(track_id);
         self.active_video_requirement = Some(requirement);
         self.active_video_frame_contract = Some(frame_contract);
@@ -834,11 +849,21 @@ impl PlaybackPipeline {
         self.active_video_frame_contract
     }
 
-    /// Сохраняет requirement, который session уже провалидировала или разрешила отложить.
-    pub(crate) fn set_active_video_requirement(&mut self, requirement: VideoDecodeRequirement) {
-        let frame_contract = VideoStreamDecodeConfig::frame_contract_from_requirement(&requirement);
+    /// Сохраняет requirement и frame contract, которые session уже провалидировала.
+    pub(crate) fn set_active_video_selection(
+        &mut self,
+        requirement: VideoDecodeRequirement,
+        frame_contract: VideoFrameContract,
+    ) {
         self.active_video_requirement = Some(requirement);
         self.active_video_frame_contract = Some(frame_contract);
+    }
+
+    /// Legacy/test helper: обновляет requirement с explicit fallback contract.
+    #[cfg(test)]
+    pub(crate) fn set_active_video_requirement(&mut self, requirement: VideoDecodeRequirement) {
+        let frame_contract = fallback_frame_contract_for_unprobed_requirement(&requirement);
+        self.set_active_video_selection(requirement, frame_contract);
     }
 
     /// Возвращает текущее поколение packets без раскрытия storage поля.
@@ -1701,6 +1726,19 @@ fn audio_seek_runtime_state_from_slots(
     }
 
     AudioSeekRuntimeState::Ready
+}
+
+/// Explicit fallback contract for tests/no-capability paths.
+#[cfg(test)]
+fn fallback_frame_contract_for_unprobed_requirement(
+    requirement: &VideoDecodeRequirement,
+) -> VideoFrameContract {
+    match video_frame_pixel_layout_from_decode_requirement(requirement) {
+        Some(VideoFramePixelLayout::P010) => {
+            VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers)
+        }
+        _ => VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+    }
 }
 
 impl Default for PlaybackPipeline {

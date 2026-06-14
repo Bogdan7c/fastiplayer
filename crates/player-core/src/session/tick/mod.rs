@@ -996,6 +996,22 @@ mod tests {
     fn capabilities_with_vp9_profile0_for_decoder_io() -> capability_core::SystemCapabilities {
         let backend_id = codec_core::DecodeBackendId::new("decoder_io_test_backend")
             .expect("test backend id должен быть валидным");
+        let output = capability_core::SupportedVideoOutput {
+            backend: backend_id.clone(),
+            decode_format: codec_core::SupportedVideoDecodeFormat {
+                codec: VideoCodec::Vp9,
+                profile: codec_core::VideoProfile::Vp9(codec_core::Vp9Profile::Profile0),
+                bit_depth: codec_core::BitDepth::Eight,
+                chroma: codec_core::ChromaSubsampling::Yuv420,
+                max_width: Some(1920),
+                max_height: Some(1080),
+                max_fps: None,
+                hdr_input: false,
+            },
+            frame_contract: video_frame_contract::VideoFrameContract::dma_buf_nv12(
+                video_frame_contract::DmaBufImageLayout::SeparateLayers,
+            ),
+        };
 
         capability_core::SystemCapabilities {
             schema_version: capability_core::CURRENT_CAPABILITY_SCHEMA_VERSION,
@@ -1005,26 +1021,15 @@ mod tests {
                 display_name: "Decoder I/O test backend".to_string(),
                 status: capability_core::BackendProbeStatus::Available,
                 driver: capability_core::BackendDriverInfo::default(),
-                supported_video_decode_formats: vec![codec_core::SupportedVideoDecodeFormat {
-                    codec: VideoCodec::Vp9,
-                    profile: codec_core::VideoProfile::Vp9(codec_core::Vp9Profile::Profile0),
-                    bit_depth: codec_core::BitDepth::Eight,
-                    chroma: codec_core::ChromaSubsampling::Yuv420,
-                    max_width: Some(1920),
-                    max_height: Some(1080),
-                    max_fps: None,
-                    hdr_input: false,
-                    backend: backend_id,
-                }],
+                raw_supported_outputs: vec![output.clone()],
                 raw_profiles: Vec::new(),
                 raw_entrypoints: Vec::new(),
                 raw_rt_formats: Vec::new(),
                 quirks: Vec::new(),
-                export_paths: vec![capability_core::VideoExportPath::DmaBuf],
-                p010_storage_layouts: Vec::new(),
                 diagnostics: Vec::new(),
             }],
             render_backends: vec![render_core::RenderCapabilities::wgpu_nv12(Some(4096))],
+            playable_video_outputs: vec![output],
         }
     }
 
@@ -2777,7 +2782,8 @@ mod tests {
         session.pipeline.select_video_track(
             TrackId::new(1),
             VideoDecodeRequirement::new(VideoCodec::Vp9)
-                .with_surface_format(video_core::DecodedPixelFormat::Nv12),
+                .with_bit_depth(codec_core::BitDepth::Eight)
+                .with_chroma(codec_core::ChromaSubsampling::Yuv420),
         );
         decoder_thread.push_decoded_frame(decoded_frame_with_format(
             Duration::from_millis(120),

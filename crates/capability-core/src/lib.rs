@@ -11,8 +11,8 @@ mod selection;
 
 pub use report::{
     BackendCapabilities, BackendDriverInfo, BackendProbeStatus, CURRENT_CAPABILITY_SCHEMA_VERSION,
-    CapabilityScanner, CapabilitySchemaVersion, DriverQuirk, SystemCapabilities,
-    VideoCapabilityProvider, VideoExportPath,
+    CapabilityScanner, CapabilitySchemaVersion, DriverQuirk, SupportedVideoOutput,
+    SystemCapabilities, VideoCapabilityProvider,
 };
 pub use selection::{
     SelectedVideoStream, StreamSelectionError, UnsupportedVideoRequirement,

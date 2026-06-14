@@ -8,6 +8,8 @@
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+#[cfg(test)]
+use codec_core::video_frame_pixel_layout_from_decode_requirement;
 use codec_core::{
     VideoCodec, VideoDecodeRequirement, VideoRequirementProbe, VideoRequirementRejection,
     probe_video_packet_requirement_with_codec_private, resolve_video_metadata,
@@ -983,7 +985,7 @@ mod tests {
         assert_eq!(refined_requirement.width, Some(1280));
         assert_eq!(refined_requirement.height, Some(720));
         assert_eq!(
-            refined_requirement.surface_format,
+            video_frame_pixel_layout_from_decode_requirement(&refined_requirement),
             Some(VideoFramePixelLayout::Nv12)
         );
     }
@@ -1016,7 +1018,7 @@ mod tests {
             Some(VideoProfile::H264(H264Profile::High))
         );
         assert_eq!(
-            refined_requirement.surface_format,
+            video_frame_pixel_layout_from_decode_requirement(&refined_requirement),
             Some(VideoFramePixelLayout::Nv12)
         );
     }

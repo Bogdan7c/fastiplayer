@@ -7,6 +7,7 @@ fn playback_pipeline_decoder_boundary_absent_thread_is_noop() {
     let config = video_core::VideoStreamDecodeConfig::from_requirement(
         TrackId::new(1),
         &VideoDecodeRequirement::new(VideoCodec::Vp9),
+        VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
     );
     let floor = video_core::VideoPrerollOutputFloor {
         generation: 7,
@@ -161,6 +162,7 @@ fn playback_pipeline_decoder_boundary_forwards_stream_config_results() {
             .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0))
             .with_bit_depth(BitDepth::Eight)
             .with_chroma(ChromaSubsampling::Yuv420),
+        VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
     );
     pipeline.set_video_decoder_thread(fake_decoder.clone());
 
@@ -191,6 +193,7 @@ fn playback_pipeline_decoder_boundary_preserves_config_error_states() {
     let config = video_core::VideoStreamDecodeConfig::from_requirement(
         TrackId::new(1),
         &VideoDecodeRequirement::new(VideoCodec::Vp9),
+        VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
     );
     fake_decoder.push_configure_result(video_core::VideoStreamConfigResult::Unsupported(
         video_core::VideoStreamConfigRejection::UnsupportedCodec {

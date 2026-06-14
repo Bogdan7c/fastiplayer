@@ -1,19 +1,16 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use codec_core::{
-    DecodeBackendId, SupportedVideoDecodeFormat, VideoDecodeRequirement, ZeroCopyExportRequirement,
-    video_frame_pixel_layout_from_decode_requirement,
-};
+use codec_core::{DecodeBackendId, SupportedVideoDecodeFormat, VideoDecodeRequirement};
 use render_core::RenderCapabilities;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
-use video_frame_contract::{DmaBufImageLayout, VideoFrameContract, VideoFramePixelLayout};
+use video_frame_contract::{VideoFrameContract, VideoFrameTransferPath};
 
 /// Версия JSON/report схемы capability layer.
 pub type CapabilitySchemaVersion = u32;
 
 /// Текущая версия capability report.
-pub const CURRENT_CAPABILITY_SCHEMA_VERSION: CapabilitySchemaVersion = 4;
+pub const CURRENT_CAPABILITY_SCHEMA_VERSION: CapabilitySchemaVersion = 5;
 
 /// Provider, который умеет построить capabilities для одного video backend.
 pub trait VideoCapabilityProvider {
@@ -66,6 +63,7 @@ impl CapabilityScanner {
     #[must_use]
     pub fn scan_with_timestamp(&self, probed_at_unix_seconds: u64) -> SystemCapabilities {
         let mut video_backends = Vec::with_capacity(self.providers.len());
+        let mut playable_video_outputs = Vec::new();
 
         for provider in &self.providers {
             let backend_id = provider.backend_id();
@@ -78,8 +76,10 @@ impl CapabilityScanner {
                     "Capability provider вернул другой backend id"
                 );
             }
-            capabilities =
-                filter_backend_capabilities_for_report(capabilities, &self.render_backends);
+            playable_video_outputs.extend(playable_outputs_for_backend(
+                &mut capabilities,
+                &self.render_backends,
+            ));
             video_backends.push(capabilities);
         }
 
@@ -88,95 +88,50 @@ impl CapabilityScanner {
             probed_at_unix_seconds,
             video_backends,
             render_backends: self.render_backends.clone(),
+            playable_video_outputs,
         }
     }
 }
 
-/// Оставляет в system report только formats, которые реально проходят production intersection.
-fn filter_backend_capabilities_for_report(
-    mut capabilities: BackendCapabilities,
+/// Собирает system-level outputs, которые проходят backend/provider + renderer intersection.
+fn playable_outputs_for_backend(
+    capabilities: &mut BackendCapabilities,
     render_backends: &[RenderCapabilities],
-) -> BackendCapabilities {
+) -> Vec<SupportedVideoOutput> {
     if !capabilities.status.is_available() {
-        return capabilities;
+        return Vec::new();
     }
 
-    let original_format_count = capabilities.supported_video_decode_formats.len();
-    let export_paths = capabilities.export_paths.clone();
-    let p010_storage_layouts = capabilities.p010_storage_layouts.clone();
-    capabilities
-        .supported_video_decode_formats
-        .retain(|format| {
-            reportable_decode_format(
-                format,
-                &export_paths,
-                &p010_storage_layouts,
-                render_backends,
-            )
-        });
+    let playable_outputs = capabilities
+        .raw_supported_outputs
+        .iter()
+        .filter(|output| output.backend == capabilities.backend_id)
+        .filter(|output| playable_video_output(output, render_backends))
+        .cloned()
+        .collect::<Vec<_>>();
 
-    let hidden_format_count =
-        original_format_count.saturating_sub(capabilities.supported_video_decode_formats.len());
-    if hidden_format_count > 0 {
+    let hidden_output_count = capabilities
+        .raw_supported_outputs
+        .len()
+        .saturating_sub(playable_outputs.len());
+    if hidden_output_count > 0 {
         capabilities.diagnostics.push(format!(
-            "Capability report hid {hidden_format_count} decode formats without full zero-copy renderer intersection"
+            "Capability report found {hidden_output_count} raw video outputs without renderer transfer/layout intersection"
         ));
     }
 
-    capabilities
+    playable_outputs
 }
 
-/// Проверяет hardware+export+renderer часть capability report intersection.
-fn reportable_decode_format(
-    format: &SupportedVideoDecodeFormat,
-    export_paths: &[VideoExportPath],
-    p010_storage_layouts: &[DmaBufImageLayout],
+/// Проверяет backend-declared output against renderer capabilities.
+fn playable_video_output(
+    output: &SupportedVideoOutput,
     render_backends: &[RenderCapabilities],
 ) -> bool {
-    if !export_paths.contains(&VideoExportPath::DmaBuf) {
-        return false;
-    }
-
-    let requirement = decode_requirement_for_supported_format(format);
-    let frame_contracts = reportable_frame_contracts(format, p010_storage_layouts);
-    render_backends.iter().any(|renderer| {
-        frame_contracts
-            .iter()
-            .any(|contract| renderer.supports_video_output(&requirement, *contract))
-    })
-}
-
-/// Строит current production frame contracts для capability report filtering.
-fn reportable_frame_contracts(
-    format: &SupportedVideoDecodeFormat,
-    p010_storage_layouts: &[DmaBufImageLayout],
-) -> Vec<VideoFrameContract> {
-    match video_frame_pixel_layout_from_decode_requirement(
-        &decode_requirement_for_supported_format(format),
-    ) {
-        Some(VideoFramePixelLayout::Nv12) => {
-            vec![VideoFrameContract::dma_buf_nv12(
-                DmaBufImageLayout::SeparateLayers,
-            )]
-        }
-        Some(VideoFramePixelLayout::P010) => {
-            let layouts = if p010_storage_layouts.is_empty() {
-                vec![DmaBufImageLayout::SeparateLayers]
-            } else {
-                p010_storage_layouts.to_vec()
-            };
-            layouts
-                .into_iter()
-                .map(VideoFrameContract::dma_buf_p010)
-                .collect()
-        }
-        Some(
-            VideoFramePixelLayout::Yuv420Planar8
-            | VideoFramePixelLayout::Yuv420Planar10Le
-            | VideoFramePixelLayout::Rgba8,
-        )
-        | None => Vec::new(),
-    }
+    let requirement = decode_requirement_for_supported_format(&output.decode_format);
+    render_backends
+        .iter()
+        .any(|renderer| renderer.supports_video_output(&requirement, output.frame_contract))
 }
 
 /// Собирает минимальное stream requirement из probed backend format-а для renderer check-а.
@@ -187,9 +142,46 @@ fn decode_requirement_for_supported_format(
         .with_profile(format.profile)
         .with_bit_depth(format.bit_depth)
         .with_chroma(format.chroma);
-    requirement.surface_format = video_frame_pixel_layout_from_decode_requirement(&requirement);
     requirement.hdr = format.hdr_input;
     requirement
+}
+
+/// Один concrete decoded output, который backend/provider может произвести.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SupportedVideoOutput {
+    /// Backend, который владеет decode/output path-ом.
+    pub backend: DecodeBackendId,
+
+    /// Codec-level decode capability без backend ownership.
+    pub decode_format: SupportedVideoDecodeFormat,
+
+    /// Concrete decoder -> renderer frame contract для этого output-а.
+    pub frame_contract: VideoFrameContract,
+}
+
+impl SupportedVideoOutput {
+    /// Проверяет, закрывает ли output stream requirement на codec уровне.
+    #[must_use]
+    pub fn satisfies(&self, requirement: &VideoDecodeRequirement) -> bool {
+        self.decode_format.satisfies(requirement)
+    }
+
+    /// Возвращает transfer path, объявленный provider-ом для этого output-а.
+    #[must_use]
+    pub const fn transfer_path(&self) -> VideoFrameTransferPath {
+        self.frame_contract.transfer_path
+    }
+
+    /// Формирует компактное описание output-а для diagnostics.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!(
+            "{} via {}",
+            self.decode_format.describe(),
+            self.frame_contract.diagnostic_label()
+        )
+    }
 }
 
 /// Полный capability report текущей системы.
@@ -207,6 +199,9 @@ pub struct SystemCapabilities {
 
     /// Capabilities renderer backend-ов, доступных shell-слою.
     pub render_backends: Vec<RenderCapabilities>,
+
+    /// Outputs, которые прошли system-level renderer intersection.
+    pub playable_video_outputs: Vec<SupportedVideoOutput>,
 }
 
 impl SystemCapabilities {
@@ -218,15 +213,28 @@ impl SystemCapabilities {
             probed_at_unix_seconds,
             video_backends: Vec::new(),
             render_backends: Vec::new(),
+            playable_video_outputs: Vec::new(),
         }
     }
 
-    /// Возвращает все supported video formats из доступных backend-ов.
-    pub fn supported_video_formats(&self) -> impl Iterator<Item = &SupportedVideoDecodeFormat> {
+    /// Возвращает все raw provider-declared outputs из доступных backend-ов.
+    pub fn raw_video_outputs(&self) -> impl Iterator<Item = &SupportedVideoOutput> {
         self.video_backends
             .iter()
             .filter(|backend| backend.status.is_available())
-            .flat_map(|backend| backend.supported_video_decode_formats.iter())
+            .flat_map(|backend| backend.raw_supported_outputs.iter())
+    }
+
+    /// Возвращает все playable system-level outputs.
+    pub fn supported_video_outputs(&self) -> impl Iterator<Item = &SupportedVideoOutput> {
+        self.playable_video_outputs.iter()
+    }
+
+    /// Возвращает codec-only summaries для compatibility call sites.
+    pub fn supported_video_formats(&self) -> impl Iterator<Item = &SupportedVideoDecodeFormat> {
+        self.playable_video_outputs
+            .iter()
+            .map(|output| &output.decode_format)
     }
 
     /// Формирует короткую сводку для верхнего UI.
@@ -241,10 +249,11 @@ impl SystemCapabilities {
             .iter()
             .filter(|backend| backend.status.is_available())
             .count();
-        let supported_formats = self.supported_video_formats().count();
+        let playable_outputs = self.supported_video_outputs().count();
+        let raw_outputs = self.raw_video_outputs().count();
 
         format!(
-            "Capability probe: {available_backends}/{} video backend доступно, {supported_formats} decode formats, {} render backend",
+            "Capability probe: {available_backends}/{} video backend доступно, {playable_outputs}/{raw_outputs} video outputs playable, {} render backend",
             self.video_backends.len(),
             self.render_backends.len()
         )
@@ -260,13 +269,18 @@ impl SystemCapabilities {
         let mut lines = vec![self.summary_text()];
         for backend in &self.video_backends {
             lines.push(backend.summary_text());
-            for format in backend.supported_video_decode_formats.iter().take(12) {
-                lines.push(format!("  - {}", format.describe()));
+            for output in backend.raw_supported_outputs.iter().take(12) {
+                let playable_label = if self.playable_video_outputs.contains(output) {
+                    "playable"
+                } else {
+                    "raw only"
+                };
+                lines.push(format!("  - {} ({playable_label})", output.describe()));
             }
-            if backend.supported_video_decode_formats.len() > 12 {
+            if backend.raw_supported_outputs.len() > 12 {
                 lines.push(format!(
-                    "  - ... ещё {} formats",
-                    backend.supported_video_decode_formats.len() - 12
+                    "  - ... ещё {} outputs",
+                    backend.raw_supported_outputs.len() - 12
                 ));
             }
         }
@@ -294,8 +308,8 @@ pub struct BackendCapabilities {
     /// Информация о драйвере и устройстве.
     pub driver: BackendDriverInfo,
 
-    /// Typed supported decode matrix.
-    pub supported_video_decode_formats: Vec<SupportedVideoDecodeFormat>,
+    /// Raw provider-declared outputs до renderer intersection.
+    pub raw_supported_outputs: Vec<SupportedVideoOutput>,
 
     /// Сырые profile labels для диагностики backend-specific расхождений.
     pub raw_profiles: Vec<String>,
@@ -308,13 +322,6 @@ pub struct BackendCapabilities {
 
     /// Known quirks backend-а.
     pub quirks: Vec<DriverQuirk>,
-
-    /// Export/upload paths, которые probe или runtime считает доступными.
-    pub export_paths: Vec<VideoExportPath>,
-
-    /// P010 DMA-BUF layouts, которые backend ожидает на decoder/renderer boundary.
-    #[serde(default)]
-    pub p010_storage_layouts: Vec<DmaBufImageLayout>,
 
     /// Неструктурированные diagnostic notes, не влияющие на selection.
     pub diagnostics: Vec<String>,
@@ -335,13 +342,11 @@ impl BackendCapabilities {
                 reason: reason.into(),
             },
             driver: BackendDriverInfo::default(),
-            supported_video_decode_formats: Vec::new(),
+            raw_supported_outputs: Vec::new(),
             raw_profiles: Vec::new(),
             raw_entrypoints: Vec::new(),
             raw_rt_formats: Vec::new(),
             quirks: Vec::new(),
-            export_paths: Vec::new(),
-            p010_storage_layouts: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -349,18 +354,14 @@ impl BackendCapabilities {
     /// Формирует одну строку report для backend-а.
     #[must_use]
     pub fn summary_text(&self) -> String {
-        let zero_copy_export_label = if self.export_paths.contains(&VideoExportPath::DmaBuf) {
-            "DMA-BUF zero-copy"
-        } else {
-            "zero-copy export unavailable"
-        };
+        let transfer_summary = summarize_output_transfer_paths(&self.raw_supported_outputs);
 
         match &self.status {
             BackendProbeStatus::Available => format!(
-                "{}: доступен, {} decode formats, export: {}{}",
+                "{}: доступен, {} raw outputs, transfer: {}{}",
                 self.display_name,
-                self.supported_video_decode_formats.len(),
-                zero_copy_export_label,
+                self.raw_supported_outputs.len(),
+                transfer_summary,
                 self.driver
                     .vendor
                     .as_ref()
@@ -372,6 +373,21 @@ impl BackendCapabilities {
             }
         }
     }
+}
+
+/// Формирует backend-level transfer summary без отдельного source-of-truth списка.
+fn summarize_output_transfer_paths(outputs: &[SupportedVideoOutput]) -> String {
+    if outputs.is_empty() {
+        return "нет output transfer paths".to_string();
+    }
+
+    let mut labels = outputs
+        .iter()
+        .map(|output| output.transfer_path().diagnostic_label().to_string())
+        .collect::<Vec<_>>();
+    labels.sort();
+    labels.dedup();
+    labels.join(", ")
 }
 
 /// Состояние backend-а после probe.
@@ -421,12 +437,10 @@ pub struct DriverQuirk {
     pub description: String,
 }
 
-/// Compatibility alias: capability layer использует общий zero-copy export contract.
-pub type VideoExportPath = ZeroCopyExportRequirement;
-
 #[cfg(test)]
 mod tests {
     use codec_core::{BitDepth, ChromaSubsampling, VideoCodec, VideoProfile, Vp9Profile};
+    use video_frame_contract::DmaBufImageLayout;
 
     use super::*;
 
@@ -449,22 +463,17 @@ mod tests {
     }
 
     /// Собирает минимальный available backend report для filtering tests.
-    fn backend_with_formats(
-        formats: Vec<SupportedVideoDecodeFormat>,
-        export_paths: Vec<VideoExportPath>,
-    ) -> BackendCapabilities {
+    fn backend_with_outputs(outputs: Vec<SupportedVideoOutput>) -> BackendCapabilities {
         BackendCapabilities {
             backend_id: DecodeBackendId::vaapi(),
             display_name: "Test VA-API".to_string(),
             status: BackendProbeStatus::Available,
             driver: BackendDriverInfo::default(),
-            supported_video_decode_formats: formats,
+            raw_supported_outputs: outputs,
             raw_profiles: Vec::new(),
             raw_entrypoints: Vec::new(),
             raw_rt_formats: Vec::new(),
             quirks: Vec::new(),
-            export_paths,
-            p010_storage_layouts: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -485,35 +494,47 @@ mod tests {
             max_height: Some(2160),
             max_fps: None,
             hdr_input,
-            backend: DecodeBackendId::vaapi(),
         }
     }
 
-    /// Проверяет, что system report не рекламирует formats без DMA-BUF export.
+    /// Собирает output для тестового VAAPI backend-а.
+    fn output(
+        decode_format: SupportedVideoDecodeFormat,
+        frame_contract: VideoFrameContract,
+    ) -> SupportedVideoOutput {
+        SupportedVideoOutput {
+            backend: DecodeBackendId::vaapi(),
+            decode_format,
+            frame_contract,
+        }
+    }
+
+    /// Проверяет, что raw output остаётся, но не становится playable без renderer transfer.
     #[test]
-    fn scanner_hides_formats_without_dma_buf_export() {
+    fn scanner_keeps_raw_outputs_without_renderer_transfer_as_unplayable() {
         let mut scanner = CapabilityScanner::new();
         scanner.register_provider(Box::new(StaticVideoProvider {
-            capabilities: backend_with_formats(
-                vec![vp9_format(
+            capabilities: backend_with_outputs(vec![output(
+                vp9_format(
                     Vp9Profile::Profile0,
                     BitDepth::Eight,
                     ChromaSubsampling::Yuv420,
                     false,
-                )],
-                Vec::new(),
-            ),
+                ),
+                VideoFrameContract::host_yuv420_planar8(),
+            )]),
         }));
         scanner.register_render_capabilities(RenderCapabilities::wgpu_nv12(Some(4096)));
 
         let report = scanner.scan_with_timestamp(7);
 
-        assert_eq!(report.supported_video_formats().count(), 0);
+        assert_eq!(report.raw_video_outputs().count(), 1);
+        assert_eq!(report.supported_video_outputs().count(), 0);
         assert!(
             report.video_backends[0]
                 .diagnostics
                 .iter()
-                .any(|message| message.contains("zero-copy renderer intersection"))
+                .any(|message| message.contains("renderer transfer/layout intersection"))
         );
     }
 
@@ -522,23 +543,26 @@ mod tests {
     fn scanner_hides_renderer_incompatible_surface_formats() {
         let mut scanner = CapabilityScanner::new();
         scanner.register_provider(Box::new(StaticVideoProvider {
-            capabilities: backend_with_formats(
-                vec![
+            capabilities: backend_with_outputs(vec![
+                output(
                     vp9_format(
                         Vp9Profile::Profile0,
                         BitDepth::Eight,
                         ChromaSubsampling::Yuv420,
                         false,
                     ),
+                    VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+                ),
+                output(
                     vp9_format(
                         Vp9Profile::Profile2,
                         BitDepth::Ten,
                         ChromaSubsampling::Yuv420,
                         true,
                     ),
-                ],
-                vec![VideoExportPath::DmaBuf],
-            ),
+                    VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
+                ),
+            ]),
         }));
         scanner.register_render_capabilities(RenderCapabilities::wgpu_nv12(Some(4096)));
 
@@ -554,21 +578,21 @@ mod tests {
     fn scanner_keeps_renderer_compatible_zero_copy_format() {
         let mut scanner = CapabilityScanner::new();
         scanner.register_provider(Box::new(StaticVideoProvider {
-            capabilities: backend_with_formats(
-                vec![vp9_format(
+            capabilities: backend_with_outputs(vec![output(
+                vp9_format(
                     Vp9Profile::Profile0,
                     BitDepth::Eight,
                     ChromaSubsampling::Yuv420,
                     false,
-                )],
-                vec![VideoExportPath::DmaBuf],
-            ),
+                ),
+                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+            )]),
         }));
         scanner.register_render_capabilities(RenderCapabilities::wgpu_nv12(Some(4096)));
 
         let report = scanner.scan_with_timestamp(7);
 
-        assert_eq!(report.supported_video_formats().count(), 1);
+        assert_eq!(report.supported_video_outputs().count(), 1);
         assert!(report.video_backends[0].diagnostics.is_empty());
     }
 }

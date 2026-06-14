@@ -1882,7 +1882,7 @@ impl RenderCapabilities {
     /// Создаёт capabilities для WGPU renderer-а с production P010 BT.2446-C path.
     #[must_use]
     pub fn wgpu_p010_bt2446c(max_texture_size: Option<u32>) -> Self {
-        Self::wgpu_p010_bt2446c_with_storage_layouts(
+        Self::wgpu_p010_bt2446c_with_dma_buf_image_layouts(
             max_texture_size,
             vec![
                 DmaBufImageLayout::SeparateLayers,
@@ -1893,15 +1893,15 @@ impl RenderCapabilities {
 
     /// Создаёт capabilities для WGPU P010 renderer-а с явными import layout-ами.
     #[must_use]
-    pub fn wgpu_p010_bt2446c_with_storage_layouts(
+    pub fn wgpu_p010_bt2446c_with_dma_buf_image_layouts(
         max_texture_size: Option<u32>,
-        supported_p010_storage_layouts: Vec<DmaBufImageLayout>,
+        supported_p010_dma_buf_image_layouts: Vec<DmaBufImageLayout>,
     ) -> Self {
         let mut supported_frame_contracts = vec![VideoFrameContract::dma_buf_nv12(
             DmaBufImageLayout::SeparateLayers,
         )];
         supported_frame_contracts.extend(
-            supported_p010_storage_layouts
+            supported_p010_dma_buf_image_layouts
                 .into_iter()
                 .map(VideoFrameContract::dma_buf_p010),
         );

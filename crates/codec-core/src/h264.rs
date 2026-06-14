@@ -1948,7 +1948,7 @@ mod tests {
         assert_eq!(candidate.requirement.width, Some(1_920));
         assert_eq!(candidate.requirement.height, Some(1_088));
         assert_eq!(
-            candidate.requirement.surface_format,
+            crate::video_frame_pixel_layout_from_decode_requirement(&candidate.requirement),
             Some(crate::VideoFramePixelLayout::Nv12)
         );
 

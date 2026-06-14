@@ -11,7 +11,7 @@ use crate::{
     h265_decode_requirement_from_packet, infer_h264_packetization, infer_h265_packetization,
     parse_hevc_decoder_configuration_record, probe_h264_packet_keyframe,
     probe_h265_packet_decode_start, probe_vp9_packet_requirement, resolve_vp9_metadata,
-    video_frame_pixel_layout_from_optional_codec_fields,
+    video_frame_pixel_layout_from_decode_requirement,
 };
 
 /// Codec-neutral source metadata, пришедшая из manifest/container до decode.
@@ -151,7 +151,7 @@ impl VideoRequirementCandidate {
     #[must_use]
     pub fn generic(requirement: VideoDecodeRequirement) -> Self {
         Self {
-            surface_format: requirement.surface_format,
+            surface_format: video_frame_pixel_layout_from_decode_requirement(&requirement),
             bitstream_color: requirement.color.clone(),
             requirement,
             codec_private: CodecPrivateCandidate::Generic,
@@ -162,13 +162,9 @@ impl VideoRequirementCandidate {
     #[must_use]
     fn from_vp9(candidate: Vp9RequirementCandidate) -> Self {
         let surface_format = vp9_decoded_format_to_surface_format(candidate.decoded_format);
-        let requirement = candidate
-            .requirement
-            .clone()
-            .with_surface_format(surface_format);
 
         Self {
-            requirement,
+            requirement: candidate.requirement.clone(),
             surface_format: Some(surface_format),
             bitstream_color: candidate.bitstream_color.clone(),
             codec_private: CodecPrivateCandidate::Vp9(candidate),
@@ -509,12 +505,17 @@ pub fn resolve_video_metadata(
         .map(VideoMetadataSource::to_requirement)
         .unwrap_or_else(|| VideoDecodeRequirement::new(codec));
 
+    let bitstream_surface_format = bitstream_candidate
+        .as_ref()
+        .and_then(|candidate| candidate.surface_format);
+
     if let Some(candidate) = bitstream_candidate {
         requirement = merge_bitstream_requirement(requirement, candidate.requirement);
     }
 
     VideoResolvedMetadata {
-        surface_format: requirement.surface_format,
+        surface_format: bitstream_surface_format
+            .or_else(|| video_frame_pixel_layout_from_decode_requirement(&requirement)),
         color: requirement.color.clone(),
         requirement,
     }
@@ -549,14 +550,6 @@ fn merge_bitstream_requirement(
     if requirement.timing_contract.nominal_frame_rate.is_none() {
         requirement.timing_contract = container_requirement.timing_contract;
     }
-    if requirement.surface_format.is_none() {
-        requirement.surface_format = video_frame_pixel_layout_from_optional_codec_fields(
-            requirement.bit_depth,
-            requirement.chroma,
-        )
-        .or(container_requirement.surface_format);
-    }
-
     if let Some(color) = requirement.color.clone().or(container_requirement.color) {
         requirement = requirement.with_color(color);
     }
@@ -573,7 +566,7 @@ pub fn video_requirement_needs_packet_refinement(requirement: &VideoDecodeRequir
                 || requirement.bit_depth.is_none()
                 || requirement.chroma.is_none()
                 || requirement.color.is_none()
-                || requirement.surface_format.is_none()
+                || video_frame_pixel_layout_from_decode_requirement(requirement).is_none()
         }
         VideoCodec::H264 => {
             requirement.profile.is_none()
@@ -581,7 +574,6 @@ pub fn video_requirement_needs_packet_refinement(requirement: &VideoDecodeRequir
                 || requirement.chroma.is_none()
                 || requirement.width.is_none()
                 || requirement.height.is_none()
-                || requirement.surface_format.is_none()
         }
         VideoCodec::H265 => {
             requirement.profile.is_none()
@@ -589,7 +581,6 @@ pub fn video_requirement_needs_packet_refinement(requirement: &VideoDecodeRequir
                 || requirement.chroma.is_none()
                 || requirement.width.is_none()
                 || requirement.height.is_none()
-                || requirement.surface_format.is_none()
         }
         _ => false,
     }
@@ -646,14 +637,15 @@ fn h264_candidate(metadata: H264SpsMetadata) -> VideoRequirementCandidate {
         .with_profile(VideoProfile::H264(metadata.profile))
         .with_bit_depth(metadata.bit_depth)
         .with_chroma(metadata.chroma)
-        .with_resolution(metadata.width, metadata.height)
-        .with_surface_format(VideoFramePixelLayout::Nv12);
+        .with_resolution(metadata.width, metadata.height);
 
     if let Some(color) = metadata.color {
         requirement = requirement.with_color(color);
     }
 
-    VideoRequirementCandidate::generic(requirement)
+    let mut candidate = VideoRequirementCandidate::generic(requirement);
+    candidate.surface_format = Some(VideoFramePixelLayout::Nv12);
+    candidate
 }
 
 /// Пробует H.265 requirement из `hvcC`, затем из in-band SPS внутри packet-а.
@@ -1069,17 +1061,12 @@ fn resolve_vp9_video_metadata(
     let surface_format = resolved
         .decoded_format
         .map(vp9_decoded_format_to_surface_format)
-        .or(resolved.requirement.surface_format);
-    let requirement = if let Some(surface_format) = surface_format {
-        resolved.requirement.with_surface_format(surface_format)
-    } else {
-        resolved.requirement
-    };
+        .or_else(|| video_frame_pixel_layout_from_decode_requirement(&resolved.requirement));
 
     VideoResolvedMetadata {
         surface_format,
         color: Some(resolved.color),
-        requirement,
+        requirement: resolved.requirement,
     }
 }
 
@@ -1167,7 +1154,7 @@ mod tests {
 
         assert_eq!(candidate.surface_format, Some(VideoFramePixelLayout::P010));
         assert_eq!(
-            candidate.requirement.surface_format,
+            video_frame_pixel_layout_from_decode_requirement(&candidate.requirement),
             Some(VideoFramePixelLayout::P010)
         );
     }
@@ -1211,7 +1198,7 @@ mod tests {
             Some(ChromaSubsampling::Yuv420)
         );
         assert_eq!(
-            candidate.requirement.surface_format,
+            video_frame_pixel_layout_from_decode_requirement(&candidate.requirement),
             Some(VideoFramePixelLayout::P010)
         );
     }
@@ -1258,10 +1245,7 @@ mod tests {
         assert_eq!(resolved.requirement.chroma, Some(ChromaSubsampling::Yuv420));
         assert_eq!(resolved.requirement.width, Some(3840));
         assert_eq!(resolved.requirement.height, Some(2160));
-        assert_eq!(
-            resolved.requirement.surface_format,
-            Some(VideoFramePixelLayout::P010)
-        );
+        assert_eq!(resolved.surface_format, Some(VideoFramePixelLayout::P010));
         assert_eq!(resolved.color, Some(container_color.clone()));
         assert_eq!(resolved.requirement.color, Some(container_color));
         assert!(resolved.requirement.hdr);

@@ -9,9 +9,12 @@ use render_core::{
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use video_frame_contract::{DmaBufImageLayout, VideoFrameContract, VideoFramePixelLayout};
+use video_frame_contract::{
+    DmaBufImageLayout, HardwareFrameHandle, VideoFrameContract, VideoFramePixelLayout,
+    VideoFrameTransferPath,
+};
 
-use crate::{BackendCapabilities, SystemCapabilities, VideoExportPath};
+use crate::{SupportedVideoOutput, SystemCapabilities};
 
 /// Candidate video stream до выбора source/player layer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -27,7 +30,7 @@ pub struct VideoStreamCandidate {
     pub quality_score: i64,
 }
 
-/// Выбранный поток вместе с backend format, который его поддержал.
+/// Выбранный поток вместе с backend output, который прошёл renderer intersection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SelectedVideoStream {
@@ -37,8 +40,8 @@ pub struct SelectedVideoStream {
     /// Требования выбранного потока.
     pub requirement: VideoDecodeRequirement,
 
-    /// Decode format/backend, который удовлетворил requirement.
-    pub matched_format: SupportedVideoDecodeFormat,
+    /// Concrete output/backend, который удовлетворил requirement.
+    pub matched_output: SupportedVideoOutput,
 }
 
 /// Ошибка выбора stream-а.
@@ -142,16 +145,13 @@ pub enum VideoCapabilityRejection {
         codec: VideoCodec,
     },
 
-    /// Decode backend есть, но нужный device/export path не доступен.
-    UnsupportedDeviceExportPath {
+    /// Decode backend есть, но не объявил renderer-compatible transfer/layout.
+    UnsupportedBackendFrameTransfer {
         /// Backend, который мог декодировать stream.
         backend: DecodeBackendId,
 
-        /// Формат кадра на границе decoder/renderer.
-        frame_format: VideoFramePixelLayout,
-
-        /// Export path, обязательный для этого frame format.
-        required_export_path: VideoExportPath,
+        /// Frame contract, который был нужен для renderer intersection.
+        required_frame_contract: VideoFrameContract,
     },
 
     /// Renderer не умеет принять нужный decoded frame format.
@@ -235,12 +235,12 @@ impl VideoCapabilityRejection {
             Self::UnsupportedDecodeFormat { codec } => format!(
                 "для codec {codec} нет decode format, совпадающего с profile/bit depth/chroma/resolution stream-а"
             ),
-            Self::UnsupportedDeviceExportPath {
+            Self::UnsupportedBackendFrameTransfer {
                 backend,
-                frame_format,
-                required_export_path,
+                required_frame_contract,
             } => format!(
-                "backend {backend} может декодировать {frame_format}, но не подтвердил обязательный export path {required_export_path}"
+                "backend {backend} может декодировать stream, но не объявил output transfer/layout {}",
+                required_frame_contract.diagnostic_label()
             ),
             Self::UnsupportedRenderFrameFormat { frame_format } => {
                 format!("renderer не поддерживает input format {frame_format}")
@@ -293,14 +293,24 @@ impl VideoCapabilityRejection {
 }
 
 impl SystemCapabilities {
-    /// Ищет первый backend format, который удовлетворяет stream requirement.
+    /// Ищет первый playable output, который удовлетворяет stream requirement.
+    #[must_use]
+    pub fn find_supported_video_output(
+        &self,
+        requirement: &VideoDecodeRequirement,
+    ) -> Option<&SupportedVideoOutput> {
+        self.supported_video_outputs()
+            .find(|output| output.satisfies(requirement))
+    }
+
+    /// Возвращает codec-level format выбранного playable output-а.
     #[must_use]
     pub fn find_supported_video_format(
         &self,
         requirement: &VideoDecodeRequirement,
     ) -> Option<&SupportedVideoDecodeFormat> {
-        self.supported_video_formats()
-            .find(|format| format.satisfies(requirement))
+        self.find_supported_video_output(requirement)
+            .map(|output| &output.decode_format)
     }
 
     /// Ищет renderer backend, который сможет показать stream requirement.
@@ -314,26 +324,21 @@ impl SystemCapabilities {
             .find(|capabilities| capabilities.supports_decode_requirement(requirement))
     }
 
-    /// Ищет backend report, которому принадлежит matched decode format.
-    fn backend_for_decode_format(
+    /// Возвращает raw provider outputs, которые закрывают codec-level stream requirement.
+    fn matching_raw_video_outputs(
         &self,
-        format: &SupportedVideoDecodeFormat,
-    ) -> Option<&BackendCapabilities> {
-        self.video_backends.iter().find(|backend| {
-            backend.status.is_available()
-                && backend.backend_id == format.backend
-                && backend
-                    .supported_video_decode_formats
-                    .iter()
-                    .any(|candidate| candidate == format)
-        })
+        requirement: &VideoDecodeRequirement,
+    ) -> Vec<&SupportedVideoOutput> {
+        self.raw_video_outputs()
+            .filter(|output| output.satisfies(requirement))
+            .collect()
     }
 
     /// Проверяет одно stream requirement и возвращает detailed error при отказе.
     pub fn check_video_requirement(
         &self,
         requirement: &VideoDecodeRequirement,
-    ) -> Result<&SupportedVideoDecodeFormat, UnsupportedVideoRequirement> {
+    ) -> Result<&SupportedVideoOutput, UnsupportedVideoRequirement> {
         let frame_format = match frame_format_for_requirement(requirement) {
             Ok(frame_format) => frame_format,
             Err(rejection) => {
@@ -343,32 +348,31 @@ impl SystemCapabilities {
             }
         };
 
-        let Some(format) = self.find_supported_video_format(requirement) else {
+        let raw_outputs = self.matching_raw_video_outputs(requirement);
+        if raw_outputs.is_empty() {
             return Err(self.explain_unsupported_video_requirement(requirement));
-        };
-
-        let Some(backend) = self.backend_for_decode_format(format) else {
-            return Err(self.unsupported_requirement_with_rejections(
-                requirement,
-                vec![VideoCapabilityRejection::UnsupportedDecodeFormat {
-                    codec: requirement.codec,
-                }],
-            ));
-        };
-
-        if let Some(rejection) = device_boundary_rejection(requirement, frame_format, backend) {
-            return Err(self.unsupported_requirement_with_rejections(requirement, vec![rejection]));
         }
 
         if let Some(rejection) = strict_hdr_metadata_rejection(requirement, frame_format) {
             return Err(self.unsupported_requirement_with_rejections(requirement, vec![rejection]));
         }
 
-        if let Some(rejection) = self.render_rejection(requirement, frame_format, backend) {
+        if let Some(output) = self.find_supported_video_output(requirement) {
+            return Ok(output);
+        }
+
+        if let Some(rejection) =
+            self.output_intersection_rejection(requirement, frame_format, &raw_outputs)
+        {
             return Err(self.unsupported_requirement_with_rejections(requirement, vec![rejection]));
         }
 
-        Ok(format)
+        Err(self.unsupported_requirement_with_rejections(
+            requirement,
+            vec![VideoCapabilityRejection::UnsupportedDecodeFormat {
+                codec: requirement.codec,
+            }],
+        ))
     }
 
     /// Выбирает лучший поддерживаемый stream из candidates.
@@ -391,11 +395,11 @@ impl SystemCapabilities {
         let mut first_rejection = None;
         for candidate in ordered_candidates {
             match self.check_video_requirement(&candidate.requirement) {
-                Ok(format) => {
+                Ok(output) => {
                     return Ok(SelectedVideoStream {
                         stream_id: candidate.stream_id.clone(),
                         requirement: candidate.requirement.clone(),
-                        matched_format: format.clone(),
+                        matched_output: output.clone(),
                     });
                 }
                 Err(error) => {
@@ -419,45 +423,48 @@ impl SystemCapabilities {
         &self,
         requirement: &VideoDecodeRequirement,
     ) -> UnsupportedVideoRequirement {
-        let supported_formats = self.supported_video_formats().collect::<Vec<_>>();
+        let raw_outputs = self.raw_video_outputs().collect::<Vec<_>>();
         if let Err(rejection) = frame_format_for_requirement(requirement) {
             return self.unsupported_requirement_with_rejections(requirement, vec![rejection]);
         }
 
-        let decode_match = supported_formats
+        let decode_match = raw_outputs
             .iter()
-            .any(|format| format.satisfies(requirement));
-        let rejections = if supported_formats.is_empty() {
+            .any(|output| output.satisfies(requirement));
+        let rejections = if raw_outputs.is_empty() {
             vec![VideoCapabilityRejection::NoAvailableBackend]
-        } else if !supported_formats
+        } else if !raw_outputs
             .iter()
-            .any(|format| format.codec == requirement.codec)
+            .any(|output| output.decode_format.codec == requirement.codec)
         {
             vec![VideoCapabilityRejection::UnsupportedCodec {
                 codec: requirement.codec,
             }]
         } else if let Some(profile) = requirement.profile
-            && !supported_formats
-                .iter()
-                .any(|format| format.codec == requirement.codec && format.profile == profile)
+            && !raw_outputs.iter().any(|output| {
+                output.decode_format.codec == requirement.codec
+                    && output.decode_format.profile == profile
+            })
         {
             vec![VideoCapabilityRejection::UnsupportedProfile {
                 codec: requirement.codec,
                 profile,
             }]
         } else if let Some(bit_depth) = requirement.bit_depth
-            && !supported_formats
-                .iter()
-                .any(|format| format.codec == requirement.codec && format.bit_depth == bit_depth)
+            && !raw_outputs.iter().any(|output| {
+                output.decode_format.codec == requirement.codec
+                    && output.decode_format.bit_depth == bit_depth
+            })
         {
             vec![VideoCapabilityRejection::UnsupportedBitDepth {
                 codec: requirement.codec,
                 bit_depth,
             }]
         } else if let Some(chroma) = requirement.chroma
-            && !supported_formats
-                .iter()
-                .any(|format| format.codec == requirement.codec && format.chroma == chroma)
+            && !raw_outputs.iter().any(|output| {
+                output.decode_format.codec == requirement.codec
+                    && output.decode_format.chroma == chroma
+            })
         {
             vec![VideoCapabilityRejection::UnsupportedChroma {
                 codec: requirement.codec,
@@ -465,30 +472,27 @@ impl SystemCapabilities {
             }]
         } else if decode_match {
             let frame_format = frame_format_for_requirement(requirement).ok();
-            let device_rejection = frame_format.and_then(|frame_format| {
-                self.find_supported_video_format(requirement)
-                    .and_then(|format| self.backend_for_decode_format(format))
-                    .and_then(|backend| {
-                        device_boundary_rejection(requirement, frame_format, backend)
+            if let Some(frame_format) = frame_format {
+                strict_hdr_metadata_rejection(requirement, frame_format)
+                    .or_else(|| {
+                        let matching_raw_outputs = self.matching_raw_video_outputs(requirement);
+                        self.output_intersection_rejection(
+                            requirement,
+                            frame_format,
+                            &matching_raw_outputs,
+                        )
                     })
-            });
-            device_rejection
-                .or_else(|| strict_hdr_metadata_rejection(requirement, frame_format?))
-                .or_else(|| {
-                    frame_format.and_then(|frame_format| {
-                        self.find_supported_video_format(requirement)
-                            .and_then(|format| self.backend_for_decode_format(format))
-                            .and_then(|backend| {
-                                self.render_rejection(requirement, frame_format, backend)
-                            })
+                    .map(|rejection| vec![rejection])
+                    .unwrap_or_else(|| {
+                        vec![VideoCapabilityRejection::UnsupportedDecodeFormat {
+                            codec: requirement.codec,
+                        }]
                     })
-                })
-                .map(|rejection| vec![rejection])
-                .unwrap_or_else(|| {
-                    vec![VideoCapabilityRejection::UnsupportedDecodeFormat {
-                        codec: requirement.codec,
-                    }]
-                })
+            } else {
+                vec![VideoCapabilityRejection::InsufficientStreamMetadata {
+                    codec: requirement.codec,
+                }]
+            }
         } else if requirement.profile.is_some() {
             vec![VideoCapabilityRejection::UnsupportedDecodeFormat {
                 codec: requirement.codec,
@@ -508,42 +512,53 @@ impl SystemCapabilities {
         requirement: &VideoDecodeRequirement,
         rejections: Vec<VideoCapabilityRejection>,
     ) -> UnsupportedVideoRequirement {
-        let supported_formats = self.supported_video_formats().collect::<Vec<_>>();
+        let raw_outputs = self.raw_video_outputs().collect::<Vec<_>>();
+        let playable_outputs = self.supported_video_outputs().collect::<Vec<_>>();
 
         UnsupportedVideoRequirement {
             requirement: Box::new(requirement.clone()),
             rejections,
             supported_formats_summary: summarize_system_support(
-                &supported_formats,
+                &raw_outputs,
+                &playable_outputs,
                 &self.render_backends,
             )
             .into_boxed_str(),
         }
     }
 
-    /// Возвращает renderer-side reject после успешного decode/device match.
-    fn render_rejection(
+    /// Возвращает transfer/render reject после успешного raw decode match.
+    fn output_intersection_rejection(
         &self,
         requirement: &VideoDecodeRequirement,
         frame_format: VideoFramePixelLayout,
-        backend: &BackendCapabilities,
+        raw_outputs: &[&SupportedVideoOutput],
     ) -> Option<VideoCapabilityRejection> {
         if self.render_backends.is_empty() {
             return Some(VideoCapabilityRejection::NoAvailableRenderer);
         }
 
-        let frame_contracts = frame_contracts_for_backend_layout(frame_format, backend);
-        if frame_contracts.is_empty() {
-            return Some(VideoCapabilityRejection::UnsupportedRenderFrameFormat { frame_format });
+        if let Some(required_frame_contract) =
+            self.renderer_supported_contract_not_backed_by_outputs(requirement, raw_outputs)
+        {
+            let backend = raw_outputs
+                .first()
+                .expect("raw output intersection checked by caller")
+                .backend
+                .clone();
+            return Some(VideoCapabilityRejection::UnsupportedBackendFrameTransfer {
+                backend,
+                required_frame_contract,
+            });
         }
 
         let mut first_render_rejection = None;
         for capabilities in &self.render_backends {
-            for frame_contract in &frame_contracts {
-                match capabilities.check_video_output(requirement, *frame_contract) {
+            for output in raw_outputs {
+                match capabilities.check_video_output(requirement, output.frame_contract) {
                     Ok(()) => return None,
                     Err(rejection) if first_render_rejection.is_none() => {
-                        first_render_rejection = Some((*frame_contract, rejection));
+                        first_render_rejection = Some((*output, rejection));
                     }
                     Err(_) => {}
                 }
@@ -551,50 +566,109 @@ impl SystemCapabilities {
         }
 
         first_render_rejection
-            .map(|(frame_contract, rejection)| {
+            .map(|(output, rejection)| {
                 render_video_output_rejection_to_capability(
                     rejection,
                     requirement,
                     frame_format,
-                    frame_contract,
-                    backend,
+                    output.frame_contract,
+                    &output.backend,
                 )
             })
             .or(Some(VideoCapabilityRejection::UnsupportedDecodeFormat {
                 codec: requirement.codec,
             }))
     }
+
+    /// Ищет renderer contract, который подходит stream-у, но не объявлен backend outputs.
+    fn renderer_supported_contract_not_backed_by_outputs(
+        &self,
+        requirement: &VideoDecodeRequirement,
+        raw_outputs: &[&SupportedVideoOutput],
+    ) -> Option<VideoFrameContract> {
+        self.render_backends
+            .iter()
+            .flat_map(|renderer| {
+                renderer
+                    .supported_frame_contracts
+                    .iter()
+                    .copied()
+                    .filter(move |contract| {
+                        renderer.check_video_output(requirement, *contract).is_ok()
+                    })
+            })
+            .find(|contract| {
+                !raw_outputs.iter().any(|output| {
+                    same_transfer_path_family(
+                        output.frame_contract.transfer_path,
+                        contract.transfer_path,
+                    )
+                })
+            })
+    }
+}
+
+/// Сравнивает transfer family без смешивания layout details.
+fn same_transfer_path_family(left: VideoFrameTransferPath, right: VideoFrameTransferPath) -> bool {
+    match (left, right) {
+        (
+            VideoFrameTransferPath::HardwareZeroCopy {
+                handle: left_handle,
+            },
+            VideoFrameTransferPath::HardwareZeroCopy {
+                handle: right_handle,
+            },
+        ) => same_hardware_handle_family(left_handle, right_handle),
+        (
+            VideoFrameTransferPath::SoftwareHostUpload,
+            VideoFrameTransferPath::SoftwareHostUpload,
+        ) => true,
+        _ => false,
+    }
+}
+
+/// Сравнивает hardware handle family без layout-specific fields.
+fn same_hardware_handle_family(left: HardwareFrameHandle, right: HardwareFrameHandle) -> bool {
+    matches!(
+        (left, right),
+        (
+            HardwareFrameHandle::DmaBuf { .. },
+            HardwareFrameHandle::DmaBuf { .. }
+        )
+    )
 }
 
 /// Формирует компактный список decode/render возможностей для ошибки.
 fn summarize_system_support(
-    supported_formats: &[&SupportedVideoDecodeFormat],
+    raw_outputs: &[&SupportedVideoOutput],
+    playable_outputs: &[&SupportedVideoOutput],
     render_backends: &[RenderCapabilities],
 ) -> String {
-    let decode_summary = summarize_supported_formats(supported_formats);
+    let decode_summary = summarize_supported_outputs(raw_outputs);
+    let playable_summary = summarize_supported_outputs(playable_outputs);
 
     format!(
-        "decode: {decode_summary}; render: {}",
+        "raw decode outputs: {decode_summary}; playable outputs: {playable_summary}; render: {}",
         summarize_render_capabilities(render_backends)
     )
 }
 
-/// Формирует компактный список поддерживаемых decode форматов для ошибки.
-fn summarize_supported_formats(supported_formats: &[&SupportedVideoDecodeFormat]) -> String {
-    if supported_formats.is_empty() {
-        return "нет доступных аппаратных video formats".to_string();
+/// Формирует компактный список поддерживаемых outputs для ошибки.
+fn summarize_supported_outputs(outputs: &[&SupportedVideoOutput]) -> String {
+    if outputs.is_empty() {
+        return "нет доступных video outputs".to_string();
     }
 
-    let mut descriptions = supported_formats
+    let mut descriptions = outputs
         .iter()
         .take(6)
-        .map(|format| format.describe())
+        .map(|output| output.describe())
         .collect::<Vec<_>>();
 
-    if supported_formats.len() > descriptions.len() {
+    if outputs.len() > descriptions.len() {
         descriptions.push(format!(
-            "ещё {} formats",
-            supported_formats.len() - descriptions.len()
+            "ещё {} outputs",
+            outputs.len() - descriptions.len()
         ));
     }
 
@@ -738,43 +812,13 @@ fn invalid_hdr_metadata(reason: impl Into<String>) -> VideoCapabilityRejection {
     }
 }
 
-/// Строит current production DMA-BUF contracts из selection-time backend report-а.
-fn frame_contracts_for_backend_layout(
-    frame_format: VideoFramePixelLayout,
-    backend: &BackendCapabilities,
-) -> Vec<VideoFrameContract> {
-    match frame_format {
-        VideoFramePixelLayout::Nv12 => {
-            vec![VideoFrameContract::dma_buf_nv12(
-                DmaBufImageLayout::SeparateLayers,
-            )]
-        }
-        VideoFramePixelLayout::P010 => p010_layouts_for_backend(backend)
-            .into_iter()
-            .map(VideoFrameContract::dma_buf_p010)
-            .collect(),
-        VideoFramePixelLayout::Yuv420Planar8
-        | VideoFramePixelLayout::Yuv420Planar10Le
-        | VideoFramePixelLayout::Rgba8 => Vec::new(),
-    }
-}
-
-/// Возвращает P010 layouts из backend report-а, сохраняя старый baseline default.
-fn p010_layouts_for_backend(backend: &BackendCapabilities) -> Vec<DmaBufImageLayout> {
-    if backend.p010_storage_layouts.is_empty() {
-        vec![DmaBufImageLayout::SeparateLayers]
-    } else {
-        backend.p010_storage_layouts.clone()
-    }
-}
-
 /// Переводит neutral render-core rejection в capability-layer user-facing reason.
 fn render_video_output_rejection_to_capability(
     rejection: RenderVideoOutputRejection,
     requirement: &VideoDecodeRequirement,
     frame_format: VideoFramePixelLayout,
     frame_contract: VideoFrameContract,
-    backend: &BackendCapabilities,
+    backend: &DecodeBackendId,
 ) -> VideoCapabilityRejection {
     match rejection {
         RenderVideoOutputRejection::FrameContract { reason } => {
@@ -808,7 +852,7 @@ fn render_frame_contract_rejection_to_capability(
     rejection: RenderFrameContractRejection,
     frame_format: VideoFramePixelLayout,
     frame_contract: VideoFrameContract,
-    backend: &BackendCapabilities,
+    backend: &DecodeBackendId,
 ) -> VideoCapabilityRejection {
     match rejection {
         RenderFrameContractRejection::UnsupportedPixelLayout { pixel_layout } => {
@@ -820,7 +864,7 @@ fn render_frame_contract_rejection_to_capability(
             if frame_format == VideoFramePixelLayout::P010 =>
         {
             VideoCapabilityRejection::UnsupportedDmaBufImageLayout {
-                backend: backend.backend_id.clone(),
+                backend: backend.clone(),
                 storage_layout: image_layout,
                 required_wgpu_feature: p010_dma_buf_layout_required_wgpu_feature_label(
                     image_layout,
@@ -845,25 +889,6 @@ fn p010_dma_buf_layout_required_wgpu_feature_label(layout: DmaBufImageLayout) ->
     }
 }
 
-/// Проверяет device/export часть intersection для decoded frame format-а.
-fn device_boundary_rejection(
-    requirement: &VideoDecodeRequirement,
-    frame_format: VideoFramePixelLayout,
-    backend: &BackendCapabilities,
-) -> Option<VideoCapabilityRejection> {
-    let required_export_path = requirement.memory_contract.required_export();
-
-    if backend.export_paths.contains(&required_export_path) {
-        return None;
-    }
-
-    Some(VideoCapabilityRejection::UnsupportedDeviceExportPath {
-        backend: backend.backend_id.clone(),
-        frame_format,
-        required_export_path,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use codec_core::{
@@ -886,16 +911,38 @@ mod tests {
                 false,
             )],
             vec![RenderCapabilities::wgpu_nv12(Some(4096))],
-            vec![VideoExportPath::DmaBuf],
         )
     }
 
     fn capabilities_with_formats(
         supported_formats: Vec<SupportedVideoDecodeFormat>,
         render_backends: Vec<RenderCapabilities>,
-        export_paths: Vec<VideoExportPath>,
     ) -> SystemCapabilities {
-        let p010_storage_layouts = p010_storage_layouts_for_formats(&supported_formats);
+        let raw_supported_outputs = supported_formats
+            .into_iter()
+            .filter_map(output_for_supported_format)
+            .collect::<Vec<_>>();
+        capabilities_with_outputs(raw_supported_outputs, render_backends)
+    }
+
+    fn capabilities_with_outputs(
+        raw_supported_outputs: Vec<SupportedVideoOutput>,
+        render_backends: Vec<RenderCapabilities>,
+    ) -> SystemCapabilities {
+        let playable_video_outputs = raw_supported_outputs
+            .iter()
+            .filter(|output| {
+                let mut requirement = VideoDecodeRequirement::new(output.decode_format.codec)
+                    .with_profile(output.decode_format.profile)
+                    .with_bit_depth(output.decode_format.bit_depth)
+                    .with_chroma(output.decode_format.chroma);
+                requirement.hdr = output.decode_format.hdr_input;
+                render_backends.iter().any(|renderer| {
+                    renderer.supports_video_output(&requirement, output.frame_contract)
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
 
         SystemCapabilities {
             schema_version: crate::CURRENT_CAPABILITY_SCHEMA_VERSION,
@@ -905,31 +952,36 @@ mod tests {
                 display_name: "VA-API".to_string(),
                 status: BackendProbeStatus::Available,
                 driver: BackendDriverInfo::default(),
-                supported_video_decode_formats: supported_formats,
+                raw_supported_outputs,
                 raw_profiles: Vec::new(),
                 raw_entrypoints: Vec::new(),
                 raw_rt_formats: Vec::new(),
                 quirks: Vec::new(),
-                export_paths,
-                p010_storage_layouts,
                 diagnostics: Vec::new(),
             }],
             render_backends,
+            playable_video_outputs,
         }
     }
 
-    fn p010_storage_layouts_for_formats(
-        supported_formats: &[SupportedVideoDecodeFormat],
-    ) -> Vec<DmaBufImageLayout> {
-        let has_p010_format = supported_formats.iter().any(|format| {
-            format.bit_depth == BitDepth::Ten && format.chroma == ChromaSubsampling::Yuv420
-        });
+    fn output_for_supported_format(
+        decode_format: SupportedVideoDecodeFormat,
+    ) -> Option<SupportedVideoOutput> {
+        let frame_contract = match (decode_format.bit_depth, decode_format.chroma) {
+            (BitDepth::Eight, ChromaSubsampling::Yuv420) => {
+                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers)
+            }
+            (BitDepth::Ten, ChromaSubsampling::Yuv420) => {
+                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers)
+            }
+            _ => return None,
+        };
 
-        if has_p010_format {
-            vec![DmaBufImageLayout::SeparateLayers]
-        } else {
-            Vec::new()
-        }
+        Some(SupportedVideoOutput {
+            backend: DecodeBackendId::vaapi(),
+            decode_format,
+            frame_contract,
+        })
     }
 
     fn vp9_format(
@@ -947,7 +999,6 @@ mod tests {
             max_height: Some(2304),
             max_fps: None,
             hdr_input,
-            backend: DecodeBackendId::vaapi(),
         }
     }
 
@@ -966,7 +1017,6 @@ mod tests {
             max_height: Some(2304),
             max_fps: None,
             hdr_input,
-            backend: DecodeBackendId::vaapi(),
         }
     }
 
@@ -1093,7 +1143,6 @@ mod tests {
             let capabilities = capabilities_with_formats(
                 vec![vp9_format(profile, bit_depth, chroma, false)],
                 vec![RenderCapabilities::wgpu_nv12(Some(4096))],
-                vec![VideoExportPath::DmaBuf],
             );
             let requirement = vp9_requirement(profile, bit_depth, chroma);
 
@@ -1121,7 +1170,6 @@ mod tests {
                 true,
             )],
             vec![RenderCapabilities::wgpu_nv12(Some(4096))],
-            vec![VideoExportPath::DmaBuf],
         );
         let requirement = vp9_requirement(
             Vp9Profile::Profile2,
@@ -1152,7 +1200,6 @@ mod tests {
                 true,
             )],
             vec![RenderCapabilities::wgpu_nv12(Some(4096))],
-            vec![VideoExportPath::DmaBuf],
         );
         let requirement = vp9_requirement(
             Vp9Profile::Profile2,
@@ -1175,16 +1222,19 @@ mod tests {
     }
 
     #[test]
-    fn nv12_requirement_requires_dma_buf_export_path() {
-        let capabilities = capabilities_with_formats(
-            vec![vp9_format(
-                Vp9Profile::Profile0,
-                BitDepth::Eight,
-                ChromaSubsampling::Yuv420,
-                false,
-            )],
+    fn nv12_requirement_rejects_backend_without_renderer_compatible_transfer() {
+        let capabilities = capabilities_with_outputs(
+            vec![SupportedVideoOutput {
+                backend: DecodeBackendId::vaapi(),
+                decode_format: vp9_format(
+                    Vp9Profile::Profile0,
+                    BitDepth::Eight,
+                    ChromaSubsampling::Yuv420,
+                    false,
+                ),
+                frame_contract: VideoFrameContract::host_yuv420_planar8(),
+            }],
             vec![RenderCapabilities::wgpu_nv12(Some(4096))],
-            Vec::new(),
         );
         let requirement = vp9_requirement(
             Vp9Profile::Profile0,
@@ -1198,11 +1248,10 @@ mod tests {
 
         assert!(matches!(
             error.rejections.first(),
-            Some(VideoCapabilityRejection::UnsupportedDeviceExportPath {
-                frame_format: VideoFramePixelLayout::Nv12,
-                required_export_path: VideoExportPath::DmaBuf,
+            Some(VideoCapabilityRejection::UnsupportedBackendFrameTransfer {
+                required_frame_contract,
                 ..
-            })
+            }) if *required_frame_contract == VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers)
         ));
     }
 
@@ -1218,7 +1267,6 @@ mod tests {
                 false,
             )],
             vec![render_capabilities],
-            vec![VideoExportPath::DmaBuf],
         );
         let requirement = vp9_requirement(
             Vp9Profile::Profile2,
@@ -1248,7 +1296,6 @@ mod tests {
                 true,
             )],
             vec![RenderCapabilities::wgpu_p010_bt2446c(Some(4096))],
-            vec![VideoExportPath::DmaBuf],
         );
         let requirement = vp9_requirement(
             Vp9Profile::Profile2,
@@ -1257,13 +1304,16 @@ mod tests {
         )
         .with_color(bt2020_pq_limited());
 
-        let selected_format = capabilities
+        let selected_output = capabilities
             .check_video_requirement(&requirement)
             .expect("P010 renderable + BT.2446-C must enable HDR-to-SDR playback");
 
-        assert_eq!(selected_format.bit_depth, BitDepth::Ten);
-        assert_eq!(selected_format.chroma, ChromaSubsampling::Yuv420);
-        assert!(selected_format.hdr_input);
+        assert_eq!(selected_output.decode_format.bit_depth, BitDepth::Ten);
+        assert_eq!(
+            selected_output.decode_format.chroma,
+            ChromaSubsampling::Yuv420
+        );
+        assert!(selected_output.decode_format.hdr_input);
     }
 
     #[test]
@@ -1283,11 +1333,12 @@ mod tests {
                     true,
                 ),
             ],
-            vec![RenderCapabilities::wgpu_p010_bt2446c_with_storage_layouts(
-                Some(4096),
-                vec![DmaBufImageLayout::SeparateLayers],
-            )],
-            vec![VideoExportPath::DmaBuf],
+            vec![
+                RenderCapabilities::wgpu_p010_bt2446c_with_dma_buf_image_layouts(
+                    Some(4096),
+                    vec![DmaBufImageLayout::SeparateLayers],
+                ),
+            ],
         );
         let candidates = vec![
             VideoStreamCandidate {
@@ -1335,11 +1386,12 @@ mod tests {
                     true,
                 ),
             ],
-            vec![RenderCapabilities::wgpu_p010_bt2446c_with_storage_layouts(
-                Some(4096),
-                vec![DmaBufImageLayout::ComposedLayers],
-            )],
-            vec![VideoExportPath::DmaBuf],
+            vec![
+                RenderCapabilities::wgpu_p010_bt2446c_with_dma_buf_image_layouts(
+                    Some(4096),
+                    vec![DmaBufImageLayout::ComposedLayers],
+                ),
+            ],
         );
         let candidates = vec![
             VideoStreamCandidate {
@@ -1379,11 +1431,12 @@ mod tests {
                 ChromaSubsampling::Yuv420,
                 true,
             )],
-            vec![RenderCapabilities::wgpu_p010_bt2446c_with_storage_layouts(
-                Some(4096),
-                vec![DmaBufImageLayout::ComposedLayers],
-            )],
-            vec![VideoExportPath::DmaBuf],
+            vec![
+                RenderCapabilities::wgpu_p010_bt2446c_with_dma_buf_image_layouts(
+                    Some(4096),
+                    vec![DmaBufImageLayout::ComposedLayers],
+                ),
+            ],
         );
         let requirement = vp9_requirement(
             Vp9Profile::Profile2,
@@ -1408,21 +1461,24 @@ mod tests {
 
     #[test]
     fn missing_composed_p010_import_feature_rejects_hdr_stream() {
-        let mut capabilities = capabilities_with_formats(
-            vec![vp9_format(
-                Vp9Profile::Profile2,
-                BitDepth::Ten,
-                ChromaSubsampling::Yuv420,
-                true,
-            )],
-            vec![RenderCapabilities::wgpu_p010_bt2446c_with_storage_layouts(
-                Some(4096),
-                vec![DmaBufImageLayout::SeparateLayers],
-            )],
-            vec![VideoExportPath::DmaBuf],
+        let capabilities = capabilities_with_outputs(
+            vec![SupportedVideoOutput {
+                backend: DecodeBackendId::vaapi(),
+                decode_format: vp9_format(
+                    Vp9Profile::Profile2,
+                    BitDepth::Ten,
+                    ChromaSubsampling::Yuv420,
+                    true,
+                ),
+                frame_contract: VideoFrameContract::dma_buf_p010(DmaBufImageLayout::ComposedLayers),
+            }],
+            vec![
+                RenderCapabilities::wgpu_p010_bt2446c_with_dma_buf_image_layouts(
+                    Some(4096),
+                    vec![DmaBufImageLayout::SeparateLayers],
+                ),
+            ],
         );
-        capabilities.video_backends[0].p010_storage_layouts =
-            vec![DmaBufImageLayout::ComposedLayers];
         let requirement = vp9_requirement(
             Vp9Profile::Profile2,
             BitDepth::Ten,
@@ -1454,7 +1510,6 @@ mod tests {
                 true,
             )],
             vec![RenderCapabilities::wgpu_p010_bt2446c(Some(4096))],
-            vec![VideoExportPath::DmaBuf],
         );
         let mut requirement = vp9_requirement(
             Vp9Profile::Profile2,
@@ -1484,7 +1539,6 @@ mod tests {
                 false,
             )],
             vec![RenderCapabilities::wgpu_nv12(Some(4096))],
-            vec![VideoExportPath::DmaBuf],
         );
         let requirement = VideoDecodeRequirement::new(VideoCodec::Av1)
             .with_profile(VideoProfile::Av1(Av1Profile::High))
@@ -1514,13 +1568,11 @@ mod tests {
                 true,
             )],
             vec![RenderCapabilities::wgpu_nv12(Some(4096))],
-            vec![VideoExportPath::DmaBuf],
         );
         let requirement = VideoDecodeRequirement::new(VideoCodec::Av1)
             .with_profile(VideoProfile::Av1(Av1Profile::Main))
             .with_bit_depth(BitDepth::Ten)
-            .with_chroma(ChromaSubsampling::Yuv420)
-            .with_surface_format(VideoFramePixelLayout::P010);
+            .with_chroma(ChromaSubsampling::Yuv420);
 
         let error = capabilities
             .check_video_requirement(&requirement)

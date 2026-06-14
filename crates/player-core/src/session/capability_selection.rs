@@ -1,10 +1,12 @@
-use capability_core::{SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection};
+use capability_core::{
+    SupportedVideoOutput, SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection,
+};
 use codec_core::{
     VideoCodec, VideoDecodeRequirement, VideoMetadataSource,
     parse_avc_decoder_configuration_record, parse_hevc_decoder_configuration_record,
     resolve_video_metadata,
     unsupported_requirement_can_be_refined_by_packet_probe as codec_requirement_can_be_refined_by_packet_probe,
-    video_requirement_needs_packet_refinement,
+    video_frame_pixel_layout_from_decode_requirement, video_requirement_needs_packet_refinement,
 };
 use media_core::{TrackInfo, TrackKind};
 use tracing::info;
@@ -12,10 +14,20 @@ use video_core::{
     VideoStreamConfigRejection, VideoStreamConfigResult, VideoStreamDecodeConfig,
     VideoStreamPacketization,
 };
+use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
 use crate::{PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, TrackId};
 
 use super::PlayerSession;
+
+/// Принятый video stream после capability validation.
+struct AcceptedVideoSelection {
+    /// Codec-level stream requirement.
+    requirement: VideoDecodeRequirement,
+
+    /// Concrete backend output; отсутствует только в legacy test/no-capabilities path.
+    matched_output: Option<SupportedVideoOutput>,
+}
 
 impl PlayerSession {
     /// Устанавливает capability report и публикует событие для UI/log layer.
@@ -47,9 +59,9 @@ impl PlayerSession {
 
         let mut last_rejection = None;
         for track in video_tracks {
-            match self.accepted_video_requirement_for_track(track) {
-                Ok(requirement) => {
-                    self.activate_video_track(track, requirement)?;
+            match self.accepted_video_selection_for_track(track) {
+                Ok(selection) => {
+                    self.activate_video_track(track, selection)?;
                     return Ok(());
                 }
                 Err(error) if can_try_next_video_track_after_error(&error.kind) => {
@@ -79,16 +91,16 @@ impl PlayerSession {
             ));
         };
 
-        let requirement = self.accepted_video_requirement_for_track(&track)?;
-        self.activate_video_track(&track, requirement)?;
+        let selection = self.accepted_video_selection_for_track(&track)?;
+        self.activate_video_track(&track, selection)?;
         Ok(())
     }
 
     /// Строит requirement из container metadata и принимает его до mutation selection state.
-    fn accepted_video_requirement_for_track(
+    fn accepted_video_selection_for_track(
         &self,
         track: &TrackInfo,
-    ) -> PlayerResult<VideoDecodeRequirement> {
+    ) -> PlayerResult<AcceptedVideoSelection> {
         let Some(requirement) = video_requirement_from_track(track) else {
             return Err(PlayerError::new(
                 PlayerErrorKind::UnsupportedVideoCodec,
@@ -100,7 +112,10 @@ impl PlayerSession {
         };
 
         match self.validate_video_decode_requirement(&requirement) {
-            Ok(()) => Ok(requirement),
+            Ok(matched_output) => Ok(AcceptedVideoSelection {
+                requirement,
+                matched_output,
+            }),
             Err(error) => {
                 if self.can_defer_packet_refinement(&requirement) {
                     info!(
@@ -108,7 +123,10 @@ impl PlayerSession {
                         requirement = %requirement.describe(),
                         "Video track выбран до bitstream refinement; strict capability check будет повторён перед decode"
                     );
-                    return Ok(requirement);
+                    return Ok(AcceptedVideoSelection {
+                        requirement,
+                        matched_output: None,
+                    });
                 }
 
                 Err(error)
@@ -120,10 +138,21 @@ impl PlayerSession {
     fn activate_video_track(
         &mut self,
         track: &TrackInfo,
-        requirement: VideoDecodeRequirement,
+        selection: AcceptedVideoSelection,
     ) -> PlayerResult<()> {
-        self.configure_decoder_stream_for_track(track, &requirement)?;
-        self.pipeline.select_video_track(track.id, requirement);
+        let frame_contract = selection
+            .matched_output
+            .as_ref()
+            .map(|output| output.frame_contract)
+            .unwrap_or_else(|| {
+                fallback_frame_contract_for_unprobed_requirement(&selection.requirement)
+            });
+        self.configure_decoder_stream_for_track(track, &selection.requirement, frame_contract)?;
+        self.pipeline.select_video_track_with_frame_contract(
+            track.id,
+            selection.requirement,
+            frame_contract,
+        );
         self.snapshot.selected_tracks.video_track = Some(track.id);
         log_selected_video_track_metadata(track, self.pipeline.active_video_requirement());
         Ok(())
@@ -134,13 +163,13 @@ impl PlayerSession {
         &self,
         track: &TrackInfo,
         requirement: &VideoDecodeRequirement,
-    ) -> PlayerResult<video_frame_contract::VideoFrameContract> {
-        let config = video_stream_decode_config_from_track(track, requirement)?;
-        let frame_contract = config.frame_contract;
+        frame_contract: VideoFrameContract,
+    ) -> PlayerResult<()> {
+        let config = video_stream_decode_config_from_track(track, requirement, frame_contract)?;
         player_result_from_stream_config_result(
             self.pipeline.configure_video_decoder_stream(config),
         )?;
-        Ok(frame_contract)
+        Ok(())
     }
 
     /// Повторно конфигурирует новый decoder backend под уже выбранный active video track.
@@ -149,6 +178,9 @@ impl PlayerSession {
             return Ok(());
         };
         let Some(requirement) = self.pipeline.active_video_requirement().cloned() else {
+            return Ok(());
+        };
+        let Some(frame_contract) = self.pipeline.active_video_frame_contract() else {
             return Ok(());
         };
         let Some(track) = self
@@ -163,12 +195,9 @@ impl PlayerSession {
             ));
         };
 
-        let frame_contract = self.configure_decoder_stream_for_track(track, &requirement)?;
-        debug_assert_eq!(
-            frame_contract,
-            VideoStreamDecodeConfig::frame_contract_from_requirement(&requirement)
-        );
-        self.pipeline.set_active_video_requirement(requirement);
+        self.configure_decoder_stream_for_track(track, &requirement, frame_contract)?;
+        self.pipeline
+            .set_active_video_selection(requirement, frame_contract);
         Ok(())
     }
 
@@ -193,13 +222,13 @@ impl PlayerSession {
     pub(super) fn validate_video_decode_requirement(
         &self,
         requirement: &VideoDecodeRequirement,
-    ) -> PlayerResult<()> {
+    ) -> PlayerResult<Option<SupportedVideoOutput>> {
         let Some(capabilities) = &self.capabilities else {
-            return Ok(());
+            return Ok(None);
         };
 
         match capabilities.check_video_requirement(requirement) {
-            Ok(_) => Ok(()),
+            Ok(output) => Ok(Some(output.clone())),
             Err(error) => Err(player_error_from_unsupported_requirement(error)),
         }
     }
@@ -209,8 +238,13 @@ impl PlayerSession {
         &mut self,
         requirement: VideoDecodeRequirement,
     ) -> PlayerResult<()> {
-        self.validate_video_decode_requirement(&requirement)?;
-        self.pipeline.set_active_video_requirement(requirement);
+        let matched_output = self.validate_video_decode_requirement(&requirement)?;
+        let frame_contract = matched_output
+            .as_ref()
+            .map(|output| output.frame_contract)
+            .unwrap_or_else(|| fallback_frame_contract_for_unprobed_requirement(&requirement));
+        self.pipeline
+            .set_active_video_selection(requirement, frame_contract);
         Ok(())
     }
 
@@ -249,15 +283,17 @@ impl PlayerSession {
 fn video_stream_decode_config_from_track(
     track: &TrackInfo,
     requirement: &VideoDecodeRequirement,
+    frame_contract: VideoFrameContract,
 ) -> PlayerResult<VideoStreamDecodeConfig> {
     let display_orientation = track
         .video
         .as_ref()
         .map(|metadata| metadata.orientation)
         .unwrap_or_default();
-    let mut config = VideoStreamDecodeConfig::from_requirement(track.id, requirement)
-        .with_codec_private(track.codec_private.clone())
-        .with_display_orientation(display_orientation);
+    let mut config =
+        VideoStreamDecodeConfig::from_requirement(track.id, requirement, frame_contract)
+            .with_codec_private(track.codec_private.clone())
+            .with_display_orientation(display_orientation);
 
     match requirement.codec {
         VideoCodec::H264 => {
@@ -270,6 +306,18 @@ fn video_stream_decode_config_from_track(
     }
 
     Ok(config)
+}
+
+/// Возвращает explicit fallback contract только для no-capability legacy path.
+fn fallback_frame_contract_for_unprobed_requirement(
+    requirement: &VideoDecodeRequirement,
+) -> VideoFrameContract {
+    match video_frame_pixel_layout_from_decode_requirement(requirement) {
+        Some(video_frame_contract::VideoFramePixelLayout::P010) => {
+            VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers)
+        }
+        _ => VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+    }
 }
 
 /// Достаёт H.264 packetization из codec-private, если adapter уже подтвердил `avcC`.
@@ -381,7 +429,7 @@ fn player_error_from_config_rejection(rejection: VideoStreamConfigRejection) -> 
             PlayerErrorKind::UnsupportedVideoChroma
         }
         VideoStreamConfigRejection::UnsupportedSurfaceFormat { .. }
-        | VideoStreamConfigRejection::UnsupportedMemoryContract { .. } => {
+        | VideoStreamConfigRejection::UnsupportedFrameContract { .. } => {
             PlayerErrorKind::UnsupportedRenderFormat
         }
     };
@@ -479,7 +527,7 @@ fn player_error_from_unsupported_requirement(error: UnsupportedVideoRequirement)
             PlayerErrorKind::UnsupportedHdrMode
         }
         Some(VideoCapabilityRejection::NoAvailableRenderer)
-        | Some(VideoCapabilityRejection::UnsupportedDeviceExportPath { .. })
+        | Some(VideoCapabilityRejection::UnsupportedBackendFrameTransfer { .. })
         | Some(VideoCapabilityRejection::UnsupportedDmaBufImageLayout { .. })
         | Some(VideoCapabilityRejection::UnsupportedRenderFrameFormat { .. })
         | Some(VideoCapabilityRejection::UnsupportedRenderFrameTransfer { .. })

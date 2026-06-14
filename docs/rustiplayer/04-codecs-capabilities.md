@@ -5,9 +5,9 @@
 Видео считается поддержанным только после полного intersection:
 
 - codec requirement известен достаточно точно;
-- hardware backend заявил matching decode format;
-- backend подтвердил обязательный `DMA-BUF` export;
-- renderer подтвердил input surface format и P010 storage layout, если нужен;
+- hardware backend заявил matching `SupportedVideoOutput`;
+- backend-declared transfer path пересёкся с renderer-declared `VideoFrameContract`;
+- renderer подтвердил input pixel layout и hardware handle layout, если нужен;
 - HDR stream прошёл strict metadata policy и renderer поддерживает HDR-to-SDR.
 
 Software video fallback и CPU transfer не входят в production policy.
@@ -34,14 +34,22 @@ Canonical types live in `codec-core`:
 - `VideoProfile`
 - `BitDepth`
 - `ChromaSubsampling`
-- `VideoSurfaceFormat`
-- `VideoMemoryContract`
-- `ZeroCopyExportRequirement`
 - `VideoColorMetadata`
 - `ColorMetadataOrigin`
 - `ColorMetadataConfidence`
 - `VideoDecodeRequirement`
 - `SupportedVideoDecodeFormat`
+
+Frame output contract types live in `video-core` and are referenced by
+capability reports:
+
+- `VideoFrameContract`
+- `VideoFrameTransferPath`
+- `HardwareFrameHandle`
+- `DmaBufImageLayout`
+
+Capability selection binds codec and output contracts through
+`capability-core::SupportedVideoOutput`.
 
 Renderer-facing aliases and capabilities live in `render-core`:
 
@@ -117,15 +125,23 @@ pretending HDR can be shown as SDR.
 
 - `BackendCapabilities` from decode providers;
 - `RenderCapabilities` from renderer backend;
-- schema version `CURRENT_CAPABILITY_SCHEMA_VERSION = 4`;
+- schema version `CURRENT_CAPABILITY_SCHEMA_VERSION = 5`;
 - typed rejection reasons from `VideoCapabilityRejection`.
 
 `video-vaapi::VaapiCapabilityProvider` supplies the current hardware backend
-report. `render-wgpu-video` builds render capabilities from WGPU device
-features, including `TEXTURE_FORMAT_16BIT_NORM` and `TEXTURE_FORMAT_P010`
-implications for P010 DMA-BUF layouts; `render-wgpu-shell` exposes that report
-to `app-egui` during system capability probing. Renderer support is expressed as
-full `VideoFrameContract` entries, so pixel layout, transfer path, and hardware
+report. Each `BackendCapabilities` entry keeps raw backend outputs in
+`raw_supported_outputs`; each `SupportedVideoOutput` binds backend id,
+codec-level decode format and provider-declared `VideoFrameContract` in one
+record. `SystemCapabilities::playable_video_outputs` stores only the
+system-level intersection with renderer support, so diagnostics can explain
+backend-capable-but-renderer-incompatible outputs without inventing a false
+Cartesian product between codec formats and transfer paths.
+
+`render-wgpu-video` builds render capabilities from WGPU device features,
+including `TEXTURE_FORMAT_16BIT_NORM` and `TEXTURE_FORMAT_P010` implications
+for P010 DMA-BUF layouts; `render-wgpu-shell` exposes that report to `app-egui`
+during system capability probing. Renderer support is expressed as full
+`VideoFrameContract` entries, so pixel layout, transfer path, and hardware
 handle layout are checked as one contract instead of separate format/layout
 lists.
 

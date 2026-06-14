@@ -10,6 +10,7 @@ use codec_core::{
     h265_access_unit_to_annex_b_into,
     h265_decode_requirement_from_hevc_decoder_configuration_record, h265_nal_units,
     parse_avc_decoder_configuration_record, parse_hevc_decoder_configuration_record,
+    video_frame_pixel_layout_from_decode_requirement,
 };
 use cros_codecs::DecodedFormat;
 use cros_codecs::backend::vaapi::decoder::VaapiBackend;
@@ -21,7 +22,7 @@ use cros_codecs::decoder::{
 };
 use cros_codecs::libva::Display;
 use video_core::{VideoStreamConfigRejection, VideoStreamDecodeConfig, VideoStreamPacketization};
-use video_frame_contract::VideoFramePixelLayout;
+use video_frame_contract::{HardwareFrameHandle, VideoFramePixelLayout, VideoFrameTransferPath};
 
 use crate::frame_pool::DmaFramePool;
 use crate::internal_vaapi_frame::InternalVaapiFrame;
@@ -1222,6 +1223,10 @@ impl VaapiCodecAdapterFactory {
 fn reject_unsupported_vp9_config(
     config: &VideoStreamDecodeConfig,
 ) -> Option<VideoStreamConfigRejection> {
+    if let Some(rejection) = reject_unsupported_frame_contract(config) {
+        return Some(rejection);
+    }
+
     let surface_format = Some(config.frame_contract.pixel_layout);
 
     if let Some(profile) = config.profile {
@@ -1293,6 +1298,10 @@ fn reject_vp9_without_profile(
 fn reject_unsupported_h264_config(
     config: &VideoStreamDecodeConfig,
 ) -> Option<VideoStreamConfigRejection> {
+    if let Some(rejection) = reject_unsupported_frame_contract(config) {
+        return Some(rejection);
+    }
+
     if let Some(profile) = config.profile
         && !matches!(profile, VideoProfile::H264(_))
     {
@@ -1327,6 +1336,10 @@ fn reject_unsupported_h264_config(
 fn reject_unsupported_h265_config(
     config: &VideoStreamDecodeConfig,
 ) -> Option<VideoStreamConfigRejection> {
+    if let Some(rejection) = reject_unsupported_frame_contract(config) {
+        return Some(rejection);
+    }
+
     if let Some(rejection) = reject_h265_declared_format(
         config.profile,
         config.bit_depth,
@@ -1437,8 +1450,24 @@ fn reject_h265_codec_private_requirement(
         requirement.profile,
         requirement.bit_depth,
         requirement.chroma,
-        requirement.surface_format,
+        video_frame_pixel_layout_from_decode_requirement(&requirement),
     )
+}
+
+/// Проверяет, что VAAPI stream config требует hardware DMA-BUF output.
+fn reject_unsupported_frame_contract(
+    config: &VideoStreamDecodeConfig,
+) -> Option<VideoStreamConfigRejection> {
+    match config.frame_contract.transfer_path {
+        VideoFrameTransferPath::HardwareZeroCopy {
+            handle: HardwareFrameHandle::DmaBuf { .. },
+        } => None,
+        VideoFrameTransferPath::SoftwareHostUpload => {
+            Some(VideoStreamConfigRejection::UnsupportedFrameContract {
+                frame_contract: config.frame_contract,
+            })
+        }
+    }
 }
 
 /// Проверяет optional bit depth на точное expected значение.

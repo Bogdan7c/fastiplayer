@@ -9,12 +9,11 @@ use std::{
 use bytes::Bytes;
 use codec_core::{
     BitDepth, ChromaSubsampling, H264Packetization, H265Packetization, VideoCodec,
-    VideoColorMetadata, VideoDecodeRequirement, VideoDisplayOrientation, VideoMemoryContract,
-    VideoProfile, video_frame_pixel_layout_from_decode_requirement,
+    VideoColorMetadata, VideoDecodeRequirement, VideoDisplayOrientation, VideoProfile,
 };
 use crossbeam_channel::{Receiver, RecvError, RecvTimeoutError, Sender, TrySendError, bounded};
 use media_core::{TrackId, TrackTimestamp};
-use video_frame_contract::{DmaBufImageLayout, VideoFrameContract, VideoFramePixelLayout};
+use video_frame_contract::{VideoFrameContract, VideoFramePixelLayout};
 
 /// Codec-specific framing, которое decoder backend не должен угадывать из bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,9 +67,13 @@ pub struct VideoStreamDecodeConfig {
 }
 
 impl VideoStreamDecodeConfig {
-    /// Создаёт stream config из уже принятого capability requirement.
+    /// Создаёт stream config из requirement и выбранного capability output contract-а.
     #[must_use]
-    pub fn from_requirement(track_id: TrackId, requirement: &VideoDecodeRequirement) -> Self {
+    pub fn from_requirement(
+        track_id: TrackId,
+        requirement: &VideoDecodeRequirement,
+        frame_contract: VideoFrameContract,
+    ) -> Self {
         Self {
             track_id,
             codec: requirement.codec,
@@ -80,39 +83,9 @@ impl VideoStreamDecodeConfig {
             coded_width: requirement.width,
             coded_height: requirement.height,
             display_orientation: VideoDisplayOrientation::Identity,
-            frame_contract: Self::frame_contract_from_requirement(requirement),
+            frame_contract,
             codec_private: None,
             packetization: None,
-        }
-    }
-
-    /// Выводит runtime frame contract из selection requirement-а.
-    ///
-    /// Пока selection не хранит exact DMA-BUF image layout, P010/NV12 используют
-    /// текущий production default `SeparateLayers`. Exact layout selection будет
-    /// отдельной boundary задачей.
-    #[must_use]
-    pub fn frame_contract_from_requirement(
-        requirement: &VideoDecodeRequirement,
-    ) -> VideoFrameContract {
-        let pixel_layout = requirement
-            .surface_format
-            .or_else(|| video_frame_pixel_layout_from_decode_requirement(requirement))
-            .unwrap_or(VideoFramePixelLayout::Nv12);
-
-        match pixel_layout {
-            VideoFramePixelLayout::Nv12 => {
-                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers)
-            }
-            VideoFramePixelLayout::P010 => {
-                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers)
-            }
-            VideoFramePixelLayout::Yuv420Planar8 => VideoFrameContract::host_yuv420_planar8(),
-            VideoFramePixelLayout::Yuv420Planar10Le => VideoFrameContract::host_yuv420_planar10le(),
-            VideoFramePixelLayout::Rgba8 => VideoFrameContract {
-                pixel_layout,
-                transfer_path: video_frame_contract::VideoFrameTransferPath::SoftwareHostUpload,
-            },
         }
     }
 
@@ -174,10 +147,10 @@ pub enum VideoStreamConfigRejection {
         surface_format: VideoFramePixelLayout,
     },
 
-    /// Backend не может выполнить требуемый decoded memory contract.
-    UnsupportedMemoryContract {
-        /// Memory contract, который требовал stream config.
-        memory_contract: VideoMemoryContract,
+    /// Backend не может выполнить требуемый decoded frame transfer/layout contract.
+    UnsupportedFrameContract {
+        /// Frame contract, который требовал stream config.
+        frame_contract: VideoFrameContract,
     },
 
     /// Для codec-а нужна packetization metadata, но она ещё не подтверждена.
@@ -224,10 +197,11 @@ impl std::fmt::Display for VideoStreamConfigRejection {
                     "decoder backend does not support surface format {surface_format}"
                 )
             }
-            Self::UnsupportedMemoryContract { memory_contract } => {
+            Self::UnsupportedFrameContract { frame_contract } => {
                 write!(
                     formatter,
-                    "decoder backend does not support memory contract {memory_contract:?}"
+                    "decoder backend does not support frame contract {}",
+                    frame_contract.diagnostic_label()
                 )
             }
             Self::MissingPacketization { codec } => {

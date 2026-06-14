@@ -1955,7 +1955,6 @@ fn video_requirement_from_h265_sps_metadata(metadata: &H265SpsMetadata) -> Video
         .with_bit_depth(metadata.bit_depth)
         .with_chroma(metadata.chroma)
         .with_resolution(metadata.width, metadata.height)
-        .with_surface_format(metadata.surface_format)
 }
 
 fn video_requirement_from_h265_header_metadata(
@@ -1965,7 +1964,6 @@ fn video_requirement_from_h265_header_metadata(
         .with_profile(VideoProfile::H265(metadata.profile))
         .with_bit_depth(metadata.bit_depth)
         .with_chroma(metadata.chroma)
-        .with_surface_format(metadata.surface_format)
 }
 
 fn ebsp_to_rbsp(ebsp_bytes: &[u8]) -> Vec<u8> {
@@ -2459,7 +2457,7 @@ mod tests {
         assert_eq!(requirement.width, Some(3_840));
         assert_eq!(requirement.height, Some(2_160));
         assert_eq!(
-            requirement.surface_format,
+            crate::video_frame_pixel_layout_from_decode_requirement(&requirement),
             Some(VideoFramePixelLayout::P010)
         );
         assert_eq!(nal_types, vec![32, 33, 34, 21]);
@@ -2499,7 +2497,9 @@ mod tests {
         );
         assert_eq!(requirement_without_dimensions.width, None);
         assert_eq!(
-            requirement_without_dimensions.surface_format,
+            crate::video_frame_pixel_layout_from_decode_requirement(
+                &requirement_without_dimensions
+            ),
             Some(VideoFramePixelLayout::P010)
         );
     }

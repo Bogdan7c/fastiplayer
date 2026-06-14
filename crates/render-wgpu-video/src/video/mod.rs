@@ -1071,7 +1071,7 @@ mod tests {
     }
 
     #[test]
-    fn p010_storage_layouts_map_to_same_renderer_plane_kind() {
+    fn p010_dma_buf_image_layouts_map_to_same_renderer_plane_kind() {
         let baseline_separate_layer_kind = p010_storage_layout_renderer_plane_kind(
             video_frame_contract::DmaBufImageLayout::SeparateLayers,
         );

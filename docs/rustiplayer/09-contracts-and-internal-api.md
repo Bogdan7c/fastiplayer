@@ -170,8 +170,10 @@ pre-roll/drop/commit.
 
 `VideoDecodeRequirement` является единственным объектом stream requirement,
 который попадает в capability selection. Он объединяет codec/profile/bit-depth/
-chroma/resolution, surface format, memory contract, color pipeline requirement и
-timing contract.
+chroma/resolution, color pipeline requirement и timing contract. Concrete output
+contract не живёт в stream requirement: backend/provider объявляет
+`VideoFrameContract` внутри `SupportedVideoOutput`, а selection выбирает одну
+связанную запись decode format + frame contract.
 
 Codec adapters могут уточнять requirements. Они не должны напрямую открывать
 backend, renderer, UI или source resources.
@@ -183,9 +185,9 @@ backend, renderer, UI или source resources.
 Selection должна учитывать:
 
 - supported decode format;
-- mandatory export path from `VideoMemoryContract`;
-- renderer format support;
-- P010 readiness and storage layout;
+- backend-declared `VideoFrameTransferPath`;
+- renderer-declared `VideoFrameContract`;
+- P010 readiness and hardware handle layout;
 - strict HDR metadata;
 - renderer HDR-to-SDR settings.
 

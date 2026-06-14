@@ -614,8 +614,8 @@ mod tests {
     use std::time::Duration;
 
     use capability_core::{
-        BackendCapabilities, BackendDriverInfo, BackendProbeStatus, SystemCapabilities,
-        VideoExportPath,
+        BackendCapabilities, BackendDriverInfo, BackendProbeStatus, SupportedVideoOutput,
+        SystemCapabilities,
     };
     use codec_core::{
         BitDepth, ChromaSubsampling, DecodeBackendId, SupportedVideoDecodeFormat, VideoCodec,
@@ -627,10 +627,27 @@ mod tests {
         YoutubeStreamCandidates, YoutubeStreamKind, YoutubeVideoRequirement,
     };
     use source_core::SourceValidators;
+    use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
     use super::*;
 
     fn capabilities_with_vp9_profile0() -> SystemCapabilities {
+        let decode_format = SupportedVideoDecodeFormat {
+            codec: VideoCodec::Vp9,
+            profile: VideoProfile::Vp9(Vp9Profile::Profile0),
+            bit_depth: BitDepth::Eight,
+            chroma: ChromaSubsampling::Yuv420,
+            max_width: Some(4096),
+            max_height: Some(2304),
+            max_fps: None,
+            hdr_input: false,
+        };
+        let output = SupportedVideoOutput {
+            backend: DecodeBackendId::vaapi(),
+            decode_format,
+            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+        };
+
         SystemCapabilities {
             schema_version: capability_core::CURRENT_CAPABILITY_SCHEMA_VERSION,
             probed_at_unix_seconds: 1,
@@ -639,26 +656,15 @@ mod tests {
                 display_name: "VA-API".to_string(),
                 status: BackendProbeStatus::Available,
                 driver: BackendDriverInfo::default(),
-                supported_video_decode_formats: vec![SupportedVideoDecodeFormat {
-                    codec: VideoCodec::Vp9,
-                    profile: VideoProfile::Vp9(Vp9Profile::Profile0),
-                    bit_depth: BitDepth::Eight,
-                    chroma: ChromaSubsampling::Yuv420,
-                    max_width: Some(4096),
-                    max_height: Some(2304),
-                    max_fps: None,
-                    hdr_input: false,
-                    backend: DecodeBackendId::vaapi(),
-                }],
+                raw_supported_outputs: vec![output.clone()],
                 raw_profiles: Vec::new(),
                 raw_entrypoints: Vec::new(),
                 raw_rt_formats: Vec::new(),
                 quirks: Vec::new(),
-                export_paths: vec![VideoExportPath::DmaBuf],
-                p010_storage_layouts: Vec::new(),
                 diagnostics: Vec::new(),
             }],
             render_backends: vec![RenderCapabilities::wgpu_nv12(Some(4096))],
+            playable_video_outputs: vec![output],
         }
     }
 

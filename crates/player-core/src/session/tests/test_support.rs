@@ -1745,6 +1745,20 @@ pub(super) fn decoder_resource_snapshot_for_tests(
 
 pub(super) fn capabilities_with_vp9_profile0() -> SystemCapabilities {
     let backend_id = test_decode_backend_id();
+    let output = SupportedVideoOutput {
+        backend: backend_id.clone(),
+        decode_format: SupportedVideoDecodeFormat {
+            codec: VideoCodec::Vp9,
+            profile: VideoProfile::Vp9(Vp9Profile::Profile0),
+            bit_depth: BitDepth::Eight,
+            chroma: ChromaSubsampling::Yuv420,
+            max_width: Some(1920),
+            max_height: Some(1080),
+            max_fps: None,
+            hdr_input: false,
+        },
+        frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+    };
 
     SystemCapabilities {
         schema_version: capability_core::CURRENT_CAPABILITY_SCHEMA_VERSION,
@@ -1754,31 +1768,34 @@ pub(super) fn capabilities_with_vp9_profile0() -> SystemCapabilities {
             display_name: "Test hardware decoder".to_string(),
             status: BackendProbeStatus::Available,
             driver: BackendDriverInfo::default(),
-            supported_video_decode_formats: vec![SupportedVideoDecodeFormat {
-                codec: VideoCodec::Vp9,
-                profile: VideoProfile::Vp9(Vp9Profile::Profile0),
-                bit_depth: BitDepth::Eight,
-                chroma: ChromaSubsampling::Yuv420,
-                max_width: Some(1920),
-                max_height: Some(1080),
-                max_fps: None,
-                hdr_input: false,
-                backend: backend_id,
-            }],
+            raw_supported_outputs: vec![output.clone()],
             raw_profiles: Vec::new(),
             raw_entrypoints: Vec::new(),
             raw_rt_formats: Vec::new(),
             quirks: Vec::new(),
-            export_paths: vec![VideoExportPath::DmaBuf],
-            p010_storage_layouts: Vec::new(),
             diagnostics: Vec::new(),
         }],
         render_backends: vec![RenderCapabilities::wgpu_nv12(Some(4096))],
+        playable_video_outputs: vec![output],
     }
 }
 
 pub(super) fn capabilities_with_phase10_vp9_profile2_hdr() -> SystemCapabilities {
     let backend_id = test_decode_backend_id();
+    let output = SupportedVideoOutput {
+        backend: backend_id.clone(),
+        decode_format: SupportedVideoDecodeFormat {
+            codec: VideoCodec::Vp9,
+            profile: VideoProfile::Vp9(Vp9Profile::Profile2),
+            bit_depth: BitDepth::Ten,
+            chroma: ChromaSubsampling::Yuv420,
+            max_width: Some(4096),
+            max_height: Some(4096),
+            max_fps: None,
+            hdr_input: true,
+        },
+        frame_contract: VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
+    };
 
     SystemCapabilities {
         schema_version: capability_core::CURRENT_CAPABILITY_SCHEMA_VERSION,
@@ -1788,26 +1805,15 @@ pub(super) fn capabilities_with_phase10_vp9_profile2_hdr() -> SystemCapabilities
             display_name: "Test hardware decoder".to_string(),
             status: BackendProbeStatus::Available,
             driver: BackendDriverInfo::default(),
-            supported_video_decode_formats: vec![SupportedVideoDecodeFormat {
-                codec: VideoCodec::Vp9,
-                profile: VideoProfile::Vp9(Vp9Profile::Profile2),
-                bit_depth: BitDepth::Ten,
-                chroma: ChromaSubsampling::Yuv420,
-                max_width: Some(4096),
-                max_height: Some(4096),
-                max_fps: None,
-                hdr_input: true,
-                backend: backend_id,
-            }],
+            raw_supported_outputs: vec![output.clone()],
             raw_profiles: Vec::new(),
             raw_entrypoints: Vec::new(),
             raw_rt_formats: Vec::new(),
             quirks: Vec::new(),
-            export_paths: vec![VideoExportPath::DmaBuf],
-            p010_storage_layouts: vec![DmaBufImageLayout::SeparateLayers],
             diagnostics: Vec::new(),
         }],
         render_backends: vec![RenderCapabilities::wgpu_p010_bt2446c(Some(4096))],
+        playable_video_outputs: vec![output],
     }
 }
 

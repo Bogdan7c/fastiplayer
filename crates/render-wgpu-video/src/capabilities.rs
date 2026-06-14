@@ -6,22 +6,22 @@ pub(crate) fn wgpu_capabilities_from_features(
     max_texture_size: Option<u32>,
     device_features: wgpu::Features,
 ) -> RenderCapabilities {
-    let mut supported_p010_storage_layouts = Vec::new();
+    let mut supported_p010_dma_buf_image_layouts = Vec::new();
 
     if device_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
-        supported_p010_storage_layouts.push(DmaBufImageLayout::SeparateLayers);
+        supported_p010_dma_buf_image_layouts.push(DmaBufImageLayout::SeparateLayers);
     }
 
     if device_features.contains(wgpu::Features::TEXTURE_FORMAT_P010) {
-        supported_p010_storage_layouts.push(DmaBufImageLayout::ComposedLayers);
+        supported_p010_dma_buf_image_layouts.push(DmaBufImageLayout::ComposedLayers);
     }
 
-    if supported_p010_storage_layouts.is_empty() {
+    if supported_p010_dma_buf_image_layouts.is_empty() {
         RenderCapabilities::wgpu_nv12(max_texture_size)
     } else {
-        RenderCapabilities::wgpu_p010_bt2446c_with_storage_layouts(
+        RenderCapabilities::wgpu_p010_bt2446c_with_dma_buf_image_layouts(
             max_texture_size,
-            supported_p010_storage_layouts,
+            supported_p010_dma_buf_image_layouts,
         )
     }
 }

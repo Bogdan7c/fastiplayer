@@ -615,19 +615,14 @@ pub const fn video_frame_pixel_layout_from_optional_codec_fields(
     }
 }
 
-/// Выводит минимальный renderer input layout из stream requirement.
+/// Выводит codec-level decoded pixel layout hint из stream requirement.
 ///
-/// Если codec adapter уже зафиксировал `surface_format`, именно это поле
-/// временно остаётся transition hint-ом. Иначе используется текущая legacy
-/// эвристика: неизвестная bit depth остаётся SDR/NV12 до packet-level refinement.
+/// Это не выбранный renderer/backend output contract. Конкретный
+/// `VideoFrameContract` объявляет backend provider через capability output.
 #[must_use]
 pub fn video_frame_pixel_layout_from_decode_requirement(
     requirement: &VideoDecodeRequirement,
 ) -> Option<VideoFramePixelLayout> {
-    if let Some(surface_format) = requirement.surface_format {
-        return Some(surface_format);
-    }
-
     if let Some(chroma) = requirement.chroma
         && chroma != ChromaSubsampling::Yuv420
     {
@@ -638,60 +633,6 @@ pub fn video_frame_pixel_layout_from_decode_requirement(
         Some(BitDepth::Ten) => Some(VideoFramePixelLayout::P010),
         Some(BitDepth::Twelve) => None,
         Some(BitDepth::Eight) | None => Some(VideoFramePixelLayout::Nv12),
-    }
-}
-
-/// Обязательный zero-copy export/import механизм для production video path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ZeroCopyExportRequirement {
-    /// DMA-BUF fd export из decoder backend и import renderer-ом.
-    DmaBuf,
-}
-
-impl fmt::Display for ZeroCopyExportRequirement {
-    /// Печатает export requirement в стабильной diagnostic форме.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            Self::DmaBuf => "DMA-BUF",
-        };
-        formatter.write_str(label)
-    }
-}
-
-/// Контракт памяти decoded frame-а, общий для codec adapters, decoder backend-а и renderer-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VideoMemoryContract {
-    /// Production video кадры обязаны идти только через hardware zero-copy path.
-    HardwareZeroCopy {
-        /// Какой external-memory export должен подтвердить decode backend.
-        export: ZeroCopyExportRequirement,
-    },
-}
-
-impl VideoMemoryContract {
-    /// Возвращает production baseline: hardware decode + DMA-BUF zero-copy.
-    #[must_use]
-    pub const fn dma_buf_zero_copy() -> Self {
-        Self::HardwareZeroCopy {
-            export: ZeroCopyExportRequirement::DmaBuf,
-        }
-    }
-
-    /// Возвращает export requirement, нужный для удовлетворения контракта.
-    #[must_use]
-    pub const fn required_export(self) -> ZeroCopyExportRequirement {
-        match self {
-            Self::HardwareZeroCopy { export } => export,
-        }
-    }
-}
-
-impl Default for VideoMemoryContract {
-    /// По умолчанию любое video requirement остаётся zero-copy-only.
-    fn default() -> Self {
-        Self::dma_buf_zero_copy()
     }
 }
 
@@ -781,14 +722,6 @@ pub struct VideoDecodeRequirement {
     /// FPS, если он известен.
     pub fps: Option<f64>,
 
-    /// Codec-neutral surface format, если adapter уже вывел точный decoded boundary.
-    #[serde(default)]
-    pub surface_format: Option<VideoFramePixelLayout>,
-
-    /// Общий memory contract; production default запрещает CPU fallback.
-    #[serde(default)]
-    pub memory_contract: VideoMemoryContract,
-
     /// Общий color pipeline requirement с origin/confidence metadata.
     #[serde(default)]
     pub color_pipeline: ColorPipelineRequirement,
@@ -816,8 +749,6 @@ impl VideoDecodeRequirement {
             width: None,
             height: None,
             fps: None,
-            surface_format: None,
-            memory_contract: VideoMemoryContract::dma_buf_zero_copy(),
             color_pipeline: ColorPipelineRequirement::unspecified_sdr(),
             timing_contract: FrameTimingContract {
                 nominal_frame_rate: None,
@@ -852,8 +783,6 @@ impl VideoDecodeRequirement {
     #[must_use]
     pub const fn with_bit_depth(mut self, bit_depth: BitDepth) -> Self {
         self.bit_depth = Some(bit_depth);
-        self.surface_format =
-            video_frame_pixel_layout_from_optional_codec_fields(self.bit_depth, self.chroma);
         self
     }
 
@@ -861,8 +790,6 @@ impl VideoDecodeRequirement {
     #[must_use]
     pub const fn with_chroma(mut self, chroma: ChromaSubsampling) -> Self {
         self.chroma = Some(chroma);
-        self.surface_format =
-            video_frame_pixel_layout_from_optional_codec_fields(self.bit_depth, self.chroma);
         self
     }
 
@@ -871,13 +798,6 @@ impl VideoDecodeRequirement {
     pub const fn with_resolution(mut self, width: u32, height: u32) -> Self {
         self.width = Some(width);
         self.height = Some(height);
-        self
-    }
-
-    /// Возвращает копию requirement с явно заданным decoded surface contract.
-    #[must_use]
-    pub const fn with_surface_format(mut self, surface_format: VideoFramePixelLayout) -> Self {
-        self.surface_format = Some(surface_format);
         self
     }
 
@@ -923,10 +843,6 @@ impl VideoDecodeRequirement {
             parts.push(format!("{fps:.2} fps"));
         }
 
-        if let Some(surface_format) = self.surface_format {
-            parts.push(format!("surface {surface_format}"));
-        }
-
         if self.hdr {
             parts.push("HDR".to_string());
         }
@@ -962,9 +878,6 @@ pub struct SupportedVideoDecodeFormat {
 
     /// Может ли backend принять HDR input для этого формата.
     pub hdr_input: bool,
-
-    /// Backend, который предоставил формат.
-    pub backend: DecodeBackendId,
 }
 
 impl SupportedVideoDecodeFormat {
@@ -1016,16 +929,10 @@ impl SupportedVideoDecodeFormat {
             return false;
         }
 
-        if let Some(required_surface_format) = requirement.surface_format
-            && self.surface_format() != Some(required_surface_format)
-        {
-            return false;
-        }
-
         !requirement.hdr || self.hdr_input
     }
 
-    /// Возвращает decoded surface format, который backend format может произвести.
+    /// Возвращает codec-level decoded pixel layout hint для diagnostics/tests.
     #[must_use]
     pub const fn surface_format(&self) -> Option<VideoFramePixelLayout> {
         video_frame_pixel_layout_from_codec_fields(self.bit_depth, self.chroma)
@@ -1113,7 +1020,6 @@ mod tests {
             max_height: Some(1080),
             max_fps: None,
             hdr_input: false,
-            backend: DecodeBackendId::vaapi(),
         };
         let requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
             .with_profile(VideoProfile::Vp9(Vp9Profile::Profile2));
@@ -1132,7 +1038,6 @@ mod tests {
             max_height: Some(1080),
             max_fps: None,
             hdr_input: false,
-            backend: DecodeBackendId::vaapi(),
         };
         let requirement = VideoDecodeRequirement::new(VideoCodec::Vp9);
 

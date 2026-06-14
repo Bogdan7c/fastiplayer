@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use capability_core::{
     BackendCapabilities, BackendDriverInfo, BackendProbeStatus, DmaBufImageLayout, DriverQuirk,
-    VideoCapabilityProvider, VideoExportPath,
+    SupportedVideoOutput, VideoCapabilityProvider,
 };
 use codec_core::{
     Av1Profile, BitDepth, ChromaSubsampling, DecodeBackendId, H264Profile, H265Profile,
@@ -17,6 +17,7 @@ use codec_core::{
 };
 use cros_codecs::libva;
 use tracing::{debug, warn};
+use video_frame_contract::{VideoFrameContract, VideoFramePixelLayout};
 
 use crate::codec_adapter::VaapiCodecAdapterFactory;
 
@@ -170,36 +171,57 @@ pub fn probe_vaapi_capabilities() -> BackendCapabilities {
         "VA-API capability probe completed"
     );
 
-    let p010_storage_layouts = p010_storage_layouts_for_formats(&supported_formats);
+    let raw_supported_outputs = supported_formats
+        .into_iter()
+        .filter_map(|decode_format| {
+            vaapi_output_contract_for_format(&decode_format).map(|frame_contract| {
+                SupportedVideoOutput {
+                    backend: backend_id.clone(),
+                    decode_format,
+                    frame_contract,
+                }
+            })
+        })
+        .collect();
 
     BackendCapabilities {
         backend_id,
         display_name: VAAPI_DISPLAY_NAME.to_string(),
         status: BackendProbeStatus::Available,
         driver,
-        supported_video_decode_formats: supported_formats,
+        raw_supported_outputs,
         raw_profiles: raw_profiles.into_iter().collect(),
         raw_entrypoints: raw_entrypoints.into_iter().collect(),
         raw_rt_formats: raw_rt_formats.into_iter().collect(),
         quirks,
-        export_paths: vec![VideoExportPath::DmaBuf],
-        p010_storage_layouts,
         diagnostics,
     }
 }
 
-/// Возвращает P010 export layouts только если decode matrix реально содержит P010-кандидат.
-fn p010_storage_layouts_for_formats(
-    supported_formats: &[SupportedVideoDecodeFormat],
-) -> Vec<DmaBufImageLayout> {
-    let has_p010_format = supported_formats.iter().any(|format| {
-        format.bit_depth == BitDepth::Ten && format.chroma == ChromaSubsampling::Yuv420
-    });
-
-    if has_p010_format {
-        vec![DmaBufImageLayout::SeparateLayers]
-    } else {
-        Vec::new()
+/// Возвращает VAAPI production output contract для одного codec-level decode format-а.
+fn vaapi_output_contract_for_format(
+    format: &SupportedVideoDecodeFormat,
+) -> Option<VideoFrameContract> {
+    match video_frame_contract::VideoFramePixelLayout::from_frame_bit_depth_and_chroma(
+        match format.bit_depth {
+            BitDepth::Eight => video_frame_contract::FrameBitDepth::Eight,
+            BitDepth::Ten => video_frame_contract::FrameBitDepth::Ten,
+            BitDepth::Twelve => return None,
+        },
+        match format.chroma {
+            ChromaSubsampling::Yuv420 => video_frame_contract::FrameChromaSubsampling::Yuv420,
+            ChromaSubsampling::Yuv422 | ChromaSubsampling::Yuv444 => return None,
+        },
+    ) {
+        VideoFramePixelLayout::Nv12 => Some(VideoFrameContract::dma_buf_nv12(
+            DmaBufImageLayout::SeparateLayers,
+        )),
+        VideoFramePixelLayout::P010 => Some(VideoFrameContract::dma_buf_p010(
+            DmaBufImageLayout::SeparateLayers,
+        )),
+        VideoFramePixelLayout::Yuv420Planar8
+        | VideoFramePixelLayout::Yuv420Planar10Le
+        | VideoFramePixelLayout::Rgba8 => None,
     }
 }
 
@@ -666,7 +688,6 @@ fn push_matching_rt_format(
             max_height: max_resolution.height,
             max_fps: None,
             hdr_input: matches!(spec.bit_depth, BitDepth::Ten | BitDepth::Twelve),
-            backend: DecodeBackendId::vaapi(),
         });
     }
 }
@@ -792,7 +813,12 @@ mod tests {
         assert_eq!(formats[0].profile, VideoProfile::Vp9(Vp9Profile::Profile0));
         assert_eq!(formats[0].bit_depth, BitDepth::Eight);
         assert_eq!(formats[0].chroma, ChromaSubsampling::Yuv420);
-        assert!(p010_storage_layouts_for_formats(&formats).is_empty());
+        assert_eq!(
+            vaapi_output_contract_for_format(&formats[0]),
+            Some(VideoFrameContract::dma_buf_nv12(
+                DmaBufImageLayout::SeparateLayers
+            ))
+        );
     }
 
     #[test]
@@ -812,8 +838,10 @@ mod tests {
         assert_eq!(formats[0].bit_depth, BitDepth::Ten);
         assert_eq!(formats[0].chroma, ChromaSubsampling::Yuv420);
         assert_eq!(
-            p010_storage_layouts_for_formats(&formats),
-            vec![DmaBufImageLayout::SeparateLayers]
+            vaapi_output_contract_for_format(&formats[0]),
+            Some(VideoFrameContract::dma_buf_p010(
+                DmaBufImageLayout::SeparateLayers
+            ))
         );
     }
 
