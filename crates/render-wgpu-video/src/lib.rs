@@ -16,9 +16,9 @@ mod bt2446c_reference;
 
 pub use resource_provider::wrap_video_backend_for_wgpu_submission;
 pub use video::{
-    DmaBufWgpuFrameMaterializer, WgpuFramePlanes, WgpuFrameTextureViewLookup,
-    WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews, WgpuRenderableFrame,
-    WgpuVideoRenderer, clear_to_black,
+    DmaBufWgpuFrameMaterializer, WgpuFrameMaterializationUnsupportedReason, WgpuFramePlanes,
+    WgpuFrameTextureViewLookup, WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
+    WgpuRenderableFrame, WgpuVideoRenderer, clear_to_black,
 };
 
 /// Возвращает набор WGPU features, обязательный для video texture boundary.

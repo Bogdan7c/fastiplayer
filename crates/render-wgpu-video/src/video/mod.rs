@@ -11,10 +11,8 @@ use render_core::{
     RenderableFrame, SwapchainTransferMode, ToneMappingMode,
 };
 use video_backend_api::{PresentFrameResourceDescriptorLookup, PresentFrameResourceProviderHandle};
-use video_core::{
-    DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceDescriptor, FrameResourceHandle,
-};
-use video_frame_contract::VideoFramePixelLayout;
+use video_core::{DecodedFrame, DecodedPixelFormat, FrameResourceDescriptor, FrameResourceHandle};
+use video_frame_contract::{HardwareFrameHandle, VideoFramePixelLayout, VideoFrameTransferPath};
 
 use crate::capabilities::wgpu_capabilities_from_features;
 use crate::dma_buf_import::{DmaBufImporter, ImportedDmaBufTexture};
@@ -50,6 +48,25 @@ impl WgpuFrameTextureViews {
     }
 }
 
+/// Почему конкретный descriptor не подходит этому WGPU materializer-у.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WgpuFrameMaterializationUnsupportedReason {
+    /// Descriptor содержит CPU-visible host planes, а этот materializer импортирует только DMA-BUF.
+    HostPlanarRequiresUploadMaterializer,
+}
+
+impl WgpuFrameMaterializationUnsupportedReason {
+    /// Stable diagnostic label без user-facing текста.
+    #[must_use]
+    pub const fn diagnostic_label(self) -> &'static str {
+        match self {
+            Self::HostPlanarRequiresUploadMaterializer => {
+                "host planar descriptor requires upload materializer"
+            }
+        }
+    }
+}
+
 /// Результат WGPU materialization без участия playback core.
 pub enum WgpuFrameTextureViewLookup {
     /// Backend вернул валидные plane views для renderer-а.
@@ -75,6 +92,9 @@ pub enum WgpuFrameTextureViewLookup {
 
     /// Descriptor существует, но этот materializer не умеет такой resource kind.
     Unsupported {
+        /// Техническая причина отказа materializer-а.
+        reason: WgpuFrameMaterializationUnsupportedReason,
+
         /// Сколько render thread ждал lock texture pool-а внутри backend provider-а.
         texture_pool_lock_wait: Duration,
     },
@@ -103,6 +123,7 @@ impl WgpuFrameTextureViewLookup {
             }
             | Self::Unsupported {
                 texture_pool_lock_wait,
+                ..
             }
             | Self::Error {
                 texture_pool_lock_wait,
@@ -220,6 +241,7 @@ fn unsupported_lookup_for_non_dma_buf_descriptor(
     match descriptor {
         FrameResourceDescriptor::DmaBuf(_) => None,
         FrameResourceDescriptor::HostPlanar(_) => Some(WgpuFrameTextureViewLookup::Unsupported {
+            reason: WgpuFrameMaterializationUnsupportedReason::HostPlanarRequiresUploadMaterializer,
             texture_pool_lock_wait,
         }),
     }
@@ -382,33 +404,35 @@ impl<'frame> WgpuRenderableFrame<'frame> {
 
 /// Проверяет NV12 decoded frame до привязки backend-specific texture views.
 fn validate_decoded_nv12_frame(frame: &DecodedFrame) -> Result<()> {
-    frame.validate_contract()?;
-    ensure!(
-        frame.format() == DecodedPixelFormat::Nv12,
-        "from_decoded_nv12 received {} frame",
-        frame.format()
-    );
-    ensure!(
-        frame.memory_path() == FrameMemoryPath::DmaBufZeroCopy,
-        "NV12 WGPU boundary requires zero-copy memory path, got {}",
-        frame.memory_path()
-    );
-
-    Ok(())
+    validate_current_dma_buf_frame_contract(frame, DecodedPixelFormat::Nv12, "NV12")
 }
 
 /// Проверяет P010 decoded frame до привязки backend-specific texture views.
 fn validate_decoded_p010_frame(frame: &DecodedFrame) -> Result<()> {
-    frame.validate_contract()?;
+    validate_current_dma_buf_frame_contract(frame, DecodedPixelFormat::P010, "P010")
+}
+
+/// Проверяет, что decoded frame соответствует текущему WGPU DMA-BUF path-у.
+fn validate_current_dma_buf_frame_contract(
+    frame: &DecodedFrame,
+    expected_pixel_layout: VideoFramePixelLayout,
+    boundary_label: &str,
+) -> Result<()> {
+    frame.validate_self_consistency()?;
     ensure!(
-        frame.format() == DecodedPixelFormat::P010,
-        "from_decoded_p010 received {} frame",
-        frame.format()
+        matches!(
+            frame.frame_contract.transfer_path,
+            VideoFrameTransferPath::HardwareZeroCopy {
+                handle: HardwareFrameHandle::DmaBuf { .. },
+            }
+        ),
+        "{boundary_label} WGPU boundary requires DMA-BUF hardware zero-copy frame contract, got {}",
+        frame.frame_contract
     );
     ensure!(
-        frame.memory_path() == FrameMemoryPath::DmaBufZeroCopy,
-        "P010 WGPU boundary requires zero-copy memory path, got {}",
-        frame.memory_path()
+        frame.frame_contract.pixel_layout == expected_pixel_layout,
+        "from_decoded_{boundary_label} received {} frame",
+        frame.format()
     );
 
     Ok(())
@@ -1039,7 +1063,9 @@ mod tests {
         assert!(matches!(
             lookup,
             WgpuFrameTextureViewLookup::Unsupported {
-                texture_pool_lock_wait
+                reason:
+                    WgpuFrameMaterializationUnsupportedReason::HostPlanarRequiresUploadMaterializer,
+                texture_pool_lock_wait,
             } if texture_pool_lock_wait == Duration::from_millis(4)
         ));
     }

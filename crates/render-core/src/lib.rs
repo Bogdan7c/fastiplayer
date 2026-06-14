@@ -14,7 +14,10 @@ use codec_core::{
     video_frame_pixel_layout_from_decode_requirement,
 };
 use serde::{Deserialize, Serialize};
-use video_frame_contract::{DmaBufImageLayout, VideoFramePixelLayout};
+use video_frame_contract::{
+    DmaBufImageLayout, HardwareFrameHandle, VideoFrameContract, VideoFrameContractValidationError,
+    VideoFramePixelLayout, VideoFrameTransferPath,
+};
 
 /// Стабильный идентификатор семейства renderer backend-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1726,6 +1729,87 @@ impl RenderableFrame {
     }
 }
 
+/// Техническая причина отказа при проверке одного renderer frame contract-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderFrameContractRejection {
+    /// Сам contract нарушает invariant neutral vocabulary.
+    InvalidContract {
+        /// Причина, которую вернул `video-frame-contract`.
+        reason: VideoFrameContractValidationError,
+    },
+
+    /// Renderer вообще не объявлял такой transfer path.
+    UnsupportedTransferPath {
+        /// Transfer path/layout, который запросил caller.
+        transfer_path: VideoFrameTransferPath,
+    },
+
+    /// Renderer не объявлял такой pixel layout ни для одного path-а.
+    UnsupportedPixelLayout {
+        /// Pixel layout, который запросил caller.
+        pixel_layout: VideoFramePixelLayout,
+    },
+
+    /// Renderer поддерживает DMA-BUF для pixel layout-а, но не этот image layout.
+    UnsupportedDmaBufImageLayout {
+        /// Pixel layout, для которого проверялся DMA-BUF layout.
+        pixel_layout: VideoFramePixelLayout,
+
+        /// DMA-BUF image layout, который не входит в renderer contract list.
+        image_layout: DmaBufImageLayout,
+    },
+
+    /// Pixel layout и transfer path по отдельности известны, но не как одна пара.
+    UnsupportedContractCombination {
+        /// Полный frame contract, который нельзя собирать через Cartesian product.
+        frame_contract: VideoFrameContract,
+    },
+}
+
+/// Размерная ось, которая превысила renderer texture limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderTextureDimension {
+    /// Coded width stream-а.
+    Width,
+
+    /// Coded height stream-а.
+    Height,
+}
+
+/// Техническая причина отказа stream-level renderer output check-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderVideoOutputRejection {
+    /// Frame contract сам по себе не входит в renderer input boundary.
+    FrameContract {
+        /// Детальная contract-level причина.
+        reason: RenderFrameContractRejection,
+    },
+
+    /// P010 path объявлен не как production-renderable.
+    P010NotRenderable {
+        /// Текущий diagnostic readiness.
+        readiness: P010RenderReadiness,
+    },
+
+    /// Stream требует HDR обработки, но renderer не имеет подходящего output path-а.
+    HdrUnsupported {
+        /// Frame contract, который проверялся для HDR stream-а.
+        frame_contract: VideoFrameContract,
+    },
+
+    /// Coded размер stream-а превышает renderer texture limit.
+    MaxTextureSizeExceeded {
+        /// Какая ось превысила limit.
+        dimension: RenderTextureDimension,
+
+        /// Запрошенный размер по этой оси.
+        requested: u32,
+
+        /// Максимум, объявленный renderer backend-ом.
+        max_texture_size: u32,
+    },
+}
+
 /// Возможности одного renderer backend-а.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1736,16 +1820,12 @@ pub struct RenderCapabilities {
     /// Человекочитаемое имя backend-а.
     pub display_name: String,
 
-    /// Форматы decoded frame, которые backend может принять.
-    pub supported_frame_formats: Vec<VideoFramePixelLayout>,
+    /// Полные frame contracts, которые backend может принять без скрытых fallback-ов.
+    pub supported_frame_contracts: Vec<VideoFrameContract>,
 
     /// Состояние P010: diagnostic boundary отдельно от production renderability.
     #[serde(default)]
     pub p010_render_readiness: P010RenderReadiness,
-
-    /// P010 storage layouts, которые backend может импортировать без CPU fallback.
-    #[serde(default)]
-    pub supported_p010_storage_layouts: Vec<DmaBufImageLayout>,
 
     /// HDR-to-SDR operators, которые backend реально реализует в production shader path.
     #[serde(default)]
@@ -1784,9 +1864,10 @@ impl RenderCapabilities {
         Self {
             backend: RenderBackendKind::Wgpu,
             display_name: "WGPU NV12 renderer".to_string(),
-            supported_frame_formats: vec![VideoFramePixelLayout::Nv12],
+            supported_frame_contracts: vec![VideoFrameContract::dma_buf_nv12(
+                DmaBufImageLayout::SeparateLayers,
+            )],
             p010_render_readiness: P010RenderReadiness::Unavailable,
-            supported_p010_storage_layouts: Vec::new(),
             supported_hdr_to_sdr_operators: Vec::new(),
             hdr_output_mode: HdrOutputMode::SdrBt709Only,
             supports_hdr_to_sdr: false,
@@ -1816,12 +1897,20 @@ impl RenderCapabilities {
         max_texture_size: Option<u32>,
         supported_p010_storage_layouts: Vec<DmaBufImageLayout>,
     ) -> Self {
+        let mut supported_frame_contracts = vec![VideoFrameContract::dma_buf_nv12(
+            DmaBufImageLayout::SeparateLayers,
+        )];
+        supported_frame_contracts.extend(
+            supported_p010_storage_layouts
+                .into_iter()
+                .map(VideoFrameContract::dma_buf_p010),
+        );
+
         Self {
             backend: RenderBackendKind::Wgpu,
             display_name: "WGPU P010 BT.2446-C renderer".to_string(),
-            supported_frame_formats: vec![VideoFramePixelLayout::Nv12, VideoFramePixelLayout::P010],
+            supported_frame_contracts,
             p010_render_readiness: P010RenderReadiness::Renderable,
-            supported_p010_storage_layouts,
             supported_hdr_to_sdr_operators: vec![HdrToneMappingOperator::Bt2446C],
             hdr_output_mode: HdrOutputMode::SdrBt709Only,
             supports_hdr_to_sdr: true,
@@ -1836,21 +1925,77 @@ impl RenderCapabilities {
     /// Проверяет прямую поддержку входного frame format.
     #[must_use]
     pub fn supports_frame_format(&self, format: VideoFramePixelLayout) -> bool {
-        self.supported_frame_formats.contains(&format)
+        self.supported_frame_contracts
+            .iter()
+            .any(|contract| contract.pixel_layout == format)
+    }
+
+    /// Проверяет поддержку полного frame contract-а без stream-level HDR/size policy.
+    #[must_use]
+    pub fn supports_frame_contract(&self, frame_contract: VideoFrameContract) -> bool {
+        self.check_frame_contract(frame_contract).is_ok()
+    }
+
+    /// Возвращает техническую причину, если frame contract не входит в renderer boundary.
+    pub fn check_frame_contract(
+        &self,
+        frame_contract: VideoFrameContract,
+    ) -> Result<(), RenderFrameContractRejection> {
+        frame_contract
+            .validate()
+            .map_err(|reason| RenderFrameContractRejection::InvalidContract { reason })?;
+
+        if self.supported_frame_contracts.contains(&frame_contract) {
+            return Ok(());
+        }
+
+        let transfer_family_supported = self.supported_frame_contracts.iter().any(|contract| {
+            same_transfer_path_family(contract.transfer_path, frame_contract.transfer_path)
+        });
+        if !transfer_family_supported {
+            return Err(RenderFrameContractRejection::UnsupportedTransferPath {
+                transfer_path: frame_contract.transfer_path,
+            });
+        }
+
+        if !self.supports_frame_format(frame_contract.pixel_layout) {
+            return Err(RenderFrameContractRejection::UnsupportedPixelLayout {
+                pixel_layout: frame_contract.pixel_layout,
+            });
+        }
+
+        if let Some(image_layout) = dma_buf_image_layout(frame_contract.transfer_path) {
+            let supports_same_pixel_dma_buf =
+                self.supported_frame_contracts.iter().any(|contract| {
+                    contract.pixel_layout == frame_contract.pixel_layout
+                        && dma_buf_image_layout(contract.transfer_path).is_some()
+                });
+            if supports_same_pixel_dma_buf {
+                return Err(RenderFrameContractRejection::UnsupportedDmaBufImageLayout {
+                    pixel_layout: frame_contract.pixel_layout,
+                    image_layout,
+                });
+            }
+        }
+
+        Err(RenderFrameContractRejection::UnsupportedContractCombination { frame_contract })
     }
 
     /// Проверяет, что P010 доступен именно как production-renderable path.
     #[must_use]
     pub fn supports_p010_rendering(&self) -> bool {
         self.p010_render_readiness.is_renderable()
-            && self.supports_frame_format(VideoFramePixelLayout::P010)
-            && !self.supported_p010_storage_layouts.is_empty()
+            && self.supported_frame_contracts.iter().any(|contract| {
+                contract.pixel_layout == VideoFramePixelLayout::P010
+                    && dma_buf_image_layout(contract.transfer_path).is_some()
+            })
     }
 
     /// Проверяет, что renderer умеет импортировать конкретный P010 storage layout.
     #[must_use]
     pub fn supports_p010_storage_layout(&self, layout: DmaBufImageLayout) -> bool {
-        self.supports_p010_rendering() && self.supported_p010_storage_layouts.contains(&layout)
+        self.supports_p010_rendering()
+            && self.supports_frame_contract(VideoFrameContract::dma_buf_p010(layout))
     }
 
     /// Проверяет production-ready HDR-to-SDR support для конкретных settings.
@@ -1868,59 +2013,104 @@ impl RenderCapabilities {
     /// Проверяет, сможет ли renderer показать stream с указанными требованиями.
     #[must_use]
     pub fn supports_decode_requirement(&self, requirement: &VideoDecodeRequirement) -> bool {
+        let Some(frame_contract) = dma_buf_frame_contract_from_decode_requirement(
+            requirement,
+            DmaBufImageLayout::SeparateLayers,
+        ) else {
+            return false;
+        };
+
+        self.supports_video_output(requirement, frame_contract)
+    }
+
+    /// Проверяет stream-level renderability для уже выбранного frame contract-а.
+    #[must_use]
+    pub fn supports_video_output(
+        &self,
+        requirement: &VideoDecodeRequirement,
+        frame_contract: VideoFrameContract,
+    ) -> bool {
+        self.check_video_output(requirement, frame_contract).is_ok()
+    }
+
+    /// Возвращает техническую причину stream-level renderer rejection-а.
+    pub fn check_video_output(
+        &self,
+        requirement: &VideoDecodeRequirement,
+        frame_contract: VideoFrameContract,
+    ) -> Result<(), RenderVideoOutputRejection> {
+        if let Err(reason) = frame_contract.validate() {
+            return Err(RenderVideoOutputRejection::FrameContract {
+                reason: RenderFrameContractRejection::InvalidContract { reason },
+            });
+        }
+
         if requirement.hdr
             && !(self.supports_hdr_to_sdr_with(&HdrToSdrSettings::default())
                 || self.supports_native_hdr_output)
         {
-            return false;
+            return Err(RenderVideoOutputRejection::HdrUnsupported { frame_contract });
         }
 
         let Some(frame_format) = video_frame_pixel_layout_from_decode_requirement(requirement)
         else {
-            return false;
+            return Err(RenderVideoOutputRejection::FrameContract {
+                reason: RenderFrameContractRejection::UnsupportedPixelLayout {
+                    pixel_layout: frame_contract.pixel_layout,
+                },
+            });
         };
 
         if frame_format == VideoFramePixelLayout::P010 && !self.supports_p010_rendering() {
-            return false;
+            return Err(RenderVideoOutputRejection::P010NotRenderable {
+                readiness: self.p010_render_readiness,
+            });
         }
 
-        if !self.supports_frame_format(frame_format) {
-            return false;
+        if frame_contract.pixel_layout != frame_format {
+            return Err(RenderVideoOutputRejection::FrameContract {
+                reason: RenderFrameContractRejection::UnsupportedContractCombination {
+                    frame_contract,
+                },
+            });
+        }
+
+        if let Err(reason) = self.check_frame_contract(frame_contract) {
+            return Err(RenderVideoOutputRejection::FrameContract { reason });
         }
 
         if let (Some(width), Some(max_texture_size)) = (requirement.width, self.max_texture_size)
             && width > max_texture_size
         {
-            return false;
+            return Err(RenderVideoOutputRejection::MaxTextureSizeExceeded {
+                dimension: RenderTextureDimension::Width,
+                requested: width,
+                max_texture_size,
+            });
         }
 
         if let (Some(height), Some(max_texture_size)) = (requirement.height, self.max_texture_size)
             && height > max_texture_size
         {
-            return false;
+            return Err(RenderVideoOutputRejection::MaxTextureSizeExceeded {
+                dimension: RenderTextureDimension::Height,
+                requested: height,
+                max_texture_size,
+            });
         }
 
-        true
+        Ok(())
     }
 
     /// Формирует одну строку diagnostics для capability report.
     #[must_use]
     pub fn summary_text(&self) -> String {
-        let frame_formats = self
-            .supported_frame_formats
+        let frame_contracts = self
+            .supported_frame_contracts
             .iter()
-            .map(std::string::ToString::to_string)
+            .map(|contract| contract.diagnostic_label())
             .collect::<Vec<_>>()
             .join(", ");
-        let p010_layouts = if self.supported_p010_storage_layouts.is_empty() {
-            "none".to_string()
-        } else {
-            self.supported_p010_storage_layouts
-                .iter()
-                .map(|layout| layout.diagnostic_label())
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
 
         let hdr_support_label = if self.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()) {
             "HDR available via HDR-to-SDR"
@@ -1936,17 +2126,69 @@ impl RenderCapabilities {
         };
 
         format!(
-            "{}: {}, {}, {}, formats: {}, P010 layouts: {}, max texture: {}",
+            "{}: {}, {}, {}, frame contracts: {}, max texture: {}",
             self.display_name,
             hdr_support_label,
             native_hdr_label,
             self.p010_render_readiness,
-            frame_formats,
-            p010_layouts,
+            frame_contracts,
             self.max_texture_size
                 .map(|size| size.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         )
+    }
+}
+
+/// Выводит current DMA-BUF contract из stream requirement и выбранного layout-а.
+fn dma_buf_frame_contract_from_decode_requirement(
+    requirement: &VideoDecodeRequirement,
+    image_layout: DmaBufImageLayout,
+) -> Option<VideoFrameContract> {
+    match video_frame_pixel_layout_from_decode_requirement(requirement)? {
+        VideoFramePixelLayout::Nv12 => Some(VideoFrameContract::dma_buf_nv12(image_layout)),
+        VideoFramePixelLayout::P010 => Some(VideoFrameContract::dma_buf_p010(image_layout)),
+        VideoFramePixelLayout::Yuv420Planar8
+        | VideoFramePixelLayout::Yuv420Planar10Le
+        | VideoFramePixelLayout::Rgba8 => None,
+    }
+}
+
+/// Сравнивает family transfer path-а без смешивания concrete layout-ов.
+fn same_transfer_path_family(left: VideoFrameTransferPath, right: VideoFrameTransferPath) -> bool {
+    match (left, right) {
+        (
+            VideoFrameTransferPath::SoftwareHostUpload,
+            VideoFrameTransferPath::SoftwareHostUpload,
+        ) => true,
+        (
+            VideoFrameTransferPath::HardwareZeroCopy { handle: left },
+            VideoFrameTransferPath::HardwareZeroCopy { handle: right },
+        ) => same_hardware_handle_family(left, right),
+        _ => false,
+    }
+}
+
+/// Сравнивает hardware handle family, не считая layout details равными.
+const fn same_hardware_handle_family(
+    left: HardwareFrameHandle,
+    right: HardwareFrameHandle,
+) -> bool {
+    matches!(
+        (left, right),
+        (
+            HardwareFrameHandle::DmaBuf { .. },
+            HardwareFrameHandle::DmaBuf { .. }
+        )
+    )
+}
+
+/// Достаёт DMA-BUF layout только из DMA-BUF transfer path-а.
+const fn dma_buf_image_layout(transfer_path: VideoFrameTransferPath) -> Option<DmaBufImageLayout> {
+    match transfer_path {
+        VideoFrameTransferPath::HardwareZeroCopy {
+            handle: HardwareFrameHandle::DmaBuf { image_layout },
+        } => Some(image_layout),
+        VideoFrameTransferPath::SoftwareHostUpload => None,
     }
 }
 
@@ -2390,6 +2632,12 @@ mod tests {
         let capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
 
         assert!(capabilities.supports_frame_format(VideoFramePixelLayout::Nv12));
+        assert!(
+            capabilities.supports_frame_contract(VideoFrameContract::dma_buf_nv12(
+                DmaBufImageLayout::SeparateLayers
+            ))
+        );
+        assert!(!capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar8()));
         assert!(!capabilities.supports_frame_format(VideoFramePixelLayout::P010));
         assert_eq!(
             capabilities.p010_render_readiness,
@@ -2408,7 +2656,38 @@ mod tests {
                 .contains("native HDR unsupported")
         );
         assert!(capabilities.summary_text().contains("P010 unavailable"));
+        assert!(
+            capabilities
+                .summary_text()
+                .contains("NV12 via hardware zero-copy via DMA-BUF (separate DMA-BUF layers)")
+        );
+        assert!(!capabilities.summary_text().contains("software host upload"));
         assert!(!capabilities.summary_text().contains("HDR supported"));
+    }
+
+    #[test]
+    fn fake_capabilities_can_advertise_host_upload_without_cartesian_product() {
+        let mut capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
+        capabilities.display_name = "Fake host-upload renderer".to_string();
+        capabilities.supported_frame_contracts = vec![
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+            VideoFrameContract::host_yuv420_planar8(),
+        ];
+
+        let invalid_cartesian_contract = VideoFrameContract {
+            pixel_layout: VideoFramePixelLayout::Nv12,
+            transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+        };
+
+        assert!(capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar8()));
+        assert!(
+            !capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar10le())
+        );
+        assert!(matches!(
+            capabilities.check_frame_contract(invalid_cartesian_contract),
+            Err(RenderFrameContractRejection::InvalidContract { .. })
+        ));
+        assert!(capabilities.summary_text().contains("software host upload"));
     }
 
     #[test]
@@ -2423,12 +2702,11 @@ mod tests {
 
         let mut p010_without_operator = RenderCapabilities::wgpu_nv12(Some(4096));
         p010_without_operator
-            .supported_frame_formats
-            .push(VideoFramePixelLayout::P010);
+            .supported_frame_contracts
+            .push(VideoFrameContract::dma_buf_p010(
+                DmaBufImageLayout::SeparateLayers,
+            ));
         p010_without_operator.p010_render_readiness = P010RenderReadiness::Renderable;
-        p010_without_operator
-            .supported_p010_storage_layouts
-            .push(DmaBufImageLayout::SeparateLayers);
         p010_without_operator.supports_hdr_to_sdr = true;
 
         let production_capabilities = RenderCapabilities::wgpu_p010_bt2446c(Some(4096));
@@ -2443,12 +2721,25 @@ mod tests {
     fn p010_zero_copy_boundary_state_is_not_renderable() {
         let mut capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
         capabilities.p010_render_readiness = P010RenderReadiness::ZeroCopyBoundaryVerified;
+        capabilities
+            .supported_frame_contracts
+            .push(VideoFrameContract::dma_buf_p010(
+                DmaBufImageLayout::SeparateLayers,
+            ));
         let requirement =
             VideoDecodeRequirement::new(VideoCodec::Vp9).with_bit_depth(BitDepth::Ten);
 
         assert!(!capabilities.supports_p010_rendering());
         assert!(!capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
-        assert!(!capabilities.supports_decode_requirement(&requirement));
+        assert!(matches!(
+            capabilities.check_video_output(
+                &requirement,
+                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
+            ),
+            Err(RenderVideoOutputRejection::P010NotRenderable {
+                readiness: P010RenderReadiness::ZeroCopyBoundaryVerified,
+            })
+        ));
         assert!(
             capabilities
                 .summary_text()
@@ -2462,7 +2753,15 @@ mod tests {
         let requirement =
             VideoDecodeRequirement::new(VideoCodec::Vp9).with_bit_depth(BitDepth::Ten);
 
-        assert!(!capabilities.supports_decode_requirement(&requirement));
+        assert!(matches!(
+            capabilities.check_video_output(
+                &requirement,
+                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
+            ),
+            Err(RenderVideoOutputRejection::P010NotRenderable {
+                readiness: P010RenderReadiness::Unavailable,
+            })
+        ));
     }
 
     #[test]
@@ -2472,7 +2771,13 @@ mod tests {
             VideoDecodeRequirement::new(VideoCodec::Vp9).with_bit_depth(BitDepth::Ten);
         requirement.hdr = true;
 
-        assert!(!capabilities.supports_decode_requirement(&requirement));
+        assert!(matches!(
+            capabilities.check_video_output(
+                &requirement,
+                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
+            ),
+            Err(RenderVideoOutputRejection::HdrUnsupported { .. })
+        ));
     }
 
     #[test]
@@ -2483,7 +2788,10 @@ mod tests {
             .with_chroma(ChromaSubsampling::Yuv420);
         requirement.hdr = true;
 
-        assert!(capabilities.supports_decode_requirement(&requirement));
+        assert!(capabilities.supports_video_output(
+            &requirement,
+            VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
+        ));
         assert!(capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
         assert!(!capabilities.supports_native_hdr_output);
         assert!(capabilities.summary_text().contains("HDR available"));

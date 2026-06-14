@@ -117,14 +117,17 @@ pretending HDR can be shown as SDR.
 
 - `BackendCapabilities` from decode providers;
 - `RenderCapabilities` from renderer backend;
-- schema version `CURRENT_CAPABILITY_SCHEMA_VERSION = 2`;
+- schema version `CURRENT_CAPABILITY_SCHEMA_VERSION = 4`;
 - typed rejection reasons from `VideoCapabilityRejection`.
 
 `video-vaapi::VaapiCapabilityProvider` supplies the current hardware backend
 report. `render-wgpu-video` builds render capabilities from WGPU device
 features, including `TEXTURE_FORMAT_16BIT_NORM` and `TEXTURE_FORMAT_P010`
-implications for P010 layouts; `render-wgpu-shell` exposes that report to
-`app-egui` during system capability probing.
+implications for P010 DMA-BUF layouts; `render-wgpu-shell` exposes that report
+to `app-egui` during system capability probing. Renderer support is expressed as
+full `VideoFrameContract` entries, so pixel layout, transfer path, and hardware
+handle layout are checked as one contract instead of separate format/layout
+lists.
 
 ## H.265 manual validation notes
 

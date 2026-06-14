@@ -29,7 +29,7 @@ pub(crate) fn wgpu_capabilities_from_features(
 #[cfg(test)]
 mod tests {
     use render_core::HdrToSdrSettings;
-    use video_frame_contract::VideoFramePixelLayout;
+    use video_frame_contract::{VideoFrameContract, VideoFramePixelLayout};
 
     use super::*;
 
@@ -42,6 +42,9 @@ mod tests {
 
         assert!(separate_layer_capabilities.supports_p010_rendering());
         assert!(separate_layer_capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
+        assert!(separate_layer_capabilities.supports_frame_contract(
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers)
+        ));
         assert!(
             separate_layer_capabilities
                 .supports_p010_storage_layout(DmaBufImageLayout::SeparateLayers)
@@ -52,6 +55,11 @@ mod tests {
         );
         assert!(composed_capabilities.supports_p010_rendering());
         assert!(composed_capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
+        assert!(
+            composed_capabilities.supports_frame_contract(VideoFrameContract::dma_buf_p010(
+                DmaBufImageLayout::ComposedLayers
+            ))
+        );
         assert!(
             composed_capabilities.supports_p010_storage_layout(DmaBufImageLayout::ComposedLayers)
         );
@@ -65,6 +73,12 @@ mod tests {
         let capabilities = wgpu_capabilities_from_features(Some(4096), wgpu::Features::empty());
 
         assert!(capabilities.supports_frame_format(VideoFramePixelLayout::Nv12));
+        assert!(
+            capabilities.supports_frame_contract(VideoFrameContract::dma_buf_nv12(
+                DmaBufImageLayout::SeparateLayers
+            ))
+        );
+        assert!(!capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar8()));
         assert!(!capabilities.supports_p010_rendering());
         assert!(!capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
     }

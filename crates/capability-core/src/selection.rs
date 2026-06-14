@@ -3,10 +3,13 @@ use codec_core::{
     SupportedVideoDecodeFormat, TransferFunction, VideoCodec, VideoDecodeRequirement, VideoProfile,
     video_frame_pixel_layout_from_decode_requirement,
 };
-use render_core::{P010RenderReadiness, RenderCapabilities};
+use render_core::{
+    P010RenderReadiness, RenderCapabilities, RenderFrameContractRejection,
+    RenderVideoOutputRejection,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use video_frame_contract::{DmaBufImageLayout, VideoFramePixelLayout};
+use video_frame_contract::{DmaBufImageLayout, VideoFrameContract, VideoFramePixelLayout};
 
 use crate::{BackendCapabilities, SystemCapabilities, VideoExportPath};
 
@@ -157,6 +160,24 @@ pub enum VideoCapabilityRejection {
         frame_format: VideoFramePixelLayout,
     },
 
+    /// Renderer не умеет принять нужный transfer path/layout для frame contract-а.
+    UnsupportedRenderFrameTransfer {
+        /// Полный frame contract, который renderer отклонил.
+        frame_contract: VideoFrameContract,
+    },
+
+    /// Renderer texture limit меньше coded размера stream-а.
+    RenderTextureSizeExceeded {
+        /// Width stream-а, если он был известен.
+        width: Option<u32>,
+
+        /// Height stream-а, если он был известен.
+        height: Option<u32>,
+
+        /// Максимальный texture size renderer-а.
+        max_texture_size: u32,
+    },
+
     /// P010 boundary может быть диагностически проверен, но production render path ещё не готов.
     P010NotRenderable {
         /// Текущий readiness state renderer-а.
@@ -223,6 +244,25 @@ impl VideoCapabilityRejection {
             ),
             Self::UnsupportedRenderFrameFormat { frame_format } => {
                 format!("renderer не поддерживает input format {frame_format}")
+            }
+            Self::UnsupportedRenderFrameTransfer { frame_contract } => format!(
+                "renderer не поддерживает transfer contract {}",
+                frame_contract.diagnostic_label()
+            ),
+            Self::RenderTextureSizeExceeded {
+                width,
+                height,
+                max_texture_size,
+            } => {
+                let width = width
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let height = height
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                format!(
+                    "renderer texture limit {max_texture_size} меньше coded размера stream-а {width}x{height}"
+                )
             }
             Self::P010NotRenderable { readiness } => format!(
                 "P010 zero-copy boundary имеет состояние `{readiness}`, но production P010 renderer ещё недоступен"
@@ -492,50 +532,37 @@ impl SystemCapabilities {
             return Some(VideoCapabilityRejection::NoAvailableRenderer);
         }
 
-        if self.render_backends.iter().any(|capabilities| {
-            render_capability_supports_requirement_with_backend_layout(
-                capabilities,
-                requirement,
-                frame_format,
-                backend,
-            )
-        }) {
-            return None;
-        }
-
-        if requirement_requires_hdr_processing(requirement)
-            && !self.render_backends.iter().any(|capabilities| {
-                capabilities.supports_hdr_to_sdr_with(&render_core::HdrToSdrSettings::default())
-                    || capabilities.supports_native_hdr_output
-            })
-        {
-            return Some(VideoCapabilityRejection::UnsupportedHdrRenderer {
-                frame_format: Some(frame_format),
-            });
-        }
-
-        if frame_format == VideoFramePixelLayout::P010 {
-            let readiness = best_p010_render_readiness(&self.render_backends);
-            if !readiness.is_renderable() {
-                return Some(VideoCapabilityRejection::P010NotRenderable { readiness });
-            }
-
-            if let Some(rejection) = p010_storage_layout_rejection(backend, &self.render_backends) {
-                return Some(rejection);
-            }
-        }
-
-        if !self
-            .render_backends
-            .iter()
-            .any(|capabilities| capabilities.supports_frame_format(frame_format))
-        {
+        let frame_contracts = frame_contracts_for_backend_layout(frame_format, backend);
+        if frame_contracts.is_empty() {
             return Some(VideoCapabilityRejection::UnsupportedRenderFrameFormat { frame_format });
         }
 
-        Some(VideoCapabilityRejection::UnsupportedDecodeFormat {
-            codec: requirement.codec,
-        })
+        let mut first_render_rejection = None;
+        for capabilities in &self.render_backends {
+            for frame_contract in &frame_contracts {
+                match capabilities.check_video_output(requirement, *frame_contract) {
+                    Ok(()) => return None,
+                    Err(rejection) if first_render_rejection.is_none() => {
+                        first_render_rejection = Some((*frame_contract, rejection));
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+
+        first_render_rejection
+            .map(|(frame_contract, rejection)| {
+                render_video_output_rejection_to_capability(
+                    rejection,
+                    requirement,
+                    frame_format,
+                    frame_contract,
+                    backend,
+                )
+            })
+            .or(Some(VideoCapabilityRejection::UnsupportedDecodeFormat {
+                codec: requirement.codec,
+            }))
     }
 }
 
@@ -711,52 +738,103 @@ fn invalid_hdr_metadata(reason: impl Into<String>) -> VideoCapabilityRejection {
     }
 }
 
-/// Проверяет renderer capability с учётом фактического P010 export layout-а backend-а.
-fn render_capability_supports_requirement_with_backend_layout(
-    capabilities: &RenderCapabilities,
-    requirement: &VideoDecodeRequirement,
+/// Строит current production DMA-BUF contracts из selection-time backend report-а.
+fn frame_contracts_for_backend_layout(
     frame_format: VideoFramePixelLayout,
     backend: &BackendCapabilities,
-) -> bool {
-    if !capabilities.supports_decode_requirement(requirement) {
-        return false;
+) -> Vec<VideoFrameContract> {
+    match frame_format {
+        VideoFramePixelLayout::Nv12 => {
+            vec![VideoFrameContract::dma_buf_nv12(
+                DmaBufImageLayout::SeparateLayers,
+            )]
+        }
+        VideoFramePixelLayout::P010 => p010_layouts_for_backend(backend)
+            .into_iter()
+            .map(VideoFrameContract::dma_buf_p010)
+            .collect(),
+        VideoFramePixelLayout::Yuv420Planar8
+        | VideoFramePixelLayout::Yuv420Planar10Le
+        | VideoFramePixelLayout::Rgba8 => Vec::new(),
     }
-
-    if frame_format != VideoFramePixelLayout::P010 {
-        return true;
-    }
-
-    backend
-        .p010_storage_layouts
-        .iter()
-        .any(|layout| capabilities.supports_p010_storage_layout(*layout))
 }
 
-/// Возвращает typed reject, если renderer не поддерживает P010 layout backend-а.
-fn p010_storage_layout_rejection(
-    backend: &BackendCapabilities,
-    render_backends: &[RenderCapabilities],
-) -> Option<VideoCapabilityRejection> {
-    let storage_layout = backend
-        .p010_storage_layouts
-        .first()
-        .copied()
-        .unwrap_or(DmaBufImageLayout::SeparateLayers);
-
-    let layout_supported = render_backends
-        .iter()
-        .any(|capabilities| capabilities.supports_p010_storage_layout(storage_layout));
-
-    if layout_supported {
-        return None;
+/// Возвращает P010 layouts из backend report-а, сохраняя старый baseline default.
+fn p010_layouts_for_backend(backend: &BackendCapabilities) -> Vec<DmaBufImageLayout> {
+    if backend.p010_storage_layouts.is_empty() {
+        vec![DmaBufImageLayout::SeparateLayers]
+    } else {
+        backend.p010_storage_layouts.clone()
     }
+}
 
-    Some(VideoCapabilityRejection::UnsupportedDmaBufImageLayout {
-        backend: backend.backend_id.clone(),
-        storage_layout,
-        required_wgpu_feature: p010_dma_buf_layout_required_wgpu_feature_label(storage_layout)
-            .to_string(),
-    })
+/// Переводит neutral render-core rejection в capability-layer user-facing reason.
+fn render_video_output_rejection_to_capability(
+    rejection: RenderVideoOutputRejection,
+    requirement: &VideoDecodeRequirement,
+    frame_format: VideoFramePixelLayout,
+    frame_contract: VideoFrameContract,
+    backend: &BackendCapabilities,
+) -> VideoCapabilityRejection {
+    match rejection {
+        RenderVideoOutputRejection::FrameContract { reason } => {
+            render_frame_contract_rejection_to_capability(
+                reason,
+                frame_format,
+                frame_contract,
+                backend,
+            )
+        }
+        RenderVideoOutputRejection::P010NotRenderable { readiness } => {
+            VideoCapabilityRejection::P010NotRenderable { readiness }
+        }
+        RenderVideoOutputRejection::HdrUnsupported { .. } => {
+            VideoCapabilityRejection::UnsupportedHdrRenderer {
+                frame_format: Some(frame_format),
+            }
+        }
+        RenderVideoOutputRejection::MaxTextureSizeExceeded {
+            max_texture_size, ..
+        } => VideoCapabilityRejection::RenderTextureSizeExceeded {
+            width: requirement.width,
+            height: requirement.height,
+            max_texture_size,
+        },
+    }
+}
+
+/// Переводит frame-contract-only отказ renderer-а в capability rejection.
+fn render_frame_contract_rejection_to_capability(
+    rejection: RenderFrameContractRejection,
+    frame_format: VideoFramePixelLayout,
+    frame_contract: VideoFrameContract,
+    backend: &BackendCapabilities,
+) -> VideoCapabilityRejection {
+    match rejection {
+        RenderFrameContractRejection::UnsupportedPixelLayout { pixel_layout } => {
+            VideoCapabilityRejection::UnsupportedRenderFrameFormat {
+                frame_format: pixel_layout,
+            }
+        }
+        RenderFrameContractRejection::UnsupportedDmaBufImageLayout { image_layout, .. }
+            if frame_format == VideoFramePixelLayout::P010 =>
+        {
+            VideoCapabilityRejection::UnsupportedDmaBufImageLayout {
+                backend: backend.backend_id.clone(),
+                storage_layout: image_layout,
+                required_wgpu_feature: p010_dma_buf_layout_required_wgpu_feature_label(
+                    image_layout,
+                )
+                .to_string(),
+            }
+        }
+        RenderFrameContractRejection::InvalidContract { .. }
+        | RenderFrameContractRejection::UnsupportedTransferPath { .. }
+        | RenderFrameContractRejection::UnsupportedDmaBufImageLayout { .. }
+        | RenderFrameContractRejection::UnsupportedContractCombination { .. } => {
+            VideoCapabilityRejection::UnsupportedRenderFrameTransfer { frame_contract }
+        }
+    }
 }
 
 /// Возвращает WGPU feature, без которого текущий renderer не импортирует P010 DMA-BUF layout.
@@ -784,15 +862,6 @@ fn device_boundary_rejection(
         frame_format,
         required_export_path,
     })
-}
-
-/// Возвращает самый сильный P010 readiness state среди renderer backend-ов.
-fn best_p010_render_readiness(render_backends: &[RenderCapabilities]) -> P010RenderReadiness {
-    render_backends
-        .iter()
-        .map(|capabilities| capabilities.p010_render_readiness)
-        .max()
-        .unwrap_or(P010RenderReadiness::Unavailable)
 }
 
 #[cfg(test)]

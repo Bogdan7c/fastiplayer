@@ -1,6 +1,6 @@
 # Task Completion
 
-- For any code task, first ensure local workflow was followed: Context7 checked for relevant library/API docs, `code_index` path set to `<REPO_ROOT>`, deep index built, and architecture/test plan stated when the change is non-trivial.
+- For any code task, first ensure local workflow was followed: Context7 checked for relevant library/API docs, `code_index` path set to `<REPO_ROOT>`, deep index built when the `code_index` tools are available, and architecture/test plan stated when the change is non-trivial.
 - Run the narrowest relevant tests first: crate-specific `cargo test -p <crate>` for touched workspace crates; include neighboring crates when changing contracts or cross-module boundaries.
 - Local `[replace]` patch crates such as `crates/cros-codecs-patch` and `crates/cros-libva-patch` are not workspace members, so `cargo test -p cros-codecs-patch`/direct `--manifest-path` currently fail under this workspace layout. Validate patch-crate changes through dependent workspace crates (for example `video-vaapi`) unless the workspace membership policy is intentionally changed.
 - Run `cargo check --workspace` after Rust changes that affect public types, features, workspace deps, or multiple crates.

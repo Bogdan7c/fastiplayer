@@ -7,13 +7,13 @@ use codec_core::{
 use render_core::RenderCapabilities;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
-use video_frame_contract::DmaBufImageLayout;
+use video_frame_contract::{DmaBufImageLayout, VideoFrameContract, VideoFramePixelLayout};
 
 /// Версия JSON/report схемы capability layer.
 pub type CapabilitySchemaVersion = u32;
 
 /// Текущая версия capability report.
-pub const CURRENT_CAPABILITY_SCHEMA_VERSION: CapabilitySchemaVersion = 3;
+pub const CURRENT_CAPABILITY_SCHEMA_VERSION: CapabilitySchemaVersion = 4;
 
 /// Provider, который умеет построить capabilities для одного video backend.
 pub trait VideoCapabilityProvider {
@@ -103,9 +103,17 @@ fn filter_backend_capabilities_for_report(
 
     let original_format_count = capabilities.supported_video_decode_formats.len();
     let export_paths = capabilities.export_paths.clone();
+    let p010_storage_layouts = capabilities.p010_storage_layouts.clone();
     capabilities
         .supported_video_decode_formats
-        .retain(|format| reportable_decode_format(format, &export_paths, render_backends));
+        .retain(|format| {
+            reportable_decode_format(
+                format,
+                &export_paths,
+                &p010_storage_layouts,
+                render_backends,
+            )
+        });
 
     let hidden_format_count =
         original_format_count.saturating_sub(capabilities.supported_video_decode_formats.len());
@@ -122,6 +130,7 @@ fn filter_backend_capabilities_for_report(
 fn reportable_decode_format(
     format: &SupportedVideoDecodeFormat,
     export_paths: &[VideoExportPath],
+    p010_storage_layouts: &[DmaBufImageLayout],
     render_backends: &[RenderCapabilities],
 ) -> bool {
     if !export_paths.contains(&VideoExportPath::DmaBuf) {
@@ -129,9 +138,45 @@ fn reportable_decode_format(
     }
 
     let requirement = decode_requirement_for_supported_format(format);
-    render_backends
-        .iter()
-        .any(|renderer| renderer.supports_decode_requirement(&requirement))
+    let frame_contracts = reportable_frame_contracts(format, p010_storage_layouts);
+    render_backends.iter().any(|renderer| {
+        frame_contracts
+            .iter()
+            .any(|contract| renderer.supports_video_output(&requirement, *contract))
+    })
+}
+
+/// Строит current production frame contracts для capability report filtering.
+fn reportable_frame_contracts(
+    format: &SupportedVideoDecodeFormat,
+    p010_storage_layouts: &[DmaBufImageLayout],
+) -> Vec<VideoFrameContract> {
+    match video_frame_pixel_layout_from_decode_requirement(
+        &decode_requirement_for_supported_format(format),
+    ) {
+        Some(VideoFramePixelLayout::Nv12) => {
+            vec![VideoFrameContract::dma_buf_nv12(
+                DmaBufImageLayout::SeparateLayers,
+            )]
+        }
+        Some(VideoFramePixelLayout::P010) => {
+            let layouts = if p010_storage_layouts.is_empty() {
+                vec![DmaBufImageLayout::SeparateLayers]
+            } else {
+                p010_storage_layouts.to_vec()
+            };
+            layouts
+                .into_iter()
+                .map(VideoFrameContract::dma_buf_p010)
+                .collect()
+        }
+        Some(
+            VideoFramePixelLayout::Yuv420Planar8
+            | VideoFramePixelLayout::Yuv420Planar10Le
+            | VideoFramePixelLayout::Rgba8,
+        )
+        | None => Vec::new(),
+    }
 }
 
 /// Собирает минимальное stream requirement из probed backend format-а для renderer check-а.
