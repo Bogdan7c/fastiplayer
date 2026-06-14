@@ -143,8 +143,8 @@ impl<'session> PlayerSnapshotBuilder<'session> {
                 height: present_frame.height,
                 render_width: present_frame.render_width,
                 render_height: present_frame.render_height,
-                format: present_frame.format,
-                memory_path: present_frame.memory_path,
+                format: present_frame.format(),
+                memory_path: present_frame.memory_path(),
             })
     }
 

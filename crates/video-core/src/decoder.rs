@@ -5,7 +5,10 @@ use std::time::Duration;
 use anyhow::ensure;
 use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoDisplayOrientation};
 use media_core::Packet;
-use video_frame_contract::VideoFramePixelLayout;
+use video_frame_contract::{
+    FrameBitDepth, FrameChromaSubsampling, VideoFrameContract, VideoFramePixelLayout,
+    VideoFrameTransferPath,
+};
 
 use crate::FrameResourceHandle;
 use crate::VideoFrameDiagnostics;
@@ -38,10 +41,7 @@ impl fmt::Display for FrameMemoryPath {
 pub struct DecodedFrame {
     pub generation: u64,
     pub pts: Duration,
-    pub format: DecodedPixelFormat,
-    pub bit_depth: BitDepth,
-    pub chroma: ChromaSubsampling,
-    pub memory_path: FrameMemoryPath,
+    pub frame_contract: VideoFrameContract,
     pub width: u32,
     pub height: u32,
     pub render_width: u32,
@@ -53,8 +53,42 @@ pub struct DecodedFrame {
 }
 
 impl DecodedFrame {
-    /// Проверяет инварианты decoded frame до передачи в scheduler или renderer boundary.
-    pub fn validate_contract(&self) -> anyhow::Result<()> {
+    /// Возвращает decoded pixel layout из единого runtime contract-а.
+    #[must_use]
+    pub const fn format(&self) -> DecodedPixelFormat {
+        self.frame_contract.pixel_layout
+    }
+
+    /// Возвращает bit depth как compatibility metadata для diagnostics/render metadata.
+    #[must_use]
+    pub const fn bit_depth(&self) -> Option<BitDepth> {
+        match self.frame_contract.pixel_layout.bit_depth() {
+            Some(FrameBitDepth::Eight) => Some(BitDepth::Eight),
+            Some(FrameBitDepth::Ten) => Some(BitDepth::Ten),
+            None => None,
+        }
+    }
+
+    /// Возвращает chroma как compatibility metadata для YUV layouts.
+    #[must_use]
+    pub const fn chroma(&self) -> Option<ChromaSubsampling> {
+        match self.frame_contract.pixel_layout.chroma() {
+            Some(FrameChromaSubsampling::Yuv420) => Some(ChromaSubsampling::Yuv420),
+            None => None,
+        }
+    }
+
+    /// Возвращает legacy memory-path marker, выведенный из transfer path-а.
+    #[must_use]
+    pub const fn memory_path(&self) -> FrameMemoryPath {
+        match self.frame_contract.transfer_path {
+            VideoFrameTransferPath::HardwareZeroCopy { .. } => FrameMemoryPath::DmaBufZeroCopy,
+            VideoFrameTransferPath::SoftwareHostUpload => FrameMemoryPath::CpuUpload,
+        }
+    }
+
+    /// Проверяет только локальные инварианты decoded frame-а без resource lookup-а.
+    pub fn validate_self_consistency(&self) -> anyhow::Result<()> {
         ensure!(
             self.width > 0 && self.height > 0,
             "decoded frame has invalid coded size: {}x{}",
@@ -67,36 +101,61 @@ impl DecodedFrame {
             self.render_width,
             self.render_height
         );
+        self.frame_contract
+            .validate()
+            .map_err(|error| anyhow::anyhow!("decoded frame contract is invalid: {error}"))?;
+
+        Ok(())
+    }
+
+    /// Проверяет actual frame contract против expected stream contract-а.
+    pub fn validate_against_expected_contract(
+        &self,
+        expected_contract: VideoFrameContract,
+    ) -> anyhow::Result<()> {
+        self.validate_self_consistency()?;
         ensure!(
-            self.memory_path == FrameMemoryPath::DmaBufZeroCopy,
+            self.frame_contract == expected_contract,
+            "decoded frame contract mismatch: expected {}, got {}",
+            expected_contract,
+            self.frame_contract
+        );
+        Ok(())
+    }
+
+    /// Compatibility wrapper для текущего zero-copy renderer/VAAPI path-а.
+    pub fn validate_contract(&self) -> anyhow::Result<()> {
+        self.validate_self_consistency()?;
+        ensure!(
+            self.memory_path() == FrameMemoryPath::DmaBufZeroCopy,
             "{} decoded frame requires zero-copy memory path, got {}",
-            self.format,
-            self.memory_path
+            self.format(),
+            self.memory_path()
         );
 
-        match self.format {
+        match self.format() {
             DecodedPixelFormat::Nv12 => {
                 ensure!(
-                    self.bit_depth == BitDepth::Eight,
+                    self.bit_depth() == Some(BitDepth::Eight),
                     "NV12 decoded frame must be 8-bit, got {}",
-                    self.bit_depth
+                    optional_bit_depth_label(self.bit_depth())
                 );
                 ensure!(
-                    self.chroma == ChromaSubsampling::Yuv420,
+                    self.chroma() == Some(ChromaSubsampling::Yuv420),
                     "NV12 decoded frame must be 4:2:0, got {}",
-                    self.chroma
+                    optional_chroma_label(self.chroma())
                 );
             }
             DecodedPixelFormat::P010 => {
                 ensure!(
-                    self.bit_depth == BitDepth::Ten,
+                    self.bit_depth() == Some(BitDepth::Ten),
                     "P010 decoded frame must be 10-bit, got {}",
-                    self.bit_depth
+                    optional_bit_depth_label(self.bit_depth())
                 );
                 ensure!(
-                    self.chroma == ChromaSubsampling::Yuv420,
+                    self.chroma() == Some(ChromaSubsampling::Yuv420),
                     "P010 decoded frame must be 4:2:0, got {}",
-                    self.chroma
+                    optional_chroma_label(self.chroma())
                 );
             }
             DecodedPixelFormat::Rgba8 => {
@@ -109,13 +168,21 @@ impl DecodedFrame {
                 ensure!(
                     false,
                     "{} decoded frame is a host-planar layout and is not part of the current zero-copy runtime boundary",
-                    self.format
+                    self.format()
                 );
             }
         }
 
         Ok(())
     }
+}
+
+fn optional_bit_depth_label(bit_depth: Option<BitDepth>) -> String {
+    bit_depth.map_or_else(|| "none".to_string(), |bit_depth| bit_depth.to_string())
+}
+
+fn optional_chroma_label(chroma: Option<ChromaSubsampling>) -> String {
+    chroma.map_or_else(|| "none".to_string(), |chroma| chroma.to_string())
 }
 
 pub trait VideoDecoder {
@@ -132,16 +199,14 @@ pub trait VideoDecoder {
 mod tests {
     use super::*;
     use codec_core::{ColorMetadataOrigin, ColorRange, MatrixCoefficients};
+    use video_frame_contract::DmaBufImageLayout;
 
     /// Создаёт test frame без реальных GPU resources и без legacy `ColorSpace`.
     fn decoded_test_frame() -> DecodedFrame {
         DecodedFrame {
             generation: 0,
             pts: Duration::ZERO,
-            format: DecodedPixelFormat::Nv12,
-            bit_depth: BitDepth::Eight,
-            chroma: ChromaSubsampling::Yuv420,
-            memory_path: FrameMemoryPath::DmaBufZeroCopy,
+            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
             width: 640,
             height: 360,
             render_width: 640,
@@ -167,10 +232,10 @@ mod tests {
         let frame = decoded_test_frame();
 
         frame.validate_contract().unwrap();
-        assert_eq!(frame.format, DecodedPixelFormat::Nv12);
-        assert_eq!(frame.bit_depth, BitDepth::Eight);
-        assert_eq!(frame.chroma, ChromaSubsampling::Yuv420);
-        assert_eq!(frame.memory_path, FrameMemoryPath::DmaBufZeroCopy);
+        assert_eq!(frame.format(), DecodedPixelFormat::Nv12);
+        assert_eq!(frame.bit_depth(), Some(BitDepth::Eight));
+        assert_eq!(frame.chroma(), Some(ChromaSubsampling::Yuv420));
+        assert_eq!(frame.memory_path(), FrameMemoryPath::DmaBufZeroCopy);
     }
 
     #[test]
@@ -178,10 +243,7 @@ mod tests {
         let frame = DecodedFrame {
             generation: 0,
             pts: Duration::ZERO,
-            format: DecodedPixelFormat::P010,
-            bit_depth: BitDepth::Ten,
-            chroma: ChromaSubsampling::Yuv420,
-            memory_path: FrameMemoryPath::DmaBufZeroCopy,
+            frame_contract: VideoFrameContract::dma_buf_p010(DmaBufImageLayout::ComposedLayers),
             width: 640,
             height: 360,
             render_width: 640,
@@ -193,20 +255,17 @@ mod tests {
         };
 
         frame.validate_contract().unwrap();
-        assert_eq!(frame.format, DecodedPixelFormat::P010);
-        assert_eq!(frame.bit_depth, BitDepth::Ten);
-        assert_eq!(frame.memory_path, FrameMemoryPath::DmaBufZeroCopy);
+        assert_eq!(frame.format(), DecodedPixelFormat::P010);
+        assert_eq!(frame.bit_depth(), Some(BitDepth::Ten));
+        assert_eq!(frame.memory_path(), FrameMemoryPath::DmaBufZeroCopy);
     }
 
     #[test]
-    fn nv12_cpu_upload_is_rejected_by_contract_validation() {
+    fn host_planar_upload_is_rejected_by_zero_copy_contract_validation() {
         let frame = DecodedFrame {
             generation: 0,
             pts: Duration::ZERO,
-            format: DecodedPixelFormat::Nv12,
-            bit_depth: BitDepth::Eight,
-            chroma: ChromaSubsampling::Yuv420,
-            memory_path: FrameMemoryPath::CpuUpload,
+            frame_contract: VideoFrameContract::host_yuv420_planar8(),
             width: 640,
             height: 360,
             render_width: 640,
@@ -220,22 +279,17 @@ mod tests {
         let error = frame.validate_contract().unwrap_err();
 
         assert!(
-            error
-                .to_string()
-                .contains("NV12 decoded frame requires zero-copy"),
+            error.to_string().contains("requires zero-copy memory path"),
             "unexpected validation error: {error}"
         );
     }
 
     #[test]
-    fn p010_cpu_upload_is_rejected_by_contract_validation() {
+    fn validate_against_expected_contract_reports_mismatch() {
         let frame = DecodedFrame {
             generation: 0,
             pts: Duration::ZERO,
-            format: DecodedPixelFormat::P010,
-            bit_depth: BitDepth::Ten,
-            chroma: ChromaSubsampling::Yuv420,
-            memory_path: FrameMemoryPath::CpuUpload,
+            frame_contract: VideoFrameContract::host_yuv420_planar10le(),
             width: 640,
             height: 360,
             render_width: 640,
@@ -246,10 +300,15 @@ mod tests {
             diagnostics: VideoFrameDiagnostics::default(),
         };
 
-        let error = frame.validate_contract().unwrap_err();
+        frame
+            .validate_self_consistency()
+            .expect("host-upload contract is locally valid");
+        let error = frame
+            .validate_against_expected_contract(VideoFrameContract::host_yuv420_planar8())
+            .unwrap_err();
 
         assert!(
-            error.to_string().contains("requires zero-copy"),
+            error.to_string().contains("contract mismatch"),
             "unexpected validation error: {error}"
         );
     }

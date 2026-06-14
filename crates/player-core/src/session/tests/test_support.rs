@@ -1440,10 +1440,9 @@ pub(super) fn decoded_frame_for_tests(pts: Duration, handle: u64) -> video_core:
     video_core::DecodedFrame {
         generation: 0,
         pts,
-        format: video_core::DecodedPixelFormat::Nv12,
-        bit_depth: BitDepth::Eight,
-        chroma: ChromaSubsampling::Yuv420,
-        memory_path: video_core::FrameMemoryPath::DmaBufZeroCopy,
+        frame_contract: video_frame_contract::VideoFrameContract::dma_buf_nv12(
+            video_frame_contract::DmaBufImageLayout::SeparateLayers,
+        ),
         width: 640,
         height: 360,
         render_width: 640,

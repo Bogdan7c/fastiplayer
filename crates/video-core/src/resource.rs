@@ -1,5 +1,12 @@
 use std::io;
 use std::os::fd::{AsFd, OwnedFd};
+use std::sync::Arc;
+
+use anyhow::{Context, bail, ensure};
+use video_frame_contract::{
+    DmaBufImageLayout, HardwareFrameHandle, VideoFrameContract, VideoFramePixelLayout,
+    VideoFrameTransferPath,
+};
 
 /// Opaque handle decoded frame resource-а.
 ///
@@ -16,6 +23,9 @@ pub struct FrameResourceHandle(pub u64);
 pub enum FrameResourceDescriptor {
     /// Linux DMA-BUF/DRM PRIME descriptor для zero-copy materialization.
     DmaBuf(DmaBufFrameDescriptor),
+
+    /// CPU-visible planar frame, готовый для будущего host-upload path-а.
+    HostPlanar(HostPlanarFrameDescriptor),
 }
 
 impl FrameResourceDescriptor {
@@ -26,6 +36,63 @@ impl FrameResourceDescriptor {
     pub fn try_clone_for_lookup(&self) -> io::Result<Self> {
         match self {
             Self::DmaBuf(descriptor) => descriptor.try_clone_for_lookup().map(Self::DmaBuf),
+            Self::HostPlanar(descriptor) => Ok(Self::HostPlanar(descriptor.clone_for_lookup())),
+        }
+    }
+}
+
+/// Роль plane внутри owned host-planar frame-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostPlaneRole {
+    /// Luma/Y plane.
+    Luma,
+
+    /// Chroma U/Cb plane.
+    ChromaU,
+
+    /// Chroma V/Cr plane.
+    ChromaV,
+}
+
+/// Описание одной visible plane внутри общего host storage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostPlaneDescriptor {
+    /// Смысл plane-а; layout остаётся в `VideoFrameContract`, не в descriptor-е.
+    pub role: HostPlaneRole,
+
+    /// Byte offset начала plane-а внутри общего `storage`.
+    pub offset: usize,
+
+    /// Byte stride между началом соседних строк.
+    pub stride: usize,
+
+    /// Видимая ширина plane-а в samples; padding справа сюда не входит.
+    pub visible_width: u32,
+
+    /// Видимая высота plane-а в строках.
+    pub visible_height: u32,
+
+    /// Размер одного sample в байтах: 1 для 8-bit, 2 для 10-bit LE storage word.
+    pub bytes_per_sample: usize,
+}
+
+/// Owned host-planar decoded frame без raw pointers и per-plane owners.
+#[derive(Debug, Clone)]
+pub struct HostPlanarFrameDescriptor {
+    /// Общий immutable byte storage всего host frame-а.
+    pub storage: Arc<[u8]>,
+
+    /// Per-plane metadata с offsets в общий `storage`.
+    pub planes: Vec<HostPlaneDescriptor>,
+}
+
+impl HostPlanarFrameDescriptor {
+    /// Дешёвый clone для lookup-а: bytes остаются в том же `Arc<[u8]>`.
+    #[must_use]
+    fn clone_for_lookup(&self) -> Self {
+        Self {
+            storage: Arc::clone(&self.storage),
+            planes: self.planes.clone(),
         }
     }
 }
@@ -146,6 +213,236 @@ impl DmaBufFrameDescriptor {
     }
 }
 
+/// Проверяет runtime resource descriptor против expected decoded frame contract-а.
+///
+/// Размеры передаются явно, чтобы descriptor не становился вторым источником
+/// frame-level coded/render geometry для host-planar path-а.
+pub fn validate_resource_descriptor_against_contract(
+    contract: VideoFrameContract,
+    coded_width: u32,
+    coded_height: u32,
+    descriptor: &FrameResourceDescriptor,
+) -> anyhow::Result<()> {
+    contract
+        .validate()
+        .with_context(|| format!("invalid video frame contract: {contract}"))?;
+    ensure!(
+        coded_width > 0 && coded_height > 0,
+        "resource validation requires positive coded size, got {coded_width}x{coded_height}"
+    );
+
+    match (contract.transfer_path, descriptor) {
+        (
+            VideoFrameTransferPath::HardwareZeroCopy {
+                handle:
+                    HardwareFrameHandle::DmaBuf {
+                        image_layout: expected_layout,
+                    },
+            },
+            FrameResourceDescriptor::DmaBuf(dma_buf_descriptor),
+        ) => validate_dma_buf_descriptor_against_contract(
+            expected_layout,
+            coded_width,
+            coded_height,
+            dma_buf_descriptor,
+        ),
+        (
+            VideoFrameTransferPath::HardwareZeroCopy { .. },
+            FrameResourceDescriptor::HostPlanar(_),
+        ) => bail!("hardware zero-copy contract requires DMA-BUF descriptor, got host-planar"),
+        (VideoFrameTransferPath::SoftwareHostUpload, FrameResourceDescriptor::HostPlanar(host)) => {
+            validate_host_planar_descriptor_against_contract(
+                contract.pixel_layout,
+                coded_width,
+                coded_height,
+                host,
+            )
+        }
+        (VideoFrameTransferPath::SoftwareHostUpload, FrameResourceDescriptor::DmaBuf(_)) => {
+            bail!("software host-upload contract requires host-planar descriptor, got DMA-BUF")
+        }
+    }
+}
+
+fn validate_dma_buf_descriptor_against_contract(
+    expected_layout: DmaBufImageLayout,
+    coded_width: u32,
+    coded_height: u32,
+    descriptor: &DmaBufFrameDescriptor,
+) -> anyhow::Result<()> {
+    let actual_layout = dma_buf_export_layout_to_image_layout(descriptor.export_layout);
+    ensure!(
+        actual_layout == expected_layout,
+        "DMA-BUF image layout mismatch: expected {expected_layout}, got {actual_layout}"
+    );
+    ensure!(
+        descriptor.width == coded_width && descriptor.height == coded_height,
+        "DMA-BUF coded size mismatch: expected {coded_width}x{coded_height}, got {}x{}",
+        descriptor.width,
+        descriptor.height
+    );
+    Ok(())
+}
+
+const fn dma_buf_export_layout_to_image_layout(
+    export_layout: DmaBufFrameExportLayout,
+) -> DmaBufImageLayout {
+    match export_layout {
+        DmaBufFrameExportLayout::ComposedLayers => DmaBufImageLayout::ComposedLayers,
+        DmaBufFrameExportLayout::SeparateLayers => DmaBufImageLayout::SeparateLayers,
+    }
+}
+
+fn validate_host_planar_descriptor_against_contract(
+    pixel_layout: VideoFramePixelLayout,
+    coded_width: u32,
+    coded_height: u32,
+    descriptor: &HostPlanarFrameDescriptor,
+) -> anyhow::Result<()> {
+    let expected_planes = expected_host_planar_planes(pixel_layout, coded_width, coded_height)?;
+    ensure!(
+        descriptor.planes.len() == expected_planes.len(),
+        "host-planar plane count mismatch for {pixel_layout}: expected {}, got {}",
+        expected_planes.len(),
+        descriptor.planes.len()
+    );
+
+    for (plane, expected_plane) in descriptor.planes.iter().zip(expected_planes.iter()) {
+        validate_host_plane_metadata(pixel_layout, plane, expected_plane)?;
+        validate_host_plane_visible_bounds(plane, descriptor.storage.len())?;
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExpectedHostPlane {
+    role: HostPlaneRole,
+    visible_width: u32,
+    visible_height: u32,
+    bytes_per_sample: usize,
+}
+
+fn expected_host_planar_planes(
+    pixel_layout: VideoFramePixelLayout,
+    coded_width: u32,
+    coded_height: u32,
+) -> anyhow::Result<Vec<ExpectedHostPlane>> {
+    let bytes_per_sample = match pixel_layout {
+        VideoFramePixelLayout::Yuv420Planar8 => 1,
+        VideoFramePixelLayout::Yuv420Planar10Le => 2,
+        _ => bail!("{pixel_layout} is not an accepted host-planar layout"),
+    };
+    let chroma_width = half_rounded_up(coded_width);
+    let chroma_height = half_rounded_up(coded_height);
+
+    Ok(vec![
+        ExpectedHostPlane {
+            role: HostPlaneRole::Luma,
+            visible_width: coded_width,
+            visible_height: coded_height,
+            bytes_per_sample,
+        },
+        ExpectedHostPlane {
+            role: HostPlaneRole::ChromaU,
+            visible_width: chroma_width,
+            visible_height: chroma_height,
+            bytes_per_sample,
+        },
+        ExpectedHostPlane {
+            role: HostPlaneRole::ChromaV,
+            visible_width: chroma_width,
+            visible_height: chroma_height,
+            bytes_per_sample,
+        },
+    ])
+}
+
+const fn half_rounded_up(dimension: u32) -> u32 {
+    (dimension / 2) + (dimension % 2)
+}
+
+fn validate_host_plane_metadata(
+    pixel_layout: VideoFramePixelLayout,
+    plane: &HostPlaneDescriptor,
+    expected_plane: &ExpectedHostPlane,
+) -> anyhow::Result<()> {
+    ensure!(
+        plane.role == expected_plane.role,
+        "host-planar role mismatch for {pixel_layout}: expected {:?}, got {:?}",
+        expected_plane.role,
+        plane.role
+    );
+    ensure!(
+        plane.visible_width == expected_plane.visible_width
+            && plane.visible_height == expected_plane.visible_height,
+        "host-planar {:?} visible size mismatch for {pixel_layout}: expected {}x{}, got {}x{}",
+        plane.role,
+        expected_plane.visible_width,
+        expected_plane.visible_height,
+        plane.visible_width,
+        plane.visible_height
+    );
+    ensure!(
+        plane.bytes_per_sample == expected_plane.bytes_per_sample,
+        "host-planar {:?} bytes-per-sample mismatch for {pixel_layout}: expected {}, got {}",
+        plane.role,
+        expected_plane.bytes_per_sample,
+        plane.bytes_per_sample
+    );
+    Ok(())
+}
+
+fn validate_host_plane_visible_bounds(
+    plane: &HostPlaneDescriptor,
+    storage_len: usize,
+) -> anyhow::Result<()> {
+    ensure!(
+        plane.visible_width > 0 && plane.visible_height > 0,
+        "host-planar {:?} plane has invalid visible size {}x{}",
+        plane.role,
+        plane.visible_width,
+        plane.visible_height
+    );
+
+    let visible_width = usize::try_from(plane.visible_width)
+        .context("host-planar visible width does not fit usize")?;
+    let visible_height = usize::try_from(plane.visible_height)
+        .context("host-planar visible height does not fit usize")?;
+    let visible_row_bytes = visible_width
+        .checked_mul(plane.bytes_per_sample)
+        .context("host-planar visible row byte count overflow")?;
+
+    ensure!(
+        plane.stride >= visible_row_bytes,
+        "host-planar {:?} stride {} is smaller than visible row bytes {}",
+        plane.role,
+        plane.stride,
+        visible_row_bytes
+    );
+
+    let last_row_delta = plane
+        .stride
+        .checked_mul(visible_height.saturating_sub(1))
+        .context("host-planar last-row stride overflow")?;
+    let last_row_start = plane
+        .offset
+        .checked_add(last_row_delta)
+        .context("host-planar last-row offset overflow")?;
+    let readable_end = last_row_start
+        .checked_add(visible_row_bytes)
+        .context("host-planar visible readable end overflow")?;
+
+    ensure!(
+        readable_end <= storage_len,
+        "host-planar {:?} visible area exceeds storage: end {}, storage {}",
+        plane.role,
+        readable_end,
+        storage_len
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs::File;
@@ -184,6 +481,47 @@ mod tests {
                 offset: [0, 2048, 0, 0],
                 pitch: [1920, 1920, 0, 0],
             }],
+        }
+    }
+
+    fn sample_host_planar_descriptor(bytes_per_sample: usize) -> HostPlanarFrameDescriptor {
+        let width = 4;
+        let height = 4;
+        let y_stride = width * bytes_per_sample;
+        let chroma_stride = (width / 2) * bytes_per_sample;
+        let y_size = y_stride * height;
+        let u_size = chroma_stride * (height / 2);
+        let v_size = u_size;
+        let storage = vec![0; y_size + u_size + v_size].into();
+
+        HostPlanarFrameDescriptor {
+            storage,
+            planes: vec![
+                HostPlaneDescriptor {
+                    role: HostPlaneRole::Luma,
+                    offset: 0,
+                    stride: y_stride,
+                    visible_width: width as u32,
+                    visible_height: height as u32,
+                    bytes_per_sample,
+                },
+                HostPlaneDescriptor {
+                    role: HostPlaneRole::ChromaU,
+                    offset: y_size,
+                    stride: chroma_stride,
+                    visible_width: (width / 2) as u32,
+                    visible_height: (height / 2) as u32,
+                    bytes_per_sample,
+                },
+                HostPlaneDescriptor {
+                    role: HostPlaneRole::ChromaV,
+                    offset: y_size + u_size,
+                    stride: chroma_stride,
+                    visible_width: (width / 2) as u32,
+                    visible_height: (height / 2) as u32,
+                    bytes_per_sample,
+                },
+            ],
         }
     }
 
@@ -268,6 +606,245 @@ mod tests {
                 assert_eq!(cloned_dma_buf.objects.len(), 1);
                 assert_eq!(cloned_dma_buf.layers.len(), 1);
             }
+            FrameResourceDescriptor::HostPlanar(_) => panic!("expected DMA-BUF clone"),
         }
+    }
+
+    #[test]
+    fn host_planar_accepts_valid_yuv420_8_and_10_descriptors() {
+        let planar8 = FrameResourceDescriptor::HostPlanar(sample_host_planar_descriptor(1));
+        let planar10 = FrameResourceDescriptor::HostPlanar(sample_host_planar_descriptor(2));
+
+        validate_resource_descriptor_against_contract(
+            VideoFrameContract::host_yuv420_planar8(),
+            4,
+            4,
+            &planar8,
+        )
+        .expect("valid 8-bit host-planar descriptor must pass");
+        validate_resource_descriptor_against_contract(
+            VideoFrameContract::host_yuv420_planar10le(),
+            4,
+            4,
+            &planar10,
+        )
+        .expect("valid 10-bit host-planar descriptor must pass");
+    }
+
+    #[test]
+    fn host_planar_rejects_invalid_plane_count() {
+        let mut descriptor = sample_host_planar_descriptor(1);
+        descriptor.planes.pop();
+
+        let error = validate_resource_descriptor_against_contract(
+            VideoFrameContract::host_yuv420_planar8(),
+            4,
+            4,
+            &FrameResourceDescriptor::HostPlanar(descriptor),
+        )
+        .expect_err("missing V plane must be rejected");
+
+        assert!(error.to_string().contains("plane count mismatch"));
+    }
+
+    #[test]
+    fn host_planar_rejects_invalid_stride() {
+        let mut descriptor = sample_host_planar_descriptor(1);
+        descriptor.planes[0].stride = 3;
+
+        let error = validate_resource_descriptor_against_contract(
+            VideoFrameContract::host_yuv420_planar8(),
+            4,
+            4,
+            &FrameResourceDescriptor::HostPlanar(descriptor),
+        )
+        .expect_err("visible row wider than stride must be rejected");
+
+        assert!(error.to_string().contains("stride"));
+    }
+
+    #[test]
+    fn host_planar_rejects_out_of_bounds_offset() {
+        let mut descriptor = sample_host_planar_descriptor(1);
+        descriptor.planes[2].offset = descriptor.storage.len();
+
+        let error = validate_resource_descriptor_against_contract(
+            VideoFrameContract::host_yuv420_planar8(),
+            4,
+            4,
+            &FrameResourceDescriptor::HostPlanar(descriptor),
+        )
+        .expect_err("visible V plane outside storage must be rejected");
+
+        assert!(error.to_string().contains("exceeds storage"));
+    }
+
+    #[test]
+    fn host_planar_bounds_check_reads_visible_bytes_not_trailing_padding() {
+        let descriptor = HostPlanarFrameDescriptor {
+            storage: vec![0; 40].into(),
+            planes: vec![
+                HostPlaneDescriptor {
+                    role: HostPlaneRole::Luma,
+                    offset: 0,
+                    stride: 8,
+                    visible_width: 4,
+                    visible_height: 4,
+                    bytes_per_sample: 1,
+                },
+                HostPlaneDescriptor {
+                    role: HostPlaneRole::ChromaU,
+                    offset: 28,
+                    stride: 4,
+                    visible_width: 2,
+                    visible_height: 2,
+                    bytes_per_sample: 1,
+                },
+                HostPlaneDescriptor {
+                    role: HostPlaneRole::ChromaV,
+                    offset: 34,
+                    stride: 4,
+                    visible_width: 2,
+                    visible_height: 2,
+                    bytes_per_sample: 1,
+                },
+            ],
+        };
+
+        validate_resource_descriptor_against_contract(
+            VideoFrameContract::host_yuv420_planar8(),
+            4,
+            4,
+            &FrameResourceDescriptor::HostPlanar(descriptor),
+        )
+        .expect("last-row padding after visible bytes must not be required");
+    }
+
+    #[test]
+    fn host_planar_uses_rounded_chroma_sizes_for_odd_yuv420_dimensions() {
+        let descriptor = HostPlanarFrameDescriptor {
+            storage: vec![0; 29].into(),
+            planes: vec![
+                HostPlaneDescriptor {
+                    role: HostPlaneRole::Luma,
+                    offset: 0,
+                    stride: 5,
+                    visible_width: 5,
+                    visible_height: 3,
+                    bytes_per_sample: 1,
+                },
+                HostPlaneDescriptor {
+                    role: HostPlaneRole::ChromaU,
+                    offset: 15,
+                    stride: 3,
+                    visible_width: 3,
+                    visible_height: 2,
+                    bytes_per_sample: 1,
+                },
+                HostPlaneDescriptor {
+                    role: HostPlaneRole::ChromaV,
+                    offset: 23,
+                    stride: 3,
+                    visible_width: 3,
+                    visible_height: 2,
+                    bytes_per_sample: 1,
+                },
+            ],
+        };
+
+        validate_resource_descriptor_against_contract(
+            VideoFrameContract::host_yuv420_planar8(),
+            5,
+            3,
+            &FrameResourceDescriptor::HostPlanar(descriptor),
+        )
+        .expect("odd YUV420 dimensions must round chroma plane sizes up");
+    }
+
+    #[test]
+    fn host_planar_rejects_mismatched_layout_bit_depth() {
+        let descriptor = sample_host_planar_descriptor(2);
+
+        let error = validate_resource_descriptor_against_contract(
+            VideoFrameContract::host_yuv420_planar8(),
+            4,
+            4,
+            &FrameResourceDescriptor::HostPlanar(descriptor),
+        )
+        .expect_err("8-bit contract must reject 16-bit host samples");
+
+        assert!(error.to_string().contains("bytes-per-sample mismatch"));
+    }
+
+    #[test]
+    fn host_planar_clone_for_lookup_preserves_shared_storage_without_copying() {
+        let descriptor = FrameResourceDescriptor::HostPlanar(sample_host_planar_descriptor(1));
+        let cloned_descriptor = descriptor
+            .try_clone_for_lookup()
+            .expect("host-planar clone must be infallible");
+
+        let (
+            FrameResourceDescriptor::HostPlanar(original),
+            FrameResourceDescriptor::HostPlanar(cloned),
+        ) = (&descriptor, &cloned_descriptor)
+        else {
+            panic!("expected host-planar descriptors");
+        };
+
+        assert!(Arc::ptr_eq(&original.storage, &cloned.storage));
+        assert_eq!(original.planes, cloned.planes);
+    }
+
+    #[test]
+    fn descriptor_validation_accepts_dma_buf_and_host_planar_matching_contracts() {
+        validate_resource_descriptor_against_contract(
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+            1920,
+            1080,
+            &FrameResourceDescriptor::DmaBuf(sample_dma_buf_descriptor()),
+        )
+        .expect("matching DMA-BUF descriptor must pass");
+
+        validate_resource_descriptor_against_contract(
+            VideoFrameContract::host_yuv420_planar8(),
+            4,
+            4,
+            &FrameResourceDescriptor::HostPlanar(sample_host_planar_descriptor(1)),
+        )
+        .expect("matching host-planar descriptor must pass");
+    }
+
+    #[test]
+    fn descriptor_validation_rejects_mismatched_descriptor_contract_pairs() {
+        let host_error = validate_resource_descriptor_against_contract(
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+            4,
+            4,
+            &FrameResourceDescriptor::HostPlanar(sample_host_planar_descriptor(1)),
+        )
+        .expect_err("hardware contract must reject host-planar descriptor");
+        assert!(host_error.to_string().contains("requires DMA-BUF"));
+
+        let dma_buf_error = validate_resource_descriptor_against_contract(
+            VideoFrameContract::host_yuv420_planar8(),
+            1920,
+            1080,
+            &FrameResourceDescriptor::DmaBuf(sample_dma_buf_descriptor()),
+        )
+        .expect_err("software contract must reject DMA-BUF descriptor");
+        assert!(dma_buf_error.to_string().contains("requires host-planar"));
+    }
+
+    #[test]
+    fn descriptor_validation_rejects_dma_buf_image_layout_mismatch() {
+        let error = validate_resource_descriptor_against_contract(
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+            1920,
+            1080,
+            &FrameResourceDescriptor::DmaBuf(sample_dma_buf_descriptor()),
+        )
+        .expect_err("composed DMA-BUF descriptor must not satisfy separate-layer contract");
+
+        assert!(error.to_string().contains("image layout mismatch"));
     }
 }

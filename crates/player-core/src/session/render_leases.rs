@@ -198,8 +198,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::{PresentFrameResourceProvider, PresentFrameResourceProviderLookup};
-    use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
-    use video_core::{DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle};
+    use codec_core::VideoColorMetadata;
+    use video_core::FrameResourceHandle;
+    use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
     /// Fake provider, который показывает, каким release path-ом ушёл rendered frame.
     #[derive(Clone)]
@@ -299,10 +300,7 @@ mod tests {
         video_core::DecodedFrame {
             generation: 0,
             pts: std::time::Duration::from_millis(42),
-            format: DecodedPixelFormat::Nv12,
-            bit_depth: BitDepth::Eight,
-            chroma: ChromaSubsampling::Yuv420,
-            memory_path: FrameMemoryPath::DmaBufZeroCopy,
+            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
             width: 640,
             height: 360,
             render_width: 640,

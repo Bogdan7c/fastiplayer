@@ -10,6 +10,7 @@ use media_core::{
     TrackTimestamp,
 };
 use video_core::{VideoDecoderActivitySnapshot, VideoDecoderActivityUnavailableReason};
+use video_frame_contract::VideoFrameContract;
 
 use crate::{
     DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
@@ -439,6 +440,9 @@ pub(crate) struct PlaybackPipeline {
 
     /// Требование активного video track, уточнённое container metadata или bitstream probe.
     active_video_requirement: Option<VideoDecodeRequirement>,
+
+    /// Runtime frame contract, который decoder stream должен публиковать для active track.
+    active_video_frame_contract: Option<VideoFrameContract>,
 }
 
 impl PlaybackPipeline {
@@ -793,8 +797,10 @@ impl PlaybackPipeline {
         track_id: TrackId,
         requirement: VideoDecodeRequirement,
     ) {
+        let frame_contract = VideoStreamDecodeConfig::frame_contract_from_requirement(&requirement);
         self.video_track_id = Some(track_id);
         self.active_video_requirement = Some(requirement);
+        self.active_video_frame_contract = Some(frame_contract);
     }
 
     /// Выбирает audio track id без side effects для decoder/output ownership.
@@ -813,6 +819,7 @@ impl PlaybackPipeline {
         self.audio_track_id = None;
         self.video_track_id = None;
         self.active_video_requirement = None;
+        self.active_video_frame_contract = None;
     }
 
     /// Возвращает active video requirement без передачи владения наружу pipeline.
@@ -821,9 +828,17 @@ impl PlaybackPipeline {
         self.active_video_requirement.as_ref()
     }
 
+    /// Возвращает expected runtime frame contract active video stream-а.
+    #[must_use]
+    pub(crate) fn active_video_frame_contract(&self) -> Option<VideoFrameContract> {
+        self.active_video_frame_contract
+    }
+
     /// Сохраняет requirement, который session уже провалидировала или разрешила отложить.
     pub(crate) fn set_active_video_requirement(&mut self, requirement: VideoDecodeRequirement) {
+        let frame_contract = VideoStreamDecodeConfig::frame_contract_from_requirement(&requirement);
         self.active_video_requirement = Some(requirement);
+        self.active_video_frame_contract = Some(frame_contract);
     }
 
     /// Возвращает текущее поколение packets без раскрытия storage поля.
@@ -1725,6 +1740,7 @@ impl Default for PlaybackPipeline {
             last_audio_clock_change_at: Instant::now(),
             video_backend: "Synthetic (test)",
             active_video_requirement: None,
+            active_video_frame_contract: None,
         }
     }
 }
@@ -1745,10 +1761,9 @@ mod tests {
         video_core::DecodedFrame {
             generation: 0,
             pts,
-            format: video_core::DecodedPixelFormat::Nv12,
-            bit_depth: codec_core::BitDepth::Eight,
-            chroma: codec_core::ChromaSubsampling::Yuv420,
-            memory_path: video_core::FrameMemoryPath::DmaBufZeroCopy,
+            frame_contract: video_frame_contract::VideoFrameContract::dma_buf_nv12(
+                video_frame_contract::DmaBufImageLayout::SeparateLayers,
+            ),
             width: 640,
             height: 360,
             render_width: 640,

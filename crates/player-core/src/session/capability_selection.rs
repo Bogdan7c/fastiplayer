@@ -134,15 +134,17 @@ impl PlayerSession {
         &self,
         track: &TrackInfo,
         requirement: &VideoDecodeRequirement,
-    ) -> PlayerResult<()> {
+    ) -> PlayerResult<video_frame_contract::VideoFrameContract> {
         let config = video_stream_decode_config_from_track(track, requirement)?;
+        let frame_contract = config.frame_contract;
         player_result_from_stream_config_result(
             self.pipeline.configure_video_decoder_stream(config),
-        )
+        )?;
+        Ok(frame_contract)
     }
 
     /// Повторно конфигурирует новый decoder backend под уже выбранный active video track.
-    pub(super) fn configure_active_video_decoder_stream(&self) -> PlayerResult<()> {
+    pub(super) fn configure_active_video_decoder_stream(&mut self) -> PlayerResult<()> {
         let Some(track_id) = self.pipeline.selected_video_track_id() else {
             return Ok(());
         };
@@ -161,7 +163,13 @@ impl PlayerSession {
             ));
         };
 
-        self.configure_decoder_stream_for_track(track, &requirement)
+        let frame_contract = self.configure_decoder_stream_for_track(track, &requirement)?;
+        debug_assert_eq!(
+            frame_contract,
+            VideoStreamDecodeConfig::frame_contract_from_requirement(&requirement)
+        );
+        self.pipeline.set_active_video_requirement(requirement);
+        Ok(())
     }
 
     /// Разрешает отложить codec validation до первого packet header-а, если container неполный.

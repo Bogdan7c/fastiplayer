@@ -967,56 +967,57 @@ impl PlaybackDiagnostics {
         queues: PipelineQueueDepthSnapshot,
     ) {
         self.snapshot.decoded_frames = self.snapshot.decoded_frames.saturating_add(1);
-        self.snapshot.zero_copy_memory_path = Some(frame.memory_path);
+        let memory_path = frame.memory_path();
+        self.snapshot.zero_copy_memory_path = Some(memory_path);
         self.snapshot.queues = queues;
 
         self.record_optional_latency(
             PipelineLatencyStage::DecoderPacketReceive,
             frame.diagnostics.timings.decoder_packet_receive_latency,
             Some(frame.pts),
-            Some(frame.memory_path),
+            Some(memory_path),
             queues,
         );
         self.record_optional_latency(
             PipelineLatencyStage::DecoderSubmit,
             frame.diagnostics.timings.decoder_submit_latency,
             Some(frame.pts),
-            Some(frame.memory_path),
+            Some(memory_path),
             queues,
         );
         self.record_optional_latency(
             PipelineLatencyStage::DecoderEventDrain,
             frame.diagnostics.timings.decoder_event_drain_latency,
             Some(frame.pts),
-            Some(frame.memory_path),
+            Some(memory_path),
             queues,
         );
         self.record_optional_latency(
             PipelineLatencyStage::HardwareSync,
             frame.diagnostics.timings.hardware_sync_latency,
             Some(frame.pts),
-            Some(frame.memory_path),
+            Some(memory_path),
             queues,
         );
         self.record_optional_latency(
             PipelineLatencyStage::DmaBufExport,
             frame.diagnostics.timings.dma_buf_export_latency,
             Some(frame.pts),
-            Some(frame.memory_path),
+            Some(memory_path),
             queues,
         );
         self.record_optional_latency(
             PipelineLatencyStage::DmaBufImport,
             frame.diagnostics.timings.dma_buf_import_latency,
             Some(frame.pts),
-            Some(frame.memory_path),
+            Some(memory_path),
             queues,
         );
         self.record_optional_latency(
             PipelineLatencyStage::DecodedFramePublish,
             frame.diagnostics.timings.decoded_frame_publish_latency,
             Some(frame.pts),
-            Some(frame.memory_path),
+            Some(memory_path),
             queues,
         );
         if let Some(latency) = frame.diagnostics.timings.decoded_frame_publish_latency {
@@ -1496,8 +1497,9 @@ fn average_duration(total: Duration, samples: u64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
-    use video_core::{DecodedPixelFormat, FrameResourceHandle, VideoFrameTimingDiagnostics};
+    use codec_core::VideoColorMetadata;
+    use video_core::{FrameResourceHandle, VideoFrameTimingDiagnostics};
+    use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
     /// Создаёт queue snapshot для чистых aggregation тестов.
     fn queue_depths_for_tests(pending_video_packets: usize) -> PipelineQueueDepthSnapshot {
@@ -1527,10 +1529,7 @@ mod tests {
         DecodedFrame {
             generation: 0,
             pts: Duration::from_millis(42),
-            format: DecodedPixelFormat::Nv12,
-            bit_depth: BitDepth::Eight,
-            chroma: ChromaSubsampling::Yuv420,
-            memory_path: FrameMemoryPath::DmaBufZeroCopy,
+            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
             width: 640,
             height: 360,
             render_width: 640,

@@ -23,6 +23,7 @@ pub use diagnostics::{
 };
 pub use resource::{
     DmaBufFrameDescriptor, DmaBufFrameExportLayout, DmaBufLayerDescriptor, DmaBufObjectDescriptor,
-    DmaBufObjectIdentity, FrameResourceDescriptor, FrameResourceHandle,
+    DmaBufObjectIdentity, FrameResourceDescriptor, FrameResourceHandle, HostPlanarFrameDescriptor,
+    HostPlaneDescriptor, HostPlaneRole, validate_resource_descriptor_against_contract,
 };
 pub use sync::{AvSync, FrameAction};

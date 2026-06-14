@@ -466,6 +466,9 @@ enum TextureViewLookupKind {
     /// Backend доступен, но resource для frame handle отсутствует.
     Missing,
 
+    /// Resource descriptor существует, но текущий materializer его не поддерживает.
+    Unsupported,
+
     /// Backend сообщил fatal/poisoned lookup state.
     Error,
 }
@@ -488,6 +491,9 @@ enum VideoFrameTexturePreparationAction {
     /// Missing — это absent resource на render boundary, cache должен быть очищен.
     ReportMissingRenderResources,
 
+    /// Unsupported — materializer не умеет текущий resource descriptor.
+    ReportUnsupportedRenderResource,
+
     /// Error — fatal lookup на render boundary, cache должен быть очищен.
     ReportRenderResourceLookupFailure,
 }
@@ -497,7 +503,9 @@ impl VideoFrameTexturePreparationAction {
     const fn clears_cached_renderable_frame(self) -> bool {
         matches!(
             self,
-            Self::ReportMissingRenderResources | Self::ReportRenderResourceLookupFailure
+            Self::ReportMissingRenderResources
+                | Self::ReportUnsupportedRenderResource
+                | Self::ReportRenderResourceLookupFailure
         )
     }
 }
@@ -520,6 +528,9 @@ fn video_frame_texture_preparation_action(
         }
         TextureViewLookupKind::Missing => {
             VideoFrameTexturePreparationAction::ReportMissingRenderResources
+        }
+        TextureViewLookupKind::Unsupported => {
+            VideoFrameTexturePreparationAction::ReportUnsupportedRenderResource
         }
         TextureViewLookupKind::Error => {
             VideoFrameTexturePreparationAction::ReportRenderResourceLookupFailure
@@ -902,6 +913,22 @@ fn prepare_video_frame(
             timings.total = video_prepare_started_at.elapsed();
             PreparedVideoFrame::empty(acquisition_state).with_diagnostics("missing", timings)
         }
+        WgpuFrameTextureViewLookup::Unsupported { .. } => {
+            let stage_started_at = Instant::now();
+            let preparation_action = video_frame_texture_preparation_action(
+                TextureViewLookupKind::Unsupported,
+                false,
+                acquisition_reused_previous_frame,
+            );
+            debug_assert!(preparation_action.clears_cached_renderable_frame());
+            report_video_render_boundary_error(
+                app_state,
+                PlayerRenderError::render_resource_lookup_failed(&present_frame),
+            );
+            timings.lookup_action = stage_started_at.elapsed();
+            timings.total = video_prepare_started_at.elapsed();
+            PreparedVideoFrame::empty(acquisition_state).with_diagnostics("unsupported", timings)
+        }
         WgpuFrameTextureViewLookup::Error { .. } => {
             let stage_started_at = Instant::now();
             let preparation_action = video_frame_texture_preparation_action(
@@ -938,18 +965,20 @@ fn build_render_input_video_frame<'frame>(
 ) -> Result<WgpuRenderableFrame<'frame>, PlayerRenderError> {
     let present_frame = &renderable_frame.present_frame;
     let texture_views = &renderable_frame.texture_views;
+    let frame_format = present_frame.frame.format();
+    let frame_memory_path = present_frame.frame.memory_path();
 
     tracing::trace!(
         handle_id = present_frame.frame.resource_handle.0,
         pts_ms = present_frame.frame.pts.as_millis(),
-        format = %present_frame.frame.format,
-        memory_path = %present_frame.frame.memory_path,
+        format = %frame_format,
+        memory_path = %frame_memory_path,
         stale = present_frame.stale,
         acquisition = acquisition_state,
         "Present frame acquired from playback worker"
     );
 
-    let boundary_frame = match present_frame.frame.format {
+    let boundary_frame = match frame_format {
         DecodedPixelFormat::Nv12 => WgpuRenderableFrame::from_decoded_nv12(
             &present_frame.frame,
             &texture_views.y_view,
@@ -966,7 +995,7 @@ fn build_render_input_video_frame<'frame>(
         DecodedPixelFormat::Yuv420Planar8 | DecodedPixelFormat::Yuv420Planar10Le => {
             Err(anyhow::anyhow!(
                 "{} decoded video surface requires host upload, which is not implemented in this session",
-                present_frame.frame.format
+                frame_format
             ))
         }
     };
@@ -974,12 +1003,12 @@ fn build_render_input_video_frame<'frame>(
     boundary_frame.map_err(|error| {
         let message = format!(
             "WGPU renderable frame rejected decoded {} frame: {}",
-            present_frame.frame.format, error
+            frame_format, error
         );
         tracing::error!(
             error = %error,
-            format = %present_frame.frame.format,
-            memory_path = %present_frame.frame.memory_path,
+            format = %frame_format,
+            memory_path = %frame_memory_path,
             "Failed to build WGPU renderable frame"
         );
         PlayerRenderError::unsupported_frame_format(present_frame, message)
@@ -1583,6 +1612,19 @@ mod tests {
             render_error.to_player_error().kind,
             player_core::PlayerErrorKind::UnsupportedRenderFormat
         );
+    }
+
+    /// Проверяет, что Unsupported — отдельный descriptor boundary outcome.
+    #[test]
+    fn texture_view_unsupported_reports_boundary_error_and_clears_cache() {
+        let preparation_action =
+            video_frame_texture_preparation_action(TextureViewLookupKind::Unsupported, true, false);
+
+        assert_eq!(
+            preparation_action,
+            VideoFrameTexturePreparationAction::ReportUnsupportedRenderResource
+        );
+        assert!(preparation_action.clears_cached_renderable_frame());
     }
 
     /// Проверяет, что Error — fatal lookup boundary error, а не Busy fallback.

@@ -73,6 +73,12 @@ pub enum WgpuFrameTextureViewLookup {
         texture_pool_lock_wait: Duration,
     },
 
+    /// Descriptor существует, но этот materializer не умеет такой resource kind.
+    Unsupported {
+        /// Сколько render thread ждал lock texture pool-а внутри backend provider-а.
+        texture_pool_lock_wait: Duration,
+    },
+
     /// Backend обнаружил poisoned/fatal state при lookup-е.
     Error {
         /// Сколько render thread ждал lock texture pool-а внутри backend provider-а.
@@ -93,6 +99,9 @@ impl WgpuFrameTextureViewLookup {
                 texture_pool_lock_wait,
             }
             | Self::Missing {
+                texture_pool_lock_wait,
+            }
+            | Self::Unsupported {
                 texture_pool_lock_wait,
             }
             | Self::Error {
@@ -169,6 +178,12 @@ impl WgpuFrameTextureViewMaterializer for DmaBufWgpuFrameMaterializer {
             }
         };
 
+        if let Some(unsupported_lookup) =
+            unsupported_lookup_for_non_dma_buf_descriptor(&descriptor, provider_wait)
+        {
+            return unsupported_lookup;
+        }
+
         let cache_lock_started_at = Instant::now();
         let mut texture_cache = match self.texture_cache.try_lock() {
             Ok(texture_cache) => texture_cache,
@@ -195,6 +210,18 @@ impl WgpuFrameTextureViewMaterializer for DmaBufWgpuFrameMaterializer {
             },
             Err(error) => texture_view_lookup_after_import_failure(handle, error, total_lock_wait),
         }
+    }
+}
+
+fn unsupported_lookup_for_non_dma_buf_descriptor(
+    descriptor: &FrameResourceDescriptor,
+    texture_pool_lock_wait: Duration,
+) -> Option<WgpuFrameTextureViewLookup> {
+    match descriptor {
+        FrameResourceDescriptor::DmaBuf(_) => None,
+        FrameResourceDescriptor::HostPlanar(_) => Some(WgpuFrameTextureViewLookup::Unsupported {
+            texture_pool_lock_wait,
+        }),
     }
 }
 
@@ -239,7 +266,9 @@ impl DmaBufWgpuTextureCache {
             ));
         }
 
-        let FrameResourceDescriptor::DmaBuf(dma_buf_descriptor) = descriptor;
+        let FrameResourceDescriptor::DmaBuf(dma_buf_descriptor) = descriptor else {
+            bail!("WGPU DMA-BUF texture cache received non-DMA-BUF descriptor");
+        };
         let imported_texture = Arc::new(
             self.importer
                 .import_exported_dma_buf_image(&dma_buf_descriptor)?,
@@ -355,14 +384,14 @@ impl<'frame> WgpuRenderableFrame<'frame> {
 fn validate_decoded_nv12_frame(frame: &DecodedFrame) -> Result<()> {
     frame.validate_contract()?;
     ensure!(
-        frame.format == DecodedPixelFormat::Nv12,
+        frame.format() == DecodedPixelFormat::Nv12,
         "from_decoded_nv12 received {} frame",
-        frame.format
+        frame.format()
     );
     ensure!(
-        frame.memory_path == FrameMemoryPath::DmaBufZeroCopy,
+        frame.memory_path() == FrameMemoryPath::DmaBufZeroCopy,
         "NV12 WGPU boundary requires zero-copy memory path, got {}",
-        frame.memory_path
+        frame.memory_path()
     );
 
     Ok(())
@@ -372,14 +401,14 @@ fn validate_decoded_nv12_frame(frame: &DecodedFrame) -> Result<()> {
 fn validate_decoded_p010_frame(frame: &DecodedFrame) -> Result<()> {
     frame.validate_contract()?;
     ensure!(
-        frame.format == DecodedPixelFormat::P010,
+        frame.format() == DecodedPixelFormat::P010,
         "from_decoded_p010 received {} frame",
-        frame.format
+        frame.format()
     );
     ensure!(
-        frame.memory_path == FrameMemoryPath::DmaBufZeroCopy,
+        frame.memory_path() == FrameMemoryPath::DmaBufZeroCopy,
         "P010 WGPU boundary requires zero-copy memory path, got {}",
-        frame.memory_path
+        frame.memory_path()
     );
 
     Ok(())
@@ -410,8 +439,12 @@ fn renderable_metadata_from_decoded(
         handle: frame.resource_handle.0,
         pts: frame.pts,
         format,
-        bit_depth: frame.bit_depth,
-        chroma: frame.chroma,
+        bit_depth: frame
+            .bit_depth()
+            .expect("validated WGPU frame must expose YUV bit depth"),
+        chroma: frame
+            .chroma()
+            .expect("validated WGPU frame must expose YUV chroma"),
         coded_width: frame.width,
         coded_height: frame.height,
         render_width: frame.render_width,
@@ -813,7 +846,8 @@ pub fn clear_to_black(target: &wgpu::TextureView, encoder: &mut wgpu::CommandEnc
 mod tests {
     use std::time::Duration;
 
-    use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
+    use codec_core::VideoColorMetadata;
+    use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
     use super::*;
 
@@ -925,9 +959,10 @@ mod tests {
 
     #[test]
     fn p010_boundary_rejects_non_zero_copy_memory_path() {
-        let frame = decoded_p010_test_frame(FrameMemoryPath::CpuUpload);
+        let frame = decoded_host_planar10_test_frame();
 
-        let error = validate_decoded_p010_frame(&frame).expect_err("P010 CPU path rejected");
+        let error =
+            validate_decoded_p010_frame(&frame).expect_err("P010 host-upload path rejected");
 
         assert!(
             error.to_string().contains("zero-copy"),
@@ -937,9 +972,10 @@ mod tests {
 
     #[test]
     fn nv12_boundary_rejects_non_zero_copy_memory_path() {
-        let frame = decoded_nv12_test_frame(FrameMemoryPath::CpuUpload);
+        let frame = decoded_host_planar8_test_frame();
 
-        let error = validate_decoded_nv12_frame(&frame).expect_err("NV12 CPU path rejected");
+        let error =
+            validate_decoded_nv12_frame(&frame).expect_err("NV12 host-upload path rejected");
 
         assert!(
             error.to_string().contains("zero-copy"),
@@ -960,6 +996,51 @@ mod tests {
             WgpuFrameTextureViewLookup::Error {
                 texture_pool_lock_wait
             } if texture_pool_lock_wait == Duration::from_millis(9)
+        ));
+    }
+
+    #[test]
+    fn dma_buf_materializer_returns_unsupported_for_host_planar_descriptor() {
+        let descriptor =
+            FrameResourceDescriptor::HostPlanar(video_core::HostPlanarFrameDescriptor {
+                storage: std::sync::Arc::<[u8]>::from(vec![0_u8; 6]),
+                planes: vec![
+                    video_core::HostPlaneDescriptor {
+                        role: video_core::HostPlaneRole::Luma,
+                        offset: 0,
+                        stride: 2,
+                        visible_width: 2,
+                        visible_height: 2,
+                        bytes_per_sample: 1,
+                    },
+                    video_core::HostPlaneDescriptor {
+                        role: video_core::HostPlaneRole::ChromaU,
+                        offset: 4,
+                        stride: 1,
+                        visible_width: 1,
+                        visible_height: 1,
+                        bytes_per_sample: 1,
+                    },
+                    video_core::HostPlaneDescriptor {
+                        role: video_core::HostPlaneRole::ChromaV,
+                        offset: 5,
+                        stride: 1,
+                        visible_width: 1,
+                        visible_height: 1,
+                        bytes_per_sample: 1,
+                    },
+                ],
+            });
+
+        let lookup =
+            unsupported_lookup_for_non_dma_buf_descriptor(&descriptor, Duration::from_millis(4))
+                .expect("host-planar descriptor must be classified before DMA-BUF import");
+
+        assert!(matches!(
+            lookup,
+            WgpuFrameTextureViewLookup::Unsupported {
+                texture_pool_lock_wait
+            } if texture_pool_lock_wait == Duration::from_millis(4)
         ));
     }
 
@@ -1014,7 +1095,7 @@ mod tests {
 
     /// Строит renderer-neutral frame с заданным render-размером для letterbox тестов.
     fn renderable_test_frame(render_width: u32, render_height: u32) -> RenderableFrame {
-        let mut decoded = decoded_nv12_test_frame(FrameMemoryPath::CpuUpload);
+        let mut decoded = decoded_nv12_test_frame();
         decoded.render_width = render_width;
         decoded.render_height = render_height;
         renderable_metadata_from_decoded(&decoded, VideoFramePixelLayout::Nv12)
@@ -1124,14 +1205,11 @@ mod tests {
         assert!((center_y - 0.5).abs() < 1e-4, "center_y = {center_y}");
     }
 
-    fn decoded_nv12_test_frame(memory_path: FrameMemoryPath) -> DecodedFrame {
+    fn decoded_nv12_test_frame() -> DecodedFrame {
         DecodedFrame {
             generation: 0,
             pts: Duration::ZERO,
-            format: DecodedPixelFormat::Nv12,
-            bit_depth: BitDepth::Eight,
-            chroma: ChromaSubsampling::Yuv420,
-            memory_path,
+            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
             width: 640,
             height: 360,
             render_width: 640,
@@ -1143,14 +1221,11 @@ mod tests {
         }
     }
 
-    fn decoded_p010_test_frame(memory_path: FrameMemoryPath) -> DecodedFrame {
+    fn decoded_p010_test_frame() -> DecodedFrame {
         DecodedFrame {
             generation: 0,
             pts: Duration::ZERO,
-            format: DecodedPixelFormat::P010,
-            bit_depth: BitDepth::Ten,
-            chroma: ChromaSubsampling::Yuv420,
-            memory_path,
+            frame_contract: VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
             width: 1920,
             height: 1080,
             render_width: 1920,
@@ -1159,6 +1234,20 @@ mod tests {
             color: VideoColorMetadata::sdr_bt709_limited(),
             resource_handle: video_core::FrameResourceHandle(7),
             diagnostics: video_core::VideoFrameDiagnostics::default(),
+        }
+    }
+
+    fn decoded_host_planar8_test_frame() -> DecodedFrame {
+        DecodedFrame {
+            frame_contract: VideoFrameContract::host_yuv420_planar8(),
+            ..decoded_nv12_test_frame()
+        }
+    }
+
+    fn decoded_host_planar10_test_frame() -> DecodedFrame {
+        DecodedFrame {
+            frame_contract: VideoFrameContract::host_yuv420_planar10le(),
+            ..decoded_p010_test_frame()
         }
     }
 }

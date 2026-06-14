@@ -2416,7 +2416,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
+    use codec_core::VideoColorMetadata;
     use media_core::MediaTime;
     use player_core::{
         MediaOpenRequest, MediaSource, MediaSummary, PlaybackResumeIntent, PlaybackState,
@@ -2427,8 +2427,9 @@ mod tests {
         ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
         HdrReferenceDefaultDiagnostics, RenderDiagnostics,
     };
-    use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle};
+    use video_core::{DecodedFrame, FrameResourceHandle};
     use video_frame_contract::VideoFramePixelLayout;
+    use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
     use super::{
         AppFrameContext, AppState, CachedPresentFrameDiscardReason,
@@ -2468,10 +2469,7 @@ mod tests {
         DecodedFrame {
             generation,
             pts,
-            format: DecodedPixelFormat::Nv12,
-            bit_depth: BitDepth::Eight,
-            chroma: ChromaSubsampling::Yuv420,
-            memory_path: FrameMemoryPath::DmaBufZeroCopy,
+            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
             width: 640,
             height: 360,
             render_width: 640,

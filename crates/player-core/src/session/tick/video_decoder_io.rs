@@ -329,13 +329,31 @@ pub(super) fn drain_decoded_video_frames(
             continue;
         }
 
+        if let Some(expected_contract) = session.pipeline.active_video_frame_contract()
+            && let Err(error) = frame.validate_against_expected_contract(expected_contract)
+        {
+            release_video_texture(session, frame.resource_handle);
+            session.mark_fatal_error(crate::PlayerError::new(
+                crate::PlayerErrorKind::RuntimeError,
+                format!("Decoded video frame contract mismatch: {error}"),
+            ));
+            tracing::error!(
+                error = %error,
+                expected_contract = %expected_contract,
+                actual_contract = %frame.frame_contract,
+                pts_ms = frame.pts.as_millis(),
+                "Decoded video frame does not match active stream contract"
+            );
+            return drained_frame_count;
+        }
+
         session.note_decoded_video_frame_for_seek_trace(frame.pts, frame.generation);
         tracing::debug!(
             generation = frame.generation,
             pts_ms = frame.pts.as_millis(),
-            format = %frame.format,
-            bit_depth = %frame.bit_depth,
-            memory_path = %frame.memory_path,
+            format = %frame.format(),
+            bit_depth = ?frame.bit_depth(),
+            memory_path = %frame.memory_path(),
             width = frame.width,
             height = frame.height,
             "Video frame decoded"

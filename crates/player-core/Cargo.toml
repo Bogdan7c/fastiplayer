@@ -20,6 +20,7 @@ rustiplayer-config = { workspace = true }
 tracing = { workspace = true }
 video-backend-api = { workspace = true }
 video-core = { path = "../video-core" }
+video-frame-contract = { workspace = true }
 
 [dev-dependencies]
 render-core = { workspace = true }

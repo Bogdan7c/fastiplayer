@@ -2737,18 +2737,16 @@ fn notify_decoder_activity(activity_notifier: &VideoDecoderActivityNotifier) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
-    use video_core::{DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle};
+    use codec_core::VideoColorMetadata;
+    use video_core::FrameResourceHandle;
+    use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
     /// Создаёт decoded frame без реальных GPU resources для channel-level тестов.
     fn decoded_frame_for_tests(handle_id: u64) -> DecodedFrame {
         DecodedFrame {
             generation: 0,
             pts: Duration::ZERO,
-            format: DecodedPixelFormat::Nv12,
-            bit_depth: BitDepth::Eight,
-            chroma: ChromaSubsampling::Yuv420,
-            memory_path: FrameMemoryPath::DmaBufZeroCopy,
+            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
             width: 640,
             height: 360,
             render_width: 640,

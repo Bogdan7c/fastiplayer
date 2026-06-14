@@ -10,11 +10,11 @@ use bytes::Bytes;
 use codec_core::{
     BitDepth, ChromaSubsampling, H264Packetization, H265Packetization, VideoCodec,
     VideoColorMetadata, VideoDecodeRequirement, VideoDisplayOrientation, VideoMemoryContract,
-    VideoProfile,
+    VideoProfile, video_frame_pixel_layout_from_decode_requirement,
 };
 use crossbeam_channel::{Receiver, RecvError, RecvTimeoutError, Sender, TrySendError, bounded};
 use media_core::{TrackId, TrackTimestamp};
-use video_frame_contract::VideoFramePixelLayout;
+use video_frame_contract::{DmaBufImageLayout, VideoFrameContract, VideoFramePixelLayout};
 
 /// Codec-specific framing, которое decoder backend не должен угадывать из bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,11 +57,8 @@ pub struct VideoStreamDecodeConfig {
     /// Display orientation из container track transform.
     pub display_orientation: VideoDisplayOrientation,
 
-    /// Expected decoded surface format на renderer/backend boundary.
-    pub surface_format: Option<VideoFramePixelLayout>,
-
-    /// Required decoded memory path; production policy остаётся hardware zero-copy.
-    pub memory_contract: VideoMemoryContract,
+    /// Expected decoded frame/runtime resource contract на decoder->renderer boundary.
+    pub frame_contract: VideoFrameContract,
 
     /// Container codec-private bytes, например MP4/MKV `avcC`/`hvcC`.
     pub codec_private: Option<Bytes>,
@@ -83,10 +80,39 @@ impl VideoStreamDecodeConfig {
             coded_width: requirement.width,
             coded_height: requirement.height,
             display_orientation: VideoDisplayOrientation::Identity,
-            surface_format: requirement.surface_format,
-            memory_contract: requirement.memory_contract,
+            frame_contract: Self::frame_contract_from_requirement(requirement),
             codec_private: None,
             packetization: None,
+        }
+    }
+
+    /// Выводит runtime frame contract из selection requirement-а.
+    ///
+    /// Пока selection не хранит exact DMA-BUF image layout, P010/NV12 используют
+    /// текущий production default `SeparateLayers`. Exact layout selection будет
+    /// отдельной boundary задачей.
+    #[must_use]
+    pub fn frame_contract_from_requirement(
+        requirement: &VideoDecodeRequirement,
+    ) -> VideoFrameContract {
+        let pixel_layout = requirement
+            .surface_format
+            .or_else(|| video_frame_pixel_layout_from_decode_requirement(requirement))
+            .unwrap_or(VideoFramePixelLayout::Nv12);
+
+        match pixel_layout {
+            VideoFramePixelLayout::Nv12 => {
+                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers)
+            }
+            VideoFramePixelLayout::P010 => {
+                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers)
+            }
+            VideoFramePixelLayout::Yuv420Planar8 => VideoFrameContract::host_yuv420_planar8(),
+            VideoFramePixelLayout::Yuv420Planar10Le => VideoFrameContract::host_yuv420_planar10le(),
+            VideoFramePixelLayout::Rgba8 => VideoFrameContract {
+                pixel_layout,
+                transfer_path: video_frame_contract::VideoFrameTransferPath::SoftwareHostUpload,
+            },
         }
     }
 

@@ -422,14 +422,18 @@ mod tests {
             .duplicate_descriptor(handle)
             .expect("descriptor duplication must not fail")
             .expect("registered handle must have descriptor");
-        let FrameResourceDescriptor::DmaBuf(first_dma_buf) = first_descriptor;
+        let FrameResourceDescriptor::DmaBuf(first_dma_buf) = first_descriptor else {
+            panic!("expected DMA-BUF descriptor for first registered image");
+        };
         let first_lookup_fd = first_dma_buf.objects[0].fd.as_raw_fd();
 
         let second_descriptor = resource_pool
             .duplicate_descriptor(handle)
             .expect("provider-owned descriptor must support repeated renderer lookups")
             .expect("registered handle must still have descriptor");
-        let FrameResourceDescriptor::DmaBuf(second_dma_buf) = second_descriptor;
+        let FrameResourceDescriptor::DmaBuf(second_dma_buf) = second_descriptor else {
+            panic!("expected DMA-BUF descriptor for second registered image");
+        };
 
         assert_ne!(first_lookup_fd, second_dma_buf.objects[0].fd.as_raw_fd());
         drop(first_dma_buf);
@@ -483,7 +487,9 @@ mod tests {
             .duplicate_descriptor(replacement_handle)
             .expect("replacement descriptor lookup must not fail")
             .expect("replacement handle must have descriptor");
-        let FrameResourceDescriptor::DmaBuf(replacement_dma_buf) = replacement_descriptor;
+        let FrameResourceDescriptor::DmaBuf(replacement_dma_buf) = replacement_descriptor else {
+            panic!("expected DMA-BUF descriptor for replacement image");
+        };
         assert_eq!(replacement_dma_buf.resource_id, 103);
 
         let stats = resource_pool.stats();

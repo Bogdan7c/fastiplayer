@@ -289,7 +289,7 @@ impl PlayerRenderError {
             frame_handle: Some(lease.resource_handle().0),
             message: format!(
                 "Render resources are missing for {} frame handle {} in generation {}",
-                lease.frame.format,
+                lease.frame.format(),
                 lease.resource_handle().0,
                 lease.render_generation
             ),
@@ -305,7 +305,7 @@ impl PlayerRenderError {
             frame_handle: Some(lease.resource_handle().0),
             message: format!(
                 "Render resource lookup failed for {} frame handle {} in generation {}",
-                lease.frame.format,
+                lease.frame.format(),
                 lease.resource_handle().0,
                 lease.render_generation
             ),
@@ -2008,16 +2008,14 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
+    use codec_core::VideoColorMetadata;
     use crossbeam_channel::unbounded;
     use media_core::{
         DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaTime, TrackId,
         TrackInfo, TrackKind,
     };
-    use video_core::{
-        DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle,
-        VideoDecoderActivitySnapshot,
-    };
+    use video_core::{DecodedFrame, FrameResourceHandle, VideoDecoderActivitySnapshot};
+    use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
     use super::*;
     use crate::{
@@ -2406,10 +2404,7 @@ mod tests {
         DecodedFrame {
             generation: 0,
             pts,
-            format: DecodedPixelFormat::Nv12,
-            bit_depth: BitDepth::Eight,
-            chroma: ChromaSubsampling::Yuv420,
-            memory_path: FrameMemoryPath::DmaBufZeroCopy,
+            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
             width: 640,
             height: 360,
             render_width: 640,

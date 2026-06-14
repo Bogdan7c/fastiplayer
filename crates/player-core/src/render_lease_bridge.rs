@@ -74,10 +74,10 @@ impl PresentFrameResourceDescriptor {
     /// Собирает neutral descriptor из decoded frame metadata без materialization в renderer-е.
     const fn from_decoded_frame(render_generation: u64, frame: &video_core::DecodedFrame) -> Self {
         Self {
-            kind: PresentFrameResourceKind::from_memory_path(frame.memory_path),
+            kind: PresentFrameResourceKind::from_memory_path(frame.memory_path()),
             render_generation,
             resource_handle: frame.resource_handle,
-            memory_path: frame.memory_path,
+            memory_path: frame.memory_path(),
         }
     }
 
@@ -278,7 +278,7 @@ impl PresentFrameLease {
         let _ = sample_tx.try_send(RenderResourceLockSample {
             wait,
             pts: Some(self.frame.pts),
-            memory_path: Some(self.frame.memory_path),
+            memory_path: Some(self.frame.memory_path()),
             lookup_was_busy,
         });
     }
@@ -887,8 +887,9 @@ impl RenderLeaseBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
-    use video_core::{DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle};
+    use codec_core::VideoColorMetadata;
+    use video_core::{FrameMemoryPath, FrameResourceHandle};
+    use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
     /// Provider, который не создаёт GPU handles, но возвращает измеренный lock wait.
     struct MissingResourceProvider {
@@ -986,10 +987,7 @@ mod tests {
         video_core::DecodedFrame {
             generation: 0,
             pts: Duration::from_millis(42),
-            format: DecodedPixelFormat::Nv12,
-            bit_depth: BitDepth::Eight,
-            chroma: ChromaSubsampling::Yuv420,
-            memory_path: FrameMemoryPath::DmaBufZeroCopy,
+            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
             width: 640,
             height: 360,
             render_width: 640,

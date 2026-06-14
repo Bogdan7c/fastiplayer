@@ -663,15 +663,17 @@ mod tests {
         handle: u64,
         format: video_core::DecodedPixelFormat,
     ) -> video_core::DecodedFrame {
-        let (bit_depth, memory_path) = match format {
-            video_core::DecodedPixelFormat::Nv12 => (
-                codec_core::BitDepth::Eight,
-                video_core::FrameMemoryPath::DmaBufZeroCopy,
-            ),
-            video_core::DecodedPixelFormat::P010 => (
-                codec_core::BitDepth::Ten,
-                video_core::FrameMemoryPath::DmaBufZeroCopy,
-            ),
+        let frame_contract = match format {
+            video_core::DecodedPixelFormat::Nv12 => {
+                video_frame_contract::VideoFrameContract::dma_buf_nv12(
+                    video_frame_contract::DmaBufImageLayout::SeparateLayers,
+                )
+            }
+            video_core::DecodedPixelFormat::P010 => {
+                video_frame_contract::VideoFrameContract::dma_buf_p010(
+                    video_frame_contract::DmaBufImageLayout::SeparateLayers,
+                )
+            }
             video_core::DecodedPixelFormat::Rgba8 => {
                 panic!("RGBA8 is not a production decoded video test format")
             }
@@ -684,10 +686,7 @@ mod tests {
         video_core::DecodedFrame {
             generation: 0,
             pts,
-            format,
-            bit_depth,
-            chroma: codec_core::ChromaSubsampling::Yuv420,
-            memory_path,
+            frame_contract,
             width: 640,
             height: 360,
             render_width: 640,
@@ -1726,7 +1725,7 @@ mod tests {
             session
                 .pipeline
                 .present_video_frame()
-                .map(|frame| frame.format),
+                .map(|frame| frame.format()),
             Some(video_core::DecodedPixelFormat::P010)
         );
         assert!(session.pipeline.video_present_queue_is_empty());
@@ -2764,6 +2763,48 @@ mod tests {
                 reason: PlayerVideoDropReason::StaleGeneration,
             }]
         );
+    }
+
+    #[test]
+    fn decoded_frame_contract_mismatch_is_reported_without_renderer_knowledge() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+
+        session
+            .pipeline
+            .set_video_decoder_thread(decoder_thread.clone());
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9)
+                .with_surface_format(video_core::DecodedPixelFormat::Nv12),
+        );
+        decoder_thread.push_decoded_frame(decoded_frame_with_format(
+            Duration::from_millis(120),
+            78,
+            video_core::DecodedPixelFormat::P010,
+        ));
+
+        let drained_frames = drain_decoded_video_frames(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(1, 0),
+            None,
+        );
+
+        assert_eq!(drained_frames, 1);
+        assert!(session.pipeline.video_present_queue_is_empty());
+        assert_eq!(
+            decoder_thread.released_handles(),
+            vec![video_core::FrameResourceHandle(78)]
+        );
+        let last_error = session
+            .snapshot()
+            .last_error
+            .as_ref()
+            .expect("contract mismatch must be reported to player state");
+        assert_eq!(last_error.kind, PlayerErrorKind::RuntimeError);
+        assert!(last_error.message.contains("contract mismatch"));
     }
 
     #[test]

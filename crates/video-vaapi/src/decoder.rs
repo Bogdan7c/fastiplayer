@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoDisplayOrientation};
+use cros_codecs::decoder::DecodedDmaBufExportLayout;
 use cros_codecs::libva::{
     VA_RT_FORMAT_YUV420, VA_RT_FORMAT_YUV420_10, VA_RT_FORMAT_YUV420_12, VA_RT_FORMAT_YUV422,
     VA_RT_FORMAT_YUV422_10, VA_RT_FORMAT_YUV422_12, VA_RT_FORMAT_YUV444, VA_RT_FORMAT_YUV444_10,
@@ -15,12 +16,13 @@ use cros_codecs::libva::{
 use media_core::Packet;
 use tracing::{debug, info, trace, warn};
 use video_core::{
-    DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle, VideoDecoder,
+    DecodedFrame, DecodedPixelFormat, FrameResourceHandle, VideoDecoder,
     VideoDecoderActivityNotifier, VideoDecoderDiagnosticEvent, VideoDecoderDropReason,
     VideoFrameDiagnostics, VideoFrameTimingDiagnostics, VideoPrerollOutputFloor,
     VideoPrerollOutputFloorClear, VideoPrerollOutputFloorResult, VideoResourcePoolDiagnostics,
     VideoStreamDecodeConfig,
 };
+use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
 use crate::codec_adapter::{
     VaapiAdapterDecodeError, VaapiCodecAdapter, VaapiCodecAdapterFactory, VaapiDecodedFormat,
@@ -952,6 +954,30 @@ fn decoded_contract_for_stream_format(
         other => Err(anyhow::anyhow!(
             "Unsupported decoded stream format for VA-API renderer boundary: {:?}",
             other
+        )),
+    }
+}
+
+fn dma_buf_image_layout_from_export_layout(
+    export_layout: DecodedDmaBufExportLayout,
+) -> DmaBufImageLayout {
+    match export_layout {
+        DecodedDmaBufExportLayout::ComposedLayers => DmaBufImageLayout::ComposedLayers,
+        DecodedDmaBufExportLayout::SeparateLayers => DmaBufImageLayout::SeparateLayers,
+    }
+}
+
+fn frame_contract_for_dma_buf_export(
+    format: DecodedPixelFormat,
+    export_layout: DecodedDmaBufExportLayout,
+) -> Result<VideoFrameContract> {
+    let image_layout = dma_buf_image_layout_from_export_layout(export_layout);
+
+    match format {
+        DecodedPixelFormat::Nv12 => Ok(VideoFrameContract::dma_buf_nv12(image_layout)),
+        DecodedPixelFormat::P010 => Ok(VideoFrameContract::dma_buf_p010(image_layout)),
+        other => Err(anyhow::anyhow!(
+            "unsupported VA-API DMA-BUF decoded frame format for frame contract: {other}"
         )),
     }
 }
@@ -1945,8 +1971,8 @@ impl VaapiVideoDecoder {
             let invalid_resource_handle = frame.resource_handle;
             warn!(
                 error = %error,
-                format = %frame.format,
-                memory_path = %frame.memory_path,
+                format = %frame.format(),
+                memory_path = %frame.memory_path(),
                 "Decoded frame contract validation failed before ready queue"
             );
             if let Err(release_error) = self.release_frame(invalid_resource_handle) {
@@ -1981,9 +2007,9 @@ impl VaapiVideoDecoder {
         trace!(
             pts_ms = frame.pts.as_millis(),
             handle_id = frame.resource_handle.0,
-            format = %frame.format,
-            bit_depth = %frame.bit_depth,
-            chroma = %frame.chroma,
+            format = %frame.format(),
+            bit_depth = ?frame.bit_depth(),
+            chroma = ?frame.chroma(),
             color_origin = ?frame.color.origin,
             color_confidence = ?frame.color.confidence,
             queue_len = self.ready_queue.len() + 1,
@@ -2116,6 +2142,10 @@ impl VaapiVideoDecoder {
                 )));
             }
         };
+        let frame_contract = frame_contract_for_dma_buf_export(
+            decoded_contract.format,
+            dma_buf_image.export_layout,
+        )?;
         let dma_buf_export_latency = export_start.elapsed();
 
         // Шаг 3: Регистрируем descriptor; renderer сам выполнит graphics import.
@@ -2201,10 +2231,7 @@ impl VaapiVideoDecoder {
         self.push_ready_frame(DecodedFrame {
             generation,
             pts: Duration::from_micros(timestamp),
-            format: decoded_contract.format,
-            bit_depth: decoded_contract.bit_depth,
-            chroma: decoded_contract.chroma,
-            memory_path: FrameMemoryPath::DmaBufZeroCopy,
+            frame_contract,
             width: resolution.width,
             height: resolution.height,
             render_width: display_resolution.width,
@@ -2577,10 +2604,7 @@ mod tests {
         DecodedFrame {
             generation: 0,
             pts: Duration::ZERO,
-            format: DecodedPixelFormat::Nv12,
-            bit_depth: BitDepth::Eight,
-            chroma: ChromaSubsampling::Yuv420,
-            memory_path: FrameMemoryPath::DmaBufZeroCopy,
+            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
             width: 640,
             height: 360,
             render_width: 640,
