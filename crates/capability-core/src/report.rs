@@ -1,18 +1,19 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use codec_core::{
-    DecodeBackendId, SupportedVideoDecodeFormat, VideoDecodeRequirement, VideoSurfaceFormat,
-    ZeroCopyExportRequirement,
+    DecodeBackendId, SupportedVideoDecodeFormat, VideoDecodeRequirement, ZeroCopyExportRequirement,
+    video_frame_pixel_layout_from_decode_requirement,
 };
-use render_core::{P010StorageLayout, RenderCapabilities};
+use render_core::RenderCapabilities;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
+use video_frame_contract::DmaBufImageLayout;
 
 /// Версия JSON/report схемы capability layer.
 pub type CapabilitySchemaVersion = u32;
 
 /// Текущая версия capability report.
-pub const CURRENT_CAPABILITY_SCHEMA_VERSION: CapabilitySchemaVersion = 2;
+pub const CURRENT_CAPABILITY_SCHEMA_VERSION: CapabilitySchemaVersion = 3;
 
 /// Provider, который умеет построить capabilities для одного video backend.
 pub trait VideoCapabilityProvider {
@@ -141,7 +142,7 @@ fn decode_requirement_for_supported_format(
         .with_profile(format.profile)
         .with_bit_depth(format.bit_depth)
         .with_chroma(format.chroma);
-    requirement.surface_format = VideoSurfaceFormat::from_decode_requirement(&requirement);
+    requirement.surface_format = video_frame_pixel_layout_from_decode_requirement(&requirement);
     requirement.hdr = format.hdr_input;
     requirement
 }
@@ -268,7 +269,7 @@ pub struct BackendCapabilities {
 
     /// P010 DMA-BUF layouts, которые backend ожидает на decoder/renderer boundary.
     #[serde(default)]
-    pub p010_storage_layouts: Vec<P010StorageLayout>,
+    pub p010_storage_layouts: Vec<DmaBufImageLayout>,
 
     /// Неструктурированные diagnostic notes, не влияющие на selection.
     pub diagnostics: Vec<String>,

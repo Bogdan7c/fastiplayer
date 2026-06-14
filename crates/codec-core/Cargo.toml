@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 serde.workspace = true
+video-frame-contract.workspace = true
 vp9-parser.workspace = true
 
 [dev-dependencies]

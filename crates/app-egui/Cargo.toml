@@ -48,3 +48,4 @@ render-wgpu-video.workspace = true
 
 [dev-dependencies]
 codec-core.workspace = true
+video-frame-contract.workspace = true

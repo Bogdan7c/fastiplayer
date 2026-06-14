@@ -963,6 +963,12 @@ fn build_render_input_video_frame<'frame>(
         DecodedPixelFormat::Rgba8 => Err(anyhow::anyhow!(
             "RGBA8 decoded video surface is not a production zero-copy render path"
         )),
+        DecodedPixelFormat::Yuv420Planar8 | DecodedPixelFormat::Yuv420Planar10Le => {
+            Err(anyhow::anyhow!(
+                "{} decoded video surface requires host upload, which is not implemented in this session",
+                present_frame.frame.format
+            ))
+        }
     };
 
     boundary_frame.map_err(|error| {

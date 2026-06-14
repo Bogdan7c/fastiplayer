@@ -10,3 +10,4 @@ render-core.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+video-frame-contract.workspace = true

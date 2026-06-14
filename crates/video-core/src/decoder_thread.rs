@@ -10,10 +10,11 @@ use bytes::Bytes;
 use codec_core::{
     BitDepth, ChromaSubsampling, H264Packetization, H265Packetization, VideoCodec,
     VideoColorMetadata, VideoDecodeRequirement, VideoDisplayOrientation, VideoMemoryContract,
-    VideoProfile, VideoSurfaceFormat,
+    VideoProfile,
 };
 use crossbeam_channel::{Receiver, RecvError, RecvTimeoutError, Sender, TrySendError, bounded};
 use media_core::{TrackId, TrackTimestamp};
+use video_frame_contract::VideoFramePixelLayout;
 
 /// Codec-specific framing, которое decoder backend не должен угадывать из bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +58,7 @@ pub struct VideoStreamDecodeConfig {
     pub display_orientation: VideoDisplayOrientation,
 
     /// Expected decoded surface format на renderer/backend boundary.
-    pub surface_format: Option<VideoSurfaceFormat>,
+    pub surface_format: Option<VideoFramePixelLayout>,
 
     /// Required decoded memory path; production policy остаётся hardware zero-copy.
     pub memory_contract: VideoMemoryContract,
@@ -144,7 +145,7 @@ pub enum VideoStreamConfigRejection {
     /// Backend не может выдать нужный decoded surface format.
     UnsupportedSurfaceFormat {
         /// Surface format, который требовал stream config.
-        surface_format: VideoSurfaceFormat,
+        surface_format: VideoFramePixelLayout,
     },
 
     /// Backend не может выполнить требуемый decoded memory contract.

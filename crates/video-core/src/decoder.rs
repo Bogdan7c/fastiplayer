@@ -3,16 +3,15 @@ use std::fmt;
 use std::time::Duration;
 
 use anyhow::ensure;
-use codec_core::{
-    BitDepth, ChromaSubsampling, VideoColorMetadata, VideoDisplayOrientation, VideoSurfaceFormat,
-};
+use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoDisplayOrientation};
 use media_core::Packet;
+use video_frame_contract::VideoFramePixelLayout;
 
 use crate::FrameResourceHandle;
 use crate::VideoFrameDiagnostics;
 
 /// Compatibility alias: decoded frame использует общий surface contract.
-pub type DecodedPixelFormat = VideoSurfaceFormat;
+pub type DecodedPixelFormat = VideoFramePixelLayout;
 
 /// Путь памяти, по которому decoded frame дошёл до renderer boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +103,13 @@ impl DecodedFrame {
                 ensure!(
                     false,
                     "RGBA8 decoded frame is not a production zero-copy video surface"
+                );
+            }
+            DecodedPixelFormat::Yuv420Planar8 | DecodedPixelFormat::Yuv420Planar10Le => {
+                ensure!(
+                    false,
+                    "{} decoded frame is a host-planar layout and is not part of the current zero-copy runtime boundary",
+                    self.format
                 );
             }
         }

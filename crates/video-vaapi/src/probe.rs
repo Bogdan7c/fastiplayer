@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use capability_core::{
-    BackendCapabilities, BackendDriverInfo, BackendProbeStatus, DriverQuirk, P010StorageLayout,
+    BackendCapabilities, BackendDriverInfo, BackendProbeStatus, DmaBufImageLayout, DriverQuirk,
     VideoCapabilityProvider, VideoExportPath,
 };
 use codec_core::{
@@ -191,13 +191,13 @@ pub fn probe_vaapi_capabilities() -> BackendCapabilities {
 /// Возвращает P010 export layouts только если decode matrix реально содержит P010-кандидат.
 fn p010_storage_layouts_for_formats(
     supported_formats: &[SupportedVideoDecodeFormat],
-) -> Vec<P010StorageLayout> {
+) -> Vec<DmaBufImageLayout> {
     let has_p010_format = supported_formats.iter().any(|format| {
         format.bit_depth == BitDepth::Ten && format.chroma == ChromaSubsampling::Yuv420
     });
 
     if has_p010_format {
-        vec![P010StorageLayout::BaselineSeparateLayer]
+        vec![DmaBufImageLayout::SeparateLayers]
     } else {
         Vec::new()
     }
@@ -813,7 +813,7 @@ mod tests {
         assert_eq!(formats[0].chroma, ChromaSubsampling::Yuv420);
         assert_eq!(
             p010_storage_layouts_for_formats(&formats),
-            vec![P010StorageLayout::BaselineSeparateLayer]
+            vec![DmaBufImageLayout::SeparateLayers]
         );
     }
 

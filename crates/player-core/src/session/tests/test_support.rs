@@ -1805,7 +1805,7 @@ pub(super) fn capabilities_with_phase10_vp9_profile2_hdr() -> SystemCapabilities
             raw_rt_formats: Vec::new(),
             quirks: Vec::new(),
             export_paths: vec![VideoExportPath::DmaBuf],
-            p010_storage_layouts: vec![P010StorageLayout::BaselineSeparateLayer],
+            p010_storage_layouts: vec![DmaBufImageLayout::SeparateLayers],
             diagnostics: Vec::new(),
         }],
         render_backends: vec![RenderCapabilities::wgpu_p010_bt2446c(Some(4096))],

@@ -472,7 +472,7 @@ fn player_error_from_unsupported_requirement(error: UnsupportedVideoRequirement)
         }
         Some(VideoCapabilityRejection::NoAvailableRenderer)
         | Some(VideoCapabilityRejection::UnsupportedDeviceExportPath { .. })
-        | Some(VideoCapabilityRejection::UnsupportedP010StorageLayout { .. })
+        | Some(VideoCapabilityRejection::UnsupportedDmaBufImageLayout { .. })
         | Some(VideoCapabilityRejection::UnsupportedRenderFrameFormat { .. })
         | Some(VideoCapabilityRejection::P010NotRenderable { .. }) => {
             PlayerErrorKind::UnsupportedRenderFormat

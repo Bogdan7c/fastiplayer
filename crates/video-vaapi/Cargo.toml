@@ -16,6 +16,7 @@ codec-core = { workspace = true }
 capability-core = { workspace = true }
 video-core = { path = "../video-core" }
 video-backend-api.workspace = true
+video-frame-contract.workspace = true
 cros-codecs = { version = "0.0.6", features = ["vaapi", "backend"] }
 gbm = { version = "0.15", features = ["drm-support"] }
 gbm-sys = "0.3"

@@ -262,9 +262,8 @@ mod tests {
         BitDepth, ChromaSubsampling, ColorMetadataConfidence, ColorMetadataOrigin, ColorPrimaries,
         ColorRange, HdrMetadata, MatrixCoefficients, TransferFunction, VideoDisplayOrientation,
     };
-    use render_core::{
-        ActiveColorPathFallback, RenderCapabilities, RenderOutputColorSpace, VideoFrameFormat,
-    };
+    use render_core::{ActiveColorPathFallback, RenderCapabilities, RenderOutputColorSpace};
+    use video_frame_contract::VideoFramePixelLayout;
 
     use super::*;
 
@@ -276,7 +275,7 @@ mod tests {
         RenderableFrame {
             handle: 1,
             pts: Duration::ZERO,
-            format: VideoFrameFormat::Nv12,
+            format: VideoFramePixelLayout::Nv12,
             bit_depth: BitDepth::Eight,
             chroma: ChromaSubsampling::Yuv420,
             coded_width: 1920,

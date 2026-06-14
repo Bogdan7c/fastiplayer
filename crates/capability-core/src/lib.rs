@@ -9,7 +9,6 @@
 mod report;
 mod selection;
 
-pub use render_core::P010StorageLayout;
 pub use report::{
     BackendCapabilities, BackendDriverInfo, BackendProbeStatus, CURRENT_CAPABILITY_SCHEMA_VERSION,
     CapabilityScanner, CapabilitySchemaVersion, DriverQuirk, SystemCapabilities,
@@ -19,3 +18,4 @@ pub use selection::{
     SelectedVideoStream, StreamSelectionError, UnsupportedVideoRequirement,
     VideoCapabilityRejection, VideoStreamCandidate,
 };
+pub use video_frame_contract::DmaBufImageLayout;

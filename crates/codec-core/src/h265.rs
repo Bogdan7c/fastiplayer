@@ -3,8 +3,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BitDepth, ChromaSubsampling, H265Profile, VideoCodec, VideoDecodeRequirement, VideoProfile,
-    VideoSurfaceFormat,
+    BitDepth, ChromaSubsampling, H265Profile, VideoCodec, VideoDecodeRequirement,
+    VideoFramePixelLayout, VideoProfile, video_frame_pixel_layout_from_codec_fields,
 };
 
 const HEVC_DECODER_CONFIGURATION_RECORD_VERSION: u8 = 1;
@@ -625,7 +625,7 @@ pub struct H265SpsMetadata {
     pub height: u32,
 
     /// Decoded surface format для zero-copy renderer boundary.
-    pub surface_format: VideoSurfaceFormat,
+    pub surface_format: VideoFramePixelLayout,
 }
 
 /// Header-level HEVC metadata из `hvcC`, когда SPS отсутствует и должен прийти in-band.
@@ -644,7 +644,7 @@ pub struct H265HeaderMetadata {
     pub chroma: ChromaSubsampling,
 
     /// Decoded surface format для zero-copy renderer boundary.
-    pub surface_format: VideoSurfaceFormat,
+    pub surface_format: VideoFramePixelLayout,
 }
 
 /// Ошибка SPS parser-а: malformed отдельно от unsupported stream variants.
@@ -1769,7 +1769,7 @@ struct H265DecodedFormat {
     profile: H265Profile,
     bit_depth: BitDepth,
     chroma: ChromaSubsampling,
-    surface_format: VideoSurfaceFormat,
+    surface_format: VideoFramePixelLayout,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1904,7 +1904,7 @@ fn refine_h265_decoded_format(
         });
     };
 
-    let surface_format = VideoSurfaceFormat::from_bit_depth_and_chroma(bit_depth, chroma).ok_or(
+    let surface_format = video_frame_pixel_layout_from_codec_fields(bit_depth, chroma).ok_or(
         H265FormatError::ProfileFormat {
             profile,
             bit_depth,
@@ -2076,7 +2076,7 @@ mod tests {
         parse_h265_sps_metadata, parse_hevc_decoder_configuration_record,
         probe_h265_packet_decode_start,
     };
-    use crate::{BitDepth, ChromaSubsampling, H265Profile, VideoProfile, VideoSurfaceFormat};
+    use crate::{BitDepth, ChromaSubsampling, H265Profile, VideoFramePixelLayout, VideoProfile};
 
     fn vps() -> Vec<u8> {
         nal_unit(32, &[0x01, 0x60])
@@ -2268,7 +2268,7 @@ mod tests {
             }
         );
         assert_eq!(metadata.profile, H265Profile::Main);
-        assert_eq!(metadata.surface_format, VideoSurfaceFormat::Nv12);
+        assert_eq!(metadata.surface_format, VideoFramePixelLayout::Nv12);
     }
 
     #[test]
@@ -2458,7 +2458,10 @@ mod tests {
         assert_eq!(requirement.chroma, Some(ChromaSubsampling::Yuv420));
         assert_eq!(requirement.width, Some(3_840));
         assert_eq!(requirement.height, Some(2_160));
-        assert_eq!(requirement.surface_format, Some(VideoSurfaceFormat::P010));
+        assert_eq!(
+            requirement.surface_format,
+            Some(VideoFramePixelLayout::P010)
+        );
         assert_eq!(nal_types, vec![32, 33, 34, 21]);
     }
 
@@ -2497,7 +2500,7 @@ mod tests {
         assert_eq!(requirement_without_dimensions.width, None);
         assert_eq!(
             requirement_without_dimensions.surface_format,
-            Some(VideoSurfaceFormat::P010)
+            Some(VideoFramePixelLayout::P010)
         );
     }
 

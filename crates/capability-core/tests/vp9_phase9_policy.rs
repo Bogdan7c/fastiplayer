@@ -7,7 +7,8 @@ use codec_core::{
     SupportedVideoDecodeFormat, TransferFunction, VideoCodec, VideoColorMetadata,
     VideoDecodeRequirement, VideoProfile, Vp9Profile,
 };
-use render_core::{P010RenderReadiness, P010StorageLayout, RenderCapabilities, VideoFrameFormat};
+use render_core::{P010RenderReadiness, RenderCapabilities};
+use video_frame_contract::{DmaBufImageLayout, VideoFramePixelLayout};
 
 #[test]
 fn p010_boundary_without_hdr_renderer_does_not_enable_production_hdr() {
@@ -25,7 +26,7 @@ fn p010_boundary_without_hdr_renderer_does_not_enable_production_hdr() {
     assert!(matches!(
         production_error.rejections.first(),
         Some(VideoCapabilityRejection::UnsupportedHdrRenderer {
-            frame_format: Some(VideoFrameFormat::P010),
+            frame_format: Some(VideoFramePixelLayout::P010),
         })
     ));
 
@@ -65,7 +66,7 @@ fn capabilities_with_profile2_p010_boundary() -> SystemCapabilities {
             raw_rt_formats: Vec::new(),
             quirks: Vec::new(),
             export_paths: vec![VideoExportPath::DmaBuf],
-            p010_storage_layouts: vec![P010StorageLayout::BaselineSeparateLayer],
+            p010_storage_layouts: vec![DmaBufImageLayout::SeparateLayers],
             diagnostics: Vec::new(),
         }],
         render_backends: vec![render_capabilities],

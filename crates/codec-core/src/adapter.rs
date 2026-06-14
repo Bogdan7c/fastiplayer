@@ -4,13 +4,14 @@ use crate::{
     BitDepth, ChromaSubsampling, ColorMetadataOrigin, H264ParameterSetKind, H264RequirementError,
     H264SpsError, H264SpsMetadata, H265PacketDecodeStartProbe, H265ParameterSetKind,
     H265RequirementError, H265SpsError, VideoCodec, VideoColorMetadata, VideoDecodeRequirement,
-    VideoProfile, VideoSurfaceFormat, Vp9DecodedFormatRequirement, Vp9MetadataSource, Vp9Profile,
-    Vp9RequirementCandidate, Vp9RequirementProbe, Vp9RequirementRejection,
+    VideoFramePixelLayout, VideoProfile, Vp9DecodedFormatRequirement, Vp9MetadataSource,
+    Vp9Profile, Vp9RequirementCandidate, Vp9RequirementProbe, Vp9RequirementRejection,
     Vp9RequirementUncertainty, h264_sps_metadata_from_avc_decoder_configuration_record,
     h264_sps_metadata_from_packet, h265_decode_requirement_from_hevc_decoder_configuration_record,
     h265_decode_requirement_from_packet, infer_h264_packetization, infer_h265_packetization,
     parse_hevc_decoder_configuration_record, probe_h264_packet_keyframe,
     probe_h265_packet_decode_start, probe_vp9_packet_requirement, resolve_vp9_metadata,
+    video_frame_pixel_layout_from_optional_codec_fields,
 };
 
 /// Codec-neutral source metadata, пришедшая из manifest/container до decode.
@@ -136,7 +137,7 @@ pub struct VideoRequirementCandidate {
     pub requirement: VideoDecodeRequirement,
 
     /// Decoded surface format, если adapter смог вывести его из codec header-а.
-    pub surface_format: Option<VideoSurfaceFormat>,
+    pub surface_format: Option<VideoFramePixelLayout>,
 
     /// Color metadata из bitstream header-а, если codec её выразил.
     pub bitstream_color: Option<VideoColorMetadata>,
@@ -386,7 +387,7 @@ pub struct VideoResolvedMetadata {
     pub requirement: VideoDecodeRequirement,
 
     /// Decoded surface format, если он уже известен.
-    pub surface_format: Option<VideoSurfaceFormat>,
+    pub surface_format: Option<VideoFramePixelLayout>,
 
     /// Resolved color metadata с сохранёнными origin/confidence.
     pub color: Option<VideoColorMetadata>,
@@ -549,9 +550,11 @@ fn merge_bitstream_requirement(
         requirement.timing_contract = container_requirement.timing_contract;
     }
     if requirement.surface_format.is_none() {
-        requirement.surface_format =
-            VideoSurfaceFormat::from_optional_fields(requirement.bit_depth, requirement.chroma)
-                .or(container_requirement.surface_format);
+        requirement.surface_format = video_frame_pixel_layout_from_optional_codec_fields(
+            requirement.bit_depth,
+            requirement.chroma,
+        )
+        .or(container_requirement.surface_format);
     }
 
     if let Some(color) = requirement.color.clone().or(container_requirement.color) {
@@ -644,7 +647,7 @@ fn h264_candidate(metadata: H264SpsMetadata) -> VideoRequirementCandidate {
         .with_bit_depth(metadata.bit_depth)
         .with_chroma(metadata.chroma)
         .with_resolution(metadata.width, metadata.height)
-        .with_surface_format(VideoSurfaceFormat::Nv12);
+        .with_surface_format(VideoFramePixelLayout::Nv12);
 
     if let Some(color) = metadata.color {
         requirement = requirement.with_color(color);
@@ -1101,10 +1104,10 @@ fn vp9_source_from_generic(source: VideoMetadataSource) -> Option<Vp9MetadataSou
 /// Переводит VP9 decoded format adapter-а в общий surface format.
 const fn vp9_decoded_format_to_surface_format(
     decoded_format: Vp9DecodedFormatRequirement,
-) -> VideoSurfaceFormat {
+) -> VideoFramePixelLayout {
     match decoded_format {
-        Vp9DecodedFormatRequirement::Nv12 => VideoSurfaceFormat::Nv12,
-        Vp9DecodedFormatRequirement::P010 => VideoSurfaceFormat::P010,
+        Vp9DecodedFormatRequirement::Nv12 => VideoFramePixelLayout::Nv12,
+        Vp9DecodedFormatRequirement::P010 => VideoFramePixelLayout::P010,
     }
 }
 
@@ -1162,10 +1165,10 @@ mod tests {
             panic!("VP9 Profile 2 10-bit должен дать generic candidate, получено {probe:?}");
         };
 
-        assert_eq!(candidate.surface_format, Some(VideoSurfaceFormat::P010));
+        assert_eq!(candidate.surface_format, Some(VideoFramePixelLayout::P010));
         assert_eq!(
             candidate.requirement.surface_format,
-            Some(VideoSurfaceFormat::P010)
+            Some(VideoFramePixelLayout::P010)
         );
     }
 
@@ -1209,7 +1212,7 @@ mod tests {
         );
         assert_eq!(
             candidate.requirement.surface_format,
-            Some(VideoSurfaceFormat::P010)
+            Some(VideoFramePixelLayout::P010)
         );
     }
 
@@ -1257,7 +1260,7 @@ mod tests {
         assert_eq!(resolved.requirement.height, Some(2160));
         assert_eq!(
             resolved.requirement.surface_format,
-            Some(VideoSurfaceFormat::P010)
+            Some(VideoFramePixelLayout::P010)
         );
         assert_eq!(resolved.color, Some(container_color.clone()));
         assert_eq!(resolved.requirement.color, Some(container_color));

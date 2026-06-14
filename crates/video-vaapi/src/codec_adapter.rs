@@ -6,7 +6,7 @@ use anyhow::Result;
 use codec_core::{
     BitDepth, ChromaSubsampling, H264Packetization, H264ParameterSetInjection, H265NalUnit,
     H265Packetization, H265ParameterSetInjection, H265Profile, SupportedVideoDecodeFormat,
-    VideoCodec, VideoProfile, VideoSurfaceFormat, Vp9Profile, h264_access_unit_to_annex_b_into,
+    VideoCodec, VideoProfile, Vp9Profile, h264_access_unit_to_annex_b_into,
     h265_access_unit_to_annex_b_into,
     h265_decode_requirement_from_hevc_decoder_configuration_record, h265_nal_units,
     parse_avc_decoder_configuration_record, parse_hevc_decoder_configuration_record,
@@ -21,6 +21,7 @@ use cros_codecs::decoder::{
 };
 use cros_codecs::libva::Display;
 use video_core::{VideoStreamConfigRejection, VideoStreamDecodeConfig, VideoStreamPacketization};
+use video_frame_contract::VideoFramePixelLayout;
 
 use crate::frame_pool::DmaFramePool;
 use crate::internal_vaapi_frame::InternalVaapiFrame;
@@ -1227,14 +1228,14 @@ fn reject_unsupported_vp9_config(
                 reject_optional_bit_depth(config.bit_depth, BitDepth::Eight)
                     .or_else(|| reject_optional_chroma(config.chroma, ChromaSubsampling::Yuv420))
                     .or_else(|| {
-                        reject_optional_surface(config.surface_format, VideoSurfaceFormat::Nv12)
+                        reject_optional_surface(config.surface_format, VideoFramePixelLayout::Nv12)
                     })
             }
             VideoProfile::Vp9(Vp9Profile::Profile2) => {
                 reject_optional_bit_depth(config.bit_depth, BitDepth::Ten)
                     .or_else(|| reject_optional_chroma(config.chroma, ChromaSubsampling::Yuv420))
                     .or_else(|| {
-                        reject_optional_surface(config.surface_format, VideoSurfaceFormat::P010)
+                        reject_optional_surface(config.surface_format, VideoFramePixelLayout::P010)
                     })
             }
             VideoProfile::Vp9(_) => {
@@ -1278,7 +1279,7 @@ fn reject_vp9_without_profile(
     if let Some(surface_format) = config.surface_format
         && !matches!(
             surface_format,
-            VideoSurfaceFormat::Nv12 | VideoSurfaceFormat::P010
+            VideoFramePixelLayout::Nv12 | VideoFramePixelLayout::P010
         )
     {
         return Some(VideoStreamConfigRejection::UnsupportedSurfaceFormat { surface_format });
@@ -1299,7 +1300,7 @@ fn reject_unsupported_h264_config(
 
     if let Some(rejection) = reject_optional_bit_depth(config.bit_depth, BitDepth::Eight)
         .or_else(|| reject_optional_chroma(config.chroma, ChromaSubsampling::Yuv420))
-        .or_else(|| reject_optional_surface(config.surface_format, VideoSurfaceFormat::Nv12))
+        .or_else(|| reject_optional_surface(config.surface_format, VideoFramePixelLayout::Nv12))
     {
         return Some(rejection);
     }
@@ -1350,18 +1351,18 @@ fn reject_h265_declared_format(
     profile: Option<VideoProfile>,
     bit_depth: Option<BitDepth>,
     chroma: Option<ChromaSubsampling>,
-    surface_format: Option<VideoSurfaceFormat>,
+    surface_format: Option<VideoFramePixelLayout>,
 ) -> Option<VideoStreamConfigRejection> {
     match profile {
         Some(VideoProfile::H265(H265Profile::Main)) => {
             reject_optional_bit_depth(bit_depth, BitDepth::Eight)
                 .or_else(|| reject_optional_chroma(chroma, ChromaSubsampling::Yuv420))
-                .or_else(|| reject_optional_surface(surface_format, VideoSurfaceFormat::Nv12))
+                .or_else(|| reject_optional_surface(surface_format, VideoFramePixelLayout::Nv12))
         }
         Some(VideoProfile::H265(H265Profile::Main10)) => {
             reject_optional_bit_depth(bit_depth, BitDepth::Ten)
                 .or_else(|| reject_optional_chroma(chroma, ChromaSubsampling::Yuv420))
-                .or_else(|| reject_optional_surface(surface_format, VideoSurfaceFormat::P010))
+                .or_else(|| reject_optional_surface(surface_format, VideoFramePixelLayout::P010))
         }
         Some(unsupported_profile) => Some(VideoStreamConfigRejection::UnsupportedProfile {
             profile: unsupported_profile,
@@ -1374,7 +1375,7 @@ fn reject_h265_declared_format(
 fn reject_h265_without_profile(
     bit_depth: Option<BitDepth>,
     chroma: Option<ChromaSubsampling>,
-    surface_format: Option<VideoSurfaceFormat>,
+    surface_format: Option<VideoFramePixelLayout>,
 ) -> Option<VideoStreamConfigRejection> {
     if let Some(bit_depth) = bit_depth
         && !matches!(bit_depth, BitDepth::Eight | BitDepth::Ten)
@@ -1391,15 +1392,15 @@ fn reject_h265_without_profile(
     if let Some(surface_format) = surface_format
         && !matches!(
             surface_format,
-            VideoSurfaceFormat::Nv12 | VideoSurfaceFormat::P010
+            VideoFramePixelLayout::Nv12 | VideoFramePixelLayout::P010
         )
     {
         return Some(VideoStreamConfigRejection::UnsupportedSurfaceFormat { surface_format });
     }
 
     match (bit_depth, surface_format) {
-        (Some(BitDepth::Eight), Some(surface_format @ VideoSurfaceFormat::P010))
-        | (Some(BitDepth::Ten), Some(surface_format @ VideoSurfaceFormat::Nv12)) => {
+        (Some(BitDepth::Eight), Some(surface_format @ VideoFramePixelLayout::P010))
+        | (Some(BitDepth::Ten), Some(surface_format @ VideoFramePixelLayout::Nv12)) => {
             Some(VideoStreamConfigRejection::UnsupportedSurfaceFormat { surface_format })
         }
         _ => None,
@@ -1456,8 +1457,8 @@ fn reject_optional_chroma(
 
 /// Проверяет optional decoded surface format на точное expected значение.
 fn reject_optional_surface(
-    surface_format: Option<VideoSurfaceFormat>,
-    expected: VideoSurfaceFormat,
+    surface_format: Option<VideoFramePixelLayout>,
+    expected: VideoFramePixelLayout,
 ) -> Option<VideoStreamConfigRejection> {
     surface_format
         .filter(|surface_format| *surface_format != expected)
@@ -1821,7 +1822,7 @@ mod tests {
     fn h265_stream_decode_config(
         profile: H265Profile,
         bit_depth: BitDepth,
-        surface_format: VideoSurfaceFormat,
+        surface_format: VideoFramePixelLayout,
         codec_private: Option<Bytes>,
     ) -> VideoStreamDecodeConfig {
         VideoStreamDecodeConfig {
@@ -1867,7 +1868,7 @@ mod tests {
         let config = h265_stream_decode_config(
             H265Profile::Main,
             BitDepth::Eight,
-            VideoSurfaceFormat::Nv12,
+            VideoFramePixelLayout::Nv12,
             Some(codec_private),
         );
 
@@ -1900,7 +1901,7 @@ mod tests {
             profile: Some(VideoProfile::Vp9(Vp9Profile::Profile0)),
             bit_depth: Some(BitDepth::Eight),
             chroma: Some(ChromaSubsampling::Yuv420),
-            surface_format: Some(VideoSurfaceFormat::Nv12),
+            surface_format: Some(VideoFramePixelLayout::Nv12),
             ..stream_config(VideoCodec::Vp9)
         };
 
@@ -1931,13 +1932,13 @@ mod tests {
         let main_config = h265_stream_decode_config(
             H265Profile::Main,
             BitDepth::Eight,
-            VideoSurfaceFormat::Nv12,
+            VideoFramePixelLayout::Nv12,
             Some(h265_hvcc(4, 1, 1, 8, &[])),
         );
         let main10_config = h265_stream_decode_config(
             H265Profile::Main10,
             BitDepth::Ten,
-            VideoSurfaceFormat::P010,
+            VideoFramePixelLayout::P010,
             Some(h265_hvcc(4, 2, 1, 10, &[])),
         );
 
@@ -2001,7 +2002,7 @@ mod tests {
             profile: Some(VideoProfile::H264(H264Profile::High)),
             bit_depth: Some(BitDepth::Eight),
             chroma: Some(ChromaSubsampling::Yuv420),
-            surface_format: Some(VideoSurfaceFormat::Nv12),
+            surface_format: Some(VideoFramePixelLayout::Nv12),
             codec_private: Some(valid_h264_avcc_private()),
             packetization: Some(VideoStreamPacketization::H264(
                 H264Packetization::AvccLengthPrefixed {
@@ -2074,7 +2075,7 @@ mod tests {
         let mut config = h265_stream_decode_config(
             H265Profile::Main,
             BitDepth::Eight,
-            VideoSurfaceFormat::Nv12,
+            VideoFramePixelLayout::Nv12,
             Some(h265_hvcc(4, 1, 1, 8, &[])),
         );
 
@@ -2105,7 +2106,7 @@ mod tests {
         let config = h265_stream_decode_config(
             H265Profile::Main,
             BitDepth::Eight,
-            VideoSurfaceFormat::Nv12,
+            VideoFramePixelLayout::Nv12,
             Some(h265_hvcc(4, 1, 1, 8, &[])),
         );
 
@@ -2170,7 +2171,7 @@ mod tests {
         let config = h265_stream_decode_config(
             H265Profile::Main,
             BitDepth::Eight,
-            VideoSurfaceFormat::Nv12,
+            VideoFramePixelLayout::Nv12,
             None,
         );
         let stream_config = H265VaapiStreamConfig::from_decode_config(&config)
@@ -2206,20 +2207,20 @@ mod tests {
             ..h265_stream_decode_config(
                 H265Profile::Main,
                 BitDepth::Eight,
-                VideoSurfaceFormat::Nv12,
+                VideoFramePixelLayout::Nv12,
                 Some(h265_hvcc(4, 1, 1, 8, &[])),
             )
         };
         let main444_config = h265_stream_decode_config(
             H265Profile::Main444,
             BitDepth::Eight,
-            VideoSurfaceFormat::Nv12,
+            VideoFramePixelLayout::Nv12,
             Some(h265_hvcc(4, 1, 3, 8, &[])),
         );
         let twelve_bit_config = h265_stream_decode_config(
             H265Profile::Main,
             BitDepth::Twelve,
-            VideoSurfaceFormat::Nv12,
+            VideoFramePixelLayout::Nv12,
             Some(h265_hvcc(4, 1, 1, 12, &[])),
         );
 
@@ -2396,7 +2397,7 @@ mod tests {
             profile: Some(VideoProfile::H264(H264Profile::High)),
             bit_depth: Some(BitDepth::Eight),
             chroma: Some(ChromaSubsampling::Yuv420),
-            surface_format: Some(VideoSurfaceFormat::Nv12),
+            surface_format: Some(VideoFramePixelLayout::Nv12),
             codec_private: Some(valid_h264_avcc_private()),
             packetization: Some(VideoStreamPacketization::H264(
                 H264Packetization::AvccLengthPrefixed {
@@ -2416,7 +2417,7 @@ mod tests {
             profile: Some(VideoProfile::H264(H264Profile::Main)),
             bit_depth: Some(BitDepth::Eight),
             chroma: Some(ChromaSubsampling::Yuv420),
-            surface_format: Some(VideoSurfaceFormat::Nv12),
+            surface_format: Some(VideoFramePixelLayout::Nv12),
             ..stream_config(VideoCodec::H264)
         };
 

@@ -49,9 +49,12 @@ pub use model::{
     ColorMetadataOrigin, ColorPipelineRequirement, ColorPrimaries, ColorRange, DecodeBackendId,
     FrameTimingContract, HdrMetadata, MatrixCoefficients, SupportedVideoDecodeFormat,
     TransferFunction, VideoCodec, VideoColorMetadata, VideoDecodeRequirement,
-    VideoDisplayOrientation, VideoMemoryContract, VideoSurfaceFormat, ZeroCopyExportRequirement,
+    VideoDisplayOrientation, VideoMemoryContract, ZeroCopyExportRequirement,
+    video_frame_pixel_layout_from_codec_fields, video_frame_pixel_layout_from_decode_requirement,
+    video_frame_pixel_layout_from_optional_codec_fields,
 };
 pub use profile::{Av1Profile, H264Profile, H265Profile, VideoProfile, Vp8Profile, Vp9Profile};
+pub use video_frame_contract::VideoFramePixelLayout;
 pub use vp9::{
     Vp9DecodedFormatRequirement, Vp9MetadataConflict, Vp9MetadataDiagnostic, Vp9MetadataField,
     Vp9MetadataSource, Vp9RequirementCandidate, Vp9RequirementProbe, Vp9RequirementRejection,

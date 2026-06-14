@@ -1,6 +1,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use video_frame_contract::VideoFramePixelLayout;
 
 use crate::VideoProfile;
 
@@ -587,85 +588,56 @@ impl fmt::Display for DecodeBackendId {
     }
 }
 
-/// Codec-neutral decoded surface format на границе decoder -> renderer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VideoSurfaceFormat {
-    /// 8-bit 4:2:0 semi-planar surface.
-    Nv12,
-
-    /// 10-bit 4:2:0 semi-planar surface in 16-bit storage words.
-    P010,
-
-    /// Packed 8-bit RGBA surface для будущих non-YUV producers, не для CPU fallback.
-    Rgba8,
-}
-
-impl VideoSurfaceFormat {
-    /// Выводит surface format из уже нормализованных bit depth/chroma полей.
-    #[must_use]
-    pub const fn from_bit_depth_and_chroma(
-        bit_depth: BitDepth,
-        chroma: ChromaSubsampling,
-    ) -> Option<Self> {
-        match (bit_depth, chroma) {
-            (BitDepth::Eight, ChromaSubsampling::Yuv420) => Some(Self::Nv12),
-            (BitDepth::Ten, ChromaSubsampling::Yuv420) => Some(Self::P010),
-            _ => None,
-        }
-    }
-
-    /// Выводит surface format, только если stream metadata уже достаточно точна.
-    #[must_use]
-    pub const fn from_optional_fields(
-        bit_depth: Option<BitDepth>,
-        chroma: Option<ChromaSubsampling>,
-    ) -> Option<Self> {
-        match (bit_depth, chroma) {
-            (Some(bit_depth), Some(chroma)) => Self::from_bit_depth_and_chroma(bit_depth, chroma),
-            _ => None,
-        }
-    }
-
-    /// Выводит минимальный renderer input surface из stream requirement.
-    ///
-    /// Если codec adapter уже зафиксировал `surface_format`, именно это поле
-    /// становится контрактом. Иначе используется текущая legacy эвристика:
-    /// неизвестная bit depth остаётся SDR/NV12 до packet-level refinement.
-    #[must_use]
-    pub fn from_decode_requirement(requirement: &VideoDecodeRequirement) -> Option<Self> {
-        if let Some(surface_format) = requirement.surface_format {
-            return Some(surface_format);
-        }
-
-        if let Some(chroma) = requirement.chroma
-            && chroma != ChromaSubsampling::Yuv420
-        {
-            return None;
-        }
-
-        match requirement.bit_depth {
-            Some(BitDepth::Ten) => Some(Self::P010),
-            Some(BitDepth::Twelve) => None,
-            Some(BitDepth::Eight) | None => Some(Self::Nv12),
-        }
-    }
-
-    /// Возвращает стабильное имя surface format для diagnostics.
-    #[must_use]
-    pub const fn display_name(self) -> &'static str {
-        match self {
-            Self::Nv12 => "NV12",
-            Self::P010 => "P010",
-            Self::Rgba8 => "RGBA8",
-        }
+/// Выводит hardware baseline pixel layout из codec-level bit depth/chroma.
+#[must_use]
+pub const fn video_frame_pixel_layout_from_codec_fields(
+    bit_depth: BitDepth,
+    chroma: ChromaSubsampling,
+) -> Option<VideoFramePixelLayout> {
+    match (bit_depth, chroma) {
+        (BitDepth::Eight, ChromaSubsampling::Yuv420) => Some(VideoFramePixelLayout::Nv12),
+        (BitDepth::Ten, ChromaSubsampling::Yuv420) => Some(VideoFramePixelLayout::P010),
+        _ => None,
     }
 }
 
-impl fmt::Display for VideoSurfaceFormat {
-    /// Печатает format в привычной video-терминологии.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.display_name())
+/// Выводит pixel layout, только если codec metadata уже достаточно точна.
+#[must_use]
+pub const fn video_frame_pixel_layout_from_optional_codec_fields(
+    bit_depth: Option<BitDepth>,
+    chroma: Option<ChromaSubsampling>,
+) -> Option<VideoFramePixelLayout> {
+    match (bit_depth, chroma) {
+        (Some(bit_depth), Some(chroma)) => {
+            video_frame_pixel_layout_from_codec_fields(bit_depth, chroma)
+        }
+        _ => None,
+    }
+}
+
+/// Выводит минимальный renderer input layout из stream requirement.
+///
+/// Если codec adapter уже зафиксировал `surface_format`, именно это поле
+/// временно остаётся transition hint-ом. Иначе используется текущая legacy
+/// эвристика: неизвестная bit depth остаётся SDR/NV12 до packet-level refinement.
+#[must_use]
+pub fn video_frame_pixel_layout_from_decode_requirement(
+    requirement: &VideoDecodeRequirement,
+) -> Option<VideoFramePixelLayout> {
+    if let Some(surface_format) = requirement.surface_format {
+        return Some(surface_format);
+    }
+
+    if let Some(chroma) = requirement.chroma
+        && chroma != ChromaSubsampling::Yuv420
+    {
+        return None;
+    }
+
+    match requirement.bit_depth {
+        Some(BitDepth::Ten) => Some(VideoFramePixelLayout::P010),
+        Some(BitDepth::Twelve) => None,
+        Some(BitDepth::Eight) | None => Some(VideoFramePixelLayout::Nv12),
     }
 }
 
@@ -811,7 +783,7 @@ pub struct VideoDecodeRequirement {
 
     /// Codec-neutral surface format, если adapter уже вывел точный decoded boundary.
     #[serde(default)]
-    pub surface_format: Option<VideoSurfaceFormat>,
+    pub surface_format: Option<VideoFramePixelLayout>,
 
     /// Общий memory contract; production default запрещает CPU fallback.
     #[serde(default)]
@@ -880,7 +852,8 @@ impl VideoDecodeRequirement {
     #[must_use]
     pub const fn with_bit_depth(mut self, bit_depth: BitDepth) -> Self {
         self.bit_depth = Some(bit_depth);
-        self.surface_format = VideoSurfaceFormat::from_optional_fields(self.bit_depth, self.chroma);
+        self.surface_format =
+            video_frame_pixel_layout_from_optional_codec_fields(self.bit_depth, self.chroma);
         self
     }
 
@@ -888,7 +861,8 @@ impl VideoDecodeRequirement {
     #[must_use]
     pub const fn with_chroma(mut self, chroma: ChromaSubsampling) -> Self {
         self.chroma = Some(chroma);
-        self.surface_format = VideoSurfaceFormat::from_optional_fields(self.bit_depth, self.chroma);
+        self.surface_format =
+            video_frame_pixel_layout_from_optional_codec_fields(self.bit_depth, self.chroma);
         self
     }
 
@@ -902,7 +876,7 @@ impl VideoDecodeRequirement {
 
     /// Возвращает копию requirement с явно заданным decoded surface contract.
     #[must_use]
-    pub const fn with_surface_format(mut self, surface_format: VideoSurfaceFormat) -> Self {
+    pub const fn with_surface_format(mut self, surface_format: VideoFramePixelLayout) -> Self {
         self.surface_format = Some(surface_format);
         self
     }
@@ -1053,8 +1027,8 @@ impl SupportedVideoDecodeFormat {
 
     /// Возвращает decoded surface format, который backend format может произвести.
     #[must_use]
-    pub const fn surface_format(&self) -> Option<VideoSurfaceFormat> {
-        VideoSurfaceFormat::from_bit_depth_and_chroma(self.bit_depth, self.chroma)
+    pub const fn surface_format(&self) -> Option<VideoFramePixelLayout> {
+        video_frame_pixel_layout_from_codec_fields(self.bit_depth, self.chroma)
     }
 
     /// Формирует компактное описание формата для report/UI.

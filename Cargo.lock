@@ -157,6 +157,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "video-core",
+ "video-frame-contract",
  "video-vaapi",
  "wgpu",
  "winit",
@@ -634,6 +635,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "tracing",
+ "video-frame-contract",
 ]
 
 [[package]]
@@ -716,6 +718,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "video-frame-contract",
  "vp9-parser",
 ]
 
@@ -2919,6 +2922,7 @@ dependencies = [
  "tracing",
  "video-backend-api",
  "video-core",
+ "video-frame-contract",
 ]
 
 [[package]]
@@ -3275,6 +3279,7 @@ version = "0.1.0"
 dependencies = [
  "codec-core",
  "serde",
+ "video-frame-contract",
 ]
 
 [[package]]
@@ -3306,6 +3311,7 @@ dependencies = [
  "tracing",
  "video-backend-api",
  "video-core",
+ "video-frame-contract",
  "wgpu",
  "wgpu-types",
 ]
@@ -4691,6 +4697,14 @@ dependencies = [
  "crossbeam-channel",
  "media-core",
  "tracing",
+ "video-frame-contract",
+]
+
+[[package]]
+name = "video-frame-contract"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -4710,6 +4724,7 @@ dependencies = [
  "tracing",
  "video-backend-api",
  "video-core",
+ "video-frame-contract",
 ]
 
 [[package]]

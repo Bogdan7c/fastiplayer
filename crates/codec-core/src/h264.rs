@@ -1949,7 +1949,7 @@ mod tests {
         assert_eq!(candidate.requirement.height, Some(1_088));
         assert_eq!(
             candidate.requirement.surface_format,
-            Some(crate::VideoSurfaceFormat::Nv12)
+            Some(crate::VideoFramePixelLayout::Nv12)
         );
 
         let high_10_sps = build_sps(BuildSpsOptions {

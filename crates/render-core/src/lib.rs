@@ -10,9 +10,11 @@ use std::{borrow::Cow, collections::BTreeSet, error::Error, fmt, time::Duration}
 
 use codec_core::{
     BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction,
-    VideoColorMetadata, VideoDecodeRequirement, VideoDisplayOrientation, VideoSurfaceFormat,
+    VideoColorMetadata, VideoDecodeRequirement, VideoDisplayOrientation,
+    video_frame_pixel_layout_from_decode_requirement,
 };
 use serde::{Deserialize, Serialize};
+use video_frame_contract::{DmaBufImageLayout, VideoFramePixelLayout};
 
 /// Стабильный идентификатор семейства renderer backend-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -51,9 +53,6 @@ impl fmt::Display for RenderBackendKind {
         formatter.write_str(self.stable_id())
     }
 }
-
-/// Compatibility alias: renderer использует общий codec-neutral surface contract.
-pub type VideoFrameFormat = VideoSurfaceFormat;
 
 /// Состояние P010 на границе decoder/renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -100,44 +99,6 @@ impl Default for P010RenderReadiness {
     /// Старые reports без P010 readiness безопасно считаются production-неготовыми.
     fn default() -> Self {
         Self::Unavailable
-    }
-}
-
-/// Storage layout, через который P010 DMA-BUF попадает на renderer boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum P010StorageLayout {
-    /// Основной Phase 10 layout: VA отдаёт luma/chroma как R16 + Rg16 textures.
-    BaselineSeparateLayer,
-
-    /// Compatibility layout: VA отдаёт один composed `TextureFormat::P010`.
-    CompatibilityComposed,
-}
-
-impl P010StorageLayout {
-    /// Возвращает stable label layout-а для capability report и ошибок.
-    #[must_use]
-    pub const fn diagnostic_label(self) -> &'static str {
-        match self {
-            Self::BaselineSeparateLayer => "baseline separate-layer R16/Rg16",
-            Self::CompatibilityComposed => "compatibility composed P010",
-        }
-    }
-
-    /// Возвращает wgpu feature, без которого этот layout нельзя импортировать.
-    #[must_use]
-    pub const fn required_wgpu_feature_label(self) -> &'static str {
-        match self {
-            Self::BaselineSeparateLayer => "TEXTURE_FORMAT_16BIT_NORM",
-            Self::CompatibilityComposed => "TEXTURE_FORMAT_P010",
-        }
-    }
-}
-
-impl fmt::Display for P010StorageLayout {
-    /// Печатает stable layout label без backend-specific Debug-шума.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.diagnostic_label())
     }
 }
 
@@ -1476,7 +1437,7 @@ pub enum ActiveColorPathFallback {
 #[serde(rename_all = "snake_case")]
 pub struct ActiveColorPath {
     /// Формат decoded frame на входе renderer-а.
-    pub input_format: VideoFrameFormat,
+    pub input_format: VideoFramePixelLayout,
 
     /// Bit depth decoded frame на входе renderer-а.
     pub input_bit_depth: BitDepth,
@@ -1531,7 +1492,7 @@ impl ActiveColorPath {
     /// Строит active color path без зависимости от конкретного frame struct.
     #[must_use]
     pub fn from_parts(
-        input_format: VideoFrameFormat,
+        input_format: VideoFramePixelLayout,
         input_bit_depth: BitDepth,
         input_chroma: ChromaSubsampling,
         input_color: RenderColorMetadata,
@@ -1550,7 +1511,7 @@ impl ActiveColorPath {
     /// Строит active color path с явным HDR-to-SDR contract для production P010 path.
     #[must_use]
     pub fn from_parts_with_hdr_to_sdr(
-        input_format: VideoFrameFormat,
+        input_format: VideoFramePixelLayout,
         input_bit_depth: BitDepth,
         input_chroma: ChromaSubsampling,
         input_color: RenderColorMetadata,
@@ -1560,7 +1521,7 @@ impl ActiveColorPath {
         let fallback = classify_color_path_fallback(input_format, &input_color, hdr_to_sdr);
         let active_hdr_to_sdr = hdr_to_sdr.filter(|settings| {
             is_hdr_input(&input_color)
-                && input_format == VideoFrameFormat::P010
+                && input_format == VideoFramePixelLayout::P010
                 && is_phase10_hdr_transfer(&input_color)
                 && settings.is_phase10_bt2446_c_sdr_bt709()
                 && fallback.is_none()
@@ -1613,12 +1574,12 @@ impl ActiveColorPath {
 
 /// Определяет fallback marker без изменения текущего renderer support matrix.
 fn classify_color_path_fallback(
-    input_format: VideoFrameFormat,
+    input_format: VideoFramePixelLayout,
     color_metadata: &RenderColorMetadata,
     hdr_to_sdr: Option<HdrToSdrSettings>,
 ) -> Option<ActiveColorPathFallback> {
     if is_hdr_input(color_metadata) {
-        if input_format == VideoFrameFormat::P010
+        if input_format == VideoFramePixelLayout::P010
             && is_phase10_hdr_transfer(color_metadata)
             && hdr_to_sdr.is_some_and(|settings| settings.is_phase10_bt2446_c_sdr_bt709())
         {
@@ -1709,7 +1670,7 @@ pub struct RenderableFrame {
     pub pts: Duration,
 
     /// Формат входных texture planes или готового RGB image.
-    pub format: VideoFrameFormat,
+    pub format: VideoFramePixelLayout,
 
     /// Bit depth decoded frame на render boundary.
     pub bit_depth: BitDepth,
@@ -1776,7 +1737,7 @@ pub struct RenderCapabilities {
     pub display_name: String,
 
     /// Форматы decoded frame, которые backend может принять.
-    pub supported_frame_formats: Vec<VideoFrameFormat>,
+    pub supported_frame_formats: Vec<VideoFramePixelLayout>,
 
     /// Состояние P010: diagnostic boundary отдельно от production renderability.
     #[serde(default)]
@@ -1784,7 +1745,7 @@ pub struct RenderCapabilities {
 
     /// P010 storage layouts, которые backend может импортировать без CPU fallback.
     #[serde(default)]
-    pub supported_p010_storage_layouts: Vec<P010StorageLayout>,
+    pub supported_p010_storage_layouts: Vec<DmaBufImageLayout>,
 
     /// HDR-to-SDR operators, которые backend реально реализует в production shader path.
     #[serde(default)]
@@ -1823,7 +1784,7 @@ impl RenderCapabilities {
         Self {
             backend: RenderBackendKind::Wgpu,
             display_name: "WGPU NV12 renderer".to_string(),
-            supported_frame_formats: vec![VideoFrameFormat::Nv12],
+            supported_frame_formats: vec![VideoFramePixelLayout::Nv12],
             p010_render_readiness: P010RenderReadiness::Unavailable,
             supported_p010_storage_layouts: Vec::new(),
             supported_hdr_to_sdr_operators: Vec::new(),
@@ -1843,8 +1804,8 @@ impl RenderCapabilities {
         Self::wgpu_p010_bt2446c_with_storage_layouts(
             max_texture_size,
             vec![
-                P010StorageLayout::BaselineSeparateLayer,
-                P010StorageLayout::CompatibilityComposed,
+                DmaBufImageLayout::SeparateLayers,
+                DmaBufImageLayout::ComposedLayers,
             ],
         )
     }
@@ -1853,12 +1814,12 @@ impl RenderCapabilities {
     #[must_use]
     pub fn wgpu_p010_bt2446c_with_storage_layouts(
         max_texture_size: Option<u32>,
-        supported_p010_storage_layouts: Vec<P010StorageLayout>,
+        supported_p010_storage_layouts: Vec<DmaBufImageLayout>,
     ) -> Self {
         Self {
             backend: RenderBackendKind::Wgpu,
             display_name: "WGPU P010 BT.2446-C renderer".to_string(),
-            supported_frame_formats: vec![VideoFrameFormat::Nv12, VideoFrameFormat::P010],
+            supported_frame_formats: vec![VideoFramePixelLayout::Nv12, VideoFramePixelLayout::P010],
             p010_render_readiness: P010RenderReadiness::Renderable,
             supported_p010_storage_layouts,
             supported_hdr_to_sdr_operators: vec![HdrToneMappingOperator::Bt2446C],
@@ -1874,7 +1835,7 @@ impl RenderCapabilities {
 
     /// Проверяет прямую поддержку входного frame format.
     #[must_use]
-    pub fn supports_frame_format(&self, format: VideoFrameFormat) -> bool {
+    pub fn supports_frame_format(&self, format: VideoFramePixelLayout) -> bool {
         self.supported_frame_formats.contains(&format)
     }
 
@@ -1882,13 +1843,13 @@ impl RenderCapabilities {
     #[must_use]
     pub fn supports_p010_rendering(&self) -> bool {
         self.p010_render_readiness.is_renderable()
-            && self.supports_frame_format(VideoFrameFormat::P010)
+            && self.supports_frame_format(VideoFramePixelLayout::P010)
             && !self.supported_p010_storage_layouts.is_empty()
     }
 
     /// Проверяет, что renderer умеет импортировать конкретный P010 storage layout.
     #[must_use]
-    pub fn supports_p010_storage_layout(&self, layout: P010StorageLayout) -> bool {
+    pub fn supports_p010_storage_layout(&self, layout: DmaBufImageLayout) -> bool {
         self.supports_p010_rendering() && self.supported_p010_storage_layouts.contains(&layout)
     }
 
@@ -1914,11 +1875,12 @@ impl RenderCapabilities {
             return false;
         }
 
-        let Some(frame_format) = VideoFrameFormat::from_decode_requirement(requirement) else {
+        let Some(frame_format) = video_frame_pixel_layout_from_decode_requirement(requirement)
+        else {
             return false;
         };
 
-        if frame_format == VideoFrameFormat::P010 && !self.supports_p010_rendering() {
+        if frame_format == VideoFramePixelLayout::P010 && !self.supports_p010_rendering() {
             return false;
         }
 
@@ -2004,8 +1966,8 @@ mod tests {
             .with_chroma(ChromaSubsampling::Yuv420);
 
         assert_eq!(
-            VideoFrameFormat::from_decode_requirement(&requirement),
-            Some(VideoFrameFormat::Nv12)
+            video_frame_pixel_layout_from_decode_requirement(&requirement),
+            Some(VideoFramePixelLayout::Nv12)
         );
     }
 
@@ -2015,8 +1977,8 @@ mod tests {
             VideoDecodeRequirement::new(VideoCodec::Vp9).with_bit_depth(BitDepth::Ten);
 
         assert_eq!(
-            VideoFrameFormat::from_decode_requirement(&requirement),
-            Some(VideoFrameFormat::P010)
+            video_frame_pixel_layout_from_decode_requirement(&requirement),
+            Some(VideoFramePixelLayout::P010)
         );
     }
 
@@ -2241,7 +2203,7 @@ mod tests {
         let frame = RenderableFrame {
             handle: 7,
             pts: Duration::ZERO,
-            format: VideoFrameFormat::Nv12,
+            format: VideoFramePixelLayout::Nv12,
             bit_depth: BitDepth::Eight,
             chroma: ChromaSubsampling::Yuv420,
             coded_width: 1920,
@@ -2255,7 +2217,7 @@ mod tests {
 
         let active_path = ActiveColorPath::from_frame(&frame, &settings);
 
-        assert_eq!(active_path.input_format, VideoFrameFormat::Nv12);
+        assert_eq!(active_path.input_format, VideoFramePixelLayout::Nv12);
         assert_eq!(active_path.input_bit_depth, BitDepth::Eight);
         assert_eq!(active_path.input_chroma, ChromaSubsampling::Yuv420);
         assert_eq!(active_path.input_color.range, ColorRange::Limited);
@@ -2281,7 +2243,7 @@ mod tests {
         let settings = ColorPipelineSettings::default();
 
         let active_path = ActiveColorPath::from_parts(
-            VideoFrameFormat::Nv12,
+            VideoFramePixelLayout::Nv12,
             BitDepth::Eight,
             ChromaSubsampling::Yuv420,
             color,
@@ -2315,7 +2277,7 @@ mod tests {
         };
 
         let active_path = ActiveColorPath::from_parts_with_hdr_to_sdr(
-            VideoFrameFormat::P010,
+            VideoFramePixelLayout::P010,
             BitDepth::Ten,
             ChromaSubsampling::Yuv420,
             color,
@@ -2348,7 +2310,7 @@ mod tests {
         let settings = ColorPipelineSettings::default();
 
         let active_path = ActiveColorPath::from_parts(
-            VideoFrameFormat::P010,
+            VideoFramePixelLayout::P010,
             BitDepth::Ten,
             ChromaSubsampling::Yuv420,
             color,
@@ -2386,7 +2348,7 @@ mod tests {
         };
 
         let active_path = ActiveColorPath::from_parts_with_hdr_to_sdr(
-            VideoFrameFormat::P010,
+            VideoFramePixelLayout::P010,
             BitDepth::Ten,
             ChromaSubsampling::Yuv420,
             color,
@@ -2406,7 +2368,7 @@ mod tests {
     fn render_diagnostics_exposes_active_color_path_without_gpu_handles() {
         let settings = ColorPipelineSettings::default();
         let active_path = ActiveColorPath::from_parts(
-            VideoFrameFormat::Nv12,
+            VideoFramePixelLayout::Nv12,
             BitDepth::Eight,
             ChromaSubsampling::Yuv420,
             VideoColorMetadata::sdr_bt709_limited(),
@@ -2427,8 +2389,8 @@ mod tests {
     fn current_wgpu_capabilities_do_not_advertise_p010_or_hdr() {
         let capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
 
-        assert!(capabilities.supports_frame_format(VideoFrameFormat::Nv12));
-        assert!(!capabilities.supports_frame_format(VideoFrameFormat::P010));
+        assert!(capabilities.supports_frame_format(VideoFramePixelLayout::Nv12));
+        assert!(!capabilities.supports_frame_format(VideoFramePixelLayout::P010));
         assert_eq!(
             capabilities.p010_render_readiness,
             P010RenderReadiness::Unavailable
@@ -2462,11 +2424,11 @@ mod tests {
         let mut p010_without_operator = RenderCapabilities::wgpu_nv12(Some(4096));
         p010_without_operator
             .supported_frame_formats
-            .push(VideoFrameFormat::P010);
+            .push(VideoFramePixelLayout::P010);
         p010_without_operator.p010_render_readiness = P010RenderReadiness::Renderable;
         p010_without_operator
             .supported_p010_storage_layouts
-            .push(P010StorageLayout::BaselineSeparateLayer);
+            .push(DmaBufImageLayout::SeparateLayers);
         p010_without_operator.supports_hdr_to_sdr = true;
 
         let production_capabilities = RenderCapabilities::wgpu_p010_bt2446c(Some(4096));

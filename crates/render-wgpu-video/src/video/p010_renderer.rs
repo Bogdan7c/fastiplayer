@@ -9,8 +9,8 @@ use codec_core::{
 use render_core::{
     ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
     HdrReferenceDefaultDiagnostics, HdrToSdrSettings, RenderableFrame, SwapchainTransferMode,
-    VideoFrameFormat,
 };
+use video_frame_contract::VideoFramePixelLayout;
 
 use super::VideoRenderPassContext;
 
@@ -644,7 +644,7 @@ fn log_first_p010_render_dispatch(frame: &RenderableFrame, prepared_render: &Pre
 /// Проверяет renderer-neutral P010 contract перед созданием bind group.
 fn validate_p010_renderable_frame(frame: &RenderableFrame) -> Result<()> {
     ensure!(
-        frame.format == VideoFrameFormat::P010,
+        frame.format == VideoFramePixelLayout::P010,
         "P010 renderer received {} frame",
         frame.format
     );
@@ -1275,7 +1275,7 @@ mod tests {
         RenderableFrame {
             handle: 42,
             pts: Duration::ZERO,
-            format: VideoFrameFormat::P010,
+            format: VideoFramePixelLayout::P010,
             bit_depth: BitDepth::Ten,
             chroma: ChromaSubsampling::Yuv420,
             coded_width: 1920,

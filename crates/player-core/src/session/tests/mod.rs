@@ -25,7 +25,7 @@ use crate::{
 };
 use bytes::Bytes;
 use capability_core::{
-    BackendCapabilities, BackendDriverInfo, BackendProbeStatus, P010StorageLayout, VideoExportPath,
+    BackendCapabilities, BackendDriverInfo, BackendProbeStatus, DmaBufImageLayout, VideoExportPath,
 };
 use codec_core::{
     BitDepth, ChromaSubsampling, DecodeBackendId, H264Profile, SupportedVideoDecodeFormat,

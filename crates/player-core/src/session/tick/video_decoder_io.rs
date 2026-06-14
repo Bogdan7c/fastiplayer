@@ -924,10 +924,11 @@ fn video_requirement_from_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec_core::{BitDepth, ChromaSubsampling, H264Profile, VideoProfile, VideoSurfaceFormat};
+    use codec_core::{BitDepth, ChromaSubsampling, H264Profile, VideoProfile};
     use media_core::{
         DemuxSeekResult, Demuxer, Packet, TimeBase, TrackInfo, TrackKind, VideoTrackMetadata,
     };
+    use video_frame_contract::VideoFramePixelLayout;
 
     #[test]
     fn h264_packet_refinement_uses_codec_private_for_avcc_packets() {
@@ -965,7 +966,7 @@ mod tests {
         assert_eq!(refined_requirement.height, Some(720));
         assert_eq!(
             refined_requirement.surface_format,
-            Some(VideoSurfaceFormat::Nv12)
+            Some(VideoFramePixelLayout::Nv12)
         );
     }
 
@@ -998,7 +999,7 @@ mod tests {
         );
         assert_eq!(
             refined_requirement.surface_format,
-            Some(VideoSurfaceFormat::Nv12)
+            Some(VideoFramePixelLayout::Nv12)
         );
     }
 

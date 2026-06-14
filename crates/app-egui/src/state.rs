@@ -2425,9 +2425,10 @@ mod tests {
     };
     use render_core::{
         ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
-        HdrReferenceDefaultDiagnostics, RenderDiagnostics, VideoFrameFormat,
+        HdrReferenceDefaultDiagnostics, RenderDiagnostics,
     };
     use video_core::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceHandle};
+    use video_frame_contract::VideoFramePixelLayout;
 
     use super::{
         AppFrameContext, AppState, CachedPresentFrameDiscardReason,
@@ -2543,7 +2544,7 @@ mod tests {
     fn ui_diagnostics_reads_active_color_path_without_gpu_handles() {
         let settings = ColorPipelineSettings::default();
         let active_path = ActiveColorPath::from_parts(
-            VideoFrameFormat::Nv12,
+            VideoFramePixelLayout::Nv12,
             BitDepth::Eight,
             ChromaSubsampling::Yuv420,
             VideoColorMetadata::sdr_bt709_limited(),

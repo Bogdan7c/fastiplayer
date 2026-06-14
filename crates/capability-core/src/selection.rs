@@ -1,10 +1,12 @@
 use codec_core::{
     BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, DecodeBackendId, MatrixCoefficients,
     SupportedVideoDecodeFormat, TransferFunction, VideoCodec, VideoDecodeRequirement, VideoProfile,
+    video_frame_pixel_layout_from_decode_requirement,
 };
-use render_core::{P010RenderReadiness, P010StorageLayout, RenderCapabilities, VideoFrameFormat};
+use render_core::{P010RenderReadiness, RenderCapabilities};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use video_frame_contract::{DmaBufImageLayout, VideoFramePixelLayout};
 
 use crate::{BackendCapabilities, SystemCapabilities, VideoExportPath};
 
@@ -143,7 +145,7 @@ pub enum VideoCapabilityRejection {
         backend: DecodeBackendId,
 
         /// Формат кадра на границе decoder/renderer.
-        frame_format: VideoFrameFormat,
+        frame_format: VideoFramePixelLayout,
 
         /// Export path, обязательный для этого frame format.
         required_export_path: VideoExportPath,
@@ -152,7 +154,7 @@ pub enum VideoCapabilityRejection {
     /// Renderer не умеет принять нужный decoded frame format.
     UnsupportedRenderFrameFormat {
         /// Формат кадра на входе renderer-а.
-        frame_format: VideoFrameFormat,
+        frame_format: VideoFramePixelLayout,
     },
 
     /// P010 boundary может быть диагностически проверен, но production render path ещё не готов.
@@ -162,12 +164,12 @@ pub enum VideoCapabilityRejection {
     },
 
     /// Renderer не включил feature, нужный для фактического P010 DMA-BUF layout-а.
-    UnsupportedP010StorageLayout {
+    UnsupportedDmaBufImageLayout {
         /// Backend, который экспортирует P010 surface.
         backend: DecodeBackendId,
 
         /// Layout, который нужен для zero-copy import.
-        storage_layout: P010StorageLayout,
+        storage_layout: DmaBufImageLayout,
 
         /// wgpu feature, без которого layout не считается production-ready.
         required_wgpu_feature: String,
@@ -176,7 +178,7 @@ pub enum VideoCapabilityRejection {
     /// Decode возможен, но HDR renderer/tone mapper отсутствует.
     UnsupportedHdrRenderer {
         /// Формат кадра, который пришёл бы на renderer boundary.
-        frame_format: Option<VideoFrameFormat>,
+        frame_format: Option<VideoFramePixelLayout>,
     },
 
     /// HDR metadata не проходит strict core policy Phase 10.
@@ -225,7 +227,7 @@ impl VideoCapabilityRejection {
             Self::P010NotRenderable { readiness } => format!(
                 "P010 zero-copy boundary имеет состояние `{readiness}`, но production P010 renderer ещё недоступен"
             ),
-            Self::UnsupportedP010StorageLayout {
+            Self::UnsupportedDmaBufImageLayout {
                 backend,
                 storage_layout,
                 required_wgpu_feature,
@@ -483,7 +485,7 @@ impl SystemCapabilities {
     fn render_rejection(
         &self,
         requirement: &VideoDecodeRequirement,
-        frame_format: VideoFrameFormat,
+        frame_format: VideoFramePixelLayout,
         backend: &BackendCapabilities,
     ) -> Option<VideoCapabilityRejection> {
         if self.render_backends.is_empty() {
@@ -512,7 +514,7 @@ impl SystemCapabilities {
             });
         }
 
-        if frame_format == VideoFrameFormat::P010 {
+        if frame_format == VideoFramePixelLayout::P010 {
             let readiness = best_p010_render_readiness(&self.render_backends);
             if !readiness.is_renderable() {
                 return Some(VideoCapabilityRejection::P010NotRenderable { readiness });
@@ -588,7 +590,7 @@ fn summarize_render_capabilities(render_backends: &[RenderCapabilities]) -> Stri
 /// Выводит renderer input format или typed policy reject для неподдержанных вариантов.
 fn frame_format_for_requirement(
     requirement: &VideoDecodeRequirement,
-) -> Result<VideoFrameFormat, VideoCapabilityRejection> {
+) -> Result<VideoFramePixelLayout, VideoCapabilityRejection> {
     if let Some(chroma) = requirement.chroma
         && chroma != ChromaSubsampling::Yuv420
     {
@@ -607,7 +609,7 @@ fn frame_format_for_requirement(
         });
     }
 
-    VideoFrameFormat::from_decode_requirement(requirement).ok_or(
+    video_frame_pixel_layout_from_decode_requirement(requirement).ok_or(
         VideoCapabilityRejection::InsufficientStreamMetadata {
             codec: requirement.codec,
         },
@@ -626,13 +628,13 @@ fn requirement_requires_hdr_processing(requirement: &VideoDecodeRequirement) -> 
 /// Проверяет strict HDR core metadata до выбора production renderer path.
 fn strict_hdr_metadata_rejection(
     requirement: &VideoDecodeRequirement,
-    frame_format: VideoFrameFormat,
+    frame_format: VideoFramePixelLayout,
 ) -> Option<VideoCapabilityRejection> {
     if !requirement_requires_hdr_processing(requirement) {
         return None;
     }
 
-    if frame_format != VideoFrameFormat::P010 {
+    if frame_format != VideoFramePixelLayout::P010 {
         return Some(invalid_hdr_metadata(
             "Phase 10 HDR-to-SDR принимает только P010 10-bit 4:2:0 input",
         ));
@@ -713,14 +715,14 @@ fn invalid_hdr_metadata(reason: impl Into<String>) -> VideoCapabilityRejection {
 fn render_capability_supports_requirement_with_backend_layout(
     capabilities: &RenderCapabilities,
     requirement: &VideoDecodeRequirement,
-    frame_format: VideoFrameFormat,
+    frame_format: VideoFramePixelLayout,
     backend: &BackendCapabilities,
 ) -> bool {
     if !capabilities.supports_decode_requirement(requirement) {
         return false;
     }
 
-    if frame_format != VideoFrameFormat::P010 {
+    if frame_format != VideoFramePixelLayout::P010 {
         return true;
     }
 
@@ -739,7 +741,7 @@ fn p010_storage_layout_rejection(
         .p010_storage_layouts
         .first()
         .copied()
-        .unwrap_or(P010StorageLayout::BaselineSeparateLayer);
+        .unwrap_or(DmaBufImageLayout::SeparateLayers);
 
     let layout_supported = render_backends
         .iter()
@@ -749,17 +751,26 @@ fn p010_storage_layout_rejection(
         return None;
     }
 
-    Some(VideoCapabilityRejection::UnsupportedP010StorageLayout {
+    Some(VideoCapabilityRejection::UnsupportedDmaBufImageLayout {
         backend: backend.backend_id.clone(),
         storage_layout,
-        required_wgpu_feature: storage_layout.required_wgpu_feature_label().to_string(),
+        required_wgpu_feature: p010_dma_buf_layout_required_wgpu_feature_label(storage_layout)
+            .to_string(),
     })
+}
+
+/// Возвращает WGPU feature, без которого текущий renderer не импортирует P010 DMA-BUF layout.
+fn p010_dma_buf_layout_required_wgpu_feature_label(layout: DmaBufImageLayout) -> &'static str {
+    match layout {
+        DmaBufImageLayout::SeparateLayers => "TEXTURE_FORMAT_16BIT_NORM",
+        DmaBufImageLayout::ComposedLayers => "TEXTURE_FORMAT_P010",
+    }
 }
 
 /// Проверяет device/export часть intersection для decoded frame format-а.
 fn device_boundary_rejection(
     requirement: &VideoDecodeRequirement,
-    frame_format: VideoFrameFormat,
+    frame_format: VideoFramePixelLayout,
     backend: &BackendCapabilities,
 ) -> Option<VideoCapabilityRejection> {
     let required_export_path = requirement.memory_contract.required_export();
@@ -840,13 +851,13 @@ mod tests {
 
     fn p010_storage_layouts_for_formats(
         supported_formats: &[SupportedVideoDecodeFormat],
-    ) -> Vec<P010StorageLayout> {
+    ) -> Vec<DmaBufImageLayout> {
         let has_p010_format = supported_formats.iter().any(|format| {
             format.bit_depth == BitDepth::Ten && format.chroma == ChromaSubsampling::Yuv420
         });
 
         if has_p010_format {
-            vec![P010StorageLayout::BaselineSeparateLayer]
+            vec![DmaBufImageLayout::SeparateLayers]
         } else {
             Vec::new()
         }
@@ -1088,7 +1099,7 @@ mod tests {
         assert!(matches!(
             error.rejections.first(),
             Some(VideoCapabilityRejection::UnsupportedHdrRenderer {
-                frame_format: Some(VideoFrameFormat::P010),
+                frame_format: Some(VideoFramePixelLayout::P010),
             })
         ));
         assert!(error.user_message().contains("HDR-to-SDR renderer"));
@@ -1119,7 +1130,7 @@ mod tests {
         assert!(matches!(
             error.rejections.first(),
             Some(VideoCapabilityRejection::UnsupportedDeviceExportPath {
-                frame_format: VideoFrameFormat::Nv12,
+                frame_format: VideoFramePixelLayout::Nv12,
                 required_export_path: VideoExportPath::DmaBuf,
                 ..
             })
@@ -1205,7 +1216,7 @@ mod tests {
             ],
             vec![RenderCapabilities::wgpu_p010_bt2446c_with_storage_layouts(
                 Some(4096),
-                vec![P010StorageLayout::BaselineSeparateLayer],
+                vec![DmaBufImageLayout::SeparateLayers],
             )],
             vec![VideoExportPath::DmaBuf],
         );
@@ -1257,7 +1268,7 @@ mod tests {
             ],
             vec![RenderCapabilities::wgpu_p010_bt2446c_with_storage_layouts(
                 Some(4096),
-                vec![P010StorageLayout::CompatibilityComposed],
+                vec![DmaBufImageLayout::ComposedLayers],
             )],
             vec![VideoExportPath::DmaBuf],
         );
@@ -1301,7 +1312,7 @@ mod tests {
             )],
             vec![RenderCapabilities::wgpu_p010_bt2446c_with_storage_layouts(
                 Some(4096),
-                vec![P010StorageLayout::CompatibilityComposed],
+                vec![DmaBufImageLayout::ComposedLayers],
             )],
             vec![VideoExportPath::DmaBuf],
         );
@@ -1318,8 +1329,8 @@ mod tests {
 
         assert!(matches!(
             error.rejections.first(),
-            Some(VideoCapabilityRejection::UnsupportedP010StorageLayout {
-                storage_layout: P010StorageLayout::BaselineSeparateLayer,
+            Some(VideoCapabilityRejection::UnsupportedDmaBufImageLayout {
+                storage_layout: DmaBufImageLayout::SeparateLayers,
                 required_wgpu_feature,
                 ..
             }) if required_wgpu_feature == "TEXTURE_FORMAT_16BIT_NORM"
@@ -1337,12 +1348,12 @@ mod tests {
             )],
             vec![RenderCapabilities::wgpu_p010_bt2446c_with_storage_layouts(
                 Some(4096),
-                vec![P010StorageLayout::BaselineSeparateLayer],
+                vec![DmaBufImageLayout::SeparateLayers],
             )],
             vec![VideoExportPath::DmaBuf],
         );
         capabilities.video_backends[0].p010_storage_layouts =
-            vec![P010StorageLayout::CompatibilityComposed];
+            vec![DmaBufImageLayout::ComposedLayers];
         let requirement = vp9_requirement(
             Vp9Profile::Profile2,
             BitDepth::Ten,
@@ -1356,8 +1367,8 @@ mod tests {
 
         assert!(matches!(
             error.rejections.first(),
-            Some(VideoCapabilityRejection::UnsupportedP010StorageLayout {
-                storage_layout: P010StorageLayout::CompatibilityComposed,
+            Some(VideoCapabilityRejection::UnsupportedDmaBufImageLayout {
+                storage_layout: DmaBufImageLayout::ComposedLayers,
                 required_wgpu_feature,
                 ..
             }) if required_wgpu_feature == "TEXTURE_FORMAT_P010"
@@ -1440,7 +1451,7 @@ mod tests {
             .with_profile(VideoProfile::Av1(Av1Profile::Main))
             .with_bit_depth(BitDepth::Ten)
             .with_chroma(ChromaSubsampling::Yuv420)
-            .with_surface_format(VideoFrameFormat::P010);
+            .with_surface_format(VideoFramePixelLayout::P010);
 
         let error = capabilities
             .check_video_requirement(&requirement)

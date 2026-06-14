@@ -1,4 +1,5 @@
-use render_core::{P010StorageLayout, RenderCapabilities};
+use render_core::RenderCapabilities;
+use video_frame_contract::DmaBufImageLayout;
 
 /// Строит public renderer capabilities из реально включённых wgpu device features.
 pub(crate) fn wgpu_capabilities_from_features(
@@ -8,11 +9,11 @@ pub(crate) fn wgpu_capabilities_from_features(
     let mut supported_p010_storage_layouts = Vec::new();
 
     if device_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
-        supported_p010_storage_layouts.push(P010StorageLayout::BaselineSeparateLayer);
+        supported_p010_storage_layouts.push(DmaBufImageLayout::SeparateLayers);
     }
 
     if device_features.contains(wgpu::Features::TEXTURE_FORMAT_P010) {
-        supported_p010_storage_layouts.push(P010StorageLayout::CompatibilityComposed);
+        supported_p010_storage_layouts.push(DmaBufImageLayout::ComposedLayers);
     }
 
     if supported_p010_storage_layouts.is_empty() {
@@ -27,7 +28,8 @@ pub(crate) fn wgpu_capabilities_from_features(
 
 #[cfg(test)]
 mod tests {
-    use render_core::{HdrToSdrSettings, VideoFrameFormat};
+    use render_core::HdrToSdrSettings;
+    use video_frame_contract::VideoFramePixelLayout;
 
     use super::*;
 
@@ -42,21 +44,19 @@ mod tests {
         assert!(separate_layer_capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
         assert!(
             separate_layer_capabilities
-                .supports_p010_storage_layout(P010StorageLayout::BaselineSeparateLayer)
+                .supports_p010_storage_layout(DmaBufImageLayout::SeparateLayers)
         );
         assert!(
             !separate_layer_capabilities
-                .supports_p010_storage_layout(P010StorageLayout::CompatibilityComposed)
+                .supports_p010_storage_layout(DmaBufImageLayout::ComposedLayers)
         );
         assert!(composed_capabilities.supports_p010_rendering());
         assert!(composed_capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
         assert!(
-            composed_capabilities
-                .supports_p010_storage_layout(P010StorageLayout::CompatibilityComposed)
+            composed_capabilities.supports_p010_storage_layout(DmaBufImageLayout::ComposedLayers)
         );
         assert!(
-            !composed_capabilities
-                .supports_p010_storage_layout(P010StorageLayout::BaselineSeparateLayer)
+            !composed_capabilities.supports_p010_storage_layout(DmaBufImageLayout::SeparateLayers)
         );
     }
 
@@ -64,7 +64,7 @@ mod tests {
     fn renderer_capabilities_stay_nv12_when_p010_import_features_are_missing() {
         let capabilities = wgpu_capabilities_from_features(Some(4096), wgpu::Features::empty());
 
-        assert!(capabilities.supports_frame_format(VideoFrameFormat::Nv12));
+        assert!(capabilities.supports_frame_format(VideoFramePixelLayout::Nv12));
         assert!(!capabilities.supports_p010_rendering());
         assert!(!capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
     }

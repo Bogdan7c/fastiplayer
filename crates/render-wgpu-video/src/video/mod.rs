@@ -8,12 +8,13 @@ use render_core::{
     ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics,
     RenderLiveApplyPhase, RenderLiveApplyReport, RenderLiveSettingId, RenderLiveSettings,
     RenderLiveSettingsAdapter, RenderLiveSettingsError, RenderLiveSettingsUpdate, RenderViewport,
-    RenderableFrame, SwapchainTransferMode, ToneMappingMode, VideoFrameFormat,
+    RenderableFrame, SwapchainTransferMode, ToneMappingMode,
 };
 use video_backend_api::{PresentFrameResourceDescriptorLookup, PresentFrameResourceProviderHandle};
 use video_core::{
     DecodedFrame, DecodedPixelFormat, FrameMemoryPath, FrameResourceDescriptor, FrameResourceHandle,
 };
+use video_frame_contract::VideoFramePixelLayout;
 
 use crate::capabilities::wgpu_capabilities_from_features;
 use crate::dma_buf_import::{DmaBufImporter, ImportedDmaBufTexture};
@@ -330,7 +331,7 @@ impl<'frame> WgpuRenderableFrame<'frame> {
         validate_decoded_nv12_frame(frame)?;
 
         Ok(Self {
-            metadata: renderable_metadata_from_decoded(frame, VideoFrameFormat::Nv12),
+            metadata: renderable_metadata_from_decoded(frame, VideoFramePixelLayout::Nv12),
             planes: WgpuFramePlanes::Nv12 { y_view, uv_view },
         })
     }
@@ -344,7 +345,7 @@ impl<'frame> WgpuRenderableFrame<'frame> {
         validate_decoded_p010_frame(frame)?;
 
         Ok(Self {
-            metadata: renderable_metadata_from_decoded(frame, VideoFrameFormat::P010),
+            metadata: renderable_metadata_from_decoded(frame, VideoFramePixelLayout::P010),
             planes: WgpuFramePlanes::P010 { y_view, uv_view },
         })
     }
@@ -403,7 +404,7 @@ fn texture_view_lookup_after_import_failure(
 /// Копирует renderer-neutral metadata из decoded frame без backend-specific handles.
 fn renderable_metadata_from_decoded(
     frame: &DecodedFrame,
-    format: VideoFrameFormat,
+    format: VideoFramePixelLayout,
 ) -> RenderableFrame {
     RenderableFrame {
         handle: frame.resource_handle.0,
@@ -753,12 +754,12 @@ pub(super) fn display_orientation_uv_transform(
 
 /// Выбирает renderer path по renderer-neutral format и kind plane set.
 fn select_renderer_dispatch(
-    format: VideoFrameFormat,
+    format: VideoFramePixelLayout,
     plane_kind: WgpuFramePlaneKind,
 ) -> Result<RendererDispatch> {
     match (format, plane_kind) {
-        (VideoFrameFormat::Nv12, WgpuFramePlaneKind::Nv12) => Ok(RendererDispatch::Nv12),
-        (VideoFrameFormat::P010, WgpuFramePlaneKind::P010) => Ok(RendererDispatch::P010),
+        (VideoFramePixelLayout::Nv12, WgpuFramePlaneKind::Nv12) => Ok(RendererDispatch::Nv12),
+        (VideoFramePixelLayout::P010, WgpuFramePlaneKind::P010) => Ok(RendererDispatch::P010),
         (format, _) => bail!("WGPU renderer frame metadata/plane mismatch for format: {format}"),
     }
 }
@@ -818,16 +819,18 @@ mod tests {
 
     #[test]
     fn p010_frame_dispatches_to_p010_renderer_path() {
-        let dispatch = select_renderer_dispatch(VideoFrameFormat::P010, WgpuFramePlaneKind::P010)
-            .expect("P010 frame dispatches");
+        let dispatch =
+            select_renderer_dispatch(VideoFramePixelLayout::P010, WgpuFramePlaneKind::P010)
+                .expect("P010 frame dispatches");
 
         assert_eq!(dispatch, RendererDispatch::P010);
     }
 
     #[test]
     fn nv12_frame_dispatches_to_nv12_renderer_path() {
-        let dispatch = select_renderer_dispatch(VideoFrameFormat::Nv12, WgpuFramePlaneKind::Nv12)
-            .expect("NV12 frame dispatches");
+        let dispatch =
+            select_renderer_dispatch(VideoFramePixelLayout::Nv12, WgpuFramePlaneKind::Nv12)
+                .expect("NV12 frame dispatches");
 
         assert_eq!(dispatch, RendererDispatch::Nv12);
     }
@@ -911,7 +914,7 @@ mod tests {
 
     #[test]
     fn metadata_plane_mismatch_is_rejected_before_renderer_call() {
-        let error = select_renderer_dispatch(VideoFrameFormat::P010, WgpuFramePlaneKind::Nv12)
+        let error = select_renderer_dispatch(VideoFramePixelLayout::P010, WgpuFramePlaneKind::Nv12)
             .expect_err("P010 metadata must not use NV12 planes");
 
         assert!(
@@ -962,29 +965,21 @@ mod tests {
 
     #[test]
     fn p010_storage_layouts_map_to_same_renderer_plane_kind() {
-        let baseline_separate_layer_kind =
-            p010_storage_layout_renderer_plane_kind(TestP010StorageLayout::BaselineSeparateLayer);
-        let compatibility_composed_kind =
-            p010_storage_layout_renderer_plane_kind(TestP010StorageLayout::CompatibilityComposed);
+        let baseline_separate_layer_kind = p010_storage_layout_renderer_plane_kind(
+            video_frame_contract::DmaBufImageLayout::SeparateLayers,
+        );
+        let compatibility_composed_kind = p010_storage_layout_renderer_plane_kind(
+            video_frame_contract::DmaBufImageLayout::ComposedLayers,
+        );
 
         assert_eq!(baseline_separate_layer_kind, WgpuFramePlaneKind::P010);
         assert_eq!(compatibility_composed_kind, WgpuFramePlaneKind::P010);
         assert_eq!(baseline_separate_layer_kind, compatibility_composed_kind);
     }
 
-    /// Тестовое описание P010 storage layout до renderer boundary.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum TestP010StorageLayout {
-        /// Baseline Phase 10 path: отдельные `R16Unorm` и `Rg16Unorm` textures.
-        BaselineSeparateLayer,
-
-        /// Compatibility path: plane views из composed `TextureFormat::P010`.
-        CompatibilityComposed,
-    }
-
     /// Документирует, что renderer видит только P010 Y/UV pair, а не storage layout.
     const fn p010_storage_layout_renderer_plane_kind(
-        _storage_layout: TestP010StorageLayout,
+        _storage_layout: video_frame_contract::DmaBufImageLayout,
     ) -> WgpuFramePlaneKind {
         WgpuFramePlaneKind::P010
     }
@@ -1022,7 +1017,7 @@ mod tests {
         let mut decoded = decoded_nv12_test_frame(FrameMemoryPath::CpuUpload);
         decoded.render_width = render_width;
         decoded.render_height = render_height;
-        renderable_metadata_from_decoded(&decoded, VideoFrameFormat::Nv12)
+        renderable_metadata_from_decoded(&decoded, VideoFramePixelLayout::Nv12)
     }
 
     /// Долю оси, занятую видео, восстанавливаем из uv_scale: видимая полоса = 1 / scale.

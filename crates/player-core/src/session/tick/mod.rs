@@ -675,6 +675,10 @@ mod tests {
             video_core::DecodedPixelFormat::Rgba8 => {
                 panic!("RGBA8 is not a production decoded video test format")
             }
+            video_core::DecodedPixelFormat::Yuv420Planar8
+            | video_core::DecodedPixelFormat::Yuv420Planar10Le => {
+                panic!("host-planar layouts are not production decoded video test formats")
+            }
         };
 
         video_core::DecodedFrame {
