@@ -43,6 +43,7 @@ use crate::ui::sidebar::{self, AppSidebarContent};
 use crate::ui::skin::{self, PlayerSkin};
 use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
 use crate::ui::window_chrome::{self, WindowChromeAction, WindowChromeInput, WindowChromeStyle};
+use crate::video_pipeline_selector::{VideoPipelinePlan, select_video_pipeline_plan};
 
 /// Частота обновления тяжёлого текста telemetry panel.
 ///
@@ -665,6 +666,9 @@ pub struct AppState {
     /// Read-only snapshot последнего committed config-а от authoritative settings runtime.
     committed_config_snapshot: CommittedConfigSnapshot,
 
+    /// Read-only snapshot последнего capability report-а для app-owned selector-а.
+    system_capabilities_snapshot: Option<SystemCapabilities>,
+
     /// Startup-ошибка shell-слоя, которую нужно показать без перевода player в Failed.
     pub startup_error: Option<String>,
 
@@ -760,6 +764,7 @@ impl AppState {
             start_time: std::time::Instant::now(),
             telemetry,
             committed_config_snapshot,
+            system_capabilities_snapshot: None,
             startup_error,
             startup_pending: None,
             last_player_snapshot: PlayerSnapshot::empty(),
@@ -1101,6 +1106,17 @@ impl AppState {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> Result<(), String> {
+        let plan = select_video_pipeline_plan(
+            self.committed_config_snapshot.video_backend_preference(),
+            self.system_capabilities_snapshot.as_ref(),
+            decoder_thread_config,
+        )
+        .map_err(|error| format!("video pipeline selection failed: {error}"))?;
+
+        let VideoPipelinePlan::VaapiDmaBufWgpu {
+            decoder_thread_config,
+        } = plan;
+
         let backend_factory =
             VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config);
 
@@ -1132,8 +1148,10 @@ impl AppState {
         self.wgpu_frame_materializer.clone()
     }
 
-    /// Передаёт capability report из shell/backend layer в playback worker.
+    /// Сохраняет capability report для app-owned selector-а и передаёт clone в worker.
     pub fn set_system_capabilities(&mut self, capabilities: SystemCapabilities) {
+        self.system_capabilities_snapshot = Some(capabilities.clone());
+
         if let Err(error) = self.player_worker.set_system_capabilities(capabilities) {
             warn!(error = %error, "Не удалось отправить capability report в worker");
             return;

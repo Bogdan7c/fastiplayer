@@ -23,7 +23,7 @@ use render_core::{
 use render_core::{RenderLiveApplyReport, RenderLiveSettingsError};
 use rustiplayer_config::{
     AppConfig, LoadedConfig, NetworkConfig, PlayerDemuxConfig, RenderProfile, ToneMappingMode,
-    UiConfig, VulkanConfig, YoutubeConfig,
+    UiConfig, VideoBackendPreference, VulkanConfig, YoutubeConfig,
 };
 use rustiplayer_settings::{
     AppConfigStore, AppConfigValidator, AppRouteApplyReport, AppRouteApplyResult,
@@ -82,6 +82,12 @@ impl CommittedConfigSnapshot {
     #[must_use]
     pub(crate) fn demux_config_for_open(&self) -> PlayerDemuxConfig {
         self.config.player.demux
+    }
+
+    /// Committed intent выбора video backend-а для app-owned pipeline selector-а.
+    #[must_use]
+    pub(crate) fn video_backend_preference(&self) -> VideoBackendPreference {
+        self.config.video.preferred_backend
     }
 
     /// Default volume policy для startup/new media и mute-toggle restore.
@@ -189,6 +195,9 @@ pub(crate) struct SettingsPreviewTick {
 /// Этот trait передаётся только из app composition/frame слоя, где эти owners
 /// реально доступны и где можно сохранить порядок команд.
 pub(crate) trait SettingsRuntimeReconfigureHost {
+    /// Синхронизирует внешний owner с committed config-ом перед owner-level apply.
+    fn sync_committed_config_snapshot(&mut self, _snapshot: CommittedConfigSnapshot) {}
+
     /// Применяет typed player update через owner-level worker boundary.
     fn apply_player_runtime_settings(
         &mut self,
@@ -1218,6 +1227,10 @@ where
         request: CommittedApplyRequest<'_, AppConfig>,
     ) -> SettingsResult<Vec<ApplyRouteReport>> {
         let mut reports = Vec::with_capacity(request.route_updates.len());
+        self.runtime_adapter
+            .sync_committed_config_snapshot(CommittedConfigSnapshot::from_config(
+                request.persisted,
+            ));
 
         for update in request.route_updates {
             let routes = committed_routes_from_update(

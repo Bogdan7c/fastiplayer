@@ -19,7 +19,9 @@ use video_core::DecodedPixelFormat;
 use winit::window::{ResizeDirection, Window};
 
 use crate::redraw_pacing::RedrawPacing;
-use crate::settings_runtime::{SettingsRuntime, SettingsRuntimeReconfigureHost};
+use crate::settings_runtime::{
+    CommittedConfigSnapshot, SettingsRuntime, SettingsRuntimeReconfigureHost,
+};
 use crate::startup_media::{resolve_direct_media_startup_media, resolve_youtube_startup_media};
 use crate::state::{
     ActiveMediaSource, AppFrameContext, AppState, AppUiRenderTimings, RenderablePresentFrame,
@@ -159,6 +161,10 @@ impl RenderLiveSettingsAdapter for FrameSettingsRuntimeAdapter<'_> {
 }
 
 impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
+    fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
+        self.app_state.sync_committed_config_snapshot(snapshot);
+    }
+
     fn apply_player_runtime_settings(
         &mut self,
         update: PlayerRuntimeSettingsUpdate,
