@@ -30,6 +30,10 @@ read-only snapshot. Media pipeline живёт в `player-core` внутри `Pla
 
 Видео в production идёт только через hardware decode и DMA-BUF zero-copy.
 Software video fallback, CPU upload и CPU readback не являются настройками.
+Текущий video decode backend path - VA-API; FFmpeg software decode ещё не
+добавлен, а Vulkan video decode path в проекте не поддерживается.
+Vulkan-упоминания в render docs относятся к WGPU/Vulkan surface/import path, а
+не к `video.preferred_backend`.
 
 Текущий production video path:
 

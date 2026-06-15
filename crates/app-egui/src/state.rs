@@ -2416,7 +2416,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use codec_core::VideoColorMetadata;
+    use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
     use media_core::MediaTime;
     use player_core::{
         MediaOpenRequest, MediaSource, MediaSummary, PlaybackResumeIntent, PlaybackState,

@@ -873,6 +873,60 @@ operator = "reinhard"
         assert!(error.to_string().contains("TOML-схеме"));
     }
 
+    /// Проверяет, что удалённый Vulkan video backend preference получает понятную подсказку.
+    #[test]
+    fn removed_vulkan_video_backend_preference_has_suggested_fix() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[video]
+preferred_backend = "vulkan"
+"#,
+        )
+        .expect("removed backend config written");
+
+        let error = load_from_path(&config_path).expect_err("removed backend rejected");
+        let message = error.to_string();
+
+        assert!(message.contains("video.preferred_backend"));
+        assert!(message.contains("\"vulkan\""));
+        assert!(message.contains("\"auto\""));
+        assert!(message.contains("\"vaapi\""));
+        assert!(message.contains("удал"));
+        assert!(message.contains("замените"));
+    }
+
+    /// Проверяет, что другие неизвестные backend id остаются обычной schema error.
+    #[test]
+    fn unknown_video_backend_preference_stays_generic_parse_error() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[video]
+preferred_backend = "cuda"
+"#,
+        )
+        .expect("unknown backend config written");
+
+        let error = load_from_path(&config_path).expect_err("unknown backend rejected");
+        let message = error.to_string();
+
+        assert!(message.contains("TOML-схеме"));
+        assert!(message.contains("cuda"));
+        assert!(message.contains("auto"));
+        assert!(message.contains("vaapi"));
+        assert!(!message.contains("удал"));
+        assert!(!message.contains("замените"));
+    }
+
     /// Проверяет validation для нулевого SDR reference white.
     #[test]
     fn invalid_hdr_to_sdr_sdr_white_nits_fails_validation() {

@@ -33,6 +33,11 @@ WGPU boundary в документации описан через surface config
 adapter/device features и limits. В коде это отражено через `RenderCapabilities`
 и WGPU device features.
 
+`render.profile = "vulkan"` и `[render.vulkan]` относятся к WGPU shell
+surface/present configuration. Они не включают Vulkan video decode backend:
+decode path сейчас VA-API, а frame import/materialization остаётся
+renderer-side ответственностью.
+
 ## Surface formats
 
 Current render input formats:

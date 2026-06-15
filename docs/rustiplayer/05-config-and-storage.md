@@ -52,12 +52,21 @@ schema_version = 2
 Unknown fields are rejected with `deny_unknown_fields`. Values are validated after
 Serde deserialization.
 
+`video.preferred_backend` accepts only `"auto"` and `"vaapi"`. The old
+`"vulkan"` video decode preference was removed and is rejected with a suggested
+fix instead of being migrated or silently mapped to VA-API.
+
+`render.profile = "vulkan"` and `[render.vulkan]` are render/surface settings
+for the current WGPU shell path. They do not select a Vulkan video decode
+backend.
+
 ## Важные defaults
 
 - `player.start_paused = true`
 - `player.resume_last_position = true`
 - `player.demux.max_consecutive_corrupted_packets = 64`
 - `video.hardware_decode_only = true`
+- `video.preferred_backend = "auto"`
 - `video.present_queue_frames = 8`
 - `video.decoder_packet_channel_frames = 32`
 - `video.decoder_frame_channel_frames = 8`

@@ -1,4 +1,9 @@
-use serde::{Deserialize, Deserializer, Serialize};
+use std::fmt;
+
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{self, Visitor},
+};
 
 use crate::{ConfigResult, validation};
 
@@ -729,7 +734,6 @@ pub struct VideoConfig {
         options(
             option(id = "auto", label_id = "settings.video.preferred_backend.auto", label_ru = "Авто", value = VideoBackendPreference::Auto),
             option(id = "vaapi", label_id = "settings.video.preferred_backend.vaapi", label_ru = "VA-API", value = VideoBackendPreference::Vaapi),
-            option(id = "vulkan", label_id = "settings.video.preferred_backend.vulkan", label_ru = "Vulkan", value = VideoBackendPreference::Vulkan),
         )
     )]
     pub preferred_backend: VideoBackendPreference,
@@ -1103,7 +1107,7 @@ impl Default for VideoSchedulerConfig {
 }
 
 /// Выбор decode backend из пользовательского config.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VideoBackendPreference {
     /// Автоматически выбрать лучший доступный backend.
@@ -1111,9 +1115,49 @@ pub enum VideoBackendPreference {
 
     /// VA-API hardware decode.
     Vaapi,
+}
 
-    /// Vulkan-oriented decode path текущего MVP.
-    Vulkan,
+const SUPPORTED_VIDEO_BACKEND_PREFERENCE_VALUES: &[&str] = &["auto", "vaapi"];
+const REMOVED_VULKAN_VIDEO_BACKEND_PREFERENCE: &str = "vulkan";
+
+// Ручной Deserialize нужен, чтобы удалённый `vulkan` получил точную подсказку,
+// а остальные неизвестные id остались обычной schema error от Serde.
+impl<'de> Deserialize<'de> for VideoBackendPreference {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(VideoBackendPreferenceVisitor)
+    }
+}
+
+struct VideoBackendPreferenceVisitor;
+
+impl<'de> Visitor<'de> for VideoBackendPreferenceVisitor {
+    type Value = VideoBackendPreference;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("video.preferred_backend value \"auto\" or \"vaapi\"")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        match value {
+            "auto" => Ok(VideoBackendPreference::Auto),
+            "vaapi" => Ok(VideoBackendPreference::Vaapi),
+            REMOVED_VULKAN_VIDEO_BACKEND_PREFERENCE => Err(E::custom(
+                "video.preferred_backend = \"vulkan\" удалён; замените его на \"auto\", \
+                 чтобы Rustiplayer выбрал поддерживаемый backend, или на \"vaapi\", чтобы \
+                 явно требовать VA-API hardware decode",
+            )),
+            unknown_value => Err(E::unknown_variant(
+                unknown_value,
+                SUPPORTED_VIDEO_BACKEND_PREFERENCE_VALUES,
+            )),
+        }
+    }
 }
 
 /// Render-настройки верхнего уровня.
@@ -2653,11 +2697,7 @@ mod settings_metadata_tests {
             "player.preferred_video_codec_order",
             &["vp9", "av1", "h264", "h265", "vp8"],
         );
-        assert_select_options(
-            &registry,
-            "video.preferred_backend",
-            &["auto", "vaapi", "vulkan"],
-        );
+        assert_select_options(&registry, "video.preferred_backend", &["auto", "vaapi"]);
         assert_select_options(&registry, "render.profile", &["auto", "vulkan", "opengles"]);
         assert_select_options(&registry, "render.hdr_to_sdr.operator", &["bt2446_c"]);
         assert_select_options(&registry, "render.tone_mapping", &["auto", "disabled"]);
