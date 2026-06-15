@@ -1,0 +1,13 @@
+# Video FFmpeg Software Design
+
+- Future FFmpeg integration is software-decode-only. Hardware video acceleration remains owned by the native backend path (`video-vaapi` currently); do not plan FFmpeg hardware decode, hardware download-to-RAM, or FFmpeg-as-primary hardware backend work from `user/ffmpeg_backend_design.md`.
+- Current code still has no FFmpeg/libav dependency and no public `ffmpeg_sw` TOML/UI option. Public `video.preferred_backend` remains `auto`/`vaapi` until a separate config architecture decision changes it.
+- Target FFmpeg baseline in the design doc is stable 8.1.x (`8.1.1 "Hoare"` was latest stable on 2026-06-15) plus a required Context7 stable/trunk Doxygen recheck before implementation.
+- Target linking policy is dynamic LGPL FFmpeg through a future `video-ffmpeg` crate using `ffmpeg-sys-next` with a thin safe RAII wrapper over raw FFI.
+- Future `ffmpeg-sw` must use existing neutral boundaries: `VideoDecoderThreadHandle`, `VideoStreamDecodeConfig.frame_contract`, `DecodedFrame.frame_contract`, `FrameResourceDescriptor::HostPlanar`, `VideoFrameTransferPath::SoftwareHostUpload`, `SupportedVideoOutput`, and renderer-intersected `SystemCapabilities.playable_video_outputs`.
+- V1 software output target is explicit planar YUV 4:2:0/4:2:2/4:4:4 for 8/10/12-bit, added as concrete `VideoFramePixelLayout` variants with matching HostPlanar validation and renderer upload support. Do not use a generic "any planar YUV" layout as a shortcut.
+- FFmpeg FFI layer must own padded `AVPacket` input (`AV_INPUT_BUFFER_PADDING_SIZE`), `AVFrame`/refcount lifetimes, send/receive queuing, typed error mapping, flush vs EOF drain semantics, color metadata mapping, and resource lifetime until `release_frame`.
+- CPU color conversion/RGB output remains forbidden in the playback path; YUV sampling, color/HDR/tone mapping, and composition stay GPU-side.
+- Architectural decision (2026-06-15): exactly one copy on decode->render path, and that copy is the final host-to-GPU upload. An intermediate CPU copy of decoded planes into owned host storage is forbidden in steady-state playback, so v1 is built on zero-copy host ownership over a refcounted `AVFrame` from the start, not as a later optimization. Consequence: the foundation `HostPlanarFrameDescriptor` single-`Arc<[u8]>` backing must be generalized to a provider-owned refcounted owner yielding per-plane `&[u8]` (owner may be our buffer OR a wrapped `AVFrame`); this is a deliberate resource-provider boundary change with focused lifetime tests, and `release_frame` is the only release point.
+
+Source doc: `user/ffmpeg_backend_design.md`.
