@@ -10,20 +10,23 @@
 - renderer подтвердил input pixel layout и hardware handle layout, если нужен;
 - HDR stream прошёл strict metadata policy и renderer поддерживает HDR-to-SDR.
 
-Software video fallback и CPU transfer не входят в production policy.
+Software video fallback, FFmpeg decoder, WGPU host upload и CPU transfer не
+входят в production policy. Host upload сейчас существует только как neutral
+`VideoFrameContract`/`HostPlanar` boundary для будущей интеграции, без
+production renderer implementation.
 
 ## Текущая матрица
 
-| Stream | Surface | Decode | Render | Status |
+| Stream | Frame contract | Decode | Render | Status |
 | --- | --- | --- | --- | --- |
-| VP9 Profile 0, 8-bit, 4:2:0, SDR | NV12 | VA-API | WGPU SDR BT.709 | production |
-| VP9 Profile 2, 10-bit, 4:2:0, PQ/HLG HDR | P010 | VA-API | WGPU BT.2446-C to SDR BT.709 | production when capabilities pass |
+| VP9 Profile 0, 8-bit, 4:2:0, SDR | NV12 + DMA-BUF | VA-API | WGPU SDR BT.709 | production |
+| VP9 Profile 2, 10-bit, 4:2:0, PQ/HLG HDR | P010 + DMA-BUF | VA-API | WGPU BT.2446-C to SDR BT.709 | production when capabilities pass |
 | VP9 12-bit | none | rejected | rejected | unsupported bit depth |
 | VP9 4:2:2/4:4:4 | none | rejected | rejected | unsupported chroma |
 | VP9 Profile 1/3 | none | rejected | rejected | unsupported current renderer/backend path |
-| H.264 ConstrainedBaseline/Main/High, 8-bit, 4:2:0, SDR | NV12 | VA-API | WGPU SDR BT.709 | production when capabilities pass |
-| H.265 Main, 8-bit, 4:2:0, SDR | NV12 | VA-API | WGPU SDR BT.709 | production when capabilities pass |
-| H.265 Main10, 10-bit, 4:2:0, PQ/HLG HDR | P010 | VA-API | WGPU BT.2446-C to SDR BT.709 | production when capabilities pass |
+| H.264 ConstrainedBaseline/Main/High, 8-bit, 4:2:0, SDR | NV12 + DMA-BUF | VA-API | WGPU SDR BT.709 | production when capabilities pass |
+| H.265 Main, 8-bit, 4:2:0, SDR | NV12 + DMA-BUF | VA-API | WGPU SDR BT.709 | production when capabilities pass |
+| H.265 Main10, 10-bit, 4:2:0, PQ/HLG HDR | P010 + DMA-BUF | VA-API | WGPU BT.2446-C to SDR BT.709 | production when capabilities pass |
 | AV1/VP8 and future H.265 profiles | future | future | future | not production |
 
 ## Ключевые типы
@@ -40,9 +43,10 @@ Canonical types live in `codec-core`:
 - `VideoDecodeRequirement`
 - `SupportedVideoDecodeFormat`
 
-Frame output contract types live in `video-core` and are referenced by
-capability reports:
+Frame output contract types live in `video-frame-contract` and are referenced
+by decoded frames, renderer capabilities and capability reports:
 
+- `VideoFramePixelLayout`
 - `VideoFrameContract`
 - `VideoFrameTransferPath`
 - `HardwareFrameHandle`
@@ -55,7 +59,6 @@ Renderer-facing aliases and capabilities live in `render-core`:
 
 - `RenderCapabilities`
 - `P010RenderReadiness`
-- `P010StorageLayout`
 - `HdrToSdrSettings`
 - `HdrToneMappingOperator`
 - `ActiveColorPath`
@@ -95,8 +98,10 @@ HDR side metadata. MaxCLL/MaxFALL alone beside BT.709 SDR does not make a stream
 HDR.
 
 Bitstream refinement must not erase container color metadata. H.264/H.265
-config or packet candidates are authoritative for profile, bit depth, chroma and
-surface format when they know those fields, but MP4/Matroska `colr`/HDR metadata
+config or packet candidates are authoritative for profile, bit depth and chroma
+when they know those fields, but they do not select the concrete transfer path.
+The output path comes from `SupportedVideoOutput.frame_contract`, selected after
+backend and renderer capability intersection. MP4/Matroska `colr`/HDR metadata
 must remain in `VideoDecodeRequirement.color` when the bitstream parser has no
 equivalent color proof. Otherwise `DecodePacket.resolved_color` becomes `None`
 and the renderer falls back to SDR BT.709 instead of the HDR-to-SDR path.
@@ -105,7 +110,7 @@ and the renderer falls back to SDR BT.709 instead of the HDR-to-SDR path.
 
 Current HDR-to-SDR production baseline:
 
-- input surface: P010;
+- input frame contract: P010 + DMA-BUF;
 - bit depth: 10-bit;
 - chroma: 4:2:0;
 - transfer: PQ or HLG;
@@ -144,6 +149,12 @@ during system capability probing. Renderer support is expressed as full
 `VideoFrameContract` entries, so pixel layout, transfer path, and hardware
 handle layout are checked as one contract instead of separate format/layout
 lists.
+
+Current production `SupportedVideoOutput` records are hardware-only VA-API
+outputs with `HardwareZeroCopy { DmaBuf { image_layout } }`. Host-planar
+`SoftwareHostUpload` contracts may appear in focused tests to prove neutral
+intersection semantics, but they are not advertised by the production WGPU
+renderer and do not enable FFmpeg/software playback today.
 
 ## H.265 manual validation notes
 

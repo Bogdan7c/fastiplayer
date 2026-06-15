@@ -53,7 +53,8 @@ Vulkan-упоминания в render docs относятся к WGPU/Vulkan sur
 - `app-egui` не должен читать `PlayerSession` или `PlaybackPipeline`.
 - Renderer получает frame только через `PresentFrameLease`.
 - Config хранит пользовательские настройки, но не историю, cookies, bookmarks и durable cache metadata.
-- Capability selection обязана пройти decode backend, memory contract, renderer import и color pipeline.
+- Capability selection обязана пройти decode backend, `VideoFrameContract`,
+  renderer import и color pipeline.
 - Неуверенный bitstream probe не должен превращаться в fatal hardware failure.
 
 ## Seek Diagnostics

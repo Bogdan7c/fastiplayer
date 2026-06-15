@@ -3,17 +3,23 @@
 ## Workspace crates
 
 ```text
+crates/animation-core        neutral UI animation math
 crates/app-egui              desktop shell, media opening, backend/render wiring
 crates/player-core           worker, session, scheduler, commands/events/snapshots
 crates/audio-core            neutral audio decoder/output/clock contracts
 crates/media-core            Packet, TrackInfo, MediaTime, TimelineSnapshot
-crates/codec-core            codec/profile/color/surface/memory contracts
+crates/codec-core            codec/profile/color/stream requirement contracts
+crates/video-frame-contract  neutral decoded frame layout/transfer contract vocabulary
 crates/capability-core       backend reports, render reports, stream selection
 crates/config                TOML schema v2, defaults, validation, paths
 crates/source-core           local files, HTTP Range, RAM byte-range cache
 crates/media-prefetch        config-agnostic RAM read-ahead over ByteSource
+crates/settings-core         neutral settings metadata/controller contracts
+crates/settings-derive       proc-macro generated settings registry/accessors
+crates/rustiplayer-settings  AppConfig/settings runtime binding contracts
 crates/symphonia-demux       Symphonia audio container demux adapter
 crates/webm-demux            compatibility re-export for old demux crate path
+crates/service-direct-media  direct HTTP media opener over source/prefetch/demux
 crates/service-youtube       yt-dlp adapter, stream candidates, YouTube demux open
 crates/audio                 Symphonia/Opus decoder factory, CPAL output backend, audio clock
 crates/video-core            decoded frame and video diagnostics contracts
@@ -47,9 +53,16 @@ snapshots. It no longer opens WebM/Matroska or imports `video-vaapi` directly,
 and it does not materialize WGPU texture views. Present-frame resource lookup and
 release use renderer-neutral handles from `video-backend-api`.
 
-`media-core`, `codec-core`, `audio-core`, `render-core`, `video-core` and
-`video-backend-api` are contract crates. They should stay backend-neutral and
-avoid UI/service dependencies.
+`media-core`, `codec-core`, `audio-core`, `video-frame-contract`, `render-core`,
+`video-core` and `video-backend-api` are contract crates. They should stay
+backend-neutral and avoid UI/service dependencies.
+
+`video-frame-contract` owns the decoded frame contract vocabulary shared by
+decoder, capability and renderer layers: `VideoFramePixelLayout`,
+`VideoFrameContract`, `VideoFrameTransferPath`, `HardwareFrameHandle` and
+`DmaBufImageLayout`. It is intentionally lower than `video-core` and does not
+depend on codec, video, render, backend, FFmpeg, WGPU, VA-API, cros-codecs,
+`player-core` or app crates.
 
 `video-backend-api` owns the video backend startup/resource-provider contract:
 `VideoBackendFactory`, `StartedVideoBackend`, `PresentFrameResourceProvider` and
@@ -91,25 +104,29 @@ resources or playback queues.
 
 ```text
 app-egui -> player-core/service-youtube/desktop-integration
-app-egui -> symphonia-demux/audio/video-core/video-vaapi/render-wgpu-shell/render-wgpu-video/source-core
-app-egui -> media-core/capability-core/render-core/rustiplayer-config
+app-egui -> symphonia-demux/service-direct-media/audio/video-core/video-frame-contract/video-vaapi/render-wgpu-shell/render-wgpu-video/source-core
+app-egui -> media-core/capability-core/render-core/rustiplayer-config/rustiplayer-settings/settings-core/animation-core
 app-egui -> wgpu/winit/egui/egui-winit
-player-core -> media-core/codec-core/capability-core/video-core/video-backend-api/rustiplayer-config/audio-core/render-core
+player-core -> media-core/codec-core/capability-core/video-core/video-backend-api/video-frame-contract/rustiplayer-config/audio-core/render-core
 desktop-integration -> player-core/media-core
 service-youtube -> source-core/symphonia-demux/rustiplayer-config/capability-core/codec-core/media-core
 service-youtube -> media-prefetch
+service-direct-media -> source-core/media-prefetch/symphonia-demux/rustiplayer-config
 source-core -> rustiplayer-config
 media-prefetch -> source-core
+rustiplayer-settings -> player-core/render-core/rustiplayer-config/settings-core
+settings-derive -> settings-core/proc-macro2/quote/syn
 symphonia-demux -> media-core/codec-core/source-core
 webm-demux -> symphonia-demux
 audio -> audio-core
-capability-core -> codec-core/render-core
-codec-core -> vp9-parser
-video-core -> media-core/codec-core
+capability-core -> codec-core/render-core/video-frame-contract
+codec-core -> vp9-parser/video-frame-contract
+video-frame-contract -> serde
+video-core -> media-core/codec-core/video-frame-contract
 video-backend-api -> video-core
-render-core -> codec-core
-video-vaapi -> video-backend-api/video-core/media-core/codec-core/capability-core
-render-wgpu-video -> render-core/video-core/video-backend-api/codec-core/wgpu/ash/wgpu-types
+render-core -> codec-core/video-frame-contract
+video-vaapi -> video-backend-api/video-core/video-frame-contract/media-core/codec-core/capability-core
+render-wgpu-video -> render-core/video-core/video-backend-api/video-frame-contract/codec-core/wgpu/ash/wgpu-types
 render-wgpu-shell -> render-wgpu-video/render-core/wgpu/egui/egui-wgpu/winit
 ```
 
@@ -131,6 +148,8 @@ After:
   app-egui -> video-vaapi
   app-egui -> render-wgpu-shell/render-wgpu-video
   player-core -> video-backend-api
+  decoder/render transfer vocabulary -> video-frame-contract
+  capability selection -> SupportedVideoOutput + VideoFrameContract
   video-vaapi -> video-backend-api
   reverse video-vaapi/player-core edge closed
   player-core -> wgpu closed

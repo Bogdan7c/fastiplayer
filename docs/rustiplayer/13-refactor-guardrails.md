@@ -23,8 +23,12 @@ Contract crates задают нейтральные типы и правила �
 Текущий список contract crates:
 
 - `media-core` - neutral media packets, tracks, timeline/time contracts.
-- `codec-core` - codec/profile/color/surface/memory requirements.
-- `video-core` - decoded frame, texture handle и video diagnostics contracts.
+- `audio-core` - neutral audio decoder/output/clock contracts.
+- `codec-core` - codec/profile/color/stream requirements.
+- `settings-core` - neutral settings metadata/controller contracts.
+- `video-frame-contract` - neutral decoded frame pixel-layout/transfer-path
+  vocabulary shared by decoder, capability and renderer layers.
+- `video-core` - decoded frame, resource handle/descriptor и video diagnostics contracts.
 - `video-backend-api` - video backend startup/resource-provider boundary.
 - `render-core` - renderer-neutral capabilities, color и render diagnostics.
 - `capability-core` - selection gate между stream requirements и render/backend reports.
@@ -33,10 +37,12 @@ Contract crates задают нейтральные типы и правила �
 
 ```text
 media-core -> codec-core
-video-core -> media-core / codec-core
+codec-core -> video-frame-contract
+video-frame-contract -> serde
+video-core -> media-core / codec-core / video-frame-contract
 video-backend-api -> video-core
-render-core -> codec-core
-capability-core -> codec-core / render-core
+render-core -> codec-core / video-frame-contract
+capability-core -> codec-core / render-core / video-frame-contract
 ```
 
 `codec-core -> vp9-parser` сейчас является внутренней codec-model деталью, а не
@@ -94,23 +100,27 @@ upstream `symphonia = 0.6`, а устаревшие локальные ката�
 Фактическая карта direct normal-dependencies, важная для архитектурных границ:
 
 ```text
-app-egui -> player-core/service-youtube/desktop-integration
-app-egui -> symphonia-demux/audio/video-core/video-vaapi/render-core/render-wgpu-shell/render-wgpu-video/source-core
-app-egui -> media-core/capability-core/wgpu/winit/egui/egui-winit/rustiplayer-config
-player-core -> media-core/codec-core/capability-core/video-core/video-backend-api/rustiplayer-config/audio-core/render-core
+app-egui -> player-core/service-youtube/service-direct-media/desktop-integration
+app-egui -> symphonia-demux/audio/video-core/video-frame-contract/video-vaapi/render-core/render-wgpu-shell/render-wgpu-video/source-core
+app-egui -> media-core/capability-core/wgpu/winit/egui/egui-winit/rustiplayer-config/rustiplayer-settings/settings-core/animation-core
+player-core -> media-core/codec-core/capability-core/video-core/video-backend-api/video-frame-contract/rustiplayer-config/audio-core/render-core
 video-backend-api -> video-core
 service-youtube -> source-core/media-prefetch/symphonia-demux/rustiplayer-config/capability-core/codec-core/media-core
+service-direct-media -> source-core/media-prefetch/symphonia-demux/rustiplayer-config
 source-core -> rustiplayer-config
 media-prefetch -> source-core
+rustiplayer-settings -> player-core/render-core/rustiplayer-config/settings-core
+settings-derive -> settings-core/proc-macro2/quote/syn
 symphonia-demux -> source-core/media-core/codec-core
 webm-demux -> symphonia-demux
 audio -> audio-core
-codec-core -> vp9-parser
-capability-core -> codec-core/render-core
-render-core -> codec-core
-video-core -> media-core/codec-core
-video-vaapi -> video-backend-api/video-core/media-core/codec-core/capability-core
-render-wgpu-video -> render-core/video-core/video-backend-api/codec-core/wgpu/ash/wgpu-types
+codec-core -> vp9-parser/video-frame-contract
+capability-core -> codec-core/render-core/video-frame-contract
+render-core -> codec-core/video-frame-contract
+video-frame-contract -> serde
+video-core -> media-core/codec-core/video-frame-contract
+video-vaapi -> video-backend-api/video-core/video-frame-contract/media-core/codec-core/capability-core
+render-wgpu-video -> render-core/video-core/video-backend-api/video-frame-contract/codec-core/wgpu/ash/wgpu-types
 render-wgpu-shell -> render-wgpu-video/render-core/wgpu/egui/egui-wgpu/winit
 ```
 
@@ -143,6 +153,8 @@ After:
   render-wgpu-video owns video rendering without shell/reference backend deps
   render-wgpu-shell owns winit/egui surface composition
   video-vulkan removed from workspace and Cargo graph
+  video-frame-contract owns decoder->renderer frame contract vocabulary
+  capability selection uses SupportedVideoOutput + VideoFrameContract
 ```
 
 ## Временные нарушения
@@ -169,9 +181,14 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
 - Contract crates не добавляют прямые зависимости на `app-egui`, `player-core`,
   `symphonia-demux`, `webm-demux`, `audio`, `video-vaapi`,
   `render-wgpu-shell`, `render-wgpu-video`, `video-vulkan`,
-  `service-youtube`, `desktop-integration`, `wgpu`, `winit`, `egui`,
-  `egui-winit`, `egui-wgpu`, `wgpu-types`, `ash`, `cros-codecs` или
-  `cros-libva`.
+  `service-direct-media`, `service-youtube`, `desktop-integration`,
+  `rustiplayer-config`, `rustiplayer-settings`, `settings-derive`, `wgpu`,
+  `winit`, `egui`, `egui-winit`, `egui-wgpu`, `wgpu-types`, `ash`,
+  `cros-codecs` или `cros-libva`.
+- `video-frame-contract` остаётся leaf contract crate: normal dependency
+  allowlist сейчас только `serde`. Он не зависит от `codec-core`, `video-core`,
+  `render-core`, `capability-core`, WGPU, VA-API, cros-codecs, FFmpeg,
+  `player-core` или app crates.
 - `media-core`, `codec-core`, `audio-core`, `audio`, `symphonia-demux` и `webm-demux` не
   добавляют прямые зависимости на `wgpu`, `video-vaapi`, `video-vulkan`,
   `render-wgpu-shell`, `render-wgpu-video`, `wgpu-types` или `ash`.
@@ -191,11 +208,21 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
   `player-core`; backend startup/resource provider boundary проходит через
   `video-backend-api`.
 - `video-vaapi` не зависит от renderer/GPU import crates (`wgpu`,
-  `wgpu-types`, `ash`, `render-wgpu-video`, `render-wgpu-shell`): он владеет
+  `wgpu-types`, `ash`, `render-core`, `render-wgpu-video`,
+  `render-wgpu-shell`): он владеет
   VA display, cros decoder, VA surfaces, DMA-BUF export и release lifecycle,
   но не создаёт WGPU texture views.
-- `video-vulkan` не возвращается в workspace и не становится dependency
-  production crates без отдельного архитектурного решения.
+- `video-vulkan` и `video-ffmpeg` не возвращаются в workspace и не становятся
+  dependency production crates без отдельного архитектурного решения.
+- FFmpeg/libav crates не добавляются в этом подготовительном refactor-е:
+  `ffmpeg-next`, `ffmpeg-sys-next`, `rsmpeg`, `libav*` и аналогичные direct
+  dependency names запрещены для всех workspace crates.
+- Public `video.preferred_backend` остаётся только `auto`/`vaapi`. Старое
+  `"vulkan"` разрешено упоминать только в rejection diagnostics/tests, а
+  `ffmpeg_sw`/`ffmpeg-sw` не должен появляться как TOML/UI/settings option.
+- `render-wgpu-video` не добавляет WGPU host-upload materializer module. Current
+  production renderer остаётся DMA-BUF NV12/P010; HostPlanar возвращает typed
+  `Unsupported`, а не silent CPU fallback/readback/upload.
 - Новые обращения к `PlaybackPipeline` внутри `player-core` проходят через
   intent methods. Возвращать `pub(crate)` поля в сам `PlaybackPipeline`
   запрещено без отдельного архитектурного решения и focused tests.
@@ -212,11 +239,14 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
 документирует этот JSON как источник workspace packages и manifest dependencies,
 а `--format-version` фиксирует ожидаемый формат.
 
-Текущая проверка намеренно маленькая:
+Текущая проверка намеренно маленькая, но покрывает explicit non-goals этой
+refactor-серии:
 
 - проверяет наличие зафиксированных role crates в workspace;
 - запрещает молчаливое возвращение удалённых workspace crates, сейчас
-  `video-vulkan`;
+  `video-vulkan` и `video-ffmpeg`;
+- проверяет, что `video-frame-contract` зависит только от `serde`;
+- запрещает direct FFmpeg/libav dependencies по всем manifest dependency kinds;
 - запрещает прямые normal-dependencies из contract crates в shell/backend/player;
 - запрещает прямые `media-core`/`codec-core`/`audio`/demux dependencies на
   `wgpu`, `wgpu-types`, `ash`, `video-vaapi`, `video-vulkan`,
@@ -224,12 +254,16 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
 - запрещает возвращение `player-core -> symphonia-demux/webm-demux`,
   `player-core -> video-vaapi`, `player-core -> audio`, `player-core -> wgpu`,
   `player-core -> wgpu-types` и `player-core -> ash`;
-- запрещает прямую dependency от `video-vaapi` к `player-core`, `wgpu`,
-  `wgpu-types`, `ash`, `render-wgpu-video` и `render-wgpu-shell`;
+- запрещает прямую dependency от `video-vaapi` к `player-core`, `render-core`,
+  `wgpu`, `wgpu-types`, `ash`, `render-wgpu-video` и `render-wgpu-shell`;
 - запрещает новые прямые связи `player-core`, `render-wgpu-shell` и
   `render-wgpu-video` с явно опасными соседними слоями;
 - запрещает `media-prefetch` добавлять любые normal-dependencies кроме
   `source-core`, `tracing` и `thiserror`;
+- проверяет config/settings/UI source roots на public `video.preferred_backend`
+  values/options для удалённого Vulkan video backend и будущего `ffmpeg_sw`;
+- запрещает появление WGPU host-upload materializer module в
+  `render-wgpu-video/src`;
 - не содержит temporary debt allowlist для old mixed `render-wgpu` crate.
 
 Локальный pre-PR путь находится в `scripts/pre-pr-checks.sh`. Он последовательно

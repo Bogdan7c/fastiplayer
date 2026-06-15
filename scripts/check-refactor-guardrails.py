@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Проверяет архитектурные dependency guardrails для refactoring PR.
 
-Скрипт намеренно читает только direct normal-dependencies из
-`cargo metadata --no-deps --format-version 1`: именно эту границу фиксирует
-`docs/rustiplayer/13-refactor-guardrails.md`.
+Скрипт намеренно проверяет direct manifest-dependencies из
+`cargo metadata --no-deps --format-version 1`. Boundary rules смотрят normal
+dependencies, а explicit non-goals вроде FFmpeg/libav проверяются по всем
+direct dependency kinds.
 """
 
 from __future__ import annotations
@@ -22,8 +23,11 @@ GUARDRAILS_DOC = "docs/rustiplayer/13-refactor-guardrails.md"
 
 CONTRACT_CRATES = frozenset(
     {
+        "audio-core",
         "media-core",
         "codec-core",
+        "settings-core",
+        "video-frame-contract",
         "video-core",
         "video-backend-api",
         "render-core",
@@ -33,8 +37,10 @@ CONTRACT_CRATES = frozenset(
 
 REQUIRED_ROLE_CRATES = frozenset(
     {
+        "animation-core",
         "app-egui",
         "audio",
+        "audio-core",
         "capability-core",
         "codec-core",
         "desktop-integration",
@@ -45,9 +51,14 @@ REQUIRED_ROLE_CRATES = frozenset(
         "render-wgpu-shell",
         "render-wgpu-video",
         "rustiplayer-config",
+        "rustiplayer-settings",
+        "service-direct-media",
         "service-youtube",
+        "settings-core",
+        "settings-derive",
         "source-core",
         "symphonia-demux",
+        "video-frame-contract",
         "video-core",
         "video-backend-api",
         "video-vaapi",
@@ -57,7 +68,36 @@ REQUIRED_ROLE_CRATES = frozenset(
 
 # Crates из этого списка были удалены из workspace и не должны возвращаться
 # как "reference" backend-ы без отдельного архитектурного решения.
-REMOVED_WORKSPACE_CRATES = frozenset({"video-vulkan"})
+REMOVED_WORKSPACE_CRATES = frozenset({"video-ffmpeg", "video-vulkan"})
+
+VIDEO_FRAME_CONTRACT_ALLOWED_DEPENDENCIES = frozenset({"serde"})
+
+FFMPEG_FORBIDDEN_DEPENDENCIES = frozenset(
+    {
+        "ac-ffmpeg",
+        "ffmpeg",
+        "ffmpeg-next",
+        "ffmpeg-sys",
+        "ffmpeg-sys-next",
+        "ffmpeg-the-third",
+        "ffmpeg4-sys",
+        "ffmpeg5-sys",
+        "ffmpeg6-sys",
+        "ffmpeg7-sys",
+        "ffmpeg8-sys",
+        "libav",
+        "libav-sys",
+        "libavcodec",
+        "libavcodec-sys",
+        "libavfilter",
+        "libavfilter-sys",
+        "libavformat",
+        "libavformat-sys",
+        "libavutil",
+        "libavutil-sys",
+        "rsmpeg",
+    }
+)
 
 CONTRACT_FORBIDDEN_DEPENDENCIES = frozenset(
     {
@@ -70,12 +110,21 @@ CONTRACT_FORBIDDEN_DEPENDENCIES = frozenset(
         "egui",
         "egui-wgpu",
         "egui-winit",
+        "ffmpeg-next",
+        "ffmpeg-sys-next",
+        "gbm",
+        "gbm-sys",
         "player-core",
         "render-wgpu-shell",
         "render-wgpu-video",
+        "rustiplayer-config",
+        "rustiplayer-settings",
+        "service-direct-media",
         "service-youtube",
+        "settings-derive",
         "symphonia-demux",
         "video-vaapi",
+        "video-ffmpeg",
         "video-vulkan",
         "webm-demux",
         "wgpu",
@@ -99,6 +148,7 @@ LOW_LEVEL_FORBIDDEN_DEPENDENCIES = frozenset(
         "ash",
         "render-wgpu-shell",
         "render-wgpu-video",
+        "video-ffmpeg",
         "video-vulkan",
         "video-vaapi",
         "wgpu",
@@ -118,6 +168,7 @@ PLAYER_CORE_FORBIDDEN_DEPENDENCIES = frozenset(
         "service-youtube",
         "source-core",
         "symphonia-demux",
+        "video-ffmpeg",
         "video-vaapi",
         "video-vulkan",
         "webm-demux",
@@ -138,6 +189,7 @@ VIDEO_BACKEND_FORBIDDEN_DEPENDENCIES = frozenset(
     {
         "ash",
         "player-core",
+        "render-core",
         "render-wgpu-shell",
         "render-wgpu-video",
         "wgpu",
@@ -172,6 +224,7 @@ RENDER_WGPU_VIDEO_FORBIDDEN_DEPENDENCIES = frozenset(
         "service-youtube",
         "source-core",
         "symphonia-demux",
+        "video-ffmpeg",
         "video-vaapi",
         "video-vulkan",
         "webm-demux",
@@ -191,6 +244,37 @@ MEDIA_PREFETCH_ALLOWED_DEPENDENCIES = frozenset(
 
 KNOWN_DEBT_EDGES: dict[tuple[str, str], str] = {}
 
+PUBLIC_CONFIG_SCAN_ROOTS = (
+    "crates/app-egui",
+    "crates/config",
+    "crates/rustiplayer-settings",
+    "crates/settings-core",
+    "crates/settings-derive",
+)
+
+TEXT_SOURCE_SUFFIXES = frozenset(
+    {
+        ".rs",
+        ".toml",
+        ".ron",
+        ".json",
+        ".snap",
+    }
+)
+
+FORBIDDEN_RENDER_WGPU_VIDEO_MODULE_PARTS = (
+    "cpu_upload",
+    "cpu-upload",
+    "host_upload",
+    "host-upload",
+    "host_upload_materializer",
+    "host-upload-materializer",
+    "software_upload",
+    "software-upload",
+    "upload_materializer",
+    "upload-materializer",
+)
+
 
 class GuardrailError(RuntimeError):
     """Ошибка входных данных или запуска Cargo, а не нарушение архитектурной policy."""
@@ -203,6 +287,16 @@ class DependencyViolation:
     owner: str
     dependency: str
     rule: str
+
+
+@dataclass(frozen=True)
+class SourcePolicyViolation:
+    """Одно нарушение source/string policy guardrail."""
+
+    path: Path
+    line_number: int
+    rule: str
+    matched_text: str
 
 
 def repository_root() -> Path:
@@ -305,18 +399,36 @@ def read_string_field(source: dict[str, Any], field_name: str, context: str) -> 
 def direct_normal_dependencies(packages: dict[str, dict[str, Any]]) -> dict[str, frozenset[str]]:
     """Строит map direct normal-dependencies для каждого workspace package."""
 
+    return direct_dependencies(packages, normal_only=True)
+
+
+def direct_all_manifest_dependencies(
+    packages: dict[str, dict[str, Any]],
+) -> dict[str, frozenset[str]]:
+    """Строит map всех direct dependencies, включая dev/build dependency."""
+
+    return direct_dependencies(packages, normal_only=False)
+
+
+def direct_dependencies(
+    packages: dict[str, dict[str, Any]],
+    *,
+    normal_only: bool,
+) -> dict[str, frozenset[str]]:
+    """Строит map direct dependencies из Cargo manifest metadata."""
+
     dependency_map: dict[str, frozenset[str]] = {}
     for package_name, package in packages.items():
         dependencies = package.get("dependencies")
         if not isinstance(dependencies, list):
             raise GuardrailError(f"package `{package_name}` не содержит массив dependencies")
 
-        normal_dependency_names = {
+        direct_dependency_names = {
             read_string_field(dependency, "name", f"dependency package `{package_name}`")
             for dependency in dependencies
-            if is_normal_dependency(dependency, package_name)
+            if not normal_only or is_normal_dependency(dependency, package_name)
         }
-        dependency_map[package_name] = frozenset(normal_dependency_names)
+        dependency_map[package_name] = frozenset(direct_dependency_names)
 
     return dependency_map
 
@@ -343,10 +455,27 @@ def find_reintroduced_workspace_crates(packages: dict[str, dict[str, Any]]) -> l
 
 def find_dependency_violations(
     dependency_map: dict[str, frozenset[str]],
+    all_dependency_map: dict[str, frozenset[str]],
 ) -> list[DependencyViolation]:
     """Проверяет dependency rules из документа guardrails."""
 
     violations: list[DependencyViolation] = []
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"video-frame-contract"}),
+            VIDEO_FRAME_CONTRACT_ALLOWED_DEPENDENCIES,
+            "video-frame-contract остаётся leaf contract crate и зависит только от serde",
+        )
+    )
+    violations.extend(
+        find_forbidden_dependencies(
+            all_dependency_map,
+            frozenset(all_dependency_map),
+            FFMPEG_FORBIDDEN_DEPENDENCIES,
+            "FFmpeg/libav crates не входят в подготовительный refactor",
+        )
+    )
     violations.extend(
         find_forbidden_dependencies(
             dependency_map,
@@ -404,6 +533,147 @@ def find_dependency_violations(
         )
     )
     return sorted(violations, key=lambda violation: (violation.owner, violation.dependency))
+
+
+def find_source_policy_violations(repo_root: Path) -> list[SourcePolicyViolation]:
+    """Проверяет source-level guardrails, которые нельзя выразить Cargo graph-ом."""
+
+    violations: list[SourcePolicyViolation] = []
+    violations.extend(find_public_video_backend_option_violations(repo_root))
+    violations.extend(find_wgpu_host_upload_materializer_modules(repo_root))
+    return sorted(
+        violations,
+        key=lambda violation: (str(violation.path), violation.line_number, violation.rule),
+    )
+
+
+def find_public_video_backend_option_violations(repo_root: Path) -> list[SourcePolicyViolation]:
+    """Запрещает public config/UI options для удалённых video decode backend-ов."""
+
+    violations: list[SourcePolicyViolation] = []
+    for relative_path in iter_text_files(repo_root, PUBLIC_CONFIG_SCAN_ROOTS):
+        text = read_text_lossy(repo_root / relative_path)
+        for line_index, line in enumerate(text.splitlines(), start=1):
+            stripped_line = line.strip()
+            lowered_line = stripped_line.lower()
+
+            if "ffmpeg_sw" in lowered_line or "ffmpeg-sw" in lowered_line:
+                violations.append(
+                    SourcePolicyViolation(
+                        path=relative_path,
+                        line_number=line_index,
+                        rule="ffmpeg_sw не должен появляться как public config/UI option",
+                        matched_text=stripped_line,
+                    )
+                )
+
+            if is_allowed_removed_vulkan_video_backend_reference(relative_path, stripped_line):
+                continue
+
+            if 'preferred_backend = "vulkan"' in stripped_line:
+                violations.append(
+                    SourcePolicyViolation(
+                        path=relative_path,
+                        line_number=line_index,
+                        rule='video.preferred_backend = "vulkan" не должен быть public config value',
+                        matched_text=stripped_line,
+                    )
+                )
+
+            if "VideoBackendPreference::Vulkan" in stripped_line:
+                violations.append(
+                    SourcePolicyViolation(
+                        path=relative_path,
+                        line_number=line_index,
+                        rule="VideoBackendPreference не должен возвращать Vulkan video backend variant",
+                        matched_text=stripped_line,
+                    )
+                )
+
+            if "settings.video.preferred_backend.vulkan" in stripped_line:
+                violations.append(
+                    SourcePolicyViolation(
+                        path=relative_path,
+                        line_number=line_index,
+                        rule="settings registry/UI не должен публиковать Vulkan video backend option",
+                        matched_text=stripped_line,
+                    )
+                )
+
+    return violations
+
+
+def is_allowed_removed_vulkan_video_backend_reference(
+    relative_path: Path,
+    stripped_line: str,
+) -> bool:
+    """Оставляет только rejection diagnostics для старого удалённого значения."""
+
+    if relative_path == Path("crates/config/src/store.rs"):
+        return 'preferred_backend = "vulkan"' in stripped_line
+    if relative_path != Path("crates/config/src/schema.rs"):
+        return False
+    return (
+        'REMOVED_VULKAN_VIDEO_BACKEND_PREFERENCE: &str = "vulkan"' in stripped_line
+        or 'video.preferred_backend = "vulkan" удал' in stripped_line
+        or "REMOVED_VULKAN_VIDEO_BACKEND_PREFERENCE => Err" in stripped_line
+    )
+
+
+def find_wgpu_host_upload_materializer_modules(repo_root: Path) -> list[SourcePolicyViolation]:
+    """Запрещает добавление WGPU host-upload materializer module в текущей стадии."""
+
+    violations: list[SourcePolicyViolation] = []
+    source_root = repo_root / "crates/render-wgpu-video/src"
+    if not source_root.exists():
+        raise GuardrailError("crates/render-wgpu-video/src отсутствует")
+
+    for path in source_root.rglob("*"):
+        relative_path = path.relative_to(repo_root)
+        normalized_name = path.name.lower()
+        matched_part = next(
+            (
+                forbidden_part
+                for forbidden_part in FORBIDDEN_RENDER_WGPU_VIDEO_MODULE_PARTS
+                if forbidden_part in normalized_name
+            ),
+            None,
+        )
+        if matched_part is None:
+            continue
+        violations.append(
+            SourcePolicyViolation(
+                path=relative_path,
+                line_number=0,
+                rule="WGPU host-upload materializer module не реализуется в подготовительном refactor",
+                matched_text=matched_part,
+            )
+        )
+
+    return violations
+
+
+def iter_text_files(repo_root: Path, relative_roots: tuple[str, ...]) -> list[Path]:
+    """Возвращает текстовые файлы из ограниченных source roots."""
+
+    text_files: list[Path] = []
+    for relative_root in relative_roots:
+        root = repo_root / relative_root
+        if not root.exists():
+            raise GuardrailError(f"source root `{relative_root}` отсутствует")
+        for path in root.rglob("*"):
+            if path.is_file() and path.suffix in TEXT_SOURCE_SUFFIXES:
+                text_files.append(path.relative_to(repo_root))
+    return sorted(text_files)
+
+
+def read_text_lossy(path: Path) -> str:
+    """Читает UTF-8 source file; ошибки кодировки считаются нарушением guardrail input."""
+
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise GuardrailError(f"`{path}` не является UTF-8 текстом: {error}") from error
 
 
 def find_forbidden_dependencies(
@@ -464,6 +734,7 @@ def print_failures(
     missing_role_crates: list[str],
     reintroduced_workspace_crates: list[str],
     violations: list[DependencyViolation],
+    source_policy_violations: list[SourcePolicyViolation],
 ) -> None:
     """Печатает все найденные ошибки за один запуск."""
 
@@ -479,10 +750,20 @@ def print_failures(
             print(f"  - {crate_name}", file=sys.stderr)
 
     if violations:
-        print("Forbidden direct normal-dependencies:", file=sys.stderr)
+        print("Forbidden direct manifest dependencies:", file=sys.stderr)
         for violation in violations:
             print(
                 f"  - {violation.owner} -> {violation.dependency}: {violation.rule}",
+                file=sys.stderr,
+            )
+
+    if source_policy_violations:
+        print("Forbidden source/config policy matches:", file=sys.stderr)
+        for violation in source_policy_violations:
+            line_suffix = f":{violation.line_number}" if violation.line_number else ""
+            print(
+                f"  - {violation.path}{line_suffix}: {violation.rule}: "
+                f"{violation.matched_text}",
                 file=sys.stderr,
             )
 
@@ -496,12 +777,24 @@ def run() -> int:
     metadata = load_cargo_metadata(repo_root)
     packages = workspace_packages(metadata)
     dependency_map = direct_normal_dependencies(packages)
+    all_dependency_map = direct_all_manifest_dependencies(packages)
 
     missing_role_crates = find_missing_role_crates(packages)
     reintroduced_workspace_crates = find_reintroduced_workspace_crates(packages)
-    violations = find_dependency_violations(dependency_map)
-    if missing_role_crates or reintroduced_workspace_crates or violations:
-        print_failures(missing_role_crates, reintroduced_workspace_crates, violations)
+    violations = find_dependency_violations(dependency_map, all_dependency_map)
+    source_policy_violations = find_source_policy_violations(repo_root)
+    if (
+        missing_role_crates
+        or reintroduced_workspace_crates
+        or violations
+        or source_policy_violations
+    ):
+        print_failures(
+            missing_role_crates,
+            reintroduced_workspace_crates,
+            violations,
+            source_policy_violations,
+        )
         return 1
 
     print_success(find_known_debt_edges(dependency_map))

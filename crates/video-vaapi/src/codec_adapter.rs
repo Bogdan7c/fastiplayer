@@ -2009,7 +2009,6 @@ mod tests {
             max_height: Some(2160),
             max_fps: None,
             hdr_input: false,
-            backend: codec_core::DecodeBackendId::vaapi(),
         };
         let h265_main10 = SupportedVideoDecodeFormat {
             profile: VideoProfile::H265(H265Profile::Main10),
@@ -2697,7 +2696,6 @@ mod tests {
             max_height: None,
             max_fps: None,
             hdr_input: true,
-            backend: codec_core::DecodeBackendId::vaapi(),
         };
         let supported_h264 = SupportedVideoDecodeFormat {
             profile: VideoProfile::H264(H264Profile::High),

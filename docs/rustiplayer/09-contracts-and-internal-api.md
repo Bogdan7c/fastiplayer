@@ -178,6 +178,12 @@ contract не живёт в stream requirement: backend/provider объявля�
 Codec adapters могут уточнять requirements. Они не должны напрямую открывать
 backend, renderer, UI или source resources.
 
+Decoded frame transfer vocabulary живёт в `video-frame-contract`, а не в
+`codec-core`: `VideoFramePixelLayout` описывает layout decoded samples,
+`VideoFrameTransferPath` описывает способ передачи, а `VideoFrameContract`
+связывает их в одну проверяемую запись. Это не capability policy и не renderer
+implementation.
+
 ## Capability contract
 
 `SystemCapabilities::select_best_video_stream()` является selection gate.
@@ -185,7 +191,7 @@ backend, renderer, UI или source resources.
 Selection должна учитывать:
 
 - supported decode format;
-- backend-declared `VideoFrameTransferPath`;
+- backend-declared `SupportedVideoOutput.frame_contract`;
 - renderer-declared `VideoFrameContract`;
 - P010 readiness and hardware handle layout;
 - strict HDR metadata;
@@ -208,12 +214,31 @@ contract from `video-backend-api`; concrete backend crates must not depend on
 
 Decoded frame contract:
 
-- `format`: `Nv12` or `P010` for production paths;
-- `memory_path`: `DmaBufZeroCopy`;
+- `VideoStreamDecodeConfig.frame_contract` переносит выбранный
+  `VideoFrameContract` из capability selection в decoder backend;
+- `DecodedFrame.frame_contract` является runtime source of truth для actual
+  decoded output contract;
+- production VA-API path публикует `Nv12` or `P010` with
+  `HardwareZeroCopy { DmaBuf { image_layout } }`;
+- `HostPlanarFrameDescriptor` и `SoftwareHostUpload` существуют как neutral
+  future boundary, но current WGPU production path их не materialize-ит;
 - `resource_handle`: opaque handle for renderer-neutral resource lookup, not a
   CPU image or GPU texture view;
 - `color`: resolved `VideoColorMetadata`;
 - diagnostics travel with the frame.
+
+`video-core` владеет resource descriptor types и validation:
+`validate_self_consistency()` проверяет локальные поля decoded frame, а
+descriptor-vs-contract validation сверяет DMA-BUF layout или host-planar planes
+с explicit dimensions и `VideoFrameContract`. Эти проверки не импортируют WGPU,
+VA-API или FFmpeg.
+
+`player-core` не выбирает transfer path и не читает host planar bytes. Его роль:
+получить выбранный `VideoFrameContract`, передать его через
+`VideoStreamDecodeConfig.frame_contract`, хранить expected contract текущего
+stream-а и сравнить actual `DecodedFrame.frame_contract` с expected перед
+queueing/presentation. Mismatch остаётся typed runtime error; renderer
+compatibility решается capability/render слоями.
 
 `PresentFrameResourceProvider` сообщает playback-facing статусы
 `Ready`/`Busy`/`Missing`/`Fatal` и renderer-facing duplicated
@@ -233,8 +258,12 @@ Allowed constructors:
 - `from_decoded_nv12`;
 - `from_decoded_p010`.
 
-Оба конструктора отвергают non-zero-copy memory paths. Metadata/plane mismatch
-является render boundary error.
+Оба конструктора принимают только matching `DecodedFrame.frame_contract`:
+NV12/P010 plus `HardwareZeroCopy { DmaBuf { image_layout } }`. HostPlanar/
+SoftwareHostUpload сейчас возвращает typed `Unsupported`, потому что WGPU
+host-upload materializer ещё не реализован. Metadata/plane mismatch является
+render boundary error; CPU fallback/readback/upload в текущем VAAPI DMA-BUF flow
+не добавляется.
 
 `RenderDiagnostics` renderer-neutral: UI может показывать его без GPU handles.
 
