@@ -43,7 +43,7 @@ mod tests {
         assert!(separate_layer_capabilities.supports_p010_rendering());
         assert!(separate_layer_capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
         assert!(separate_layer_capabilities.supports_frame_contract(
-            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers)
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers)
         ));
         assert!(
             separate_layer_capabilities
@@ -75,7 +75,7 @@ mod tests {
         assert!(capabilities.supports_frame_format(VideoFramePixelLayout::Nv12));
         assert!(
             capabilities.supports_frame_contract(VideoFrameContract::dma_buf_nv12(
-                DmaBufImageLayout::SeparateLayers
+                DmaBufImageLayout::ComposedLayers
             ))
         );
         assert!(!capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar8()));

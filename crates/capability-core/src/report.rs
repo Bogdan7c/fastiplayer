@@ -551,7 +551,7 @@ mod tests {
                         ChromaSubsampling::Yuv420,
                         false,
                     ),
-                    VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+                    VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
                 ),
                 output(
                     vp9_format(
@@ -585,7 +585,7 @@ mod tests {
                     ChromaSubsampling::Yuv420,
                     false,
                 ),
-                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
             )]),
         }));
         scanner.register_render_capabilities(RenderCapabilities::wgpu_nv12(Some(4096)));

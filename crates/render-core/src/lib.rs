@@ -1865,7 +1865,7 @@ impl RenderCapabilities {
             backend: RenderBackendKind::Wgpu,
             display_name: "WGPU NV12 renderer".to_string(),
             supported_frame_contracts: vec![VideoFrameContract::dma_buf_nv12(
-                DmaBufImageLayout::SeparateLayers,
+                DmaBufImageLayout::ComposedLayers,
             )],
             p010_render_readiness: P010RenderReadiness::Unavailable,
             supported_hdr_to_sdr_operators: Vec::new(),
@@ -1898,7 +1898,7 @@ impl RenderCapabilities {
         supported_p010_dma_buf_image_layouts: Vec<DmaBufImageLayout>,
     ) -> Self {
         let mut supported_frame_contracts = vec![VideoFrameContract::dma_buf_nv12(
-            DmaBufImageLayout::SeparateLayers,
+            DmaBufImageLayout::ComposedLayers,
         )];
         supported_frame_contracts.extend(
             supported_p010_dma_buf_image_layouts
@@ -2634,7 +2634,7 @@ mod tests {
         assert!(capabilities.supports_frame_format(VideoFramePixelLayout::Nv12));
         assert!(
             capabilities.supports_frame_contract(VideoFrameContract::dma_buf_nv12(
-                DmaBufImageLayout::SeparateLayers
+                DmaBufImageLayout::ComposedLayers
             ))
         );
         assert!(!capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar8()));
@@ -2659,7 +2659,7 @@ mod tests {
         assert!(
             capabilities
                 .summary_text()
-                .contains("NV12 via hardware zero-copy via DMA-BUF (separate DMA-BUF layers)")
+                .contains("NV12 via hardware zero-copy via DMA-BUF (composed DMA-BUF layers)")
         );
         assert!(!capabilities.summary_text().contains("software host upload"));
         assert!(!capabilities.summary_text().contains("HDR supported"));

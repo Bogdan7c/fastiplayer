@@ -969,7 +969,7 @@ mod tests {
     ) -> Option<SupportedVideoOutput> {
         let frame_contract = match (decode_format.bit_depth, decode_format.chroma) {
             (BitDepth::Eight, ChromaSubsampling::Yuv420) => {
-                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers)
+                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers)
             }
             (BitDepth::Ten, ChromaSubsampling::Yuv420) => {
                 VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers)
@@ -1251,7 +1251,7 @@ mod tests {
             Some(VideoCapabilityRejection::UnsupportedBackendFrameTransfer {
                 required_frame_contract,
                 ..
-            }) if *required_frame_contract == VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers)
+            }) if *required_frame_contract == VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers)
         ));
     }
 

@@ -666,7 +666,7 @@ mod tests {
         let frame_contract = match format {
             video_core::DecodedPixelFormat::Nv12 => {
                 video_frame_contract::VideoFrameContract::dma_buf_nv12(
-                    video_frame_contract::DmaBufImageLayout::SeparateLayers,
+                    video_frame_contract::DmaBufImageLayout::ComposedLayers,
                 )
             }
             video_core::DecodedPixelFormat::P010 => {
@@ -1009,7 +1009,7 @@ mod tests {
                 hdr_input: false,
             },
             frame_contract: video_frame_contract::VideoFrameContract::dma_buf_nv12(
-                video_frame_contract::DmaBufImageLayout::SeparateLayers,
+                video_frame_contract::DmaBufImageLayout::ComposedLayers,
             ),
         };
 

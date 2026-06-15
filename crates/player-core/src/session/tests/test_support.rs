@@ -1441,7 +1441,7 @@ pub(super) fn decoded_frame_for_tests(pts: Duration, handle: u64) -> video_core:
         generation: 0,
         pts,
         frame_contract: video_frame_contract::VideoFrameContract::dma_buf_nv12(
-            video_frame_contract::DmaBufImageLayout::SeparateLayers,
+            video_frame_contract::DmaBufImageLayout::ComposedLayers,
         ),
         width: 640,
         height: 360,
@@ -1757,7 +1757,7 @@ pub(super) fn capabilities_with_vp9_profile0() -> SystemCapabilities {
             max_fps: None,
             hdr_input: false,
         },
-        frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+        frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
     };
 
     SystemCapabilities {

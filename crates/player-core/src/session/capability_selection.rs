@@ -316,7 +316,7 @@ fn fallback_frame_contract_for_unprobed_requirement(
         Some(video_frame_contract::VideoFramePixelLayout::P010) => {
             VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers)
         }
-        _ => VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+        _ => VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
     }
 }
 

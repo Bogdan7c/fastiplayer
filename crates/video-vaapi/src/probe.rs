@@ -214,7 +214,7 @@ fn vaapi_output_contract_for_format(
         },
     ) {
         VideoFramePixelLayout::Nv12 => Some(VideoFrameContract::dma_buf_nv12(
-            DmaBufImageLayout::SeparateLayers,
+            DmaBufImageLayout::ComposedLayers,
         )),
         VideoFramePixelLayout::P010 => Some(VideoFrameContract::dma_buf_p010(
             DmaBufImageLayout::SeparateLayers,
@@ -816,7 +816,7 @@ mod tests {
         assert_eq!(
             vaapi_output_contract_for_format(&formats[0]),
             Some(VideoFrameContract::dma_buf_nv12(
-                DmaBufImageLayout::SeparateLayers
+                DmaBufImageLayout::ComposedLayers
             ))
         );
     }

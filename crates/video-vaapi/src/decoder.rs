@@ -1501,7 +1501,7 @@ impl VaapiVideoDecoder {
             p010_boundary_verified_logged: false,
             backend_name,
             expected_frame_contract: VideoFrameContract::dma_buf_nv12(
-                DmaBufImageLayout::SeparateLayers,
+                DmaBufImageLayout::ComposedLayers,
             ),
             display_orientation: VideoDisplayOrientation::Identity,
             preroll_output_floor: PrerollOutputFloorState::default(),
