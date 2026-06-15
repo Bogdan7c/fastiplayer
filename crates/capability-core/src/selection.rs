@@ -313,17 +313,6 @@ impl SystemCapabilities {
             .map(|output| &output.decode_format)
     }
 
-    /// Ищет renderer backend, который сможет показать stream requirement.
-    #[must_use]
-    pub fn find_supported_render_capability(
-        &self,
-        requirement: &VideoDecodeRequirement,
-    ) -> Option<&RenderCapabilities> {
-        self.render_backends
-            .iter()
-            .find(|capabilities| capabilities.supports_decode_requirement(requirement))
-    }
-
     /// Возвращает raw provider outputs, которые закрывают codec-level stream requirement.
     fn matching_raw_video_outputs(
         &self,

@@ -2010,19 +2010,6 @@ impl RenderCapabilities {
                 .contains(&settings.operator)
     }
 
-    /// Проверяет, сможет ли renderer показать stream с указанными требованиями.
-    #[must_use]
-    pub fn supports_decode_requirement(&self, requirement: &VideoDecodeRequirement) -> bool {
-        let Some(frame_contract) = dma_buf_frame_contract_from_decode_requirement(
-            requirement,
-            DmaBufImageLayout::SeparateLayers,
-        ) else {
-            return false;
-        };
-
-        self.supports_video_output(requirement, frame_contract)
-    }
-
     /// Проверяет stream-level renderability для уже выбранного frame contract-а.
     #[must_use]
     pub fn supports_video_output(
@@ -2136,20 +2123,6 @@ impl RenderCapabilities {
                 .map(|size| size.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         )
-    }
-}
-
-/// Выводит current DMA-BUF contract из stream requirement и выбранного layout-а.
-fn dma_buf_frame_contract_from_decode_requirement(
-    requirement: &VideoDecodeRequirement,
-    image_layout: DmaBufImageLayout,
-) -> Option<VideoFrameContract> {
-    match video_frame_pixel_layout_from_decode_requirement(requirement)? {
-        VideoFramePixelLayout::Nv12 => Some(VideoFrameContract::dma_buf_nv12(image_layout)),
-        VideoFramePixelLayout::P010 => Some(VideoFrameContract::dma_buf_p010(image_layout)),
-        VideoFramePixelLayout::Yuv420Planar8
-        | VideoFramePixelLayout::Yuv420Planar10Le
-        | VideoFramePixelLayout::Rgba8 => None,
     }
 }
 
