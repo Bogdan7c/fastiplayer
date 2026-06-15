@@ -2,11 +2,11 @@ use capability_core::{
     SupportedVideoOutput, SystemCapabilities, UnsupportedVideoRequirement, VideoCapabilityRejection,
 };
 use codec_core::{
-    VideoCodec, VideoDecodeRequirement, VideoMetadataSource,
+    BitDepth, ChromaSubsampling, VideoCodec, VideoDecodeRequirement, VideoMetadataSource,
     parse_avc_decoder_configuration_record, parse_hevc_decoder_configuration_record,
     resolve_video_metadata,
     unsupported_requirement_can_be_refined_by_packet_probe as codec_requirement_can_be_refined_by_packet_probe,
-    video_frame_pixel_layout_from_decode_requirement, video_requirement_needs_packet_refinement,
+    video_requirement_needs_packet_refinement,
 };
 use media_core::{TrackInfo, TrackKind};
 use tracing::info;
@@ -309,14 +309,29 @@ fn video_stream_decode_config_from_track(
 }
 
 /// Возвращает explicit fallback contract только для no-capability legacy path.
+///
+/// Bit depth у VP9/HEVC часто неизвестен из container-а и приходит только из
+/// bitstream probe. Для HDR/PQ 4:2:0 потоков это всегда 10-bit P010, поэтому
+/// нельзя по умолчанию падать в NV12: иначе decoder сконфигурируется под NV12
+/// и упадёт на реальном P010 DMA-BUF export-е до того, как refinement уточнит
+/// bit depth.
 fn fallback_frame_contract_for_unprobed_requirement(
     requirement: &VideoDecodeRequirement,
 ) -> VideoFrameContract {
-    match video_frame_pixel_layout_from_decode_requirement(requirement) {
-        Some(video_frame_contract::VideoFramePixelLayout::P010) => {
-            VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers)
-        }
-        _ => VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+    let chroma_allows_p010 = !matches!(
+        requirement.chroma,
+        Some(ChromaSubsampling::Yuv422 | ChromaSubsampling::Yuv444)
+    );
+    let prefers_p010 = chroma_allows_p010
+        && match requirement.bit_depth {
+            Some(bit_depth) => bit_depth == BitDepth::Ten,
+            None => requirement.requires_hdr_processing(),
+        };
+
+    if prefers_p010 {
+        VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers)
+    } else {
+        VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers)
     }
 }
 
@@ -542,4 +557,64 @@ fn player_error_from_unsupported_requirement(error: UnsupportedVideoRequirement)
     };
 
     PlayerError::new(kind, error.user_message())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codec_core::{
+        ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction, VideoColorMetadata,
+    };
+    use video_frame_contract::VideoFramePixelLayout;
+
+    fn bt2020_pq_container() -> VideoColorMetadata {
+        VideoColorMetadata::container(
+            ColorRange::Limited,
+            MatrixCoefficients::Bt2020,
+            ColorPrimaries::Bt2020,
+            TransferFunction::Pq,
+            None,
+        )
+    }
+
+    #[test]
+    fn hdr_unprobed_requirement_falls_back_to_p010() {
+        let requirement =
+            VideoDecodeRequirement::new(VideoCodec::Vp9).with_color(bt2020_pq_container());
+
+        let contract = fallback_frame_contract_for_unprobed_requirement(&requirement);
+
+        assert_eq!(contract.pixel_layout, VideoFramePixelLayout::P010);
+    }
+
+    #[test]
+    fn sdr_unprobed_requirement_falls_back_to_nv12() {
+        let requirement = VideoDecodeRequirement::new(VideoCodec::Vp9);
+
+        let contract = fallback_frame_contract_for_unprobed_requirement(&requirement);
+
+        assert_eq!(contract.pixel_layout, VideoFramePixelLayout::Nv12);
+    }
+
+    #[test]
+    fn explicit_ten_bit_requirement_falls_back_to_p010() {
+        let requirement = VideoDecodeRequirement::new(VideoCodec::H265)
+            .with_bit_depth(BitDepth::Ten)
+            .with_chroma(ChromaSubsampling::Yuv420);
+
+        let contract = fallback_frame_contract_for_unprobed_requirement(&requirement);
+
+        assert_eq!(contract.pixel_layout, VideoFramePixelLayout::P010);
+    }
+
+    #[test]
+    fn explicit_eight_bit_requirement_falls_back_to_nv12() {
+        let requirement = VideoDecodeRequirement::new(VideoCodec::H265)
+            .with_bit_depth(BitDepth::Eight)
+            .with_chroma(ChromaSubsampling::Yuv420);
+
+        let contract = fallback_frame_contract_for_unprobed_requirement(&requirement);
+
+        assert_eq!(contract.pixel_layout, VideoFramePixelLayout::Nv12);
+    }
 }
