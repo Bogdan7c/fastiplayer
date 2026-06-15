@@ -234,6 +234,12 @@ impl PlayerSession {
     }
 
     /// Уточняет active video requirement после bitstream probe.
+    ///
+    /// Если refined output contract отличается от текущего (например, поток
+    /// оказался 10-bit P010, а стартовый fallback был NV12), decoder
+    /// переинициализируется под новый contract ещё до отправки первого packet-а;
+    /// иначе он продолжил бы ожидать старый contract и упал бы на mismatch при
+    /// первом DMA-BUF export-е.
     pub(super) fn refine_active_video_requirement(
         &mut self,
         requirement: VideoDecodeRequirement,
@@ -243,6 +249,29 @@ impl PlayerSession {
             .as_ref()
             .map(|output| output.frame_contract)
             .unwrap_or_else(|| fallback_frame_contract_for_unprobed_requirement(&requirement));
+
+        let contract_changed = match self.pipeline.active_video_frame_contract() {
+            Some(active_contract) => active_contract != frame_contract,
+            None => true,
+        };
+
+        if contract_changed {
+            if let Some(track_id) = self.pipeline.selected_video_track_id() {
+                let Some(track) = self
+                    .pipeline
+                    .tracks()
+                    .iter()
+                    .find(|track| track.id == track_id && track.kind == TrackKind::Video)
+                else {
+                    return Err(PlayerError::new(
+                        PlayerErrorKind::InvalidCommand,
+                        format!("Active video track `{track_id}` отсутствует в текущем media"),
+                    ));
+                };
+                self.configure_decoder_stream_for_track(track, &requirement, frame_contract)?;
+            }
+        }
+
         self.pipeline
             .set_active_video_selection(requirement, frame_contract);
         Ok(())

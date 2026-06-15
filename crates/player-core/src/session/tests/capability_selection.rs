@@ -405,6 +405,62 @@ fn active_video_requirement_refinement_preserves_selection_and_rejects_before_mu
 }
 
 #[test]
+fn refinement_reconfigures_decoder_when_output_contract_changes() {
+    let mut session = PlayerSession::new();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    session
+        .pipeline
+        .set_video_decoder_thread(fake_decoder.clone());
+
+    let tracks = vec![vp9_track_with_profile(1, Vp9Profile::Profile0)];
+    install_tracks_for_capability_selection(&mut session, tracks.clone());
+
+    session
+        .select_default_video_track(&tracks, "fake media содержит video track")
+        .expect("VP9 track без bit_depth должен выбраться через NV12 fallback");
+
+    assert_eq!(
+        session
+            .pipeline
+            .active_video_frame_contract()
+            .map(|contract| contract.pixel_layout),
+        Some(video_frame_contract::VideoFramePixelLayout::Nv12)
+    );
+
+    let refined_requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
+        .with_profile(VideoProfile::Vp9(Vp9Profile::Profile2))
+        .with_bit_depth(BitDepth::Ten)
+        .with_chroma(ChromaSubsampling::Yuv420)
+        .with_color(bt2020_pq_limited());
+
+    session
+        .refine_active_video_requirement(refined_requirement)
+        .expect("10-bit refinement должен переконфигурировать decoder под P010");
+
+    assert_eq!(
+        session
+            .pipeline
+            .active_video_frame_contract()
+            .map(|contract| contract.pixel_layout),
+        Some(video_frame_contract::VideoFramePixelLayout::P010)
+    );
+
+    let configured_contracts: Vec<_> = fake_decoder
+        .configured_streams()
+        .iter()
+        .map(|config| config.frame_contract.pixel_layout)
+        .collect();
+    assert_eq!(
+        configured_contracts,
+        vec![
+            video_frame_contract::VideoFramePixelLayout::Nv12,
+            video_frame_contract::VideoFramePixelLayout::P010,
+        ],
+        "decoder должен быть переинициализирован под refined P010 contract"
+    );
+}
+
+#[test]
 fn deferred_bitstream_selection_preserves_selected_track() {
     let mut session = PlayerSession::new();
     session.set_system_capabilities(capabilities_with_phase10_vp9_profile2_hdr());
