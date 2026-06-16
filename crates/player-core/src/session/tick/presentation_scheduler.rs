@@ -84,6 +84,11 @@ pub(super) fn video_present_queue_target(tick_config: &PlayerTickConfig) -> usiz
         .min(video_present_queue_limit(tick_config))
 }
 
+/// Возвращает bounded capacity software decoded-frame ready queue.
+pub(super) fn host_upload_ready_queue_capacity(tick_config: &PlayerTickConfig) -> usize {
+    tick_config.decoder_ready_queue_frames.max(1)
+}
+
 /// Проверяет, что seek transaction сейчас должен продвигаться независимо от обычных present slots.
 pub(super) fn seek_admission_active(session: &PlayerSession) -> bool {
     session.has_active_seek_commit()
@@ -152,6 +157,7 @@ pub(super) fn video_decoder_io_limits(
         max_frames_to_drain,
         max_packets_to_send,
         video_present_queue_limit(tick_config),
+        host_upload_ready_queue_capacity(tick_config),
         video_decoder_texture_limits(tick_config),
         video_decoder_decode_ahead_limits(tick_config, decode_ahead_limit),
     )
@@ -793,7 +799,11 @@ pub(super) fn has_texture_capacity_for_catch_up(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> bool {
-    if !session.pipeline.can_send_video_decode_packets() {
+    if session
+        .pipeline
+        .video_decoder_send_backpressure(host_upload_ready_queue_capacity(tick_config))
+        .is_some()
+    {
         return false;
     }
 

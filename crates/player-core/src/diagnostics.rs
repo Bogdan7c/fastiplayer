@@ -134,6 +134,15 @@ pub enum PipelinePauseReason {
     /// Bounded packet channel decoder thread-а заполнен.
     DecoderPacketQueueFull,
 
+    /// Bounded control/release channel decoder thread-а заполнен.
+    DecoderControlQueueFull,
+
+    /// Software host-upload ready frame queue заполнена.
+    HostUploadReadyQueueFull,
+
+    /// Software host-upload slots заняты и ждут release.
+    HostUploadSlotsExhausted,
+
     /// Decoder/presentation queue не дала кадр к текущему render request.
     DecoderStarvation,
 
@@ -381,6 +390,15 @@ pub struct PipelinePauseCountersSnapshot {
 
     /// Decoder packet channel full pauses.
     pub decoder_packet_queue_full: u64,
+
+    /// Decoder control/release channel full pauses.
+    pub decoder_control_queue_full: u64,
+
+    /// Software host-upload ready frame queue full pauses.
+    pub host_upload_ready_queue_full: u64,
+
+    /// Software host-upload slots exhausted pauses.
+    pub host_upload_slots_exhausted: u64,
 
     /// Decoder starvation pauses.
     pub decoder_starvation: u64,
@@ -1171,6 +1189,27 @@ impl PlaybackDiagnostics {
                     .snapshot
                     .pauses
                     .decoder_packet_queue_full
+                    .saturating_add(1);
+            }
+            PipelinePauseReason::DecoderControlQueueFull => {
+                self.snapshot.pauses.decoder_control_queue_full = self
+                    .snapshot
+                    .pauses
+                    .decoder_control_queue_full
+                    .saturating_add(1);
+            }
+            PipelinePauseReason::HostUploadReadyQueueFull => {
+                self.snapshot.pauses.host_upload_ready_queue_full = self
+                    .snapshot
+                    .pauses
+                    .host_upload_ready_queue_full
+                    .saturating_add(1);
+            }
+            PipelinePauseReason::HostUploadSlotsExhausted => {
+                self.snapshot.pauses.host_upload_slots_exhausted = self
+                    .snapshot
+                    .pauses
+                    .host_upload_slots_exhausted
                     .saturating_add(1);
             }
             PipelinePauseReason::DecoderStarvation => {

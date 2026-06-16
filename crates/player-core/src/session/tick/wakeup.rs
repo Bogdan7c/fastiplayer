@@ -17,15 +17,18 @@ use super::{
     },
     presentation_scheduler::{
         front_frame_ready_for_scheduler, front_frame_scheduler_delay, front_frame_timing,
-        normal_present_queue_blocks_video_admission, seek_admission_active,
-        video_decode_ahead_limit, video_decode_ahead_target, video_decoder_decode_ahead_limits,
-        video_decoder_texture_limits, video_present_queue_target,
+        host_upload_ready_queue_capacity, normal_present_queue_blocks_video_admission,
+        seek_admission_active, video_decode_ahead_limit, video_decode_ahead_target,
+        video_decoder_decode_ahead_limits, video_decoder_texture_limits,
+        video_present_queue_target,
     },
     video_decoder_io::can_send_video_packet_to_decoder,
 };
 use crate::{
     PendingVideoPacket, PlaybackState, WorkerFrameTimingSnapshot, WorkerWakeupDiagnosticsSnapshot,
-    WorkerWakeupReason, pipeline::VideoDecoderActivityStatus, session::PlayerSession,
+    WorkerWakeupReason,
+    pipeline::{VideoDecoderActivityStatus, VideoDecoderSendBackpressure},
+    session::PlayerSession,
     session::audio_runtime::sanitize_audio_high_water_mark,
 };
 
@@ -355,8 +358,11 @@ pub(super) fn pending_video_work_available(
         return false;
     }
 
-    if !session.pipeline.can_send_video_decode_packets() {
-        return true;
+    if let Some(backpressure) = session
+        .pipeline
+        .video_decoder_send_backpressure(host_upload_ready_queue_capacity(tick_config))
+    {
+        return matches!(backpressure, VideoDecoderSendBackpressure::AbsentDecoder);
     }
 
     if normal_present_queue_blocks_video_admission(session, tick_config) {
@@ -373,6 +379,7 @@ pub(super) fn pending_video_work_available(
         session,
         video_decoder_texture_limits(tick_config),
         video_decoder_decode_ahead_limits(tick_config, decode_ahead_limit),
+        host_upload_ready_queue_capacity(tick_config),
         session.decoder_output_floor_applies_to_seek_preroll_packet(packet.pts, packet.generation),
         packet.pts,
     )

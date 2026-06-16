@@ -17,6 +17,7 @@ use codec_core::{
 };
 use media_core::{PacketKeyframe, TrackId};
 use tracing::{debug, trace, warn};
+use video_core::HostUploadBackpressureReason;
 
 use super::{
     PlayerTickResult, PlayerVideoDropReason,
@@ -29,7 +30,7 @@ use super::{
 };
 use crate::{
     DecodeSendError, DecodeThreadError, PipelinePauseReason, PlaybackPipeline, PlayerDecodePacket,
-    PlayerError, PlayerErrorKind, session::PlayerSession,
+    PlayerError, PlayerErrorKind, pipeline::VideoDecoderSendBackpressure, session::PlayerSession,
 };
 
 /// Typed лимит texture/surface pressure для decoder admission.
@@ -85,6 +86,9 @@ pub(super) struct VideoDecoderIoLimits {
     /// Безопасный размер presentation queue для admission/drop policy.
     present_queue_limit: usize,
 
+    /// Bounded размер software host-upload ready queue.
+    host_upload_ready_queue_capacity: usize,
+
     /// Texture/surface pressure limits.
     texture: VideoDecoderTextureLimits,
 
@@ -98,6 +102,7 @@ impl VideoDecoderIoLimits {
         max_frames_to_drain: usize,
         max_packets_to_send: usize,
         present_queue_limit: usize,
+        host_upload_ready_queue_capacity: usize,
         texture: VideoDecoderTextureLimits,
         decode_ahead: VideoDecoderDecodeAheadLimits,
     ) -> Self {
@@ -105,6 +110,7 @@ impl VideoDecoderIoLimits {
             max_frames_to_drain,
             max_packets_to_send,
             present_queue_limit,
+            host_upload_ready_queue_capacity,
             texture,
             decode_ahead,
         }
@@ -190,9 +196,18 @@ pub(super) fn can_send_video_packet_to_decoder(
     session: &PlayerSession,
     texture_limits: VideoDecoderTextureLimits,
     decode_ahead_limits: VideoDecoderDecodeAheadLimits,
+    host_upload_ready_queue_capacity: usize,
     bypass_texture_capacity: bool,
     packet_pts: Duration,
 ) -> bool {
+    if session
+        .pipeline
+        .video_decoder_send_backpressure(host_upload_ready_queue_capacity)
+        .is_some()
+    {
+        return false;
+    }
+
     if !bypass_texture_capacity && !has_texture_capacity_for_decode(session, texture_limits) {
         return false;
     }
@@ -217,6 +232,39 @@ pub(super) fn has_texture_capacity_for_decode(
     texture_limits: VideoDecoderTextureLimits,
 ) -> bool {
     texture_capacity_backpressure_reason(session, texture_limits).is_none()
+}
+
+/// Диагностирует neutral decoder send backpressure без доступа к concrete backend-у.
+pub(super) fn decoder_send_backpressure_pause_reason(
+    session: &PlayerSession,
+    host_upload_ready_queue_capacity: usize,
+) -> Option<PipelinePauseReason> {
+    match session
+        .pipeline
+        .video_decoder_send_backpressure(host_upload_ready_queue_capacity)?
+    {
+        VideoDecoderSendBackpressure::AbsentDecoder => None,
+        VideoDecoderSendBackpressure::HostUpload(reason) => {
+            Some(host_upload_backpressure_pause_reason(reason))
+        }
+        VideoDecoderSendBackpressure::DecoderControl(_) => {
+            Some(PipelinePauseReason::DecoderControlQueueFull)
+        }
+    }
+}
+
+/// Маппит software host-upload pressure в player diagnostics, не смешивая причины.
+fn host_upload_backpressure_pause_reason(
+    reason: HostUploadBackpressureReason,
+) -> PipelinePauseReason {
+    match reason {
+        HostUploadBackpressureReason::ReadyQueueFull { .. } => {
+            PipelinePauseReason::HostUploadReadyQueueFull
+        }
+        HostUploadBackpressureReason::UploadSlotsExhausted { .. } => {
+            PipelinePauseReason::HostUploadSlotsExhausted
+        }
+    }
 }
 
 /// Диагностирует, почему texture/surface pool не даёт отправить новый packet.
@@ -423,8 +471,11 @@ pub(super) fn send_pending_video_packets_to_decoder(
     limits: VideoDecoderIoLimits,
     catch_up_deadline: Option<Instant>,
 ) -> usize {
-    if !session.pipeline.can_send_video_decode_packets() {
+    if let Some(reason) =
+        decoder_send_backpressure_pause_reason(session, limits.host_upload_ready_queue_capacity)
+    {
         session.note_decoder_backpressure_for_seek_preroll_diagnostics();
+        record_pipeline_pause(session, tick_result, reason);
         return 0;
     }
 
@@ -497,6 +548,14 @@ pub(super) fn send_pending_video_packets_to_decoder(
             break;
         }
 
+        if let Some(reason) =
+            decoder_send_backpressure_pause_reason(session, limits.host_upload_ready_queue_capacity)
+        {
+            session.note_decoder_backpressure_for_seek_preroll_diagnostics();
+            record_pipeline_pause(session, tick_result, reason);
+            break;
+        }
+
         let packet_bypasses_texture_capacity = session
             .decoder_output_floor_applies_to_seek_preroll_packet(packet_pts, packet_generation);
         if !packet_bypasses_texture_capacity
@@ -514,6 +573,7 @@ pub(super) fn send_pending_video_packets_to_decoder(
             session,
             limits.texture,
             limits.decode_ahead,
+            limits.host_upload_ready_queue_capacity,
             packet_bypasses_texture_capacity,
             packet_pts,
         ) {

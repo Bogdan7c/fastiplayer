@@ -598,6 +598,10 @@ pub(crate) fn validate_runtime_tick_config(tick_config: &PlayerTickConfig) -> Re
         PlayerRuntimeSettingId::VideoDecoderPacketChannelFrames,
     )?;
     ensure_non_zero(
+        tick_config.decoder_ready_queue_frames,
+        PlayerRuntimeSettingId::VideoDecoderReadyQueueFrames,
+    )?;
+    ensure_non_zero(
         tick_config.max_video_packets_sent_per_tick,
         PlayerRuntimeSettingId::VideoSchedulerVideoPacketsPerTick,
     )?;

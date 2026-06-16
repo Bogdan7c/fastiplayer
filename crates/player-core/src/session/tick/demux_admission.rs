@@ -12,10 +12,14 @@ use tracing::{debug, trace, warn};
 use super::{
     PlayerTickConfig, PlayerTickResult,
     presentation_scheduler::{
-        available_video_present_slots, seek_admission_active, video_decoder_texture_limits,
+        available_video_present_slots, host_upload_ready_queue_capacity, seek_admission_active,
+        video_decoder_texture_limits,
     },
     record_pipeline_pause,
-    video_decoder_io::{has_texture_capacity_for_decode, texture_capacity_backpressure_reason},
+    video_decoder_io::{
+        decoder_send_backpressure_pause_reason, has_texture_capacity_for_decode,
+        texture_capacity_backpressure_reason,
+    },
 };
 use crate::{
     PendingAudioPacket, PendingVideoPacket, PipelineLatencyStage, PipelinePauseReason, PlayerError,
@@ -487,6 +491,15 @@ pub(super) fn can_read_next_demux_packet_with_audio_priority(
         return false;
     }
 
+    if decoder_send_backpressure_pause_reason(
+        session,
+        host_upload_ready_queue_capacity(tick_config),
+    )
+    .is_some()
+    {
+        return false;
+    }
+
     let pending_video_limit = if seek_fast_preroll {
         seek_preroll_pending_video_limit(tick_config)
     } else {
@@ -520,6 +533,13 @@ pub(super) fn demux_backpressure_reason(
     if let Some(reason) =
         texture_capacity_backpressure_reason(session, video_decoder_texture_limits(tick_config))
     {
+        return Some(reason);
+    }
+
+    if let Some(reason) = decoder_send_backpressure_pause_reason(
+        session,
+        host_upload_ready_queue_capacity(tick_config),
+    ) {
         return Some(reason);
     }
 

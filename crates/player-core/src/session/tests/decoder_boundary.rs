@@ -54,6 +54,10 @@ fn playback_pipeline_decoder_boundary_absent_thread_is_noop() {
         HostUploadResourceSnapshotStatus::AbsentDecoder
     );
     assert!(matches!(
+        pipeline.video_decoder_send_backpressure(4),
+        Some(crate::pipeline::VideoDecoderSendBackpressure::AbsentDecoder)
+    ));
+    assert!(matches!(
         pipeline.video_decoder_activity_status(),
         crate::pipeline::VideoDecoderActivityStatus::AbsentDecoder
     ));
@@ -418,6 +422,7 @@ fn playback_pipeline_decoder_boundary_returns_typed_absent_host_upload_resource(
         pipeline.host_upload_resource_snapshot(),
         HostUploadResourceSnapshotStatus::AbsentResource
     );
+    assert_eq!(pipeline.video_decoder_send_backpressure(4), None);
 }
 
 #[test]
@@ -438,6 +443,7 @@ fn playback_pipeline_decoder_boundary_forwards_fake_software_host_upload_snapsho
         pipeline.host_upload_resource_snapshot(),
         HostUploadResourceSnapshotStatus::Available(snapshot)
     );
+    assert_eq!(pipeline.video_decoder_send_backpressure(4), None);
     assert!(pipeline.video_decoder_resource_snapshot().is_none());
 }
 

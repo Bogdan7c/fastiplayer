@@ -12,8 +12,8 @@ use media_core::{
     TrackTimestamp,
 };
 use video_core::{
-    HostUploadResourceSnapshotStatus, VideoDecoderActivitySnapshot,
-    VideoDecoderActivityUnavailableReason,
+    HostUploadBackpressureReason, HostUploadResourceSnapshotStatus, VideoDecoderActivitySnapshot,
+    VideoDecoderActivityUnavailableReason, VideoDecoderControlBackpressureReason,
 };
 use video_frame_contract::VideoFrameContract;
 #[cfg(test)]
@@ -66,6 +66,19 @@ pub(crate) enum VideoTextureReleaseEffect {
 
     /// Активных render leases нет, texture handle можно сразу вернуть decoder-у.
     ReleaseNow,
+}
+
+/// Typed причина, по которой tick не должен отправлять новый packet в decoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VideoDecoderSendBackpressure {
+    /// Decoder ещё не установлен в playback pipeline.
+    AbsentDecoder,
+
+    /// Software host-upload backend временно не может принять ещё один decoded host frame.
+    HostUpload(HostUploadBackpressureReason),
+
+    /// Control/release channel decoder-а заполнен и должен быть обработан перед новым input.
+    DecoderControl(VideoDecoderControlBackpressureReason),
 }
 
 /// Status neutral decoder-activity boundary-а, который скрывает decoder handle storage.
@@ -1357,9 +1370,43 @@ impl PlaybackPipeline {
     ///
     /// Tick-код использует этот метод как send-side readiness и не зависит от
     /// того, каким полем pipeline владеет активным decoder backend-ом.
+    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn can_send_video_decode_packets(&self) -> bool {
-        self.has_active_video_decoder()
+        self.video_decoder_send_backpressure(usize::MAX).is_none()
+    }
+
+    /// Возвращает typed причину send-side backpressure без доступа к backend internals.
+    ///
+    /// `UnsupportedBackend` у host-upload snapshot-а означает hardware/old backend и
+    /// оставляет старую VA-API surface accounting ветку активной. `AbsentResource`
+    /// остаётся отличимым через `host_upload_resource_snapshot()` и не маскируется
+    /// под свободные upload slots.
+    #[must_use]
+    pub(crate) fn video_decoder_send_backpressure(
+        &self,
+        host_upload_ready_queue_capacity: usize,
+    ) -> Option<VideoDecoderSendBackpressure> {
+        if self.video_decoder_thread.is_none() {
+            return Some(VideoDecoderSendBackpressure::AbsentDecoder);
+        }
+
+        match self.host_upload_resource_snapshot() {
+            HostUploadResourceSnapshotStatus::Available(snapshot) => {
+                if let Some(reason) = self.decoder_control_backpressure_reason() {
+                    return Some(VideoDecoderSendBackpressure::DecoderControl(reason));
+                }
+
+                snapshot
+                    .backpressure_reason(host_upload_ready_queue_capacity)
+                    .map(VideoDecoderSendBackpressure::HostUpload)
+            }
+            HostUploadResourceSnapshotStatus::AbsentDecoder => {
+                Some(VideoDecoderSendBackpressure::AbsentDecoder)
+            }
+            HostUploadResourceSnapshotStatus::AbsentResource
+            | HostUploadResourceSnapshotStatus::UnsupportedBackend => None,
+        }
     }
 
     /// Проверяет, можно ли принимать decoded frames через decoder I/O boundary.
@@ -1406,6 +1453,24 @@ impl PlaybackPipeline {
         self.video_decoder_thread
             .as_ref()
             .and_then(|decoder_thread| decoder_thread.decoder_control_channel_pressure())
+    }
+
+    /// Возвращает typed control-channel backpressure, если neutral snapshot показывает full queue.
+    #[must_use]
+    pub(crate) fn decoder_control_backpressure_reason(
+        &self,
+    ) -> Option<VideoDecoderControlBackpressureReason> {
+        let pressure = self.video_decoder_control_channel_pressure()?;
+        if pressure.control_channel_capacity == 0
+            || pressure.control_channel_len < pressure.control_channel_capacity
+        {
+            return None;
+        }
+
+        Some(VideoDecoderControlBackpressureReason::ControlChannelFull {
+            queued_messages: pressure.control_channel_len,
+            capacity: pressure.control_channel_capacity,
+        })
     }
 
     /// Возвращает typed status neutral decoder activity boundary-а.

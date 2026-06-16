@@ -818,6 +818,10 @@ fn player_update_from_settings(
             Some(PlayerRuntimeSettingId::AudioDefaultVolume) => {
                 default_volume_changed = true;
             }
+            Some(runtime_id) if player_decoder_ready_queue_setting(setting_name) => {
+                tick_settings.push(runtime_id);
+                decoder_settings.push(runtime_id);
+            }
             Some(runtime_id) if player_tick_setting(setting_name) => {
                 tick_settings.push(runtime_id);
             }
@@ -984,6 +988,10 @@ fn player_tick_setting(setting_id: &str) -> bool {
             | "video.scheduler.surface_free_slots_min"
             | "video.scheduler.surface_free_slots_target"
     )
+}
+
+fn player_decoder_ready_queue_setting(setting_id: &str) -> bool {
+    setting_id == "video.decoder_ready_queue_frames"
 }
 
 fn player_decoder_thread_setting(setting_id: &str) -> bool {
@@ -1310,6 +1318,57 @@ mod tests {
         assert_eq!(
             update.audio_output_device_id.as_deref(),
             Some("cpal-0.15-name:USB%20DAC")
+        );
+        assert!(update.deferred_boundary_settings.is_empty());
+    }
+
+    #[test]
+    fn decoder_ready_queue_route_updates_decoder_and_tick_capacity() {
+        let registry = app_config_registry().expect("registry builds");
+        let mut current = AppConfig::default();
+        current.video.decoder_ready_queue_frames = 3;
+
+        let diff = registry
+            .diff(&AppConfig::default(), &current)
+            .expect("diff succeeds");
+        let plan = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
+            .expect("route plan builds");
+
+        let player_route = plan
+            .committed_routes
+            .iter()
+            .find(|route| route.route == AppRuntimeRoute::Player)
+            .expect("player route exists");
+        let RuntimeCommittedUpdate::Player(update) = &player_route.update else {
+            panic!("decoder ready queue должен попасть в player route update");
+        };
+
+        assert_eq!(
+            player_route.groups,
+            vec![AppRuntimeRouteGroupUpdate {
+                group: AppRuntimeRouteGroup::PlayerDecoderThreadConfig,
+                affected_settings: vec![SettingId::from("video.decoder_ready_queue_frames")],
+            }]
+        );
+        assert_eq!(
+            update
+                .player_core
+                .decoder_thread_config
+                .as_ref()
+                .expect("decoder-thread update expected")
+                .decoder_thread_config
+                .decoder_ready_queue_frames,
+            3
+        );
+        assert_eq!(
+            update
+                .player_core
+                .tick_config
+                .as_ref()
+                .expect("tick update expected")
+                .tick_config
+                .decoder_ready_queue_frames,
+            3
         );
         assert!(update.deferred_boundary_settings.is_empty());
     }

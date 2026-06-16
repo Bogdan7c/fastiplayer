@@ -102,6 +102,9 @@ pub struct PlayerTickConfig {
     /// Максимум сырых video packets между demuxer и decoder thread.
     pub max_pending_video_packets: usize,
 
+    /// Максимум готовых decoded frames внутри decoder ready queue.
+    pub decoder_ready_queue_frames: usize,
+
     /// Временный bounded лимит video packets, пока audio buffer догоняет low-watermark.
     pub max_pending_video_packets_during_audio_catchup: usize,
 
@@ -174,6 +177,7 @@ impl Default for PlayerTickConfig {
             min_texture_slots_available_for_decode: 2,
             target_texture_slots_available_for_decode: 4,
             max_pending_video_packets: 32,
+            decoder_ready_queue_frames: 8,
             max_pending_video_packets_during_audio_catchup: 240,
             max_video_packets_sent_per_tick: 8,
             max_decoded_video_frames_drained_per_tick: 8,
@@ -218,6 +222,7 @@ impl From<&AppConfig> for PlayerTickConfig {
                 .scheduler
                 .surface_free_slots_target,
             max_pending_video_packets: config.video.decoder_packet_channel_frames,
+            decoder_ready_queue_frames: config.video.decoder_ready_queue_frames,
             max_video_packets_sent_per_tick: config.video.scheduler.video_packets_per_tick,
             max_decoded_video_frames_drained_per_tick: config
                 .video
@@ -805,6 +810,13 @@ mod tests {
         /// Snapshot texture/surface pressure для packet admission tests.
         resource_snapshot: Arc<Mutex<Option<crate::DecoderResourceSnapshot>>>,
 
+        /// Software host-upload snapshot для decoder send backpressure tests.
+        host_upload_resource_status:
+            Arc<Mutex<Option<video_core::HostUploadResourceSnapshotStatus>>>,
+
+        /// Snapshot control-channel pressure для neutral backpressure tests.
+        control_pressure: Arc<Mutex<Option<crate::DecoderControlChannelPressureSnapshot>>>,
+
         /// Активный Accurate preroll floor внутри fake decoder-а.
         preroll_floor: Arc<Mutex<Option<video_core::VideoPrerollOutputFloor>>>,
 
@@ -885,6 +897,25 @@ mod tests {
                 .lock()
                 .expect("recording decoder resource snapshot lock") = Some(resource_snapshot);
         }
+
+        /// Настраивает software host-upload snapshot/status без VA-API counters.
+        fn set_host_upload_resource_status(
+            &self,
+            status: video_core::HostUploadResourceSnapshotStatus,
+        ) {
+            *self
+                .host_upload_resource_status
+                .lock()
+                .expect("recording decoder host-upload resource status lock") = Some(status);
+        }
+
+        /// Настраивает snapshot decoder control channel-а.
+        fn set_control_pressure(&self, pressure: crate::DecoderControlChannelPressureSnapshot) {
+            *self
+                .control_pressure
+                .lock()
+                .expect("recording decoder control pressure lock") = Some(pressure);
+        }
     }
 
     impl video_core::VideoDecoderThreadHandle for RecordingVideoDecoderThread {
@@ -955,6 +986,22 @@ mod tests {
                 .resource_snapshot
                 .lock()
                 .expect("recording decoder resource snapshot lock")
+        }
+
+        fn host_upload_resource_snapshot(&self) -> video_core::HostUploadResourceSnapshotStatus {
+            self.host_upload_resource_status
+                .lock()
+                .expect("recording decoder host-upload resource status lock")
+                .unwrap_or(video_core::HostUploadResourceSnapshotStatus::UnsupportedBackend)
+        }
+
+        fn decoder_control_channel_pressure(
+            &self,
+        ) -> Option<crate::DecoderControlChannelPressureSnapshot> {
+            *self
+                .control_pressure
+                .lock()
+                .expect("recording decoder control pressure lock")
         }
 
         fn decoder_activity_snapshot(&self) -> video_core::VideoDecoderActivitySnapshot {
@@ -1636,6 +1683,38 @@ mod tests {
         assert_eq!(plan.reason, WorkerWakeupReason::PipelineWorkReady);
         assert_eq!(plan.delay, Some(Duration::ZERO));
         assert!(!plan.wait_for_decoder_activity);
+    }
+
+    #[test]
+    fn software_host_backpressure_does_not_schedule_immediate_video_work() {
+        let tick_config = PlayerTickConfig::default();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut session = PlayerSession::new();
+
+        decoder_thread.set_host_upload_resource_status(
+            video_core::HostUploadResourceSnapshotStatus::Available(
+                video_core::HostUploadResourceSnapshot {
+                    host_frames_ready: tick_config.decoder_ready_queue_frames,
+                    host_frames_in_flight: 0,
+                    upload_slots_capacity: 2,
+                    upload_slots_free: 2,
+                    upload_failures: 0,
+                },
+            ),
+        );
+        session.pipeline.set_video_decoder_thread(decoder_thread);
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        enqueue_selected_video_packet(
+            &mut session,
+            Duration::from_millis(120),
+            Bytes::from_static(b"blocked-video-work"),
+            true,
+        );
+
+        assert!(!pending_video_work_available(&session, &tick_config));
     }
 
     #[test]
@@ -2536,6 +2615,183 @@ mod tests {
                 reason: PipelinePauseReason::DecoderPacketQueueFull,
             }]
         );
+    }
+
+    #[test]
+    fn software_host_ready_queue_backpressure_stops_packet_send() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+
+        decoder_thread.set_host_upload_resource_status(
+            video_core::HostUploadResourceSnapshotStatus::Available(
+                video_core::HostUploadResourceSnapshot {
+                    host_frames_ready: PlayerTickConfig::default().decoder_ready_queue_frames,
+                    host_frames_in_flight: 0,
+                    upload_slots_capacity: 2,
+                    upload_slots_free: 2,
+                    upload_failures: 0,
+                },
+            ),
+        );
+        session
+            .pipeline
+            .set_video_decoder_thread(decoder_thread.clone());
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        enqueue_selected_video_packet(
+            &mut session,
+            Duration::from_millis(120),
+            Bytes::from_static(b"software-ready-queue-full"),
+            true,
+        );
+
+        let sent_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+
+        assert_eq!(sent_packets, 0);
+        assert!(decoder_thread.sent_packets().is_empty());
+        assert_eq!(
+            tick_result.pipeline_pauses,
+            vec![PlayerPipelinePause {
+                reason: PipelinePauseReason::HostUploadReadyQueueFull,
+            }]
+        );
+        assert!(!session.pipeline.pending_video_packet_is_empty());
+    }
+
+    #[test]
+    fn software_upload_slots_freed_resume_packet_send() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut blocked_tick = PlayerTickResult::default();
+
+        decoder_thread.set_host_upload_resource_status(
+            video_core::HostUploadResourceSnapshotStatus::Available(
+                video_core::HostUploadResourceSnapshot {
+                    host_frames_ready: 0,
+                    host_frames_in_flight: 2,
+                    upload_slots_capacity: 2,
+                    upload_slots_free: 0,
+                    upload_failures: 0,
+                },
+            ),
+        );
+        session
+            .pipeline
+            .set_video_decoder_thread(decoder_thread.clone());
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        enqueue_selected_video_packet(
+            &mut session,
+            Duration::from_millis(120),
+            Bytes::from_static(b"software-upload-slot-resume"),
+            true,
+        );
+
+        let blocked_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut blocked_tick,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+
+        assert_eq!(blocked_packets, 0);
+        assert!(decoder_thread.sent_packets().is_empty());
+        assert_eq!(
+            blocked_tick.pipeline_pauses,
+            vec![PlayerPipelinePause {
+                reason: PipelinePauseReason::HostUploadSlotsExhausted,
+            }]
+        );
+
+        decoder_thread.set_host_upload_resource_status(
+            video_core::HostUploadResourceSnapshotStatus::Available(
+                video_core::HostUploadResourceSnapshot {
+                    host_frames_ready: 0,
+                    host_frames_in_flight: 1,
+                    upload_slots_capacity: 2,
+                    upload_slots_free: 1,
+                    upload_failures: 0,
+                },
+            ),
+        );
+        let mut resumed_tick = PlayerTickResult::default();
+        let resumed_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut resumed_tick,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+
+        assert_eq!(resumed_packets, 1);
+        assert_eq!(decoder_thread.sent_packets().len(), 1);
+        assert!(resumed_tick.pipeline_pauses.is_empty());
+        assert!(session.pipeline.pending_video_packet_is_empty());
+    }
+
+    #[test]
+    fn software_decoder_control_backpressure_stops_packet_send() {
+        let mut session = PlayerSession::new();
+        let decoder_thread = RecordingVideoDecoderThread::new();
+        let mut tick_result = PlayerTickResult::default();
+
+        decoder_thread.set_host_upload_resource_status(
+            video_core::HostUploadResourceSnapshotStatus::Available(
+                video_core::HostUploadResourceSnapshot {
+                    host_frames_ready: 0,
+                    host_frames_in_flight: 0,
+                    upload_slots_capacity: 2,
+                    upload_slots_free: 2,
+                    upload_failures: 0,
+                },
+            ),
+        );
+        decoder_thread.set_control_pressure(crate::DecoderControlChannelPressureSnapshot {
+            control_channel_len: 4,
+            control_channel_capacity: 4,
+            control_channel_full_count: 1,
+            release_control_send_fail_count: 1,
+            flush_control_send_fail_count: 0,
+        });
+        session
+            .pipeline
+            .set_video_decoder_thread(decoder_thread.clone());
+        session.pipeline.select_video_track(
+            TrackId::new(1),
+            VideoDecodeRequirement::new(VideoCodec::Vp9),
+        );
+        enqueue_selected_video_packet(
+            &mut session,
+            Duration::from_millis(120),
+            Bytes::from_static(b"software-control-full"),
+            true,
+        );
+
+        let sent_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+
+        assert_eq!(sent_packets, 0);
+        assert!(decoder_thread.sent_packets().is_empty());
+        assert_eq!(
+            tick_result.pipeline_pauses,
+            vec![PlayerPipelinePause {
+                reason: PipelinePauseReason::DecoderControlQueueFull,
+            }]
+        );
+        assert!(!session.pipeline.pending_video_packet_is_empty());
     }
 
     #[test]
