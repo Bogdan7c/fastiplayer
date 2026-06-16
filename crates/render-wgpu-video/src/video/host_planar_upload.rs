@@ -8,7 +8,9 @@ use video_core::{
     DecodedFrame, FrameResourceDescriptor, FrameResourceHandle, HostPlanarFrameDescriptor,
     HostPlaneRole, validate_resource_descriptor_against_contract,
 };
-use video_frame_contract::{VideoFrameContract, VideoFramePixelLayout, VideoFrameTransferPath};
+use video_frame_contract::{
+    FrameChromaSubsampling, VideoFrameContract, VideoFramePixelLayout, VideoFrameTransferPath,
+};
 
 use super::WgpuFrameMaterializationUnsupportedReason;
 
@@ -699,33 +701,48 @@ fn host_planar_upload_layout(
         );
     }
 
+    let Some(chroma_subsampling) = frame_contract.pixel_layout.chroma() else {
+        return Err(
+            WgpuFrameMaterializationUnsupportedReason::HostPlanarLayoutNotSupportedByUploadMaterializer,
+        );
+    };
+
     match frame_contract.pixel_layout {
-        VideoFramePixelLayout::Yuv420Planar8 => Ok(yuv420_planar_upload_layout(
+        VideoFramePixelLayout::Yuv420Planar8
+        | VideoFramePixelLayout::Yuv422Planar8
+        | VideoFramePixelLayout::Yuv444Planar8 => Ok(planar_yuv_upload_layout(
             coded_width,
             coded_height,
+            chroma_subsampling,
             1,
             HostPlanarUploadTextureFormat::R8Unorm,
         )),
-        VideoFramePixelLayout::Yuv420Planar10Le | VideoFramePixelLayout::Yuv420Planar12Le => {
-            Ok(yuv420_planar_upload_layout(
-                coded_width,
-                coded_height,
-                2,
-                HostPlanarUploadTextureFormat::R16Uint,
-            ))
-        }
-        _ => Err(WgpuFrameMaterializationUnsupportedReason::HostPlanarLayoutNotSupportedByUploadMaterializer),
+        VideoFramePixelLayout::Yuv420Planar10Le
+        | VideoFramePixelLayout::Yuv420Planar12Le
+        | VideoFramePixelLayout::Yuv422Planar10Le
+        | VideoFramePixelLayout::Yuv422Planar12Le
+        | VideoFramePixelLayout::Yuv444Planar10Le => Ok(planar_yuv_upload_layout(
+            coded_width,
+            coded_height,
+            chroma_subsampling,
+            2,
+            HostPlanarUploadTextureFormat::R16Uint,
+        )),
+        _ => Err(
+            WgpuFrameMaterializationUnsupportedReason::HostPlanarLayoutNotSupportedByUploadMaterializer,
+        ),
     }
 }
 
-fn yuv420_planar_upload_layout(
+fn planar_yuv_upload_layout(
     coded_width: u32,
     coded_height: u32,
+    chroma_subsampling: FrameChromaSubsampling,
     bytes_per_sample: usize,
     texture_format: HostPlanarUploadTextureFormat,
 ) -> HostPlanarUploadLayout {
-    let chroma_width = half_rounded_up(coded_width);
-    let chroma_height = half_rounded_up(coded_height);
+    let (chroma_width, chroma_height) =
+        chroma_plane_dimensions(coded_width, coded_height, chroma_subsampling);
 
     HostPlanarUploadLayout {
         planes: [
@@ -751,6 +768,22 @@ fn yuv420_planar_upload_layout(
                 texture_format,
             },
         ],
+    }
+}
+
+fn chroma_plane_dimensions(
+    coded_width: u32,
+    coded_height: u32,
+    chroma_subsampling: FrameChromaSubsampling,
+) -> (u32, u32) {
+    // В host-planar descriptor padding не является пикселями, поэтому размеры
+    // chroma plane считаются только из видимой coded области.
+    match chroma_subsampling {
+        FrameChromaSubsampling::Yuv420 => {
+            (half_rounded_up(coded_width), half_rounded_up(coded_height))
+        }
+        FrameChromaSubsampling::Yuv422 => (half_rounded_up(coded_width), coded_height),
+        FrameChromaSubsampling::Yuv444 => (coded_width, coded_height),
     }
 }
 
@@ -863,12 +896,12 @@ mod tests {
         let layout = host_planar_upload_layout(VideoFrameContract::host_yuv420_planar8(), 5, 3)
             .expect("YUV420 planar 8-bit is renderable");
 
-        assert_eq!(layout.planes[0].width, 5);
-        assert_eq!(layout.planes[0].height, 3);
-        assert_eq!(layout.planes[1].width, 3);
-        assert_eq!(layout.planes[1].height, 2);
-        assert_eq!(layout.planes[2].width, 3);
-        assert_eq!(layout.planes[2].height, 2);
+        assert_upload_plane_layout(
+            layout,
+            [(5, 3), (3, 2), (3, 2)],
+            1,
+            HostPlanarUploadTextureFormat::R8Unorm,
+        );
 
         for contract in [
             VideoFrameContract::host_yuv420_planar10le(),
@@ -877,17 +910,109 @@ mod tests {
             let layout =
                 host_planar_upload_layout(contract, 5, 3).expect("YUV420 16-bit words renderable");
 
-            assert_eq!(layout.planes[0].width, 5);
-            assert_eq!(layout.planes[0].height, 3);
-            assert_eq!(layout.planes[0].bytes_per_sample, 2);
-            assert_eq!(
-                layout.planes[0].texture_format,
-                HostPlanarUploadTextureFormat::R16Uint
+            assert_upload_plane_layout(
+                layout,
+                [(5, 3), (3, 2), (3, 2)],
+                2,
+                HostPlanarUploadTextureFormat::R16Uint,
             );
-            assert_eq!(layout.planes[1].width, 3);
-            assert_eq!(layout.planes[1].height, 2);
-            assert_eq!(layout.planes[2].width, 3);
-            assert_eq!(layout.planes[2].height, 2);
+        }
+    }
+
+    #[test]
+    fn yuv422_upload_layout_uses_ceil_chroma_width_and_full_height() {
+        for (coded_width, expected_chroma_width) in [(4, 2), (5, 3)] {
+            let layout = host_planar_upload_layout(
+                VideoFrameContract {
+                    pixel_layout: VideoFramePixelLayout::Yuv422Planar8,
+                    transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+                },
+                coded_width,
+                3,
+            )
+            .expect("YUV422 planar 8-bit is renderable");
+
+            assert_upload_plane_layout(
+                layout,
+                [
+                    (coded_width, 3),
+                    (expected_chroma_width, 3),
+                    (expected_chroma_width, 3),
+                ],
+                1,
+                HostPlanarUploadTextureFormat::R8Unorm,
+            );
+        }
+
+        for pixel_layout in [
+            VideoFramePixelLayout::Yuv422Planar10Le,
+            VideoFramePixelLayout::Yuv422Planar12Le,
+        ] {
+            let layout = host_planar_upload_layout(
+                VideoFrameContract {
+                    pixel_layout,
+                    transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+                },
+                5,
+                3,
+            )
+            .expect("YUV422 16-bit words are renderable");
+
+            assert_upload_plane_layout(
+                layout,
+                [(5, 3), (3, 3), (3, 3)],
+                2,
+                HostPlanarUploadTextureFormat::R16Uint,
+            );
+        }
+    }
+
+    #[test]
+    fn yuv444_upload_layout_keeps_chroma_planes_full_size() {
+        for (pixel_layout, bytes_per_sample, texture_format) in [
+            (
+                VideoFramePixelLayout::Yuv444Planar8,
+                1,
+                HostPlanarUploadTextureFormat::R8Unorm,
+            ),
+            (
+                VideoFramePixelLayout::Yuv444Planar10Le,
+                2,
+                HostPlanarUploadTextureFormat::R16Uint,
+            ),
+        ] {
+            let layout = host_planar_upload_layout(
+                VideoFrameContract {
+                    pixel_layout,
+                    transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+                },
+                5,
+                3,
+            )
+            .expect("YUV444 v1 layout is renderable");
+
+            assert_upload_plane_layout(
+                layout,
+                [(5, 3), (5, 3), (5, 3)],
+                bytes_per_sample,
+                texture_format,
+            );
+        }
+    }
+
+    fn assert_upload_plane_layout(
+        layout: HostPlanarUploadLayout,
+        expected_dimensions: [(u32, u32); 3],
+        expected_bytes_per_sample: usize,
+        expected_texture_format: HostPlanarUploadTextureFormat,
+    ) {
+        for (plane_layout, (expected_width, expected_height)) in
+            layout.planes.into_iter().zip(expected_dimensions)
+        {
+            assert_eq!(plane_layout.width, expected_width);
+            assert_eq!(plane_layout.height, expected_height);
+            assert_eq!(plane_layout.bytes_per_sample, expected_bytes_per_sample);
+            assert_eq!(plane_layout.texture_format, expected_texture_format);
         }
     }
 

@@ -1,4 +1,4 @@
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use codec_core::{BitDepth, ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction};
 use render_core::{
     ActiveColorPath, ColorPipelineSettings, HdrReferenceDefaultDiagnostics, HdrToSdrSettings,
@@ -65,7 +65,7 @@ struct HostYuv420HighBitUniforms {
 }
 
 /// Диагностика HostPlanar render path-а без GPU handles.
-pub(crate) struct HostYuv420RenderFrameDiagnostics {
+pub(crate) struct HostPlanarYuvRenderFrameDiagnostics {
     /// Renderer-neutral описание выбранного color/HDR path-а.
     pub(crate) active_color_path: ActiveColorPath,
 
@@ -107,8 +107,8 @@ struct PreparedHostYuv420HighBitRender {
     hdr_reference_defaults: Option<HdrReferenceDefaultDiagnostics>,
 }
 
-/// Renderer для HostPlanar YUV420 8/10/12-bit path-а.
-pub(crate) struct HostYuv420VideoRenderer {
+/// Renderer для HostPlanar YUV 4:2:0/4:2:2/4:4:4 path-а.
+pub(crate) struct HostPlanarYuvVideoRenderer {
     /// Pipeline для R8Unorm Y/U/V textures.
     unorm8_pipeline: wgpu::RenderPipeline,
 
@@ -137,7 +137,7 @@ pub(crate) struct HostYuv420VideoRenderer {
     hdr_to_sdr_settings: HdrToSdrSettings,
 }
 
-impl HostYuv420VideoRenderer {
+impl HostPlanarYuvVideoRenderer {
     /// Создаёт оба HostPlanar YUV420 pipeline-а.
     pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
         let unorm8_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -212,7 +212,7 @@ impl HostYuv420VideoRenderer {
         self.hdr_to_sdr_settings = settings;
     }
 
-    /// Рендерит HostPlanar YUV420 frame из отдельных Y/U/V plane views.
+    /// Рендерит HostPlanar YUV frame из отдельных Y/U/V plane views.
     pub fn render_frame(
         &mut self,
         frame: &RenderableFrame,
@@ -220,17 +220,23 @@ impl HostYuv420VideoRenderer {
         u_view: &wgpu::TextureView,
         v_view: &wgpu::TextureView,
         pass_context: &mut VideoRenderPassContext<'_>,
-    ) -> Result<HostYuv420RenderFrameDiagnostics> {
+    ) -> Result<HostPlanarYuvRenderFrameDiagnostics> {
         match frame.format {
-            VideoFramePixelLayout::Yuv420Planar8 => {
+            VideoFramePixelLayout::Yuv420Planar8
+            | VideoFramePixelLayout::Yuv422Planar8
+            | VideoFramePixelLayout::Yuv444Planar8 => {
                 self.render_unorm8_frame(frame, y_view, u_view, v_view, pass_context)
             }
-            VideoFramePixelLayout::Yuv420Planar10Le | VideoFramePixelLayout::Yuv420Planar12Le => {
+            VideoFramePixelLayout::Yuv420Planar10Le
+            | VideoFramePixelLayout::Yuv420Planar12Le
+            | VideoFramePixelLayout::Yuv422Planar10Le
+            | VideoFramePixelLayout::Yuv422Planar12Le
+            | VideoFramePixelLayout::Yuv444Planar10Le => {
                 self.render_uint16_frame(frame, y_view, u_view, v_view, pass_context)
             }
-            unsupported_format => bail!(
-                "HostPlanar YUV420 renderer received unsupported format: {unsupported_format}"
-            ),
+            unsupported_format => {
+                bail!("HostPlanar YUV renderer received unsupported format: {unsupported_format}")
+            }
         }
     }
 
@@ -241,7 +247,7 @@ impl HostYuv420VideoRenderer {
         u_view: &wgpu::TextureView,
         v_view: &wgpu::TextureView,
         pass_context: &mut VideoRenderPassContext<'_>,
-    ) -> Result<HostYuv420RenderFrameDiagnostics> {
+    ) -> Result<HostPlanarYuvRenderFrameDiagnostics> {
         validate_host_yuv420_8bit_frame(frame)?;
 
         let (uv_scale, uv_offset) = letterbox_scale_and_offset(frame, pass_context.viewport.size());
@@ -296,7 +302,7 @@ impl HostYuv420VideoRenderer {
             &bind_group,
         );
 
-        Ok(HostYuv420RenderFrameDiagnostics {
+        Ok(HostPlanarYuvRenderFrameDiagnostics {
             active_color_path: prepared_color_pipeline.active_path,
             hdr_reference_defaults: None,
         })
@@ -309,7 +315,7 @@ impl HostYuv420VideoRenderer {
         u_view: &wgpu::TextureView,
         v_view: &wgpu::TextureView,
         pass_context: &mut VideoRenderPassContext<'_>,
-    ) -> Result<HostYuv420RenderFrameDiagnostics> {
+    ) -> Result<HostPlanarYuvRenderFrameDiagnostics> {
         let prepared_render = prepare_host_yuv420_high_bit_render(
             frame,
             &self.color_settings,
@@ -355,7 +361,7 @@ impl HostYuv420VideoRenderer {
             &bind_group,
         );
 
-        Ok(HostYuv420RenderFrameDiagnostics {
+        Ok(HostPlanarYuvRenderFrameDiagnostics {
             active_color_path: prepared_render.active_path,
             hdr_reference_defaults: prepared_render.hdr_reference_defaults,
         })
@@ -580,19 +586,21 @@ fn prepare_host_yuv420_high_bit_render(
 
 fn validate_host_yuv420_8bit_frame(frame: &RenderableFrame) -> Result<()> {
     ensure!(
-        frame.format == VideoFramePixelLayout::Yuv420Planar8,
-        "HostPlanar YUV420 8-bit renderer received {}",
+        matches!(
+            frame.format,
+            VideoFramePixelLayout::Yuv420Planar8
+                | VideoFramePixelLayout::Yuv422Planar8
+                | VideoFramePixelLayout::Yuv444Planar8
+        ),
+        "HostPlanar YUV 8-bit renderer received {}",
         frame.format
     );
     ensure!(
         frame.bit_depth == BitDepth::Eight,
-        "HostPlanar YUV420 8-bit renderer received {:?}",
+        "HostPlanar YUV 8-bit renderer received {:?}",
         frame.bit_depth
     );
-    ensure!(
-        frame.chroma == codec_core::ChromaSubsampling::Yuv420,
-        "HostPlanar YUV420 8-bit renderer requires YUV420 chroma"
-    );
+    validate_host_planar_yuv_chroma(frame)?;
     Ok(())
 }
 
@@ -600,21 +608,71 @@ fn validate_host_yuv420_high_bit_frame(frame: &RenderableFrame) -> Result<()> {
     ensure!(
         matches!(
             frame.format,
-            VideoFramePixelLayout::Yuv420Planar10Le | VideoFramePixelLayout::Yuv420Planar12Le
+            VideoFramePixelLayout::Yuv420Planar10Le
+                | VideoFramePixelLayout::Yuv420Planar12Le
+                | VideoFramePixelLayout::Yuv422Planar10Le
+                | VideoFramePixelLayout::Yuv422Planar12Le
+                | VideoFramePixelLayout::Yuv444Planar10Le
         ),
-        "HostPlanar YUV420 high-bit renderer received {}",
+        "HostPlanar YUV high-bit renderer received {}",
         frame.format
     );
+    let expected_bit_depth = host_planar_yuv_expected_bit_depth(frame.format)
+        .with_context(|| format!("HostPlanar YUV renderer received {}", frame.format))?;
     ensure!(
-        matches!(frame.bit_depth, BitDepth::Ten | BitDepth::Twelve),
-        "HostPlanar YUV420 high-bit renderer received {:?}",
-        frame.bit_depth
+        frame.bit_depth == expected_bit_depth,
+        "HostPlanar YUV renderer received {:?} bit depth for {}",
+        frame.bit_depth,
+        frame.format
     );
-    ensure!(
-        frame.chroma == codec_core::ChromaSubsampling::Yuv420,
-        "HostPlanar YUV420 high-bit renderer requires YUV420 chroma"
-    );
+    validate_host_planar_yuv_chroma(frame)?;
     Ok(())
+}
+
+fn host_planar_yuv_expected_bit_depth(format: VideoFramePixelLayout) -> Option<BitDepth> {
+    match format {
+        VideoFramePixelLayout::Yuv420Planar8
+        | VideoFramePixelLayout::Yuv422Planar8
+        | VideoFramePixelLayout::Yuv444Planar8 => Some(BitDepth::Eight),
+        VideoFramePixelLayout::Yuv420Planar10Le
+        | VideoFramePixelLayout::Yuv422Planar10Le
+        | VideoFramePixelLayout::Yuv444Planar10Le => Some(BitDepth::Ten),
+        VideoFramePixelLayout::Yuv420Planar12Le | VideoFramePixelLayout::Yuv422Planar12Le => {
+            Some(BitDepth::Twelve)
+        }
+        _ => None,
+    }
+}
+
+fn validate_host_planar_yuv_chroma(frame: &RenderableFrame) -> Result<()> {
+    let expected_chroma = host_planar_yuv_expected_chroma(frame.format)
+        .with_context(|| format!("HostPlanar YUV renderer received {}", frame.format))?;
+
+    ensure!(
+        frame.chroma == expected_chroma,
+        "HostPlanar YUV renderer received {:?} chroma for {}",
+        frame.chroma,
+        frame.format
+    );
+
+    Ok(())
+}
+
+fn host_planar_yuv_expected_chroma(
+    format: VideoFramePixelLayout,
+) -> Option<codec_core::ChromaSubsampling> {
+    match format {
+        VideoFramePixelLayout::Yuv420Planar8
+        | VideoFramePixelLayout::Yuv420Planar10Le
+        | VideoFramePixelLayout::Yuv420Planar12Le => Some(codec_core::ChromaSubsampling::Yuv420),
+        VideoFramePixelLayout::Yuv422Planar8
+        | VideoFramePixelLayout::Yuv422Planar10Le
+        | VideoFramePixelLayout::Yuv422Planar12Le => Some(codec_core::ChromaSubsampling::Yuv422),
+        VideoFramePixelLayout::Yuv444Planar8 | VideoFramePixelLayout::Yuv444Planar10Le => {
+            Some(codec_core::ChromaSubsampling::Yuv444)
+        }
+        _ => None,
+    }
 }
 
 fn select_host_yuv420_color_path(frame: &RenderableFrame) -> Result<HostYuv420ColorPath> {
@@ -743,7 +801,7 @@ fn host_yuv420_range_normalization(
 ) -> Result<HostYuv420RangeNormalization> {
     ensure!(
         matches!(bit_depth, 8 | 10 | 12),
-        "HostPlanar YUV420 normalization supports 8/10/12-bit, got {bit_depth}"
+        "HostPlanar YUV normalization supports 8/10/12-bit, got {bit_depth}"
     );
 
     let max_code = ((1u32 << bit_depth) - 1) as f32;
@@ -774,7 +832,7 @@ fn host_yuv420_range_normalization(
             chroma_range: [chroma_center, 1.0 / max_code, chroma_center, 1.0 / max_code],
         }),
         ColorRange::Unknown => {
-            bail!("HostPlanar YUV420 renderer requires explicit limited/full color range")
+            bail!("HostPlanar YUV renderer requires explicit limited/full color range")
         }
     }
 }
@@ -947,10 +1005,21 @@ mod tests {
     #[test]
     fn host_yuv420_shaders_use_expected_texture_contracts() {
         assert!(HOST_YUV420_8BIT_SHADER_SOURCE.contains("var y_texture: texture_2d<f32>;"));
-        assert!(HOST_YUV420_8BIT_SHADER_SOURCE.contains("textureSample(u_texture"));
-        assert!(HOST_YUV420_8BIT_SHADER_SOURCE.contains("textureSample(v_texture"));
+        assert!(
+            HOST_YUV420_8BIT_SHADER_SOURCE
+                .contains("source_uv_to_chroma_uv(textureDimensions(u_texture)")
+        );
+        assert!(
+            HOST_YUV420_8BIT_SHADER_SOURCE
+                .contains("source_uv_to_chroma_uv(textureDimensions(v_texture)")
+        );
+        assert!(HOST_YUV420_8BIT_SHADER_SOURCE.contains("source_uv_to_chroma_uv"));
+        assert!(HOST_YUV420_8BIT_SHADER_SOURCE.contains("axis_subsampling_factor"));
+        assert!(HOST_YUV420_8BIT_SHADER_SOURCE.contains("chroma_axis_size == luma_axis_size"));
         assert!(HOST_YUV420_16BIT_SHADER_SOURCE.contains("var y_texture: texture_2d<u32>;"));
         assert!(HOST_YUV420_16BIT_SHADER_SOURCE.contains("textureLoad(y_texture"));
+        assert!(HOST_YUV420_16BIT_SHADER_SOURCE.contains("source_uv_to_chroma_texel"));
+        assert!(HOST_YUV420_16BIT_SHADER_SOURCE.contains("luma_texel / subsampling_factor"));
         assert!(HOST_YUV420_16BIT_SHADER_SOURCE.contains("uniforms.shader_mode.z"));
     }
 
@@ -984,11 +1053,16 @@ mod tests {
 
     #[test]
     fn host_yuv420_10_and_12_bit_normalization_uses_source_bit_depth() {
+        let eight_bit =
+            host_yuv420_range_normalization(8, ColorRange::Limited).expect("8-bit normalization");
         let ten_bit =
             host_yuv420_range_normalization(10, ColorRange::Limited).expect("10-bit normalization");
         let twelve_bit =
             host_yuv420_range_normalization(12, ColorRange::Limited).expect("12-bit normalization");
 
+        assert_eq!(eight_bit.luma_range[0], 16.0);
+        assert_eq!(eight_bit.luma_range[3], 235.0);
+        assert_eq!(eight_bit.chroma_range[0], 128.0);
         assert_eq!(ten_bit.luma_range[0], 64.0);
         assert_eq!(ten_bit.luma_range[3], 940.0);
         assert_eq!(ten_bit.chroma_range[0], 512.0);
@@ -1021,25 +1095,116 @@ mod tests {
         assert_eq!(prepared.uniforms.luma_range[3], 3760.0);
     }
 
+    #[test]
+    fn host_planar_yuv_renderer_accepts_v1_software_matrix() {
+        let supported_formats = [
+            (
+                VideoFramePixelLayout::Yuv420Planar8,
+                BitDepth::Eight,
+                ChromaSubsampling::Yuv420,
+            ),
+            (
+                VideoFramePixelLayout::Yuv420Planar10Le,
+                BitDepth::Ten,
+                ChromaSubsampling::Yuv420,
+            ),
+            (
+                VideoFramePixelLayout::Yuv420Planar12Le,
+                BitDepth::Twelve,
+                ChromaSubsampling::Yuv420,
+            ),
+            (
+                VideoFramePixelLayout::Yuv422Planar8,
+                BitDepth::Eight,
+                ChromaSubsampling::Yuv422,
+            ),
+            (
+                VideoFramePixelLayout::Yuv422Planar10Le,
+                BitDepth::Ten,
+                ChromaSubsampling::Yuv422,
+            ),
+            (
+                VideoFramePixelLayout::Yuv422Planar12Le,
+                BitDepth::Twelve,
+                ChromaSubsampling::Yuv422,
+            ),
+            (
+                VideoFramePixelLayout::Yuv444Planar8,
+                BitDepth::Eight,
+                ChromaSubsampling::Yuv444,
+            ),
+            (
+                VideoFramePixelLayout::Yuv444Planar10Le,
+                BitDepth::Ten,
+                ChromaSubsampling::Yuv444,
+            ),
+        ];
+
+        for (format, expected_bit_depth, expected_chroma) in supported_formats {
+            let frame = host_yuv420_test_frame(format);
+
+            assert_eq!(frame.bit_depth, expected_bit_depth);
+            assert_eq!(frame.chroma, expected_chroma);
+
+            if expected_bit_depth == BitDepth::Eight {
+                validate_host_yuv420_8bit_frame(&frame)
+                    .expect("8-bit host-planar YUV frame is accepted");
+            } else {
+                let prepared = prepare_host_yuv420_high_bit_render(
+                    &frame,
+                    &ColorPipelineSettings::default(),
+                    HdrToSdrSettings::default(),
+                    (1920, 1080),
+                )
+                .expect("high-bit host-planar YUV frame is accepted");
+
+                assert_eq!(
+                    prepared.uniforms.shader_mode[2],
+                    bit_depth_code_for_tests(expected_bit_depth)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn host_planar_yuv_renderer_rejects_metadata_chroma_mismatch() {
+        let mut frame = host_yuv420_test_frame(VideoFramePixelLayout::Yuv422Planar10Le);
+        frame.chroma = ChromaSubsampling::Yuv420;
+
+        let error = validate_host_yuv420_high_bit_frame(&frame)
+            .expect_err("YUV422 layout with YUV420 metadata must be rejected");
+
+        assert!(
+            error.to_string().contains("chroma"),
+            "unexpected error: {error}"
+        );
+    }
+
     fn host_yuv420_test_frame(format: VideoFramePixelLayout) -> RenderableFrame {
-        let bit_depth = match format {
-            VideoFramePixelLayout::Yuv420Planar10Le => BitDepth::Ten,
-            VideoFramePixelLayout::Yuv420Planar12Le => BitDepth::Twelve,
-            _ => BitDepth::Eight,
-        };
+        let bit_depth =
+            host_planar_yuv_expected_bit_depth(format).expect("test format is host-planar YUV");
+        let chroma = host_planar_yuv_expected_chroma(format).expect("test format has chroma");
 
         RenderableFrame {
             handle: 1,
             pts: std::time::Duration::ZERO,
             format,
             bit_depth,
-            chroma: ChromaSubsampling::Yuv420,
+            chroma,
             coded_width: 1920,
             coded_height: 1080,
             render_width: 1920,
             render_height: 1080,
             display_orientation: VideoDisplayOrientation::Identity,
             color: VideoColorMetadata::sdr_bt709_limited(),
+        }
+    }
+
+    fn bit_depth_code_for_tests(bit_depth: BitDepth) -> u32 {
+        match bit_depth {
+            BitDepth::Eight => 8,
+            BitDepth::Ten => 10,
+            BitDepth::Twelve => 12,
         }
     }
 

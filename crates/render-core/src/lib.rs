@@ -1629,6 +1629,9 @@ fn pixel_layout_supports_phase10_hdr_to_sdr(input_format: VideoFramePixelLayout)
         VideoFramePixelLayout::P010
             | VideoFramePixelLayout::Yuv420Planar10Le
             | VideoFramePixelLayout::Yuv420Planar12Le
+            | VideoFramePixelLayout::Yuv422Planar10Le
+            | VideoFramePixelLayout::Yuv422Planar12Le
+            | VideoFramePixelLayout::Yuv444Planar10Le
     )
 }
 
@@ -1867,12 +1870,24 @@ pub struct RenderCapabilities {
     pub present_timing_metrics: bool,
 }
 
-fn wgpu_yuv420_host_upload_frame_contracts() -> [VideoFrameContract; 3] {
+fn wgpu_host_upload_frame_contracts() -> [VideoFrameContract; 8] {
     [
         VideoFrameContract::host_yuv420_planar8(),
         VideoFrameContract::host_yuv420_planar10le(),
         VideoFrameContract::host_yuv420_planar12le(),
+        software_host_upload_contract(VideoFramePixelLayout::Yuv422Planar8),
+        software_host_upload_contract(VideoFramePixelLayout::Yuv422Planar10Le),
+        software_host_upload_contract(VideoFramePixelLayout::Yuv422Planar12Le),
+        software_host_upload_contract(VideoFramePixelLayout::Yuv444Planar8),
+        software_host_upload_contract(VideoFramePixelLayout::Yuv444Planar10Le),
     ]
+}
+
+const fn software_host_upload_contract(pixel_layout: VideoFramePixelLayout) -> VideoFrameContract {
+    VideoFrameContract {
+        pixel_layout,
+        transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+    }
 }
 
 impl RenderCapabilities {
@@ -1882,11 +1897,11 @@ impl RenderCapabilities {
         let mut supported_frame_contracts = vec![VideoFrameContract::dma_buf_nv12(
             DmaBufImageLayout::ComposedLayers,
         )];
-        supported_frame_contracts.extend(wgpu_yuv420_host_upload_frame_contracts());
+        supported_frame_contracts.extend(wgpu_host_upload_frame_contracts());
 
         Self {
             backend: RenderBackendKind::Wgpu,
-            display_name: "WGPU NV12 + HostPlanar YUV420 renderer".to_string(),
+            display_name: "WGPU NV12 + HostPlanar YUV renderer".to_string(),
             supported_frame_contracts,
             p010_render_readiness: P010RenderReadiness::Unavailable,
             supported_hdr_to_sdr_operators: Vec::new(),
@@ -1926,11 +1941,11 @@ impl RenderCapabilities {
                 .into_iter()
                 .map(VideoFrameContract::dma_buf_p010),
         );
-        supported_frame_contracts.extend(wgpu_yuv420_host_upload_frame_contracts());
+        supported_frame_contracts.extend(wgpu_host_upload_frame_contracts());
 
         Self {
             backend: RenderBackendKind::Wgpu,
-            display_name: "WGPU P010 BT.2446-C + HostPlanar YUV420 renderer".to_string(),
+            display_name: "WGPU P010 BT.2446-C + HostPlanar YUV renderer".to_string(),
             supported_frame_contracts,
             p010_render_readiness: P010RenderReadiness::Renderable,
             supported_hdr_to_sdr_operators: vec![HdrToneMappingOperator::Bt2446C],
@@ -2744,7 +2759,7 @@ mod tests {
     }
 
     #[test]
-    fn current_wgpu_nv12_capabilities_advertise_host_yuv420_without_p010_or_hdr() {
+    fn current_wgpu_nv12_capabilities_advertise_host_yuv_matrix_without_p010_or_hdr() {
         let capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
 
         assert!(capabilities.supports_frame_format(VideoFramePixelLayout::Nv12));
@@ -2756,6 +2771,31 @@ mod tests {
         assert!(capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar8()));
         assert!(capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar10le()));
         assert!(capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar12le()));
+        assert!(
+            capabilities.supports_frame_contract(software_host_upload_contract(
+                VideoFramePixelLayout::Yuv422Planar8
+            ))
+        );
+        assert!(
+            capabilities.supports_frame_contract(software_host_upload_contract(
+                VideoFramePixelLayout::Yuv422Planar10Le
+            ))
+        );
+        assert!(
+            capabilities.supports_frame_contract(software_host_upload_contract(
+                VideoFramePixelLayout::Yuv422Planar12Le
+            ))
+        );
+        assert!(
+            capabilities.supports_frame_contract(software_host_upload_contract(
+                VideoFramePixelLayout::Yuv444Planar8
+            ))
+        );
+        assert!(
+            capabilities.supports_frame_contract(software_host_upload_contract(
+                VideoFramePixelLayout::Yuv444Planar10Le
+            ))
+        );
         assert!(!capabilities.supports_frame_format(VideoFramePixelLayout::P010));
         assert_eq!(
             capabilities.p010_render_readiness,
@@ -2784,7 +2824,7 @@ mod tests {
     }
 
     #[test]
-    fn current_wgpu_capabilities_advertise_dma_buf_and_exact_yuv420_host_upload() {
+    fn current_wgpu_capabilities_advertise_dma_buf_and_exact_v1_host_upload_matrix() {
         let nv12_capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
         let p010_capabilities = RenderCapabilities::wgpu_p010_bt2446c(Some(4096));
 
@@ -2795,6 +2835,11 @@ mod tests {
                 VideoFrameContract::host_yuv420_planar8(),
                 VideoFrameContract::host_yuv420_planar10le(),
                 VideoFrameContract::host_yuv420_planar12le(),
+                software_host_upload_contract(VideoFramePixelLayout::Yuv422Planar8),
+                software_host_upload_contract(VideoFramePixelLayout::Yuv422Planar10Le),
+                software_host_upload_contract(VideoFramePixelLayout::Yuv422Planar12Le),
+                software_host_upload_contract(VideoFramePixelLayout::Yuv444Planar8),
+                software_host_upload_contract(VideoFramePixelLayout::Yuv444Planar10Le),
             ]
         );
         assert_eq!(
@@ -2806,6 +2851,11 @@ mod tests {
                 VideoFrameContract::host_yuv420_planar8(),
                 VideoFrameContract::host_yuv420_planar10le(),
                 VideoFrameContract::host_yuv420_planar12le(),
+                software_host_upload_contract(VideoFramePixelLayout::Yuv422Planar8),
+                software_host_upload_contract(VideoFramePixelLayout::Yuv422Planar10Le),
+                software_host_upload_contract(VideoFramePixelLayout::Yuv422Planar12Le),
+                software_host_upload_contract(VideoFramePixelLayout::Yuv444Planar8),
+                software_host_upload_contract(VideoFramePixelLayout::Yuv444Planar10Le),
             ]
         );
 
@@ -2822,6 +2872,11 @@ mod tests {
                                 | VideoFramePixelLayout::Yuv420Planar8
                                 | VideoFramePixelLayout::Yuv420Planar10Le
                                 | VideoFramePixelLayout::Yuv420Planar12Le
+                                | VideoFramePixelLayout::Yuv422Planar8
+                                | VideoFramePixelLayout::Yuv422Planar10Le
+                                | VideoFramePixelLayout::Yuv422Planar12Le
+                                | VideoFramePixelLayout::Yuv444Planar8
+                                | VideoFramePixelLayout::Yuv444Planar10Le
                         )
                     })
             );
@@ -2830,17 +2885,15 @@ mod tests {
                     .supported_frame_contracts
                     .iter()
                     .filter(|contract| contract.transfer_path.is_software_host_upload())
-                    .all(|contract| contract.pixel_layout.chroma()
-                        == Some(FrameChromaSubsampling::Yuv420))
+                    .all(|contract| matches!(
+                        contract.pixel_layout.chroma(),
+                        Some(
+                            FrameChromaSubsampling::Yuv420
+                                | FrameChromaSubsampling::Yuv422
+                                | FrameChromaSubsampling::Yuv444
+                        )
+                    ))
             );
-            assert!(!capabilities.supports_frame_contract(VideoFrameContract {
-                pixel_layout: VideoFramePixelLayout::Yuv422Planar8,
-                transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
-            }));
-            assert!(!capabilities.supports_frame_contract(VideoFrameContract {
-                pixel_layout: VideoFramePixelLayout::Yuv444Planar8,
-                transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
-            }));
         }
     }
 

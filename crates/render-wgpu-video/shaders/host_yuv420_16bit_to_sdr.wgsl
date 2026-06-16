@@ -1,4 +1,4 @@
-// Host-planar YUV420 10/12-bit to SDR fullscreen shader.
+// Host-planar YUV 10/12-bit to SDR fullscreen shader.
 // CPU uploads little-endian 16-bit Y, U, and V words as R16Uint textures; shader reads code values.
 
 struct VertexOutput {
@@ -92,13 +92,41 @@ const XYZ_TO_BT709_LINEAR_RGB_ROW0: vec3<f32> = vec3<f32>(1.7167, -0.3557, -0.25
 const XYZ_TO_BT709_LINEAR_RGB_ROW1: vec3<f32> = vec3<f32>(-0.6667, 1.6165, 0.0158);
 const XYZ_TO_BT709_LINEAR_RGB_ROW2: vec3<f32> = vec3<f32>(0.0176, -0.0428, 0.9421);
 
-fn source_uv_to_texel(texture_size: vec2<u32>, source_uv: vec2<f32>) -> vec2<i32> {
-    let max_texel = vec2<f32>(texture_size) - vec2<f32>(1.0);
+fn source_uv_to_texel(texture_size: vec2<u32>, source_uv: vec2<f32>) -> vec2<u32> {
+    let max_texel = texture_size - vec2<u32>(1u);
     let clamped_uv = clamp(source_uv, vec2<f32>(0.0), vec2<f32>(1.0));
     let unclamped_texel = floor(clamped_uv * vec2<f32>(texture_size));
-    let texel = min(unclamped_texel, max_texel);
+    let texel = min(
+        vec2<u32>(u32(unclamped_texel.x), u32(unclamped_texel.y)),
+        max_texel,
+    );
 
-    return vec2<i32>(texel);
+    return texel;
+}
+
+fn texel_to_load_coords(texel: vec2<u32>) -> vec2<i32> {
+    return vec2<i32>(i32(texel.x), i32(texel.y));
+}
+
+fn axis_subsampling_factor(luma_axis_size: u32, chroma_axis_size: u32) -> u32 {
+    // 4:2:0 и 4:2:2 используют ceil(width / 2), поэтому odd widths тоже дают factor 2.
+    if (chroma_axis_size < luma_axis_size) {
+        return 2u;
+    }
+
+    return 1u;
+}
+
+fn source_uv_to_chroma_texel(chroma_texture_size: vec2<u32>, source_uv: vec2<f32>) -> vec2<u32> {
+    let luma_texture_size = textureDimensions(y_texture);
+    let luma_texel = source_uv_to_texel(luma_texture_size, source_uv);
+    let subsampling_factor = vec2<u32>(
+        axis_subsampling_factor(luma_texture_size.x, chroma_texture_size.x),
+        axis_subsampling_factor(luma_texture_size.y, chroma_texture_size.y),
+    );
+    let max_chroma_texel = chroma_texture_size - vec2<u32>(1u);
+
+    return min(luma_texel / subsampling_factor, max_chroma_texel);
 }
 
 fn display_uv_to_source_uv(display_uv: vec2<f32>) -> vec2<f32> {
@@ -115,20 +143,20 @@ fn source_max_code_value() -> f32 {
 
 fn read_y_code_value(source_uv: vec2<f32>) -> f32 {
     let texel = source_uv_to_texel(textureDimensions(y_texture), source_uv);
-    return f32(textureLoad(y_texture, texel, 0).r);
+    return f32(textureLoad(y_texture, texel_to_load_coords(texel), 0).r);
 }
 
 fn read_u_code_value(source_uv: vec2<f32>) -> f32 {
-    let texel = source_uv_to_texel(textureDimensions(u_texture), source_uv);
-    return f32(textureLoad(u_texture, texel, 0).r);
+    let texel = source_uv_to_chroma_texel(textureDimensions(u_texture), source_uv);
+    return f32(textureLoad(u_texture, texel_to_load_coords(texel), 0).r);
 }
 
 fn read_v_code_value(source_uv: vec2<f32>) -> f32 {
-    let texel = source_uv_to_texel(textureDimensions(v_texture), source_uv);
-    return f32(textureLoad(v_texture, texel, 0).r);
+    let texel = source_uv_to_chroma_texel(textureDimensions(v_texture), source_uv);
+    return f32(textureLoad(v_texture, texel_to_load_coords(texel), 0).r);
 }
 
-fn normalize_host_yuv420_sample(y_code_raw: f32, u_code_raw: f32, v_code_raw: f32) -> vec3<f32> {
+fn normalize_host_planar_yuv_sample(y_code_raw: f32, u_code_raw: f32, v_code_raw: f32) -> vec3<f32> {
     let source_max_code = source_max_code_value();
     let y_code = clamp(y_code_raw, uniforms.luma_range.z, min(uniforms.luma_range.w, source_max_code));
     let u_code = clamp(u_code_raw, 0.0, source_max_code);
@@ -140,7 +168,7 @@ fn normalize_host_yuv420_sample(y_code_raw: f32, u_code_raw: f32, v_code_raw: f3
     return vec3<f32>(normalized_y, normalized_u, normalized_v);
 }
 
-fn host_yuv420_sdr_bt709_to_rgb(normalized_yuv: vec3<f32>) -> vec3<f32> {
+fn host_planar_yuv_sdr_bt709_to_rgb(normalized_yuv: vec3<f32>) -> vec3<f32> {
     let red = normalized_yuv.x + 1.5748 * normalized_yuv.z;
     let green = normalized_yuv.x - 0.18732427 * normalized_yuv.y - 0.46812427 * normalized_yuv.z;
     let blue = normalized_yuv.x + 1.8556 * normalized_yuv.y;
@@ -298,7 +326,7 @@ fn encode_sdr_bt709_output(linear_rgb_nits: vec3<f32>) -> vec3<f32> {
     );
 }
 
-fn host_yuv420_hdr_bt2446c_to_sdr(normalized_yuv: vec3<f32>) -> vec3<f32> {
+fn host_planar_yuv_hdr_bt2446c_to_sdr(normalized_yuv: vec3<f32>) -> vec3<f32> {
     let nonlinear_bt2020_rgb = bt2020_yuv_to_rgb(normalized_yuv);
     let linear_hdr_rgb = apply_hdr_eotf(nonlinear_bt2020_rgb);
     let crosstalk_hdr_rgb = apply_bt2446c_crosstalk(linear_hdr_rgb);
@@ -325,18 +353,18 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let source_uv = display_uv_to_source_uv(display_uv);
-    let normalized_yuv = normalize_host_yuv420_sample(
+    let normalized_yuv = normalize_host_planar_yuv_sample(
         read_y_code_value(source_uv),
         read_u_code_value(source_uv),
         read_v_code_value(source_uv),
     );
 
     if (uniforms.shader_mode.x == HOST_YUV420_SHADER_MODE_SDR_BT709) {
-        return vec4<f32>(host_yuv420_sdr_bt709_to_rgb(normalized_yuv), 1.0);
+        return vec4<f32>(host_planar_yuv_sdr_bt709_to_rgb(normalized_yuv), 1.0);
     }
 
     if (uniforms.shader_mode.x == HOST_YUV420_SHADER_MODE_HDR_BT2446C) {
-        return vec4<f32>(host_yuv420_hdr_bt2446c_to_sdr(normalized_yuv), 1.0);
+        return vec4<f32>(host_planar_yuv_hdr_bt2446c_to_sdr(normalized_yuv), 1.0);
     }
 
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
