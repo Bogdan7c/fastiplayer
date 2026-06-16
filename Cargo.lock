@@ -4735,9 +4735,12 @@ name = "video-ffmpeg"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "codec-core",
+ "crossbeam-channel",
  "ffmpeg-sys-next",
  "libloading",
+ "media-core",
  "pkg-config",
  "thiserror 2.0.18",
  "video-backend-api",

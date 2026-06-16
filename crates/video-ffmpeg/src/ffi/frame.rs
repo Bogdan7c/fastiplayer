@@ -23,6 +23,14 @@ pub struct OwnedAvFrame {
     _feature_disabled: (),
 }
 
+#[cfg(feature = "ffmpeg")]
+// SAFETY: `OwnedAvFrame` является exclusive RAII owner-ом. Safe access, который
+// может mutate/unref frame, требует `&mut self`, а shared row borrows требуют
+// `&self` и не раскрывают raw pointer-ы. Перенос owner-а в decoder thread
+// безопасен; concurrent shared mutation остаётся невозможной, потому что тип
+// не реализует `Sync`.
+unsafe impl Send for OwnedAvFrame {}
+
 /// Backward-compatible alias для старого scaffold имени.
 pub type FfmpegFrame = OwnedAvFrame;
 
@@ -363,6 +371,11 @@ impl OwnedAvFrame {
                 chroma_location: frame.chroma_location as i32,
             }
         }
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut ffmpeg_sys_next::AVFrame {
+        self.raw_frame.as_ptr()
     }
 }
 

@@ -15,20 +15,19 @@ pub struct FfmpegVideoBackendFactory {
 impl FfmpegVideoBackendFactory {
     /// Создаёт factory с default scaffold config.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            decoder_config: FfmpegDecoderThreadConfig,
+            decoder_config: FfmpegDecoderThreadConfig::default(),
         }
     }
 }
 
 impl VideoBackendFactory for FfmpegVideoBackendFactory {
-    /// Возвращает typed unavailable error до реализации decoder thread-а.
+    /// Стартует playback-facing FFmpeg decoder thread без раскрытия FFmpeg internals.
     fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend> {
         crate::decoder_thread::start_decoder_thread(self.decoder_config)
-            .map_err(FfmpegBackendFactoryError::from)?;
-
-        Err(FfmpegBackendFactoryError::DecodeThreadDidNotReturnHandle.into())
+            .map_err(FfmpegBackendFactoryError::from)
+            .map_err(Into::into)
     }
 }
 
@@ -38,10 +37,6 @@ pub enum FfmpegBackendFactoryError {
     /// Decoder thread не стартовал по typed причине.
     #[error(transparent)]
     DecoderThread(#[from] FfmpegDecoderThreadError),
-
-    /// Защита от невозможного состояния в scaffold-е.
-    #[error("FFmpeg decoder thread startup did not return a backend handle")]
-    DecodeThreadDidNotReturnHandle,
 }
 
 #[cfg(test)]
@@ -53,12 +48,15 @@ mod tests {
         let factory = FfmpegVideoBackendFactory::new();
         let result = factory.start_video_backend();
 
-        assert!(
-            result.is_err(),
-            "scaffold must not start a fake FFmpeg backend"
-        );
+        if cfg!(feature = "ffmpeg") {
+            assert!(
+                result.is_ok(),
+                "FFmpeg build should start a real decoder-thread handle"
+            );
+            return;
+        }
 
-        let error = result.err().unwrap();
+        let error = result.err().expect("default build has no FFmpeg FFI");
 
         assert!(error.downcast_ref::<FfmpegBackendFactoryError>().is_some());
     }

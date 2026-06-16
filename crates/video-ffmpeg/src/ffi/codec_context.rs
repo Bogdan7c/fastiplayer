@@ -8,6 +8,8 @@ use std::ptr::{self, NonNull};
 use codec_core::VideoCodec;
 
 use super::error::{FfiResult, FfmpegError};
+use super::frame::OwnedAvFrame;
+use super::packet::OwnedAvPacket;
 #[cfg(feature = "ffmpeg")]
 use super::pixel_format::av_pixel_format_is_software;
 use super::pixel_format::{SoftwarePixelFormat, SoftwarePixelFormatSet};
@@ -98,6 +100,13 @@ pub struct CodecContext {
     #[cfg(not(feature = "ffmpeg"))]
     _feature_disabled: (),
 }
+
+#[cfg(feature = "ffmpeg")]
+// SAFETY: `CodecContext` единолично владеет `AVCodecContext`, а safe API
+// требует `&mut self` для send/receive/flush операций. Перенос owner-а в
+// decoder thread безопасен; concurrent shared access по-прежнему запрещён,
+// потому что тип не реализует `Sync`.
+unsafe impl Send for CodecContext {}
 
 /// Backward-compatible alias для старого scaffold имени.
 pub type FfmpegCodecContext = CodecContext;
@@ -199,6 +208,93 @@ impl CodecContext {
         {
             // SAFETY: raw pointer валиден в течение `&self`; читаем plain field.
             unsafe { self.raw_context.as_ref().height }
+        }
+    }
+
+    /// Передаёт один compressed packet в FFmpeg send/receive decoder.
+    pub fn send_packet(&mut self, packet: &OwnedAvPacket) -> FfiResult<()> {
+        #[cfg(not(feature = "ffmpeg"))]
+        {
+            let _packet = packet;
+            Err(FfmpegError::FeatureDisabled)
+        }
+
+        #[cfg(feature = "ffmpeg")]
+        {
+            // SAFETY: context открыт `avcodec_open2`, packet pointer живёт до
+            // конца вызова и остаётся owned caller-ом по контракту FFmpeg.
+            let status = unsafe {
+                ffmpeg_sys_next::avcodec_send_packet(self.raw_context.as_ptr(), packet.as_ptr())
+            };
+
+            if status < 0 {
+                return Err(FfmpegError::from_averror("avcodec_send_packet", status));
+            }
+
+            Ok(())
+        }
+    }
+
+    /// Передаёт NULL packet, который переводит decoder в EOF/DPB drain mode.
+    pub fn send_flush_packet(&mut self) -> FfiResult<()> {
+        #[cfg(not(feature = "ffmpeg"))]
+        {
+            Err(FfmpegError::FeatureDisabled)
+        }
+
+        #[cfg(feature = "ffmpeg")]
+        {
+            // SAFETY: context открыт `avcodec_open2`; null packet является
+            // documented FFmpeg способом начать draining mode.
+            let status = unsafe {
+                ffmpeg_sys_next::avcodec_send_packet(self.raw_context.as_ptr(), ptr::null())
+            };
+
+            if status < 0 {
+                return Err(FfmpegError::from_averror(
+                    "avcodec_send_packet(NULL)",
+                    status,
+                ));
+            }
+
+            Ok(())
+        }
+    }
+
+    /// Забирает следующий decoded frame из FFmpeg receive side.
+    pub fn receive_frame(&mut self, frame: &mut OwnedAvFrame) -> FfiResult<()> {
+        #[cfg(not(feature = "ffmpeg"))]
+        {
+            let _frame = frame;
+            Err(FfmpegError::FeatureDisabled)
+        }
+
+        #[cfg(feature = "ffmpeg")]
+        {
+            // SAFETY: context открыт, frame allocation принадлежит caller-у и
+            // передаётся FFmpeg как reusable receive buffer.
+            let status = unsafe {
+                ffmpeg_sys_next::avcodec_receive_frame(
+                    self.raw_context.as_ptr(),
+                    frame.as_mut_ptr(),
+                )
+            };
+
+            if status < 0 {
+                return Err(FfmpegError::from_averror("avcodec_receive_frame", status));
+            }
+
+            Ok(())
+        }
+    }
+
+    /// Сбрасывает decoder buffers после seek/lifecycle reset.
+    pub fn flush_buffers(&mut self) {
+        #[cfg(feature = "ffmpeg")]
+        {
+            // SAFETY: context открыт; `avcodec_flush_buffers` не освобождает сам
+            // context, а сбрасывает внутренний decode state перед новым input.
+            unsafe { ffmpeg_sys_next::avcodec_flush_buffers(self.raw_context.as_ptr()) };
         }
     }
 }

@@ -74,6 +74,19 @@ pub struct OwnedAvPacket {
     _feature_disabled: (),
 }
 
+/// Timestamp metadata, которую safe layer записывает в `AVPacket`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PacketTimestamps {
+    /// Presentation timestamp в FFmpeg stream time base units.
+    pub pts: Option<i64>,
+
+    /// Decode timestamp в FFmpeg stream time base units.
+    pub dts: Option<i64>,
+
+    /// Packet duration в FFmpeg stream time base units.
+    pub duration: Option<i64>,
+}
+
 impl OwnedAvPacket {
     /// Allocates an `AVPacket`, copies caller payload and keeps FFmpeg padding.
     pub fn new(encoded_payload: impl AsRef<[u8]>) -> FfiResult<Self> {
@@ -175,6 +188,45 @@ impl OwnedAvPacket {
         }
     }
 
+    /// Записывает timestamp поля без раскрытия `AVPacket` наружу.
+    pub fn set_timestamps(&mut self, timestamps: PacketTimestamps) {
+        #[cfg(not(feature = "ffmpeg"))]
+        {
+            let _timestamps = timestamps;
+        }
+
+        #[cfg(feature = "ffmpeg")]
+        {
+            // SAFETY: wrapper единолично владеет packet pointer-ом. Поля
+            // `pts`/`dts`/`duration` являются plain metadata FFmpeg packet-а.
+            let packet = unsafe { self.raw_packet.as_mut() };
+            packet.pts = timestamps.pts.unwrap_or(ffmpeg_sys_next::AV_NOPTS_VALUE);
+            packet.dts = timestamps.dts.unwrap_or(ffmpeg_sys_next::AV_NOPTS_VALUE);
+            packet.duration = timestamps.duration.unwrap_or(0);
+        }
+    }
+
+    /// Помечает packet как keyframe, если container уже сообщил этот факт.
+    pub fn set_keyframe(&mut self, keyframe: bool) {
+        #[cfg(not(feature = "ffmpeg"))]
+        {
+            let _keyframe = keyframe;
+        }
+
+        #[cfg(feature = "ffmpeg")]
+        {
+            // SAFETY: wrapper единолично владеет packet pointer-ом. FFmpeg
+            // flags являются plain bitfield metadata.
+            let packet = unsafe { self.raw_packet.as_mut() };
+
+            if keyframe {
+                packet.flags |= ffmpeg_sys_next::AV_PKT_FLAG_KEY;
+            } else {
+                packet.flags &= !ffmpeg_sys_next::AV_PKT_FLAG_KEY;
+            }
+        }
+    }
+
     #[cfg(feature = "ffmpeg")]
     fn allocate_with_payload(encoded_payload: &[u8]) -> FfiResult<Self> {
         let payload_len = encoded_payload.len();
@@ -219,6 +271,11 @@ impl OwnedAvPacket {
         // SAFETY: raw pointer создан `av_packet_alloc`, хранится NonNull и
         // освобождается только в Drop. Читаем immutable field.
         unsafe { self.raw_packet.as_ref().data.cast_const() }
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    pub(crate) fn as_ptr(&self) -> *const ffmpeg_sys_next::AVPacket {
+        self.raw_packet.as_ptr().cast_const()
     }
 }
 
