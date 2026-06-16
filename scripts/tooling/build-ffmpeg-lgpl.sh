@@ -264,9 +264,6 @@ build_configure_options() {
     # libavfilter не нужен, потому что CPU filter/conversion pipeline не входит в playback path.
     add_configure_option "--disable-avfilter"
 
-    # libpostproc не нужен для decode->render boundary.
-    add_configure_option "--disable-postproc"
-
     # Hardware acceleration в FFmpeg запрещена дизайном: native backend владеет hw path.
     add_configure_option "--disable-hwaccels"
 
