@@ -527,20 +527,6 @@ impl SystemCapabilities {
             return Some(VideoCapabilityRejection::NoAvailableRenderer);
         }
 
-        if let Some(required_frame_contract) =
-            self.renderer_supported_contract_not_backed_by_outputs(requirement, raw_outputs)
-        {
-            let backend = raw_outputs
-                .first()
-                .expect("raw output intersection checked by caller")
-                .backend
-                .clone();
-            return Some(VideoCapabilityRejection::UnsupportedBackendFrameTransfer {
-                backend,
-                required_frame_contract,
-            });
-        }
-
         let mut first_render_rejection = None;
         for capabilities in &self.render_backends {
             for output in raw_outputs {
@@ -554,19 +540,33 @@ impl SystemCapabilities {
             }
         }
 
-        first_render_rejection
-            .map(|(output, rejection)| {
-                render_video_output_rejection_to_capability(
-                    rejection,
-                    requirement,
-                    frame_format,
-                    output.frame_contract,
-                    &output.backend,
-                )
-            })
-            .or(Some(VideoCapabilityRejection::UnsupportedDecodeFormat {
-                codec: requirement.codec,
-            }))
+        if let Some((output, rejection)) = first_render_rejection {
+            if matches!(
+                rejection,
+                RenderVideoOutputRejection::FrameContract {
+                    reason: RenderFrameContractRejection::UnsupportedTransferPath { .. },
+                }
+            ) && let Some(required_frame_contract) =
+                self.renderer_supported_contract_not_backed_by_outputs(requirement, raw_outputs)
+            {
+                return Some(VideoCapabilityRejection::UnsupportedBackendFrameTransfer {
+                    backend: output.backend.clone(),
+                    required_frame_contract,
+                });
+            }
+
+            return Some(render_video_output_rejection_to_capability(
+                rejection,
+                requirement,
+                frame_format,
+                output.frame_contract,
+                &output.backend,
+            ));
+        }
+
+        Some(VideoCapabilityRejection::UnsupportedDecodeFormat {
+            codec: requirement.codec,
+        })
     }
 
     /// Ищет renderer contract, который подходит stream-у, но не объявлен backend outputs.
@@ -575,7 +575,8 @@ impl SystemCapabilities {
         requirement: &VideoDecodeRequirement,
         raw_outputs: &[&SupportedVideoOutput],
     ) -> Option<VideoFrameContract> {
-        self.render_backends
+        let renderer_supported_contracts = self
+            .render_backends
             .iter()
             .flat_map(|renderer| {
                 renderer
@@ -586,14 +587,27 @@ impl SystemCapabilities {
                         renderer.check_video_output(requirement, *contract).is_ok()
                     })
             })
-            .find(|contract| {
-                !raw_outputs.iter().any(|output| {
-                    same_transfer_path_family(
-                        output.frame_contract.transfer_path,
-                        contract.transfer_path,
-                    )
-                })
+            .collect::<Vec<_>>();
+
+        if renderer_supported_contracts.iter().any(|contract| {
+            raw_outputs.iter().any(|output| {
+                same_transfer_path_family(
+                    output.frame_contract.transfer_path,
+                    contract.transfer_path,
+                )
             })
+        }) {
+            return None;
+        }
+
+        renderer_supported_contracts.into_iter().find(|contract| {
+            !raw_outputs.iter().any(|output| {
+                same_transfer_path_family(
+                    output.frame_contract.transfer_path,
+                    contract.transfer_path,
+                )
+            })
+        })
     }
 }
 
@@ -1221,7 +1235,7 @@ mod tests {
     }
 
     #[test]
-    fn nv12_requirement_rejects_backend_without_renderer_compatible_transfer() {
+    fn yuv420_requirement_accepts_backend_software_host_upload_contract() {
         let capabilities = capabilities_with_outputs(
             vec![SupportedVideoOutput {
                 backend: DecodeBackendId::vaapi(),
@@ -1241,17 +1255,14 @@ mod tests {
             ChromaSubsampling::Yuv420,
         );
 
-        let error = capabilities
+        let selected_output = capabilities
             .check_video_requirement(&requirement)
-            .expect_err("NV12 production path must require DMA-BUF export");
+            .expect("YUV420 software host-upload output is renderable");
 
-        assert!(matches!(
-            error.rejections.first(),
-            Some(VideoCapabilityRejection::UnsupportedBackendFrameTransfer {
-                required_frame_contract,
-                ..
-            }) if *required_frame_contract == VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers)
-        ));
+        assert_eq!(
+            selected_output.frame_contract,
+            VideoFrameContract::host_yuv420_planar8()
+        );
     }
 
     #[test]

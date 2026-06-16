@@ -20,10 +20,12 @@ use crate::dma_buf_import::{DmaBufImporter, ImportedDmaBufTexture};
 pub use self::host_planar_upload::{
     HostPlanarWgpuFrameMaterializer, HostPlanarWgpuTextureViewLookup, HostPlanarWgpuTextureViews,
 };
+use self::host_yuv420_renderer::HostYuv420VideoRenderer;
 use self::nv12_renderer::Nv12VideoRenderer;
 use self::p010_renderer::P010VideoRenderer;
 
 mod host_planar_upload;
+mod host_yuv420_renderer;
 mod nv12_renderer;
 mod p010_renderer;
 
@@ -383,6 +385,18 @@ pub enum WgpuFramePlanes<'frame> {
         /// Texture view с interleaved UV/chroma plane.
         uv_view: &'frame wgpu::TextureView,
     },
+
+    /// HostPlanar YUV420 frame: отдельные Y, U и V plane textures.
+    HostYuv420Planar {
+        /// Texture view с Y/luma plane.
+        y_view: &'frame wgpu::TextureView,
+
+        /// Texture view с U/Cb chroma plane.
+        u_view: &'frame wgpu::TextureView,
+
+        /// Texture view с V/Cr chroma plane.
+        v_view: &'frame wgpu::TextureView,
+    },
 }
 
 /// Кадр, готовый к рендерингу через WGPU backend.
@@ -422,6 +436,25 @@ impl<'frame> WgpuRenderableFrame<'frame> {
             planes: WgpuFramePlanes::P010 { y_view, uv_view },
         })
     }
+
+    /// Собирает WGPU frame wrapper из HostPlanar YUV420 frame и upload texture views.
+    pub fn from_decoded_host_yuv420(
+        frame: &DecodedFrame,
+        y_view: &'frame wgpu::TextureView,
+        u_view: &'frame wgpu::TextureView,
+        v_view: &'frame wgpu::TextureView,
+    ) -> Result<Self> {
+        validate_decoded_host_yuv420_frame(frame)?;
+
+        Ok(Self {
+            metadata: renderable_metadata_from_decoded(frame, frame.frame_contract.pixel_layout),
+            planes: WgpuFramePlanes::HostYuv420Planar {
+                y_view,
+                u_view,
+                v_view,
+            },
+        })
+    }
 }
 
 /// Проверяет NV12 decoded frame до привязки backend-specific texture views.
@@ -432,6 +465,28 @@ fn validate_decoded_nv12_frame(frame: &DecodedFrame) -> Result<()> {
 /// Проверяет P010 decoded frame до привязки backend-specific texture views.
 fn validate_decoded_p010_frame(frame: &DecodedFrame) -> Result<()> {
     validate_current_dma_buf_frame_contract(frame, DecodedPixelFormat::P010, "P010")
+}
+
+/// Проверяет HostPlanar YUV420 decoded frame до привязки renderer-owned upload views.
+fn validate_decoded_host_yuv420_frame(frame: &DecodedFrame) -> Result<()> {
+    frame.validate_self_consistency()?;
+    ensure!(
+        frame.frame_contract.transfer_path == VideoFrameTransferPath::SoftwareHostUpload,
+        "HostPlanar YUV420 WGPU boundary requires software host-upload frame contract, got {}",
+        frame.frame_contract
+    );
+    ensure!(
+        matches!(
+            frame.frame_contract.pixel_layout,
+            VideoFramePixelLayout::Yuv420Planar8
+                | VideoFramePixelLayout::Yuv420Planar10Le
+                | VideoFramePixelLayout::Yuv420Planar12Le
+        ),
+        "from_decoded_host_yuv420 received {} frame",
+        frame.frame_contract.pixel_layout
+    );
+
+    Ok(())
 }
 
 /// Проверяет, что decoded frame соответствует текущему WGPU DMA-BUF path-у.
@@ -507,6 +562,9 @@ pub struct WgpuVideoRenderer {
 
     /// Приватный renderer P010 path с отдельным shader module.
     p010_renderer: P010VideoRenderer,
+
+    /// Приватный renderer для HostPlanar YUV420 software host-upload path-а.
+    host_yuv420_renderer: HostYuv420VideoRenderer,
 
     /// Снимок возможностей backend-а для capability report и stream selection.
     capabilities: RenderCapabilities,
@@ -585,6 +643,7 @@ impl WgpuVideoRenderer {
         Self {
             nv12_renderer: Nv12VideoRenderer::new(device, surface_format),
             p010_renderer: P010VideoRenderer::new(device, surface_format),
+            host_yuv420_renderer: HostYuv420VideoRenderer::new(device, surface_format),
             capabilities,
             diagnostics: RenderDiagnostics::default(),
             surface_size: (1, 1),
@@ -608,12 +667,15 @@ impl WgpuVideoRenderer {
     pub fn set_color_pipeline_settings(&mut self, settings: ColorPipelineSettings) {
         self.nv12_renderer.set_color_pipeline_settings(settings);
         self.p010_renderer.set_color_pipeline_settings(settings);
+        self.host_yuv420_renderer
+            .set_color_pipeline_settings(settings);
         self.live_settings.color_pipeline = settings;
     }
 
-    /// Обновляет HDR-to-SDR settings для P010 HDR renderer-а.
+    /// Обновляет HDR-to-SDR settings для high-bit GPU HDR renderer-ов.
     pub fn set_hdr_to_sdr_settings(&mut self, settings: HdrToSdrSettings) {
         self.p010_renderer.set_hdr_to_sdr_settings(settings);
+        self.host_yuv420_renderer.set_hdr_to_sdr_settings(settings);
         self.live_settings.hdr_to_sdr = settings;
     }
 
@@ -724,6 +786,28 @@ impl WgpuVideoRenderer {
                 self.diagnostics.hdr_reference_defaults = p010_diagnostics.hdr_reference_defaults;
                 Ok(true)
             }
+            RendererDispatch::HostYuv420Planar => {
+                let WgpuFramePlanes::HostYuv420Planar {
+                    y_view,
+                    u_view,
+                    v_view,
+                } = &frame.planes
+                else {
+                    unreachable!("renderer dispatch was selected from plane kind");
+                };
+                let host_yuv420_diagnostics = self.host_yuv420_renderer.render_frame(
+                    &frame.metadata,
+                    y_view,
+                    u_view,
+                    v_view,
+                    &mut pass_context,
+                )?;
+                self.diagnostics.active_color_path =
+                    Some(host_yuv420_diagnostics.active_color_path);
+                self.diagnostics.hdr_reference_defaults =
+                    host_yuv420_diagnostics.hdr_reference_defaults;
+                Ok(true)
+            }
         }
     }
 }
@@ -762,6 +846,9 @@ enum WgpuFramePlaneKind {
 
     /// Renderer-facing P010 Y/UV plane pair.
     P010,
+
+    /// Renderer-facing HostPlanar Y/U/V plane triplet.
+    HostYuv420Planar,
 }
 
 impl WgpuFramePlanes<'_> {
@@ -770,6 +857,7 @@ impl WgpuFramePlanes<'_> {
         match self {
             Self::Nv12 { .. } => WgpuFramePlaneKind::Nv12,
             Self::P010 { .. } => WgpuFramePlaneKind::P010,
+            Self::HostYuv420Planar { .. } => WgpuFramePlaneKind::HostYuv420Planar,
         }
     }
 }
@@ -782,6 +870,9 @@ enum RendererDispatch {
 
     /// Отдельный P010 renderer.
     P010,
+
+    /// Отдельный HostPlanar YUV420 upload renderer.
+    HostYuv420Planar,
 }
 
 /// Считает letterbox `uv_scale`/`uv_offset` для NV12 и P010 shader-ов.
@@ -839,6 +930,12 @@ fn select_renderer_dispatch(
     match (format, plane_kind) {
         (VideoFramePixelLayout::Nv12, WgpuFramePlaneKind::Nv12) => Ok(RendererDispatch::Nv12),
         (VideoFramePixelLayout::P010, WgpuFramePlaneKind::P010) => Ok(RendererDispatch::P010),
+        (
+            VideoFramePixelLayout::Yuv420Planar8
+            | VideoFramePixelLayout::Yuv420Planar10Le
+            | VideoFramePixelLayout::Yuv420Planar12Le,
+            WgpuFramePlaneKind::HostYuv420Planar,
+        ) => Ok(RendererDispatch::HostYuv420Planar),
         (format, _) => bail!("WGPU renderer frame metadata/plane mismatch for format: {format}"),
     }
 }
@@ -913,6 +1010,20 @@ mod tests {
                 .expect("NV12 frame dispatches");
 
         assert_eq!(dispatch, RendererDispatch::Nv12);
+    }
+
+    #[test]
+    fn host_yuv420_frame_dispatches_to_host_yuv420_renderer_path() {
+        for format in [
+            VideoFramePixelLayout::Yuv420Planar8,
+            VideoFramePixelLayout::Yuv420Planar10Le,
+            VideoFramePixelLayout::Yuv420Planar12Le,
+        ] {
+            let dispatch = select_renderer_dispatch(format, WgpuFramePlaneKind::HostYuv420Planar)
+                .expect("HostPlanar YUV420 frame dispatches");
+
+            assert_eq!(dispatch, RendererDispatch::HostYuv420Planar);
+        }
     }
 
     #[test]
@@ -1012,6 +1123,31 @@ mod tests {
 
         assert!(
             error.to_string().contains("zero-copy"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn host_yuv420_boundary_accepts_ready_host_upload_contracts() {
+        for frame in [
+            decoded_host_planar8_test_frame(),
+            decoded_host_planar10_test_frame(),
+            decoded_host_planar12_test_frame(),
+        ] {
+            validate_decoded_host_yuv420_frame(&frame)
+                .expect("HostPlanar YUV420 software upload boundary accepts frame");
+        }
+    }
+
+    #[test]
+    fn host_yuv420_boundary_rejects_dma_buf_contract() {
+        let frame = decoded_nv12_test_frame();
+
+        let error = validate_decoded_host_yuv420_frame(&frame)
+            .expect_err("HostPlanar YUV420 rejects DMA-BUF frame");
+
+        assert!(
+            error.to_string().contains("software host-upload"),
             "unexpected error: {error}"
         );
     }
@@ -1296,6 +1432,13 @@ mod tests {
     fn decoded_host_planar10_test_frame() -> DecodedFrame {
         DecodedFrame {
             frame_contract: VideoFrameContract::host_yuv420_planar10le(),
+            ..decoded_p010_test_frame()
+        }
+    }
+
+    fn decoded_host_planar12_test_frame() -> DecodedFrame {
+        DecodedFrame {
+            frame_contract: VideoFrameContract::host_yuv420_planar12le(),
             ..decoded_p010_test_frame()
         }
     }

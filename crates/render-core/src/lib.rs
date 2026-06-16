@@ -1511,7 +1511,7 @@ impl ActiveColorPath {
         )
     }
 
-    /// Строит active color path с явным HDR-to-SDR contract для production P010 path.
+    /// Строит active color path с явным HDR-to-SDR contract для production HDR path-а.
     #[must_use]
     pub fn from_parts_with_hdr_to_sdr(
         input_format: VideoFramePixelLayout,
@@ -1524,7 +1524,7 @@ impl ActiveColorPath {
         let fallback = classify_color_path_fallback(input_format, &input_color, hdr_to_sdr);
         let active_hdr_to_sdr = hdr_to_sdr.filter(|settings| {
             is_hdr_input(&input_color)
-                && input_format == VideoFramePixelLayout::P010
+                && pixel_layout_supports_phase10_hdr_to_sdr(input_format)
                 && is_phase10_hdr_transfer(&input_color)
                 && settings.is_phase10_bt2446_c_sdr_bt709()
                 && fallback.is_none()
@@ -1582,7 +1582,7 @@ fn classify_color_path_fallback(
     hdr_to_sdr: Option<HdrToSdrSettings>,
 ) -> Option<ActiveColorPathFallback> {
     if is_hdr_input(color_metadata) {
-        if input_format == VideoFramePixelLayout::P010
+        if pixel_layout_supports_phase10_hdr_to_sdr(input_format)
             && is_phase10_hdr_transfer(color_metadata)
             && hdr_to_sdr.is_some_and(|settings| settings.is_phase10_bt2446_c_sdr_bt709())
         {
@@ -1619,6 +1619,16 @@ fn is_phase10_hdr_transfer(color_metadata: &RenderColorMetadata) -> bool {
     matches!(
         color_metadata.transfer,
         TransferFunction::Pq | TransferFunction::Hlg
+    )
+}
+
+/// Проверяет, что pixel layout имеет production Phase 10 HDR-to-SDR shader path.
+fn pixel_layout_supports_phase10_hdr_to_sdr(input_format: VideoFramePixelLayout) -> bool {
+    matches!(
+        input_format,
+        VideoFramePixelLayout::P010
+            | VideoFramePixelLayout::Yuv420Planar10Le
+            | VideoFramePixelLayout::Yuv420Planar12Le
     )
 }
 
@@ -1857,16 +1867,27 @@ pub struct RenderCapabilities {
     pub present_timing_metrics: bool,
 }
 
+fn wgpu_yuv420_host_upload_frame_contracts() -> [VideoFrameContract; 3] {
+    [
+        VideoFrameContract::host_yuv420_planar8(),
+        VideoFrameContract::host_yuv420_planar10le(),
+        VideoFrameContract::host_yuv420_planar12le(),
+    ]
+}
+
 impl RenderCapabilities {
     /// Создаёт capabilities для текущего WGPU MVP backend-а.
     #[must_use]
     pub fn wgpu_nv12(max_texture_size: Option<u32>) -> Self {
+        let mut supported_frame_contracts = vec![VideoFrameContract::dma_buf_nv12(
+            DmaBufImageLayout::ComposedLayers,
+        )];
+        supported_frame_contracts.extend(wgpu_yuv420_host_upload_frame_contracts());
+
         Self {
             backend: RenderBackendKind::Wgpu,
-            display_name: "WGPU NV12 renderer".to_string(),
-            supported_frame_contracts: vec![VideoFrameContract::dma_buf_nv12(
-                DmaBufImageLayout::ComposedLayers,
-            )],
+            display_name: "WGPU NV12 + HostPlanar YUV420 renderer".to_string(),
+            supported_frame_contracts,
             p010_render_readiness: P010RenderReadiness::Unavailable,
             supported_hdr_to_sdr_operators: Vec::new(),
             hdr_output_mode: HdrOutputMode::SdrBt709Only,
@@ -1905,10 +1926,11 @@ impl RenderCapabilities {
                 .into_iter()
                 .map(VideoFrameContract::dma_buf_p010),
         );
+        supported_frame_contracts.extend(wgpu_yuv420_host_upload_frame_contracts());
 
         Self {
             backend: RenderBackendKind::Wgpu,
-            display_name: "WGPU P010 BT.2446-C renderer".to_string(),
+            display_name: "WGPU P010 BT.2446-C + HostPlanar YUV420 renderer".to_string(),
             supported_frame_contracts,
             p010_render_readiness: P010RenderReadiness::Renderable,
             supported_hdr_to_sdr_operators: vec![HdrToneMappingOperator::Bt2446C],
@@ -2041,7 +2063,8 @@ impl RenderCapabilities {
         }
 
         if requirement.hdr
-            && !(self.supports_hdr_to_sdr_with(&HdrToSdrSettings::default())
+            && !((self.supports_hdr_to_sdr_with(&HdrToSdrSettings::default())
+                && frame_contract_supports_hdr_to_sdr(frame_contract))
                 || self.supports_native_hdr_output)
         {
             return Err(RenderVideoOutputRejection::HdrUnsupported { frame_contract });
@@ -2163,6 +2186,11 @@ fn check_frame_contract_matches_requirement(
     }
 
     Ok(())
+}
+
+/// Проверяет, что конкретный frame contract имеет GPU HDR-to-SDR shader path.
+fn frame_contract_supports_hdr_to_sdr(frame_contract: VideoFrameContract) -> bool {
+    pixel_layout_supports_phase10_hdr_to_sdr(frame_contract.pixel_layout)
 }
 
 /// Переводит stream bit depth в neutral frame-contract vocabulary.
@@ -2591,6 +2619,42 @@ mod tests {
     }
 
     #[test]
+    fn active_color_path_describes_host_yuv420_hdr_to_sdr_bt2446c_path() {
+        let color = VideoColorMetadata {
+            range: ColorRange::Limited,
+            matrix: MatrixCoefficients::Bt2020,
+            primaries: ColorPrimaries::Bt2020,
+            transfer: TransferFunction::Pq,
+            hdr_metadata: None,
+            origin: codec_core::ColorMetadataOrigin::Bitstream,
+            confidence: codec_core::ColorMetadataConfidence::Confirmed,
+        };
+        let settings = ColorPipelineSettings {
+            swapchain_transfer: SwapchainTransferMode::ExplicitShaderOetf,
+            ..ColorPipelineSettings::default()
+        };
+
+        let active_path = ActiveColorPath::from_parts_with_hdr_to_sdr(
+            VideoFramePixelLayout::Yuv420Planar10Le,
+            BitDepth::Ten,
+            ChromaSubsampling::Yuv420,
+            color,
+            &settings,
+            Some(HdrToSdrSettings::default()),
+        );
+
+        assert_eq!(active_path.fallback, None);
+        assert_eq!(
+            active_path.hdr_to_sdr.map(|settings| settings.operator),
+            Some(HdrToneMappingOperator::Bt2446C)
+        );
+        assert_eq!(
+            active_path.diagnostic_text(),
+            "YUV420 planar 10-bit little-endian 10-bit BT.2020 PQ limited -> SDR BT.709 bt2446-c explicit-shader-oetf"
+        );
+    }
+
+    #[test]
     fn active_color_path_keeps_hdr_fallback_without_explicit_hdr_to_sdr_contract() {
         let color = VideoColorMetadata {
             range: ColorRange::Limited,
@@ -2680,7 +2744,7 @@ mod tests {
     }
 
     #[test]
-    fn current_wgpu_capabilities_do_not_advertise_p010_or_hdr() {
+    fn current_wgpu_nv12_capabilities_advertise_host_yuv420_without_p010_or_hdr() {
         let capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
 
         assert!(capabilities.supports_frame_format(VideoFramePixelLayout::Nv12));
@@ -2689,7 +2753,9 @@ mod tests {
                 DmaBufImageLayout::ComposedLayers
             ))
         );
-        assert!(!capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar8()));
+        assert!(capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar8()));
+        assert!(capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar10le()));
+        assert!(capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar12le()));
         assert!(!capabilities.supports_frame_format(VideoFramePixelLayout::P010));
         assert_eq!(
             capabilities.p010_render_readiness,
@@ -2713,20 +2779,23 @@ mod tests {
                 .summary_text()
                 .contains("NV12 via hardware zero-copy via DMA-BUF (composed DMA-BUF layers)")
         );
-        assert!(!capabilities.summary_text().contains("software host upload"));
+        assert!(capabilities.summary_text().contains("software host upload"));
         assert!(!capabilities.summary_text().contains("HDR supported"));
     }
 
     #[test]
-    fn current_wgpu_capabilities_advertise_only_dma_buf_nv12_and_p010() {
+    fn current_wgpu_capabilities_advertise_dma_buf_and_exact_yuv420_host_upload() {
         let nv12_capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
         let p010_capabilities = RenderCapabilities::wgpu_p010_bt2446c(Some(4096));
 
         assert_eq!(
             nv12_capabilities.supported_frame_contracts,
-            vec![VideoFrameContract::dma_buf_nv12(
-                DmaBufImageLayout::ComposedLayers
-            )]
+            vec![
+                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+                VideoFrameContract::host_yuv420_planar8(),
+                VideoFrameContract::host_yuv420_planar10le(),
+                VideoFrameContract::host_yuv420_planar12le(),
+            ]
         );
         assert_eq!(
             p010_capabilities.supported_frame_contracts,
@@ -2734,6 +2803,9 @@ mod tests {
                 VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
                 VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
                 VideoFrameContract::dma_buf_p010(DmaBufImageLayout::ComposedLayers),
+                VideoFrameContract::host_yuv420_planar8(),
+                VideoFrameContract::host_yuv420_planar10le(),
+                VideoFrameContract::host_yuv420_planar12le(),
             ]
         );
 
@@ -2745,16 +2817,30 @@ mod tests {
                     .all(|contract| {
                         matches!(
                             contract.pixel_layout,
-                            VideoFramePixelLayout::Nv12 | VideoFramePixelLayout::P010
-                        ) && contract.transfer_path.is_hardware_zero_copy()
+                            VideoFramePixelLayout::Nv12
+                                | VideoFramePixelLayout::P010
+                                | VideoFramePixelLayout::Yuv420Planar8
+                                | VideoFramePixelLayout::Yuv420Planar10Le
+                                | VideoFramePixelLayout::Yuv420Planar12Le
+                        )
                     })
             );
             assert!(
                 capabilities
                     .supported_frame_contracts
                     .iter()
-                    .all(|contract| !contract.transfer_path.is_software_host_upload())
+                    .filter(|contract| contract.transfer_path.is_software_host_upload())
+                    .all(|contract| contract.pixel_layout.chroma()
+                        == Some(FrameChromaSubsampling::Yuv420))
             );
+            assert!(!capabilities.supports_frame_contract(VideoFrameContract {
+                pixel_layout: VideoFramePixelLayout::Yuv422Planar8,
+                transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+            }));
+            assert!(!capabilities.supports_frame_contract(VideoFrameContract {
+                pixel_layout: VideoFramePixelLayout::Yuv444Planar8,
+                transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+            }));
         }
     }
 
@@ -3082,5 +3168,38 @@ mod tests {
                 .summary_text()
                 .contains("native HDR unsupported")
         );
+    }
+
+    #[test]
+    fn host_yuv420_hdr_policy_requires_high_bit_gpu_shader_contract() {
+        let capabilities = RenderCapabilities::wgpu_p010_bt2446c(Some(4096));
+        let mut eight_bit_hdr_requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_bit_depth(BitDepth::Eight)
+            .with_chroma(ChromaSubsampling::Yuv420);
+        eight_bit_hdr_requirement.hdr = true;
+        let mut ten_bit_hdr_requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_bit_depth(BitDepth::Ten)
+            .with_chroma(ChromaSubsampling::Yuv420);
+        ten_bit_hdr_requirement.hdr = true;
+        let mut twelve_bit_hdr_requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_bit_depth(BitDepth::Twelve)
+            .with_chroma(ChromaSubsampling::Yuv420);
+        twelve_bit_hdr_requirement.hdr = true;
+
+        assert!(matches!(
+            capabilities.check_video_output(
+                &eight_bit_hdr_requirement,
+                VideoFrameContract::host_yuv420_planar8(),
+            ),
+            Err(RenderVideoOutputRejection::HdrUnsupported { .. })
+        ));
+        assert!(capabilities.supports_video_output(
+            &ten_bit_hdr_requirement,
+            VideoFrameContract::host_yuv420_planar10le(),
+        ));
+        assert!(capabilities.supports_video_output(
+            &twelve_bit_hdr_requirement,
+            VideoFrameContract::host_yuv420_planar12le(),
+        ));
     }
 }

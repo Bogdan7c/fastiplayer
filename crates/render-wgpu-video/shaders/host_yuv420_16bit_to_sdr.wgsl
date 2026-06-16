@@ -1,0 +1,343 @@
+// Host-planar YUV420 10/12-bit to SDR fullscreen shader.
+// CPU uploads little-endian 16-bit Y, U, and V words as R16Uint textures; shader reads code values.
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 3.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+    );
+
+    var texture_coordinates = array<vec2<f32>, 3>(
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(2.0, 1.0),
+        vec2<f32>(0.0, -1.0),
+    );
+
+    var output: VertexOutput;
+    output.clip_position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    output.uv = texture_coordinates[vertex_index];
+    return output;
+}
+
+struct HostYuv420ColorPipelineUniforms {
+    uv_scale: vec2<f32>,
+    uv_offset: vec2<f32>,
+    orientation_transform_row0: vec4<f32>,
+    orientation_transform_row1: vec4<f32>,
+    // x: shader branch, y: transfer branch, z: source bit depth, w: reserved.
+    shader_mode: vec4<u32>,
+    // x: Y offset code, y: Y scale, z/w: valid Y code bounds.
+    luma_range: vec4<f32>,
+    // x/z: U/V center code, y/w: U/V scale.
+    chroma_range: vec4<f32>,
+    // x: SDR white, y: HDR peak, z/w: mastering max/min luminance.
+    hdr_reference_nits: vec4<f32>,
+    // x: MaxCLL, y: MaxFALL, z/w: reserved.
+    content_light_levels: vec4<f32>,
+    // x/y: mastering max/min markers, z/w: MaxCLL/MaxFALL markers.
+    optional_metadata_markers: vec4<u32>,
+};
+
+@group(0) @binding(0)
+var<uniform> uniforms: HostYuv420ColorPipelineUniforms;
+
+@group(0) @binding(1)
+var y_texture: texture_2d<u32>;
+
+@group(0) @binding(2)
+var u_texture: texture_2d<u32>;
+
+@group(0) @binding(3)
+var v_texture: texture_2d<u32>;
+
+const HOST_YUV420_SHADER_MODE_SDR_BT709: u32 = 0u;
+const HOST_YUV420_SHADER_MODE_HDR_BT2446C: u32 = 1u;
+const HOST_YUV420_TRANSFER_MODE_SDR_BT709: u32 = 0u;
+const HOST_YUV420_TRANSFER_MODE_PQ: u32 = 1u;
+const HOST_YUV420_TRANSFER_MODE_HLG: u32 = 2u;
+const BT2020_KR: f32 = 0.2627;
+const BT2020_KB: f32 = 0.0593;
+const BT2020_KG: f32 = 0.6780;
+const PQ_M1: f32 = 0.1593017578125;
+const PQ_M2: f32 = 78.84375;
+const PQ_C1: f32 = 0.8359375;
+const PQ_C2: f32 = 18.8515625;
+const PQ_C3: f32 = 18.6875;
+const PQ_REFERENCE_PEAK_NITS: f32 = 10000.0;
+const HLG_A: f32 = 0.17883277;
+const HLG_B: f32 = 0.28466892;
+const HLG_C: f32 = 0.559910729529562;
+const HLG_REFERENCE_SYSTEM_GAMMA: f32 = 1.2;
+const BT2446C_REFERENCE_CROSSTALK_ALPHA: f32 = 0.04;
+const BT2446C_K1: f32 = 0.83802;
+const BT2446C_K2: f32 = 15.09968;
+const BT2446C_K3: f32 = 0.74204;
+const BT2446C_K4: f32 = 78.99439;
+const BT2446C_SDR_INFLECTION_NITS: f32 = 58.5;
+const BT1886_REFERENCE_GAMMA: f32 = 2.4;
+const D65_WHITE_X: f32 = 0.3127;
+const D65_WHITE_Y: f32 = 0.3290;
+const CHROMATICITY_EPSILON: f32 = 0.000001;
+const BT2020_LINEAR_RGB_TO_XYZ_ROW0: vec3<f32> = vec3<f32>(0.6370, 0.1446, 0.1689);
+const BT2020_LINEAR_RGB_TO_XYZ_ROW1: vec3<f32> = vec3<f32>(0.2627, 0.6780, 0.0593);
+const BT2020_LINEAR_RGB_TO_XYZ_ROW2: vec3<f32> = vec3<f32>(0.0000, 0.0281, 1.0610);
+const XYZ_TO_BT709_LINEAR_RGB_ROW0: vec3<f32> = vec3<f32>(1.7167, -0.3557, -0.2534);
+const XYZ_TO_BT709_LINEAR_RGB_ROW1: vec3<f32> = vec3<f32>(-0.6667, 1.6165, 0.0158);
+const XYZ_TO_BT709_LINEAR_RGB_ROW2: vec3<f32> = vec3<f32>(0.0176, -0.0428, 0.9421);
+
+fn source_uv_to_texel(texture_size: vec2<u32>, source_uv: vec2<f32>) -> vec2<i32> {
+    let max_texel = vec2<f32>(texture_size) - vec2<f32>(1.0);
+    let clamped_uv = clamp(source_uv, vec2<f32>(0.0), vec2<f32>(1.0));
+    let unclamped_texel = floor(clamped_uv * vec2<f32>(texture_size));
+    let texel = min(unclamped_texel, max_texel);
+
+    return vec2<i32>(texel);
+}
+
+fn display_uv_to_source_uv(display_uv: vec2<f32>) -> vec2<f32> {
+    let affine_input = vec3<f32>(display_uv, 1.0);
+    let source_x = dot(uniforms.orientation_transform_row0.xyz, affine_input);
+    let source_y = dot(uniforms.orientation_transform_row1.xyz, affine_input);
+
+    return vec2<f32>(source_x, source_y);
+}
+
+fn source_max_code_value() -> f32 {
+    return pow(2.0, f32(uniforms.shader_mode.z)) - 1.0;
+}
+
+fn read_y_code_value(source_uv: vec2<f32>) -> f32 {
+    let texel = source_uv_to_texel(textureDimensions(y_texture), source_uv);
+    return f32(textureLoad(y_texture, texel, 0).r);
+}
+
+fn read_u_code_value(source_uv: vec2<f32>) -> f32 {
+    let texel = source_uv_to_texel(textureDimensions(u_texture), source_uv);
+    return f32(textureLoad(u_texture, texel, 0).r);
+}
+
+fn read_v_code_value(source_uv: vec2<f32>) -> f32 {
+    let texel = source_uv_to_texel(textureDimensions(v_texture), source_uv);
+    return f32(textureLoad(v_texture, texel, 0).r);
+}
+
+fn normalize_host_yuv420_sample(y_code_raw: f32, u_code_raw: f32, v_code_raw: f32) -> vec3<f32> {
+    let source_max_code = source_max_code_value();
+    let y_code = clamp(y_code_raw, uniforms.luma_range.z, min(uniforms.luma_range.w, source_max_code));
+    let u_code = clamp(u_code_raw, 0.0, source_max_code);
+    let v_code = clamp(v_code_raw, 0.0, source_max_code);
+    let normalized_y = (y_code - uniforms.luma_range.x) * uniforms.luma_range.y;
+    let normalized_u = (u_code - uniforms.chroma_range.x) * uniforms.chroma_range.y;
+    let normalized_v = (v_code - uniforms.chroma_range.z) * uniforms.chroma_range.w;
+
+    return vec3<f32>(normalized_y, normalized_u, normalized_v);
+}
+
+fn host_yuv420_sdr_bt709_to_rgb(normalized_yuv: vec3<f32>) -> vec3<f32> {
+    let red = normalized_yuv.x + 1.5748 * normalized_yuv.z;
+    let green = normalized_yuv.x - 0.18732427 * normalized_yuv.y - 0.46812427 * normalized_yuv.z;
+    let blue = normalized_yuv.x + 1.8556 * normalized_yuv.y;
+
+    return clamp(vec3<f32>(red, green, blue), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn bt2020_yuv_to_rgb(normalized_yuv: vec3<f32>) -> vec3<f32> {
+    let red = normalized_yuv.x + 2.0 * (1.0 - BT2020_KR) * normalized_yuv.z;
+    let blue = normalized_yuv.x + 2.0 * (1.0 - BT2020_KB) * normalized_yuv.y;
+    let green = (normalized_yuv.x - BT2020_KR * red - BT2020_KB * blue) / BT2020_KG;
+
+    return vec3<f32>(red, green, blue);
+}
+
+fn pq_eotf_nits(encoded_value: f32) -> f32 {
+    let bounded_encoded_value = clamp(encoded_value, 0.0, 1.0);
+    let encoded_root = pow(bounded_encoded_value, 1.0 / PQ_M2);
+    let numerator = max(encoded_root - PQ_C1, 0.0);
+    let denominator = PQ_C2 - PQ_C3 * encoded_root;
+    let normalized_luminance = pow(numerator / denominator, 1.0 / PQ_M1);
+
+    return PQ_REFERENCE_PEAK_NITS * normalized_luminance;
+}
+
+fn hlg_inverse_oetf(encoded_value: f32) -> f32 {
+    let bounded_encoded_value = clamp(encoded_value, 0.0, 1.0);
+
+    if (bounded_encoded_value <= 0.5) {
+        return bounded_encoded_value * bounded_encoded_value / 3.0;
+    }
+
+    return (exp((bounded_encoded_value - HLG_C) / HLG_A) + HLG_B) / 12.0;
+}
+
+fn hlg_eotf_rgb_nits(encoded_rgb: vec3<f32>) -> vec3<f32> {
+    let scene_rgb = vec3<f32>(
+        hlg_inverse_oetf(encoded_rgb.r),
+        hlg_inverse_oetf(encoded_rgb.g),
+        hlg_inverse_oetf(encoded_rgb.b),
+    );
+    let scene_luma = BT2020_KR * scene_rgb.r + BT2020_KG * scene_rgb.g + BT2020_KB * scene_rgb.b;
+
+    if (scene_luma <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+
+    let peak_nits = max(uniforms.hdr_reference_nits.y, uniforms.hdr_reference_nits.x);
+    let system_gamma_scale = pow(scene_luma, HLG_REFERENCE_SYSTEM_GAMMA - 1.0);
+
+    return peak_nits * system_gamma_scale * scene_rgb;
+}
+
+fn apply_hdr_eotf(nonlinear_bt2020_rgb: vec3<f32>) -> vec3<f32> {
+    let bounded_rgb = clamp(nonlinear_bt2020_rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+
+    if (uniforms.shader_mode.y == HOST_YUV420_TRANSFER_MODE_PQ) {
+        return vec3<f32>(
+            pq_eotf_nits(bounded_rgb.r),
+            pq_eotf_nits(bounded_rgb.g),
+            pq_eotf_nits(bounded_rgb.b),
+        );
+    }
+
+    if (uniforms.shader_mode.y == HOST_YUV420_TRANSFER_MODE_HLG) {
+        return hlg_eotf_rgb_nits(bounded_rgb);
+    }
+
+    return vec3<f32>(0.0);
+}
+
+fn apply_bt2446c_crosstalk(rgb: vec3<f32>) -> vec3<f32> {
+    let alpha = BT2446C_REFERENCE_CROSSTALK_ALPHA;
+    let self_weight = 1.0 - 2.0 * alpha;
+
+    return vec3<f32>(
+        self_weight * rgb.r + alpha * rgb.g + alpha * rgb.b,
+        alpha * rgb.r + self_weight * rgb.g + alpha * rgb.b,
+        alpha * rgb.r + alpha * rgb.g + self_weight * rgb.b,
+    );
+}
+
+fn bt2020_linear_rgb_to_xyz(rgb: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        dot(BT2020_LINEAR_RGB_TO_XYZ_ROW0, rgb),
+        dot(BT2020_LINEAR_RGB_TO_XYZ_ROW1, rgb),
+        dot(BT2020_LINEAR_RGB_TO_XYZ_ROW2, rgb),
+    );
+}
+
+fn xyz_to_chromaticity(xyz: vec3<f32>) -> vec2<f32> {
+    let tristimulus_sum = xyz.x + xyz.y + xyz.z;
+
+    if (abs(tristimulus_sum) <= CHROMATICITY_EPSILON) {
+        return vec2<f32>(D65_WHITE_X, D65_WHITE_Y);
+    }
+
+    return vec2<f32>(xyz.x / tristimulus_sum, xyz.y / tristimulus_sum);
+}
+
+fn bt2446c_tone_map_luminance_nits(hdr_luminance_nits: f32) -> f32 {
+    let hdr_inflection_nits = BT2446C_SDR_INFLECTION_NITS / BT2446C_K1;
+
+    if (hdr_luminance_nits < hdr_inflection_nits) {
+        return BT2446C_K1 * hdr_luminance_nits;
+    }
+
+    return BT2446C_K2 * log(hdr_luminance_nits / hdr_inflection_nits - BT2446C_K3) + BT2446C_K4;
+}
+
+fn xyz_from_luminance_and_chromaticity(luminance_nits: f32, chromaticity: vec2<f32>) -> vec3<f32> {
+    if (luminance_nits <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+
+    let chromaticity_y = max(chromaticity.y, CHROMATICITY_EPSILON);
+
+    return vec3<f32>(
+        chromaticity.x / chromaticity_y * luminance_nits,
+        luminance_nits,
+        (1.0 - chromaticity.x - chromaticity.y) / chromaticity_y * luminance_nits,
+    );
+}
+
+fn xyz_to_bt709_linear_rgb(xyz: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        dot(XYZ_TO_BT709_LINEAR_RGB_ROW0, xyz),
+        dot(XYZ_TO_BT709_LINEAR_RGB_ROW1, xyz),
+        dot(XYZ_TO_BT709_LINEAR_RGB_ROW2, xyz),
+    );
+}
+
+fn apply_bt2446c_inverse_crosstalk(rgb: vec3<f32>) -> vec3<f32> {
+    let alpha = BT2446C_REFERENCE_CROSSTALK_ALPHA;
+    let denominator = 1.0 - 3.0 * alpha;
+
+    return vec3<f32>(
+        ((1.0 - alpha) * rgb.r - alpha * rgb.g - alpha * rgb.b) / denominator,
+        (-alpha * rgb.r + (1.0 - alpha) * rgb.g - alpha * rgb.b) / denominator,
+        (-alpha * rgb.r - alpha * rgb.g + (1.0 - alpha) * rgb.b) / denominator,
+    );
+}
+
+fn inverse_bt1886_oetf(linear_nits: f32, reference_white_nits: f32) -> f32 {
+    return pow(clamp(linear_nits / reference_white_nits, 0.0, 1.0), 1.0 / BT1886_REFERENCE_GAMMA);
+}
+
+fn encode_sdr_bt709_output(linear_rgb_nits: vec3<f32>) -> vec3<f32> {
+    let reference_white_nits = max(uniforms.hdr_reference_nits.x, 0.001);
+
+    return vec3<f32>(
+        inverse_bt1886_oetf(linear_rgb_nits.r, reference_white_nits),
+        inverse_bt1886_oetf(linear_rgb_nits.g, reference_white_nits),
+        inverse_bt1886_oetf(linear_rgb_nits.b, reference_white_nits),
+    );
+}
+
+fn host_yuv420_hdr_bt2446c_to_sdr(normalized_yuv: vec3<f32>) -> vec3<f32> {
+    let nonlinear_bt2020_rgb = bt2020_yuv_to_rgb(normalized_yuv);
+    let linear_hdr_rgb = apply_hdr_eotf(nonlinear_bt2020_rgb);
+    let crosstalk_hdr_rgb = apply_bt2446c_crosstalk(linear_hdr_rgb);
+    let hdr_xyz = bt2020_linear_rgb_to_xyz(crosstalk_hdr_rgb);
+    let hdr_chromaticity = xyz_to_chromaticity(hdr_xyz);
+    let tone_mapped_sdr_luminance_nits = bt2446c_tone_map_luminance_nits(max(hdr_xyz.y, 0.0));
+    let sdr_xyz = xyz_from_luminance_and_chromaticity(
+        tone_mapped_sdr_luminance_nits,
+        hdr_chromaticity,
+    );
+    let crosstalk_sdr_rgb = xyz_to_bt709_linear_rgb(sdr_xyz);
+    let linear_sdr_rgb = apply_bt2446c_inverse_crosstalk(crosstalk_sdr_rgb);
+
+    return encode_sdr_bt709_output(linear_sdr_rgb);
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let display_uv = input.uv * uniforms.uv_scale + uniforms.uv_offset;
+
+    if (display_uv.x < 0.0 || display_uv.x > 1.0 ||
+        display_uv.y < 0.0 || display_uv.y > 1.0) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+
+    let source_uv = display_uv_to_source_uv(display_uv);
+    let normalized_yuv = normalize_host_yuv420_sample(
+        read_y_code_value(source_uv),
+        read_u_code_value(source_uv),
+        read_v_code_value(source_uv),
+    );
+
+    if (uniforms.shader_mode.x == HOST_YUV420_SHADER_MODE_SDR_BT709) {
+        return vec4<f32>(host_yuv420_sdr_bt709_to_rgb(normalized_yuv), 1.0);
+    }
+
+    if (uniforms.shader_mode.x == HOST_YUV420_SHADER_MODE_HDR_BT2446C) {
+        return vec4<f32>(host_yuv420_hdr_bt2446c_to_sdr(normalized_yuv), 1.0);
+    }
+
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+}

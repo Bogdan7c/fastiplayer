@@ -78,7 +78,9 @@ mod tests {
                 DmaBufImageLayout::ComposedLayers
             ))
         );
-        assert!(!capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar8()));
+        assert!(capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar8()));
+        assert!(capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar10le()));
+        assert!(capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar12le()));
         assert!(!capabilities.supports_p010_rendering());
         assert!(!capabilities.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()));
     }

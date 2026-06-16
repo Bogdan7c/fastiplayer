@@ -447,6 +447,15 @@ impl VideoFrameContract {
         }
     }
 
+    /// Создаёт host-upload contract для 12-bit little-endian planar YUV420.
+    #[must_use]
+    pub const fn host_yuv420_planar12le() -> Self {
+        Self {
+            pixel_layout: VideoFramePixelLayout::Yuv420Planar12Le,
+            transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+        }
+    }
+
     /// Проверяет self-consistency между pixel layout и transfer path.
     pub const fn validate(self) -> Result<(), VideoFrameContractValidationError> {
         match self.transfer_path {
@@ -557,6 +566,33 @@ mod tests {
         ));
         assert_eq!(nv12_contract.validate(), Ok(()));
         assert_eq!(p010_contract.validate(), Ok(()));
+    }
+
+    #[test]
+    fn host_yuv420_contract_helpers_bind_exact_software_layouts() {
+        let contracts = [
+            (
+                VideoFrameContract::host_yuv420_planar8(),
+                VideoFramePixelLayout::Yuv420Planar8,
+            ),
+            (
+                VideoFrameContract::host_yuv420_planar10le(),
+                VideoFramePixelLayout::Yuv420Planar10Le,
+            ),
+            (
+                VideoFrameContract::host_yuv420_planar12le(),
+                VideoFramePixelLayout::Yuv420Planar12Le,
+            ),
+        ];
+
+        for (contract, expected_layout) in contracts {
+            assert_eq!(contract.pixel_layout, expected_layout);
+            assert_eq!(
+                contract.transfer_path,
+                VideoFrameTransferPath::SoftwareHostUpload
+            );
+            assert_eq!(contract.validate(), Ok(()));
+        }
     }
 
     #[test]

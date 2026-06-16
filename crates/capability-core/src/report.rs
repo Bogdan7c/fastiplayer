@@ -440,7 +440,7 @@ pub struct DriverQuirk {
 #[cfg(test)]
 mod tests {
     use codec_core::{BitDepth, ChromaSubsampling, VideoCodec, VideoProfile, Vp9Profile};
-    use video_frame_contract::DmaBufImageLayout;
+    use video_frame_contract::{DmaBufImageLayout, VideoFramePixelLayout};
 
     use super::*;
 
@@ -518,10 +518,13 @@ mod tests {
                 vp9_format(
                     Vp9Profile::Profile0,
                     BitDepth::Eight,
-                    ChromaSubsampling::Yuv420,
+                    ChromaSubsampling::Yuv422,
                     false,
                 ),
-                VideoFrameContract::host_yuv420_planar8(),
+                VideoFrameContract {
+                    pixel_layout: VideoFramePixelLayout::Yuv422Planar8,
+                    transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+                },
             )]),
         }));
         scanner.register_render_capabilities(RenderCapabilities::wgpu_nv12(Some(4096)));

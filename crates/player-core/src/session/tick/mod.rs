@@ -678,7 +678,13 @@ mod tests {
                 panic!("RGBA8 is not a production decoded video test format")
             }
             video_core::DecodedPixelFormat::Yuv420Planar8
-            | video_core::DecodedPixelFormat::Yuv420Planar10Le => {
+            | video_core::DecodedPixelFormat::Yuv420Planar10Le
+            | video_core::DecodedPixelFormat::Yuv420Planar12Le
+            | video_core::DecodedPixelFormat::Yuv422Planar8
+            | video_core::DecodedPixelFormat::Yuv422Planar10Le
+            | video_core::DecodedPixelFormat::Yuv422Planar12Le
+            | video_core::DecodedPixelFormat::Yuv444Planar8
+            | video_core::DecodedPixelFormat::Yuv444Planar10Le => {
                 panic!("host-planar layouts are not production decoded video test formats")
             }
         };
