@@ -26,12 +26,12 @@ cache metadata is not part of the current architecture.
 
 ## Схема
 
-Current schema version: `2`.
+Current schema version: `3`.
 
 Top-level sections:
 
 ```toml
-schema_version = 2
+schema_version = 3
 
 [player]
 [player.seek]
@@ -52,9 +52,15 @@ schema_version = 2
 Unknown fields are rejected with `deny_unknown_fields`. Values are validated after
 Serde deserialization.
 
-`video.preferred_backend` accepts only `"auto"` and `"vaapi"`. The old
-`"vulkan"` video decode preference was removed and is rejected with a suggested
-fix instead of being migrated or silently mapped to VA-API.
+`video.preferred_backend` accepts only `"auto"`, `"hardware"` and `"software"`.
+Legacy schema v2 `"vaapi"` is loaded as `"hardware"` in memory. The old
+`"vulkan"` video decode preference remains removed and is rejected with a
+suggested fix instead of being migrated or silently mapped to a current backend.
+
+`"hardware"` means the native hardware decode path; on Linux today that concrete
+path is VA-API, but the public config value is intentionally not VA-API-specific.
+`"software"` means FFmpeg software decode only; if the FFmpeg software provider
+is unavailable, selection fails with a typed error.
 
 `render.profile = "vulkan"` and `[render.vulkan]` are render/surface settings
 for the current WGPU shell path. They do not select a Vulkan video decode

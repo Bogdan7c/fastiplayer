@@ -8,7 +8,10 @@ use serde::{
 use crate::{ConfigResult, validation};
 
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+
+/// Предыдущая схема, которую loader умеет нормализовать в текущую.
+pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
 
 /// Полная пользовательская конфигурация приложения.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, settings_derive::SettingsSchema)]
@@ -83,14 +86,14 @@ impl AppConfig {
         if !toml_text.ends_with('\n') {
             toml_text.push('\n');
         }
-        document_schema_version_2_defaults(&mut toml_text);
+        document_schema_version_3_defaults(&mut toml_text);
 
         Ok(toml_text)
     }
 }
 
-/// Добавляет русские комментарии к полям schema version 2 в default TOML.
-fn document_schema_version_2_defaults(toml_text: &mut String) {
+/// Добавляет русские комментарии к полям schema version 3 в default TOML.
+fn document_schema_version_3_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
         "[player.seek]",
@@ -728,12 +731,13 @@ pub struct VideoConfig {
         label_id = "settings.video.preferred_backend.label",
         label_ru = "Decode backend",
         description_id = "settings.video.preferred_backend.description",
-        description_ru = "Предпочитаемый backend для hardware decode.",
+        description_ru = "Предпочитаемый video decode path: auto, native hardware или software FFmpeg.",
         editor = "select",
         apply = "video.apply",
         options(
             option(id = "auto", label_id = "settings.video.preferred_backend.auto", label_ru = "Авто", value = VideoBackendPreference::Auto),
-            option(id = "vaapi", label_id = "settings.video.preferred_backend.vaapi", label_ru = "VA-API", value = VideoBackendPreference::Vaapi),
+            option(id = "hardware", label_id = "settings.video.preferred_backend.hardware", label_ru = "Hardware", value = VideoBackendPreference::Hardware),
+            option(id = "software", label_id = "settings.video.preferred_backend.software", label_ru = "Software FFmpeg", value = VideoBackendPreference::Software),
         )
     )]
     pub preferred_backend: VideoBackendPreference,
@@ -1113,15 +1117,20 @@ pub enum VideoBackendPreference {
     /// Автоматически выбрать лучший доступный backend.
     Auto,
 
-    /// VA-API hardware decode.
-    Vaapi,
+    /// Native hardware decode path; сейчас это VA-API, но TOML value не привязан к VA-API навсегда.
+    Hardware,
+
+    /// Только FFmpeg software decode path.
+    Software,
 }
 
-const SUPPORTED_VIDEO_BACKEND_PREFERENCE_VALUES: &[&str] = &["auto", "vaapi"];
+const SUPPORTED_VIDEO_BACKEND_PREFERENCE_VALUES: &[&str] = &["auto", "hardware", "software"];
+const LEGACY_VAAPI_VIDEO_BACKEND_PREFERENCE: &str = "vaapi";
 const REMOVED_VULKAN_VIDEO_BACKEND_PREFERENCE: &str = "vulkan";
 
-// Ручной Deserialize нужен, чтобы удалённый `vulkan` получил точную подсказку,
-// а остальные неизвестные id остались обычной schema error от Serde.
+// Ручной Deserialize нужен, чтобы v2 `vaapi` нормализовался в `hardware`,
+// удалённый `vulkan` получил точную подсказку, а остальные неизвестные id
+// остались обычной schema error от Serde.
 impl<'de> Deserialize<'de> for VideoBackendPreference {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1137,7 +1146,7 @@ impl<'de> Visitor<'de> for VideoBackendPreferenceVisitor {
     type Value = VideoBackendPreference;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("video.preferred_backend value \"auto\" or \"vaapi\"")
+        formatter.write_str("video.preferred_backend value \"auto\", \"hardware\" or \"software\"")
     }
 
     fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
@@ -1146,11 +1155,13 @@ impl<'de> Visitor<'de> for VideoBackendPreferenceVisitor {
     {
         match value {
             "auto" => Ok(VideoBackendPreference::Auto),
-            "vaapi" => Ok(VideoBackendPreference::Vaapi),
+            "hardware" => Ok(VideoBackendPreference::Hardware),
+            "software" => Ok(VideoBackendPreference::Software),
+            LEGACY_VAAPI_VIDEO_BACKEND_PREFERENCE => Ok(VideoBackendPreference::Hardware),
             REMOVED_VULKAN_VIDEO_BACKEND_PREFERENCE => Err(E::custom(
                 "video.preferred_backend = \"vulkan\" удалён; замените его на \"auto\", \
-                 чтобы Rustiplayer выбрал поддерживаемый backend, или на \"vaapi\", чтобы \
-                 явно требовать VA-API hardware decode",
+                 чтобы Rustiplayer выбрал поддерживаемый backend, или на \"hardware\", чтобы \
+                 явно требовать native hardware decode",
             )),
             unknown_value => Err(E::unknown_variant(
                 unknown_value,
@@ -2697,7 +2708,11 @@ mod settings_metadata_tests {
             "player.preferred_video_codec_order",
             &["vp9", "av1", "h264", "h265", "vp8"],
         );
-        assert_select_options(&registry, "video.preferred_backend", &["auto", "vaapi"]);
+        assert_select_options(
+            &registry,
+            "video.preferred_backend",
+            &["auto", "hardware", "software"],
+        );
         assert_select_options(&registry, "render.profile", &["auto", "vulkan", "opengles"]);
         assert_select_options(&registry, "render.hdr_to_sdr.operator", &["bt2446_c"]);
         assert_select_options(&registry, "render.tone_mapping", &["auto", "disabled"]);
@@ -2707,6 +2722,24 @@ mod settings_metadata_tests {
             &["auto", "fifo", "mailbox", "immediate"],
         );
         assert_select_options(&registry, "ui.skin", &[validation::DEFAULT_UI_SKIN]);
+    }
+
+    #[test]
+    fn video_backend_options_do_not_expose_implementation_specific_public_id() {
+        let registry = registry();
+        let SettingEditor::Select(SelectDescriptor::Static { options }) =
+            &descriptor(&registry, "video.preferred_backend").editor
+        else {
+            panic!("video.preferred_backend must use static select editor");
+        };
+
+        let ids = option_ids(options);
+        let implementation_specific_underscore_id = ["ffmpeg", "sw"].join("_");
+        let implementation_specific_dash_id = ["ffmpeg", "sw"].join("-");
+
+        assert_eq!(ids, vec!["auto", "hardware", "software"]);
+        assert!(!ids.contains(&implementation_specific_underscore_id.as_str()));
+        assert!(!ids.contains(&implementation_specific_dash_id.as_str()));
     }
 
     #[test]

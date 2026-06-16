@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 
 use tracing::{info, warn};
 
-use crate::{AppConfig, ConfigError, ConfigPaths, ConfigResult};
+use crate::{
+    AppConfig, CURRENT_SCHEMA_VERSION, ConfigError, ConfigPaths, ConfigResult,
+    LEGACY_SCHEMA_VERSION_2,
+};
 
 /// Сколько разных имён temp-файла пробуем перед явной ошибкой collision-а.
 const MAX_TEMP_CONFIG_CREATE_ATTEMPTS: u32 = 32;
@@ -304,11 +307,12 @@ fn sync_parent_directory_best_effort(path: &Path) {
 
 /// Превращает TOML text в validated `AppConfig`.
 fn parse_config_text(path: &Path, toml_text: &str) -> ConfigResult<AppConfig> {
-    let config =
+    let mut config =
         toml::from_str::<AppConfig>(toml_text).map_err(|source| ConfigError::ParseConfigFile {
             path: path.to_path_buf(),
             source,
         })?;
+    migrate_loaded_config(&mut config);
 
     config
         .validate()
@@ -319,6 +323,15 @@ fn parse_config_text(path: &Path, toml_text: &str) -> ConfigResult<AppConfig> {
     Ok(config)
 }
 
+/// Нормализует старые TOML-схемы в текущую in-memory схему перед validation.
+fn migrate_loaded_config(config: &mut AppConfig) {
+    if config.schema_version == LEGACY_SCHEMA_VERSION_2 {
+        // Все breaking-изменения v2 -> v3 уже выражены типами:
+        // `video.preferred_backend = "vaapi"` десериализуется как `Hardware`.
+        config.schema_version = CURRENT_SCHEMA_VERSION;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -326,7 +339,7 @@ mod tests {
     use super::*;
     use crate::{
         CURRENT_SCHEMA_VERSION, HdrToSdrOperatorConfig, PausedCommitBehavior, ToneMappingMode,
-        validation,
+        VideoBackendPreference, validation,
     };
 
     /// Проверяет, что default schema остаётся самосогласованной.
@@ -401,13 +414,13 @@ mod tests {
         assert_eq!(config.render.tone_mapping, ToneMappingMode::Disabled);
     }
 
-    /// Проверяет defaults новой schema version 2.
+    /// Проверяет defaults текущей schema version 3.
     #[test]
-    fn schema_version_2_defaults_include_seek_network_and_ui_skin() {
+    fn schema_version_3_defaults_include_seek_network_and_ui_skin() {
         let config = AppConfig::default();
 
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
-        assert_eq!(CURRENT_SCHEMA_VERSION, 2);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 3);
         assert_eq!(config.player.seek.commit_timeout_ms, 10_000);
         assert_eq!(config.player.seek.resume_audio_min_buffer_ms, 50);
         assert_eq!(config.player.seek.resume_audio_gate_timeout_ms, 250);
@@ -426,6 +439,7 @@ mod tests {
         assert_eq!(config.video.decoder_ready_queue_frames, 8);
         assert_eq!(config.video.decoder_surface_pool_frames, 24);
         assert_eq!(config.video.zero_copy_surface_pool_slots, 24);
+        assert_eq!(config.video.preferred_backend, VideoBackendPreference::Auto);
         assert_eq!(config.video.scheduler.demux_packets_per_tick, 12);
         assert_eq!(config.video.scheduler.video_packets_per_tick, 8);
         assert_eq!(config.video.scheduler.decoded_frames_per_tick, 8);
@@ -550,7 +564,7 @@ mod tests {
         assert!(loaded.config.render.color_adjustment.is_identity());
 
         let created_toml = fs::read_to_string(&loaded.path).expect("created config readable");
-        assert!(created_toml.contains("schema_version = 2"));
+        assert!(created_toml.contains("schema_version = 3"));
         assert!(created_toml.contains("[player.seek]"));
         assert!(created_toml.contains("# Настройки seek commit"));
         assert!(created_toml.contains("commit_timeout_ms = 10000"));
@@ -895,9 +909,34 @@ preferred_backend = "vulkan"
         assert!(message.contains("video.preferred_backend"));
         assert!(message.contains("\"vulkan\""));
         assert!(message.contains("\"auto\""));
-        assert!(message.contains("\"vaapi\""));
+        assert!(message.contains("\"hardware\""));
         assert!(message.contains("удал"));
         assert!(message.contains("замените"));
+    }
+
+    /// Проверяет migration boundary: v2 `vaapi` становится v3 `hardware`.
+    #[test]
+    fn legacy_vaapi_video_backend_preference_migrates_to_hardware() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 2
+
+[video]
+preferred_backend = "vaapi"
+"#,
+        )
+        .expect("legacy backend config written");
+
+        let loaded = load_from_path(&config_path).expect("legacy backend migrated");
+
+        assert_eq!(loaded.config.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            loaded.config.video.preferred_backend,
+            VideoBackendPreference::Hardware
+        );
     }
 
     /// Проверяет, что другие неизвестные backend id остаются обычной schema error.
@@ -922,7 +961,8 @@ preferred_backend = "cuda"
         assert!(message.contains("TOML-схеме"));
         assert!(message.contains("cuda"));
         assert!(message.contains("auto"));
-        assert!(message.contains("vaapi"));
+        assert!(message.contains("hardware"));
+        assert!(message.contains("software"));
         assert!(!message.contains("удал"));
         assert!(!message.contains("замените"));
     }

@@ -32,15 +32,19 @@ pub(crate) enum VideoPipelineSelectionError {
 
     /// `auto` не нашёл ни одного уже playable path-а.
     #[error(
-        "video.preferred_backend=auto: нет playable VA-API DMA-BUF output после renderer intersection"
+        "video.preferred_backend=auto: нет playable native hardware output после renderer intersection"
     )]
-    AutoVaapiDmaBufUnavailable,
+    AutoHardwareUnavailable,
 
-    /// Пользователь явно потребовал VA-API, но capability report не подтверждает path.
+    /// Пользователь явно потребовал native hardware path, но capability report не подтверждает path.
     #[error(
-        "video.preferred_backend=vaapi: нет playable VA-API DMA-BUF output после renderer intersection"
+        "video.preferred_backend=hardware: нет playable native hardware output после renderer intersection"
     )]
-    PreferredVaapiDmaBufUnavailable,
+    PreferredHardwareUnavailable,
+
+    /// Пользователь явно потребовал FFmpeg software path, но provider ещё не доступен.
+    #[error("video.preferred_backend=software: FFmpeg software decode backend сейчас недоступен")]
+    SoftwareBackendUnavailable,
 }
 
 /// Выбирает concrete plan из committed video config и готового capability snapshot-а.
@@ -62,16 +66,17 @@ pub(crate) fn select_video_pipeline_plan(
                 decoder_thread_config,
             })
         }
-        VideoBackendPreference::Auto => {
-            Err(VideoPipelineSelectionError::AutoVaapiDmaBufUnavailable)
-        }
-        VideoBackendPreference::Vaapi if has_playable_vaapi_dma_buf => {
+        VideoBackendPreference::Auto => Err(VideoPipelineSelectionError::AutoHardwareUnavailable),
+        VideoBackendPreference::Hardware if has_playable_vaapi_dma_buf => {
             Ok(VideoPipelinePlan::VaapiDmaBufWgpu {
                 decoder_thread_config,
             })
         }
-        VideoBackendPreference::Vaapi => {
-            Err(VideoPipelineSelectionError::PreferredVaapiDmaBufUnavailable)
+        VideoBackendPreference::Hardware => {
+            Err(VideoPipelineSelectionError::PreferredHardwareUnavailable)
+        }
+        VideoBackendPreference::Software => {
+            Err(VideoPipelineSelectionError::SoftwareBackendUnavailable)
         }
     }
 }
@@ -183,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn vaapi_preference_requires_vaapi_dma_buf_output() {
+    fn hardware_preference_requires_native_hardware_dma_buf_output() {
         let decoder_thread_config = PlayerVideoDecoderThreadConfig::default();
         let capabilities = capabilities_with_playable_outputs(vec![
             non_vaapi_dma_buf_output(),
@@ -191,11 +196,11 @@ mod tests {
         ]);
 
         let plan = select_video_pipeline_plan(
-            VideoBackendPreference::Vaapi,
+            VideoBackendPreference::Hardware,
             Some(&capabilities),
             decoder_thread_config,
         )
-        .expect("vaapi preference should select VA-API when present");
+        .expect("hardware preference should select current native hardware path");
 
         assert_eq!(
             plan,
@@ -206,36 +211,53 @@ mod tests {
     }
 
     #[test]
-    fn missing_vaapi_in_vaapi_preference_is_explicit_error() {
+    fn missing_native_hardware_in_hardware_preference_is_explicit_error() {
         let capabilities = capabilities_with_playable_outputs(vec![non_vaapi_dma_buf_output()]);
 
         let error = select_video_pipeline_plan(
-            VideoBackendPreference::Vaapi,
+            VideoBackendPreference::Hardware,
             Some(&capabilities),
             PlayerVideoDecoderThreadConfig::default(),
         )
-        .expect_err("vaapi preference must not fall back to another backend");
+        .expect_err("hardware preference must not fall back to another backend");
 
         assert_eq!(
             error,
-            VideoPipelineSelectionError::PreferredVaapiDmaBufUnavailable
+            VideoPipelineSelectionError::PreferredHardwareUnavailable
         );
     }
 
     #[test]
-    fn vaapi_preference_rejects_vaapi_without_dma_buf_transfer() {
+    fn hardware_preference_rejects_native_hardware_without_dma_buf_transfer() {
         let capabilities = capabilities_with_playable_outputs(vec![host_upload_vaapi_output()]);
 
         let error = select_video_pipeline_plan(
-            VideoBackendPreference::Vaapi,
+            VideoBackendPreference::Hardware,
             Some(&capabilities),
             PlayerVideoDecoderThreadConfig::default(),
         )
-        .expect_err("VA-API startup requires current DMA-BUF materializer path");
+        .expect_err("hardware startup requires current DMA-BUF materializer path");
 
         assert_eq!(
             error,
-            VideoPipelineSelectionError::PreferredVaapiDmaBufUnavailable
+            VideoPipelineSelectionError::PreferredHardwareUnavailable
+        );
+    }
+
+    #[test]
+    fn software_preference_returns_typed_unavailable_until_ffmpeg_provider_exists() {
+        let capabilities = capabilities_with_playable_outputs(vec![current_vaapi_output()]);
+
+        let error = select_video_pipeline_plan(
+            VideoBackendPreference::Software,
+            Some(&capabilities),
+            PlayerVideoDecoderThreadConfig::default(),
+        )
+        .expect_err("software preference must not silently use current VA-API path");
+
+        assert_eq!(
+            error,
+            VideoPipelineSelectionError::SoftwareBackendUnavailable
         );
     }
 

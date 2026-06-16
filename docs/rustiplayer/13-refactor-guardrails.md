@@ -217,9 +217,10 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
 - FFmpeg/libav crates не добавляются в этом подготовительном refactor-е:
   `ffmpeg-next`, `ffmpeg-sys-next`, `rsmpeg`, `libav*` и аналогичные direct
   dependency names запрещены для всех workspace crates.
-- Public `video.preferred_backend` остаётся только `auto`/`vaapi`. Старое
-  `"vulkan"` разрешено упоминать только в rejection diagnostics/tests, а
-  `ffmpeg_sw`/`ffmpeg-sw` не должен появляться как TOML/UI/settings option.
+- Public `video.preferred_backend` остаётся только `auto`/`hardware`/`software`.
+  Старое `"vulkan"` разрешено упоминать только в rejection diagnostics/tests, а
+  отдельный `ffmpeg_sw`/`ffmpeg-sw` не должен появляться как TOML/UI/settings
+  option.
 - `render-wgpu-video` не добавляет WGPU host-upload materializer module. Current
   production renderer остаётся DMA-BUF NV12/P010; HostPlanar возвращает typed
   `Unsupported`, а не silent CPU fallback/readback/upload.

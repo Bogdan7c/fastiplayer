@@ -14,6 +14,7 @@ mod validation;
 
 pub use error::{ConfigError, ConfigResult};
 pub use paths::{CONFIG_FILE_NAME, ConfigPaths};
+pub(crate) use schema::LEGACY_SCHEMA_VERSION_2;
 pub use schema::{
     AppConfig, AudioConfig, CURRENT_SCHEMA_VERSION, HdrToSdrConfig, HdrToSdrOperatorConfig,
     NetworkConfig, OpenGlesConfig, PausedCommitBehavior, PlayerConfig, PlayerDemuxConfig,
