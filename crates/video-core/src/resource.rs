@@ -97,6 +97,21 @@ pub trait HostPlanarFrameOwner: fmt::Debug + Send + Sync {
         row_index: u32,
         visible_row_bytes: usize,
     ) -> anyhow::Result<&[u8]>;
+
+    /// Возвращает один непрерывный блок plane-а, покрывающий все видимые строки.
+    ///
+    /// Блок начинается с начала plane-а и имеет длину ровно `block_len`
+    /// (`(visible_height - 1) * stride + visible_row_bytes`), то есть включает
+    /// inter-row padding между строками, но не правый padding последней строки.
+    /// Это позволяет renderer-у залить весь plane одним host->GPU upload-ом со
+    /// `bytes_per_row = stride` вместо одного вызова на строку, не делая
+    /// промежуточной CPU-копии. Owner не раскрывает raw pointers.
+    fn visible_plane_block(
+        &self,
+        plane_index: usize,
+        plane: &HostPlaneDescriptor,
+        block_len: usize,
+    ) -> anyhow::Result<&[u8]>;
 }
 
 /// Простая owned-buffer реализация owner-а для тестов и будущих CPU-owned paths.
@@ -148,6 +163,44 @@ impl HostPlanarFrameOwner for HostPlanarOwnedBuffer {
 
         Ok(&self.bytes[row_start..row_end])
     }
+
+    fn visible_plane_block(
+        &self,
+        _plane_index: usize,
+        plane: &HostPlaneDescriptor,
+        block_len: usize,
+    ) -> anyhow::Result<&[u8]> {
+        let block_end = plane
+            .offset
+            .checked_add(block_len)
+            .context("host-planar plane block end overflow")?;
+
+        ensure!(
+            block_end <= self.bytes.len(),
+            "host-planar {:?} plane block exceeds storage: end {}, storage {}",
+            plane.role,
+            block_end,
+            self.bytes.len()
+        );
+
+        Ok(&self.bytes[plane.offset..block_end])
+    }
+}
+
+/// Непрерывный видимый plane плюс stride для одного host->GPU upload-а.
+#[derive(Debug)]
+pub struct HostPlanarVisiblePlaneBlock<'a> {
+    /// Срез backing-а owner-а, покрывающий все видимые строки plane-а.
+    pub bytes: &'a [u8],
+
+    /// Byte stride между началом соседних строк (`bytes_per_row` для upload-а).
+    pub stride: usize,
+
+    /// Видимые bytes одной строки без правого padding-а.
+    pub visible_row_bytes: usize,
+
+    /// Количество видимых строк plane-а.
+    pub visible_height: u32,
 }
 
 /// Owned host-planar decoded frame без raw pointers и layout второго порядка.
@@ -215,6 +268,59 @@ impl HostPlanarFrameDescriptor {
         );
 
         Ok(row_bytes)
+    }
+
+    /// Возвращает весь видимый plane одним непрерывным блоком плюс stride.
+    ///
+    /// Renderer использует это, чтобы залить plane одним host->GPU upload-ом
+    /// (`bytes_per_row = stride`) вместо вызова на каждую строку. Промежуточной
+    /// CPU-копии нет: блок — это срез backing-а owner-а.
+    pub fn visible_plane_block(
+        &self,
+        plane_index: usize,
+    ) -> anyhow::Result<HostPlanarVisiblePlaneBlock<'_>> {
+        let plane = self
+            .planes
+            .get(plane_index)
+            .with_context(|| format!("host-planar plane index {plane_index} is out of bounds"))?;
+
+        let visible_row_bytes = host_plane_visible_row_bytes(plane)?;
+        ensure!(
+            plane.stride >= visible_row_bytes,
+            "host-planar {:?} stride {} is smaller than visible row bytes {}",
+            plane.role,
+            plane.stride,
+            visible_row_bytes
+        );
+
+        let visible_height = usize::try_from(plane.visible_height)
+            .context("host-planar visible height does not fit usize")?;
+        // block_len = (visible_height - 1) * stride + visible_row_bytes — ровно
+        // столько байт требует wgpu::Queue::write_texture для копии height строк
+        // со stride; visible_height > 0 гарантирован host_plane_visible_row_bytes.
+        let block_len = plane
+            .stride
+            .checked_mul(visible_height - 1)
+            .and_then(|rows| rows.checked_add(visible_row_bytes))
+            .context("host-planar plane block length overflow")?;
+
+        let bytes = self
+            .owner
+            .visible_plane_block(plane_index, plane, block_len)?;
+        ensure!(
+            bytes.len() == block_len,
+            "host-planar {:?} owner returned {} bytes for plane block, expected {}",
+            plane.role,
+            bytes.len(),
+            block_len
+        );
+
+        Ok(HostPlanarVisiblePlaneBlock {
+            bytes,
+            stride: plane.stride,
+            visible_row_bytes,
+            visible_height: plane.visible_height,
+        })
     }
 
     /// Дешёвый clone для lookup-а: owner/refcount клонируется без копирования bytes.
@@ -1187,6 +1293,16 @@ mod tests {
         ) -> anyhow::Result<&[u8]> {
             self.owned_buffer
                 .visible_row_bytes(plane_index, plane, row_index, visible_row_bytes)
+        }
+
+        fn visible_plane_block(
+            &self,
+            plane_index: usize,
+            plane: &HostPlaneDescriptor,
+            block_len: usize,
+        ) -> anyhow::Result<&[u8]> {
+            self.owned_buffer
+                .visible_plane_block(plane_index, plane, block_len)
         }
     }
 

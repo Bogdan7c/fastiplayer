@@ -212,14 +212,30 @@ impl FfmpegVideoDecoderThread {
         let thread_config = config.thread_config().normalized();
         let (packet_tx, packet_rx) = bounded(thread_config.packet_channel_frames);
         let (control_tx, control_rx) = bounded(thread_config.control_channel_frames);
-        let (frame_tx, frame_rx) = bounded(thread_config.frame_channel_frames);
+        // Decoded-frame channel сделан с запасом над ready-queue backpressure
+        // порогом (decoder_ready_queue_frames): один send_packet при frame
+        // threading может слить burst кадров (или весь EOF/DPB tail ~thread_count
+        // сразу), а player тормозит отправку только по frame_rx.len() >=
+        // ready-queue. Размер по decoder_surface_pool_frames даёт headroom, чтобы
+        // try_send не упёрся в full channel внутри одной drain-итерации.
+        let (frame_tx, frame_rx) = bounded(thread_config.decoder_surface_pool_frames);
         let (error_tx, error_rx) = bounded(1);
         let (packet_ack_tx, packet_ack_rx) = bounded(thread_config.packet_channel_frames);
         let (activity_notifier, activity_subscription) = VideoDecoderActivityNotifier::new();
         let eof_drain_state = Arc::new(Mutex::new(VideoDecoderEndOfStreamDrainState::Idle));
         let control_pressure = Arc::new(FfmpegControlPressureCounters::default());
+        // Resource table должна вмещать все одновременно живущие decoded frames,
+        // а не только те, что лежат в frame channel: кадры остаются в таблице
+        // после выборки из channel-а, пока consumer держит их в present queue и
+        // render lease-ах, и освобождаются только через release_frame. Размер по
+        // frame_channel_frames (ready-queue) переполнялся, как только быстрый
+        // (теперь многопоточный) decode заполнял весь pipeline. Берём
+        // decoder_surface_pool_frames — это neutral output frame pool (тот же
+        // смысл, что и surface pool у hardware backend-а), который покрывает
+        // ready channel + present queue + leases. Ready-queue backpressure
+        // продолжает считаться отдельно по frame channel длине.
         let host_resource_provider =
-            FfmpegHostResourceProvider::new(thread_config.frame_channel_frames);
+            FfmpegHostResourceProvider::new(thread_config.decoder_surface_pool_frames);
         let worker = FfmpegDecoderWorker {
             active_decoder: None,
             activity_notifier,
@@ -922,6 +938,59 @@ impl HostPlanarFrameOwner for AvFrameHostPlanarOwner {
 
         self.frame
             .plane_row_data(plane_index, row_index, visible_row_bytes)
+            .map_err(|error| anyhow::anyhow!(error))?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "AVFrame-backed host-planar {:?} plane {} has null data pointer",
+                    plane.role,
+                    plane_index
+                )
+            })
+    }
+
+    fn visible_plane_block(
+        &self,
+        plane_index: usize,
+        plane: &HostPlaneDescriptor,
+        block_len: usize,
+    ) -> anyhow::Result<&[u8]> {
+        if plane.offset != 0 {
+            return Err(anyhow::anyhow!(
+                "AVFrame-backed host-planar {:?} plane uses non-zero owner offset {}",
+                plane.role,
+                plane.offset
+            ));
+        }
+
+        // block_len посчитан descriptor-ом из plane.stride; убеждаемся, что это
+        // тот же linesize, что у AVFrame, иначе срез мог бы выйти за plane buffer.
+        let line_size = self.frame.linesize(plane_index).ok_or_else(|| {
+            anyhow::anyhow!(
+                "AVFrame-backed host-planar {:?} plane {} has no linesize",
+                plane.role,
+                plane_index
+            )
+        })?;
+        let line_size = usize::try_from(line_size).map_err(|_| {
+            anyhow::anyhow!(
+                "AVFrame-backed host-planar {:?} plane {} has negative linesize {}",
+                plane.role,
+                plane_index,
+                line_size
+            )
+        })?;
+        if line_size != plane.stride {
+            return Err(anyhow::anyhow!(
+                "AVFrame-backed host-planar {:?} plane {} linesize {} does not match descriptor stride {}",
+                plane.role,
+                plane_index,
+                line_size,
+                plane.stride
+            ));
+        }
+
+        self.frame
+            .plane_block_data(plane_index, block_len)
             .map_err(|error| anyhow::anyhow!(error))?
             .ok_or_else(|| {
                 anyhow::anyhow!(

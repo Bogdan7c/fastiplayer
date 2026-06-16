@@ -455,12 +455,13 @@ trait HostPlanarUploadBackend {
         layout: HostPlanarUploadLayout,
     ) -> Result<Self::UploadedTextures>;
 
-    fn upload_plane_row(
+    fn upload_plane_block(
         &mut self,
         uploaded_textures: &Self::UploadedTextures,
         plane_index: usize,
-        row_index: u32,
-        row_bytes: &[u8],
+        block_bytes: &[u8],
+        stride: usize,
+        visible_height: u32,
     ) -> Result<()>;
 }
 
@@ -535,52 +536,68 @@ impl HostPlanarUploadBackend for WgpuHostPlanarUploadBackend {
         )))
     }
 
-    fn upload_plane_row(
+    fn upload_plane_block(
         &mut self,
         uploaded_textures: &Self::UploadedTextures,
         plane_index: usize,
-        row_index: u32,
-        row_bytes: &[u8],
+        block_bytes: &[u8],
+        stride: usize,
+        visible_height: u32,
     ) -> Result<()> {
         let plane_layout = uploaded_textures.layout.plane(plane_index)?;
         let texture = uploaded_textures.plane_texture(plane_index)?;
-        let expected_row_bytes = plane_layout.visible_row_bytes()?;
+        let visible_row_bytes = plane_layout.visible_row_bytes()?;
 
         ensure!(
-            row_bytes.len() == expected_row_bytes,
-            "host-planar {:?} upload row has {} bytes, expected {}",
+            visible_height == plane_layout.height,
+            "host-planar {:?} upload block height {} does not match texture height {}",
             plane_layout.role,
-            row_bytes.len(),
-            expected_row_bytes
-        );
-        ensure!(
-            row_index < plane_layout.height,
-            "host-planar {:?} upload row {} is outside texture height {}",
-            plane_layout.role,
-            row_index,
+            visible_height,
             plane_layout.height
         );
+        ensure!(
+            stride >= visible_row_bytes,
+            "host-planar {:?} upload stride {} is smaller than visible row bytes {}",
+            plane_layout.role,
+            stride,
+            visible_row_bytes
+        );
+
+        // wgpu::Queue::write_texture требует ровно (height-1)*stride +
+        // visible_row_bytes байт для копии height строк со stride. Один вызов на
+        // весь plane вместо одного на строку убирает per-row overhead (на 4K это
+        // ~4320 вызовов write_texture на кадр).
+        let expected_block_bytes = stride
+            .checked_mul(plane_layout.height.saturating_sub(1) as usize)
+            .and_then(|rows| rows.checked_add(visible_row_bytes))
+            .context("host-planar upload block length overflow")?;
+        ensure!(
+            block_bytes.len() == expected_block_bytes,
+            "host-planar {:?} upload block has {} bytes, expected {}",
+            plane_layout.role,
+            block_bytes.len(),
+            expected_block_bytes
+        );
+
+        let bytes_per_row =
+            u32::try_from(stride).context("host-planar upload stride does not fit u32")?;
 
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: 0,
-                    y: row_index,
-                    z: 0,
-                },
+                origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
                 aspect: wgpu::TextureAspect::All,
             },
-            row_bytes,
+            block_bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: None,
+                bytes_per_row: Some(bytes_per_row),
                 rows_per_image: None,
             },
             wgpu::Extent3d {
                 width: plane_layout.width,
-                height: 1,
+                height: plane_layout.height,
                 depth_or_array_layers: 1,
             },
         );
@@ -716,25 +733,36 @@ where
     );
 
     let expected_row_bytes = plane_layout.visible_row_bytes()?;
-    for row_index in 0..plane_layout.height {
-        let row_bytes = descriptor
-            .visible_plane_row_bytes(plane_index, row_index)
-            .with_context(|| {
-                format!(
-                    "failed to read visible row {row_index} for host-planar {:?} upload",
-                    plane_layout.role
-                )
-            })?;
-        ensure!(
-            row_bytes.len() == expected_row_bytes,
-            "host-planar {:?} visible row has {} bytes, expected {}",
-            plane_layout.role,
-            row_bytes.len(),
-            expected_row_bytes
-        );
+    let block = descriptor
+        .visible_plane_block(plane_index)
+        .with_context(|| {
+            format!(
+                "failed to read visible plane block for host-planar {:?} upload",
+                plane_layout.role
+            )
+        })?;
+    ensure!(
+        block.visible_row_bytes == expected_row_bytes,
+        "host-planar {:?} visible row has {} bytes, expected {}",
+        plane_layout.role,
+        block.visible_row_bytes,
+        expected_row_bytes
+    );
+    ensure!(
+        block.visible_height == plane_layout.height,
+        "host-planar {:?} visible height {} does not match upload height {}",
+        plane_layout.role,
+        block.visible_height,
+        plane_layout.height
+    );
 
-        backend.upload_plane_row(uploaded_textures, plane_index, row_index, row_bytes)?;
-    }
+    backend.upload_plane_block(
+        uploaded_textures,
+        plane_index,
+        block.bytes,
+        block.stride,
+        block.visible_height,
+    )?;
 
     Ok(())
 }
@@ -1106,18 +1134,30 @@ mod tests {
             })
         }
 
-        fn upload_plane_row(
+        fn upload_plane_block(
             &mut self,
             uploaded_textures: &Self::UploadedTextures,
             plane_index: usize,
-            _row_index: u32,
-            row_bytes: &[u8],
+            block_bytes: &[u8],
+            stride: usize,
+            visible_height: u32,
         ) -> Result<()> {
+            let visible_height = visible_height as usize;
+            // Восстанавливаем видимые строки из блока, чтобы тесты по-прежнему
+            // проверяли, что upload адресует только visible bytes (без padding-а).
+            let visible_row_bytes = block_bytes
+                .len()
+                .checked_sub(stride * visible_height.saturating_sub(1))
+                .expect("recorded block shorter than stride layout");
+            let mut rows = Vec::with_capacity(visible_height);
+            for row_index in 0..visible_height {
+                let start = row_index * stride;
+                rows.push(block_bytes[start..start + visible_row_bytes].to_vec());
+            }
             uploaded_textures
                 .planes
                 .lock()
-                .expect("recorded rows lock poisoned")[plane_index]
-                .push(row_bytes.to_vec());
+                .expect("recorded rows lock poisoned")[plane_index] = rows;
             Ok(())
         }
     }

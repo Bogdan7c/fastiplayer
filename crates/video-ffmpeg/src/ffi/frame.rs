@@ -396,6 +396,57 @@ impl OwnedAvFrame {
         }
     }
 
+    /// Возвращает один непрерывный блок plane-а длиной `block_len` байт.
+    ///
+    /// Используется для заливки всего plane-а одним host->GPU upload-ом со
+    /// `bytes_per_row = linesize`. Caller (`HostPlanarFrameDescriptor`) считает
+    /// `block_len = (visible_height - 1) * linesize + visible_row_bytes`, что не
+    /// превышает выделенный FFmpeg-ом plane buffer (`linesize * height`), поэтому
+    /// срез остаётся внутри backing-а refcounted `AVFrame`.
+    pub fn plane_block_data(
+        &self,
+        plane_index: usize,
+        block_len: usize,
+    ) -> FfiResult<Option<&[u8]>> {
+        if plane_index >= AV_FRAME_DATA_POINTERS {
+            return Err(FfmpegError::InvalidInput {
+                operation: "AVFrame plane block access",
+                details: format!(
+                    "plane index {plane_index} is outside 0..{AV_FRAME_DATA_POINTERS}"
+                ),
+            });
+        }
+
+        #[cfg(not(feature = "ffmpeg"))]
+        {
+            let _block_len = block_len;
+            Ok(None)
+        }
+
+        #[cfg(feature = "ffmpeg")]
+        {
+            // SAFETY: index bounds проверены выше; raw pointer валиден в течение `&self`.
+            let data_pointer = unsafe { self.raw_frame.as_ref().data[plane_index] };
+
+            if data_pointer.is_null() {
+                return Ok(None);
+            }
+
+            if block_len == 0 {
+                return Ok(Some(&[]));
+            }
+
+            // SAFETY: `OwnedAvFrame` владеет refcounted `AVFrame` lifetime-ом.
+            // `block_len` посчитан caller-ом как (height-1)*linesize +
+            // visible_row_bytes и не выходит за пределы plane buffer-а, который
+            // FFmpeg выделяет как минимум linesize*height. `&self` запрещает
+            // safe-коду вызвать `unref` во время borrow.
+            Ok(Some(unsafe {
+                slice::from_raw_parts(data_pointer.cast_const(), block_len)
+            }))
+        }
+    }
+
     /// Timestamps copied from the frame.
     #[must_use]
     pub fn timestamps(&self) -> FrameTimestamps {

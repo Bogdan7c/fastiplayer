@@ -177,6 +177,22 @@ impl CodecContext {
                 }
             }
 
+            // Многопоточный software decode. Без этого FFmpeg декодирует в один
+            // поток (thread_count по умолчанию = 1), и на 4K упирается в одно
+            // ядро при свободных остальных. thread_count = 0 просит libavcodec
+            // выбрать число потоков автоматически по av_cpu_count(); thread_type
+            // разрешает оба метода, а libavcodec сам маскирует их по
+            // AVCodec.capabilities (codec без frame/slice threading просто
+            // остаётся однопоточным). Должно быть выставлено до avcodec_open2.
+            // SAFETY: context owned wrapper-ом и валиден до open; поля
+            // thread_count/thread_type читаются FFmpeg только внутри open.
+            unsafe {
+                let context = raw_context.as_ptr();
+                (*context).thread_count = 0;
+                (*context).thread_type =
+                    ffmpeg_sys_next::FF_THREAD_FRAME | ffmpeg_sys_next::FF_THREAD_SLICE;
+            }
+
             // SAFETY: context и decoder pointer-ы валидны; options null значит
             // caller не передаёт dictionary. Context остаётся owned wrapper-ом.
             let status = unsafe {
