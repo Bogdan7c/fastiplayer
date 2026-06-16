@@ -18,7 +18,12 @@ use std::time::Duration;
 use std::time::Instant;
 
 #[cfg(feature = "ffmpeg")]
-use codec_core::{VideoColorMetadata, VideoDecodeRequirement};
+use codec_core::VideoDecodeRequirement;
+#[cfg(any(test, feature = "ffmpeg"))]
+use codec_core::{
+    ColorPrimaries, ColorRange, HdrMetadata, MatrixCoefficients, TransferFunction,
+    VideoColorMetadata,
+};
 #[cfg(feature = "ffmpeg")]
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 use thiserror::Error;
@@ -1627,6 +1632,9 @@ struct SendReceiveDecodeLoop<A: SendReceiveCodecApi> {
     /// Last generation whose packet was accepted by the decoder.
     current_generation: Option<u64>,
 
+    /// Last stream/context color metadata accepted with a packet.
+    current_context_color: Option<VideoColorMetadata>,
+
     /// Shared EOF/DPB drain state.
     eof_drain_state: Arc<Mutex<VideoDecoderEndOfStreamDrainState>>,
 
@@ -1648,6 +1656,7 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
             codec_api,
             pts_resolver: FramePtsResolver::default(),
             current_generation: None,
+            current_context_color: None,
             eof_drain_state,
             activity_notifier,
             completed_packet_count: 0,
@@ -1666,9 +1675,13 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
             match self.codec_api.send_packet(&prepared_packet) {
                 Ok(()) => {
                     self.current_generation = Some(packet.generation);
+                    self.current_context_color = packet.resolved_color.clone();
                     self.pts_resolver.observe_accepted_packet(&packet);
-                    let drain_report =
-                        self.receive_until_blocked(packet.generation, Some(packet.pts))?;
+                    let drain_report = self.receive_until_blocked(
+                        packet.generation,
+                        Some(packet.pts),
+                        self.current_context_color.clone(),
+                    )?;
                     progress_report.extend(drain_report);
                     progress_report.packet_completed = true;
                     self.completed_packet_count = self.completed_packet_count.saturating_add(1);
@@ -1677,7 +1690,11 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                 }
                 Err(DecodeApiError::Again) => {
                     let drain_generation = self.current_generation.unwrap_or(packet.generation);
-                    let drain_report = self.receive_until_blocked(drain_generation, None)?;
+                    let drain_report = self.receive_until_blocked(
+                        drain_generation,
+                        None,
+                        self.current_context_color.clone(),
+                    )?;
                     let made_progress = drain_report.made_progress();
                     progress_report.extend(drain_report);
 
@@ -1707,6 +1724,7 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
         self.codec_api.flush_buffers()?;
         self.pts_resolver = FramePtsResolver::default();
         self.current_generation = None;
+        self.current_context_color = None;
         set_eof_drain_state(
             &self.eof_drain_state,
             VideoDecoderEndOfStreamDrainState::Idle,
@@ -1731,7 +1749,11 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                         VideoDecoderEndOfStreamDrainState::Draining { generation },
                         &self.activity_notifier,
                     )?;
-                    let drain_report = self.receive_until_blocked(generation, None)?;
+                    let drain_report = self.receive_until_blocked(
+                        generation,
+                        None,
+                        self.current_context_color.clone(),
+                    )?;
                     let stop_reason = drain_report.stop_reason;
                     frames.extend(drain_report.frames);
 
@@ -1748,7 +1770,11 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                 }
                 Err(DecodeApiError::Again) => {
                     let drain_generation = self.current_generation.unwrap_or(generation);
-                    let drain_report = self.receive_until_blocked(drain_generation, None)?;
+                    let drain_report = self.receive_until_blocked(
+                        drain_generation,
+                        None,
+                        self.current_context_color.clone(),
+                    )?;
                     let made_progress = drain_report.made_progress();
                     frames.extend(drain_report.frames);
 
@@ -1795,6 +1821,7 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
         &mut self,
         generation: u64,
         packet_pts_seed: Option<Duration>,
+        context_color: Option<VideoColorMetadata>,
     ) -> Result<ReceiveDrainReport, FfmpegDecoderThreadError> {
         let mut drain_report = ReceiveDrainReport::default();
 
@@ -1804,13 +1831,13 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                     let pts = self
                         .pts_resolver
                         .resolve_frame_pts(frame_metadata.timestamps, packet_pts_seed);
+                    let color = frame_color_or_context_color(&frame_metadata, &context_color);
                     drain_report.frames.push(DecodedFrameRecord {
                         generation,
                         pts,
                         #[cfg(feature = "ffmpeg")]
                         frame_ref: frame_metadata.frame_ref,
-                        #[cfg(feature = "ffmpeg")]
-                        color: frame_metadata.color,
+                        color,
                     });
                     let _ = self.activity_notifier.notify_activity();
                 }
@@ -1871,6 +1898,93 @@ struct ReceivedFrameMetadata {
     color: Option<VideoColorMetadata>,
 }
 
+#[cfg(any(test, feature = "ffmpeg"))]
+fn frame_color_or_context_color(
+    frame_metadata: &ReceivedFrameMetadata,
+    context_color: &Option<VideoColorMetadata>,
+) -> Option<VideoColorMetadata> {
+    #[cfg(feature = "ffmpeg")]
+    {
+        merge_frame_color_with_context_color(frame_metadata.color.clone(), context_color)
+    }
+
+    #[cfg(not(feature = "ffmpeg"))]
+    {
+        let _frame_metadata = frame_metadata;
+        context_color.as_ref().cloned()
+    }
+}
+
+#[cfg(any(test, feature = "ffmpeg"))]
+fn merge_frame_color_with_context_color(
+    frame_color: Option<VideoColorMetadata>,
+    context_color: &Option<VideoColorMetadata>,
+) -> Option<VideoColorMetadata> {
+    match (frame_color, context_color.as_ref()) {
+        (Some(frame_color), Some(context_color)) if color_core_is_unknown(&frame_color) => {
+            let mut merged_color = context_color.clone();
+            merged_color.hdr_metadata =
+                align_hdr_metadata_to_color(frame_color.hdr_metadata, &merged_color)
+                    .or(merged_color.hdr_metadata);
+            Some(merged_color)
+        }
+        (Some(mut frame_color), Some(context_color)) => {
+            fill_unknown_core_color_fields(&mut frame_color, context_color);
+            let frame_hdr_metadata = frame_color.hdr_metadata.take();
+            frame_color.hdr_metadata =
+                align_hdr_metadata_to_color(frame_hdr_metadata, &frame_color)
+                    .or_else(|| context_color.hdr_metadata.clone());
+            Some(frame_color)
+        }
+        (Some(frame_color), None) => Some(frame_color),
+        (None, Some(context_color)) => Some(context_color.clone()),
+        (None, None) => None,
+    }
+}
+
+#[cfg(any(test, feature = "ffmpeg"))]
+fn color_core_is_unknown(color: &VideoColorMetadata) -> bool {
+    color.range == ColorRange::Unknown
+        && color.matrix == MatrixCoefficients::Unknown
+        && color.primaries == ColorPrimaries::Unknown
+        && color.transfer == TransferFunction::Unknown
+}
+
+#[cfg(any(test, feature = "ffmpeg"))]
+fn fill_unknown_core_color_fields(
+    frame_color: &mut VideoColorMetadata,
+    context_color: &VideoColorMetadata,
+) {
+    if frame_color.range == ColorRange::Unknown {
+        frame_color.range = context_color.range;
+    }
+    if frame_color.matrix == MatrixCoefficients::Unknown {
+        frame_color.matrix = context_color.matrix;
+    }
+    if frame_color.primaries == ColorPrimaries::Unknown {
+        frame_color.primaries = context_color.primaries;
+    }
+    if frame_color.transfer == TransferFunction::Unknown {
+        frame_color.transfer = context_color.transfer;
+    }
+}
+
+#[cfg(any(test, feature = "ffmpeg"))]
+fn align_hdr_metadata_to_color(
+    hdr_metadata: Option<HdrMetadata>,
+    color: &VideoColorMetadata,
+) -> Option<HdrMetadata> {
+    hdr_metadata.map(|mut hdr_metadata| {
+        if hdr_metadata.color_primaries == ColorPrimaries::Unknown {
+            hdr_metadata.color_primaries = color.primaries;
+        }
+        if hdr_metadata.transfer_function == TransferFunction::Unknown {
+            hdr_metadata.transfer_function = color.transfer;
+        }
+        hdr_metadata
+    })
+}
+
 /// Internal send/receive status preserving EAGAIN vs EOF.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg(any(test, feature = "ffmpeg"))]
@@ -1899,8 +2013,7 @@ struct DecodedFrameRecord {
     #[cfg(feature = "ffmpeg")]
     frame_ref: Option<OwnedAvFrame>,
 
-    /// Frame color metadata, present only in real FFmpeg builds.
-    #[cfg(feature = "ffmpeg")]
+    /// Frame-level color metadata or packet/context fallback metadata.
     color: Option<VideoColorMetadata>,
 }
 
@@ -2154,7 +2267,10 @@ mod tests {
     use std::collections::VecDeque;
 
     use bytes::Bytes;
-    use codec_core::VideoColorMetadata;
+    use codec_core::{
+        ColorPrimaries, ColorRange, HdrMetadata, MatrixCoefficients, TransferFunction,
+        VideoColorMetadata,
+    };
     use media_core::{TimeBase, TrackId, TrackTimestamp};
     use video_core::VideoDecoderActivityWaitOutcome;
 
@@ -2246,6 +2362,79 @@ mod tests {
             .send_packet(decode_packet_with_pts(1, 0, Duration::ZERO))
             .expect("multi-frame packet should complete");
         assert_eq!(many_frame_progress.frames.len(), 3);
+    }
+
+    #[test]
+    fn receive_loop_uses_packet_color_when_frame_metadata_is_missing() {
+        let expected_context_color = VideoColorMetadata::container(
+            ColorRange::Full,
+            MatrixCoefficients::Bt2020,
+            ColorPrimaries::Bt2020,
+            TransferFunction::Hlg,
+            None,
+        );
+        let mut packet = decode_packet_with_pts(1, 0, Duration::ZERO);
+        packet.resolved_color = Some(expected_context_color.clone());
+        let mut decode_loop = fake_loop(
+            [FakeSendResult::Accepted],
+            [
+                FakeReceiveResult::Frame(frame_timestamps(1, NO_TIMESTAMP, 1)),
+                FakeReceiveResult::Again,
+            ],
+        );
+
+        let progress = decode_loop
+            .send_packet(packet)
+            .expect("packet color should be copied into decoded frame record");
+
+        assert_eq!(progress.frames.len(), 1);
+        assert_eq!(progress.frames[0].color, Some(expected_context_color));
+    }
+
+    #[test]
+    fn frame_hdr_side_data_merges_with_packet_core_colorimetry() {
+        let context_color = VideoColorMetadata::container(
+            ColorRange::Limited,
+            MatrixCoefficients::Bt2020,
+            ColorPrimaries::Bt2020,
+            TransferFunction::Pq,
+            None,
+        );
+        let mut frame_side_data_color = VideoColorMetadata::bitstream(
+            ColorRange::Unknown,
+            MatrixCoefficients::Unknown,
+            ColorPrimaries::Unknown,
+            TransferFunction::Unknown,
+        );
+        frame_side_data_color.hdr_metadata = Some(HdrMetadata {
+            color_primaries: ColorPrimaries::Unknown,
+            transfer_function: TransferFunction::Unknown,
+            max_luminance_nits: Some(1_000.0),
+            min_luminance_nits: Some(0.005),
+            max_content_light_level_nits: Some(1_000),
+            max_frame_average_light_level_nits: Some(400),
+        });
+
+        let merged_color = merge_frame_color_with_context_color(
+            Some(frame_side_data_color),
+            &Some(context_color.clone()),
+        )
+        .expect("frame side data and packet color should merge");
+        let hdr_metadata = merged_color
+            .hdr_metadata
+            .as_ref()
+            .expect("HDR side data should be preserved");
+
+        assert_eq!(merged_color.range, context_color.range);
+        assert_eq!(merged_color.matrix, context_color.matrix);
+        assert_eq!(merged_color.primaries, context_color.primaries);
+        assert_eq!(merged_color.transfer, context_color.transfer);
+        assert_eq!(merged_color.origin, context_color.origin);
+        assert_eq!(merged_color.confidence, context_color.confidence);
+        assert_eq!(hdr_metadata.color_primaries, ColorPrimaries::Bt2020);
+        assert_eq!(hdr_metadata.transfer_function, TransferFunction::Pq);
+        assert_eq!(hdr_metadata.max_luminance_nits, Some(1_000.0));
+        assert!(merged_color.requires_hdr_processing());
     }
 
     #[test]

@@ -951,7 +951,10 @@ mod tests {
     use std::mem::{align_of, offset_of, size_of};
 
     use bytemuck::Zeroable;
-    use codec_core::{ChromaSubsampling, VideoColorMetadata, VideoDisplayOrientation};
+    use codec_core::{
+        ChromaSubsampling, ColorPrimaries, ColorRange, HdrMetadata, MatrixCoefficients,
+        TransferFunction, VideoColorMetadata, VideoDisplayOrientation,
+    };
     use render_core::RenderableFrame;
 
     use super::*;
@@ -1096,6 +1099,40 @@ mod tests {
     }
 
     #[test]
+    fn host_yuv420_hdr_host_upload_uses_gpu_tone_mapping_with_hdr_metadata() {
+        for (transfer, transfer_mode) in [
+            (TransferFunction::Pq, HOST_YUV420_TRANSFER_MODE_PQ),
+            (TransferFunction::Hlg, HOST_YUV420_TRANSFER_MODE_HLG),
+        ] {
+            let mut frame = host_yuv420_test_frame(VideoFramePixelLayout::Yuv420Planar10Le);
+            frame.color = host_yuv420_hdr_bt2020_color(transfer);
+
+            let prepared = prepare_host_yuv420_high_bit_render(
+                &frame,
+                &ColorPipelineSettings::default(),
+                HdrToSdrSettings::default(),
+                (1920, 1080),
+            )
+            .expect("HDR host-upload frame should prepare through GPU tone mapping");
+
+            assert_eq!(
+                prepared.uniforms.shader_mode[0],
+                HOST_YUV420_SHADER_MODE_HDR_BT2446C
+            );
+            assert_eq!(prepared.uniforms.shader_mode[1], transfer_mode);
+            assert!(prepared.active_path.hdr_to_sdr.is_some());
+            assert_eq!(prepared.uniforms.hdr_reference_nits[2], 1_000.0);
+            assert_eq!(prepared.uniforms.hdr_reference_nits[3], 0.005);
+            assert_eq!(prepared.uniforms.content_light_levels[0], 1_000.0);
+            assert_eq!(prepared.uniforms.content_light_levels[1], 400.0);
+            assert_eq!(
+                prepared.uniforms.optional_metadata_markers,
+                [HDR_METADATA_MARKER_CONFIRMED; 4]
+            );
+        }
+    }
+
+    #[test]
     fn host_planar_yuv_renderer_accepts_v1_software_matrix() {
         let supported_formats = [
             (
@@ -1198,6 +1235,24 @@ mod tests {
             display_orientation: VideoDisplayOrientation::Identity,
             color: VideoColorMetadata::sdr_bt709_limited(),
         }
+    }
+
+    fn host_yuv420_hdr_bt2020_color(transfer: TransferFunction) -> VideoColorMetadata {
+        let mut color = VideoColorMetadata::bitstream(
+            ColorRange::Limited,
+            MatrixCoefficients::Bt2020,
+            ColorPrimaries::Bt2020,
+            transfer,
+        );
+        color.hdr_metadata = Some(HdrMetadata {
+            color_primaries: ColorPrimaries::Bt2020,
+            transfer_function: transfer,
+            max_luminance_nits: Some(1_000.0),
+            min_luminance_nits: Some(0.005),
+            max_content_light_level_nits: Some(1_000),
+            max_frame_average_light_level_nits: Some(400),
+        });
+        color
     }
 
     fn bit_depth_code_for_tests(bit_depth: BitDepth) -> u32 {

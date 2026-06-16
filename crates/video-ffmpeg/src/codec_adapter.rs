@@ -1,11 +1,13 @@
 //! Adapter helpers between neutral video contracts and future FFmpeg setup.
 
-use crate::ffi::frame::FrameColorMetadata;
+use crate::ffi::frame::{
+    FrameColorMetadata, FrameContentLightMetadata, FrameMasteringDisplayMetadata, FrameRational,
+};
 use crate::ffi::pixel_format::{SoftwarePixelFormat, SoftwarePixelFormatSet};
 use codec_core::{
     Av1Profile, BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, H264Profile, H265Profile,
-    MatrixCoefficients, TransferFunction, VideoCodec, VideoColorMetadata, VideoDecodeRequirement,
-    VideoProfile, Vp8Profile, Vp9Profile,
+    HdrMetadata, MatrixCoefficients, TransferFunction, VideoCodec, VideoColorMetadata,
+    VideoDecodeRequirement, VideoProfile, Vp8Profile, Vp9Profile,
 };
 use thiserror::Error;
 use video_frame_contract::{
@@ -64,14 +66,20 @@ impl FfmpegDecoderId {
     }
 }
 
-/// Placeholder состояния чтения FFmpeg HDR side data.
+/// Состояние чтения FFmpeg HDR side data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FfmpegHdrSideDataStatus {
-    /// Side data ещё не читается: это намеренный foundation marker.
+    /// Side data не инспектировалась, например для stream-level requirement-а.
     NotInspected,
+
+    /// Side data была проверена и отсутствует.
+    Absent,
+
+    /// Side data была проверена и присутствует.
+    Present,
 }
 
-/// План будущего чтения HDR side data из `AVFrame`.
+/// План чтения HDR side data из `AVFrame`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FfmpegHdrSideDataPlan {
     /// FFmpeg `AV_FRAME_DATA_MASTERING_DISPLAY_METADATA`.
@@ -82,12 +90,25 @@ pub struct FfmpegHdrSideDataPlan {
 }
 
 impl FfmpegHdrSideDataPlan {
-    /// Создаёт placeholder без чтения side data.
+    /// Создаёт marker без чтения side data.
     #[must_use]
     pub const fn placeholders() -> Self {
         Self {
             mastering_display_metadata: FfmpegHdrSideDataStatus::NotInspected,
             content_light_metadata: FfmpegHdrSideDataStatus::NotInspected,
+        }
+    }
+
+    /// Создаёт status после frame-level inspection.
+    #[must_use]
+    pub const fn inspected(frame_color_metadata: &FrameColorMetadata) -> Self {
+        Self {
+            mastering_display_metadata: side_data_status(
+                frame_color_metadata.mastering_display_metadata.is_some(),
+            ),
+            content_light_metadata: side_data_status(
+                frame_color_metadata.content_light_metadata.is_some(),
+            ),
         }
     }
 }
@@ -314,17 +335,100 @@ pub fn color_metadata_plan_from_ffmpeg_frame(
     let matrix = matrix_from_ffmpeg_value(frame_color_metadata.color_space);
     let primaries = color_primaries_from_ffmpeg_value(frame_color_metadata.color_primaries);
     let transfer = transfer_from_ffmpeg_value(frame_color_metadata.color_transfer);
+    let hdr_metadata = hdr_metadata_from_ffmpeg_frame(&frame_color_metadata, primaries, transfer);
 
-    let metadata = (range != ColorRange::Unknown
+    let mut metadata = (range != ColorRange::Unknown
         || matrix != MatrixCoefficients::Unknown
         || primaries != ColorPrimaries::Unknown
-        || transfer != TransferFunction::Unknown)
-        .then(|| VideoColorMetadata::bitstream(range, matrix, primaries, transfer));
+        || transfer != TransferFunction::Unknown
+        || hdr_metadata.is_some())
+    .then(|| VideoColorMetadata::bitstream(range, matrix, primaries, transfer));
+
+    if let Some(metadata) = metadata.as_mut() {
+        metadata.hdr_metadata = hdr_metadata;
+    }
 
     FfmpegColorMetadataPlan {
         metadata,
-        hdr_side_data: FfmpegHdrSideDataPlan::placeholders(),
+        hdr_side_data: FfmpegHdrSideDataPlan::inspected(&frame_color_metadata),
     }
+}
+
+const fn side_data_status(is_present: bool) -> FfmpegHdrSideDataStatus {
+    if is_present {
+        FfmpegHdrSideDataStatus::Present
+    } else {
+        FfmpegHdrSideDataStatus::Absent
+    }
+}
+
+fn hdr_metadata_from_ffmpeg_frame(
+    frame_color_metadata: &FrameColorMetadata,
+    color_primaries: ColorPrimaries,
+    transfer_function: TransferFunction,
+) -> Option<HdrMetadata> {
+    let mastering_luminance =
+        mastering_luminance_from_ffmpeg(frame_color_metadata.mastering_display_metadata.as_ref());
+    let content_light =
+        content_light_from_ffmpeg(frame_color_metadata.content_light_metadata.as_ref());
+
+    (frame_color_metadata.mastering_display_metadata.is_some()
+        || frame_color_metadata.content_light_metadata.is_some())
+    .then(|| HdrMetadata {
+        color_primaries,
+        transfer_function,
+        max_luminance_nits: mastering_luminance
+            .as_ref()
+            .and_then(|luminance| luminance.max_luminance_nits),
+        min_luminance_nits: mastering_luminance
+            .as_ref()
+            .and_then(|luminance| luminance.min_luminance_nits),
+        max_content_light_level_nits: content_light
+            .as_ref()
+            .map(|light| light.max_content_light_level),
+        max_frame_average_light_level_nits: content_light
+            .as_ref()
+            .map(|light| light.max_frame_average_light_level),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MasteringLuminance {
+    max_luminance_nits: Option<f32>,
+    min_luminance_nits: Option<f32>,
+}
+
+fn mastering_luminance_from_ffmpeg(
+    mastering_display_metadata: Option<&FrameMasteringDisplayMetadata>,
+) -> Option<MasteringLuminance> {
+    let mastering_display_metadata = mastering_display_metadata?;
+
+    if !mastering_display_metadata.has_luminance {
+        return None;
+    }
+
+    Some(MasteringLuminance {
+        max_luminance_nits: rational_to_non_negative_f32(mastering_display_metadata.max_luminance),
+        min_luminance_nits: rational_to_non_negative_f32(mastering_display_metadata.min_luminance),
+    })
+}
+
+fn content_light_from_ffmpeg(
+    content_light_metadata: Option<&FrameContentLightMetadata>,
+) -> Option<FrameContentLightMetadata> {
+    content_light_metadata.copied()
+}
+
+fn rational_to_non_negative_f32(value: FrameRational) -> Option<f32> {
+    if value.denominator == 0 {
+        return None;
+    }
+
+    let value = value.numerator as f32 / value.denominator as f32;
+    value
+        .is_finite()
+        .then_some(value)
+        .filter(|value| *value >= 0.0)
 }
 
 /// Выводит FFmpeg decoder id из neutral codec/profile requirement-а.
@@ -682,6 +786,7 @@ const fn transfer_from_ffmpeg_value(value: i32) -> TransferFunction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codec_core::{ColorMetadataConfidence, ColorMetadataOrigin};
     use codec_core::{H265Profile, VideoProfile};
     use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
@@ -815,39 +920,163 @@ mod tests {
     }
 
     #[test]
-    fn frame_color_metadata_maps_ffmpeg_values_and_leaves_hdr_side_data_placeholder() {
-        let plan = color_metadata_plan_from_ffmpeg_frame(FrameColorMetadata {
-            color_range: 2,
-            color_primaries: 9,
-            color_transfer: 16,
-            color_space: 9,
-            chroma_location: 0,
-        });
-        let metadata = plan.metadata().expect("known FFmpeg fields should map");
+    fn frame_color_metadata_maps_bt709_limited_and_full_range() {
+        let limited_plan = color_metadata_plan_from_ffmpeg_frame(frame_color_metadata(1, 1, 1, 1));
+        let full_plan = color_metadata_plan_from_ffmpeg_frame(frame_color_metadata(2, 1, 1, 1));
 
-        assert_eq!(metadata.range, ColorRange::Full);
-        assert_eq!(metadata.matrix, MatrixCoefficients::Bt2020);
-        assert_eq!(metadata.primaries, ColorPrimaries::Bt2020);
-        assert_eq!(metadata.transfer, TransferFunction::Pq);
+        let limited_metadata = limited_plan
+            .metadata()
+            .expect("BT.709 limited fields should map");
+        let full_metadata = full_plan.metadata().expect("BT.709 full fields should map");
+
+        assert_eq!(limited_metadata.range, ColorRange::Limited);
+        assert_eq!(full_metadata.range, ColorRange::Full);
+        assert_eq!(limited_metadata.matrix, MatrixCoefficients::Bt709);
+        assert_eq!(limited_metadata.primaries, ColorPrimaries::Bt709);
+        assert_eq!(limited_metadata.transfer, TransferFunction::Bt709);
+        assert_eq!(limited_metadata.origin, ColorMetadataOrigin::Bitstream);
         assert_eq!(
-            plan.hdr_side_data(),
+            limited_metadata.confidence,
+            ColorMetadataConfidence::Confirmed
+        );
+        assert_eq!(
+            limited_plan.hdr_side_data(),
             FfmpegHdrSideDataPlan {
-                mastering_display_metadata: FfmpegHdrSideDataStatus::NotInspected,
-                content_light_metadata: FfmpegHdrSideDataStatus::NotInspected,
+                mastering_display_metadata: FfmpegHdrSideDataStatus::Absent,
+                content_light_metadata: FfmpegHdrSideDataStatus::Absent,
             }
         );
     }
 
     #[test]
-    fn unknown_frame_color_metadata_does_not_create_fake_metadata() {
-        let plan = color_metadata_plan_from_ffmpeg_frame(FrameColorMetadata {
-            color_range: 0,
-            color_primaries: 2,
-            color_transfer: 2,
-            color_space: 2,
-            chroma_location: 0,
+    fn frame_color_metadata_maps_bt2020_pq_hdr_side_data() {
+        let mut frame_metadata = frame_color_metadata(1, 9, 16, 9);
+        frame_metadata.mastering_display_metadata = Some(mastering_display_metadata());
+        frame_metadata.content_light_metadata = Some(FrameContentLightMetadata {
+            max_content_light_level: 1_000,
+            max_frame_average_light_level: 400,
         });
 
+        let plan = color_metadata_plan_from_ffmpeg_frame(frame_metadata);
+        let metadata = plan.metadata().expect("known FFmpeg fields should map");
+
+        assert_eq!(metadata.range, ColorRange::Limited);
+        assert_eq!(metadata.matrix, MatrixCoefficients::Bt2020);
+        assert_eq!(metadata.primaries, ColorPrimaries::Bt2020);
+        assert_eq!(metadata.transfer, TransferFunction::Pq);
+        assert_eq!(metadata.origin, ColorMetadataOrigin::Bitstream);
+        assert_eq!(metadata.confidence, ColorMetadataConfidence::Confirmed);
+        assert!(metadata.requires_hdr_processing());
+
+        let hdr_metadata = metadata
+            .hdr_metadata
+            .as_ref()
+            .expect("HDR side data should become neutral HDR metadata");
+        assert_eq!(hdr_metadata.color_primaries, ColorPrimaries::Bt2020);
+        assert_eq!(hdr_metadata.transfer_function, TransferFunction::Pq);
+        assert_eq!(hdr_metadata.max_luminance_nits, Some(1_000.0));
+        assert_eq!(hdr_metadata.min_luminance_nits, Some(0.005));
+        assert_eq!(hdr_metadata.max_content_light_level_nits, Some(1_000));
+        assert_eq!(hdr_metadata.max_frame_average_light_level_nits, Some(400));
+        assert_eq!(
+            plan.hdr_side_data(),
+            FfmpegHdrSideDataPlan {
+                mastering_display_metadata: FfmpegHdrSideDataStatus::Present,
+                content_light_metadata: FfmpegHdrSideDataStatus::Present,
+            }
+        );
+    }
+
+    #[test]
+    fn frame_color_metadata_maps_bt2020_hlg_hdr_side_data() {
+        let mut frame_metadata = frame_color_metadata(1, 9, 18, 9);
+        frame_metadata.mastering_display_metadata = Some(mastering_display_metadata());
+
+        let plan = color_metadata_plan_from_ffmpeg_frame(frame_metadata);
+        let metadata = plan.metadata().expect("HLG HDR fields should map");
+        let hdr_metadata = metadata
+            .hdr_metadata
+            .as_ref()
+            .expect("mastering display side data should be preserved");
+
+        assert_eq!(metadata.transfer, TransferFunction::Hlg);
+        assert_eq!(hdr_metadata.transfer_function, TransferFunction::Hlg);
+        assert!(metadata.requires_hdr_processing());
+    }
+
+    #[test]
+    fn unknown_frame_color_metadata_does_not_create_fake_metadata() {
+        let plan = color_metadata_plan_from_ffmpeg_frame(frame_color_metadata(0, 2, 2, 2));
+
         assert!(plan.metadata().is_none());
+    }
+
+    #[test]
+    fn hdr_side_data_without_core_colorimetry_is_not_silently_promoted_to_hdr() {
+        let mut frame_metadata = frame_color_metadata(0, 2, 2, 2);
+        frame_metadata.content_light_metadata = Some(FrameContentLightMetadata {
+            max_content_light_level: 1_000,
+            max_frame_average_light_level: 400,
+        });
+
+        let plan = color_metadata_plan_from_ffmpeg_frame(frame_metadata);
+        let metadata = plan
+            .metadata()
+            .expect("real side data should still be carried to renderer boundary");
+
+        assert_eq!(metadata.transfer, TransferFunction::Unknown);
+        assert_eq!(metadata.primaries, ColorPrimaries::Unknown);
+        assert!(!metadata.requires_hdr_processing());
+        assert_eq!(
+            metadata
+                .hdr_metadata
+                .as_ref()
+                .and_then(|hdr| hdr.max_content_light_level_nits),
+            Some(1_000)
+        );
+    }
+
+    fn frame_color_metadata(
+        color_range: i32,
+        color_primaries: i32,
+        color_transfer: i32,
+        color_space: i32,
+    ) -> FrameColorMetadata {
+        FrameColorMetadata {
+            color_range,
+            color_primaries,
+            color_transfer,
+            color_space,
+            chroma_location: 0,
+            mastering_display_metadata: None,
+            content_light_metadata: None,
+        }
+    }
+
+    fn mastering_display_metadata() -> FrameMasteringDisplayMetadata {
+        FrameMasteringDisplayMetadata {
+            has_primaries: true,
+            has_luminance: true,
+            display_primaries: [
+                [
+                    FrameRational::new(34_000, 50_000),
+                    FrameRational::new(16_000, 50_000),
+                ],
+                [
+                    FrameRational::new(13_250, 50_000),
+                    FrameRational::new(34_500, 50_000),
+                ],
+                [
+                    FrameRational::new(7_500, 50_000),
+                    FrameRational::new(3_000, 50_000),
+                ],
+            ],
+            white_point: [
+                FrameRational::new(15_635, 50_000),
+                FrameRational::new(16_450, 50_000),
+            ],
+            min_luminance: FrameRational::new(5, 1_000),
+            max_luminance: FrameRational::new(1_000, 1),
+        }
     }
 }

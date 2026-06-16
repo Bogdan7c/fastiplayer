@@ -1,6 +1,8 @@
 //! Safe RAII owner for refcounted `AVFrame` data.
 
 #[cfg(feature = "ffmpeg")]
+use std::os::raw::c_int;
+#[cfg(feature = "ffmpeg")]
 use std::ptr::NonNull;
 #[cfg(feature = "ffmpeg")]
 use std::slice;
@@ -50,6 +52,77 @@ pub struct FrameTimestamps {
     pub duration: i64,
 }
 
+/// FFmpeg `AVRational`, copied out as plain integers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameRational {
+    /// Rational numerator.
+    pub numerator: i32,
+
+    /// Rational denominator.
+    pub denominator: i32,
+}
+
+impl FrameRational {
+    /// Creates a copied rational value without exposing FFmpeg types.
+    #[must_use]
+    pub const fn new(numerator: i32, denominator: i32) -> Self {
+        Self {
+            numerator,
+            denominator,
+        }
+    }
+}
+
+/// FFmpeg mastering-display side data copied out of `AVFrame`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameMasteringDisplayMetadata {
+    /// Whether FFmpeg reported display primaries and white point.
+    pub has_primaries: bool,
+
+    /// Whether FFmpeg reported min/max mastering luminance.
+    pub has_luminance: bool,
+
+    /// CIE 1931 xy display primaries in FFmpeg r/g/b order.
+    pub display_primaries: [[FrameRational; 2]; 3],
+
+    /// CIE 1931 xy white point.
+    pub white_point: [FrameRational; 2],
+
+    /// Minimum mastering display luminance in cd/m^2.
+    pub min_luminance: FrameRational,
+
+    /// Maximum mastering display luminance in cd/m^2.
+    pub max_luminance: FrameRational,
+}
+
+/// FFmpeg content-light side data copied out of `AVFrame`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameContentLightMetadata {
+    /// MaxCLL in nits.
+    pub max_content_light_level: u32,
+
+    /// MaxFALL in nits.
+    pub max_frame_average_light_level: u32,
+}
+
+#[cfg(feature = "ffmpeg")]
+#[repr(C)]
+struct AvMasteringDisplayMetadataMirror {
+    display_primaries: [[ffmpeg_sys_next::AVRational; 2]; 3],
+    white_point: [ffmpeg_sys_next::AVRational; 2],
+    min_luminance: ffmpeg_sys_next::AVRational,
+    max_luminance: ffmpeg_sys_next::AVRational,
+    has_primaries: c_int,
+    has_luminance: c_int,
+}
+
+#[cfg(feature = "ffmpeg")]
+#[repr(C)]
+struct AvContentLightMetadataMirror {
+    max_cll: u32,
+    max_fall: u32,
+}
+
 /// Color metadata fields, copied out without exposing FFmpeg enum types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameColorMetadata {
@@ -67,6 +140,12 @@ pub struct FrameColorMetadata {
 
     /// FFmpeg `AVChromaLocation` numeric value.
     pub chroma_location: i32,
+
+    /// FFmpeg `AV_FRAME_DATA_MASTERING_DISPLAY_METADATA`, if present.
+    pub mastering_display_metadata: Option<FrameMasteringDisplayMetadata>,
+
+    /// FFmpeg `AV_FRAME_DATA_CONTENT_LIGHT_LEVEL`, if present.
+    pub content_light_metadata: Option<FrameContentLightMetadata>,
 }
 
 impl OwnedAvFrame {
@@ -355,6 +434,8 @@ impl OwnedAvFrame {
                 color_transfer: 0,
                 color_space: 0,
                 chroma_location: 0,
+                mastering_display_metadata: None,
+                content_light_metadata: None,
             }
         }
 
@@ -369,6 +450,10 @@ impl OwnedAvFrame {
                 color_transfer: frame.color_trc as i32,
                 color_space: frame.colorspace as i32,
                 chroma_location: frame.chroma_location as i32,
+                mastering_display_metadata: frame_mastering_display_metadata(
+                    self.raw_frame.as_ptr(),
+                ),
+                content_light_metadata: frame_content_light_metadata(self.raw_frame.as_ptr()),
             }
         }
     }
@@ -519,6 +604,85 @@ impl OwnedAvFrame {
     }
 }
 
+#[cfg(feature = "ffmpeg")]
+fn frame_mastering_display_metadata(
+    raw_frame: *const ffmpeg_sys_next::AVFrame,
+) -> Option<FrameMasteringDisplayMetadata> {
+    // SAFETY: `raw_frame` is borrowed from a live `OwnedAvFrame`. FFmpeg returns
+    // a side-data pointer owned by that frame; this function copies plain values
+    // before returning and never stores FFmpeg pointers.
+    let side_data = unsafe {
+        ffmpeg_sys_next::av_frame_get_side_data(
+            raw_frame,
+            ffmpeg_sys_next::AVFrameSideDataType::AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,
+        )
+    };
+    let side_data = NonNull::new(side_data)?;
+
+    // SAFETY: Context7/FFmpeg docs define this side-data payload layout as
+    // `AVMasteringDisplayMetadata` for the requested enum value. The Rust
+    // binding does not export that typedef, so we copy through a local
+    // repr(C) mirror that stays private to this FFI boundary.
+    let metadata =
+        unsafe { (side_data.as_ref().data as *const AvMasteringDisplayMetadataMirror).as_ref()? };
+
+    Some(FrameMasteringDisplayMetadata {
+        has_primaries: metadata.has_primaries != 0,
+        has_luminance: metadata.has_luminance != 0,
+        display_primaries: [
+            [
+                frame_rational_from_av(metadata.display_primaries[0][0]),
+                frame_rational_from_av(metadata.display_primaries[0][1]),
+            ],
+            [
+                frame_rational_from_av(metadata.display_primaries[1][0]),
+                frame_rational_from_av(metadata.display_primaries[1][1]),
+            ],
+            [
+                frame_rational_from_av(metadata.display_primaries[2][0]),
+                frame_rational_from_av(metadata.display_primaries[2][1]),
+            ],
+        ],
+        white_point: [
+            frame_rational_from_av(metadata.white_point[0]),
+            frame_rational_from_av(metadata.white_point[1]),
+        ],
+        min_luminance: frame_rational_from_av(metadata.min_luminance),
+        max_luminance: frame_rational_from_av(metadata.max_luminance),
+    })
+}
+
+#[cfg(feature = "ffmpeg")]
+fn frame_content_light_metadata(
+    raw_frame: *const ffmpeg_sys_next::AVFrame,
+) -> Option<FrameContentLightMetadata> {
+    // SAFETY: `raw_frame` is borrowed from a live `OwnedAvFrame`; side data is
+    // copied immediately into neutral integers.
+    let side_data = unsafe {
+        ffmpeg_sys_next::av_frame_get_side_data(
+            raw_frame,
+            ffmpeg_sys_next::AVFrameSideDataType::AV_FRAME_DATA_CONTENT_LIGHT_LEVEL,
+        )
+    };
+    let side_data = NonNull::new(side_data)?;
+
+    // SAFETY: FFmpeg defines this payload layout as `AVContentLightMetadata`
+    // for `AV_FRAME_DATA_CONTENT_LIGHT_LEVEL`. The local repr(C) mirror stays
+    // inside `video-ffmpeg`.
+    let metadata =
+        unsafe { (side_data.as_ref().data as *const AvContentLightMetadataMirror).as_ref()? };
+
+    Some(FrameContentLightMetadata {
+        max_content_light_level: metadata.max_cll,
+        max_frame_average_light_level: metadata.max_fall,
+    })
+}
+
+#[cfg(feature = "ffmpeg")]
+fn frame_rational_from_av(value: ffmpeg_sys_next::AVRational) -> FrameRational {
+    FrameRational::new(value.num, value.den)
+}
+
 #[cfg(all(test, feature = "ffmpeg"))]
 const fn test_av_pixel_format(format: SoftwarePixelFormat) -> ffmpeg_sys_next::AVPixelFormat {
     match format {
@@ -635,6 +799,78 @@ mod tests {
 
     #[cfg(feature = "ffmpeg")]
     #[test]
+    fn frame_color_metadata_reads_hdr_side_data() {
+        let frame = OwnedAvFrame::new().expect("frame allocation should succeed");
+
+        // SAFETY: test owns the fresh AVFrame. Side-data buffers are allocated
+        // by FFmpeg for the exact payload sizes and filled through local
+        // repr(C) mirrors that match FFmpeg 8.1 headers.
+        unsafe {
+            let mastering_side_data = ffmpeg_sys_next::av_frame_new_side_data(
+                frame.raw_frame.as_ptr(),
+                ffmpeg_sys_next::AVFrameSideDataType::AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,
+                std::mem::size_of::<AvMasteringDisplayMetadataMirror>(),
+            );
+            assert!(
+                !mastering_side_data.is_null(),
+                "mastering side data allocation should succeed"
+            );
+            let mastering_metadata =
+                (*mastering_side_data).data as *mut AvMasteringDisplayMetadataMirror;
+            *mastering_metadata = AvMasteringDisplayMetadataMirror {
+                display_primaries: [
+                    [av_rational(34_000, 50_000), av_rational(16_000, 50_000)],
+                    [av_rational(13_250, 50_000), av_rational(34_500, 50_000)],
+                    [av_rational(7_500, 50_000), av_rational(3_000, 50_000)],
+                ],
+                white_point: [av_rational(15_635, 50_000), av_rational(16_450, 50_000)],
+                min_luminance: av_rational(5, 1_000),
+                max_luminance: av_rational(1_000, 1),
+                has_primaries: 1,
+                has_luminance: 1,
+            };
+
+            let content_light_side_data = ffmpeg_sys_next::av_frame_new_side_data(
+                frame.raw_frame.as_ptr(),
+                ffmpeg_sys_next::AVFrameSideDataType::AV_FRAME_DATA_CONTENT_LIGHT_LEVEL,
+                std::mem::size_of::<AvContentLightMetadataMirror>(),
+            );
+            assert!(
+                !content_light_side_data.is_null(),
+                "content-light side data allocation should succeed"
+            );
+            let content_light_metadata =
+                (*content_light_side_data).data as *mut AvContentLightMetadataMirror;
+            *content_light_metadata = AvContentLightMetadataMirror {
+                max_cll: 1_000,
+                max_fall: 400,
+            };
+        }
+
+        let color_metadata = frame.color_metadata();
+        let mastering_display_metadata = color_metadata
+            .mastering_display_metadata
+            .expect("mastering display side data should be copied");
+        let content_light_metadata = color_metadata
+            .content_light_metadata
+            .expect("content light side data should be copied");
+
+        assert!(mastering_display_metadata.has_primaries);
+        assert!(mastering_display_metadata.has_luminance);
+        assert_eq!(
+            mastering_display_metadata.max_luminance,
+            FrameRational::new(1_000, 1)
+        );
+        assert_eq!(
+            mastering_display_metadata.min_luminance,
+            FrameRational::new(5, 1_000)
+        );
+        assert_eq!(content_light_metadata.max_content_light_level, 1_000);
+        assert_eq!(content_light_metadata.max_frame_average_light_level, 400);
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
     fn frame_unref_releases_plane_addresses() {
         let mut frame = OwnedAvFrame::new().expect("frame allocation should succeed");
 
@@ -655,5 +891,10 @@ mod tests {
         frame.unref();
 
         assert!(frame.plane_data_address(0).is_none());
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    const fn av_rational(num: i32, den: i32) -> ffmpeg_sys_next::AVRational {
+        ffmpeg_sys_next::AVRational { num, den }
     }
 }
