@@ -440,6 +440,7 @@ pub struct DriverQuirk {
 #[cfg(test)]
 mod tests {
     use codec_core::{BitDepth, ChromaSubsampling, VideoCodec, VideoProfile, Vp9Profile};
+    use render_core::{HdrOutputMode, P010RenderReadiness, RenderBackendKind, UiCompositionMode};
     use video_frame_contract::{DmaBufImageLayout, VideoFramePixelLayout};
 
     use super::*;
@@ -464,9 +465,18 @@ mod tests {
 
     /// Собирает минимальный available backend report для filtering tests.
     fn backend_with_outputs(outputs: Vec<SupportedVideoOutput>) -> BackendCapabilities {
+        backend_with_id_and_outputs(DecodeBackendId::vaapi(), "Test VA-API", outputs)
+    }
+
+    /// Собирает минимальный available backend report с explicit backend id.
+    fn backend_with_id_and_outputs(
+        backend_id: DecodeBackendId,
+        display_name: &str,
+        outputs: Vec<SupportedVideoOutput>,
+    ) -> BackendCapabilities {
         BackendCapabilities {
-            backend_id: DecodeBackendId::vaapi(),
-            display_name: "Test VA-API".to_string(),
+            backend_id,
+            display_name: display_name.to_string(),
             status: BackendProbeStatus::Available,
             driver: BackendDriverInfo::default(),
             raw_supported_outputs: outputs,
@@ -502,10 +512,39 @@ mod tests {
         decode_format: SupportedVideoDecodeFormat,
         frame_contract: VideoFrameContract,
     ) -> SupportedVideoOutput {
+        output_for_backend(DecodeBackendId::vaapi(), decode_format, frame_contract)
+    }
+
+    /// Собирает output для заданного backend-а.
+    fn output_for_backend(
+        backend: DecodeBackendId,
+        decode_format: SupportedVideoDecodeFormat,
+        frame_contract: VideoFrameContract,
+    ) -> SupportedVideoOutput {
         SupportedVideoOutput {
-            backend: DecodeBackendId::vaapi(),
+            backend,
             decode_format,
             frame_contract,
+        }
+    }
+
+    /// Собирает fake renderer, который объявляет только exact frame contracts.
+    fn fake_renderer_with_contracts(
+        supported_frame_contracts: Vec<VideoFrameContract>,
+    ) -> RenderCapabilities {
+        RenderCapabilities {
+            backend: RenderBackendKind::Wgpu,
+            display_name: "Fake renderer".to_string(),
+            supported_frame_contracts,
+            p010_render_readiness: P010RenderReadiness::Unavailable,
+            supported_hdr_to_sdr_operators: Vec::new(),
+            hdr_output_mode: HdrOutputMode::SdrBt709Only,
+            supports_hdr_to_sdr: false,
+            supports_native_hdr_output: false,
+            max_texture_size: Some(4096),
+            advanced_ui: false,
+            ui_composition_mode: UiCompositionMode::Overlay,
+            present_timing_metrics: false,
         }
     }
 
@@ -527,7 +566,9 @@ mod tests {
                 },
             )]),
         }));
-        scanner.register_render_capabilities(RenderCapabilities::wgpu_nv12(Some(4096)));
+        scanner.register_render_capabilities(fake_renderer_with_contracts(vec![
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+        ]));
 
         let report = scanner.scan_with_timestamp(7);
 
@@ -597,5 +638,68 @@ mod tests {
 
         assert_eq!(report.supported_video_outputs().count(), 1);
         assert!(report.video_backends[0].diagnostics.is_empty());
+    }
+
+    /// Проверяет, что software output playable только при exact host-upload contract renderer-а.
+    #[test]
+    fn scanner_intersects_software_outputs_only_for_matching_host_upload_contract() {
+        let software_backend_id =
+            DecodeBackendId::new("ffmpeg-sw").expect("test backend id is valid");
+        let software_output = output_for_backend(
+            software_backend_id.clone(),
+            vp9_format(
+                Vp9Profile::Profile1,
+                BitDepth::Eight,
+                ChromaSubsampling::Yuv422,
+                false,
+            ),
+            VideoFrameContract {
+                pixel_layout: VideoFramePixelLayout::Yuv422Planar8,
+                transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+            },
+        );
+        let software_backend = backend_with_id_and_outputs(
+            software_backend_id,
+            "Test FFmpeg software",
+            vec![software_output],
+        );
+
+        let mut non_matching_scanner = CapabilityScanner::new();
+        non_matching_scanner.register_provider(Box::new(StaticVideoProvider {
+            capabilities: software_backend.clone(),
+        }));
+        non_matching_scanner.register_render_capabilities(fake_renderer_with_contracts(vec![
+            VideoFrameContract {
+                pixel_layout: VideoFramePixelLayout::Yuv420Planar8,
+                transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+            },
+        ]));
+
+        let non_matching_report = non_matching_scanner.scan_with_timestamp(7);
+
+        assert_eq!(non_matching_report.raw_video_outputs().count(), 1);
+        assert_eq!(non_matching_report.supported_video_outputs().count(), 0);
+
+        let mut matching_scanner = CapabilityScanner::new();
+        matching_scanner.register_provider(Box::new(StaticVideoProvider {
+            capabilities: software_backend,
+        }));
+        matching_scanner.register_render_capabilities(fake_renderer_with_contracts(vec![
+            VideoFrameContract {
+                pixel_layout: VideoFramePixelLayout::Yuv422Planar8,
+                transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+            },
+        ]));
+
+        let matching_report = matching_scanner.scan_with_timestamp(7);
+
+        assert_eq!(matching_report.raw_video_outputs().count(), 1);
+        assert_eq!(matching_report.supported_video_outputs().count(), 1);
+        assert_eq!(
+            matching_report.playable_video_outputs[0]
+                .frame_contract
+                .pixel_layout,
+            VideoFramePixelLayout::Yuv422Planar8
+        );
     }
 }

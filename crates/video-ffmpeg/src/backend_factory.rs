@@ -5,15 +5,15 @@ use video_backend_api::{StartedVideoBackend, VideoBackendFactory};
 
 use crate::decoder_thread::{FfmpegDecoderThreadConfig, FfmpegDecoderThreadError};
 
-/// Concrete factory type that keeps future startup wiring outside `player-core`.
+/// Concrete software factory type that keeps startup wiring outside `player-core`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct FfmpegVideoBackendFactory {
-    /// Config remains crate-owned; callers should not assemble FFmpeg internals.
+pub struct FfmpegSoftwareVideoBackendFactory {
+    /// Config остаётся внутри crate-а; caller не собирает FFmpeg internals руками.
     decoder_config: FfmpegDecoderThreadConfig,
 }
 
-impl FfmpegVideoBackendFactory {
-    /// Создаёт factory с default scaffold config.
+impl FfmpegSoftwareVideoBackendFactory {
+    /// Создаёт software factory с default decoder-thread config.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -22,7 +22,7 @@ impl FfmpegVideoBackendFactory {
     }
 }
 
-impl VideoBackendFactory for FfmpegVideoBackendFactory {
+impl VideoBackendFactory for FfmpegSoftwareVideoBackendFactory {
     /// Стартует playback-facing FFmpeg decoder thread без раскрытия FFmpeg internals.
     fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend> {
         crate::decoder_thread::start_decoder_thread(self.decoder_config)
@@ -39,13 +39,16 @@ pub enum FfmpegBackendFactoryError {
     DecoderThread(#[from] FfmpegDecoderThreadError),
 }
 
+/// Backward-compatible имя старого scaffold-а.
+pub type FfmpegVideoBackendFactory = FfmpegSoftwareVideoBackendFactory;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn backend_factory_reports_unavailable_instead_of_creating_fake_backend() {
-        let factory = FfmpegVideoBackendFactory::new();
+        let factory = FfmpegSoftwareVideoBackendFactory::new();
         let result = factory.start_video_backend();
 
         if cfg!(feature = "ffmpeg") {

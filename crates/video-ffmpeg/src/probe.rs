@@ -309,7 +309,7 @@ const fn current_build_status() -> FfmpegBuildStatus {
 }
 
 /// Собирает public report из уже классифицированного runtime status.
-fn report_from_runtime_status(
+pub(crate) fn report_from_runtime_status(
     build_status: FfmpegBuildStatus,
     runtime_status: FfmpegRuntimeProbeStatus,
 ) -> FfmpegProbeReport {

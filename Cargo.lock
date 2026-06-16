@@ -4736,6 +4736,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "capability-core",
  "codec-core",
  "crossbeam-channel",
  "ffmpeg-sys-next",

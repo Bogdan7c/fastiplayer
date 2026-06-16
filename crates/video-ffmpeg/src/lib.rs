@@ -7,13 +7,19 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod backend_factory;
+pub mod capability_provider;
 pub mod codec_adapter;
 pub mod decoder_thread;
 pub mod ffi;
 pub mod probe;
 pub mod software_frame;
 
-pub use backend_factory::{FfmpegBackendFactoryError, FfmpegVideoBackendFactory};
+pub use backend_factory::{
+    FfmpegBackendFactoryError, FfmpegSoftwareVideoBackendFactory, FfmpegVideoBackendFactory,
+};
+pub use capability_provider::{
+    FfmpegSoftwareCapabilityProvider, probe_ffmpeg_software_capabilities,
+};
 pub use codec_adapter::{
     FfmpegCodecAdapterError, FfmpegColorMetadataPlan, FfmpegDecoderId, FfmpegHdrSideDataPlan,
     FfmpegHdrSideDataStatus, FfmpegStreamAdapterPlan, SoftwareDecodeContractPlan,
@@ -24,7 +30,7 @@ pub use decoder_thread::{FfmpegDecoderThreadConfig, FfmpegDecoderThreadError};
 pub use probe::{
     FfmpegBuildStatus, FfmpegLibraryVersion, FfmpegLibraryVersions, FfmpegProbeFailure,
     FfmpegProbeReport, FfmpegRuntimeInfo, FfmpegRuntimeLibrary, FfmpegRuntimeProbeStatus,
-    compile_time_probe, probe_runtime_availability,
+    compile_time_probe, minimum_supported_versions, probe_runtime_availability,
 };
 pub use software_frame::{SoftwareFramePlan, SoftwareFramePlanError};
 

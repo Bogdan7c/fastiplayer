@@ -11,6 +11,7 @@ ffmpeg = ["dep:ffmpeg-sys-next", "dep:libloading"]
 
 [dependencies]
 anyhow.workspace = true
+capability-core = { workspace = true }
 codec-core.workspace = true
 crossbeam-channel.workspace = true
 libloading = { workspace = true, optional = true }
