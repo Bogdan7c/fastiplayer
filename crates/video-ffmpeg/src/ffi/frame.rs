@@ -377,6 +377,170 @@ impl OwnedAvFrame {
     pub(crate) fn as_mut_ptr(&mut self) -> *mut ffmpeg_sys_next::AVFrame {
         self.raw_frame.as_ptr()
     }
+
+    /// Allocates a small real video frame for AVFrame-backed resource tests.
+    #[cfg(all(test, feature = "ffmpeg"))]
+    pub(crate) fn new_test_video_frame(
+        format: SoftwarePixelFormat,
+        width: i32,
+        height: i32,
+        alignment: i32,
+    ) -> FfiResult<Self> {
+        Self::new_test_video_frame_with_av_pixel_format(
+            test_av_pixel_format(format),
+            width,
+            height,
+            alignment,
+        )
+    }
+
+    /// Allocates an NV12 frame that resource-table tests must reject.
+    #[cfg(all(test, feature = "ffmpeg"))]
+    pub(crate) fn new_test_unsupported_nv12_frame(
+        width: i32,
+        height: i32,
+        alignment: i32,
+    ) -> FfiResult<Self> {
+        Self::new_test_video_frame_with_av_pixel_format(
+            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_NV12,
+            width,
+            height,
+            alignment,
+        )
+    }
+
+    #[cfg(all(test, feature = "ffmpeg"))]
+    fn new_test_video_frame_with_av_pixel_format(
+        format: ffmpeg_sys_next::AVPixelFormat,
+        width: i32,
+        height: i32,
+        alignment: i32,
+    ) -> FfiResult<Self> {
+        let frame = Self::new()?;
+
+        // SAFETY: test owns a fresh AVFrame and sets required video fields
+        // before `av_frame_get_buffer`, matching FFmpeg allocation rules.
+        unsafe {
+            let raw_frame = frame.raw_frame.as_ptr();
+            (*raw_frame).format = format as i32;
+            (*raw_frame).width = width;
+            (*raw_frame).height = height;
+
+            let status = ffmpeg_sys_next::av_frame_get_buffer(raw_frame, alignment);
+            if status < 0 {
+                return Err(FfmpegError::from_averror("av_frame_get_buffer", status));
+            }
+        }
+
+        Ok(frame)
+    }
+
+    /// Writes visible test bytes into one AVFrame row without exposing raw pointers.
+    #[cfg(all(test, feature = "ffmpeg"))]
+    pub(crate) fn write_test_plane_row(
+        &mut self,
+        plane_index: usize,
+        row_index: usize,
+        row_bytes: &[u8],
+    ) -> FfiResult<()> {
+        if plane_index >= AV_FRAME_DATA_POINTERS {
+            return Err(FfmpegError::InvalidInput {
+                operation: "AVFrame test row write",
+                details: format!(
+                    "plane index {plane_index} is outside 0..{AV_FRAME_DATA_POINTERS}"
+                ),
+            });
+        }
+
+        let line_size = self
+            .linesize(plane_index)
+            .ok_or_else(|| FfmpegError::InvalidInput {
+                operation: "AVFrame test row write",
+                details: format!("plane index {plane_index} has no linesize slot"),
+            })?;
+        let line_size = usize::try_from(line_size).map_err(|_| FfmpegError::InvalidInput {
+            operation: "AVFrame test row write",
+            details: format!("plane index {plane_index} has negative linesize {line_size}"),
+        })?;
+        if row_bytes.len() > line_size {
+            return Err(FfmpegError::InvalidInput {
+                operation: "AVFrame test row write",
+                details: format!(
+                    "row has {} bytes but plane {plane_index} linesize is {line_size}",
+                    row_bytes.len()
+                ),
+            });
+        }
+
+        // SAFETY: index bounds were checked; destination row is inside the
+        // FFmpeg-allocated buffer by construction of row_index/linesize in tests.
+        unsafe {
+            let data_pointer = self.raw_frame.as_ref().data[plane_index];
+            if data_pointer.is_null() {
+                return Err(FfmpegError::InvalidInput {
+                    operation: "AVFrame test row write",
+                    details: format!("plane {plane_index} has null data pointer"),
+                });
+            }
+            let row_offset = row_index.checked_mul(line_size).ok_or_else(|| {
+                FfmpegError::InvalidInput {
+                    operation: "AVFrame test row write",
+                    details: format!(
+                        "row index {row_index} overflows plane {plane_index} linesize {line_size}"
+                    ),
+                }
+            })?;
+            std::ptr::copy_nonoverlapping(
+                row_bytes.as_ptr(),
+                data_pointer.add(row_offset),
+                row_bytes.len(),
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Corrupts one test plane data pointer for descriptor rejection tests.
+    #[cfg(all(test, feature = "ffmpeg"))]
+    pub(crate) fn clear_test_plane_data(&mut self, plane_index: usize) {
+        if plane_index < AV_FRAME_DATA_POINTERS {
+            // SAFETY: test-only mutation of plain AVFrame metadata field.
+            unsafe { self.raw_frame.as_mut().data[plane_index] = std::ptr::null_mut() };
+        }
+    }
+
+    /// Corrupts one test plane linesize for descriptor rejection tests.
+    #[cfg(all(test, feature = "ffmpeg"))]
+    pub(crate) fn set_test_linesize(&mut self, plane_index: usize, line_size: i32) {
+        if plane_index < AV_FRAME_DATA_POINTERS {
+            // SAFETY: test-only mutation of plain AVFrame metadata field.
+            unsafe { self.raw_frame.as_mut().linesize[plane_index] = line_size };
+        }
+    }
+}
+
+#[cfg(all(test, feature = "ffmpeg"))]
+const fn test_av_pixel_format(format: SoftwarePixelFormat) -> ffmpeg_sys_next::AVPixelFormat {
+    match format {
+        SoftwarePixelFormat::Yuv420Planar8 => ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P,
+        SoftwarePixelFormat::Yuv420Planar10Le => {
+            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P10LE
+        }
+        SoftwarePixelFormat::Yuv420Planar12Le => {
+            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P12LE
+        }
+        SoftwarePixelFormat::Yuv422Planar8 => ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV422P,
+        SoftwarePixelFormat::Yuv422Planar10Le => {
+            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV422P10LE
+        }
+        SoftwarePixelFormat::Yuv422Planar12Le => {
+            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV422P12LE
+        }
+        SoftwarePixelFormat::Yuv444Planar8 => ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV444P,
+        SoftwarePixelFormat::Yuv444Planar10Le => {
+            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV444P10LE
+        }
+    }
 }
 
 #[cfg(feature = "ffmpeg")]

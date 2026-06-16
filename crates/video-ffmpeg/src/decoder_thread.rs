@@ -1,43 +1,55 @@
 //! FFmpeg send/receive decoder thread.
 //!
 //! Модуль держит FFmpeg decode state внутри `video-ffmpeg` и отдаёт наружу
-//! только нейтральный `VideoDecoderThreadHandle`. Renderer/upload resource
-//! table намеренно не реализуется здесь: AVFrame-backed HostPlanar ownership
-//! добавляется отдельной сессией.
+//! только нейтральный `VideoDecoderThreadHandle`. AVFrame-backed HostPlanar
+//! resource table остаётся внутренней частью этого backend-а.
 
+#[cfg(feature = "ffmpeg")]
+use std::collections::HashMap;
+#[cfg(feature = "ffmpeg")]
+use std::sync::TryLockError;
 #[cfg(feature = "ffmpeg")]
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(any(test, feature = "ffmpeg"))]
 use std::sync::{Arc, Mutex};
 #[cfg(any(test, feature = "ffmpeg"))]
 use std::time::Duration;
+#[cfg(feature = "ffmpeg")]
+use std::time::Instant;
 
 #[cfg(feature = "ffmpeg")]
-use codec_core::VideoDecodeRequirement;
+use codec_core::{VideoColorMetadata, VideoDecodeRequirement};
 #[cfg(feature = "ffmpeg")]
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 use thiserror::Error;
 use video_backend_api::StartedVideoBackend;
 #[cfg(feature = "ffmpeg")]
 use video_backend_api::{
-    PresentFrameResourceProvider, PresentFrameResourceProviderHandle,
-    PresentFrameResourceProviderLookup,
+    PresentFrameResourceDescriptorLookup, PresentFrameResourceProvider,
+    PresentFrameResourceProviderHandle, PresentFrameResourceProviderLookup,
 };
 use video_core::VideoDecoderThreadConfig;
 #[cfg(feature = "ffmpeg")]
 use video_core::VideoStreamConfigRejection;
 #[cfg(feature = "ffmpeg")]
 use video_core::{
-    DecodeBackpressureReason, DecodeSendError, DecodedFrame, FrameResourceHandle,
-    HostUploadResourceSnapshotStatus, VideoDecoderActivitySnapshot,
-    VideoDecoderActivitySubscription, VideoDecoderControlBackpressureReason,
-    VideoDecoderControlChannelPressureSnapshot, VideoDecoderEndOfStreamDrainResult,
-    VideoDecoderThreadHandle, VideoStreamConfigResult, VideoStreamDecodeConfig,
+    DecodeBackpressureReason, DecodeSendError, DecodedFrame, FrameResourceDescriptor,
+    FrameResourceHandle, HostPlanarFrameDescriptor, HostPlanarFrameOwner, HostPlaneDescriptor,
+    HostPlaneRole, HostUploadResourceSnapshot, HostUploadResourceSnapshotStatus,
+    VideoDecoderActivitySnapshot, VideoDecoderActivitySubscription,
+    VideoDecoderControlBackpressureReason, VideoDecoderControlChannelPressureSnapshot,
+    VideoDecoderEndOfStreamDrainResult, VideoDecoderThreadHandle, VideoFrameDiagnostics,
+    VideoStreamConfigResult, VideoStreamDecodeConfig,
+    validate_resource_descriptor_against_contract,
 };
 #[cfg(any(test, feature = "ffmpeg"))]
 use video_core::{
     DecodePacket, DecodeThreadError, VideoDecoderActivityNotifier,
     VideoDecoderEndOfStreamDrainState,
+};
+#[cfg(feature = "ffmpeg")]
+use video_frame_contract::{
+    FrameBitDepth, FrameChromaSubsampling, VideoFramePixelLayout, VideoFrameTransferPath,
 };
 
 use crate::ffi::error::FfmpegError;
@@ -51,13 +63,15 @@ use crate::ffi::packet::PacketTimestamps;
 use crate::ffi::packet::PaddedPacketBytes;
 
 #[cfg(feature = "ffmpeg")]
-use crate::codec_adapter::plan_ffmpeg_software_decode;
+use crate::codec_adapter::{color_metadata_plan_from_ffmpeg_frame, plan_ffmpeg_software_decode};
 #[cfg(feature = "ffmpeg")]
 use crate::ffi::codec_context::{CodecContext, FfmpegCodecContextRequest};
 #[cfg(feature = "ffmpeg")]
 use crate::ffi::frame::OwnedAvFrame;
 #[cfg(feature = "ffmpeg")]
 use crate::ffi::packet::OwnedAvPacket;
+#[cfg(feature = "ffmpeg")]
+use crate::ffi::pixel_format::SoftwarePixelFormat;
 
 /// FFmpeg `AV_NOPTS_VALUE` без зависимости default build-а от headers/libs.
 #[cfg(any(test, feature = "ffmpeg"))]
@@ -151,7 +165,7 @@ pub struct FfmpegVideoDecoderThread {
     /// Control queue for config/flush/EOF-drain lifecycle commands.
     control_tx: Sender<FfmpegDecoderControl>,
 
-    /// Future decoded-frame channel; Session 16 не публикует renderable frames.
+    /// Decoded-frame channel from FFmpeg worker to playback/session.
     frame_rx: Receiver<DecodedFrame>,
 
     /// Fatal decoder-thread errors reported to player-core.
@@ -163,8 +177,11 @@ pub struct FfmpegVideoDecoderThread {
     /// Activity subscription exposed through neutral video-core contract.
     activity_subscription: VideoDecoderActivitySubscription,
 
-    /// Empty provider until AVFrame-backed HostPlanar table is implemented.
+    /// Renderer-facing provider handle over the AVFrame-backed resource table.
     resource_provider: PresentFrameResourceProviderHandle,
+
+    /// Concrete provider is kept here for software host-upload accounting.
+    host_resource_provider: FfmpegHostResourceProvider,
 
     /// Shared EOF/DPB drain state visible without peeking into worker internals.
     eof_drain_state: Arc<Mutex<VideoDecoderEndOfStreamDrainState>>,
@@ -184,16 +201,20 @@ impl FfmpegVideoDecoderThread {
         let thread_config = config.thread_config().normalized();
         let (packet_tx, packet_rx) = bounded(thread_config.packet_channel_frames);
         let (control_tx, control_rx) = bounded(thread_config.control_channel_frames);
-        let (_frame_tx, frame_rx) = bounded(thread_config.frame_channel_frames);
+        let (frame_tx, frame_rx) = bounded(thread_config.frame_channel_frames);
         let (error_tx, error_rx) = bounded(1);
         let (packet_ack_tx, packet_ack_rx) = bounded(thread_config.packet_channel_frames);
         let (activity_notifier, activity_subscription) = VideoDecoderActivityNotifier::new();
         let eof_drain_state = Arc::new(Mutex::new(VideoDecoderEndOfStreamDrainState::Idle));
         let control_pressure = Arc::new(FfmpegControlPressureCounters::default());
+        let host_resource_provider =
+            FfmpegHostResourceProvider::new(thread_config.frame_channel_frames);
         let worker = FfmpegDecoderWorker {
             active_decoder: None,
             activity_notifier,
             eof_drain_state: eof_drain_state.clone(),
+            frame_tx,
+            resource_provider: host_resource_provider.clone(),
             packet_ack_tx,
             error_tx,
         };
@@ -212,7 +233,10 @@ impl FfmpegVideoDecoderThread {
             error_rx,
             packet_ack_rx,
             activity_subscription,
-            resource_provider: PresentFrameResourceProviderHandle::new(EmptyFfmpegResourceProvider),
+            resource_provider: PresentFrameResourceProviderHandle::new(
+                host_resource_provider.clone(),
+            ),
+            host_resource_provider,
             eof_drain_state,
             thread_config,
             control_pressure,
@@ -443,7 +467,9 @@ impl VideoDecoderThreadHandle for FfmpegVideoDecoderThread {
     }
 
     fn host_upload_resource_snapshot(&self) -> HostUploadResourceSnapshotStatus {
-        HostUploadResourceSnapshotStatus::AbsentResource
+        HostUploadResourceSnapshotStatus::Available(
+            self.host_resource_provider.snapshot(self.frame_rx.len()),
+        )
     }
 
     fn decoder_control_channel_pressure(
@@ -521,7 +547,7 @@ struct FfmpegControlPressureCounters {
     /// Any bounded control-channel full event.
     full_count: AtomicU64,
 
-    /// Release path is a no-op in Session 16, but snapshot keeps the field.
+    /// FFmpeg release path is provider-local, so control-channel release sends stay zero.
     release_send_fail_count: AtomicU64,
 
     /// Flush command send failures are tracked separately for seek diagnostics.
@@ -551,19 +577,530 @@ impl FfmpegControlPressureCounters {
     }
 }
 
-/// Placeholder provider until Session 17 adds AVFrame-backed HostPlanar resources.
+/// Shared provider over AVFrame-backed host-planar resources.
+#[derive(Debug, Clone)]
 #[cfg(feature = "ffmpeg")]
-struct EmptyFfmpegResourceProvider;
+struct FfmpegHostResourceProvider {
+    /// Shared inner state is cloned into both decoder handle and worker thread.
+    inner: Arc<FfmpegHostResourceProviderInner>,
+}
+
+/// Mutable resource table плюс counters, hidden behind the provider boundary.
+#[derive(Debug)]
+#[cfg(feature = "ffmpeg")]
+struct FfmpegHostResourceProviderInner {
+    /// Provider-owned resources that stay alive until renderer calls release.
+    table: Mutex<FfmpegHostResourceTable>,
+
+    /// Upper bound for simultaneously retained host frames.
+    upload_slots_capacity: usize,
+
+    /// Cumulative failures while creating/publishing host-upload resources.
+    upload_failures: AtomicU64,
+}
+
+/// Resource table keyed by neutral opaque frame handles.
+#[derive(Debug)]
+#[cfg(feature = "ffmpeg")]
+struct FfmpegHostResourceTable {
+    /// Next never-reused handle value for this provider lifetime.
+    next_handle: u64,
+
+    /// Active resources still owned by the provider.
+    entries: HashMap<FrameResourceHandle, FfmpegHostResourceEntry>,
+}
+
+/// One provider-owned resource entry.
+#[derive(Debug)]
+#[cfg(feature = "ffmpeg")]
+struct FfmpegHostResourceEntry {
+    /// Generation is diagnostic ownership context; release remains handle-based.
+    _generation: u64,
+
+    /// Neutral descriptor whose owner holds the refcounted AVFrame alive.
+    descriptor: FrameResourceDescriptor,
+}
+
+/// Result of moving one received AVFrame into the provider table.
+#[derive(Debug)]
+#[cfg(feature = "ffmpeg")]
+struct FfmpegHostResourcePublication {
+    /// Opaque handle stored in `DecodedFrame`.
+    handle: FrameResourceHandle,
+
+    /// Actual coded width read from the received AVFrame.
+    width: u32,
+
+    /// Actual coded height read from the received AVFrame.
+    height: u32,
+}
 
 #[cfg(feature = "ffmpeg")]
-impl PresentFrameResourceProvider for EmptyFfmpegResourceProvider {
-    fn resource_lookup(&self, _handle: FrameResourceHandle) -> PresentFrameResourceProviderLookup {
-        PresentFrameResourceProviderLookup::Missing {
-            resource_pool_lock_wait: Duration::ZERO,
+impl FfmpegHostResourceProvider {
+    /// Создаёт provider с bounded числом host-upload slots.
+    fn new(upload_slots_capacity: usize) -> Self {
+        let upload_slots_capacity = upload_slots_capacity.max(1);
+
+        Self {
+            inner: Arc::new(FfmpegHostResourceProviderInner {
+                table: Mutex::new(FfmpegHostResourceTable {
+                    next_handle: 1,
+                    entries: HashMap::new(),
+                }),
+                upload_slots_capacity,
+                upload_failures: AtomicU64::new(0),
+            }),
         }
     }
 
-    fn release_frame(&self, _handle: FrameResourceHandle) {}
+    /// Converts a refcounted AVFrame into a provider-owned host-planar resource.
+    fn insert_frame(
+        &self,
+        generation: u64,
+        frame: OwnedAvFrame,
+        expected_contract: video_frame_contract::VideoFrameContract,
+    ) -> Result<FfmpegHostResourcePublication, FfmpegDecoderThreadError> {
+        let publication = self.insert_frame_inner(generation, frame, expected_contract);
+
+        if publication.is_err() {
+            self.record_upload_failure();
+        }
+
+        publication
+    }
+
+    /// Internal implementation split out so failure accounting stays in one place.
+    fn insert_frame_inner(
+        &self,
+        generation: u64,
+        frame: OwnedAvFrame,
+        expected_contract: video_frame_contract::VideoFrameContract,
+    ) -> Result<FfmpegHostResourcePublication, FfmpegDecoderThreadError> {
+        let (descriptor, width, height) = avframe_host_planar_descriptor(frame, expected_contract)?;
+
+        validate_resource_descriptor_against_contract(
+            expected_contract,
+            width,
+            height,
+            &descriptor,
+        )
+        .map_err(|error| {
+            invalid_avframe_resource(
+                "AVFrame HostPlanar descriptor validation",
+                error.to_string(),
+            )
+        })?;
+
+        let mut table = self.inner.table.lock().map_err(|_| {
+            invalid_avframe_resource(
+                "AVFrame HostPlanar resource table lock",
+                "resource table mutex is poisoned".to_owned(),
+            )
+        })?;
+
+        if table.entries.len() >= self.inner.upload_slots_capacity {
+            return Err(FfmpegDecoderThreadError::ProtocolViolation {
+                reason: format!(
+                    "FFmpeg host-upload resource table is full: {}/{} slots are occupied",
+                    table.entries.len(),
+                    self.inner.upload_slots_capacity
+                ),
+            });
+        }
+
+        let handle = table.allocate_handle()?;
+        table.entries.insert(
+            handle,
+            FfmpegHostResourceEntry {
+                _generation: generation,
+                descriptor,
+            },
+        );
+
+        Ok(FfmpegHostResourcePublication {
+            handle,
+            width,
+            height,
+        })
+    }
+
+    /// Snapshot used by the neutral software host-upload backpressure boundary.
+    fn snapshot(&self, host_frames_ready: usize) -> HostUploadResourceSnapshot {
+        let host_frames_in_flight = self
+            .inner
+            .table
+            .lock()
+            .map(|table| table.entries.len())
+            .unwrap_or(self.inner.upload_slots_capacity);
+        let upload_slots_free = self
+            .inner
+            .upload_slots_capacity
+            .saturating_sub(host_frames_in_flight);
+
+        HostUploadResourceSnapshot {
+            host_frames_ready,
+            host_frames_in_flight,
+            upload_slots_capacity: self.inner.upload_slots_capacity,
+            upload_slots_free,
+            upload_failures: self.inner.upload_failures.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Counts resource creation/publish failures without changing error semantics.
+    fn record_upload_failure(&self) {
+        self.inner.upload_failures.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(feature = "ffmpeg")]
+impl FfmpegHostResourceTable {
+    /// Allocates the next opaque handle without reusing released values.
+    fn allocate_handle(&mut self) -> Result<FrameResourceHandle, FfmpegDecoderThreadError> {
+        let handle = FrameResourceHandle(self.next_handle);
+        self.next_handle = self.next_handle.checked_add(1).ok_or_else(|| {
+            FfmpegDecoderThreadError::ProtocolViolation {
+                reason: "FFmpeg host-upload resource handle counter overflowed".to_owned(),
+            }
+        })?;
+        Ok(handle)
+    }
+}
+
+#[cfg(feature = "ffmpeg")]
+impl PresentFrameResourceProvider for FfmpegHostResourceProvider {
+    fn resource_lookup(&self, handle: FrameResourceHandle) -> PresentFrameResourceProviderLookup {
+        let lock_start = Instant::now();
+        match self.inner.table.lock() {
+            Ok(table) => resource_lookup_from_table(&table, handle, lock_start.elapsed()),
+            Err(_) => PresentFrameResourceProviderLookup::Fatal {
+                resource_pool_lock_wait: lock_start.elapsed(),
+            },
+        }
+    }
+
+    fn try_resource_lookup(
+        &self,
+        handle: FrameResourceHandle,
+    ) -> PresentFrameResourceProviderLookup {
+        let lock_start = Instant::now();
+        match self.inner.table.try_lock() {
+            Ok(table) => resource_lookup_from_table(&table, handle, lock_start.elapsed()),
+            Err(TryLockError::WouldBlock) => PresentFrameResourceProviderLookup::Busy {
+                resource_pool_lock_wait: lock_start.elapsed(),
+            },
+            Err(TryLockError::Poisoned(_)) => PresentFrameResourceProviderLookup::Fatal {
+                resource_pool_lock_wait: lock_start.elapsed(),
+            },
+        }
+    }
+
+    fn resource_descriptor_lookup(
+        &self,
+        handle: FrameResourceHandle,
+    ) -> PresentFrameResourceDescriptorLookup {
+        let lock_start = Instant::now();
+        match self.inner.table.lock() {
+            Ok(table) => descriptor_lookup_from_table(&table, handle, lock_start.elapsed()),
+            Err(_) => PresentFrameResourceDescriptorLookup::Fatal {
+                resource_pool_lock_wait: lock_start.elapsed(),
+            },
+        }
+    }
+
+    fn try_resource_descriptor_lookup(
+        &self,
+        handle: FrameResourceHandle,
+    ) -> PresentFrameResourceDescriptorLookup {
+        let lock_start = Instant::now();
+        match self.inner.table.try_lock() {
+            Ok(table) => descriptor_lookup_from_table(&table, handle, lock_start.elapsed()),
+            Err(TryLockError::WouldBlock) => PresentFrameResourceDescriptorLookup::Busy {
+                resource_pool_lock_wait: lock_start.elapsed(),
+            },
+            Err(TryLockError::Poisoned(_)) => PresentFrameResourceDescriptorLookup::Fatal {
+                resource_pool_lock_wait: lock_start.elapsed(),
+            },
+        }
+    }
+
+    fn release_frame(&self, handle: FrameResourceHandle) {
+        if let Ok(mut table) = self.inner.table.lock() {
+            table.entries.remove(&handle);
+        }
+    }
+}
+
+#[cfg(feature = "ffmpeg")]
+fn resource_lookup_from_table(
+    table: &FfmpegHostResourceTable,
+    handle: FrameResourceHandle,
+    resource_pool_lock_wait: Duration,
+) -> PresentFrameResourceProviderLookup {
+    if table.entries.contains_key(&handle) {
+        PresentFrameResourceProviderLookup::Ready {
+            resource_pool_lock_wait,
+        }
+    } else {
+        PresentFrameResourceProviderLookup::Missing {
+            resource_pool_lock_wait,
+        }
+    }
+}
+
+#[cfg(feature = "ffmpeg")]
+fn descriptor_lookup_from_table(
+    table: &FfmpegHostResourceTable,
+    handle: FrameResourceHandle,
+    resource_pool_lock_wait: Duration,
+) -> PresentFrameResourceDescriptorLookup {
+    let Some(entry) = table.entries.get(&handle) else {
+        return PresentFrameResourceDescriptorLookup::Missing {
+            resource_pool_lock_wait,
+        };
+    };
+
+    match entry.descriptor.try_clone_for_lookup() {
+        Ok(descriptor) => PresentFrameResourceDescriptorLookup::Ready {
+            descriptor,
+            resource_pool_lock_wait,
+        },
+        Err(_) => PresentFrameResourceDescriptorLookup::Fatal {
+            resource_pool_lock_wait,
+        },
+    }
+}
+
+/// HostPlanar owner that keeps a refcounted AVFrame alive behind video-core API.
+#[derive(Debug)]
+#[cfg(feature = "ffmpeg")]
+struct AvFrameHostPlanarOwner {
+    /// Separate `av_frame_ref` owned by the resource table/descriptor clones.
+    frame: OwnedAvFrame,
+}
+
+// SAFETY: after publication this owner never mutates the wrapped AVFrame. Its
+// safe API exposes only immutable row slices, and Drop only releases FFmpeg's
+// refcounted buffers when the last descriptor clone disappears.
+#[cfg(feature = "ffmpeg")]
+unsafe impl Sync for AvFrameHostPlanarOwner {}
+
+#[cfg(feature = "ffmpeg")]
+impl HostPlanarFrameOwner for AvFrameHostPlanarOwner {
+    fn visible_row_bytes(
+        &self,
+        plane_index: usize,
+        plane: &HostPlaneDescriptor,
+        row_index: u32,
+        visible_row_bytes: usize,
+    ) -> anyhow::Result<&[u8]> {
+        if plane.offset != 0 {
+            return Err(anyhow::anyhow!(
+                "AVFrame-backed host-planar {:?} plane uses non-zero owner offset {}",
+                plane.role,
+                plane.offset
+            ));
+        }
+
+        let row_index = usize::try_from(row_index).map_err(|_| {
+            anyhow::anyhow!(
+                "AVFrame-backed host-planar {:?} row index {} does not fit usize",
+                plane.role,
+                row_index
+            )
+        })?;
+
+        self.frame
+            .plane_row_data(plane_index, row_index, visible_row_bytes)
+            .map_err(|error| anyhow::anyhow!(error))?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "AVFrame-backed host-planar {:?} plane {} has null data pointer",
+                    plane.role,
+                    plane_index
+                )
+            })
+    }
+}
+
+#[cfg(feature = "ffmpeg")]
+fn avframe_host_planar_descriptor(
+    frame: OwnedAvFrame,
+    expected_contract: video_frame_contract::VideoFrameContract,
+) -> Result<(FrameResourceDescriptor, u32, u32), FfmpegDecoderThreadError> {
+    if expected_contract.transfer_path != VideoFrameTransferPath::SoftwareHostUpload {
+        return Err(invalid_avframe_resource(
+            "AVFrame HostPlanar descriptor",
+            format!(
+                "expected SoftwareHostUpload contract, got {}",
+                expected_contract.transfer_path
+            ),
+        ));
+    }
+
+    let frame_format = frame.software_format().ok_or_else(|| {
+        invalid_avframe_resource(
+            "AVFrame pixel format",
+            format!(
+                "AVFrame format code {} is not a supported v1 software planar YUV format",
+                frame.raw_format_code()
+            ),
+        )
+    })?;
+    ensure_frame_format_matches_contract(frame_format, expected_contract.pixel_layout)?;
+
+    let width = positive_avframe_dimension("width", frame.width())?;
+    let height = positive_avframe_dimension("height", frame.height())?;
+    let planes =
+        avframe_host_plane_descriptors(&frame, expected_contract.pixel_layout, width, height)?;
+    let owner = Arc::new(AvFrameHostPlanarOwner { frame });
+    let descriptor = HostPlanarFrameDescriptor::new(owner, planes);
+
+    Ok((
+        FrameResourceDescriptor::HostPlanar(descriptor),
+        width,
+        height,
+    ))
+}
+
+#[cfg(feature = "ffmpeg")]
+fn ensure_frame_format_matches_contract(
+    frame_format: SoftwarePixelFormat,
+    expected_layout: VideoFramePixelLayout,
+) -> Result<(), FfmpegDecoderThreadError> {
+    let actual_layout = frame_format.frame_pixel_layout();
+    if actual_layout != expected_layout {
+        return Err(invalid_avframe_resource(
+            "AVFrame pixel format",
+            format!(
+                "decoded AVFrame layout {} does not match selected contract {}",
+                actual_layout, expected_layout
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "ffmpeg")]
+fn positive_avframe_dimension(
+    name: &'static str,
+    value: i32,
+) -> Result<u32, FfmpegDecoderThreadError> {
+    u32::try_from(value)
+        .ok()
+        .filter(|dimension| *dimension > 0)
+        .ok_or_else(|| {
+            invalid_avframe_resource(
+                "AVFrame dimensions",
+                format!("AVFrame {name} must be positive, got {value}"),
+            )
+        })
+}
+
+#[cfg(feature = "ffmpeg")]
+fn avframe_host_plane_descriptors(
+    frame: &OwnedAvFrame,
+    pixel_layout: VideoFramePixelLayout,
+    width: u32,
+    height: u32,
+) -> Result<Vec<HostPlaneDescriptor>, FfmpegDecoderThreadError> {
+    let bytes_per_sample = host_planar_bytes_per_sample(pixel_layout)?;
+    let (chroma_width, chroma_height) = host_planar_chroma_size(pixel_layout, width, height)?;
+    let plane_specs = [
+        (HostPlaneRole::Luma, width, height),
+        (HostPlaneRole::ChromaU, chroma_width, chroma_height),
+        (HostPlaneRole::ChromaV, chroma_width, chroma_height),
+    ];
+
+    plane_specs
+        .into_iter()
+        .enumerate()
+        .map(|(plane_index, (role, visible_width, visible_height))| {
+            let stride = positive_avframe_linesize(frame, plane_index, role)?;
+
+            Ok(HostPlaneDescriptor {
+                role,
+                offset: 0,
+                stride,
+                visible_width,
+                visible_height,
+                bytes_per_sample,
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "ffmpeg")]
+fn positive_avframe_linesize(
+    frame: &OwnedAvFrame,
+    plane_index: usize,
+    role: HostPlaneRole,
+) -> Result<usize, FfmpegDecoderThreadError> {
+    let line_size = frame.linesize(plane_index).ok_or_else(|| {
+        invalid_avframe_resource(
+            "AVFrame linesize",
+            format!(
+                "AVFrame {:?} plane index {} is outside linesize table",
+                role, plane_index
+            ),
+        )
+    })?;
+
+    usize::try_from(line_size)
+        .ok()
+        .filter(|line_size| *line_size > 0)
+        .ok_or_else(|| {
+            invalid_avframe_resource(
+                "AVFrame linesize",
+                format!(
+                    "AVFrame {:?} plane {} has unsupported non-positive linesize {}",
+                    role, plane_index, line_size
+                ),
+            )
+        })
+}
+
+#[cfg(feature = "ffmpeg")]
+fn host_planar_bytes_per_sample(
+    pixel_layout: VideoFramePixelLayout,
+) -> Result<usize, FfmpegDecoderThreadError> {
+    match pixel_layout.bit_depth() {
+        Some(FrameBitDepth::Eight) => Ok(1),
+        Some(FrameBitDepth::Ten | FrameBitDepth::Twelve) => Ok(2),
+        None => Err(invalid_avframe_resource(
+            "AVFrame HostPlanar layout",
+            format!("{pixel_layout} is not a host-planar YUV layout"),
+        )),
+    }
+}
+
+#[cfg(feature = "ffmpeg")]
+fn host_planar_chroma_size(
+    pixel_layout: VideoFramePixelLayout,
+    width: u32,
+    height: u32,
+) -> Result<(u32, u32), FfmpegDecoderThreadError> {
+    match pixel_layout.chroma() {
+        Some(FrameChromaSubsampling::Yuv420) => {
+            Ok((half_rounded_up(width), half_rounded_up(height)))
+        }
+        Some(FrameChromaSubsampling::Yuv422) => Ok((half_rounded_up(width), height)),
+        Some(FrameChromaSubsampling::Yuv444) => Ok((width, height)),
+        None => Err(invalid_avframe_resource(
+            "AVFrame HostPlanar layout",
+            format!("{pixel_layout} is not a planar YUV layout"),
+        )),
+    }
+}
+
+#[cfg(feature = "ffmpeg")]
+const fn half_rounded_up(value: u32) -> u32 {
+    (value / 2) + (value % 2)
+}
+
+#[cfg(feature = "ffmpeg")]
+fn invalid_avframe_resource(operation: &'static str, details: String) -> FfmpegDecoderThreadError {
+    FfmpegDecoderThreadError::Ffi(FfmpegError::InvalidInput { operation, details })
 }
 
 /// Worker thread state that owns the active FFmpeg codec instance.
@@ -577,6 +1114,12 @@ struct FfmpegDecoderWorker {
 
     /// Shared EOF drain state read by the playback-facing handle.
     eof_drain_state: Arc<Mutex<VideoDecoderEndOfStreamDrainState>>,
+
+    /// Decoded-frame publisher for playback/session.
+    frame_tx: Sender<DecodedFrame>,
+
+    /// AVFrame-backed resource table shared with renderer lookup/release path.
+    resource_provider: FfmpegHostResourceProvider,
 
     /// Packet completion acknowledgements for player in-flight accounting.
     packet_ack_tx: Sender<usize>,
@@ -711,35 +1254,55 @@ impl FfmpegDecoderWorker {
     }
 
     fn begin_end_of_stream_drain(&mut self, generation: u64) -> VideoDecoderEndOfStreamDrainResult {
-        let Some(active_decoder) = self.active_decoder.as_mut() else {
-            let drained = VideoDecoderEndOfStreamDrainState::Drained { generation };
-            if let Err(error) = set_eof_drain_state(
-                &self.eof_drain_state,
-                drained.clone(),
-                &self.activity_notifier,
+        let drain_result = {
+            let Some(active_decoder) = self.active_decoder.as_mut() else {
+                let drained = VideoDecoderEndOfStreamDrainState::Drained { generation };
+                if let Err(error) = set_eof_drain_state(
+                    &self.eof_drain_state,
+                    drained.clone(),
+                    &self.activity_notifier,
+                ) {
+                    return VideoDecoderEndOfStreamDrainResult::Fatal(
+                        decode_thread_error_from_ffmpeg(error),
+                    );
+                }
+                return VideoDecoderEndOfStreamDrainResult::Started(drained);
+            };
+
+            let current_state = active_decoder.decode_loop.end_of_stream_drain_state();
+            if matches!(
+                current_state,
+                VideoDecoderEndOfStreamDrainState::Draining { generation: active_generation }
+                    | VideoDecoderEndOfStreamDrainState::Drained { generation: active_generation }
+                    if active_generation == generation
             ) {
-                return VideoDecoderEndOfStreamDrainResult::Fatal(decode_thread_error_from_ffmpeg(
-                    error,
-                ));
+                return VideoDecoderEndOfStreamDrainResult::Unchanged(current_state);
             }
-            return VideoDecoderEndOfStreamDrainResult::Started(drained);
+
+            let config = active_decoder.config.clone();
+            active_decoder
+                .decode_loop
+                .begin_end_of_stream_drain(generation)
+                .map(|progress_report| (config, progress_report))
         };
 
-        let current_state = active_decoder.decode_loop.end_of_stream_drain_state();
-        if matches!(
-            current_state,
-            VideoDecoderEndOfStreamDrainState::Draining { generation: active_generation }
-                | VideoDecoderEndOfStreamDrainState::Drained { generation: active_generation }
-                if active_generation == generation
-        ) {
-            return VideoDecoderEndOfStreamDrainResult::Unchanged(current_state);
-        }
-
-        match active_decoder
-            .decode_loop
-            .begin_end_of_stream_drain(generation)
-        {
-            Ok(state) => VideoDecoderEndOfStreamDrainResult::Started(state),
+        match drain_result {
+            Ok((config, progress_report)) => {
+                if let Err(error) = self.publish_decoded_frames(&config, progress_report.frames) {
+                    let thread_error = decode_thread_error_from_ffmpeg(error.clone());
+                    let _ = set_eof_drain_state(
+                        &self.eof_drain_state,
+                        VideoDecoderEndOfStreamDrainState::Fatal {
+                            generation: Some(generation),
+                            error: thread_error.clone(),
+                        },
+                        &self.activity_notifier,
+                    );
+                    VideoDecoderEndOfStreamDrainResult::Fatal(thread_error)
+                } else {
+                    VideoDecoderEndOfStreamDrainResult::Started(progress_report.state)
+                }
+            }
             Err(error) => {
                 let thread_error = decode_thread_error_from_ffmpeg(error.clone());
                 let _ = set_eof_drain_state(
@@ -756,13 +1319,26 @@ impl FfmpegDecoderWorker {
     }
 
     fn handle_packet(&mut self, packet: DecodePacket) {
-        let Some(active_decoder) = self.active_decoder.as_mut() else {
-            self.report_fatal_error(FfmpegDecoderThreadError::DecoderNotConfigured);
-            return;
+        let decode_result = {
+            let Some(active_decoder) = self.active_decoder.as_mut() else {
+                self.report_fatal_error(FfmpegDecoderThreadError::DecoderNotConfigured);
+                return;
+            };
+
+            let config = active_decoder.config.clone();
+            active_decoder
+                .decode_loop
+                .send_packet(packet)
+                .map(|progress_report| (config, progress_report))
         };
 
-        match active_decoder.decode_loop.send_packet(packet) {
-            Ok(progress_report) => {
+        match decode_result {
+            Ok((config, progress_report)) => {
+                if let Err(error) = self.publish_decoded_frames(&config, progress_report.frames) {
+                    self.report_fatal_error(error);
+                    return;
+                }
+
                 if progress_report.packet_completed {
                     let _ = self.packet_ack_tx.try_send(1);
                 }
@@ -770,6 +1346,85 @@ impl FfmpegDecoderWorker {
             }
             Err(error) => self.report_fatal_error(error),
         }
+    }
+
+    fn publish_decoded_frames(
+        &self,
+        config: &VideoStreamDecodeConfig,
+        frames: Vec<DecodedFrameRecord>,
+    ) -> Result<(), FfmpegDecoderThreadError> {
+        for frame_record in frames {
+            let decoded_frame = self.decoded_frame_from_record(config, frame_record)?;
+            let resource_handle = decoded_frame.resource_handle;
+
+            match self.frame_tx.try_send(decoded_frame) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    self.resource_provider.release_frame(resource_handle);
+                    self.resource_provider.record_upload_failure();
+                    return Err(FfmpegDecoderThreadError::ProtocolViolation {
+                        reason: format!(
+                            "FFmpeg decoded-frame channel is full: {}/{} frames queued",
+                            self.frame_tx.len(),
+                            self.frame_tx.capacity().unwrap_or(0)
+                        ),
+                    });
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    self.resource_provider.release_frame(resource_handle);
+                    self.resource_provider.record_upload_failure();
+                    return Err(FfmpegDecoderThreadError::ProtocolViolation {
+                        reason: "FFmpeg decoded-frame channel is disconnected".to_owned(),
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn decoded_frame_from_record(
+        &self,
+        config: &VideoStreamDecodeConfig,
+        frame_record: DecodedFrameRecord,
+    ) -> Result<DecodedFrame, FfmpegDecoderThreadError> {
+        let frame_ref =
+            frame_record
+                .frame_ref
+                .ok_or_else(|| FfmpegDecoderThreadError::ProtocolViolation {
+                    reason: "FFmpeg receive loop produced metadata without an AVFrame reference"
+                        .to_owned(),
+                })?;
+        let color = frame_record
+            .color
+            .unwrap_or_else(VideoColorMetadata::sdr_bt709_limited);
+        let publication = self.resource_provider.insert_frame(
+            frame_record.generation,
+            frame_ref,
+            config.frame_contract,
+        )?;
+
+        let decoded_frame = DecodedFrame {
+            generation: frame_record.generation,
+            pts: frame_record.pts,
+            frame_contract: config.frame_contract,
+            width: publication.width,
+            height: publication.height,
+            render_width: publication.width,
+            render_height: publication.height,
+            display_orientation: config.display_orientation,
+            color,
+            resource_handle: publication.handle,
+            diagnostics: VideoFrameDiagnostics::default(),
+        };
+
+        decoded_frame
+            .validate_against_expected_contract(config.frame_contract)
+            .map_err(|error| {
+                invalid_avframe_resource("FFmpeg decoded frame validation", error.to_string())
+            })?;
+
+        Ok(decoded_frame)
     }
 
     fn drop_queued_packets_after_seek_flush(&self, packet_rx: &Receiver<DecodePacket>) {
@@ -907,10 +1562,25 @@ impl SendReceiveCodecApi for RealFfmpegDecodeApi {
         self.codec_context
             .receive_frame(&mut self.receive_frame)
             .map_err(decode_api_error_from_ffi)?;
+
         let timestamps = self.receive_frame.timestamps();
+        let color = color_metadata_plan_from_ffmpeg_frame(self.receive_frame.color_metadata())
+            .metadata()
+            .cloned();
+        let frame_ref = match self.receive_frame.try_clone_ref() {
+            Ok(frame_ref) => frame_ref,
+            Err(error) => {
+                self.receive_frame.unref();
+                return Err(DecodeApiError::Fatal(FfmpegDecoderThreadError::from(error)));
+            }
+        };
         self.receive_frame.unref();
 
-        Ok(ReceivedFrameMetadata { timestamps })
+        Ok(ReceivedFrameMetadata {
+            timestamps,
+            frame_ref: Some(frame_ref),
+            color,
+        })
     }
 
     fn flush_buffers(&mut self) -> Result<(), FfmpegDecoderThreadError> {
@@ -1049,8 +1719,9 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
     fn begin_end_of_stream_drain(
         &mut self,
         generation: u64,
-    ) -> Result<VideoDecoderEndOfStreamDrainState, FfmpegDecoderThreadError> {
+    ) -> Result<EofDrainProgressReport, FfmpegDecoderThreadError> {
         let mut eagain_without_progress_count = 0usize;
+        let mut frames = Vec::new();
 
         loop {
             match self.codec_api.send_end_of_stream() {
@@ -1061,21 +1732,27 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                         &self.activity_notifier,
                     )?;
                     let drain_report = self.receive_until_blocked(generation, None)?;
+                    let stop_reason = drain_report.stop_reason;
+                    frames.extend(drain_report.frames);
 
-                    return Ok(match drain_report.stop_reason {
+                    let state = match stop_reason {
                         ReceiveStopReason::EndOfFile => {
                             VideoDecoderEndOfStreamDrainState::Drained { generation }
                         }
                         ReceiveStopReason::NeedMoreInput => {
                             VideoDecoderEndOfStreamDrainState::Draining { generation }
                         }
-                    });
+                    };
+
+                    return Ok(EofDrainProgressReport { state, frames });
                 }
                 Err(DecodeApiError::Again) => {
                     let drain_generation = self.current_generation.unwrap_or(generation);
                     let drain_report = self.receive_until_blocked(drain_generation, None)?;
+                    let made_progress = drain_report.made_progress();
+                    frames.extend(drain_report.frames);
 
-                    if !drain_report.made_progress() {
+                    if !made_progress {
                         eagain_without_progress_count =
                             eagain_without_progress_count.saturating_add(1);
                         if eagain_without_progress_count > 1 {
@@ -1094,7 +1771,10 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                         drained.clone(),
                         &self.activity_notifier,
                     )?;
-                    return Ok(drained);
+                    return Ok(EofDrainProgressReport {
+                        state: drained,
+                        frames,
+                    });
                 }
                 Err(DecodeApiError::Fatal(error)) => return Err(error),
             }
@@ -1127,7 +1807,10 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                     drain_report.frames.push(DecodedFrameRecord {
                         generation,
                         pts,
-                        timestamps: frame_metadata.timestamps,
+                        #[cfg(feature = "ffmpeg")]
+                        frame_ref: frame_metadata.frame_ref,
+                        #[cfg(feature = "ffmpeg")]
+                        color: frame_metadata.color,
                     });
                     let _ = self.activity_notifier.notify_activity();
                 }
@@ -1173,11 +1856,19 @@ trait SendReceiveCodecApi {
 }
 
 /// Normalized receive result used by tests and the real FFmpeg adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 #[cfg(any(test, feature = "ffmpeg"))]
 struct ReceivedFrameMetadata {
     /// Timestamp fields copied from the received frame.
     timestamps: FrameTimestamps,
+
+    /// Refcounted frame reference kept alive for provider-owned HostPlanar access.
+    #[cfg(feature = "ffmpeg")]
+    frame_ref: Option<OwnedAvFrame>,
+
+    /// Frame-level color metadata normalized from FFmpeg fields when available.
+    #[cfg(feature = "ffmpeg")]
+    color: Option<VideoColorMetadata>,
 }
 
 /// Internal send/receive status preserving EAGAIN vs EOF.
@@ -1195,7 +1886,7 @@ enum DecodeApiError {
 }
 
 /// Metadata report for decoded frames observed by the state machine.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 #[cfg(any(test, feature = "ffmpeg"))]
 struct DecodedFrameRecord {
     /// Seek generation assigned by the decode loop.
@@ -1204,12 +1895,17 @@ struct DecodedFrameRecord {
     /// Resolved presentation timestamp.
     pts: Duration,
 
-    /// Raw frame timestamps used to resolve `pts`.
-    timestamps: FrameTimestamps,
+    /// Provider-owned AVFrame reference, present only in real FFmpeg builds.
+    #[cfg(feature = "ffmpeg")]
+    frame_ref: Option<OwnedAvFrame>,
+
+    /// Frame color metadata, present only in real FFmpeg builds.
+    #[cfg(feature = "ffmpeg")]
+    color: Option<VideoColorMetadata>,
 }
 
 /// Report returned after send/drain progress.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 #[cfg(any(test, feature = "ffmpeg"))]
 struct DecodeProgressReport {
     /// Frames produced while processing the operation.
@@ -1242,7 +1938,7 @@ impl DecodeProgressReport {
 }
 
 /// Report returned by one receive loop.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 #[cfg(any(test, feature = "ffmpeg"))]
 struct ReceiveDrainReport {
     /// Frames received before EAGAIN/EOF/fatal.
@@ -1250,6 +1946,17 @@ struct ReceiveDrainReport {
 
     /// Non-fatal receive-loop stop reason.
     stop_reason: ReceiveStopReason,
+}
+
+/// Report returned after explicit EOF/DPB drain.
+#[derive(Debug)]
+#[cfg(any(test, feature = "ffmpeg"))]
+struct EofDrainProgressReport {
+    /// Publicly visible drain lifecycle state.
+    state: VideoDecoderEndOfStreamDrainState,
+
+    /// Tail frames produced while draining decoder buffers.
+    frames: Vec<DecodedFrameRecord>,
 }
 
 #[cfg(any(test, feature = "ffmpeg"))]
@@ -1569,14 +2276,15 @@ mod tests {
             FakeReceiveResult::EndOfFile,
         ]);
 
-        let drain_state = decode_loop
+        let drain_report = decode_loop
             .begin_end_of_stream_drain(9)
             .expect("EOF drain should send NULL packet and drain tail frames");
 
         assert_eq!(decode_loop.codec_api.flush_buffers_count, 1);
         assert_eq!(decode_loop.codec_api.end_of_stream_send_count, 1);
+        assert_eq!(drain_report.frames.len(), 1);
         assert_eq!(
-            drain_state,
+            drain_report.state,
             VideoDecoderEndOfStreamDrainState::Drained { generation: 9 }
         );
     }
@@ -1643,8 +2351,216 @@ mod tests {
             .expect("interpolated frame should decode");
 
         assert_eq!(first.frames[0].pts, Duration::from_millis(5));
+        assert_eq!(first.frames[0].generation, 1);
         assert_eq!(second.frames[0].pts, Duration::from_millis(8));
         assert_eq!(third.frames[0].pts, Duration::from_millis(10));
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn avframe_resource_remains_readable_until_release() {
+        let provider = FfmpegHostResourceProvider::new(4);
+        let mut frame = test_yuv420_frame(2, 2, 32);
+        frame
+            .write_test_plane_row(0, 0, &[10, 11])
+            .expect("Y row 0 should be writable");
+        frame
+            .write_test_plane_row(0, 1, &[20, 21])
+            .expect("Y row 1 should be writable");
+
+        let publication = provider
+            .insert_frame(
+                3,
+                frame,
+                host_planar_contract(VideoFramePixelLayout::Yuv420Planar8),
+            )
+            .expect("valid AVFrame should become a host resource");
+        let descriptor = lookup_host_planar_descriptor(&provider, publication.handle);
+
+        assert_eq!(
+            descriptor
+                .visible_plane_row_bytes(0, 1)
+                .expect("Y row remains readable"),
+            &[20, 21]
+        );
+        assert!(matches!(
+            provider.resource_lookup(publication.handle),
+            PresentFrameResourceProviderLookup::Ready { .. }
+        ));
+
+        provider.release_frame(publication.handle);
+
+        assert!(matches!(
+            provider.resource_lookup(publication.handle),
+            PresentFrameResourceProviderLookup::Missing { .. }
+        ));
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn release_drops_resource_entry_and_stale_release_is_noop() {
+        let provider = FfmpegHostResourceProvider::new(2);
+        let frame = test_yuv420_frame(2, 2, 32);
+        let publication = provider
+            .insert_frame(
+                1,
+                frame,
+                host_planar_contract(VideoFramePixelLayout::Yuv420Planar8),
+            )
+            .expect("valid AVFrame should be inserted");
+
+        provider.release_frame(publication.handle);
+        provider.release_frame(publication.handle);
+
+        assert!(matches!(
+            provider.resource_descriptor_lookup(publication.handle),
+            PresentFrameResourceDescriptorLookup::Missing { .. }
+        ));
+        assert_eq!(
+            provider.snapshot(0).host_frames_in_flight,
+            0,
+            "release should remove the provider-owned entry"
+        );
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn descriptor_clone_keeps_avframe_owner_without_copying_planes() {
+        let provider = FfmpegHostResourceProvider::new(2);
+        let mut frame = test_yuv420_frame(2, 2, 32);
+        frame
+            .write_test_plane_row(0, 0, &[7, 8])
+            .expect("Y row should be writable");
+        let publication = provider
+            .insert_frame(
+                1,
+                frame,
+                host_planar_contract(VideoFramePixelLayout::Yuv420Planar8),
+            )
+            .expect("valid AVFrame should be inserted");
+        let descriptor = match provider.resource_descriptor_lookup(publication.handle) {
+            PresentFrameResourceDescriptorLookup::Ready { descriptor, .. } => descriptor,
+            other => panic!("expected ready descriptor lookup, got {other:?}"),
+        };
+        let cloned_descriptor = descriptor
+            .try_clone_for_lookup()
+            .expect("host-planar descriptor clone should not duplicate plane bytes");
+
+        provider.release_frame(publication.handle);
+
+        let FrameResourceDescriptor::HostPlanar(cloned_descriptor) = cloned_descriptor else {
+            panic!("expected host-planar cloned descriptor");
+        };
+        assert_eq!(
+            cloned_descriptor
+                .visible_plane_row_bytes(0, 0)
+                .expect("cloned descriptor keeps AVFrame owner alive"),
+            &[7, 8]
+        );
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn invalid_linesize_and_data_are_rejected() {
+        let provider = FfmpegHostResourceProvider::new(2);
+        let mut invalid_linesize_frame = test_yuv420_frame(2, 2, 32);
+        invalid_linesize_frame.set_test_linesize(0, 1);
+
+        let linesize_error = provider
+            .insert_frame(
+                1,
+                invalid_linesize_frame,
+                host_planar_contract(VideoFramePixelLayout::Yuv420Planar8),
+            )
+            .expect_err("visible row wider than linesize must be rejected");
+        assert!(
+            linesize_error
+                .to_string()
+                .contains("AVFrame HostPlanar descriptor validation")
+        );
+
+        let mut null_data_frame = test_yuv420_frame(2, 2, 32);
+        null_data_frame.clear_test_plane_data(1);
+        let data_error = provider
+            .insert_frame(
+                1,
+                null_data_frame,
+                host_planar_contract(VideoFramePixelLayout::Yuv420Planar8),
+            )
+            .expect_err("null AVFrame plane data must be rejected");
+        assert!(
+            data_error
+                .to_string()
+                .contains("AVFrame HostPlanar descriptor validation")
+        );
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn unsupported_avframe_format_is_rejected_with_diagnostic_context() {
+        let provider = FfmpegHostResourceProvider::new(2);
+        let unsupported_frame = OwnedAvFrame::new_test_unsupported_nv12_frame(2, 2, 32)
+            .expect("test NV12 AVFrame allocation should succeed");
+
+        let error = provider
+            .insert_frame(
+                1,
+                unsupported_frame,
+                host_planar_contract(VideoFramePixelLayout::Yuv420Planar8),
+            )
+            .expect_err("NV12 must not enter the HostPlanar software resource table");
+
+        assert!(
+            error
+                .to_string()
+                .contains("not a supported v1 software planar YUV format")
+        );
+        assert_eq!(provider.snapshot(0).upload_failures, 1);
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn padded_avframe_linesize_reads_visible_bytes_and_validates_descriptor() {
+        let provider = FfmpegHostResourceProvider::new(2);
+        let mut frame = test_yuv420_frame(3, 3, 32);
+        frame
+            .write_test_plane_row(0, 0, &[1, 2, 3])
+            .expect("Y row 0 should be writable");
+        frame
+            .write_test_plane_row(0, 2, &[9, 10, 11])
+            .expect("Y row 2 should be writable");
+        frame
+            .write_test_plane_row(1, 1, &[21, 22])
+            .expect("U row should be writable");
+        frame
+            .write_test_plane_row(2, 1, &[31, 32])
+            .expect("V row should be writable");
+
+        let publication = provider
+            .insert_frame(
+                5,
+                frame,
+                host_planar_contract(VideoFramePixelLayout::Yuv420Planar8),
+            )
+            .expect("padded AVFrame should validate");
+        let descriptor = lookup_host_planar_descriptor(&provider, publication.handle);
+
+        assert!(
+            descriptor.planes[0].stride > 3,
+            "FFmpeg test frame should expose row padding through linesize"
+        );
+        assert_eq!(
+            descriptor
+                .visible_plane_row_bytes(0, 0)
+                .expect("visible Y row should ignore right padding"),
+            &[1, 2, 3]
+        );
+        assert_eq!(
+            descriptor
+                .visible_plane_row_bytes(1, 1)
+                .expect("visible U row should ignore right padding"),
+            &[21, 22]
+        );
     }
 
     #[derive(Debug, Clone)]
@@ -1751,7 +2667,13 @@ mod tests {
                 .pop_front()
                 .unwrap_or(FakeReceiveResult::Again)
             {
-                FakeReceiveResult::Frame(timestamps) => Ok(ReceivedFrameMetadata { timestamps }),
+                FakeReceiveResult::Frame(timestamps) => Ok(ReceivedFrameMetadata {
+                    timestamps,
+                    #[cfg(feature = "ffmpeg")]
+                    frame_ref: None,
+                    #[cfg(feature = "ffmpeg")]
+                    color: None,
+                }),
                 FakeReceiveResult::Again => Err(DecodeApiError::Again),
                 FakeReceiveResult::EndOfFile => Err(DecodeApiError::EndOfFile),
                 FakeReceiveResult::Fatal(reason) => Err(DecodeApiError::Fatal(
@@ -1809,6 +2731,41 @@ mod tests {
         let (activity_notifier, _activity_subscription) = VideoDecoderActivityNotifier::new();
 
         SendReceiveDecodeLoop::new(fake_api, activity_notifier, shared_idle_drain_state())
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    fn host_planar_contract(
+        pixel_layout: VideoFramePixelLayout,
+    ) -> video_frame_contract::VideoFrameContract {
+        video_frame_contract::VideoFrameContract {
+            pixel_layout,
+            transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+        }
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    fn test_yuv420_frame(width: i32, height: i32, alignment: i32) -> OwnedAvFrame {
+        OwnedAvFrame::new_test_video_frame(
+            SoftwarePixelFormat::Yuv420Planar8,
+            width,
+            height,
+            alignment,
+        )
+        .expect("test AVFrame allocation should succeed")
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    fn lookup_host_planar_descriptor(
+        provider: &FfmpegHostResourceProvider,
+        handle: FrameResourceHandle,
+    ) -> HostPlanarFrameDescriptor {
+        match provider.resource_descriptor_lookup(handle) {
+            PresentFrameResourceDescriptorLookup::Ready {
+                descriptor: FrameResourceDescriptor::HostPlanar(descriptor),
+                ..
+            } => descriptor,
+            other => panic!("expected ready host-planar descriptor lookup, got {other:?}"),
+        }
     }
 
     fn shared_idle_drain_state() -> Arc<Mutex<VideoDecoderEndOfStreamDrainState>> {
