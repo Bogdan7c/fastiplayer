@@ -1,14 +1,15 @@
 # FFmpeg LGPL Build Tooling
 
-Этот каталог содержит подготовительный tooling для локальной сборки dynamic
-LGPL FFmpeg/libav* под будущий software decode backend. Сам tooling не делает
-запуск плеера зависимым от FFmpeg; workspace crate `video-ffmpeg` подключает
-raw binding только за explicit Cargo feature `ffmpeg`.
+Этот каталог содержит tooling для локальной сборки dynamic LGPL FFmpeg/libav*
+под optional software decode backend. Сам tooling не делает запуск плеера
+зависимым от FFmpeg; workspace crate `video-ffmpeg` подключает raw binding
+только за explicit Cargo feature `ffmpeg`.
 
 ## Архитектурная граница
 
 - `scripts/tooling/build-ffmpeg-lgpl.sh` владеет только download/configure/make/install workflow.
-- Runtime capability остаётся будущим optional probe: отсутствие FFmpeg не должно мешать старту `rustiplayer`.
+- Runtime capability проверяется optional probe-ом в `video-ffmpeg`: отсутствие
+  FFmpeg не должно мешать старту `rustiplayer`.
 - Demuxing остаётся в существующих media crates; этот tooling не собирает `libavformat`.
 - CPU conversion не становится playback path: `libswscale` и `libswresample` выключены по умолчанию и включаются только явным opt-in для будущих header/build проверок.
 - FFmpeg hardware acceleration не используется: native hardware path остаётся за текущими backend crates.
@@ -69,7 +70,8 @@ scripts/tooling/build-ffmpeg-lgpl.sh \
 - `RUSTIPLAYER_FFMPEG_ENABLE_SWRESAMPLE` - `0`/`1`, default `0`.
 - `RUSTIPLAYER_FFMPEG_ENABLE_SWSCALE` - `0`/`1`, default `0`.
 
-После установки будущий build/probe код должен смотреть в локальный prefix явно:
+После установки explicit FFmpeg build/runtime проверки должны смотреть в
+локальный prefix явно:
 
 ```bash
 export FFMPEG_DIR="$RUSTIPLAYER_FFMPEG_PREFIX"
@@ -83,6 +85,24 @@ export LD_LIBRARY_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LI
 `cargo check --workspace` не включает feature `ffmpeg`, поэтому эти export не
 нужны для default workspace build.
 
+Проверить explicit FFmpeg build path:
+
+```bash
+FFMPEG_DIR="$RUSTIPLAYER_FFMPEG_PREFIX" \
+PKG_CONFIG_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+LD_LIBRARY_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+cargo check -p video-ffmpeg --features ffmpeg
+```
+
+Проверить real runtime probe, если local FFmpeg runtime установлен:
+
+```bash
+FFMPEG_DIR="$RUSTIPLAYER_FFMPEG_PREFIX" \
+PKG_CONFIG_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+LD_LIBRARY_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+cargo test -p video-ffmpeg --features ffmpeg -- --ignored
+```
+
 ## Guardrail
 
 Сборка FFmpeg в локальный prefix не означает, что плеер зависит от FFmpeg при
@@ -92,4 +112,5 @@ export LD_LIBRARY_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LI
   `video-ffmpeg`;
 - включать FFmpeg feature в default workspace/app build;
 - добавлять public `ffmpeg_sw`/`ffmpeg-sw` config или UI option;
-- использовать FFmpeg CPU color conversion/RGB path в playback.
+- использовать FFmpeg CPU color conversion/RGB path в playback;
+- использовать FFmpeg hardware decode/hwaccel API.

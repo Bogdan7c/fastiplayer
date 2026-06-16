@@ -10,6 +10,9 @@ use crate::{
     VideoFrameResourceLookup, VideoFrameResourceProvider,
 };
 
+/// Canonical backend id, совпадающий с `DecodeBackendId::vaapi()` в capability report-е.
+const VAAPI_BACKEND_ID: &str = "vaapi";
+
 /// Factory текущего production VA-API backend-а для app composition layer-а.
 ///
 /// Тип живёт в concrete backend crate, а `player-core` получает только
@@ -42,6 +45,7 @@ impl VaapiVideoBackendFactory {
             self.decoder_thread_config,
         ))?;
         let player_backend = StartedVideoBackend::from_decoder_thread(
+            VAAPI_BACKEND_ID,
             VaapiVideoDecoderThreadHandle::new(decoder_thread),
         );
 

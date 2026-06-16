@@ -2,12 +2,13 @@
 
 ## Цель
 
-`rustiplayer` - Linux-first видеоплеер с аппаратным video decode, zero-copy
-передачей кадров в renderer и честной диагностикой неподдержанных потоков.
+`rustiplayer` - Linux-first видеоплеер с native hardware video decode,
+optional FFmpeg software decode, explicit decoder->renderer frame contracts и
+честной диагностикой неподдержанных потоков.
 
 Главная инженерная цель: не показывать "почти работает" там, где pipeline
 нарушает контракт. Если поток нельзя воспроизвести через поддержанный hardware
-path, он должен получить typed reject с понятной причиной.
+или software path, он должен получить typed reject с понятной причиной.
 
 ## Поддерживается сейчас
 
@@ -15,6 +16,8 @@ path, он должен получить typed reject с понятной при
 - YouTube/VOD WebM через временный `yt-dlp` adapter.
 - VP9 Profile 0 SDR 8-bit 4:2:0 через NV12.
 - VP9 Profile 2 HDR 10-bit 4:2:0 через P010 и BT.2446-C HDR-to-SDR.
+- FFmpeg software decode через HostPlanar YUV + WGPU host upload, если runtime
+  probe и capability intersection успешны.
 - Opus audio decode в software path.
 - WGPU renderer с Vulkan-first профилем.
 - egui shell, timeline/scrub, worker-owned playback runtime.
@@ -22,8 +25,8 @@ path, он должен получить typed reject с понятной при
 
 ## Не поддерживается сейчас
 
-- Software video decode fallback.
-- CPU upload/readback decoded video для production playback.
+- CPU RGB conversion/readback decoded video для production playback.
+- FFmpeg hardware decode/hwaccel path.
 - Native HDR output в swapchain/display.
 - MP4/MOV/fMP4/HLS/DASH как production containers.
 - AV1, H.264, H.265, VP8 как production video paths.

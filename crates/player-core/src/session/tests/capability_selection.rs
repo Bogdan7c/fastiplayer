@@ -33,6 +33,38 @@ fn unsupported_profile_returns_player_error_before_decode() {
 }
 
 #[test]
+fn active_backend_filters_matching_capability_output_contract_for_each_codec() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_with_hardware_and_ffmpeg_outputs());
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        "ffmpeg-sw",
+        SharedFakeVideoDecoderThread::new(),
+    ));
+
+    for requirement in [
+        VideoDecodeRequirement::new(VideoCodec::H264)
+            .with_profile(VideoProfile::H264(H264Profile::Main))
+            .with_bit_depth(BitDepth::Eight)
+            .with_chroma(ChromaSubsampling::Yuv420),
+        VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0))
+            .with_bit_depth(BitDepth::Eight)
+            .with_chroma(ChromaSubsampling::Yuv420),
+    ] {
+        let matched_output = session
+            .validate_video_decode_requirement(&requirement)
+            .expect("active FFmpeg backend должен пройти playable software requirement")
+            .expect("capability selection должен вернуть concrete output");
+
+        assert_eq!(matched_output.backend.as_str(), "ffmpeg-sw");
+        assert_eq!(
+            matched_output.frame_contract,
+            VideoFrameContract::host_yuv420_planar8()
+        );
+    }
+}
+
+#[test]
 fn requested_video_track_selection_sets_matching_requirement() {
     let mut session = PlayerSession::new();
     session.set_system_capabilities(capabilities_with_vp9_profile0());
@@ -520,6 +552,100 @@ fn install_tracks_for_capability_selection(session: &mut PlayerSession, tracks: 
     session
         .pipeline
         .install_opened_media(Box::new(demuxer), None, None, tracks);
+}
+
+fn capabilities_with_hardware_and_ffmpeg_outputs() -> capability_core::SystemCapabilities {
+    let hardware_backend_id = DecodeBackendId::vaapi();
+    let ffmpeg_backend_id =
+        DecodeBackendId::new("ffmpeg-sw").expect("test FFmpeg backend id is valid");
+    let h264_main = h264_main_yuv420_8bit_format();
+    let vp9_profile0 = vp9_profile0_yuv420_8bit_format();
+    let hardware_outputs = vec![
+        SupportedVideoOutput {
+            backend: hardware_backend_id.clone(),
+            decode_format: h264_main.clone(),
+            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+        },
+        SupportedVideoOutput {
+            backend: hardware_backend_id.clone(),
+            decode_format: vp9_profile0.clone(),
+            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+        },
+    ];
+    let ffmpeg_outputs = vec![
+        SupportedVideoOutput {
+            backend: ffmpeg_backend_id.clone(),
+            decode_format: h264_main,
+            frame_contract: VideoFrameContract::host_yuv420_planar8(),
+        },
+        SupportedVideoOutput {
+            backend: ffmpeg_backend_id.clone(),
+            decode_format: vp9_profile0,
+            frame_contract: VideoFrameContract::host_yuv420_planar8(),
+        },
+    ];
+    let mut playable_video_outputs = Vec::new();
+    playable_video_outputs.extend(hardware_outputs.iter().cloned());
+    playable_video_outputs.extend(ffmpeg_outputs.iter().cloned());
+
+    capability_core::SystemCapabilities {
+        schema_version: capability_core::CURRENT_CAPABILITY_SCHEMA_VERSION,
+        probed_at_unix_seconds: 1,
+        video_backends: vec![
+            BackendCapabilities {
+                backend_id: hardware_backend_id,
+                display_name: "Test VA-API".to_string(),
+                status: BackendProbeStatus::Available,
+                driver: BackendDriverInfo::default(),
+                raw_supported_outputs: hardware_outputs,
+                raw_profiles: Vec::new(),
+                raw_entrypoints: Vec::new(),
+                raw_rt_formats: Vec::new(),
+                quirks: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            BackendCapabilities {
+                backend_id: ffmpeg_backend_id,
+                display_name: "Test FFmpeg software".to_string(),
+                status: BackendProbeStatus::Available,
+                driver: BackendDriverInfo::default(),
+                raw_supported_outputs: ffmpeg_outputs,
+                raw_profiles: Vec::new(),
+                raw_entrypoints: Vec::new(),
+                raw_rt_formats: Vec::new(),
+                quirks: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+        ],
+        render_backends: vec![RenderCapabilities::wgpu_nv12(Some(4096))],
+        playable_video_outputs,
+    }
+}
+
+fn h264_main_yuv420_8bit_format() -> SupportedVideoDecodeFormat {
+    SupportedVideoDecodeFormat {
+        codec: VideoCodec::H264,
+        profile: VideoProfile::H264(H264Profile::Main),
+        bit_depth: BitDepth::Eight,
+        chroma: ChromaSubsampling::Yuv420,
+        max_width: Some(4096),
+        max_height: Some(4096),
+        max_fps: None,
+        hdr_input: false,
+    }
+}
+
+fn vp9_profile0_yuv420_8bit_format() -> SupportedVideoDecodeFormat {
+    SupportedVideoDecodeFormat {
+        codec: VideoCodec::Vp9,
+        profile: VideoProfile::Vp9(Vp9Profile::Profile0),
+        bit_depth: BitDepth::Eight,
+        chroma: ChromaSubsampling::Yuv420,
+        max_width: Some(4096),
+        max_height: Some(4096),
+        max_fps: None,
+        hdr_input: false,
+    }
 }
 
 fn vp9_track_with_profile(track_id: u32, profile: Vp9Profile) -> TrackInfo {

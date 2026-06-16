@@ -149,7 +149,7 @@ fn select_hardware_rejection(
     Err(VideoPipelineSelectionError::HardwareUnavailable)
 }
 
-/// Software-ветка уже типизирована, но не возвращает план до появления FFmpeg composition.
+/// Software-ветка выбирает только renderer-intersected FFmpeg HostPlanar output.
 fn select_software_plan(
     preferred_backend: VideoBackendPreference,
     playable_video_outputs: &[SupportedVideoOutput],

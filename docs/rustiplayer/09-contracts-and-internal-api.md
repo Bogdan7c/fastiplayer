@@ -202,15 +202,17 @@ Selection должна учитывать:
 
 ## Video decode contract
 
-`video-vaapi::VideoDecodeThread` owns backend threading and queues. It accepts
-`DecodePacket` and publishes `video_core::DecodedFrame`.
+`video-vaapi::VideoDecodeThread` owns hardware backend threading and queues.
+`video-ffmpeg` owns the optional software decoder thread and all raw FFmpeg FFI.
+Both accept `DecodePacket` through the neutral decoder boundary and publish
+`video_core::DecodedFrame`.
 
 `video-backend-api` owns `VideoBackendFactory`, `StartedVideoBackend` and
 `PresentFrameResourceProvider*`. `player-core` consumes `StartedVideoBackend`
 and re-exports the playback-facing provider handle types, but does not own the
-factory trait. `video-vaapi::VaapiVideoBackendFactory` implements the
-contract from `video-backend-api`; concrete backend crates must not depend on
-`player-core`.
+factory trait. `video-vaapi::VaapiVideoBackendFactory` and
+`video-ffmpeg::FfmpegSoftwareVideoBackendFactory` implement the contract from
+`video-backend-api`; concrete backend crates must not depend on `player-core`.
 
 Decoded frame contract:
 
@@ -220,8 +222,8 @@ Decoded frame contract:
   decoded output contract;
 - production VA-API path публикует `Nv12` or `P010` with
   `HardwareZeroCopy { DmaBuf { image_layout } }`;
-- `HostPlanarFrameDescriptor` и `SoftwareHostUpload` существуют как neutral
-  future boundary, но current WGPU production path их не materialize-ит;
+- FFmpeg software path публикует explicit HostPlanar YUV layouts with
+  `SoftwareHostUpload`;
 - `resource_handle`: opaque handle for renderer-neutral resource lookup, not a
   CPU image or GPU texture view;
 - `color`: resolved `VideoColorMetadata`;
@@ -242,10 +244,11 @@ compatibility решается capability/render слоями.
 
 `PresentFrameResourceProvider` сообщает playback-facing статусы
 `Ready`/`Busy`/`Missing`/`Fatal` и renderer-facing duplicated
-`FrameResourceDescriptor`. `video-vaapi` владеет исходным descriptor/surface до
-release, а `render-wgpu-video` импортирует duplicated DMA-BUF handles в WGPU
-texture views. `player-core` видит только renderer-neutral lookup/release
-boundary.
+`FrameResourceDescriptor`. `video-vaapi` владеет исходным DMA-BUF
+descriptor/surface до release, `video-ffmpeg` владеет refcounted decoded
+software frame до release, а `render-wgpu-video` либо импортирует duplicated
+DMA-BUF handles, либо загружает HostPlanar Y/U/V planes в renderer-owned WGPU
+textures. `player-core` видит только renderer-neutral lookup/release boundary.
 
 ## Render contract
 
@@ -257,13 +260,14 @@ Allowed constructors:
 
 - `from_decoded_nv12`;
 - `from_decoded_p010`.
+- `from_decoded_host_yuv`.
 
-Оба конструктора принимают только matching `DecodedFrame.frame_contract`:
-NV12/P010 plus `HardwareZeroCopy { DmaBuf { image_layout } }`. HostPlanar/
-SoftwareHostUpload сейчас возвращает typed `Unsupported`, потому что WGPU
-host-upload materializer ещё не реализован. Metadata/plane mismatch является
-render boundary error; CPU fallback/readback/upload в текущем VAAPI DMA-BUF flow
-не добавляется.
+DMA-BUF constructors принимают только matching `DecodedFrame.frame_contract`:
+NV12/P010 plus `HardwareZeroCopy { DmaBuf { image_layout } }`.
+`from_decoded_host_yuv` принимает только explicit HostPlanar YUV layout plus
+`SoftwareHostUpload`, already materialized into renderer-owned Y/U/V texture
+views. Metadata/plane mismatch является render boundary error; CPU RGB
+conversion, CPU readback fallback и swscale playback conversion не добавляются.
 
 `RenderDiagnostics` renderer-neutral: UI может показывать его без GPU handles.
 

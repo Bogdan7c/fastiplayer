@@ -2585,6 +2585,43 @@ mod tests {
             .join(file_name)
     }
 
+    fn optional_fixture_path(path: PathBuf, fixture_label: &str) -> Option<PathBuf> {
+        if path.exists() {
+            return Some(path);
+        }
+
+        eprintln!(
+            "skipping {fixture_label} test fixture: {} is absent",
+            path.display()
+        );
+        None
+    }
+
+    fn open_optional_demuxer_fixture(
+        path: PathBuf,
+        fixture_label: &str,
+    ) -> Option<SymphoniaDemuxer> {
+        let path = optional_fixture_path(path, fixture_label)?;
+
+        Some(SymphoniaDemuxer::from_file(&path).unwrap_or_else(|error| {
+            panic!(
+                "{fixture_label} fixture должен открыться через Symphonia: {error}; path: {}",
+                path.display()
+            )
+        }))
+    }
+
+    fn open_optional_file_fixture(path: PathBuf, fixture_label: &str) -> Option<File> {
+        let path = optional_fixture_path(path, fixture_label)?;
+
+        Some(File::open(&path).unwrap_or_else(|error| {
+            panic!(
+                "{fixture_label} fixture должен открыться как файл: {error}; path: {}",
+                path.display()
+            )
+        }))
+    }
+
     fn ios_h265_mov_fixture_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../<MEDIA_DIR>/ios-hevc-main10-aac-4k60.mov")
@@ -4256,8 +4293,11 @@ mod tests {
 
     #[test]
     fn seek_after_eof_rebuilds_seekable_reader_and_preserves_track_layout() {
-        let mut demuxer = SymphoniaDemuxer::from_file(&audio_fixture_path("music_sample.m4a"))
-            .expect("seekable m4a fixture должен открыться");
+        let Some(mut demuxer) =
+            open_optional_demuxer_fixture(audio_fixture_path("music_sample.m4a"), "seekable m4a")
+        else {
+            return;
+        };
         let tracks_before_eof = demuxer.tracks().to_vec();
         let duration_before_eof = demuxer.duration();
 
@@ -4280,8 +4320,11 @@ mod tests {
 
     #[test]
     fn unseekable_stream_seek_after_eof_does_not_rebuild_or_become_seekable() {
-        let fixture_file = File::open(audio_fixture_path("music_sample.mp3"))
-            .expect("mp3 fixture должен открыться как reader");
+        let Some(fixture_file) =
+            open_optional_file_fixture(audio_fixture_path("music_sample.mp3"), "mp3")
+        else {
+            return;
+        };
         let mut demuxer = SymphoniaDemuxer::from_stream(fixture_file, "mp3", "unit unseekable mp3")
             .expect("unseekable stream fixture должен открыться");
         let tracks_before_eof = demuxer.tracks().to_vec();
@@ -4319,8 +4362,11 @@ mod tests {
 
     #[test]
     fn seek_reprobe_preserves_pending_tracks_changed_event() {
-        let mut demuxer = SymphoniaDemuxer::from_file(&audio_fixture_path("music_sample.m4a"))
-            .expect("seekable m4a fixture должен открыться");
+        let Some(mut demuxer) =
+            open_optional_demuxer_fixture(audio_fixture_path("music_sample.m4a"), "seekable m4a")
+        else {
+            return;
+        };
 
         drain_demuxer_to_eof_for_unit_test(&mut demuxer);
 
@@ -4505,8 +4551,11 @@ mod tests {
 
     #[test]
     fn decode_point_before_seek_starts_video_before_target() {
-        let mut demuxer =
-            SymphoniaDemuxer::from_file(&test_webm_path()).expect("test webm должен открыться");
+        let Some(mut demuxer) =
+            open_optional_demuxer_fixture(test_webm_path(), "VP9 WebM decode-point")
+        else {
+            return;
+        };
         let target = Duration::from_millis(500);
 
         let seek_result = demuxer
@@ -4539,8 +4588,11 @@ mod tests {
         ];
 
         for target in targets {
-            let mut demuxer =
-                SymphoniaDemuxer::from_file(&test_webm_path()).expect("test webm должен открыться");
+            let Some(mut demuxer) =
+                open_optional_demuxer_fixture(test_webm_path(), "VP9 WebM decode-point")
+            else {
+                return;
+            };
 
             let seek_result = demuxer
                 .seek_with_request(DemuxSeekRequest::decode_point_before(target))

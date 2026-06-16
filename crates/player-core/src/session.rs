@@ -83,6 +83,12 @@ pub struct PlayerSession {
     /// Последний системный capability report, полученный от shell/backend layer.
     capabilities: Option<SystemCapabilities>,
 
+    /// Canonical backend id текущего started video backend-а.
+    ///
+    /// Нужен, чтобы stream selection не брала `VideoFrameContract` от другого
+    /// playable backend-а из общего system capability report-а.
+    active_video_backend_id: Option<String>,
+
     /// Runtime state seek transaction/scrub/trace markers, которым владеет session.
     seek_runtime: SeekRuntimeState,
 }
@@ -447,12 +453,14 @@ impl PlayerSession {
 
     /// Устанавливает video backend, уже запущенный shell composition root-ом.
     pub fn set_video_backend(&mut self, started_backend: StartedVideoBackend) {
+        let backend_id = started_backend.backend_id().to_owned();
         if let Err(error) = self.clear_active_seek_decoder_output_floor("video backend replacement")
         {
             self.mark_fatal_error(error);
             return;
         }
 
+        self.active_video_backend_id = Some(backend_id);
         self.pipeline
             .set_video_decoder_thread_handle(started_backend.into_decoder_thread());
         info!(
@@ -747,6 +755,7 @@ impl Default for PlayerSession {
             shutdown_requested: false,
             eof_drain: EofDrainRuntime::default(),
             capabilities: None,
+            active_video_backend_id: None,
             seek_runtime: SeekRuntimeState::default(),
         }
     }

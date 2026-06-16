@@ -5,15 +5,16 @@
 Видео считается поддержанным только после полного intersection:
 
 - codec requirement известен достаточно точно;
-- hardware backend заявил matching `SupportedVideoOutput`;
+- decode backend заявил matching `SupportedVideoOutput`;
 - backend-declared transfer path пересёкся с renderer-declared `VideoFrameContract`;
 - renderer подтвердил input pixel layout и hardware handle layout, если нужен;
 - HDR stream прошёл strict metadata policy и renderer поддерживает HDR-to-SDR.
 
-Software video fallback, FFmpeg decoder, WGPU host upload и CPU transfer не
-входят в production policy. Host upload сейчас существует только как neutral
-`VideoFrameContract`/`HostPlanar` boundary для будущей интеграции, без
-production renderer implementation.
+VA-API hardware остаётся preferred production path. FFmpeg software decode
+становится playable только когда runtime probe успешен, provider объявил raw
+software output, а renderer подтвердил точный `SoftwareHostUpload` contract.
+CPU RGB conversion, swscale playback conversion, CPU readback и FFmpeg hardware
+decode не входят в policy.
 
 ## Текущая матрица
 
@@ -27,7 +28,12 @@ production renderer implementation.
 | H.264 ConstrainedBaseline/Main/High, 8-bit, 4:2:0, SDR | NV12 + DMA-BUF | VA-API | WGPU SDR BT.709 | production when capabilities pass |
 | H.265 Main, 8-bit, 4:2:0, SDR | NV12 + DMA-BUF | VA-API | WGPU SDR BT.709 | production when capabilities pass |
 | H.265 Main10, 10-bit, 4:2:0, PQ/HLG HDR | P010 + DMA-BUF | VA-API | WGPU BT.2446-C to SDR BT.709 | production when capabilities pass |
-| AV1/VP8 and future H.265 profiles | future | future | future | not production |
+| H.264 ConstrainedBaseline/Main/High, 8-bit, 4:2:0 | YUV420 HostPlanar 8-bit | FFmpeg software | WGPU HostPlanar upload | playable when FFmpeg/runtime/renderer pass |
+| VP8 Version0To3, 8-bit, 4:2:0 | YUV420 HostPlanar 8-bit | FFmpeg software | WGPU HostPlanar upload | playable when FFmpeg/runtime/renderer pass |
+| H.265 Main/Main10/Main12/Main422_10/Main422_12/Main444/Main444_10 | matching HostPlanar YUV | FFmpeg software | WGPU HostPlanar upload | playable when FFmpeg/runtime/renderer pass |
+| VP9 Profile 0/1/2/3 legal v1 layouts | matching HostPlanar YUV | FFmpeg software | WGPU HostPlanar upload | playable when FFmpeg/runtime/renderer pass |
+| AV1 Main 8/10-bit 4:2:0, AV1 High 8/10-bit 4:4:4 | matching HostPlanar YUV | FFmpeg software | WGPU HostPlanar upload | playable when FFmpeg/runtime/renderer pass |
+| 4:4:4 12-bit software layouts | none | rejected | rejected | outside v1 HostPlanar matrix |
 
 ## Ключевые типы
 
@@ -134,13 +140,19 @@ pretending HDR can be shown as SDR.
 - typed rejection reasons from `VideoCapabilityRejection`.
 
 `video-vaapi::VaapiCapabilityProvider` supplies the current hardware backend
-report. Each `BackendCapabilities` entry keeps raw backend outputs in
+report. `video-ffmpeg::FfmpegSoftwareCapabilityProvider` supplies the optional
+software backend report only after FFmpeg runtime probing. Probe failures are
+typed in diagnostics as `no-build`, `missing-runtime-libs`, `too-old` or
+`probe-failed`.
+
+Each `BackendCapabilities` entry keeps raw backend outputs in
 `raw_supported_outputs`; each `SupportedVideoOutput` binds backend id,
 codec-level decode format and provider-declared `VideoFrameContract` in one
 record. `SystemCapabilities::playable_video_outputs` stores only the
 system-level intersection with renderer support, so diagnostics can explain
 backend-capable-but-renderer-incompatible outputs without inventing a false
-Cartesian product between codec formats and transfer paths.
+Cartesian product between codec formats and transfer paths. Report text prints
+the backend id, pixel layout and transfer path for each output.
 
 `render-wgpu-video` builds render capabilities from WGPU device features,
 including `TEXTURE_FORMAT_16BIT_NORM` and `TEXTURE_FORMAT_P010` implications
@@ -150,11 +162,15 @@ during system capability probing. Renderer support is expressed as full
 handle layout are checked as one contract instead of separate format/layout
 lists.
 
-Current production `SupportedVideoOutput` records are hardware-only VA-API
-outputs with `HardwareZeroCopy { DmaBuf { image_layout } }`. Host-planar
-`SoftwareHostUpload` contracts may appear in focused tests to prove neutral
-intersection semantics, but they are not advertised by the production WGPU
-renderer and do not enable FFmpeg/software playback today.
+Current production `SupportedVideoOutput` records can be:
+
+- VA-API hardware outputs with `HardwareZeroCopy { DmaBuf { image_layout } }`;
+- FFmpeg software outputs with explicit HostPlanar YUV pixel layout and
+  `SoftwareHostUpload`.
+
+`app-egui` selects concrete plans from already-playable outputs:
+`auto` prefers VA-API DMA-BUF and then FFmpeg HostPlanar, `hardware` never falls
+back to software, and `software` never starts VA-API.
 
 ## H.265 manual validation notes
 

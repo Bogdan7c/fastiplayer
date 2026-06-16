@@ -15,6 +15,9 @@ pub type VideoBackendDecoderThreadHandle =
 
 /// Запущенный video backend, подготовленный composition layer-ом для playback pipeline.
 pub struct StartedVideoBackend {
+    /// Canonical backend id из capability report-а, например `vaapi` или `ffmpeg-sw`.
+    backend_id: String,
+
     /// Decoder thread остаётся за neutral handle boundary.
     decoder_thread: Box<VideoBackendDecoderThreadHandle>,
 }
@@ -23,13 +26,21 @@ impl StartedVideoBackend {
     /// Создаёт backend wrapper вокруг decoder thread, который уже прошёл init handshake.
     #[must_use]
     pub fn from_decoder_thread(
+        backend_id: impl Into<String>,
         decoder_thread: impl video_core::VideoDecoderThreadHandle<
             ResourceProvider = PresentFrameResourceProviderHandle,
         > + 'static,
     ) -> Self {
         Self {
+            backend_id: backend_id.into(),
             decoder_thread: Box::new(decoder_thread),
         }
+    }
+
+    /// Возвращает canonical backend id для связи active backend-а с capability output-ами.
+    #[must_use]
+    pub fn backend_id(&self) -> &str {
+        &self.backend_id
     }
 
     /// Передаёт decoder handle playback layer-у без раскрытия concrete backend type.
@@ -475,6 +486,7 @@ mod tests {
     impl VideoBackendFactory for SuccessfulVideoBackendFactory {
         fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend> {
             Ok(StartedVideoBackend::from_decoder_thread(
+                "startup_fake",
                 StartupFakeDecoderThread,
             ))
         }
@@ -686,7 +698,11 @@ mod tests {
     /// Проверяет, что StartedVideoBackend отдаёт только neutral decoder handle.
     #[test]
     fn started_video_backend_returns_neutral_decoder_handle() {
-        let started_backend = StartedVideoBackend::from_decoder_thread(StartupFakeDecoderThread);
+        let started_backend =
+            StartedVideoBackend::from_decoder_thread("startup_fake", StartupFakeDecoderThread);
+
+        assert_eq!(started_backend.backend_id(), "startup_fake");
+
         let decoder_thread = started_backend.into_decoder_thread();
 
         assert_eq!(decoder_thread.backend_name(), "startup fake decoder");

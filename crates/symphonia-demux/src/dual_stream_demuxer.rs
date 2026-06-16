@@ -545,12 +545,24 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/VP9/test.webm")
     }
 
-    fn open_dual_demuxer_from_test_asset() -> DualStreamDemuxer {
-        let path = test_webm_path();
+    fn optional_fixture_path(path: PathBuf, fixture_label: &str) -> Option<PathBuf> {
+        if path.exists() {
+            return Some(path);
+        }
+
+        eprintln!(
+            "skipping {fixture_label} test fixture: {} is absent",
+            path.display()
+        );
+        None
+    }
+
+    fn open_dual_demuxer_from_test_asset() -> Option<DualStreamDemuxer> {
+        let path = optional_fixture_path(test_webm_path(), "VP9 WebM dual-stream")?;
         let video_demuxer = SymphoniaDemuxer::from_file(&path).expect("video demuxer opens");
         let audio_demuxer = SymphoniaDemuxer::from_file(&path).expect("audio demuxer opens");
 
-        DualStreamDemuxer::new(video_demuxer, audio_demuxer).expect("dual demuxer opens")
+        Some(DualStreamDemuxer::new(video_demuxer, audio_demuxer).expect("dual demuxer opens"))
     }
 
     fn marker_packet(kind: TrackKind) -> Packet {
@@ -729,7 +741,9 @@ mod tests {
 
     #[test]
     fn seek_seeks_both_streams_and_clears_pending_state() {
-        let mut demuxer = open_dual_demuxer_from_test_asset();
+        let Some(mut demuxer) = open_dual_demuxer_from_test_asset() else {
+            return;
+        };
         demuxer.pending_video_packet = Some(marker_packet(TrackKind::Video));
         demuxer.pending_audio_packet = Some(marker_packet(TrackKind::Audio));
         demuxer.video_eof = true;

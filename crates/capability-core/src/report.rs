@@ -177,9 +177,11 @@ impl SupportedVideoOutput {
     #[must_use]
     pub fn describe(&self) -> String {
         format!(
-            "{} via {}",
+            "backend {}, {}, pixel layout: {}, transfer path: {}",
+            self.backend.as_str(),
             self.decode_format.describe(),
-            self.frame_contract.diagnostic_label()
+            self.frame_contract.pixel_layout,
+            self.frame_contract.transfer_path
         )
     }
 }
@@ -701,5 +703,42 @@ mod tests {
                 .pixel_layout,
             VideoFramePixelLayout::Yuv422Planar8
         );
+    }
+
+    /// Проверяет, что report явно показывает выбранные capability contract поля.
+    #[test]
+    fn detailed_report_text_names_backend_pixel_layout_and_transfer_path() {
+        let backend_id = DecodeBackendId::new("ffmpeg-sw").expect("test backend id is valid");
+        let software_output = output_for_backend(
+            backend_id.clone(),
+            vp9_format(
+                Vp9Profile::Profile1,
+                BitDepth::Eight,
+                ChromaSubsampling::Yuv422,
+                false,
+            ),
+            VideoFrameContract {
+                pixel_layout: VideoFramePixelLayout::Yuv422Planar8,
+                transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+            },
+        );
+        let backend =
+            backend_with_id_and_outputs(backend_id, "Test FFmpeg software", vec![software_output]);
+        let mut scanner = CapabilityScanner::new();
+        scanner.register_provider(Box::new(StaticVideoProvider {
+            capabilities: backend,
+        }));
+        scanner.register_render_capabilities(fake_renderer_with_contracts(vec![
+            VideoFrameContract {
+                pixel_layout: VideoFramePixelLayout::Yuv422Planar8,
+                transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+            },
+        ]));
+
+        let report = scanner.scan_with_timestamp(7).detailed_report_text();
+
+        assert!(report.contains("backend ffmpeg-sw"));
+        assert!(report.contains("pixel layout: YUV422 planar 8-bit"));
+        assert!(report.contains("transfer path: software host upload"));
     }
 }

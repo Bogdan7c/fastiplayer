@@ -1,6 +1,6 @@
 # Документация rustiplayer
 
-Актуализировано: 2026-05-29.
+Актуализировано: 2026-06-16.
 
 Этот каталог описывает текущее состояние `rustiplayer`, а не историю фаз
 рефакторинга. Исторические session-планы удалены из рабочей навигации: если
@@ -22,26 +22,32 @@
 - [12. План усиления seek/scrub](12-seek-reliability-plan.md) - сессионный план фикса reliability проблем перемотки.
 - [13. Refactor Guardrails](13-refactor-guardrails.md) - проверяемые границы crates перед refactoring PR.
 - [14. Manual Seek/Scrub Acceptance](14-manual-seek-acceptance.md) - ручная media matrix и parser для seek diagnostics.
+- [15. Manual Video Backend Validation](15-manual-video-backend-validation.md) - release-only проверки hardware/software backend-ов.
 
 ## Короткая карта
 
 `app-egui` является shell: окно, egui, renderer wiring, команды в worker и
 read-only snapshot. Media pipeline живёт в `player-core` внутри `PlayerWorker`.
 
-Видео в production идёт только через hardware decode и DMA-BUF zero-copy.
-Software video fallback, CPU upload и CPU readback не являются настройками.
-Текущий video decode backend path - VA-API; FFmpeg software decode ещё не
-добавлен, а Vulkan video decode path в проекте не поддерживается.
+Основной video path остаётся hardware decode через VA-API и DMA-BUF zero-copy.
+Дополнительный software path использует FFmpeg software decode внутри
+`video-ffmpeg`, FFmpeg-owned decoded-frame backed HostPlanar resources и один
+host-to-GPU upload в `render-wgpu-video`. CPU RGB conversion, CPU readback
+fallback и FFmpeg hardware decode не являются playback paths.
 Vulkan-упоминания в render docs относятся к WGPU/Vulkan surface/import path, а
 не к `video.preferred_backend`.
-Подготовительный FFmpeg build tooling живёт в `scripts/tooling/` и собирает
-локальные dynamic LGPL libav* только как workflow для будущих экспериментов; он
-не добавляет runtime dependency и не меняет capability policy старта плеера.
+FFmpeg build tooling живёт в `scripts/tooling/` и собирает локальные dynamic
+LGPL libav* для opt-in software decode. Default workspace build не включает
+feature `ffmpeg`, не требует FFmpeg headers/libs/runtime и не ломает старт
+приложения при отсутствующем runtime.
 
-Текущий production video path:
+Текущие video paths:
 
 - VP9 Profile 0, 8-bit, 4:2:0, SDR -> VA-API -> NV12 -> WGPU SDR path.
 - VP9 Profile 2, 10-bit, 4:2:0, HDR PQ/HLG -> VA-API -> P010 -> WGPU BT.2446-C HDR-to-SDR path.
+- FFmpeg software outputs -> explicit HostPlanar YUV contracts
+  (`Yuv420Planar8/10/12`, `Yuv422Planar8/10/12`, `Yuv444Planar8/10`) ->
+  WGPU HostPlanar upload -> GPU YUV sampling/color/HDR path.
 
 Текущий service path:
 
@@ -58,6 +64,11 @@ Vulkan-упоминания в render docs относятся к WGPU/Vulkan sur
 - Config хранит пользовательские настройки, но не историю, cookies, bookmarks и durable cache metadata.
 - Capability selection обязана пройти decode backend, `VideoFrameContract`,
   renderer import и color pipeline.
+- `video.preferred_backend = auto` предпочитает playable hardware output и
+  только затем выбирает playable FFmpeg software output.
+- `hardware` не падает обратно на software; `software` не стартует VA-API.
+- FFmpeg/libav dependencies, raw FFmpeg FFI и unsafe FFmpeg ownership остаются
+  внутри `video-ffmpeg`.
 - Неуверенный bitstream probe не должен превращаться в fatal hardware failure.
 
 ## Seek Diagnostics

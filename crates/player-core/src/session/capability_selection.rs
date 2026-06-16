@@ -227,10 +227,49 @@ impl PlayerSession {
             return Ok(None);
         };
 
+        if let Some(active_backend_id) = self.active_video_backend_id.as_deref() {
+            if let Some(output) = capabilities.playable_video_outputs.iter().find(|output| {
+                output.backend.as_str() == active_backend_id && output.satisfies(requirement)
+            }) {
+                return Ok(Some(output.clone()));
+            }
+
+            return Err(self.active_backend_rejection(requirement, active_backend_id));
+        }
+
         match capabilities.check_video_requirement(requirement) {
             Ok(output) => Ok(Some(output.clone())),
             Err(error) => Err(player_error_from_unsupported_requirement(error)),
         }
+    }
+
+    /// Возвращает typed rejection, когда общий system report содержит другой playable backend.
+    fn active_backend_rejection(
+        &self,
+        requirement: &VideoDecodeRequirement,
+        active_backend_id: &str,
+    ) -> PlayerError {
+        let other_backend_hint = self
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.check_video_requirement(requirement).ok())
+            .map(|output| {
+                format!(
+                    "; другой playable backend `{}` объявляет contract `{}`",
+                    output.backend.as_str(),
+                    output.frame_contract.diagnostic_label()
+                )
+            })
+            .unwrap_or_default();
+
+        PlayerError::new(
+            PlayerErrorKind::UnsupportedVideoCodec,
+            format!(
+                "Active video backend `{active_backend_id}` не имеет playable output для {}; \
+                 contract другого backend-а не используется{other_backend_hint}",
+                requirement.describe()
+            ),
+        )
     }
 
     /// Уточняет active video requirement после bitstream probe.

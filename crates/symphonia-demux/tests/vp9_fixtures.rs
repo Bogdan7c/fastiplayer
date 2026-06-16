@@ -12,7 +12,9 @@ use symphonia_demux::SymphoniaDemuxer;
 #[test]
 fn vp9_sdr_decode_point_before_seek_reaches_near_target_keyframe() -> Result<()> {
     let fixture_name = "4k60fps_sdr/LXb3EKWsInQ_2160p60_sdr_vp9_opus.webm";
-    let mut demuxer = open_vp9_fixture(fixture_name)?;
+    let Some(mut demuxer) = open_optional_vp9_fixture(fixture_name)? else {
+        return Ok(());
+    };
     let video_track = first_vp9_video_track(&mut demuxer)
         .with_context(|| format!("{fixture_name}: expected VP9 video track"))?;
     let target = Duration::from_nanos(66_932_403_380);
@@ -59,6 +61,19 @@ fn open_vp9_fixture(fixture_name: &str) -> Result<SymphoniaDemuxer> {
     let fixture_path = vp9_fixture_path(fixture_name);
     SymphoniaDemuxer::from_file(&fixture_path)
         .with_context(|| format!("open VP9 fixture {}", fixture_path.display()))
+}
+
+fn open_optional_vp9_fixture(fixture_name: &str) -> Result<Option<SymphoniaDemuxer>> {
+    let fixture_path = vp9_fixture_path(fixture_name);
+    if !fixture_path.exists() {
+        eprintln!(
+            "skipping VP9 fixture {fixture_name}: {} is absent",
+            fixture_path.display()
+        );
+        return Ok(None);
+    }
+
+    open_vp9_fixture(fixture_name).map(Some)
 }
 
 fn first_vp9_video_track(demuxer: &mut SymphoniaDemuxer) -> Option<TrackInfo> {

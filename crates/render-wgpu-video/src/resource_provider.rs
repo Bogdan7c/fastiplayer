@@ -20,6 +20,7 @@ pub fn wrap_video_backend_for_wgpu_submission(
     started_backend: StartedVideoBackend,
     queue: &wgpu::Queue,
 ) -> (StartedVideoBackend, PresentFrameResourceProviderHandle) {
+    let backend_id = started_backend.backend_id().to_owned();
     let decoder_thread = started_backend.into_decoder_thread();
     let inner_provider = decoder_thread.resource_provider();
     let renderer_provider =
@@ -33,7 +34,7 @@ pub fn wrap_video_backend_for_wgpu_submission(
     };
 
     (
-        StartedVideoBackend::from_decoder_thread(wrapped_thread),
+        StartedVideoBackend::from_decoder_thread(backend_id, wrapped_thread),
         renderer_provider,
     )
 }

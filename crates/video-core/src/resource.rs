@@ -83,7 +83,7 @@ pub struct HostPlaneDescriptor {
 /// Владелец CPU-visible backing-а для host-planar frame-а.
 ///
 /// `video-core` знает только этот neutral trait. Concrete provider может держать
-/// внутри `Arc<[u8]>`, AVFrame или другой resource, но наружу отдаёт только
+/// внутри refcounted decoder frame или другой resource, но наружу отдаёт только
 /// безопасный slice видимых bytes конкретной строки plane-а.
 pub trait HostPlanarFrameOwner: fmt::Debug + Send + Sync {
     /// Возвращает только видимые bytes строки, без правого padding-а.

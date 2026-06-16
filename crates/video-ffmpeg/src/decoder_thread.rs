@@ -57,6 +57,8 @@ use video_frame_contract::{
     FrameBitDepth, FrameChromaSubsampling, VideoFramePixelLayout, VideoFrameTransferPath,
 };
 
+#[cfg(feature = "ffmpeg")]
+use crate::FFMPEG_SOFTWARE_BACKEND_ID;
 use crate::ffi::error::FfmpegError;
 #[cfg(feature = "ffmpeg")]
 use crate::ffi::error::FfmpegErrorKind;
@@ -157,7 +159,9 @@ pub fn start_decoder_thread(
 
     #[cfg(feature = "ffmpeg")]
     {
-        FfmpegVideoDecoderThread::spawn(config).map(StartedVideoBackend::from_decoder_thread)
+        FfmpegVideoDecoderThread::spawn(config).map(|decoder_thread| {
+            StartedVideoBackend::from_decoder_thread(FFMPEG_SOFTWARE_BACKEND_ID, decoder_thread)
+        })
     }
 }
 

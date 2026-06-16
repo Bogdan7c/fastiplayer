@@ -84,8 +84,9 @@ hardware decode или GPU render path. Они могут зависеть от 
 - `audio` - concrete Symphonia/Opus decoder factory и CPAL output backend.
 - `video-vaapi` - VA-API decoder thread, probe, DMA-BUF export и lifecycle
   decoded surfaces до renderer release.
-- `video-ffmpeg` - optional FFmpeg software decoder scaffold; весь raw
-  FFmpeg FFI и будущий unsafe код остаются внутри этого crate-а.
+- `video-ffmpeg` - optional FFmpeg software decoder; весь raw FFmpeg FFI,
+  unsafe FFmpeg ownership и software-only decode thread остаются внутри этого
+  crate-а.
 - `render-wgpu-video` - NV12/P010 WGPU renderer, renderer-side DMA-BUF import,
   materialization API и shader paths.
 
@@ -157,9 +158,10 @@ After:
   render-wgpu-video owns video rendering without shell/reference backend deps
   render-wgpu-shell owns winit/egui surface composition
   video-vulkan removed from workspace and Cargo graph
-  video-ffmpeg added as isolated optional FFmpeg software backend scaffold
+  video-ffmpeg added as isolated optional FFmpeg software backend
   video-frame-contract owns decoder->renderer frame contract vocabulary
   capability selection uses SupportedVideoOutput + VideoFrameContract
+  render-wgpu-video owns renderer-side HostPlanar upload/materialization
 ```
 
 ## Временные нарушения
@@ -226,14 +228,21 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
 - FFmpeg/libav crates разрешены только внутри `video-ffmpeg` и только как
   optional dependency. `ffmpeg-next`, `ffmpeg-sys-next`, `rsmpeg`, `libav*` и
   аналогичные direct dependency names запрещены для всех остальных workspace
-  crates.
+  crates. Эти crates также нельзя добавлять в root `[workspace.dependencies]`,
+  потому что тогда они становятся общим dependency inventory workspace-а.
 - Public `video.preferred_backend` остаётся только `auto`/`hardware`/`software`.
   Старое `"vulkan"` разрешено упоминать только в rejection diagnostics/tests, а
   отдельный `ffmpeg_sw`/`ffmpeg-sw` не должен появляться как TOML/UI/settings
   option.
-- `render-wgpu-video` не добавляет WGPU host-upload materializer module. Current
-  production renderer остаётся DMA-BUF NV12/P010; HostPlanar возвращает typed
-  `Unsupported`, а не silent CPU fallback/readback/upload.
+- Raw FFmpeg types/bindings (`AVFrame`, `AVPacket`, `AVCodecContext`,
+  `ffmpeg_sys_next::...`) не выходят за пределы `video-ffmpeg`; соседние crates
+  видят только neutral contracts.
+- FFmpeg hardware decode API (`av_hwdevice_*`, `av_hwframe_*`, `hwaccel`) не
+  используется. Native hardware path принадлежит `video-vaapi`/будущим native
+  backend crates, не FFmpeg.
+- CPU RGB/YUV conversion через swscale/libswscale/legacy avpicture helpers не
+  используется в playback source tree. HostPlanar software path делает один
+  host-to-GPU upload, а YUV sampling/color/HDR conversion остаются GPU-side.
 - Новые обращения к `PlaybackPipeline` внутри `player-core` проходят через
   intent methods. Возвращать `pub(crate)` поля в сам `PlaybackPipeline`
   запрещено без отдельного архитектурного решения и focused tests.
@@ -257,6 +266,7 @@ refactor-серии:
 - запрещает молчаливое возвращение удалённых workspace crates, сейчас
   `video-vulkan`;
 - проверяет, что `video-frame-contract` зависит только от `serde`;
+- запрещает FFmpeg/libav dependencies в root `[workspace.dependencies]`;
 - запрещает direct FFmpeg/libav dependencies по всем manifest dependency kinds
   для всех crates кроме `video-ffmpeg`;
 - запрещает прямые normal-dependencies из contract crates в shell/backend/player;
@@ -275,9 +285,11 @@ refactor-серии:
 - запрещает `media-prefetch` добавлять любые normal-dependencies кроме
   `source-core`, `tracing` и `thiserror`;
 - проверяет config/settings/UI source roots на public `video.preferred_backend`
-  values/options для удалённого Vulkan video backend и будущего `ffmpeg_sw`;
-- запрещает появление WGPU host-upload materializer module в
-  `render-wgpu-video/src`;
+  values/options для удалённого Vulkan video backend и запрещённого
+  implementation-specific `ffmpeg_sw`;
+- запрещает raw FFmpeg type/binding identifiers за пределами `video-ffmpeg`;
+- запрещает swscale/libswscale/legacy CPU conversion helpers в source tree;
+- запрещает FFmpeg hardware decode API в source tree;
 - не содержит temporary debt allowlist для old mixed `render-wgpu` crate.
 
 Локальный pre-PR путь находится в `scripts/pre-pr-checks.sh`. Он последовательно

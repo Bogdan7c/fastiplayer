@@ -24,7 +24,7 @@ use render_wgpu_video::{
 };
 use rustiplayer_config::PlayerDemuxConfig;
 use rustiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;
 use video_vaapi::VaapiVideoBackendFactory;
 use winit::window::Window;
@@ -1094,7 +1094,7 @@ impl AppState {
             device,
             queue,
         ) {
-            warn!(error = %error, "Video backend unavailable, no hardware decode");
+            warn!(error = %error, "Video pipeline unavailable");
         }
     }
 
@@ -1166,6 +1166,7 @@ impl AppState {
         }
 
         self.wgpu_frame_materializer = Some(frame_materializer);
+        info!(plan = plan_label, "Selected video pipeline");
         self.mark_pending_worker_redraw();
         Ok(())
     }

@@ -11,7 +11,7 @@ crates/media-core            Packet, TrackInfo, MediaTime, TimelineSnapshot
 crates/codec-core            codec/profile/color/stream requirement contracts
 crates/video-frame-contract  neutral decoded frame layout/transfer contract vocabulary
 crates/capability-core       backend reports, render reports, stream selection
-crates/config                TOML schema v2, defaults, validation, paths
+crates/config                TOML schema v3, defaults, validation, paths
 crates/source-core           local files, HTTP Range, RAM byte-range cache
 crates/media-prefetch        config-agnostic RAM read-ahead over ByteSource
 crates/settings-core         neutral settings metadata/controller contracts
@@ -25,8 +25,9 @@ crates/audio                 Symphonia/Opus decoder factory, CPAL output backend
 crates/video-core            decoded frame and video diagnostics contracts
 crates/video-backend-api     backend startup and resource-provider contracts
 crates/video-vaapi           VA-API decoder thread, probe, DMA-BUF export/lifecycle
+crates/video-ffmpeg          optional FFmpeg software decoder, probe, AVFrame HostPlanar owner
 crates/render-core           renderer-neutral capabilities and color contracts
-crates/render-wgpu-video     WGPU NV12/P010 renderer, DMA-BUF materialization, shaders
+crates/render-wgpu-video     WGPU DMA-BUF + HostPlanar materialization, YUV shaders
 crates/render-wgpu-shell     WGPU device/surface shell, egui composition, present path
 crates/desktop-integration   PlayerCommand/PlayerSnapshot adapter for desktop controls
 crates/vp9-parser            VP9 header parser used by codec adapter
@@ -43,9 +44,10 @@ crates/cros-libva-patch      local patched cros-libva dependency
 
 `app-egui` owns UI state, window lifecycle, renderer lifetime and current
 production composition. It opens local files through `symphonia-demux`, receives
-YouTube demuxers from `service-youtube`, starts the VA-API backend, creates the
-WGPU materializer and forwards prepared boundaries into `player-core`. It must
-not own playback queues, A/V scheduling or `PlayerSession` state.
+YouTube demuxers from `service-youtube`, selects VA-API or FFmpeg software plans
+from renderer-intersected capabilities, creates the matching WGPU materializer
+and forwards prepared boundaries into `player-core`. It must not own playback
+queues, A/V scheduling or `PlayerSession` state.
 
 `player-core` owns playback state. It consumes `PreparedMedia`, demuxer traits,
 audio-core decoder/output contracts, video backend handles, commands, events and
@@ -79,19 +81,26 @@ know YouTube, config schema, containers, codecs, renderer, UI or player state.
 
 `service-youtube` owns YouTube/yt-dlp details. It returns already opened streaming
 media/demuxer objects to the shell and does not contain UI/render/player state.
-It also exposes capability-aware candidate metadata for a future startup path
-where `capability-core` selects before the demuxer is opened.
+It exposes capability-aware candidate metadata so `app-egui` can select through
+`capability-core` before asking the service to open the chosen stream.
 
 `video-vaapi` owns VA-API decode, DMA-BUF export and decoded surface lifecycle
 until renderer release. Its `VaapiVideoBackendFactory` implements the `video-backend-api`
 `VideoBackendFactory` boundary. The concrete backend crate depends on
 `video-backend-api`, not on `player-core`, `wgpu`, `wgpu-types` or `ash`.
 
+`video-ffmpeg` owns FFmpeg runtime probe, raw FFmpeg FFI, software-only decoder
+thread, padded packet/frame ownership, codec/pixel/color adapters and
+AVFrame-backed HostPlanar resource lifetime. It exposes only neutral backend and
+capability contracts to neighboring crates. Default workspace builds do not
+enable feature `ffmpeg`.
+
 `render-wgpu-video` owns the pure WGPU video backend: renderer capabilities,
 NV12/P010 renderers, BT.2446-C HDR-to-SDR shader path, renderer-side DMA-BUF
-import/materialization API and renderer diagnostics. It consumes
-renderer-neutral metadata plus duplicated resource descriptors and does not call
-demux/source/player APIs or depend on `video-vaapi`.
+import/materialization API, renderer-side HostPlanar upload textures/cache and
+renderer diagnostics. It consumes renderer-neutral metadata plus duplicated
+resource descriptors and does not call demux/source/player APIs or depend on
+`video-vaapi`/`video-ffmpeg`.
 
 `render-wgpu-shell` owns WGPU instance/device/surface lifecycle, required WGPU
 feature selection for the video renderer, egui composition, frame timing and
@@ -104,7 +113,7 @@ resources or playback queues.
 
 ```text
 app-egui -> player-core/service-youtube/desktop-integration
-app-egui -> symphonia-demux/service-direct-media/audio/video-core/video-frame-contract/video-vaapi/render-wgpu-shell/render-wgpu-video/source-core
+app-egui -> symphonia-demux/service-direct-media/audio/video-core/video-frame-contract/video-vaapi/video-ffmpeg/render-wgpu-shell/render-wgpu-video/source-core
 app-egui -> media-core/capability-core/render-core/rustiplayer-config/rustiplayer-settings/settings-core/animation-core
 app-egui -> wgpu/winit/egui/egui-winit
 player-core -> media-core/codec-core/capability-core/video-core/video-backend-api/video-frame-contract/rustiplayer-config/audio-core/render-core
@@ -126,6 +135,7 @@ video-core -> media-core/codec-core/video-frame-contract
 video-backend-api -> video-core
 render-core -> codec-core/video-frame-contract
 video-vaapi -> video-backend-api/video-core/video-frame-contract/media-core/codec-core/capability-core
+video-ffmpeg -> video-backend-api/video-core/video-frame-contract/codec-core/capability-core
 render-wgpu-video -> render-core/video-core/video-backend-api/video-frame-contract/codec-core/wgpu/ash/wgpu-types
 render-wgpu-shell -> render-wgpu-video/render-core/wgpu/egui/egui-wgpu/winit
 ```
@@ -155,14 +165,16 @@ After:
   player-core -> wgpu closed
   render-wgpu split into render-wgpu-video and render-wgpu-shell
   video-vulkan removed from workspace and Cargo graph
+  video-ffmpeg added as isolated optional FFmpeg software backend
+  render-wgpu-video added renderer-side HostPlanar upload/materialization
 ```
 
 Закрытые связи `player-core -> symphonia-demux/webm-demux` и `player-core -> video-vaapi` не
 должны возвращаться. Обратная direct dependency от `video-vaapi` к `player-core`
 тоже не должна возвращаться: backend startup/resource-provider boundary живёт в
-`video-backend-api`. Текущий production path всё ещё WGPU/VA-API specific,
-потому что concrete factory и WGPU materialization собираются в shell/render
-composition layer-е.
+`video-backend-api`. Concrete factory и WGPU materialization собираются в
+shell/render composition layer-е: VA-API использует DMA-BUF materializer, а
+FFmpeg software использует HostPlanar upload materializer.
 
 ## Особые случаи
 
@@ -171,6 +183,9 @@ composition layer-е.
 - `video-vaapi::VaapiVideoBackendFactory` is the production backend factory.
   It returns only a neutral `StartedVideoBackend`; WGPU materialization is owned
   by `render-wgpu-video`.
+- `video-ffmpeg::FfmpegSoftwareVideoBackendFactory` is the optional software
+  backend factory. It returns only a neutral `StartedVideoBackend`; raw FFmpeg
+  handles stay inside `video-ffmpeg`.
 - `video-backend-api` owns `VideoBackendFactory`, `StartedVideoBackend` and the
   renderer-neutral resource-provider handle used by `player-core`.
 - WGPU texture-view materialization stays in `render-wgpu-video`, and WGPU

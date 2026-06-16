@@ -61,6 +61,10 @@ suggested fix instead of being migrated or silently mapped to a current backend.
 path is VA-API, but the public config value is intentionally not VA-API-specific.
 `"software"` means FFmpeg software decode only; if the FFmpeg software provider
 is unavailable, selection fails with a typed error.
+`"auto"` prefers playable native hardware outputs and falls back to FFmpeg
+software only after capability selection proves that no supported hardware plan
+is playable and a renderer-intersected software output exists. There is no
+separate `ffmpeg_sw` or `ffmpeg-sw` config key.
 
 `render.profile = "vulkan"` and `[render.vulkan]` are render/surface settings
 for the current WGPU shell path. They do not select a Vulkan video decode
@@ -98,11 +102,15 @@ backend.
 
 These are not user switches:
 
-- zero-copy video only;
-- no software video fallback;
-- no CPU upload/readback fallback;
+- FFmpeg hardware decode;
+- CPU RGB conversion or swscale playback conversion;
+- CPU readback fallback;
 - native HDR output disabled;
 - only BT.2446-C HDR-to-SDR operator in current production path.
+
+Software decode is selected only through `video.preferred_backend = "auto"` or
+`"software"` and only when FFmpeg runtime probing plus renderer capability
+intersection succeeds.
 
 If tests need CPU-visible helpers, they must be compile-time test paths, not TOML,
 env or UI toggles.
@@ -124,6 +132,11 @@ No `rusqlite` crate is present in the workspace.
 
 `render.hdr_to_sdr` supports reading the old scalar placeholder and maps it to the
 current table defaults. New persisted defaults should use `[render.hdr_to_sdr]`.
+
+Schema v2 `video.preferred_backend = "vaapi"` is accepted as a compatibility
+value and loaded as `"hardware"` in memory. The removed `"vulkan"` decode value
+is rejected with a targeted error and should be changed to `"auto"` or
+`"hardware"`.
 
 `render.tone_mapping` remains a legacy/future config field. It does not expose
 multiple production tone-mapping presets today.

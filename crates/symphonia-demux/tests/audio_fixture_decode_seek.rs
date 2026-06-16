@@ -125,6 +125,10 @@ impl AudioFixtureCase {
 
 #[test]
 fn audio_fixtures_decode_before_and_after_accurate_middle_seek() -> Result<()> {
+    if skip_when_audio_fixture_root_is_absent("decode/seek matrix") {
+        return Ok(());
+    }
+
     for fixture_case in AUDIO_FIXTURE_CASES {
         run_audio_fixture_case(*fixture_case)
             .with_context(|| format!("audio fixture '{}' failed", fixture_case.label))?;
@@ -135,6 +139,10 @@ fn audio_fixtures_decode_before_and_after_accurate_middle_seek() -> Result<()> {
 
 #[test]
 fn audio_fixtures_replay_after_real_eof_returns_first_audio_packet() -> Result<()> {
+    if skip_when_audio_fixture_root_is_absent("EOF/replay matrix") {
+        return Ok(());
+    }
+
     let mut fixture_failures = Vec::new();
 
     for fixture_case in EOF_REPLAY_FIXTURE_CASES {
@@ -161,6 +169,10 @@ fn audio_fixtures_replay_after_real_eof_returns_first_audio_packet() -> Result<(
 
 #[test]
 fn matroska_opus_fixtures_seek_to_public_duration_returns_audio_packet() -> Result<()> {
+    if skip_when_audio_fixture_root_is_absent("Matroska Opus end-seek matrix") {
+        return Ok(());
+    }
+
     let mut fixture_failures = Vec::new();
 
     for fixture_case in MATROSKA_OPUS_END_SEEK_FIXTURE_CASES {
@@ -188,6 +200,10 @@ fn matroska_opus_fixtures_seek_to_public_duration_returns_audio_packet() -> Resu
 
 #[test]
 fn matroska_opus_fixtures_aggressive_late_seeks_reach_target_audio_packets() -> Result<()> {
+    if skip_when_audio_fixture_root_is_absent("Matroska Opus aggressive seek matrix") {
+        return Ok(());
+    }
+
     let mut fixture_failures = Vec::new();
 
     for fixture_case in MATROSKA_OPUS_END_SEEK_FIXTURE_CASES {
@@ -673,7 +689,24 @@ fn audio_packet_timing_from_media_packet(packet: &Packet) -> AudioPacketTiming {
 }
 
 fn audio_fixture_path(file_name: &str) -> PathBuf {
-    workspace_root().join("test-assets/audio").join(file_name)
+    audio_fixture_root().join(file_name)
+}
+
+fn audio_fixture_root() -> PathBuf {
+    workspace_root().join("test-assets/audio")
+}
+
+fn skip_when_audio_fixture_root_is_absent(test_label: &str) -> bool {
+    let fixture_root = audio_fixture_root();
+    if fixture_root.is_dir() {
+        return false;
+    }
+
+    eprintln!(
+        "skipping {test_label}: audio fixture directory is absent: {}",
+        fixture_root.display()
+    );
+    true
 }
 
 fn workspace_root() -> PathBuf {

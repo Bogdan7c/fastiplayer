@@ -12,7 +12,9 @@ use symphonia_demux::SymphoniaDemuxer;
 #[test]
 fn h265_ios_mov_decode_point_before_seek_starts_on_sync_sample() -> Result<()> {
     let fixture_name = "4k60fps/ios-hevc-main10-aac-4k60.mov";
-    let mut demuxer = open_h265_fixture(fixture_name)?;
+    let Some(mut demuxer) = open_optional_h265_fixture(fixture_name)? else {
+        return Ok(());
+    };
     let video_track = first_h265_video_track(&mut demuxer)
         .with_context(|| format!("{fixture_name}: expected H.265 video track"))?;
     let target = Duration::from_secs(8);
@@ -57,7 +59,9 @@ fn h265_ios_mov_decode_point_before_seek_starts_on_sync_sample() -> Result<()> {
 #[test]
 fn h265_ios_mov_track_exposes_hvcc_codec_private() -> Result<()> {
     let fixture_name = "4k60fps/ios-hevc-main10-aac-4k60.mov";
-    let mut demuxer = open_h265_fixture(fixture_name)?;
+    let Some(mut demuxer) = open_optional_h265_fixture(fixture_name)? else {
+        return Ok(());
+    };
     let video_track = first_h265_video_track(&mut demuxer)
         .with_context(|| format!("{fixture_name}: expected H.265 video track"))?;
     let codec_private = video_track
@@ -90,6 +94,21 @@ fn open_h265_fixture(fixture_name: &str) -> Result<SymphoniaDemuxer> {
     let fixture_path = h265_fixture_path(fixture_name);
     SymphoniaDemuxer::from_file(&fixture_path)
         .with_context(|| format!("open H.265 fixture {}", fixture_path.display()))
+}
+
+fn open_optional_h265_fixture(fixture_name: &str) -> Result<Option<SymphoniaDemuxer>> {
+    let fixture_path = h265_fixture_path(fixture_name);
+    if !fixture_path.exists() {
+        eprintln!(
+            "skipping H.265 fixture {fixture_name}: {} is absent",
+            fixture_path.display()
+        );
+        return Ok(None);
+    }
+
+    SymphoniaDemuxer::from_file(&fixture_path)
+        .with_context(|| format!("open H.265 fixture {}", fixture_path.display()))
+        .map(Some)
 }
 
 fn first_h265_video_track(demuxer: &mut SymphoniaDemuxer) -> Option<TrackInfo> {

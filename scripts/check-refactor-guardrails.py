@@ -10,8 +10,10 @@ direct dependency kinds.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -265,17 +267,49 @@ TEXT_SOURCE_SUFFIXES = frozenset(
     }
 )
 
-FORBIDDEN_RENDER_WGPU_VIDEO_MODULE_PARTS = (
-    "cpu_upload",
-    "cpu-upload",
-    "host_upload",
-    "host-upload",
-    "host_upload_materializer",
-    "host-upload-materializer",
-    "software_upload",
-    "software-upload",
-    "upload_materializer",
-    "upload-materializer",
+RUST_SOURCE_SUFFIXES = frozenset({".rs"})
+
+SOURCE_POLICY_SCAN_ROOTS = ("crates",)
+
+DIRECT_FFMPEG_TYPE_ALLOWED_ROOTS = (Path("crates/video-ffmpeg"),)
+
+DIRECT_FFMPEG_TYPE_PATTERNS = (
+    (
+        re.compile(
+            r"\bAV(?:Frame|Packet|Codec|CodecContext|PixelFormat|Rational|Dictionary|BufferRef)\b"
+        ),
+        "raw FFmpeg/libav types должны оставаться внутри video-ffmpeg",
+    ),
+    (
+        re.compile(r"\bAVERROR\b"),
+        "raw FFmpeg/libav error macros должны оставаться внутри video-ffmpeg",
+    ),
+    (
+        re.compile(r"\bffmpeg_sys_next::|\bffmpeg_next::|\brsmpeg::"),
+        "raw FFmpeg Rust bindings должны использоваться только внутри video-ffmpeg",
+    ),
+)
+
+CPU_RGB_CONVERSION_PATTERNS = (
+    (
+        re.compile(r"\bsws_scale\b|\bsws_getContext\b|\bSwsContext\b"),
+        "swscale CPU conversion запрещён в playback/source tree",
+    ),
+    (
+        re.compile(r"\blibswscale\b|\bav_image_convert\b|\bavpicture_"),
+        "CPU RGB/YUV conversion helpers запрещены в playback/source tree",
+    ),
+)
+
+FFMPEG_HARDWARE_DECODE_PATTERNS = (
+    (
+        re.compile(r"\bav_hwdevice_|\bav_hwframe_|\bAVHW(?:Device|Frames)"),
+        "FFmpeg hardware decode/device API запрещён: native hardware path живёт вне FFmpeg",
+    ),
+    (
+        re.compile(r"\bhwaccel\b|\bhw_frames\b"),
+        "FFmpeg hwaccel path запрещён: video-ffmpeg остаётся software-decode-only",
+    ),
 )
 
 
@@ -436,6 +470,28 @@ def direct_dependencies(
     return dependency_map
 
 
+def workspace_dependency_names(repo_root: Path) -> frozenset[str]:
+    """Читает root `[workspace.dependencies]`, потому что Cargo metadata показывает только package deps."""
+
+    manifest_path = repo_root / "Cargo.toml"
+    try:
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as error:
+        raise GuardrailError(f"`{manifest_path}` содержит невалидный TOML: {error}") from error
+    except OSError as error:
+        raise GuardrailError(f"`{manifest_path}` нельзя прочитать: {error}") from error
+
+    workspace = manifest.get("workspace", {})
+    if not isinstance(workspace, dict):
+        raise GuardrailError("root Cargo.toml `[workspace]` должен быть TOML table")
+
+    dependencies = workspace.get("dependencies", {})
+    if not isinstance(dependencies, dict):
+        raise GuardrailError("root Cargo.toml `[workspace.dependencies]` должен быть TOML table")
+
+    return frozenset(dependencies)
+
+
 def is_normal_dependency(dependency: Any, package_name: str) -> bool:
     """Отличает normal dependency от dev/build dependency."""
 
@@ -459,10 +515,19 @@ def find_reintroduced_workspace_crates(packages: dict[str, dict[str, Any]]) -> l
 def find_dependency_violations(
     dependency_map: dict[str, frozenset[str]],
     all_dependency_map: dict[str, frozenset[str]],
+    workspace_dependencies: frozenset[str],
 ) -> list[DependencyViolation]:
     """Проверяет dependency rules из документа guardrails."""
 
     violations: list[DependencyViolation] = []
+    for dependency in sorted(workspace_dependencies.intersection(FFMPEG_FORBIDDEN_DEPENDENCIES)):
+        violations.append(
+            DependencyViolation(
+                owner="workspace.dependencies",
+                dependency=dependency,
+                rule="FFmpeg/libav crates не должны быть общими workspace dependencies",
+            )
+        )
     violations.extend(
         find_disallowed_dependencies(
             dependency_map,
@@ -543,7 +608,9 @@ def find_source_policy_violations(repo_root: Path) -> list[SourcePolicyViolation
 
     violations: list[SourcePolicyViolation] = []
     violations.extend(find_public_video_backend_option_violations(repo_root))
-    violations.extend(find_wgpu_host_upload_materializer_modules(repo_root))
+    violations.extend(find_direct_ffmpeg_type_violations(repo_root))
+    violations.extend(find_cpu_rgb_conversion_violations(repo_root))
+    violations.extend(find_ffmpeg_hardware_decode_violations(repo_root))
     return sorted(
         violations,
         key=lambda violation: (str(violation.path), violation.line_number, violation.rule),
@@ -623,41 +690,99 @@ def is_allowed_removed_vulkan_video_backend_reference(
     )
 
 
-def find_wgpu_host_upload_materializer_modules(repo_root: Path) -> list[SourcePolicyViolation]:
-    """Запрещает добавление WGPU host-upload materializer module в текущей стадии."""
+def find_direct_ffmpeg_type_violations(repo_root: Path) -> list[SourcePolicyViolation]:
+    """Запрещает raw FFmpeg identifiers за пределами `video-ffmpeg`."""
 
     violations: list[SourcePolicyViolation] = []
-    source_root = repo_root / "crates/render-wgpu-video/src"
-    if not source_root.exists():
-        raise GuardrailError("crates/render-wgpu-video/src отсутствует")
-
-    for path in source_root.rglob("*"):
-        relative_path = path.relative_to(repo_root)
-        normalized_name = path.name.lower()
-        matched_part = next(
-            (
-                forbidden_part
-                for forbidden_part in FORBIDDEN_RENDER_WGPU_VIDEO_MODULE_PARTS
-                if forbidden_part in normalized_name
-            ),
-            None,
-        )
-        if matched_part is None:
+    for relative_path in iter_files_with_suffixes(
+        repo_root,
+        SOURCE_POLICY_SCAN_ROOTS,
+        RUST_SOURCE_SUFFIXES,
+    ):
+        if path_is_under_any(relative_path, DIRECT_FFMPEG_TYPE_ALLOWED_ROOTS):
             continue
-        violations.append(
-            SourcePolicyViolation(
-                path=relative_path,
-                line_number=0,
-                rule="WGPU host-upload materializer module не реализуется в подготовительном refactor",
-                matched_text=matched_part,
+        violations.extend(
+            find_regex_line_violations(
+                repo_root,
+                relative_path,
+                DIRECT_FFMPEG_TYPE_PATTERNS,
             )
         )
+    return violations
 
+
+def find_cpu_rgb_conversion_violations(repo_root: Path) -> list[SourcePolicyViolation]:
+    """Запрещает FFmpeg/swscale-style CPU color conversion artifacts в source tree."""
+
+    return find_regex_violations_in_roots(
+        repo_root,
+        SOURCE_POLICY_SCAN_ROOTS,
+        RUST_SOURCE_SUFFIXES,
+        CPU_RGB_CONVERSION_PATTERNS,
+    )
+
+
+def find_ffmpeg_hardware_decode_violations(repo_root: Path) -> list[SourcePolicyViolation]:
+    """Запрещает FFmpeg hardware decode API даже внутри `video-ffmpeg`."""
+
+    return find_regex_violations_in_roots(
+        repo_root,
+        SOURCE_POLICY_SCAN_ROOTS,
+        RUST_SOURCE_SUFFIXES,
+        FFMPEG_HARDWARE_DECODE_PATTERNS,
+    )
+
+
+def find_regex_violations_in_roots(
+    repo_root: Path,
+    relative_roots: tuple[str, ...],
+    suffixes: frozenset[str],
+    patterns: tuple[tuple[re.Pattern[str], str], ...],
+) -> list[SourcePolicyViolation]:
+    """Ищет regex guardrails в заданных roots и возвращает нарушения с line numbers."""
+
+    violations: list[SourcePolicyViolation] = []
+    for relative_path in iter_files_with_suffixes(repo_root, relative_roots, suffixes):
+        violations.extend(find_regex_line_violations(repo_root, relative_path, patterns))
+    return violations
+
+
+def find_regex_line_violations(
+    repo_root: Path,
+    relative_path: Path,
+    patterns: tuple[tuple[re.Pattern[str], str], ...],
+) -> list[SourcePolicyViolation]:
+    """Проверяет один файл набором regex policy rules."""
+
+    violations: list[SourcePolicyViolation] = []
+    text = read_text_lossy(repo_root / relative_path)
+    for line_index, line in enumerate(text.splitlines(), start=1):
+        stripped_line = line.strip()
+        for pattern, rule in patterns:
+            if pattern.search(stripped_line):
+                violations.append(
+                    SourcePolicyViolation(
+                        path=relative_path,
+                        line_number=line_index,
+                        rule=rule,
+                        matched_text=stripped_line,
+                    )
+                )
     return violations
 
 
 def iter_text_files(repo_root: Path, relative_roots: tuple[str, ...]) -> list[Path]:
     """Возвращает текстовые файлы из ограниченных source roots."""
+
+    return iter_files_with_suffixes(repo_root, relative_roots, TEXT_SOURCE_SUFFIXES)
+
+
+def iter_files_with_suffixes(
+    repo_root: Path,
+    relative_roots: tuple[str, ...],
+    suffixes: frozenset[str],
+) -> list[Path]:
+    """Возвращает файлы с нужными suffix-ами из ограниченных source roots."""
 
     text_files: list[Path] = []
     for relative_root in relative_roots:
@@ -665,9 +790,18 @@ def iter_text_files(repo_root: Path, relative_roots: tuple[str, ...]) -> list[Pa
         if not root.exists():
             raise GuardrailError(f"source root `{relative_root}` отсутствует")
         for path in root.rglob("*"):
-            if path.is_file() and path.suffix in TEXT_SOURCE_SUFFIXES:
+            if path.is_file() and path.suffix in suffixes:
                 text_files.append(path.relative_to(repo_root))
     return sorted(text_files)
+
+
+def path_is_under_any(relative_path: Path, allowed_roots: tuple[Path, ...]) -> bool:
+    """Проверяет, находится ли относительный путь внутри одного из разрешённых roots."""
+
+    return any(
+        relative_path == allowed_root or allowed_root in relative_path.parents
+        for allowed_root in allowed_roots
+    )
 
 
 def read_text_lossy(path: Path) -> str:
@@ -781,10 +915,15 @@ def run() -> int:
     packages = workspace_packages(metadata)
     dependency_map = direct_normal_dependencies(packages)
     all_dependency_map = direct_all_manifest_dependencies(packages)
+    workspace_dependencies = workspace_dependency_names(repo_root)
 
     missing_role_crates = find_missing_role_crates(packages)
     reintroduced_workspace_crates = find_reintroduced_workspace_crates(packages)
-    violations = find_dependency_violations(dependency_map, all_dependency_map)
+    violations = find_dependency_violations(
+        dependency_map,
+        all_dependency_map,
+        workspace_dependencies,
+    )
     source_policy_violations = find_source_policy_violations(repo_root)
     if (
         missing_role_crates
