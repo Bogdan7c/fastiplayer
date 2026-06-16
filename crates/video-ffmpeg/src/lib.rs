@@ -15,7 +15,10 @@ pub mod software_frame;
 
 pub use backend_factory::{FfmpegBackendFactoryError, FfmpegVideoBackendFactory};
 pub use codec_adapter::{
-    FfmpegCodecAdapterError, SoftwareDecodeContractPlan, validate_software_frame_contract,
+    FfmpegCodecAdapterError, FfmpegColorMetadataPlan, FfmpegDecoderId, FfmpegHdrSideDataPlan,
+    FfmpegHdrSideDataStatus, FfmpegStreamAdapterPlan, SoftwareDecodeContractPlan,
+    color_metadata_plan_from_ffmpeg_frame, decoder_id_from_requirement,
+    plan_ffmpeg_software_decode, validate_software_frame_contract,
 };
 pub use decoder_thread::{FfmpegDecoderThreadConfig, FfmpegDecoderThreadError};
 pub use probe::{

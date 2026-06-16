@@ -1,8 +1,76 @@
 //! Project-owned software pixel format boundary for FFmpeg negotiation.
 
+use thiserror::Error;
 use video_frame_contract::VideoFramePixelLayout;
 
 use super::error::{FfiResult, FfmpegError};
+
+/// Typed reason why an FFmpeg pixel format is not accepted by software decode.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum FfmpegPixelFormatRejection {
+    /// FFmpeg не знает descriptor для этого numeric format code.
+    #[error("unknown FFmpeg pixel format code {format_code}")]
+    UnknownPixelFormat {
+        /// Raw `AVPixelFormat` numeric value for diagnostics.
+        format_code: i32,
+    },
+
+    /// Hardware frames are owned by native hardware backend path.
+    #[error("FFmpeg pixel format {format_code} is hardware-backed")]
+    HardwarePixelFormat {
+        /// Raw `AVPixelFormat` numeric value for diagnostics.
+        format_code: i32,
+    },
+
+    /// RGB output would imply CPU color conversion or another renderer contract.
+    #[error("FFmpeg pixel format {format_code} is RGB")]
+    RgbPixelFormat {
+        /// Raw `AVPixelFormat` numeric value for diagnostics.
+        format_code: i32,
+    },
+
+    /// Paletted output is not a direct planar YUV frame contract.
+    #[error("FFmpeg pixel format {format_code} is paletted")]
+    PalettedPixelFormat {
+        /// Raw `AVPixelFormat` numeric value for diagnostics.
+        format_code: i32,
+    },
+
+    /// Bitstream-packed pixel formats do not expose simple visible Y/U/V rows.
+    #[error("FFmpeg pixel format {format_code} is bitstream-packed")]
+    BitstreamPixelFormat {
+        /// Raw `AVPixelFormat` numeric value for diagnostics.
+        format_code: i32,
+    },
+
+    /// Floating-point formats are outside the explicit v1 YUV integer matrix.
+    #[error("FFmpeg pixel format {format_code} is floating-point")]
+    FloatingPointPixelFormat {
+        /// Raw `AVPixelFormat` numeric value for diagnostics.
+        format_code: i32,
+    },
+
+    /// Alpha formats add a component the current video contract does not own.
+    #[error("FFmpeg pixel format {format_code} carries alpha")]
+    AlphaPixelFormat {
+        /// Raw `AVPixelFormat` numeric value for diagnostics.
+        format_code: i32,
+    },
+
+    /// Big-endian integer formats do not match the explicit little-endian host layouts.
+    #[error("FFmpeg pixel format {format_code} is big-endian")]
+    BigEndianPixelFormat {
+        /// Raw `AVPixelFormat` numeric value for diagnostics.
+        format_code: i32,
+    },
+
+    /// Format is CPU-visible but not one of the explicit v1 host-planar YUV layouts.
+    #[error("FFmpeg pixel format {format_code} is not in the v1 software YUV matrix")]
+    UnsupportedSoftwarePixelFormat {
+        /// Raw `AVPixelFormat` numeric value for diagnostics.
+        format_code: i32,
+    },
+}
 
 /// Software pixel format, который adapter разрешает FFmpeg decoder-у.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -89,6 +157,20 @@ impl SoftwarePixelFormat {
             ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV444P10LE => Some(Self::Yuv444Planar10Le),
             _ => None,
         }
+    }
+
+    /// Converts from raw FFmpeg enum and preserves a typed rejection reason.
+    #[cfg(feature = "ffmpeg")]
+    pub(crate) fn try_from_av_pixel_format(
+        format: ffmpeg_sys_next::AVPixelFormat,
+    ) -> Result<Self, FfmpegPixelFormatRejection> {
+        validate_av_pixel_format_descriptor(format)?;
+
+        Self::from_av_pixel_format(format).ok_or(
+            FfmpegPixelFormatRejection::UnsupportedSoftwarePixelFormat {
+                format_code: format as i32,
+            },
+        )
     }
 
     /// Converts raw `AVFrame.format` integer without constructing invalid Rust enum values.
@@ -198,7 +280,8 @@ impl SoftwarePixelFormatSet {
     #[cfg(feature = "ffmpeg")]
     #[must_use]
     pub(crate) fn contains_av_pixel_format(&self, format: ffmpeg_sys_next::AVPixelFormat) -> bool {
-        SoftwarePixelFormat::from_av_pixel_format(format)
+        SoftwarePixelFormat::try_from_av_pixel_format(format)
+            .ok()
             .is_some_and(|software_format| self.contains(software_format))
     }
 }
@@ -206,25 +289,86 @@ impl SoftwarePixelFormatSet {
 #[cfg(feature = "ffmpeg")]
 #[must_use]
 pub(crate) fn av_pixel_format_is_software(format: ffmpeg_sys_next::AVPixelFormat) -> bool {
+    validate_av_pixel_format_descriptor(format).is_ok()
+}
+
+#[cfg(feature = "ffmpeg")]
+fn validate_av_pixel_format_descriptor(
+    format: ffmpeg_sys_next::AVPixelFormat,
+) -> Result<(), FfmpegPixelFormatRejection> {
     // SAFETY: `av_pix_fmt_desc_get` только читает registry FFmpeg и возвращает
     // borrowed descriptor или null. Descriptor не сохраняется и используется
     // только в этом thread до конца функции.
     let descriptor = unsafe { ffmpeg_sys_next::av_pix_fmt_desc_get(format) };
 
     if descriptor.is_null() {
-        return false;
+        return Err(FfmpegPixelFormatRejection::UnknownPixelFormat {
+            format_code: format as i32,
+        });
     }
 
     // SAFETY: null уже обработан; descriptor принадлежит FFmpeg global registry,
     // читается immutable и не требует освобождения caller-ом.
     let descriptor_flags = unsafe { (*descriptor).flags };
 
-    descriptor_flags & ffmpeg_sys_next::AV_PIX_FMT_FLAG_HWACCEL as u64 == 0
+    let format_code = format as i32;
+
+    reject_flag(
+        descriptor_flags,
+        ffmpeg_sys_next::AV_PIX_FMT_FLAG_HWACCEL,
+        FfmpegPixelFormatRejection::HardwarePixelFormat { format_code },
+    )?;
+    reject_flag(
+        descriptor_flags,
+        ffmpeg_sys_next::AV_PIX_FMT_FLAG_RGB,
+        FfmpegPixelFormatRejection::RgbPixelFormat { format_code },
+    )?;
+    reject_flag(
+        descriptor_flags,
+        ffmpeg_sys_next::AV_PIX_FMT_FLAG_PAL,
+        FfmpegPixelFormatRejection::PalettedPixelFormat { format_code },
+    )?;
+    reject_flag(
+        descriptor_flags,
+        ffmpeg_sys_next::AV_PIX_FMT_FLAG_BITSTREAM,
+        FfmpegPixelFormatRejection::BitstreamPixelFormat { format_code },
+    )?;
+    reject_flag(
+        descriptor_flags,
+        ffmpeg_sys_next::AV_PIX_FMT_FLAG_FLOAT,
+        FfmpegPixelFormatRejection::FloatingPointPixelFormat { format_code },
+    )?;
+    reject_flag(
+        descriptor_flags,
+        ffmpeg_sys_next::AV_PIX_FMT_FLAG_ALPHA,
+        FfmpegPixelFormatRejection::AlphaPixelFormat { format_code },
+    )?;
+    reject_flag(
+        descriptor_flags,
+        ffmpeg_sys_next::AV_PIX_FMT_FLAG_BE,
+        FfmpegPixelFormatRejection::BigEndianPixelFormat { format_code },
+    )?;
+
+    Ok(())
+}
+
+#[cfg(feature = "ffmpeg")]
+fn reject_flag(
+    descriptor_flags: u64,
+    forbidden_flag: i32,
+    rejection: FfmpegPixelFormatRejection,
+) -> Result<(), FfmpegPixelFormatRejection> {
+    if descriptor_flags & forbidden_flag as u64 == 0 {
+        Ok(())
+    } else {
+        Err(rejection)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use video_frame_contract::VideoFramePixelLayout;
 
     #[test]
     fn allowlist_deduplicates_without_losing_order() {
@@ -251,5 +395,130 @@ mod tests {
         let error = SoftwarePixelFormatSet::new([]).expect_err("empty allowlist must fail");
 
         assert!(matches!(error, FfmpegError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn neutral_layout_mapping_accepts_only_explicit_host_planar_yuv() {
+        let mapped =
+            SoftwarePixelFormat::from_frame_pixel_layout(VideoFramePixelLayout::Yuv422Planar12Le);
+        let rejected = SoftwarePixelFormat::from_frame_pixel_layout(VideoFramePixelLayout::Nv12);
+
+        assert_eq!(mapped, Some(SoftwarePixelFormat::Yuv422Planar12Le));
+        assert_eq!(rejected, None);
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn ffmpeg_pix_fmt_maps_supported_formats_to_expected_layouts() {
+        let cases = [
+            (
+                ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P,
+                VideoFramePixelLayout::Yuv420Planar8,
+            ),
+            (
+                ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P10LE,
+                VideoFramePixelLayout::Yuv420Planar10Le,
+            ),
+            (
+                ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P12LE,
+                VideoFramePixelLayout::Yuv420Planar12Le,
+            ),
+            (
+                ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV422P,
+                VideoFramePixelLayout::Yuv422Planar8,
+            ),
+            (
+                ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV422P10LE,
+                VideoFramePixelLayout::Yuv422Planar10Le,
+            ),
+            (
+                ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV422P12LE,
+                VideoFramePixelLayout::Yuv422Planar12Le,
+            ),
+            (
+                ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV444P,
+                VideoFramePixelLayout::Yuv444Planar8,
+            ),
+            (
+                ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV444P10LE,
+                VideoFramePixelLayout::Yuv444Planar10Le,
+            ),
+        ];
+
+        for (ffmpeg_format, expected_layout) in cases {
+            let software_format =
+                SoftwarePixelFormat::try_from_av_pixel_format(ffmpeg_format).unwrap();
+
+            assert_eq!(software_format.frame_pixel_layout(), expected_layout);
+        }
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn ffmpeg_pix_fmt_rejects_hardware_rgb_and_unsupported_yuv_formats() {
+        let hardware = SoftwarePixelFormat::try_from_av_pixel_format(
+            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_VAAPI,
+        )
+        .expect_err("hardware frames must stay outside FFmpeg software adapter");
+        let rgb = SoftwarePixelFormat::try_from_av_pixel_format(
+            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_RGB24,
+        )
+        .expect_err("RGB output would require a conversion path");
+        let unsupported_yuv = SoftwarePixelFormat::try_from_av_pixel_format(
+            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_NV12,
+        )
+        .expect_err("semi-planar NV12 is not an explicit host-planar v1 layout");
+
+        assert!(matches!(
+            hardware,
+            FfmpegPixelFormatRejection::HardwarePixelFormat { .. }
+        ));
+        assert!(matches!(
+            rgb,
+            FfmpegPixelFormatRejection::RgbPixelFormat { .. }
+        ));
+        assert!(matches!(
+            unsupported_yuv,
+            FfmpegPixelFormatRejection::UnsupportedSoftwarePixelFormat { .. }
+        ));
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn ffmpeg_pix_fmt_rejects_big_endian_alpha_float_and_bitstream_formats() {
+        let big_endian = SoftwarePixelFormat::try_from_av_pixel_format(
+            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P10BE,
+        )
+        .expect_err("v1 host layouts are little-endian");
+        let alpha = SoftwarePixelFormat::try_from_av_pixel_format(
+            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUVA420P,
+        )
+        .expect_err("alpha is not part of the current YUV frame contract");
+        let floating_point = SoftwarePixelFormat::try_from_av_pixel_format(
+            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_GBRPF32LE,
+        )
+        .expect_err("float formats are not in the integer YUV matrix");
+        let bitstream = SoftwarePixelFormat::try_from_av_pixel_format(
+            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_MONOBLACK,
+        )
+        .expect_err("bitstream-packed formats do not expose Y/U/V rows");
+
+        assert!(matches!(
+            big_endian,
+            FfmpegPixelFormatRejection::BigEndianPixelFormat { .. }
+        ));
+        assert!(matches!(
+            alpha,
+            FfmpegPixelFormatRejection::AlphaPixelFormat { .. }
+        ));
+        assert!(matches!(
+            floating_point,
+            FfmpegPixelFormatRejection::RgbPixelFormat { .. }
+                | FfmpegPixelFormatRejection::FloatingPointPixelFormat { .. }
+        ));
+        assert!(matches!(
+            bitstream,
+            FfmpegPixelFormatRejection::BitstreamPixelFormat { .. }
+        ));
     }
 }

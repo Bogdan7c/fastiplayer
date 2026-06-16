@@ -11,6 +11,7 @@ use super::error::{FfiResult, FfmpegError};
 #[cfg(feature = "ffmpeg")]
 use super::pixel_format::av_pixel_format_is_software;
 use super::pixel_format::{SoftwarePixelFormat, SoftwarePixelFormatSet};
+use crate::codec_adapter::FfmpegDecoderId;
 
 /// Запрос на открытие FFmpeg codec context-а.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,8 +26,8 @@ pub struct FfmpegCodecContextRequest {
 /// Project-owned decoder selector.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FfmpegDecoderSelection {
-    /// Decoder selected from neutral codec vocabulary.
-    VideoCodec(VideoCodec),
+    /// Decoder selected by codec/profile adapter policy.
+    DecoderId(FfmpegDecoderId),
 
     /// Explicit decoder name for diagnostics/tests and compatibility.
     DecoderName(String),
@@ -48,8 +49,20 @@ impl FfmpegCodecContextRequest {
         video_codec: VideoCodec,
         accepted_pixel_formats: SoftwarePixelFormatSet,
     ) -> Self {
+        Self::for_decoder_id(
+            decoder_id_from_video_codec(video_codec),
+            accepted_pixel_formats,
+        )
+    }
+
+    /// Создаёт production-shaped request по adapter-approved decoder id.
+    #[must_use]
+    pub fn for_decoder_id(
+        decoder_id: FfmpegDecoderId,
+        accepted_pixel_formats: SoftwarePixelFormatSet,
+    ) -> Self {
         Self {
-            decoder: FfmpegDecoderSelection::VideoCodec(video_codec),
+            decoder: FfmpegDecoderSelection::DecoderId(decoder_id),
             accepted_pixel_formats,
         }
     }
@@ -58,11 +71,7 @@ impl FfmpegCodecContextRequest {
     #[must_use]
     pub fn codec_name(&self) -> &str {
         match &self.decoder {
-            FfmpegDecoderSelection::VideoCodec(VideoCodec::Vp9) => "vp9",
-            FfmpegDecoderSelection::VideoCodec(VideoCodec::Av1) => "av1",
-            FfmpegDecoderSelection::VideoCodec(VideoCodec::H264) => "h264",
-            FfmpegDecoderSelection::VideoCodec(VideoCodec::H265) => "hevc",
-            FfmpegDecoderSelection::VideoCodec(VideoCodec::Vp8) => "vp8",
+            FfmpegDecoderSelection::DecoderId(decoder_id) => decoder_id.codec_name(),
             FfmpegDecoderSelection::DecoderName(codec_name) => codec_name,
         }
     }
@@ -274,8 +283,8 @@ unsafe extern "C" fn select_software_pixel_format(
 #[cfg(feature = "ffmpeg")]
 fn find_decoder(request: &FfmpegCodecContextRequest) -> FfiResult<*const ffmpeg_sys_next::AVCodec> {
     let decoder = match &request.decoder {
-        FfmpegDecoderSelection::VideoCodec(video_codec) => {
-            let codec_id = codec_id_from_video_codec(*video_codec);
+        FfmpegDecoderSelection::DecoderId(decoder_id) => {
+            let codec_id = codec_id_from_decoder_id(*decoder_id);
 
             // SAFETY: codec id comes from our closed enum mapping. FFmpeg returns
             // borrowed static decoder pointer or null; null is handled below.
@@ -304,13 +313,23 @@ fn find_decoder(request: &FfmpegCodecContextRequest) -> FfiResult<*const ffmpeg_
 }
 
 #[cfg(feature = "ffmpeg")]
-fn codec_id_from_video_codec(video_codec: VideoCodec) -> ffmpeg_sys_next::AVCodecID {
+fn codec_id_from_decoder_id(decoder_id: FfmpegDecoderId) -> ffmpeg_sys_next::AVCodecID {
+    match decoder_id {
+        FfmpegDecoderId::Vp9 => ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_VP9,
+        FfmpegDecoderId::Av1 => ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_AV1,
+        FfmpegDecoderId::H264 => ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_H264,
+        FfmpegDecoderId::Hevc => ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_HEVC,
+        FfmpegDecoderId::Vp8 => ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_VP8,
+    }
+}
+
+fn decoder_id_from_video_codec(video_codec: VideoCodec) -> FfmpegDecoderId {
     match video_codec {
-        VideoCodec::Vp9 => ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_VP9,
-        VideoCodec::Av1 => ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_AV1,
-        VideoCodec::H264 => ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_H264,
-        VideoCodec::H265 => ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_HEVC,
-        VideoCodec::Vp8 => ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_VP8,
+        VideoCodec::Vp9 => FfmpegDecoderId::Vp9,
+        VideoCodec::Av1 => FfmpegDecoderId::Av1,
+        VideoCodec::H264 => FfmpegDecoderId::H264,
+        VideoCodec::H265 => FfmpegDecoderId::Hevc,
+        VideoCodec::Vp8 => FfmpegDecoderId::Vp8,
     }
 }
 
@@ -382,10 +401,20 @@ mod tests {
     fn codec_context_request_preserves_adapter_pixel_format_policy() {
         let formats = SoftwarePixelFormatSet::new([SoftwarePixelFormat::Yuv420Planar8])
             .expect("single software format is valid");
-        let request = FfmpegCodecContextRequest::for_video_codec(VideoCodec::H264, formats.clone());
+        let request =
+            FfmpegCodecContextRequest::for_decoder_id(FfmpegDecoderId::H264, formats.clone());
 
         assert_eq!(request.codec_name(), "h264");
         assert_eq!(request.accepted_pixel_formats(), &formats);
+    }
+
+    #[test]
+    fn codec_context_request_keeps_codec_only_constructor_as_compatibility_path() {
+        let formats = SoftwarePixelFormatSet::new([SoftwarePixelFormat::Yuv420Planar8])
+            .expect("single software format is valid");
+        let request = FfmpegCodecContextRequest::for_video_codec(VideoCodec::H265, formats);
+
+        assert_eq!(request.codec_name(), "hevc");
     }
 
     #[cfg(feature = "ffmpeg")]
