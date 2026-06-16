@@ -46,7 +46,7 @@ impl RedrawPacing {
         }
     }
 
-    /// Возвращает `true`, если shell должен держать `ControlFlow::Poll`.
+    /// Возвращает `true`, если shell должен перерисовываться непрерывно (playback).
     pub(crate) const fn wants_continuous_redraw(self) -> bool {
         self.continuous
     }
@@ -82,7 +82,12 @@ impl BackgroundPollScheduler {
         self.clear_deadline_if_background_jobs_finished(has_pending_background_job);
 
         if pacing.wants_continuous_redraw() {
-            return RedrawControlAction::new(ControlFlow::Poll, true);
+            // Continuous playback перерисовывается каждый frame callback (vsync),
+            // но event loop СПИТ между кадрами. ControlFlow::Poll крутил loop
+            // вхолостую между 60Hz redraw-ами (redraw гейтится frame callback-ом,
+            // present не блокирует), сжигая целое ядро. Wait + request_redraw даёт
+            // тот же 60fps без busy-spin.
+            return RedrawControlAction::new(ControlFlow::Wait, true);
         }
 
         if pacing.wants_immediate_redraw() {
@@ -102,7 +107,9 @@ impl BackgroundPollScheduler {
         self.clear_deadline_if_background_jobs_finished(has_pending_background_job);
 
         if has_continuous_redraw {
-            return RedrawControlAction::new(ControlFlow::Poll, true);
+            // См. after_render: continuous playback держим на Wait + request_redraw,
+            // а не на Poll, чтобы не крутить event loop между frame callback-ами.
+            return RedrawControlAction::new(ControlFlow::Wait, true);
         }
 
         self.schedule_background_poll_before_idle_wait(has_pending_background_job, now)
@@ -219,15 +226,15 @@ mod tests {
         ));
     }
 
-    /// Проверяет, что render pass continuous playback включает Poll и запрашивает redraw.
+    /// Continuous playback держит Wait + request_redraw (без busy-spin), а не Poll.
     #[test]
-    fn after_render_continuous_requests_poll_and_redraw() {
+    fn after_render_continuous_requests_wait_and_redraw() {
         let mut scheduler = BackgroundPollScheduler::new();
         let now = Instant::now();
 
         let action = scheduler.after_render(RedrawPacing::new(true, false), false, now);
 
-        assert!(matches!(action.control_flow, ControlFlow::Poll));
+        assert!(matches!(action.control_flow, ControlFlow::Wait));
         assert!(action.request_redraw);
     }
 
