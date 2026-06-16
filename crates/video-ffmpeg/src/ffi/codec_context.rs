@@ -23,6 +23,11 @@ pub struct FfmpegCodecContextRequest {
 
     /// Software pixel formats, которые adapter уже разрешил.
     accepted_pixel_formats: SoftwarePixelFormatSet,
+
+    /// Codec-private global headers (например MP4 `avcC`/`hvcC`), которые
+    /// нужно установить как `AVCodecContext.extradata` до `avcodec_open2`.
+    /// Хранятся как нейтральные bytes; raw FFmpeg типы наружу не выносятся.
+    extradata: Option<Vec<u8>>,
 }
 
 /// Project-owned decoder selector.
@@ -42,6 +47,7 @@ impl FfmpegCodecContextRequest {
         Self {
             decoder: FfmpegDecoderSelection::DecoderName(codec_name.into()),
             accepted_pixel_formats: SoftwarePixelFormatSet::v1_host_planar(),
+            extradata: None,
         }
     }
 
@@ -66,7 +72,16 @@ impl FfmpegCodecContextRequest {
         Self {
             decoder: FfmpegDecoderSelection::DecoderId(decoder_id),
             accepted_pixel_formats,
+            extradata: None,
         }
+    }
+
+    /// Прикрепляет codec-private global headers (`avcC`/`hvcC`), которые будут
+    /// установлены как `AVCodecContext.extradata` перед `avcodec_open2`.
+    #[must_use]
+    pub fn with_extradata(mut self, extradata: Vec<u8>) -> Self {
+        self.extradata = Some(extradata);
+        self
     }
 
     /// Возвращает codec name для error/reporting layers.
@@ -82,6 +97,12 @@ impl FfmpegCodecContextRequest {
     #[must_use]
     pub fn accepted_pixel_formats(&self) -> &SoftwarePixelFormatSet {
         &self.accepted_pixel_formats
+    }
+
+    /// Возвращает codec-private global headers, если они заданы.
+    #[must_use]
+    pub fn extradata(&self) -> Option<&[u8]> {
+        self.extradata.as_deref()
     }
 }
 
@@ -144,6 +165,16 @@ impl CodecContext {
                 let context = raw_context.as_ptr();
                 (*context).opaque = format_negotiator.as_mut_ptr();
                 (*context).get_format = Some(select_software_pixel_format);
+            }
+
+            // Codec-private global headers (avcC/hvcC) должны попасть в decoder до
+            // open: иначе H.264/H.265 length-prefixed packets парсятся как Annex B
+            // и FFmpeg отвечает AVERROR_INVALIDDATA ("No start code is found").
+            if let Some(extradata) = request.extradata() {
+                if let Err(error) = assign_codec_context_extradata(raw_context, extradata) {
+                    free_context(raw_context);
+                    return Err(error);
+                }
             }
 
             // SAFETY: context и decoder pointer-ы валидны; options null значит
@@ -468,6 +499,56 @@ fn free_context(raw_context: NonNull<ffmpeg_sys_next::AVCodecContext>) {
     // FFmpeg closes/frees context-owned state and writes null into local
     // variable; `_format_negotiator` освобождается Rust Drop-ом отдельно.
     unsafe { ffmpeg_sys_next::avcodec_free_context(&mut context_to_free) };
+}
+
+/// Устанавливает codec-private bytes (`avcC`/`hvcC`) как `AVCodecContext.extradata`.
+///
+/// Буфер выделяется FFmpeg allocator-ом с `AV_INPUT_BUFFER_PADDING_SIZE` zero
+/// padding (требование bitstream reader-а). После присвоения buffer принадлежит
+/// codec-у и освобождается в `avcodec_free_context`, поэтому здесь его освобождать
+/// нельзя.
+#[cfg(feature = "ffmpeg")]
+fn assign_codec_context_extradata(
+    raw_context: NonNull<ffmpeg_sys_next::AVCodecContext>,
+    extradata: &[u8],
+) -> FfiResult<()> {
+    if extradata.is_empty() {
+        return Err(FfmpegError::InvalidInput {
+            operation: "set extradata",
+            details: "codec-private extradata is empty".to_string(),
+        });
+    }
+
+    let extradata_size = i32::try_from(extradata.len()).map_err(|_| FfmpegError::InvalidInput {
+        operation: "set extradata",
+        details: format!(
+            "codec-private extradata is too large: {} bytes",
+            extradata.len()
+        ),
+    })?;
+
+    let padding = ffmpeg_sys_next::AV_INPUT_BUFFER_PADDING_SIZE as usize;
+    let allocation_size = extradata.len() + padding;
+
+    // SAFETY: `av_mallocz` возвращает owned zero-initialized buffer или null,
+    // что даёт обязательное zero padding в хвосте без ручной очистки.
+    let buffer = unsafe { ffmpeg_sys_next::av_mallocz(allocation_size) } as *mut u8;
+    let buffer = NonNull::new(buffer).ok_or(FfmpegError::AllocationFailed {
+        operation: "av_mallocz(extradata)",
+    })?;
+
+    // SAFETY: `buffer` указывает минимум на `extradata.len() + padding` writable
+    // bytes; source slice не пересекается с только что выделенным destination.
+    // Затем передаём ownership buffer-а в codec context, который освободит его
+    // через `avcodec_free_context`.
+    unsafe {
+        ptr::copy_nonoverlapping(extradata.as_ptr(), buffer.as_ptr(), extradata.len());
+        let context = raw_context.as_ptr();
+        (*context).extradata = buffer.as_ptr();
+        (*context).extradata_size = extradata_size;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

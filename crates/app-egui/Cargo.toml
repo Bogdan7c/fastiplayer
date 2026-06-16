@@ -8,6 +8,12 @@ rust-version.workspace = true
 name = "rustiplayer"
 path = "src/main.rs"
 
+[features]
+# FFmpeg software decode включён по умолчанию для debug и release сборок
+# бинаря `rustiplayer`. Сборка без FFmpeg: `--no-default-features`.
+default = ["ffmpeg"]
+ffmpeg = ["video-ffmpeg/ffmpeg"]
+
 [dependencies]
 animation-core.workspace = true
 wgpu.workspace = true

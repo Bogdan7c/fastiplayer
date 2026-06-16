@@ -25,6 +25,8 @@ use codec_core::{
     VideoColorMetadata,
 };
 #[cfg(feature = "ffmpeg")]
+use codec_core::{H264Packetization, H265Packetization};
+#[cfg(feature = "ffmpeg")]
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 use thiserror::Error;
 use video_backend_api::StartedVideoBackend;
@@ -44,7 +46,7 @@ use video_core::{
     VideoDecoderActivitySnapshot, VideoDecoderActivitySubscription,
     VideoDecoderControlBackpressureReason, VideoDecoderControlChannelPressureSnapshot,
     VideoDecoderEndOfStreamDrainResult, VideoDecoderThreadHandle, VideoFrameDiagnostics,
-    VideoStreamConfigResult, VideoStreamDecodeConfig,
+    VideoStreamConfigResult, VideoStreamDecodeConfig, VideoStreamPacketization,
     validate_resource_descriptor_against_contract,
 };
 #[cfg(any(test, feature = "ffmpeg"))]
@@ -1459,6 +1461,7 @@ struct ConfiguredFfmpegDecoder {
 
 /// Error returned while opening a configured FFmpeg decoder.
 #[cfg(feature = "ffmpeg")]
+#[derive(Debug)]
 enum FfmpegOpenDecoderError {
     /// Stream config is not supported by FFmpeg software policy.
     Unsupported(VideoStreamConfigRejection),
@@ -1492,10 +1495,13 @@ impl RealFfmpegDecodeApi {
                     },
                 )
             })?;
-        let request = FfmpegCodecContextRequest::for_decoder_id(
+        let mut request = FfmpegCodecContextRequest::for_decoder_id(
             adapter_plan.decoder_id(),
             adapter_plan.accepted_pixel_formats().clone(),
         );
+        if let Some(extradata) = extradata_for_stream_config(config)? {
+            request = request.with_extradata(extradata);
+        }
         let codec_context = CodecContext::open(&request)
             .map_err(FfmpegDecoderThreadError::from)
             .map_err(FfmpegOpenDecoderError::Fatal)?;
@@ -1622,6 +1628,60 @@ fn video_decode_requirement_from_stream_config(
     }
 
     requirement
+}
+
+/// Решает, какие codec-private bytes нужно установить как FFmpeg extradata.
+///
+/// Length-prefixed (`avcC`/`hvcC`) H.264/H.265 streams требуют extradata, иначе
+/// FFmpeg парсит length-prefixed NAL units как Annex B и падает с
+/// `AVERROR_INVALIDDATA`. Annex B потоки несут SPS/PPS in-band, поэтому extradata
+/// им не передаётся (иначе decoder ошибочно переключится в length-prefixed режим).
+/// Для остальных кодеков codec-private передаётся как есть, если он присутствует.
+#[cfg(feature = "ffmpeg")]
+fn extradata_for_stream_config(
+    config: &VideoStreamDecodeConfig,
+) -> Result<Option<Vec<u8>>, FfmpegOpenDecoderError> {
+    let length_prefixed = matches!(
+        config.packetization,
+        Some(VideoStreamPacketization::H264(
+            H264Packetization::AvccLengthPrefixed { .. }
+        )) | Some(VideoStreamPacketization::H265(
+            H265Packetization::HvccLengthPrefixed { .. }
+        ))
+    );
+
+    if length_prefixed {
+        let codec_private = config
+            .codec_private
+            .as_ref()
+            .filter(|bytes| !bytes.is_empty())
+            .ok_or_else(|| {
+                FfmpegOpenDecoderError::Unsupported(
+                    VideoStreamConfigRejection::InvalidCodecPrivate {
+                        codec: config.codec,
+                        reason:
+                            "length-prefixed H.264/H.265 stream requires avcC/hvcC codec-private \
+                             extradata, but it is missing or empty"
+                                .to_string(),
+                    },
+                )
+            })?;
+        return Ok(Some(codec_private.to_vec()));
+    }
+
+    if matches!(
+        config.packetization,
+        Some(VideoStreamPacketization::H264(H264Packetization::AnnexB))
+            | Some(VideoStreamPacketization::H265(H265Packetization::AnnexB))
+    ) {
+        return Ok(None);
+    }
+
+    Ok(config
+        .codec_private
+        .as_ref()
+        .filter(|bytes| !bytes.is_empty())
+        .map(|bytes| bytes.to_vec()))
 }
 
 /// Testable state machine around FFmpeg send/receive semantics.
@@ -2934,6 +2994,128 @@ mod tests {
             pixel_layout,
             transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
         }
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    fn extradata_test_stream_config(
+        codec: codec_core::VideoCodec,
+        codec_private: Option<Bytes>,
+        packetization: Option<VideoStreamPacketization>,
+    ) -> VideoStreamDecodeConfig {
+        let requirement = VideoDecodeRequirement::new(codec);
+        VideoStreamDecodeConfig::from_requirement(
+            TrackId::new(1),
+            &requirement,
+            host_planar_contract(VideoFramePixelLayout::Yuv420Planar8),
+        )
+        .with_codec_private(codec_private)
+        .with_packetization(packetization)
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn h264_avcc_config_passes_codec_private_as_extradata() {
+        let avcc = Bytes::from_static(&[0x01, 0x64, 0x00, 0x1f, 0xff, 0xe1]);
+        let config = extradata_test_stream_config(
+            codec_core::VideoCodec::H264,
+            Some(avcc.clone()),
+            Some(VideoStreamPacketization::H264(
+                H264Packetization::AvccLengthPrefixed {
+                    nal_length_size: codec_core::H264NalLengthSize::FOUR,
+                },
+            )),
+        );
+
+        let extradata = extradata_for_stream_config(&config)
+            .expect("avcC config is valid")
+            .expect("length-prefixed H.264 must carry extradata");
+
+        assert_eq!(extradata.as_slice(), avcc.as_ref());
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn h265_hvcc_config_passes_codec_private_as_extradata() {
+        let hvcc = Bytes::from_static(&[0x01, 0x01, 0x60, 0x00, 0x00, 0x00]);
+        let config = extradata_test_stream_config(
+            codec_core::VideoCodec::H265,
+            Some(hvcc.clone()),
+            Some(VideoStreamPacketization::H265(
+                H265Packetization::HvccLengthPrefixed {
+                    nal_length_size: codec_core::H265NalLengthSize::FOUR,
+                },
+            )),
+        );
+
+        let extradata = extradata_for_stream_config(&config)
+            .expect("hvcC config is valid")
+            .expect("length-prefixed H.265 must carry extradata");
+
+        assert_eq!(extradata.as_slice(), hvcc.as_ref());
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn h264_annexb_config_does_not_pass_extradata() {
+        // Annex B несёт SPS/PPS in-band; передача avcC переключила бы decoder в
+        // length-prefixed режим и сломала бы парсинг, поэтому extradata = None.
+        let config = extradata_test_stream_config(
+            codec_core::VideoCodec::H264,
+            Some(Bytes::from_static(&[0x01, 0x64, 0x00, 0x1f])),
+            Some(VideoStreamPacketization::H264(H264Packetization::AnnexB)),
+        );
+
+        assert_eq!(
+            extradata_for_stream_config(&config).expect("annexb config is valid"),
+            None
+        );
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn length_prefixed_without_codec_private_is_typed_invalid() {
+        let config = extradata_test_stream_config(
+            codec_core::VideoCodec::H264,
+            None,
+            Some(VideoStreamPacketization::H264(
+                H264Packetization::AvccLengthPrefixed {
+                    nal_length_size: codec_core::H264NalLengthSize::FOUR,
+                },
+            )),
+        );
+
+        let error =
+            extradata_for_stream_config(&config).expect_err("missing avcC must be rejected");
+
+        match error {
+            FfmpegOpenDecoderError::Unsupported(
+                VideoStreamConfigRejection::InvalidCodecPrivate { codec, .. },
+            ) => assert_eq!(codec, codec_core::VideoCodec::H264),
+            other => panic!("expected typed InvalidCodecPrivate rejection, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn length_prefixed_with_empty_codec_private_is_typed_invalid() {
+        let config = extradata_test_stream_config(
+            codec_core::VideoCodec::H265,
+            Some(Bytes::new()),
+            Some(VideoStreamPacketization::H265(
+                H265Packetization::HvccLengthPrefixed {
+                    nal_length_size: codec_core::H265NalLengthSize::FOUR,
+                },
+            )),
+        );
+
+        let error = extradata_for_stream_config(&config).expect_err("empty hvcC must be rejected");
+
+        assert!(matches!(
+            error,
+            FfmpegOpenDecoderError::Unsupported(
+                VideoStreamConfigRejection::InvalidCodecPrivate { .. }
+            )
+        ));
     }
 
     #[cfg(feature = "ffmpeg")]
