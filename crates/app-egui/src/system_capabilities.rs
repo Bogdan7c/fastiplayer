@@ -12,6 +12,9 @@ pub(crate) fn probe_system_capabilities(
 ) -> capability_core::SystemCapabilities {
     let mut scanner = CapabilityScanner::new();
     scanner.register_provider(Box::new(video_vaapi::VaapiCapabilityProvider::new()));
+    scanner.register_provider(Box::new(
+        video_ffmpeg::FfmpegSoftwareCapabilityProvider::new(),
+    ));
     scanner.register_render_capabilities(render_capabilities);
     scanner.scan()
 }

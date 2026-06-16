@@ -12,7 +12,10 @@ use video_frame_contract::{
     FrameChromaSubsampling, VideoFrameContract, VideoFramePixelLayout, VideoFrameTransferPath,
 };
 
-use super::WgpuFrameMaterializationUnsupportedReason;
+use super::{
+    WgpuFrameMaterializationUnsupportedReason, WgpuFrameTextureViewLookup,
+    WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
+};
 
 /// Renderer-side materializer, который загружает HostPlanar descriptors в WGPU textures.
 pub struct HostPlanarWgpuFrameMaterializer {
@@ -42,8 +45,18 @@ impl HostPlanarWgpuFrameMaterializer {
     ///
     /// Decoder/provider продолжает владеть host frame backing-ом до обычного
     /// release lease; cache ниже владеет только WGPU upload textures.
-    pub fn try_texture_view_lookup(&self, frame: &DecodedFrame) -> HostPlanarWgpuTextureViewLookup {
+    pub fn try_host_planar_texture_view_lookup(
+        &self,
+        frame: &DecodedFrame,
+    ) -> HostPlanarWgpuTextureViewLookup {
         HostPlanarWgpuTextureViewLookup::from_core_lookup(self.inner.try_upload_lookup(frame))
+    }
+}
+
+impl WgpuFrameTextureViewMaterializer for HostPlanarWgpuFrameMaterializer {
+    /// Подключает HostPlanar upload к общему app/render materializer trait-у.
+    fn try_texture_view_lookup(&self, frame: &DecodedFrame) -> WgpuFrameTextureViewLookup {
+        common_lookup_from_host_planar_lookup(self.try_host_planar_texture_view_lookup(frame))
     }
 }
 
@@ -180,6 +193,42 @@ impl HostPlanarWgpuTextureViewLookup {
                 texture_pool_lock_wait,
             },
         }
+    }
+}
+
+fn common_lookup_from_host_planar_lookup(
+    lookup: HostPlanarWgpuTextureViewLookup,
+) -> WgpuFrameTextureViewLookup {
+    match lookup {
+        HostPlanarWgpuTextureViewLookup::Ready {
+            views,
+            texture_pool_lock_wait,
+        } => WgpuFrameTextureViewLookup::Ready {
+            views: WgpuFrameTextureViews::from_host_planar_texture_views(views),
+            texture_pool_lock_wait,
+        },
+        HostPlanarWgpuTextureViewLookup::Busy {
+            texture_pool_lock_wait,
+        } => WgpuFrameTextureViewLookup::Busy {
+            texture_pool_lock_wait,
+        },
+        HostPlanarWgpuTextureViewLookup::Missing {
+            texture_pool_lock_wait,
+        } => WgpuFrameTextureViewLookup::Missing {
+            texture_pool_lock_wait,
+        },
+        HostPlanarWgpuTextureViewLookup::Unsupported {
+            reason,
+            texture_pool_lock_wait,
+        } => WgpuFrameTextureViewLookup::Unsupported {
+            reason,
+            texture_pool_lock_wait,
+        },
+        HostPlanarWgpuTextureViewLookup::Error {
+            texture_pool_lock_wait,
+        } => WgpuFrameTextureViewLookup::Error {
+            texture_pool_lock_wait,
+        },
     }
 }
 

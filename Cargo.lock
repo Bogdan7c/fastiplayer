@@ -157,6 +157,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "video-core",
+ "video-ffmpeg",
  "video-frame-contract",
  "video-vaapi",
  "wgpu",

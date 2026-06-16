@@ -29,17 +29,29 @@ mod host_yuv420_renderer;
 mod nv12_renderer;
 mod p010_renderer;
 
-/// WGPU texture views, полученные renderer materializer-ом по opaque frame handle.
+/// WGPU texture views, полученные renderer materializer-ом по decoded frame resource.
 #[derive(Clone)]
 pub struct WgpuFrameTextureViews {
-    /// Texture view с luma/Y plane.
-    pub y_view: wgpu::TextureView,
+    /// Concrete storage отличается для DMA-BUF и HostPlanar, но app видит один тип.
+    storage: WgpuFrameTextureViewStorage,
+}
 
-    /// Texture view с chroma/UV plane.
-    pub uv_view: wgpu::TextureView,
+#[derive(Clone)]
+enum WgpuFrameTextureViewStorage {
+    /// DMA-BUF import даёт Y + interleaved UV texture views.
+    DmaBuf {
+        /// Texture view с luma/Y plane.
+        y_view: wgpu::TextureView,
 
-    /// Guard держит imported texture storage живым как минимум до drop-а views.
-    _imported_texture_guard: Option<Arc<ImportedDmaBufTexture>>,
+        /// Texture view с chroma/UV plane.
+        uv_view: wgpu::TextureView,
+
+        /// Guard держит imported texture storage живым как минимум до drop-а views.
+        _imported_texture_guard: Option<Arc<ImportedDmaBufTexture>>,
+    },
+
+    /// HostPlanar upload даёт отдельные Y/U/V texture views.
+    HostPlanar(Box<HostPlanarWgpuTextureViews>),
 }
 
 impl WgpuFrameTextureViews {
@@ -47,9 +59,42 @@ impl WgpuFrameTextureViews {
     fn from_imported_texture(imported_texture: Arc<ImportedDmaBufTexture>) -> Self {
         let _owned_storage_textures = imported_texture.storage_texture_count();
         Self {
-            y_view: imported_texture.y_view.clone(),
-            uv_view: imported_texture.uv_view.clone(),
-            _imported_texture_guard: Some(imported_texture),
+            storage: WgpuFrameTextureViewStorage::DmaBuf {
+                y_view: imported_texture.y_view.clone(),
+                uv_view: imported_texture.uv_view.clone(),
+                _imported_texture_guard: Some(imported_texture),
+            },
+        }
+    }
+
+    /// Создаёт views из renderer-owned HostPlanar upload textures.
+    fn from_host_planar_texture_views(views: Box<HostPlanarWgpuTextureViews>) -> Self {
+        Self {
+            storage: WgpuFrameTextureViewStorage::HostPlanar(views),
+        }
+    }
+
+    /// Возвращает DMA-BUF Y/UV views, если materializer создал именно DMA-BUF storage.
+    #[must_use]
+    pub fn dma_buf_views(&self) -> Option<(&wgpu::TextureView, &wgpu::TextureView)> {
+        match &self.storage {
+            WgpuFrameTextureViewStorage::DmaBuf {
+                y_view, uv_view, ..
+            } => Some((y_view, uv_view)),
+            WgpuFrameTextureViewStorage::HostPlanar(_) => None,
+        }
+    }
+
+    /// Возвращает HostPlanar Y/U/V views, если materializer выполнил software upload.
+    #[must_use]
+    pub fn host_planar_views(
+        &self,
+    ) -> Option<(&wgpu::TextureView, &wgpu::TextureView, &wgpu::TextureView)> {
+        match &self.storage {
+            WgpuFrameTextureViewStorage::DmaBuf { .. } => None,
+            WgpuFrameTextureViewStorage::HostPlanar(views) => {
+                Some((&views.y_view, &views.u_view, &views.v_view))
+            }
         }
     }
 }
@@ -165,7 +210,7 @@ impl WgpuFrameTextureViewLookup {
 /// WGPU-side materializer plane views из backend-owned opaque frame resource-а.
 pub trait WgpuFrameTextureViewMaterializer: Send + Sync {
     /// Пытается materialize frame resource без ожидания backend texture pool mutex-а.
-    fn try_texture_view_lookup(&self, handle: FrameResourceHandle) -> WgpuFrameTextureViewLookup;
+    fn try_texture_view_lookup(&self, frame: &DecodedFrame) -> WgpuFrameTextureViewLookup;
 }
 
 /// Renderer-side materializer, который импортирует neutral DMA-BUF descriptors в WGPU.
@@ -198,7 +243,8 @@ impl DmaBufWgpuFrameMaterializer {
 }
 
 impl WgpuFrameTextureViewMaterializer for DmaBufWgpuFrameMaterializer {
-    fn try_texture_view_lookup(&self, handle: FrameResourceHandle) -> WgpuFrameTextureViewLookup {
+    fn try_texture_view_lookup(&self, frame: &DecodedFrame) -> WgpuFrameTextureViewLookup {
+        let handle = frame.resource_handle;
         let provider_lookup = self
             .resource_provider
             .try_resource_descriptor_lookup(handle);

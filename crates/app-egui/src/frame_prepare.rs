@@ -824,7 +824,7 @@ fn prepare_video_frame(
 
     let stage_started_at = Instant::now();
     let texture_view_lookup =
-        texture_view_materializer.try_texture_view_lookup(present_frame.resource_handle());
+        texture_view_materializer.try_texture_view_lookup(&present_frame.frame);
     timings.texture_view_lookup = stage_started_at.elapsed();
 
     let stage_started_at = Instant::now();
@@ -985,23 +985,39 @@ fn build_render_input_video_frame<'frame>(
     );
 
     let boundary_frame = match frame_format {
-        DecodedPixelFormat::Nv12 => WgpuRenderableFrame::from_decoded_nv12(
-            &present_frame.frame,
-            &texture_views.y_view,
-            &texture_views.uv_view,
-        ),
-        DecodedPixelFormat::P010 => WgpuRenderableFrame::from_decoded_p010(
-            &present_frame.frame,
-            &texture_views.y_view,
-            &texture_views.uv_view,
-        ),
+        DecodedPixelFormat::Nv12 => match texture_views.dma_buf_views() {
+            Some((y_view, uv_view)) => {
+                WgpuRenderableFrame::from_decoded_nv12(&present_frame.frame, y_view, uv_view)
+            }
+            None => Err(anyhow::anyhow!(
+                "NV12 decoded video surface requires DMA-BUF Y/UV texture views"
+            )),
+        },
+        DecodedPixelFormat::P010 => match texture_views.dma_buf_views() {
+            Some((y_view, uv_view)) => {
+                WgpuRenderableFrame::from_decoded_p010(&present_frame.frame, y_view, uv_view)
+            }
+            None => Err(anyhow::anyhow!(
+                "P010 decoded video surface requires DMA-BUF Y/UV texture views"
+            )),
+        },
         DecodedPixelFormat::Rgba8 => Err(anyhow::anyhow!(
             "RGBA8 decoded video surface is not a production zero-copy render path"
         )),
-        host_planar_layout if host_planar_layout.is_host_planar() => Err(anyhow::anyhow!(
-            "{} decoded video surface requires host upload, which is not implemented in this session",
-            host_planar_layout
-        )),
+        host_planar_layout if host_planar_layout.is_host_planar() => {
+            match texture_views.host_planar_views() {
+                Some((y_view, u_view, v_view)) => WgpuRenderableFrame::from_decoded_host_yuv(
+                    &present_frame.frame,
+                    y_view,
+                    u_view,
+                    v_view,
+                ),
+                None => Err(anyhow::anyhow!(
+                    "{} decoded video surface requires HostPlanar Y/U/V texture views",
+                    host_planar_layout
+                )),
+            }
+        }
         unsupported_layout => Err(anyhow::anyhow!(
             "{} decoded video surface is not a production zero-copy render path",
             unsupported_layout

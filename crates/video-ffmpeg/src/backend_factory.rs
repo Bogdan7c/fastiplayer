@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 use video_backend_api::{StartedVideoBackend, VideoBackendFactory};
+use video_core::VideoDecoderThreadConfig;
 
 use crate::decoder_thread::{FfmpegDecoderThreadConfig, FfmpegDecoderThreadError};
 
@@ -19,6 +20,23 @@ impl FfmpegSoftwareVideoBackendFactory {
         Self {
             decoder_config: FfmpegDecoderThreadConfig::default(),
         }
+    }
+
+    /// Создаёт software factory с теми же neutral runtime limits, что выбрал app config.
+    #[must_use]
+    pub fn new_with_decoder_config(
+        decoder_thread_config: impl Into<VideoDecoderThreadConfig>,
+    ) -> Self {
+        Self {
+            decoder_config: FfmpegDecoderThreadConfig::from_thread_config(
+                decoder_thread_config.into(),
+            ),
+        }
+    }
+
+    /// Стартует FFmpeg backend и возвращает playback-facing artifact для composition root-а.
+    pub fn start_for_composition(&self) -> anyhow::Result<StartedVideoBackend> {
+        <Self as VideoBackendFactory>::start_video_backend(self)
     }
 }
 

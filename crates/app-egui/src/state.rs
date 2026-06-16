@@ -19,12 +19,13 @@ use player_core::{
 };
 use render_core::RenderDiagnostics;
 use render_wgpu_video::{
-    DmaBufWgpuFrameMaterializer, WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
-    wrap_video_backend_for_wgpu_submission,
+    DmaBufWgpuFrameMaterializer, HostPlanarWgpuFrameMaterializer, WgpuFrameTextureViewMaterializer,
+    WgpuFrameTextureViews, wrap_video_backend_for_wgpu_submission,
 };
 use rustiplayer_config::PlayerDemuxConfig;
 use rustiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
 use tracing::{debug, instrument, warn};
+use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;
 use video_vaapi::VaapiVideoBackendFactory;
 use winit::window::Window;
 
@@ -1112,25 +1113,53 @@ impl AppState {
             decoder_thread_config,
         )
         .map_err(|error| format!("video pipeline selection failed: {error}"))?;
+        let plan_label = plan.diagnostic_label();
 
-        let VideoPipelinePlan::VaapiDmaBufWgpu {
-            decoder_thread_config,
-        } = plan;
+        let (player_backend, frame_materializer): (
+            player_core::StartedVideoBackend,
+            Arc<dyn WgpuFrameTextureViewMaterializer>,
+        ) = match plan {
+            VideoPipelinePlan::VaapiDmaBufWgpu {
+                decoder_thread_config,
+            } => {
+                let backend_factory =
+                    VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config);
+                let started_backend = backend_factory.start_for_composition().map_err(|error| {
+                    format!("video backend startup failed for {plan_label}: {error}")
+                })?;
+                let (player_backend, frame_resource_provider) =
+                    wrap_video_backend_for_wgpu_submission(started_backend, queue);
+                let frame_materializer: Arc<dyn WgpuFrameTextureViewMaterializer> =
+                    Arc::new(DmaBufWgpuFrameMaterializer::new(
+                        instance,
+                        adapter,
+                        device,
+                        frame_resource_provider,
+                    ));
 
-        let backend_factory =
-            VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config);
+                (player_backend, frame_materializer)
+            }
+            VideoPipelinePlan::FfmpegHostUploadWgpu {
+                decoder_thread_config,
+            } => {
+                let backend_factory = FfmpegSoftwareVideoBackendFactory::new_with_decoder_config(
+                    decoder_thread_config,
+                );
+                let started_backend = backend_factory.start_for_composition().map_err(|error| {
+                    format!("video backend startup failed for {plan_label}: {error}")
+                })?;
+                let (player_backend, frame_resource_provider) =
+                    wrap_video_backend_for_wgpu_submission(started_backend, queue);
+                let frame_materializer = Arc::new(HostPlanarWgpuFrameMaterializer::new(
+                    device,
+                    queue,
+                    frame_resource_provider,
+                ))
+                    as Arc<dyn WgpuFrameTextureViewMaterializer>;
 
-        let started_backend = match backend_factory.start_for_composition() {
-            Ok(started_backend) => started_backend,
-            Err(error) => {
-                return Err(format!("video backend startup failed: {error}"));
+                (player_backend, frame_materializer)
             }
         };
-        let (player_backend, frame_resource_provider) =
-            wrap_video_backend_for_wgpu_submission(started_backend, queue);
-        let frame_materializer: Arc<dyn WgpuFrameTextureViewMaterializer> = Arc::new(
-            DmaBufWgpuFrameMaterializer::new(instance, adapter, device, frame_resource_provider),
-        );
 
         if let Err(error) = self.player_worker.set_video_backend(player_backend) {
             return Err(format!("video backend command delivery failed: {error}"));

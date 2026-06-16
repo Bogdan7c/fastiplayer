@@ -42,6 +42,7 @@ audio = { path = "../audio" }
 # Композиция video decode/render.
 video-core = { path = "../video-core" }
 video-frame-contract.workspace = true
+video-ffmpeg.workspace = true
 video-vaapi = { path = "../video-vaapi" }
 render-core.workspace = true
 render-wgpu-shell.workspace = true
