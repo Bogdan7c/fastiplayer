@@ -76,7 +76,7 @@ pub struct HostPlaneDescriptor {
     /// Видимая высота plane-а в строках.
     pub visible_height: u32,
 
-    /// Размер одного sample в байтах: 1 для 8-bit, 2 для 10-bit LE storage word.
+    /// Размер одного sample в байтах: 1 для 8-bit, 2 для 10/12-bit LE storage word.
     pub bytes_per_sample: usize,
 }
 
@@ -458,39 +458,84 @@ struct ExpectedHostPlane {
     bytes_per_sample: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ExpectedHostPlanarLayout {
+    chroma_width: u32,
+    chroma_height: u32,
+    bytes_per_sample: usize,
+}
+
 fn expected_host_planar_planes(
     pixel_layout: VideoFramePixelLayout,
     coded_width: u32,
     coded_height: u32,
 ) -> anyhow::Result<Vec<ExpectedHostPlane>> {
-    let bytes_per_sample = match pixel_layout {
-        VideoFramePixelLayout::Yuv420Planar8 => 1,
-        VideoFramePixelLayout::Yuv420Planar10Le => 2,
-        _ => bail!("{pixel_layout} is not an accepted host-planar layout"),
-    };
-    let chroma_width = half_rounded_up(coded_width);
-    let chroma_height = half_rounded_up(coded_height);
+    let layout = expected_host_planar_layout(pixel_layout, coded_width, coded_height)?;
 
     Ok(vec![
         ExpectedHostPlane {
             role: HostPlaneRole::Luma,
             visible_width: coded_width,
             visible_height: coded_height,
-            bytes_per_sample,
+            bytes_per_sample: layout.bytes_per_sample,
         },
         ExpectedHostPlane {
             role: HostPlaneRole::ChromaU,
-            visible_width: chroma_width,
-            visible_height: chroma_height,
-            bytes_per_sample,
+            visible_width: layout.chroma_width,
+            visible_height: layout.chroma_height,
+            bytes_per_sample: layout.bytes_per_sample,
         },
         ExpectedHostPlane {
             role: HostPlaneRole::ChromaV,
-            visible_width: chroma_width,
-            visible_height: chroma_height,
-            bytes_per_sample,
+            visible_width: layout.chroma_width,
+            visible_height: layout.chroma_height,
+            bytes_per_sample: layout.bytes_per_sample,
         },
     ])
+}
+
+fn expected_host_planar_layout(
+    pixel_layout: VideoFramePixelLayout,
+    coded_width: u32,
+    coded_height: u32,
+) -> anyhow::Result<ExpectedHostPlanarLayout> {
+    match pixel_layout {
+        VideoFramePixelLayout::Yuv420Planar8 => Ok(ExpectedHostPlanarLayout {
+            chroma_width: half_rounded_up(coded_width),
+            chroma_height: half_rounded_up(coded_height),
+            bytes_per_sample: 1,
+        }),
+        VideoFramePixelLayout::Yuv420Planar10Le | VideoFramePixelLayout::Yuv420Planar12Le => {
+            Ok(ExpectedHostPlanarLayout {
+                chroma_width: half_rounded_up(coded_width),
+                chroma_height: half_rounded_up(coded_height),
+                bytes_per_sample: 2,
+            })
+        }
+        VideoFramePixelLayout::Yuv422Planar8 => Ok(ExpectedHostPlanarLayout {
+            chroma_width: half_rounded_up(coded_width),
+            chroma_height: coded_height,
+            bytes_per_sample: 1,
+        }),
+        VideoFramePixelLayout::Yuv422Planar10Le | VideoFramePixelLayout::Yuv422Planar12Le => {
+            Ok(ExpectedHostPlanarLayout {
+                chroma_width: half_rounded_up(coded_width),
+                chroma_height: coded_height,
+                bytes_per_sample: 2,
+            })
+        }
+        VideoFramePixelLayout::Yuv444Planar8 => Ok(ExpectedHostPlanarLayout {
+            chroma_width: coded_width,
+            chroma_height: coded_height,
+            bytes_per_sample: 1,
+        }),
+        VideoFramePixelLayout::Yuv444Planar10Le => Ok(ExpectedHostPlanarLayout {
+            chroma_width: coded_width,
+            chroma_height: coded_height,
+            bytes_per_sample: 2,
+        }),
+        _ => bail!("{pixel_layout} is not an accepted host-planar layout"),
+    }
 }
 
 const fn half_rounded_up(dimension: u32) -> u32 {
@@ -608,45 +653,153 @@ mod tests {
         }
     }
 
-    fn sample_host_planar_descriptor(bytes_per_sample: usize) -> HostPlanarFrameDescriptor {
-        let width = 4;
-        let height = 4;
-        let y_stride = width * bytes_per_sample;
-        let chroma_stride = (width / 2) * bytes_per_sample;
-        let y_size = y_stride * height;
-        let u_size = chroma_stride * (height / 2);
-        let v_size = u_size;
-        let bytes = vec![0; y_size + u_size + v_size];
+    #[derive(Debug, Clone, Copy)]
+    struct HostPlanarLayoutCase {
+        pixel_layout: VideoFramePixelLayout,
+        coded_width: u32,
+        coded_height: u32,
+        chroma_width: u32,
+        chroma_height: u32,
+        bytes_per_sample: usize,
+    }
 
-        HostPlanarFrameDescriptor::from_owned_buffer(
-            bytes,
-            vec![
-                HostPlaneDescriptor {
-                    role: HostPlaneRole::Luma,
-                    offset: 0,
-                    stride: y_stride,
-                    visible_width: width as u32,
-                    visible_height: height as u32,
-                    bytes_per_sample,
-                },
-                HostPlaneDescriptor {
-                    role: HostPlaneRole::ChromaU,
-                    offset: y_size,
-                    stride: chroma_stride,
-                    visible_width: (width / 2) as u32,
-                    visible_height: (height / 2) as u32,
-                    bytes_per_sample,
-                },
-                HostPlaneDescriptor {
-                    role: HostPlaneRole::ChromaV,
-                    offset: y_size + u_size,
-                    stride: chroma_stride,
-                    visible_width: (width / 2) as u32,
-                    visible_height: (height / 2) as u32,
-                    bytes_per_sample,
-                },
-            ],
-        )
+    fn host_planar_contract(pixel_layout: VideoFramePixelLayout) -> VideoFrameContract {
+        VideoFrameContract {
+            pixel_layout,
+            transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+        }
+    }
+
+    fn explicit_host_planar_layout_cases() -> [HostPlanarLayoutCase; 8] {
+        [
+            HostPlanarLayoutCase {
+                pixel_layout: VideoFramePixelLayout::Yuv420Planar8,
+                coded_width: 4,
+                coded_height: 4,
+                chroma_width: 2,
+                chroma_height: 2,
+                bytes_per_sample: 1,
+            },
+            HostPlanarLayoutCase {
+                pixel_layout: VideoFramePixelLayout::Yuv420Planar10Le,
+                coded_width: 4,
+                coded_height: 4,
+                chroma_width: 2,
+                chroma_height: 2,
+                bytes_per_sample: 2,
+            },
+            HostPlanarLayoutCase {
+                pixel_layout: VideoFramePixelLayout::Yuv420Planar12Le,
+                coded_width: 4,
+                coded_height: 4,
+                chroma_width: 2,
+                chroma_height: 2,
+                bytes_per_sample: 2,
+            },
+            HostPlanarLayoutCase {
+                pixel_layout: VideoFramePixelLayout::Yuv422Planar8,
+                coded_width: 4,
+                coded_height: 4,
+                chroma_width: 2,
+                chroma_height: 4,
+                bytes_per_sample: 1,
+            },
+            HostPlanarLayoutCase {
+                pixel_layout: VideoFramePixelLayout::Yuv422Planar10Le,
+                coded_width: 4,
+                coded_height: 4,
+                chroma_width: 2,
+                chroma_height: 4,
+                bytes_per_sample: 2,
+            },
+            HostPlanarLayoutCase {
+                pixel_layout: VideoFramePixelLayout::Yuv422Planar12Le,
+                coded_width: 4,
+                coded_height: 4,
+                chroma_width: 2,
+                chroma_height: 4,
+                bytes_per_sample: 2,
+            },
+            HostPlanarLayoutCase {
+                pixel_layout: VideoFramePixelLayout::Yuv444Planar8,
+                coded_width: 4,
+                coded_height: 4,
+                chroma_width: 4,
+                chroma_height: 4,
+                bytes_per_sample: 1,
+            },
+            HostPlanarLayoutCase {
+                pixel_layout: VideoFramePixelLayout::Yuv444Planar10Le,
+                coded_width: 4,
+                coded_height: 4,
+                chroma_width: 4,
+                chroma_height: 4,
+                bytes_per_sample: 2,
+            },
+        ]
+    }
+
+    fn sample_host_planar_descriptor(bytes_per_sample: usize) -> HostPlanarFrameDescriptor {
+        sample_host_planar_descriptor_for_case(HostPlanarLayoutCase {
+            pixel_layout: VideoFramePixelLayout::Yuv420Planar8,
+            coded_width: 4,
+            coded_height: 4,
+            chroma_width: 2,
+            chroma_height: 2,
+            bytes_per_sample,
+        })
+    }
+
+    fn sample_host_planar_descriptor_for_case(
+        layout_case: HostPlanarLayoutCase,
+    ) -> HostPlanarFrameDescriptor {
+        let plane_geometries = [
+            (
+                HostPlaneRole::Luma,
+                layout_case.coded_width,
+                layout_case.coded_height,
+            ),
+            (
+                HostPlaneRole::ChromaU,
+                layout_case.chroma_width,
+                layout_case.chroma_height,
+            ),
+            (
+                HostPlaneRole::ChromaV,
+                layout_case.chroma_width,
+                layout_case.chroma_height,
+            ),
+        ];
+
+        let mut next_offset = 0usize;
+        let mut planes = Vec::with_capacity(plane_geometries.len());
+        for (role, visible_width, visible_height) in plane_geometries {
+            let visible_width_usize =
+                usize::try_from(visible_width).expect("test visible width must fit usize");
+            let visible_height_usize =
+                usize::try_from(visible_height).expect("test visible height must fit usize");
+            let stride = visible_width_usize
+                .checked_mul(layout_case.bytes_per_sample)
+                .expect("test stride must not overflow");
+            let plane_size = stride
+                .checked_mul(visible_height_usize)
+                .expect("test plane size must not overflow");
+
+            planes.push(HostPlaneDescriptor {
+                role,
+                offset: next_offset,
+                stride,
+                visible_width,
+                visible_height,
+                bytes_per_sample: layout_case.bytes_per_sample,
+            });
+
+            next_offset = next_offset
+                .checked_add(plane_size)
+                .expect("test total byte length must not overflow");
+        }
+
+        HostPlanarFrameDescriptor::from_owned_buffer(vec![0; next_offset], planes)
     }
 
     /// Проверяет, что cloned descriptor получает другой fd и сохраняет metadata.
@@ -735,24 +888,25 @@ mod tests {
     }
 
     #[test]
-    fn host_planar_accepts_valid_yuv420_8_and_10_descriptors() {
-        let planar8 = FrameResourceDescriptor::HostPlanar(sample_host_planar_descriptor(1));
-        let planar10 = FrameResourceDescriptor::HostPlanar(sample_host_planar_descriptor(2));
+    fn host_planar_accepts_valid_descriptors_for_explicit_layout_matrix() {
+        for layout_case in explicit_host_planar_layout_cases() {
+            let descriptor = FrameResourceDescriptor::HostPlanar(
+                sample_host_planar_descriptor_for_case(layout_case),
+            );
 
-        validate_resource_descriptor_against_contract(
-            VideoFrameContract::host_yuv420_planar8(),
-            4,
-            4,
-            &planar8,
-        )
-        .expect("valid 8-bit host-planar descriptor must pass");
-        validate_resource_descriptor_against_contract(
-            VideoFrameContract::host_yuv420_planar10le(),
-            4,
-            4,
-            &planar10,
-        )
-        .expect("valid 10-bit host-planar descriptor must pass");
+            validate_resource_descriptor_against_contract(
+                host_planar_contract(layout_case.pixel_layout),
+                layout_case.coded_width,
+                layout_case.coded_height,
+                &descriptor,
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "valid {} host-planar descriptor must pass: {error:#}",
+                    layout_case.pixel_layout
+                )
+            });
+        }
     }
 
     #[test]
@@ -769,6 +923,22 @@ mod tests {
         .expect_err("missing V plane must be rejected");
 
         assert!(error.to_string().contains("plane count mismatch"));
+    }
+
+    #[test]
+    fn host_planar_rejects_invalid_role_order() {
+        let mut descriptor = sample_host_planar_descriptor(1);
+        descriptor.planes.swap(1, 2);
+
+        let error = validate_resource_descriptor_against_contract(
+            VideoFrameContract::host_yuv420_planar8(),
+            4,
+            4,
+            &FrameResourceDescriptor::HostPlanar(descriptor),
+        )
+        .expect_err("U/V role order mismatch must be rejected");
+
+        assert!(error.to_string().contains("role mismatch"));
     }
 
     #[test]
@@ -883,6 +1053,53 @@ mod tests {
             &FrameResourceDescriptor::HostPlanar(descriptor),
         )
         .expect("odd YUV420 dimensions must round chroma plane sizes up");
+    }
+
+    #[test]
+    fn host_planar_uses_rounded_chroma_width_for_odd_yuv422_dimensions() {
+        let layout_case = HostPlanarLayoutCase {
+            pixel_layout: VideoFramePixelLayout::Yuv422Planar10Le,
+            coded_width: 5,
+            coded_height: 3,
+            chroma_width: 3,
+            chroma_height: 3,
+            bytes_per_sample: 2,
+        };
+        let descriptor = FrameResourceDescriptor::HostPlanar(
+            sample_host_planar_descriptor_for_case(layout_case),
+        );
+
+        validate_resource_descriptor_against_contract(
+            host_planar_contract(layout_case.pixel_layout),
+            layout_case.coded_width,
+            layout_case.coded_height,
+            &descriptor,
+        )
+        .expect("odd YUV422 width must round chroma width up without halving height");
+    }
+
+    #[test]
+    fn host_planar_rejects_mismatched_visible_plane_size() {
+        let layout_case = HostPlanarLayoutCase {
+            pixel_layout: VideoFramePixelLayout::Yuv422Planar8,
+            coded_width: 4,
+            coded_height: 4,
+            chroma_width: 2,
+            chroma_height: 4,
+            bytes_per_sample: 1,
+        };
+        let mut descriptor = sample_host_planar_descriptor_for_case(layout_case);
+        descriptor.planes[1].visible_height = 2;
+
+        let error = validate_resource_descriptor_against_contract(
+            host_planar_contract(layout_case.pixel_layout),
+            layout_case.coded_width,
+            layout_case.coded_height,
+            &FrameResourceDescriptor::HostPlanar(descriptor),
+        )
+        .expect_err("wrong YUV422 chroma height must be rejected");
+
+        assert!(error.to_string().contains("visible size mismatch"));
     }
 
     #[test]
