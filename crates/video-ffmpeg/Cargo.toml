@@ -1,0 +1,27 @@
+[package]
+name = "video-ffmpeg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[features]
+default = []
+ffmpeg = ["dep:ffmpeg-sys-next"]
+
+[dependencies]
+anyhow.workspace = true
+codec-core.workspace = true
+thiserror.workspace = true
+video-backend-api.workspace = true
+video-core.workspace = true
+video-frame-contract.workspace = true
+
+[dependencies.ffmpeg-sys-next]
+version = "8.1.0"
+default-features = false
+features = ["avcodec"]
+optional = true
+
+[build-dependencies]
+pkg-config = "0.3"

@@ -1,9 +1,9 @@
 # FFmpeg LGPL Build Tooling
 
 Этот каталог содержит подготовительный tooling для локальной сборки dynamic
-LGPL FFmpeg/libav* под будущий software decode backend. Он не добавляет
-`video-ffmpeg` crate, не меняет Cargo workspace и не делает запуск плеера
-зависимым от FFmpeg.
+LGPL FFmpeg/libav* под будущий software decode backend. Сам tooling не делает
+запуск плеера зависимым от FFmpeg; workspace crate `video-ffmpeg` подключает
+raw binding только за explicit Cargo feature `ffmpeg`.
 
 ## Архитектурная граница
 
@@ -72,21 +72,24 @@ scripts/tooling/build-ffmpeg-lgpl.sh \
 После установки будущий build/probe код должен смотреть в локальный prefix явно:
 
 ```bash
+export FFMPEG_DIR="$RUSTIPLAYER_FFMPEG_PREFIX"
 export PKG_CONFIG_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 export LD_LIBRARY_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
 
-`PKG_CONFIG_PATH` нужен для будущего build-time lookup. `LD_LIBRARY_PATH`
-нужен только для локального запуска binaries/tests, которые будут dynamic-link
-к этим libraries. Сейчас в workspace нет FFmpeg dependency, поэтому эти export
-не нужны для обычного `cargo check --workspace`.
+`FFMPEG_DIR` нужен `ffmpeg-sys-next` при explicit prefix-е. `PKG_CONFIG_PATH`
+нужен для pkg-config lookup. `LD_LIBRARY_PATH` нужен только для локального
+запуска binaries/tests, которые dynamic-link к этим libraries. Обычный
+`cargo check --workspace` не включает feature `ffmpeg`, поэтому эти export не
+нужны для default workspace build.
 
 ## Guardrail
 
 Сборка FFmpeg в локальный prefix не означает, что плеер зависит от FFmpeg при
 старте. До отдельного архитектурного решения запрещено:
 
-- добавлять `video-ffmpeg` в workspace;
-- добавлять `ffmpeg-*`, `libav*`, `rsmpeg` или похожие crates в Cargo manifests;
+- добавлять `ffmpeg-*`, `libav*`, `rsmpeg` или похожие crates вне
+  `video-ffmpeg`;
+- включать FFmpeg feature в default workspace/app build;
 - добавлять public `ffmpeg_sw`/`ffmpeg-sw` config или UI option;
 - использовать FFmpeg CPU color conversion/RGB path в playback.

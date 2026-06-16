@@ -84,6 +84,8 @@ hardware decode или GPU render path. Они могут зависеть от 
 - `audio` - concrete Symphonia/Opus decoder factory и CPAL output backend.
 - `video-vaapi` - VA-API decoder thread, probe, DMA-BUF export и lifecycle
   decoded surfaces до renderer release.
+- `video-ffmpeg` - optional FFmpeg software decoder scaffold; весь raw
+  FFmpeg FFI и будущий unsafe код остаются внутри этого crate-а.
 - `render-wgpu-video` - NV12/P010 WGPU renderer, renderer-side DMA-BUF import,
   materialization API и shader paths.
 
@@ -120,6 +122,8 @@ render-core -> codec-core/video-frame-contract
 video-frame-contract -> serde
 video-core -> media-core/codec-core/video-frame-contract
 video-vaapi -> video-backend-api/video-core/video-frame-contract/media-core/codec-core/capability-core
+video-ffmpeg -> video-backend-api/video-core/video-frame-contract/codec-core
+video-ffmpeg -> ffmpeg-sys-next only when crate feature `ffmpeg` is enabled
 render-wgpu-video -> render-core/video-core/video-backend-api/video-frame-contract/codec-core/wgpu/ash/wgpu-types
 render-wgpu-shell -> render-wgpu-video/render-core/wgpu/egui/egui-wgpu/winit
 ```
@@ -153,6 +157,7 @@ After:
   render-wgpu-video owns video rendering without shell/reference backend deps
   render-wgpu-shell owns winit/egui surface composition
   video-vulkan removed from workspace and Cargo graph
+  video-ffmpeg added as isolated optional FFmpeg software backend scaffold
   video-frame-contract owns decoder->renderer frame contract vocabulary
   capability selection uses SupportedVideoOutput + VideoFrameContract
 ```
@@ -207,16 +212,21 @@ provider boundary остаётся в `video-backend-api`, WGPU materialization 
 - `video-vaapi` и будущие concrete video backend crates не зависят от
   `player-core`; backend startup/resource provider boundary проходит через
   `video-backend-api`.
+- `video-ffmpeg` не зависит от `player-core`, app/UI crates, WGPU renderer
+  crates или VA-API crates. Он может зависеть от `ffmpeg-sys-next` только за
+  optional feature `ffmpeg`; default workspace build не требует FFmpeg
+  headers/libs/runtime.
 - `video-vaapi` не зависит от renderer/GPU import crates (`wgpu`,
   `wgpu-types`, `ash`, `render-core`, `render-wgpu-video`,
   `render-wgpu-shell`): он владеет
   VA display, cros decoder, VA surfaces, DMA-BUF export и release lifecycle,
   но не создаёт WGPU texture views.
-- `video-vulkan` и `video-ffmpeg` не возвращаются в workspace и не становятся
-  dependency production crates без отдельного архитектурного решения.
-- FFmpeg/libav crates не добавляются в этом подготовительном refactor-е:
-  `ffmpeg-next`, `ffmpeg-sys-next`, `rsmpeg`, `libav*` и аналогичные direct
-  dependency names запрещены для всех workspace crates.
+- `video-vulkan` не возвращается в workspace и не становится dependency
+  production crate без отдельного архитектурного решения.
+- FFmpeg/libav crates разрешены только внутри `video-ffmpeg` и только как
+  optional dependency. `ffmpeg-next`, `ffmpeg-sys-next`, `rsmpeg`, `libav*` и
+  аналогичные direct dependency names запрещены для всех остальных workspace
+  crates.
 - Public `video.preferred_backend` остаётся только `auto`/`hardware`/`software`.
   Старое `"vulkan"` разрешено упоминать только в rejection diagnostics/tests, а
   отдельный `ffmpeg_sw`/`ffmpeg-sw` не должен появляться как TOML/UI/settings
@@ -245,18 +255,21 @@ refactor-серии:
 
 - проверяет наличие зафиксированных role crates в workspace;
 - запрещает молчаливое возвращение удалённых workspace crates, сейчас
-  `video-vulkan` и `video-ffmpeg`;
+  `video-vulkan`;
 - проверяет, что `video-frame-contract` зависит только от `serde`;
-- запрещает direct FFmpeg/libav dependencies по всем manifest dependency kinds;
+- запрещает direct FFmpeg/libav dependencies по всем manifest dependency kinds
+  для всех crates кроме `video-ffmpeg`;
 - запрещает прямые normal-dependencies из contract crates в shell/backend/player;
 - запрещает прямые `media-core`/`codec-core`/`audio`/demux dependencies на
-  `wgpu`, `wgpu-types`, `ash`, `video-vaapi`, `video-vulkan`,
+  `wgpu`, `wgpu-types`, `ash`, `video-vaapi`, `video-ffmpeg`, `video-vulkan`,
   `render-wgpu-shell` и `render-wgpu-video`;
 - запрещает возвращение `player-core -> symphonia-demux/webm-demux`,
-  `player-core -> video-vaapi`, `player-core -> audio`, `player-core -> wgpu`,
-  `player-core -> wgpu-types` и `player-core -> ash`;
-- запрещает прямую dependency от `video-vaapi` к `player-core`, `render-core`,
-  `wgpu`, `wgpu-types`, `ash`, `render-wgpu-video` и `render-wgpu-shell`;
+  `player-core -> video-vaapi`, `player-core -> video-ffmpeg`,
+  `player-core -> audio`, `player-core -> wgpu`, `player-core -> wgpu-types`
+  и `player-core -> ash`;
+- запрещает прямую dependency от concrete video backend crates к `player-core`,
+  `render-core`, `wgpu`, `wgpu-types`, `ash`, `render-wgpu-video` и
+  `render-wgpu-shell`;
 - запрещает новые прямые связи `player-core`, `render-wgpu-shell` и
   `render-wgpu-video` с явно опасными соседними слоями;
 - запрещает `media-prefetch` добавлять любые normal-dependencies кроме

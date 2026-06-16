@@ -61,6 +61,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "video-frame-contract",
         "video-core",
         "video-backend-api",
+        "video-ffmpeg",
         "video-vaapi",
         "webm-demux",
     }
@@ -68,7 +69,7 @@ REQUIRED_ROLE_CRATES = frozenset(
 
 # Crates из этого списка были удалены из workspace и не должны возвращаться
 # как "reference" backend-ы без отдельного архитектурного решения.
-REMOVED_WORKSPACE_CRATES = frozenset({"video-ffmpeg", "video-vulkan"})
+REMOVED_WORKSPACE_CRATES = frozenset({"video-vulkan"})
 
 VIDEO_FRAME_CONTRACT_ALLOWED_DEPENDENCIES = frozenset({"serde"})
 
@@ -181,6 +182,7 @@ PLAYER_CORE_FORBIDDEN_DEPENDENCIES = frozenset(
 
 VIDEO_BACKEND_CRATES = frozenset(
     {
+        "video-ffmpeg",
         "video-vaapi",
     }
 )
@@ -204,6 +206,7 @@ RENDER_WGPU_SHELL_FORBIDDEN_DEPENDENCIES = frozenset(
         "service-youtube",
         "source-core",
         "symphonia-demux",
+        "video-ffmpeg",
         "video-vaapi",
         "video-vulkan",
         "webm-demux",
@@ -471,9 +474,9 @@ def find_dependency_violations(
     violations.extend(
         find_forbidden_dependencies(
             all_dependency_map,
-            frozenset(all_dependency_map),
+            frozenset(all_dependency_map).difference({"video-ffmpeg"}),
             FFMPEG_FORBIDDEN_DEPENDENCIES,
-            "FFmpeg/libav crates не входят в подготовительный refactor",
+            "FFmpeg/libav crates разрешены только внутри video-ffmpeg",
         )
     )
     violations.extend(
