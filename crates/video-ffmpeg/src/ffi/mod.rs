@@ -8,3 +8,4 @@ pub mod codec_context;
 pub mod error;
 pub mod frame;
 pub mod packet;
+pub mod pixel_format;
