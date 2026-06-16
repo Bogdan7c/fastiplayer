@@ -716,6 +716,9 @@ pub(super) struct SharedFakeVideoDecoderThread {
     /// Snapshot texture/surface pressure, который fake отдаёт scheduler-у.
     pub(super) resource_snapshot: Arc<Mutex<Option<DecoderResourceSnapshot>>>,
 
+    /// Software host-upload snapshot/status для отдельного resource boundary.
+    pub(super) host_upload_resource_status: Arc<Mutex<HostUploadResourceSnapshotStatus>>,
+
     /// Control-channel pressure snapshot, который fake отдаёт через decoder boundary.
     pub(super) control_pressure: Arc<Mutex<Option<DecoderControlChannelPressureSnapshot>>>,
 
@@ -772,6 +775,9 @@ impl SharedFakeVideoDecoderThread {
             flush_count: Arc::new(Mutex::new(0)),
             released_handles: Arc::new(Mutex::new(Vec::new())),
             resource_snapshot: Arc::new(Mutex::new(None)),
+            host_upload_resource_status: Arc::new(Mutex::new(
+                HostUploadResourceSnapshotStatus::AbsentResource,
+            )),
             control_pressure: Arc::new(Mutex::new(None)),
             activity_snapshot: Arc::new(Mutex::new(
                 video_core::VideoDecoderActivitySnapshot::unsupported(),
@@ -883,6 +889,15 @@ impl SharedFakeVideoDecoderThread {
             .resource_snapshot
             .lock()
             .expect("fake decoder resource snapshot lock") = Some(resource_snapshot);
+    }
+
+    /// Настраивает software host-upload snapshot без изменения VA-API resource counters.
+    pub(super) fn set_host_upload_resource_snapshot(&self, snapshot: HostUploadResourceSnapshot) {
+        *self
+            .host_upload_resource_status
+            .lock()
+            .expect("fake decoder host-upload resource status lock") =
+            HostUploadResourceSnapshotStatus::Available(snapshot);
     }
 
     /// Настраивает control-channel pressure snapshot для проверки pipeline boundary.
@@ -1291,6 +1306,13 @@ impl video_core::VideoDecoderThreadHandle for SharedFakeVideoDecoderThread {
             .resource_snapshot
             .lock()
             .expect("fake decoder resource snapshot lock")
+    }
+
+    fn host_upload_resource_snapshot(&self) -> HostUploadResourceSnapshotStatus {
+        *self
+            .host_upload_resource_status
+            .lock()
+            .expect("fake decoder host-upload resource status lock")
     }
 
     fn decoder_control_channel_pressure(&self) -> Option<DecoderControlChannelPressureSnapshot> {

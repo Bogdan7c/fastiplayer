@@ -49,6 +49,10 @@ fn playback_pipeline_decoder_boundary_absent_thread_is_noop() {
     assert!(pipeline.try_recv_video_decoder_error().is_none());
     assert_eq!(pipeline.drain_completed_video_decode_packet_count(), 0);
     assert!(pipeline.video_decoder_control_channel_pressure().is_none());
+    assert_eq!(
+        pipeline.host_upload_resource_snapshot(),
+        HostUploadResourceSnapshotStatus::AbsentDecoder
+    );
     assert!(matches!(
         pipeline.video_decoder_activity_status(),
         crate::pipeline::VideoDecoderActivityStatus::AbsentDecoder
@@ -402,6 +406,39 @@ fn playback_pipeline_decoder_boundary_forwards_control_pressure_snapshot() {
         pipeline.video_decoder_control_channel_pressure(),
         Some(pressure)
     );
+}
+
+#[test]
+fn playback_pipeline_decoder_boundary_returns_typed_absent_host_upload_resource() {
+    let mut pipeline = PlaybackPipeline::default();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    pipeline.set_video_decoder_thread(fake_decoder);
+
+    assert_eq!(
+        pipeline.host_upload_resource_snapshot(),
+        HostUploadResourceSnapshotStatus::AbsentResource
+    );
+}
+
+#[test]
+fn playback_pipeline_decoder_boundary_forwards_fake_software_host_upload_snapshot() {
+    let mut pipeline = PlaybackPipeline::default();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    let snapshot = HostUploadResourceSnapshot {
+        host_frames_ready: 2,
+        host_frames_in_flight: 1,
+        upload_slots_capacity: 3,
+        upload_slots_free: 2,
+        upload_failures: 4,
+    };
+    fake_decoder.set_host_upload_resource_snapshot(snapshot);
+    pipeline.set_video_decoder_thread(fake_decoder);
+
+    assert_eq!(
+        pipeline.host_upload_resource_snapshot(),
+        HostUploadResourceSnapshotStatus::Available(snapshot)
+    );
+    assert!(pipeline.video_decoder_resource_snapshot().is_none());
 }
 
 #[test]

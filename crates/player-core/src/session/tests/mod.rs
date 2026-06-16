@@ -38,6 +38,7 @@ use media_core::{
     VideoTrackMetadata,
 };
 use render_core::RenderCapabilities;
+use video_core::{HostUploadResourceSnapshot, HostUploadResourceSnapshotStatus};
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
 mod test_support;

@@ -7,7 +7,8 @@ pub mod sync;
 pub use decoder::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, VideoDecoder};
 pub use decoder_thread::{
     DecodeBackpressureReason, DecodePacket, DecodeSendError, DecodeThreadError,
-    DecoderResourceSnapshot, VideoDecoderActivityEpoch, VideoDecoderActivityNotifier,
+    DecoderResourceSnapshot, HostUploadBackpressureReason, HostUploadResourceSnapshot,
+    HostUploadResourceSnapshotStatus, VideoDecoderActivityEpoch, VideoDecoderActivityNotifier,
     VideoDecoderActivitySnapshot, VideoDecoderActivitySubscription,
     VideoDecoderActivityUnavailableReason, VideoDecoderActivityWaitOutcome,
     VideoDecoderControlBackpressureReason, VideoDecoderControlChannelPressureSnapshot,

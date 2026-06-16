@@ -11,7 +11,10 @@ use media_core::{
     DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, Demuxer, PacketKeyframe, TrackId, TrackInfo,
     TrackTimestamp,
 };
-use video_core::{VideoDecoderActivitySnapshot, VideoDecoderActivityUnavailableReason};
+use video_core::{
+    HostUploadResourceSnapshotStatus, VideoDecoderActivitySnapshot,
+    VideoDecoderActivityUnavailableReason,
+};
 use video_frame_contract::VideoFrameContract;
 #[cfg(test)]
 use video_frame_contract::{DmaBufImageLayout, VideoFramePixelLayout};
@@ -1382,6 +1385,18 @@ impl PlaybackPipeline {
         self.video_decoder_thread
             .as_ref()
             .and_then(|decoder_thread| decoder_thread.decoder_resource_snapshot())
+    }
+
+    /// Возвращает typed snapshot software host-upload ресурсов.
+    // S20 подключит этот boundary к scheduler/tick; сейчас его фиксируют focused tests.
+    #[allow(dead_code)]
+    #[must_use]
+    pub(crate) fn host_upload_resource_snapshot(&self) -> HostUploadResourceSnapshotStatus {
+        let Some(decoder_thread) = self.video_decoder_thread.as_ref() else {
+            return HostUploadResourceSnapshotStatus::AbsentDecoder;
+        };
+
+        decoder_thread.host_upload_resource_snapshot()
     }
 
     /// Возвращает pressure snapshot decoder control channel-а, если backend его поддерживает.

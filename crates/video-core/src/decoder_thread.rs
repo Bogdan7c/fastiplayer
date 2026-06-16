@@ -528,6 +528,88 @@ impl DecoderResourceSnapshot {
     }
 }
 
+/// Software host-upload resource counters без смешивания с VA-API surface/import accounting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostUploadResourceSnapshot {
+    /// Сколько decoded host frames уже готово к upload/presentation path-у.
+    pub host_frames_ready: usize,
+
+    /// Сколько host frames уже заняло upload slot и ждёт release.
+    pub host_frames_in_flight: usize,
+
+    /// Сколько upload slots может одновременно держать software path.
+    pub upload_slots_capacity: usize,
+
+    /// Сколько upload slots сейчас свободно для новых host frames.
+    pub upload_slots_free: usize,
+
+    /// Сколько upload попыток завершилось ошибкой.
+    pub upload_failures: u64,
+}
+
+impl HostUploadResourceSnapshot {
+    /// Возвращает typed причину software backpressure без обращения к VA-API counters.
+    #[must_use]
+    pub const fn backpressure_reason(
+        self,
+        ready_queue_capacity: usize,
+    ) -> Option<HostUploadBackpressureReason> {
+        if ready_queue_capacity > 0 && self.host_frames_ready >= ready_queue_capacity {
+            return Some(HostUploadBackpressureReason::ReadyQueueFull {
+                host_frames_ready: self.host_frames_ready,
+                capacity: ready_queue_capacity,
+            });
+        }
+
+        if self.upload_slots_free == 0 {
+            return Some(HostUploadBackpressureReason::UploadSlotsExhausted {
+                host_frames_in_flight: self.host_frames_in_flight,
+                upload_slots_capacity: self.upload_slots_capacity,
+            });
+        }
+
+        None
+    }
+}
+
+/// Typed причина software host-upload backpressure для будущей scheduler integration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostUploadBackpressureReason {
+    /// Очередь decoded host frames заполнена, decoder не должен публиковать ещё один frame.
+    ReadyQueueFull {
+        /// Сколько host frames уже ждёт upload/presentation path-а.
+        host_frames_ready: usize,
+
+        /// Bounded capacity очереди ready host frames.
+        capacity: usize,
+    },
+
+    /// Upload slots закончились, поэтому renderer/provider ещё не освободил ресурсы.
+    UploadSlotsExhausted {
+        /// Сколько host frames уже находится в upload/release lifecycle.
+        host_frames_in_flight: usize,
+
+        /// Общая capacity upload slots.
+        upload_slots_capacity: usize,
+    },
+}
+
+/// Typed результат чтения software host-upload snapshot-а через decoder boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostUploadResourceSnapshotStatus {
+    /// В `player-core` ещё не установлен video decoder.
+    AbsentDecoder,
+
+    /// Decoder установлен, но software host-upload resource boundary ещё отсутствует.
+    AbsentResource,
+
+    /// Backend не является software host-upload provider-ом.
+    UnsupportedBackend,
+
+    /// Software host-upload resource counters доступны.
+    Available(HostUploadResourceSnapshot),
+}
+
 /// Snapshot давления на decoder control channel без backend-specific типов.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VideoDecoderControlChannelPressureSnapshot {
@@ -1146,6 +1228,11 @@ pub trait VideoDecoderThreadHandle: Send {
     /// Возвращает snapshot texture/resource pool-а для UI/backpressure diagnostics.
     fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot>;
 
+    /// Возвращает typed snapshot software host-upload ресурсов.
+    fn host_upload_resource_snapshot(&self) -> HostUploadResourceSnapshotStatus {
+        HostUploadResourceSnapshotStatus::UnsupportedBackend
+    }
+
     /// Возвращает snapshot bounded control channel-а для diagnostics.
     fn decoder_control_channel_pressure(
         &self,
@@ -1264,6 +1351,17 @@ mod tests {
                 panic!("default decoder handle must not expose activity subscription");
             }
         }
+    }
+
+    /// Проверяет default software-resource contract: hardware/old backend не маскируется под нули.
+    #[test]
+    fn default_host_upload_resource_snapshot_returns_unsupported() {
+        let decoder_thread = DefaultPrerollFloorDecoderThread;
+
+        assert_eq!(
+            decoder_thread.host_upload_resource_snapshot(),
+            HostUploadResourceSnapshotStatus::UnsupportedBackend
+        );
     }
 
     /// Проверяет happy path: caller видит activity после ранее observed epoch-а.
@@ -1455,5 +1553,57 @@ mod tests {
         };
 
         assert_eq!(snapshot.available_slots(), 0);
+    }
+
+    /// Проверяет, что software snapshot не использует VA-API surface slots.
+    #[test]
+    fn host_upload_resource_snapshot_stores_software_counters() {
+        let snapshot = HostUploadResourceSnapshot {
+            host_frames_ready: 2,
+            host_frames_in_flight: 3,
+            upload_slots_capacity: 4,
+            upload_slots_free: 1,
+            upload_failures: 5,
+        };
+
+        assert_eq!(snapshot.host_frames_ready, 2);
+        assert_eq!(snapshot.host_frames_in_flight, 3);
+        assert_eq!(snapshot.upload_slots_capacity, 4);
+        assert_eq!(snapshot.upload_slots_free, 1);
+        assert_eq!(snapshot.upload_failures, 5);
+    }
+
+    /// Проверяет, что ready-queue pressure и upload-slot pressure остаются разными типами.
+    #[test]
+    fn host_upload_backpressure_distinguishes_ready_queue_and_upload_slots() {
+        let ready_queue_full = HostUploadResourceSnapshot {
+            host_frames_ready: 4,
+            host_frames_in_flight: 1,
+            upload_slots_capacity: 2,
+            upload_slots_free: 1,
+            upload_failures: 0,
+        };
+        let upload_slots_exhausted = HostUploadResourceSnapshot {
+            host_frames_ready: 1,
+            host_frames_in_flight: 2,
+            upload_slots_capacity: 2,
+            upload_slots_free: 0,
+            upload_failures: 0,
+        };
+
+        assert_eq!(
+            ready_queue_full.backpressure_reason(4),
+            Some(HostUploadBackpressureReason::ReadyQueueFull {
+                host_frames_ready: 4,
+                capacity: 4,
+            })
+        );
+        assert_eq!(
+            upload_slots_exhausted.backpressure_reason(4),
+            Some(HostUploadBackpressureReason::UploadSlotsExhausted {
+                host_frames_in_flight: 2,
+                upload_slots_capacity: 2,
+            })
+        );
     }
 }
