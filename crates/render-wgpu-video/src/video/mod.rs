@@ -17,9 +17,13 @@ use video_frame_contract::{HardwareFrameHandle, VideoFramePixelLayout, VideoFram
 use crate::capabilities::wgpu_capabilities_from_features;
 use crate::dma_buf_import::{DmaBufImporter, ImportedDmaBufTexture};
 
+pub use self::host_planar_upload::{
+    HostPlanarWgpuFrameMaterializer, HostPlanarWgpuTextureViewLookup, HostPlanarWgpuTextureViews,
+};
 use self::nv12_renderer::Nv12VideoRenderer;
 use self::p010_renderer::P010VideoRenderer;
 
+mod host_planar_upload;
 mod nv12_renderer;
 mod p010_renderer;
 
@@ -53,6 +57,15 @@ impl WgpuFrameTextureViews {
 pub enum WgpuFrameMaterializationUnsupportedReason {
     /// Descriptor содержит CPU-visible host planes, а этот materializer импортирует только DMA-BUF.
     HostPlanarRequiresUploadMaterializer,
+
+    /// Descriptor содержит DMA-BUF, а этот materializer загружает только HostPlanar.
+    DmaBufRequiresDmaBufMaterializer,
+
+    /// HostPlanar frame пришёл не через software host-upload contract.
+    HostPlanarRequiresSoftwareUploadContract,
+
+    /// HostPlanar layout пока не входит в минимальный upload subset.
+    HostPlanarLayoutNotSupportedByUploadMaterializer,
 }
 
 impl WgpuFrameMaterializationUnsupportedReason {
@@ -62,6 +75,15 @@ impl WgpuFrameMaterializationUnsupportedReason {
         match self {
             Self::HostPlanarRequiresUploadMaterializer => {
                 "host planar descriptor requires upload materializer"
+            }
+            Self::DmaBufRequiresDmaBufMaterializer => {
+                "DMA-BUF descriptor requires DMA-BUF materializer"
+            }
+            Self::HostPlanarRequiresSoftwareUploadContract => {
+                "host planar descriptor requires software host-upload contract"
+            }
+            Self::HostPlanarLayoutNotSupportedByUploadMaterializer => {
+                "host planar layout is not supported by upload materializer"
             }
         }
     }

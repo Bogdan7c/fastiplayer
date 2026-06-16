@@ -16,7 +16,8 @@ mod bt2446c_reference;
 
 pub use resource_provider::wrap_video_backend_for_wgpu_submission;
 pub use video::{
-    DmaBufWgpuFrameMaterializer, WgpuFrameMaterializationUnsupportedReason, WgpuFramePlanes,
+    DmaBufWgpuFrameMaterializer, HostPlanarWgpuFrameMaterializer, HostPlanarWgpuTextureViewLookup,
+    HostPlanarWgpuTextureViews, WgpuFrameMaterializationUnsupportedReason, WgpuFramePlanes,
     WgpuFrameTextureViewLookup, WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
     WgpuRenderableFrame, WgpuVideoRenderer, clear_to_black,
 };
