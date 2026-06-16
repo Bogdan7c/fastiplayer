@@ -11,12 +11,12 @@ use std::{borrow::Cow, collections::BTreeSet, error::Error, fmt, time::Duration}
 use codec_core::{
     BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction,
     VideoColorMetadata, VideoDecodeRequirement, VideoDisplayOrientation,
-    video_frame_pixel_layout_from_decode_requirement,
 };
 use serde::{Deserialize, Serialize};
 use video_frame_contract::{
-    DmaBufImageLayout, HardwareFrameHandle, VideoFrameContract, VideoFrameContractValidationError,
-    VideoFramePixelLayout, VideoFrameTransferPath,
+    DmaBufImageLayout, FrameBitDepth, FrameChromaSubsampling, HardwareFrameHandle,
+    VideoFrameContract, VideoFrameContractValidationError, VideoFramePixelLayout,
+    VideoFrameTransferPath,
 };
 
 /// Стабильный идентификатор семейства renderer backend-а.
@@ -2026,9 +2026,17 @@ impl RenderCapabilities {
         requirement: &VideoDecodeRequirement,
         frame_contract: VideoFrameContract,
     ) -> Result<(), RenderVideoOutputRejection> {
-        if let Err(reason) = frame_contract.validate() {
-            return Err(RenderVideoOutputRejection::FrameContract {
-                reason: RenderFrameContractRejection::InvalidContract { reason },
+        if let Err(reason) = self.check_frame_contract(frame_contract) {
+            return Err(RenderVideoOutputRejection::FrameContract { reason });
+        }
+
+        check_frame_contract_matches_requirement(requirement, frame_contract)?;
+
+        if frame_contract.pixel_layout == VideoFramePixelLayout::P010
+            && !self.supports_p010_rendering()
+        {
+            return Err(RenderVideoOutputRejection::P010NotRenderable {
+                readiness: self.p010_render_readiness,
             });
         }
 
@@ -2037,33 +2045,6 @@ impl RenderCapabilities {
                 || self.supports_native_hdr_output)
         {
             return Err(RenderVideoOutputRejection::HdrUnsupported { frame_contract });
-        }
-
-        let Some(frame_format) = video_frame_pixel_layout_from_decode_requirement(requirement)
-        else {
-            return Err(RenderVideoOutputRejection::FrameContract {
-                reason: RenderFrameContractRejection::UnsupportedPixelLayout {
-                    pixel_layout: frame_contract.pixel_layout,
-                },
-            });
-        };
-
-        if frame_format == VideoFramePixelLayout::P010 && !self.supports_p010_rendering() {
-            return Err(RenderVideoOutputRejection::P010NotRenderable {
-                readiness: self.p010_render_readiness,
-            });
-        }
-
-        if frame_contract.pixel_layout != frame_format {
-            return Err(RenderVideoOutputRejection::FrameContract {
-                reason: RenderFrameContractRejection::UnsupportedContractCombination {
-                    frame_contract,
-                },
-            });
-        }
-
-        if let Err(reason) = self.check_frame_contract(frame_contract) {
-            return Err(RenderVideoOutputRejection::FrameContract { reason });
         }
 
         if let (Some(width), Some(max_texture_size)) = (requirement.width, self.max_texture_size)
@@ -2165,14 +2146,112 @@ const fn dma_buf_image_layout(transfer_path: VideoFrameTransferPath) -> Option<D
     }
 }
 
+/// Проверяет, что выбранный renderer contract совпадает с codec-level metadata stream-а.
+fn check_frame_contract_matches_requirement(
+    requirement: &VideoDecodeRequirement,
+    frame_contract: VideoFrameContract,
+) -> Result<(), RenderVideoOutputRejection> {
+    let expected_bit_depth = required_frame_bit_depth(requirement);
+    let expected_chroma = required_frame_chroma(requirement);
+
+    if frame_contract.pixel_layout.bit_depth() != Some(expected_bit_depth)
+        || frame_contract.pixel_layout.chroma() != Some(expected_chroma)
+    {
+        return Err(RenderVideoOutputRejection::FrameContract {
+            reason: RenderFrameContractRejection::UnsupportedContractCombination { frame_contract },
+        });
+    }
+
+    Ok(())
+}
+
+/// Переводит stream bit depth в neutral frame-contract vocabulary.
+fn required_frame_bit_depth(requirement: &VideoDecodeRequirement) -> FrameBitDepth {
+    match requirement.bit_depth.unwrap_or(BitDepth::Eight) {
+        BitDepth::Eight => FrameBitDepth::Eight,
+        BitDepth::Ten => FrameBitDepth::Ten,
+        BitDepth::Twelve => FrameBitDepth::Twelve,
+    }
+}
+
+/// Переводит stream chroma в neutral frame-contract vocabulary.
+fn required_frame_chroma(requirement: &VideoDecodeRequirement) -> FrameChromaSubsampling {
+    match requirement.chroma.unwrap_or(ChromaSubsampling::Yuv420) {
+        ChromaSubsampling::Yuv420 => FrameChromaSubsampling::Yuv420,
+        ChromaSubsampling::Yuv422 => FrameChromaSubsampling::Yuv422,
+        ChromaSubsampling::Yuv444 => FrameChromaSubsampling::Yuv444,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use codec_core::{
         BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, MatrixCoefficients,
         TransferFunction, VideoCodec, VideoColorMetadata, VideoDecodeRequirement,
+        video_frame_pixel_layout_from_decode_requirement,
     };
 
     use super::*;
+
+    impl RenderCapabilities {
+        /// Создаёт fake renderer из exact contracts без WGPU/materializer promises.
+        fn fake_with_frame_contracts_for_tests(
+            display_name: &str,
+            supported_frame_contracts: Vec<VideoFrameContract>,
+            max_texture_size: Option<u32>,
+        ) -> Self {
+            Self {
+                backend: RenderBackendKind::Wgpu,
+                display_name: display_name.to_string(),
+                supported_frame_contracts,
+                p010_render_readiness: P010RenderReadiness::Unavailable,
+                supported_hdr_to_sdr_operators: Vec::new(),
+                hdr_output_mode: HdrOutputMode::SdrBt709Only,
+                supports_hdr_to_sdr: false,
+                supports_native_hdr_output: false,
+                max_texture_size,
+                advanced_ui: false,
+                ui_composition_mode: UiCompositionMode::Overlay,
+                present_timing_metrics: false,
+            }
+        }
+
+        /// Создаёт fake renderer, который объявляет только exact host-upload contracts.
+        fn fake_host_upload_for_tests(
+            supported_pixel_layouts: &[VideoFramePixelLayout],
+            max_texture_size: Option<u32>,
+        ) -> Self {
+            let supported_frame_contracts = supported_pixel_layouts
+                .iter()
+                .copied()
+                .map(host_upload_contract_for_tests)
+                .collect();
+
+            Self::fake_with_frame_contracts_for_tests(
+                "Fake host-upload renderer",
+                supported_frame_contracts,
+                max_texture_size,
+            )
+        }
+    }
+
+    /// Создаёт host-upload contract для explicit planar layout-а в тестах.
+    fn host_upload_contract_for_tests(pixel_layout: VideoFramePixelLayout) -> VideoFrameContract {
+        VideoFrameContract {
+            pixel_layout,
+            transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+        }
+    }
+
+    /// Собирает stream requirement с теми metadata, которые должен покрыть contract.
+    fn video_requirement_for_tests(
+        bit_depth: BitDepth,
+        chroma: ChromaSubsampling,
+    ) -> VideoDecodeRequirement {
+        VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_bit_depth(bit_depth)
+            .with_chroma(chroma)
+    }
 
     #[test]
     fn eight_bit_yuv420_requirement_maps_to_nv12() {
@@ -2639,28 +2718,252 @@ mod tests {
     }
 
     #[test]
+    fn current_wgpu_capabilities_advertise_only_dma_buf_nv12_and_p010() {
+        let nv12_capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
+        let p010_capabilities = RenderCapabilities::wgpu_p010_bt2446c(Some(4096));
+
+        assert_eq!(
+            nv12_capabilities.supported_frame_contracts,
+            vec![VideoFrameContract::dma_buf_nv12(
+                DmaBufImageLayout::ComposedLayers
+            )]
+        );
+        assert_eq!(
+            p010_capabilities.supported_frame_contracts,
+            vec![
+                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
+                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::ComposedLayers),
+            ]
+        );
+
+        for capabilities in [&nv12_capabilities, &p010_capabilities] {
+            assert!(
+                capabilities
+                    .supported_frame_contracts
+                    .iter()
+                    .all(|contract| {
+                        matches!(
+                            contract.pixel_layout,
+                            VideoFramePixelLayout::Nv12 | VideoFramePixelLayout::P010
+                        ) && contract.transfer_path.is_hardware_zero_copy()
+                    })
+            );
+            assert!(
+                capabilities
+                    .supported_frame_contracts
+                    .iter()
+                    .all(|contract| !contract.transfer_path.is_software_host_upload())
+            );
+        }
+    }
+
+    #[test]
     fn fake_capabilities_can_advertise_host_upload_without_cartesian_product() {
-        let mut capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
-        capabilities.display_name = "Fake host-upload renderer".to_string();
-        capabilities.supported_frame_contracts = vec![
-            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
-            VideoFrameContract::host_yuv420_planar8(),
-        ];
+        let capabilities = RenderCapabilities::fake_with_frame_contracts_for_tests(
+            "Fake mixed renderer",
+            vec![
+                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+                host_upload_contract_for_tests(VideoFramePixelLayout::Yuv422Planar10Le),
+            ],
+            Some(4096),
+        );
+
+        let unsupported_host_layout =
+            host_upload_contract_for_tests(VideoFramePixelLayout::Yuv420Planar10Le);
+        let unsupported_dma_buf_layout =
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers);
 
         let invalid_cartesian_contract = VideoFrameContract {
             pixel_layout: VideoFramePixelLayout::Nv12,
             transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
         };
 
-        assert!(capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar8()));
         assert!(
-            !capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar10le())
+            capabilities.supports_frame_contract(host_upload_contract_for_tests(
+                VideoFramePixelLayout::Yuv422Planar10Le
+            ))
         );
+        assert!(matches!(
+            capabilities.check_frame_contract(unsupported_host_layout),
+            Err(RenderFrameContractRejection::UnsupportedPixelLayout {
+                pixel_layout: VideoFramePixelLayout::Yuv420Planar10Le,
+            })
+        ));
+        assert!(matches!(
+            capabilities.check_frame_contract(unsupported_dma_buf_layout),
+            Err(RenderFrameContractRejection::UnsupportedDmaBufImageLayout {
+                pixel_layout: VideoFramePixelLayout::Nv12,
+                image_layout: DmaBufImageLayout::ComposedLayers,
+            })
+        ));
         assert!(matches!(
             capabilities.check_frame_contract(invalid_cartesian_contract),
             Err(RenderFrameContractRejection::InvalidContract { .. })
         ));
         assert!(capabilities.summary_text().contains("software host upload"));
+    }
+
+    #[test]
+    fn fake_capabilities_support_host_upload_exact_video_outputs() {
+        let supported_layouts = [
+            (
+                VideoFramePixelLayout::Yuv420Planar8,
+                BitDepth::Eight,
+                ChromaSubsampling::Yuv420,
+            ),
+            (
+                VideoFramePixelLayout::Yuv420Planar10Le,
+                BitDepth::Ten,
+                ChromaSubsampling::Yuv420,
+            ),
+            (
+                VideoFramePixelLayout::Yuv420Planar12Le,
+                BitDepth::Twelve,
+                ChromaSubsampling::Yuv420,
+            ),
+            (
+                VideoFramePixelLayout::Yuv422Planar8,
+                BitDepth::Eight,
+                ChromaSubsampling::Yuv422,
+            ),
+            (
+                VideoFramePixelLayout::Yuv422Planar10Le,
+                BitDepth::Ten,
+                ChromaSubsampling::Yuv422,
+            ),
+            (
+                VideoFramePixelLayout::Yuv422Planar12Le,
+                BitDepth::Twelve,
+                ChromaSubsampling::Yuv422,
+            ),
+            (
+                VideoFramePixelLayout::Yuv444Planar8,
+                BitDepth::Eight,
+                ChromaSubsampling::Yuv444,
+            ),
+            (
+                VideoFramePixelLayout::Yuv444Planar10Le,
+                BitDepth::Ten,
+                ChromaSubsampling::Yuv444,
+            ),
+        ];
+        let supported_pixel_layouts = supported_layouts
+            .iter()
+            .map(|(pixel_layout, _, _)| *pixel_layout)
+            .collect::<Vec<_>>();
+        let capabilities =
+            RenderCapabilities::fake_host_upload_for_tests(&supported_pixel_layouts, Some(4096));
+
+        for (pixel_layout, bit_depth, chroma) in supported_layouts {
+            let requirement = video_requirement_for_tests(bit_depth, chroma);
+            let frame_contract = host_upload_contract_for_tests(pixel_layout);
+
+            assert!(capabilities.supports_video_output(&requirement, frame_contract));
+        }
+
+        let wrong_chroma_requirement =
+            video_requirement_for_tests(BitDepth::Ten, ChromaSubsampling::Yuv420);
+        let yuv422_contract =
+            host_upload_contract_for_tests(VideoFramePixelLayout::Yuv422Planar10Le);
+
+        assert!(matches!(
+            capabilities.check_video_output(&wrong_chroma_requirement, yuv422_contract),
+            Err(RenderVideoOutputRejection::FrameContract {
+                reason: RenderFrameContractRejection::UnsupportedContractCombination {
+                    frame_contract
+                },
+            }) if frame_contract == yuv422_contract
+        ));
+    }
+
+    #[test]
+    fn video_output_rejections_keep_contract_policy_and_size_distinct() {
+        let yuv420_requirement =
+            video_requirement_for_tests(BitDepth::Eight, ChromaSubsampling::Yuv420);
+        let yuv422_requirement =
+            video_requirement_for_tests(BitDepth::Eight, ChromaSubsampling::Yuv422);
+        let yuv420_host_contract =
+            host_upload_contract_for_tests(VideoFramePixelLayout::Yuv420Planar8);
+        let yuv422_host_contract =
+            host_upload_contract_for_tests(VideoFramePixelLayout::Yuv422Planar8);
+
+        let host_upload_yuv420_capabilities = RenderCapabilities::fake_host_upload_for_tests(
+            &[VideoFramePixelLayout::Yuv420Planar8],
+            Some(4096),
+        );
+        assert!(matches!(
+            host_upload_yuv420_capabilities
+                .check_video_output(&yuv422_requirement, yuv422_host_contract),
+            Err(RenderVideoOutputRejection::FrameContract {
+                reason: RenderFrameContractRejection::UnsupportedPixelLayout {
+                    pixel_layout: VideoFramePixelLayout::Yuv422Planar8,
+                },
+            })
+        ));
+
+        let dma_buf_only_capabilities = RenderCapabilities::fake_with_frame_contracts_for_tests(
+            "Fake DMA-BUF-only renderer",
+            vec![VideoFrameContract::dma_buf_nv12(
+                DmaBufImageLayout::ComposedLayers,
+            )],
+            Some(4096),
+        );
+        assert!(matches!(
+            dma_buf_only_capabilities.check_video_output(&yuv420_requirement, yuv420_host_contract),
+            Err(RenderVideoOutputRejection::FrameContract {
+                reason: RenderFrameContractRejection::UnsupportedTransferPath {
+                    transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+                },
+            })
+        ));
+
+        let mut p010_boundary_only_capabilities =
+            RenderCapabilities::fake_with_frame_contracts_for_tests(
+                "Fake P010 boundary-only renderer",
+                vec![VideoFrameContract::dma_buf_p010(
+                    DmaBufImageLayout::SeparateLayers,
+                )],
+                Some(4096),
+            );
+        p010_boundary_only_capabilities.p010_render_readiness =
+            P010RenderReadiness::ZeroCopyBoundaryVerified;
+        let p010_requirement =
+            video_requirement_for_tests(BitDepth::Ten, ChromaSubsampling::Yuv420);
+        assert!(matches!(
+            p010_boundary_only_capabilities.check_video_output(
+                &p010_requirement,
+                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
+            ),
+            Err(RenderVideoOutputRejection::P010NotRenderable {
+                readiness: P010RenderReadiness::ZeroCopyBoundaryVerified,
+            })
+        ));
+
+        let mut hdr_requirement = yuv420_requirement.clone();
+        hdr_requirement.hdr = true;
+        assert!(matches!(
+            host_upload_yuv420_capabilities
+                .check_video_output(&hdr_requirement, yuv420_host_contract),
+            Err(RenderVideoOutputRejection::HdrUnsupported {
+                frame_contract
+            }) if frame_contract == yuv420_host_contract
+        ));
+
+        let small_texture_capabilities = RenderCapabilities::fake_host_upload_for_tests(
+            &[VideoFramePixelLayout::Yuv420Planar8],
+            Some(32),
+        );
+        let oversized_requirement = yuv420_requirement.with_resolution(64, 16);
+        assert!(matches!(
+            small_texture_capabilities
+                .check_video_output(&oversized_requirement, yuv420_host_contract),
+            Err(RenderVideoOutputRejection::MaxTextureSizeExceeded {
+                dimension: RenderTextureDimension::Width,
+                requested: 64,
+                max_texture_size: 32,
+            })
+        ));
     }
 
     #[test]
@@ -2721,7 +3024,7 @@ mod tests {
     }
 
     #[test]
-    fn current_wgpu_capabilities_reject_p010_until_hdr_phase() {
+    fn current_wgpu_nv12_capabilities_reject_p010_as_unsupported_pixel_layout() {
         let capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
         let requirement =
             VideoDecodeRequirement::new(VideoCodec::Vp9).with_bit_depth(BitDepth::Ten);
@@ -2731,14 +3034,16 @@ mod tests {
                 &requirement,
                 VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
             ),
-            Err(RenderVideoOutputRejection::P010NotRenderable {
-                readiness: P010RenderReadiness::Unavailable,
+            Err(RenderVideoOutputRejection::FrameContract {
+                reason: RenderFrameContractRejection::UnsupportedPixelLayout {
+                    pixel_layout: VideoFramePixelLayout::P010,
+                },
             })
         ));
     }
 
     #[test]
-    fn current_wgpu_capabilities_reject_ten_bit_hdr_requirement() {
+    fn current_wgpu_nv12_capabilities_reject_p010_before_hdr_policy() {
         let capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
         let mut requirement =
             VideoDecodeRequirement::new(VideoCodec::Vp9).with_bit_depth(BitDepth::Ten);
@@ -2749,7 +3054,11 @@ mod tests {
                 &requirement,
                 VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
             ),
-            Err(RenderVideoOutputRejection::HdrUnsupported { .. })
+            Err(RenderVideoOutputRejection::FrameContract {
+                reason: RenderFrameContractRejection::UnsupportedPixelLayout {
+                    pixel_layout: VideoFramePixelLayout::P010,
+                },
+            })
         ));
     }
 

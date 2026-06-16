@@ -1181,6 +1181,16 @@ mod tests {
 
     #[test]
     fn vp9_profile2_10bit_hdr_is_rejected_until_hdr_renderer_exists() {
+        let mut p010_without_hdr_renderer =
+            RenderCapabilities::wgpu_p010_bt2446c_with_dma_buf_image_layouts(
+                Some(4096),
+                vec![DmaBufImageLayout::SeparateLayers],
+            );
+        p010_without_hdr_renderer.supports_hdr_to_sdr = false;
+        p010_without_hdr_renderer
+            .supported_hdr_to_sdr_operators
+            .clear();
+
         let capabilities = capabilities_with_formats(
             vec![vp9_format(
                 Vp9Profile::Profile2,
@@ -1188,7 +1198,7 @@ mod tests {
                 ChromaSubsampling::Yuv420,
                 true,
             )],
-            vec![RenderCapabilities::wgpu_nv12(Some(4096))],
+            vec![p010_without_hdr_renderer],
         );
         let requirement = vp9_requirement(
             Vp9Profile::Profile2,
@@ -1248,6 +1258,11 @@ mod tests {
     fn p010_boundary_verified_state_alone_does_not_make_stream_playable() {
         let mut render_capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
         render_capabilities.p010_render_readiness = P010RenderReadiness::ZeroCopyBoundaryVerified;
+        render_capabilities
+            .supported_frame_contracts
+            .push(VideoFrameContract::dma_buf_p010(
+                DmaBufImageLayout::SeparateLayers,
+            ));
         let capabilities = capabilities_with_formats(
             vec![vp9_format(
                 Vp9Profile::Profile2,
@@ -1571,8 +1586,8 @@ mod tests {
 
         assert!(matches!(
             error.rejections.first(),
-            Some(VideoCapabilityRejection::P010NotRenderable {
-                readiness: P010RenderReadiness::Unavailable,
+            Some(VideoCapabilityRejection::UnsupportedRenderFrameFormat {
+                frame_format: VideoFramePixelLayout::P010,
             })
         ));
     }

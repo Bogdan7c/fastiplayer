@@ -7,7 +7,7 @@ use codec_core::{
     SupportedVideoDecodeFormat, TransferFunction, VideoCodec, VideoColorMetadata,
     VideoDecodeRequirement, VideoProfile, Vp9Profile,
 };
-use render_core::{P010RenderReadiness, RenderCapabilities};
+use render_core::RenderCapabilities;
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract, VideoFramePixelLayout};
 
 #[test]
@@ -37,10 +37,14 @@ fn p010_boundary_without_hdr_renderer_does_not_enable_production_hdr() {
     );
 }
 
-/// Собирает Phase 9 capability report: decode/P010 boundary есть, HDR renderer-а нет.
+/// Собирает fake capability report: P010 contract есть, HDR renderer-а нет.
 fn capabilities_with_profile2_p010_boundary() -> SystemCapabilities {
-    let mut render_capabilities = RenderCapabilities::wgpu_nv12(Some(4096));
-    render_capabilities.p010_render_readiness = P010RenderReadiness::ZeroCopyBoundaryVerified;
+    let mut render_capabilities = RenderCapabilities::wgpu_p010_bt2446c_with_dma_buf_image_layouts(
+        Some(4096),
+        vec![DmaBufImageLayout::SeparateLayers],
+    );
+    render_capabilities.supports_hdr_to_sdr = false;
+    render_capabilities.supported_hdr_to_sdr_operators.clear();
     let output = SupportedVideoOutput {
         backend: DecodeBackendId::vaapi(),
         decode_format: SupportedVideoDecodeFormat {
