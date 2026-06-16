@@ -65,6 +65,7 @@ impl DecodedFrame {
         match self.frame_contract.pixel_layout.bit_depth() {
             Some(FrameBitDepth::Eight) => Some(BitDepth::Eight),
             Some(FrameBitDepth::Ten) => Some(BitDepth::Ten),
+            Some(FrameBitDepth::Twelve) => Some(BitDepth::Twelve),
             None => None,
         }
     }
@@ -74,6 +75,8 @@ impl DecodedFrame {
     pub const fn chroma(&self) -> Option<ChromaSubsampling> {
         match self.frame_contract.pixel_layout.chroma() {
             Some(FrameChromaSubsampling::Yuv420) => Some(ChromaSubsampling::Yuv420),
+            Some(FrameChromaSubsampling::Yuv422) => Some(ChromaSubsampling::Yuv422),
+            Some(FrameChromaSubsampling::Yuv444) => Some(ChromaSubsampling::Yuv444),
             None => None,
         }
     }
@@ -164,11 +167,18 @@ impl DecodedFrame {
                     "RGBA8 decoded frame is not a production zero-copy video surface"
                 );
             }
-            DecodedPixelFormat::Yuv420Planar8 | DecodedPixelFormat::Yuv420Planar10Le => {
+            host_planar_layout if host_planar_layout.is_host_planar() => {
                 ensure!(
                     false,
                     "{} decoded frame is a host-planar layout and is not part of the current zero-copy runtime boundary",
-                    self.format()
+                    host_planar_layout
+                );
+            }
+            unsupported_layout => {
+                ensure!(
+                    false,
+                    "{} decoded frame is not part of the current zero-copy runtime boundary",
+                    unsupported_layout
                 );
             }
         }

@@ -202,26 +202,27 @@ pub fn probe_vaapi_capabilities() -> BackendCapabilities {
 fn vaapi_output_contract_for_format(
     format: &SupportedVideoDecodeFormat,
 ) -> Option<VideoFrameContract> {
-    match video_frame_contract::VideoFramePixelLayout::from_frame_bit_depth_and_chroma(
-        match format.bit_depth {
-            BitDepth::Eight => video_frame_contract::FrameBitDepth::Eight,
-            BitDepth::Ten => video_frame_contract::FrameBitDepth::Ten,
-            BitDepth::Twelve => return None,
-        },
-        match format.chroma {
-            ChromaSubsampling::Yuv420 => video_frame_contract::FrameChromaSubsampling::Yuv420,
-            ChromaSubsampling::Yuv422 | ChromaSubsampling::Yuv444 => return None,
-        },
-    ) {
+    let frame_bit_depth = match format.bit_depth {
+        BitDepth::Eight => video_frame_contract::FrameBitDepth::Eight,
+        BitDepth::Ten => video_frame_contract::FrameBitDepth::Ten,
+        BitDepth::Twelve => return None,
+    };
+    let frame_chroma = match format.chroma {
+        ChromaSubsampling::Yuv420 => video_frame_contract::FrameChromaSubsampling::Yuv420,
+        ChromaSubsampling::Yuv422 | ChromaSubsampling::Yuv444 => return None,
+    };
+
+    match video_frame_contract::VideoFramePixelLayout::hardware_baseline_from_frame_bit_depth_and_chroma(
+        frame_bit_depth,
+        frame_chroma,
+    )? {
         VideoFramePixelLayout::Nv12 => Some(VideoFrameContract::dma_buf_nv12(
             DmaBufImageLayout::ComposedLayers,
         )),
         VideoFramePixelLayout::P010 => Some(VideoFrameContract::dma_buf_p010(
             DmaBufImageLayout::SeparateLayers,
         )),
-        VideoFramePixelLayout::Yuv420Planar8
-        | VideoFramePixelLayout::Yuv420Planar10Le
-        | VideoFramePixelLayout::Rgba8 => None,
+        _ => None,
     }
 }
 

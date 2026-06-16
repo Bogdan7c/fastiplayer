@@ -18,6 +18,9 @@ pub enum FrameBitDepth {
 
     /// 10 бит на sample, обычно в 16-битном storage word-е.
     Ten,
+
+    /// 12 бит на sample, обычно в 16-битном little-endian storage word-е.
+    Twelve,
 }
 
 impl FrameBitDepth {
@@ -27,6 +30,7 @@ impl FrameBitDepth {
         match self {
             Self::Eight => "8-bit",
             Self::Ten => "10-bit",
+            Self::Twelve => "12-bit",
         }
     }
 }
@@ -44,6 +48,12 @@ impl fmt::Display for FrameBitDepth {
 pub enum FrameChromaSubsampling {
     /// YUV 4:2:0.
     Yuv420,
+
+    /// YUV 4:2:2.
+    Yuv422,
+
+    /// YUV 4:4:4.
+    Yuv444,
 }
 
 impl FrameChromaSubsampling {
@@ -52,6 +62,8 @@ impl FrameChromaSubsampling {
     pub const fn diagnostic_label(self) -> &'static str {
         match self {
             Self::Yuv420 => "YUV 4:2:0",
+            Self::Yuv422 => "YUV 4:2:2",
+            Self::Yuv444 => "YUV 4:4:4",
         }
     }
 }
@@ -79,29 +91,71 @@ pub enum VideoFramePixelLayout {
     /// 10-bit 4:2:0 planar host layout: little-endian 16-bit storage words.
     Yuv420Planar10Le,
 
+    /// 12-bit 4:2:0 planar host layout: little-endian 16-bit storage words.
+    Yuv420Planar12Le,
+
+    /// 8-bit 4:2:2 planar host layout: Y, U, V planes.
+    Yuv422Planar8,
+
+    /// 10-bit 4:2:2 planar host layout: little-endian 16-bit storage words.
+    Yuv422Planar10Le,
+
+    /// 12-bit 4:2:2 planar host layout: little-endian 16-bit storage words.
+    Yuv422Planar12Le,
+
+    /// 8-bit 4:4:4 planar host layout: Y, U, V planes.
+    Yuv444Planar8,
+
+    /// 10-bit 4:4:4 planar host layout: little-endian 16-bit storage words.
+    Yuv444Planar10Le,
+
     /// Reserved packed RGBA layout for future producers, not current production.
     Rgba8,
 }
 
 impl VideoFramePixelLayout {
-    /// Выводит hardware baseline pixel layout из frame-level bit depth/chroma.
+    /// Выводит current hardware baseline layout из frame-level bit depth/chroma.
+    ///
+    /// Этот helper намеренно не выбирает host-planar layout-ы: такой выбор уже
+    /// является capability policy конкретного software producer/renderer pair.
+    #[must_use]
+    pub const fn hardware_baseline_from_frame_bit_depth_and_chroma(
+        bit_depth: FrameBitDepth,
+        chroma: FrameChromaSubsampling,
+    ) -> Option<Self> {
+        match (bit_depth, chroma) {
+            (FrameBitDepth::Eight, FrameChromaSubsampling::Yuv420) => Some(Self::Nv12),
+            (FrameBitDepth::Ten, FrameChromaSubsampling::Yuv420) => Some(Self::P010),
+            _ => None,
+        }
+    }
+
+    /// Выводит current hardware baseline layout из frame-level bit depth/chroma.
+    ///
+    /// Оставлено как compatibility name для существующих call site-ов:
+    /// unsupported bit-depth/chroma пары возвращают `None`, а не guessed host layout.
     #[must_use]
     pub const fn from_frame_bit_depth_and_chroma(
         bit_depth: FrameBitDepth,
         chroma: FrameChromaSubsampling,
-    ) -> Self {
-        match (bit_depth, chroma) {
-            (FrameBitDepth::Eight, FrameChromaSubsampling::Yuv420) => Self::Nv12,
-            (FrameBitDepth::Ten, FrameChromaSubsampling::Yuv420) => Self::P010,
-        }
+    ) -> Option<Self> {
+        Self::hardware_baseline_from_frame_bit_depth_and_chroma(bit_depth, chroma)
     }
 
-    /// Возвращает bit depth, если layout относится к YUV frame vocabulary.
+    /// Возвращает bit depth, если layout относится к known frame vocabulary.
     #[must_use]
     pub const fn bit_depth(self) -> Option<FrameBitDepth> {
         match self {
-            Self::Nv12 | Self::Yuv420Planar8 | Self::Rgba8 => Some(FrameBitDepth::Eight),
-            Self::P010 | Self::Yuv420Planar10Le => Some(FrameBitDepth::Ten),
+            Self::Nv12
+            | Self::Yuv420Planar8
+            | Self::Yuv422Planar8
+            | Self::Yuv444Planar8
+            | Self::Rgba8 => Some(FrameBitDepth::Eight),
+            Self::P010
+            | Self::Yuv420Planar10Le
+            | Self::Yuv422Planar10Le
+            | Self::Yuv444Planar10Le => Some(FrameBitDepth::Ten),
+            Self::Yuv420Planar12Le | Self::Yuv422Planar12Le => Some(FrameBitDepth::Twelve),
         }
     }
 
@@ -109,9 +163,15 @@ impl VideoFramePixelLayout {
     #[must_use]
     pub const fn chroma(self) -> Option<FrameChromaSubsampling> {
         match self {
-            Self::Nv12 | Self::P010 | Self::Yuv420Planar8 | Self::Yuv420Planar10Le => {
-                Some(FrameChromaSubsampling::Yuv420)
+            Self::Nv12
+            | Self::P010
+            | Self::Yuv420Planar8
+            | Self::Yuv420Planar10Le
+            | Self::Yuv420Planar12Le => Some(FrameChromaSubsampling::Yuv420),
+            Self::Yuv422Planar8 | Self::Yuv422Planar10Le | Self::Yuv422Planar12Le => {
+                Some(FrameChromaSubsampling::Yuv422)
             }
+            Self::Yuv444Planar8 | Self::Yuv444Planar10Le => Some(FrameChromaSubsampling::Yuv444),
             Self::Rgba8 => None,
         }
     }
@@ -119,7 +179,17 @@ impl VideoFramePixelLayout {
     /// Проверяет, что layout описывает CPU-visible planar host storage.
     #[must_use]
     pub const fn is_host_planar(self) -> bool {
-        matches!(self, Self::Yuv420Planar8 | Self::Yuv420Planar10Le)
+        matches!(
+            self,
+            Self::Yuv420Planar8
+                | Self::Yuv420Planar10Le
+                | Self::Yuv420Planar12Le
+                | Self::Yuv422Planar8
+                | Self::Yuv422Planar10Le
+                | Self::Yuv422Planar12Le
+                | Self::Yuv444Planar8
+                | Self::Yuv444Planar10Le
+        )
     }
 
     /// Проверяет, что layout является current hardware zero-copy baseline.
@@ -136,6 +206,12 @@ impl VideoFramePixelLayout {
             Self::P010 => "P010",
             Self::Yuv420Planar8 => "YUV420 planar 8-bit",
             Self::Yuv420Planar10Le => "YUV420 planar 10-bit little-endian",
+            Self::Yuv420Planar12Le => "YUV420 planar 12-bit little-endian",
+            Self::Yuv422Planar8 => "YUV422 planar 8-bit",
+            Self::Yuv422Planar10Le => "YUV422 planar 10-bit little-endian",
+            Self::Yuv422Planar12Le => "YUV422 planar 12-bit little-endian",
+            Self::Yuv444Planar8 => "YUV444 planar 8-bit",
+            Self::Yuv444Planar10Le => "YUV444 planar 10-bit little-endian",
             Self::Rgba8 => "RGBA8",
         }
     }
@@ -373,35 +449,41 @@ impl VideoFrameContract {
 
     /// Проверяет self-consistency между pixel layout и transfer path.
     pub const fn validate(self) -> Result<(), VideoFrameContractValidationError> {
-        match (self.pixel_layout, self.transfer_path) {
-            (
-                VideoFramePixelLayout::Nv12 | VideoFramePixelLayout::P010,
-                VideoFrameTransferPath::HardwareZeroCopy { .. },
-            ) => Ok(()),
-            (
-                VideoFramePixelLayout::Yuv420Planar8 | VideoFramePixelLayout::Yuv420Planar10Le,
-                VideoFrameTransferPath::SoftwareHostUpload,
-            ) => Ok(()),
-            (
-                pixel_layout @ (VideoFramePixelLayout::Yuv420Planar8
-                | VideoFramePixelLayout::Yuv420Planar10Le),
-                VideoFrameTransferPath::HardwareZeroCopy { .. },
-            ) => Err(
-                VideoFrameContractValidationError::HostPlanarRequiresSoftwareUpload {
-                    pixel_layout,
-                },
-            ),
-            (
-                pixel_layout @ (VideoFramePixelLayout::Nv12 | VideoFramePixelLayout::P010),
-                VideoFrameTransferPath::SoftwareHostUpload,
-            ) => Err(
-                VideoFrameContractValidationError::HardwareLayoutRequiresZeroCopy { pixel_layout },
-            ),
-            (pixel_layout @ VideoFramePixelLayout::Rgba8, _) => Err(
-                VideoFrameContractValidationError::ReservedLayoutWithoutTransferContract {
-                    pixel_layout,
-                },
-            ),
+        match self.transfer_path {
+            VideoFrameTransferPath::HardwareZeroCopy { .. } => {
+                if self.pixel_layout.is_current_dma_buf_baseline() {
+                    Ok(())
+                } else if self.pixel_layout.is_host_planar() {
+                    Err(
+                        VideoFrameContractValidationError::HostPlanarRequiresSoftwareUpload {
+                            pixel_layout: self.pixel_layout,
+                        },
+                    )
+                } else {
+                    Err(
+                        VideoFrameContractValidationError::ReservedLayoutWithoutTransferContract {
+                            pixel_layout: self.pixel_layout,
+                        },
+                    )
+                }
+            }
+            VideoFrameTransferPath::SoftwareHostUpload => {
+                if self.pixel_layout.is_host_planar() {
+                    Ok(())
+                } else if self.pixel_layout.is_current_dma_buf_baseline() {
+                    Err(
+                        VideoFrameContractValidationError::HardwareLayoutRequiresZeroCopy {
+                            pixel_layout: self.pixel_layout,
+                        },
+                    )
+                } else {
+                    Err(
+                        VideoFrameContractValidationError::ReservedLayoutWithoutTransferContract {
+                            pixel_layout: self.pixel_layout,
+                        },
+                    )
+                }
+            }
         }
     }
 
@@ -422,6 +504,33 @@ impl fmt::Display for VideoFrameContract {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const EXPLICIT_HOST_PLANAR_LAYOUTS: [VideoFramePixelLayout; 8] = [
+        VideoFramePixelLayout::Yuv420Planar8,
+        VideoFramePixelLayout::Yuv420Planar10Le,
+        VideoFramePixelLayout::Yuv420Planar12Le,
+        VideoFramePixelLayout::Yuv422Planar8,
+        VideoFramePixelLayout::Yuv422Planar10Le,
+        VideoFramePixelLayout::Yuv422Planar12Le,
+        VideoFramePixelLayout::Yuv444Planar8,
+        VideoFramePixelLayout::Yuv444Planar10Le,
+    ];
+
+    fn software_host_upload_contract(pixel_layout: VideoFramePixelLayout) -> VideoFrameContract {
+        VideoFrameContract {
+            pixel_layout,
+            transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+        }
+    }
+
+    fn dma_buf_zero_copy_contract(pixel_layout: VideoFramePixelLayout) -> VideoFrameContract {
+        VideoFrameContract {
+            pixel_layout,
+            transfer_path: VideoFrameTransferPath::dma_buf_zero_copy(
+                DmaBufImageLayout::SeparateLayers,
+            ),
+        }
+    }
 
     #[test]
     fn dma_buf_contracts_bind_nv12_and_p010_to_hardware_zero_copy() {
@@ -451,20 +560,120 @@ mod tests {
     }
 
     #[test]
-    fn software_host_upload_accepts_only_host_planar_yuv420_layouts() {
-        let yuv420_planar8 = VideoFrameContract::host_yuv420_planar8();
-        let yuv420_planar10le = VideoFrameContract::host_yuv420_planar10le();
-        let invalid_nv12 = VideoFrameContract {
-            pixel_layout: VideoFramePixelLayout::Nv12,
-            transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
-        };
-        let invalid_p010 = VideoFrameContract {
-            pixel_layout: VideoFramePixelLayout::P010,
-            transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
-        };
+    fn hardware_baseline_helper_does_not_guess_software_layouts() {
+        let unsupported_hardware_baseline_pairs = [
+            (FrameBitDepth::Twelve, FrameChromaSubsampling::Yuv420),
+            (FrameBitDepth::Eight, FrameChromaSubsampling::Yuv422),
+            (FrameBitDepth::Ten, FrameChromaSubsampling::Yuv422),
+            (FrameBitDepth::Twelve, FrameChromaSubsampling::Yuv422),
+            (FrameBitDepth::Eight, FrameChromaSubsampling::Yuv444),
+            (FrameBitDepth::Ten, FrameChromaSubsampling::Yuv444),
+            (FrameBitDepth::Twelve, FrameChromaSubsampling::Yuv444),
+        ];
 
-        assert_eq!(yuv420_planar8.validate(), Ok(()));
-        assert_eq!(yuv420_planar10le.validate(), Ok(()));
+        assert_eq!(
+            VideoFramePixelLayout::hardware_baseline_from_frame_bit_depth_and_chroma(
+                FrameBitDepth::Eight,
+                FrameChromaSubsampling::Yuv420,
+            ),
+            Some(VideoFramePixelLayout::Nv12)
+        );
+        assert_eq!(
+            VideoFramePixelLayout::hardware_baseline_from_frame_bit_depth_and_chroma(
+                FrameBitDepth::Ten,
+                FrameChromaSubsampling::Yuv420,
+            ),
+            Some(VideoFramePixelLayout::P010)
+        );
+        for (bit_depth, chroma) in unsupported_hardware_baseline_pairs {
+            assert_eq!(
+                VideoFramePixelLayout::hardware_baseline_from_frame_bit_depth_and_chroma(
+                    bit_depth, chroma,
+                ),
+                None
+            );
+            assert_eq!(
+                VideoFramePixelLayout::from_frame_bit_depth_and_chroma(bit_depth, chroma),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn new_planar_layouts_expose_expected_bit_depth_and_chroma() {
+        let expected_layout_metadata = [
+            (
+                VideoFramePixelLayout::Yuv420Planar12Le,
+                FrameBitDepth::Twelve,
+                FrameChromaSubsampling::Yuv420,
+            ),
+            (
+                VideoFramePixelLayout::Yuv422Planar8,
+                FrameBitDepth::Eight,
+                FrameChromaSubsampling::Yuv422,
+            ),
+            (
+                VideoFramePixelLayout::Yuv422Planar10Le,
+                FrameBitDepth::Ten,
+                FrameChromaSubsampling::Yuv422,
+            ),
+            (
+                VideoFramePixelLayout::Yuv422Planar12Le,
+                FrameBitDepth::Twelve,
+                FrameChromaSubsampling::Yuv422,
+            ),
+            (
+                VideoFramePixelLayout::Yuv444Planar8,
+                FrameBitDepth::Eight,
+                FrameChromaSubsampling::Yuv444,
+            ),
+            (
+                VideoFramePixelLayout::Yuv444Planar10Le,
+                FrameBitDepth::Ten,
+                FrameChromaSubsampling::Yuv444,
+            ),
+        ];
+
+        for (pixel_layout, bit_depth, chroma) in expected_layout_metadata {
+            assert_eq!(pixel_layout.bit_depth(), Some(bit_depth));
+            assert_eq!(pixel_layout.chroma(), Some(chroma));
+            assert!(pixel_layout.is_host_planar());
+            assert!(!pixel_layout.diagnostic_label().is_empty());
+            assert_eq!(pixel_layout.display_name(), pixel_layout.diagnostic_label());
+        }
+    }
+
+    #[test]
+    fn software_host_upload_accepts_all_explicit_planar_yuv_layouts() {
+        for pixel_layout in EXPLICIT_HOST_PLANAR_LAYOUTS {
+            let contract = software_host_upload_contract(pixel_layout);
+
+            assert_eq!(contract.validate(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn host_planar_layouts_do_not_validate_as_dma_buf_zero_copy() {
+        for pixel_layout in EXPLICIT_HOST_PLANAR_LAYOUTS {
+            let contract = dma_buf_zero_copy_contract(pixel_layout);
+
+            assert!(matches!(
+                contract.validate(),
+                Err(
+                    VideoFrameContractValidationError::HostPlanarRequiresSoftwareUpload {
+                        pixel_layout: rejected_pixel_layout
+                    }
+                ) if rejected_pixel_layout == pixel_layout
+            ));
+        }
+    }
+
+    #[test]
+    fn software_host_upload_rejects_hardware_and_reserved_layouts() {
+        let invalid_nv12 = software_host_upload_contract(VideoFramePixelLayout::Nv12);
+        let invalid_p010 = software_host_upload_contract(VideoFramePixelLayout::P010);
+        let invalid_rgba8 = software_host_upload_contract(VideoFramePixelLayout::Rgba8);
+
         assert!(matches!(
             invalid_nv12.validate(),
             Err(
@@ -481,36 +690,11 @@ mod tests {
                 }
             )
         ));
-    }
-
-    #[test]
-    fn host_planar_layouts_do_not_validate_as_dma_buf_zero_copy() {
-        let invalid_planar8 = VideoFrameContract {
-            pixel_layout: VideoFramePixelLayout::Yuv420Planar8,
-            transfer_path: VideoFrameTransferPath::dma_buf_zero_copy(
-                DmaBufImageLayout::SeparateLayers,
-            ),
-        };
-        let invalid_planar10le = VideoFrameContract {
-            pixel_layout: VideoFramePixelLayout::Yuv420Planar10Le,
-            transfer_path: VideoFrameTransferPath::dma_buf_zero_copy(
-                DmaBufImageLayout::SeparateLayers,
-            ),
-        };
-
         assert!(matches!(
-            invalid_planar8.validate(),
+            invalid_rgba8.validate(),
             Err(
-                VideoFrameContractValidationError::HostPlanarRequiresSoftwareUpload {
-                    pixel_layout: VideoFramePixelLayout::Yuv420Planar8
-                }
-            )
-        ));
-        assert!(matches!(
-            invalid_planar10le.validate(),
-            Err(
-                VideoFrameContractValidationError::HostPlanarRequiresSoftwareUpload {
-                    pixel_layout: VideoFramePixelLayout::Yuv420Planar10Le
+                VideoFrameContractValidationError::ReservedLayoutWithoutTransferContract {
+                    pixel_layout: VideoFramePixelLayout::Rgba8
                 }
             )
         ));
@@ -518,11 +702,9 @@ mod tests {
 
     #[test]
     fn rgba8_is_reserved_and_not_current_production_contract() {
-        let rgba8_contract = VideoFrameContract {
-            pixel_layout: VideoFramePixelLayout::Rgba8,
-            transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
-        };
+        let rgba8_contract = dma_buf_zero_copy_contract(VideoFramePixelLayout::Rgba8);
 
+        assert!(!VideoFramePixelLayout::Rgba8.is_host_planar());
         assert!(!VideoFramePixelLayout::Rgba8.is_current_dma_buf_baseline());
         assert!(matches!(
             rgba8_contract.validate(),
