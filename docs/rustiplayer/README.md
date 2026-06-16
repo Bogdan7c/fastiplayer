@@ -34,6 +34,9 @@ Software video fallback, CPU upload и CPU readback не являются нас
 добавлен, а Vulkan video decode path в проекте не поддерживается.
 Vulkan-упоминания в render docs относятся к WGPU/Vulkan surface/import path, а
 не к `video.preferred_backend`.
+Подготовительный FFmpeg build tooling живёт в `scripts/tooling/` и собирает
+локальные dynamic LGPL libav* только как workflow для будущих экспериментов; он
+не добавляет runtime dependency и не меняет capability policy старта плеера.
 
 Текущий production video path:
 

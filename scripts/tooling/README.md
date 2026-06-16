@@ -1,0 +1,92 @@
+# FFmpeg LGPL Build Tooling
+
+Этот каталог содержит подготовительный tooling для локальной сборки dynamic
+LGPL FFmpeg/libav* под будущий software decode backend. Он не добавляет
+`video-ffmpeg` crate, не меняет Cargo workspace и не делает запуск плеера
+зависимым от FFmpeg.
+
+## Архитектурная граница
+
+- `scripts/tooling/build-ffmpeg-lgpl.sh` владеет только download/configure/make/install workflow.
+- Runtime capability остаётся будущим optional probe: отсутствие FFmpeg не должно мешать старту `rustiplayer`.
+- Demuxing остаётся в существующих media crates; этот tooling не собирает `libavformat`.
+- CPU conversion не становится playback path: `libswscale` и `libswresample` выключены по умолчанию и включаются только явным opt-in для будущих header/build проверок.
+- FFmpeg hardware acceleration не используется: native hardware path остаётся за текущими backend crates.
+
+Context7 был использован перед добавлением tooling:
+
+- `/websites/ffmpeg_documentation` для configure/build assumptions и состава FFmpeg libraries.
+- `/websites/ffmpeg_doxygen_trunk` для сверки trunk headers/library assumptions.
+- `/websites/ffmpeg_doxygen_8_0` для сверки stable 8.x headers/library assumptions.
+
+Официальный release index FFmpeg на 2026-06-16 содержит `ffmpeg-8.1.1.tar.xz`,
+поэтому default version зафиксирован как `8.1.1` внутри ветки 8.1.x.
+
+## Быстрый старт
+
+Проверить CLI без побочных эффектов:
+
+```bash
+scripts/tooling/build-ffmpeg-lgpl.sh --help
+scripts/tooling/build-ffmpeg-lgpl.sh --dry-run
+```
+
+Собрать в default prefix внутри ignored `target/`:
+
+```bash
+scripts/tooling/build-ffmpeg-lgpl.sh
+```
+
+Собрать в явный prefix, например системный локальный каталог:
+
+```bash
+scripts/tooling/build-ffmpeg-lgpl.sh --prefix /rustiplayer-ffmpeg
+```
+
+Если архив уже скачан и сеть не нужна:
+
+```bash
+scripts/tooling/build-ffmpeg-lgpl.sh \
+  --source-archive /path/to/ffmpeg-8.1.1.tar.xz
+```
+
+Если исходники уже распакованы:
+
+```bash
+scripts/tooling/build-ffmpeg-lgpl.sh \
+  --source-dir /path/to/ffmpeg-8.1.1
+```
+
+## Env Vars
+
+- `RUSTIPLAYER_FFMPEG_VERSION` - версия FFmpeg stable 8.1.x, default `8.1.1`.
+- `RUSTIPLAYER_FFMPEG_PREFIX` - install prefix, default `target/rustiplayer-ffmpeg/<version>`.
+- `RUSTIPLAYER_FFMPEG_WORK_DIR` - каталог downloads/source/build cache, default `target/rustiplayer-ffmpeg/build`.
+- `RUSTIPLAYER_FFMPEG_SOURCE_DIR` - уже распакованный source tree с `configure`.
+- `RUSTIPLAYER_FFMPEG_SOURCE_ARCHIVE` - локальный `ffmpeg-<version>.tar.xz`.
+- `RUSTIPLAYER_FFMPEG_URL` - mirror URL для source archive.
+- `RUSTIPLAYER_FFMPEG_JOBS` - число parallel `make` jobs.
+- `RUSTIPLAYER_FFMPEG_ENABLE_SWRESAMPLE` - `0`/`1`, default `0`.
+- `RUSTIPLAYER_FFMPEG_ENABLE_SWSCALE` - `0`/`1`, default `0`.
+
+После установки будущий build/probe код должен смотреть в локальный prefix явно:
+
+```bash
+export PKG_CONFIG_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+export LD_LIBRARY_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+```
+
+`PKG_CONFIG_PATH` нужен для будущего build-time lookup. `LD_LIBRARY_PATH`
+нужен только для локального запуска binaries/tests, которые будут dynamic-link
+к этим libraries. Сейчас в workspace нет FFmpeg dependency, поэтому эти export
+не нужны для обычного `cargo check --workspace`.
+
+## Guardrail
+
+Сборка FFmpeg в локальный prefix не означает, что плеер зависит от FFmpeg при
+старте. До отдельного архитектурного решения запрещено:
+
+- добавлять `video-ffmpeg` в workspace;
+- добавлять `ffmpeg-*`, `libav*`, `rsmpeg` или похожие crates в Cargo manifests;
+- добавлять public `ffmpeg_sw`/`ffmpeg-sw` config или UI option;
+- использовать FFmpeg CPU color conversion/RGB path в playback.
