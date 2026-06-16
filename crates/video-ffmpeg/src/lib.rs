@@ -18,7 +18,11 @@ pub use codec_adapter::{
     FfmpegCodecAdapterError, SoftwareDecodeContractPlan, validate_software_frame_contract,
 };
 pub use decoder_thread::{FfmpegDecoderThreadConfig, FfmpegDecoderThreadError};
-pub use probe::{FfmpegBuildStatus, FfmpegProbeReport, compile_time_probe};
+pub use probe::{
+    FfmpegBuildStatus, FfmpegLibraryVersion, FfmpegLibraryVersions, FfmpegProbeFailure,
+    FfmpegProbeReport, FfmpegRuntimeInfo, FfmpegRuntimeLibrary, FfmpegRuntimeProbeStatus,
+    compile_time_probe, probe_runtime_availability,
+};
 pub use software_frame::{SoftwareFramePlan, SoftwareFramePlanError};
 
 /// Canonical backend id для будущего software FFmpeg backend-а.

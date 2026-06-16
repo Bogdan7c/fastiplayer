@@ -7,11 +7,12 @@ build = "build.rs"
 
 [features]
 default = []
-ffmpeg = ["dep:ffmpeg-sys-next"]
+ffmpeg = ["dep:ffmpeg-sys-next", "dep:libloading"]
 
 [dependencies]
 anyhow.workspace = true
 codec-core.workspace = true
+libloading = { workspace = true, optional = true }
 thiserror.workspace = true
 video-backend-api.workspace = true
 video-core.workspace = true

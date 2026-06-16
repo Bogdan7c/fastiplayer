@@ -4737,6 +4737,7 @@ dependencies = [
  "anyhow",
  "codec-core",
  "ffmpeg-sys-next",
+ "libloading",
  "pkg-config",
  "thiserror 2.0.18",
  "video-backend-api",
