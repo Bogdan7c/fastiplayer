@@ -1,6 +1,6 @@
-use std::io;
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::Arc;
+use std::{fmt, io};
 
 use anyhow::{Context, bail, ensure};
 use video_frame_contract::{
@@ -60,7 +60,11 @@ pub struct HostPlaneDescriptor {
     /// Смысл plane-а; layout остаётся в `VideoFrameContract`, не в descriptor-е.
     pub role: HostPlaneRole,
 
-    /// Byte offset начала plane-а внутри общего `storage`.
+    /// Byte offset начала plane-а внутри backing-а, которым владеет `HostPlanarFrameOwner`.
+    ///
+    /// Для simple owned-buffer owner-а это offset от начала общего byte slice-а.
+    /// Provider-owned owner может интерпретировать offset относительно своей
+    /// plane storage, не раскрывая raw pointers за пределы provider-а.
     pub offset: usize,
 
     /// Byte stride между началом соседних строк.
@@ -76,22 +80,148 @@ pub struct HostPlaneDescriptor {
     pub bytes_per_sample: usize,
 }
 
-/// Owned host-planar decoded frame без raw pointers и per-plane owners.
+/// Владелец CPU-visible backing-а для host-planar frame-а.
+///
+/// `video-core` знает только этот neutral trait. Concrete provider может держать
+/// внутри `Arc<[u8]>`, AVFrame или другой resource, но наружу отдаёт только
+/// безопасный slice видимых bytes конкретной строки plane-а.
+pub trait HostPlanarFrameOwner: fmt::Debug + Send + Sync {
+    /// Возвращает только видимые bytes строки, без правого padding-а.
+    ///
+    /// `plane_index` и metadata принадлежат descriptor-у; owner использует их,
+    /// чтобы найти строку в своём backing-е и не раскрывать storage details.
+    fn visible_row_bytes(
+        &self,
+        plane_index: usize,
+        plane: &HostPlaneDescriptor,
+        row_index: u32,
+        visible_row_bytes: usize,
+    ) -> anyhow::Result<&[u8]>;
+}
+
+/// Простая owned-buffer реализация owner-а для тестов и будущих CPU-owned paths.
+#[derive(Debug, Clone)]
+pub struct HostPlanarOwnedBuffer {
+    /// Общий immutable byte storage всего host frame-а.
+    bytes: Arc<[u8]>,
+}
+
+impl HostPlanarOwnedBuffer {
+    /// Создаёт owner поверх immutable byte storage без дополнительной копии.
+    #[must_use]
+    pub fn new(bytes: impl Into<Arc<[u8]>>) -> Self {
+        Self {
+            bytes: bytes.into(),
+        }
+    }
+}
+
+impl HostPlanarFrameOwner for HostPlanarOwnedBuffer {
+    fn visible_row_bytes(
+        &self,
+        _plane_index: usize,
+        plane: &HostPlaneDescriptor,
+        row_index: u32,
+        visible_row_bytes: usize,
+    ) -> anyhow::Result<&[u8]> {
+        let row_index =
+            usize::try_from(row_index).context("host-planar row index does not fit usize")?;
+        let row_delta = plane
+            .stride
+            .checked_mul(row_index)
+            .context("host-planar row stride overflow")?;
+        let row_start = plane
+            .offset
+            .checked_add(row_delta)
+            .context("host-planar row offset overflow")?;
+        let row_end = row_start
+            .checked_add(visible_row_bytes)
+            .context("host-planar visible row end overflow")?;
+
+        ensure!(
+            row_end <= self.bytes.len(),
+            "host-planar {:?} visible area exceeds storage: end {}, storage {}",
+            plane.role,
+            row_end,
+            self.bytes.len()
+        );
+
+        Ok(&self.bytes[row_start..row_end])
+    }
+}
+
+/// Owned host-planar decoded frame без raw pointers и layout второго порядка.
 #[derive(Debug, Clone)]
 pub struct HostPlanarFrameDescriptor {
-    /// Общий immutable byte storage всего host frame-а.
-    pub storage: Arc<[u8]>,
+    /// Owner удерживает backing живым, пока существует descriptor или его clone.
+    owner: Arc<dyn HostPlanarFrameOwner>,
 
-    /// Per-plane metadata с offsets в общий `storage`.
+    /// Per-plane metadata; pixel layout и frame dimensions остаются в contract-е.
     pub planes: Vec<HostPlaneDescriptor>,
 }
 
 impl HostPlanarFrameDescriptor {
-    /// Дешёвый clone для lookup-а: bytes остаются в том же `Arc<[u8]>`.
+    /// Создаёт descriptor поверх provider-owned backing-а.
+    #[must_use]
+    pub fn new(owner: Arc<dyn HostPlanarFrameOwner>, planes: Vec<HostPlaneDescriptor>) -> Self {
+        Self { owner, planes }
+    }
+
+    /// Создаёт descriptor поверх simple owned byte buffer-а.
+    #[must_use]
+    pub fn from_owned_buffer(
+        bytes: impl Into<Arc<[u8]>>,
+        planes: Vec<HostPlaneDescriptor>,
+    ) -> Self {
+        Self::new(Arc::new(HostPlanarOwnedBuffer::new(bytes)), planes)
+    }
+
+    /// Возвращает видимые bytes одной строки plane-а без padding-а.
+    pub fn visible_plane_row_bytes(
+        &self,
+        plane_index: usize,
+        row_index: u32,
+    ) -> anyhow::Result<&[u8]> {
+        let plane = self
+            .planes
+            .get(plane_index)
+            .with_context(|| format!("host-planar plane index {plane_index} is out of bounds"))?;
+        ensure!(
+            row_index < plane.visible_height,
+            "host-planar {:?} row {} is outside visible height {}",
+            plane.role,
+            row_index,
+            plane.visible_height
+        );
+
+        let visible_row_bytes = host_plane_visible_row_bytes(plane)?;
+        ensure!(
+            plane.stride >= visible_row_bytes,
+            "host-planar {:?} stride {} is smaller than visible row bytes {}",
+            plane.role,
+            plane.stride,
+            visible_row_bytes
+        );
+
+        let row_bytes =
+            self.owner
+                .visible_row_bytes(plane_index, plane, row_index, visible_row_bytes)?;
+        ensure!(
+            row_bytes.len() == visible_row_bytes,
+            "host-planar {:?} owner returned {} bytes for visible row, expected {}",
+            plane.role,
+            row_bytes.len(),
+            visible_row_bytes
+        );
+
+        Ok(row_bytes)
+    }
+
+    /// Дешёвый clone для lookup-а: owner/refcount клонируется без копирования bytes.
     #[must_use]
     fn clone_for_lookup(&self) -> Self {
         Self {
-            storage: Arc::clone(&self.storage),
+            owner: Arc::clone(&self.owner),
             planes: self.planes.clone(),
         }
     }
@@ -307,9 +437,14 @@ fn validate_host_planar_descriptor_against_contract(
         descriptor.planes.len()
     );
 
-    for (plane, expected_plane) in descriptor.planes.iter().zip(expected_planes.iter()) {
+    for (plane_index, (plane, expected_plane)) in descriptor
+        .planes
+        .iter()
+        .zip(expected_planes.iter())
+        .enumerate()
+    {
         validate_host_plane_metadata(pixel_layout, plane, expected_plane)?;
-        validate_host_plane_visible_bounds(plane, descriptor.storage.len())?;
+        validate_host_plane_visible_bounds(descriptor, plane_index, plane)?;
     }
 
     Ok(())
@@ -393,10 +528,7 @@ fn validate_host_plane_metadata(
     Ok(())
 }
 
-fn validate_host_plane_visible_bounds(
-    plane: &HostPlaneDescriptor,
-    storage_len: usize,
-) -> anyhow::Result<()> {
+fn host_plane_visible_row_bytes(plane: &HostPlaneDescriptor) -> anyhow::Result<usize> {
     ensure!(
         plane.visible_width > 0 && plane.visible_height > 0,
         "host-planar {:?} plane has invalid visible size {}x{}",
@@ -407,12 +539,19 @@ fn validate_host_plane_visible_bounds(
 
     let visible_width = usize::try_from(plane.visible_width)
         .context("host-planar visible width does not fit usize")?;
-    let visible_height = usize::try_from(plane.visible_height)
-        .context("host-planar visible height does not fit usize")?;
     let visible_row_bytes = visible_width
         .checked_mul(plane.bytes_per_sample)
         .context("host-planar visible row byte count overflow")?;
 
+    Ok(visible_row_bytes)
+}
+
+fn validate_host_plane_visible_bounds(
+    descriptor: &HostPlanarFrameDescriptor,
+    plane_index: usize,
+    plane: &HostPlaneDescriptor,
+) -> anyhow::Result<()> {
+    let visible_row_bytes = host_plane_visible_row_bytes(plane)?;
     ensure!(
         plane.stride >= visible_row_bytes,
         "host-planar {:?} stride {} is smaller than visible row bytes {}",
@@ -421,25 +560,9 @@ fn validate_host_plane_visible_bounds(
         visible_row_bytes
     );
 
-    let last_row_delta = plane
-        .stride
-        .checked_mul(visible_height.saturating_sub(1))
-        .context("host-planar last-row stride overflow")?;
-    let last_row_start = plane
-        .offset
-        .checked_add(last_row_delta)
-        .context("host-planar last-row offset overflow")?;
-    let readable_end = last_row_start
-        .checked_add(visible_row_bytes)
-        .context("host-planar visible readable end overflow")?;
+    let last_visible_row = plane.visible_height.saturating_sub(1);
+    descriptor.visible_plane_row_bytes(plane_index, last_visible_row)?;
 
-    ensure!(
-        readable_end <= storage_len,
-        "host-planar {:?} visible area exceeds storage: end {}, storage {}",
-        plane.role,
-        readable_end,
-        storage_len
-    );
     Ok(())
 }
 
@@ -447,6 +570,7 @@ fn validate_host_plane_visible_bounds(
 mod tests {
     use std::fs::File;
     use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
@@ -492,11 +616,11 @@ mod tests {
         let y_size = y_stride * height;
         let u_size = chroma_stride * (height / 2);
         let v_size = u_size;
-        let storage = vec![0; y_size + u_size + v_size].into();
+        let bytes = vec![0; y_size + u_size + v_size];
 
-        HostPlanarFrameDescriptor {
-            storage,
-            planes: vec![
+        HostPlanarFrameDescriptor::from_owned_buffer(
+            bytes,
+            vec![
                 HostPlaneDescriptor {
                     role: HostPlaneRole::Luma,
                     offset: 0,
@@ -522,7 +646,7 @@ mod tests {
                     bytes_per_sample,
                 },
             ],
-        }
+        )
     }
 
     /// Проверяет, что cloned descriptor получает другой fd и сохраняет metadata.
@@ -666,7 +790,7 @@ mod tests {
     #[test]
     fn host_planar_rejects_out_of_bounds_offset() {
         let mut descriptor = sample_host_planar_descriptor(1);
-        descriptor.planes[2].offset = descriptor.storage.len();
+        descriptor.planes[2].offset = 24;
 
         let error = validate_resource_descriptor_against_contract(
             VideoFrameContract::host_yuv420_planar8(),
@@ -681,9 +805,9 @@ mod tests {
 
     #[test]
     fn host_planar_bounds_check_reads_visible_bytes_not_trailing_padding() {
-        let descriptor = HostPlanarFrameDescriptor {
-            storage: vec![0; 40].into(),
-            planes: vec![
+        let descriptor = HostPlanarFrameDescriptor::from_owned_buffer(
+            vec![0; 40],
+            vec![
                 HostPlaneDescriptor {
                     role: HostPlaneRole::Luma,
                     offset: 0,
@@ -709,7 +833,7 @@ mod tests {
                     bytes_per_sample: 1,
                 },
             ],
-        };
+        );
 
         validate_resource_descriptor_against_contract(
             VideoFrameContract::host_yuv420_planar8(),
@@ -722,9 +846,9 @@ mod tests {
 
     #[test]
     fn host_planar_uses_rounded_chroma_sizes_for_odd_yuv420_dimensions() {
-        let descriptor = HostPlanarFrameDescriptor {
-            storage: vec![0; 29].into(),
-            planes: vec![
+        let descriptor = HostPlanarFrameDescriptor::from_owned_buffer(
+            vec![0; 29],
+            vec![
                 HostPlaneDescriptor {
                     role: HostPlaneRole::Luma,
                     offset: 0,
@@ -750,7 +874,7 @@ mod tests {
                     bytes_per_sample: 1,
                 },
             ],
-        };
+        );
 
         validate_resource_descriptor_against_contract(
             VideoFrameContract::host_yuv420_planar8(),
@@ -791,8 +915,102 @@ mod tests {
             panic!("expected host-planar descriptors");
         };
 
-        assert!(Arc::ptr_eq(&original.storage, &cloned.storage));
+        assert!(std::sync::Arc::ptr_eq(&original.owner, &cloned.owner));
+        assert_eq!(std::sync::Arc::strong_count(&original.owner), 2);
         assert_eq!(original.planes, cloned.planes);
+    }
+
+    #[test]
+    fn host_planar_visible_row_access_returns_only_visible_bytes() {
+        let descriptor = HostPlanarFrameDescriptor::from_owned_buffer(
+            vec![1, 2, 91, 92, 3, 4, 93, 94],
+            vec![HostPlaneDescriptor {
+                role: HostPlaneRole::Luma,
+                offset: 0,
+                stride: 4,
+                visible_width: 2,
+                visible_height: 2,
+                bytes_per_sample: 1,
+            }],
+        );
+
+        assert_eq!(
+            descriptor
+                .visible_plane_row_bytes(0, 0)
+                .expect("first row must be readable"),
+            &[1, 2]
+        );
+        assert_eq!(
+            descriptor
+                .visible_plane_row_bytes(0, 1)
+                .expect("second row must be readable"),
+            &[3, 4]
+        );
+
+        let error = descriptor
+            .visible_plane_row_bytes(0, 2)
+            .expect_err("row outside visible height must be rejected");
+
+        assert!(error.to_string().contains("outside visible height"));
+    }
+
+    #[derive(Debug)]
+    struct DropCountingHostPlanarOwner {
+        owned_buffer: HostPlanarOwnedBuffer,
+        drop_count: std::sync::Arc<AtomicUsize>,
+    }
+
+    impl HostPlanarFrameOwner for DropCountingHostPlanarOwner {
+        fn visible_row_bytes(
+            &self,
+            plane_index: usize,
+            plane: &HostPlaneDescriptor,
+            row_index: u32,
+            visible_row_bytes: usize,
+        ) -> anyhow::Result<&[u8]> {
+            self.owned_buffer
+                .visible_row_bytes(plane_index, plane, row_index, visible_row_bytes)
+        }
+    }
+
+    impl Drop for DropCountingHostPlanarOwner {
+        fn drop(&mut self) {
+            self.drop_count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn host_planar_descriptor_clone_keeps_owner_alive_until_last_drop() {
+        let drop_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let descriptor = HostPlanarFrameDescriptor::new(
+            std::sync::Arc::new(DropCountingHostPlanarOwner {
+                owned_buffer: HostPlanarOwnedBuffer::new(vec![11, 12, 13, 14]),
+                drop_count: std::sync::Arc::clone(&drop_count),
+            }),
+            vec![HostPlaneDescriptor {
+                role: HostPlaneRole::Luma,
+                offset: 0,
+                stride: 2,
+                visible_width: 2,
+                visible_height: 2,
+                bytes_per_sample: 1,
+            }],
+        );
+
+        let cloned = descriptor.clone_for_lookup();
+        drop(descriptor);
+
+        assert_eq!(drop_count.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            cloned
+                .visible_plane_row_bytes(0, 0)
+                .expect("clone must keep owner readable"),
+            &[11, 12]
+        );
+
+        drop(cloned);
+
+        assert_eq!(drop_count.load(Ordering::SeqCst), 1);
     }
 
     #[test]

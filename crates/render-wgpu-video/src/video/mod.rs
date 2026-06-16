@@ -1025,10 +1025,10 @@ mod tests {
 
     #[test]
     fn dma_buf_materializer_returns_unsupported_for_host_planar_descriptor() {
-        let descriptor =
-            FrameResourceDescriptor::HostPlanar(video_core::HostPlanarFrameDescriptor {
-                storage: std::sync::Arc::<[u8]>::from(vec![0_u8; 6]),
-                planes: vec![
+        let descriptor = FrameResourceDescriptor::HostPlanar(
+            video_core::HostPlanarFrameDescriptor::from_owned_buffer(
+                vec![0_u8; 6],
+                vec![
                     video_core::HostPlaneDescriptor {
                         role: video_core::HostPlaneRole::Luma,
                         offset: 0,
@@ -1054,7 +1054,8 @@ mod tests {
                         bytes_per_sample: 1,
                     },
                 ],
-            });
+            ),
+        );
 
         let lookup =
             unsupported_lookup_for_non_dma_buf_descriptor(&descriptor, Duration::from_millis(4))
