@@ -30,21 +30,26 @@ pub(crate) enum VideoPipelineSelectionError {
     #[error("capability snapshot ещё недоступен для выбора video pipeline")]
     CapabilitiesUnavailable,
 
-    /// `auto` не нашёл ни одного уже playable path-а.
-    #[error(
-        "video.preferred_backend=auto: нет playable native hardware output после renderer intersection"
-    )]
-    AutoHardwareUnavailable,
-
-    /// Пользователь явно потребовал native hardware path, но capability report не подтверждает path.
+    /// Запрошен native hardware path, но playable hardware output отсутствует.
     #[error(
         "video.preferred_backend=hardware: нет playable native hardware output после renderer intersection"
     )]
-    PreferredHardwareUnavailable,
+    HardwareUnavailable,
 
-    /// Пользователь явно потребовал FFmpeg software path, но provider ещё не доступен.
+    /// Запрошен FFmpeg software path, но playable software output/provider пока отсутствует.
     #[error("video.preferred_backend=software: FFmpeg software decode backend сейчас недоступен")]
-    SoftwareBackendUnavailable,
+    SoftwareUnavailable,
+
+    /// Capability policy нашла playable output, но app composition ещё не умеет стартовать этот backend.
+    #[error(
+        "video.preferred_backend={preference}: playable backend '{backend_id}' пока не поддержан app composition"
+    )]
+    RequestedBackendUnavailable {
+        /// Значение public config, из которого пришёл запрос.
+        preference: &'static str,
+        /// Backend id из renderer-intersected capability output.
+        backend_id: String,
+    },
 }
 
 /// Выбирает concrete plan из committed video config и готового capability snapshot-а.
@@ -55,9 +60,10 @@ pub(crate) fn select_video_pipeline_plan(
 ) -> Result<VideoPipelinePlan, VideoPipelineSelectionError> {
     let system_capabilities =
         system_capabilities.ok_or(VideoPipelineSelectionError::CapabilitiesUnavailable)?;
+    let playable_video_outputs = system_capabilities.playable_video_outputs.as_slice();
 
-    let has_playable_vaapi_dma_buf = system_capabilities
-        .supported_video_outputs()
+    let has_playable_vaapi_dma_buf = playable_video_outputs
+        .iter()
         .any(is_playable_vaapi_dma_buf_output);
 
     match preferred_backend {
@@ -66,31 +72,114 @@ pub(crate) fn select_video_pipeline_plan(
                 decoder_thread_config,
             })
         }
-        VideoBackendPreference::Auto => Err(VideoPipelineSelectionError::AutoHardwareUnavailable),
+        VideoBackendPreference::Auto => select_auto_fallback_plan(playable_video_outputs),
         VideoBackendPreference::Hardware if has_playable_vaapi_dma_buf => {
             Ok(VideoPipelinePlan::VaapiDmaBufWgpu {
                 decoder_thread_config,
             })
         }
-        VideoBackendPreference::Hardware => {
-            Err(VideoPipelineSelectionError::PreferredHardwareUnavailable)
-        }
+        VideoBackendPreference::Hardware => select_hardware_rejection(playable_video_outputs),
         VideoBackendPreference::Software => {
-            Err(VideoPipelineSelectionError::SoftwareBackendUnavailable)
+            select_software_plan(VideoBackendPreference::Software, playable_video_outputs)
         }
     }
 }
 
+/// Выбирает будущий software fallback только когда playable hardware output вообще отсутствует.
+fn select_auto_fallback_plan(
+    playable_video_outputs: &[SupportedVideoOutput],
+) -> Result<VideoPipelinePlan, VideoPipelineSelectionError> {
+    if let Some(native_hardware_output) = playable_video_outputs
+        .iter()
+        .find(|output| is_playable_native_hardware_output(output))
+    {
+        return Err(requested_backend_unavailable(
+            VideoBackendPreference::Auto,
+            native_hardware_output,
+        ));
+    }
+
+    select_software_plan(VideoBackendPreference::Auto, playable_video_outputs)
+}
+
+/// Отклоняет hardware request без перехода на software или raw provider outputs.
+fn select_hardware_rejection(
+    playable_video_outputs: &[SupportedVideoOutput],
+) -> Result<VideoPipelinePlan, VideoPipelineSelectionError> {
+    if let Some(native_hardware_output) = playable_video_outputs
+        .iter()
+        .find(|output| is_playable_native_hardware_output(output))
+    {
+        return Err(requested_backend_unavailable(
+            VideoBackendPreference::Hardware,
+            native_hardware_output,
+        ));
+    }
+
+    Err(VideoPipelineSelectionError::HardwareUnavailable)
+}
+
+/// Software-ветка уже типизирована, но не возвращает план до появления FFmpeg composition.
+fn select_software_plan(
+    preferred_backend: VideoBackendPreference,
+    playable_video_outputs: &[SupportedVideoOutput],
+) -> Result<VideoPipelinePlan, VideoPipelineSelectionError> {
+    if let Some(software_output) = playable_video_outputs
+        .iter()
+        .find(|output| is_playable_software_output(output))
+    {
+        return Err(requested_backend_unavailable(
+            preferred_backend,
+            software_output,
+        ));
+    }
+
+    Err(VideoPipelineSelectionError::SoftwareUnavailable)
+}
+
 /// Проверяет только уже пересечённый system-level output.
 fn is_playable_vaapi_dma_buf_output(output: &SupportedVideoOutput) -> bool {
-    output.backend.as_str() == VAAPI_BACKEND_ID
-        && output.frame_contract.validate().is_ok()
+    output.backend.as_str() == VAAPI_BACKEND_ID && is_playable_native_hardware_output(output)
+}
+
+/// Определяет native hardware output независимо от конкретного backend-а, который умеет стартовать app.
+fn is_playable_native_hardware_output(output: &SupportedVideoOutput) -> bool {
+    output.frame_contract.validate().is_ok()
         && matches!(
             output.frame_contract.transfer_path,
             VideoFrameTransferPath::HardwareZeroCopy {
                 handle: HardwareFrameHandle::DmaBuf { .. },
             }
         )
+}
+
+/// Определяет software output, который будущий FFmpeg plan сможет исполнить.
+fn is_playable_software_output(output: &SupportedVideoOutput) -> bool {
+    output.frame_contract.validate().is_ok()
+        && matches!(
+            output.frame_contract.transfer_path,
+            VideoFrameTransferPath::SoftwareHostUpload
+        )
+}
+
+/// Формирует typed ошибку для playable output без доступного app composition plan-а.
+fn requested_backend_unavailable(
+    preferred_backend: VideoBackendPreference,
+    output: &SupportedVideoOutput,
+) -> VideoPipelineSelectionError {
+    VideoPipelineSelectionError::RequestedBackendUnavailable {
+        preference: preference_label(preferred_backend),
+        backend_id: output.backend.as_str().to_string(),
+    }
+}
+
+/// Возвращает стабильный config label для диагностик selector-а.
+fn preference_label(preferred_backend: VideoBackendPreference) -> &'static str {
+    match preferred_backend {
+        VideoBackendPreference::Auto => "auto",
+        VideoBackendPreference::Hardware => "hardware",
+        VideoBackendPreference::Software => "software",
+    }
 }
 
 #[cfg(test)]
@@ -147,6 +236,16 @@ mod tests {
     fn capabilities_with_playable_outputs(
         playable_video_outputs: Vec<SupportedVideoOutput>,
     ) -> SystemCapabilities {
+        capabilities_with_raw_and_playable_outputs(
+            playable_video_outputs.clone(),
+            playable_video_outputs,
+        )
+    }
+
+    fn capabilities_with_raw_and_playable_outputs(
+        raw_supported_outputs: Vec<SupportedVideoOutput>,
+        playable_video_outputs: Vec<SupportedVideoOutput>,
+    ) -> SystemCapabilities {
         SystemCapabilities {
             schema_version: CURRENT_CAPABILITY_SCHEMA_VERSION,
             probed_at_unix_seconds: 1,
@@ -155,7 +254,7 @@ mod tests {
                 display_name: "Test VA-API".to_string(),
                 status: BackendProbeStatus::Available,
                 driver: BackendDriverInfo::default(),
-                raw_supported_outputs: playable_video_outputs.clone(),
+                raw_supported_outputs,
                 raw_profiles: Vec::new(),
                 raw_entrypoints: Vec::new(),
                 raw_rt_formats: Vec::new(),
@@ -211,8 +310,37 @@ mod tests {
     }
 
     #[test]
+    fn auto_falls_back_to_software_branch_when_no_playable_hardware_exists() {
+        let capabilities = capabilities_with_playable_outputs(Vec::new());
+
+        let error = select_video_pipeline_plan(
+            VideoBackendPreference::Auto,
+            Some(&capabilities),
+            PlayerVideoDecoderThreadConfig::default(),
+        )
+        .expect_err("auto should try software branch when no playable hardware exists");
+
+        assert_eq!(error, VideoPipelineSelectionError::SoftwareUnavailable);
+    }
+
+    #[test]
+    fn auto_does_not_recompute_playability_from_raw_vaapi_outputs() {
+        let capabilities =
+            capabilities_with_raw_and_playable_outputs(vec![current_vaapi_output()], Vec::new());
+
+        let error = select_video_pipeline_plan(
+            VideoBackendPreference::Auto,
+            Some(&capabilities),
+            PlayerVideoDecoderThreadConfig::default(),
+        )
+        .expect_err("raw VA-API output must not bypass playable output policy");
+
+        assert_eq!(error, VideoPipelineSelectionError::SoftwareUnavailable);
+    }
+
+    #[test]
     fn missing_native_hardware_in_hardware_preference_is_explicit_error() {
-        let capabilities = capabilities_with_playable_outputs(vec![non_vaapi_dma_buf_output()]);
+        let capabilities = capabilities_with_playable_outputs(Vec::new());
 
         let error = select_video_pipeline_plan(
             VideoBackendPreference::Hardware,
@@ -221,9 +349,46 @@ mod tests {
         )
         .expect_err("hardware preference must not fall back to another backend");
 
+        assert_eq!(error, VideoPipelineSelectionError::HardwareUnavailable);
+    }
+
+    #[test]
+    fn unstartable_native_hardware_backend_is_typed_requested_backend_error() {
+        let capabilities = capabilities_with_playable_outputs(vec![non_vaapi_dma_buf_output()]);
+
+        let error = select_video_pipeline_plan(
+            VideoBackendPreference::Hardware,
+            Some(&capabilities),
+            PlayerVideoDecoderThreadConfig::default(),
+        )
+        .expect_err("selector must not pretend future hardware backend is startable");
+
         assert_eq!(
             error,
-            VideoPipelineSelectionError::PreferredHardwareUnavailable
+            VideoPipelineSelectionError::RequestedBackendUnavailable {
+                preference: "hardware",
+                backend_id: "future_backend".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn auto_does_not_fall_back_to_software_when_unstartable_hardware_is_playable() {
+        let capabilities = capabilities_with_playable_outputs(vec![non_vaapi_dma_buf_output()]);
+
+        let error = select_video_pipeline_plan(
+            VideoBackendPreference::Auto,
+            Some(&capabilities),
+            PlayerVideoDecoderThreadConfig::default(),
+        )
+        .expect_err("auto can use software only when no playable hardware output exists");
+
+        assert_eq!(
+            error,
+            VideoPipelineSelectionError::RequestedBackendUnavailable {
+                preference: "auto",
+                backend_id: "future_backend".to_string(),
+            }
         );
     }
 
@@ -238,10 +403,7 @@ mod tests {
         )
         .expect_err("hardware startup requires current DMA-BUF materializer path");
 
-        assert_eq!(
-            error,
-            VideoPipelineSelectionError::PreferredHardwareUnavailable
-        );
+        assert_eq!(error, VideoPipelineSelectionError::HardwareUnavailable);
     }
 
     #[test]
@@ -255,10 +417,7 @@ mod tests {
         )
         .expect_err("software preference must not silently use current VA-API path");
 
-        assert_eq!(
-            error,
-            VideoPipelineSelectionError::SoftwareBackendUnavailable
-        );
+        assert_eq!(error, VideoPipelineSelectionError::SoftwareUnavailable);
     }
 
     #[test]

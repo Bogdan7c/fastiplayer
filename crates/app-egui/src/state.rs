@@ -2680,6 +2680,32 @@ mod tests {
         assert!(!include_str!("app_shell/mod.rs").contains(forbidden_member));
     }
 
+    /// Фиксирует, что startup не обходит selector прямым VAAPI fallback-ом.
+    #[test]
+    fn video_pipeline_rebuild_stops_before_vaapi_startup_when_selector_rejects() {
+        let state_source = include_str!("state.rs");
+        let rebuild_section = source_section_between(
+            state_source,
+            "pub(crate) fn rebuild_video_pipeline_with_decoder_config",
+            "/// Возвращает WGPU materializer текущего concrete video backend-а.",
+        );
+        let selector_error_return = rebuild_section
+            .find(".map_err(|error| format!(\"video pipeline selection failed: {error}\"))?;")
+            .expect("rebuild должен возвращать selection error через ? до backend startup");
+        let vaapi_factory_start = rebuild_section
+            .find("VaapiVideoBackendFactory::new_with_decoder_config")
+            .expect("rebuild должен сохранять текущий VAAPI startup plan после selector");
+
+        assert!(
+            selector_error_return < vaapi_factory_start,
+            "VAAPI startup должен быть недостижим, когда selector вернул ошибку"
+        );
+        assert!(
+            !rebuild_section.contains("or_else"),
+            "rebuild не должен добавлять fallback startup после ошибки selector"
+        );
+    }
+
     #[test]
     fn app_layout_uses_sidebar_instead_of_floating_settings_window() {
         let state_source = include_str!("state.rs");
