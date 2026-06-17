@@ -411,6 +411,20 @@ impl PlayerSession {
         }
     }
 
+    /// Сбрасывает decoded frames, оставшиеся в decoder→player канале от
+    /// предыдущего stream config-а.
+    ///
+    /// `seek_generation` обнуляется при media reset, поэтому stale кадры
+    /// прошлого media не отсекаются generation-проверкой и иначе дошли бы до
+    /// contract validation (например, 10-bit HDR кадр против 8-bit SDR
+    /// контракта). Вызывать только после остановки decoder-production
+    /// (`clear_video_decoder_stream`), чтобы канал не пополнялся во время drain-а.
+    pub(crate) fn discard_pending_decoded_video_frames(&mut self) {
+        while let Some(frame) = self.pipeline.try_recv_decoded_video_frame() {
+            self.release_video_texture(frame.resource_handle);
+        }
+    }
+
     /// Освобождает stale present frame, если final seek упёрся в texture pressure.
     ///
     /// Final seek не должен навсегда держать старый кадр, когда именно его

@@ -284,6 +284,8 @@ impl PlayerSession {
             }
         }
 
+        self.discard_pending_decoded_video_frames();
+
         self.pipeline.reset_media_slots();
         self.reset_diagnostics_for_media();
 
