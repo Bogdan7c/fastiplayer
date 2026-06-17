@@ -33,7 +33,7 @@ impl HostPlanarWgpuFrameMaterializer {
         Self {
             inner: HostPlanarFrameMaterializerCore::new(
                 resource_provider,
-                HostPlanarUploadTextureCache::new(WgpuHostPlanarUploadBackend::new(
+                HostPlanarUploadTexturePool::new(WgpuHostPlanarUploadBackend::new(
                     device.clone(),
                     queue.clone(),
                 )),
@@ -44,7 +44,7 @@ impl HostPlanarWgpuFrameMaterializer {
     /// Пытается получить renderer-owned HostPlanar texture views для decoded frame-а.
     ///
     /// Decoder/provider продолжает владеть host frame backing-ом до обычного
-    /// release lease; cache ниже владеет только WGPU upload textures.
+    /// release lease; pool ниже владеет только WGPU upload textures.
     pub fn try_host_planar_texture_view_lookup(
         &self,
         frame: &DecodedFrame,
@@ -89,16 +89,16 @@ impl HostPlanarWgpuTextureViews {
 
 /// Результат HostPlanar upload materialization без участия playback core.
 pub enum HostPlanarWgpuTextureViewLookup {
-    /// Renderer получил texture views, которые принадлежат upload cache.
+    /// Renderer получил texture views, которые принадлежат upload pool-у.
     Ready {
         /// Views трёх planar Y/U/V textures.
         views: Box<HostPlanarWgpuTextureViews>,
 
-        /// Сколько render thread ждал lock texture/cache pool-а.
+        /// Сколько render thread ждал lock texture pool-а.
         texture_pool_lock_wait: Duration,
     },
 
-    /// Backend resource pool или renderer upload cache занят.
+    /// Backend resource pool или renderer upload pool занят.
     Busy {
         /// Сколько заняла non-blocking попытка получить lock.
         texture_pool_lock_wait: Duration,
@@ -106,7 +106,7 @@ pub enum HostPlanarWgpuTextureViewLookup {
 
     /// Backend доступен, но resource для handle отсутствует.
     Missing {
-        /// Сколько render thread ждал lock resource/cache pool-а.
+        /// Сколько render thread ждал lock resource/texture pool-а.
         texture_pool_lock_wait: Duration,
     },
 
@@ -115,13 +115,13 @@ pub enum HostPlanarWgpuTextureViewLookup {
         /// Техническая причина отказа materializer-а.
         reason: WgpuFrameMaterializationUnsupportedReason,
 
-        /// Сколько render thread ждал lock resource/cache pool-а.
+        /// Сколько render thread ждал lock resource/texture pool-а.
         texture_pool_lock_wait: Duration,
     },
 
     /// Provider или renderer upload path обнаружил fatal/materialization error.
     Error {
-        /// Сколько render thread ждал lock resource/cache pool-а.
+        /// Сколько render thread ждал lock resource/texture pool-а.
         texture_pool_lock_wait: Duration,
     },
 }
@@ -151,7 +151,7 @@ impl HostPlanarWgpuTextureViewLookup {
         }
     }
 
-    /// Возвращает `true`, если lookup не стал ждать занятый resource/cache lock.
+    /// Возвращает `true`, если lookup не стал ждать занятый resource/texture lock.
     #[must_use]
     pub const fn lookup_was_busy(&self) -> bool {
         matches!(self, Self::Busy { .. })
@@ -237,7 +237,7 @@ where
     B: HostPlanarUploadBackend,
 {
     resource_provider: PresentFrameResourceProviderHandle,
-    texture_cache: Mutex<HostPlanarUploadTextureCache<B>>,
+    texture_pool: Mutex<HostPlanarUploadTexturePool<B>>,
 }
 
 impl<B> HostPlanarFrameMaterializerCore<B>
@@ -246,11 +246,11 @@ where
 {
     fn new(
         resource_provider: PresentFrameResourceProviderHandle,
-        texture_cache: HostPlanarUploadTextureCache<B>,
+        texture_pool: HostPlanarUploadTexturePool<B>,
     ) -> Self {
         Self {
             resource_provider,
-            texture_cache: Mutex::new(texture_cache),
+            texture_pool: Mutex::new(texture_pool),
         }
     }
 
@@ -293,28 +293,31 @@ where
             }
         };
 
-        let cache_lock_started_at = Instant::now();
-        let mut texture_cache = match self.texture_cache.try_lock() {
-            Ok(texture_cache) => texture_cache,
+        let pool_lock_started_at = Instant::now();
+        let mut texture_pool = match self.texture_pool.try_lock() {
+            Ok(texture_pool) => texture_pool,
             Err(TryLockError::WouldBlock) => {
                 return HostPlanarUploadLookup::Busy {
                     texture_pool_lock_wait: provider_wait
-                        .saturating_add(cache_lock_started_at.elapsed()),
+                        .saturating_add(pool_lock_started_at.elapsed()),
                 };
             }
             Err(TryLockError::Poisoned(error)) => {
-                tracing::warn!(error = %error, "WGPU HostPlanar upload cache mutex poisoned");
+                tracing::warn!(error = %error, "WGPU HostPlanar upload pool mutex poisoned");
                 return HostPlanarUploadLookup::Error {
                     texture_pool_lock_wait: provider_wait
-                        .saturating_add(cache_lock_started_at.elapsed()),
+                        .saturating_add(pool_lock_started_at.elapsed()),
                 };
             }
         };
-        let total_lock_wait = provider_wait.saturating_add(cache_lock_started_at.elapsed());
+        let total_lock_wait = provider_wait.saturating_add(pool_lock_started_at.elapsed());
 
-        match texture_cache.materialize(frame, host_descriptor) {
+        match texture_pool.materialize(frame, host_descriptor) {
             Ok(uploaded_textures) => HostPlanarUploadLookup::Ready {
                 uploaded_textures,
+                texture_pool_lock_wait: total_lock_wait,
+            },
+            Err(HostPlanarUploadFailure::Busy) => HostPlanarUploadLookup::Busy {
                 texture_pool_lock_wait: total_lock_wait,
             },
             Err(HostPlanarUploadFailure::Unsupported(reason)) => {
@@ -352,25 +355,32 @@ enum HostPlanarUploadLookup<T> {
     },
 }
 
-struct HostPlanarUploadTextureCache<B>
+struct HostPlanarUploadTexturePool<B>
 where
     B: HostPlanarUploadBackend,
 {
     backend: B,
-    cached_textures: VecDeque<CachedHostPlanarTexture<B::UploadedTextures>>,
+    slots: VecDeque<HostPlanarUploadTextureSlot<B::UploadedTextures>>,
     capacity: usize,
 }
 
-impl<B> HostPlanarUploadTextureCache<B>
+impl<B> HostPlanarUploadTexturePool<B>
 where
     B: HostPlanarUploadBackend,
 {
     const DEFAULT_CAPACITY: usize = 24;
 
+    /// Минимальное число резидентных slot-ов одного layout, которое pool держит
+    /// перед тем, как начать переиспользовать idle slot. Даёт GPU pipeline запас:
+    /// без него reuse схлопывается на 1–2 сета, и `write_texture` нового кадра
+    /// попадает в текстуру, которую GPU ещё семплит из недавнего submitted draw
+    /// (write-after-read hazard сериализует upload и draw, раздувая CPU/GPU).
+    const MIN_REUSE_RING_SLOTS: usize = 4;
+
     fn new(backend: B) -> Self {
         Self {
             backend,
-            cached_textures: VecDeque::with_capacity(Self::DEFAULT_CAPACITY),
+            slots: VecDeque::with_capacity(Self::DEFAULT_CAPACITY),
             capacity: Self::DEFAULT_CAPACITY,
         }
     }
@@ -379,7 +389,7 @@ where
     fn with_capacity(backend: B, capacity: usize) -> Self {
         Self {
             backend,
-            cached_textures: VecDeque::with_capacity(capacity),
+            slots: VecDeque::with_capacity(capacity),
             capacity,
         }
     }
@@ -402,47 +412,180 @@ where
         )
         .map_err(HostPlanarUploadFailure::Error)?;
 
-        if let Some(cached_texture) = self
-            .cached_textures
+        // Same-handle lookup возвращает уже загруженные textures без повторного upload:
+        // FrameResourceHandle здесь только identity decoded resource, а не ключ lifecycle pool-а.
+        if let Some(slot) = self
+            .slots
             .iter()
-            .find(|cached_texture| cached_texture.handle == frame.resource_handle)
+            .find(|slot| slot.current_handle == Some(frame.resource_handle))
         {
-            return Ok(cached_texture.uploaded_textures.clone());
+            if slot.layout != layout {
+                return Err(HostPlanarUploadFailure::Error(anyhow!(
+                    "host-planar upload pool handle {:?} is associated with a different layout",
+                    frame.resource_handle
+                )));
+            }
+            return Ok(slot.uploaded_textures.clone());
+        }
+
+        // Пока резидентных slot-ов этого layout меньше reuse-окна, растим кольцо
+        // вместо немедленного reuse: иначе pool схлопывается на 1–2 сета и запись
+        // нового кадра попадает в только что засабмиченную текстуру.
+        if self.slot_count_with_layout(layout) < self.target_reuse_ring_slots()
+            && self.slots.len() < self.capacity
+        {
+            return self.allocate_upload_and_store(frame.resource_handle, &host_descriptor, layout);
+        }
+
+        // Новый handle с тем же layout обязан перезалить planes, но может использовать
+        // idle slot: старые pixels больше не наблюдаются render/app guard-ами.
+        if let Some(slot_index) = self.idle_slot_with_layout(layout) {
+            return self.upload_into_existing_slot(
+                slot_index,
+                frame.resource_handle,
+                &host_descriptor,
+                layout,
+            );
+        }
+
+        // Idle slot нужного layout нет, но global capacity ещё свободна — создаём новый.
+        if self.slots.len() < self.capacity {
+            return self.allocate_upload_and_store(frame.resource_handle, &host_descriptor, layout);
+        }
+
+        // При полном pool-е разрешён eviction только idle slot-а другого layout.
+        // Занятый slot не трогаем, чтобы Busy fallback не получил перезаписанную texture.
+        if let Some(slot_index) = self.idle_slot_with_different_layout(layout) {
+            self.slots.remove(slot_index);
+            return self.allocate_upload_and_store(frame.resource_handle, &host_descriptor, layout);
+        }
+
+        Err(HostPlanarUploadFailure::Busy)
+    }
+
+    fn target_reuse_ring_slots(&self) -> usize {
+        Self::MIN_REUSE_RING_SLOTS.min(self.capacity)
+    }
+
+    fn slot_count_with_layout(&self, layout: HostPlanarUploadLayout) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| slot.layout == layout)
+            .count()
+    }
+
+    fn idle_slot_with_layout(&self, layout: HostPlanarUploadLayout) -> Option<usize> {
+        self.slots.iter().position(|slot| {
+            slot.layout == layout
+                && self
+                    .backend
+                    .uploaded_textures_are_idle(&slot.uploaded_textures)
+        })
+    }
+
+    fn idle_slot_with_different_layout(&self, layout: HostPlanarUploadLayout) -> Option<usize> {
+        self.slots.iter().position(|slot| {
+            slot.layout != layout
+                && self
+                    .backend
+                    .uploaded_textures_are_idle(&slot.uploaded_textures)
+        })
+    }
+
+    fn upload_into_existing_slot(
+        &mut self,
+        slot_index: usize,
+        handle: FrameResourceHandle,
+        host_descriptor: &HostPlanarFrameDescriptor,
+        layout: HostPlanarUploadLayout,
+    ) -> std::result::Result<B::UploadedTextures, HostPlanarUploadFailure> {
+        let uploaded_textures = {
+            let slot = self.slots.get_mut(slot_index).ok_or_else(|| {
+                HostPlanarUploadFailure::Error(anyhow!(
+                    "selected host-planar upload pool slot disappeared"
+                ))
+            })?;
+            if slot.layout != layout {
+                return Err(HostPlanarUploadFailure::Error(anyhow!(
+                    "selected host-planar upload pool slot layout changed"
+                )));
+            }
+
+            // Пока идёт upload нового кадра, slot не должен отвечать ни за один handle:
+            // при ошибке частично перезаписанные pixels нельзя вернуть как старый кадр.
+            slot.current_handle = None;
+            slot.uploaded_textures.clone()
+        };
+
+        self.upload_descriptor_into_textures(host_descriptor, layout, &uploaded_textures)?;
+
+        // Ротация в конец очереди делает reuse LRU: front всегда самый давно
+        // использованный idle slot, поэтому запись расходится по всему кольцу и
+        // не возвращается к только что отрисованному сету раньше, чем GPU его дочитал.
+        let mut slot = self.slots.remove(slot_index).ok_or_else(|| {
+            HostPlanarUploadFailure::Error(anyhow!(
+                "reused host-planar upload pool slot disappeared"
+            ))
+        })?;
+        slot.current_handle = Some(handle);
+        self.slots.push_back(slot);
+
+        Ok(uploaded_textures)
+    }
+
+    fn allocate_upload_and_store(
+        &mut self,
+        handle: FrameResourceHandle,
+        host_descriptor: &HostPlanarFrameDescriptor,
+        layout: HostPlanarUploadLayout,
+    ) -> std::result::Result<B::UploadedTextures, HostPlanarUploadFailure> {
+        if self.capacity == 0 {
+            return Err(HostPlanarUploadFailure::Busy);
         }
 
         let uploaded_textures = self
             .backend
             .allocate_textures(layout)
             .map_err(HostPlanarUploadFailure::Error)?;
-        upload_host_planar_visible_rows(
-            &host_descriptor,
-            layout,
-            &uploaded_textures,
-            &mut self.backend,
-        )
-        .map_err(HostPlanarUploadFailure::Error)?;
+        self.upload_descriptor_into_textures(host_descriptor, layout, &uploaded_textures)?;
 
-        if self.capacity > 0 {
-            if self.cached_textures.len() >= self.capacity {
-                self.cached_textures.pop_front();
-            }
-            self.cached_textures.push_back(CachedHostPlanarTexture {
-                handle: frame.resource_handle,
-                uploaded_textures: uploaded_textures.clone(),
-            });
-        }
+        self.slots.push_back(HostPlanarUploadTextureSlot {
+            layout,
+            current_handle: Some(handle),
+            uploaded_textures: uploaded_textures.clone(),
+        });
 
         Ok(uploaded_textures)
     }
+
+    fn upload_descriptor_into_textures(
+        &mut self,
+        host_descriptor: &HostPlanarFrameDescriptor,
+        layout: HostPlanarUploadLayout,
+        uploaded_textures: &B::UploadedTextures,
+    ) -> std::result::Result<(), HostPlanarUploadFailure> {
+        upload_host_planar_visible_rows(
+            host_descriptor,
+            layout,
+            uploaded_textures,
+            &mut self.backend,
+        )
+        .map_err(HostPlanarUploadFailure::Error)
+    }
 }
 
-struct CachedHostPlanarTexture<T> {
-    handle: FrameResourceHandle,
+struct HostPlanarUploadTextureSlot<T> {
+    /// Layout определяет, можно ли переиспользовать allocation без пересоздания textures.
+    layout: HostPlanarUploadLayout,
+    /// Handle текущих pixels; `None` значит slot idle/invalid во время перезаливки.
+    current_handle: Option<FrameResourceHandle>,
+    /// Renderer-owned upload textures, которые живут независимо от decoder resource.
     uploaded_textures: T,
 }
 
 #[derive(Debug)]
 enum HostPlanarUploadFailure {
+    Busy,
     Unsupported(WgpuFrameMaterializationUnsupportedReason),
     Error(anyhow::Error),
 }
@@ -463,6 +606,9 @@ trait HostPlanarUploadBackend {
         stride: usize,
         visible_height: u32,
     ) -> Result<()>;
+
+    /// Возвращает `true`, когда slot удерживает только pool и его textures можно перезаписать.
+    fn uploaded_textures_are_idle(&self, uploaded_textures: &Self::UploadedTextures) -> bool;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -603,6 +749,10 @@ impl HostPlanarUploadBackend for WgpuHostPlanarUploadBackend {
         );
 
         Ok(())
+    }
+
+    fn uploaded_textures_are_idle(&self, uploaded_textures: &Self::UploadedTextures) -> bool {
+        Arc::strong_count(uploaded_textures) == 1
     }
 }
 
@@ -902,7 +1052,7 @@ mod tests {
         let provider = RecordingDescriptorProvider::new_dma_buf();
         let materializer = HostPlanarFrameMaterializerCore::new(
             provider.handle(),
-            HostPlanarUploadTextureCache::new(RecordingUploadBackend::default()),
+            HostPlanarUploadTexturePool::new(RecordingUploadBackend::default()),
         );
 
         let lookup = materializer
@@ -921,10 +1071,10 @@ mod tests {
     #[test]
     fn upload_path_copies_visible_bytes_only_with_padded_stride() {
         let descriptor = padded_host_planar_descriptor();
-        let mut cache = HostPlanarUploadTextureCache::new(RecordingUploadBackend::default());
+        let mut pool = HostPlanarUploadTexturePool::new(RecordingUploadBackend::default());
         let frame = decoded_host_planar8_test_frame(FrameResourceHandle(21));
 
-        let uploaded_textures = cache
+        let uploaded_textures = pool
             .materialize(&frame, descriptor)
             .expect("host-planar upload should accept padded visible rows");
 
@@ -937,24 +1087,123 @@ mod tests {
     }
 
     #[test]
-    fn upload_cache_drops_gpu_textures_without_bypassing_provider_release() {
+    fn same_layout_new_handles_reuse_idle_slot_and_upload_again() {
+        let backend = RecordingUploadBackend::default();
+        let allocation_count = backend.allocation_counter();
+        let upload_call_count = backend.upload_call_counter();
+        let mut pool = HostPlanarUploadTexturePool::with_capacity(backend, 1);
+
+        let first_frame = decoded_host_planar8_test_frame(FrameResourceHandle(31));
+        let first_upload = pool
+            .materialize(&first_frame, padded_host_planar_descriptor())
+            .expect("first host-planar upload should allocate one slot");
+        drop(first_upload);
+
+        let second_frame = decoded_host_planar8_test_frame(FrameResourceHandle(32));
+        let second_upload = pool
+            .materialize(&second_frame, padded_host_planar_descriptor())
+            .expect("idle same-layout slot should be reused for a new handle");
+
+        assert_eq!(allocation_count.load(Ordering::SeqCst), 1);
+        assert_eq!(upload_call_count.load(Ordering::SeqCst), 6);
+        assert_eq!(
+            second_upload.rows_for_plane(0),
+            vec![vec![1, 2, 3, 4], vec![5, 6, 7, 8]]
+        );
+    }
+
+    #[test]
+    fn same_handle_lookup_returns_pool_slot_without_duplicate_upload() {
+        let backend = RecordingUploadBackend::default();
+        let allocation_count = backend.allocation_counter();
+        let upload_call_count = backend.upload_call_counter();
+        let mut pool = HostPlanarUploadTexturePool::with_capacity(backend, 1);
+
+        let frame = decoded_host_planar8_test_frame(FrameResourceHandle(41));
+        let first_upload = pool
+            .materialize(&frame, padded_host_planar_descriptor())
+            .expect("first host-planar upload should allocate one slot");
+        let second_upload = pool
+            .materialize(&frame, padded_host_planar_descriptor())
+            .expect("same handle should return the already-uploaded slot");
+
+        assert!(first_upload.same_slot_as(&second_upload));
+        assert_eq!(allocation_count.load(Ordering::SeqCst), 1);
+        assert_eq!(upload_call_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn busy_slot_is_not_reused_for_another_handle() {
+        let backend = RecordingUploadBackend::default();
+        let allocation_count = backend.allocation_counter();
+        let upload_call_count = backend.upload_call_counter();
+        let mut pool = HostPlanarUploadTexturePool::with_capacity(backend, 2);
+
+        let first_frame = decoded_host_planar8_test_frame(FrameResourceHandle(51));
+        let first_upload = pool
+            .materialize(&first_frame, padded_host_planar_descriptor())
+            .expect("first host-planar upload should allocate one slot");
+
+        let second_frame = decoded_host_planar8_test_frame(FrameResourceHandle(52));
+        let second_upload = pool
+            .materialize(&second_frame, padded_host_planar_descriptor())
+            .expect("busy first slot should force allocation of another slot");
+
+        assert!(!first_upload.same_slot_as(&second_upload));
+        assert_eq!(allocation_count.load(Ordering::SeqCst), 2);
+        assert_eq!(upload_call_count.load(Ordering::SeqCst), 6);
+    }
+
+    #[test]
+    fn capacity_full_with_no_idle_slots_returns_busy_without_provider_release() {
+        let provider = RecordingDescriptorProvider::new_host_planar();
+        let backend = RecordingUploadBackend::default();
+        let materializer = HostPlanarFrameMaterializerCore::new(
+            provider.handle(),
+            HostPlanarUploadTexturePool::with_capacity(backend, 1),
+        );
+
+        let first_frame = decoded_host_planar8_test_frame(FrameResourceHandle(61));
+        let first_upload = match materializer.try_upload_lookup(&first_frame) {
+            HostPlanarUploadLookup::Ready {
+                uploaded_textures, ..
+            } => uploaded_textures,
+            _ => panic!("first host-planar upload should be ready"),
+        };
+
+        let second_frame = decoded_host_planar8_test_frame(FrameResourceHandle(62));
+        assert!(matches!(
+            materializer.try_upload_lookup(&second_frame),
+            HostPlanarUploadLookup::Busy { .. }
+        ));
+        assert_eq!(
+            provider.released_handles(),
+            Vec::<FrameResourceHandle>::new()
+        );
+
+        drop(first_upload);
+    }
+
+    #[test]
+    fn upload_pool_evicts_idle_textures_without_bypassing_provider_release() {
         let provider = RecordingDescriptorProvider::new_host_planar();
         let drop_count = Arc::new(AtomicUsize::new(0));
         let backend = RecordingUploadBackend::with_drop_counter(Arc::clone(&drop_count));
         let materializer = HostPlanarFrameMaterializerCore::new(
             provider.handle(),
-            HostPlanarUploadTextureCache::with_capacity(backend, 1),
+            HostPlanarUploadTexturePool::with_capacity(backend, 1),
         );
 
-        let first_handle = FrameResourceHandle(31);
-        let second_handle = FrameResourceHandle(32);
+        let first_handle = FrameResourceHandle(71);
+        let second_handle = FrameResourceHandle(72);
         let first_frame = decoded_host_planar8_test_frame(first_handle);
-        let second_frame = decoded_host_planar8_test_frame(second_handle);
+        let second_frame = decoded_host_planar444_8_test_frame(second_handle);
 
         assert!(matches!(
             materializer.try_upload_lookup(&first_frame),
             HostPlanarUploadLookup::Ready { .. }
         ));
+        provider.set_descriptor_kind(RecordingDescriptorKind::HostPlanarYuv444);
         assert!(matches!(
             materializer.try_upload_lookup(&second_frame),
             HostPlanarUploadLookup::Ready { .. }
@@ -1103,18 +1352,33 @@ mod tests {
         fn rows_for_plane(&self, plane_index: usize) -> Vec<Vec<u8>> {
             self.planes.lock().expect("recorded rows lock poisoned")[plane_index].clone()
         }
+
+        fn same_slot_as(&self, other: &Self) -> bool {
+            Arc::ptr_eq(&self.planes, &other.planes)
+        }
     }
 
     #[derive(Default)]
     struct RecordingUploadBackend {
         drop_count: Option<Arc<AtomicUsize>>,
+        allocation_count: Arc<AtomicUsize>,
+        upload_call_count: Arc<AtomicUsize>,
     }
 
     impl RecordingUploadBackend {
         fn with_drop_counter(drop_count: Arc<AtomicUsize>) -> Self {
             Self {
                 drop_count: Some(drop_count),
+                ..Self::default()
             }
+        }
+
+        fn allocation_counter(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.allocation_count)
+        }
+
+        fn upload_call_counter(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.upload_call_count)
         }
     }
 
@@ -1125,6 +1389,7 @@ mod tests {
             &mut self,
             _layout: HostPlanarUploadLayout,
         ) -> Result<Self::UploadedTextures> {
+            self.allocation_count.fetch_add(1, Ordering::SeqCst);
             Ok(RecordingUploadedTextures {
                 planes: Arc::new(Mutex::new([Vec::new(), Vec::new(), Vec::new()])),
                 _drop_probe: self
@@ -1142,6 +1407,7 @@ mod tests {
             stride: usize,
             visible_height: u32,
         ) -> Result<()> {
+            self.upload_call_count.fetch_add(1, Ordering::SeqCst);
             let visible_height = visible_height as usize;
             // Восстанавливаем видимые строки из блока, чтобы тесты по-прежнему
             // проверяли, что upload адресует только visible bytes (без padding-а).
@@ -1160,6 +1426,10 @@ mod tests {
                 .expect("recorded rows lock poisoned")[plane_index] = rows;
             Ok(())
         }
+
+        fn uploaded_textures_are_idle(&self, uploaded_textures: &Self::UploadedTextures) -> bool {
+            Arc::strong_count(&uploaded_textures.planes) == 1
+        }
     }
 
     struct DropProbe(Arc<AtomicUsize>);
@@ -1172,21 +1442,21 @@ mod tests {
 
     #[derive(Clone)]
     struct RecordingDescriptorProvider {
-        descriptor_kind: RecordingDescriptorKind,
+        descriptor_kind: Arc<Mutex<RecordingDescriptorKind>>,
         released_handles: Arc<Mutex<Vec<FrameResourceHandle>>>,
     }
 
     impl RecordingDescriptorProvider {
         fn new_host_planar() -> Self {
             Self {
-                descriptor_kind: RecordingDescriptorKind::HostPlanar,
+                descriptor_kind: Arc::new(Mutex::new(RecordingDescriptorKind::HostPlanarYuv420)),
                 released_handles: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
         fn new_dma_buf() -> Self {
             Self {
-                descriptor_kind: RecordingDescriptorKind::DmaBuf,
+                descriptor_kind: Arc::new(Mutex::new(RecordingDescriptorKind::DmaBuf)),
                 released_handles: Arc::new(Mutex::new(Vec::new())),
             }
         }
@@ -1202,10 +1472,24 @@ mod tests {
                 .clone()
         }
 
+        fn set_descriptor_kind(&self, descriptor_kind: RecordingDescriptorKind) {
+            *self
+                .descriptor_kind
+                .lock()
+                .expect("descriptor kind lock poisoned") = descriptor_kind;
+        }
+
         fn descriptor(&self) -> FrameResourceDescriptor {
-            match self.descriptor_kind {
-                RecordingDescriptorKind::HostPlanar => {
+            match *self
+                .descriptor_kind
+                .lock()
+                .expect("descriptor kind lock poisoned")
+            {
+                RecordingDescriptorKind::HostPlanarYuv420 => {
                     FrameResourceDescriptor::HostPlanar(padded_host_planar_descriptor())
+                }
+                RecordingDescriptorKind::HostPlanarYuv444 => {
+                    FrameResourceDescriptor::HostPlanar(host_planar444_descriptor())
                 }
                 RecordingDescriptorKind::DmaBuf => {
                     FrameResourceDescriptor::DmaBuf(DmaBufFrameDescriptor {
@@ -1224,7 +1508,8 @@ mod tests {
 
     #[derive(Clone, Copy)]
     enum RecordingDescriptorKind {
-        HostPlanar,
+        HostPlanarYuv420,
+        HostPlanarYuv444,
         DmaBuf,
     }
 
@@ -1290,11 +1575,65 @@ mod tests {
         )
     }
 
+    fn host_planar444_descriptor() -> HostPlanarFrameDescriptor {
+        HostPlanarFrameDescriptor::from_owned_buffer(
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 21, 22, 23, 24, 25, 26, 27, 28, 41, 42, 43, 44, 45, 46, 47,
+                48,
+            ],
+            vec![
+                HostPlaneDescriptor {
+                    role: HostPlaneRole::Luma,
+                    offset: 0,
+                    stride: 4,
+                    visible_width: 4,
+                    visible_height: 2,
+                    bytes_per_sample: 1,
+                },
+                HostPlaneDescriptor {
+                    role: HostPlaneRole::ChromaU,
+                    offset: 8,
+                    stride: 4,
+                    visible_width: 4,
+                    visible_height: 2,
+                    bytes_per_sample: 1,
+                },
+                HostPlaneDescriptor {
+                    role: HostPlaneRole::ChromaV,
+                    offset: 16,
+                    stride: 4,
+                    visible_width: 4,
+                    visible_height: 2,
+                    bytes_per_sample: 1,
+                },
+            ],
+        )
+    }
+
     fn decoded_host_planar8_test_frame(resource_handle: FrameResourceHandle) -> DecodedFrame {
         DecodedFrame {
             generation: 0,
             pts: Duration::ZERO,
             frame_contract: VideoFrameContract::host_yuv420_planar8(),
+            width: 4,
+            height: 2,
+            render_width: 4,
+            render_height: 2,
+            display_orientation: codec_core::VideoDisplayOrientation::Identity,
+            color: VideoColorMetadata::sdr_bt709_limited(),
+            resource_handle,
+            diagnostics: video_core::VideoFrameDiagnostics::default(),
+        }
+    }
+
+    fn decoded_host_planar444_8_test_frame(resource_handle: FrameResourceHandle) -> DecodedFrame {
+        DecodedFrame {
+            generation: 0,
+            pts: Duration::ZERO,
+            frame_contract: VideoFrameContract {
+                pixel_layout: VideoFramePixelLayout::Yuv444Planar8,
+                transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
+            },
             width: 4,
             height: 2,
             render_width: 4,
