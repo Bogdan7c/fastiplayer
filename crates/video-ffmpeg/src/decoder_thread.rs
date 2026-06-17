@@ -234,14 +234,21 @@ impl FfmpegVideoDecoderThread {
         // смысл, что и surface pool у hardware backend-а), который покрывает
         // ready channel + present queue + leases. Ready-queue backpressure
         // продолжает считаться отдельно по frame channel длине.
-        let host_resource_provider =
-            FfmpegHostResourceProvider::new(thread_config.decoder_surface_pool_frames);
+        // bounded(1) coalescing wake-up: release_frame пишет токен, worker будит
+        // reception, как только освободился pool slot, без busy-poll.
+        let (release_notify_tx, release_notify_rx) = bounded(1);
+        let host_resource_provider = FfmpegHostResourceProvider::new(
+            thread_config.decoder_surface_pool_frames,
+            release_notify_tx,
+        );
         let worker = FfmpegDecoderWorker {
             active_decoder: None,
             activity_notifier,
             eof_drain_state: eof_drain_state.clone(),
             frame_tx,
             resource_provider: host_resource_provider.clone(),
+            release_notify_rx,
+            pending_packet: None,
             packet_ack_tx,
             error_tx,
         };
@@ -619,6 +626,10 @@ struct FfmpegHostResourceProviderInner {
     /// Provider-owned resources that stay alive until renderer calls release.
     table: Mutex<FfmpegHostResourceTable>,
 
+    /// Coalescing wake-up signalled whenever a pool slot is released, so the
+    /// decoder worker can resume reception promptly without polling.
+    release_notify: Sender<()>,
+
     /// Upper bound for simultaneously retained host frames.
     upload_slots_capacity: usize,
 
@@ -665,7 +676,7 @@ struct FfmpegHostResourcePublication {
 #[cfg(feature = "ffmpeg")]
 impl FfmpegHostResourceProvider {
     /// Создаёт provider с bounded числом host-upload slots.
-    fn new(upload_slots_capacity: usize) -> Self {
+    fn new(upload_slots_capacity: usize, release_notify: Sender<()>) -> Self {
         let upload_slots_capacity = upload_slots_capacity.max(1);
 
         Self {
@@ -674,10 +685,27 @@ impl FfmpegHostResourceProvider {
                     next_handle: 1,
                     entries: HashMap::new(),
                 }),
+                release_notify,
                 upload_slots_capacity,
                 upload_failures: AtomicU64::new(0),
             }),
         }
+    }
+
+    /// Возвращает число свободных host-upload slots прямо сейчас.
+    ///
+    /// Это hard-предел одновременно живущих decoded frames: каждый занятый slot
+    /// держит refcounted AVFrame до `release_frame`. Decode loop использует это
+    /// как receive budget, чтобы никогда не публиковать больше кадров, чем
+    /// помещается в пул, и не упираться в fatal table-full.
+    fn free_slots(&self) -> usize {
+        let in_flight = self
+            .inner
+            .table
+            .lock()
+            .map(|table| table.entries.len())
+            .unwrap_or(self.inner.upload_slots_capacity);
+        self.inner.upload_slots_capacity.saturating_sub(in_flight)
     }
 
     /// Converts a refcounted AVFrame into a provider-owned host-planar resource.
@@ -851,8 +879,15 @@ impl PresentFrameResourceProvider for FfmpegHostResourceProvider {
     }
 
     fn release_frame(&self, handle: FrameResourceHandle) {
-        if let Ok(mut table) = self.inner.table.lock() {
-            table.entries.remove(&handle);
+        let removed = self
+            .inner
+            .table
+            .lock()
+            .map(|mut table| table.entries.remove(&handle).is_some())
+            .unwrap_or(false);
+        if removed {
+            // Coalescing wake-up: ok to drop when one is already pending.
+            let _ = self.inner.release_notify.try_send(());
         }
     }
 }
@@ -1201,6 +1236,14 @@ struct FfmpegDecoderWorker {
     /// AVFrame-backed resource table shared with renderer lookup/release path.
     resource_provider: FfmpegHostResourceProvider,
 
+    /// Wake-up consumed when the renderer releases a pool slot, used to resume
+    /// reception that was paused by host-upload pool backpressure.
+    release_notify_rx: Receiver<()>,
+
+    /// Packet whose reception was deferred because the pool was full; retried
+    /// once a slot frees instead of overflowing the resource table.
+    pending_packet: Option<DecodePacket>,
+
     /// Packet completion acknowledgements for player in-flight accounting.
     packet_ack_tx: Sender<usize>,
 
@@ -1216,6 +1259,32 @@ impl FfmpegDecoderWorker {
         control_rx: Receiver<FfmpegDecoderControl>,
     ) {
         loop {
+            // Host-upload pool — единственный hard-источник backpressure: пока в
+            // нём нет свободных slots, мы не забираем новые packet-ы и не
+            // дренируем кадры (они ждут внутри FFmpeg), иначе таблица
+            // переполнится fatal-ом. Control обслуживается всегда; release pool
+            // slot-а будит reception через release_notify_rx.
+            if self.resource_provider.free_slots() == 0 {
+                crossbeam_channel::select! {
+                    recv(control_rx) -> control_message => {
+                        match control_message {
+                            Ok(control) => self.handle_control(control, &packet_rx),
+                            Err(_) if packet_rx.is_empty() => break,
+                            Err(_) => {}
+                        }
+                    }
+                    recv(self.release_notify_rx) -> _ => {}
+                }
+                continue;
+            }
+
+            // Pool освободился: сначала дотолкаем отложенный packet, чтобы не
+            // нарушить порядок и слить буферизованные внутри FFmpeg кадры.
+            if let Some(packet) = self.pending_packet.take() {
+                self.handle_packet(packet);
+                continue;
+            }
+
             crossbeam_channel::select! {
                 recv(control_rx) -> control_message => {
                     match control_message {
@@ -1242,14 +1311,20 @@ impl FfmpegDecoderWorker {
     ) {
         match control {
             FfmpegDecoderControl::Configure { config, reply_tx } => {
+                // Любой отложенный packet принадлежит прошлой конфигурации.
+                self.pending_packet = None;
                 let result = self.configure_stream(config);
                 let _ = reply_tx.try_send(result);
             }
             FfmpegDecoderControl::Clear { reply_tx } => {
+                self.pending_packet = None;
                 let result = self.clear_stream();
                 let _ = reply_tx.try_send(result);
             }
             FfmpegDecoderControl::Flush { reply_tx } => {
+                // Seek flush сбрасывает очередь packet-ов; pending packet тоже
+                // относится к до-seek потоку и должен быть отброшен.
+                self.pending_packet = None;
                 self.drop_queued_packets_after_seek_flush(packet_rx);
                 let result = self
                     .flush_for_seek()
@@ -1359,10 +1434,11 @@ impl FfmpegDecoderWorker {
                 return VideoDecoderEndOfStreamDrainResult::Unchanged(current_state);
             }
 
+            let receive_budget = self.resource_provider.free_slots();
             let config = active_decoder.config.clone();
             active_decoder
                 .decode_loop
-                .begin_end_of_stream_drain(generation)
+                .begin_end_of_stream_drain(generation, receive_budget)
                 .map(|progress_report| (config, progress_report))
         };
 
@@ -1399,6 +1475,11 @@ impl FfmpegDecoderWorker {
     }
 
     fn handle_packet(&mut self, packet: DecodePacket) {
+        // Receive budget = свободные pool slots: decode loop не произведёт больше
+        // кадров, чем влезет в таблицу. Если pool полон до приёма packet-а,
+        // packet откладывается в pending_packet и повторяется после release.
+        let receive_budget = self.resource_provider.free_slots();
+
         let decode_result = {
             let Some(active_decoder) = self.active_decoder.as_mut() else {
                 self.report_fatal_error(FfmpegDecoderThreadError::DecoderNotConfigured);
@@ -1408,12 +1489,12 @@ impl FfmpegDecoderWorker {
             let config = active_decoder.config.clone();
             active_decoder
                 .decode_loop
-                .send_packet(packet)
-                .map(|progress_report| (config, progress_report))
+                .send_packet(packet, receive_budget)
+                .map(|outcome| (config, outcome))
         };
 
         match decode_result {
-            Ok((config, progress_report)) => {
+            Ok((config, SendPacketOutcome::Consumed(progress_report))) => {
                 if let Err(error) = self.publish_decoded_frames(&config, progress_report.frames) {
                     self.report_fatal_error(error);
                     return;
@@ -1422,6 +1503,15 @@ impl FfmpegDecoderWorker {
                 if progress_report.packet_completed {
                     let _ = self.packet_ack_tx.try_send(1);
                 }
+                let _ = self.activity_notifier.notify_activity();
+            }
+            Ok((config, SendPacketOutcome::Deferred { progress, packet })) => {
+                if let Err(error) = self.publish_decoded_frames(&config, progress.frames) {
+                    self.report_fatal_error(error);
+                    return;
+                }
+
+                self.pending_packet = Some(packet);
                 let _ = self.activity_notifier.notify_activity();
             }
             Err(error) => self.report_fatal_error(error),
@@ -1796,15 +1886,27 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
         }
     }
 
+    /// Sends one packet and drains up to `receive_budget` frames.
+    ///
+    /// `receive_budget` — число свободных host-upload pool slots на момент
+    /// вызова. Pool не мутируется внутри этого метода (вставка в таблицу идёт
+    /// позже, в `publish_decoded_frames`), поэтому бюджет считается по всему
+    /// вызову и гарантирует, что мы не произведём больше кадров, чем влезет в
+    /// pool. Если бюджет исчерпан до того, как FFmpeg принял packet (EAGAIN, а
+    /// сливать output больше некуда), packet возвращается как `Deferred` и
+    /// воркер повторит его после освобождения slot-а — вместо fatal table-full.
     fn send_packet(
         &mut self,
         packet: DecodePacket,
-    ) -> Result<DecodeProgressReport, FfmpegDecoderThreadError> {
+        receive_budget: usize,
+    ) -> Result<SendPacketOutcome, FfmpegDecoderThreadError> {
         let prepared_packet = self.codec_api.create_packet(&packet)?;
         let mut progress_report = DecodeProgressReport::default();
         let mut eagain_without_progress_count = 0usize;
 
         loop {
+            let remaining_budget = receive_budget.saturating_sub(progress_report.frames.len());
+
             match self.codec_api.send_packet(&prepared_packet) {
                 Ok(()) => {
                     self.current_generation = Some(packet.generation);
@@ -1814,19 +1916,30 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                         packet.generation,
                         Some(packet.pts),
                         self.current_context_color.clone(),
+                        remaining_budget,
                     )?;
                     progress_report.extend(drain_report);
                     progress_report.packet_completed = true;
                     self.completed_packet_count = self.completed_packet_count.saturating_add(1);
                     let _ = self.activity_notifier.notify_activity();
-                    return Ok(progress_report);
+                    return Ok(SendPacketOutcome::Consumed(progress_report));
                 }
                 Err(DecodeApiError::Again) => {
+                    if remaining_budget == 0 {
+                        // FFmpeg отказывается принять packet, пока не сольём output,
+                        // но pool budget исчерпан. Откладываем packet целиком.
+                        return Ok(SendPacketOutcome::Deferred {
+                            progress: progress_report,
+                            packet,
+                        });
+                    }
+
                     let drain_generation = self.current_generation.unwrap_or(packet.generation);
                     let drain_report = self.receive_until_blocked(
                         drain_generation,
                         None,
                         self.current_context_color.clone(),
+                        remaining_budget,
                     )?;
                     let made_progress = drain_report.made_progress();
                     progress_report.extend(drain_report);
@@ -1870,11 +1983,27 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
     fn begin_end_of_stream_drain(
         &mut self,
         generation: u64,
+        receive_budget: usize,
     ) -> Result<EofDrainProgressReport, FfmpegDecoderThreadError> {
         let mut eagain_without_progress_count = 0usize;
         let mut frames = Vec::new();
 
         loop {
+            let remaining_budget = receive_budget.saturating_sub(frames.len());
+            if remaining_budget == 0 {
+                // Pool budget исчерпан; tail-кадры остаются в FFmpeg. Возвращаем
+                // Draining, чтобы player перевыдал drain после освобождения slots.
+                set_eof_drain_state(
+                    &self.eof_drain_state,
+                    VideoDecoderEndOfStreamDrainState::Draining { generation },
+                    &self.activity_notifier,
+                )?;
+                return Ok(EofDrainProgressReport {
+                    state: VideoDecoderEndOfStreamDrainState::Draining { generation },
+                    frames,
+                });
+            }
+
             match self.codec_api.send_end_of_stream() {
                 Ok(()) => {
                     set_eof_drain_state(
@@ -1886,6 +2015,7 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                         generation,
                         None,
                         self.current_context_color.clone(),
+                        remaining_budget,
                     )?;
                     let stop_reason = drain_report.stop_reason;
                     frames.extend(drain_report.frames);
@@ -1894,7 +2024,8 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                         ReceiveStopReason::EndOfFile => {
                             VideoDecoderEndOfStreamDrainState::Drained { generation }
                         }
-                        ReceiveStopReason::NeedMoreInput => {
+                        ReceiveStopReason::NeedMoreInput
+                        | ReceiveStopReason::ResourceBudgetReached => {
                             VideoDecoderEndOfStreamDrainState::Draining { generation }
                         }
                     };
@@ -1907,6 +2038,7 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                         drain_generation,
                         None,
                         self.current_context_color.clone(),
+                        remaining_budget,
                     )?;
                     let made_progress = drain_report.made_progress();
                     frames.extend(drain_report.frames);
@@ -1955,10 +2087,18 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
         generation: u64,
         packet_pts_seed: Option<Duration>,
         context_color: Option<VideoColorMetadata>,
+        receive_budget: usize,
     ) -> Result<ReceiveDrainReport, FfmpegDecoderThreadError> {
         let mut drain_report = ReceiveDrainReport::default();
 
         loop {
+            if drain_report.frames.len() >= receive_budget {
+                // Host-upload pool is full for this drain pass: leave the rest of
+                // FFmpeg's buffered frames in place and resume after a release.
+                drain_report.stop_reason = ReceiveStopReason::ResourceBudgetReached;
+                return Ok(drain_report);
+            }
+
             match self.codec_api.receive_frame() {
                 Ok(frame_metadata) => {
                     let pts = self
@@ -1987,6 +2127,39 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                 Err(DecodeApiError::Fatal(error)) => return Err(error),
             }
         }
+    }
+}
+
+/// Test-only thin wrappers that drive send/drain with an unbounded pool budget,
+/// so existing tests keep asserting pure send/receive behaviour.
+#[cfg(test)]
+impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
+    fn send_packet_for_test(
+        &mut self,
+        packet: DecodePacket,
+    ) -> Result<DecodeProgressReport, FfmpegDecoderThreadError> {
+        match self.send_packet(packet, usize::MAX)? {
+            SendPacketOutcome::Consumed(progress) => Ok(progress),
+            SendPacketOutcome::Deferred { .. } => {
+                panic!("unbounded test budget must never defer a packet")
+            }
+        }
+    }
+
+    fn begin_end_of_stream_drain_for_test(
+        &mut self,
+        generation: u64,
+    ) -> Result<EofDrainProgressReport, FfmpegDecoderThreadError> {
+        self.begin_end_of_stream_drain(generation, usize::MAX)
+    }
+}
+
+#[cfg(all(test, feature = "ffmpeg"))]
+impl FfmpegHostResourceProvider {
+    /// Builds a provider with a detached release wake-up channel for tests.
+    fn new_for_test(upload_slots_capacity: usize) -> Self {
+        let (release_notify_tx, _release_notify_rx) = bounded(1);
+        Self::new(upload_slots_capacity, release_notify_tx)
     }
 }
 
@@ -2150,6 +2323,21 @@ struct DecodedFrameRecord {
     color: Option<VideoColorMetadata>,
 }
 
+/// Outcome of one `send_packet` attempt under host-upload pool backpressure.
+#[cfg(any(test, feature = "ffmpeg"))]
+enum SendPacketOutcome {
+    /// FFmpeg accepted the packet; `frames` were drained within the pool budget.
+    Consumed(DecodeProgressReport),
+
+    /// Pool budget was exhausted before FFmpeg accepted the packet. The packet
+    /// is returned for retry after the renderer releases a slot; `progress`
+    /// still carries any frames drained so far.
+    Deferred {
+        progress: DecodeProgressReport,
+        packet: DecodePacket,
+    },
+}
+
 /// Report returned after send/drain progress.
 #[derive(Debug)]
 #[cfg(any(test, feature = "ffmpeg"))]
@@ -2231,6 +2419,10 @@ enum ReceiveStopReason {
 
     /// FFmpeg returned EOF; drain is complete.
     EndOfFile,
+
+    /// Host-upload pool budget exhausted; more frames remain buffered inside
+    /// FFmpeg and must be drained after the renderer releases pool slots.
+    ResourceBudgetReached,
 }
 
 /// PTS resolver policy: best_effort -> pts -> interpolation.
@@ -2439,7 +2631,7 @@ mod tests {
         );
         let observed_epoch = activity_subscription.current_epoch();
         let progress = decode_loop
-            .send_packet(decode_packet_with_pts(1, 100, Duration::from_millis(100)))
+            .send_packet_for_test(decode_packet_with_pts(1, 100, Duration::from_millis(100)))
             .expect("EAGAIN drain should retry the same packet");
 
         fake_api = decode_loop.codec_api;
@@ -2466,7 +2658,7 @@ mod tests {
     fn receive_loop_allows_zero_one_or_many_frames_per_packet() {
         let mut zero_frame_loop = fake_loop([FakeSendResult::Accepted], [FakeReceiveResult::Again]);
         let zero_frame_progress = zero_frame_loop
-            .send_packet(decode_packet_with_pts(1, 0, Duration::ZERO))
+            .send_packet_for_test(decode_packet_with_pts(1, 0, Duration::ZERO))
             .expect("zero-frame packet should complete");
         assert!(zero_frame_progress.frames.is_empty());
 
@@ -2478,7 +2670,7 @@ mod tests {
             ],
         );
         let one_frame_progress = one_frame_loop
-            .send_packet(decode_packet_with_pts(1, 0, Duration::ZERO))
+            .send_packet_for_test(decode_packet_with_pts(1, 0, Duration::ZERO))
             .expect("one-frame packet should complete");
         assert_eq!(one_frame_progress.frames.len(), 1);
 
@@ -2492,9 +2684,83 @@ mod tests {
             ],
         );
         let many_frame_progress = many_frame_loop
-            .send_packet(decode_packet_with_pts(1, 0, Duration::ZERO))
+            .send_packet_for_test(decode_packet_with_pts(1, 0, Duration::ZERO))
             .expect("multi-frame packet should complete");
         assert_eq!(many_frame_progress.frames.len(), 3);
+    }
+
+    #[test]
+    fn receive_budget_caps_frames_and_marks_resource_budget_reached() {
+        let mut decode_loop = fake_loop(
+            [FakeSendResult::Accepted],
+            [
+                FakeReceiveResult::Frame(frame_timestamps(1, NO_TIMESTAMP, 1)),
+                FakeReceiveResult::Frame(frame_timestamps(2, NO_TIMESTAMP, 1)),
+                FakeReceiveResult::Frame(frame_timestamps(3, NO_TIMESTAMP, 1)),
+                FakeReceiveResult::Again,
+            ],
+        );
+
+        let outcome = decode_loop
+            .send_packet(decode_packet_with_pts(1, 0, Duration::ZERO), 2)
+            .expect("budgeted send should succeed");
+
+        match outcome {
+            SendPacketOutcome::Consumed(progress) => {
+                // Pool fits only 2 frames; the third stays buffered inside FFmpeg.
+                assert_eq!(progress.frames.len(), 2);
+                assert!(progress.packet_completed);
+                assert_eq!(
+                    progress.stop_reason,
+                    ReceiveStopReason::ResourceBudgetReached
+                );
+            }
+            SendPacketOutcome::Deferred { .. } => {
+                panic!("packet was accepted by FFmpeg; it must not be deferred")
+            }
+        }
+    }
+
+    #[test]
+    fn send_packet_defers_when_pool_budget_is_zero_and_ffmpeg_needs_drain() {
+        let mut decode_loop = fake_loop([FakeSendResult::Again], []);
+
+        let outcome = decode_loop
+            .send_packet(decode_packet_with_pts(5, 0, Duration::from_millis(5)), 0)
+            .expect("zero budget must defer instead of fatally overflowing the pool");
+
+        match outcome {
+            SendPacketOutcome::Deferred { progress, packet } => {
+                assert!(progress.frames.is_empty());
+                assert!(!progress.packet_completed);
+                assert_eq!(packet.generation, 5);
+            }
+            SendPacketOutcome::Consumed(_) => {
+                panic!("send returned EAGAIN with no pool budget; packet must be deferred")
+            }
+        }
+    }
+
+    #[test]
+    fn eof_drain_with_budget_reports_draining_when_capped() {
+        let mut decode_loop = fake_loop(
+            [FakeSendResult::Accepted],
+            [
+                FakeReceiveResult::Frame(frame_timestamps(1, NO_TIMESTAMP, 1)),
+                FakeReceiveResult::Frame(frame_timestamps(2, NO_TIMESTAMP, 1)),
+                FakeReceiveResult::EndOfFile,
+            ],
+        );
+
+        let report = decode_loop
+            .begin_end_of_stream_drain(9, 1)
+            .expect("budgeted EOF drain should succeed");
+
+        assert_eq!(report.frames.len(), 1);
+        assert!(matches!(
+            report.state,
+            VideoDecoderEndOfStreamDrainState::Draining { generation: 9 }
+        ));
     }
 
     #[test]
@@ -2517,7 +2783,7 @@ mod tests {
         );
 
         let progress = decode_loop
-            .send_packet(packet)
+            .send_packet_for_test(packet)
             .expect("packet color should be copied into decoded frame record");
 
         assert_eq!(progress.frames.len(), 1);
@@ -2574,7 +2840,7 @@ mod tests {
     fn flush_and_eof_drain_have_distinct_lifecycle_effects() {
         let mut decode_loop = fake_loop([FakeSendResult::Accepted], [FakeReceiveResult::Again]);
         decode_loop
-            .send_packet(decode_packet_with_pts(7, 5, Duration::from_millis(5)))
+            .send_packet_for_test(decode_packet_with_pts(7, 5, Duration::from_millis(5)))
             .expect("packet should seed generation");
 
         assert_eq!(decode_loop.current_generation, Some(7));
@@ -2599,7 +2865,7 @@ mod tests {
         ]);
 
         let drain_report = decode_loop
-            .begin_end_of_stream_drain(9)
+            .begin_end_of_stream_drain_for_test(9)
             .expect("EOF drain should send NULL packet and drain tail frames");
 
         assert_eq!(decode_loop.codec_api.flush_buffers_count, 1);
@@ -2615,7 +2881,7 @@ mod tests {
     fn eof_from_normal_packet_send_is_protocol_violation() {
         let mut decode_loop = fake_loop([FakeSendResult::EndOfFile], [FakeReceiveResult::Again]);
         let error = decode_loop
-            .send_packet(decode_packet_with_pts(1, 0, Duration::ZERO))
+            .send_packet_for_test(decode_packet_with_pts(1, 0, Duration::ZERO))
             .expect_err("normal packet send must not be treated as EOF drain");
 
         assert!(matches!(
@@ -2632,7 +2898,7 @@ mod tests {
             [FakeReceiveResult::Fatal("fake receive failed")],
         );
         let error = decode_loop
-            .send_packet(decode_packet_with_pts(1, 0, Duration::ZERO))
+            .send_packet_for_test(decode_packet_with_pts(1, 0, Duration::ZERO))
             .expect_err("fatal receive should stop the decode loop");
 
         assert_eq!(
@@ -2663,13 +2929,13 @@ mod tests {
         );
 
         let first = decode_loop
-            .send_packet(decode_packet_with_pts(1, 0, Duration::ZERO))
+            .send_packet_for_test(decode_packet_with_pts(1, 0, Duration::ZERO))
             .expect("best effort frame should decode");
         let second = decode_loop
-            .send_packet(decode_packet_with_pts(1, 1, Duration::from_millis(1)))
+            .send_packet_for_test(decode_packet_with_pts(1, 1, Duration::from_millis(1)))
             .expect("pts fallback frame should decode");
         let third = decode_loop
-            .send_packet(decode_packet_with_pts(1, 2, Duration::from_millis(2)))
+            .send_packet_for_test(decode_packet_with_pts(1, 2, Duration::from_millis(2)))
             .expect("interpolated frame should decode");
 
         assert_eq!(first.frames[0].pts, Duration::from_millis(5));
@@ -2681,7 +2947,7 @@ mod tests {
     #[cfg(feature = "ffmpeg")]
     #[test]
     fn avframe_resource_remains_readable_until_release() {
-        let provider = FfmpegHostResourceProvider::new(4);
+        let provider = FfmpegHostResourceProvider::new_for_test(4);
         let mut frame = test_yuv420_frame(2, 2, 32);
         frame
             .write_test_plane_row(0, 0, &[10, 11])
@@ -2721,7 +2987,7 @@ mod tests {
     #[cfg(feature = "ffmpeg")]
     #[test]
     fn release_drops_resource_entry_and_stale_release_is_noop() {
-        let provider = FfmpegHostResourceProvider::new(2);
+        let provider = FfmpegHostResourceProvider::new_for_test(2);
         let frame = test_yuv420_frame(2, 2, 32);
         let publication = provider
             .insert_frame(
@@ -2748,7 +3014,7 @@ mod tests {
     #[cfg(feature = "ffmpeg")]
     #[test]
     fn descriptor_clone_keeps_avframe_owner_without_copying_planes() {
-        let provider = FfmpegHostResourceProvider::new(2);
+        let provider = FfmpegHostResourceProvider::new_for_test(2);
         let mut frame = test_yuv420_frame(2, 2, 32);
         frame
             .write_test_plane_row(0, 0, &[7, 8])
@@ -2784,7 +3050,7 @@ mod tests {
     #[cfg(feature = "ffmpeg")]
     #[test]
     fn invalid_linesize_and_data_are_rejected() {
-        let provider = FfmpegHostResourceProvider::new(2);
+        let provider = FfmpegHostResourceProvider::new_for_test(2);
         let mut invalid_linesize_frame = test_yuv420_frame(2, 2, 32);
         invalid_linesize_frame.set_test_linesize(0, 1);
 
@@ -2820,7 +3086,7 @@ mod tests {
     #[cfg(feature = "ffmpeg")]
     #[test]
     fn unsupported_avframe_format_is_rejected_with_diagnostic_context() {
-        let provider = FfmpegHostResourceProvider::new(2);
+        let provider = FfmpegHostResourceProvider::new_for_test(2);
         let unsupported_frame = OwnedAvFrame::new_test_unsupported_nv12_frame(2, 2, 32)
             .expect("test NV12 AVFrame allocation should succeed");
 
@@ -2843,7 +3109,7 @@ mod tests {
     #[cfg(feature = "ffmpeg")]
     #[test]
     fn padded_avframe_linesize_reads_visible_bytes_and_validates_descriptor() {
-        let provider = FfmpegHostResourceProvider::new(2);
+        let provider = FfmpegHostResourceProvider::new_for_test(2);
         let mut frame = test_yuv420_frame(3, 3, 32);
         frame
             .write_test_plane_row(0, 0, &[1, 2, 3])
