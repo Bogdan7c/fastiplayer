@@ -40,6 +40,10 @@ resolver = "2"
 # Patch для Symphonia MP4: upstream 0.6.0 игнорирует ctts/trun composition offsets.
 # H.264 B-frames в MP4 из-за этого получают decode-order PTS и дергаются при playback.
 "symphonia-format-isomp4:0.6.0" = { path = "crates/symphonia-format-isomp4-patch" }
+# Patch для Symphonia AAC: upstream 0.6.0 отклоняет AAC-LC с >2 каналов
+# ("aac: aac too complex"), хотя декодер многоканален. Сняли guard, чтобы играл 5.1 AAC.
+# Можно удалить когда upstream снимет ограничение по числу каналов.
+"symphonia-codec-aac:0.6.0" = { path = "crates/symphonia-codec-aac-patch" }
 
 # Все внешние зависимости в dev собираются оптимизированными: egui/wgpu/symphonia/cpal
 # на opt-level 0 не вытягивают realtime пути (UI tessellation, GPU submit/validation,
