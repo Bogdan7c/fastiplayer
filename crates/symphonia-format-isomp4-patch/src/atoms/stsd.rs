@@ -28,8 +28,8 @@ use symphonia_core::codecs::video::{VideoCodecId, VideoCodecParameters, VideoExt
 use symphonia_core::codecs::{CodecParameters, CodecProfile};
 
 use crate::atoms::{
-    AlacAtom, Atom, AtomHeader, AtomIterator, AtomType, AvcCAtom, Dac3Atom, Dec3Atom, DoviAtom,
-    EsdsAtom, FlacAtom, HvcCAtom, OpusAtom, ReadAtom, Result, WaveAtom, decode_error,
+    AlacAtom, Atom, AtomHeader, AtomIterator, AtomType, Av1CAtom, AvcCAtom, Dac3Atom, Dec3Atom,
+    DoviAtom, EsdsAtom, FlacAtom, HvcCAtom, OpusAtom, ReadAtom, Result, WaveAtom, decode_error,
     unsupported_error,
 };
 use crate::fp::FpU16;
@@ -676,6 +676,10 @@ impl Atom for VisualSampleEntry {
                 AtomType::Esds => {
                     let atom = it.read_atom::<EsdsAtom>()?;
                     atom.fill_video_sample_entry(&mut entry)?;
+                }
+                AtomType::Av1Configuration => {
+                    let atom = it.read_atom::<Av1CAtom>()?;
+                    atom.fill_video_sample_entry(&mut entry);
                 }
                 AtomType::AvcConfiguration => {
                     let atom = it.read_atom::<AvcCAtom>()?;

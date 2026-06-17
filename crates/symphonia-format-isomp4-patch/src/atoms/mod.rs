@@ -20,6 +20,7 @@ pub mod limits {
 }
 
 pub(crate) mod alac;
+pub(crate) mod av1c;
 pub(crate) mod avcc;
 pub(crate) mod co64;
 pub(crate) mod ctts;
@@ -67,6 +68,7 @@ use crate::atoms::limits::MAX_ITERATION_DEPTH;
 
 pub use self::meta::MetaAtom;
 pub use alac::AlacAtom;
+pub use av1c::Av1CAtom;
 pub use avcc::AvcCAtom;
 pub use co64::Co64Atom;
 #[allow(unused_imports)]
@@ -139,6 +141,7 @@ pub enum AtomType {
     AudioSampleEntryS32,
     AudioSampleEntryU8,
     AuthorTag,
+    Av1Configuration,
     AvcConfiguration,
     BitRate,
     ChunkOffset,
@@ -284,6 +287,7 @@ impl From<[u8; 4]> for AtomType {
             b"alac" => AtomType::AudioSampleEntryAlac,
             b"alaw" => AtomType::AudioSampleEntryALaw,
             b"av01" => AtomType::VisualSampleEntryAv1,
+            b"av1C" => AtomType::Av1Configuration,
             b"avc1" => AtomType::VisualSampleEntryAvc1,
             b"avcC" => AtomType::AvcConfiguration,
             b"btrt" => AtomType::BitRate,
