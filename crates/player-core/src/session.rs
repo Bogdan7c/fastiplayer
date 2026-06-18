@@ -492,6 +492,19 @@ impl PlayerSession {
             return;
         }
 
+        // Перед подменой backend-а освобождаем video-кадры старого backend-а через ЕГО
+        // resource provider и продвигаем render generation. Иначе удержанный present-кадр
+        // (например P010 DMA-BUF от VA-API) пережил бы свап и был бы отдан новому
+        // materializer-у другого класса (host-upload) → `Missing render resources`. Бамп
+        // render generation помечает кадры/lease нового backend-а свежим поколением, а
+        // старые отсекаются штатной generation-проверкой на renderer boundary. Делается
+        // только при уже активном decoder-е, чтобы первый install при старте не плодил
+        // лишний generation bump.
+        if self.pipeline.has_active_video_decoder() {
+            self.clear_video_frames();
+            self.advance_render_generation();
+        }
+
         self.active_video_backend_id = Some(backend_id);
         self.pipeline
             .set_video_decoder_thread_handle(started_backend.into_decoder_thread());

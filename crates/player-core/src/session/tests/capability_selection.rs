@@ -933,6 +933,44 @@ fn switching_to_hardware_backend_recomputes_active_frame_contract() {
 }
 
 #[test]
+fn swapping_active_backend_advances_render_generation_but_first_install_does_not() {
+    // Живой свап backend-а обязан продвинуть render generation, чтобы удержанные
+    // present-кадры/lease старого backend-а (например P010 DMA-BUF от VA-API) отсеклись
+    // на renderer boundary и не попали в materializer нового класса. Первый install при
+    // старте (активного decoder-а ещё нет) лишний bump делать не должен.
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_with_hardware_and_ffmpeg_outputs());
+
+    let generation_before_first_install = session.pipeline.render_generation();
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        "vaapi",
+        SharedFakeVideoDecoderThread::new(),
+    ));
+    assert_eq!(
+        session.pipeline.render_generation(),
+        generation_before_first_install,
+        "первый install backend-а не должен двигать render generation"
+    );
+
+    install_fake_media_with_seekability(
+        &mut session,
+        vec![vp9_full_track(1)],
+        DemuxSeekability::Seekable,
+    );
+
+    let generation_before_swap = session.pipeline.render_generation();
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        "ffmpeg-sw",
+        SharedFakeVideoDecoderThread::new(),
+    ));
+    assert_eq!(
+        session.pipeline.render_generation(),
+        generation_before_swap.wrapping_add(1),
+        "живой свап активного backend-а обязан продвинуть render generation"
+    );
+}
+
+#[test]
 fn rejecting_pending_video_backend_fails_with_unsupported_error() {
     let mut session = PlayerSession::new();
     session.set_system_capabilities(capabilities_vaapi_h264_only_and_ffmpeg_h264_vp9());

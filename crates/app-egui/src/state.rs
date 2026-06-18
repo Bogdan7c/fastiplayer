@@ -407,6 +407,17 @@ struct CachedRenderablePresentFrame {
     source_label: Option<String>,
 }
 
+/// Решение video-пайплайна на время живой смены backend-а.
+pub(crate) enum BackendSwapVideoPhase {
+    /// Свап не идёт — обычный путь acquire/materialize.
+    NotSwapping,
+
+    /// Worker ещё не переключился или не выдал первый кадр нового backend-а: держим
+    /// замороженный кадр (или ничего, если кэша не было) и НЕ материализуем кадры
+    /// старого backend-а новым materializer-ом.
+    HoldFrozenFrame(Option<RenderablePresentFrame>),
+}
+
 /// Стабильная identity decoded кадра на renderer boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PresentFrameIdentity {
@@ -709,6 +720,14 @@ pub struct AppState {
     /// Отложенный запрос player-core на подбор backend-а под текущий стрим (`auto`).
     pending_video_backend_reselection: Option<VideoBackendSelectionRequest>,
 
+    /// Замороженный кадр прошлого backend-а на время живой смены backend/materializer:
+    /// держится, пока worker не переключится и не выдаст первый кадр нового backend-а.
+    backend_swap_frozen_frame: Option<CachedRenderablePresentFrame>,
+
+    /// render generation на момент свапа; пока snapshot его не превысил, worker ещё не
+    /// переключился, и кадры старого backend-а нельзя материализовать новым materializer-ом.
+    backend_swap_from_generation: Option<u64>,
+
     /// Последний локальный файл, открытый shell-ом, для восстановления после suspend.
     current_local_file: Option<PathBuf>,
 
@@ -795,6 +814,8 @@ impl AppState {
             wgpu_frame_materializer: None,
             current_video_backend_kind: None,
             pending_video_backend_reselection: None,
+            backend_swap_frozen_frame: None,
+            backend_swap_from_generation: None,
             current_local_file: None,
             active_media_source: None,
             local_file_open_job: None,
@@ -1193,11 +1214,20 @@ impl AppState {
             }
         };
 
+        let previous_backend_kind = self.current_video_backend_kind;
+
         if let Err(error) = self.player_worker.set_video_backend(player_backend) {
             return Err(format!("video backend command delivery failed: {error}"));
         }
 
         self.wgpu_frame_materializer = Some(frame_materializer);
+
+        // Живая смена backend-а (класс реально меняется): морозим последний кадр, пока
+        // worker не переключится и не выдаст первый кадр нового backend-а, иначе кадры
+        // старого backend-а уйдут в новый materializer → `Missing render resources`.
+        if previous_backend_kind.is_some_and(|previous| previous != plan_backend_kind) {
+            self.begin_backend_swap_video_freeze();
+        }
         self.current_video_backend_kind = Some(plan_backend_kind);
         info!(plan = plan_label, "Selected video pipeline");
         self.mark_pending_worker_redraw();
@@ -1281,6 +1311,60 @@ impl AppState {
         &self,
     ) -> Option<Arc<dyn WgpuFrameTextureViewMaterializer>> {
         self.wgpu_frame_materializer.clone()
+    }
+
+    /// Начинает заморозку последнего кадра на время живой смены backend-а.
+    ///
+    /// Фиксирует render generation момента свапа и копию последнего материализованного
+    /// кадра старого backend-а (его texture views остаются валидны через Arc даже после
+    /// дропа старого materializer-а), чтобы держать его на экране, пока worker не
+    /// переключится и не выдаст первый кадр нового backend-а.
+    fn begin_backend_swap_video_freeze(&mut self) {
+        self.backend_swap_from_generation = Some(self.last_player_snapshot.render_generation);
+        self.backend_swap_frozen_frame = self.cached_renderable_present_frame.clone();
+    }
+
+    /// Завершает заморозку: новый backend выдал кадр или источник сменился.
+    fn finish_backend_swap_video_freeze(&mut self) {
+        self.backend_swap_from_generation = None;
+        self.backend_swap_frozen_frame = None;
+    }
+
+    /// Определяет, что показывать видео-пайплайну во время живой смены backend-а.
+    ///
+    /// Пока `render_generation` не превысил зафиксированный на свапе — worker ещё на
+    /// старом backend-е, и его кадры несовместимы с новым materializer-ом, поэтому
+    /// держим замороженный кадр. После переключения worker-а ждём первый реальный кадр
+    /// нового backend-а (`current_video_frame`), и только тогда выходим в обычный путь.
+    /// Смена источника тоже завершает заморозку, чтобы кадр прошлого media не залипал.
+    pub(crate) fn backend_swap_video_phase(
+        &mut self,
+        player_snapshot: &PlayerSnapshot,
+    ) -> BackendSwapVideoPhase {
+        let Some(from_generation) = self.backend_swap_from_generation else {
+            return BackendSwapVideoPhase::NotSwapping;
+        };
+
+        let worker_switched = player_snapshot.render_generation != from_generation;
+        let new_backend_frame_ready =
+            worker_switched && player_snapshot.current_video_frame.is_some();
+        let frozen_source_stale = self
+            .backend_swap_frozen_frame
+            .as_ref()
+            .is_some_and(|frozen| {
+                frozen.source_label.as_deref() != player_snapshot.source_label.as_deref()
+            });
+
+        if new_backend_frame_ready || frozen_source_stale {
+            self.finish_backend_swap_video_freeze();
+            return BackendSwapVideoPhase::NotSwapping;
+        }
+
+        BackendSwapVideoPhase::HoldFrozenFrame(
+            self.backend_swap_frozen_frame
+                .as_ref()
+                .map(|frozen| frozen.renderable_frame.clone()),
+        )
     }
 
     /// Сохраняет capability report для app-owned selector-а и передаёт clone в worker.

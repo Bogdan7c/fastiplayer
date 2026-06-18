@@ -24,7 +24,8 @@ use crate::settings_runtime::{
 };
 use crate::startup_media::{resolve_direct_media_startup_media, resolve_youtube_startup_media};
 use crate::state::{
-    ActiveMediaSource, AppFrameContext, AppState, AppUiRenderTimings, RenderablePresentFrame,
+    ActiveMediaSource, AppFrameContext, AppState, AppUiRenderTimings, BackendSwapVideoPhase,
+    RenderablePresentFrame,
 };
 use crate::system_capabilities::probe_system_capabilities;
 use crate::telemetry::{SeekDiscardReason, Telemetry, VideoDropReason, VideoFrameTelemetryEvent};
@@ -801,6 +802,22 @@ fn prepare_video_frame(
 ) -> PreparedVideoFrame {
     let video_prepare_started_at = Instant::now();
     let mut timings = VideoPrepareTimings::default();
+
+    // Живая смена backend-а: пока worker не переключился и не выдал первый кадр нового
+    // backend-а, не материализуем кадры старого backend-а новым materializer-ом — держим
+    // замороженный кадр (его texture views уже готовы), либо пусто, если кэша не было.
+    if let BackendSwapVideoPhase::HoldFrozenFrame(frozen_frame) =
+        app_state.backend_swap_video_phase(player_snapshot)
+    {
+        let state = "backend_swap_hold_frozen";
+        timings.total = video_prepare_started_at.elapsed();
+        return match frozen_frame {
+            Some(renderable_frame) => {
+                PreparedVideoFrame::ready(renderable_frame, state).with_diagnostics(state, timings)
+            }
+            None => PreparedVideoFrame::empty(state).with_diagnostics(state, timings),
+        };
+    }
 
     let stage_started_at = Instant::now();
     let present_frame_acquisition = app_state.acquire_present_frame_for_render(player_snapshot);
