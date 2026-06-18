@@ -835,6 +835,11 @@ impl AppState {
         self.player_worker.apply_runtime_settings(update)
     }
 
+    /// Текущий decoder-thread config worker-а для app-owned pipeline rebuild.
+    pub(crate) fn current_decoder_thread_config(&self) -> PlayerVideoDecoderThreadConfig {
+        self.player_worker.decoder_thread_config()
+    }
+
     /// Применяет media/source policy через app-level owner.
     pub(crate) fn apply_media_service_runtime_settings(
         &mut self,

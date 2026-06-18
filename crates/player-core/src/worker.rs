@@ -30,7 +30,8 @@ use crate::{
     PlayerRuntimeApplyError, PlayerRuntimeApplyGroup, PlayerRuntimeApplyGroupReport,
     PlayerRuntimeApplyReport, PlayerRuntimeApplyResult, PlayerRuntimeDecoderThreadConfigUpdate,
     PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeSettingsUpdate, PlayerRuntimeTickConfigUpdate,
-    PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
+    PlayerRuntimeVideoBackendUpdate, PlayerSession, PlayerSnapshot, PlayerTickConfig,
+    PlayerTickContext, PlayerTickResult,
     PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan, PreparedMedia,
     SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend, scheduler_timing_diagnostics,
 };
@@ -1527,6 +1528,10 @@ impl PlayerWorkerRuntime {
             self.apply_runtime_decoder_thread_config(decoder_thread_update, &mut report);
         }
 
+        if let Some(video_backend_update) = update.video_backend {
+            self.apply_runtime_video_backend(video_backend_update, &mut report);
+        }
+
         if !update.unsupported_settings.is_empty() {
             report.push(PlayerRuntimeApplyGroupReport::unsupported(
                 PlayerRuntimeApplyGroup::UnsupportedSettings,
@@ -1620,6 +1625,20 @@ impl PlayerWorkerRuntime {
             update.affected_settings,
             PlayerRuntimeAcceptedChange::Applied,
             "decoder thread config accepted after controlled backend rebuild",
+        ));
+    }
+
+    /// Подтверждает backend preference change; реальный rebuild делает app composition layer.
+    fn apply_runtime_video_backend(
+        &mut self,
+        update: PlayerRuntimeVideoBackendUpdate,
+        report: &mut PlayerRuntimeApplyReport,
+    ) {
+        report.push(PlayerRuntimeApplyGroupReport::accepted(
+            PlayerRuntimeApplyGroup::VideoBackend,
+            update.affected_settings,
+            PlayerRuntimeAcceptedChange::Applied,
+            "video backend preference applied via app-owned pipeline rebuild",
         ));
     }
 

@@ -72,7 +72,7 @@ pub use runtime_settings::{
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyOutcome, PlayerRuntimeApplyReport,
     PlayerRuntimeApplyResult, PlayerRuntimeDecoderThreadConfigUpdate,
     PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate,
-    PlayerRuntimeTickConfigUpdate,
+    PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate,
 };
 pub use seek_state::PlaybackResumeIntent;
 pub use session::{

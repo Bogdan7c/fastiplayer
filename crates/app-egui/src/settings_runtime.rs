@@ -1697,7 +1697,9 @@ fn player_deferred_message(update: &PlayerCommittedSettingsUpdate) -> Option<Str
 
 /// Выбирает mechanism по самому тяжёлому player operation в route.
 fn player_apply_mechanism(update: &PlayerCommittedSettingsUpdate) -> ApplyMechanism {
-    if update.player_core.decoder_thread_config.is_some() {
+    if update.player_core.decoder_thread_config.is_some()
+        || update.player_core.video_backend.is_some()
+    {
         ApplyMechanism::PipelineRebuild
     } else if update.player_core.tick_config.is_some()
         || update.player_core.default_volume.is_some()
@@ -1813,6 +1815,7 @@ fn player_group_result(
         AppRuntimeRouteGroup::PlayerDefaultVolume
         | AppRuntimeRouteGroup::PlayerTickConfig
         | AppRuntimeRouteGroup::PlayerDecoderThreadConfig
+        | AppRuntimeRouteGroup::PlayerVideoBackend
         | AppRuntimeRouteGroup::PlayerDeferredBoundary => player_core_result.clone(),
         AppRuntimeRouteGroup::PlayerAudioOutputDevice => audio_output_device_result.clone(),
         _ => route_result.clone(),

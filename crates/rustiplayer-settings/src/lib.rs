@@ -241,6 +241,9 @@ pub enum AppRuntimeRouteGroup {
     /// Decoder/channel/pool settings that require controlled rebuild.
     PlayerDecoderThreadConfig,
 
+    /// Video backend preference applied via app-owned pipeline rebuild.
+    PlayerVideoBackend,
+
     /// Player/audio/video settings without an in-place S07 owner boundary.
     PlayerDeferredBoundary,
 
@@ -806,11 +809,16 @@ fn player_update_from_settings(
     let mut deferred_settings = Vec::new();
     let mut default_volume_changed = false;
     let mut audio_output_device_changed = false;
+    let mut video_backend_changed = false;
 
     for setting_id in affected_settings {
         let setting_name = setting_id.as_str();
         if setting_name == "audio.output_device" {
             audio_output_device_changed = true;
+            continue;
+        }
+        if setting_name == "video.preferred_backend" {
+            video_backend_changed = true;
             continue;
         }
 
@@ -850,6 +858,9 @@ fn player_update_from_settings(
             PlayerWorkerConfig::decoder_thread_config_from_app_config(current),
             decoder_settings,
         );
+    }
+    if video_backend_changed {
+        player_core = player_core.with_video_backend([PlayerRuntimeSettingId::VideoPreferredBackend]);
     }
 
     PlayerCommittedSettingsUpdate {
@@ -957,6 +968,9 @@ fn group_for_setting(route: AppRuntimeRoute, setting_id: &str) -> AppRuntimeRout
         }
         AppRuntimeRoute::Player if player_decoder_thread_setting(setting_id) => {
             AppRuntimeRouteGroup::PlayerDecoderThreadConfig
+        }
+        AppRuntimeRoute::Player if setting_id == "video.preferred_backend" => {
+            AppRuntimeRouteGroup::PlayerVideoBackend
         }
         AppRuntimeRoute::Player => AppRuntimeRouteGroup::PlayerDeferredBoundary,
         AppRuntimeRoute::MediaService if setting_id.starts_with("youtube.") => {
@@ -1318,6 +1332,46 @@ mod tests {
         assert_eq!(
             update.audio_output_device_id.as_deref(),
             Some("cpal-0.15-name:USB%20DAC")
+        );
+        assert!(update.deferred_boundary_settings.is_empty());
+    }
+
+    #[test]
+    fn preferred_backend_route_requests_pipeline_rebuild_not_deferred_boundary() {
+        let registry = app_config_registry().expect("registry builds");
+        let mut current = AppConfig::default();
+        current.video.preferred_backend = rustiplayer_config::VideoBackendPreference::Hardware;
+
+        let diff = registry
+            .diff(&AppConfig::default(), &current)
+            .expect("diff succeeds");
+        let plan = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
+            .expect("route plan builds");
+
+        let player_route = plan
+            .committed_routes
+            .iter()
+            .find(|route| route.route == AppRuntimeRoute::Player)
+            .expect("player route exists");
+        let RuntimeCommittedUpdate::Player(update) = &player_route.update else {
+            panic!("video.preferred_backend должен попасть в player route update");
+        };
+
+        assert_eq!(
+            player_route.groups,
+            vec![AppRuntimeRouteGroupUpdate {
+                group: AppRuntimeRouteGroup::PlayerVideoBackend,
+                affected_settings: vec![SettingId::from("video.preferred_backend")],
+            }]
+        );
+        assert_eq!(
+            update
+                .player_core
+                .video_backend
+                .as_ref()
+                .expect("video backend update expected")
+                .affected_settings,
+            vec![PlayerRuntimeSettingId::VideoPreferredBackend]
         );
         assert!(update.deferred_boundary_settings.is_empty());
     }

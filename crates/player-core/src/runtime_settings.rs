@@ -93,6 +93,9 @@ pub enum PlayerRuntimeSettingId {
 
     /// `video.scheduler.surface_free_slots_target`.
     VideoSchedulerSurfaceFreeSlotsTarget,
+
+    /// `video.preferred_backend`: применяется через app-owned pipeline rebuild.
+    VideoPreferredBackend,
 }
 
 impl PlayerRuntimeSettingId {
@@ -138,6 +141,7 @@ impl PlayerRuntimeSettingId {
             Self::VideoSchedulerSurfaceFreeSlotsTarget => {
                 "video.scheduler.surface_free_slots_target"
             }
+            Self::VideoPreferredBackend => "video.preferred_backend",
         }
     }
 }
@@ -226,6 +230,33 @@ impl PlayerRuntimeDecoderThreadConfigUpdate {
     }
 }
 
+/// Backend preference change, применяемый через app-owned video pipeline rebuild.
+///
+/// Само значение backend-а worker не хранит: его читает app composition layer из
+/// committed config snapshot во время rebuild-а. Здесь нужен только сигнал и список
+/// затронутых settings для честного apply report-а.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerRuntimeVideoBackendUpdate {
+    /// Конкретные settings ids, которые потребовали смену backend-а.
+    pub affected_settings: Vec<PlayerRuntimeSettingId>,
+}
+
+impl PlayerRuntimeVideoBackendUpdate {
+    /// Создаёт backend update с явным списком затронутых settings.
+    #[must_use]
+    pub fn new<I>(affected_settings: I) -> Self
+    where
+        I: IntoIterator<Item = PlayerRuntimeSettingId>,
+    {
+        Self {
+            affected_settings: collect_or_default(
+                affected_settings,
+                &[PlayerRuntimeSettingId::VideoPreferredBackend],
+            ),
+        }
+    }
+}
+
 /// Typed committed update, который settings layer отправляет в player owner.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PlayerRuntimeSettingsUpdate {
@@ -237,6 +268,9 @@ pub struct PlayerRuntimeSettingsUpdate {
 
     /// Decoder/channel/pool settings, которые применяются через controlled rebuild.
     pub decoder_thread_config: Option<PlayerRuntimeDecoderThreadConfigUpdate>,
+
+    /// Backend preference change, применяемый через app-owned pipeline rebuild.
+    pub video_backend: Option<PlayerRuntimeVideoBackendUpdate>,
 
     /// Settings, которые player-core пока не умеет применять.
     pub unsupported_settings: Vec<PlayerRuntimeSettingId>,
@@ -296,6 +330,16 @@ impl PlayerRuntimeSettingsUpdate {
         self
     }
 
+    /// Добавляет backend preference change, требующий app-owned pipeline rebuild.
+    #[must_use]
+    pub fn with_video_backend<I>(mut self, affected_settings: I) -> Self
+    where
+        I: IntoIterator<Item = PlayerRuntimeSettingId>,
+    {
+        self.video_backend = Some(PlayerRuntimeVideoBackendUpdate::new(affected_settings));
+        self
+    }
+
     /// Добавляет settings, для которых в S07 нет runtime owner boundary.
     #[must_use]
     pub fn with_unsupported_settings<I>(mut self, affected_settings: I) -> Self
@@ -312,6 +356,7 @@ impl PlayerRuntimeSettingsUpdate {
         self.tick_config.is_none()
             && self.default_volume.is_none()
             && self.decoder_thread_config.is_none()
+            && self.video_backend.is_none()
             && self.unsupported_settings.is_empty()
     }
 }
@@ -330,6 +375,9 @@ pub enum PlayerRuntimeApplyGroup {
 
     /// Decoder thread/channel/pool limits.
     DecoderThreadConfig,
+
+    /// Backend preference, применяемый через app-owned pipeline rebuild.
+    VideoBackend,
 
     /// Неподдержанные в S07 player settings.
     UnsupportedSettings,

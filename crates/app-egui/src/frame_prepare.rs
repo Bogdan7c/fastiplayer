@@ -4,7 +4,7 @@ use anyhow::Result;
 use player_core::{
     LatencyCounterSnapshot, PlayerRenderError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyReport, PlayerRuntimeApplyResult,
-    PlayerRuntimeDecoderThreadConfigUpdate, PlayerRuntimeSettingsUpdate, PlayerSnapshot,
+    PlayerRuntimeSettingsUpdate, PlayerSnapshot,
     PlayerTickResult, PlayerVideoDropReason, PlayerWorkerEvent, PreparedMedia,
 };
 use render_core::{
@@ -169,18 +169,19 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         &mut self,
         update: PlayerRuntimeSettingsUpdate,
     ) -> PlayerRuntimeApplyResult {
-        if let Some(decoder_update) = &update.decoder_thread_config {
+        if update.decoder_thread_config.is_some() || update.video_backend.is_some() {
+            let decoder_thread_config = update.decoder_thread_config.as_ref().map_or_else(
+                || self.app_state.current_decoder_thread_config(),
+                |decoder_update| decoder_update.decoder_thread_config,
+            );
             if let Err(message) = self.app_state.rebuild_video_pipeline_with_decoder_config(
-                decoder_update.decoder_thread_config,
+                decoder_thread_config,
                 self.renderer.instance(),
                 self.renderer.adapter(),
                 self.renderer.device(),
                 self.renderer.queue(),
             ) {
-                return Ok(player_decoder_rebuild_failure_report(
-                    decoder_update,
-                    message,
-                ));
+                return Ok(player_pipeline_rebuild_failure_report(&update, message));
             }
         }
 
@@ -269,17 +270,26 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
     }
 }
 
-/// Строит typed player report, если app-owned backend rebuild не стартовал.
-fn player_decoder_rebuild_failure_report(
-    update: &PlayerRuntimeDecoderThreadConfigUpdate,
+/// Строит typed player report, если app-owned pipeline rebuild не стартовал.
+fn player_pipeline_rebuild_failure_report(
+    update: &PlayerRuntimeSettingsUpdate,
     message: String,
 ) -> PlayerRuntimeApplyReport {
     let mut report = PlayerRuntimeApplyReport::empty();
-    report.push(PlayerRuntimeApplyGroupReport::fatal(
-        PlayerRuntimeApplyGroup::DecoderThreadConfig,
-        update.affected_settings.clone(),
-        message,
-    ));
+    if let Some(decoder_update) = &update.decoder_thread_config {
+        report.push(PlayerRuntimeApplyGroupReport::fatal(
+            PlayerRuntimeApplyGroup::DecoderThreadConfig,
+            decoder_update.affected_settings.clone(),
+            message.clone(),
+        ));
+    }
+    if let Some(backend_update) = &update.video_backend {
+        report.push(PlayerRuntimeApplyGroupReport::fatal(
+            PlayerRuntimeApplyGroup::VideoBackend,
+            backend_update.affected_settings.clone(),
+            message,
+        ));
+    }
     report
 }
 
