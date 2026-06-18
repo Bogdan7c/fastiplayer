@@ -874,6 +874,65 @@ fn installing_compatible_backend_activates_pending_video_track() {
 }
 
 #[test]
+fn switching_to_hardware_backend_recomputes_active_frame_contract() {
+    // SW->HW media switch: ffmpeg-sw активен, новый ролик HW-decodable (VP9 Profile0)
+    // выбирается на software backend-е с host-upload контрактом; затем app свапает
+    // backend на vaapi. configure_active_video_decoder_stream обязан пересчитать
+    // frame contract под vaapi (DMA-BUF NV12), а не реюзать software host-upload —
+    // иначе hardware decoder падает с UnsupportedFrameContract.
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_with_hardware_and_ffmpeg_outputs());
+
+    let ffmpeg_decoder = SharedFakeVideoDecoderThread::new();
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        "ffmpeg-sw",
+        ffmpeg_decoder.clone(),
+    ));
+
+    install_fake_media_with_seekability(
+        &mut session,
+        vec![vp9_full_track(1)],
+        DemuxSeekability::Seekable,
+    );
+    assert!(
+        !session.has_pending_video_backend_reselection(),
+        "software backend сам декодит VP9 — отложенного reselection быть не должно"
+    );
+    let software_contract = ffmpeg_decoder
+        .configured_streams()
+        .last()
+        .expect("software decoder должен получить stream config")
+        .frame_contract;
+    assert_eq!(
+        software_contract,
+        VideoFrameContract::host_yuv420_planar8(),
+        "на ffmpeg-sw трек должен идти через software host-upload контракт"
+    );
+
+    let vaapi_decoder = SharedFakeVideoDecoderThread::new();
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        "vaapi",
+        vaapi_decoder.clone(),
+    ));
+
+    assert_eq!(
+        session.snapshot().selected_tracks.video_track,
+        Some(TrackId::new(1)),
+        "видео должно остаться выбранным после свапа на hardware backend"
+    );
+    let hardware_contract = vaapi_decoder
+        .configured_streams()
+        .last()
+        .expect("hardware decoder должен получить пересчитанный stream config")
+        .frame_contract;
+    assert_eq!(
+        hardware_contract,
+        VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+        "после свапа на vaapi контракт обязан стать DMA-BUF, а не остаться software host-upload"
+    );
+}
+
+#[test]
 fn rejecting_pending_video_backend_fails_with_unsupported_error() {
     let mut session = PlayerSession::new();
     session.set_system_capabilities(capabilities_vaapi_h264_only_and_ffmpeg_h264_vp9());

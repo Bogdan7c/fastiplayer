@@ -382,6 +382,16 @@ impl PlayerSession {
     }
 
     /// Повторно конфигурирует новый decoder backend под уже выбранный active video track.
+    ///
+    /// Frame contract обязан пересчитываться под НОВЫЙ backend, а не реюзаться от
+    /// прошлого: смена ffmpeg-sw -> vaapi меняет transfer path (software host-upload
+    /// YUV420P10LE -> DMA-BUF P010/NV12), и старый software-контракт hardware backend
+    /// не поддерживает (`UnsupportedFrameContract`). Поэтому requirement активного
+    /// стрима заново валидируется по playable outputs нового active backend-а, и из
+    /// matched output берётся актуальный контракт (или fallback для непробленного
+    /// requirement). После установки нового decoder-а поток перечитывается с keyframe
+    /// до текущей позиции — новый decoder стартует с пустого DPB и обязан получить
+    /// KEY_FRAME, иначе видео ждёт следующего keyframe (многосекундная чёрная пауза).
     pub(super) fn configure_active_video_decoder_stream(&mut self) -> PlayerResult<()> {
         let Some(track_id) = self.pipeline.selected_video_track_id() else {
             return Ok(());
@@ -389,14 +399,12 @@ impl PlayerSession {
         let Some(requirement) = self.pipeline.active_video_requirement().cloned() else {
             return Ok(());
         };
-        let Some(frame_contract) = self.pipeline.active_video_frame_contract() else {
-            return Ok(());
-        };
         let Some(track) = self
             .pipeline
             .tracks()
             .iter()
             .find(|track| track.id == track_id && track.kind == TrackKind::Video)
+            .cloned()
         else {
             return Err(PlayerError::new(
                 PlayerErrorKind::InvalidCommand,
@@ -404,9 +412,15 @@ impl PlayerSession {
             ));
         };
 
-        self.configure_decoder_stream_for_track(track, &requirement, frame_contract)?;
+        let frame_contract = self
+            .validate_video_decode_requirement(&requirement)?
+            .map(|output| output.frame_contract)
+            .unwrap_or_else(|| fallback_frame_contract_for_unprobed_requirement(&requirement));
+
+        self.configure_decoder_stream_for_track(&track, &requirement, frame_contract)?;
         self.pipeline
             .set_active_video_selection(requirement, frame_contract);
+        self.reseek_to_current_position_after_backend_swap();
         Ok(())
     }
 
