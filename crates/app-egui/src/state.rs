@@ -220,12 +220,23 @@ impl TelemetryPanelRow {
         }
     }
 
-    /// Рендерит строку как single-line label, чтобы `show_rows` сохранял fixed row height.
-    fn render(&self, ui: &mut egui::Ui) {
-        let text = egui::RichText::new(self.text.as_str())
-            .monospace()
-            .color(self.tone.color());
-        ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Truncate));
+    /// Дописывает строку (как отдельную text-line) в общий `LayoutJob` панели.
+    ///
+    /// Вся панель рисуется ОДНИМ виджетом-галеёй, а не Label-ом на строку: при живых
+    /// telemetry-данных набор/позиции строк меняются каждый кадр, и сотни per-row
+    /// виджетов роняли egui debug-warning «changed id between passes» (id одних и тех
+    /// же позиций «съезжали»). Один widget id это полностью устраняет и дешевле по перфу.
+    fn append_to_layout_job(&self, job: &mut egui::text::LayoutJob, font_id: egui::FontId) {
+        job.append(
+            &self.text,
+            0.0,
+            egui::TextFormat {
+                font_id,
+                color: self.tone.color(),
+                ..Default::default()
+            },
+        );
+        job.append("\n", 0.0, egui::TextFormat::default());
     }
 
     /// Возвращает текст строки для focused unit tests cache-а.
@@ -1536,7 +1547,7 @@ impl AppState {
     /// Рендерит egui UI поверх видео.
     ///
     /// UI читает только `PlayerSnapshot`, а действия после egui closure отправляет worker-у.
-    #[instrument(skip(self, window, frame_context))]
+    #[instrument(skip(self, window, frame_context, egui_input, settings_ui_model))]
     pub fn render_ui(
         &mut self,
         window: &Window,
@@ -1868,27 +1879,24 @@ impl AppState {
                 ui.heading("Telemetry");
                 ui.separator();
 
+                let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+                let mut job = egui::text::LayoutJob::default();
+                // Без переноса: длинные строки уходят за край и отсекаются clip rect-ом
+                // панели (как прежний per-row Truncate).
+                job.wrap.max_width = f32::INFINITY;
+                for row in panel_rows {
+                    row.append_to_layout_job(&mut job, font_id.clone());
+                }
+
                 egui::ScrollArea::vertical()
                     .id_salt("telemetry_scroll")
                     .auto_shrink([false, false])
-                    .show_rows(
-                        ui,
-                        Self::telemetry_panel_row_height(ui),
-                        panel_rows.len(),
-                        |ui, visible_rows| {
-                            for row_index in visible_rows {
-                                if let Some(row) = panel_rows.get(row_index) {
-                                    row.render(ui);
-                                }
-                            }
-                        },
-                    );
+                    .show(ui, |ui| {
+                        // Вся диагностика — ОДИН widget (галея): стабильный id независимо
+                        // от того, как меняется содержимое строк между кадрами.
+                        ui.label(job);
+                    });
             });
-    }
-
-    /// Возвращает fixed-height строки для `ScrollArea::show_rows`.
-    fn telemetry_panel_row_height(ui: &egui::Ui) -> f32 {
-        ui.text_style_height(&egui::TextStyle::Monospace) + ui.spacing().item_spacing.y
     }
 
     /// Собирает cached модель telemetry panel без доступа к renderer/player internals.
