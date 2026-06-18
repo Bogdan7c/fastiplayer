@@ -26,12 +26,12 @@ cache metadata is not part of the current architecture.
 
 ## Схема
 
-Current schema version: `3`.
+Current schema version: `4`.
 
 Top-level sections:
 
 ```toml
-schema_version = 3
+schema_version = 4
 
 [player]
 [player.seek]
@@ -56,6 +56,7 @@ Serde deserialization.
 Legacy schema v2 `"vaapi"` is loaded as `"hardware"` in memory. The old
 `"vulkan"` video decode preference remains removed and is rejected with a
 suggested fix instead of being migrated or silently mapped to a current backend.
+Schema v4 keeps decode-path selection only in `video.preferred_backend`.
 
 `"hardware"` means the native hardware decode path; on Linux today that concrete
 path is VA-API, but the public config value is intentionally not VA-API-specific.
@@ -75,7 +76,6 @@ backend.
 - `player.start_paused = true`
 - `player.resume_last_position = true`
 - `player.demux.max_consecutive_corrupted_packets = 64`
-- `video.hardware_decode_only = true`
 - `video.preferred_backend = "auto"`
 - `video.present_queue_frames = 8`
 - `video.decoder_packet_channel_frames = 32`

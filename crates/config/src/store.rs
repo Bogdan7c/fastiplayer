@@ -7,11 +7,14 @@ use tracing::{info, warn};
 
 use crate::{
     AppConfig, CURRENT_SCHEMA_VERSION, ConfigError, ConfigPaths, ConfigResult,
-    LEGACY_SCHEMA_VERSION_2,
+    LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3,
 };
 
 /// Сколько разных имён temp-файла пробуем перед явной ошибкой collision-а.
 const MAX_TEMP_CONFIG_CREATE_ATTEMPTS: u32 = 32;
+
+/// Удалённая legacy-галка: сейчас этот смысл задаёт `video.preferred_backend = "hardware"`.
+const REMOVED_HARDWARE_DECODE_ONLY_KEY: &str = "hardware_decode_only";
 
 /// Config, загруженный из user path или созданный из defaults.
 #[derive(Debug, Clone, PartialEq)]
@@ -307,11 +310,23 @@ fn sync_parent_directory_best_effort(path: &Path) {
 
 /// Превращает TOML text в validated `AppConfig`.
 fn parse_config_text(path: &Path, toml_text: &str) -> ConfigResult<AppConfig> {
-    let mut config =
-        toml::from_str::<AppConfig>(toml_text).map_err(|source| ConfigError::ParseConfigFile {
+    let mut toml_document = toml::from_str::<toml::Value>(toml_text).map_err(|source| {
+        ConfigError::ParseConfigFile {
             path: path.to_path_buf(),
             source,
-        })?;
+        }
+    })?;
+
+    migrate_loaded_toml_document(&mut toml_document);
+
+    let mut config: AppConfig =
+        toml_document
+            .try_into()
+            .map_err(|source| ConfigError::ParseConfigFile {
+                path: path.to_path_buf(),
+                source,
+            })?;
+
     migrate_loaded_config(&mut config);
 
     config
@@ -323,11 +338,43 @@ fn parse_config_text(path: &Path, toml_text: &str) -> ConfigResult<AppConfig> {
     Ok(config)
 }
 
+/// Нормализует TOML до strict serde-разбора, когда удалённое поле иначе сломает migration.
+fn migrate_loaded_toml_document(toml_document: &mut toml::Value) {
+    let toml::Value::Table(root_table) = toml_document else {
+        return;
+    };
+
+    if legacy_schema_allows_removed_hardware_decode_only(root_table) {
+        remove_removed_hardware_decode_only(root_table);
+    }
+}
+
+/// Проверяет, что документ ещё относится к schema, где старая галка могла быть записана.
+fn legacy_schema_allows_removed_hardware_decode_only(root_table: &toml::Table) -> bool {
+    matches!(
+        root_table.get("schema_version"),
+        Some(toml::Value::Integer(schema_version))
+            if *schema_version >= 0 && *schema_version <= i64::from(LEGACY_SCHEMA_VERSION_3)
+    )
+}
+
+/// Удаляет только известный legacy-ключ из `[video]`, не ослабляя общий `deny_unknown_fields`.
+fn remove_removed_hardware_decode_only(root_table: &mut toml::Table) {
+    let Some(toml::Value::Table(video_table)) = root_table.get_mut("video") else {
+        return;
+    };
+
+    video_table.remove(REMOVED_HARDWARE_DECODE_ONLY_KEY);
+}
+
 /// Нормализует старые TOML-схемы в текущую in-memory схему перед validation.
 fn migrate_loaded_config(config: &mut AppConfig) {
-    if config.schema_version == LEGACY_SCHEMA_VERSION_2 {
-        // Все breaking-изменения v2 -> v3 уже выражены типами:
-        // `video.preferred_backend = "vaapi"` десериализуется как `Hardware`.
+    if config.schema_version == LEGACY_SCHEMA_VERSION_2
+        || config.schema_version == LEGACY_SCHEMA_VERSION_3
+    {
+        // v2 -> v3 уже выражено типами: `video.preferred_backend = "vaapi"`
+        // десериализуется как `Hardware`. v3 -> v4 уже обработано на TOML-уровне:
+        // удалённый `video.hardware_decode_only` больше не попадает в `VideoConfig`.
         config.schema_version = CURRENT_SCHEMA_VERSION;
     }
 }
@@ -414,13 +461,13 @@ mod tests {
         assert_eq!(config.render.tone_mapping, ToneMappingMode::Disabled);
     }
 
-    /// Проверяет defaults текущей schema version 3.
+    /// Проверяет defaults текущей schema version 4.
     #[test]
-    fn schema_version_3_defaults_include_seek_network_and_ui_skin() {
+    fn schema_version_4_defaults_include_seek_network_and_ui_skin() {
         let config = AppConfig::default();
 
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
-        assert_eq!(CURRENT_SCHEMA_VERSION, 3);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 4);
         assert_eq!(config.player.seek.commit_timeout_ms, 10_000);
         assert_eq!(config.player.seek.resume_audio_min_buffer_ms, 50);
         assert_eq!(config.player.seek.resume_audio_gate_timeout_ms, 250);
@@ -564,7 +611,7 @@ mod tests {
         assert!(loaded.config.render.color_adjustment.is_identity());
 
         let created_toml = fs::read_to_string(&loaded.path).expect("created config readable");
-        assert!(created_toml.contains("schema_version = 3"));
+        assert!(created_toml.contains("schema_version = 4"));
         assert!(created_toml.contains("[player.seek]"));
         assert!(created_toml.contains("# Настройки seek commit"));
         assert!(created_toml.contains("commit_timeout_ms = 10000"));
@@ -600,6 +647,7 @@ mod tests {
         assert!(created_toml.contains("live_preview_max_hz = 60"));
         assert!(created_toml.contains("[render.hdr_to_sdr]"));
         assert!(created_toml.contains("operator = \"bt2446_c\""));
+        assert!(!created_toml.contains(REMOVED_HARDWARE_DECODE_ONLY_KEY));
 
         let reparsed = toml::from_str::<AppConfig>(&created_toml)
             .expect("documented default config remains valid TOML");
@@ -937,6 +985,37 @@ preferred_backend = "vaapi"
             loaded.config.video.preferred_backend,
             VideoBackendPreference::Hardware
         );
+    }
+
+    /// Проверяет migration boundary: старая duplicate-галка больше не ломает strict schema.
+    #[test]
+    fn legacy_hardware_decode_only_field_is_removed_before_strict_parse() {
+        for legacy_schema_version in [LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3] {
+            let temp_dir = tempfile::tempdir().expect("temp dir created");
+            let config_path = temp_dir.path().join("config.toml");
+            fs::write(
+                &config_path,
+                format!(
+                    r#"
+schema_version = {legacy_schema_version}
+
+[video]
+hardware_decode_only = false
+preferred_backend = "hardware"
+"#
+                ),
+            )
+            .expect("legacy config written");
+
+            let loaded =
+                load_from_path(&config_path).expect("removed hardware flag ignored for migration");
+
+            assert_eq!(loaded.config.schema_version, CURRENT_SCHEMA_VERSION);
+            assert_eq!(
+                loaded.config.video.preferred_backend,
+                VideoBackendPreference::Hardware
+            );
+        }
     }
 
     /// Проверяет, что другие неизвестные backend id остаются обычной schema error.

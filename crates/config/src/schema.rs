@@ -8,10 +8,13 @@ use serde::{
 use crate::{ConfigResult, validation};
 
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
-/// Предыдущая схема, которую loader умеет нормализовать в текущую.
+/// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
+
+/// Старая схема с уже удалённой галкой `video.hardware_decode_only`.
+pub(crate) const LEGACY_SCHEMA_VERSION_3: u32 = 3;
 
 /// Полная пользовательская конфигурация приложения.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, settings_derive::SettingsSchema)]
@@ -86,14 +89,14 @@ impl AppConfig {
         if !toml_text.ends_with('\n') {
             toml_text.push('\n');
         }
-        document_schema_version_3_defaults(&mut toml_text);
+        document_schema_version_4_defaults(&mut toml_text);
 
         Ok(toml_text)
     }
 }
 
-/// Добавляет русские комментарии к полям schema version 3 в default TOML.
-fn document_schema_version_3_defaults(toml_text: &mut String) {
+/// Добавляет русские комментарии к полям schema version 4 в default TOML.
+fn document_schema_version_4_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
         "[player.seek]",
@@ -705,22 +708,6 @@ pub enum VideoCodec {
 #[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct VideoConfig {
-    /// Запрещает silent fallback на software video decode.
-    #[setting(
-        id = "video.hardware_decode_only",
-        path = "video.hardware_decode_only",
-        section = "video",
-        group = "decode",
-        surface = "main-settings-window",
-        label_id = "settings.video.hardware_decode_only.label",
-        label_ru = "Только hardware decode",
-        description_id = "settings.video.hardware_decode_only.description",
-        description_ru = "Запрещает silent fallback на software video decode.",
-        editor = "toggle",
-        apply = "video.apply"
-    )]
-    pub hardware_decode_only: bool,
-
     /// Предпочитаемый decode backend.
     #[setting(
         id = "video.preferred_backend",
@@ -891,7 +878,6 @@ impl Default for VideoConfig {
     /// Возвращает текущие MVP-лимиты video backpressure.
     fn default() -> Self {
         Self {
-            hardware_decode_only: true,
             preferred_backend: VideoBackendPreference::Auto,
             max_decode_ahead_ms: 500,
             present_queue_frames: 8,
@@ -2204,7 +2190,6 @@ mod settings_metadata_tests {
         "player.seek.hotkey_large_step_secs",
         "player.demux.max_consecutive_corrupted_packets",
         "player.preferred_video_codec_order",
-        "video.hardware_decode_only",
         "video.preferred_backend",
         "video.max_decode_ahead_ms",
         "video.present_queue_frames",
