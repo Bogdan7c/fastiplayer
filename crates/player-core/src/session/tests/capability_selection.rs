@@ -732,3 +732,173 @@ fn set_h265_profile_compatibility_flag(record_bytes: &mut [u8], profile_idc: u8)
     let bit_index = 7 - (flag_index % 8);
     record_bytes[byte_index] |= 1 << bit_index;
 }
+
+/// Capabilities, где hardware (VA-API) умеет только H.264, а FFmpeg software — H.264 и VP9.
+///
+/// Это даёт сценарий `auto`: активный VA-API не тянет VP9, но software backend может.
+fn capabilities_vaapi_h264_only_and_ffmpeg_h264_vp9() -> capability_core::SystemCapabilities {
+    let hardware_backend_id = DecodeBackendId::vaapi();
+    let ffmpeg_backend_id =
+        DecodeBackendId::new("ffmpeg-sw").expect("test FFmpeg backend id is valid");
+    let h264_main = h264_main_yuv420_8bit_format();
+    let vp9_profile0 = vp9_profile0_yuv420_8bit_format();
+
+    let hardware_outputs = vec![SupportedVideoOutput {
+        backend: hardware_backend_id.clone(),
+        decode_format: h264_main.clone(),
+        frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+    }];
+    let ffmpeg_outputs = vec![
+        SupportedVideoOutput {
+            backend: ffmpeg_backend_id.clone(),
+            decode_format: h264_main,
+            frame_contract: VideoFrameContract::host_yuv420_planar8(),
+        },
+        SupportedVideoOutput {
+            backend: ffmpeg_backend_id.clone(),
+            decode_format: vp9_profile0,
+            frame_contract: VideoFrameContract::host_yuv420_planar8(),
+        },
+    ];
+
+    let mut playable_video_outputs = Vec::new();
+    playable_video_outputs.extend(hardware_outputs.iter().cloned());
+    playable_video_outputs.extend(ffmpeg_outputs.iter().cloned());
+
+    capability_core::SystemCapabilities {
+        schema_version: capability_core::CURRENT_CAPABILITY_SCHEMA_VERSION,
+        probed_at_unix_seconds: 1,
+        video_backends: vec![
+            BackendCapabilities {
+                backend_id: hardware_backend_id,
+                display_name: "Test VA-API".to_string(),
+                status: BackendProbeStatus::Available,
+                driver: BackendDriverInfo::default(),
+                raw_supported_outputs: hardware_outputs,
+                raw_profiles: Vec::new(),
+                raw_entrypoints: Vec::new(),
+                raw_rt_formats: Vec::new(),
+                quirks: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            BackendCapabilities {
+                backend_id: ffmpeg_backend_id,
+                display_name: "Test FFmpeg software".to_string(),
+                status: BackendProbeStatus::Available,
+                driver: BackendDriverInfo::default(),
+                raw_supported_outputs: ffmpeg_outputs,
+                raw_profiles: Vec::new(),
+                raw_entrypoints: Vec::new(),
+                raw_rt_formats: Vec::new(),
+                quirks: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+        ],
+        render_backends: vec![RenderCapabilities::wgpu_nv12(Some(4096))],
+        playable_video_outputs,
+    }
+}
+
+/// VP9 трек с полными metadata, чтобы requirement точно совпал с software output.
+fn vp9_full_track(track_id: u32) -> TrackInfo {
+    let mut track = fake_track(track_id, TrackKind::Video);
+    let mut metadata = VideoTrackMetadata::empty();
+    metadata.profile = Some(VideoProfile::Vp9(Vp9Profile::Profile0));
+    metadata.bit_depth = Some(BitDepth::Eight);
+    metadata.chroma = Some(ChromaSubsampling::Yuv420);
+    metadata.coded_width = Some(1920);
+    metadata.coded_height = Some(1080);
+    track.codec_id = "V_VP9".to_string();
+    track.video = Some(metadata);
+    track
+}
+
+#[test]
+fn active_hardware_backend_requests_reselection_when_only_software_can_decode() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_vaapi_h264_only_and_ffmpeg_h264_vp9());
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        "vaapi",
+        SharedFakeVideoDecoderThread::new(),
+    ));
+    let _ = session.take_events();
+
+    let tracks = vec![vp9_full_track(1)];
+    session
+        .select_default_video_track(&tracks, "media содержит VP9 video track")
+        .expect("VP9 трек должен запросить reselection, а не упасть как unsupported");
+
+    assert!(
+        session.has_pending_video_backend_reselection(),
+        "видео должно ждать совместимого software backend-а"
+    );
+    assert!(
+        session.take_events().iter().any(|event| matches!(
+            event,
+            PlayerEvent::VideoBackendSelectionRequested(request)
+                if !request.decodable_by_active_backend
+        )),
+        "shell должен получить запрос на подбор backend-а с decodable_by_active_backend=false"
+    );
+}
+
+#[test]
+fn installing_compatible_backend_activates_pending_video_track() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_vaapi_h264_only_and_ffmpeg_h264_vp9());
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        "vaapi",
+        SharedFakeVideoDecoderThread::new(),
+    ));
+    install_fake_media_with_seekability(
+        &mut session,
+        vec![vp9_full_track(1)],
+        DemuxSeekability::Seekable,
+    );
+    assert!(session.has_pending_video_backend_reselection());
+
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        "ffmpeg-sw",
+        SharedFakeVideoDecoderThread::new(),
+    ));
+
+    assert!(
+        !session.has_pending_video_backend_reselection(),
+        "после установки software backend-а отложенный выбор должен закрыться"
+    );
+    assert_eq!(
+        session.snapshot().selected_tracks.video_track,
+        Some(TrackId::new(1)),
+        "VP9 трек должен активироваться на совместимом backend-е"
+    );
+}
+
+#[test]
+fn rejecting_pending_video_backend_fails_with_unsupported_error() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_vaapi_h264_only_and_ffmpeg_h264_vp9());
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        "vaapi",
+        SharedFakeVideoDecoderThread::new(),
+    ));
+    let tracks = vec![vp9_full_track(1)];
+    session
+        .select_default_video_track(&tracks, "media содержит VP9 video track")
+        .expect("VP9 трек должен запросить reselection");
+    assert!(session.has_pending_video_backend_reselection());
+    let _ = session.take_events();
+
+    session.reject_pending_video_backend("hardware preference не допускает software".to_string());
+
+    assert!(
+        !session.has_pending_video_backend_reselection(),
+        "отклонённый выбор не должен оставаться pending"
+    );
+    assert!(
+        session.take_events().iter().any(|event| matches!(
+            event,
+            PlayerEvent::FatalError(error) if error.kind == PlayerErrorKind::UnsupportedVideoCodec
+        )),
+        "отказ shell-а должен дать typed unsupported fatal error"
+    );
+}

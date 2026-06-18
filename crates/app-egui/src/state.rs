@@ -16,6 +16,7 @@ use player_core::{
     PlayerErrorKind, PlayerEvent, PlayerPresentFrame, PlayerRenderError, PlayerRuntimeApplyResult,
     PlayerRuntimeSettingsUpdate, PlayerSnapshot, PlayerVideoDecoderThreadConfig, PlayerWorker,
     PlayerWorkerConfig, PlayerWorkerEvent, PreparedMedia, QualitySelection, SeekRequest,
+    VideoBackendSelectionRequest, VideoDecodeRequirement,
 };
 use render_core::RenderDiagnostics;
 use render_wgpu_video::{
@@ -44,7 +45,9 @@ use crate::ui::sidebar::{self, AppSidebarContent};
 use crate::ui::skin::{self, PlayerSkin};
 use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
 use crate::ui::window_chrome::{self, WindowChromeAction, WindowChromeInput, WindowChromeStyle};
-use crate::video_pipeline_selector::{VideoPipelinePlan, select_video_pipeline_plan};
+use crate::video_pipeline_selector::{
+    VideoBackendKind, VideoPipelinePlan, select_video_pipeline_plan,
+};
 
 /// Частота обновления тяжёлого текста telemetry panel.
 ///
@@ -546,6 +549,7 @@ fn cached_present_frame_discard_reason_for_player_event(
         | PlayerEvent::SubtitleTrackSelected(_)
         | PlayerEvent::QualitySelectionChanged(_)
         | PlayerEvent::ConfigReloadRequested
+        | PlayerEvent::VideoBackendSelectionRequested(_)
         | PlayerEvent::RecoverableError(_) => None,
     }
 }
@@ -699,6 +703,12 @@ pub struct AppState {
     /// WGPU video materializer concrete backend-а; `player-core` его не видит.
     wgpu_frame_materializer: Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
 
+    /// Класс активного video backend-а, чтобы не пересоздавать pipeline без нужды.
+    current_video_backend_kind: Option<VideoBackendKind>,
+
+    /// Отложенный запрос player-core на подбор backend-а под текущий стрим (`auto`).
+    pending_video_backend_reselection: Option<VideoBackendSelectionRequest>,
+
     /// Последний локальный файл, открытый shell-ом, для восстановления после suspend.
     current_local_file: Option<PathBuf>,
 
@@ -783,6 +793,8 @@ impl AppState {
             pending_redraw_after_worker_command: false,
             cached_renderable_present_frame: None,
             wgpu_frame_materializer: None,
+            current_video_backend_kind: None,
+            pending_video_backend_reselection: None,
             current_local_file: None,
             active_media_source: None,
             local_file_open_job: None,
@@ -1105,6 +1117,7 @@ impl AppState {
         let decoder_thread_config = self.player_worker.decoder_thread_config();
         if let Err(error) = self.rebuild_video_pipeline_with_decoder_config(
             decoder_thread_config,
+            None,
             instance,
             adapter,
             device,
@@ -1118,6 +1131,7 @@ impl AppState {
     pub(crate) fn rebuild_video_pipeline_with_decoder_config(
         &mut self,
         decoder_thread_config: PlayerVideoDecoderThreadConfig,
+        stream_requirement: Option<&VideoDecodeRequirement>,
         instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
@@ -1127,9 +1141,11 @@ impl AppState {
             self.committed_config_snapshot.video_backend_preference(),
             self.system_capabilities_snapshot.as_ref(),
             decoder_thread_config,
+            stream_requirement,
         )
         .map_err(|error| format!("video pipeline selection failed: {error}"))?;
         let plan_label = plan.diagnostic_label();
+        let plan_backend_kind = plan.backend_kind();
 
         let (player_backend, frame_materializer): (
             player_core::StartedVideoBackend,
@@ -1182,9 +1198,82 @@ impl AppState {
         }
 
         self.wgpu_frame_materializer = Some(frame_materializer);
+        self.current_video_backend_kind = Some(plan_backend_kind);
         info!(plan = plan_label, "Selected video pipeline");
         self.mark_pending_worker_redraw();
         Ok(())
+    }
+
+    /// Запоминает последний запрос player-core на подбор backend-а под активный стрим.
+    pub(crate) fn note_video_backend_reselection_request(
+        &mut self,
+        request: VideoBackendSelectionRequest,
+    ) {
+        self.pending_video_backend_reselection = Some(request);
+    }
+
+    /// Забирает отложенный запрос на подбор backend-а для обработки в текущем кадре.
+    pub(crate) fn take_pending_video_backend_reselection(
+        &mut self,
+    ) -> Option<VideoBackendSelectionRequest> {
+        self.pending_video_backend_reselection.take()
+    }
+
+    /// Подбирает backend под текущий стрим по committed preference и при необходимости
+    /// бесшовно переключает video pipeline; если нужный класс backend-а запрещён политикой
+    /// и видео отложено — отклоняет его, сохраняя typed unsupported error.
+    pub(crate) fn apply_video_backend_reselection(
+        &mut self,
+        request: &VideoBackendSelectionRequest,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        let decoder_thread_config = self.current_decoder_thread_config();
+        let preference = self.committed_config_snapshot.video_backend_preference();
+        match select_video_pipeline_plan(
+            preference,
+            self.system_capabilities_snapshot.as_ref(),
+            decoder_thread_config,
+            Some(&request.requirement),
+        ) {
+            Ok(plan) => {
+                // Нужный backend уже активен — player декодирует как есть, свап не требуется.
+                if self.current_video_backend_kind == Some(plan.backend_kind()) {
+                    return;
+                }
+                if let Err(error) = self.rebuild_video_pipeline_with_decoder_config(
+                    decoder_thread_config,
+                    Some(&request.requirement),
+                    instance,
+                    adapter,
+                    device,
+                    queue,
+                ) {
+                    warn!(error = %error, "Не удалось переключить video backend под текущий стрим");
+                    if !request.decodable_by_active_backend {
+                        self.reject_pending_video_backend(format!(
+                            "не удалось запустить совместимый backend: {error}"
+                        ));
+                    }
+                }
+            }
+            Err(error) => {
+                // Текущий preference не допускает backend для этого стрима (например
+                // hardware + AV1). Если видео отложено — отклоняем, иначе оставляем как есть.
+                if !request.decodable_by_active_backend {
+                    self.reject_pending_video_backend(error.to_string());
+                }
+            }
+        }
+    }
+
+    /// Сообщает worker-у, что совместимый backend для отложенного видео не найден.
+    fn reject_pending_video_backend(&self, reason: String) {
+        if let Err(error) = self.player_worker.reject_pending_video_backend(reason) {
+            warn!(error = %error, "Не удалось доставить reject pending video backend в worker");
+        }
     }
 
     /// Возвращает WGPU materializer текущего concrete video backend-а.

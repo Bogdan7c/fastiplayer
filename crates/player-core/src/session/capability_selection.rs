@@ -16,9 +16,10 @@ use video_core::{
 };
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
+use crate::event::VideoBackendSelectionRequest;
 use crate::{PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, TrackId};
 
-use super::PlayerSession;
+use super::{PendingVideoBackendReselection, PlayerSession};
 
 /// Принятый video stream после capability validation.
 struct AcceptedVideoSelection {
@@ -27,6 +28,31 @@ struct AcceptedVideoSelection {
 
     /// Concrete backend output; отсутствует только в legacy test/no-capabilities path.
     matched_output: Option<SupportedVideoOutput>,
+}
+
+/// Итог выбора одного video-трека до мутации selection state.
+enum VideoTrackSelectionOutcome {
+    /// Трек принят текущим (или будущим после probe) backend-ом и готов к активации.
+    Accepted(AcceptedVideoSelection),
+
+    /// Активный backend не тянет трек, но другой playable backend может — нужен свап.
+    BackendReselectionRequired {
+        /// Decode requirement, под который shell должен подобрать backend.
+        requirement: VideoDecodeRequirement,
+    },
+}
+
+/// Итог выбора default video-трека для media open / demux track-list update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DefaultVideoTrackOutcome {
+    /// Подходящий video-трек выбран и активирован на текущем backend-е.
+    Selected,
+
+    /// В media нет video-треков.
+    NoVideoTrack,
+
+    /// Видео отложено: запрошен бесшовный backend reselection через worker event.
+    BackendReselectionRequested,
 }
 
 impl PlayerSession {
@@ -46,7 +72,7 @@ impl PlayerSession {
         &mut self,
         tracks: &[TrackInfo],
         missing_message: &str,
-    ) -> PlayerResult<()> {
+    ) -> PlayerResult<DefaultVideoTrackOutcome> {
         let video_tracks = tracks
             .iter()
             .filter(|track| track.kind == TrackKind::Video)
@@ -54,21 +80,34 @@ impl PlayerSession {
 
         if video_tracks.is_empty() {
             info!("{missing_message}");
-            return Ok(());
+            return Ok(DefaultVideoTrackOutcome::NoVideoTrack);
         }
 
         let mut last_rejection = None;
+        // Первый трек, который может играть на другом backend-е; используется только если
+        // ни один трек не подошёл текущему backend-у (предпочитаем decode без свапа).
+        let mut reselection: Option<(VideoDecodeRequirement, TrackId)> = None;
         for track in video_tracks {
             match self.accepted_video_selection_for_track(track) {
-                Ok(selection) => {
+                Ok(VideoTrackSelectionOutcome::Accepted(selection)) => {
+                    let requirement = selection.requirement.clone();
                     self.activate_video_track(track, selection)?;
-                    return Ok(());
+                    self.note_active_video_stream_requirement(requirement, true);
+                    return Ok(DefaultVideoTrackOutcome::Selected);
+                }
+                Ok(VideoTrackSelectionOutcome::BackendReselectionRequired { requirement }) => {
+                    reselection.get_or_insert((requirement, track.id));
                 }
                 Err(error) if can_try_next_video_track_after_error(&error.kind) => {
                     last_rejection = Some(error);
                 }
                 Err(error) => return Err(error),
             }
+        }
+
+        if let Some((requirement, track_id)) = reselection {
+            self.request_video_backend_reselection(requirement, track_id);
+            return Ok(DefaultVideoTrackOutcome::BackendReselectionRequested);
         }
 
         Err(last_rejection.unwrap_or_else(|| {
@@ -91,8 +130,16 @@ impl PlayerSession {
             ));
         };
 
-        let selection = self.accepted_video_selection_for_track(&track)?;
-        self.activate_video_track(&track, selection)?;
+        match self.accepted_video_selection_for_track(&track)? {
+            VideoTrackSelectionOutcome::Accepted(selection) => {
+                let requirement = selection.requirement.clone();
+                self.activate_video_track(&track, selection)?;
+                self.note_active_video_stream_requirement(requirement, true);
+            }
+            VideoTrackSelectionOutcome::BackendReselectionRequired { requirement } => {
+                self.request_video_backend_reselection(requirement, track.id);
+            }
+        }
         Ok(())
     }
 
@@ -100,7 +147,7 @@ impl PlayerSession {
     fn accepted_video_selection_for_track(
         &self,
         track: &TrackInfo,
-    ) -> PlayerResult<AcceptedVideoSelection> {
+    ) -> PlayerResult<VideoTrackSelectionOutcome> {
         let Some(requirement) = video_requirement_from_track(track) else {
             return Err(PlayerError::new(
                 PlayerErrorKind::UnsupportedVideoCodec,
@@ -112,10 +159,12 @@ impl PlayerSession {
         };
 
         match self.validate_video_decode_requirement(&requirement) {
-            Ok(matched_output) => Ok(AcceptedVideoSelection {
-                requirement,
-                matched_output,
-            }),
+            Ok(matched_output) => Ok(VideoTrackSelectionOutcome::Accepted(
+                AcceptedVideoSelection {
+                    requirement,
+                    matched_output,
+                },
+            )),
             Err(error) => {
                 if self.can_defer_packet_refinement(&requirement) {
                     info!(
@@ -123,15 +172,152 @@ impl PlayerSession {
                         requirement = %requirement.describe(),
                         "Video track выбран до bitstream refinement; strict capability check будет повторён перед decode"
                     );
-                    return Ok(AcceptedVideoSelection {
+                    return Ok(VideoTrackSelectionOutcome::Accepted(
+                        AcceptedVideoSelection {
+                            requirement,
+                            matched_output: None,
+                        },
+                    ));
+                }
+
+                // Активный backend не тянет стрим, но другой playable backend может —
+                // это не fatal unsupported, а запрос на бесшовную смену backend-а.
+                if self
+                    .video_backend_reselection_candidate(&requirement)
+                    .is_some()
+                {
+                    return Ok(VideoTrackSelectionOutcome::BackendReselectionRequired {
                         requirement,
-                        matched_output: None,
                     });
                 }
 
                 Err(error)
             }
         }
+    }
+
+    /// Возвращает playable output другого backend-а, если активный backend не тянет стрим.
+    ///
+    /// `None` означает «активный backend сам справляется» либо «ни один backend не может»;
+    /// в обоих случаях reselection не нужен (первый — уже играем, второй — настоящая ошибка).
+    fn video_backend_reselection_candidate(
+        &self,
+        requirement: &VideoDecodeRequirement,
+    ) -> Option<&SupportedVideoOutput> {
+        let capabilities = self.capabilities.as_ref()?;
+        let active_backend_id = self.active_video_backend_id.as_deref()?;
+
+        let active_backend_serves = capabilities.playable_video_outputs.iter().any(|output| {
+            output.backend.as_str() == active_backend_id && output.satisfies(requirement)
+        });
+        if active_backend_serves {
+            return None;
+        }
+
+        capabilities.playable_video_outputs.iter().find(|output| {
+            output.backend.as_str() != active_backend_id && output.satisfies(requirement)
+        })
+    }
+
+    /// Запоминает отложенный выбор и эмитит запрос shell-у на смену backend-а.
+    fn request_video_backend_reselection(
+        &mut self,
+        requirement: VideoDecodeRequirement,
+        track_id: TrackId,
+    ) {
+        info!(
+            track_id = %track_id,
+            requirement = %requirement.describe(),
+            "Активный video backend не тянет стрим; запрошен бесшовный backend reselection"
+        );
+        self.pending_video_backend_reselection = Some(PendingVideoBackendReselection {
+            requirement: requirement.clone(),
+            track_id,
+        });
+        self.note_active_video_stream_requirement(requirement, false);
+    }
+
+    /// Сообщает shell-у requirement активного стрима, чтобы тот подтвердил/сменил backend.
+    fn note_active_video_stream_requirement(
+        &mut self,
+        requirement: VideoDecodeRequirement,
+        decodable_by_active_backend: bool,
+    ) {
+        self.pending_events
+            .push(PlayerEvent::VideoBackendSelectionRequested(
+                VideoBackendSelectionRequest {
+                    requirement,
+                    decodable_by_active_backend,
+                },
+            ));
+    }
+
+    /// Активирует отложенный video-трек на только что установленном совместимом backend-е.
+    pub(super) fn retry_pending_video_backend_reselection(&mut self) {
+        let Some(pending) = self.pending_video_backend_reselection.take() else {
+            return;
+        };
+
+        let Some(track) = self
+            .pipeline
+            .tracks()
+            .iter()
+            .find(|track| track.id == pending.track_id && track.kind == TrackKind::Video)
+            .cloned()
+        else {
+            self.record_recoverable_error(PlayerError::new(
+                PlayerErrorKind::InvalidCommand,
+                format!(
+                    "Отложенный video track `{}` отсутствует после backend reselection",
+                    pending.track_id
+                ),
+            ));
+            return;
+        };
+
+        match self.validate_video_decode_requirement(&pending.requirement) {
+            Ok(matched_output) => {
+                let requirement = pending.requirement.clone();
+                let selection = AcceptedVideoSelection {
+                    requirement: pending.requirement,
+                    matched_output,
+                };
+                if let Err(error) = self.activate_video_track(&track, selection) {
+                    self.mark_fatal_error(error);
+                    return;
+                }
+                self.note_active_video_stream_requirement(requirement, true);
+            }
+            Err(error) => self.mark_fatal_error(error),
+        }
+    }
+
+    /// Отклоняет отложенный video-трек, когда shell не может предоставить совместимый backend.
+    ///
+    /// Используется для `hardware`/`software` preference, где свап на другой класс backend-а
+    /// запрещён политикой: сохраняем прежнюю семантику typed unsupported error.
+    pub(super) fn reject_pending_video_backend(&mut self, reason: String) {
+        let Some(pending) = self.pending_video_backend_reselection.take() else {
+            return;
+        };
+        self.mark_fatal_error(PlayerError::new(
+            PlayerErrorKind::UnsupportedVideoCodec,
+            format!(
+                "Не удалось подобрать decode backend для {}: {reason}",
+                pending.requirement.describe()
+            ),
+        ));
+    }
+
+    /// Сообщает, ждёт ли session установки совместимого backend-а для отложенного видео.
+    #[must_use]
+    pub(super) const fn has_pending_video_backend_reselection(&self) -> bool {
+        self.pending_video_backend_reselection.is_some()
+    }
+
+    /// Сбрасывает отложенный выбор backend-а при полном reset текущего media.
+    pub(super) fn clear_pending_video_backend_reselection(&mut self) {
+        self.pending_video_backend_reselection = None;
     }
 
     /// Активирует video track после обычной проверки или разрешённого deferred refinement.
@@ -283,7 +469,24 @@ impl PlayerSession {
         &mut self,
         requirement: VideoDecodeRequirement,
     ) -> PlayerResult<()> {
-        let matched_output = self.validate_video_decode_requirement(&requirement)?;
+        let matched_output = match self.validate_video_decode_requirement(&requirement) {
+            Ok(matched_output) => matched_output,
+            Err(error) => {
+                // После probe выяснилось, что активный backend не тянет уточнённый стрим
+                // (например H.264 High10, который умеет только software). Если другой
+                // playable backend может — запрашиваем бесшовный свап, иначе fatal.
+                if self
+                    .video_backend_reselection_candidate(&requirement)
+                    .is_some()
+                {
+                    if let Some(track_id) = self.pipeline.selected_video_track_id() {
+                        self.request_video_backend_reselection(requirement, track_id);
+                        return Ok(());
+                    }
+                }
+                return Err(error);
+            }
+        };
         let frame_contract = matched_output
             .as_ref()
             .map(|output| output.frame_contract)

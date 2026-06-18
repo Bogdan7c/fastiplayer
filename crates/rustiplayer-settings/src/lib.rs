@@ -860,7 +860,8 @@ fn player_update_from_settings(
         );
     }
     if video_backend_changed {
-        player_core = player_core.with_video_backend([PlayerRuntimeSettingId::VideoPreferredBackend]);
+        player_core =
+            player_core.with_video_backend([PlayerRuntimeSettingId::VideoPreferredBackend]);
     }
 
     PlayerCommittedSettingsUpdate {

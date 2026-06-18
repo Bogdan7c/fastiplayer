@@ -1,9 +1,28 @@
 use std::time::Duration;
 
+use codec_core::VideoDecodeRequirement;
+
 use crate::{
     MediaOpenRequest, PlaybackResumeIntent, PlaybackState, PlayerError, QualitySelection,
     SeekRequest, TrackId,
 };
+
+/// Требование текущего активного video-стрима, под которое shell должен подобрать backend.
+///
+/// Player-core остаётся policy-neutral: он лишь сообщает, какой стрим сейчас активен и
+/// может ли его декодировать текущий backend. Решение «какой backend под `auto/hardware/
+/// software` запустить» принимает composition layer (`app-egui`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoBackendSelectionRequest {
+    /// Decode requirement выбранного video-трека (codec/profile/bit-depth/chroma/color).
+    pub requirement: VideoDecodeRequirement,
+
+    /// `true`, если уже установленный backend способен декодировать этот стрим прямо сейчас.
+    ///
+    /// `false` означает, что видео отложено и ждёт, пока shell установит совместимый backend
+    /// (или явно откажет в нём для текущего preference).
+    pub decodable_by_active_backend: bool,
+}
 
 /// Краткое описание media после успешного открытия.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +135,13 @@ pub enum PlayerEvent {
 
     /// Video track выбран.
     VideoTrackSelected(TrackId),
+
+    /// Активному video-стриму нужно подобрать/подтвердить decode backend под текущий preference.
+    ///
+    /// Shell оценивает requirement и при необходимости бесшовно переключает video pipeline
+    /// (например, hardware zero-copy для поддерживаемого кодека и FFmpeg software для
+    /// неподдерживаемого). Эмитится при каждом выборе active video-трека.
+    VideoBackendSelectionRequested(VideoBackendSelectionRequest),
 
     /// Audio track выбран.
     AudioTrackSelected(TrackId),

@@ -31,9 +31,9 @@ use crate::{
     PlayerRuntimeApplyReport, PlayerRuntimeApplyResult, PlayerRuntimeDecoderThreadConfigUpdate,
     PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeSettingsUpdate, PlayerRuntimeTickConfigUpdate,
     PlayerRuntimeVideoBackendUpdate, PlayerSession, PlayerSnapshot, PlayerTickConfig,
-    PlayerTickContext, PlayerTickResult,
-    PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan, PreparedMedia,
-    SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend, scheduler_timing_diagnostics,
+    PlayerTickContext, PlayerTickResult, PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan,
+    PreparedMedia, SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend,
+    scheduler_timing_diagnostics,
 };
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
@@ -575,6 +575,17 @@ impl PlayerWorker {
             .map_err(PlayerWorkerSendError::from)
     }
 
+    /// Сообщает worker-у, что shell не нашёл совместимый backend для отложенного видео.
+    pub fn reject_pending_video_backend(
+        &self,
+        reason: String,
+    ) -> Result<(), PlayerWorkerSendError> {
+        self.command_sender
+            .command_tx
+            .try_send(WorkerCommand::RejectPendingVideoBackend { reason })
+            .map_err(PlayerWorkerSendError::from)
+    }
+
     /// Передаёт capability report из shell/backend layer в worker.
     pub fn set_system_capabilities(
         &self,
@@ -690,6 +701,13 @@ enum WorkerCommand {
     SetVideoBackend {
         /// Started backend содержит только playback-facing decoder handle.
         started_backend: StartedVideoBackend,
+    },
+
+    /// Shell не смог подобрать совместимый backend под отложенный стрим (например
+    /// `hardware`/`software` preference запрещает нужный класс backend-а).
+    RejectPendingVideoBackend {
+        /// Человекочитаемая причина для typed unsupported error.
+        reason: String,
     },
 
     /// Capability report из shell/backend layer.
@@ -1478,6 +1496,10 @@ impl PlayerWorkerRuntime {
             }
             WorkerCommand::SetVideoBackend { started_backend } => {
                 self.session.set_video_backend(started_backend);
+            }
+            WorkerCommand::RejectPendingVideoBackend { reason } => {
+                self.session
+                    .reject_pending_video_backend_with_reason(reason);
             }
             WorkerCommand::SetSystemCapabilities(capabilities) => {
                 self.session.set_system_capabilities(capabilities);

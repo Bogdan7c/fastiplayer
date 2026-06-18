@@ -112,6 +112,8 @@ impl PlayerSession {
         );
 
         self.init_audio_pipeline(prepared_media.tracks());
+        // Reselection-исход не фатальный: media устанавливается дальше, видео ждёт, пока
+        // shell поднимет совместимый backend и session активирует отложенный трек.
         if let Err(error) = self.select_default_video_track(
             prepared_media.tracks(),
             prepared_media.missing_video_track_message(),
@@ -289,6 +291,7 @@ impl PlayerSession {
         self.pipeline.reset_media_slots();
         self.reset_diagnostics_for_media();
 
+        self.clear_pending_video_backend_reselection();
         self.media_lifecycle.clear_pending_autoplay();
         self.seek_runtime.clear_active_commit();
         self.seek_runtime.clear_trace();

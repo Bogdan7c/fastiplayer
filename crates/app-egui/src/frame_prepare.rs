@@ -2,10 +2,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use player_core::{
-    LatencyCounterSnapshot, PlayerRenderError, PlayerRuntimeApplyGroup,
+    LatencyCounterSnapshot, PlayerEvent, PlayerRenderError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyReport, PlayerRuntimeApplyResult,
-    PlayerRuntimeSettingsUpdate, PlayerSnapshot,
-    PlayerTickResult, PlayerVideoDropReason, PlayerWorkerEvent, PreparedMedia,
+    PlayerRuntimeSettingsUpdate, PlayerSnapshot, PlayerTickResult, PlayerVideoDropReason,
+    PlayerWorkerEvent, PreparedMedia,
 };
 use render_core::{
     RenderLiveApplyReport, RenderLiveSettings, RenderLiveSettingsAdapter, RenderLiveSettingsError,
@@ -176,6 +176,7 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
             );
             if let Err(message) = self.app_state.rebuild_video_pipeline_with_decoder_config(
                 decoder_thread_config,
+                None,
                 self.renderer.instance(),
                 self.renderer.adapter(),
                 self.renderer.device(),
@@ -618,6 +619,9 @@ fn record_worker_events(
             }
             PlayerWorkerEvent::Player(player_event) => {
                 app_state.handle_cached_present_frame_player_event(&player_event);
+                if let PlayerEvent::VideoBackendSelectionRequested(request) = player_event {
+                    app_state.note_video_backend_reselection_request(request);
+                }
             }
         }
     }
@@ -1380,6 +1384,17 @@ pub(crate) fn render_frame(
 
     let stage_started_at = Instant::now();
     record_worker_events(telemetry, app_state, worker_events);
+    // Бесшовный подбор decode backend-а под текущий стрим (`auto`): выполняется здесь,
+    // потому что только тут доступен renderer для пересоздания WGPU materializer-а.
+    if let Some(request) = app_state.take_pending_video_backend_reselection() {
+        app_state.apply_video_backend_reselection(
+            &request,
+            renderer.instance(),
+            renderer.adapter(),
+            renderer.device(),
+            renderer.queue(),
+        );
+    }
     let worker_event_record_elapsed = stage_started_at.elapsed();
 
     let stage_started_at = Instant::now();

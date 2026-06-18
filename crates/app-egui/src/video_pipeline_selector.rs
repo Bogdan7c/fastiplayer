@@ -5,7 +5,7 @@
 //! intersection. Исполнение выбранного плана остаётся в `AppState`.
 
 use capability_core::{SupportedVideoOutput, SystemCapabilities};
-use player_core::PlayerVideoDecoderThreadConfig;
+use player_core::{PlayerVideoDecoderThreadConfig, VideoDecodeRequirement};
 use rustiplayer_config::VideoBackendPreference;
 use thiserror::Error;
 use video_ffmpeg::FFMPEG_SOFTWARE_BACKEND_ID;
@@ -13,6 +13,17 @@ use video_frame_contract::{HardwareFrameHandle, VideoFrameTransferPath};
 
 /// Stable backend id из `codec-core`; app layer сравнивает строку без direct dependency.
 const VAAPI_BACKEND_ID: &str = "vaapi";
+
+/// Класс concrete backend-а; используется shell-ом, чтобы не пересоздавать pipeline,
+/// если нужный backend уже активен.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VideoBackendKind {
+    /// Hardware zero-copy путь (VA-API DMA-BUF сейчас).
+    HardwareZeroCopy,
+
+    /// FFmpeg software host-upload путь.
+    FfmpegSoftware,
+}
 
 /// Concrete video pipeline, который `app-egui` умеет реально запустить сейчас.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +47,14 @@ impl VideoPipelinePlan {
         match self {
             Self::VaapiDmaBufWgpu { .. } => "vaapi-dmabuf-wgpu",
             Self::FfmpegHostUploadWgpu { .. } => "ffmpeg-host-upload-wgpu",
+        }
+    }
+
+    /// Класс backend-а выбранного плана для сравнения с уже активным backend-ом.
+    pub const fn backend_kind(self) -> VideoBackendKind {
+        match self {
+            Self::VaapiDmaBufWgpu { .. } => VideoBackendKind::HardwareZeroCopy,
+            Self::FfmpegHostUploadWgpu { .. } => VideoBackendKind::FfmpegSoftware,
         }
     }
 }
@@ -74,51 +93,68 @@ pub(crate) fn select_video_pipeline_plan(
     preferred_backend: VideoBackendPreference,
     system_capabilities: Option<&SystemCapabilities>,
     decoder_thread_config: PlayerVideoDecoderThreadConfig,
+    stream_requirement: Option<&VideoDecodeRequirement>,
 ) -> Result<VideoPipelinePlan, VideoPipelineSelectionError> {
     let system_capabilities =
         system_capabilities.ok_or(VideoPipelineSelectionError::CapabilitiesUnavailable)?;
     let playable_video_outputs = system_capabilities.playable_video_outputs.as_slice();
 
     match preferred_backend {
-        VideoBackendPreference::Auto => {
-            select_auto_fallback_plan(playable_video_outputs, decoder_thread_config)
-        }
+        VideoBackendPreference::Auto => select_auto_fallback_plan(
+            playable_video_outputs,
+            decoder_thread_config,
+            stream_requirement,
+        ),
         VideoBackendPreference::Hardware
-            if playable_video_outputs
-                .iter()
-                .any(is_playable_vaapi_dma_buf_output) =>
+            if playable_video_outputs.iter().any(|output| {
+                is_playable_vaapi_dma_buf_output(output)
+                    && output_serves_requirement(output, stream_requirement)
+            }) =>
         {
             Ok(VideoPipelinePlan::VaapiDmaBufWgpu {
                 decoder_thread_config,
             })
         }
-        VideoBackendPreference::Hardware => select_hardware_rejection(playable_video_outputs),
+        VideoBackendPreference::Hardware => {
+            select_hardware_rejection(playable_video_outputs, stream_requirement)
+        }
         VideoBackendPreference::Software => select_software_plan(
             VideoBackendPreference::Software,
             playable_video_outputs,
             decoder_thread_config,
+            stream_requirement,
         ),
     }
+}
+
+/// Сообщает, обслуживает ли output текущий стрим (или фильтр выключен при `None`).
+fn output_serves_requirement(
+    output: &SupportedVideoOutput,
+    stream_requirement: Option<&VideoDecodeRequirement>,
+) -> bool {
+    stream_requirement.is_none_or(|requirement| output.satisfies(requirement))
 }
 
 /// Выбирает будущий software fallback только когда playable hardware output вообще отсутствует.
 fn select_auto_fallback_plan(
     playable_video_outputs: &[SupportedVideoOutput],
     decoder_thread_config: PlayerVideoDecoderThreadConfig,
+    stream_requirement: Option<&VideoDecodeRequirement>,
 ) -> Result<VideoPipelinePlan, VideoPipelineSelectionError> {
-    if playable_video_outputs
-        .iter()
-        .any(is_playable_vaapi_dma_buf_output)
-    {
+    // Приоритет auto — hardware zero-copy для текущего стрима, затем FFmpeg software.
+    if playable_video_outputs.iter().any(|output| {
+        is_playable_vaapi_dma_buf_output(output)
+            && output_serves_requirement(output, stream_requirement)
+    }) {
         return Ok(VideoPipelinePlan::VaapiDmaBufWgpu {
             decoder_thread_config,
         });
     }
 
-    if let Some(native_hardware_output) = playable_video_outputs
-        .iter()
-        .find(|output| is_playable_native_hardware_output(output))
-    {
+    if let Some(native_hardware_output) = playable_video_outputs.iter().find(|output| {
+        is_playable_native_hardware_output(output)
+            && output_serves_requirement(output, stream_requirement)
+    }) {
         return Err(requested_backend_unavailable(
             VideoBackendPreference::Auto,
             native_hardware_output,
@@ -129,17 +165,19 @@ fn select_auto_fallback_plan(
         VideoBackendPreference::Auto,
         playable_video_outputs,
         decoder_thread_config,
+        stream_requirement,
     )
 }
 
 /// Отклоняет hardware request без перехода на software или raw provider outputs.
 fn select_hardware_rejection(
     playable_video_outputs: &[SupportedVideoOutput],
+    stream_requirement: Option<&VideoDecodeRequirement>,
 ) -> Result<VideoPipelinePlan, VideoPipelineSelectionError> {
-    if let Some(native_hardware_output) = playable_video_outputs
-        .iter()
-        .find(|output| is_playable_native_hardware_output(output))
-    {
+    if let Some(native_hardware_output) = playable_video_outputs.iter().find(|output| {
+        is_playable_native_hardware_output(output)
+            && output_serves_requirement(output, stream_requirement)
+    }) {
         return Err(requested_backend_unavailable(
             VideoBackendPreference::Hardware,
             native_hardware_output,
@@ -154,20 +192,20 @@ fn select_software_plan(
     preferred_backend: VideoBackendPreference,
     playable_video_outputs: &[SupportedVideoOutput],
     decoder_thread_config: PlayerVideoDecoderThreadConfig,
+    stream_requirement: Option<&VideoDecodeRequirement>,
 ) -> Result<VideoPipelinePlan, VideoPipelineSelectionError> {
-    if playable_video_outputs
-        .iter()
-        .any(is_playable_ffmpeg_host_upload_output)
-    {
+    if playable_video_outputs.iter().any(|output| {
+        is_playable_ffmpeg_host_upload_output(output)
+            && output_serves_requirement(output, stream_requirement)
+    }) {
         return Ok(VideoPipelinePlan::FfmpegHostUploadWgpu {
             decoder_thread_config,
         });
     }
 
-    if let Some(software_output) = playable_video_outputs
-        .iter()
-        .find(|output| is_playable_software_output(output))
-    {
+    if let Some(software_output) = playable_video_outputs.iter().find(|output| {
+        is_playable_software_output(output) && output_serves_requirement(output, stream_requirement)
+    }) {
         return Err(requested_backend_unavailable(
             preferred_backend,
             software_output,
@@ -282,6 +320,90 @@ mod tests {
         }
     }
 
+    fn ffmpeg_vp9_profile2_output() -> SupportedVideoOutput {
+        SupportedVideoOutput {
+            backend: DecodeBackendId::new(FFMPEG_SOFTWARE_BACKEND_ID)
+                .expect("valid FFmpeg backend id"),
+            decode_format: SupportedVideoDecodeFormat {
+                codec: VideoCodec::Vp9,
+                profile: VideoProfile::Vp9(Vp9Profile::Profile2),
+                bit_depth: BitDepth::Ten,
+                chroma: ChromaSubsampling::Yuv420,
+                max_width: Some(3840),
+                max_height: Some(2160),
+                max_fps: Some(60.0),
+                hdr_input: false,
+            },
+            frame_contract: VideoFrameContract::host_yuv420_planar8(),
+        }
+    }
+
+    #[test]
+    fn auto_with_stream_requirement_prefers_hardware_then_falls_back_to_ffmpeg() {
+        let decoder_thread_config = PlayerVideoDecoderThreadConfig::default();
+        let capabilities = capabilities_with_playable_outputs(vec![
+            current_vaapi_output(),
+            ffmpeg_host_upload_output(),
+            ffmpeg_vp9_profile2_output(),
+        ]);
+
+        // Стрим, который тянет hardware (VP9 profile0 8-bit) → hardware zero-copy.
+        let hardware_stream = VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0))
+            .with_bit_depth(BitDepth::Eight)
+            .with_chroma(ChromaSubsampling::Yuv420);
+        let hardware_plan = select_video_pipeline_plan(
+            VideoBackendPreference::Auto,
+            Some(&capabilities),
+            decoder_thread_config,
+            Some(&hardware_stream),
+        )
+        .expect("auto должен выбрать hardware для hw-decodable стрима");
+        assert_eq!(
+            hardware_plan.backend_kind(),
+            VideoBackendKind::HardwareZeroCopy
+        );
+
+        // Стрим, который hardware не тянет (VP9 profile2 10-bit, только software) → ffmpeg.
+        let software_stream = VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_profile(VideoProfile::Vp9(Vp9Profile::Profile2))
+            .with_bit_depth(BitDepth::Ten)
+            .with_chroma(ChromaSubsampling::Yuv420);
+        let software_plan = select_video_pipeline_plan(
+            VideoBackendPreference::Auto,
+            Some(&capabilities),
+            decoder_thread_config,
+            Some(&software_stream),
+        )
+        .expect("auto должен упасть на ffmpeg для software-only стрима");
+        assert_eq!(
+            software_plan.backend_kind(),
+            VideoBackendKind::FfmpegSoftware
+        );
+    }
+
+    #[test]
+    fn hardware_preference_rejects_stream_no_hardware_output_can_decode() {
+        let decoder_thread_config = PlayerVideoDecoderThreadConfig::default();
+        let capabilities = capabilities_with_playable_outputs(vec![
+            current_vaapi_output(),
+            ffmpeg_vp9_profile2_output(),
+        ]);
+
+        let software_only_stream = VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_profile(VideoProfile::Vp9(Vp9Profile::Profile2))
+            .with_bit_depth(BitDepth::Ten)
+            .with_chroma(ChromaSubsampling::Yuv420);
+        let error = select_video_pipeline_plan(
+            VideoBackendPreference::Hardware,
+            Some(&capabilities),
+            decoder_thread_config,
+            Some(&software_only_stream),
+        )
+        .expect_err("hardware preference не должен падать на software для несовместимого стрима");
+        assert_eq!(error, VideoPipelineSelectionError::HardwareUnavailable);
+    }
+
     fn vp9_profile0_format() -> SupportedVideoDecodeFormat {
         SupportedVideoDecodeFormat {
             codec: VideoCodec::Vp9,
@@ -340,6 +462,7 @@ mod tests {
             VideoBackendPreference::Auto,
             Some(&capabilities),
             decoder_thread_config,
+            None,
         )
         .expect("auto should select current VA-API path");
 
@@ -363,6 +486,7 @@ mod tests {
             VideoBackendPreference::Hardware,
             Some(&capabilities),
             decoder_thread_config,
+            None,
         )
         .expect("hardware preference should select current native hardware path");
 
@@ -382,6 +506,7 @@ mod tests {
             VideoBackendPreference::Auto,
             Some(&capabilities),
             PlayerVideoDecoderThreadConfig::default(),
+            None,
         )
         .expect_err("auto should try software branch when no playable hardware exists");
 
@@ -397,6 +522,7 @@ mod tests {
             VideoBackendPreference::Auto,
             Some(&capabilities),
             decoder_thread_config,
+            None,
         )
         .expect("auto should use FFmpeg when no playable hardware output exists");
 
@@ -417,6 +543,7 @@ mod tests {
             VideoBackendPreference::Auto,
             Some(&capabilities),
             PlayerVideoDecoderThreadConfig::default(),
+            None,
         )
         .expect_err("raw VA-API output must not bypass playable output policy");
 
@@ -431,6 +558,7 @@ mod tests {
             VideoBackendPreference::Hardware,
             Some(&capabilities),
             PlayerVideoDecoderThreadConfig::default(),
+            None,
         )
         .expect_err("hardware preference must not fall back to another backend");
 
@@ -445,6 +573,7 @@ mod tests {
             VideoBackendPreference::Hardware,
             Some(&capabilities),
             PlayerVideoDecoderThreadConfig::default(),
+            None,
         )
         .expect_err("hardware preference must never fall back to software");
 
@@ -459,6 +588,7 @@ mod tests {
             VideoBackendPreference::Hardware,
             Some(&capabilities),
             PlayerVideoDecoderThreadConfig::default(),
+            None,
         )
         .expect_err("selector must not pretend future hardware backend is startable");
 
@@ -479,6 +609,7 @@ mod tests {
             VideoBackendPreference::Auto,
             Some(&capabilities),
             PlayerVideoDecoderThreadConfig::default(),
+            None,
         )
         .expect_err("auto can use software only when no playable hardware output exists");
 
@@ -499,6 +630,7 @@ mod tests {
             VideoBackendPreference::Hardware,
             Some(&capabilities),
             PlayerVideoDecoderThreadConfig::default(),
+            None,
         )
         .expect_err("hardware startup requires current DMA-BUF materializer path");
 
@@ -517,6 +649,7 @@ mod tests {
             VideoBackendPreference::Software,
             Some(&capabilities),
             decoder_thread_config,
+            None,
         )
         .expect("software preference should start only FFmpeg software path");
 
@@ -536,6 +669,7 @@ mod tests {
             VideoBackendPreference::Software,
             Some(&capabilities),
             PlayerVideoDecoderThreadConfig::default(),
+            None,
         )
         .expect_err("software preference must not silently use current VA-API path");
 
@@ -550,6 +684,7 @@ mod tests {
             VideoBackendPreference::Software,
             Some(&capabilities),
             PlayerVideoDecoderThreadConfig::default(),
+            None,
         )
         .expect_err("software preference must not treat a future backend as FFmpeg");
 
@@ -568,6 +703,7 @@ mod tests {
             VideoBackendPreference::Auto,
             None,
             PlayerVideoDecoderThreadConfig::default(),
+            None,
         )
         .expect_err("selector cannot run before shell capability probe");
 

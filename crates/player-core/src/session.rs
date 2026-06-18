@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
 #[cfg(test)]
-use codec_core::{VideoCodec, VideoDecodeRequirement};
+use codec_core::VideoCodec;
+use codec_core::VideoDecodeRequirement;
 use media_core::{MediaDuration, MediaTime};
 use tracing::{debug, info, warn};
 #[cfg(test)]
@@ -91,6 +92,23 @@ pub struct PlayerSession {
 
     /// Runtime state seek transaction/scrub/trace markers, которым владеет session.
     seek_runtime: SeekRuntimeState,
+
+    /// Отложенный выбор video-трека: активный backend не может декодировать стрим,
+    /// и session ждёт, пока shell установит совместимый backend.
+    ///
+    /// Хранит requirement и track id, чтобы после `set_video_backend` активировать
+    /// трек уже на новом backend-е без переоткрытия media.
+    pending_video_backend_reselection: Option<PendingVideoBackendReselection>,
+}
+
+/// Отложенный выбор video-трека до установки совместимого decode backend-а.
+#[derive(Debug, Clone)]
+struct PendingVideoBackendReselection {
+    /// Decode requirement, под который нужен совместимый backend.
+    requirement: VideoDecodeRequirement,
+
+    /// Track id, который нужно активировать после смены backend-а.
+    track_id: TrackId,
 }
 
 impl PlayerSession {
@@ -482,13 +500,22 @@ impl PlayerSession {
             "Video backend started"
         );
 
-        if let Err(error) = self.configure_active_video_decoder_stream() {
+        // Если видео ждало совместимого backend-а — активируем отложенный трек на новом
+        // backend-е; иначе переконфигурируем уже выбранный active stream (горячая смена).
+        if self.has_pending_video_backend_reselection() {
+            self.retry_pending_video_backend_reselection();
+        } else if let Err(error) = self.configure_active_video_decoder_stream() {
             warn!(
                 error = %error,
                 "Video backend failed to configure active stream after startup"
             );
             self.mark_fatal_error(error);
         }
+    }
+
+    /// Отклоняет отложенный выбор video backend-а, когда shell не нашёл совместимый план.
+    pub fn reject_pending_video_backend_with_reason(&mut self, reason: String) {
+        self.reject_pending_video_backend(reason);
     }
 
     /// Переводит playback в `Playing` и запускает audio output.
@@ -771,6 +798,7 @@ impl Default for PlayerSession {
             capabilities: None,
             active_video_backend_id: None,
             seek_runtime: SeekRuntimeState::default(),
+            pending_video_backend_reselection: None,
         }
     }
 }

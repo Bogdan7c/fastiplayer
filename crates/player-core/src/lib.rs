@@ -27,6 +27,7 @@ pub use audio_core::{
     AudioOutputFactory, AudioOutputSpec, AudioPacketTimeBase, AudioPacketTiming,
     EncodedAudioPacket, PlayerAudioClock, PlayerAudioOutput,
 };
+pub use codec_core::VideoDecodeRequirement;
 pub use command::{
     MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, ScrubCommitPolicy,
     SeekMode, SeekRequest, SeekTarget,
@@ -58,7 +59,7 @@ pub use diagnostics::{
 pub use error::{PlayerError, PlayerErrorKind, PlayerResult};
 pub use event::{
     BufferingState, CapabilitySummary, FramePresentationInfo, MediaSummary, PlayerEvent,
-    SeekAudioResumeInfo, SeekCommitInfo, SeekTargetFramePresentation,
+    SeekAudioResumeInfo, SeekCommitInfo, SeekTargetFramePresentation, VideoBackendSelectionRequest,
 };
 pub use media_core::TrackId;
 pub use media_opening::{PreparedMedia, PreparedMediaSource};
