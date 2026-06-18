@@ -9,7 +9,7 @@ use crate::{
     Vp9RequirementUncertainty, h264_sps_metadata_from_avc_decoder_configuration_record,
     h264_sps_metadata_from_packet, h265_decode_requirement_from_hevc_decoder_configuration_record,
     h265_decode_requirement_from_packet, infer_h264_packetization, infer_h265_packetization,
-    parse_hevc_decoder_configuration_record, probe_h264_packet_keyframe,
+    parse_hevc_decoder_configuration_record, probe_av1_packet_keyframe, probe_h264_packet_keyframe,
     probe_h265_packet_decode_start, probe_vp9_packet_requirement, resolve_vp9_metadata,
     video_frame_pixel_layout_from_decode_requirement,
 };
@@ -478,6 +478,15 @@ pub fn probe_video_packet_keyframe_with_codec_private(
                     }
                 }
             }
+            Err(error) => {
+                VideoPacketKeyframeProbe::Uncertain(VideoRequirementUncertainty::ParseError {
+                    codec,
+                    reason: error.to_string(),
+                })
+            }
+        },
+        VideoCodec::Av1 => match probe_av1_packet_keyframe(packet_bytes, codec_private) {
+            Ok(keyframe) => VideoPacketKeyframeProbe::Keyframe(keyframe),
             Err(error) => {
                 VideoPacketKeyframeProbe::Uncertain(VideoRequirementUncertainty::ParseError {
                     codec,

@@ -9,7 +9,7 @@ use codec_core::{
     video_requirement_needs_packet_refinement,
 };
 use media_core::{TrackInfo, TrackKind};
-use tracing::info;
+use tracing::{info, warn};
 use video_core::{
     VideoStreamConfigRejection, VideoStreamConfigResult, VideoStreamDecodeConfig,
     VideoStreamPacketization,
@@ -17,7 +17,7 @@ use video_core::{
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
 use crate::event::VideoBackendSelectionRequest;
-use crate::{PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, TrackId};
+use crate::{PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, SeekRequest, TrackId};
 
 use super::{PendingVideoBackendReselection, PlayerSession};
 
@@ -287,8 +287,31 @@ impl PlayerSession {
                     return;
                 }
                 self.note_active_video_stream_requirement(requirement, true);
+                self.reseek_to_current_position_after_backend_swap();
             }
             Err(error) => self.mark_fatal_error(error),
+        }
+    }
+
+    /// Перечитывает поток с keyframe до текущей позиции после бесшовного backend-swap.
+    ///
+    /// Во время deferral (пока совместимый backend ещё не выбран) demuxer уже
+    /// прочитал и отбросил video-пакеты, включая keyframe в текущей позиции (они
+    /// дропаются, т.к. video track ещё не выбран). Новый decoder обязан стартовать
+    /// строго с KEY_FRAME — иначе AV1/libdav1d получает кадр без sequence header
+    /// (`Error parsing OBU data`), а ожидание следующего keyframe даёт многосекундную
+    /// чёрную задержку. Accurate re-seek на текущую позицию заставляет demuxer
+    /// перечитать поток с ближайшего keyframe до неё, не сдвигая audio gate.
+    fn reseek_to_current_position_after_backend_swap(&mut self) {
+        if !self.pipeline.has_demuxer() {
+            return;
+        }
+        let current_position = self.snapshot.current_position;
+        if let Err(error) = self.seek(SeekRequest::accurate(current_position)) {
+            warn!(
+                error = %error,
+                "Re-seek после backend swap не удался; видео стартует со следующего keyframe"
+            );
         }
     }
 

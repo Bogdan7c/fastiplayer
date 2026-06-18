@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod adapter;
+mod av1;
 mod h264;
 mod h265;
 mod model;
@@ -21,6 +22,7 @@ pub use adapter::{
     unsupported_requirement_can_be_refined_by_packet_probe,
     video_requirement_needs_packet_refinement, vp9_profile_from_video_profile,
 };
+pub use av1::{Av1ObuError, probe_av1_packet_keyframe};
 pub use h264::{
     AvcDecoderConfigurationRecord, AvcDecoderConfigurationRecordError, H264BitReaderError,
     H264ByteStreamError, H264NalLengthSize, H264NalUnit, H264Packetization, H264PacketizationError,
