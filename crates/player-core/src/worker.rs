@@ -184,6 +184,7 @@ fn decoder_thread_config_from_app_config(
         frame_channel_frames: config.video.decoder_frame_channel_frames,
         decoder_ready_queue_frames: config.video.decoder_ready_queue_frames,
         decoder_surface_pool_frames: config.video.decoder_surface_pool_frames,
+        software_frame_pool_frames: config.video.sw_decoder_surface_pool_frames,
         zero_copy_surface_pool_slots: config.video.zero_copy_surface_pool_slots,
         ..PlayerVideoDecoderThreadConfig::from_env()
     }
@@ -2529,6 +2530,7 @@ mod tests {
             control_channel_frames: 4,
             decoder_ready_queue_frames: 5,
             decoder_surface_pool_frames: 6,
+            software_frame_pool_frames: 8,
             zero_copy_surface_pool_slots: 7,
             flush_timeout: Duration::from_millis(75),
         };
@@ -2539,6 +2541,20 @@ mod tests {
 
         assert_eq!(worker.decoder_thread_config(), decoder_thread_config);
         worker.shutdown().unwrap();
+    }
+
+    #[test]
+    fn decoder_thread_config_maps_software_surface_pool_independently() {
+        // sw_decoder_surface_pool_frames должен попадать именно в software_frame_pool_frames,
+        // не затрагивая hardware decoder_surface_pool_frames.
+        let mut config = rustiplayer_config::AppConfig::default();
+        config.video.decoder_surface_pool_frames = 24;
+        config.video.sw_decoder_surface_pool_frames = 6;
+
+        let thread_config = PlayerWorkerConfig::decoder_thread_config_from_app_config(&config);
+
+        assert_eq!(thread_config.software_frame_pool_frames, 6);
+        assert_eq!(thread_config.decoder_surface_pool_frames, 24);
     }
 
     #[test]

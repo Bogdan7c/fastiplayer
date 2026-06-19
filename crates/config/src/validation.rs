@@ -301,6 +301,12 @@ fn validate_video_section(config: &AppConfig) -> ConfigResult<()> {
         MAX_DECODER_SURFACE_POOL_FRAMES,
     )?;
     validate_usize_range(
+        "video.sw_decoder_surface_pool_frames",
+        config.video.sw_decoder_surface_pool_frames,
+        MIN_DECODER_QUEUE_FRAMES,
+        MAX_DECODER_SURFACE_POOL_FRAMES,
+    )?;
+    validate_usize_range(
         "video.zero_copy_surface_pool_slots",
         config.video.zero_copy_surface_pool_slots,
         MIN_DECODER_QUEUE_FRAMES,

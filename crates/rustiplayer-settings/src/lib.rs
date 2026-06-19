@@ -1016,6 +1016,7 @@ fn player_decoder_thread_setting(setting_id: &str) -> bool {
             | "video.decoder_frame_channel_frames"
             | "video.decoder_ready_queue_frames"
             | "video.decoder_surface_pool_frames"
+            | "video.sw_decoder_surface_pool_frames"
             | "video.zero_copy_surface_pool_slots"
     )
 }
@@ -1062,6 +1063,9 @@ fn player_runtime_setting_id(setting_id: &str) -> Option<PlayerRuntimeSettingId>
         "video.decoder_ready_queue_frames" => PlayerRuntimeSettingId::VideoDecoderReadyQueueFrames,
         "video.decoder_surface_pool_frames" => {
             PlayerRuntimeSettingId::VideoDecoderSurfacePoolFrames
+        }
+        "video.sw_decoder_surface_pool_frames" => {
+            PlayerRuntimeSettingId::VideoSoftwareDecoderSurfacePoolFrames
         }
         "video.zero_copy_surface_pool_slots" => {
             PlayerRuntimeSettingId::VideoZeroCopySurfacePoolSlots
@@ -1425,6 +1429,52 @@ mod tests {
                 .decoder_ready_queue_frames,
             3
         );
+        assert!(update.deferred_boundary_settings.is_empty());
+    }
+
+    #[test]
+    fn software_surface_pool_route_updates_decoder_thread_config() {
+        let registry = app_config_registry().expect("registry builds");
+        let mut current = AppConfig::default();
+        // Меняем только software-пул: ожидаем controlled rebuild decoder-thread
+        // группы и корректное значение software_frame_pool_frames в update-е.
+        current.video.sw_decoder_surface_pool_frames = 6;
+
+        let diff = registry
+            .diff(&AppConfig::default(), &current)
+            .expect("diff succeeds");
+        let plan = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
+            .expect("route plan builds");
+
+        let player_route = plan
+            .committed_routes
+            .iter()
+            .find(|route| route.route == AppRuntimeRoute::Player)
+            .expect("player route exists");
+        let RuntimeCommittedUpdate::Player(update) = &player_route.update else {
+            panic!("software surface pool должен попасть в player route update");
+        };
+
+        // Software-пул применяется через ту же controlled rebuild группу, что и
+        // hardware pool/channel настройки, а не через tick config.
+        assert_eq!(
+            player_route.groups,
+            vec![AppRuntimeRouteGroupUpdate {
+                group: AppRuntimeRouteGroup::PlayerDecoderThreadConfig,
+                affected_settings: vec![SettingId::from("video.sw_decoder_surface_pool_frames")],
+            }]
+        );
+        assert_eq!(
+            update
+                .player_core
+                .decoder_thread_config
+                .as_ref()
+                .expect("decoder-thread update expected")
+                .decoder_thread_config
+                .software_frame_pool_frames,
+            6
+        );
+        assert!(update.player_core.tick_config.is_none());
         assert!(update.deferred_boundary_settings.is_empty());
     }
 

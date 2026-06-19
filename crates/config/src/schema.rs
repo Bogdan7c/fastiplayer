@@ -214,6 +214,11 @@ fn document_schema_version_4_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "sw_decoder_surface_pool_frames = 8",
+        "# Сколько software (FFmpeg host RAM) кадров держать одновременно; меньше = стабильнее FPS на 4K.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "zero_copy_surface_pool_slots = 24",
         "# Zero-copy external import slots; CPU fallback всё равно запрещён.",
     );
@@ -849,6 +854,26 @@ pub struct VideoConfig {
     )]
     pub decoder_surface_pool_frames: usize,
 
+    /// Output frame pool size для software (FFmpeg host-frame) decode.
+    #[setting(
+        id = "video.sw_decoder_surface_pool_frames",
+        path = "video.sw_decoder_surface_pool_frames",
+        section = "video",
+        group = "decode",
+        surface = "main-settings-window",
+        label_id = "settings.video.sw_decoder_surface_pool_frames.label",
+        label_ru = "Software frame pool",
+        description_id = "settings.video.sw_decoder_surface_pool_frames.description",
+        description_ru = "Сколько декодированных software-кадров (в RAM) держать одновременно. Влияет только на software-декод (FFmpeg). Компромисс: меньше (6) = меньше нагрузка на память и плавнее FPS на лёгких для декода кодеках (AV1/VP9 4K); больше (8) = запас для тяжёлых кодеков (HEVC 4K), которым иначе не хватает кадров и FPS проседает. Применяется на лету. По умолчанию 8.",
+        editor = "integer",
+        min = crate::validation::MIN_DECODER_QUEUE_FRAMES,
+        max = crate::validation::MAX_DECODER_SURFACE_POOL_FRAMES,
+        step = 1,
+        unit = "frames",
+        apply = "video.apply"
+    )]
+    pub sw_decoder_surface_pool_frames: usize,
+
     /// Количество zero-copy external import slots.
     #[setting(
         id = "video.zero_copy_surface_pool_slots",
@@ -885,6 +910,7 @@ impl Default for VideoConfig {
             decoder_frame_channel_frames: 8,
             decoder_ready_queue_frames: 8,
             decoder_surface_pool_frames: 24,
+            sw_decoder_surface_pool_frames: 8,
             zero_copy_surface_pool_slots: 24,
             scheduler: VideoSchedulerConfig::default(),
         }
@@ -2197,6 +2223,7 @@ mod settings_metadata_tests {
         "video.decoder_frame_channel_frames",
         "video.decoder_ready_queue_frames",
         "video.decoder_surface_pool_frames",
+        "video.sw_decoder_surface_pool_frames",
         "video.zero_copy_surface_pool_slots",
         "video.scheduler.demux_packets_per_tick",
         "video.scheduler.video_packets_per_tick",
@@ -2480,6 +2507,12 @@ mod settings_metadata_tests {
         assert_integer_range(
             &registry,
             "video.decoder_surface_pool_frames",
+            validation::MIN_DECODER_QUEUE_FRAMES,
+            validation::MAX_DECODER_SURFACE_POOL_FRAMES,
+        );
+        assert_integer_range(
+            &registry,
+            "video.sw_decoder_surface_pool_frames",
             validation::MIN_DECODER_QUEUE_FRAMES,
             validation::MAX_DECODER_SURFACE_POOL_FRAMES,
         );

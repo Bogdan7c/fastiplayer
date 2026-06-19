@@ -394,6 +394,12 @@ mod tests {
             control_channel_frames: 4,
             decoder_ready_queue_frames: 5,
             decoder_surface_pool_frames: 6,
+            // software_frame_pool_frames — software-only limit, у VA-API нет такого
+            // ресурса, поэтому через vaapi adapter он не переносится и round-trip
+            // ожидаемо нормализуется к neutral default; берём этот же default здесь,
+            // чтобы тест проверял именно сохранность hardware-релевантных лимитов.
+            software_frame_pool_frames: video_core::VideoDecoderThreadConfig::default()
+                .software_frame_pool_frames,
             zero_copy_surface_pool_slots: 7,
             flush_timeout: Duration::from_millis(75),
         };

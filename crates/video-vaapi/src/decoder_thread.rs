@@ -918,6 +918,11 @@ impl From<VideoDecodeThreadConfig> for video_core::VideoDecoderThreadConfig {
             control_channel_frames: config.control_channel_frames,
             decoder_ready_queue_frames: config.decoder_ready_queue_frames,
             decoder_surface_pool_frames: config.decoder_surface_pool_frames,
+            // software_frame_pool_frames — software-only limit; у VA-API нет
+            // host-frame pool, поэтому возвращаем neutral default, а не VA surface
+            // pool. Hardware-путь этот лимит не использует.
+            software_frame_pool_frames: video_core::VideoDecoderThreadConfig::default()
+                .software_frame_pool_frames,
             zero_copy_surface_pool_slots: config.zero_copy_surface_pool_slots,
             flush_timeout: config.flush_timeout,
         }

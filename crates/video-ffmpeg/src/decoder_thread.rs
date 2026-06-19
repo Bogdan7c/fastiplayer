@@ -216,9 +216,9 @@ impl FfmpegVideoDecoderThread {
         // порогом (decoder_ready_queue_frames): один send_packet при frame
         // threading может слить burst кадров (или весь EOF/DPB tail ~thread_count
         // сразу), а player тормозит отправку только по frame_rx.len() >=
-        // ready-queue. Размер по decoder_surface_pool_frames даёт headroom, чтобы
+        // ready-queue. Размер по software_frame_pool_frames даёт headroom, чтобы
         // try_send не упёрся в full channel внутри одной drain-итерации.
-        let (frame_tx, frame_rx) = bounded(thread_config.decoder_surface_pool_frames);
+        let (frame_tx, frame_rx) = bounded(thread_config.software_frame_pool_frames);
         let (error_tx, error_rx) = bounded(1);
         let (packet_ack_tx, packet_ack_rx) = bounded(thread_config.packet_channel_frames);
         let (activity_notifier, activity_subscription) = VideoDecoderActivityNotifier::new();
@@ -230,15 +230,18 @@ impl FfmpegVideoDecoderThread {
         // render lease-ах, и освобождаются только через release_frame. Размер по
         // frame_channel_frames (ready-queue) переполнялся, как только быстрый
         // (теперь многопоточный) decode заполнял весь pipeline. Берём
-        // decoder_surface_pool_frames — это neutral output frame pool (тот же
-        // смысл, что и surface pool у hardware backend-а), который покрывает
-        // ready channel + present queue + leases. Ready-queue backpressure
-        // продолжает считаться отдельно по frame channel длине.
+        // software_frame_pool_frames — это software-специфичный output frame pool
+        // (host-frame аналог hardware surface pool), который покрывает ready
+        // channel + present queue + leases. Он отделён от hardware
+        // decoder_surface_pool_frames намеренно: каждый software-кадр — полный
+        // host-буфер (~12 МБ для 4K), и держать их много вредно для memory
+        // bandwidth iGPU. Ready-queue backpressure продолжает считаться отдельно
+        // по frame channel длине.
         // bounded(1) coalescing wake-up: release_frame пишет токен, worker будит
         // reception, как только освободился pool slot, без busy-poll.
         let (release_notify_tx, release_notify_rx) = bounded(1);
         let host_resource_provider = FfmpegHostResourceProvider::new(
-            thread_config.decoder_surface_pool_frames,
+            thread_config.software_frame_pool_frames,
             release_notify_tx,
         );
         let worker = FfmpegDecoderWorker {

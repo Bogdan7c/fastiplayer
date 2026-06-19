@@ -1031,6 +1031,15 @@ const DEFAULT_DECODER_READY_QUEUE_FRAMES: usize = 8;
 /// Production default output surface descriptor pool size.
 const DEFAULT_DECODER_SURFACE_POOL_FRAMES: usize = 24;
 
+/// Production default output frame pool size для software (host-frame) decode.
+///
+/// Намеренно меньше hardware surface pool: каждый software-кадр — это полный
+/// host-буфер в RAM (для 4K YUV420 ~12 МБ), и удержание десятков таких кадров
+/// создаёт давление на пропускную способность общей памяти iGPU, из-за чего
+/// растёт стоимость host→GPU upload и проседает playback FPS. 8 даёт декодеру
+/// достаточный запас впереди playback, не раздувая резидентный footprint.
+const DEFAULT_SOFTWARE_FRAME_POOL_FRAMES: usize = 8;
+
 /// Production default zero-copy external import slot capacity.
 const DEFAULT_ZERO_COPY_SURFACE_POOL_SLOTS: usize = 24;
 
@@ -1060,6 +1069,18 @@ pub struct VideoDecoderThreadConfig {
 
     /// Hardware decoder output surface descriptor pool size.
     pub decoder_surface_pool_frames: usize,
+
+    /// Output frame pool size для software (host-frame) decode backends.
+    ///
+    /// Применяется только software-путём (`video-ffmpeg`): задаёт и decoded-frame
+    /// channel, и host resource table, т.е. сколько полных host-кадров может жить
+    /// одновременно (channel + present queue + render leases). Hardware backend
+    /// (`video-vaapi`) этот лимит игнорирует и использует
+    /// `decoder_surface_pool_frames`, потому что VA surface — это дешёвый GPU
+    /// descriptor, а не RAM-буфер. Разделение позволяет держать software-пул
+    /// маленьким (меньше memory-bandwidth pressure на iGPU) независимо от
+    /// hardware surface pool.
+    pub software_frame_pool_frames: usize,
 
     /// Zero-copy external import slot capacity.
     pub zero_copy_surface_pool_slots: usize,
@@ -1132,6 +1153,7 @@ impl VideoDecoderThreadConfig {
             control_channel_frames: self.control_channel_frames.max(1),
             decoder_ready_queue_frames: self.decoder_ready_queue_frames.max(1),
             decoder_surface_pool_frames: self.decoder_surface_pool_frames.max(1),
+            software_frame_pool_frames: self.software_frame_pool_frames.max(1),
             zero_copy_surface_pool_slots: self.zero_copy_surface_pool_slots.max(1),
             flush_timeout: self.flush_timeout.max(Duration::from_millis(1)),
         }
@@ -1147,6 +1169,7 @@ impl Default for VideoDecoderThreadConfig {
             control_channel_frames: DEFAULT_DECODER_CONTROL_CHANNEL_FRAMES,
             decoder_ready_queue_frames: DEFAULT_DECODER_READY_QUEUE_FRAMES,
             decoder_surface_pool_frames: DEFAULT_DECODER_SURFACE_POOL_FRAMES,
+            software_frame_pool_frames: DEFAULT_SOFTWARE_FRAME_POOL_FRAMES,
             zero_copy_surface_pool_slots: DEFAULT_ZERO_COPY_SURFACE_POOL_SLOTS,
             flush_timeout: VideoDecoderThreadConfig::default_flush_timeout(),
         }
@@ -1502,6 +1525,7 @@ mod tests {
             control_channel_frames: 0,
             decoder_ready_queue_frames: 0,
             decoder_surface_pool_frames: 0,
+            software_frame_pool_frames: 0,
             zero_copy_surface_pool_slots: 0,
             flush_timeout: Duration::ZERO,
         }
@@ -1509,6 +1533,7 @@ mod tests {
 
         assert_eq!(config.packet_channel_frames, 1);
         assert_eq!(config.frame_channel_frames, 1);
+        assert_eq!(config.software_frame_pool_frames, 1);
         assert_eq!(config.control_channel_frames, 1);
         assert_eq!(config.decoder_ready_queue_frames, 1);
         assert_eq!(config.decoder_surface_pool_frames, 1);
