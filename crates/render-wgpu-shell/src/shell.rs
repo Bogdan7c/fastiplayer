@@ -82,18 +82,80 @@ fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> Result<wgpu::Textur
         .context("Surface capabilities не вернул ни одного texture format")
 }
 
-/// Выбирает present mode без тихого fallback на пустой список capabilities.
-fn choose_present_mode(present_modes: &[wgpu::PresentMode]) -> Result<wgpu::PresentMode> {
-    // FIFO остаётся безопасным VSync default для текущего shell.
-    if present_modes.contains(&wgpu::PresentMode::Fifo) {
-        return Ok(wgpu::PresentMode::Fifo);
+/// Предпочтительный present mode swapchain-а в нейтральной форме.
+///
+/// Живёт в shell-слое, чтобы композиция (`app-egui`) могла прокинуть выбор из
+/// config без зависимости shell -> `rustiplayer-config`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellPresentMode {
+    /// Авто: предпочесть FIFO (VSync), иначе первый доступный режим backend-а.
+    Auto,
+
+    /// FIFO: классический VSync, present блокирует до кадрового интервала.
+    Fifo,
+
+    /// Mailbox: triple-buffer, present не блокирует, новый кадр вытесняет очередь.
+    Mailbox,
+
+    /// Immediate: без синхронизации (возможен tearing).
+    Immediate,
+}
+
+/// Нейтральные surface present настройки, прокидываемые в shell из композиции.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfacePresentSettings {
+    /// Предпочтительный present mode.
+    pub present_mode: ShellPresentMode,
+
+    /// Желаемая глубина swapchain latency (в кадрах); 0 нормализуется к 1.
+    pub max_frame_latency: u32,
+}
+
+impl Default for SurfacePresentSettings {
+    /// Безопасный VSync default, совпадающий с прежним hardcoded поведением shell.
+    fn default() -> Self {
+        Self {
+            present_mode: ShellPresentMode::Auto,
+            max_frame_latency: 2,
+        }
+    }
+}
+
+/// Выбирает present mode с учётом предпочтения и без тихого fallback на пустой список.
+fn choose_present_mode(
+    present_modes: &[wgpu::PresentMode],
+    preference: ShellPresentMode,
+) -> Result<wgpu::PresentMode> {
+    // Auto и недоступный запрошенный режим откатываются к FIFO -> первый доступный.
+    let auto_choice = || -> Result<wgpu::PresentMode> {
+        if present_modes.contains(&wgpu::PresentMode::Fifo) {
+            return Ok(wgpu::PresentMode::Fifo);
+        }
+        present_modes
+            .first()
+            .copied()
+            .context("Surface capabilities не вернул ни одного present mode")
+    };
+
+    let requested = match preference {
+        ShellPresentMode::Auto => return auto_choice(),
+        ShellPresentMode::Fifo => wgpu::PresentMode::Fifo,
+        ShellPresentMode::Mailbox => wgpu::PresentMode::Mailbox,
+        ShellPresentMode::Immediate => wgpu::PresentMode::Immediate,
+    };
+
+    if present_modes.contains(&requested) {
+        return Ok(requested);
     }
 
-    // Если FIFO нет, берём первый режим, явно сообщённый backend-ом.
-    present_modes
-        .first()
-        .copied()
-        .context("Surface capabilities не вернул ни одного present mode")
+    // Запрошенный режим surface не поддерживает: явный warn и безопасный fallback,
+    // вместо тихого выбора чего попало.
+    tracing::warn!(
+        requested = ?requested,
+        available = ?present_modes,
+        "Запрошенный present mode не поддержан surface-ом; откат к FIFO/первому доступному"
+    );
+    auto_choice()
 }
 
 /// Выбирает alpha mode без неявного panic на некорректных capabilities.
@@ -142,7 +204,7 @@ impl GpuContext {
     /// 4. Device/Queue — с feature gates, нужными video renderer boundary
     /// 5. Surface configuration — настройка swapchain
     #[instrument(skip(window), fields(window = "rustiplayer"))]
-    pub async fn new(window: Arc<Window>) -> Result<Self> {
+    pub async fn new(window: Arc<Window>, surface_present: SurfacePresentSettings) -> Result<Self> {
         info!("Инициализация WGPU Vulkan instance");
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -200,8 +262,12 @@ impl GpuContext {
         // Предпочитаем 8-bit формат: текущий SDR/NV12 shader пишет обычный RGBA.
         let surface_format = choose_surface_format(&surface_caps.formats)?;
 
-        let present_mode = choose_present_mode(&surface_caps.present_modes)?;
+        let present_mode =
+            choose_present_mode(&surface_caps.present_modes, surface_present.present_mode)?;
         let alpha_mode = choose_alpha_mode(&surface_caps.alpha_modes)?;
+
+        // 0 кадров latency недопустимо для swapchain — нормализуем к 1.
+        let desired_maximum_frame_latency = surface_present.max_frame_latency.max(1);
 
         let size = window.inner_size();
         let surface_config = wgpu::SurfaceConfiguration {
@@ -212,7 +278,7 @@ impl GpuContext {
             present_mode,
             alpha_mode,
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency,
         };
 
         surface.configure(&device, &surface_config);
@@ -220,6 +286,7 @@ impl GpuContext {
         info!(
             format = ?surface_format,
             present_mode = ?present_mode,
+            desired_maximum_frame_latency,
             width = size.width,
             height = size.height,
             "Surface настроен"
@@ -276,8 +343,8 @@ impl Renderer {
     /// - video renderer facade
     /// - egui_wgpu renderer
     #[instrument(skip(window))]
-    pub fn new(window: Arc<Window>) -> Result<Self> {
-        let gpu = pollster::block_on(GpuContext::new(window.clone()))?;
+    pub fn new(window: Arc<Window>, surface_present: SurfacePresentSettings) -> Result<Self> {
+        let gpu = pollster::block_on(GpuContext::new(window.clone(), surface_present))?;
 
         let egui_compositor = EguiCompositor::new(&gpu.device, gpu.surface_format);
         let video_renderer = WgpuVideoRenderer::new(&gpu.device, gpu.surface_format);
@@ -609,13 +676,35 @@ mod tests {
         );
     }
 
-    /// Проверяет VSync-friendly present mode policy.
+    /// Auto предпочитает FIFO как безопасный VSync default, когда он доступен.
     #[test]
-    fn present_mode_prefers_fifo_when_available() {
+    fn present_mode_auto_prefers_fifo_when_available() {
         let present_modes = [wgpu::PresentMode::Immediate, wgpu::PresentMode::Fifo];
 
-        let selected_present_mode =
-            choose_present_mode(&present_modes).expect("present mode selected");
+        let selected_present_mode = choose_present_mode(&present_modes, ShellPresentMode::Auto)
+            .expect("present mode selected");
+
+        assert_eq!(selected_present_mode, wgpu::PresentMode::Fifo);
+    }
+
+    /// Явный запрошенный поддерживаемый режим (Mailbox) выбирается как есть.
+    #[test]
+    fn present_mode_uses_requested_when_supported() {
+        let present_modes = [wgpu::PresentMode::Fifo, wgpu::PresentMode::Mailbox];
+
+        let selected_present_mode = choose_present_mode(&present_modes, ShellPresentMode::Mailbox)
+            .expect("present mode selected");
+
+        assert_eq!(selected_present_mode, wgpu::PresentMode::Mailbox);
+    }
+
+    /// Запрошенный, но не поддержанный режим откатывается к FIFO без ошибки.
+    #[test]
+    fn present_mode_falls_back_to_fifo_when_requested_unsupported() {
+        let present_modes = [wgpu::PresentMode::Fifo, wgpu::PresentMode::Immediate];
+
+        let selected_present_mode = choose_present_mode(&present_modes, ShellPresentMode::Mailbox)
+            .expect("present mode selected");
 
         assert_eq!(selected_present_mode, wgpu::PresentMode::Fifo);
     }
@@ -623,7 +712,8 @@ mod tests {
     /// Проверяет явную ошибку вместо panic при пустом списке present modes.
     #[test]
     fn empty_present_mode_list_is_reported_as_error() {
-        let error = choose_present_mode(&[]).expect_err("empty present mode list rejected");
+        let error = choose_present_mode(&[], ShellPresentMode::Auto)
+            .expect_err("empty present mode list rejected");
 
         assert!(
             error

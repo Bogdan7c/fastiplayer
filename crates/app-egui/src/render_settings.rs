@@ -8,8 +8,27 @@ use render_core::{
     ColorAdjustment, ColorPipelineSettings, HdrOutputMode, HdrToSdrSettings,
     HdrToneMappingOperator, SwapchainTransferMode,
 };
-use rustiplayer_config::{AppConfig, HdrToSdrOperatorConfig};
+use render_wgpu_shell::{ShellPresentMode, SurfacePresentSettings};
+use rustiplayer_config::{AppConfig, HdrToSdrOperatorConfig, VulkanPresentMode};
 use tracing::warn;
+
+/// Преобразует пользовательский `[render.vulkan]` config в нейтральные shell
+/// surface present настройки (present mode + желаемая swapchain latency).
+pub(crate) fn surface_present_settings_from_config(
+    app_config: &AppConfig,
+) -> SurfacePresentSettings {
+    let present_mode = match app_config.render.vulkan.present_mode {
+        VulkanPresentMode::Auto => ShellPresentMode::Auto,
+        VulkanPresentMode::Fifo => ShellPresentMode::Fifo,
+        VulkanPresentMode::Mailbox => ShellPresentMode::Mailbox,
+        VulkanPresentMode::Immediate => ShellPresentMode::Immediate,
+    };
+
+    SurfacePresentSettings {
+        present_mode,
+        max_frame_latency: app_config.render.vulkan.max_frame_latency,
+    }
+}
 
 /// Логирует legacy tone mapping placeholder, который Phase 10 не превращает в UI preset.
 pub(crate) fn warn_legacy_tone_mapping_config(app_config: &AppConfig) {

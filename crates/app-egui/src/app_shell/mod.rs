@@ -12,7 +12,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::render_settings::warn_legacy_tone_mapping_config;
+use crate::render_settings::{
+    surface_present_settings_from_config, warn_legacy_tone_mapping_config,
+};
 use crate::system_capabilities::probe_system_capabilities;
 use render_wgpu_shell::Renderer;
 use rustiplayer_config::LoadedConfig;
@@ -93,7 +95,9 @@ impl AppShell {
             return;
         }
 
-        let mut renderer = match Renderer::new(window.clone()) {
+        let surface_present_settings =
+            surface_present_settings_from_config(self.settings_runtime.committed_config());
+        let mut renderer = match Renderer::new(window.clone(), surface_present_settings) {
             Ok(renderer) => renderer,
             Err(error) => {
                 tracing::error!("Не удалось инициализировать рендерер: {}", error);
