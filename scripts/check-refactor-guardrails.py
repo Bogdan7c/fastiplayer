@@ -21,8 +21,6 @@ from typing import Any
 
 METADATA_COMMAND = ("cargo", "metadata", "--no-deps", "--format-version", "1")
 
-GUARDRAILS_DOC = "docs/rustiplayer/13-refactor-guardrails.md"
-
 CONTRACT_CRATES = frozenset(
     {
         "audio-core",
@@ -903,8 +901,6 @@ def print_failures(
                 f"{violation.matched_text}",
                 file=sys.stderr,
             )
-
-    print(f"Policy source: {GUARDRAILS_DOC}", file=sys.stderr)
 
 
 def run() -> int:

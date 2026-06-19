@@ -1,6 +1,6 @@
 # iOS MOV PCM Seek Investigation (2026-06-08)
 
-Подробный контекст сохранён в `docs/rustiplayer/15-ios-mov-pcm-seek-investigation.md`.
+Этот memory является сохранённым контекстом расследования; отдельного проектного markdown-файла больше нет.
 
 Проблема: `<MEDIA_DIR>/ios-hevc-pcm.mov` (QuickTime/iOS MOV, HEVC + `pcm_s16le`/`lpcm`, 48 kHz stereo) после seek даёт сильные лаги звука и видео выглядит как замедленное. Остальные форматы и iOS MOV AAC работают нормально.
 
