@@ -720,6 +720,11 @@ pub struct AppState {
     /// Отложенный запрос player-core на подбор backend-а под текущий стрим (`auto`).
     pending_video_backend_reselection: Option<VideoBackendSelectionRequest>,
 
+    /// Requirement последнего активированного video-стрима, чтобы live-смена
+    /// настроек (preference/decoder config) пересобирала pipeline с учётом того,
+    /// какой именно кодек/профиль сейчас играет, а не выбирала backend вслепую.
+    active_video_stream_requirement: Option<VideoDecodeRequirement>,
+
     /// Замороженный кадр прошлого backend-а на время живой смены backend/materializer:
     /// держится, пока worker не переключится и не выдаст первый кадр нового backend-а.
     backend_swap_frozen_frame: Option<CachedRenderablePresentFrame>,
@@ -814,6 +819,7 @@ impl AppState {
             wgpu_frame_materializer: None,
             current_video_backend_kind: None,
             pending_video_backend_reselection: None,
+            active_video_stream_requirement: None,
             backend_swap_frozen_frame: None,
             backend_swap_from_generation: None,
             current_local_file: None,
@@ -1239,7 +1245,15 @@ impl AppState {
         &mut self,
         request: VideoBackendSelectionRequest,
     ) {
+        // Requirement активного стрима живёт дольше одного кадра: его использует
+        // live-смена настроек, чтобы пересобрать pipeline под реальный кодек/профиль.
+        self.active_video_stream_requirement = Some(request.requirement.clone());
         self.pending_video_backend_reselection = Some(request);
+    }
+
+    /// Requirement активного video-стрима, известный shell-у на текущий момент.
+    pub(crate) fn active_video_stream_requirement(&self) -> Option<&VideoDecodeRequirement> {
+        self.active_video_stream_requirement.as_ref()
     }
 
     /// Забирает отложенный запрос на подбор backend-а для обработки в текущем кадре.
@@ -3035,6 +3049,46 @@ mod tests {
         assert!(
             begin_frame_position < publish_position && publish_position < ui_prepare_position,
             "render_frame должен публиковать snapshot из AppFrameContext до UI/render подготовки"
+        );
+    }
+
+    /// Фиксирует, что live-смена настроек пересобирает video pipeline с учётом
+    /// requirement активного стрима, а не вслепую (`None`). Иначе `auto` для
+    /// software-only кодека (AV1) выбрал бы hardware backend, который железо не
+    /// тянет, и decoder thread сразу падал бы с "Decoder thread disconnected".
+    #[test]
+    fn live_settings_rebuild_passes_active_stream_requirement() {
+        let state_source = include_str!("state.rs");
+        let frame_prepare_source = include_str!("frame_prepare.rs");
+
+        // AppState кэширует requirement активного стрима и отдаёт его по boundary-методу.
+        assert!(
+            state_source
+                .contains("active_video_stream_requirement: Option<VideoDecodeRequirement>"),
+            "AppState должен хранить requirement активного video-стрима для live-rebuild"
+        );
+        assert!(
+            state_source.contains(concat!(
+                "pub(crate) fn ",
+                "active_video_stream_requirement",
+                "(&self) -> Option<&VideoDecodeRequirement>"
+            )),
+            "AppState должен отдавать requirement активного стрима через boundary-метод"
+        );
+
+        // Live-путь применения runtime-настроек обязан прокинуть этот requirement в rebuild.
+        let apply_section = source_section_between(
+            frame_prepare_source,
+            "fn apply_player_runtime_settings(",
+            "self.app_state.apply_player_runtime_settings(update)",
+        );
+        assert!(
+            apply_section.contains("self.app_state.active_video_stream_requirement()"),
+            "live-rebuild должен брать requirement активного стрима, а не выбирать backend вслепую"
+        );
+        assert!(
+            !apply_section.contains("rebuild_video_pipeline_with_decoder_config(\n                decoder_thread_config,\n                None,"),
+            "live-rebuild не должен передавать None как stream_requirement"
         );
     }
 

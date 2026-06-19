@@ -175,9 +175,14 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
                 || self.app_state.current_decoder_thread_config(),
                 |decoder_update| decoder_update.decoder_thread_config,
             );
+            // Передаём requirement активного стрима: иначе `auto` пересобирает pipeline
+            // вслепую и может выбрать hardware backend для кодека, который железо не тянет
+            // (например AV1) — decoder thread сразу падает с unsupported и плейбек встаёт.
+            // Клонируем до &mut self-вызова rebuild, чтобы снять immutable borrow.
+            let stream_requirement = self.app_state.active_video_stream_requirement().cloned();
             if let Err(message) = self.app_state.rebuild_video_pipeline_with_decoder_config(
                 decoder_thread_config,
-                None,
+                stream_requirement.as_ref(),
                 self.renderer.instance(),
                 self.renderer.adapter(),
                 self.renderer.device(),
