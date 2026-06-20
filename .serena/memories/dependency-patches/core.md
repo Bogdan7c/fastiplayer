@@ -1,0 +1,18 @@
+# Dependency Patches Core
+
+- Root `Cargo.toml` uses top-level `[replace]` for critical local patch crates: `cros-libva:0.0.12`, `cros-codecs:0.0.6`, `symphonia-format-isomp4:0.6.0`, and `symphonia-codec-aac:0.6.0`.
+- These replacements are not feature toggles. Removing any `[replace]` or doing a large upstream bump changes the playback risk profile and requires an explicit architecture/maintenance decision plus a media regression matrix. Do not mix patch removal/upstream sync with feature work.
+- Cargo override semantics checked via Context7/Cargo Book on 2026-06-20: root-level overrides affect dependency resolution transitively. Several local patch crates are not normal workspace members; practical validation usually goes through dependent workspace crates such as `video-vaapi`, `symphonia-demux`, `audio`, and the whole workspace.
+
+## Why Each Patch Is Still Needed
+
+- `cros-libva`: local replacement for the cros-libva version pulled by cros-codecs. It carries compatibility with newer system libva headers, libva version cfg/check-cfg handling, VP9 encoder ABI fields, and VA surface status/query paths used by cros-codecs/video-vaapi. Removing it can break build compatibility or decoded-surface readiness semantics.
+- `cros-codecs`: production VA-API codec layer for VP9/H.264/H.265. Local needs include H.265 Dolby Vision RPU / unspecified NAL type 48..63 acceptance, dynamic WPP entry point storage for 4K streams, H.265 seek/flush picture-order reset and `NoRaslOutputFlag` behavior for CRA/IRAP, RPS/DPB diagnostics, and `DecodedHandle::try_is_ready()` so VA query errors are not collapsed into `true` during suppressed-surface reclaim.
+- `symphonia-format-isomp4`: MP4 container patch for composition offsets (`ctts`/`trun`) so B-frames get presentation PTS, `stss` sync-sample seek targets, `tkhd` display orientation tags, MP4 `colr`/`mdcv`/`clli` raw tags for neutral color/HDR metadata, and QuickTime/iOS PCM/LPCM one-frame sample coalescing to avoid tiny-packet starvation after seek.
+- `symphonia-codec-aac`: removes the upstream AAC-LC `channels.count() > 2` complexity guard. Needed for AAC-LC 5.1 playback; local code documents that the decoder already handles SCE/CPE/LFE multichannel elements and writes to the corresponding audio planes.
+
+## Verification Before Removal Or Major Bump
+
+- Run at least `cargo check --workspace` and `cargo clippy --workspace --all-targets`.
+- Run focused tests for dependent crates touched by the patch behavior (`video-vaapi`, `symphonia-demux`, `audio`, plus neighboring crates when contracts move). Direct `cargo test -p cros-codecs-patch`/similar is not currently reliable under the workspace layout; use dependents unless workspace membership is intentionally changed.
+- Manual media regression should cover H.264 MP4 with B-frames and seek, H.265/HEVC MOV/MP4 including iOS/Dolby Vision RPU and CRA/open-GOP seek, VP9 SDR/HDR VA-API DMA-BUF export, MP4 HDR/color metadata, QuickTime/iOS LPCM seek/playback, and AAC-LC 5.1 playback.

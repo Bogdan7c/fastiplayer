@@ -30,14 +30,19 @@ members = [
 ]
 resolver = "2"
 
-# Patch для cros-libva: системные заголовки libva новее чем ожидает cros-libva 0.0.12.
-# Локальная копия 0.0.13 с фиксом отсутствующих полей в VP9 encoder struct.
-# Можно удалить когда cros-codecs обновит зависимость cros-libva.
+# Критичные local dependency patches. Это не временные feature toggles: снятие
+# любого replace меняет risk profile playback-а и требует отдельного upstream-sync
+# решения плюс media regression matrix. Подробный список причин держим в
+# `mem:dependency-patches/core` и пользовательском backlog.
 [replace]
+# cros-libva: совместимость с более новыми системными libva headers, VP9 encoder
+# ABI fields и VA surface readiness/query_status, которые нужны video-vaapi.
 "cros-libva:0.0.12" = { path = "crates/cros-libva-patch" }
+# cros-codecs: owned VA-API codec layer для VP9/H.264/H.265, включая H.265 seek,
+# Dolby Vision RPU NAL, WPP entry points и fallible decoded-surface readiness.
 "cros-codecs:0.0.6" = { path = "crates/cros-codecs-patch" }
-# Patch для Symphonia MP4: upstream 0.6.0 игнорирует ctts/trun composition offsets.
-# H.264 B-frames в MP4 из-за этого получают decode-order PTS и дергаются при playback.
+# Symphonia MP4: composition offsets, stss seek sync samples, display orientation,
+# MP4 color/HDR raw tags и QuickTime/iOS LPCM packet coalescing.
 "symphonia-format-isomp4:0.6.0" = { path = "crates/symphonia-format-isomp4-patch" }
 # Patch для Symphonia AAC: upstream 0.6.0 отклоняет AAC-LC с >2 каналов
 # ("aac: aac too complex"), хотя декодер многоканален. Сняли guard, чтобы играл 5.1 AAC.
