@@ -60,6 +60,13 @@ fn get_va_version(va_h_path: &str) -> (u32, u32) {
 }
 
 fn main() {
+    // Объявляем все версионные cfg, которые этот build script может выставить,
+    // чтобы `unexpected_cfgs` не ругался независимо от обнаруженной версии libva.
+    println!("cargo::rustc-check-cfg=cfg(libva_1_16_or_higher)");
+    println!("cargo::rustc-check-cfg=cfg(libva_1_19_or_higher)");
+    println!("cargo::rustc-check-cfg=cfg(libva_1_20_or_higher)");
+    println!("cargo::rustc-check-cfg=cfg(libva_1_21_or_higher)");
+
     // Do not require dependencies when generating docs.
     if std::env::var("CARGO_DOC").is_ok() || std::env::var("DOCS_RS").is_ok() {
         return;

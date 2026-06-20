@@ -780,7 +780,7 @@ pub fn h264_access_unit_to_annex_b_into(
 ) -> Result<(), H264ByteStreamError> {
     output.clear();
 
-    let write_result = (|| {
+    let write_result = {
         if let H264ParameterSetInjection::BeforeAccessUnit {
             sequence_parameter_sets,
             picture_parameter_sets,
@@ -791,7 +791,7 @@ pub fn h264_access_unit_to_annex_b_into(
         }
 
         append_access_unit_nals_to_annex_b(packet_bytes, packetization, output)
-    })();
+    };
 
     if write_result.is_err() {
         output.clear();
