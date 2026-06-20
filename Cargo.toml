@@ -16,7 +16,6 @@ members = [
     "crates/player-core",
     "crates/media-core",
     "crates/symphonia-demux",
-    "crates/webm-demux",
     "crates/audio",
     "crates/vp9-parser",
     "crates/video-frame-contract",
@@ -69,9 +68,6 @@ opt-level = 3
 [profile.dev.package.vp9-parser]
 opt-level = 3
 
-[profile.dev.package.webm-demux]
-opt-level = 3
-
 [profile.dev.package.symphonia-demux]
 opt-level = 3
 
@@ -98,6 +94,7 @@ directories = "6.0"
 rustiplayer-config = { path = "crates/config" }
 animation-core = { path = "crates/animation-core" }
 audio-core = { path = "crates/audio-core" }
+audio = { path = "crates/audio" }
 capability-core = { path = "crates/capability-core" }
 codec-core = { path = "crates/codec-core" }
 serde = { version = "1.0", features = ["derive"] }

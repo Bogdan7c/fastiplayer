@@ -14,7 +14,7 @@ nix = { version = "0.29", features = ["ioctl", "fs"] }
 media-core = { workspace = true }
 codec-core = { workspace = true }
 capability-core = { workspace = true }
-video-core = { path = "../video-core" }
+video-core = { workspace = true }
 video-backend-api.workspace = true
 video-frame-contract.workspace = true
 cros-codecs = { version = "0.0.6", features = ["vaapi", "backend"] }
