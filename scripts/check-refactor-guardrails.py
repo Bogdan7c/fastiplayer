@@ -63,7 +63,6 @@ REQUIRED_ROLE_CRATES = frozenset(
         "video-backend-api",
         "video-ffmpeg",
         "video-vaapi",
-        "webm-demux",
     }
 )
 
