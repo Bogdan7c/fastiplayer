@@ -162,17 +162,6 @@ impl PlayerSession {
             .record_render_resource_previous_frame_reuse(queues);
     }
 
-    /// Записывает render acquire timeout как drop и pause attribution.
-    #[allow(dead_code)]
-    pub(crate) fn record_render_acquire_timeout(&mut self, wait: Duration) {
-        self.record_pipeline_latency(PipelineLatencyStage::RenderAcquire, wait, None, None);
-        if !self.pipeline.has_selected_video_track() {
-            return;
-        }
-        self.record_video_drop(None, VideoDropReason::RenderAcquisitionTimeout);
-        self.record_pipeline_pause(PipelinePauseReason::RenderAcquireTimeout);
-    }
-
     /// Записывает latency release ack от render side до worker.
     pub(crate) fn record_release_ack_latency(&mut self, latency: Duration) {
         self.record_pipeline_latency(

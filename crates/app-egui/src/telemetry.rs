@@ -176,13 +176,6 @@ impl Telemetry {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Legacy alias для старого render loop API.
-    #[inline]
-    #[allow(dead_code)]
-    pub fn record_presented_frame(&self) {
-        self.record_frame_presented_to_surface();
-    }
-
     /// Инкрементирует счётчик кадров, потерянных на swapchain/surface boundary.
     ///
     /// Этот counter не описывает video playback timeline и не должен участвовать
@@ -190,13 +183,6 @@ impl Telemetry {
     #[inline]
     pub fn record_surface_dropped_frame(&self) {
         self.surface_dropped_frames.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Legacy alias для старого render loop API.
-    #[inline]
-    #[allow(dead_code)]
-    pub fn record_dropped_frame(&self) {
-        self.record_surface_dropped_frame();
     }
 
     /// Обновляет FPS на основе прошедшего времени кадра.
@@ -240,24 +226,10 @@ impl Telemetry {
         self.frames_presented_to_surface.load(Ordering::Relaxed)
     }
 
-    /// Legacy getter для старого имени surface-present counter-а.
-    #[inline]
-    #[allow(dead_code)]
-    pub fn presented_frames(&self) -> u64 {
-        self.frames_presented_to_surface()
-    }
-
     /// Возвращает количество render frames, потерянных на surface boundary.
     #[inline]
     pub fn surface_dropped_frames(&self) -> u64 {
         self.surface_dropped_frames.load(Ordering::Relaxed)
-    }
-
-    /// Legacy getter для старого имени surface-drop counter-а.
-    #[inline]
-    #[allow(dead_code)]
-    pub fn dropped_frames(&self) -> u64 {
-        self.surface_dropped_frames()
     }
 
     /// Возвращает процент surface drops от общего числа render attempts.
@@ -272,12 +244,6 @@ impl Telemetry {
         } else {
             (dropped as f64) / (total as f64) * 100.0
         }
-    }
-
-    /// Legacy getter для старого имени surface drop rate.
-    #[allow(dead_code)]
-    pub fn drop_rate_percent(&self) -> f64 {
-        self.surface_drop_rate_percent()
     }
 
     /// Записывает информацию о прочитанном packet.
@@ -393,31 +359,13 @@ impl Telemetry {
     }
 
     #[inline]
-    #[allow(dead_code)]
-    pub fn video_frames_late_dropped(&self) -> u64 {
-        self.video_late_drops()
-    }
-
-    #[inline]
     pub fn video_queue_drops(&self) -> u64 {
         self.video_queue_drops.load(Ordering::Relaxed)
     }
 
     #[inline]
-    #[allow(dead_code)]
-    pub fn video_frames_queue_dropped(&self) -> u64 {
-        self.video_queue_drops()
-    }
-
-    #[inline]
     pub fn video_pause_drops(&self) -> u64 {
         self.video_pause_drops.load(Ordering::Relaxed)
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub fn video_frames_pause_dropped(&self) -> u64 {
-        self.video_pause_drops()
     }
 
     #[inline]
@@ -428,12 +376,6 @@ impl Telemetry {
     #[inline]
     pub fn video_other_drops(&self) -> u64 {
         self.video_other_drops.load(Ordering::Relaxed)
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub fn video_frames_other_dropped(&self) -> u64 {
-        self.video_other_drops()
     }
 
     #[inline]
@@ -483,9 +425,9 @@ mod tests {
         assert_eq!(telemetry.frames_presented_to_surface(), 1);
         assert_eq!(telemetry.surface_dropped_frames(), 1);
         assert_eq!(telemetry.surface_drop_rate_percent(), 50.0);
-        assert_eq!(telemetry.presented_frames(), 1);
-        assert_eq!(telemetry.dropped_frames(), 1);
-        assert_eq!(telemetry.drop_rate_percent(), 50.0);
+        assert_eq!(telemetry.frames_presented_to_surface(), 1);
+        assert_eq!(telemetry.surface_dropped_frames(), 1);
+        assert_eq!(telemetry.surface_drop_rate_percent(), 50.0);
         assert_eq!(telemetry.video_frames_dropped(), 0);
         assert_eq!(telemetry.playback_visible_drops(), 0);
         assert_eq!(telemetry.seek_discarded_frames(), 0);

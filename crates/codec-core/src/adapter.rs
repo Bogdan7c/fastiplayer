@@ -183,6 +183,9 @@ enum CodecPrivateCandidate {
 }
 
 /// Результат codec-neutral packet probing.
+// Cold path: probing выполняется при открытии stream-а, а не per-frame, поэтому
+// крупный Candidate-variant держим inline без Box. Реструктуризация ради лишь
+// этого lint-а относится к отдельной P2 boundary-задаче.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum VideoRequirementProbe {

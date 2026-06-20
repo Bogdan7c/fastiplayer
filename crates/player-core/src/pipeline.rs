@@ -93,7 +93,6 @@ pub(crate) enum VideoDecoderActivityStatus {
     /// Backend сообщил typed unavailable state, который нельзя превращать в busy loop.
     ///
     /// Session 3 только планирует intent; Session 4 будет читать reason в worker wait policy.
-    #[allow(dead_code)]
     Unavailable(VideoDecoderActivityUnavailableReason),
 
     /// Snapshot доступен; worker сможет ждать activity через video-core contract.
@@ -1370,6 +1369,8 @@ impl PlaybackPipeline {
     ///
     /// Tick-код использует этот метод как send-side readiness и не зависит от
     /// того, каким полем pipeline владеет активным decoder backend-ом.
+    // Send-side readiness boundary; сейчас зафиксирован только focused tests
+    // (decoder_boundary), поэтому в non-test сборке метод не имеет вызовов.
     #[allow(dead_code)]
     #[must_use]
     pub(crate) fn can_send_video_decode_packets(&self) -> bool {
@@ -1436,7 +1437,6 @@ impl PlaybackPipeline {
 
     /// Возвращает typed snapshot software host-upload ресурсов.
     // S20 подключит этот boundary к scheduler/tick; сейчас его фиксируют focused tests.
-    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn host_upload_resource_snapshot(&self) -> HostUploadResourceSnapshotStatus {
         let Some(decoder_thread) = self.video_decoder_thread.as_ref() else {

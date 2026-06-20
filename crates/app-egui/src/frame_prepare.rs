@@ -1794,8 +1794,8 @@ mod tests {
         record_player_tick_result(&telemetry, &tick_result);
 
         assert_eq!(telemetry.video_frames_dropped(), 1);
-        assert_eq!(telemetry.video_frames_late_dropped(), 1);
-        assert_eq!(telemetry.video_frames_other_dropped(), 0);
+        assert_eq!(telemetry.video_late_drops(), 1);
+        assert_eq!(telemetry.video_other_drops(), 0);
         assert_eq!(telemetry.seek_discarded_frames(), 2);
         assert_eq!(telemetry.seek_preroll_discarded(), 1);
         assert_eq!(telemetry.stale_generation_discarded(), 1);
@@ -1861,11 +1861,11 @@ mod tests {
         record_player_tick_result(&telemetry, &tick_result);
 
         assert_eq!(telemetry.video_frames_dropped(), 0);
-        assert_eq!(telemetry.video_frames_late_dropped(), 0);
-        assert_eq!(telemetry.video_frames_queue_dropped(), 0);
-        assert_eq!(telemetry.video_frames_pause_dropped(), 0);
-        assert_eq!(telemetry.video_frames_other_dropped(), 0);
-        assert_eq!(telemetry.dropped_frames(), 0);
+        assert_eq!(telemetry.video_late_drops(), 0);
+        assert_eq!(telemetry.video_queue_drops(), 0);
+        assert_eq!(telemetry.video_pause_drops(), 0);
+        assert_eq!(telemetry.video_other_drops(), 0);
+        assert_eq!(telemetry.surface_dropped_frames(), 0);
         assert_eq!(telemetry.seek_discarded_frames(), 2);
         assert_eq!(telemetry.seek_preroll_discarded(), 1);
         assert_eq!(telemetry.stale_generation_discarded(), 1);
