@@ -79,6 +79,9 @@ impl PresentFrameResourceProvider for WgpuSubmittedResourceProvider {
 
     fn release_frame(&self, handle: video_core::FrameResourceHandle) {
         let inner_provider = self.inner_provider.clone();
+        // Контракт submitted release: player-core уже передал frame в render submission,
+        // поэтому decoder resource можно вернуть inner provider-у только после того,
+        // как WGPU подтвердит завершение ранее отправленной работы очереди.
         self.queue.on_submitted_work_done(move || {
             inner_provider.release_frame(handle);
         });
