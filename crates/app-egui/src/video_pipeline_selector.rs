@@ -72,6 +72,15 @@ pub(crate) enum VideoPipelineSelectionError {
     )]
     MissingHardwareOutput,
 
+    /// Native hardware output есть, но он не обслуживает текущий stream requirement.
+    #[error(
+        "video.preferred_backend=hardware: native hardware output не поддерживает {requirement}; software fallback запрещён preference"
+    )]
+    HardwareOutputDoesNotServeStream {
+        /// Человекочитаемое описание stream requirement из player-core.
+        requirement: String,
+    },
+
     /// Запрошен FFmpeg software path, но playable software output/provider пока отсутствует.
     #[error("video.preferred_backend=software: FFmpeg software decode backend сейчас недоступен")]
     MissingSoftwareOutput,
@@ -174,6 +183,24 @@ fn select_hardware_rejection(
     playable_video_outputs: &[SupportedVideoOutput],
     stream_requirement: Option<&VideoDecodeRequirement>,
 ) -> Result<VideoPipelinePlan, VideoPipelineSelectionError> {
+    let has_native_hardware_output = playable_video_outputs
+        .iter()
+        .any(is_playable_native_hardware_output);
+
+    if let Some(requirement) = stream_requirement.filter(|_| has_native_hardware_output) {
+        let hardware_serves_stream = playable_video_outputs.iter().any(|output| {
+            is_playable_native_hardware_output(output)
+                && output_serves_requirement(output, Some(requirement))
+        });
+        if !hardware_serves_stream {
+            return Err(
+                VideoPipelineSelectionError::HardwareOutputDoesNotServeStream {
+                    requirement: requirement.describe(),
+                },
+            );
+        }
+    }
+
     if let Some(native_hardware_output) = playable_video_outputs.iter().find(|output| {
         is_playable_native_hardware_output(output)
             && output_serves_requirement(output, stream_requirement)
@@ -401,7 +428,17 @@ mod tests {
             Some(&software_only_stream),
         )
         .expect_err("hardware preference не должен падать на software для несовместимого стрима");
-        assert_eq!(error, VideoPipelineSelectionError::MissingHardwareOutput);
+        match error {
+            VideoPipelineSelectionError::HardwareOutputDoesNotServeStream { requirement } => {
+                assert!(
+                    requirement.contains("VP9"),
+                    "diagnostic должен назвать stream requirement, got {requirement}"
+                );
+            }
+            unexpected_error => {
+                panic!("ожидали stream-specific hardware rejection, got {unexpected_error:?}");
+            }
+        }
     }
 
     fn vp9_profile0_format() -> SupportedVideoDecodeFormat {

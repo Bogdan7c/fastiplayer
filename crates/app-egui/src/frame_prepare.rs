@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use player_core::{
-    LatencyCounterSnapshot, PlayerEvent, PlayerRenderError, PlayerRuntimeApplyGroup,
+    LatencyCounterSnapshot, PlayerError, PlayerEvent, PlayerRenderError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyReport, PlayerRuntimeApplyResult,
     PlayerRuntimeSettingsUpdate, PlayerSnapshot, PlayerTickResult, PlayerVideoDropReason,
     PlayerWorkerEvent, PreparedMedia,
@@ -14,7 +14,7 @@ use render_core::{
 use render_wgpu_shell::{RenderFrameDropReason, RenderFrameOutcome, RenderFrameTiming, Renderer};
 use render_wgpu_video::{WgpuFrameTextureViewLookup, WgpuRenderableFrame};
 use rustiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
-use tracing::{debug, instrument, trace, warn};
+use tracing::{debug, error, instrument, trace, warn};
 use video_core::DecodedPixelFormat;
 use winit::window::{ResizeDirection, Window};
 
@@ -625,12 +625,28 @@ fn record_worker_events(
             }
             PlayerWorkerEvent::Player(player_event) => {
                 app_state.handle_cached_present_frame_player_event(&player_event);
-                if let PlayerEvent::VideoBackendSelectionRequested(request) = player_event {
-                    app_state.note_video_backend_reselection_request(request);
+                match player_event {
+                    PlayerEvent::FatalError(fatal_error) => {
+                        log_player_fatal_error(&fatal_error);
+                    }
+                    PlayerEvent::VideoBackendSelectionRequested(request) => {
+                        app_state.note_video_backend_reselection_request(request);
+                    }
+                    _ => {}
                 }
             }
         }
     }
+}
+
+/// Пишет stable app-level marker для fatal-событий, чтобы local smoke мог
+/// отличить typed rejection от panic, silent fallback или decoder disconnect.
+fn log_player_fatal_error(fatal_error: &PlayerError) {
+    error!(
+        kind = ?fatal_error.kind,
+        message = %fatal_error.message,
+        "PlayerEvent::FatalError"
+    );
 }
 
 /// Возвращает `true`, если surface drop означает разрыв lifecycle для cached texture.
