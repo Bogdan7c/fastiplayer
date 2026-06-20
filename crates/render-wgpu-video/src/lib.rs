@@ -19,7 +19,7 @@ pub use video::{
     DmaBufWgpuFrameMaterializer, HostPlanarWgpuFrameMaterializer, HostPlanarWgpuTextureViewLookup,
     HostPlanarWgpuTextureViews, WgpuFrameMaterializationUnsupportedReason, WgpuFramePlanes,
     WgpuFrameTextureViewLookup, WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
-    WgpuRenderableFrame, WgpuVideoRenderer, clear_to_black,
+    WgpuRenderableFrame, WgpuVideoRenderInput, WgpuVideoRenderer, clear_to_black,
 };
 
 /// Возвращает набор WGPU features, обязательный для video texture boundary.

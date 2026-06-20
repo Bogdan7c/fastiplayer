@@ -64,23 +64,23 @@ impl VideoPipelinePlan {
 pub(crate) enum VideoPipelineSelectionError {
     /// Shell ещё не передал capability snapshot в app state.
     #[error("capability snapshot ещё недоступен для выбора video pipeline")]
-    CapabilitiesUnavailable,
+    MissingCapabilities,
 
     /// Запрошен native hardware path, но playable hardware output отсутствует.
     #[error(
         "video.preferred_backend=hardware: нет playable native hardware output после renderer intersection"
     )]
-    HardwareUnavailable,
+    MissingHardwareOutput,
 
     /// Запрошен FFmpeg software path, но playable software output/provider пока отсутствует.
     #[error("video.preferred_backend=software: FFmpeg software decode backend сейчас недоступен")]
-    SoftwareUnavailable,
+    MissingSoftwareOutput,
 
     /// Capability policy нашла playable output, но app composition ещё не умеет стартовать этот backend.
     #[error(
         "video.preferred_backend={preference}: playable backend '{backend_id}' пока не поддержан app composition"
     )]
-    RequestedBackendUnavailable {
+    UnsupportedCompositionBackend {
         /// Значение public config, из которого пришёл запрос.
         preference: &'static str,
         /// Backend id из renderer-intersected capability output.
@@ -96,7 +96,7 @@ pub(crate) fn select_video_pipeline_plan(
     stream_requirement: Option<&VideoDecodeRequirement>,
 ) -> Result<VideoPipelinePlan, VideoPipelineSelectionError> {
     let system_capabilities =
-        system_capabilities.ok_or(VideoPipelineSelectionError::CapabilitiesUnavailable)?;
+        system_capabilities.ok_or(VideoPipelineSelectionError::MissingCapabilities)?;
     let playable_video_outputs = system_capabilities.playable_video_outputs.as_slice();
 
     match preferred_backend {
@@ -184,7 +184,7 @@ fn select_hardware_rejection(
         ));
     }
 
-    Err(VideoPipelineSelectionError::HardwareUnavailable)
+    Err(VideoPipelineSelectionError::MissingHardwareOutput)
 }
 
 /// Software-ветка выбирает только renderer-intersected FFmpeg HostPlanar output.
@@ -212,7 +212,7 @@ fn select_software_plan(
         ));
     }
 
-    Err(VideoPipelineSelectionError::SoftwareUnavailable)
+    Err(VideoPipelineSelectionError::MissingSoftwareOutput)
 }
 
 /// Проверяет только уже пересечённый system-level output.
@@ -250,7 +250,7 @@ fn requested_backend_unavailable(
     preferred_backend: VideoBackendPreference,
     output: &SupportedVideoOutput,
 ) -> VideoPipelineSelectionError {
-    VideoPipelineSelectionError::RequestedBackendUnavailable {
+    VideoPipelineSelectionError::UnsupportedCompositionBackend {
         preference: preference_label(preferred_backend),
         backend_id: output.backend.as_str().to_string(),
     }
@@ -401,7 +401,7 @@ mod tests {
             Some(&software_only_stream),
         )
         .expect_err("hardware preference не должен падать на software для несовместимого стрима");
-        assert_eq!(error, VideoPipelineSelectionError::HardwareUnavailable);
+        assert_eq!(error, VideoPipelineSelectionError::MissingHardwareOutput);
     }
 
     fn vp9_profile0_format() -> SupportedVideoDecodeFormat {
@@ -510,7 +510,7 @@ mod tests {
         )
         .expect_err("auto should try software branch when no playable hardware exists");
 
-        assert_eq!(error, VideoPipelineSelectionError::SoftwareUnavailable);
+        assert_eq!(error, VideoPipelineSelectionError::MissingSoftwareOutput);
     }
 
     #[test]
@@ -547,7 +547,7 @@ mod tests {
         )
         .expect_err("raw VA-API output must not bypass playable output policy");
 
-        assert_eq!(error, VideoPipelineSelectionError::SoftwareUnavailable);
+        assert_eq!(error, VideoPipelineSelectionError::MissingSoftwareOutput);
     }
 
     #[test]
@@ -562,7 +562,7 @@ mod tests {
         )
         .expect_err("hardware preference must not fall back to another backend");
 
-        assert_eq!(error, VideoPipelineSelectionError::HardwareUnavailable);
+        assert_eq!(error, VideoPipelineSelectionError::MissingHardwareOutput);
     }
 
     #[test]
@@ -577,7 +577,7 @@ mod tests {
         )
         .expect_err("hardware preference must never fall back to software");
 
-        assert_eq!(error, VideoPipelineSelectionError::HardwareUnavailable);
+        assert_eq!(error, VideoPipelineSelectionError::MissingHardwareOutput);
     }
 
     #[test]
@@ -594,7 +594,7 @@ mod tests {
 
         assert_eq!(
             error,
-            VideoPipelineSelectionError::RequestedBackendUnavailable {
+            VideoPipelineSelectionError::UnsupportedCompositionBackend {
                 preference: "hardware",
                 backend_id: "future_backend".to_string(),
             }
@@ -615,7 +615,7 @@ mod tests {
 
         assert_eq!(
             error,
-            VideoPipelineSelectionError::RequestedBackendUnavailable {
+            VideoPipelineSelectionError::UnsupportedCompositionBackend {
                 preference: "auto",
                 backend_id: "future_backend".to_string(),
             }
@@ -634,7 +634,7 @@ mod tests {
         )
         .expect_err("hardware startup requires current DMA-BUF materializer path");
 
-        assert_eq!(error, VideoPipelineSelectionError::HardwareUnavailable);
+        assert_eq!(error, VideoPipelineSelectionError::MissingHardwareOutput);
     }
 
     #[test]
@@ -673,7 +673,7 @@ mod tests {
         )
         .expect_err("software preference must not silently use current VA-API path");
 
-        assert_eq!(error, VideoPipelineSelectionError::SoftwareUnavailable);
+        assert_eq!(error, VideoPipelineSelectionError::MissingSoftwareOutput);
     }
 
     #[test]
@@ -690,7 +690,7 @@ mod tests {
 
         assert_eq!(
             error,
-            VideoPipelineSelectionError::RequestedBackendUnavailable {
+            VideoPipelineSelectionError::UnsupportedCompositionBackend {
                 preference: "software",
                 backend_id: "future_sw".to_string(),
             }
@@ -707,6 +707,6 @@ mod tests {
         )
         .expect_err("selector cannot run before shell capability probe");
 
-        assert_eq!(error, VideoPipelineSelectionError::CapabilitiesUnavailable);
+        assert_eq!(error, VideoPipelineSelectionError::MissingCapabilities);
     }
 }

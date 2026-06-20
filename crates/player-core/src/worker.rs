@@ -383,7 +383,7 @@ impl PlayerCommandSender {
         match self
             .command_tx
             .try_send(WorkerCommand::ApplyRuntimeSettings {
-                update,
+                update: Box::new(update),
                 response_tx,
             }) {
             Ok(()) => {}
@@ -723,7 +723,7 @@ enum WorkerCommand {
     /// Settings-specific command с обязательным response/report.
     ApplyRuntimeSettings {
         /// Typed update, собранный settings binding layer без чтения TOML в player-core.
-        update: PlayerRuntimeSettingsUpdate,
+        update: Box<PlayerRuntimeSettingsUpdate>,
 
         /// One-shot response channel для реального apply report-а.
         response_tx: Sender<PlayerRuntimeApplyReport>,
@@ -1515,7 +1515,7 @@ impl PlayerWorkerRuntime {
                 update,
                 response_tx,
             } => {
-                let report = self.apply_runtime_settings(update);
+                let report = self.apply_runtime_settings(*update);
                 if response_tx.send(report).is_err() {
                     warn!("Settings runtime apply report receiver was dropped");
                 }
@@ -2670,8 +2670,10 @@ mod tests {
         let (response_tx, response_rx) = bounded(1);
 
         runtime.handle_worker_command(WorkerCommand::ApplyRuntimeSettings {
-            update: PlayerRuntimeSettingsUpdate::empty()
-                .with_default_volume(0.5, [PlayerRuntimeSettingId::AudioDefaultVolume]),
+            update: Box::new(
+                PlayerRuntimeSettingsUpdate::empty()
+                    .with_default_volume(0.5, [PlayerRuntimeSettingId::AudioDefaultVolume]),
+            ),
             response_tx,
         });
 

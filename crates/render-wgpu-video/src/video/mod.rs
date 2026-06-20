@@ -412,6 +412,30 @@ pub(crate) struct VideoRenderPassContext<'pass> {
     pub(crate) draw_rects: Vec<RenderViewport>,
 }
 
+/// Контракт одного video render pass-а между shell и renderer.
+pub struct WgpuVideoRenderInput<'pass, 'frame> {
+    /// Готовый renderable frame или `None`, если target надо очистить.
+    pub frame: Option<&'pass WgpuRenderableFrame<'frame>>,
+
+    /// Viewport video layer-а в physical pixels до renderer-side clamp-а.
+    pub video_viewport: RenderViewport,
+
+    /// Области UI, которые должны исключаться из video shading.
+    pub video_exclusion_rects: &'pass [RenderViewport],
+
+    /// Surface texture view текущего swapchain frame-а.
+    pub target: &'pass wgpu::TextureView,
+
+    /// Command encoder текущего frame-а.
+    pub encoder: &'pass mut wgpu::CommandEncoder,
+
+    /// WGPU device текущего renderer-а.
+    pub device: &'pass wgpu::Device,
+
+    /// WGPU queue текущего renderer-а.
+    pub queue: &'pass wgpu::Queue,
+}
+
 /// Backend-specific texture resources для одного кадра.
 pub enum WgpuFramePlanes<'frame> {
     /// NV12 frame: отдельная luma plane и interleaved chroma plane.
@@ -781,16 +805,16 @@ impl WgpuVideoRenderer {
     /// Рендерит video frame или очищает target в чёрный цвет, если кадра нет.
     ///
     /// Возвращает `true`, если video pass реально нарисовал кадр.
-    pub fn render_or_clear(
-        &mut self,
-        frame: Option<&WgpuRenderableFrame<'_>>,
-        video_viewport: RenderViewport,
-        video_exclusion_rects: &[RenderViewport],
-        target: &wgpu::TextureView,
-        encoder: &mut wgpu::CommandEncoder,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) -> Result<bool> {
+    pub fn render_or_clear(&mut self, input: WgpuVideoRenderInput<'_, '_>) -> Result<bool> {
+        let WgpuVideoRenderInput {
+            frame,
+            video_viewport,
+            video_exclusion_rects,
+            target,
+            encoder,
+            device,
+            queue,
+        } = input;
         let Some(frame) = frame else {
             self.diagnostics = RenderDiagnostics::default();
             clear_to_black(target, encoder);

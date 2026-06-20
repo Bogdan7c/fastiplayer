@@ -7,6 +7,15 @@
 //! The starting point to using this crate is to open a [`Display`], from which a [`Context`] and
 //! [`Surface`]s can be allocated and used for doing actual work.
 
+#![expect(
+    dead_code,
+    reason = "Локальный patch upstream cros-libva хранит ABI/status типы, которые могут быть не прочитаны напрямую в текущей feature matrix."
+)]
+#![expect(
+    mismatched_lifetime_syntaxes,
+    reason = "Локальный patch upstream cros-libva использует старый стиль lifetime elision; runtime contract не меняем ради lint-шумa."
+)]
+
 mod bindings;
 pub mod buffer;
 mod config;

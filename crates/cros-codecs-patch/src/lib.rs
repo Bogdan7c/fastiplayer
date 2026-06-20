@@ -20,6 +20,11 @@
 //! The [utils] module contains some useful code that is shared between different parts of this
 //! crate and didn't fit any of the modules above.
 
+#![expect(
+    mismatched_lifetime_syntaxes,
+    reason = "Локальный patch upstream cros-codecs использует старый стиль lifetime elision; чистим вместе с upstream sync, не отдельным lint patch."
+)]
+
 pub mod bitstream_utils;
 pub mod codec;
 

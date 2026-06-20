@@ -26,7 +26,8 @@ use render_core::{
     RenderLiveSettingsUpdate,
 };
 use render_wgpu_video::{
-    WgpuRenderableFrame, WgpuVideoRenderer, required_wgpu_video_texture_features,
+    WgpuRenderableFrame, WgpuVideoRenderInput, WgpuVideoRenderer,
+    required_wgpu_video_texture_features,
 };
 use tracing::{debug, info, instrument};
 use winit::window::Window;
@@ -549,15 +550,15 @@ impl Renderer {
         );
 
         let stage_started_at = Instant::now();
-        match self.video_renderer.render_or_clear(
-            video_frame,
-            clamped_video_viewport,
-            &clamped_video_exclusion_rects,
-            &surface_view,
-            &mut encoder,
-            &self.gpu.device,
-            &self.gpu.queue,
-        ) {
+        match self.video_renderer.render_or_clear(WgpuVideoRenderInput {
+            frame: video_frame,
+            video_viewport: clamped_video_viewport,
+            video_exclusion_rects: &clamped_video_exclusion_rects,
+            target: &surface_view,
+            encoder: &mut encoder,
+            device: &self.gpu.device,
+            queue: &self.gpu.queue,
+        }) {
             Ok(_video_rendered) => {}
             Err(error) => {
                 tracing::error!(error = %error, "Video render failed");

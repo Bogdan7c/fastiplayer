@@ -1373,16 +1373,16 @@ mod tests {
 
     #[test]
     fn decoder_readiness_poll_keeps_seek_decoder_inflight_from_idling() {
-        let poll_needed = decoder_readiness_poll_needed_for_state(
-            true,
-            0,
-            video_present_queue_target(&PlayerTickConfig::default()),
-            false,
-            false,
-            false,
-            true,
-            true,
-        );
+        let poll_needed = decoder_readiness_poll_needed_for_state(DecoderReadinessPollState {
+            video_track_selected: true,
+            video_frame_queue_len: 0,
+            video_present_queue_target: video_present_queue_target(&PlayerTickConfig::default()),
+            worker_has_pending_video_packets: false,
+            worker_has_demuxer: false,
+            decoder_has_queued_packets: false,
+            decoder_has_in_flight_packets: true,
+            seek_commit_active: true,
+        });
 
         assert!(poll_needed);
     }
@@ -1391,32 +1391,32 @@ mod tests {
     fn decoder_readiness_poll_keeps_seek_decoder_inflight_when_present_queue_is_full() {
         let tick_config = PlayerTickConfig::default();
         let present_queue_target = video_present_queue_target(&tick_config);
-        let poll_needed = decoder_readiness_poll_needed_for_state(
-            true,
-            present_queue_target,
-            present_queue_target,
-            false,
-            false,
-            false,
-            true,
-            true,
-        );
+        let poll_needed = decoder_readiness_poll_needed_for_state(DecoderReadinessPollState {
+            video_track_selected: true,
+            video_frame_queue_len: present_queue_target,
+            video_present_queue_target: present_queue_target,
+            worker_has_pending_video_packets: false,
+            worker_has_demuxer: false,
+            decoder_has_queued_packets: false,
+            decoder_has_in_flight_packets: true,
+            seek_commit_active: true,
+        });
 
         assert!(poll_needed);
     }
 
     #[test]
     fn decoder_readiness_poll_ignores_decoder_inflight_outside_seek() {
-        let poll_needed = decoder_readiness_poll_needed_for_state(
-            true,
-            0,
-            video_present_queue_target(&PlayerTickConfig::default()),
-            false,
-            false,
-            false,
-            true,
-            false,
-        );
+        let poll_needed = decoder_readiness_poll_needed_for_state(DecoderReadinessPollState {
+            video_track_selected: true,
+            video_frame_queue_len: 0,
+            video_present_queue_target: video_present_queue_target(&PlayerTickConfig::default()),
+            worker_has_pending_video_packets: false,
+            worker_has_demuxer: false,
+            decoder_has_queued_packets: false,
+            decoder_has_in_flight_packets: true,
+            seek_commit_active: false,
+        });
 
         assert!(!poll_needed);
     }

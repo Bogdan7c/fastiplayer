@@ -290,6 +290,10 @@ fn present_frame_identity_from_lease(lease: &PresentFrameLease) -> PresentFrameI
 }
 
 /// Результат неблокирующего чтения latest present frame.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Render acquire hot path сразу матчится на результате; Box добавил бы heap allocation на каждый frame acquire без изменения ownership semantics."
+)]
 pub(crate) enum LatestPresentFrameAcquire {
     /// Latest-slot содержит lease, clone которого можно отдать renderer-у.
     Acquired(PlayerPresentFrame),

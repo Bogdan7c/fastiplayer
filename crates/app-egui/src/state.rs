@@ -408,14 +408,14 @@ struct CachedRenderablePresentFrame {
 }
 
 /// Решение video-пайплайна на время живой смены backend-а.
-pub(crate) enum BackendSwapVideoPhase {
+pub(crate) enum BackendSwapVideoPhase<'frame> {
     /// Свап не идёт — обычный путь acquire/materialize.
     NotSwapping,
 
     /// Worker ещё не переключился или не выдал первый кадр нового backend-а: держим
     /// замороженный кадр (или ничего, если кэша не было) и НЕ материализуем кадры
     /// старого backend-а новым materializer-ом.
-    HoldFrozenFrame(Option<RenderablePresentFrame>),
+    HoldFrozenFrame(Option<&'frame RenderablePresentFrame>),
 }
 
 /// Стабильная identity decoded кадра на renderer boundary.
@@ -1354,7 +1354,7 @@ impl AppState {
     pub(crate) fn backend_swap_video_phase(
         &mut self,
         player_snapshot: &PlayerSnapshot,
-    ) -> BackendSwapVideoPhase {
+    ) -> BackendSwapVideoPhase<'_> {
         let Some(from_generation) = self.backend_swap_from_generation else {
             return BackendSwapVideoPhase::NotSwapping;
         };
@@ -1377,7 +1377,7 @@ impl AppState {
         BackendSwapVideoPhase::HoldFrozenFrame(
             self.backend_swap_frozen_frame
                 .as_ref()
-                .map(|frozen| frozen.renderable_frame.clone()),
+                .map(|frozen| &frozen.renderable_frame),
         )
     }
 

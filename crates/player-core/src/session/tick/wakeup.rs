@@ -500,47 +500,66 @@ pub(super) fn decoder_readiness_poll_needed(
         return false;
     };
 
-    decoder_readiness_poll_needed_for_state(
-        session.pipeline.has_selected_video_track(),
-        session.pipeline.video_present_queue_len(),
-        video_present_queue_target(tick_config),
-        !session.pipeline.pending_video_packet_is_empty(),
-        session.pipeline.has_demuxer(),
-        decoder_packet_queue_depth > 0,
-        session.pipeline.video_decode_in_flight_packets() > 0,
-        session.has_active_seek_commit(),
-    )
+    decoder_readiness_poll_needed_for_state(DecoderReadinessPollState {
+        video_track_selected: session.pipeline.has_selected_video_track(),
+        video_frame_queue_len: session.pipeline.video_present_queue_len(),
+        video_present_queue_target: video_present_queue_target(tick_config),
+        worker_has_pending_video_packets: !session.pipeline.pending_video_packet_is_empty(),
+        worker_has_demuxer: session.pipeline.has_demuxer(),
+        decoder_has_queued_packets: decoder_packet_queue_depth > 0,
+        decoder_has_in_flight_packets: session.pipeline.video_decode_in_flight_packets() > 0,
+        seek_commit_active: session.has_active_seek_commit(),
+    })
+}
+
+/// Read-only snapshot для чистой decoder readiness policy.
+pub(super) struct DecoderReadinessPollState {
+    /// В текущем media выбран video track.
+    pub(super) video_track_selected: bool,
+
+    /// Сколько decoded frames уже ждёт presentation scheduler.
+    pub(super) video_frame_queue_len: usize,
+
+    /// Целевой размер decoded-frame очереди до остановки короткого poll-а.
+    pub(super) video_present_queue_target: usize,
+
+    /// Worker уже держит packets, которые можно отправить decoder-у.
+    pub(super) worker_has_pending_video_packets: bool,
+
+    /// Demuxer ещё может дать новые decode inputs.
+    pub(super) worker_has_demuxer: bool,
+
+    /// Decoder boundary принял packets и ещё не подтвердил их завершение.
+    pub(super) decoder_has_queued_packets: bool,
+
+    /// Decoder уже выполняет packets текущего поколения.
+    pub(super) decoder_has_in_flight_packets: bool,
+
+    /// Активный seek ждёт landing/commit и не должен засыпать на in-flight decoder-е.
+    pub(super) seek_commit_active: bool,
 }
 
 /// Чистая часть decoder readiness policy без реального GPU decoder thread.
-pub(super) fn decoder_readiness_poll_needed_for_state(
-    video_track_selected: bool,
-    video_frame_queue_len: usize,
-    video_present_queue_target: usize,
-    worker_has_pending_video_packets: bool,
-    worker_has_demuxer: bool,
-    decoder_has_queued_packets: bool,
-    decoder_has_in_flight_packets: bool,
-    seek_commit_active: bool,
-) -> bool {
-    let decoder_has_seek_in_flight_packets = seek_commit_active && decoder_has_in_flight_packets;
-    let worker_has_decode_inputs = worker_has_pending_video_packets
-        || worker_has_demuxer
-        || decoder_has_queued_packets
+pub(super) fn decoder_readiness_poll_needed_for_state(state: DecoderReadinessPollState) -> bool {
+    let decoder_has_seek_in_flight_packets =
+        state.seek_commit_active && state.decoder_has_in_flight_packets;
+    let worker_has_decode_inputs = state.worker_has_pending_video_packets
+        || state.worker_has_demuxer
+        || state.decoder_has_queued_packets
         || decoder_has_seek_in_flight_packets;
     if !worker_has_decode_inputs {
         return false;
     }
 
     if decoder_has_seek_in_flight_packets {
-        return video_track_selected;
+        return state.video_track_selected;
     }
 
-    if video_frame_queue_len < video_present_queue_target {
-        return video_track_selected;
+    if state.video_frame_queue_len < state.video_present_queue_target {
+        return state.video_track_selected;
     }
 
-    worker_has_pending_video_packets
+    state.worker_has_pending_video_packets
 }
 
 /// Проверяет, должен ли активный seek получить bounded wakeup хотя бы для timeout/gates.

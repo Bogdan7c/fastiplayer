@@ -210,12 +210,6 @@ pub(crate) struct PendingAudioPacket {
     /// Presentation timestamp packet-а на абсолютной media timeline.
     pub(crate) pts: Duration,
 
-    /// Decode timestamp, если container сообщил DTS отдельно от PTS.
-    pub(crate) dts: Option<Duration>,
-
-    /// Packet duration, если demuxer смог сохранить container duration.
-    pub(crate) duration: Option<Duration>,
-
     /// Raw packet timing в container units для decoder boundary.
     pub(crate) timing: audio_core::AudioPacketTiming,
 
@@ -233,16 +227,14 @@ impl PendingAudioPacket {
     pub(crate) fn new(
         track_id: TrackId,
         pts: Duration,
-        dts: Option<Duration>,
-        duration: Option<Duration>,
+        _dts: Option<Duration>,
+        _duration: Option<Duration>,
         generation: u64,
         encoded_bytes: Bytes,
     ) -> Self {
         Self {
             track_id,
             pts,
-            dts,
-            duration,
             timing: audio_core::AudioPacketTiming::unknown(),
             generation,
             encoded_bytes,
@@ -254,8 +246,8 @@ impl PendingAudioPacket {
     pub(crate) fn with_timing(
         track_id: TrackId,
         pts: Duration,
-        dts: Option<Duration>,
-        duration: Option<Duration>,
+        _dts: Option<Duration>,
+        _duration: Option<Duration>,
         timing: audio_core::AudioPacketTiming,
         generation: u64,
         encoded_bytes: Bytes,
@@ -263,8 +255,6 @@ impl PendingAudioPacket {
         Self {
             track_id,
             pts,
-            dts,
-            duration,
             timing,
             generation,
             encoded_bytes,

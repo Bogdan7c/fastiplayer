@@ -817,9 +817,8 @@ fn prepare_video_frame(
         let state = "backend_swap_hold_frozen";
         timings.total = video_prepare_started_at.elapsed();
         return match frozen_frame {
-            Some(renderable_frame) => {
-                PreparedVideoFrame::ready(renderable_frame, state).with_diagnostics(state, timings)
-            }
+            Some(renderable_frame) => PreparedVideoFrame::ready(renderable_frame.clone(), state)
+                .with_diagnostics(state, timings),
             None => PreparedVideoFrame::empty(state).with_diagnostics(state, timings),
         };
     }
