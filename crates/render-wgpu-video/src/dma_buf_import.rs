@@ -644,14 +644,22 @@ impl DmaBufImporter {
             .depth_pitch(0);
         let plane_layouts = [y_layout, uv_layout];
 
+        // SAFETY: importer создаётся из `instance`/`adapter`/`device` одного renderer
+        // WGPU context-а. `as_hal` только выдаёт guard на Vulkan device; мы не
+        // уничтожаем raw handle вручную, а backend mismatch превращаем в обычную ошибку.
         let hal_device = unsafe { self.device.as_hal::<wgpu::hal::vulkan::Api>() }
             .context("Zero-copy import requires Vulkan backend")?;
         let raw_device = hal_device.raw_device();
 
+        // SAFETY: `self.instance` приходит из того же renderer WGPU context-а, что и
+        // `self.device`. Guard живёт до конца scope, поэтому raw instance валиден для
+        // запроса свойств physical device.
         let hal_instance = unsafe { self.instance.as_hal::<wgpu::hal::vulkan::Api>() }
             .context("Zero-copy import requires Vulkan backend")?;
         let raw_instance = hal_instance.shared_instance().raw_instance();
 
+        // SAFETY: `self.adapter` соответствует тому же Vulkan backend-у; если renderer
+        // запущен не на Vulkan, `as_hal` вернёт `None` и импорт остановится до raw API.
         let hal_adapter = unsafe { self.adapter.as_hal::<wgpu::hal::vulkan::Api>() }
             .context("Zero-copy import requires Vulkan backend")?;
         let physical_device = hal_adapter.raw_physical_device();
@@ -691,8 +699,15 @@ impl DmaBufImporter {
             image_info = image_info.push_next(drm_info);
         }
 
+        // SAFETY: `image_info` полностью описывает один multi-planar DMA-BUF image:
+        // размер/format берутся из validated descriptor-а, external-memory pNext и
+        // optional DRM modifier pNext живут до завершения вызова, allocator не нужен.
         let vk_image = unsafe { raw_device.create_image(&image_info, None)? };
+        // SAFETY: `vk_image` только что создан на `raw_device` и ещё не уничтожен, memory
+        // к нему не привязана, поэтому requirements можно читать напрямую у Vulkan.
         let mem_requirements = unsafe { raw_device.get_image_memory_requirements(vk_image) };
+        // SAFETY: `physical_device` получен из adapter-а того же Vulkan instance-а;
+        // вызов только читает immutable memory properties драйвера.
         let mem_properties =
             unsafe { raw_instance.get_physical_device_memory_properties(physical_device) };
 
@@ -750,14 +765,15 @@ impl DmaBufImporter {
         let raw_device_clone = raw_device.clone();
         let drop_callback: Option<wgpu::hal::DropCallback> = Some(Box::new(move || {
             tracing::trace!("Destroying imported multi-planar Vulkan image and memory");
-            // SAFETY: wgpu-hal вызывает callback только при drop texture,
-            // созданной из этого raw image. До callback image/memory живут
-            // вместе с texture; после входа сюда других cleanup owners нет.
+            // SAFETY: `texture_from_raw` получает этот callback как явную границу
+            // владения: image/memory остаются нашими Vulkan objects, но их lifetime
+            // привязан к wgpu texture. WGPU держит ресурсы живыми для submitted work, а
+            // `WgpuFrameTextureViews` дополнительно хранит `Arc<ImportedDmaBufTexture>`,
+            // поэтому callback является первой точкой, где image больше не нужен WGPU.
             unsafe { raw_device_clone.destroy_image(vk_image, None) };
-            // SAFETY: memory была успешно bound к `vk_image` и не
-            // освобождалась раньше. После уничтожения image Vulkan memory
-            // можно освободить; fd уже принадлежит Vulkan import-у, поэтому
-            // ручной `close` здесь не нужен и был бы неверен.
+            // SAFETY: memory была успешно bound к `vk_image` и не освобождалась раньше.
+            // После уничтожения image Vulkan memory можно освободить; imported fd уже
+            // принадлежит Vulkan implementation, поэтому ручной `close` здесь не нужен.
             unsafe { raw_device_clone.free_memory(memory, None) };
         }));
 
@@ -777,6 +793,10 @@ impl DmaBufImporter {
             view_formats: vec![],
         };
 
+        // SAFETY: `vk_image` создан на `hal_device`, memory уже bound, параметры
+        // `hal_desc` совпадают с `image_info` (размер, mip/sample/dimension/format) и
+        // image содержит decoder-written DMA-BUF данные. `drop_callback` сохраняет
+        // image/memory валидными до момента, когда wgpu-hal уничтожит texture wrapper.
         let hal_texture = unsafe {
             hal_device.texture_from_raw(
                 vk_image,
@@ -801,6 +821,9 @@ impl DmaBufImporter {
             view_formats: &[],
         };
 
+        // SAFETY: `hal_texture` создан из internal handle этого `self.device`, descriptor
+        // совпадает с HAL descriptor-ом для публичной wgpu texture, а содержимое уже
+        // инициализировано внешним VA-API producer-ом до импорта.
         let texture = unsafe {
             self.device
                 .create_texture_from_hal::<wgpu::hal::vulkan::Api>(hal_texture, &wgpu_desc)
@@ -914,14 +937,22 @@ impl DmaBufImporter {
     /// Импортирует одну плоскость (fd + offset) в wgpu texture.
     fn import_plane(&self, plane: DmaBufPlaneImport) -> anyhow::Result<wgpu::Texture> {
         // Получаем HAL-level Vulkan handles через wgpu's `as_hal()` API.
+        // SAFETY: importer создаётся из `instance`/`adapter`/`device` одного renderer
+        // WGPU context-а. `as_hal` только выдаёт guard на Vulkan device; мы не
+        // уничтожаем raw handle вручную, а backend mismatch превращаем в обычную ошибку.
         let hal_device = unsafe { self.device.as_hal::<wgpu::hal::vulkan::Api>() }
             .context("Zero-copy import requires Vulkan backend")?;
         let raw_device = hal_device.raw_device();
 
+        // SAFETY: `self.instance` приходит из того же renderer WGPU context-а, что и
+        // `self.device`. Guard живёт до конца scope, поэтому raw instance валиден для
+        // запроса свойств physical device.
         let hal_instance = unsafe { self.instance.as_hal::<wgpu::hal::vulkan::Api>() }
             .context("Zero-copy import requires Vulkan backend")?;
         let raw_instance = hal_instance.shared_instance().raw_instance();
 
+        // SAFETY: `self.adapter` соответствует тому же Vulkan backend-у; если renderer
+        // запущен не на Vulkan, `as_hal` вернёт `None` и импорт остановится до raw API.
         let hal_adapter = unsafe { self.adapter.as_hal::<wgpu::hal::vulkan::Api>() }
             .context("Zero-copy import requires Vulkan backend")?;
         let physical_device = hal_adapter.raw_physical_device();
@@ -1000,9 +1031,14 @@ impl DmaBufImporter {
             image_info = image_info.push_next(drm_info);
         }
 
+        // SAFETY: `image_info` описывает одну imported plane texture: формат выбран из
+        // разрешённого списка WGPU plane formats, size/tiling/modifier/offset взяты из
+        // renderer-owned duplicated DMA-BUF descriptor-а, pNext chain живёт весь вызов.
         let image = unsafe { raw_device.create_image(&image_info, None)? };
 
         // 2. Получаем memory requirements для image.
+        // SAFETY: `image` только что создан на `raw_device` и ещё не уничтожен, memory
+        // к нему не привязана, поэтому requirements можно читать напрямую у Vulkan.
         let mem_requirements = unsafe { raw_device.get_image_memory_requirements(image) };
         tracing::trace!(
             width = plane.width,
@@ -1015,6 +1051,8 @@ impl DmaBufImporter {
         );
 
         // 3. Находим подходящий memory type (device-local).
+        // SAFETY: `physical_device` получен из adapter-а того же Vulkan instance-а;
+        // вызов только читает immutable memory properties драйвера.
         let mem_properties =
             unsafe { raw_instance.get_physical_device_memory_properties(physical_device) };
 
@@ -1079,9 +1117,11 @@ impl DmaBufImporter {
         let raw_device_clone = raw_device.clone();
         let drop_callback: Option<wgpu::hal::DropCallback> = Some(Box::new(move || {
             tracing::trace!("Destroying imported Vulkan image and memory");
-            // SAFETY: wgpu-hal вызывает callback только при drop texture,
-            // созданной из этого raw image. До callback image/memory живут
-            // вместе с texture; после входа сюда других cleanup owners нет.
+            // SAFETY: `texture_from_raw` получает этот callback как явную границу
+            // владения: image/memory остаются нашими Vulkan objects, но их lifetime
+            // привязан к wgpu texture. WGPU держит ресурсы живыми для submitted work, а
+            // `WgpuFrameTextureViews` дополнительно хранит `Arc<ImportedDmaBufTexture>`,
+            // поэтому callback является первой точкой, где image больше не нужен WGPU.
             unsafe { raw_device_clone.destroy_image(image, None) };
             // SAFETY: memory была успешно bound к `image` и не освобождалась
             // раньше. После уничтожения image Vulkan memory можно освободить;
@@ -1107,6 +1147,10 @@ impl DmaBufImporter {
             view_formats: vec![],
         };
 
+        // SAFETY: `image` создан на `hal_device`, imported memory уже bound, параметры
+        // `hal_desc` совпадают с `image_info` (размер, mip/sample/dimension/format), а
+        // decoder уже записал данные plane в DMA-BUF до того, как descriptor попал сюда.
+        // `drop_callback` сохраняет image/memory валидными до drop HAL texture.
         let hal_texture = unsafe {
             hal_device.texture_from_raw(
                 image,
@@ -1132,6 +1176,9 @@ impl DmaBufImporter {
             view_formats: &[],
         };
 
+        // SAFETY: `hal_texture` создан из internal handle этого `self.device`, descriptor
+        // совпадает с HAL descriptor-ом для публичной wgpu texture, а imported plane уже
+        // инициализирована внешним VA-API producer-ом до wrapped WGPU texture.
         let texture = unsafe {
             self.device
                 .create_texture_from_hal::<wgpu::hal::vulkan::Api>(hal_texture, &wgpu_desc)
