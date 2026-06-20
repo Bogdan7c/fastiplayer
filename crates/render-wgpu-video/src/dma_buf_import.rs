@@ -245,8 +245,10 @@ pub(crate) const fn plane_view_contract_for_imported_format(
 
 /// Дублирует DMA-BUF fd перед передачей во Vulkan import.
 ///
-/// Vulkan получает владение fd только после успешного `vkAllocateMemory`.
-/// Поэтому fd закрывается нашим кодом только на ошибке аллокации.
+/// Исходный `source_fd` принадлежит нейтральному descriptor/provider, поэтому
+/// Vulkan получает отдельный duplicate. До успешного `vkAllocateMemory` этот
+/// duplicate принадлежит этому helper-у; после успешного import его владельцем
+/// становится Vulkan implementation.
 fn duplicate_fd_for_vulkan_import(
     source_fd: RawFd,
     import_context: &'static str,
@@ -256,6 +258,9 @@ fn duplicate_fd_for_vulkan_import(
 }
 
 /// Закрывает fd, который Vulkan не принял из-за ошибки import.
+///
+/// Вызывать это можно только после failed `vkAllocateMemory`: успешный import
+/// уже передал fd драйверу, и ручной `close` стал бы double-close чужого ресурса.
 fn close_unimported_fd(vulkan_fd: RawFd, import_context: &'static str) {
     if let Err(error) = nix::unistd::close(vulkan_fd) {
         tracing::warn!(
@@ -290,6 +295,12 @@ fn allocate_dma_buf_memory_for_image(
         .push_next(&mut dedicated_info)
         .push_next(&mut import_info);
 
+    // SAFETY: `raw_device` пришёл из активного Vulkan backend wgpu-hal, а
+    // `allocate_info` держит живую pNext-цепочку (`dedicated_info` +
+    // `import_info`) на время синхронного вызова. `image` создан на том же
+    // устройстве и ещё не уничтожен. `vulkan_fd` — наш duplicate; при успехе
+    // Vulkan забирает ownership fd, при ошибке ownership остаётся у нас и
+    // закрывается ниже через `close_unimported_fd`.
     match unsafe { raw_device.allocate_memory(&allocate_info, None) } {
         Ok(memory) => Ok(memory),
         Err(error) => {
@@ -309,10 +320,22 @@ fn bind_imported_memory_to_image(
     memory_offset: u64,
     bind_context: &'static str,
 ) -> anyhow::Result<()> {
+    // SAFETY: `image` и `memory` созданы на одном `raw_device`, memory была
+    // выделена именно для этого image через `MemoryDedicatedAllocateInfo`, а
+    // `memory_offset` выбран вызывающим кодом по Vulkan layout-контракту
+    // DMA-BUF: 0 для DRM modifier layout или plane offset для linear fallback.
+    // На входе оба handle ещё принадлежат caller-у и не переданы wgpu wrapper-у.
     match unsafe { raw_device.bind_image_memory(image, memory, memory_offset) } {
         Ok(()) => Ok(()),
         Err(error) => {
+            // SAFETY: bind не состоялся, поэтому `memory` ещё не принадлежит
+            // wgpu texture wrapper-у и не используется image-ом. Память была
+            // выделена на этом же устройстве и ещё не освобождалась; её
+            // освобождение также отпускает Vulkan reference на imported fd.
             unsafe { raw_device.free_memory(memory, None) };
+            // SAFETY: после failed bind `image` остаётся нашим локальным
+            // Vulkan handle-ом, не переданным в wgpu-hal. Memory к нему не
+            // привязана, поэтому image можно уничтожить отдельно.
             unsafe { raw_device.destroy_image(image, None) };
             Err(anyhow::anyhow!(
                 "{bind_context}: bind_image_memory failed: {error:?}"
@@ -689,6 +712,9 @@ impl DmaBufImporter {
             }) {
             Ok(memory_type_index) => memory_type_index,
             Err(error) => {
+                // SAFETY: `vk_image` был создан на `raw_device`, memory к нему
+                // ещё не аллоцировалась и image не передан в wgpu-hal. Это
+                // единственный cleanup owner на ошибке выбора memory type.
                 unsafe { raw_device.destroy_image(vk_image, None) };
                 return Err(error);
             }
@@ -704,6 +730,10 @@ impl DmaBufImporter {
         ) {
             Ok(memory) => memory,
             Err(error) => {
+                // SAFETY: allocation helper вернул ошибку, значит
+                // `VkDeviceMemory` не существует, а duplicate fd уже закрыт
+                // helper-ом. `vk_image` всё ещё локально принадлежит этому
+                // коду и не был обёрнут в wgpu texture.
                 unsafe { raw_device.destroy_image(vk_image, None) };
                 return Err(error);
             }
@@ -720,7 +750,14 @@ impl DmaBufImporter {
         let raw_device_clone = raw_device.clone();
         let drop_callback: Option<wgpu::hal::DropCallback> = Some(Box::new(move || {
             tracing::trace!("Destroying imported multi-planar Vulkan image and memory");
+            // SAFETY: wgpu-hal вызывает callback только при drop texture,
+            // созданной из этого raw image. До callback image/memory живут
+            // вместе с texture; после входа сюда других cleanup owners нет.
             unsafe { raw_device_clone.destroy_image(vk_image, None) };
+            // SAFETY: memory была успешно bound к `vk_image` и не
+            // освобождалась раньше. После уничтожения image Vulkan memory
+            // можно освободить; fd уже принадлежит Vulkan import-у, поэтому
+            // ручной `close` здесь не нужен и был бы неверен.
             unsafe { raw_device_clone.free_memory(memory, None) };
         }));
 
@@ -993,6 +1030,9 @@ impl DmaBufImporter {
         {
             Ok(memory_type_index) => memory_type_index,
             Err(error) => {
+                // SAFETY: `image` был создан на `raw_device`, memory к нему
+                // ещё не аллоцировалась и image не передан в wgpu-hal. Это
+                // единственный cleanup owner на ошибке выбора memory type.
                 unsafe { raw_device.destroy_image(image, None) };
                 return Err(error);
             }
@@ -1011,6 +1051,10 @@ impl DmaBufImporter {
         ) {
             Ok(memory) => memory,
             Err(error) => {
+                // SAFETY: allocation helper вернул ошибку, значит
+                // `VkDeviceMemory` не существует, а duplicate fd уже закрыт
+                // helper-ом. `image` всё ещё локально принадлежит этому коду
+                // и не был обёрнут в wgpu texture.
                 unsafe { raw_device.destroy_image(image, None) };
                 return Err(error);
             }
@@ -1034,9 +1078,15 @@ impl DmaBufImporter {
         // 6. Callback для cleanup при drop wgpu texture.
         let raw_device_clone = raw_device.clone();
         let drop_callback: Option<wgpu::hal::DropCallback> = Some(Box::new(move || {
-            // SAFETY: image и memory валидны до вызова callback.
             tracing::trace!("Destroying imported Vulkan image and memory");
+            // SAFETY: wgpu-hal вызывает callback только при drop texture,
+            // созданной из этого raw image. До callback image/memory живут
+            // вместе с texture; после входа сюда других cleanup owners нет.
             unsafe { raw_device_clone.destroy_image(image, None) };
+            // SAFETY: memory была успешно bound к `image` и не освобождалась
+            // раньше. После уничтожения image Vulkan memory можно освободить;
+            // fd уже принадлежит Vulkan import-у, поэтому ручной `close` здесь
+            // не нужен и был бы неверен.
             unsafe { raw_device_clone.free_memory(memory, None) };
         }));
 
