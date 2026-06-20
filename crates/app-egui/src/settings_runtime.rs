@@ -442,6 +442,9 @@ impl SettingsRuntime {
             let model = self.build_ui_model();
             self.ui_model_cache = Some(model);
         }
+        // get_or_insert_with здесь не подходит: build_ui_model берёт &self,
+        // а замыкание держало бы &mut self.ui_model_cache (borrow conflict, E0502).
+        // Поэтому invariant выражен через is_none()-заполнение выше + expect.
         self.ui_model_cache
             .as_ref()
             .expect("ui_model_cache заполнен выше")
