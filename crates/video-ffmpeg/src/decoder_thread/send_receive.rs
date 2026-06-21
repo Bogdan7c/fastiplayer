@@ -10,7 +10,9 @@ use video_core::{
 };
 
 #[cfg(feature = "ffmpeg")]
-use crate::codec_adapter::{color_metadata_plan_from_ffmpeg_frame, plan_ffmpeg_software_decode};
+use crate::codec_adapter::{
+    FfmpegDecoderId, color_metadata_plan_from_ffmpeg_frame, plan_ffmpeg_software_decode,
+};
 #[cfg(feature = "ffmpeg")]
 use crate::ffi::codec_context::{CodecContext, FfmpegCodecContextRequest};
 #[cfg(feature = "ffmpeg")]
@@ -65,6 +67,9 @@ impl RealFfmpegDecodeApi {
             adapter_plan.decoder_id(),
             adapter_plan.accepted_pixel_formats().clone(),
         );
+        if adapter_plan.decoder_id() == FfmpegDecoderId::Av1 {
+            request = request.with_max_frame_delay(1);
+        }
         if let Some(extradata) = extradata_for_stream_config(config)? {
             request = request.with_extradata(extradata);
         }

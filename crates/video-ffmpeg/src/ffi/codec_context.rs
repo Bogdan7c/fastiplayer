@@ -24,6 +24,9 @@ pub struct FfmpegCodecContextRequest {
     /// Software pixel formats, которые adapter уже разрешил.
     accepted_pixel_formats: SoftwarePixelFormatSet,
 
+    /// Ограничение внутренней задержки decoder-а в кадрах, если backend его поддерживает.
+    max_frame_delay: Option<u32>,
+
     /// Codec-private global headers (например MP4 `avcC`/`hvcC`), которые
     /// нужно установить как `AVCodecContext.extradata` до `avcodec_open2`.
     /// Хранятся как нейтральные bytes; raw FFmpeg типы наружу не выносятся.
@@ -47,6 +50,7 @@ impl FfmpegCodecContextRequest {
         Self {
             decoder: FfmpegDecoderSelection::DecoderName(codec_name.into()),
             accepted_pixel_formats: SoftwarePixelFormatSet::v1_host_planar(),
+            max_frame_delay: None,
             extradata: None,
         }
     }
@@ -72,8 +76,16 @@ impl FfmpegCodecContextRequest {
         Self {
             decoder: FfmpegDecoderSelection::DecoderId(decoder_id),
             accepted_pixel_formats,
+            max_frame_delay: None,
             extradata: None,
         }
+    }
+
+    /// Просит decoder ограничить внутренний frame delay, если такая AVOption есть.
+    #[must_use]
+    pub fn with_max_frame_delay(mut self, max_frame_delay: u32) -> Self {
+        self.max_frame_delay = Some(max_frame_delay);
+        self
     }
 
     /// Прикрепляет codec-private global headers (`avcC`/`hvcC`), которые будут
@@ -97,6 +109,12 @@ impl FfmpegCodecContextRequest {
     #[must_use]
     pub fn accepted_pixel_formats(&self) -> &SoftwarePixelFormatSet {
         &self.accepted_pixel_formats
+    }
+
+    /// Возвращает requested decoder frame-delay limit, если он задан.
+    #[must_use]
+    pub fn max_frame_delay(&self) -> Option<u32> {
+        self.max_frame_delay
     }
 
     /// Возвращает codec-private global headers, если они заданы.
@@ -123,6 +141,77 @@ pub struct CodecContext {
 }
 
 #[cfg(feature = "ffmpeg")]
+struct CodecOpenOptionsDictionary {
+    /// Raw FFmpeg dictionary остаётся внутри FFI boundary и освобождается в Drop.
+    raw_dictionary: *mut ffmpeg_sys_next::AVDictionary,
+}
+
+#[cfg(feature = "ffmpeg")]
+impl CodecOpenOptionsDictionary {
+    fn from_request(request: &FfmpegCodecContextRequest, decoder_name: &str) -> FfiResult<Self> {
+        let mut dictionary = Self {
+            raw_dictionary: ptr::null_mut(),
+        };
+
+        if decoder_name == "libdav1d"
+            && let Some(max_frame_delay) = request.max_frame_delay()
+        {
+            dictionary.set_option("max_frame_delay", &max_frame_delay.to_string())?;
+        }
+
+        Ok(dictionary)
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut *mut ffmpeg_sys_next::AVDictionary {
+        if self.raw_dictionary.is_null() {
+            ptr::null_mut()
+        } else {
+            &mut self.raw_dictionary
+        }
+    }
+
+    fn set_option(&mut self, key: &'static str, value: &str) -> FfiResult<()> {
+        let key = CString::new(key).map_err(|_| FfmpegError::InvalidInput {
+            operation: "av_dict_set",
+            details: "option key contains an interior NUL byte".to_owned(),
+        })?;
+        let value = CString::new(value).map_err(|_| FfmpegError::InvalidInput {
+            operation: "av_dict_set",
+            details: "option value contains an interior NUL byte".to_owned(),
+        })?;
+
+        let status = unsafe {
+            // SAFETY: key/value are NUL-terminated and live for the call.
+            // FFmpeg copies strings into the dictionary on success.
+            ffmpeg_sys_next::av_dict_set(&mut self.raw_dictionary, key.as_ptr(), value.as_ptr(), 0)
+        };
+
+        if status < 0 {
+            return Err(FfmpegError::from_averror("av_dict_set", status));
+        }
+
+        Ok(())
+    }
+
+    fn unused_option_count(&self) -> usize {
+        unsafe {
+            // SAFETY: dictionary pointer либо null, либо owned этим wrapper-ом.
+            ffmpeg_sys_next::av_dict_count(self.raw_dictionary) as usize
+        }
+    }
+}
+
+#[cfg(feature = "ffmpeg")]
+impl Drop for CodecOpenOptionsDictionary {
+    fn drop(&mut self) {
+        unsafe {
+            // SAFETY: dictionary pointer либо null, либо owned этим wrapper-ом.
+            ffmpeg_sys_next::av_dict_free(&mut self.raw_dictionary);
+        }
+    }
+}
+
+#[cfg(feature = "ffmpeg")]
 // SAFETY: `CodecContext` единолично владеет `AVCodecContext`, а safe API
 // требует `&mut self` для send/receive/flush операций. Перенос owner-а в
 // decoder thread безопасен; concurrent shared access по-прежнему запрещён,
@@ -145,6 +234,7 @@ impl CodecContext {
         {
             let decoder = find_decoder(request)?;
             reject_hardware_decoder(decoder)?;
+            let selected_decoder_name = decoder_name(decoder);
 
             // SAFETY: decoder pointer вернул FFmpeg registry и он valid/null-checked.
             // `avcodec_alloc_context3` возвращает owned context или null.
@@ -193,15 +283,33 @@ impl CodecContext {
                     ffmpeg_sys_next::FF_THREAD_FRAME | ffmpeg_sys_next::FF_THREAD_SLICE;
             }
 
-            // SAFETY: context и decoder pointer-ы валидны; options null значит
-            // caller не передаёт dictionary. Context остаётся owned wrapper-ом.
+            let mut open_options =
+                CodecOpenOptionsDictionary::from_request(request, &selected_decoder_name)?;
+
+            // SAFETY: context и decoder pointer-ы валидны; options dictionary,
+            // если задан, живёт до конца вызова. Context остаётся owned wrapper-ом.
             let status = unsafe {
-                ffmpeg_sys_next::avcodec_open2(raw_context.as_ptr(), decoder, ptr::null_mut())
+                ffmpeg_sys_next::avcodec_open2(
+                    raw_context.as_ptr(),
+                    decoder,
+                    open_options.as_mut_ptr(),
+                )
             };
 
             if status < 0 {
                 free_context(raw_context);
                 return Err(FfmpegError::from_averror("avcodec_open2", status));
+            }
+
+            let unused_option_count = open_options.unused_option_count();
+            if unused_option_count > 0 {
+                free_context(raw_context);
+                return Err(FfmpegError::InvalidInput {
+                    operation: "avcodec_open2",
+                    details: format!(
+                        "decoder `{selected_decoder_name}` did not consume {unused_option_count} codec open option(s)"
+                    ),
+                });
             }
 
             Ok(Self {
@@ -599,6 +707,16 @@ mod tests {
 
         assert_eq!(request.codec_name(), "h264");
         assert_eq!(request.accepted_pixel_formats(), &formats);
+    }
+
+    #[test]
+    fn codec_context_request_preserves_max_frame_delay_option() {
+        let formats = SoftwarePixelFormatSet::new([SoftwarePixelFormat::Yuv420Planar8])
+            .expect("single software format is valid");
+        let request = FfmpegCodecContextRequest::for_decoder_id(FfmpegDecoderId::Av1, formats)
+            .with_max_frame_delay(1);
+
+        assert_eq!(request.max_frame_delay(), Some(1));
     }
 
     #[test]
