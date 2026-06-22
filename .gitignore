@@ -15,5 +15,6 @@ target/
 *.log
 *.tmp
 
+
 # Large local media fixtures must stay outside Git history.
 test-assets/
