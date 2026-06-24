@@ -5,7 +5,6 @@
 //! применяет эти действия отдельно.
 
 pub mod field_widget;
-pub mod launcher_button;
 pub mod layout;
 pub mod section_list;
 
@@ -286,15 +285,6 @@ mod tests {
                 value: SettingValue::Bool(true)
             }
         );
-    }
-
-    #[test]
-    fn launcher_click_maps_to_toggle_action() {
-        assert_eq!(
-            launcher_button::launcher_action_for_button(true),
-            Some(SettingsUiAction::ToggleOpen)
-        );
-        assert_eq!(launcher_button::launcher_action_for_button(false), None);
     }
 
     #[test]

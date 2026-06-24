@@ -8,6 +8,7 @@ use egui::{
 };
 
 use crate::ui::skin::ControlsStyle;
+use crate::ui::titlebar_icon_area::{self, TitlebarIconAreaAction, TitlebarIconAreaStyle};
 
 /// Ширина каждой системной кнопки titlebar в логических UI points.
 const TITLEBAR_BUTTON_WIDTH_POINTS: f32 = 46.0;
@@ -89,6 +90,16 @@ pub(crate) enum WindowChromeAction {
     BeginResize(WindowChromeResizeDirection),
 }
 
+/// Действия, собранные всем titlebar boundary за один egui frame.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WindowChromeOutput {
+    /// Window/lifecycle actions, которые shell применяет через winit.
+    pub(crate) window_actions: Vec<WindowChromeAction>,
+
+    /// Actions левой icon-area, которые app state мапит в runtime-specific intents.
+    pub(crate) titlebar_icon_actions: Vec<TitlebarIconAreaAction>,
+}
+
 /// Направление resize без зависимости визуального слоя от `winit::window::ResizeDirection`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum WindowChromeResizeDirection {
@@ -149,6 +160,8 @@ impl WindowChromeButtonKind {
 /// Прямоугольники titlebar, вычисленные без side effects для тестируемости.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct WindowChromeLayout {
+    /// Левая icon-area, зарезервированная под settings entrypoint.
+    titlebar_icon_reserved_rect: Rect,
     /// Rect строго центрированного title text.
     title_rect: Rect,
     /// Кнопка minimize.
@@ -163,48 +176,60 @@ struct WindowChromeLayout {
 
 /// Рисует titlebar и resize hit-zones, возвращая только действия пользователя.
 #[must_use]
-pub(crate) fn show(ui: &mut Ui, input: WindowChromeInput<'_>) -> Vec<WindowChromeAction> {
+pub(crate) fn show(ui: &mut Ui, input: WindowChromeInput<'_>) -> WindowChromeOutput {
     let window_rect = ui.max_rect();
-    let mut actions = resize_actions(ui, window_rect, input.height_points, input.is_maximized);
+    let mut output = WindowChromeOutput {
+        window_actions: resize_actions(ui, window_rect, input.height_points, input.is_maximized),
+        titlebar_icon_actions: Vec::new(),
+    };
 
     egui::Panel::top(titlebar_panel_id())
         .exact_size(input.height_points)
         .frame(egui::Frame::NONE.fill(input.style.fill))
         .show_inside(ui, |ui| {
             let chrome_rect = ui.max_rect();
-            let layout = WindowChromeLayout::new(chrome_rect);
+            let icon_output = titlebar_icon_area::show(
+                ui,
+                chrome_rect,
+                TitlebarIconAreaStyle {
+                    icon_stroke: input.style.icon_stroke,
+                    button_hover_fill: input.style.button_hover_fill,
+                },
+            );
+            let layout = WindowChromeLayout::new(chrome_rect, icon_output.reserved_rect);
+            output.titlebar_icon_actions.extend(icon_output.actions);
             paint_title(ui, input.title, input.style, layout.title_rect);
-            collect_drag_actions(ui, layout, input.is_maximized, &mut actions);
+            collect_drag_actions(ui, layout, input.is_maximized, &mut output.window_actions);
             collect_button_action(
                 ui,
                 layout.minimize_button_rect,
                 WindowChromeButtonKind::Minimize,
                 input,
-                &mut actions,
+                &mut output.window_actions,
             );
             collect_button_action(
                 ui,
                 layout.maximize_button_rect,
                 WindowChromeButtonKind::MaximizeRestore,
                 input,
-                &mut actions,
+                &mut output.window_actions,
             );
             collect_button_action(
                 ui,
                 layout.close_button_rect,
                 WindowChromeButtonKind::Close,
                 input,
-                &mut actions,
+                &mut output.window_actions,
             );
         });
 
-    actions
+    output
 }
 
 impl WindowChromeLayout {
     /// Вычисляет layout так, чтобы title оставался в центре всего окна, а не центра свободного места.
     #[must_use]
-    fn new(chrome_rect: Rect) -> Self {
+    fn new(chrome_rect: Rect, titlebar_icon_reserved_rect: Rect) -> Self {
         let button_size = vec2(TITLEBAR_BUTTON_WIDTH_POINTS, chrome_rect.height());
         let close_button_rect = Rect::from_min_size(
             pos2(
@@ -217,16 +242,24 @@ impl WindowChromeLayout {
             close_button_rect.translate(vec2(-TITLEBAR_BUTTON_WIDTH_POINTS, 0.0));
         let minimize_button_rect =
             maximize_button_rect.translate(vec2(-TITLEBAR_BUTTON_WIDTH_POINTS, 0.0));
-        let reserved_side_width =
-            (TITLEBAR_BUTTON_WIDTH_POINTS * 3.0 + TITLE_TEXT_GAP_POINTS).min(chrome_rect.width());
+        let left_reserved_side_width = titlebar_icon_reserved_rect.width() + TITLE_TEXT_GAP_POINTS;
+        let right_reserved_side_width = TITLEBAR_BUTTON_WIDTH_POINTS * 3.0 + TITLE_TEXT_GAP_POINTS;
+        let reserved_side_width = left_reserved_side_width
+            .max(right_reserved_side_width)
+            .min(chrome_rect.width());
         let title_width = (chrome_rect.width() - reserved_side_width * 2.0).max(0.0);
         let title_rect = Rect::from_center_size(
             chrome_rect.center(),
             vec2(title_width, chrome_rect.height()),
         );
-        let drag_rect = optional_rect(chrome_rect.left(), minimize_button_rect.left(), chrome_rect);
+        let drag_rect = optional_rect(
+            titlebar_icon_reserved_rect.right(),
+            minimize_button_rect.left(),
+            chrome_rect,
+        );
 
         Self {
+            titlebar_icon_reserved_rect,
             title_rect,
             minimize_button_rect,
             maximize_button_rect,
@@ -414,7 +447,9 @@ fn resize_actions(
     titlebar_height_points: f32,
     is_maximized: bool,
 ) -> Vec<WindowChromeAction> {
-    if is_maximized || pointer_is_over_titlebar_buttons(ui, window_rect, titlebar_height_points) {
+    if is_maximized
+        || pointer_is_over_titlebar_interactive_block(ui, window_rect, titlebar_height_points)
+    {
         return Vec::new();
     }
 
@@ -434,8 +469,8 @@ fn resize_actions(
         .collect()
 }
 
-/// Не даёт невидимым resize-зонам перехватывать hover/click системных кнопок справа.
-fn pointer_is_over_titlebar_buttons(
+/// Не даёт невидимым resize-зонам перехватывать hover/click интерактивных блоков titlebar.
+fn pointer_is_over_titlebar_interactive_block(
     ui: &Ui,
     window_rect: Rect,
     titlebar_height_points: f32,
@@ -444,7 +479,44 @@ fn pointer_is_over_titlebar_buttons(
         return false;
     };
 
-    titlebar_button_block_rect(window_rect, titlebar_height_points).contains(pointer_position)
+    pointer_position_is_over_titlebar_interactive_block(
+        window_rect,
+        titlebar_height_points,
+        pointer_position,
+    )
+}
+
+/// Pure hit-test для интерактивных titlebar блоков, чтобы resize guard был тестируемым.
+fn pointer_position_is_over_titlebar_interactive_block(
+    window_rect: Rect,
+    titlebar_height_points: f32,
+    pointer_position: egui::Pos2,
+) -> bool {
+    titlebar_interactive_block_rects(window_rect, titlebar_height_points)
+        .into_iter()
+        .any(|block_rect| block_rect.contains(pointer_position))
+}
+
+/// Возвращает left icon-area и правый блок системных кнопок как guarded hit-rects.
+fn titlebar_interactive_block_rects(window_rect: Rect, titlebar_height_points: f32) -> [Rect; 2] {
+    [
+        titlebar_icon_area::settings_button_rect(titlebar_rect_for_window(
+            window_rect,
+            titlebar_height_points,
+        )),
+        titlebar_button_block_rect(window_rect, titlebar_height_points),
+    ]
+}
+
+/// Возвращает titlebar rect внутри window rect с учётом configured height.
+fn titlebar_rect_for_window(window_rect: Rect, titlebar_height_points: f32) -> Rect {
+    Rect::from_min_max(
+        window_rect.min,
+        pos2(
+            window_rect.right(),
+            (window_rect.top() + titlebar_height_points).min(window_rect.bottom()),
+        ),
+    )
 }
 
 /// Возвращает общий hit-rect для minimize/maximize/close button block.
@@ -548,10 +620,17 @@ mod tests {
         }
     }
 
+    fn test_layout(chrome_rect: Rect) -> WindowChromeLayout {
+        WindowChromeLayout::new(
+            chrome_rect,
+            titlebar_icon_area::settings_button_rect(chrome_rect),
+        )
+    }
+
     #[test]
     fn title_rect_stays_centered_when_buttons_are_on_the_right() {
         let chrome_rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 40.0));
-        let layout = WindowChromeLayout::new(chrome_rect);
+        let layout = test_layout(chrome_rect);
 
         assert_eq!(layout.title_rect.center().x, chrome_rect.center().x);
         assert!(layout.title_rect.right() < layout.minimize_button_rect.left());
@@ -570,7 +649,7 @@ mod tests {
     #[test]
     fn drag_rect_covers_titlebar_without_stealing_buttons_or_resize_edges() {
         let chrome_rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 40.0));
-        let layout = WindowChromeLayout::new(chrome_rect);
+        let layout = test_layout(chrome_rect);
         let drag_rect = layout
             .drag_rect
             .expect("wide titlebar should have drag rect before buttons");
@@ -579,13 +658,42 @@ mod tests {
         let maximized_drag_rect = drag_interaction_rect(drag_rect, true)
             .expect("maximized titlebar should keep the full drag rect");
 
+        assert_eq!(drag_rect.left(), layout.titlebar_icon_reserved_rect.right());
         assert_eq!(drag_rect.right(), layout.minimize_button_rect.left());
         assert!(drag_rect.contains(layout.title_rect.center()));
+        assert!(!drag_rect.contains(layout.titlebar_icon_reserved_rect.center()));
         assert!(!drag_rect.contains(layout.minimize_button_rect.center()));
         assert!(!active_drag_rect.contains(pos2(20.0, 2.0)));
         assert!(!active_drag_rect.contains(pos2(2.0, 20.0)));
         assert!(active_drag_rect.contains(pos2(chrome_rect.center().x, 20.0)));
         assert_eq!(maximized_drag_rect, drag_rect);
+    }
+
+    #[test]
+    fn resize_guard_treats_left_icon_area_as_interactive_titlebar_block() {
+        let window_rect = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let titlebar_height_points = 40.0;
+        let left_icon_rect = titlebar_icon_area::settings_button_rect(titlebar_rect_for_window(
+            window_rect,
+            titlebar_height_points,
+        ));
+        let right_button_block = titlebar_button_block_rect(window_rect, titlebar_height_points);
+
+        assert!(pointer_position_is_over_titlebar_interactive_block(
+            window_rect,
+            titlebar_height_points,
+            left_icon_rect.center()
+        ));
+        assert!(pointer_position_is_over_titlebar_interactive_block(
+            window_rect,
+            titlebar_height_points,
+            right_button_block.center()
+        ));
+        assert!(!pointer_position_is_over_titlebar_interactive_block(
+            window_rect,
+            titlebar_height_points,
+            pos2(window_rect.center().x, titlebar_height_points * 0.5)
+        ));
     }
 
     #[test]

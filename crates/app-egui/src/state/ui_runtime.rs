@@ -37,6 +37,15 @@ pub(super) fn timeline_command_from_action(
     }
 }
 
+/// Мапит neutral titlebar intent в старый settings UI action boundary.
+pub(super) const fn settings_action_from_titlebar_icon_action(
+    action: TitlebarIconAreaAction,
+) -> SettingsUiAction {
+    match action {
+        TitlebarIconAreaAction::ToggleSettingsSidebar => SettingsUiAction::ToggleOpen,
+    }
+}
+
 impl AppState {
     /// Рендерит egui UI поверх видео.
     ///
@@ -136,7 +145,7 @@ impl AppState {
             video_viewport_rect = ui.max_rect();
 
             let stage_started_at = Instant::now();
-            window_chrome_actions = window_chrome::show(
+            let window_chrome_output = window_chrome::show(
                 ui,
                 WindowChromeInput {
                     title: "Rustiplayer",
@@ -144,6 +153,13 @@ impl AppState {
                     is_maximized: window_is_maximized,
                     style: WindowChromeStyle::from_controls_style(selected_skin.controls_style()),
                 },
+            );
+            window_chrome_actions = window_chrome_output.window_actions;
+            settings_actions.extend(
+                window_chrome_output
+                    .titlebar_icon_actions
+                    .into_iter()
+                    .map(settings_action_from_titlebar_icon_action),
             );
             top_bar_elapsed = stage_started_at.elapsed();
 
@@ -189,8 +205,6 @@ impl AppState {
                 animation_state,
             );
             center_overlay_elapsed = stage_started_at.elapsed();
-
-            launcher_button::show(ui.ctx(), &mut settings_actions);
         });
         let egui_run_elapsed = egui_run_started_at.elapsed();
 

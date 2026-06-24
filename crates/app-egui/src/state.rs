@@ -36,7 +36,6 @@ use crate::local_file_open::{
 };
 use crate::local_media;
 use crate::settings_runtime::CommittedConfigSnapshot;
-use crate::settings_ui::launcher_button;
 use crate::settings_ui::{SettingsUiAction, SettingsUiModel};
 use crate::telemetry::Telemetry;
 use crate::ui::animation::AnimationState;
@@ -44,6 +43,7 @@ use crate::ui::player_controls::{self, ControlAction};
 use crate::ui::sidebar::{self, AppSidebarContent};
 use crate::ui::skin::{self, PlayerSkin};
 use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
+use crate::ui::titlebar_icon_area::TitlebarIconAreaAction;
 use crate::ui::window_chrome::{self, WindowChromeAction, WindowChromeInput, WindowChromeStyle};
 use crate::video_pipeline_selector::{
     VideoBackendKind, VideoPipelinePlan, select_video_pipeline_plan,
