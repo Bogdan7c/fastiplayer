@@ -52,6 +52,11 @@ impl PlayerSkin for MinimalSkin {
             text_color: Color32::from_gray(230),
             button_width: 72.0,
             button_height: 28.0,
+            playback_button_diameter: 48.0,
+            playback_button_icon_extent: 18.0,
+            playback_button_stroke_width: 1.6,
+            playback_button_vertical_raise: 5.0,
+            playback_button_hover_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
             volume_slider_width: 96.0,
             panel_margin: Margin::symmetric(10, 6),
         }

@@ -83,6 +83,21 @@ pub struct ControlsStyle {
     /// Высота компактной кнопки.
     pub button_height: f32,
 
+    /// Диаметр центральной круглой play/pause-кнопки.
+    pub playback_button_diameter: f32,
+
+    /// Размер glyph внутри центральной play/pause-кнопки.
+    pub playback_button_icon_extent: f32,
+
+    /// Толщина обводки центральной play/pause-кнопки.
+    pub playback_button_stroke_width: f32,
+
+    /// Смещение центральной play/pause-кнопки вверх относительно строки controls.
+    pub playback_button_vertical_raise: f32,
+
+    /// Заливка центральной play/pause-кнопки при hover.
+    pub playback_button_hover_fill: Color32,
+
     /// Ширина volume slider.
     pub volume_slider_width: f32,
 
