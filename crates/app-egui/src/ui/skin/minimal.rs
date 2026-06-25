@@ -17,7 +17,6 @@ impl AssetProvider for MinimalSkin {
             IconId::Play => "Play",
             IconId::Pause => "Pause",
             IconId::OpenFile => "Open",
-            IconId::Fullscreen => "Full",
             IconId::Volume => "Vol",
         }
     }
@@ -57,6 +56,8 @@ impl PlayerSkin for MinimalSkin {
             playback_button_stroke_width: 1.6,
             playback_button_vertical_raise: 5.0,
             playback_button_hover_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+            fullscreen_button_size: 32.0,
+            fullscreen_icon_extent: 16.0,
             volume_slider_width: 96.0,
             panel_margin: Margin::symmetric(10, 6),
         }

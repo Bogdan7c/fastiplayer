@@ -104,6 +104,7 @@ impl AppState {
         let show_telemetry = self.committed_config_snapshot.show_telemetry();
         let titlebar_height_points = self.committed_config_snapshot.titlebar_height_points();
         let window_is_maximized = window.is_maximized();
+        let window_is_fullscreen = window.fullscreen().is_some();
         let mut control_actions = Vec::new();
         let mut settings_actions = Vec::new();
         let mut window_chrome_actions = Vec::new();
@@ -169,6 +170,7 @@ impl AppState {
                 player_snapshot,
                 &mut timeline_ui_state,
                 &selected_skin,
+                window_is_fullscreen,
             );
             bottom_controls_elapsed = stage_started_at.elapsed();
 

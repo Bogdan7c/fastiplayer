@@ -12,9 +12,6 @@ pub enum IconId {
     /// Команда открытия media-файла.
     OpenFile,
 
-    /// Команда переключения fullscreen.
-    Fullscreen,
-
     /// Иконка громкости.
     Volume,
 }

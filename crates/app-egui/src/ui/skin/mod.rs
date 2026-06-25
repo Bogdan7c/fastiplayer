@@ -98,6 +98,12 @@ pub struct ControlsStyle {
     /// Заливка центральной play/pause-кнопки при hover.
     pub playback_button_hover_fill: Color32,
 
+    /// Размер квадратной fullscreen-кнопки в нижней панели.
+    pub fullscreen_button_size: f32,
+
+    /// Размер hand-drawn fullscreen glyph внутри кнопки.
+    pub fullscreen_icon_extent: f32,
+
     /// Ширина volume slider.
     pub volume_slider_width: f32,
 

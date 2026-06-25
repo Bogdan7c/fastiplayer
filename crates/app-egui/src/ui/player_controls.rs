@@ -36,6 +36,7 @@ pub fn render_bottom_controls(
     player_snapshot: &PlayerSnapshot,
     timeline_state: &mut TimelineUiState,
     skin: &impl PlayerSkin,
+    is_window_fullscreen: bool,
 ) -> Vec<ControlAction> {
     let mut actions = Vec::new();
     let panel_id = bottom_panel_id(skin.id());
@@ -54,7 +55,13 @@ pub fn render_bottom_controls(
             );
 
             ui.add_space(4.0);
-            render_button_row(ui, player_snapshot, skin, &mut actions);
+            render_button_row(
+                ui,
+                player_snapshot,
+                skin,
+                is_window_fullscreen,
+                &mut actions,
+            );
         });
 
     actions
@@ -65,6 +72,7 @@ fn render_button_row(
     ui: &mut Ui,
     player_snapshot: &PlayerSnapshot,
     skin: &impl PlayerSkin,
+    is_window_fullscreen: bool,
     actions: &mut Vec<ControlAction>,
 ) {
     let controls_style = skin.controls_style();
@@ -75,6 +83,7 @@ fn render_button_row(
     let row_height = controls_style.playback_button_diameter;
     let (row_rect, _) = ui.allocate_exact_size(vec2(row_width, row_height), Sense::hover());
     let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
+    let fullscreen_button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
     let zone_gap = ui.spacing().item_spacing.x;
     let left_zone = Rect::from_min_max(
         row_rect.left_top(),
@@ -82,13 +91,6 @@ fn render_button_row(
             (playback_button_rect.left() - zone_gap).max(row_rect.left()),
             row_rect.bottom(),
         ),
-    );
-    let right_zone = Rect::from_min_max(
-        pos2(
-            (playback_button_rect.right() + zone_gap).min(row_rect.right()),
-            row_rect.top(),
-        ),
-        row_rect.right_bottom(),
     );
 
     ui.scope_builder(
@@ -120,16 +122,11 @@ fn render_button_row(
         actions.push(ControlAction::TogglePlayback);
     }
 
-    ui.scope_builder(
-        UiBuilder::new()
-            .max_rect(right_zone)
-            .layout(egui::Layout::right_to_left(egui::Align::Center)),
-        |ui| {
-            if icon_button(ui, IconId::Fullscreen, skin).clicked() {
-                actions.push(ControlAction::ToggleFullscreen);
-            }
-        },
-    );
+    if render_fullscreen_toggle_button_at(ui, fullscreen_button_rect, is_window_fullscreen, skin)
+        .clicked()
+    {
+        actions.push(ControlAction::ToggleFullscreen);
+    }
 }
 
 /// Считает rect центральной кнопки от полного rect строки, а не от соседних controls.
@@ -137,6 +134,18 @@ fn playback_button_anchor_rect(row_rect: Rect, controls_style: ControlsStyle) ->
     let button_size = Vec2::splat(controls_style.playback_button_diameter);
     let button_center = pos2(
         row_rect.center().x,
+        row_rect.center().y - controls_style.playback_button_vertical_raise,
+    );
+
+    Rect::from_center_size(button_center, button_size)
+}
+
+/// Считает rect fullscreen-кнопки от всей content-строки: правый край совпадает с row,
+/// а вертикальный центр синхронизирован с play/pause-кнопкой.
+fn fullscreen_button_anchor_rect(row_rect: Rect, controls_style: ControlsStyle) -> Rect {
+    let button_size = Vec2::splat(controls_style.fullscreen_button_size);
+    let button_center = pos2(
+        row_rect.right() - button_size.x * 0.5,
         row_rect.center().y - controls_style.playback_button_vertical_raise,
     );
 
@@ -162,6 +171,30 @@ fn render_playback_toggle_button_at(
     button_response
 }
 
+/// Рисует fullscreen-кнопку в заранее рассчитанном anchored rect.
+fn render_fullscreen_toggle_button_at(
+    ui: &mut Ui,
+    button_rect: Rect,
+    is_window_fullscreen: bool,
+    skin: &impl PlayerSkin,
+) -> egui::Response {
+    let presentation = fullscreen_toggle_presentation(is_window_fullscreen);
+    let button_response = ui.allocate_rect(button_rect, Sense::click());
+    let button_response = button_response.on_hover_text(presentation.accessible_label);
+
+    button_response.widget_info(|| {
+        WidgetInfo::labeled(
+            WidgetType::Button,
+            ui.is_enabled(),
+            presentation.accessible_label,
+        )
+    });
+
+    paint_fullscreen_toggle_button(ui, button_rect, presentation.icon, skin, &button_response);
+
+    button_response
+}
+
 /// Выбирает иконку toggle через player-side active semantics, а не через один `Playing`.
 fn playback_toggle_icon(playback_state: PlaybackState) -> IconId {
     if playback_state.is_playback_active() {
@@ -169,6 +202,33 @@ fn playback_toggle_icon(playback_state: PlaybackState) -> IconId {
         IconId::Pause
     } else {
         IconId::Play
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FullscreenToggleIcon {
+    EnterFullscreen,
+    ExitFullscreen,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FullscreenTogglePresentation {
+    icon: FullscreenToggleIcon,
+    accessible_label: &'static str,
+}
+
+/// Описывает вид кнопки по состоянию окна, чтобы render-код не дублировал тексты.
+fn fullscreen_toggle_presentation(is_window_fullscreen: bool) -> FullscreenTogglePresentation {
+    if is_window_fullscreen {
+        return FullscreenTogglePresentation {
+            icon: FullscreenToggleIcon::ExitFullscreen,
+            accessible_label: "Выйти из полноэкранного режима",
+        };
+    }
+
+    FullscreenTogglePresentation {
+        icon: FullscreenToggleIcon::EnterFullscreen,
+        accessible_label: "Полноэкранный режим",
     }
 }
 
@@ -180,6 +240,135 @@ fn icon_button(ui: &mut Ui, icon_id: IconId, skin: &impl PlayerSkin) -> egui::Re
         fixed_button(ui, skin.icon_text(icon_id), skin)
     })
     .inner
+}
+
+/// Рисует квадратную fullscreen-кнопку в стиле settings-кнопки: фон только на hover,
+/// hand-drawn glyph строится stroke-линиями без зависимости от asset pack.
+fn paint_fullscreen_toggle_button(
+    ui: &Ui,
+    button_rect: Rect,
+    icon: FullscreenToggleIcon,
+    skin: &impl PlayerSkin,
+    button_response: &egui::Response,
+) {
+    let controls_style = skin.controls_style();
+    let painter = ui.painter();
+    let icon_stroke = Stroke::new(
+        controls_style.playback_button_stroke_width,
+        controls_style.text_color,
+    );
+
+    if button_response.hovered() {
+        painter.rect_filled(button_rect, 0.0, controls_style.playback_button_hover_fill);
+    }
+
+    paint_fullscreen_corners_icon(
+        painter,
+        button_rect,
+        controls_style.fullscreen_icon_extent,
+        icon,
+        icon_stroke,
+    );
+}
+
+/// Рисует четыре corner-segment glyph: outward corners для входа в fullscreen,
+/// inward corners для выхода из него.
+fn paint_fullscreen_corners_icon(
+    painter: &egui::Painter,
+    button_rect: Rect,
+    icon_extent: f32,
+    icon: FullscreenToggleIcon,
+    stroke: Stroke,
+) {
+    let icon_rect = Rect::from_center_size(button_rect.center(), Vec2::splat(icon_extent));
+    let corner_leg = icon_extent * 0.38;
+
+    match icon {
+        FullscreenToggleIcon::EnterFullscreen => {
+            paint_enter_fullscreen_corners(painter, icon_rect, corner_leg, stroke);
+        }
+        FullscreenToggleIcon::ExitFullscreen => {
+            paint_exit_fullscreen_corners(painter, icon_rect, corner_leg, stroke);
+        }
+    }
+}
+
+/// Рисует outward-corners: углы стоят на внешней рамке glyph и раскрываются наружу.
+fn paint_enter_fullscreen_corners(
+    painter: &egui::Painter,
+    icon_rect: Rect,
+    corner_leg: f32,
+    stroke: Stroke,
+) {
+    let left = icon_rect.left();
+    let right = icon_rect.right();
+    let top = icon_rect.top();
+    let bottom = icon_rect.bottom();
+
+    for (corner, horizontal_end, vertical_end) in [
+        (
+            pos2(left, top),
+            pos2(left + corner_leg, top),
+            pos2(left, top + corner_leg),
+        ),
+        (
+            pos2(right, top),
+            pos2(right - corner_leg, top),
+            pos2(right, top + corner_leg),
+        ),
+        (
+            pos2(left, bottom),
+            pos2(left + corner_leg, bottom),
+            pos2(left, bottom - corner_leg),
+        ),
+        (
+            pos2(right, bottom),
+            pos2(right - corner_leg, bottom),
+            pos2(right, bottom - corner_leg),
+        ),
+    ] {
+        painter.line_segment([corner, horizontal_end], stroke);
+        painter.line_segment([corner, vertical_end], stroke);
+    }
+}
+
+/// Рисует inward-corners: вершины углов смещены внутрь glyph и визуально показывают выход.
+fn paint_exit_fullscreen_corners(
+    painter: &egui::Painter,
+    icon_rect: Rect,
+    corner_leg: f32,
+    stroke: Stroke,
+) {
+    let left = icon_rect.left();
+    let right = icon_rect.right();
+    let top = icon_rect.top();
+    let bottom = icon_rect.bottom();
+
+    for (corner, horizontal_end, vertical_end) in [
+        (
+            pos2(left + corner_leg, top + corner_leg),
+            pos2(left, top + corner_leg),
+            pos2(left + corner_leg, top),
+        ),
+        (
+            pos2(right - corner_leg, top + corner_leg),
+            pos2(right, top + corner_leg),
+            pos2(right - corner_leg, top),
+        ),
+        (
+            pos2(left + corner_leg, bottom - corner_leg),
+            pos2(left, bottom - corner_leg),
+            pos2(left + corner_leg, bottom),
+        ),
+        (
+            pos2(right - corner_leg, bottom - corner_leg),
+            pos2(right, bottom - corner_leg),
+            pos2(right - corner_leg, bottom),
+        ),
+    ] {
+        painter.line_segment([corner, horizontal_end], stroke);
+        painter.line_segment([corner, vertical_end], stroke);
+    }
 }
 
 /// Рисует круг, hover-заливку и glyph центральной play/pause-кнопки.
@@ -222,7 +411,7 @@ fn paint_playback_button(
             controls_style.playback_button_icon_extent,
             button_stroke,
         ),
-        IconId::OpenFile | IconId::Fullscreen | IconId::Volume => {}
+        IconId::OpenFile | IconId::Volume => {}
     }
 }
 
@@ -306,9 +495,9 @@ mod tests {
         assert_eq!(playback_toggle_icon(PlaybackState::Ended), IconId::Play);
     }
 
-    /// Проверяет, что skin владеет геометрией центральной круглой кнопки.
+    /// Проверяет, что skin владеет геометрией центральной и fullscreen-кнопки.
     #[test]
-    fn minimal_skin_playback_button_style_is_larger_than_compact_button() {
+    fn minimal_skin_owns_playback_and_fullscreen_button_geometry() {
         let controls_style = MinimalSkin.controls_style();
 
         assert!(controls_style.playback_button_diameter > controls_style.button_height);
@@ -318,6 +507,9 @@ mod tests {
         assert!(
             controls_style.playback_button_icon_extent < controls_style.playback_button_diameter
         );
+        assert_eq!(controls_style.fullscreen_button_size, 32.0);
+        assert_eq!(controls_style.fullscreen_icon_extent, 16.0);
+        assert!(controls_style.fullscreen_icon_extent < controls_style.fullscreen_button_size);
     }
 
     /// Проверяет anchor: кнопка стоит по центру строки и поднята на 5 points.
@@ -340,6 +532,71 @@ mod tests {
                 - (row_rect.center().y - controls_style.playback_button_vertical_raise))
                 .abs()
                 < f32::EPSILON
+        );
+    }
+
+    /// Проверяет, что fullscreen-кнопка имеет skin-owned размер 32x32.
+    #[test]
+    fn fullscreen_button_anchor_rect_has_skin_owned_square_size() {
+        let controls_style = MinimalSkin.controls_style();
+        let row_rect = Rect::from_min_size(
+            pos2(24.0, 80.0),
+            vec2(640.0, controls_style.playback_button_diameter),
+        );
+        let button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
+
+        assert_eq!(
+            button_rect.size(),
+            Vec2::splat(controls_style.fullscreen_button_size)
+        );
+    }
+
+    /// Проверяет, что fullscreen-кнопка привязана к правому краю content-строки.
+    #[test]
+    fn fullscreen_button_anchor_rect_right_edge_matches_row_right_edge() {
+        let controls_style = MinimalSkin.controls_style();
+        let row_rect = Rect::from_min_size(
+            pos2(24.0, 80.0),
+            vec2(640.0, controls_style.playback_button_diameter),
+        );
+        let button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
+
+        assert!((button_rect.right() - row_rect.right()).abs() < f32::EPSILON);
+    }
+
+    /// Проверяет, что fullscreen-кнопка стоит на той же вертикальной оси, что play/pause.
+    #[test]
+    fn fullscreen_button_anchor_rect_center_y_matches_playback_button_center_y() {
+        let controls_style = MinimalSkin.controls_style();
+        let row_rect = Rect::from_min_size(
+            pos2(24.0, 80.0),
+            vec2(640.0, controls_style.playback_button_diameter),
+        );
+        let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
+        let fullscreen_button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
+
+        assert!(
+            (fullscreen_button_rect.center().y - playback_button_rect.center().y).abs()
+                < f32::EPSILON
+        );
+    }
+
+    /// Проверяет, что состояние окна выбирает правильную иконку и accessible label.
+    #[test]
+    fn fullscreen_toggle_presentation_matches_window_fullscreen_state() {
+        assert_eq!(
+            fullscreen_toggle_presentation(false),
+            FullscreenTogglePresentation {
+                icon: FullscreenToggleIcon::EnterFullscreen,
+                accessible_label: "Полноэкранный режим",
+            }
+        );
+        assert_eq!(
+            fullscreen_toggle_presentation(true),
+            FullscreenTogglePresentation {
+                icon: FullscreenToggleIcon::ExitFullscreen,
+                accessible_label: "Выйти из полноэкранного режима",
+            }
         );
     }
 }
