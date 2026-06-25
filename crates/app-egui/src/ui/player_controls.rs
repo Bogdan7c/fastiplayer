@@ -140,14 +140,14 @@ fn playback_button_anchor_rect(row_rect: Rect, controls_style: ControlsStyle) ->
     Rect::from_center_size(button_center, button_size)
 }
 
-/// Считает rect fullscreen-кнопки от всей content-строки: правый край совпадает с row,
-/// а вертикальный центр синхронизирован с play/pause-кнопкой.
+/// Считает rect fullscreen-кнопки от всей content-строки.
+/// Правый отступ намеренно равен нижнему отступу, чтобы кнопка не прилипала к углу панели.
 fn fullscreen_button_anchor_rect(row_rect: Rect, controls_style: ControlsStyle) -> Rect {
     let button_size = Vec2::splat(controls_style.fullscreen_button_size);
-    let button_center = pos2(
-        row_rect.right() - button_size.x * 0.5,
-        row_rect.center().y - controls_style.playback_button_vertical_raise,
-    );
+    let button_center_y = row_rect.center().y - controls_style.playback_button_vertical_raise;
+    let bottom_inset = row_rect.bottom() - (button_center_y + button_size.y * 0.5);
+    let button_center_x = row_rect.right() - bottom_inset - button_size.x * 0.5;
+    let button_center = pos2(button_center_x, button_center_y);
 
     Rect::from_center_size(button_center, button_size)
 }
@@ -551,17 +551,19 @@ mod tests {
         );
     }
 
-    /// Проверяет, что fullscreen-кнопка привязана к правому краю content-строки.
+    /// Проверяет, что правый отступ fullscreen-кнопки равен нижнему отступу.
     #[test]
-    fn fullscreen_button_anchor_rect_right_edge_matches_row_right_edge() {
+    fn fullscreen_button_anchor_rect_right_inset_matches_bottom_inset() {
         let controls_style = MinimalSkin.controls_style();
         let row_rect = Rect::from_min_size(
             pos2(24.0, 80.0),
             vec2(640.0, controls_style.playback_button_diameter),
         );
         let button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
+        let right_inset = row_rect.right() - button_rect.right();
+        let bottom_inset = row_rect.bottom() - button_rect.bottom();
 
-        assert!((button_rect.right() - row_rect.right()).abs() < f32::EPSILON);
+        assert!((right_inset - bottom_inset).abs() < f32::EPSILON);
     }
 
     /// Проверяет, что fullscreen-кнопка стоит на той же вертикальной оси, что play/pause.
