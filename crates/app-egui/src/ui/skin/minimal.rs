@@ -37,6 +37,10 @@ impl PlayerSkin for MinimalSkin {
             played_fill: Color32::from_rgb(220, 220, 220),
             target_fill: Color32::from_rgb(130, 190, 255),
             thumb_fill: Color32::WHITE,
+            track_outline_width: 2.0,
+            track_outline_fill: Color32::from_rgb(18, 18, 18),
+            thumb_outline_width: 2.0,
+            thumb_outline_fill: Color32::from_rgb(18, 18, 18),
             disabled_fill: Color32::from_gray(48),
         }
     }

@@ -61,6 +61,18 @@ pub struct TimelineStyle {
     /// Цвет бегунка.
     pub thumb_fill: Color32,
 
+    /// Толщина тёмной визуальной обводки дорожки без расширения hit area.
+    pub track_outline_width: f32,
+
+    /// Цвет тёмной визуальной обводки дорожки.
+    pub track_outline_fill: Color32,
+
+    /// Толщина тёмной визуальной обводки бегунка.
+    pub thumb_outline_width: f32,
+
+    /// Цвет тёмной визуальной обводки бегунка.
+    pub thumb_outline_fill: Color32,
+
     /// Цвет disabled timeline.
     pub disabled_fill: Color32,
 }
@@ -147,7 +159,9 @@ pub fn skin_from_config(raw_skin_id: &str) -> Option<MinimalSkin> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MINIMAL_SKIN_ID, SkinId, skin_from_config};
+    use egui::Color32;
+
+    use super::{MINIMAL_SKIN_ID, MinimalSkin, SkinId, skin_from_config};
     use crate::ui::skin::PlayerSkin;
 
     /// Проверяет, что config id `minimal` выбирает первый skin.
@@ -162,5 +176,17 @@ mod tests {
     #[test]
     fn unknown_skin_id_is_not_resolved() {
         assert_eq!(SkinId::parse("dense"), None);
+    }
+
+    /// Проверяет, что minimal skin включает тёмную outline-защиту timeline.
+    #[test]
+    fn minimal_timeline_style_has_dark_nonzero_outline() {
+        let timeline_style = MinimalSkin.timeline_style();
+        let expected_outline_fill = Color32::from_rgb(18, 18, 18);
+
+        assert!(timeline_style.track_outline_width > 0.0);
+        assert!(timeline_style.thumb_outline_width > 0.0);
+        assert_eq!(timeline_style.track_outline_fill, expected_outline_fill);
+        assert_eq!(timeline_style.thumb_outline_fill, expected_outline_fill);
     }
 }

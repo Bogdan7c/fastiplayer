@@ -326,12 +326,19 @@ fn paint_timeline(
 ) {
     let track_rect = timeline_track_rect(rect, style);
     let track_radius = style.track_height / 2.0;
+    let track_outline_rect = timeline_track_outline_rect(track_rect, style);
+    let track_outline_radius = timeline_track_outline_radius(style);
     let base_color = if enabled {
         style.track_fill
     } else {
         style.disabled_fill
     };
 
+    painter.rect_filled(
+        track_outline_rect,
+        track_outline_radius,
+        style.track_outline_fill,
+    );
     painter.rect_filled(track_rect, track_radius, base_color);
 
     let Some(bounds) = bounds else {
@@ -358,6 +365,11 @@ fn paint_timeline(
     if state.has_active_drag() || timeline.scrubbing {
         painter.rect_filled(target_rect, track_radius, style.target_fill);
     }
+    painter.circle_filled(
+        thumb_center,
+        thumb_outline_radius(style),
+        style.thumb_outline_fill,
+    );
     painter.circle_filled(thumb_center, style.thumb_radius, style.thumb_fill);
 }
 
@@ -373,6 +385,21 @@ fn timeline_track_rect(rect: Rect, style: TimelineStyle) -> Rect {
         Pos2::new(left, center_y - half_height),
         Pos2::new(right.max(left), center_y + half_height),
     )
+}
+
+/// Создаёт только визуальный outline rect вокруг track-а.
+fn timeline_track_outline_rect(track_rect: Rect, style: TimelineStyle) -> Rect {
+    track_rect.expand(style.track_outline_width.max(0.0))
+}
+
+/// Возвращает радиус outline rect так, чтобы он повторял форму track-а.
+fn timeline_track_outline_radius(style: TimelineStyle) -> f32 {
+    style.track_height / 2.0 + style.track_outline_width.max(0.0)
+}
+
+/// Возвращает радиус тёмной подложки бегунка.
+fn thumb_outline_radius(style: TimelineStyle) -> f32 {
+    style.thumb_radius + style.thumb_outline_width.max(0.0)
 }
 
 /// Строит rect заполнения track-а от начала до указанной доли.
@@ -395,11 +422,13 @@ fn duration_mul_fraction(duration: MediaDuration, fraction: f64) -> MediaDuratio
 
 #[cfg(test)]
 mod tests {
+    use egui::{Color32, Pos2, Rect, Vec2};
     use media_core::{MediaDuration, MediaTime, TimelineRange, TimelineSnapshot};
 
     use super::{
-        TimelineAction, TimelineBounds, TimelinePointerInput, TimelineUiState, format_seconds,
-        map_timeline_interaction,
+        TimelineAction, TimelineBounds, TimelinePointerInput, TimelineStyle, TimelineUiState,
+        format_seconds, map_timeline_interaction, pointer_fraction, thumb_outline_radius,
+        timeline_track_outline_rect, timeline_track_rect,
     };
 
     /// Создаёт seekable VOD timeline для mapper tests.
@@ -414,6 +443,87 @@ mod tests {
             MediaTime::from_secs(100),
         ))
         .expect("test timeline is seekable")
+    }
+
+    /// Возвращает стиль timeline с заметной outline-шириной для geometry tests.
+    fn timeline_style_with_outline() -> TimelineStyle {
+        TimelineStyle {
+            hit_height: 28.0,
+            track_height: 5.0,
+            thumb_radius: 6.0,
+            horizontal_padding: 8.0,
+            track_fill: Color32::from_gray(64),
+            played_fill: Color32::WHITE,
+            target_fill: Color32::from_rgb(130, 190, 255),
+            thumb_fill: Color32::WHITE,
+            track_outline_width: 3.0,
+            track_outline_fill: Color32::BLACK,
+            thumb_outline_width: 2.0,
+            thumb_outline_fill: Color32::BLACK,
+            disabled_fill: Color32::from_gray(48),
+        }
+    }
+
+    /// Проверяет, что outline расширяет только визуальный слой, а track rect стабилен.
+    #[test]
+    fn outline_rect_expands_visual_layer_without_changing_track_rect() {
+        let style = timeline_style_with_outline();
+        let hit_rect =
+            Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(220.0, style.hit_height));
+        let track_rect = timeline_track_rect(hit_rect, style);
+        let outline_rect = timeline_track_outline_rect(track_rect, style);
+
+        assert_eq!(timeline_track_rect(hit_rect, style), track_rect);
+        assert_eq!(
+            outline_rect.left(),
+            track_rect.left() - style.track_outline_width
+        );
+        assert_eq!(
+            outline_rect.right(),
+            track_rect.right() + style.track_outline_width
+        );
+        assert_eq!(
+            outline_rect.top(),
+            track_rect.top() - style.track_outline_width
+        );
+        assert_eq!(
+            outline_rect.bottom(),
+            track_rect.bottom() + style.track_outline_width
+        );
+        assert_eq!(track_rect.height(), style.track_height);
+    }
+
+    /// Проверяет, что тёмная подложка бегунка больше основного белого круга.
+    #[test]
+    fn thumb_outline_radius_is_larger_than_thumb_radius() {
+        let style = timeline_style_with_outline();
+
+        assert_eq!(
+            thumb_outline_radius(style),
+            style.thumb_radius + style.thumb_outline_width
+        );
+        assert!(thumb_outline_radius(style) > style.thumb_radius);
+    }
+
+    /// Проверяет, что pointer mapping остаётся привязан к track rect, а не outline rect.
+    #[test]
+    fn pointer_fraction_ignores_visual_outline_width() {
+        let style = timeline_style_with_outline();
+        let hit_rect =
+            Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(220.0, style.hit_height));
+        let track_rect = timeline_track_rect(hit_rect, style);
+        let pointer_at_track_left = Pos2::new(track_rect.left(), track_rect.center().y);
+        let pointer_at_track_right = Pos2::new(track_rect.right(), track_rect.center().y);
+
+        assert!(style.track_outline_width > 0.0);
+        assert_eq!(
+            pointer_fraction(hit_rect, style, pointer_at_track_left),
+            0.0
+        );
+        assert_eq!(
+            pointer_fraction(hit_rect, style, pointer_at_track_right),
+            1.0
+        );
     }
 
     /// Проверяет, что pointer down сам по себе не создаёт drag/seek action.
