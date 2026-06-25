@@ -44,6 +44,114 @@ fn invalid_volume_is_reported_and_preserves_previous_value() {
 }
 
 #[test]
+fn toggle_mute_remembers_and_restores_previous_nonzero_volume() {
+    let mut session = PlayerSession::new();
+
+    session
+        .dispatch_command(PlayerCommand::SetVolume(0.35))
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::ToggleMute {
+            fallback_volume: 0.8,
+        })
+        .unwrap();
+
+    assert_eq!(session.snapshot().volume, 0.0);
+    assert!(session.snapshot().muted);
+
+    session
+        .dispatch_command(PlayerCommand::ToggleMute {
+            fallback_volume: 0.8,
+        })
+        .unwrap();
+
+    assert_eq!(session.snapshot().volume, 0.35);
+    assert!(!session.snapshot().muted);
+}
+
+#[test]
+fn set_volume_zero_mutes_without_clearing_previous_nonzero_volume() {
+    let mut session = PlayerSession::new();
+
+    session
+        .dispatch_command(PlayerCommand::SetVolume(0.42))
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::SetVolume(0.0))
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::ToggleMute {
+            fallback_volume: 0.8,
+        })
+        .unwrap();
+
+    assert_eq!(session.snapshot().volume, 0.42);
+    assert!(!session.snapshot().muted);
+}
+
+#[test]
+fn positive_set_volume_after_mute_updates_remembered_volume() {
+    let mut session = PlayerSession::new();
+
+    session
+        .dispatch_command(PlayerCommand::SetVolume(0.3))
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::SetVolume(0.0))
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::SetVolume(0.7))
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::SetVolume(0.0))
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::ToggleMute {
+            fallback_volume: 0.5,
+        })
+        .unwrap();
+
+    assert_eq!(session.snapshot().volume, 0.7);
+    assert!(!session.snapshot().muted);
+}
+
+#[test]
+fn invalid_toggle_mute_fallback_reports_recoverable_error_and_preserves_state() {
+    let mut session = PlayerSession::new();
+
+    session
+        .dispatch_command(PlayerCommand::SetVolume(0.55))
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::SetVolume(0.0))
+        .unwrap();
+
+    let result = session.dispatch_command(PlayerCommand::ToggleMute {
+        fallback_volume: f32::NAN,
+    });
+
+    assert!(result.is_err());
+    assert_eq!(session.snapshot().volume, 0.0);
+    assert!(session.snapshot().muted);
+    assert!(session.snapshot().last_error.is_some());
+    assert!(
+        session
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::RecoverableError(_)))
+    );
+
+    session
+        .dispatch_command(PlayerCommand::ToggleMute {
+            fallback_volume: 0.8,
+        })
+        .unwrap();
+
+    assert_eq!(session.snapshot().volume, 0.55);
+    assert!(!session.snapshot().muted);
+}
+
+#[test]
 fn reload_config_command_preserves_compatibility_event_behavior() {
     let mut session = PlayerSession::new();
 

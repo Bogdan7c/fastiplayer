@@ -66,6 +66,12 @@ pub struct PlayerSession {
     /// Factory, через которую session лениво создаёт audio output после decoded spec.
     audio_output_factory: Arc<dyn AudioOutputFactory>,
 
+    /// Последняя громкость, которая реально могла быть слышимой.
+    ///
+    /// Нужна, чтобы mute/unmute был session-owned поведением, а UI не угадывал,
+    /// какую громкость надо восстановить после `SetVolume(0.0)`.
+    last_nonzero_volume: Option<f32>,
+
     /// Codec/render-neutral diagnostics aggregator для текущего media pipeline.
     diagnostics: PlaybackDiagnostics,
 
@@ -272,6 +278,7 @@ impl PlayerSession {
             PlayerCommand::EndScrub { policy: _ } => self.end_scrub(),
             PlayerCommand::Stop => self.stop(),
             PlayerCommand::SetVolume(volume) => self.set_volume(volume),
+            PlayerCommand::ToggleMute { fallback_volume } => self.toggle_mute(fallback_volume),
             PlayerCommand::SelectVideoTrack(track_id) => self.select_video_track(track_id),
             PlayerCommand::SelectAudioTrack(track_id) => self.select_audio_track(track_id),
             PlayerCommand::SelectSubtitleTrack(track_id) => self.select_subtitle_track(track_id),
@@ -642,19 +649,70 @@ impl PlayerSession {
     /// Валидирует и устанавливает громкость.
     fn set_volume(&mut self, volume: f32) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        if !volume.is_finite() || !(0.0..=1.0).contains(&volume) {
-            let error = PlayerError::new(
-                PlayerErrorKind::InvalidCommand,
-                format!("volume must be finite and within 0.0..=1.0, got {volume}"),
-            );
-            self.record_recoverable_error(error.clone());
-            return Err(error);
+        self.validate_volume_command_value("volume", volume)?;
+        self.remember_last_nonzero_volume(volume);
+        self.apply_audio_volume(volume);
+        Ok(())
+    }
+
+    /// Переключает mute и восстанавливает предыдущую слышимую громкость.
+    fn toggle_mute(&mut self, fallback_volume: f32) -> PlayerResult<()> {
+        self.ensure_not_shutdown()?;
+        self.validate_volume_command_value("fallback_volume", fallback_volume)?;
+
+        if self.is_current_volume_audible() {
+            self.remember_last_nonzero_volume(self.snapshot.volume);
+            self.apply_audio_volume(0.0);
+            return Ok(());
         }
 
-        self.snapshot.volume = volume;
-        self.snapshot.muted = volume <= f32::EPSILON;
-        let _output_was_present = self.pipeline.set_audio_output_volume(volume);
+        let restored_volume = self
+            .last_nonzero_volume
+            .filter(|volume| Self::is_rememberable_volume(*volume))
+            .or_else(|| Self::is_rememberable_volume(fallback_volume).then_some(fallback_volume))
+            .unwrap_or(1.0);
+
+        self.remember_last_nonzero_volume(restored_volume);
+        self.apply_audio_volume(restored_volume);
         Ok(())
+    }
+
+    /// Проверяет значение volume-like команды и пишет recoverable error без изменения state.
+    fn validate_volume_command_value(&mut self, name: &str, volume: f32) -> PlayerResult<()> {
+        if volume.is_finite() && (0.0..=1.0).contains(&volume) {
+            return Ok(());
+        }
+
+        let error = PlayerError::new(
+            PlayerErrorKind::InvalidCommand,
+            format!("{name} must be finite and within 0.0..=1.0, got {volume}"),
+        );
+        self.record_recoverable_error(error.clone());
+        Err(error)
+    }
+
+    /// Запоминает только громкость, которая не схлопнется в muted-состояние.
+    fn remember_last_nonzero_volume(&mut self, volume: f32) {
+        if Self::is_rememberable_volume(volume) {
+            self.last_nonzero_volume = Some(volume);
+        }
+    }
+
+    /// Применяет громкость к snapshot и активному output-у, не меняя remembered-volume.
+    fn apply_audio_volume(&mut self, volume: f32) {
+        self.snapshot.volume = volume;
+        self.snapshot.muted = !Self::is_rememberable_volume(volume);
+        let _output_was_present = self.pipeline.set_audio_output_volume(volume);
+    }
+
+    /// Текущий snapshot считается слышимым только если mute-флаг и число согласованы.
+    fn is_current_volume_audible(&self) -> bool {
+        !self.snapshot.muted && Self::is_rememberable_volume(self.snapshot.volume)
+    }
+
+    /// Практический non-zero: совпадает с существующей EPSILON mute-семантикой snapshot-а.
+    fn is_rememberable_volume(volume: f32) -> bool {
+        volume > f32::EPSILON
     }
 
     /// Выбирает video track.
@@ -803,6 +861,7 @@ impl Default for PlayerSession {
             pipeline: PlaybackPipeline::default(),
             audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
+            last_nonzero_volume: None,
             diagnostics: PlaybackDiagnostics::default(),
             pending_events: Vec::new(),
             media_lifecycle: MediaLifecycleState::default(),

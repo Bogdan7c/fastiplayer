@@ -1,11 +1,17 @@
 //! Player controls поверх command/snapshot boundary.
 
-use egui::{Rect, Sense, Shape, Stroke, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{Color32, Rect, Sense, Shape, Stroke, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2};
 use player_core::{PlaybackState, PlayerSnapshot};
 
 use crate::ui::assets::IconId;
 use crate::ui::skin::{ControlsStyle, PlayerSkin, SkinId};
 use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
+
+const VOLUME_SEPARATOR_WIDTH: f32 = 1.0;
+const VOLUME_SEPARATOR_HEIGHT_FACTOR: f32 = 0.68;
+const VOLUME_TRACK_HEIGHT: f32 = 3.0;
+const VOLUME_THUMB_RADIUS: f32 = 5.0;
+const VOLUME_WAVE_SEGMENTS: usize = 8;
 
 /// Действие controls, которое shell должен применить после egui pass.
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +24,9 @@ pub enum ControlAction {
 
     /// Установить новую громкость.
     SetVolume(f32),
+
+    /// Переключить mute/unmute.
+    ToggleMute,
 
     /// Переключить fullscreen.
     ToggleFullscreen,
@@ -74,7 +83,6 @@ fn render_button_row(
 ) {
     let controls_style = skin.controls_style();
     let play_icon = playback_toggle_icon(player_snapshot.playback_state);
-    let mut volume_value = player_snapshot.volume;
 
     let row_width = ui.available_width();
     let row_height = controls_style.playback_button_diameter;
@@ -94,26 +102,7 @@ fn render_button_row(
         actions.push(ControlAction::OpenFile);
     }
 
-    ui.scope_builder(
-        UiBuilder::new()
-            .max_rect(volume_zone)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        |ui| {
-            ui.separator();
-            ui.colored_label(controls_style.text_color, skin.icon_text(IconId::Volume));
-            let volume_response = ui.add_sized(
-                [
-                    controls_style.volume_slider_width,
-                    controls_style.button_height,
-                ],
-                egui::Slider::new(&mut volume_value, 0.0..=1.0).show_value(false),
-            );
-            if volume_response.changed() {
-                actions.push(ControlAction::SetVolume(volume_value));
-            }
-            ui.monospace(format!("{:.0}%", volume_value * 100.0));
-        },
-    );
+    render_volume_controls(ui, player_snapshot, controls_style, volume_zone, actions);
 
     if render_playback_toggle_button_at(ui, playback_button_rect, play_icon, skin).clicked() {
         actions.push(ControlAction::TogglePlayback);
@@ -179,6 +168,317 @@ fn volume_controls_zone_rect(
         pos2(zone_left, row_rect.top()),
         pos2(zone_right, row_rect.bottom()),
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct VolumeControlLayout {
+    /// Тонкий separator между open-file и live-volume controls.
+    separator_rect: Rect,
+
+    /// Квадратная hit-zone speaker-кнопки.
+    icon_button_rect: Rect,
+
+    /// Широкая hit-zone slider-а: клик и drag работают не только по тонкой линии.
+    slider_hit_rect: Rect,
+
+    /// Узкая видимая линия, по которой мапится pointer -> volume.
+    slider_track_rect: Rect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VolumeIconState {
+    Audible,
+    Muted,
+}
+
+/// Рисует custom volume control внутри уже рассчитанной anchored зоны.
+fn render_volume_controls(
+    ui: &mut Ui,
+    player_snapshot: &PlayerSnapshot,
+    controls_style: ControlsStyle,
+    volume_zone: Rect,
+    actions: &mut Vec<ControlAction>,
+) {
+    let layout = volume_control_layout(volume_zone, controls_style, ui.spacing().item_spacing.x);
+    let icon_state = volume_icon_state(player_snapshot);
+
+    paint_volume_separator(ui, layout.separator_rect, controls_style);
+
+    if render_volume_icon_button_at(ui, layout.icon_button_rect, controls_style, icon_state)
+        .clicked()
+    {
+        actions.push(ControlAction::ToggleMute);
+    }
+
+    if let Some(requested_volume) = render_volume_slider_at(
+        ui,
+        layout.slider_hit_rect,
+        layout.slider_track_rect,
+        controls_style,
+        player_snapshot.volume,
+    ) {
+        actions.push(ControlAction::SetVolume(requested_volume));
+    }
+}
+
+/// Считает geometry без egui flow-layout, чтобы volume не сдвигал anchored buttons.
+fn volume_control_layout(
+    zone_rect: Rect,
+    controls_style: ControlsStyle,
+    item_spacing_x: f32,
+) -> VolumeControlLayout {
+    let controls_center_y = zone_rect.center().y - controls_style.playback_button_vertical_raise;
+    let separator_width = VOLUME_SEPARATOR_WIDTH.min(zone_rect.width().max(0.0));
+    let separator_height = controls_style.button_height * VOLUME_SEPARATOR_HEIGHT_FACTOR;
+    let separator_rect = Rect::from_center_size(
+        pos2(zone_rect.left() + separator_width * 0.5, controls_center_y),
+        vec2(separator_width, separator_height),
+    );
+
+    let available_after_separator = (zone_rect.right() - separator_rect.right()).max(0.0);
+    let icon_gap = item_spacing_x.max(4.0).min(available_after_separator);
+    let icon_size = controls_style
+        .button_height
+        .min((zone_rect.right() - separator_rect.right() - icon_gap).max(0.0));
+    let icon_button_rect = Rect::from_min_size(
+        pos2(
+            separator_rect.right() + icon_gap,
+            controls_center_y - icon_size * 0.5,
+        ),
+        Vec2::splat(icon_size),
+    );
+
+    let available_after_icon = (zone_rect.right() - icon_button_rect.right()).max(0.0);
+    let slider_gap = item_spacing_x.max(6.0).min(available_after_icon);
+    let slider_left = icon_button_rect.right() + slider_gap;
+    let slider_width = controls_style
+        .volume_slider_width
+        .min((zone_rect.right() - slider_left).max(0.0));
+    let slider_hit_rect = Rect::from_min_size(
+        pos2(
+            slider_left,
+            controls_center_y - controls_style.button_height * 0.5,
+        ),
+        vec2(slider_width, controls_style.button_height),
+    );
+
+    let track_horizontal_inset = VOLUME_THUMB_RADIUS.min(slider_hit_rect.width() * 0.5);
+    let slider_track_rect = Rect::from_min_max(
+        pos2(
+            slider_hit_rect.left() + track_horizontal_inset,
+            controls_center_y - VOLUME_TRACK_HEIGHT * 0.5,
+        ),
+        pos2(
+            slider_hit_rect.right() - track_horizontal_inset,
+            controls_center_y + VOLUME_TRACK_HEIGHT * 0.5,
+        ),
+    );
+
+    VolumeControlLayout {
+        separator_rect,
+        icon_button_rect,
+        slider_hit_rect,
+        slider_track_rect,
+    }
+}
+
+/// UI считает audible так же, как player snapshot: отдельный mute-флаг важнее числа.
+fn volume_icon_state(player_snapshot: &PlayerSnapshot) -> VolumeIconState {
+    if !player_snapshot.muted && player_snapshot.volume > f32::EPSILON {
+        VolumeIconState::Audible
+    } else {
+        VolumeIconState::Muted
+    }
+}
+
+/// Мапит pointer по видимому track-у и жёстко держит публичный диапазон volume.
+fn volume_from_pointer_x(track_rect: Rect, pointer_x: f32) -> f32 {
+    let track_width = track_rect.width();
+    if track_width <= f32::EPSILON {
+        return 0.0;
+    }
+
+    ((pointer_x - track_rect.left()) / track_width).clamp(0.0, 1.0)
+}
+
+/// Возвращает x-позицию thumb-а по тому же track-у, по которому работает pointer mapping.
+fn volume_thumb_center_x(track_rect: Rect, volume: f32) -> f32 {
+    track_rect.left() + track_rect.width() * volume.clamp(0.0, 1.0)
+}
+
+fn paint_volume_separator(ui: &Ui, separator_rect: Rect, controls_style: ControlsStyle) {
+    ui.painter().rect_filled(
+        separator_rect,
+        VOLUME_SEPARATOR_WIDTH * 0.5,
+        controls_style.text_color.gamma_multiply(0.45),
+    );
+}
+
+fn render_volume_icon_button_at(
+    ui: &mut Ui,
+    button_rect: Rect,
+    controls_style: ControlsStyle,
+    icon_state: VolumeIconState,
+) -> egui::Response {
+    let accessible_label = match icon_state {
+        VolumeIconState::Audible => "Выключить звук",
+        VolumeIconState::Muted => "Включить звук",
+    };
+    let button_response = ui.allocate_rect(button_rect, Sense::click());
+    let button_response = button_response.on_hover_text(accessible_label);
+
+    button_response
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), accessible_label));
+
+    paint_volume_icon_button(
+        ui,
+        button_rect,
+        controls_style,
+        icon_state,
+        &button_response,
+    );
+
+    button_response
+}
+
+fn render_volume_slider_at(
+    ui: &mut Ui,
+    slider_hit_rect: Rect,
+    slider_track_rect: Rect,
+    controls_style: ControlsStyle,
+    current_volume: f32,
+) -> Option<f32> {
+    let slider_response = ui.allocate_rect(slider_hit_rect, Sense::click_and_drag());
+    slider_response
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Slider, ui.is_enabled(), "Громкость"));
+
+    paint_volume_slider(
+        ui,
+        slider_track_rect,
+        controls_style,
+        current_volume.clamp(0.0, 1.0),
+        slider_response.hovered() || slider_response.dragged(),
+    );
+
+    let pointer_position = slider_response.interact_pointer_pos()?;
+    let requested_volume = volume_from_pointer_x(slider_track_rect, pointer_position.x);
+
+    (slider_response.clicked() || slider_response.dragged())
+        .then_some(requested_volume)
+        .filter(|volume| (*volume - current_volume).abs() > f32::EPSILON)
+}
+
+fn paint_volume_icon_button(
+    ui: &Ui,
+    button_rect: Rect,
+    controls_style: ControlsStyle,
+    icon_state: VolumeIconState,
+    button_response: &egui::Response,
+) {
+    if button_response.hovered() {
+        ui.painter()
+            .rect_filled(button_rect, 0.0, controls_style.playback_button_hover_fill);
+    }
+
+    let icon_stroke = Stroke::new(
+        controls_style.playback_button_stroke_width,
+        controls_style.text_color,
+    );
+    paint_speaker_glyph(ui.painter(), button_rect, icon_state, icon_stroke);
+}
+
+fn paint_speaker_glyph(
+    painter: &egui::Painter,
+    button_rect: Rect,
+    icon_state: VolumeIconState,
+    stroke: Stroke,
+) {
+    let icon_side = button_rect.width().min(button_rect.height()) * 0.68;
+    let icon_rect = Rect::from_center_size(button_rect.center(), Vec2::splat(icon_side));
+    let center = icon_rect.center();
+    let speaker_points = vec![
+        pos2(icon_rect.left(), center.y - icon_side * 0.14),
+        pos2(center.x - icon_side * 0.18, center.y - icon_side * 0.14),
+        pos2(center.x + icon_side * 0.06, icon_rect.top()),
+        pos2(center.x + icon_side * 0.06, icon_rect.bottom()),
+        pos2(center.x - icon_side * 0.18, center.y + icon_side * 0.14),
+        pos2(icon_rect.left(), center.y + icon_side * 0.14),
+        pos2(icon_rect.left(), center.y - icon_side * 0.14),
+    ];
+
+    painter.add(Shape::line(speaker_points, stroke));
+
+    match icon_state {
+        VolumeIconState::Audible => {
+            let wave_origin = pos2(center.x + icon_side * 0.05, center.y);
+            paint_volume_wave(painter, wave_origin, icon_side * 0.25, stroke);
+            paint_volume_wave(painter, wave_origin, icon_side * 0.39, stroke);
+        }
+        VolumeIconState::Muted => {
+            painter.line_segment(
+                [
+                    pos2(icon_rect.right(), icon_rect.top() + icon_side * 0.08),
+                    pos2(icon_rect.left() + icon_side * 0.08, icon_rect.bottom()),
+                ],
+                stroke,
+            );
+        }
+    }
+}
+
+fn paint_volume_wave(painter: &egui::Painter, origin: egui::Pos2, radius: f32, stroke: Stroke) {
+    let mut points = Vec::with_capacity(VOLUME_WAVE_SEGMENTS + 1);
+    for segment_index in 0..=VOLUME_WAVE_SEGMENTS {
+        let progress = segment_index as f32 / VOLUME_WAVE_SEGMENTS as f32;
+        let angle = -0.72 + progress * 1.44;
+        points.push(pos2(
+            origin.x + radius * angle.cos(),
+            origin.y + radius * angle.sin(),
+        ));
+    }
+
+    painter.add(Shape::line(points, stroke));
+}
+
+fn paint_volume_slider(
+    ui: &Ui,
+    track_rect: Rect,
+    controls_style: ControlsStyle,
+    volume: f32,
+    is_interactive: bool,
+) {
+    let painter = ui.painter();
+    let track_radius = VOLUME_TRACK_HEIGHT * 0.5;
+    let track_fill = Color32::from_rgba_unmultiplied(255, 255, 255, 52);
+    let active_fill = controls_style.text_color;
+    let thumb_center_x = volume_thumb_center_x(track_rect, volume);
+    let active_rect = Rect::from_min_max(
+        track_rect.left_top(),
+        pos2(thumb_center_x.max(track_rect.left()), track_rect.bottom()),
+    );
+    let thumb_radius = if is_interactive {
+        VOLUME_THUMB_RADIUS + 1.0
+    } else {
+        VOLUME_THUMB_RADIUS
+    };
+
+    painter.rect_filled(track_rect, track_radius, track_fill);
+    if active_rect.width() > f32::EPSILON {
+        painter.rect_filled(active_rect, track_radius, active_fill.gamma_multiply(0.85));
+    }
+    painter.circle_filled(
+        pos2(thumb_center_x, track_rect.center().y),
+        thumb_radius,
+        active_fill,
+    );
+    painter.circle_stroke(
+        pos2(thumb_center_x, track_rect.center().y),
+        thumb_radius,
+        Stroke::new(
+            controls_style.playback_button_stroke_width,
+            Color32::from_rgba_unmultiplied(0, 0, 0, 130),
+        ),
+    );
 }
 
 /// Рисует open-file кнопку в заранее рассчитанном anchored rect.
@@ -535,7 +835,6 @@ fn paint_playback_button(
             controls_style.playback_button_icon_extent,
             button_stroke,
         ),
-        IconId::Volume => {}
     }
 }
 
@@ -775,6 +1074,90 @@ mod tests {
         assert!(volume_zone_rect.right() <= playback_button_rect.left() - volume_to_playback_gap);
         assert!(volume_zone_rect.left() >= open_file_button_rect.right());
         assert!(volume_zone_rect.right() <= playback_button_rect.left());
+    }
+
+    /// Проверяет, что custom volume widgets остаются внутри volume-zone и центрируются как buttons.
+    #[test]
+    fn volume_control_layout_stays_in_zone_and_matches_button_center_y() {
+        let controls_style = MinimalSkin.controls_style();
+        let row_rect = Rect::from_min_size(
+            pos2(24.0, 80.0),
+            vec2(640.0, controls_style.playback_button_diameter),
+        );
+        let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
+        let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
+        let volume_zone_rect =
+            volume_controls_zone_rect(row_rect, open_file_button_rect, playback_button_rect, 8.0);
+        let layout = volume_control_layout(volume_zone_rect, controls_style, 8.0);
+
+        assert!(volume_zone_rect.contains_rect(layout.separator_rect));
+        assert!(volume_zone_rect.contains_rect(layout.icon_button_rect));
+        assert!(volume_zone_rect.contains_rect(layout.slider_hit_rect));
+        assert!(volume_zone_rect.contains_rect(layout.slider_track_rect));
+        assert!(layout.separator_rect.right() <= layout.icon_button_rect.left());
+        assert!(layout.icon_button_rect.right() <= layout.slider_hit_rect.left());
+        assert!(
+            (layout.icon_button_rect.center().y - playback_button_rect.center().y).abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (layout.slider_hit_rect.center().y - playback_button_rect.center().y).abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (layout.slider_track_rect.center().y - playback_button_rect.center().y).abs()
+                < f32::EPSILON
+        );
+    }
+
+    /// Проверяет узкий viewport: volume layout не выходит из своей зоны даже без места.
+    #[test]
+    fn volume_control_layout_clamps_widgets_inside_tiny_zone() {
+        let controls_style = MinimalSkin.controls_style();
+        let tiny_zone_rect = Rect::from_min_size(
+            pos2(42.0, 80.0),
+            vec2(0.0, controls_style.playback_button_diameter),
+        );
+        let layout = volume_control_layout(tiny_zone_rect, controls_style, 8.0);
+
+        assert!(tiny_zone_rect.contains_rect(layout.separator_rect));
+        assert!(tiny_zone_rect.contains_rect(layout.icon_button_rect));
+        assert!(tiny_zone_rect.contains_rect(layout.slider_hit_rect));
+        assert!(tiny_zone_rect.contains_rect(layout.slider_track_rect));
+    }
+
+    /// Проверяет icon-state: звук есть только при `!muted` и volume выше EPSILON.
+    #[test]
+    fn volume_icon_state_is_audible_only_for_unmuted_nonzero_volume() {
+        let mut snapshot = PlayerSnapshot::empty();
+
+        snapshot.volume = 0.5;
+        snapshot.muted = false;
+        assert_eq!(volume_icon_state(&snapshot), VolumeIconState::Audible);
+
+        snapshot.volume = 0.5;
+        snapshot.muted = true;
+        assert_eq!(volume_icon_state(&snapshot), VolumeIconState::Muted);
+
+        snapshot.volume = 0.0;
+        snapshot.muted = false;
+        assert_eq!(volume_icon_state(&snapshot), VolumeIconState::Muted);
+
+        snapshot.volume = f32::EPSILON;
+        snapshot.muted = false;
+        assert_eq!(volume_icon_state(&snapshot), VolumeIconState::Muted);
+    }
+
+    /// Проверяет, что pointer mapping не выпускает slider за public volume диапазон.
+    #[test]
+    fn volume_from_pointer_x_clamps_to_public_volume_range() {
+        let track_rect = Rect::from_min_max(pos2(10.0, 0.0), pos2(110.0, 3.0));
+
+        assert_eq!(volume_from_pointer_x(track_rect, -50.0), 0.0);
+        assert_eq!(volume_from_pointer_x(track_rect, 10.0), 0.0);
+        assert_eq!(volume_from_pointer_x(track_rect, 60.0), 0.5);
+        assert_eq!(volume_from_pointer_x(track_rect, 110.0), 1.0);
+        assert_eq!(volume_from_pointer_x(track_rect, 500.0), 1.0);
     }
 
     /// Проверяет, что состояние окна выбирает правильную иконку и accessible label.

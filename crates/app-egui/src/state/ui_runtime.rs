@@ -257,6 +257,20 @@ impl AppState {
                         self.mark_pending_worker_redraw();
                     }
                 }
+                ControlAction::ToggleMute => {
+                    if let Err(error) =
+                        self.player_worker
+                            .try_send_command(PlayerCommand::ToggleMute {
+                                fallback_volume: self
+                                    .committed_config_snapshot
+                                    .default_volume_for_new_media(),
+                            })
+                    {
+                        warn!(error = %error, "Не удалось переключить mute из UI");
+                    } else {
+                        self.mark_pending_worker_redraw();
+                    }
+                }
                 ControlAction::ToggleFullscreen => Self::toggle_fullscreen(window),
                 ControlAction::Timeline(timeline_action) => {
                     self.send_timeline_action(timeline_action);
@@ -324,16 +338,13 @@ impl AppState {
             winit::keyboard::KeyCode::KeyM => {
                 let player_snapshot = self.refresh_player_snapshot();
                 self.publish_desktop_snapshot(&player_snapshot);
-                let current_volume = player_snapshot.volume;
-                let next_volume = if current_volume > 0.0 {
-                    0.0
-                } else {
-                    self.committed_config_snapshot
-                        .default_volume_for_new_media()
-                };
                 if let Err(error) = self
                     .player_worker
-                    .try_send_command(PlayerCommand::SetVolume(next_volume))
+                    .try_send_command(PlayerCommand::ToggleMute {
+                        fallback_volume: self
+                            .committed_config_snapshot
+                            .default_volume_for_new_media(),
+                    })
                 {
                     warn!(error = %error, "Не удалось переключить mute");
                 } else {

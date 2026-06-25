@@ -8,9 +8,6 @@ pub enum IconId {
 
     /// Команда паузы playback.
     Pause,
-
-    /// Иконка громкости.
-    Volume,
 }
 
 /// Провайдер assets для skin-а.

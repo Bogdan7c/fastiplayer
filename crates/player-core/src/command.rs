@@ -224,6 +224,12 @@ pub enum PlayerCommand {
     /// Установить громкость в диапазоне `0.0..=1.0`.
     SetVolume(f32),
 
+    /// Переключить mute с восстановлением последней слышимой громкости.
+    ///
+    /// `fallback_volume` приходит от app/config boundary и используется только тогда,
+    /// когда session ещё не знает предыдущую ненулевую громкость.
+    ToggleMute { fallback_volume: f32 },
+
     /// Выбрать активный video track.
     SelectVideoTrack(TrackId),
 
