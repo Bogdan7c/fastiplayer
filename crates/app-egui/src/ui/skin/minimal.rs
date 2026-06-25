@@ -16,7 +16,6 @@ impl AssetProvider for MinimalSkin {
         match icon_id {
             IconId::Play => "Play",
             IconId::Pause => "Pause",
-            IconId::OpenFile => "Open",
             IconId::Volume => "Vol",
         }
     }

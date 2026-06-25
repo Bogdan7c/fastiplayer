@@ -1,9 +1,6 @@
 //! Player controls поверх command/snapshot boundary.
 
-use egui::{
-    Button, Rect, RichText, Sense, Shape, Stroke, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
-    pos2, vec2,
-};
+use egui::{Rect, Sense, Shape, Stroke, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, pos2, vec2};
 use player_core::{PlaybackState, PlayerSnapshot};
 
 use crate::ui::assets::IconId;
@@ -82,26 +79,26 @@ fn render_button_row(
     let row_width = ui.available_width();
     let row_height = controls_style.playback_button_diameter;
     let (row_rect, _) = ui.allocate_exact_size(vec2(row_width, row_height), Sense::hover());
+    let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
     let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
     let fullscreen_button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
     let zone_gap = ui.spacing().item_spacing.x;
-    let left_zone = Rect::from_min_max(
-        row_rect.left_top(),
-        pos2(
-            (playback_button_rect.left() - zone_gap).max(row_rect.left()),
-            row_rect.bottom(),
-        ),
+    let volume_zone = volume_controls_zone_rect(
+        row_rect,
+        open_file_button_rect,
+        playback_button_rect,
+        zone_gap,
     );
+
+    if render_open_file_button_at(ui, open_file_button_rect, skin).clicked() {
+        actions.push(ControlAction::OpenFile);
+    }
 
     ui.scope_builder(
         UiBuilder::new()
-            .max_rect(left_zone)
+            .max_rect(volume_zone)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
-            if icon_button(ui, IconId::OpenFile, skin).clicked() {
-                actions.push(ControlAction::OpenFile);
-            }
-
             ui.separator();
             ui.colored_label(controls_style.text_color, skin.icon_text(IconId::Volume));
             let volume_response = ui.add_sized(
@@ -129,6 +126,18 @@ fn render_button_row(
     }
 }
 
+/// Считает rect open-file кнопки от всей content-строки.
+/// Левый отступ зеркалит fullscreen-кнопку: он равен нижнему отступу кнопки.
+fn open_file_button_anchor_rect(row_rect: Rect, controls_style: ControlsStyle) -> Rect {
+    let button_size = Vec2::splat(controls_style.fullscreen_button_size);
+    let button_center_y = row_rect.center().y - controls_style.playback_button_vertical_raise;
+    let bottom_inset = row_rect.bottom() - (button_center_y + button_size.y * 0.5);
+    let button_center_x = row_rect.left() + bottom_inset + button_size.x * 0.5;
+    let button_center = pos2(button_center_x, button_center_y);
+
+    Rect::from_center_size(button_center, button_size)
+}
+
 /// Считает rect центральной кнопки от полного rect строки, а не от соседних controls.
 fn playback_button_anchor_rect(row_rect: Rect, controls_style: ControlsStyle) -> Rect {
     let button_size = Vec2::splat(controls_style.playback_button_diameter);
@@ -150,6 +159,42 @@ fn fullscreen_button_anchor_rect(row_rect: Rect, controls_style: ControlsStyle) 
     let button_center = pos2(button_center_x, button_center_y);
 
     Rect::from_center_size(button_center, button_size)
+}
+
+/// Ограничивает volume controls зоной между open-file и play/pause.
+/// Это держит flow-layout volume-а отдельно от anchored кнопок.
+fn volume_controls_zone_rect(
+    row_rect: Rect,
+    open_file_button_rect: Rect,
+    playback_button_rect: Rect,
+    zone_gap: f32,
+) -> Rect {
+    let zone_left =
+        (open_file_button_rect.right() + zone_gap).clamp(row_rect.left(), row_rect.right());
+    let zone_right = (playback_button_rect.left() - zone_gap).clamp(zone_left, row_rect.right());
+
+    Rect::from_min_max(
+        pos2(zone_left, row_rect.top()),
+        pos2(zone_right, row_rect.bottom()),
+    )
+}
+
+/// Рисует open-file кнопку в заранее рассчитанном anchored rect.
+fn render_open_file_button_at(
+    ui: &mut Ui,
+    button_rect: Rect,
+    skin: &impl PlayerSkin,
+) -> egui::Response {
+    let accessible_label = "Открыть файл";
+    let button_response = ui.allocate_rect(button_rect, Sense::click());
+    let button_response = button_response.on_hover_text(accessible_label);
+
+    button_response
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), accessible_label));
+
+    paint_open_file_button(ui, button_rect, skin, &button_response);
+
+    button_response
 }
 
 /// Рисует центральную play/pause-кнопку в уже рассчитанном anchored rect.
@@ -232,16 +277,6 @@ fn fullscreen_toggle_presentation(is_window_fullscreen: bool) -> FullscreenToggl
     }
 }
 
-/// Рисует кнопку для asset-backed иконки.
-fn icon_button(ui: &mut Ui, icon_id: IconId, skin: &impl PlayerSkin) -> egui::Response {
-    let asset_id = skin.icon_asset(icon_id);
-
-    ui.push_id(asset_id, |ui| {
-        fixed_button(ui, skin.icon_text(icon_id), skin)
-    })
-    .inner
-}
-
 /// Рисует квадратную fullscreen-кнопку в стиле settings-кнопки: фон только на hover,
 /// hand-drawn glyph строится stroke-линиями без зависимости от asset pack.
 fn paint_fullscreen_toggle_button(
@@ -269,6 +304,93 @@ fn paint_fullscreen_toggle_button(
         icon,
         icon_stroke,
     );
+}
+
+/// Рисует квадратную open-file кнопку: hover-фон общий с fullscreen,
+/// glyph полностью векторный и не зависит от asset pack.
+fn paint_open_file_button(
+    ui: &Ui,
+    button_rect: Rect,
+    skin: &impl PlayerSkin,
+    button_response: &egui::Response,
+) {
+    let controls_style = skin.controls_style();
+    let painter = ui.painter();
+    let icon_stroke = Stroke::new(
+        controls_style.playback_button_stroke_width,
+        controls_style.text_color,
+    );
+
+    if button_response.hovered() {
+        painter.rect_filled(button_rect, 0.0, controls_style.playback_button_hover_fill);
+    }
+
+    paint_open_file_concept_icon(painter, button_rect, icon_stroke);
+}
+
+/// Рисует hand-drawn glyph "media file": контур файла, play-треугольник
+/// и три короткие строки справа, чтобы кнопка читалась как открытие media.
+fn paint_open_file_concept_icon(painter: &egui::Painter, button_rect: Rect, stroke: Stroke) {
+    let icon_side = button_rect.width().min(button_rect.height()) * 0.64;
+    let icon_rect = Rect::from_center_size(button_rect.center(), vec2(icon_side * 1.12, icon_side));
+    let file_rect = Rect::from_min_size(
+        icon_rect.left_top(),
+        vec2(icon_rect.width() * 0.58, icon_rect.height()),
+    );
+    let fold_size = file_rect.width() * 0.24;
+    let file_top_right_before_fold = pos2(file_rect.right() - fold_size, file_rect.top());
+    let file_fold_corner = pos2(file_rect.right(), file_rect.top() + fold_size);
+
+    painter.line_segment([file_rect.left_top(), file_top_right_before_fold], stroke);
+    painter.line_segment([file_top_right_before_fold, file_fold_corner], stroke);
+    painter.line_segment([file_fold_corner, file_rect.right_bottom()], stroke);
+    painter.line_segment([file_rect.right_bottom(), file_rect.left_bottom()], stroke);
+    painter.line_segment([file_rect.left_bottom(), file_rect.left_top()], stroke);
+
+    let play_center = pos2(
+        file_rect.center().x - file_rect.width() * 0.03,
+        file_rect.center().y + file_rect.height() * 0.04,
+    );
+    let play_half_height = file_rect.height() * 0.19;
+    let play_half_width = file_rect.width() * 0.17;
+    let play_points = vec![
+        pos2(
+            play_center.x - play_half_width,
+            play_center.y - play_half_height,
+        ),
+        pos2(
+            play_center.x - play_half_width,
+            play_center.y + play_half_height,
+        ),
+        pos2(play_center.x + play_half_width, play_center.y),
+    ];
+    painter.add(Shape::convex_polygon(
+        play_points,
+        stroke.color,
+        Stroke::NONE,
+    ));
+
+    let detail_dot_x = file_rect.right() + icon_rect.width() * 0.12;
+    let detail_line_start_x = detail_dot_x + icon_rect.width() * 0.08;
+    let detail_line_end_x = icon_rect.right();
+    for detail_line_y in [
+        icon_rect.center().y - icon_rect.height() * 0.24,
+        icon_rect.center().y,
+        icon_rect.center().y + icon_rect.height() * 0.24,
+    ] {
+        painter.circle_filled(
+            pos2(detail_dot_x, detail_line_y),
+            stroke.width * 0.55,
+            stroke.color,
+        );
+        painter.line_segment(
+            [
+                pos2(detail_line_start_x, detail_line_y),
+                pos2(detail_line_end_x, detail_line_y),
+            ],
+            stroke,
+        );
+    }
 }
 
 /// Рисует четыре corner-segment glyph: outward corners для входа в fullscreen,
@@ -411,7 +533,7 @@ fn paint_playback_button(
             controls_style.playback_button_icon_extent,
             button_stroke,
         ),
-        IconId::OpenFile | IconId::Volume => {}
+        IconId::Volume => {}
     }
 }
 
@@ -458,17 +580,6 @@ fn paint_pause_glyph(
             button_stroke,
         );
     }
-}
-
-/// Рисует кнопку фиксированного размера, чтобы layout не прыгал от текста.
-fn fixed_button(ui: &mut Ui, text: impl Into<RichText>, skin: &impl PlayerSkin) -> egui::Response {
-    let controls_style = skin.controls_style();
-    let button_text = text.into().color(controls_style.text_color);
-
-    ui.add_sized(
-        [controls_style.button_width, controls_style.button_height],
-        Button::new(button_text),
-    )
 }
 
 /// Возвращает panel id нижней панели для выбранного skin-а.
@@ -535,6 +646,39 @@ mod tests {
         );
     }
 
+    /// Проверяет, что open-file кнопка имеет тот же skin-owned размер, что fullscreen.
+    #[test]
+    fn open_file_button_anchor_rect_has_fullscreen_square_size() {
+        let controls_style = MinimalSkin.controls_style();
+        let row_rect = Rect::from_min_size(
+            pos2(24.0, 80.0),
+            vec2(640.0, controls_style.playback_button_diameter),
+        );
+        let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
+        let fullscreen_button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
+
+        assert_eq!(open_file_button_rect.size(), fullscreen_button_rect.size());
+        assert_eq!(
+            open_file_button_rect.size(),
+            Vec2::splat(controls_style.fullscreen_button_size)
+        );
+    }
+
+    /// Проверяет, что левый отступ open-file кнопки равен её нижнему отступу.
+    #[test]
+    fn open_file_button_anchor_rect_left_inset_matches_bottom_inset() {
+        let controls_style = MinimalSkin.controls_style();
+        let row_rect = Rect::from_min_size(
+            pos2(24.0, 80.0),
+            vec2(640.0, controls_style.playback_button_diameter),
+        );
+        let button_rect = open_file_button_anchor_rect(row_rect, controls_style);
+        let left_inset = button_rect.left() - row_rect.left();
+        let bottom_inset = row_rect.bottom() - button_rect.bottom();
+
+        assert!((left_inset - bottom_inset).abs() < f32::EPSILON);
+    }
+
     /// Проверяет, что fullscreen-кнопка имеет skin-owned размер 32x32.
     #[test]
     fn fullscreen_button_anchor_rect_has_skin_owned_square_size() {
@@ -581,6 +725,52 @@ mod tests {
             (fullscreen_button_rect.center().y - playback_button_rect.center().y).abs()
                 < f32::EPSILON
         );
+    }
+
+    /// Проверяет, что open-file, play/pause и fullscreen стоят на одной вертикальной оси.
+    #[test]
+    fn open_file_button_anchor_rect_center_y_matches_other_anchored_buttons() {
+        let controls_style = MinimalSkin.controls_style();
+        let row_rect = Rect::from_min_size(
+            pos2(24.0, 80.0),
+            vec2(640.0, controls_style.playback_button_diameter),
+        );
+        let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
+        let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
+        let fullscreen_button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
+
+        assert!(
+            (open_file_button_rect.center().y - playback_button_rect.center().y).abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (open_file_button_rect.center().y - fullscreen_button_rect.center().y).abs()
+                < f32::EPSILON
+        );
+    }
+
+    /// Проверяет, что volume зона начинается после open-file кнопки и не лезет под play/pause.
+    #[test]
+    fn volume_controls_zone_rect_stays_between_open_file_and_playback_buttons() {
+        let controls_style = MinimalSkin.controls_style();
+        let row_rect = Rect::from_min_size(
+            pos2(24.0, 80.0),
+            vec2(640.0, controls_style.playback_button_diameter),
+        );
+        let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
+        let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
+        let zone_gap = 8.0;
+        let volume_zone_rect = volume_controls_zone_rect(
+            row_rect,
+            open_file_button_rect,
+            playback_button_rect,
+            zone_gap,
+        );
+
+        assert!(volume_zone_rect.left() >= open_file_button_rect.right() + zone_gap);
+        assert!(volume_zone_rect.right() <= playback_button_rect.left() - zone_gap);
+        assert!(volume_zone_rect.left() >= open_file_button_rect.right());
+        assert!(volume_zone_rect.right() <= playback_button_rect.left());
     }
 
     /// Проверяет, что состояние окна выбирает правильную иконку и accessible label.
