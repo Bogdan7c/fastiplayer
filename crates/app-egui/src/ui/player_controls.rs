@@ -82,12 +82,12 @@ fn render_button_row(
     let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
     let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
     let fullscreen_button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
-    let zone_gap = ui.spacing().item_spacing.x;
+    let volume_to_playback_gap = ui.spacing().item_spacing.x;
     let volume_zone = volume_controls_zone_rect(
         row_rect,
         open_file_button_rect,
         playback_button_rect,
-        zone_gap,
+        volume_to_playback_gap,
     );
 
     if render_open_file_button_at(ui, open_file_button_rect, skin).clicked() {
@@ -167,11 +167,13 @@ fn volume_controls_zone_rect(
     row_rect: Rect,
     open_file_button_rect: Rect,
     playback_button_rect: Rect,
-    zone_gap: f32,
+    volume_to_playback_gap: f32,
 ) -> Rect {
-    let zone_left =
-        (open_file_button_rect.right() + zone_gap).clamp(row_rect.left(), row_rect.right());
-    let zone_right = (playback_button_rect.left() - zone_gap).clamp(zone_left, row_rect.right());
+    let open_button_left_inset = open_file_button_rect.left() - row_rect.left();
+    let zone_left = (open_file_button_rect.right() + open_button_left_inset)
+        .clamp(row_rect.left(), row_rect.right());
+    let zone_right =
+        (playback_button_rect.left() - volume_to_playback_gap).clamp(zone_left, row_rect.right());
 
     Rect::from_min_max(
         pos2(zone_left, row_rect.top()),
@@ -749,7 +751,7 @@ mod tests {
         );
     }
 
-    /// Проверяет, что volume зона начинается после open-file кнопки и не лезет под play/pause.
+    /// Проверяет, что volume зона начинается после open-file кнопки с зеркальным отступом.
     #[test]
     fn volume_controls_zone_rect_stays_between_open_file_and_playback_buttons() {
         let controls_style = MinimalSkin.controls_style();
@@ -759,16 +761,18 @@ mod tests {
         );
         let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
         let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
-        let zone_gap = 8.0;
+        let volume_to_playback_gap = 8.0;
         let volume_zone_rect = volume_controls_zone_rect(
             row_rect,
             open_file_button_rect,
             playback_button_rect,
-            zone_gap,
+            volume_to_playback_gap,
         );
+        let open_button_left_inset = open_file_button_rect.left() - row_rect.left();
+        let open_button_to_volume_gap = volume_zone_rect.left() - open_file_button_rect.right();
 
-        assert!(volume_zone_rect.left() >= open_file_button_rect.right() + zone_gap);
-        assert!(volume_zone_rect.right() <= playback_button_rect.left() - zone_gap);
+        assert!((open_button_to_volume_gap - open_button_left_inset).abs() < f32::EPSILON);
+        assert!(volume_zone_rect.right() <= playback_button_rect.left() - volume_to_playback_gap);
         assert!(volume_zone_rect.left() >= open_file_button_rect.right());
         assert!(volume_zone_rect.right() <= playback_button_rect.left());
     }
