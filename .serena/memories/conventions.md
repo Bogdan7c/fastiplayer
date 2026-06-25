@@ -10,5 +10,8 @@
 - Ownership/lifecycle stays at the layer that owns it. Do not hide release, generation, scheduler semantics, or accounting decisions inside convenience methods that shift responsibility.
 - New direct access to foreign fields is an architecture smell; add a small owner method or document why direct access is necessary.
 - New boundary/API requires focused tests for absent resource, active fake/stub, error path, edge accounting, and ensuring it does not mutate state it does not own.
+- Do not bloat central modules/crates; for this project be especially careful with `app-egui`, `player-core`, `render-wgpu-video`, `video-frame-contract`, and `video-backend-api`. New logic should live with the module that owns the relevant state and invariants, not in the biggest or most convenient file.
+- If a file is already around 700-800 lines, new feature work should default to a new module. Only make a small local exception when a split would reduce readability or fragment one coherent invariant, and explain that explicitly.
+- New Rust boundary/internal APIs should be self-documenting at the callsite. Avoid positional `bool`, ambiguous `Option`, and unclear numeric/string literals when an `enum`, newtype, named method, or intent-method can express the meaning; when an old API forces an opaque literal, add a short parameter-name comment at the callsite.
 - Do not bundle cosmetic refactors with feature work or architecture boundary changes.
 - Refactoring must preserve behavior parity: playback/render/seek/scrub semantics, HDR/P010/NV12 output, zero-copy path, queue limits, error policy, diagnostics, and config defaults stay stable unless separately decided.
