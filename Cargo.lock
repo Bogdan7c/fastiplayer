@@ -1386,6 +1386,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "frame-server-core"
+version = "0.1.0"
+dependencies = [
+ "codec-core",
+ "media-core",
+ "video-core",
+ "video-frame-contract",
+ "video-present-core",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"

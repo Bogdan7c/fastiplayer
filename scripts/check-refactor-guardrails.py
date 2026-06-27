@@ -33,6 +33,7 @@ CONTRACT_CRATES = frozenset(
         "video-present-core",
         "render-core",
         "capability-core",
+        "frame-server-core",
     }
 )
 
@@ -45,6 +46,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "capability-core",
         "codec-core",
         "desktop-integration",
+        "frame-server-core",
         "media-prefetch",
         "media-core",
         "player-core",

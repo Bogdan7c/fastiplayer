@@ -7,6 +7,7 @@ members = [
     "crates/codec-core",
     "crates/config",
     "crates/desktop-integration",
+    "crates/frame-server-core",
     "crates/source-core",
     "crates/media-prefetch",
     "crates/service-direct-media",
@@ -125,6 +126,7 @@ render-wgpu-video = { path = "crates/render-wgpu-video" }
 render-wgpu-shell = { path = "crates/render-wgpu-shell" }
 player-core = { path = "crates/player-core" }
 desktop-integration = { path = "crates/desktop-integration" }
+frame-server-core = { path = "crates/frame-server-core" }
 media-core = { path = "crates/media-core" }
 symphonia-demux = { path = "crates/symphonia-demux" }
 service-direct-media = { path = "crates/service-direct-media" }

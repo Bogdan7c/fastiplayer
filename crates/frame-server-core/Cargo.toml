@@ -1,0 +1,18 @@
+[package]
+name = "frame-server-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "frame_server_core"
+path = "src/lib.rs"
+
+[dependencies]
+media-core.workspace = true
+video-present-core.workspace = true
+
+[dev-dependencies]
+codec-core.workspace = true
+video-core.workspace = true
+video-frame-contract.workspace = true
