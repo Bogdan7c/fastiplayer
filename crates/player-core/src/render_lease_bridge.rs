@@ -793,6 +793,37 @@ mod tests {
         fn release_frame(&self, _handle: FrameResourceHandle) {}
     }
 
+    /// Provider, который записывает fallback release-и для проверки аварийного пути bridge-а.
+    struct RecordingFallbackProvider {
+        /// Handle, который должен быть освобождён через provider fallback.
+        expected_handle: FrameResourceHandle,
+
+        /// Общий журнал release-вызовов, потому что provider хранится за Arc boundary.
+        released_handles: Arc<Mutex<Vec<FrameResourceHandle>>>,
+    }
+
+    impl PresentFrameResourceProvider for RecordingFallbackProvider {
+        /// Lookup в этих тестах не используется: проверяется только release fallback.
+        fn resource_lookup(
+            &self,
+            handle: FrameResourceHandle,
+        ) -> PresentFrameResourceProviderLookup {
+            assert_eq!(handle, self.expected_handle);
+            PresentFrameResourceProviderLookup::Missing {
+                resource_pool_lock_wait: Duration::ZERO,
+            }
+        }
+
+        /// Записывает backend release, если worker queue недоступна или переполнена.
+        fn release_frame(&self, handle: FrameResourceHandle) {
+            assert_eq!(handle, self.expected_handle);
+            self.released_handles
+                .lock()
+                .expect("fallback release log mutex should not be poisoned")
+                .push(handle);
+        }
+    }
+
     /// Создаёт decoded frame без GPU handles для проверки render lease boundary.
     fn decoded_frame_for_tests(resource_handle: FrameResourceHandle) -> video_core::DecodedFrame {
         video_core::DecodedFrame {
@@ -841,6 +872,33 @@ mod tests {
             frame,
             Arc::new(RenderLeaseReleaseSink::new(release_tx)),
         ))
+    }
+
+    /// Собирает release ack-заглушку, которая занимает bounded queue в backpressure тесте.
+    fn queued_release_for_tests(resource_handle: FrameResourceHandle) -> RenderLeaseRelease {
+        RenderLeaseRelease {
+            render_generation: 0,
+            resource_handle,
+            resource_provider: None,
+            submitted_to_renderer: false,
+            released_at: Instant::now(),
+        }
+    }
+
+    /// Собирает общий release DTO для прямой проверки bridge sink-а.
+    fn video_release_for_tests(
+        render_generation: u64,
+        resource_handle: FrameResourceHandle,
+        resource_provider: Option<PresentFrameResourceProviderHandle>,
+        renderer_submission: video_present_core::VideoFrameRendererSubmission,
+    ) -> VideoFrameRelease {
+        VideoFrameRelease::new(
+            render_generation,
+            resource_handle,
+            resource_provider,
+            renderer_submission,
+            Instant::now(),
+        )
     }
 
     #[test]
@@ -1003,8 +1061,86 @@ mod tests {
     }
 
     #[test]
+    fn full_release_queue_reports_backpressure_fallback_and_releases_provider() {
+        let queued_handle = FrameResourceHandle(82);
+        let fallback_handle = FrameResourceHandle(83);
+        let released_handles = Arc::new(Mutex::new(Vec::new()));
+        let (release_tx, release_rx) = bounded(1);
+        release_tx
+            .try_send(queued_release_for_tests(queued_handle))
+            .expect("test release queue should accept pre-filled ack");
+        let resource_provider =
+            PresentFrameResourceProviderHandle::new(RecordingFallbackProvider {
+                expected_handle: fallback_handle,
+                released_handles: Arc::clone(&released_handles),
+            });
+        let release_sink = RenderLeaseReleaseSink::new(release_tx);
+        let release = video_release_for_tests(
+            9,
+            fallback_handle,
+            Some(resource_provider),
+            video_present_core::VideoFrameRendererSubmission::Submitted,
+        );
+
+        let outcome = release_sink.release_frame(release);
+
+        assert!(matches!(
+            outcome,
+            VideoFrameReleaseOutcome::FallbackReleased {
+                reason: VideoFrameReleaseFallbackReason::Backpressure
+            }
+        ));
+        let still_queued_release = release_rx
+            .try_recv()
+            .expect("pre-filled release should stay in the full queue");
+        assert_eq!(still_queued_release.resource_handle, queued_handle);
+        assert!(release_rx.try_recv().is_err());
+        assert_eq!(
+            *released_handles
+                .lock()
+                .expect("fallback release log mutex should not be poisoned"),
+            vec![fallback_handle]
+        );
+    }
+
+    #[test]
+    fn disconnected_release_queue_reports_disconnected_fallback_and_releases_provider() {
+        let resource_handle = FrameResourceHandle(84);
+        let released_handles = Arc::new(Mutex::new(Vec::new()));
+        let (release_tx, release_rx) = bounded(1);
+        let resource_provider =
+            PresentFrameResourceProviderHandle::new(RecordingFallbackProvider {
+                expected_handle: resource_handle,
+                released_handles: Arc::clone(&released_handles),
+            });
+        let release_sink = RenderLeaseReleaseSink::new(release_tx);
+        let release = video_release_for_tests(
+            9,
+            resource_handle,
+            Some(resource_provider),
+            video_present_core::VideoFrameRendererSubmission::NotSubmitted,
+        );
+        drop(release_rx);
+
+        let outcome = release_sink.release_frame(release);
+
+        assert!(matches!(
+            outcome,
+            VideoFrameReleaseOutcome::FallbackReleased {
+                reason: VideoFrameReleaseFallbackReason::Disconnected
+            }
+        ));
+        assert_eq!(
+            *released_handles
+                .lock()
+                .expect("fallback release log mutex should not be poisoned"),
+            vec![resource_handle]
+        );
+    }
+
+    #[test]
     fn submitted_lease_drop_ack_records_renderer_usage() {
-        let resource_handle = FrameResourceHandle(83);
+        let resource_handle = FrameResourceHandle(85);
         let lock_wait = Duration::from_micros(80);
         let (release_tx, release_rx) = bounded(1);
         let (sample_tx, _sample_rx) = bounded(1);
