@@ -1360,7 +1360,7 @@ fn submit_render_frame(
     };
     let submitted_video_frame = video_frame.is_some();
 
-    match renderer.render_frame(render_wgpu_shell::RenderFrameInput {
+    let render_frame_outcome = renderer.render_frame(render_wgpu_shell::RenderFrameInput {
         window,
         video_frame: video_frame.as_ref(),
         egui_paint_jobs: prepared_ui_frame.paint_jobs,
@@ -1368,11 +1368,13 @@ fn submit_render_frame(
         screen: prepared_ui_frame.screen,
         video_viewport: prepared_ui_frame.video_viewport,
         video_exclusion_rects: prepared_ui_frame.video_exclusion_rects,
-    }) {
+    });
+    if render_outcome_marks_video_submitted(&render_frame_outcome, submitted_video_frame) {
+        prepared_video_frame.mark_submitted_to_renderer();
+    }
+
+    match render_frame_outcome {
         RenderFrameOutcome::Presented(timing) => {
-            if submitted_video_frame {
-                prepared_video_frame.mark_submitted_to_renderer();
-            }
             telemetry.record_frame_presented_to_surface();
             app_state.report_gpu_submit_present_latency(timing.submit_present_elapsed);
             Some(timing)
@@ -1394,6 +1396,14 @@ fn submit_render_frame(
             None
         }
     }
+}
+
+/// Возвращает `true`, только если renderer реально принял video input в presented frame.
+fn render_outcome_marks_video_submitted(
+    render_frame_outcome: &RenderFrameOutcome,
+    submitted_video_frame: bool,
+) -> bool {
+    submitted_video_frame && matches!(render_frame_outcome, RenderFrameOutcome::Presented(_))
 }
 
 /// Рендерит один полный кадр: видео + egui overlay.
@@ -1554,7 +1564,7 @@ mod tests {
     use std::time::Duration;
 
     use player_core::{PlayerRenderErrorKind, PlayerVideoFrameDrop};
-    use render_wgpu_shell::{RenderFrameDropReason, RenderFrameFailure};
+    use render_wgpu_shell::{RenderFrameDropReason, RenderFrameFailure, RenderFrameStageTimings};
 
     #[test]
     fn video_viewport_from_ui_rect_converts_points_to_physical_pixels() {
@@ -1633,6 +1643,27 @@ mod tests {
                 .message
                 .contains("WGPU renderable frame rejected decoded P010 frame")
         );
+    }
+
+    /// Проверяет, что submitted lease отмечается только после успешного renderer present.
+    #[test]
+    fn render_outcome_marks_video_submitted_only_after_presented_submit() {
+        let presented_frame = RenderFrameOutcome::Presented(RenderFrameTiming::new(
+            RenderFrameStageTimings::default(),
+            Duration::ZERO,
+        ));
+        let dropped_frame = RenderFrameOutcome::Dropped(RenderFrameDropReason::SurfaceTimeout);
+        let failed_frame = RenderFrameOutcome::Failed(RenderFrameFailure::new(
+            "renderer rejected frame after validation",
+        ));
+
+        assert!(render_outcome_marks_video_submitted(&presented_frame, true));
+        assert!(!render_outcome_marks_video_submitted(
+            &presented_frame,
+            false
+        ));
+        assert!(!render_outcome_marks_video_submitted(&dropped_frame, true));
+        assert!(!render_outcome_marks_video_submitted(&failed_frame, true));
     }
 
     /// Проверяет, что Busy + valid cached frame рендерит previous frame без cache clear.
