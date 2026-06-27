@@ -10,11 +10,14 @@ pub mod config;
 pub mod diagnostics;
 pub mod error;
 pub mod request;
+pub mod scheduler;
 pub mod scrub;
 
 pub use config::{
-    DEFAULT_MAX_FEED_AND_DRAIN_DRIVER_STEPS, DEFAULT_RESUME_PENDING_EVENT_INTERVAL,
-    DEFAULT_STALE_OUTCOME_CANCEL_THRESHOLD, FrameServerConfig, ValidatedFrameServerConfig,
+    DEFAULT_LIVE_SCRUB_MAX_HZ, DEFAULT_MAX_FEED_AND_DRAIN_DRIVER_STEPS,
+    DEFAULT_RESUME_PENDING_EVENT_INTERVAL, DEFAULT_STALE_OUTCOME_CANCEL_THRESHOLD,
+    DEFAULT_TIMELINE_HOVER_PREPARE_SLOTS, FrameServerConfig, LiveScrubDecodeMode,
+    MAX_LIVE_SCRUB_MAX_HZ, MAX_TIMELINE_HOVER_PREPARE_SLOTS, ValidatedFrameServerConfig,
 };
 pub use diagnostics::{
     ScrubDriverDiagnosticReason, ScrubDriverOutcomeKind, ScrubEventDiagnostics, ScrubFailureReason,
@@ -28,6 +31,9 @@ pub use request::{
     ScrubExactnessPolicy, ScrubGeneration, ScrubGenerationToken, ScrubIntent, ScrubIntentKind,
     ScrubPriority, ScrubRequestKind, ScrubStaleReason, ScrubTarget, ScrubTargetContext,
     ScrubTrackSelection, SeekDecodePointBeforeIntent, SourceRevision,
+};
+pub use scheduler::{
+    FrameScheduler, SchedulerAction, SchedulerActiveWork, SchedulerDiagnostic, SchedulerUpdate,
 };
 pub use scrub::{
     AudioResumeBudgetMetadata, AudioResumeBudgetSource, AudioResumeErrorReason,
@@ -44,5 +50,7 @@ pub use scrub::{
     ScrubTimedOutOutcome, ScrubTimeoutReason, StaleGenerationOutcome,
 };
 
+#[cfg(test)]
+mod scheduler_tests;
 #[cfg(test)]
 mod tests;

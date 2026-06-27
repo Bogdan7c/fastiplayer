@@ -475,5 +475,58 @@ fn config_validation_rejects_impossible_values() {
         .validate(),
         Err(FrameServerConfigError::ZeroResumePendingEventInterval)
     );
+    assert_eq!(
+        FrameServerConfig {
+            live_scrub_max_hz: 0,
+            ..FrameServerConfig::default()
+        }
+        .validate(),
+        Err(FrameServerConfigError::ZeroLiveScrubMaxHz)
+    );
+    assert_eq!(
+        FrameServerConfig {
+            live_scrub_max_hz: MAX_LIVE_SCRUB_MAX_HZ + 1,
+            ..FrameServerConfig::default()
+        }
+        .validate(),
+        Err(FrameServerConfigError::LiveScrubMaxHzTooHigh {
+            max_allowed: MAX_LIVE_SCRUB_MAX_HZ,
+            actual: MAX_LIVE_SCRUB_MAX_HZ + 1,
+        })
+    );
+    assert_eq!(
+        FrameServerConfig {
+            timeline_hover_prepare_slots: 0,
+            ..FrameServerConfig::default()
+        }
+        .validate(),
+        Err(FrameServerConfigError::ZeroTimelineHoverPrepareSlots)
+    );
+    assert_eq!(
+        FrameServerConfig {
+            timeline_hover_prepare_slots: MAX_TIMELINE_HOVER_PREPARE_SLOTS + 1,
+            ..FrameServerConfig::default()
+        }
+        .validate(),
+        Err(FrameServerConfigError::TimelineHoverPrepareSlotsTooHigh {
+            max_allowed: MAX_TIMELINE_HOVER_PREPARE_SLOTS,
+            actual: MAX_TIMELINE_HOVER_PREPARE_SLOTS + 1,
+        })
+    );
+    let default_config = FrameServerConfig::default()
+        .validate()
+        .expect("default frame-server config stays valid");
+    assert_eq!(
+        default_config.live_scrub_max_hz(),
+        DEFAULT_LIVE_SCRUB_MAX_HZ
+    );
+    assert_eq!(
+        default_config.live_scrub_decode_mode(),
+        LiveScrubDecodeMode::ThrottledLatest
+    );
+    assert_eq!(
+        default_config.timeline_hover_prepare_slots(),
+        DEFAULT_TIMELINE_HOVER_PREPARE_SLOTS
+    );
     assert!(FrameServerConfig::default().validate().is_ok());
 }

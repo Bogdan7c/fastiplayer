@@ -6,6 +6,10 @@ pub enum FrameServerConfigError {
     ZeroMaxFeedAndDrainDriverSteps,
     ZeroStaleOutcomeCancelThreshold,
     ZeroResumePendingEventInterval,
+    ZeroLiveScrubMaxHz,
+    LiveScrubMaxHzTooHigh { max_allowed: u16, actual: u16 },
+    ZeroTimelineHoverPrepareSlots,
+    TimelineHoverPrepareSlotsTooHigh { max_allowed: u8, actual: u8 },
 }
 
 impl fmt::Display for FrameServerConfigError {
@@ -20,6 +24,26 @@ impl fmt::Display for FrameServerConfigError {
             Self::ZeroResumePendingEventInterval => {
                 formatter.write_str("resume_pending_event_interval must be greater than zero")
             }
+            Self::ZeroLiveScrubMaxHz => {
+                formatter.write_str("live_scrub_max_hz must be greater than zero")
+            }
+            Self::LiveScrubMaxHzTooHigh {
+                max_allowed,
+                actual,
+            } => write!(
+                formatter,
+                "live_scrub_max_hz must be <= {max_allowed}, got {actual}"
+            ),
+            Self::ZeroTimelineHoverPrepareSlots => {
+                formatter.write_str("timeline_hover_prepare_slots must be greater than zero")
+            }
+            Self::TimelineHoverPrepareSlotsTooHigh {
+                max_allowed,
+                actual,
+            } => write!(
+                formatter,
+                "timeline_hover_prepare_slots must be <= {max_allowed}, got {actual}"
+            ),
         }
     }
 }

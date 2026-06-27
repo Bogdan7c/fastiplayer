@@ -5,6 +5,19 @@ use crate::error::FrameServerConfigError;
 pub const DEFAULT_MAX_FEED_AND_DRAIN_DRIVER_STEPS: u32 = 256;
 pub const DEFAULT_STALE_OUTCOME_CANCEL_THRESHOLD: u32 = 3;
 pub const DEFAULT_RESUME_PENDING_EVENT_INTERVAL: Duration = Duration::from_millis(16);
+pub const DEFAULT_LIVE_SCRUB_MAX_HZ: u16 = 60;
+pub const MAX_LIVE_SCRUB_MAX_HZ: u16 = 240;
+pub const DEFAULT_TIMELINE_HOVER_PREPARE_SLOTS: u8 = 1;
+pub const MAX_TIMELINE_HOVER_PREPARE_SLOTS: u8 = 3;
+
+/// Policy запуска decode-work для live scrub. Оба режима остаются latest-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LiveScrubDecodeMode {
+    /// UI target обновляется на каждый drag, а decode-work стартует не чаще лимита.
+    ThrottledLatest,
+    /// Каждый drag target допускается к запуску без hz throttle, но старый target отменяется.
+    EveryDragEvent,
+}
 
 /// Нейтральный config protocol-а. Он не хранит backend/audio timing policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -12,6 +25,9 @@ pub struct FrameServerConfig {
     pub max_feed_and_drain_driver_steps: u32,
     pub stale_outcome_cancel_threshold: u32,
     pub resume_pending_event_interval: Duration,
+    pub live_scrub_max_hz: u16,
+    pub live_scrub_decode_mode: LiveScrubDecodeMode,
+    pub timeline_hover_prepare_slots: u8,
 }
 
 impl Default for FrameServerConfig {
@@ -20,6 +36,9 @@ impl Default for FrameServerConfig {
             max_feed_and_drain_driver_steps: DEFAULT_MAX_FEED_AND_DRAIN_DRIVER_STEPS,
             stale_outcome_cancel_threshold: DEFAULT_STALE_OUTCOME_CANCEL_THRESHOLD,
             resume_pending_event_interval: DEFAULT_RESUME_PENDING_EVENT_INTERVAL,
+            live_scrub_max_hz: DEFAULT_LIVE_SCRUB_MAX_HZ,
+            live_scrub_decode_mode: LiveScrubDecodeMode::ThrottledLatest,
+            timeline_hover_prepare_slots: DEFAULT_TIMELINE_HOVER_PREPARE_SLOTS,
         }
     }
 }
@@ -36,6 +55,28 @@ impl FrameServerConfig {
 
         if self.resume_pending_event_interval.is_zero() {
             return Err(FrameServerConfigError::ZeroResumePendingEventInterval);
+        }
+
+        if self.live_scrub_max_hz == 0 {
+            return Err(FrameServerConfigError::ZeroLiveScrubMaxHz);
+        }
+
+        if self.live_scrub_max_hz > MAX_LIVE_SCRUB_MAX_HZ {
+            return Err(FrameServerConfigError::LiveScrubMaxHzTooHigh {
+                max_allowed: MAX_LIVE_SCRUB_MAX_HZ,
+                actual: self.live_scrub_max_hz,
+            });
+        }
+
+        if self.timeline_hover_prepare_slots == 0 {
+            return Err(FrameServerConfigError::ZeroTimelineHoverPrepareSlots);
+        }
+
+        if self.timeline_hover_prepare_slots > MAX_TIMELINE_HOVER_PREPARE_SLOTS {
+            return Err(FrameServerConfigError::TimelineHoverPrepareSlotsTooHigh {
+                max_allowed: MAX_TIMELINE_HOVER_PREPARE_SLOTS,
+                actual: self.timeline_hover_prepare_slots,
+            });
         }
 
         Ok(ValidatedFrameServerConfig { raw: self })
@@ -67,5 +108,20 @@ impl ValidatedFrameServerConfig {
     #[must_use]
     pub const fn resume_pending_event_interval(self) -> Duration {
         self.raw.resume_pending_event_interval
+    }
+
+    #[must_use]
+    pub const fn live_scrub_max_hz(self) -> u16 {
+        self.raw.live_scrub_max_hz
+    }
+
+    #[must_use]
+    pub const fn live_scrub_decode_mode(self) -> LiveScrubDecodeMode {
+        self.raw.live_scrub_decode_mode
+    }
+
+    #[must_use]
+    pub const fn timeline_hover_prepare_slots(self) -> u8 {
+        self.raw.timeline_hover_prepare_slots
     }
 }
