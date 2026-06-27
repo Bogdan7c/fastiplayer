@@ -48,6 +48,7 @@ audio.workspace = true
 # Композиция video decode/render.
 video-core.workspace = true
 video-frame-contract.workspace = true
+video-present-core.workspace = true
 video-ffmpeg.workspace = true
 video-vaapi.workspace = true
 render-core.workspace = true

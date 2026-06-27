@@ -21,6 +21,7 @@ members = [
     "crates/video-frame-contract",
     "crates/video-core",
     "crates/video-backend-api",
+    "crates/video-present-core",
     "crates/video-ffmpeg",
     "crates/render-core",
     "crates/render-wgpu-video",
@@ -116,6 +117,7 @@ vp9-parser = { path = "crates/vp9-parser" }
 video-frame-contract = { path = "crates/video-frame-contract" }
 video-core = { path = "crates/video-core" }
 video-backend-api = { path = "crates/video-backend-api" }
+video-present-core = { path = "crates/video-present-core" }
 video-ffmpeg = { path = "crates/video-ffmpeg" }
 video-vaapi = { path = "crates/video-vaapi" }
 render-core = { path = "crates/render-core" }

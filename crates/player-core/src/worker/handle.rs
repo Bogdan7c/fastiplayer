@@ -211,7 +211,7 @@ impl PlayerWorker {
 
     /// Пытается получить текущий кадр для renderer-а без раскрытия `PlayerSession`.
     #[must_use]
-    pub fn try_acquire_present_frame(&self) -> Option<PlayerPresentFrame> {
+    pub fn try_acquire_present_frame(&self) -> Option<VideoFrameLease> {
         self.render_bridge_client.try_acquire_present_frame()
     }
 

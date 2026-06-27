@@ -1,0 +1,17 @@
+[package]
+name = "video-present-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "video_present_core"
+path = "src/lib.rs"
+
+[dependencies]
+video-backend-api.workspace = true
+video-core.workspace = true
+
+[dev-dependencies]
+codec-core.workspace = true
+video-frame-contract.workspace = true

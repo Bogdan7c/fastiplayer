@@ -13,7 +13,7 @@ use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
 use media_core::TrackKind;
 use player_core::{
     FrameCounters, MediaOpenRequest, MediaSource, PlaybackState, PlayerCommand, PlayerError,
-    PlayerErrorKind, PlayerEvent, PlayerPresentFrame, PlayerRenderError, PlayerRuntimeApplyResult,
+    PlayerErrorKind, PlayerEvent, PlayerRenderError, PlayerRuntimeApplyResult,
     PlayerRuntimeSettingsUpdate, PlayerSnapshot, PlayerVideoDecoderThreadConfig, PlayerWorker,
     PlayerWorkerConfig, PlayerWorkerEvent, PreparedMedia, QualitySelection, SeekRequest,
     VideoBackendSelectionRequest, VideoDecodeRequirement,
@@ -27,6 +27,7 @@ use rustiplayer_config::PlayerDemuxConfig;
 use rustiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
 use tracing::{debug, info, instrument, warn};
 use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;
+use video_present_core::VideoFrameLease;
 use video_vaapi::VaapiVideoBackendFactory;
 use winit::window::Window;
 

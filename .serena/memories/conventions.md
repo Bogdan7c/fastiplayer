@@ -1,6 +1,6 @@
 # Conventions
 
-- Mandatory local workflow from AGENTS.md: before code edits or writing code, check Context7; before project work, set `code_index` project path to repo root and build deep index; solve root causes, not symptoms.
+- Mandatory local workflow from AGENTS.md: before code edits or writing code, make a Context7 checkpoint for any touched external libraries/API/CLI; before code tasks, run Serena `initial_instructions` if not yet read, activate the project, read `mem:core` plus relevant memories, and use Serena symbols/references for codebase questions; solve root causes, not symptoms.
 - Stop and ask before important architecture/API/behavior decisions, especially if Sonar or a refactor suggests changing public API, module ownership, or playback semantics.
 - Before implementing a feature, briefly state architecture: owner modules/state, boundary methods, invariants that must not change, and focused tests.
 - Keep code production-ready and readable; avoid one giant function, vague names (`data`, `temp`, `obj`, `arr` without context), silent error swallowing, hardcoded config, IO/business/formatting mixing, and unexplained magic.

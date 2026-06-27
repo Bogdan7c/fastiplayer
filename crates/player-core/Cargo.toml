@@ -21,6 +21,7 @@ tracing = { workspace = true }
 video-backend-api = { workspace = true }
 video-core = { workspace = true }
 video-frame-contract = { workspace = true }
+video-present-core = { workspace = true }
 
 [dev-dependencies]
 render-core = { workspace = true }

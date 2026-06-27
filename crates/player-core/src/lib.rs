@@ -64,10 +64,6 @@ pub use event::{
 pub use media_core::TrackId;
 pub use media_opening::{PreparedMedia, PreparedMediaSource};
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
-pub use render_lease_bridge::{
-    PlayerPresentFrame, PresentFrameLease, PresentFrameResourceDescriptor,
-    PresentFrameResourceKind, PresentFrameResourceLookup,
-};
 pub use runtime_settings::{
     PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyOutcome, PlayerRuntimeApplyReport,

@@ -1,15 +1,19 @@
-use std::sync::{
-    Arc, Mutex, MutexGuard, TryLockError,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvError, SendTimeoutError, Sender, TrySendError, bounded};
 use tracing::warn;
+use video_present_core::{
+    SharedVideoFrameLeaseDiagnosticsSink, SharedVideoFrameReleaseSink, VideoFrameLease,
+    VideoFrameLeaseConfig, VideoFrameLeaseDiagnosticsSink, VideoFrameRelease,
+    VideoFrameReleaseFallbackReason, VideoFrameReleaseOutcome, VideoFrameReleaseSink,
+    VideoFrameResourceLookupSample,
+};
 
 use crate::PresentFrameResourceProviderHandle;
 #[cfg(test)]
 use crate::decoder_boundary::PresentFrameResourceProvider;
+#[cfg(test)]
 use crate::decoder_boundary::PresentFrameResourceProviderLookup;
 use crate::session::{LeasedPresentFrame, PlayerSession, PresentFrameIdentity};
 
@@ -31,262 +35,9 @@ const RENDER_RESOURCE_REUSE_DIAGNOSTIC_CHANNEL_CAPACITY: usize = 256;
 /// Короткий backpressure budget для Drop path render lease-а.
 const RENDER_RELEASE_SEND_TIMEOUT: Duration = Duration::from_millis(2);
 
-/// Renderer-neutral тип ресурса, который стоит за present frame lease-ом.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PresentFrameResourceKind {
-    /// Decoder-owned DMA-BUF доступен renderer-у как zero-copy GPU resource.
-    DmaBufZeroCopy,
-
-    /// Opaque backend texture скрыта за `FrameResourceHandle` без public GPU handles.
-    OpaqueBackendTexture,
-
-    /// Future external GPU handle, который backend материализует самостоятельно.
-    ExternalGpuHandle,
-}
-
-impl PresentFrameResourceKind {
-    /// Мапит decoded memory path в neutral render resource kind без знания renderer-а.
-    const fn from_memory_path(memory_path: video_core::FrameMemoryPath) -> Self {
-        match memory_path {
-            video_core::FrameMemoryPath::DmaBufZeroCopy => Self::DmaBufZeroCopy,
-            video_core::FrameMemoryPath::CpuUpload => Self::OpaqueBackendTexture,
-        }
-    }
-}
-
-/// Renderer-neutral descriptor present frame resource-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PresentFrameResourceDescriptor {
-    /// Тип backend resource-а без привязки к API конкретного renderer-а.
-    kind: PresentFrameResourceKind,
-
-    /// Поколение render resources, где был выдан opaque handle.
-    render_generation: u64,
-
-    /// Opaque handle decoded frame-а внутри backend-owned resource table.
-    resource_handle: video_core::FrameResourceHandle,
-
-    /// Memory path сохраняет distinction zero-copy/upload для diagnostics и backend policy.
-    memory_path: video_core::FrameMemoryPath,
-}
-
-impl PresentFrameResourceDescriptor {
-    /// Собирает neutral descriptor из decoded frame metadata без materialization в renderer-е.
-    const fn from_decoded_frame(render_generation: u64, frame: &video_core::DecodedFrame) -> Self {
-        Self {
-            kind: PresentFrameResourceKind::from_memory_path(frame.memory_path()),
-            render_generation,
-            resource_handle: frame.resource_handle,
-            memory_path: frame.memory_path(),
-        }
-    }
-
-    /// Возвращает renderer-neutral kind ресурса для выбора backend materialization path-а.
-    #[must_use]
-    pub const fn kind(&self) -> PresentFrameResourceKind {
-        self.kind
-    }
-
-    /// Возвращает render generation, которому принадлежит opaque resource handle.
-    #[must_use]
-    pub const fn render_generation(&self) -> u64 {
-        self.render_generation
-    }
-
-    /// Возвращает opaque frame texture handle без раскрытия backend storage-а.
-    #[must_use]
-    pub const fn resource_handle(&self) -> video_core::FrameResourceHandle {
-        self.resource_handle
-    }
-
-    /// Возвращает decoded memory path для diagnostics и backend policy decisions.
-    #[must_use]
-    pub const fn memory_path(&self) -> video_core::FrameMemoryPath {
-        self.memory_path
-    }
-}
-
-/// Renderer-neutral результат lookup-а present frame resource-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PresentFrameResourceLookup {
-    /// Resource доступен, backend может материализовать его через свой renderer-specific путь.
-    Ready(PresentFrameResourceDescriptor),
-
-    /// Backend resource table занят, caller должен использовать safe fallback без stall-а.
-    Busy,
-
-    /// Resource отсутствует при доступном backend table-е.
-    Missing,
-
-    /// Backend сообщил poisoned/fatal lookup state.
-    Fatal,
-}
-
-/// Lease текущего кадра, который render thread может отдать renderer backend-у.
-#[derive(Clone)]
-pub struct PresentFrameLease {
-    /// Поколение render resources, которому принадлежит texture handle.
-    pub render_generation: u64,
-
-    /// Metadata decoded frame без прямого доступа к `PlayerSession`.
-    pub frame: video_core::DecodedFrame,
-
-    /// Признак, что кадр является stale fallback для текущего timeline состояния.
-    pub stale: bool,
-
-    /// Renderer-neutral provider для status lookup-а и release по frame handle.
-    resource_provider: Option<PresentFrameResourceProviderHandle>,
-
-    /// Неблокирующий канал sample-ов ожидания backend resource pool lock-а.
-    resource_lock_sample_tx: Option<Sender<RenderResourceLockSample>>,
-
-    /// Shared lease отправляет drop-ack, когда последний clone кадра освобождён.
-    _drop_ack: Arc<PresentFrameDropAck>,
-}
-
-/// Backward-compatible имя public frame lease для текущего app shell.
-pub type PlayerPresentFrame = PresentFrameLease;
-
-impl PresentFrameLease {
-    /// Собирает render lease из worker-owned session lease без раскрытия pipeline наружу.
-    #[must_use]
-    fn from_leased_frame(
-        leased_frame: LeasedPresentFrame,
-        release_tx: Sender<RenderLeaseRelease>,
-        resource_lock_sample_tx: Sender<RenderResourceLockSample>,
-    ) -> Self {
-        Self {
-            render_generation: leased_frame.render_generation,
-            frame: leased_frame.frame.clone(),
-            stale: leased_frame.stale,
-            resource_provider: Some(leased_frame.resource_provider.clone()),
-            resource_lock_sample_tx: Some(resource_lock_sample_tx),
-            _drop_ack: Arc::new(PresentFrameDropAck {
-                render_generation: leased_frame.render_generation,
-                resource_handle: leased_frame.frame.resource_handle,
-                resource_provider: Some(leased_frame.resource_provider),
-                submitted_to_renderer: AtomicBool::new(false),
-                release_tx,
-            }),
-        }
-    }
-
-    /// Создаёт тестовый lease с тем же RAII drop-ack контрактом, что production path.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn new_for_tests(
-        render_generation: u64,
-        frame: video_core::DecodedFrame,
-        stale: bool,
-        release_tx: Sender<RenderLeaseRelease>,
-    ) -> Self {
-        let resource_handle = frame.resource_handle;
-
-        Self {
-            render_generation,
-            frame,
-            stale,
-            resource_provider: None,
-            resource_lock_sample_tx: None,
-            _drop_ack: Arc::new(PresentFrameDropAck {
-                render_generation,
-                resource_handle,
-                resource_provider: None,
-                submitted_to_renderer: AtomicBool::new(false),
-                release_tx,
-            }),
-        }
-    }
-
-    /// Возвращает opaque texture handle кадра без доступа к player pipeline.
-    #[must_use]
-    pub const fn resource_handle(&self) -> video_core::FrameResourceHandle {
-        self.frame.resource_handle
-    }
-
-    /// Отмечает, что renderer действительно включил этот lease в GPU submit.
-    ///
-    /// Lookup или clone lease-а сами по себе не означают, что frame был использован
-    /// GPU. Этот флаг нужен release accounting-у, чтобы не отправлять
-    /// неиспользованные frames в GPU-completion path.
-    pub fn mark_submitted_to_renderer(&self) {
-        self._drop_ack
-            .submitted_to_renderer
-            .store(true, Ordering::Release);
-    }
-
-    /// Возвращает `true`, если lease устарел относительно актуального render generation.
-    #[must_use]
-    pub const fn stale_for_generation(&self, current_render_generation: u64) -> bool {
-        self.stale || self.render_generation != current_render_generation
-    }
-
-    /// Возвращает neutral descriptor без попытки материализовать backend resource.
-    #[must_use]
-    pub const fn resource_descriptor(&self) -> PresentFrameResourceDescriptor {
-        PresentFrameResourceDescriptor::from_decoded_frame(self.render_generation, &self.frame)
-    }
-
-    /// Пытается проверить доступность present resource-а без GPU handles.
-    #[must_use]
-    pub fn try_resource_lookup(&self) -> PresentFrameResourceLookup {
-        let Some(provider) = self.resource_provider.as_ref() else {
-            return PresentFrameResourceLookup::Missing;
-        };
-        let lookup = provider.try_resource_lookup(self.resource_handle());
-
-        self.present_resource_lookup_from_boundary(lookup)
-    }
-
-    /// Записывает diagnostics lookup-а, выполненного renderer-specific materializer-ом.
-    pub fn report_resource_lookup_sample(&self, wait: Duration, lookup_was_busy: bool) {
-        self.report_resource_lock_sample(wait, lookup_was_busy);
-    }
-
-    /// Конвертирует backend lookup в neutral public outcome и сохраняет diagnostics.
-    fn present_resource_lookup_from_boundary(
-        &self,
-        lookup: PresentFrameResourceProviderLookup,
-    ) -> PresentFrameResourceLookup {
-        self.report_resource_provider_lookup_sample(&lookup);
-
-        match lookup {
-            PresentFrameResourceProviderLookup::Ready { .. } => {
-                PresentFrameResourceLookup::Ready(self.resource_descriptor())
-            }
-            PresentFrameResourceProviderLookup::Busy { .. } => PresentFrameResourceLookup::Busy,
-            PresentFrameResourceProviderLookup::Missing { .. } => {
-                PresentFrameResourceLookup::Missing
-            }
-            PresentFrameResourceProviderLookup::Fatal { .. } => PresentFrameResourceLookup::Fatal,
-        }
-    }
-
-    /// Записывает diagnostics sample для renderer-neutral provider lookup-а.
-    fn report_resource_provider_lookup_sample(&self, lookup: &PresentFrameResourceProviderLookup) {
-        let resource_pool_lock_wait = lookup.resource_pool_lock_wait();
-        let lookup_was_busy = matches!(lookup, PresentFrameResourceProviderLookup::Busy { .. });
-        self.report_resource_lock_sample(resource_pool_lock_wait, lookup_was_busy);
-    }
-
-    /// Отправляет lock-wait sample в worker diagnostics без ожидания worker thread-а.
-    fn report_resource_lock_sample(&self, wait: Duration, lookup_was_busy: bool) {
-        let Some(sample_tx) = &self.resource_lock_sample_tx else {
-            return;
-        };
-
-        let _ = sample_tx.try_send(RenderResourceLockSample {
-            wait,
-            pts: Some(self.frame.pts),
-            memory_path: Some(self.frame.memory_path()),
-            lookup_was_busy,
-        });
-    }
-}
-
 /// Собирает stable identity из lease-а, который уже безопасно опубликован render-side.
-fn present_frame_identity_from_lease(lease: &PresentFrameLease) -> PresentFrameIdentity {
-    PresentFrameIdentity::new(lease.render_generation, lease.frame.resource_handle)
+fn present_frame_identity_from_lease(lease: &VideoFrameLease) -> PresentFrameIdentity {
+    PresentFrameIdentity::new(lease.render_generation(), lease.resource_handle())
 }
 
 /// Результат неблокирующего чтения latest present frame.
@@ -296,7 +47,7 @@ fn present_frame_identity_from_lease(lease: &PresentFrameLease) -> PresentFrameI
 )]
 pub(crate) enum LatestPresentFrameAcquire {
     /// Latest-slot содержит lease, clone которого можно отдать renderer-у.
-    Acquired(PlayerPresentFrame),
+    Acquired(VideoFrameLease),
 
     /// Worker ещё не публиковал frame или уже очистил stale frame.
     Empty,
@@ -308,7 +59,7 @@ pub(crate) enum LatestPresentFrameAcquire {
 /// Latest-slot для передачи frame lease-а из worker thread в render thread без request/reply.
 pub(crate) struct LatestPresentFrameHandoff {
     /// Единственный опубликованный lease; его clone-ы разделяют один RAII drop-ack.
-    latest_frame: Mutex<Option<PlayerPresentFrame>>,
+    latest_frame: Mutex<Option<VideoFrameLease>>,
 }
 
 impl LatestPresentFrameHandoff {
@@ -334,7 +85,7 @@ impl LatestPresentFrameHandoff {
     }
 
     /// Публикует новый latest frame и dropping старого lease-а выполняет вне mutex guard-а.
-    pub(crate) fn publish(&self, frame: Option<PlayerPresentFrame>) {
+    pub(crate) fn publish(&self, frame: Option<VideoFrameLease>) {
         let previous_frame = {
             let mut guard = self.latest_frame_guard();
             std::mem::replace(&mut *guard, frame)
@@ -355,7 +106,7 @@ impl LatestPresentFrameHandoff {
     }
 
     /// Clone-ит frame из уже полученного guard-а.
-    fn clone_from_guard(guard: &Option<PlayerPresentFrame>) -> LatestPresentFrameAcquire {
+    fn clone_from_guard(guard: &Option<VideoFrameLease>) -> LatestPresentFrameAcquire {
         guard
             .as_ref()
             .cloned()
@@ -364,7 +115,7 @@ impl LatestPresentFrameHandoff {
     }
 
     /// Берёт mutex для worker-side обновлений и восстанавливается после poison.
-    fn latest_frame_guard(&self) -> MutexGuard<'_, Option<PlayerPresentFrame>> {
+    fn latest_frame_guard(&self) -> MutexGuard<'_, Option<VideoFrameLease>> {
         match self.latest_frame.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -430,87 +181,140 @@ pub(crate) struct RenderLeaseRelease {
     pub(crate) released_at: Instant,
 }
 
-/// Shared guard, который отправляет release ack ровно один раз на группу clone-ов.
-struct PresentFrameDropAck {
-    /// Поколение render resources, где lease был создан.
-    render_generation: u64,
+impl RenderLeaseRelease {
+    /// Переводит общий lease release в player-owned queue DTO.
+    fn from_video_release(release: VideoFrameRelease) -> Self {
+        Self {
+            render_generation: release.render_generation(),
+            resource_handle: release.resource_handle(),
+            resource_provider: release.resource_provider().cloned(),
+            submitted_to_renderer: release.submitted_to_renderer(),
+            released_at: release.released_at(),
+        }
+    }
+}
 
-    /// Texture handle, защищённый от premature release.
-    resource_handle: video_core::FrameResourceHandle,
-
-    /// Provider исходного frame-а; нужен, если ack пришёл после смены поколения.
-    resource_provider: Option<PresentFrameResourceProviderHandle>,
-
-    /// Shared флаг: хотя бы один clone lease-а был отправлен в renderer submit.
-    submitted_to_renderer: AtomicBool,
-
+/// Player-owned release sink: сохраняет accounting path и fallback release policy.
+pub(crate) struct RenderLeaseReleaseSink {
     /// Канал drop-ack обратно в playback worker.
     release_tx: Sender<RenderLeaseRelease>,
 }
 
-impl Drop for PresentFrameDropAck {
-    /// Освобождает render lease без участия UI-кода.
-    fn drop(&mut self) {
-        let release = RenderLeaseRelease {
-            render_generation: self.render_generation,
-            resource_handle: self.resource_handle,
-            resource_provider: self.resource_provider.clone(),
-            submitted_to_renderer: self.submitted_to_renderer.load(Ordering::Acquire),
-            released_at: Instant::now(),
-        };
-
-        self.send_release_ack(release);
+impl RenderLeaseReleaseSink {
+    /// Создаёт sink для конкретной bounded release queue.
+    pub(crate) fn new(release_tx: Sender<RenderLeaseRelease>) -> Self {
+        Self { release_tx }
     }
-}
 
-impl PresentFrameDropAck {
     /// Отправляет release ack через bounded queue с коротким backpressure budget.
-    fn send_release_ack(&self, release: RenderLeaseRelease) {
+    fn send_release_ack(&self, release: RenderLeaseRelease) -> VideoFrameReleaseOutcome {
         match self.release_tx.try_send(release) {
-            Ok(()) => {}
-            Err(TrySendError::Full(release)) => {
-                self.send_release_ack_with_timeout(release);
-            }
+            Ok(()) => VideoFrameReleaseOutcome::Accepted,
+            Err(TrySendError::Full(release)) => self.send_release_ack_with_timeout(release),
             Err(TrySendError::Disconnected(release)) => {
-                Self::release_without_worker(release);
+                Self::release_without_worker(release, VideoFrameReleaseFallbackReason::Disconnected)
             }
         }
     }
 
     /// Даёт worker-у короткое окно на drain, но не блокирует render/UI thread навсегда.
-    fn send_release_ack_with_timeout(&self, release: RenderLeaseRelease) {
+    fn send_release_ack_with_timeout(
+        &self,
+        release: RenderLeaseRelease,
+    ) -> VideoFrameReleaseOutcome {
         match self
             .release_tx
             .send_timeout(release, RENDER_RELEASE_SEND_TIMEOUT)
         {
-            Ok(()) => {}
+            Ok(()) => VideoFrameReleaseOutcome::Accepted,
             Err(SendTimeoutError::Timeout(release)) => {
                 warn!(
                     generation = release.render_generation,
                     resource_handle = release.resource_handle.0,
                     "Render release queue is full; releasing texture outside worker bookkeeping"
                 );
-                Self::release_without_worker(release);
+                Self::release_without_worker(release, VideoFrameReleaseFallbackReason::Backpressure)
             }
             Err(SendTimeoutError::Disconnected(release)) => {
-                Self::release_without_worker(release);
+                Self::release_without_worker(release, VideoFrameReleaseFallbackReason::Disconnected)
             }
         }
     }
 
     /// Последний шанс освободить backend resource, когда worker уже недоступен или перегружен.
-    fn release_without_worker(release: RenderLeaseRelease) {
+    fn release_without_worker(
+        release: RenderLeaseRelease,
+        reason: VideoFrameReleaseFallbackReason,
+    ) -> VideoFrameReleaseOutcome {
         let Some(resource_provider) = release.resource_provider else {
             warn!(
                 generation = release.render_generation,
                 resource_handle = release.resource_handle.0,
                 "Render release ack could not reach worker and has no resource provider fallback"
             );
-            return;
+            return VideoFrameReleaseOutcome::FallbackUnavailable { reason };
         };
 
         resource_provider.release_frame(release.resource_handle);
+        VideoFrameReleaseOutcome::FallbackReleased { reason }
     }
+}
+
+impl VideoFrameReleaseSink for RenderLeaseReleaseSink {
+    /// Сохраняет current playback accounting: сначала worker queue, затем typed fallback.
+    fn release_frame(&self, release: VideoFrameRelease) -> VideoFrameReleaseOutcome {
+        self.send_release_ack(RenderLeaseRelease::from_video_release(release))
+    }
+}
+
+/// Player-owned diagnostics sink для samples, которые производит общий lease API.
+struct RenderLeaseDiagnosticsSink {
+    /// Неблокирующий канал sample-ов ожидания backend resource pool lock-а.
+    resource_lock_sample_tx: Sender<RenderResourceLockSample>,
+}
+
+impl RenderLeaseDiagnosticsSink {
+    /// Создаёт sink для worker-owned diagnostics queue.
+    fn new(resource_lock_sample_tx: Sender<RenderResourceLockSample>) -> Self {
+        Self {
+            resource_lock_sample_tx,
+        }
+    }
+}
+
+impl VideoFrameLeaseDiagnosticsSink for RenderLeaseDiagnosticsSink {
+    /// Переводит общий diagnostics sample в player diagnostics queue.
+    fn report_resource_lookup_sample(&self, sample: VideoFrameResourceLookupSample) {
+        let _ = self
+            .resource_lock_sample_tx
+            .try_send(RenderResourceLockSample {
+                wait: sample.wait(),
+                pts: sample.pts(),
+                memory_path: sample.memory_path(),
+                lookup_was_busy: sample.lookup_was_busy(),
+            });
+    }
+}
+
+/// Собирает общий lease config из player-owned leased frame и local sinks.
+fn build_video_frame_lease(
+    leased_frame: LeasedPresentFrame,
+    release_sink: SharedVideoFrameReleaseSink,
+    diagnostics_sink: SharedVideoFrameLeaseDiagnosticsSink,
+) -> VideoFrameLease {
+    let mut config = VideoFrameLeaseConfig::new(
+        leased_frame.render_generation,
+        leased_frame.frame.clone(),
+        release_sink,
+    )
+    .with_resource_provider(leased_frame.resource_provider)
+    .with_diagnostics_sink(diagnostics_sink);
+
+    if leased_frame.stale {
+        config = config.with_timeline_stale();
+    }
+
+    VideoFrameLease::new(config)
 }
 
 /// Shell/render-side handle, через который public `PlayerWorker` API остаётся прежним.
@@ -546,7 +350,7 @@ impl RenderLeaseBridgeClient {
 
     /// Пытается получить текущий кадр для renderer-а без раскрытия `PlayerSession`.
     #[must_use]
-    pub(crate) fn try_acquire_present_frame(&self) -> Option<PlayerPresentFrame> {
+    pub(crate) fn try_acquire_present_frame(&self) -> Option<VideoFrameLease> {
         let acquire_started_at = Instant::now();
         let acquire_result = self.latest_present_frame_handoff.try_clone_latest();
         self.report_render_acquire_sample(acquire_started_at.elapsed());
@@ -799,12 +603,14 @@ impl RenderLeaseBridge {
     }
 
     /// Собирает renderable frame без передачи `PlayerSession` наружу.
-    fn build_present_frame(&mut self, session: &mut PlayerSession) -> Option<PlayerPresentFrame> {
+    fn build_present_frame(&mut self, session: &mut PlayerSession) -> Option<VideoFrameLease> {
         let leased_frame = session.lease_present_video_frame()?;
-        Some(PlayerPresentFrame::from_leased_frame(
+        Some(build_video_frame_lease(
             leased_frame,
-            self.render_release_tx.clone(),
-            self.resource_lock_sample_tx.clone(),
+            Arc::new(RenderLeaseReleaseSink::new(self.render_release_tx.clone())),
+            Arc::new(RenderLeaseDiagnosticsSink::new(
+                self.resource_lock_sample_tx.clone(),
+            )),
         ))
     }
 
@@ -894,6 +700,7 @@ mod tests {
     use codec_core::VideoColorMetadata;
     use video_core::{FrameMemoryPath, FrameResourceHandle};
     use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
+    use video_present_core::{VideoPresentFrameResourceKind, VideoPresentFrameResourceLookup};
 
     /// Provider, который не создаёт GPU handles, но возвращает измеренный lock wait.
     struct MissingResourceProvider {
@@ -1010,22 +817,30 @@ mod tests {
         release_tx: Sender<RenderLeaseRelease>,
         sample_tx: Sender<RenderResourceLockSample>,
         resource_provider: impl PresentFrameResourceProvider + 'static,
-    ) -> PresentFrameLease {
+    ) -> VideoFrameLease {
         let resource_provider = PresentFrameResourceProviderHandle::new(resource_provider);
-        PresentFrameLease {
-            render_generation,
-            frame: decoded_frame_for_tests(resource_handle),
-            stale: false,
-            resource_provider: Some(resource_provider.clone()),
-            resource_lock_sample_tx: Some(sample_tx),
-            _drop_ack: Arc::new(PresentFrameDropAck {
+        VideoFrameLease::new(
+            VideoFrameLeaseConfig::new(
                 render_generation,
-                resource_handle,
-                resource_provider: Some(resource_provider),
-                submitted_to_renderer: AtomicBool::new(false),
-                release_tx,
-            }),
-        }
+                decoded_frame_for_tests(resource_handle),
+                Arc::new(RenderLeaseReleaseSink::new(release_tx)),
+            )
+            .with_resource_provider(resource_provider)
+            .with_diagnostics_sink(Arc::new(RenderLeaseDiagnosticsSink::new(sample_tx))),
+        )
+    }
+
+    /// Собирает lease без provider-а для тестов absent-resource path-а.
+    fn lease_without_resource_provider_for_tests(
+        render_generation: u64,
+        frame: video_core::DecodedFrame,
+        release_tx: Sender<RenderLeaseRelease>,
+    ) -> VideoFrameLease {
+        VideoFrameLease::new(VideoFrameLeaseConfig::new(
+            render_generation,
+            frame,
+            Arc::new(RenderLeaseReleaseSink::new(release_tx)),
+        ))
     }
 
     #[test]
@@ -1033,11 +848,14 @@ mod tests {
         let resource_handle = FrameResourceHandle(76);
         let (release_tx, _release_rx) = bounded(1);
         let frame = decoded_frame_for_tests(resource_handle);
-        let lease = PresentFrameLease::new_for_tests(8, frame, false, release_tx);
+        let lease = lease_without_resource_provider_for_tests(8, frame, release_tx);
 
         let descriptor = lease.resource_descriptor();
 
-        assert_eq!(descriptor.kind(), PresentFrameResourceKind::DmaBufZeroCopy);
+        assert_eq!(
+            descriptor.kind(),
+            VideoPresentFrameResourceKind::DmaBufZeroCopy
+        );
         assert_eq!(descriptor.render_generation(), 8);
         assert_eq!(descriptor.resource_handle(), resource_handle);
         assert_eq!(descriptor.memory_path(), FrameMemoryPath::DmaBufZeroCopy);
@@ -1048,11 +866,11 @@ mod tests {
         let resource_handle = FrameResourceHandle(77);
         let (release_tx, _release_rx) = bounded(1);
         let frame = decoded_frame_for_tests(resource_handle);
-        let lease = PresentFrameLease::new_for_tests(9, frame, false, release_tx);
+        let lease = lease_without_resource_provider_for_tests(9, frame, release_tx);
 
         assert!(matches!(
             lease.try_resource_lookup(),
-            PresentFrameResourceLookup::Missing
+            VideoPresentFrameResourceLookup::Missing
         ));
     }
 
@@ -1075,7 +893,7 @@ mod tests {
 
         assert!(matches!(
             lease.try_resource_lookup(),
-            PresentFrameResourceLookup::Busy
+            VideoPresentFrameResourceLookup::Busy
         ));
 
         let sample = sample_rx
@@ -1104,7 +922,7 @@ mod tests {
 
         assert!(matches!(
             lease.try_resource_lookup(),
-            PresentFrameResourceLookup::Fatal
+            VideoPresentFrameResourceLookup::Fatal
         ));
 
         let sample = sample_rx
@@ -1133,7 +951,7 @@ mod tests {
 
         assert!(matches!(
             lease.try_resource_lookup(),
-            PresentFrameResourceLookup::Missing
+            VideoPresentFrameResourceLookup::Missing
         ));
 
         let sample = sample_rx
@@ -1164,7 +982,7 @@ mod tests {
 
         assert!(matches!(
             lease.try_resource_lookup(),
-            PresentFrameResourceLookup::Busy
+            VideoPresentFrameResourceLookup::Busy
         ));
 
         let sample = sample_rx
@@ -1217,13 +1035,14 @@ mod tests {
         let lock_wait = Duration::from_micros(125);
         let (release_tx, _release_rx) = bounded(1);
         let (sample_tx, sample_rx) = bounded(1);
-        let mut lease = PresentFrameLease::new_for_tests(
-            9,
-            decoded_frame_for_tests(resource_handle),
-            false,
-            release_tx,
+        let lease = VideoFrameLease::new(
+            VideoFrameLeaseConfig::new(
+                9,
+                decoded_frame_for_tests(resource_handle),
+                Arc::new(RenderLeaseReleaseSink::new(release_tx)),
+            )
+            .with_diagnostics_sink(Arc::new(RenderLeaseDiagnosticsSink::new(sample_tx))),
         );
-        lease.resource_lock_sample_tx = Some(sample_tx);
         lease.report_resource_lookup_sample(lock_wait, false);
 
         let sample = sample_rx

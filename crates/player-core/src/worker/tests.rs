@@ -10,6 +10,7 @@ use media_core::{
 };
 use video_core::{DecodedFrame, FrameResourceHandle, VideoDecoderActivitySnapshot};
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
+use video_present_core::VideoFrameLeaseConfig;
 
 use super::*;
 use crate::{
@@ -410,13 +411,16 @@ fn present_frame_lease_for_tests(
     resource_handle: FrameResourceHandle,
     stale: bool,
     release_tx: Sender<RenderLeaseRelease>,
-) -> PresentFrameLease {
-    PresentFrameLease::new_for_tests(
+) -> VideoFrameLease {
+    let mut config = VideoFrameLeaseConfig::new(
         render_generation,
         decoded_frame_for_tests(resource_handle),
-        stale,
-        release_tx,
-    )
+        Arc::new(RenderLeaseReleaseSink::new(release_tx)),
+    );
+    if stale {
+        config = config.with_timeline_stale();
+    }
+    VideoFrameLease::new(config)
 }
 
 fn worker_with_latest_handoff_for_tests(
@@ -1143,7 +1147,7 @@ fn player_worker_try_acquire_present_frame_reads_latest_slot_without_reply_wait(
 
     let acquired_frame = worker.try_acquire_present_frame().unwrap();
 
-    assert_eq!(acquired_frame.render_generation, 3);
+    assert_eq!(acquired_frame.render_generation(), 3);
     assert_eq!(acquired_frame.resource_handle(), expected_resource_handle);
     assert!(render_acquire_sample_rx.try_recv().is_ok());
 }

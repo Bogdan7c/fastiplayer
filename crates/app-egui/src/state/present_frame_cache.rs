@@ -6,10 +6,10 @@ pub enum PresentFrameAcquisition {
     NoFrameYet,
 
     /// Renderer повторяет последний безопасно удерживаемый lease.
-    ReusedPreviousFrame(PlayerPresentFrame),
+    ReusedPreviousFrame(VideoFrameLease),
 
     /// Renderer получил новый lease с другим generation/texture handle.
-    NewFrameAcquired(PlayerPresentFrame),
+    NewFrameAcquired(VideoFrameLease),
 
     /// Кандидат был отвергнут, потому что принадлежит старому render generation.
     StaleFrameRejected,
@@ -19,7 +19,7 @@ pub enum PresentFrameAcquisition {
 #[derive(Clone)]
 pub struct RenderablePresentFrame {
     /// Lease удерживает backend texture resource до завершения render-side использования.
-    pub present_frame: PlayerPresentFrame,
+    pub present_frame: VideoFrameLease,
 
     /// WGPU texture views соответствуют `present_frame` и не используются без его lease-а.
     pub texture_views: WgpuFrameTextureViews,
@@ -28,7 +28,7 @@ pub struct RenderablePresentFrame {
 impl RenderablePresentFrame {
     /// Собирает renderable frame из lease-а и WGPU texture views одного decoded кадра.
     #[must_use]
-    pub fn new(present_frame: PlayerPresentFrame, texture_views: WgpuFrameTextureViews) -> Self {
+    pub fn new(present_frame: VideoFrameLease, texture_views: WgpuFrameTextureViews) -> Self {
         Self {
             present_frame,
             texture_views,
@@ -273,7 +273,7 @@ pub(super) fn texture_busy_fallback_can_reuse_previous_frame(
 impl PresentFrameAcquisition {
     /// Возвращает frame lease, если acquisition state разрешает rendering video.
     #[must_use]
-    pub fn into_present_frame(self) -> Option<PlayerPresentFrame> {
+    pub fn into_present_frame(self) -> Option<VideoFrameLease> {
         match self {
             Self::ReusedPreviousFrame(present_frame) | Self::NewFrameAcquired(present_frame) => {
                 Some(present_frame)
@@ -310,14 +310,16 @@ impl AppState {
         let rejected_stale_cached_frame = self.drop_stale_cached_present_frame(player_snapshot);
 
         if let Some(mut present_frame) = self.player_worker.try_acquire_present_frame() {
-            if present_frame.render_generation != player_snapshot.render_generation {
+            if present_frame.render_generation() != player_snapshot.render_generation {
                 self.clear_cached_present_frame(
                     CachedPresentFrameDiscardReason::RenderGenerationChanged,
                 );
                 return PresentFrameAcquisition::StaleFrameRejected;
             }
 
-            present_frame.stale = present_frame.stale || player_snapshot.timeline.stale_frame;
+            if player_snapshot.timeline.stale_frame {
+                present_frame.mark_timeline_stale();
+            }
             let cached_frame_identity =
                 self.cached_renderable_present_frame
                     .as_ref()
@@ -332,7 +334,9 @@ impl AppState {
                     .as_ref()
                     .map(|cached_frame| cached_frame.renderable_frame.present_frame.clone())
                     .map(|mut cached_present_frame| {
-                        cached_present_frame.stale = present_frame.stale;
+                        if present_frame.is_stale() {
+                            cached_present_frame.mark_timeline_stale();
+                        }
                         PresentFrameAcquisition::ReusedPreviousFrame(cached_present_frame)
                     })
                     .unwrap_or(PresentFrameAcquisition::NoFrameYet);
@@ -346,8 +350,9 @@ impl AppState {
             .as_ref()
             .map(|cached_frame| cached_frame.renderable_frame.present_frame.clone())
         {
-            cached_present_frame.stale =
-                cached_present_frame.stale || player_snapshot.timeline.stale_frame;
+            if player_snapshot.timeline.stale_frame {
+                cached_present_frame.mark_timeline_stale();
+            }
             return PresentFrameAcquisition::ReusedPreviousFrame(cached_present_frame);
         }
 
@@ -374,7 +379,7 @@ impl AppState {
             cached_generation: cached_renderable_frame
                 .renderable_frame
                 .present_frame
-                .render_generation,
+                .render_generation(),
             current_generation: player_snapshot.render_generation,
         };
         let Some(reason) = cached_present_frame_stale_reason(validation_state) else {
@@ -388,12 +393,10 @@ impl AppState {
     }
 
     /// Возвращает identity frame-а, достаточную для отличия нового lease-а от reuse.
-    pub(super) fn present_frame_identity(
-        present_frame: &PlayerPresentFrame,
-    ) -> PresentFrameIdentity {
+    pub(super) fn present_frame_identity(present_frame: &VideoFrameLease) -> PresentFrameIdentity {
         PresentFrameIdentity::from_decoded_frame(
-            present_frame.render_generation,
-            &present_frame.frame,
+            present_frame.render_generation(),
+            present_frame.decoded_frame(),
         )
     }
 
@@ -460,12 +463,15 @@ impl AppState {
             cached_generation: cached_renderable_frame
                 .renderable_frame
                 .present_frame
-                .render_generation,
+                .render_generation(),
             current_generation: player_snapshot.render_generation,
             source_matches: cached_renderable_frame.source_label.as_deref()
                 == player_snapshot.source_label.as_deref(),
             has_current_video_frame: player_snapshot.current_video_frame.is_some(),
-            cached_frame_is_stale: cached_renderable_frame.renderable_frame.present_frame.stale,
+            cached_frame_is_stale: cached_renderable_frame
+                .renderable_frame
+                .present_frame
+                .is_stale(),
             timeline_marks_frame_stale: player_snapshot.timeline.stale_frame,
         };
 

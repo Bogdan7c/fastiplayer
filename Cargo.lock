@@ -159,6 +159,7 @@ dependencies = [
  "video-core",
  "video-ffmpeg",
  "video-frame-contract",
+ "video-present-core",
  "video-vaapi",
  "wgpu",
  "winit",
@@ -2948,6 +2949,7 @@ dependencies = [
  "video-backend-api",
  "video-core",
  "video-frame-contract",
+ "video-present-core",
 ]
 
 [[package]]
@@ -4760,6 +4762,16 @@ name = "video-frame-contract"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "video-present-core"
+version = "0.1.0"
+dependencies = [
+ "codec-core",
+ "video-backend-api",
+ "video-core",
+ "video-frame-contract",
 ]
 
 [[package]]

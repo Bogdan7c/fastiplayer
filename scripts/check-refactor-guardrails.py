@@ -30,6 +30,7 @@ CONTRACT_CRATES = frozenset(
         "video-frame-contract",
         "video-core",
         "video-backend-api",
+        "video-present-core",
         "render-core",
         "capability-core",
     }
@@ -61,6 +62,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "video-frame-contract",
         "video-core",
         "video-backend-api",
+        "video-present-core",
         "video-ffmpeg",
         "video-vaapi",
     }

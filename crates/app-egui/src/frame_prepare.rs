@@ -377,7 +377,7 @@ struct VideoPrepareTimings {
     /// Полная длительность video prepare stage.
     total: Duration,
 
-    /// Получение `PresentFrameLease` или reuse cached present frame.
+    /// Получение `VideoFrameLease` или reuse cached present frame.
     present_frame_acquire: Duration,
 
     /// Учёт repeated frame после acquisition.
@@ -875,7 +875,7 @@ fn prepare_video_frame(
 
     let stage_started_at = Instant::now();
     let texture_view_lookup =
-        texture_view_materializer.try_texture_view_lookup(&present_frame.frame);
+        texture_view_materializer.try_texture_view_lookup(present_frame.decoded_frame());
     timings.texture_view_lookup = stage_started_at.elapsed();
 
     let stage_started_at = Instant::now();
@@ -1022,15 +1022,16 @@ fn build_render_input_video_frame<'frame>(
 ) -> Result<WgpuRenderableFrame<'frame>, PlayerRenderError> {
     let present_frame = &renderable_frame.present_frame;
     let texture_views = &renderable_frame.texture_views;
-    let frame_format = present_frame.frame.format();
-    let frame_memory_path = present_frame.frame.memory_path();
+    let decoded_frame = present_frame.decoded_frame();
+    let frame_format = decoded_frame.format();
+    let frame_memory_path = decoded_frame.memory_path();
 
     tracing::trace!(
-        handle_id = present_frame.frame.resource_handle.0,
-        pts_ms = present_frame.frame.pts.as_millis(),
+        handle_id = decoded_frame.resource_handle.0,
+        pts_ms = decoded_frame.pts.as_millis(),
         format = %frame_format,
         memory_path = %frame_memory_path,
-        stale = present_frame.stale,
+        stale = present_frame.is_stale(),
         acquisition = acquisition_state,
         "Present frame acquired from playback worker"
     );
@@ -1038,7 +1039,7 @@ fn build_render_input_video_frame<'frame>(
     let boundary_frame = match frame_format {
         DecodedPixelFormat::Nv12 => match texture_views.dma_buf_views() {
             Some((y_view, uv_view)) => {
-                WgpuRenderableFrame::from_decoded_nv12(&present_frame.frame, y_view, uv_view)
+                WgpuRenderableFrame::from_decoded_nv12(decoded_frame, y_view, uv_view)
             }
             None => Err(anyhow::anyhow!(
                 "NV12 decoded video surface requires DMA-BUF Y/UV texture views"
@@ -1046,7 +1047,7 @@ fn build_render_input_video_frame<'frame>(
         },
         DecodedPixelFormat::P010 => match texture_views.dma_buf_views() {
             Some((y_view, uv_view)) => {
-                WgpuRenderableFrame::from_decoded_p010(&present_frame.frame, y_view, uv_view)
+                WgpuRenderableFrame::from_decoded_p010(decoded_frame, y_view, uv_view)
             }
             None => Err(anyhow::anyhow!(
                 "P010 decoded video surface requires DMA-BUF Y/UV texture views"
@@ -1058,7 +1059,7 @@ fn build_render_input_video_frame<'frame>(
         host_planar_layout if host_planar_layout.is_host_planar() => {
             match texture_views.host_planar_views() {
                 Some((y_view, u_view, v_view)) => WgpuRenderableFrame::from_decoded_host_yuv(
-                    &present_frame.frame,
+                    decoded_frame,
                     y_view,
                     u_view,
                     v_view,

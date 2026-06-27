@@ -10,17 +10,16 @@ use video_core::{
     VideoDecoderActivityEpoch, VideoDecoderActivitySnapshot, VideoDecoderActivityUnavailableReason,
     VideoDecoderActivityWaitOutcome,
 };
+use video_present_core::VideoFrameLease;
 
 use crate::audio_boundary::{missing_audio_decoder_factory, missing_audio_output_factory};
 use crate::pipeline::VideoDecoderActivityStatus;
 #[cfg(test)]
 use crate::render_lease_bridge::{
     LatestPresentFrameAcquire, LatestPresentFrameHandoff, RenderAcquireSample, RenderLeaseRelease,
-    RenderResourcePreviousFrameReuseSample, RenderTimingSample,
+    RenderLeaseReleaseSink, RenderResourcePreviousFrameReuseSample, RenderTimingSample,
 };
-use crate::render_lease_bridge::{
-    PlayerPresentFrame, PresentFrameLease, RenderLeaseBridge, RenderLeaseBridgeClient,
-};
+use crate::render_lease_bridge::{RenderLeaseBridge, RenderLeaseBridgeClient};
 use crate::runtime_settings::{validate_runtime_default_volume, validate_runtime_tick_config};
 use crate::worker_scheduler::{PlannedWorkerWakeup, WorkerScheduler, WorkerWakeupDeadline};
 use crate::{
@@ -292,42 +291,42 @@ pub struct PlayerRenderError {
 impl PlayerRenderError {
     /// Создаёт ошибку отсутствующего renderer resource для конкретного lease-а.
     #[must_use]
-    pub fn missing_render_resources(lease: &PresentFrameLease) -> Self {
+    pub fn missing_render_resources(lease: &VideoFrameLease) -> Self {
         Self {
             kind: PlayerRenderErrorKind::MissingRenderResources,
-            render_generation: Some(lease.render_generation),
+            render_generation: Some(lease.render_generation()),
             frame_handle: Some(lease.resource_handle().0),
             message: format!(
                 "Render resources are missing for {} frame handle {} in generation {}",
-                lease.frame.format(),
+                lease.decoded_frame().format(),
                 lease.resource_handle().0,
-                lease.render_generation
+                lease.render_generation()
             ),
         }
     }
 
     /// Создаёт ошибку fatal renderer resource lookup для конкретного lease-а.
     #[must_use]
-    pub fn render_resource_lookup_failed(lease: &PresentFrameLease) -> Self {
+    pub fn render_resource_lookup_failed(lease: &VideoFrameLease) -> Self {
         Self {
             kind: PlayerRenderErrorKind::RenderResourceLookupFailed,
-            render_generation: Some(lease.render_generation),
+            render_generation: Some(lease.render_generation()),
             frame_handle: Some(lease.resource_handle().0),
             message: format!(
                 "Render resource lookup failed for {} frame handle {} in generation {}",
-                lease.frame.format(),
+                lease.decoded_frame().format(),
                 lease.resource_handle().0,
-                lease.render_generation
+                lease.render_generation()
             ),
         }
     }
 
     /// Создаёт ошибку renderer boundary validation для конкретного lease-а.
     #[must_use]
-    pub fn unsupported_frame_format(lease: &PresentFrameLease, message: impl Into<String>) -> Self {
+    pub fn unsupported_frame_format(lease: &VideoFrameLease, message: impl Into<String>) -> Self {
         Self {
             kind: PlayerRenderErrorKind::UnsupportedFrameFormat,
-            render_generation: Some(lease.render_generation),
+            render_generation: Some(lease.render_generation()),
             frame_handle: Some(lease.resource_handle().0),
             message: message.into(),
         }
