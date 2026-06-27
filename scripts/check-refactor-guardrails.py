@@ -74,6 +74,16 @@ REMOVED_WORKSPACE_CRATES = frozenset({"video-vulkan"})
 
 VIDEO_FRAME_CONTRACT_ALLOWED_DEPENDENCIES = frozenset({"serde"})
 
+VIDEO_PRESENT_CORE_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "crossbeam-channel",
+        "thiserror",
+        "tracing",
+        "video-backend-api",
+        "video-core",
+    }
+)
+
 FFMPEG_FORBIDDEN_DEPENDENCIES = frozenset(
     {
         "ac-ffmpeg",
@@ -533,6 +543,14 @@ def find_dependency_violations(
             frozenset({"video-frame-contract"}),
             VIDEO_FRAME_CONTRACT_ALLOWED_DEPENDENCIES,
             "video-frame-contract остаётся leaf contract crate и зависит только от serde",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"video-present-core"}),
+            VIDEO_PRESENT_CORE_ALLOWED_DEPENDENCIES,
+            "video-present-core normal-deps остаются нейтральным present boundary без player/render/backend/UI deps",
         )
     )
     violations.extend(
