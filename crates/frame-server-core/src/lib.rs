@@ -12,6 +12,7 @@ pub mod error;
 pub mod request;
 pub mod scheduler;
 pub mod scrub;
+pub mod working_set;
 
 pub use config::{
     DEFAULT_LIVE_SCRUB_MAX_HZ, DEFAULT_MAX_FEED_AND_DRAIN_DRIVER_STEPS,
@@ -49,8 +50,17 @@ pub use scrub::{
     ScrubProgress, ScrubProgressEvent, ScrubStartedEvent, ScrubTargetReachStatus,
     ScrubTimedOutOutcome, ScrubTimeoutReason, StaleGenerationOutcome,
 };
+pub use working_set::{
+    FrameExactnessPolicy, TimelineHoverFrameBucket, TimelineHoverPrepareFrameKey,
+    TimelineHoverPrepareFrameLookupRequest, TimelineHoverPrepareLookupMissReason,
+    TimelineHoverPrepareLookupOutcome, TimelineHoverPrepareTimingRejection,
+    TimelineHoverPrepareWorkingSet, TimelineHoverPreparedFrame, TimelineHoverPreparedFrameEntry,
+    TimelineHoverPreparedFrameTiming,
+};
 
 #[cfg(test)]
 mod scheduler_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod working_set_tests;
