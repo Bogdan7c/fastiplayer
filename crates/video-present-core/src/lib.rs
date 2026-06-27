@@ -28,6 +28,9 @@ pub enum VideoPresentFrameResourceKind {
     /// Decoder-owned DMA-BUF доступен renderer-у как zero-copy GPU resource.
     DmaBufZeroCopy,
 
+    /// Provider-owned HostPlanar frame доступен renderer-у через host-upload materializer.
+    HostPlanar,
+
     /// Opaque backend texture скрыта за `FrameResourceHandle` без public GPU handles.
     OpaqueBackendTexture,
 
@@ -41,7 +44,7 @@ impl VideoPresentFrameResourceKind {
     pub const fn from_memory_path(memory_path: FrameMemoryPath) -> Self {
         match memory_path {
             FrameMemoryPath::DmaBufZeroCopy => Self::DmaBufZeroCopy,
-            FrameMemoryPath::CpuUpload => Self::OpaqueBackendTexture,
+            FrameMemoryPath::CpuUpload => Self::HostPlanar,
         }
     }
 }
@@ -653,11 +656,14 @@ mod tests {
         }
     }
 
-    fn decoded_frame_for_tests(resource_handle: FrameResourceHandle) -> DecodedFrame {
+    fn decoded_frame_with_contract_for_tests(
+        resource_handle: FrameResourceHandle,
+        frame_contract: VideoFrameContract,
+    ) -> DecodedFrame {
         DecodedFrame {
             generation: 0,
             pts: Duration::from_millis(42),
-            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+            frame_contract,
             width: 640,
             height: 360,
             render_width: 640,
@@ -667,6 +673,13 @@ mod tests {
             resource_handle,
             diagnostics: video_core::VideoFrameDiagnostics::default(),
         }
+    }
+
+    fn decoded_frame_for_tests(resource_handle: FrameResourceHandle) -> DecodedFrame {
+        decoded_frame_with_contract_for_tests(
+            resource_handle,
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+        )
     }
 
     fn lease_for_tests(
@@ -717,6 +730,23 @@ mod tests {
         assert_eq!(descriptor.render_generation(), 8);
         assert_eq!(descriptor.resource_handle(), resource_handle);
         assert_eq!(descriptor.memory_path(), FrameMemoryPath::DmaBufZeroCopy);
+    }
+
+    #[test]
+    fn resource_descriptor_exposes_renderer_neutral_host_planar_handle() {
+        let resource_handle = FrameResourceHandle(78);
+        let decoded_frame = decoded_frame_with_contract_for_tests(
+            resource_handle,
+            VideoFrameContract::host_yuv420_planar8(),
+        );
+
+        let descriptor =
+            VideoPresentFrameResourceDescriptor::from_decoded_frame(10, &decoded_frame);
+
+        assert_eq!(descriptor.kind(), VideoPresentFrameResourceKind::HostPlanar);
+        assert_eq!(descriptor.render_generation(), 10);
+        assert_eq!(descriptor.resource_handle(), resource_handle);
+        assert_eq!(descriptor.memory_path(), FrameMemoryPath::CpuUpload);
     }
 
     #[test]
