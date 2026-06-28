@@ -215,6 +215,13 @@ impl PlayerWorker {
         self.render_bridge_client.try_acquire_present_frame()
     }
 
+    /// Пытается получить scrub visual override frame без доступа к `PlayerSession`.
+    #[must_use]
+    pub fn try_acquire_scrub_visual_override_frame(&self) -> Option<VideoFrameLease> {
+        self.render_bridge_client
+            .try_acquire_scrub_visual_override_frame()
+    }
+
     /// Сообщает worker-у renderer submit/present timing без блокировки render thread.
     pub fn report_gpu_submit_present_latency(&self, submit_present_elapsed: Duration) {
         self.render_bridge_client

@@ -4,7 +4,7 @@ use codec_core::{VideoColorMetadata, VideoDisplayOrientation};
 use media_core::{MediaTime, TimeBase, TrackId, TrackTimestamp};
 use video_core::{DecodedFrame, FrameResourceHandle, VideoFrameDiagnostics};
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
-use video_present_core::VideoPresentFrameResourceDescriptor;
+use video_present_core::{VideoPresentFrameIdentity, VideoPresentFrameResourceDescriptor};
 
 use crate::DecodePointSeekedOutcome;
 use crate::{
@@ -14,11 +14,11 @@ use crate::{
     FinishScrubPolicy, FrameServerConfig, HostUploadBackpressureOutcome,
     HostUploadBackpressureReason, PlaybackGeneration, PreparedOutcome, ResourceBusyOutcome,
     ResourceBusyReason, ScrubCurrentGuards, ScrubDriverOutcome, ScrubEvent, ScrubExactnessPolicy,
-    ScrubExecutionPolicy, ScrubFailedEvent, ScrubFailureReason, ScrubFatalReason, ScrubGeneration,
-    ScrubIntent, ScrubIntentKind, ScrubPreviewFrame, ScrubRequestKind, ScrubStaleReason,
-    ScrubStateMachine, ScrubStep, ScrubTarget, ScrubTargetContext, ScrubTargetUpdate,
-    ScrubTargetUpdateGuards, ScrubTimedOutOutcome, ScrubTimeoutReason, SourceRevision,
-    StaleGenerationOutcome,
+    ScrubExecutionPolicy, ScrubFailedEvent, ScrubFailureReason, ScrubFatalReason, ScrubFrameTiming,
+    ScrubGeneration, ScrubIntent, ScrubIntentKind, ScrubPreviewFrame, ScrubRequestKind,
+    ScrubStaleReason, ScrubStateMachine, ScrubStep, ScrubTarget, ScrubTargetContext,
+    ScrubTargetUpdate, ScrubTargetUpdateGuards, ScrubTimedOutOutcome, ScrubTimeoutReason,
+    SourceRevision, StaleGenerationOutcome,
 };
 
 #[path = "state_machine_tests/exact_flow.rs"]
@@ -331,18 +331,29 @@ fn decode_point_seeked_outcome(context: ScrubTargetContext) -> DecodePointSeeked
 
 fn preview_frame_for_tests(context: ScrubTargetContext) -> ScrubPreviewFrame {
     let target = context.target();
+    let resource_handle = FrameResourceHandle(42);
     ScrubPreviewFrame {
         generation: context.generation(),
-        actual_time: target.media_time,
-        actual_pts: target.target_pts,
-        resource: descriptor_for_tests(FrameResourceHandle(42)),
+        timing: ScrubFrameTiming::new(target.media_time, target.target_pts),
+        frame_identity: frame_identity_for_tests(resource_handle),
+        resource: descriptor_for_tests(resource_handle),
     }
 }
 
 fn descriptor_for_tests(
     resource_handle: FrameResourceHandle,
 ) -> VideoPresentFrameResourceDescriptor {
-    let decoded_frame = DecodedFrame {
+    let decoded_frame = decoded_frame_for_present_tests(resource_handle);
+    VideoPresentFrameResourceDescriptor::from_decoded_frame(2, &decoded_frame)
+}
+
+fn frame_identity_for_tests(resource_handle: FrameResourceHandle) -> VideoPresentFrameIdentity {
+    let decoded_frame = decoded_frame_for_present_tests(resource_handle);
+    VideoPresentFrameIdentity::from_decoded_frame(2, &decoded_frame)
+}
+
+fn decoded_frame_for_present_tests(resource_handle: FrameResourceHandle) -> DecodedFrame {
+    DecodedFrame {
         generation: 30,
         pts: Duration::from_millis(1_250),
         frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
@@ -354,9 +365,7 @@ fn descriptor_for_tests(
         color: VideoColorMetadata::sdr_bt709_limited(),
         resource_handle,
         diagnostics: VideoFrameDiagnostics::default(),
-    };
-
-    VideoPresentFrameResourceDescriptor::from_decoded_frame(2, &decoded_frame)
+    }
 }
 
 fn track_timestamp(track_id: TrackId, millis: u64) -> TrackTimestamp {

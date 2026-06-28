@@ -431,6 +431,21 @@ fn worker_with_latest_handoff_for_tests(
     Receiver<RenderTimingSample>,
     Receiver<RenderResourcePreviousFrameReuseSample>,
 ) {
+    worker_with_latest_handoffs_for_tests(
+        latest_present_frame_handoff,
+        Arc::new(LatestPresentFrameHandoff::new()),
+    )
+}
+
+fn worker_with_latest_handoffs_for_tests(
+    latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
+    latest_scrub_visual_override_handoff: Arc<LatestPresentFrameHandoff>,
+) -> (
+    PlayerWorker,
+    Receiver<RenderAcquireSample>,
+    Receiver<RenderTimingSample>,
+    Receiver<RenderResourcePreviousFrameReuseSample>,
+) {
     let (command_tx, _command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
     let (_snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
     let (_event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
@@ -439,7 +454,10 @@ fn worker_with_latest_handoff_for_tests(
         render_acquire_sample_rx,
         render_timing_sample_rx,
         render_resource_previous_frame_reuse_sample_rx,
-    ) = RenderLeaseBridgeClient::with_handoff_for_tests(latest_present_frame_handoff);
+    ) = RenderLeaseBridgeClient::with_handoff_for_tests(
+        latest_present_frame_handoff,
+        latest_scrub_visual_override_handoff,
+    );
     let (shutdown_tx, _shutdown_rx) = bounded(1);
     let command_sender = PlayerCommandSender { command_tx };
 
@@ -686,6 +704,7 @@ fn command_ordering_for_play_pause_stop_open_shutdown_is_preserved() {
         .iter()
         .filter_map(|event| match event {
             PlayerWorkerEvent::Player(event) => Some(event),
+            PlayerWorkerEvent::Scrub(_) => None,
             PlayerWorkerEvent::RenderError(_) => None,
             PlayerWorkerEvent::Tick(_) => None,
         })
@@ -1150,6 +1169,42 @@ fn player_worker_try_acquire_present_frame_reads_latest_slot_without_reply_wait(
     assert_eq!(acquired_frame.render_generation(), 3);
     assert_eq!(acquired_frame.resource_handle(), expected_resource_handle);
     assert!(render_acquire_sample_rx.try_recv().is_ok());
+}
+
+#[test]
+fn player_worker_scrub_visual_override_handoff_stays_separate_from_playback_slot() {
+    let playback_handoff = Arc::new(LatestPresentFrameHandoff::new());
+    let scrub_override_handoff = Arc::new(LatestPresentFrameHandoff::new());
+    let (release_tx, _release_rx) = unbounded();
+    let playback_handle = FrameResourceHandle(44);
+    let scrub_override_handle = FrameResourceHandle(45);
+    playback_handoff.publish(Some(present_frame_lease_for_tests(
+        3,
+        playback_handle,
+        false,
+        release_tx.clone(),
+    )));
+    scrub_override_handoff.publish(Some(present_frame_lease_for_tests(
+        3,
+        scrub_override_handle,
+        false,
+        release_tx,
+    )));
+    let (
+        worker,
+        _render_acquire_sample_rx,
+        _render_timing_sample_rx,
+        _render_resource_previous_frame_reuse_sample_rx,
+    ) = worker_with_latest_handoffs_for_tests(playback_handoff, scrub_override_handoff);
+
+    let playback_frame = worker.try_acquire_present_frame().unwrap();
+    let scrub_override_frame = worker.try_acquire_scrub_visual_override_frame().unwrap();
+
+    assert_eq!(playback_frame.resource_handle(), playback_handle);
+    assert_eq!(
+        scrub_override_frame.resource_handle(),
+        scrub_override_handle
+    );
 }
 
 #[test]

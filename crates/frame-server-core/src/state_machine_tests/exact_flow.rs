@@ -5,16 +5,17 @@ use media_core::MediaTime;
 use video_core::FrameResourceHandle;
 
 use super::{
-    decode_point_seeked_outcome, descriptor_for_tests, guards_for_context, only_first_intent,
-    preview_frame_for_tests, track_timestamp, update_for_tests,
+    decode_point_seeked_outcome, descriptor_for_tests, frame_identity_for_tests,
+    guards_for_context, only_first_intent, preview_frame_for_tests, track_timestamp,
+    update_for_tests,
 };
 use crate::{
     CancelScrubReason, ExactFrameReadyOutcome, FeedAndDrainIntent, FeedAndDrainStopCondition,
     FinishScrubPolicy, FinishedOutcome, PreTargetReleasedOutcome, PreparedOutcome,
-    ScrubCurrentGuards, ScrubDriverOutcome, ScrubEvent, ScrubGeneration, ScrubGenerationToken,
-    ScrubIntent, ScrubIntentKind, ScrubPreviewFrame, ScrubProgress, ScrubProtocolPhase,
-    ScrubRequestKind, ScrubStaleReason, ScrubStateMachine, ScrubTargetContext,
-    ScrubTargetReachStatus,
+    ScrubCurrentGuards, ScrubDriverOutcome, ScrubEvent, ScrubEventFrameIdentity, ScrubFrameTiming,
+    ScrubGeneration, ScrubGenerationToken, ScrubIntent, ScrubIntentKind, ScrubPreviewFrame,
+    ScrubProgress, ScrubProtocolPhase, ScrubRequestKind, ScrubStaleReason, ScrubStateMachine,
+    ScrubTargetContext, ScrubTargetReachStatus,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,7 +140,8 @@ impl FakeScrubTransactionDriver {
                     .expect("fake driver must have a decoded frame for feed/drain");
 
                 if decoded_frame
-                    .actual_pts
+                    .timing
+                    .pts
                     .cmp_timeline_position(actual_context.target().target_pts)
                     == Ordering::Less
                 {
@@ -163,9 +165,16 @@ impl FakeScrubTransactionDriver {
             }
             ScrubIntent::Finish(_) => {
                 self.lifecycle_steps.push(FakeLifecycleStep::Finish);
+                let committed_frame = self
+                    .published_ready_frames
+                    .last()
+                    .copied()
+                    .expect("finish requires a published ready frame");
                 ScrubDriverOutcome::Finished(FinishedOutcome {
                     context: actual_context,
-                    committed_time: actual_context.target().media_time,
+                    committed_position: actual_context.target().media_time,
+                    committed_frame_timing: committed_frame.timing,
+                    frame_identity: ScrubEventFrameIdentity::Video(committed_frame.frame_identity),
                 })
             }
             ScrubIntent::Cancel(payload) => {
@@ -442,7 +451,7 @@ fn exact_scrub_flow_releases_pre_target_then_finishes_on_first_target_or_after()
         ScrubDriverOutcome::ExactFrameReady(payload) => payload.frame,
         other => panic!("expected ExactFrameReady, got {other:?}"),
     };
-    assert_eq!(ready_frame.actual_pts, prepare_context.target().target_pts);
+    assert_eq!(ready_frame.timing.pts, prepare_context.target().target_pts);
     assert_eq!(driver.published_ready_frames, vec![ready_frame]);
 
     let finish_step = machine.handle_driver_outcome(ScrubDriverOutcome::ExactFrameReady(
@@ -468,14 +477,18 @@ fn exact_scrub_flow_releases_pre_target_then_finishes_on_first_target_or_after()
     let committed_step =
         machine.handle_driver_outcome(ScrubDriverOutcome::Finished(FinishedOutcome {
             context: prepare_context,
-            committed_time: prepare_context.target().media_time,
+            committed_position: prepare_context.target().media_time,
+            committed_frame_timing: ready_frame.timing,
+            frame_identity: ScrubEventFrameIdentity::Video(ready_frame.frame_identity),
         }));
 
     assert!(matches!(
         committed_step.event(),
         Some(ScrubEvent::Committed(event))
             if event.context == prepare_context
-                && event.committed_time == prepare_context.target().media_time
+                && event.committed_position == prepare_context.target().media_time
+                && event.committed_frame_timing == ready_frame.timing
+                && event.frame_identity == ScrubEventFrameIdentity::Video(ready_frame.frame_identity)
     ));
     assert!(committed_step.first_intent().is_none());
     assert_eq!(machine.active_context(), None);
@@ -539,8 +552,11 @@ fn decoded_frame_for_tests(
 ) -> ScrubPreviewFrame {
     ScrubPreviewFrame {
         generation: context.generation(),
-        actual_time: MediaTime::from_millis(millis),
-        actual_pts: track_timestamp(context.track_selection().video_track, millis),
+        timing: ScrubFrameTiming::new(
+            MediaTime::from_millis(millis),
+            track_timestamp(context.track_selection().video_track, millis),
+        ),
+        frame_identity: frame_identity_for_tests(resource_handle),
         resource: descriptor_for_tests(resource_handle),
     }
 }
@@ -552,8 +568,8 @@ fn default_decoded_frames(context: ScrubTargetContext) -> VecDeque<ScrubPreviewF
         decoded_frame_for_tests(context, 950, FrameResourceHandle(41)),
         ScrubPreviewFrame {
             generation: context.generation(),
-            actual_time: target.media_time,
-            actual_pts: target.target_pts,
+            timing: ScrubFrameTiming::new(target.media_time, target.target_pts),
+            frame_identity: frame_identity_for_tests(FrameResourceHandle(42)),
             resource: descriptor_for_tests(FrameResourceHandle(42)),
         },
         decoded_frame_for_tests(context, 1_100, FrameResourceHandle(43)),

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use media_core::{MediaTime, TrackTimestamp};
-use video_present_core::VideoPresentFrameResourceDescriptor;
+use video_present_core::{VideoPresentFrameIdentity, VideoPresentFrameResourceDescriptor};
 
 use crate::diagnostics::{
     ScrubDriverDiagnosticReason, ScrubDriverOutcomeKind, ScrubEventDiagnostics, ScrubFailureReason,
@@ -114,12 +114,44 @@ pub struct ScrubProgress {
     pub target_status: ScrubTargetReachStatus,
 }
 
+/// Neutral timing decoded frame-а, который scrub route готов показать/сопоставить.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ScrubFrameTiming {
+    pub media_time: MediaTime,
+    pub pts: TrackTimestamp,
+}
+
+impl ScrubFrameTiming {
+    /// Создаёт timing без чтения decoder/backend internals.
+    #[must_use]
+    pub const fn new(media_time: MediaTime, pts: TrackTimestamp) -> Self {
+        Self { media_time, pts }
+    }
+}
+
+/// Stable identity кадра для clear-override событий.
+///
+/// Commit/match могут быть video-less только явно: app не должен угадывать, почему
+/// identity отсутствует, и не должен чистить video override по одному `MediaTime`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrubEventFrameIdentity {
+    Video(VideoPresentFrameIdentity),
+    NoVideoFrame(ScrubNoVideoFrameReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrubNoVideoFrameReason {
+    AudioOnly,
+    NoSelectedVideoTrack,
+    CurrentFrameUnavailable,
+}
+
 /// Renderer-neutral preview frame identity. Pixel data and release ownership stay outside.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScrubPreviewFrame {
     pub generation: ScrubGenerationToken,
-    pub actual_time: MediaTime,
-    pub actual_pts: TrackTimestamp,
+    pub timing: ScrubFrameTiming,
+    pub frame_identity: VideoPresentFrameIdentity,
     pub resource: VideoPresentFrameResourceDescriptor,
 }
 
@@ -245,13 +277,17 @@ pub struct AudioResumeFailedOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FinishedOutcome {
     pub context: ScrubTargetContext,
-    pub committed_time: MediaTime,
+    pub committed_position: MediaTime,
+    pub committed_frame_timing: ScrubFrameTiming,
+    pub frame_identity: ScrubEventFrameIdentity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MatchedPlaybackOutcome {
     pub context: ScrubTargetContext,
-    pub matched_time: MediaTime,
+    pub playback_position: MediaTime,
+    pub matched_frame_timing: ScrubFrameTiming,
+    pub frame_identity: ScrubEventFrameIdentity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,14 +474,18 @@ pub struct ResumePendingEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScrubCommittedEvent {
     pub context: ScrubTargetContext,
-    pub committed_time: MediaTime,
+    pub committed_position: MediaTime,
+    pub committed_frame_timing: ScrubFrameTiming,
+    pub frame_identity: ScrubEventFrameIdentity,
     pub diagnostics: ScrubEventDiagnostics,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MatchedPlaybackEvent {
     pub context: ScrubTargetContext,
-    pub matched_time: MediaTime,
+    pub playback_position: MediaTime,
+    pub matched_frame_timing: ScrubFrameTiming,
+    pub frame_identity: ScrubEventFrameIdentity,
     pub diagnostics: ScrubEventDiagnostics,
 }
 
@@ -575,13 +615,17 @@ impl ScrubEvent {
             }
             ScrubDriverOutcome::Finished(payload) => Self::Committed(ScrubCommittedEvent {
                 context: payload.context,
-                committed_time: payload.committed_time,
+                committed_position: payload.committed_position,
+                committed_frame_timing: payload.committed_frame_timing,
+                frame_identity: payload.frame_identity,
                 diagnostics,
             }),
             ScrubDriverOutcome::MatchedPlayback(payload) => {
                 Self::MatchedPlayback(MatchedPlaybackEvent {
                     context: payload.context,
-                    matched_time: payload.matched_time,
+                    playback_position: payload.playback_position,
+                    matched_frame_timing: payload.matched_frame_timing,
+                    frame_identity: payload.frame_identity,
                     diagnostics,
                 })
             }

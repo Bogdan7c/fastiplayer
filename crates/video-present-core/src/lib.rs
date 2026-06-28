@@ -102,6 +102,63 @@ impl VideoPresentFrameResourceDescriptor {
     }
 }
 
+/// Stable identity decoded кадра на present/render boundary.
+///
+/// Этот тип намеренно не хранит texture views или owner pointers: он нужен только
+/// для сравнения "тот же ли кадр" между scrub commit/match events и app-owned
+/// visual override state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoPresentFrameIdentity {
+    /// Поколение render resources, которому принадлежит opaque resource handle.
+    render_generation: u64,
+
+    /// Opaque handle decoded frame-а внутри backend-owned resource table.
+    resource_handle: FrameResourceHandle,
+
+    /// Поколение decoded frame-а внутри текущего seek/decode lifecycle.
+    decoded_generation: u64,
+
+    /// Presentation timestamp decoded frame-а.
+    pts: Duration,
+}
+
+impl VideoPresentFrameIdentity {
+    /// Собирает stable identity из decoded frame metadata без materialization-а.
+    #[must_use]
+    pub fn from_decoded_frame(render_generation: u64, frame: &DecodedFrame) -> Self {
+        Self {
+            render_generation,
+            resource_handle: frame.resource_handle,
+            decoded_generation: frame.generation,
+            pts: frame.pts,
+        }
+    }
+
+    /// Возвращает render generation, которому принадлежит opaque resource handle.
+    #[must_use]
+    pub const fn render_generation(&self) -> u64 {
+        self.render_generation
+    }
+
+    /// Возвращает opaque resource handle decoded frame-а.
+    #[must_use]
+    pub const fn resource_handle(&self) -> FrameResourceHandle {
+        self.resource_handle
+    }
+
+    /// Возвращает decoded generation, чтобы reuse той же texture не склеивал разные кадры.
+    #[must_use]
+    pub const fn decoded_generation(&self) -> u64 {
+        self.decoded_generation
+    }
+
+    /// Возвращает presentation timestamp decoded frame-а.
+    #[must_use]
+    pub const fn pts(&self) -> Duration {
+        self.pts
+    }
+}
+
 /// Renderer-neutral результат lookup-а present frame resource-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoPresentFrameResourceLookup {
@@ -730,6 +787,34 @@ mod tests {
         assert_eq!(descriptor.render_generation(), 8);
         assert_eq!(descriptor.resource_handle(), resource_handle);
         assert_eq!(descriptor.memory_path(), FrameMemoryPath::DmaBufZeroCopy);
+    }
+
+    #[test]
+    fn present_frame_identity_distinguishes_reused_resource_handle_frames() {
+        let resource_handle = FrameResourceHandle(76);
+        let previous_frame = decoded_frame_for_tests(resource_handle);
+        let mut next_generation_frame = previous_frame.clone();
+        let mut next_pts_frame = previous_frame.clone();
+        next_generation_frame.generation = previous_frame.generation + 1;
+        next_pts_frame.pts += Duration::from_millis(33);
+
+        let previous_identity = VideoPresentFrameIdentity::from_decoded_frame(8, &previous_frame);
+
+        assert_ne!(
+            previous_identity,
+            VideoPresentFrameIdentity::from_decoded_frame(8, &next_generation_frame)
+        );
+        assert_ne!(
+            previous_identity,
+            VideoPresentFrameIdentity::from_decoded_frame(8, &next_pts_frame)
+        );
+        assert_eq!(previous_identity.render_generation(), 8);
+        assert_eq!(previous_identity.resource_handle(), resource_handle);
+        assert_eq!(
+            previous_identity.decoded_generation(),
+            previous_frame.generation
+        );
+        assert_eq!(previous_identity.pts(), previous_frame.pts);
     }
 
     #[test]

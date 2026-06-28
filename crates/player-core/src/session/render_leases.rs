@@ -19,28 +19,7 @@ pub(crate) struct LeasedPresentFrame {
 }
 
 /// Стабильная identity текущего present frame без раскрытия `PlaybackPipeline`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PresentFrameIdentity {
-    /// Поколение render resources, где был создан texture handle.
-    render_generation: u64,
-
-    /// Opaque texture handle decoded frame-а.
-    resource_handle: video_core::FrameResourceHandle,
-}
-
-impl PresentFrameIdentity {
-    /// Собирает identity из session-owned render generation и texture handle.
-    #[must_use]
-    pub(crate) const fn new(
-        render_generation: u64,
-        resource_handle: video_core::FrameResourceHandle,
-    ) -> Self {
-        Self {
-            render_generation,
-            resource_handle,
-        }
-    }
-}
+pub(crate) type PresentFrameIdentity = video_present_core::VideoPresentFrameIdentity;
 
 impl PlayerSession {
     /// Возвращает identity текущего present frame для latest-slot render bridge-а.
@@ -51,7 +30,7 @@ impl PlayerSession {
         }
 
         self.pipeline.present_video_frame().map(|frame| {
-            PresentFrameIdentity::new(self.pipeline.render_generation(), frame.resource_handle)
+            PresentFrameIdentity::from_decoded_frame(self.pipeline.render_generation(), frame)
         })
     }
 
@@ -326,9 +305,10 @@ mod tests {
         let mut session = PlayerSession::new();
         let resource_handle = FrameResourceHandle(47);
 
+        let present_frame = decoded_frame_for_tests(resource_handle);
         session
             .pipeline
-            .set_present_video_frame(decoded_frame_for_tests(resource_handle));
+            .set_present_video_frame(present_frame.clone());
 
         assert_eq!(session.current_present_frame_identity(), None);
         assert_eq!(session.render_lease_count(), 0);
@@ -343,9 +323,10 @@ mod tests {
             .pipeline
             .set_video_decoder_thread(noop_video_decoder_thread());
         let render_generation = session.pipeline.render_generation();
+        let present_frame = decoded_frame_for_tests(resource_handle);
         session
             .pipeline
-            .set_present_video_frame(decoded_frame_for_tests(resource_handle));
+            .set_present_video_frame(present_frame.clone());
 
         let identity = session
             .current_present_frame_identity()
@@ -353,7 +334,7 @@ mod tests {
 
         assert_eq!(
             identity,
-            PresentFrameIdentity::new(render_generation, resource_handle)
+            PresentFrameIdentity::from_decoded_frame(render_generation, &present_frame)
         );
         assert_eq!(session.render_lease_count(), 0);
     }

@@ -50,6 +50,7 @@ use crate::video_pipeline_selector::{
     VideoBackendKind, VideoPipelinePlan, select_video_pipeline_plan,
 };
 
+mod main_visual_override;
 mod media_jobs;
 mod present_frame_cache;
 mod telemetry_panel;
@@ -59,12 +60,14 @@ mod video_backend;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use main_visual_override::MainVisualOverrideAcquisition;
 pub(crate) use media_jobs::ActiveMediaSource;
 #[allow(unused_imports)]
 pub use present_frame_cache::PresentFrameAcquisition;
 pub use present_frame_cache::RenderablePresentFrame;
 pub(crate) use video_backend::BackendSwapVideoPhase;
 
+use main_visual_override::MainVisualOverrideState;
 use present_frame_cache::CachedRenderablePresentFrame;
 use telemetry_panel::TelemetryPanelCache;
 
@@ -190,6 +193,9 @@ pub struct AppState {
     /// Последний кадр с уже полученными texture views для safe fallback на busy lock.
     cached_renderable_present_frame: Option<CachedRenderablePresentFrame>,
 
+    /// App-owned main-video override во время scrub/seek visual pending state.
+    main_visual_override_state: MainVisualOverrideState,
+
     /// WGPU video materializer concrete backend-а; `player-core` его не видит.
     wgpu_frame_materializer: Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
 
@@ -295,6 +301,7 @@ impl AppState {
             last_player_snapshot: PlayerSnapshot::empty(),
             pending_redraw_after_worker_command: false,
             cached_renderable_present_frame: None,
+            main_visual_override_state: MainVisualOverrideState::default(),
             wgpu_frame_materializer: None,
             current_video_backend_kind: None,
             pending_video_backend_reselection: None,

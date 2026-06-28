@@ -4,7 +4,7 @@ use codec_core::{VideoColorMetadata, VideoDisplayOrientation};
 use media_core::{MediaTime, TimeBase, TrackId, TrackTimestamp};
 use video_core::{DecodedFrame, FrameResourceHandle, VideoFrameDiagnostics};
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
-use video_present_core::VideoPresentFrameResourceDescriptor;
+use video_present_core::{VideoPresentFrameIdentity, VideoPresentFrameResourceDescriptor};
 
 use crate::*;
 
@@ -36,10 +36,8 @@ fn context_for_tests(request_kind: ScrubRequestKind) -> ScrubTargetContext {
     )
 }
 
-fn descriptor_for_tests(
-    resource_handle: FrameResourceHandle,
-) -> VideoPresentFrameResourceDescriptor {
-    let decoded_frame = DecodedFrame {
+fn decoded_frame_for_present_tests(resource_handle: FrameResourceHandle) -> DecodedFrame {
+    DecodedFrame {
         generation: 30,
         pts: Duration::from_millis(1_250),
         frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
@@ -51,18 +49,32 @@ fn descriptor_for_tests(
         color: VideoColorMetadata::sdr_bt709_limited(),
         resource_handle,
         diagnostics: VideoFrameDiagnostics::default(),
-    };
+    }
+}
 
+fn descriptor_for_tests(
+    resource_handle: FrameResourceHandle,
+) -> VideoPresentFrameResourceDescriptor {
+    let decoded_frame = decoded_frame_for_present_tests(resource_handle);
     VideoPresentFrameResourceDescriptor::from_decoded_frame(2, &decoded_frame)
+}
+
+fn frame_identity_for_tests(resource_handle: FrameResourceHandle) -> VideoPresentFrameIdentity {
+    let decoded_frame = decoded_frame_for_present_tests(resource_handle);
+    VideoPresentFrameIdentity::from_decoded_frame(2, &decoded_frame)
 }
 
 fn preview_frame_for_tests(generation: ScrubGenerationToken) -> ScrubPreviewFrame {
     let video_track = TrackId::new(7);
+    let resource_handle = FrameResourceHandle(42);
     ScrubPreviewFrame {
         generation,
-        actual_time: MediaTime::from_millis(1_250),
-        actual_pts: target_for_tests(video_track, 1_250).target_pts,
-        resource: descriptor_for_tests(FrameResourceHandle(42)),
+        timing: ScrubFrameTiming::new(
+            MediaTime::from_millis(1_250),
+            target_for_tests(video_track, 1_250).target_pts,
+        ),
+        frame_identity: frame_identity_for_tests(resource_handle),
+        resource: descriptor_for_tests(resource_handle),
     }
 }
 
@@ -295,12 +307,16 @@ fn public_events_are_normalized_and_driver_details_stay_in_diagnostics() {
         )),
         ScrubEvent::from_driver_outcome(ScrubDriverOutcome::Finished(FinishedOutcome {
             context,
-            committed_time: MediaTime::from_millis(1_250),
+            committed_position: MediaTime::from_millis(1_250),
+            committed_frame_timing: frame.timing,
+            frame_identity: ScrubEventFrameIdentity::Video(frame.frame_identity),
         })),
         ScrubEvent::from_driver_outcome(ScrubDriverOutcome::MatchedPlayback(
             MatchedPlaybackOutcome {
                 context,
-                matched_time: MediaTime::from_millis(1_250),
+                playback_position: MediaTime::from_millis(1_250),
+                matched_frame_timing: frame.timing,
+                frame_identity: ScrubEventFrameIdentity::Video(frame.frame_identity),
             },
         )),
         ScrubEvent::from_driver_outcome(ScrubDriverOutcome::Cancelled(CancelledOutcome {
@@ -324,6 +340,30 @@ fn public_events_are_normalized_and_driver_details_stay_in_diagnostics() {
     assert!(matches!(events[6], ScrubEvent::MatchedPlayback(_)));
     assert!(matches!(events[7], ScrubEvent::Cancelled(_)));
     assert!(matches!(events[8], ScrubEvent::Failed(_)));
+
+    match events[5] {
+        ScrubEvent::Committed(payload) => {
+            assert_eq!(payload.committed_position, MediaTime::from_millis(1_250));
+            assert_eq!(payload.committed_frame_timing, frame.timing);
+            assert_eq!(
+                payload.frame_identity,
+                ScrubEventFrameIdentity::Video(frame.frame_identity)
+            );
+        }
+        other => panic!("ожидали normalized Committed event, получили {other:?}"),
+    }
+
+    match events[6] {
+        ScrubEvent::MatchedPlayback(payload) => {
+            assert_eq!(payload.playback_position, MediaTime::from_millis(1_250));
+            assert_eq!(payload.matched_frame_timing, frame.timing);
+            assert_eq!(
+                payload.frame_identity,
+                ScrubEventFrameIdentity::Video(frame.frame_identity)
+            );
+        }
+        other => panic!("ожидали normalized MatchedPlayback event, получили {other:?}"),
+    }
 
     match events[2] {
         ScrubEvent::Progress(payload) => {

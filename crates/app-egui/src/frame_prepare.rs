@@ -25,7 +25,7 @@ use crate::settings_runtime::{
 use crate::startup_media::{resolve_direct_media_startup_media, resolve_youtube_startup_media};
 use crate::state::{
     ActiveMediaSource, AppFrameContext, AppState, AppUiRenderTimings, BackendSwapVideoPhase,
-    RenderablePresentFrame,
+    MainVisualOverrideAcquisition, RenderablePresentFrame,
 };
 use crate::system_capabilities::probe_system_capabilities;
 use crate::telemetry::{SeekDiscardReason, Telemetry, VideoDropReason, VideoFrameTelemetryEvent};
@@ -628,11 +628,15 @@ fn record_worker_events(
             PlayerWorkerEvent::Tick(tick_result) => {
                 record_player_tick_result(telemetry, &tick_result);
             }
+            PlayerWorkerEvent::Scrub(scrub_event) => {
+                app_state.handle_main_visual_override_scrub_event(&scrub_event);
+            }
             PlayerWorkerEvent::RenderError(_) => {
                 app_state.clear_cached_present_frame_after_worker_render_error();
             }
             PlayerWorkerEvent::Player(player_event) => {
                 app_state.handle_cached_present_frame_player_event(&player_event);
+                app_state.handle_main_visual_override_player_event(&player_event);
                 match player_event {
                     PlayerEvent::FatalError(fatal_error) => {
                         log_player_fatal_error(&fatal_error);
@@ -847,6 +851,12 @@ fn prepare_video_frame(
         };
     }
 
+    if let Some(prepared_override_frame) =
+        prepare_main_visual_override_frame(app_state, player_snapshot)
+    {
+        return prepared_override_frame;
+    }
+
     let stage_started_at = Instant::now();
     let present_frame_acquisition = app_state.acquire_present_frame_for_render(player_snapshot);
     timings.present_frame_acquire = stage_started_at.elapsed();
@@ -1009,6 +1019,80 @@ fn prepare_video_frame(
             timings.lookup_action = stage_started_at.elapsed();
             timings.total = video_prepare_started_at.elapsed();
             PreparedVideoFrame::empty(acquisition_state).with_diagnostics("error", timings)
+        }
+    }
+}
+
+fn prepare_main_visual_override_frame(
+    app_state: &mut AppState,
+    player_snapshot: &PlayerSnapshot,
+) -> Option<PreparedVideoFrame> {
+    let video_prepare_started_at = Instant::now();
+    let mut timings = VideoPrepareTimings::default();
+    let override_acquisition = app_state.acquire_main_visual_override_for_render(player_snapshot);
+    let acquisition_state = override_acquisition.metric_name();
+
+    match override_acquisition {
+        MainVisualOverrideAcquisition::NoOverride
+        | MainVisualOverrideAcquisition::WaitingForExactFrame => None,
+        MainVisualOverrideAcquisition::Ready(renderable_frame) => {
+            timings.total = video_prepare_started_at.elapsed();
+            Some(
+                PreparedVideoFrame::ready(renderable_frame, acquisition_state)
+                    .with_diagnostics("scrub_override_ready", timings),
+            )
+        }
+        MainVisualOverrideAcquisition::Lease { metadata, lease } => {
+            let stage_started_at = Instant::now();
+            let texture_view_materializer = app_state.wgpu_frame_materializer();
+            timings.materializer_access = stage_started_at.elapsed();
+
+            let Some(texture_view_materializer) = texture_view_materializer else {
+                return None;
+            };
+
+            let materialization = materialize_shared_video_frame(
+                SharedVideoFrameMaterializationRequest::new(
+                    SharedVideoFrameLeaseRole::ScrubOverride,
+                    lease,
+                ),
+                texture_view_materializer.as_ref(),
+            );
+            timings.texture_view_lookup = materialization.timings.texture_view_lookup;
+            timings.resource_lookup_report = materialization.timings.resource_lookup_report;
+
+            match materialization.outcome {
+                SharedVideoFrameMaterializationOutcome::Ready { materialized_frame } => {
+                    let stage_started_at = Instant::now();
+                    let renderable_frame = materialized_frame.into_renderable_present_frame();
+                    app_state.remember_main_visual_override_renderable(
+                        metadata,
+                        renderable_frame.clone(),
+                    );
+                    timings.lookup_action = stage_started_at.elapsed();
+                    timings.total = video_prepare_started_at.elapsed();
+                    Some(
+                        PreparedVideoFrame::ready(renderable_frame, acquisition_state)
+                            .with_diagnostics("scrub_override_ready", timings),
+                    )
+                }
+                SharedVideoFrameMaterializationOutcome::Busy { .. } => None,
+                SharedVideoFrameMaterializationOutcome::Missing { present_frame } => {
+                    app_state.report_render_error(PlayerRenderError::missing_render_resources(
+                        &present_frame,
+                    ));
+                    app_state.clear_main_visual_override();
+                    None
+                }
+                SharedVideoFrameMaterializationOutcome::Unsupported { present_frame }
+                | SharedVideoFrameMaterializationOutcome::Error { present_frame } => {
+                    app_state.report_render_error(
+                        PlayerRenderError::render_resource_lookup_failed(&present_frame),
+                    );
+                    app_state.clear_main_visual_override();
+                    None
+                }
+            }
         }
     }
 }

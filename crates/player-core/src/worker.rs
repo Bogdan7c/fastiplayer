@@ -249,6 +249,9 @@ pub enum PlayerWorkerEvent {
     /// Событие из `PlayerSession`.
     Player(PlayerEvent),
 
+    /// Normalized scrub state-machine event для app-owned visual override/diagnostics.
+    Scrub(frame_server_core::ScrubEvent),
+
     /// Ошибка render bridge, полученная от shell/render thread.
     RenderError(PlayerRenderError),
 

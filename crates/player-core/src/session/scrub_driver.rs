@@ -13,10 +13,11 @@ use frame_server_core::{
     FinishScrubPolicy, FinishedOutcome, HostUploadBackpressureOutcome,
     HostUploadBackpressureReason, MatchedPlaybackOutcome, PlaybackGeneration, PreparedOutcome,
     PreviewFrameReadyOutcome, ProgressedOutcome, ResourceBusyOutcome, ResourceBusyReason,
-    ScrubDriverOutcome, ScrubEvent, ScrubExecutionPolicy, ScrubFatalReason, ScrubGeneration,
-    ScrubGenerationToken, ScrubIntent, ScrubIntentKind, ScrubProgress, ScrubStaleReason,
-    ScrubStateMachine, ScrubStep, ScrubTargetContext, ScrubTargetUpdate, ScrubTimedOutOutcome,
-    ScrubTimeoutReason, SourceRevision, StaleGenerationOutcome, ValidatedFrameServerConfig,
+    ScrubDriverOutcome, ScrubEvent, ScrubEventFrameIdentity, ScrubExecutionPolicy,
+    ScrubFatalReason, ScrubFrameTiming, ScrubGeneration, ScrubGenerationToken, ScrubIntent,
+    ScrubIntentKind, ScrubNoVideoFrameReason, ScrubProgress, ScrubStaleReason, ScrubStateMachine,
+    ScrubStep, ScrubTargetContext, ScrubTargetUpdate, ScrubTimedOutOutcome, ScrubTimeoutReason,
+    SourceRevision, StaleGenerationOutcome, ValidatedFrameServerConfig,
 };
 use media_core::{DemuxSeekRequest, MediaDemuxError, MediaTime, TrackTimestamp};
 
@@ -189,8 +190,16 @@ pub(super) enum ScrubFeedDrainResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ScrubFinishResult {
-    Committed { committed_time: MediaTime },
-    MatchedPlayback { matched_time: MediaTime },
+    Committed {
+        committed_position: MediaTime,
+        committed_frame_timing: ScrubFrameTiming,
+        frame_identity: ScrubEventFrameIdentity,
+    },
+    MatchedPlayback {
+        playback_position: MediaTime,
+        matched_frame_timing: ScrubFrameTiming,
+        frame_identity: ScrubEventFrameIdentity,
+    },
     ReleasedWithoutCommit,
 }
 
@@ -463,14 +472,26 @@ impl ScrubTransactionLifecycle for PlayerSession {
         context: ScrubTargetContext,
         policy: FinishScrubPolicy,
     ) -> ScrubLifecycleResult<ScrubFinishResult> {
+        let frame_timing = scrub_frame_timing_from_context(context);
+        let frame_identity = self
+            .current_present_frame_identity()
+            .map(ScrubEventFrameIdentity::Video)
+            .unwrap_or(ScrubEventFrameIdentity::NoVideoFrame(
+                ScrubNoVideoFrameReason::CurrentFrameUnavailable,
+            ));
+
         self.invalidate_in_flight_scrub_outputs_after_exit("scrub driver finish");
 
         match policy {
             FinishScrubPolicy::CommitVisiblePreview => Ok(ScrubFinishResult::Committed {
-                committed_time: context.target().media_time,
+                committed_position: context.target().media_time,
+                committed_frame_timing: frame_timing,
+                frame_identity,
             }),
             FinishScrubPolicy::MatchPlaybackPosition => Ok(ScrubFinishResult::MatchedPlayback {
-                matched_time: self.snapshot.timeline.current_position,
+                playback_position: self.snapshot.timeline.current_position,
+                matched_frame_timing: frame_timing,
+                frame_identity,
             }),
             FinishScrubPolicy::ReleaseWithoutCommit => Ok(ScrubFinishResult::ReleasedWithoutCommit),
         }
@@ -605,24 +626,37 @@ fn execute_feed_and_drain(
     }
 }
 
+fn scrub_frame_timing_from_context(context: ScrubTargetContext) -> ScrubFrameTiming {
+    let target = context.target();
+    ScrubFrameTiming::new(target.media_time, target.target_pts)
+}
+
 fn execute_finish(
     lifecycle: &mut impl ScrubTransactionLifecycle,
     context: ScrubTargetContext,
     policy: FinishScrubPolicy,
 ) -> ScrubDriverOutcome {
     match lifecycle.finish_scrub(context, policy) {
-        Ok(ScrubFinishResult::Committed { committed_time }) => {
-            ScrubDriverOutcome::Finished(FinishedOutcome {
-                context,
-                committed_time,
-            })
-        }
-        Ok(ScrubFinishResult::MatchedPlayback { matched_time }) => {
-            ScrubDriverOutcome::MatchedPlayback(MatchedPlaybackOutcome {
-                context,
-                matched_time,
-            })
-        }
+        Ok(ScrubFinishResult::Committed {
+            committed_position,
+            committed_frame_timing,
+            frame_identity,
+        }) => ScrubDriverOutcome::Finished(FinishedOutcome {
+            context,
+            committed_position,
+            committed_frame_timing,
+            frame_identity,
+        }),
+        Ok(ScrubFinishResult::MatchedPlayback {
+            playback_position,
+            matched_frame_timing,
+            frame_identity,
+        }) => ScrubDriverOutcome::MatchedPlayback(MatchedPlaybackOutcome {
+            context,
+            playback_position,
+            matched_frame_timing,
+            frame_identity,
+        }),
         Ok(ScrubFinishResult::ReleasedWithoutCommit) => {
             ScrubDriverOutcome::Cancelled(CancelledOutcome {
                 context,

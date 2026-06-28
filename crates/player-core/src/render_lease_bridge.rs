@@ -37,7 +37,7 @@ const RENDER_RELEASE_SEND_TIMEOUT: Duration = Duration::from_millis(2);
 
 /// Собирает stable identity из lease-а, который уже безопасно опубликован render-side.
 fn present_frame_identity_from_lease(lease: &VideoFrameLease) -> PresentFrameIdentity {
-    PresentFrameIdentity::new(lease.render_generation(), lease.resource_handle())
+    PresentFrameIdentity::from_decoded_frame(lease.render_generation(), lease.decoded_frame())
 }
 
 /// Результат неблокирующего чтения latest present frame.
@@ -322,6 +322,9 @@ pub(crate) struct RenderLeaseBridgeClient {
     /// Shared latest-slot, из которого render thread неблокирующе clone-ит frame lease.
     latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
 
+    /// Отдельный latest-slot для scrub visual override; playback acquisition его не читает.
+    latest_scrub_visual_override_handoff: Arc<LatestPresentFrameHandoff>,
+
     /// Неблокирующий канал latency samples render acquisition.
     render_acquire_sample_tx: Sender<RenderAcquireSample>,
 
@@ -336,12 +339,14 @@ impl RenderLeaseBridgeClient {
     /// Создаёт render-side handle поверх уже созданных worker-side каналов.
     fn new(
         latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
+        latest_scrub_visual_override_handoff: Arc<LatestPresentFrameHandoff>,
         render_acquire_sample_tx: Sender<RenderAcquireSample>,
         render_timing_sample_tx: Sender<RenderTimingSample>,
         resource_previous_frame_reuse_sample_tx: Sender<RenderResourcePreviousFrameReuseSample>,
     ) -> Self {
         Self {
             latest_present_frame_handoff,
+            latest_scrub_visual_override_handoff,
             render_acquire_sample_tx,
             render_timing_sample_tx,
             resource_previous_frame_reuse_sample_tx,
@@ -356,6 +361,15 @@ impl RenderLeaseBridgeClient {
         self.report_render_acquire_sample(acquire_started_at.elapsed());
 
         match acquire_result {
+            LatestPresentFrameAcquire::Acquired(frame) => Some(frame),
+            LatestPresentFrameAcquire::Empty | LatestPresentFrameAcquire::Busy => None,
+        }
+    }
+
+    /// Пытается получить scrub visual override lease без смешивания с playback latest-slot.
+    #[must_use]
+    pub(crate) fn try_acquire_scrub_visual_override_frame(&self) -> Option<VideoFrameLease> {
+        match self.latest_scrub_visual_override_handoff.try_clone_latest() {
             LatestPresentFrameAcquire::Acquired(frame) => Some(frame),
             LatestPresentFrameAcquire::Empty | LatestPresentFrameAcquire::Busy => None,
         }
@@ -386,6 +400,7 @@ impl RenderLeaseBridgeClient {
     #[cfg(test)]
     pub(crate) fn with_handoff_for_tests(
         latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
+        latest_scrub_visual_override_handoff: Arc<LatestPresentFrameHandoff>,
     ) -> (
         Self,
         Receiver<RenderAcquireSample>,
@@ -402,6 +417,7 @@ impl RenderLeaseBridgeClient {
         (
             Self::new(
                 latest_present_frame_handoff,
+                latest_scrub_visual_override_handoff,
                 render_acquire_sample_tx,
                 render_timing_sample_tx,
                 resource_previous_frame_reuse_sample_tx,
@@ -417,6 +433,9 @@ impl RenderLeaseBridgeClient {
 pub(crate) struct RenderLeaseBridge {
     /// Shared latest-slot для публикации frame lease-а render thread-у.
     latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
+
+    /// Shared latest-slot для scrub visual override, отдельный от playback slot-а.
+    latest_scrub_visual_override_handoff: Arc<LatestPresentFrameHandoff>,
 
     /// Sender render lease release ack-ов для новых present frames.
     render_release_tx: Sender<RenderLeaseRelease>,
@@ -453,8 +472,10 @@ impl RenderLeaseBridge {
         let (resource_previous_frame_reuse_sample_tx, resource_previous_frame_reuse_sample_rx) =
             bounded(RENDER_RESOURCE_REUSE_DIAGNOSTIC_CHANNEL_CAPACITY);
         let latest_present_frame_handoff = Arc::new(LatestPresentFrameHandoff::new());
+        let latest_scrub_visual_override_handoff = Arc::new(LatestPresentFrameHandoff::new());
         let client = RenderLeaseBridgeClient::new(
             Arc::clone(&latest_present_frame_handoff),
+            Arc::clone(&latest_scrub_visual_override_handoff),
             render_acquire_sample_tx,
             render_timing_sample_tx,
             resource_previous_frame_reuse_sample_tx,
@@ -463,6 +484,7 @@ impl RenderLeaseBridge {
         (
             Self {
                 latest_present_frame_handoff,
+                latest_scrub_visual_override_handoff,
                 render_release_tx,
                 render_release_rx,
                 render_acquire_sample_rx,
@@ -595,6 +617,24 @@ impl RenderLeaseBridge {
 
         let present_frame = self.build_present_frame(session);
         self.latest_present_frame_handoff.publish(present_frame);
+    }
+
+    /// Публикует scrub visual override lease в отдельный latest-slot.
+    #[expect(
+        dead_code,
+        reason = "S16 exposes the boundary; S17 execution wiring will call it when real scrub frames are produced."
+    )]
+    pub(crate) fn publish_scrub_visual_override_frame(&mut self, frame: Option<VideoFrameLease>) {
+        self.latest_scrub_visual_override_handoff.publish(frame);
+    }
+
+    /// Чистит scrub visual override slot без воздействия на playback latest frame.
+    #[expect(
+        dead_code,
+        reason = "S16 exposes the boundary; S17 execution wiring will clear it on scrub lifecycle transitions."
+    )]
+    pub(crate) fn clear_scrub_visual_override_frame(&mut self) {
+        self.latest_scrub_visual_override_handoff.clear();
     }
 
     /// Возвращает identity текущего present frame без создания нового render lease-а.

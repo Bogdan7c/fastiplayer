@@ -456,8 +456,16 @@ impl ScrubTransactionLifecycle for RecordingScrubLifecycle {
         _policy: FinishScrubPolicy,
     ) -> ScrubLifecycleResult<ScrubFinishResult> {
         self.steps.push(LifecycleStep::Finish);
+        let target = context.target();
         Ok(ScrubFinishResult::Committed {
-            committed_time: context.target().media_time,
+            committed_position: target.media_time,
+            committed_frame_timing: frame_server_core::ScrubFrameTiming::new(
+                target.media_time,
+                target.target_pts,
+            ),
+            frame_identity: frame_server_core::ScrubEventFrameIdentity::NoVideoFrame(
+                frame_server_core::ScrubNoVideoFrameReason::CurrentFrameUnavailable,
+            ),
         })
     }
 

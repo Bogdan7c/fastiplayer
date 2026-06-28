@@ -105,6 +105,7 @@ impl AppState {
             return Err(format!("video backend command delivery failed: {error}"));
         }
 
+        self.clear_main_visual_override();
         self.wgpu_frame_materializer = Some(frame_materializer);
 
         // Живая смена backend-а (класс реально меняется): морозим последний кадр, пока

@@ -55,10 +55,10 @@ pub use scrub::{
     MatchedPlaybackEvent, MatchedPlaybackOutcome, PreTargetReleasedOutcome, PreparedOutcome,
     PreviewFrameReadyEvent, PreviewFrameReadyOutcome, ProgressedOutcome, ResourceBusyOutcome,
     ResourceBusyReason, ResumePendingEvent, ScrubCancelledEvent, ScrubCommittedEvent,
-    ScrubDriverOutcome, ScrubEvent, ScrubFailedEvent, ScrubFatalReason, ScrubFrameReadiness,
-    ScrubFrameReadinessState, ScrubPreviewFrame, ScrubProgress, ScrubProgressEvent,
-    ScrubStartedEvent, ScrubTargetReachStatus, ScrubTimedOutOutcome, ScrubTimeoutReason,
-    StaleGenerationOutcome,
+    ScrubDriverOutcome, ScrubEvent, ScrubEventFrameIdentity, ScrubFailedEvent, ScrubFatalReason,
+    ScrubFrameReadiness, ScrubFrameReadinessState, ScrubFrameTiming, ScrubNoVideoFrameReason,
+    ScrubPreviewFrame, ScrubProgress, ScrubProgressEvent, ScrubStartedEvent,
+    ScrubTargetReachStatus, ScrubTimedOutOutcome, ScrubTimeoutReason, StaleGenerationOutcome,
 };
 pub use state_machine::{
     ScrubExecutionPolicy, ScrubProtocolPhase, ScrubStateMachine, ScrubStep, ScrubTargetUpdate,

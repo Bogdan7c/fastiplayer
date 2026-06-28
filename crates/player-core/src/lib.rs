@@ -61,6 +61,13 @@ pub use event::{
     BufferingState, CapabilitySummary, FramePresentationInfo, MediaSummary, PlayerEvent,
     SeekAudioResumeInfo, SeekCommitInfo, SeekTargetFramePresentation, VideoBackendSelectionRequest,
 };
+pub use frame_server_core::{
+    BackendRevision, MatchedPlaybackEvent, PlaybackGeneration, PreviewFrameReadyEvent,
+    ResumePendingEvent, ScrubCommittedEvent, ScrubDriverOutcomeKind, ScrubEvent,
+    ScrubEventDiagnostics, ScrubEventFrameIdentity, ScrubExactnessPolicy, ScrubFrameTiming,
+    ScrubGeneration, ScrubGenerationToken, ScrubNoVideoFrameReason, ScrubPreviewFrame,
+    ScrubRequestKind, ScrubTarget, ScrubTargetContext, ScrubTrackSelection, SourceRevision,
+};
 pub use media_core::TrackId;
 pub use media_opening::{PreparedMedia, PreparedMediaSource};
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};

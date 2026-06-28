@@ -4,6 +4,7 @@ S14 refactor-only split moved `crates/app-egui/src/state.rs` implementation deta
 
 - `state.rs`: keeps `AppState` fields/constructor, frame context/timing/output structs, committed snapshot/player snapshot/redraw/desktop integration core helpers, and declares private child modules.
 - `state/present_frame_cache.rs`: `PresentFrameAcquisition`, `RenderablePresentFrame`, cached/renderable present-frame identity, validation, lifecycle invalidation, texture-busy fallback, render error/frame cache methods.
+- `state/main_visual_override.rs`: S16 app-owned main-video scrub visual override state for `SeekLanding`/`LiveScrub`; stores override metadata and S15-materialized renderable frame separately from playback cache; ignores stale older-generation preview/events, clears old override on newer scrub generation, handles matching `Committed`/`MatchedPlayback`, and player lifecycle invalidation.
 - `state/video_backend.rs`: video pipeline init/rebuild, backend reselection, backend swap freeze/phase, system capabilities handoff.
 - `state/media_jobs.rs`: `ActiveMediaSource`, local file/prepared media/direct/YouTube loading, local open job polling/result application, media reconfigure restore helpers.
 - `state/telemetry_panel.rs`: telemetry panel cache/rows/tone, row building and panel rendering helpers.
