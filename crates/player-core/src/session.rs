@@ -27,6 +27,7 @@ mod capability_selection;
 mod diagnostics_sink;
 mod eof_drain;
 mod media_lifecycle;
+mod prepared_seek;
 mod render_leases;
 mod scrub_driver;
 mod seek_transaction;
@@ -35,6 +36,8 @@ mod tick;
 
 use self::eof_drain::EofDrainRuntime;
 use self::media_lifecycle::MediaLifecycleState;
+pub(crate) use self::prepared_seek::PreparedSeekLandingOverrideHandoff;
+use self::prepared_seek::PreparedSeekLandingRuntime;
 pub(crate) use self::render_leases::{LeasedPresentFrame, PresentFrameIdentity};
 pub use self::tick::{
     PlayerPipelinePause, PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult,
@@ -103,6 +106,9 @@ pub struct PlayerSession {
 
     /// Runtime state seek transaction/scrub/trace markers, которым владеет session.
     seek_runtime: SeekRuntimeState,
+
+    /// S17B bridge: neutral prepared working set плюс seek-owned promoted lease.
+    prepared_seek_landing: PreparedSeekLandingRuntime,
 
     /// Отложенный выбор video-трека: активный backend не может декодировать стрим,
     /// и session ждёт, пока shell установит совместимый backend.
@@ -894,6 +900,7 @@ impl Default for PlayerSession {
             capabilities: None,
             active_video_backend_id: None,
             seek_runtime: SeekRuntimeState::default(),
+            prepared_seek_landing: PreparedSeekLandingRuntime::default(),
             pending_video_backend_reselection: None,
         }
     }

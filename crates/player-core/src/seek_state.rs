@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use frame_server_core::ScrubGenerationToken;
+use frame_server_core::{ScrubGenerationToken, ScrubStaleReason};
 use media_core::{DemuxSeekRequest, MediaTime, TrackKind};
 
 use crate::diagnostics::{
@@ -72,11 +72,14 @@ pub(crate) struct PendingSeekLandingState {
     resume_intent: PlaybackResumeIntent,
 }
 
-/// Active S17A SeekLanding transaction поверх текущего playback decoder-а.
+/// Active S17 SeekLanding transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ActiveSeekLandingState {
     /// Двойной guard state-machine: playback generation + nested scrub generation.
     generation: ScrubGenerationToken,
+
+    /// Route исполнения: cold decode или prepared override без decoder loop.
+    execution: SeekLandingExecution,
 
     /// Пользовательский seek mode, сохранённый до demux-level mapping-а.
     seek_mode: SeekMode,
@@ -86,6 +89,34 @@ pub(crate) struct ActiveSeekLandingState {
 
     /// Фактическая позиция, куда demuxer принял decode-point seek.
     actual_decode_position: Option<MediaTime>,
+}
+
+/// Route исполнения active SeekLanding без неявного `bool` на callsite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SeekLandingExecution {
+    /// S17A cold route: reused playback decoder должен demux/decode exact frame.
+    ReusedDecoderColdDecode,
+
+    /// S17B prepared route: exact frame уже promoted, tick не должен запускать decode.
+    PreparedVisualOverride,
+}
+
+impl SeekLandingExecution {
+    /// Разрешает ли route demux/decode loop во время public `Scrubbing`.
+    #[must_use]
+    pub(crate) const fn decode_active(self) -> bool {
+        matches!(self, Self::ReusedDecoderColdDecode)
+    }
+}
+
+/// Ошибка начала SeekLanding playback generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SeekLandingGenerationStartError {
+    /// Следующее playback generation переполнилось.
+    GenerationOverflow,
+
+    /// State-machine generation не совпала с owner-side guard-ами.
+    Stale(ScrubStaleReason),
 }
 
 impl ActiveSeekLandingState {
@@ -105,6 +136,12 @@ impl ActiveSeekLandingState {
     #[must_use]
     pub(crate) const fn resume_intent(self) -> PlaybackResumeIntent {
         self.resume_intent
+    }
+
+    /// Проверяет, должен ли tick продолжать cold decode route.
+    #[must_use]
+    pub(crate) const fn decode_active(self) -> bool {
+        self.execution.decode_active()
     }
 
     /// Возвращает accepted demux position, если demux seek уже состоялся.
@@ -631,7 +668,7 @@ pub(crate) struct SeekRuntimeState {
     /// One-shot SeekLanding request, ожидающий scrub generation от state-machine.
     pending_seek_landing: Option<PendingSeekLandingState>,
 
-    /// Active one-shot SeekLanding transaction, которая декодирует через playback decoder.
+    /// Active one-shot SeekLanding transaction: cold decode или prepared override route.
     active_seek_landing: Option<ActiveSeekLandingState>,
 
     /// PTS свежего near-EOF fallback frame-а, который уже был представлен.
@@ -881,14 +918,19 @@ impl SeekRuntimeState {
         self.pending_seek_landing.is_some()
     }
 
-    /// Привязывает pending S17A SeekLanding request к concrete scrub generation.
-    pub(crate) fn activate_seek_landing_generation(&mut self, generation: ScrubGenerationToken) {
+    /// Привязывает pending S17 SeekLanding request к concrete scrub generation.
+    pub(crate) fn activate_seek_landing_generation(
+        &mut self,
+        generation: ScrubGenerationToken,
+        execution: SeekLandingExecution,
+    ) {
         let Some(pending) = self.pending_seek_landing.take() else {
             return;
         };
 
         self.active_seek_landing = Some(ActiveSeekLandingState {
             generation,
+            execution,
             seek_mode: pending.seek_mode,
             resume_intent: pending.resume_intent,
             actual_decode_position: None,
@@ -931,10 +973,13 @@ impl SeekRuntimeState {
     /// Decode loop должен работать в public `Scrubbing` только для S17A SeekLanding.
     #[must_use]
     pub(crate) const fn seek_landing_decode_active(&self) -> bool {
-        self.commit.is_some() && self.active_seek_landing.is_some()
+        match (self.commit, self.active_seek_landing) {
+            (Some(_), Some(active)) => active.decode_active(),
+            _ => false,
+        }
     }
 
-    /// Сбрасывает только S17A SeekLanding markers; simple scrub state не трогает.
+    /// Сбрасывает только S17 SeekLanding markers; simple scrub state не трогает.
     pub(crate) fn clear_seek_landing(&mut self) {
         self.pending_seek_landing = None;
         self.active_seek_landing = None;

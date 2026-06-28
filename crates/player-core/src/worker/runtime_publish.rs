@@ -200,6 +200,16 @@ impl PlayerWorkerRuntime {
     pub(super) fn publish_session_outputs(&mut self) {
         self.render_bridge
             .publish_latest_present_frame(&mut self.session);
+        match self.session.take_prepared_seek_landing_override_handoff() {
+            Some(crate::session::PreparedSeekLandingOverrideHandoff::Publish(frame)) => {
+                self.render_bridge
+                    .publish_scrub_visual_override_frame(Some(frame));
+            }
+            Some(crate::session::PreparedSeekLandingOverrideHandoff::Clear) => {
+                self.render_bridge.clear_scrub_visual_override_frame();
+            }
+            None => {}
+        }
 
         let snapshot = self
             .session

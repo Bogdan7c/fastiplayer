@@ -620,19 +620,11 @@ impl RenderLeaseBridge {
     }
 
     /// Публикует scrub visual override lease в отдельный latest-slot.
-    #[expect(
-        dead_code,
-        reason = "S16 exposes the boundary; S17 execution wiring will call it when real scrub frames are produced."
-    )]
     pub(crate) fn publish_scrub_visual_override_frame(&mut self, frame: Option<VideoFrameLease>) {
         self.latest_scrub_visual_override_handoff.publish(frame);
     }
 
     /// Чистит scrub visual override slot без воздействия на playback latest frame.
-    #[expect(
-        dead_code,
-        reason = "S16 exposes the boundary; S17 execution wiring will clear it on scrub lifecycle transitions."
-    )]
     pub(crate) fn clear_scrub_visual_override_frame(&mut self) {
         self.latest_scrub_visual_override_handoff.clear();
     }

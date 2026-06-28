@@ -22,7 +22,10 @@ use frame_server_core::{
 use media_core::{DemuxSeekRequest, MediaDemuxError, MediaTime, TrackTimestamp};
 
 use super::PlayerSession;
-use crate::seek_state::{SeekCommitState, demux_seek_request_for_transaction};
+use crate::seek_state::{
+    SeekCommitState, SeekLandingExecution, SeekLandingGenerationStartError,
+    demux_seek_request_for_transaction,
+};
 use crate::{PlayerError, SeekMode};
 
 const AUDIO_RESUME_TIMEOUT_MAX: Duration = Duration::from_millis(500);
@@ -398,71 +401,15 @@ impl ScrubTransactionLifecycle for PlayerSession {
         &mut self,
         generation: ScrubGenerationToken,
     ) -> ScrubLifecycleResult<()> {
-        let pending_seek_landing = self.seek_runtime.pending_seek_landing_request_active();
-        let expected_playback_generation = if pending_seek_landing {
-            self.pipeline
-                .seek_generation()
-                .checked_add(1)
-                .ok_or_else(|| {
-                    ScrubLifecycleError::Fatal(ScrubFatalReason::DriverInvariantViolated)
-                })?
-        } else {
-            self.pipeline.seek_generation()
-        };
-        let current_generation = ScrubGenerationToken::new(
-            PlaybackGeneration::new(expected_playback_generation),
-            generation.scrub_generation,
-        );
-        if let Some(stale_reason) = generation.stale_reason_against(current_generation) {
-            return Err(ScrubLifecycleError::StaleGeneration(stale_reason));
-        }
-
-        if pending_seek_landing {
-            let new_playback_generation = self.pipeline.begin_seek_generation();
-            debug_assert_eq!(new_playback_generation, expected_playback_generation);
-            if self.pipeline.has_selected_video_track() {
-                self.record_video_decoder_bootstrap_started();
-            }
-            if let Some(Err(error)) = self.pipeline.reset_audio_decoder() {
-                let player_error = PlayerError::new(
-                    crate::PlayerErrorKind::RuntimeError,
-                    format!("Audio decoder reset failed during SeekLanding: {error}"),
-                );
-                self.record_recoverable_error(player_error);
-            }
-            if let Some(clear_result) = self
-                .pipeline
-                .clear_audio_output_for_seek(new_playback_generation)
-            {
-                match clear_result {
-                    Ok(ack_generation) => {
-                        self.pipeline.mark_audio_buffer_clear_ack(ack_generation);
-                    }
-                    Err(error) => {
-                        let player_error = PlayerError::new(
-                            crate::PlayerErrorKind::AudioDeviceUnavailable,
-                            format!("Audio buffer clear failed during SeekLanding: {error}"),
-                        );
-                        self.record_recoverable_error(player_error);
-                    }
-                }
-            } else {
-                self.pipeline
-                    .mark_audio_buffer_clear_ack(new_playback_generation);
-                self.pipeline.reset_audio_clock();
-            }
-        }
-
-        self.seek_runtime
-            .activate_seek_landing_generation(generation);
-        Ok(())
+        self.begin_seek_landing_playback_generation(
+            generation,
+            SeekLandingExecution::ReusedDecoderColdDecode,
+        )
+        .map_err(scrub_error_from_seek_landing_generation_start)
     }
 
     fn clear_pending_queues(&mut self, _context: ScrubTargetContext) -> ScrubLifecycleResult<()> {
-        let has_video = self.pipeline.has_selected_video_track();
-        self.pipeline.clear_pending_packets_for_seek();
-        self.pipeline.reset_decoder_state_for_seek(has_video);
-        self.clear_queued_video_frames();
+        self.clear_pending_queues_for_seek_landing();
         Ok(())
     }
 
@@ -540,6 +487,7 @@ impl ScrubTransactionLifecycle for PlayerSession {
             if let Err(error) = self.apply_decoder_output_floor_for_seek(seek_commit) {
                 self.record_recoverable_error(error.clone());
                 self.seek_runtime.clear_active_commit();
+                self.prepared_seek_landing.clear_promoted_seek_ownership();
                 self.seek_runtime.clear_trace();
                 self.seek_runtime.clear_eof_fallback_video_position();
                 self.clear_seek_preroll_fallback_frame();
@@ -810,6 +758,19 @@ fn record_outcome(
 
 fn player_error_to_scrub_fatal(_error: PlayerError) -> ScrubLifecycleError {
     ScrubLifecycleError::Fatal(ScrubFatalReason::BackendContractViolated)
+}
+
+fn scrub_error_from_seek_landing_generation_start(
+    error: SeekLandingGenerationStartError,
+) -> ScrubLifecycleError {
+    match error {
+        SeekLandingGenerationStartError::GenerationOverflow => {
+            ScrubLifecycleError::Fatal(ScrubFatalReason::DriverInvariantViolated)
+        }
+        SeekLandingGenerationStartError::Stale(reason) => {
+            ScrubLifecycleError::StaleGeneration(reason)
+        }
+    }
 }
 
 fn scrub_lifecycle_error_from_demux_seek_error(error: anyhow::Error) -> ScrubLifecycleError {

@@ -1,6 +1,97 @@
 use super::test_support::*;
 use super::*;
 
+use super::super::prepared_seek::{
+    PreparedSeekBranchResumePendingReason, PreparedSeekBranchToken,
+    PreparedSeekLandingOverrideHandoff, PreparedSeekLandingPromotionKind,
+};
+
+struct RecordingPreparedReleaseSink {
+    released: Arc<Mutex<Vec<video_core::FrameResourceHandle>>>,
+}
+
+impl video_present_core::VideoFrameReleaseSink for RecordingPreparedReleaseSink {
+    fn release_frame(
+        &self,
+        release: video_present_core::VideoFrameRelease,
+    ) -> video_present_core::VideoFrameReleaseOutcome {
+        self.released
+            .lock()
+            .expect("prepared release storage mutex must not be poisoned")
+            .push(release.resource_handle());
+        video_present_core::VideoFrameReleaseOutcome::Accepted
+    }
+}
+
+fn prepared_timestamp(millis: u64) -> media_core::TrackTimestamp {
+    media_core::TrackTimestamp::new(
+        media_core::TrackId::new(1),
+        i64::try_from(millis).expect("test timestamp fits into i64"),
+        media_core::TimeBase::new(1, 1_000).expect("valid millisecond timebase"),
+    )
+}
+
+fn prepared_media_time(millis: u64) -> MediaTime {
+    MediaTime::from_millis(millis)
+}
+
+fn prepared_lease_for_tests(
+    session: &PlayerSession,
+    pts_millis: u64,
+    resource_handle: u64,
+    released: Arc<Mutex<Vec<video_core::FrameResourceHandle>>>,
+) -> video_present_core::VideoFrameLease {
+    let mut frame = decoded_frame_for_tests(Duration::from_millis(pts_millis), resource_handle);
+    frame.generation = session.pipeline.seek_generation();
+
+    video_present_core::VideoFrameLease::new(video_present_core::VideoFrameLeaseConfig::new(
+        session.pipeline.render_generation(),
+        frame,
+        Arc::new(RecordingPreparedReleaseSink { released }),
+    ))
+}
+
+fn insert_prepared_seek_frame_for_tests(
+    session: &mut PlayerSession,
+    target_millis: u64,
+    actual_millis: u64,
+    resource_handle: u64,
+    branch_token: Option<PreparedSeekBranchToken>,
+    released: Arc<Mutex<Vec<video_core::FrameResourceHandle>>>,
+) {
+    let lease = prepared_lease_for_tests(session, actual_millis, resource_handle, released);
+    session.insert_prepared_seek_landing_frame_for_tests(
+        prepared_media_time(target_millis),
+        prepared_timestamp(actual_millis),
+        lease,
+        branch_token,
+    );
+}
+
+fn take_prepared_override_lease(
+    session: &mut PlayerSession,
+) -> video_present_core::VideoFrameLease {
+    match session.take_prepared_seek_landing_override_handoff() {
+        Some(PreparedSeekLandingOverrideHandoff::Publish(lease)) => lease,
+        Some(PreparedSeekLandingOverrideHandoff::Clear) => {
+            panic!("prepared hit must publish an override lease before clear")
+        }
+        None => panic!("prepared hit must publish an override lease"),
+    }
+}
+
+fn release_count(
+    released: &Arc<Mutex<Vec<video_core::FrameResourceHandle>>>,
+    resource_handle: u64,
+) -> usize {
+    released
+        .lock()
+        .expect("prepared release storage mutex must not be poisoned")
+        .iter()
+        .filter(|handle| **handle == video_core::FrameResourceHandle(resource_handle))
+        .count()
+}
+
 #[test]
 fn inactive_end_scrub_clears_simple_state_without_resetting_unrelated_seek_state() {
     let mut session = PlayerSession::new();
@@ -411,6 +502,273 @@ fn cold_seek_landing_keeps_old_confirmed_frame_visible_while_pending() {
             .iter()
             .any(|event| matches!(event, frame_server_core::ScrubEvent::ResumePending(_)))
     );
+}
+
+#[test]
+fn prepared_frame_only_seek_landing_publishes_override_without_cold_decode() {
+    let mut session = PlayerSession::new();
+    let seek_request_log = install_fake_media_with_seek_request_log(
+        &mut session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+    let released = Arc::new(Mutex::new(Vec::new()));
+    insert_prepared_seek_frame_for_tests(
+        &mut session,
+        11_000,
+        11_000,
+        80,
+        None,
+        Arc::clone(&released),
+    );
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            prepared_media_time(11_000),
+        )))
+        .unwrap();
+
+    assert_eq!(
+        seek_request_log
+            .lock()
+            .expect("seek request log mutex must not be poisoned")
+            .len(),
+        0
+    );
+    assert!(!session.seek_landing_decode_active());
+    assert!(session.seek_commit().is_some());
+    assert_eq!(
+        session.active_prepared_seek_landing_kind_for_tests(),
+        Some(
+            PreparedSeekLandingPromotionKind::VisualOverrideResumePending {
+                reason: PreparedSeekBranchResumePendingReason::FrameOnly,
+            }
+        )
+    );
+    assert_eq!(session.prepared_seek_landing_working_set_len_for_tests(), 0);
+
+    let scrub_events = session.take_scrub_events();
+    assert!(matches!(
+        scrub_events.as_slice(),
+        [
+            frame_server_core::ScrubEvent::Started(_),
+            frame_server_core::ScrubEvent::PreviewFrameReady(_),
+            frame_server_core::ScrubEvent::ResumePending(_),
+        ]
+    ));
+    let preview = scrub_events
+        .iter()
+        .find_map(|event| match event {
+            frame_server_core::ScrubEvent::PreviewFrameReady(preview) => Some(preview),
+            _ => None,
+        })
+        .expect("prepared hit must publish PreviewFrameReady");
+    assert_eq!(preview.frame.timing.pts, prepared_timestamp(11_000));
+    assert_eq!(
+        preview.frame.resource.resource_handle(),
+        video_core::FrameResourceHandle(80)
+    );
+
+    let override_lease = take_prepared_override_lease(&mut session);
+    assert_eq!(
+        override_lease.resource_handle(),
+        video_core::FrameResourceHandle(80)
+    );
+    assert!(
+        session
+            .take_prepared_seek_landing_override_handoff()
+            .is_none()
+    );
+    assert_eq!(release_count(&released, 80), 0);
+
+    drop(override_lease);
+    assert_eq!(release_count(&released, 80), 0);
+    session.set_seek_commit_for_tests(None);
+    assert_eq!(release_count(&released, 80), 1);
+}
+
+#[test]
+fn prepared_timing_rejection_falls_back_to_cold_decode_without_promoting() {
+    let mut session = PlayerSession::new();
+    let seek_request_log = install_fake_media_with_seek_request_log(
+        &mut session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+    let released = Arc::new(Mutex::new(Vec::new()));
+    insert_prepared_seek_frame_for_tests(
+        &mut session,
+        11_000,
+        10_900,
+        81,
+        Some(PreparedSeekBranchToken::resume_ready_for_tests()),
+        Arc::clone(&released),
+    );
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            prepared_media_time(11_000),
+        )))
+        .unwrap();
+
+    assert_eq!(
+        seek_request_log
+            .lock()
+            .expect("seek request log mutex must not be poisoned")
+            .len(),
+        1
+    );
+    assert!(session.seek_landing_decode_active());
+    assert_eq!(session.active_prepared_seek_landing_kind_for_tests(), None);
+    assert_eq!(session.prepared_seek_landing_working_set_len_for_tests(), 1);
+    assert!(
+        session
+            .take_prepared_seek_landing_override_handoff()
+            .is_none()
+    );
+    assert_eq!(release_count(&released, 81), 0);
+}
+
+#[test]
+fn prepared_branch_token_without_runway_is_fail_closed_resume_pending() {
+    let mut session = PlayerSession::new();
+    let seek_request_log = install_fake_media_with_seek_request_log(
+        &mut session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+    let released = Arc::new(Mutex::new(Vec::new()));
+    insert_prepared_seek_frame_for_tests(
+        &mut session,
+        12_000,
+        12_000,
+        82,
+        Some(PreparedSeekBranchToken::continuation_without_runway_for_tests()),
+        Arc::clone(&released),
+    );
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            prepared_media_time(12_000),
+        )))
+        .unwrap();
+
+    assert_eq!(
+        seek_request_log
+            .lock()
+            .expect("seek request log mutex must not be poisoned")
+            .len(),
+        0
+    );
+    assert_eq!(
+        session.active_prepared_seek_landing_kind_for_tests(),
+        Some(
+            PreparedSeekLandingPromotionKind::VisualOverrideResumePending {
+                reason: PreparedSeekBranchResumePendingReason::RunwayPending,
+            }
+        )
+    );
+    assert!(
+        session
+            .take_scrub_events()
+            .iter()
+            .any(|event| matches!(event, frame_server_core::ScrubEvent::ResumePending(_)))
+    );
+    assert_eq!(release_count(&released, 82), 0);
+}
+
+#[test]
+fn prepared_resume_ready_branch_still_waits_for_resume_pending_policy() {
+    let mut session = PlayerSession::new();
+    let seek_request_log = install_fake_media_with_seek_request_log(
+        &mut session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+    let released = Arc::new(Mutex::new(Vec::new()));
+    insert_prepared_seek_frame_for_tests(
+        &mut session,
+        13_000,
+        13_000,
+        83,
+        Some(PreparedSeekBranchToken::resume_ready_for_tests()),
+        Arc::clone(&released),
+    );
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            prepared_media_time(13_000),
+        )))
+        .unwrap();
+
+    assert_eq!(
+        seek_request_log
+            .lock()
+            .expect("seek request log mutex must not be poisoned")
+            .len(),
+        0
+    );
+    assert_eq!(
+        session.active_prepared_seek_landing_kind_for_tests(),
+        Some(PreparedSeekLandingPromotionKind::ResumeReadyBranch)
+    );
+    assert!(session.snapshot().timeline.scrubbing);
+    let scrub_events = session.take_scrub_events();
+    assert!(
+        scrub_events
+            .iter()
+            .any(|event| matches!(event, frame_server_core::ScrubEvent::ResumePending(_)))
+    );
+    assert!(
+        scrub_events
+            .iter()
+            .all(|event| !matches!(event, frame_server_core::ScrubEvent::Committed(_)))
+    );
+    assert_eq!(release_count(&released, 83), 0);
+}
+
+#[test]
+fn promoted_prepared_resource_leaves_hover_cleanup_and_releases_once() {
+    let mut session = PlayerSession::new();
+    install_fake_media_with_seek_request_log(&mut session, vec![fake_track(1, TrackKind::Video)]);
+    let released = Arc::new(Mutex::new(Vec::new()));
+    insert_prepared_seek_frame_for_tests(
+        &mut session,
+        14_000,
+        14_000,
+        84,
+        Some(PreparedSeekBranchToken::resume_ready_for_tests()),
+        Arc::clone(&released),
+    );
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            prepared_media_time(14_000),
+        )))
+        .unwrap();
+
+    assert_eq!(session.prepared_seek_landing_working_set_len_for_tests(), 0);
+    insert_prepared_seek_frame_for_tests(
+        &mut session,
+        15_000,
+        15_000,
+        85,
+        None,
+        Arc::clone(&released),
+    );
+    insert_prepared_seek_frame_for_tests(
+        &mut session,
+        16_000,
+        16_000,
+        86,
+        None,
+        Arc::clone(&released),
+    );
+
+    assert_eq!(release_count(&released, 84), 0);
+    assert_eq!(release_count(&released, 85), 1);
+    assert_eq!(release_count(&released, 86), 0);
+
+    session.set_seek_commit_for_tests(None);
+    assert_eq!(release_count(&released, 84), 1);
+    session.set_seek_commit_for_tests(None);
+    assert_eq!(release_count(&released, 84), 1);
 }
 
 /// PreviewScrub временно является latest-target update и не стартует demux preview.
