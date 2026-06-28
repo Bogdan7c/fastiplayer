@@ -169,6 +169,17 @@ impl<BranchToken> TimelineHoverRecentSupersededEntries<BranchToken> {
         cleared_entries
     }
 
+    pub(super) fn remove_oldest_for_pressure(&mut self) -> Option<TimelineHoverPrepareFrameKey> {
+        while let Some(oldest_key) = self.insertion_order.pop_front() {
+            if self.entries.remove(&oldest_key).is_some() {
+                self.remove_key_from_bucket_index(oldest_key);
+                return Some(oldest_key);
+            }
+        }
+
+        None
+    }
+
     fn find_entry_for_request(
         &self,
         request: &TimelineHoverPrepareFrameLookupRequest,
@@ -269,7 +280,7 @@ impl<BranchToken> TimelineHoverRecentSupersededEntries<BranchToken> {
 }
 
 impl<BranchToken> TimelineHoverPreparedFrameEntry<BranchToken> {
-    fn resource_descriptor(&self) -> VideoPresentFrameResourceDescriptor {
+    pub(super) fn resource_descriptor(&self) -> VideoPresentFrameResourceDescriptor {
         self.lease.resource_descriptor()
     }
 }

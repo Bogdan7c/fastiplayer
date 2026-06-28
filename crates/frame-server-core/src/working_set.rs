@@ -3,6 +3,7 @@
 //! Модуль владеет только индексом, ключом, metadata и проверкой попадания.
 //! Он не декодирует кадры, не хранит пиксели и не знает о player/render backend.
 
+mod pressure;
 mod recent_superseded;
 
 use std::cmp::Ordering;
@@ -14,10 +15,25 @@ use video_present_core::{
     VideoFrameLease, VideoPresentFrameResourceDescriptor, VideoPresentFrameResourceKind,
 };
 
+pub use pressure::{
+    TimelineHoverPrepareAdmissionMode, TimelineHoverPrepareAdmissionOutcome,
+    TimelineHoverPrepareAdmissionRequest, TimelineHoverPrepareInsertOutcome,
+    TimelineHoverPrepareNoOpReason, TimelineHoverPreparePressureReleaseMissReason,
+    TimelineHoverPreparePressureReleaseOutcome, TimelineHoverPrepareProviderBudget,
+    TimelineHoverPrepareSlotPlan,
+};
 pub use recent_superseded::{
     TimelineHoverRecentSupersededBudget, TimelineHoverRecentSupersededClearReason,
 };
 
+use self::pressure::{
+    TimelineHoverPrepareAdmissionMode as AdmissionMode,
+    TimelineHoverPrepareAdmissionOutcome as AdmissionOutcome,
+    TimelineHoverPrepareNoOpReason as NoOpReason,
+    TimelineHoverPreparePressureReleaseMissReason as PressureReleaseMissReason,
+    TimelineHoverPreparePressureReleaseOutcome as PressureReleaseOutcome,
+    TimelineHoverPrepareProviderBudget as ProviderBudget, TimelineHoverPrepareSlotPlan as SlotPlan,
+};
 use self::recent_superseded::TimelineHoverRecentSupersededEntries;
 use crate::{
     BackendRevision, CancelScrubReason, ScrubGenerationToken, ScrubTrackSelection, SourceRevision,
@@ -493,10 +509,104 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
         self.recent_superseded.len()
     }
 
+    /// Dry-run admission перед запуском hover prepare.
+    ///
+    /// Метод не меняет storage и не освобождает lease. Caller использует его до
+    /// дорогой подготовки, когда нужно понять: есть ли hover slot и provider pin.
+    #[must_use]
+    pub fn evaluate_prepare_admission(
+        &self,
+        request: TimelineHoverPrepareAdmissionRequest,
+    ) -> TimelineHoverPrepareAdmissionOutcome {
+        if request.mode() == AdmissionMode::ActiveLiveScrub {
+            return AdmissionOutcome::NoOp {
+                reason: NoOpReason::ActiveLiveScrubSuspendsHoverPrepare,
+            };
+        }
+
+        if request.provider_budget() == ProviderBudget::ExhaustedAfterActivePins {
+            return AdmissionOutcome::NoOp {
+                reason: NoOpReason::ProviderResourcePressure,
+            };
+        }
+
+        match self.slot_plan_for_admission(request) {
+            Some(slot_plan) => AdmissionOutcome::Admitted { slot_plan },
+            None => AdmissionOutcome::NoOp {
+                reason: NoOpReason::NoSpareHoverSlot {
+                    capacity: self.capacity.get(),
+                    used_slots: self.entries.len(),
+                    protected_key: request.protected_key(),
+                },
+            },
+        }
+    }
+
+    /// Вставляет prepared entry только если admission всё ещё разрешён.
+    ///
+    /// При отказе entry возвращается caller-у, чтобы working set не делал
+    /// скрытый release и не менял состояние при typed pressure/no-op.
+    #[must_use]
+    pub fn try_insert_prepared_frame(
+        &mut self,
+        request: TimelineHoverPrepareAdmissionRequest,
+        entry: TimelineHoverPreparedFrameEntry<BranchToken>,
+    ) -> TimelineHoverPrepareInsertOutcome<BranchToken> {
+        let slot_plan = match self.evaluate_prepare_admission(request) {
+            AdmissionOutcome::Admitted { slot_plan } => slot_plan,
+            AdmissionOutcome::NoOp { reason } => {
+                return TimelineHoverPrepareInsertOutcome::NoOp { entry, reason };
+            }
+        };
+
+        self.insert_primary_entry(request.prepared_key(), entry);
+        let evicted_primary_byproducts =
+            self.evict_entries_over_capacity_protecting(request.protected_key());
+
+        TimelineHoverPrepareInsertOutcome::Inserted {
+            slot_plan,
+            evicted_primary_byproducts,
+        }
+    }
+
+    /// Освобождает один hover-owned entry под provider/resource pressure.
+    ///
+    /// Release order S08D: сначала click-back `recent_superseded`, потом
+    /// старейший primary byproduct. Protected current target не трогаем.
+    #[must_use]
+    pub fn release_one_for_resource_pressure(
+        &mut self,
+        protected_key: TimelineHoverPrepareFrameKey,
+    ) -> TimelineHoverPreparePressureReleaseOutcome {
+        if let Some(released_key) = self.recent_superseded.remove_oldest_for_pressure() {
+            return PressureReleaseOutcome::ReleasedRecentSuperseded { released_key };
+        }
+
+        if let Some(released_key) = self.remove_oldest_primary_byproduct(protected_key) {
+            return PressureReleaseOutcome::ReleasedPrimaryByproduct { released_key };
+        }
+
+        let reason = if self.entries.is_empty() {
+            PressureReleaseMissReason::NoHoverOwnedEntries
+        } else {
+            PressureReleaseMissReason::OnlyProtectedCurrentTarget { protected_key }
+        };
+        PressureReleaseOutcome::NothingReleased { reason }
+    }
+
     /// Вставляет prepared entry и evict-ит самые старые записи сверх capacity.
     ///
     /// Удаление entry просто drop-ает `VideoFrameLease`; release делает сам lease.
     pub fn insert_prepared_frame(
+        &mut self,
+        key: TimelineHoverPrepareFrameKey,
+        entry: TimelineHoverPreparedFrameEntry<BranchToken>,
+    ) {
+        self.insert_primary_entry(key, entry);
+        self.evict_entries_over_capacity_protecting(key);
+    }
+
+    fn insert_primary_entry(
         &mut self,
         key: TimelineHoverPrepareFrameKey,
         entry: TimelineHoverPreparedFrameEntry<BranchToken>,
@@ -511,8 +621,6 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
             .entry(key.target_bucket)
             .or_default()
             .push(key);
-
-        self.evict_entries_over_capacity();
     }
 
     /// Ищет prepared frame: сначала bucket/key, затем actual timing validation.
@@ -695,15 +803,60 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
         Ok(entry)
     }
 
-    fn evict_entries_over_capacity(&mut self) {
+    fn slot_plan_for_admission(
+        &self,
+        request: TimelineHoverPrepareAdmissionRequest,
+    ) -> Option<TimelineHoverPrepareSlotPlan> {
+        if self.entries.contains_key(&request.prepared_key()) {
+            return Some(SlotPlan::ReplaceExistingPrimary);
+        }
+
+        if self.entries.len() < self.capacity.get() {
+            return Some(SlotPlan::UseSparePrimarySlot);
+        }
+
+        if request.mode() == AdmissionMode::NormalHover
+            && self.has_evictable_primary_byproduct(request.protected_key())
+        {
+            return Some(SlotPlan::EvictOldestPrimaryByproduct);
+        }
+
+        None
+    }
+
+    fn has_evictable_primary_byproduct(&self, protected_key: TimelineHoverPrepareFrameKey) -> bool {
+        self.insertion_order
+            .iter()
+            .any(|stored_key| *stored_key != protected_key && self.entries.contains_key(stored_key))
+    }
+
+    fn evict_entries_over_capacity_protecting(
+        &mut self,
+        protected_key: TimelineHoverPrepareFrameKey,
+    ) -> usize {
+        let mut evicted_entries = 0;
         while self.entries.len() > self.capacity.get() {
-            let Some(oldest_key) = self.insertion_order.pop_front() else {
+            let Some(evicted_key) = self.remove_oldest_primary_byproduct(protected_key) else {
                 break;
             };
 
-            self.entries.remove(&oldest_key);
-            self.remove_key_from_bucket_index(oldest_key);
+            debug_assert_ne!(evicted_key, protected_key);
+            evicted_entries += 1;
         }
+        evicted_entries
+    }
+
+    fn remove_oldest_primary_byproduct(
+        &mut self,
+        protected_key: TimelineHoverPrepareFrameKey,
+    ) -> Option<TimelineHoverPrepareFrameKey> {
+        let released_key = self.insertion_order.iter().copied().find(|stored_key| {
+            *stored_key != protected_key && self.entries.contains_key(stored_key)
+        })?;
+
+        self.entries.remove(&released_key);
+        self.remove_key_from_indexes(released_key);
+        Some(released_key)
     }
 
     fn remove_key_from_indexes(&mut self, key: TimelineHoverPrepareFrameKey) {

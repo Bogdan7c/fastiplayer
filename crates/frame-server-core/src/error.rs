@@ -8,8 +8,10 @@ pub enum FrameServerConfigError {
     ZeroResumePendingEventInterval,
     ZeroLiveScrubMaxHz,
     LiveScrubMaxHzTooHigh { max_allowed: u16, actual: u16 },
-    ZeroTimelineHoverPrepareSlots,
-    TimelineHoverPrepareSlotsTooHigh { max_allowed: u8, actual: u8 },
+    ZeroHoverPrepareWindowSlots,
+    HoverPrepareWindowSlotsTooHigh { max_allowed: u8, actual: u8 },
+    ZeroSoftwareHoverPrepareWindowSlots,
+    SoftwareHoverPrepareWindowSlotsTooHigh { max_allowed: u8, actual: u8 },
     RecentSupersededPrepareSlotsTooHigh { max_allowed: u8, actual: u8 },
     SoftwareRecentSupersededPrepareSlotsTooHigh { max_allowed: u8, actual: u8 },
 }
@@ -36,15 +38,25 @@ impl fmt::Display for FrameServerConfigError {
                 formatter,
                 "live_scrub_max_hz must be <= {max_allowed}, got {actual}"
             ),
-            Self::ZeroTimelineHoverPrepareSlots => {
-                formatter.write_str("timeline_hover_prepare_slots must be greater than zero")
+            Self::ZeroHoverPrepareWindowSlots => {
+                formatter.write_str("hover_prepare_window_slots must be greater than zero")
             }
-            Self::TimelineHoverPrepareSlotsTooHigh {
+            Self::HoverPrepareWindowSlotsTooHigh {
                 max_allowed,
                 actual,
             } => write!(
                 formatter,
-                "timeline_hover_prepare_slots must be <= {max_allowed}, got {actual}"
+                "hover_prepare_window_slots must be <= {max_allowed}, got {actual}"
+            ),
+            Self::ZeroSoftwareHoverPrepareWindowSlots => {
+                formatter.write_str("software_hover_prepare_window_slots must be greater than zero")
+            }
+            Self::SoftwareHoverPrepareWindowSlotsTooHigh {
+                max_allowed,
+                actual,
+            } => write!(
+                formatter,
+                "software_hover_prepare_window_slots must be <= {max_allowed}, got {actual}"
             ),
             Self::RecentSupersededPrepareSlotsTooHigh {
                 max_allowed,

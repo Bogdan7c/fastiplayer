@@ -7,8 +7,10 @@ pub const DEFAULT_STALE_OUTCOME_CANCEL_THRESHOLD: u32 = 3;
 pub const DEFAULT_RESUME_PENDING_EVENT_INTERVAL: Duration = Duration::from_millis(16);
 pub const DEFAULT_LIVE_SCRUB_MAX_HZ: u16 = 60;
 pub const MAX_LIVE_SCRUB_MAX_HZ: u16 = 240;
-pub const DEFAULT_TIMELINE_HOVER_PREPARE_SLOTS: u8 = 1;
-pub const MAX_TIMELINE_HOVER_PREPARE_SLOTS: u8 = 3;
+pub const DEFAULT_HOVER_PREPARE_WINDOW_SLOTS: u8 = 1;
+pub const MAX_HOVER_PREPARE_WINDOW_SLOTS: u8 = 3;
+pub const DEFAULT_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS: u8 = 1;
+pub const MAX_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS: u8 = 2;
 pub const DEFAULT_RECENT_SUPERSEDED_PREPARE_SLOTS: u8 = 1;
 pub const MAX_RECENT_SUPERSEDED_PREPARE_SLOTS: u8 = 3;
 pub const DEFAULT_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS: u8 = 1;
@@ -31,7 +33,8 @@ pub struct FrameServerConfig {
     pub resume_pending_event_interval: Duration,
     pub live_scrub_max_hz: u16,
     pub live_scrub_decode_mode: LiveScrubDecodeMode,
-    pub timeline_hover_prepare_slots: u8,
+    pub hover_prepare_window_slots: u8,
+    pub software_hover_prepare_window_slots: u8,
     pub recent_superseded_prepare_slots: u8,
     pub software_recent_superseded_prepare_slots: u8,
 }
@@ -44,7 +47,8 @@ impl Default for FrameServerConfig {
             resume_pending_event_interval: DEFAULT_RESUME_PENDING_EVENT_INTERVAL,
             live_scrub_max_hz: DEFAULT_LIVE_SCRUB_MAX_HZ,
             live_scrub_decode_mode: LiveScrubDecodeMode::ThrottledLatest,
-            timeline_hover_prepare_slots: DEFAULT_TIMELINE_HOVER_PREPARE_SLOTS,
+            hover_prepare_window_slots: DEFAULT_HOVER_PREPARE_WINDOW_SLOTS,
+            software_hover_prepare_window_slots: DEFAULT_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS,
             recent_superseded_prepare_slots: DEFAULT_RECENT_SUPERSEDED_PREPARE_SLOTS,
             software_recent_superseded_prepare_slots:
                 DEFAULT_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS,
@@ -77,15 +81,28 @@ impl FrameServerConfig {
             });
         }
 
-        if self.timeline_hover_prepare_slots == 0 {
-            return Err(FrameServerConfigError::ZeroTimelineHoverPrepareSlots);
+        if self.hover_prepare_window_slots == 0 {
+            return Err(FrameServerConfigError::ZeroHoverPrepareWindowSlots);
         }
 
-        if self.timeline_hover_prepare_slots > MAX_TIMELINE_HOVER_PREPARE_SLOTS {
-            return Err(FrameServerConfigError::TimelineHoverPrepareSlotsTooHigh {
-                max_allowed: MAX_TIMELINE_HOVER_PREPARE_SLOTS,
-                actual: self.timeline_hover_prepare_slots,
+        if self.hover_prepare_window_slots > MAX_HOVER_PREPARE_WINDOW_SLOTS {
+            return Err(FrameServerConfigError::HoverPrepareWindowSlotsTooHigh {
+                max_allowed: MAX_HOVER_PREPARE_WINDOW_SLOTS,
+                actual: self.hover_prepare_window_slots,
             });
+        }
+
+        if self.software_hover_prepare_window_slots == 0 {
+            return Err(FrameServerConfigError::ZeroSoftwareHoverPrepareWindowSlots);
+        }
+
+        if self.software_hover_prepare_window_slots > MAX_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS {
+            return Err(
+                FrameServerConfigError::SoftwareHoverPrepareWindowSlotsTooHigh {
+                    max_allowed: MAX_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS,
+                    actual: self.software_hover_prepare_window_slots,
+                },
+            );
         }
 
         if self.recent_superseded_prepare_slots > MAX_RECENT_SUPERSEDED_PREPARE_SLOTS {
@@ -150,8 +167,13 @@ impl ValidatedFrameServerConfig {
     }
 
     #[must_use]
-    pub const fn timeline_hover_prepare_slots(self) -> u8 {
-        self.raw.timeline_hover_prepare_slots
+    pub const fn hover_prepare_window_slots(self) -> u8 {
+        self.raw.hover_prepare_window_slots
+    }
+
+    #[must_use]
+    pub const fn software_hover_prepare_window_slots(self) -> u8 {
+        self.raw.software_hover_prepare_window_slots
     }
 
     #[must_use]

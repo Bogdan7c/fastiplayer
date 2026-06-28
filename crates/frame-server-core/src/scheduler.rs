@@ -188,7 +188,7 @@ impl FrameScheduler {
         let protected_work = self.next_work(protected_context);
         self.pending_hover_prepare_window.push(protected_work);
 
-        let slot_budget = usize::from(self.config.timeline_hover_prepare_slots());
+        let slot_budget = usize::from(self.config.hover_prepare_window_slots());
         let optional_slot_budget = slot_budget.saturating_sub(1);
         let admitted_optional_targets = additional_hover_targets
             .iter()

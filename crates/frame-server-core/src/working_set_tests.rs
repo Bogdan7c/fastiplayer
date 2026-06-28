@@ -187,6 +187,15 @@ fn working_set_with_recent(
     )
 }
 
+fn admission_request(
+    prepared_key: TimelineHoverPrepareFrameKey,
+    protected_key: TimelineHoverPrepareFrameKey,
+    mode: TimelineHoverPrepareAdmissionMode,
+    provider_budget: TimelineHoverPrepareProviderBudget,
+) -> TimelineHoverPrepareAdmissionRequest {
+    TimelineHoverPrepareAdmissionRequest::new(prepared_key, protected_key, mode, provider_budget)
+}
+
 #[derive(Debug)]
 struct FakeBranchToken {
     branch_id: u64,
@@ -556,6 +565,275 @@ fn eviction_releases_evicted_lease_exactly_once() {
             .filter(|handle| **handle == FrameResourceHandle(11))
             .count(),
         1
+    );
+}
+
+#[test]
+fn pressure_releases_recent_before_primary_byproducts_and_protects_current_target() {
+    let released = Arc::new(Mutex::new(Vec::new()));
+    let current_key = base_key(200);
+    let byproduct_key = base_key(201);
+    let recent_key = base_key(202);
+    let mut working_set = TimelineHoverPrepareWorkingSet::with_capacity_and_recent_superseded(
+        capacity(2),
+        recent_budget_for_tests(1, 1),
+    );
+    working_set.insert_prepared_frame(
+        current_key,
+        TimelineHoverPreparedFrameEntry::<FakeBranchToken>::new(
+            hardware_lease(FrameResourceHandle(200), released.clone()),
+            timing(1_250),
+        ),
+    );
+    working_set.insert_prepared_frame(
+        byproduct_key,
+        TimelineHoverPreparedFrameEntry::<FakeBranchToken>::new(
+            hardware_lease(FrameResourceHandle(201), released.clone()),
+            timing(1_260),
+        ),
+    );
+    let mut transaction_source = working_set_with_recent(0, 0);
+    let transaction = promote_branch_entry(
+        &mut transaction_source,
+        recent_key,
+        FrameResourceHandle(202),
+        released.clone(),
+    );
+    let demote =
+        transaction.supersede_to_recent(&mut working_set, lookup_request(recent_key, 1_200));
+    assert!(matches!(
+        demote,
+        TimelineHoverPrepareDemoteBackOutcome::DemotedToRecentSuperseded
+    ));
+
+    let recent_pressure = working_set.release_one_for_resource_pressure(current_key);
+
+    assert_eq!(
+        recent_pressure,
+        TimelineHoverPreparePressureReleaseOutcome::ReleasedRecentSuperseded {
+            released_key: recent_key,
+        }
+    );
+    assert_eq!(release_count(&released, FrameResourceHandle(202)), 1);
+    assert_eq!(release_count(&released, FrameResourceHandle(201)), 0);
+    assert_eq!(release_count(&released, FrameResourceHandle(200)), 0);
+
+    let primary_pressure = working_set.release_one_for_resource_pressure(current_key);
+
+    assert_eq!(
+        primary_pressure,
+        TimelineHoverPreparePressureReleaseOutcome::ReleasedPrimaryByproduct {
+            released_key: byproduct_key,
+        }
+    );
+    assert_eq!(release_count(&released, FrameResourceHandle(201)), 1);
+    assert_eq!(release_count(&released, FrameResourceHandle(200)), 0);
+
+    let protected_pressure = working_set.release_one_for_resource_pressure(current_key);
+
+    assert_eq!(
+        protected_pressure,
+        TimelineHoverPreparePressureReleaseOutcome::NothingReleased {
+            reason: TimelineHoverPreparePressureReleaseMissReason::OnlyProtectedCurrentTarget {
+                protected_key: current_key,
+            },
+        }
+    );
+    assert_eq!(release_count(&released, FrameResourceHandle(200)), 0);
+}
+
+#[test]
+fn pressure_never_touches_active_seek_owned_promoted_resource() {
+    let released = Arc::new(Mutex::new(Vec::new()));
+    let promoted_key = base_key(210);
+    let byproduct_key = base_key(211);
+    let protected_key = base_key(212);
+    let mut working_set = TimelineHoverPrepareWorkingSet::with_capacity(capacity(1));
+    let transaction = promote_branch_entry(
+        &mut working_set,
+        promoted_key,
+        FrameResourceHandle(210),
+        released.clone(),
+    );
+    working_set.insert_prepared_frame(
+        byproduct_key,
+        TimelineHoverPreparedFrameEntry::<FakeBranchToken>::new(
+            hardware_lease(FrameResourceHandle(211), released.clone()),
+            timing(1_260),
+        ),
+    );
+
+    let pressure = working_set.release_one_for_resource_pressure(protected_key);
+
+    assert_eq!(
+        pressure,
+        TimelineHoverPreparePressureReleaseOutcome::ReleasedPrimaryByproduct {
+            released_key: byproduct_key,
+        }
+    );
+    assert_eq!(release_count(&released, FrameResourceHandle(211)), 1);
+    assert_eq!(release_count(&released, FrameResourceHandle(210)), 0);
+
+    transaction.commit();
+    assert_eq!(release_count(&released, FrameResourceHandle(210)), 1);
+}
+
+#[test]
+fn primary_hover_byproducts_use_latest_n_without_evicting_current_target() {
+    let released = Arc::new(Mutex::new(Vec::new()));
+    let current_key = base_key(220);
+    let first_byproduct_key = base_key(221);
+    let second_byproduct_key = base_key(222);
+    let newest_byproduct_key = base_key(223);
+    let mut working_set =
+        TimelineHoverPrepareWorkingSet::<FakeBranchToken>::with_capacity(capacity(3));
+
+    for (key, handle) in [
+        (current_key, FrameResourceHandle(220)),
+        (first_byproduct_key, FrameResourceHandle(221)),
+        (second_byproduct_key, FrameResourceHandle(222)),
+        (newest_byproduct_key, FrameResourceHandle(223)),
+    ] {
+        let insert = working_set.try_insert_prepared_frame(
+            admission_request(
+                key,
+                current_key,
+                TimelineHoverPrepareAdmissionMode::NormalHover,
+                TimelineHoverPrepareProviderBudget::SpareSlotAvailable,
+            ),
+            TimelineHoverPreparedFrameEntry::new(
+                hardware_lease(handle, released.clone()),
+                timing(1_250),
+            ),
+        );
+
+        assert!(matches!(
+            insert,
+            TimelineHoverPrepareInsertOutcome::Inserted { .. }
+        ));
+    }
+
+    assert_eq!(working_set.len(), 3);
+    assert_eq!(release_count(&released, FrameResourceHandle(221)), 1);
+    assert_eq!(release_count(&released, FrameResourceHandle(220)), 0);
+    assert!(matches!(
+        working_set.lookup_prepared_frame(lookup_request(current_key, 1_200)),
+        TimelineHoverPrepareLookupOutcome::Hit(_)
+    ));
+    assert!(matches!(
+        working_set.lookup_prepared_frame(lookup_request(second_byproduct_key, 1_200)),
+        TimelineHoverPrepareLookupOutcome::Hit(_)
+    ));
+    assert!(matches!(
+        working_set.lookup_prepared_frame(lookup_request(newest_byproduct_key, 1_200)),
+        TimelineHoverPrepareLookupOutcome::Hit(_)
+    ));
+}
+
+#[test]
+fn provider_pressure_insert_noop_returns_entry_without_working_set_side_effects() {
+    let released = Arc::new(Mutex::new(Vec::new()));
+    let current_key = base_key(230);
+    let rejected_key = base_key(231);
+    let mut working_set =
+        TimelineHoverPrepareWorkingSet::<FakeBranchToken>::with_capacity(capacity(1));
+    working_set.insert_prepared_frame(
+        current_key,
+        TimelineHoverPreparedFrameEntry::new(
+            hardware_lease(FrameResourceHandle(230), released.clone()),
+            timing(1_250),
+        ),
+    );
+
+    let insert = working_set.try_insert_prepared_frame(
+        admission_request(
+            rejected_key,
+            current_key,
+            TimelineHoverPrepareAdmissionMode::NormalHover,
+            TimelineHoverPrepareProviderBudget::ExhaustedAfterActivePins,
+        ),
+        TimelineHoverPreparedFrameEntry::new(
+            hardware_lease(FrameResourceHandle(231), released.clone()),
+            timing(1_260),
+        ),
+    );
+
+    let TimelineHoverPrepareInsertOutcome::NoOp { entry, reason } = insert else {
+        panic!("provider pressure must reject prepare without mutating working set");
+    };
+    assert_eq!(
+        reason,
+        TimelineHoverPrepareNoOpReason::ProviderResourcePressure
+    );
+    assert_eq!(working_set.len(), 1);
+    assert_eq!(release_count(&released, FrameResourceHandle(230)), 0);
+    assert_eq!(release_count(&released, FrameResourceHandle(231)), 0);
+    assert!(matches!(
+        working_set.lookup_prepared_frame(lookup_request(current_key, 1_200)),
+        TimelineHoverPrepareLookupOutcome::Hit(_)
+    ));
+
+    drop(entry);
+    assert_eq!(release_count(&released, FrameResourceHandle(231)), 1);
+    assert_eq!(release_count(&released, FrameResourceHandle(230)), 0);
+}
+
+#[test]
+fn resume_pending_hover_prepare_requires_spare_slot_after_seek_pin() {
+    let released = Arc::new(Mutex::new(Vec::new()));
+    let current_key = base_key(240);
+    let next_key = base_key(241);
+    let mut full_working_set =
+        TimelineHoverPrepareWorkingSet::<FakeBranchToken>::with_capacity(capacity(1));
+    full_working_set.insert_prepared_frame(
+        current_key,
+        TimelineHoverPreparedFrameEntry::new(
+            hardware_lease(FrameResourceHandle(240), released.clone()),
+            timing(1_250),
+        ),
+    );
+
+    let no_spare = full_working_set.evaluate_prepare_admission(admission_request(
+        next_key,
+        current_key,
+        TimelineHoverPrepareAdmissionMode::ResumePendingAfterSeekPin,
+        TimelineHoverPrepareProviderBudget::SpareSlotAvailable,
+    ));
+
+    assert_eq!(
+        no_spare,
+        TimelineHoverPrepareAdmissionOutcome::NoOp {
+            reason: TimelineHoverPrepareNoOpReason::NoSpareHoverSlot {
+                capacity: 1,
+                used_slots: 1,
+                protected_key: current_key,
+            },
+        }
+    );
+    assert_eq!(release_count(&released, FrameResourceHandle(240)), 0);
+
+    let mut spare_working_set =
+        TimelineHoverPrepareWorkingSet::<FakeBranchToken>::with_capacity(capacity(2));
+    spare_working_set.insert_prepared_frame(
+        current_key,
+        TimelineHoverPreparedFrameEntry::new(
+            hardware_lease(FrameResourceHandle(242), released.clone()),
+            timing(1_250),
+        ),
+    );
+
+    let admitted = spare_working_set.evaluate_prepare_admission(admission_request(
+        next_key,
+        current_key,
+        TimelineHoverPrepareAdmissionMode::ResumePendingAfterSeekPin,
+        TimelineHoverPrepareProviderBudget::SpareSlotAvailable,
+    ));
+
+    assert_eq!(
+        admitted,
+        TimelineHoverPrepareAdmissionOutcome::Admitted {
+            slot_plan: TimelineHoverPrepareSlotPlan::UseSparePrimarySlot,
+        }
     );
 }
 

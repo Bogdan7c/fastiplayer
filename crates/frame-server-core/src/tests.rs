@@ -496,22 +496,43 @@ fn config_validation_rejects_impossible_values() {
     );
     assert_eq!(
         FrameServerConfig {
-            timeline_hover_prepare_slots: 0,
+            hover_prepare_window_slots: 0,
             ..FrameServerConfig::default()
         }
         .validate(),
-        Err(FrameServerConfigError::ZeroTimelineHoverPrepareSlots)
+        Err(FrameServerConfigError::ZeroHoverPrepareWindowSlots)
     );
     assert_eq!(
         FrameServerConfig {
-            timeline_hover_prepare_slots: MAX_TIMELINE_HOVER_PREPARE_SLOTS + 1,
+            hover_prepare_window_slots: MAX_HOVER_PREPARE_WINDOW_SLOTS + 1,
             ..FrameServerConfig::default()
         }
         .validate(),
-        Err(FrameServerConfigError::TimelineHoverPrepareSlotsTooHigh {
-            max_allowed: MAX_TIMELINE_HOVER_PREPARE_SLOTS,
-            actual: MAX_TIMELINE_HOVER_PREPARE_SLOTS + 1,
+        Err(FrameServerConfigError::HoverPrepareWindowSlotsTooHigh {
+            max_allowed: MAX_HOVER_PREPARE_WINDOW_SLOTS,
+            actual: MAX_HOVER_PREPARE_WINDOW_SLOTS + 1,
         })
+    );
+    assert_eq!(
+        FrameServerConfig {
+            software_hover_prepare_window_slots: 0,
+            ..FrameServerConfig::default()
+        }
+        .validate(),
+        Err(FrameServerConfigError::ZeroSoftwareHoverPrepareWindowSlots)
+    );
+    assert_eq!(
+        FrameServerConfig {
+            software_hover_prepare_window_slots: MAX_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS + 1,
+            ..FrameServerConfig::default()
+        }
+        .validate(),
+        Err(
+            FrameServerConfigError::SoftwareHoverPrepareWindowSlotsTooHigh {
+                max_allowed: MAX_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS,
+                actual: MAX_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS + 1,
+            }
+        )
     );
     assert_eq!(
         FrameServerConfig {
@@ -559,8 +580,12 @@ fn config_validation_rejects_impossible_values() {
         LiveScrubDecodeMode::ThrottledLatest
     );
     assert_eq!(
-        default_config.timeline_hover_prepare_slots(),
-        DEFAULT_TIMELINE_HOVER_PREPARE_SLOTS
+        default_config.hover_prepare_window_slots(),
+        DEFAULT_HOVER_PREPARE_WINDOW_SLOTS
+    );
+    assert_eq!(
+        default_config.software_hover_prepare_window_slots(),
+        DEFAULT_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS
     );
     assert_eq!(
         default_config.recent_superseded_prepare_slots(),

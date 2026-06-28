@@ -256,7 +256,7 @@ fn live_scrub_suspends_hover_work_for_same_timeline_gesture() {
 #[test]
 fn hover_prepare_window_protects_current_target_and_respects_slot_budget() {
     let config = FrameServerConfig {
-        timeline_hover_prepare_slots: 2,
+        hover_prepare_window_slots: 2,
         ..FrameServerConfig::default()
     }
     .validate()
@@ -301,4 +301,28 @@ fn hover_prepare_window_protects_current_target_and_respects_slot_budget() {
     );
     assert!(!prepared_contexts(&optional_start).contains(&rejected_contexts[0]));
     assert!(!prepared_contexts(&optional_start).contains(&rejected_contexts[1]));
+}
+
+#[test]
+fn live_scrub_suspends_hover_prepare_window_for_same_timeline_gesture() {
+    let mut scheduler = FrameScheduler::default();
+    let live_context = context_for_tests_at(ScrubRequestKind::LiveScrub, 1_000);
+    let protected_hover_context =
+        context_for_tests_at(ScrubRequestKind::TimelineHoverPrepareWindow, 2_000);
+    let optional_hover_context =
+        context_for_tests_at(ScrubRequestKind::TimelineHoverPrepareWindow, 3_000);
+
+    scheduler.submit_live_scrub_target(live_context);
+    assert_eq!(
+        prepared_contexts(&scheduler.tick(Duration::ZERO)),
+        vec![live_context]
+    );
+
+    let suspended_prepare = scheduler
+        .submit_timeline_hover_prepare_window(protected_hover_context, &[optional_hover_context]);
+
+    assert!(suspended_prepare.actions.is_empty());
+    assert!(suspended_prepare.diagnostics.is_empty());
+    assert_eq!(scheduler.pending_work_count_for_tests(), 0);
+    assert!(prepared_contexts(&scheduler.tick(Duration::ZERO)).is_empty());
 }
