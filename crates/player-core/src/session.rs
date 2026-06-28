@@ -27,6 +27,7 @@ mod diagnostics_sink;
 mod eof_drain;
 mod media_lifecycle;
 mod render_leases;
+mod scrub_driver;
 mod seek_transaction;
 mod snapshot_builder;
 mod tick;

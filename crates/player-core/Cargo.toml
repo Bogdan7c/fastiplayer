@@ -15,6 +15,7 @@ bytes = { workspace = true }
 capability-core = { workspace = true }
 codec-core = { workspace = true }
 crossbeam-channel = { workspace = true }
+frame-server-core = { workspace = true }
 media-core = { workspace = true }
 rustiplayer-config = { workspace = true }
 tracing = { workspace = true }

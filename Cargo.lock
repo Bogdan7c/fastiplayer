@@ -2953,6 +2953,7 @@ dependencies = [
  "capability-core",
  "codec-core",
  "crossbeam-channel",
+ "frame-server-core",
  "media-core",
  "render-core",
  "rustiplayer-config",

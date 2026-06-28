@@ -51,6 +51,7 @@ mod eof_drain;
 mod media_lifecycle;
 mod playback;
 mod scrub;
+mod scrub_driver;
 mod seek_regressions;
 mod seek_trace;
 mod seek_transaction;
