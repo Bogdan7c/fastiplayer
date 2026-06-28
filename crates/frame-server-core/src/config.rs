@@ -9,6 +9,10 @@ pub const DEFAULT_LIVE_SCRUB_MAX_HZ: u16 = 60;
 pub const MAX_LIVE_SCRUB_MAX_HZ: u16 = 240;
 pub const DEFAULT_TIMELINE_HOVER_PREPARE_SLOTS: u8 = 1;
 pub const MAX_TIMELINE_HOVER_PREPARE_SLOTS: u8 = 3;
+pub const DEFAULT_RECENT_SUPERSEDED_PREPARE_SLOTS: u8 = 1;
+pub const MAX_RECENT_SUPERSEDED_PREPARE_SLOTS: u8 = 3;
+pub const DEFAULT_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS: u8 = 1;
+pub const MAX_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS: u8 = 2;
 
 /// Policy запуска decode-work для live scrub. Оба режима остаются latest-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,6 +32,8 @@ pub struct FrameServerConfig {
     pub live_scrub_max_hz: u16,
     pub live_scrub_decode_mode: LiveScrubDecodeMode,
     pub timeline_hover_prepare_slots: u8,
+    pub recent_superseded_prepare_slots: u8,
+    pub software_recent_superseded_prepare_slots: u8,
 }
 
 impl Default for FrameServerConfig {
@@ -39,6 +45,9 @@ impl Default for FrameServerConfig {
             live_scrub_max_hz: DEFAULT_LIVE_SCRUB_MAX_HZ,
             live_scrub_decode_mode: LiveScrubDecodeMode::ThrottledLatest,
             timeline_hover_prepare_slots: DEFAULT_TIMELINE_HOVER_PREPARE_SLOTS,
+            recent_superseded_prepare_slots: DEFAULT_RECENT_SUPERSEDED_PREPARE_SLOTS,
+            software_recent_superseded_prepare_slots:
+                DEFAULT_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS,
         }
     }
 }
@@ -77,6 +86,26 @@ impl FrameServerConfig {
                 max_allowed: MAX_TIMELINE_HOVER_PREPARE_SLOTS,
                 actual: self.timeline_hover_prepare_slots,
             });
+        }
+
+        if self.recent_superseded_prepare_slots > MAX_RECENT_SUPERSEDED_PREPARE_SLOTS {
+            return Err(
+                FrameServerConfigError::RecentSupersededPrepareSlotsTooHigh {
+                    max_allowed: MAX_RECENT_SUPERSEDED_PREPARE_SLOTS,
+                    actual: self.recent_superseded_prepare_slots,
+                },
+            );
+        }
+
+        if self.software_recent_superseded_prepare_slots
+            > MAX_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS
+        {
+            return Err(
+                FrameServerConfigError::SoftwareRecentSupersededPrepareSlotsTooHigh {
+                    max_allowed: MAX_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS,
+                    actual: self.software_recent_superseded_prepare_slots,
+                },
+            );
         }
 
         Ok(ValidatedFrameServerConfig { raw: self })
@@ -123,5 +152,15 @@ impl ValidatedFrameServerConfig {
     #[must_use]
     pub const fn timeline_hover_prepare_slots(self) -> u8 {
         self.raw.timeline_hover_prepare_slots
+    }
+
+    #[must_use]
+    pub const fn recent_superseded_prepare_slots(self) -> u8 {
+        self.raw.recent_superseded_prepare_slots
+    }
+
+    #[must_use]
+    pub const fn software_recent_superseded_prepare_slots(self) -> u8 {
+        self.raw.software_recent_superseded_prepare_slots
     }
 }

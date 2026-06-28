@@ -16,9 +16,12 @@ pub mod working_set;
 
 pub use config::{
     DEFAULT_LIVE_SCRUB_MAX_HZ, DEFAULT_MAX_FEED_AND_DRAIN_DRIVER_STEPS,
-    DEFAULT_RESUME_PENDING_EVENT_INTERVAL, DEFAULT_STALE_OUTCOME_CANCEL_THRESHOLD,
+    DEFAULT_RECENT_SUPERSEDED_PREPARE_SLOTS, DEFAULT_RESUME_PENDING_EVENT_INTERVAL,
+    DEFAULT_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS, DEFAULT_STALE_OUTCOME_CANCEL_THRESHOLD,
     DEFAULT_TIMELINE_HOVER_PREPARE_SLOTS, FrameServerConfig, LiveScrubDecodeMode,
-    MAX_LIVE_SCRUB_MAX_HZ, MAX_TIMELINE_HOVER_PREPARE_SLOTS, ValidatedFrameServerConfig,
+    MAX_LIVE_SCRUB_MAX_HZ, MAX_RECENT_SUPERSEDED_PREPARE_SLOTS,
+    MAX_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS, MAX_TIMELINE_HOVER_PREPARE_SLOTS,
+    ValidatedFrameServerConfig,
 };
 pub use diagnostics::{
     ScrubDriverDiagnosticReason, ScrubDriverOutcomeKind, ScrubEventDiagnostics, ScrubFailureReason,
@@ -51,12 +54,14 @@ pub use scrub::{
     ScrubTimedOutOutcome, ScrubTimeoutReason, StaleGenerationOutcome,
 };
 pub use working_set::{
-    FrameExactnessPolicy, TimelineHoverFrameBucket, TimelineHoverPrepareFrameKey,
+    FrameExactnessPolicy, TimelineHoverFrameBucket, TimelineHoverPrepareDemoteBackOutcome,
+    TimelineHoverPrepareDemoteBackRejection, TimelineHoverPrepareFrameKey,
     TimelineHoverPrepareFrameLookupRequest, TimelineHoverPrepareLookupMissReason,
     TimelineHoverPrepareLookupOutcome, TimelineHoverPreparePromotionOutcome,
     TimelineHoverPrepareTimingRejection, TimelineHoverPrepareWorkingSet,
     TimelineHoverPreparedFrame, TimelineHoverPreparedFrameEntry, TimelineHoverPreparedFrameTiming,
     TimelineHoverPromotedFrameSeekReuse, TimelineHoverPromotedPreparedFrame,
+    TimelineHoverRecentSupersededBudget, TimelineHoverRecentSupersededClearReason,
 };
 
 #[cfg(test)]

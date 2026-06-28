@@ -10,6 +10,8 @@ pub enum FrameServerConfigError {
     LiveScrubMaxHzTooHigh { max_allowed: u16, actual: u16 },
     ZeroTimelineHoverPrepareSlots,
     TimelineHoverPrepareSlotsTooHigh { max_allowed: u8, actual: u8 },
+    RecentSupersededPrepareSlotsTooHigh { max_allowed: u8, actual: u8 },
+    SoftwareRecentSupersededPrepareSlotsTooHigh { max_allowed: u8, actual: u8 },
 }
 
 impl fmt::Display for FrameServerConfigError {
@@ -43,6 +45,20 @@ impl fmt::Display for FrameServerConfigError {
             } => write!(
                 formatter,
                 "timeline_hover_prepare_slots must be <= {max_allowed}, got {actual}"
+            ),
+            Self::RecentSupersededPrepareSlotsTooHigh {
+                max_allowed,
+                actual,
+            } => write!(
+                formatter,
+                "recent_superseded_prepare_slots must be <= {max_allowed}, got {actual}"
+            ),
+            Self::SoftwareRecentSupersededPrepareSlotsTooHigh {
+                max_allowed,
+                actual,
+            } => write!(
+                formatter,
+                "software_recent_superseded_prepare_slots must be <= {max_allowed}, got {actual}"
             ),
         }
     }

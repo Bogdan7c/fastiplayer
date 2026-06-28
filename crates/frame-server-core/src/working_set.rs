@@ -3,14 +3,25 @@
 //! Модуль владеет только индексом, ключом, metadata и проверкой попадания.
 //! Он не декодирует кадры, не хранит пиксели и не знает о player/render backend.
 
+mod recent_superseded;
+
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroUsize;
 
 use media_core::{TrackDuration, TrackId, TrackTimestamp};
-use video_present_core::{VideoFrameLease, VideoPresentFrameResourceDescriptor};
+use video_present_core::{
+    VideoFrameLease, VideoPresentFrameResourceDescriptor, VideoPresentFrameResourceKind,
+};
 
-use crate::{BackendRevision, ScrubGenerationToken, ScrubTrackSelection, SourceRevision};
+pub use recent_superseded::{
+    TimelineHoverRecentSupersededBudget, TimelineHoverRecentSupersededClearReason,
+};
+
+use self::recent_superseded::TimelineHoverRecentSupersededEntries;
+use crate::{
+    BackendRevision, CancelScrubReason, ScrubGenerationToken, ScrubTrackSelection, SourceRevision,
+};
 
 /// Политика точности именно для prepared working set-а.
 ///
@@ -216,6 +227,15 @@ impl<BranchToken> TimelineHoverPromotedPreparedFrame<BranchToken> {
         Self { key, entry }
     }
 
+    fn into_validated_entry(
+        self,
+    ) -> (
+        TimelineHoverPrepareFrameKey,
+        TimelineHoverPreparedFrameEntry<BranchToken>,
+    ) {
+        (self.key, self.entry)
+    }
+
     #[must_use]
     pub const fn key(&self) -> TimelineHoverPrepareFrameKey {
         self.key
@@ -308,9 +328,69 @@ pub enum TimelineHoverPreparePromotionOutcome<BranchToken = ()> {
     TimingRejected(TimelineHoverPrepareTimingRejection),
 }
 
+/// Результат demote-back из seek transaction ownership в `recent_superseded`.
+pub enum TimelineHoverPrepareDemoteBackOutcome<BranchToken = ()> {
+    /// Promoted entry перешла в hover-owned recent compartment.
+    DemotedToRecentSuperseded,
+    /// Entry остаётся у transaction owner-а; caller должен завершить transaction release path.
+    Rejected {
+        promoted_frame: TimelineHoverPromotedPreparedFrame<BranchToken>,
+        reason: TimelineHoverPrepareDemoteBackRejection,
+    },
+}
+
+/// Почему promoted entry нельзя вернуть в `recent_superseded`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelineHoverPrepareDemoteBackRejection {
+    CancelReasonDoesNotAllowDemote {
+        actual: CancelScrubReason,
+    },
+    PromotedKeyNotCurrent {
+        promoted_key: TimelineHoverPrepareFrameKey,
+        current_key: TimelineHoverPrepareFrameKey,
+    },
+    TimingRejected(TimelineHoverPrepareTimingRejection),
+    RecentSupersededRetentionDisabled {
+        resource_kind: VideoPresentFrameResourceKind,
+    },
+}
+
 enum TimelineHoverPrepareLookupFailure {
     Miss(TimelineHoverPrepareLookupMissReason),
     TimingRejected(TimelineHoverPrepareTimingRejection),
+}
+
+impl TimelineHoverPrepareLookupFailure {
+    fn into_lookup_outcome<'a, BranchToken>(
+        self,
+    ) -> TimelineHoverPrepareLookupOutcome<'a, BranchToken> {
+        match self {
+            Self::Miss(reason) => TimelineHoverPrepareLookupOutcome::Miss(reason),
+            Self::TimingRejected(rejection) => {
+                TimelineHoverPrepareLookupOutcome::TimingRejected(rejection)
+            }
+        }
+    }
+
+    fn into_promotion_outcome<BranchToken>(
+        self,
+    ) -> TimelineHoverPreparePromotionOutcome<BranchToken> {
+        match self {
+            Self::Miss(reason) => TimelineHoverPreparePromotionOutcome::Miss(reason),
+            Self::TimingRejected(rejection) => {
+                TimelineHoverPreparePromotionOutcome::TimingRejected(rejection)
+            }
+        }
+    }
+
+    fn recent_fallback_or_primary(primary_failure: Self, recent_failure: Self) -> Self {
+        match (primary_failure, recent_failure) {
+            (Self::Miss(_), Self::TimingRejected(recent_rejection)) => {
+                Self::TimingRejected(recent_rejection)
+            }
+            (primary_failure, _) => primary_failure,
+        }
+    }
 }
 
 /// Почему working set не нашёл запись с подходящим ключом.
@@ -365,17 +445,31 @@ pub struct TimelineHoverPrepareWorkingSet<BranchToken = ()> {
     entries: HashMap<TimelineHoverPrepareFrameKey, TimelineHoverPreparedFrameEntry<BranchToken>>,
     insertion_order: VecDeque<TimelineHoverPrepareFrameKey>,
     bucket_index: HashMap<TimelineHoverFrameBucket, Vec<TimelineHoverPrepareFrameKey>>,
+    recent_superseded: TimelineHoverRecentSupersededEntries<BranchToken>,
 }
 
 impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
     /// Создаёт generic working set с явной non-zero вместимостью.
     #[must_use]
     pub fn with_capacity(capacity: NonZeroUsize) -> Self {
+        Self::with_capacity_and_recent_superseded(
+            capacity,
+            TimelineHoverRecentSupersededBudget::disabled(),
+        )
+    }
+
+    /// Создаёт generic working set с отдельным budget-ом click-back retention.
+    #[must_use]
+    pub fn with_capacity_and_recent_superseded(
+        capacity: NonZeroUsize,
+        recent_superseded_budget: TimelineHoverRecentSupersededBudget,
+    ) -> Self {
         Self {
             capacity,
             entries: HashMap::new(),
             insertion_order: VecDeque::new(),
             bucket_index: HashMap::new(),
+            recent_superseded: TimelineHoverRecentSupersededEntries::new(recent_superseded_budget),
         }
     }
 
@@ -392,6 +486,11 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    #[must_use]
+    pub fn recent_superseded_len(&self) -> usize {
+        self.recent_superseded.len()
     }
 
     /// Вставляет prepared entry и evict-ит самые старые записи сверх capacity.
@@ -423,16 +522,25 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
         request: TimelineHoverPrepareFrameLookupRequest,
     ) -> TimelineHoverPrepareLookupOutcome<'_, BranchToken> {
         match self.find_validated_entry(&request) {
-            Ok(entry) => TimelineHoverPrepareLookupOutcome::Hit(TimelineHoverPreparedFrame {
-                key: request.key,
-                entry,
-            }),
-            Err(TimelineHoverPrepareLookupFailure::Miss(reason)) => {
-                TimelineHoverPrepareLookupOutcome::Miss(reason)
+            Ok(entry) => {
+                return TimelineHoverPrepareLookupOutcome::Hit(TimelineHoverPreparedFrame {
+                    key: request.key,
+                    entry,
+                });
             }
-            Err(TimelineHoverPrepareLookupFailure::TimingRejected(rejection)) => {
-                TimelineHoverPrepareLookupOutcome::TimingRejected(rejection)
-            }
+            Err(primary_failure) => match self.recent_superseded.find_validated_entry(&request) {
+                Ok(entry) => TimelineHoverPrepareLookupOutcome::Hit(TimelineHoverPreparedFrame {
+                    key: request.key,
+                    entry,
+                }),
+                Err(recent_failure) => {
+                    TimelineHoverPrepareLookupFailure::recent_fallback_or_primary(
+                        primary_failure,
+                        recent_failure,
+                    )
+                    .into_lookup_outcome()
+                }
+            },
         }
     }
 
@@ -445,15 +553,94 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
         &mut self,
         request: TimelineHoverPrepareFrameLookupRequest,
     ) -> TimelineHoverPreparePromotionOutcome<BranchToken> {
-        match self.find_validated_entry(&request) {
-            Ok(_) => {}
-            Err(TimelineHoverPrepareLookupFailure::Miss(reason)) => {
-                return TimelineHoverPreparePromotionOutcome::Miss(reason);
+        match self.take_validated_primary_entry(&request) {
+            Ok(entry) => {
+                return Self::promotion_outcome_from_entry(request.key, entry);
             }
-            Err(TimelineHoverPrepareLookupFailure::TimingRejected(rejection)) => {
-                return TimelineHoverPreparePromotionOutcome::TimingRejected(rejection);
-            }
+            Err(primary_failure) => match self.recent_superseded.take_validated_entry(&request) {
+                Ok(entry) => Self::promotion_outcome_from_entry(request.key, entry),
+                Err(recent_failure) => {
+                    TimelineHoverPrepareLookupFailure::recent_fallback_or_primary(
+                        primary_failure,
+                        recent_failure,
+                    )
+                    .into_promotion_outcome()
+                }
+            },
         }
+    }
+
+    /// Возвращает pre-commit superseded transaction entry в click-back compartment.
+    ///
+    /// Только `SupersededByNewTarget` имеет право на demote-back. Остальные пути
+    /// остаются во владении transaction owner-а и release-ятся там.
+    #[must_use]
+    pub fn try_demote_promoted_frame_to_recent_superseded(
+        &mut self,
+        promoted_frame: TimelineHoverPromotedPreparedFrame<BranchToken>,
+        request: TimelineHoverPrepareFrameLookupRequest,
+        cancel_reason: CancelScrubReason,
+    ) -> TimelineHoverPrepareDemoteBackOutcome<BranchToken> {
+        if cancel_reason != CancelScrubReason::SupersededByNewTarget {
+            return TimelineHoverPrepareDemoteBackOutcome::Rejected {
+                promoted_frame,
+                reason: TimelineHoverPrepareDemoteBackRejection::CancelReasonDoesNotAllowDemote {
+                    actual: cancel_reason,
+                },
+            };
+        }
+
+        if promoted_frame.key != request.key {
+            return TimelineHoverPrepareDemoteBackOutcome::Rejected {
+                reason: TimelineHoverPrepareDemoteBackRejection::PromotedKeyNotCurrent {
+                    promoted_key: promoted_frame.key,
+                    current_key: request.key,
+                },
+                promoted_frame,
+            };
+        }
+
+        if let Some(rejection) = validate_entry_timing(&request, promoted_frame.entry.timing) {
+            return TimelineHoverPrepareDemoteBackOutcome::Rejected {
+                promoted_frame,
+                reason: TimelineHoverPrepareDemoteBackRejection::TimingRejected(rejection),
+            };
+        }
+
+        let resource_descriptor = promoted_frame.resource_descriptor();
+        if self
+            .recent_superseded
+            .budget_for_descriptor(resource_descriptor)
+            == 0
+        {
+            return TimelineHoverPrepareDemoteBackOutcome::Rejected {
+                reason:
+                    TimelineHoverPrepareDemoteBackRejection::RecentSupersededRetentionDisabled {
+                        resource_kind: resource_descriptor.kind(),
+                    },
+                promoted_frame,
+            };
+        }
+
+        let (key, entry) = promoted_frame.into_validated_entry();
+        self.recent_superseded.insert_validated_demoted(key, entry);
+        TimelineHoverPrepareDemoteBackOutcome::DemotedToRecentSuperseded
+    }
+
+    /// Очищает только `recent_superseded`; primary hover entries не затрагиваются.
+    pub fn clear_recent_superseded(
+        &mut self,
+        _reason: TimelineHoverRecentSupersededClearReason,
+    ) -> usize {
+        self.recent_superseded.clear()
+    }
+
+    fn take_validated_primary_entry(
+        &mut self,
+        request: &TimelineHoverPrepareFrameLookupRequest,
+    ) -> Result<TimelineHoverPreparedFrameEntry<BranchToken>, TimelineHoverPrepareLookupFailure>
+    {
+        self.find_validated_entry(request)?;
 
         let entry = self
             .entries
@@ -461,8 +648,14 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
             .expect("validated prepared entry must remain present until promotion removes it");
         self.remove_key_from_indexes(request.key);
 
-        let promoted_frame =
-            TimelineHoverPromotedPreparedFrame::from_validated_entry(request.key, entry);
+        Ok(entry)
+    }
+
+    fn promotion_outcome_from_entry(
+        key: TimelineHoverPrepareFrameKey,
+        entry: TimelineHoverPreparedFrameEntry<BranchToken>,
+    ) -> TimelineHoverPreparePromotionOutcome<BranchToken> {
+        let promoted_frame = TimelineHoverPromotedPreparedFrame::from_validated_entry(key, entry);
 
         if promoted_frame.branch_token().is_some() {
             TimelineHoverPreparePromotionOutcome::PromotedResumeReadyBranch(promoted_frame)
@@ -537,82 +730,88 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
         requested_key: TimelineHoverPrepareFrameKey,
         bucket_keys: &[TimelineHoverPrepareFrameKey],
     ) -> TimelineHoverPrepareLookupMissReason {
-        let live_bucket_keys = bucket_keys
-            .iter()
-            .copied()
-            .filter(|stored_key| self.entries.contains_key(stored_key));
-
-        if let Some(stored_key) = live_bucket_keys.clone().find(|stored_key| {
-            stored_key.source_revision != requested_key.source_revision
-                && stored_key.backend_revision == requested_key.backend_revision
-                && stored_key.hover_generation == requested_key.hover_generation
-                && stored_key.track_selection == requested_key.track_selection
-                && stored_key.exactness_policy == requested_key.exactness_policy
-        }) {
-            return TimelineHoverPrepareLookupMissReason::SourceRevisionMismatch {
-                stored: stored_key.source_revision,
-                requested: requested_key.source_revision,
-            };
-        }
-
-        if let Some(stored_key) = live_bucket_keys.clone().find(|stored_key| {
-            stored_key.source_revision == requested_key.source_revision
-                && stored_key.backend_revision != requested_key.backend_revision
-                && stored_key.hover_generation == requested_key.hover_generation
-                && stored_key.track_selection == requested_key.track_selection
-                && stored_key.exactness_policy == requested_key.exactness_policy
-        }) {
-            return TimelineHoverPrepareLookupMissReason::BackendRevisionMismatch {
-                stored: stored_key.backend_revision,
-                requested: requested_key.backend_revision,
-            };
-        }
-
-        if let Some(stored_key) = live_bucket_keys.clone().find(|stored_key| {
-            stored_key.source_revision == requested_key.source_revision
-                && stored_key.backend_revision == requested_key.backend_revision
-                && stored_key.hover_generation != requested_key.hover_generation
-                && stored_key.track_selection == requested_key.track_selection
-                && stored_key.exactness_policy == requested_key.exactness_policy
-        }) {
-            return TimelineHoverPrepareLookupMissReason::HoverGenerationMismatch {
-                stored: stored_key.hover_generation,
-                requested: requested_key.hover_generation,
-            };
-        }
-
-        if let Some(stored_key) = live_bucket_keys.clone().find(|stored_key| {
-            stored_key.source_revision == requested_key.source_revision
-                && stored_key.backend_revision == requested_key.backend_revision
-                && stored_key.hover_generation == requested_key.hover_generation
-                && stored_key.track_selection != requested_key.track_selection
-                && stored_key.exactness_policy == requested_key.exactness_policy
-        }) {
-            return TimelineHoverPrepareLookupMissReason::TrackSelectionMismatch {
-                stored: stored_key.track_selection,
-                requested: requested_key.track_selection,
-            };
-        }
-
-        if let Some(stored_key) = live_bucket_keys.clone().find(|stored_key| {
-            stored_key.source_revision == requested_key.source_revision
-                && stored_key.backend_revision == requested_key.backend_revision
-                && stored_key.hover_generation == requested_key.hover_generation
-                && stored_key.track_selection == requested_key.track_selection
-                && stored_key.exactness_policy != requested_key.exactness_policy
-        }) {
-            return TimelineHoverPrepareLookupMissReason::ExactnessPolicyMismatch {
-                stored: stored_key.exactness_policy,
-                requested: requested_key.exactness_policy,
-            };
-        }
-
-        if live_bucket_keys.count() == 0 {
-            return TimelineHoverPrepareLookupMissReason::NoEntryForKey;
-        }
-
-        TimelineHoverPrepareLookupMissReason::NoEntryForKey
+        classify_key_miss_for_live_bucket_keys(
+            requested_key,
+            bucket_keys
+                .iter()
+                .copied()
+                .filter(|stored_key| self.entries.contains_key(stored_key)),
+        )
     }
+}
+
+pub(super) fn classify_key_miss_for_live_bucket_keys(
+    requested_key: TimelineHoverPrepareFrameKey,
+    live_bucket_keys: impl IntoIterator<Item = TimelineHoverPrepareFrameKey>,
+) -> TimelineHoverPrepareLookupMissReason {
+    let live_bucket_keys = live_bucket_keys.into_iter().collect::<Vec<_>>();
+
+    if let Some(stored_key) = live_bucket_keys.iter().copied().find(|stored_key| {
+        stored_key.source_revision != requested_key.source_revision
+            && stored_key.backend_revision == requested_key.backend_revision
+            && stored_key.hover_generation == requested_key.hover_generation
+            && stored_key.track_selection == requested_key.track_selection
+            && stored_key.exactness_policy == requested_key.exactness_policy
+    }) {
+        return TimelineHoverPrepareLookupMissReason::SourceRevisionMismatch {
+            stored: stored_key.source_revision,
+            requested: requested_key.source_revision,
+        };
+    }
+
+    if let Some(stored_key) = live_bucket_keys.iter().copied().find(|stored_key| {
+        stored_key.source_revision == requested_key.source_revision
+            && stored_key.backend_revision != requested_key.backend_revision
+            && stored_key.hover_generation == requested_key.hover_generation
+            && stored_key.track_selection == requested_key.track_selection
+            && stored_key.exactness_policy == requested_key.exactness_policy
+    }) {
+        return TimelineHoverPrepareLookupMissReason::BackendRevisionMismatch {
+            stored: stored_key.backend_revision,
+            requested: requested_key.backend_revision,
+        };
+    }
+
+    if let Some(stored_key) = live_bucket_keys.iter().copied().find(|stored_key| {
+        stored_key.source_revision == requested_key.source_revision
+            && stored_key.backend_revision == requested_key.backend_revision
+            && stored_key.hover_generation != requested_key.hover_generation
+            && stored_key.track_selection == requested_key.track_selection
+            && stored_key.exactness_policy == requested_key.exactness_policy
+    }) {
+        return TimelineHoverPrepareLookupMissReason::HoverGenerationMismatch {
+            stored: stored_key.hover_generation,
+            requested: requested_key.hover_generation,
+        };
+    }
+
+    if let Some(stored_key) = live_bucket_keys.iter().copied().find(|stored_key| {
+        stored_key.source_revision == requested_key.source_revision
+            && stored_key.backend_revision == requested_key.backend_revision
+            && stored_key.hover_generation == requested_key.hover_generation
+            && stored_key.track_selection != requested_key.track_selection
+            && stored_key.exactness_policy == requested_key.exactness_policy
+    }) {
+        return TimelineHoverPrepareLookupMissReason::TrackSelectionMismatch {
+            stored: stored_key.track_selection,
+            requested: requested_key.track_selection,
+        };
+    }
+
+    if let Some(stored_key) = live_bucket_keys.iter().copied().find(|stored_key| {
+        stored_key.source_revision == requested_key.source_revision
+            && stored_key.backend_revision == requested_key.backend_revision
+            && stored_key.hover_generation == requested_key.hover_generation
+            && stored_key.track_selection == requested_key.track_selection
+            && stored_key.exactness_policy != requested_key.exactness_policy
+    }) {
+        return TimelineHoverPrepareLookupMissReason::ExactnessPolicyMismatch {
+            stored: stored_key.exactness_policy,
+            requested: requested_key.exactness_policy,
+        };
+    }
+
+    TimelineHoverPrepareLookupMissReason::NoEntryForKey
 }
 
 fn validate_entry_timing(

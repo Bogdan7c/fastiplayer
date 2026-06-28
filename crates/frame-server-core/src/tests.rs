@@ -513,6 +513,40 @@ fn config_validation_rejects_impossible_values() {
             actual: MAX_TIMELINE_HOVER_PREPARE_SLOTS + 1,
         })
     );
+    assert_eq!(
+        FrameServerConfig {
+            recent_superseded_prepare_slots: MAX_RECENT_SUPERSEDED_PREPARE_SLOTS + 1,
+            ..FrameServerConfig::default()
+        }
+        .validate(),
+        Err(
+            FrameServerConfigError::RecentSupersededPrepareSlotsTooHigh {
+                max_allowed: MAX_RECENT_SUPERSEDED_PREPARE_SLOTS,
+                actual: MAX_RECENT_SUPERSEDED_PREPARE_SLOTS + 1,
+            }
+        )
+    );
+    assert_eq!(
+        FrameServerConfig {
+            software_recent_superseded_prepare_slots: MAX_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS
+                + 1,
+            ..FrameServerConfig::default()
+        }
+        .validate(),
+        Err(
+            FrameServerConfigError::SoftwareRecentSupersededPrepareSlotsTooHigh {
+                max_allowed: MAX_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS,
+                actual: MAX_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS + 1,
+            }
+        )
+    );
+    FrameServerConfig {
+        recent_superseded_prepare_slots: 0,
+        software_recent_superseded_prepare_slots: 0,
+        ..FrameServerConfig::default()
+    }
+    .validate()
+    .expect("zero recent retention disables only click-back retention");
     let default_config = FrameServerConfig::default()
         .validate()
         .expect("default frame-server config stays valid");
@@ -527,6 +561,24 @@ fn config_validation_rejects_impossible_values() {
     assert_eq!(
         default_config.timeline_hover_prepare_slots(),
         DEFAULT_TIMELINE_HOVER_PREPARE_SLOTS
+    );
+    assert_eq!(
+        default_config.recent_superseded_prepare_slots(),
+        DEFAULT_RECENT_SUPERSEDED_PREPARE_SLOTS
+    );
+    assert_eq!(
+        default_config.software_recent_superseded_prepare_slots(),
+        DEFAULT_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS
+    );
+    let default_recent_budget =
+        TimelineHoverRecentSupersededBudget::from_validated_config(default_config);
+    assert_eq!(
+        default_recent_budget.general_slots(),
+        usize::from(DEFAULT_RECENT_SUPERSEDED_PREPARE_SLOTS)
+    );
+    assert_eq!(
+        default_recent_budget.software_slots(),
+        usize::from(DEFAULT_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS)
     );
     assert!(FrameServerConfig::default().validate().is_ok());
 }
