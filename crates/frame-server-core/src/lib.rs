@@ -12,6 +12,7 @@ pub mod error;
 pub mod request;
 pub mod scheduler;
 pub mod scrub;
+pub mod state_machine;
 pub mod working_set;
 
 pub use config::{
@@ -53,6 +54,10 @@ pub use scrub::{
     ScrubProgress, ScrubProgressEvent, ScrubStartedEvent, ScrubTargetReachStatus,
     ScrubTimedOutOutcome, ScrubTimeoutReason, StaleGenerationOutcome,
 };
+pub use state_machine::{
+    ScrubExecutionPolicy, ScrubProtocolPhase, ScrubStateMachine, ScrubStep, ScrubTargetUpdate,
+    ScrubTargetUpdateGuards,
+};
 pub use working_set::{
     FrameExactnessPolicy, TimelineHoverFrameBucket, TimelineHoverPrepareAdmissionMode,
     TimelineHoverPrepareAdmissionOutcome, TimelineHoverPrepareAdmissionRequest,
@@ -71,6 +76,8 @@ pub use working_set::{
 
 #[cfg(test)]
 mod scheduler_tests;
+#[cfg(test)]
+mod state_machine_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
