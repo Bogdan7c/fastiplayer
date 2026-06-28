@@ -22,7 +22,7 @@ use frame_server_core::{
 use media_core::{DemuxSeekRequest, MediaDemuxError, MediaTime, TrackTimestamp};
 
 use super::PlayerSession;
-use crate::seek_state::demux_seek_request_for_transaction;
+use crate::seek_state::{SeekCommitState, demux_seek_request_for_transaction};
 use crate::{PlayerError, SeekMode};
 
 const AUDIO_RESUME_TIMEOUT_MAX: Duration = Duration::from_millis(500);
@@ -385,22 +385,76 @@ impl ScrubTransactionLifecycle for PlayerSession {
     }
 
     fn flush_decoder(&mut self, _context: ScrubTargetContext) -> ScrubLifecycleResult<()> {
-        self.reset_video_decoder_for_seek()
-            .map_err(player_error_to_scrub_fatal)
+        match self.reset_video_decoder_for_seek() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.record_recoverable_error(error.clone());
+                Err(player_error_to_scrub_fatal(error))
+            }
+        }
     }
 
     fn begin_nested_scrub_generation(
         &mut self,
         generation: ScrubGenerationToken,
     ) -> ScrubLifecycleResult<()> {
+        let pending_seek_landing = self.seek_runtime.pending_seek_landing_request_active();
+        let expected_playback_generation = if pending_seek_landing {
+            self.pipeline
+                .seek_generation()
+                .checked_add(1)
+                .ok_or_else(|| {
+                    ScrubLifecycleError::Fatal(ScrubFatalReason::DriverInvariantViolated)
+                })?
+        } else {
+            self.pipeline.seek_generation()
+        };
         let current_generation = ScrubGenerationToken::new(
-            self.current_playback_generation(),
+            PlaybackGeneration::new(expected_playback_generation),
             generation.scrub_generation,
         );
         if let Some(stale_reason) = generation.stale_reason_against(current_generation) {
             return Err(ScrubLifecycleError::StaleGeneration(stale_reason));
         }
 
+        if pending_seek_landing {
+            let new_playback_generation = self.pipeline.begin_seek_generation();
+            debug_assert_eq!(new_playback_generation, expected_playback_generation);
+            if self.pipeline.has_selected_video_track() {
+                self.record_video_decoder_bootstrap_started();
+            }
+            if let Some(Err(error)) = self.pipeline.reset_audio_decoder() {
+                let player_error = PlayerError::new(
+                    crate::PlayerErrorKind::RuntimeError,
+                    format!("Audio decoder reset failed during SeekLanding: {error}"),
+                );
+                self.record_recoverable_error(player_error);
+            }
+            if let Some(clear_result) = self
+                .pipeline
+                .clear_audio_output_for_seek(new_playback_generation)
+            {
+                match clear_result {
+                    Ok(ack_generation) => {
+                        self.pipeline.mark_audio_buffer_clear_ack(ack_generation);
+                    }
+                    Err(error) => {
+                        let player_error = PlayerError::new(
+                            crate::PlayerErrorKind::AudioDeviceUnavailable,
+                            format!("Audio buffer clear failed during SeekLanding: {error}"),
+                        );
+                        self.record_recoverable_error(player_error);
+                    }
+                }
+            } else {
+                self.pipeline
+                    .mark_audio_buffer_clear_ack(new_playback_generation);
+                self.pipeline.reset_audio_clock();
+            }
+        }
+
+        self.seek_runtime
+            .activate_seek_landing_generation(generation);
         Ok(())
     }
 
@@ -448,6 +502,8 @@ impl ScrubTransactionLifecycle for PlayerSession {
         };
 
         let seek_result = seek_result.map_err(scrub_lifecycle_error_from_demux_seek_error)?;
+        self.seek_runtime
+            .record_seek_landing_demux_accept(context.generation(), seek_result.actual_position);
 
         Ok(ScrubDemuxSeekAccepted {
             actual_decode_time: seek_result.actual_position,
@@ -459,9 +515,46 @@ impl ScrubTransactionLifecycle for PlayerSession {
 
     fn feed_and_drain(
         &mut self,
-        _context: ScrubTargetContext,
+        context: ScrubTargetContext,
         _stop_condition: FeedAndDrainStopCondition,
     ) -> ScrubLifecycleResult<ScrubFeedDrainResult> {
+        if let Some(seek_landing) = self.seek_runtime.active_seek_landing(context.generation()) {
+            let Some(actual_position) = seek_landing.actual_decode_position() else {
+                return Err(ScrubLifecycleError::DemuxUnavailable(
+                    DemuxUnavailableReason::DemuxerClosed,
+                ));
+            };
+
+            let seek_commit = SeekCommitState {
+                generation: context.generation().playback_generation.get(),
+                seek_mode: seek_landing.seek_mode(),
+                target_position: context.target().media_time,
+                actual_position,
+                started_at: std::time::Instant::now(),
+                resume_intent: seek_landing.resume_intent(),
+            };
+
+            self.seek_runtime.begin_trace(seek_commit.generation);
+            self.reanchor_clocks_after_seek_accept(seek_commit);
+            self.seek_runtime.set_active_commit(seek_commit);
+            if let Err(error) = self.apply_decoder_output_floor_for_seek(seek_commit) {
+                self.record_recoverable_error(error.clone());
+                self.seek_runtime.clear_active_commit();
+                self.seek_runtime.clear_trace();
+                self.seek_runtime.clear_eof_fallback_video_position();
+                self.clear_seek_preroll_fallback_frame();
+                return Err(player_error_to_scrub_fatal(error));
+            }
+
+            return Ok(ScrubFeedDrainResult::AudioResumePending(
+                derive_audio_resume_timeout_budget(
+                    AudioResumeTimingInput::unknown(),
+                    Duration::ZERO,
+                )
+                .metadata,
+            ));
+        }
+
         let budget =
             derive_audio_resume_timeout_budget(AudioResumeTimingInput::unknown(), Duration::ZERO);
         Ok(ScrubFeedDrainResult::AudioResumePending(budget.metadata))
@@ -540,10 +633,20 @@ fn scrub_intent_stale_reason(
     current_scrub_generation: ScrubGeneration,
 ) -> Option<ScrubStaleReason> {
     let context_generation = intent.context().generation();
-    let current_generation = ScrubGenerationToken::new(
-        lifecycle.current_playback_generation(),
-        current_scrub_generation,
-    );
+    let owner_playback_generation = lifecycle.current_playback_generation();
+    let current_playback_generation = if matches!(intent, ScrubIntent::PrepareTarget(_))
+        && owner_playback_generation
+            .get()
+            .checked_add(1)
+            .is_some_and(|next_generation| {
+                PlaybackGeneration::new(next_generation) == context_generation.playback_generation
+            }) {
+        context_generation.playback_generation
+    } else {
+        owner_playback_generation
+    };
+    let current_generation =
+        ScrubGenerationToken::new(current_playback_generation, current_scrub_generation);
     let stale_reason = context_generation.stale_reason_against(current_generation)?;
 
     if superseded_cancel_can_release_old_target(intent, stale_reason) {

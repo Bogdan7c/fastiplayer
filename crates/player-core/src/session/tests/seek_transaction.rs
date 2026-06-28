@@ -648,7 +648,8 @@ fn seek_without_video_decoder_treats_absent_flush_as_noop() {
         initial_generation.saturating_add(1)
     );
     assert!(session.seek_commit().is_some());
-    assert!(session.snapshot().timeline.seeking);
+    assert!(session.snapshot().timeline.scrubbing);
+    assert!(!session.snapshot().timeline.seeking);
     assert_eq!(
         session.snapshot().timeline.target_position,
         Some(MediaTime::from_secs(5))
@@ -682,7 +683,8 @@ fn seek_successful_decoder_flush_calls_demux_seek_and_advances_generation() {
         initial_generation.saturating_add(1)
     );
     assert!(session.seek_commit().is_some());
-    assert!(session.snapshot().timeline.seeking);
+    assert!(session.snapshot().timeline.scrubbing);
+    assert!(!session.snapshot().timeline.seeking);
     assert_eq!(
         session.snapshot().timeline.target_position,
         Some(MediaTime::from_secs(7))
@@ -715,7 +717,7 @@ fn seek_flush_failure_does_not_call_demux_seek_or_advance_generation() {
     assert!(session.seek_commit().is_none());
     assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
     assert!(!session.snapshot().timeline.seeking);
-    assert!(session.snapshot().timeline.stale_frame);
+    assert!(!session.snapshot().timeline.stale_frame);
     assert_eq!(session.snapshot().timeline.target_position, None);
     assert!(matches!(
         session
@@ -762,12 +764,12 @@ fn seek_flush_failure_clears_existing_seek_commit() {
     );
     assert_eq!(
         session.pipeline.seek_generation(),
-        generation_after_first_seek
+        generation_after_first_seek.saturating_add(1)
     );
     assert!(session.seek_commit().is_none());
     assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
     assert!(!session.snapshot().timeline.seeking);
-    assert!(session.snapshot().timeline.stale_frame);
+    assert!(!session.snapshot().timeline.stale_frame);
     assert!(matches!(
         session
             .snapshot()
@@ -2373,7 +2375,7 @@ fn accurate_seek_keeps_audio_fully_gated_before_target_without_preview() {
     assert!(harness.session.seek_commit().is_some());
     assert_eq!(
         harness.session.snapshot().playback_state,
-        PlaybackState::Seeking
+        PlaybackState::Scrubbing
     );
 }
 
@@ -2613,7 +2615,8 @@ fn final_seek_with_frozen_audio_clock_waits_for_audio_runtime_after_target_frame
         SeekAudioGateStatus::WaitingForDecoder
     );
     assert_eq!(session.snapshot().playback_state, PlaybackState::Draining);
-    assert!(session.snapshot().timeline.seeking);
+    assert!(session.snapshot().timeline.scrubbing);
+    assert!(!session.snapshot().timeline.seeking);
     assert!(!session.snapshot().timeline.stale_frame);
 }
 
@@ -2923,8 +2926,9 @@ fn playing_seek_waits_for_configured_video_preroll_before_resume() {
         3,
     );
 
-    assert_eq!(session.snapshot().playback_state, PlaybackState::Seeking);
-    assert!(session.snapshot().timeline.seeking);
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Scrubbing);
+    assert!(session.snapshot().timeline.scrubbing);
+    assert!(!session.snapshot().timeline.seeking);
 
     session
         .pipeline
@@ -3049,8 +3053,9 @@ fn playing_video_seek_with_audio_waits_for_audio_runtime_after_target_frame() {
         session.seek_audio_gate_status(seek_commit, 50.0),
         SeekAudioGateStatus::WaitingForDecoder
     );
-    assert_eq!(session.snapshot().playback_state, PlaybackState::Seeking);
-    assert!(session.snapshot().timeline.seeking);
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Scrubbing);
+    assert!(session.snapshot().timeline.scrubbing);
+    assert!(!session.snapshot().timeline.seeking);
 }
 
 #[test]

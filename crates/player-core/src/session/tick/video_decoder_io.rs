@@ -173,7 +173,7 @@ pub(super) fn run_video_decoder_io(
 
     let packets_sent = if context.send_pending_packets
         && session.can_present_video()
-        && session.playback_state().is_playback_active()
+        && (session.playback_state().is_playback_active() || session.seek_landing_decode_active())
     {
         send_pending_video_packets_to_decoder(
             session,

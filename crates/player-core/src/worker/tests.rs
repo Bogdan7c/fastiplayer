@@ -793,7 +793,7 @@ fn command_sender_routes_player_commands_through_worker_queue() {
 }
 
 #[test]
-fn public_scrub_api_uses_session_fallback_final_seek() {
+fn public_scrub_api_uses_session_seek_landing_route() {
     let mut runtime = runtime_for_tests(Instant::now());
     let seek_request_log = Arc::new(Mutex::new(Vec::new()));
 
@@ -815,8 +815,12 @@ fn public_scrub_api_uses_session_fallback_final_seek() {
         &[expected_request]
     );
     assert!(runtime.session.has_active_seek_commit());
-    assert!(runtime.session.snapshot().timeline.seeking);
-    assert!(!runtime.session.snapshot().timeline.scrubbing);
+    assert!(!runtime.session.snapshot().timeline.seeking);
+    assert!(runtime.session.snapshot().timeline.scrubbing);
+    assert_eq!(
+        runtime.session.snapshot().timeline.preview_state,
+        media_core::TimelinePreviewState::Pending
+    );
 }
 
 #[test]

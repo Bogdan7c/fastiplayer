@@ -248,6 +248,8 @@ fn eof_drain_finishes_when_audio_output_stalls_after_media_tail() {
     assert_eq!(seek_commit.target_position, MediaTime::ZERO);
     assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
     assert_eq!(session.playback_state(), PlaybackState::Seeking);
+    assert!(session.snapshot().timeline.seeking);
+    assert!(!session.snapshot().timeline.scrubbing);
 }
 
 #[test]
@@ -316,6 +318,8 @@ fn video_eof_drain_decodes_pending_video_tail_before_ending() {
     assert_eq!(seek_commit.target_position, MediaTime::ZERO);
     assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
     assert_eq!(session.playback_state(), PlaybackState::Seeking);
+    assert!(session.snapshot().timeline.seeking);
+    assert!(!session.snapshot().timeline.scrubbing);
 }
 
 #[test]
@@ -379,7 +383,9 @@ fn eof_drain_keeps_demuxer_open_for_seek() {
         seek_log.lock().expect("seek log lock").as_slice(),
         &[Duration::from_secs(5)]
     );
-    assert_eq!(session.playback_state(), PlaybackState::Seeking);
+    assert_eq!(session.playback_state(), PlaybackState::Scrubbing);
+    assert!(session.snapshot().timeline.scrubbing);
+    assert!(!session.snapshot().timeline.seeking);
     assert!(!session.is_eof_draining());
     assert!(session.snapshot().last_error.is_none());
 }
@@ -408,7 +414,9 @@ fn replay_and_seek_from_ended_keep_demuxer_contract() {
         seek_log.lock().expect("seek log lock").as_slice(),
         &[Duration::from_secs(5)]
     );
-    assert_eq!(seek_session.playback_state(), PlaybackState::Seeking);
+    assert_eq!(seek_session.playback_state(), PlaybackState::Scrubbing);
+    assert!(seek_session.snapshot().timeline.scrubbing);
+    assert!(!seek_session.snapshot().timeline.seeking);
     assert!(!seek_session.is_eof_draining());
     assert!(seek_session.snapshot().last_error.is_none());
 

@@ -1,7 +1,13 @@
 use std::time::{Duration, Instant};
 
-use frame_server_core::CancelScrubReason;
-use media_core::{MediaDemuxError, MediaTime, TimelineNotSeekableReason};
+use frame_server_core::{
+    CancelScrubReason, FinishScrubPolicy, FrameServerConfig, ScrubExactnessPolicy, ScrubGeneration,
+    ScrubRequestKind, ScrubTarget, ScrubTargetUpdate, ScrubTrackSelection,
+};
+use media_core::{
+    MediaDemuxError, MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason,
+    TimelinePreviewState, TrackKind, TrackTimestamp,
+};
 use tracing::{debug, trace, warn};
 
 use crate::seek_state::{
@@ -17,7 +23,18 @@ use crate::{
 };
 
 use super::audio_runtime::SeekAudioGateStatus;
+use super::scrub_driver::{
+    PlayerScrubTransactionDriver, default_scrub_execution_policy, scrub_update_guards_for_owner,
+};
 use super::{PlayerSession, PlayerTickConfig};
+
+/// S17A пока не имеет отдельного source revision provider-а внутри player-core.
+/// Playback generation остаётся реальным stale guard-ом для decoded frames.
+const SEEK_LANDING_SOURCE_REVISION_UNTRACKED: u64 = 0;
+
+/// Backend revision будет заменён реальным owner counter-ом, когда hover/prepared
+/// branch integration начнёт валидировать backend lineage.
+const SEEK_LANDING_BACKEND_REVISION_UNTRACKED: u64 = 0;
 
 /// Read-only срез gate-состояния, нужный только для диагностики active seek-а.
 #[derive(Debug, Clone, Copy)]
@@ -463,7 +480,7 @@ impl PlayerSession {
     }
 
     /// Перепривязывает clocks после accepted seek, когда demuxer уже сообщил actual point.
-    fn reanchor_clocks_after_seek_accept(&mut self, seek_commit: SeekCommitState) {
+    pub(super) fn reanchor_clocks_after_seek_accept(&mut self, seek_commit: SeekCommitState) {
         let clock_base = self.accepted_seek_clock_base(seek_commit);
         self.pipeline
             .reanchor_media_clock_for_seek(clock_base, Instant::now());
@@ -669,7 +686,7 @@ impl PlayerSession {
     }
 
     /// Пробует включить decoder-side output floor для Accurate seek preroll.
-    fn apply_decoder_output_floor_for_seek(
+    pub(super) fn apply_decoder_output_floor_for_seek(
         &mut self,
         seek_commit: SeekCommitState,
     ) -> Result<(), PlayerError> {
@@ -1465,6 +1482,7 @@ impl PlayerSession {
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.scrubbing = false;
         self.snapshot.timeline.stale_frame = false;
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
         self.pipeline.set_media_clock_base(playback_position);
         self.pipeline.clear_monotonic_media_clock();
         self.publish_position_changed(playback_position);
@@ -1557,6 +1575,7 @@ impl PlayerSession {
         self.snapshot.timeline.target_position = None;
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.scrubbing = false;
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Failed;
         // После timeout старый present frame остаётся на экране, но уже не принадлежит
         // закрытому final seek-у. Поэтому fresh можно считать только frame, который
         // действительно покрывает target завершённой transaction.
@@ -1586,16 +1605,19 @@ impl PlayerSession {
         self.record_recoverable_error(error);
     }
 
-    /// Запускает настоящий seek transaction через текущий demuxer.
+    /// Запускает one-shot SeekLanding route для обычной public seek-команды.
     pub(super) fn seek(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
         let resume_intent = PlaybackResumeIntent::from_playback_state(self.playback_state());
-        self.start_seek_from_request(request, resume_intent)
+        self.start_one_shot_seek_landing_from_request(request, resume_intent)
     }
 
-    /// Запускает seek request с уже выбранным resume intent.
-    fn start_seek_from_request(
+    /// Единая S17A точка входа для user-visible seek producers.
+    ///
+    /// Video route идёт через reused-decoder scrub driver; audio-only route остаётся
+    /// single seek transaction без второго video decode-а.
+    fn start_one_shot_seek_landing_from_request(
         &mut self,
         request: SeekRequest,
         resume_intent: PlaybackResumeIntent,
@@ -1615,7 +1637,170 @@ impl PlayerSession {
             return Ok(());
         }
 
-        self.start_seek_transaction(target_position, request.mode, resume_intent)
+        if !self.pipeline.has_selected_video_track() {
+            return self.start_audio_only_seek_landing_transaction(
+                target_position,
+                request.mode,
+                resume_intent,
+            );
+        }
+
+        self.start_reused_decoder_scrub_landing_transaction(
+            target_position,
+            request.mode,
+            resume_intent,
+        )
+    }
+
+    /// Выполняет no-video/audio-only SeekLanding через существующую single seek transaction.
+    ///
+    /// S17A exact landing frame semantics применимы к video route. Для audio-only
+    /// нет landing кадра и нет риска второго video decode-а, поэтому используем
+    /// текущие typed commit gates без отдельного public command route-а.
+    fn start_audio_only_seek_landing_transaction(
+        &mut self,
+        target_position: MediaTime,
+        seek_mode: SeekMode,
+        resume_intent: PlaybackResumeIntent,
+    ) -> PlayerResult<()> {
+        self.start_seek_transaction(target_position, seek_mode, resume_intent)
+    }
+
+    /// Запускает S17A SeekLanding через `frame-server-core` scrub driver поверх
+    /// текущего playback decoder-а.
+    fn start_reused_decoder_scrub_landing_transaction(
+        &mut self,
+        target_position: MediaTime,
+        seek_mode: SeekMode,
+        resume_intent: PlaybackResumeIntent,
+    ) -> PlayerResult<()> {
+        if !self.snapshot.timeline.seekable {
+            let reason = self
+                .snapshot
+                .timeline
+                .not_seekable_reason
+                .unwrap_or(TimelineNotSeekableReason::UnknownTimeline);
+            let error = PlayerError::new(
+                PlayerErrorKind::SeekUnavailable,
+                format!("Seek невозможен: timeline не seekable ({reason:?})"),
+            );
+            self.record_recoverable_error(error);
+            return Ok(());
+        }
+
+        let Some(video_track_id) = self.pipeline.selected_video_track_id() else {
+            return self.start_audio_only_seek_landing_transaction(
+                target_position,
+                seek_mode,
+                resume_intent,
+            );
+        };
+
+        let config = match FrameServerConfig::default().validate() {
+            Ok(config) => config,
+            Err(error) => {
+                return Err(PlayerError::new(
+                    PlayerErrorKind::RuntimeError,
+                    format!("Default frame-server config не прошёл validation: {error}"),
+                ));
+            }
+        };
+        if let Err(error) =
+            demux_seek_request_for_transaction(true, target_position.as_duration(), seek_mode)
+        {
+            self.record_recoverable_error(player_error_from_seek_demux_request_error(error));
+            return Ok(());
+        }
+        let generation = self
+            .pipeline
+            .seek_generation()
+            .checked_add(1)
+            .ok_or_else(|| {
+                PlayerError::new(
+                    PlayerErrorKind::RuntimeError,
+                    "Seek generation overflow would break SeekLanding stale-frame guards",
+                )
+            })?;
+
+        self.pause_audio_output_for_seek();
+        self.seek_runtime
+            .begin_seek_landing_request(seek_mode, resume_intent);
+        self.set_playback_state(PlaybackState::Scrubbing);
+        self.seek_runtime.clear_eof_fallback_video_position();
+        self.clear_seek_preroll_fallback_frame();
+        self.pipeline
+            .reset_clocks_for_seek(target_position.as_duration());
+        self.snapshot.timeline.target_position = Some(target_position);
+        self.snapshot.timeline.seeking = false;
+        self.snapshot.timeline.scrubbing = true;
+        self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame();
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Pending;
+
+        let target = ScrubTarget::new(
+            target_position,
+            self.seek_landing_target_pts(video_track_id, target_position),
+        );
+        let track_selection = match self.pipeline.selected_audio_track_id() {
+            Some(audio_track_id) => ScrubTrackSelection::with_audio(video_track_id, audio_track_id),
+            None => ScrubTrackSelection::video_only(video_track_id),
+        };
+        let update = ScrubTargetUpdate::new(
+            scrub_update_guards_for_owner(
+                SEEK_LANDING_SOURCE_REVISION_UNTRACKED,
+                SEEK_LANDING_BACKEND_REVISION_UNTRACKED,
+                generation,
+            ),
+            track_selection,
+            target,
+            ScrubExactnessPolicy::ExactFrame,
+            ScrubRequestKind::SeekLanding,
+            default_scrub_execution_policy(config, FinishScrubPolicy::CommitVisiblePreview),
+        );
+        let mut driver = PlayerScrubTransactionDriver::new(config, ScrubGeneration::new(0));
+        let run = driver.submit_target_update(self, update);
+        self.pending_scrub_events.extend(run.events);
+
+        if self.seek_landing_decode_active() {
+            return Ok(());
+        }
+
+        self.seek_runtime.clear_active_commit();
+        self.seek_runtime.clear_trace();
+        self.seek_runtime.clear_seek_landing();
+        self.seek_runtime.clear_eof_fallback_video_position();
+        self.clear_seek_preroll_fallback_frame();
+        self.snapshot.timeline.target_position = None;
+        self.snapshot.timeline.seeking = false;
+        self.snapshot.timeline.scrubbing = false;
+        self.snapshot.timeline.stale_frame = false;
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Failed;
+        self.set_playback_state(PlaybackState::Paused);
+        if self.snapshot.last_error.is_none() {
+            self.record_recoverable_error(PlayerError::new(
+                PlayerErrorKind::SeekUnavailable,
+                "SeekLanding не смог стартовать reused-decoder scrub route",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Строит target PTS в timebase выбранного video track-а для neutral scrub events.
+    fn seek_landing_target_pts(
+        &self,
+        video_track_id: crate::TrackId,
+        target_position: MediaTime,
+    ) -> TrackTimestamp {
+        let time_base = self
+            .pipeline
+            .tracks()
+            .iter()
+            .find(|track| track.id == video_track_id && track.kind == TrackKind::Video)
+            .and_then(|track| track.time_base)
+            .unwrap_or_else(|| TimeBase::new(1, 1_000).expect("valid millisecond timebase"));
+        let units = time_base.duration_to_track_units_saturating(MediaDuration::from_duration(
+            target_position.as_duration(),
+        ));
+        TrackTimestamp::new(video_track_id, units.get(), time_base)
     }
 
     /// Начинает compatibility scrub на уровне контракта без запуска demux seek.
@@ -1659,7 +1844,7 @@ impl PlayerSession {
         }
     }
 
-    /// Завершает compatibility scrub и превращает latest target в обычный final seek.
+    /// Завершает compatibility scrub и передаёт latest target в единый SeekLanding route.
     pub(super) fn end_scrub(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         if !self.seek_runtime.simple_scrub_active() {
@@ -1684,7 +1869,7 @@ impl PlayerSession {
         }
         if let Some(request) = latest_request {
             let resume_intent = PlaybackResumeIntent::from_playback_state(confirmed_playback_state);
-            self.start_seek_from_request(request, resume_intent)?;
+            self.start_one_shot_seek_landing_from_request(request, resume_intent)?;
         }
         Ok(())
     }
@@ -1713,6 +1898,11 @@ impl PlayerSession {
 
     /// Закрывает live scrub перед внешней командой без commit-а latest target-а.
     pub(super) fn cancel_active_scrub_for_external_command(&mut self, reason: CancelScrubReason) {
+        if self.seek_landing_decode_active() {
+            self.cancel_active_seek_landing_for_external_command(reason);
+            return;
+        }
+
         let Some(finished_scrub) = self.seek_runtime.finish_active_simple_scrub() else {
             return;
         };
@@ -1729,6 +1919,48 @@ impl PlayerSession {
             Some(confirmed_playback_state),
             SimpleScrubExitMode::RestoreStateOnly,
         );
+    }
+
+    /// Закрывает active S17A SeekLanding без commit-а uncommitted landing target-а.
+    fn cancel_active_seek_landing_for_external_command(&mut self, reason: CancelScrubReason) {
+        let resume_intent = self
+            .seek_runtime
+            .active_seek_landing_resume_intent()
+            .unwrap_or(PlaybackResumeIntent::Pause);
+        debug!(
+            reason = ?reason,
+            resume_intent = ?resume_intent,
+            target_position = ?self.snapshot.timeline.target_position,
+            "Cancelling active SeekLanding before external command"
+        );
+        if let Err(error) = self.clear_active_seek_decoder_output_floor("seek landing cancel") {
+            self.mark_fatal_error(error);
+            return;
+        }
+
+        self.invalidate_in_flight_scrub_outputs_after_exit("seek landing external command cancel");
+        self.seek_runtime.clear_active_commit();
+        self.seek_runtime.clear_trace();
+        self.seek_runtime.clear_seek_landing();
+        self.seek_runtime.clear_eof_fallback_video_position();
+        self.clear_seek_preroll_fallback_frame();
+        self.pipeline.clear_pending_packets_for_seek();
+        self.clear_queued_video_frames();
+        self.snapshot.timeline.target_position = None;
+        self.snapshot.timeline.seeking = false;
+        self.snapshot.timeline.scrubbing = false;
+        self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame();
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Inactive;
+
+        match resume_intent {
+            PlaybackResumeIntent::Pause => {
+                self.pause_audio_output_for_seek();
+                self.set_playback_state(PlaybackState::Paused);
+            }
+            PlaybackResumeIntent::Play => {
+                self.set_playback_state(PlaybackState::Playing);
+            }
+        }
     }
 
     /// Делает все in-flight scrub packets/frames/readiness старым playback generation.

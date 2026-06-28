@@ -2,7 +2,7 @@ use super::test_support::*;
 use super::*;
 
 #[test]
-fn regression_ordinary_final_seek_drops_decode_safe_preroll_until_target_frame() {
+fn regression_seek_landing_drops_decode_safe_preroll_until_target_frame() {
     let video_track = fake_track(1, TrackKind::Video);
     let target = Duration::from_secs(8);
     let actual = Duration::from_millis(7_900);
@@ -27,8 +27,8 @@ fn regression_ordinary_final_seek_drops_decode_safe_preroll_until_target_frame()
         accepted_seek.actual_position,
         MediaTime::from_duration(actual)
     );
-    assert!(harness.session.snapshot().timeline.seeking);
-    assert!(!harness.session.snapshot().timeline.scrubbing);
+    assert!(harness.session.snapshot().timeline.scrubbing);
+    assert!(!harness.session.snapshot().timeline.seeking);
 
     let first_tick = harness.tick_once_fast_preroll();
     assert_eq!(first_tick.demuxed_packets.len(), 2);
@@ -55,10 +55,10 @@ fn regression_ordinary_final_seek_drops_decode_safe_preroll_until_target_frame()
             .map(|frame| frame.pts),
         None
     );
-    // Pre-target frame не закрывает gate: commit ещё активен, seeking держится, позиция не сдвинута.
+    // Pre-target frame не закрывает gate: commit ещё активен, S17A pending держится, позиция не сдвинута.
     assert!(harness.session.seek_commit().is_some());
-    assert!(harness.session.snapshot().timeline.seeking);
-    assert!(!harness.session.snapshot().timeline.scrubbing);
+    assert!(harness.session.snapshot().timeline.scrubbing);
+    assert!(!harness.session.snapshot().timeline.seeking);
     assert!(!harness.session.snapshot().timeline.stale_frame);
     assert!(
         harness
@@ -346,7 +346,8 @@ fn regression_symphonia_reset_required_event_rebases_generation_and_seek_complet
     // Pre-target кадр после reset-generation не показывается и остаётся active seek fallback-ом.
     assert_eq!(preroll_tick.video_frames_presented, 0);
     assert!(harness.session.seek_commit().is_some());
-    assert!(harness.session.snapshot().timeline.seeking);
+    assert!(harness.session.snapshot().timeline.scrubbing);
+    assert!(!harness.session.snapshot().timeline.seeking);
     assert!(!harness.session.snapshot().timeline.stale_frame);
     assert_eq!(
         harness
@@ -476,7 +477,7 @@ fn regression_preview_scrub_does_not_mark_target_ready_without_seek() {
 }
 
 #[test]
-fn regression_drag_release_uses_ordinary_final_seek_even_with_visible_frame() {
+fn regression_drag_release_uses_seek_landing_even_with_visible_frame() {
     let mut session = PlayerSession::new();
     let seek_request_log = install_fake_media_with_seek_request_log(
         &mut session,
@@ -509,8 +510,8 @@ fn regression_drag_release_uses_ordinary_final_seek_even_with_visible_frame() {
         ))]
     );
     assert!(session.seek_commit().is_some());
-    assert!(!session.snapshot().timeline.scrubbing);
-    assert!(session.snapshot().timeline.seeking);
+    assert!(session.snapshot().timeline.scrubbing);
+    assert!(!session.snapshot().timeline.seeking);
 }
 
 #[test]

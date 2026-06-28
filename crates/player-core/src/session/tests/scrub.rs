@@ -248,9 +248,9 @@ fn toggle_during_scrub_uses_last_confirmed_playback_state() {
     );
 }
 
-/// Ordinary Seek во время scrub отменяет latest preview target и идёт по обычному seek route.
+/// Ordinary Seek во время scrub отменяет latest preview target и идёт по SeekLanding route.
 #[test]
-fn seek_during_scrub_cancels_latest_target_before_normal_seek_route() {
+fn seek_during_scrub_cancels_latest_target_before_one_shot_landing_route() {
     let mut session = PlayerSession::new();
     let seek_request_log = install_fake_media_with_seek_request_log(
         &mut session,
@@ -271,8 +271,14 @@ fn seek_during_scrub_cancels_latest_target_before_normal_seek_route() {
 
     assert!(!session.simple_scrub_active_for_tests());
     assert_eq!(session.simple_scrub_latest_request_for_tests(), None);
-    assert!(!session.snapshot().timeline.scrubbing);
-    assert_eq!(session.snapshot().playback_state, PlaybackState::Seeking);
+    assert!(session.snapshot().timeline.scrubbing);
+    assert!(!session.snapshot().timeline.seeking);
+    assert_eq!(
+        session.snapshot().timeline.preview_state,
+        media_core::TimelinePreviewState::Pending
+    );
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Scrubbing);
+    assert!(session.seek_commit().is_some());
 
     let requests = seek_request_log.lock().expect("seek request log lock");
     assert_eq!(requests.len(), 1);
@@ -297,7 +303,7 @@ fn default_timeline_release_remains_commit_visible_preview() {
     );
 }
 
-/// Проверяет, что release после simple UpdateScrub запускает обычный final seek.
+/// Проверяет, что release после simple UpdateScrub запускает тот же SeekLanding route.
 #[test]
 fn default_release_after_update_commits_latest_target_without_visible_preview() {
     let mut session = PlayerSession::new();
@@ -338,17 +344,73 @@ fn default_release_after_update_commits_latest_target_without_visible_preview() 
     assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
     let seek_commit = session
         .seek_commit()
-        .expect("EndScrub должен открыть ordinary final seek");
+        .expect("EndScrub должен открыть one-shot SeekLanding fallback");
     assert_eq!(seek_commit.target_position, MediaTime::from_secs(7));
     assert!(session.should_drop_decoded_frame_for_seek(Duration::from_millis(6_900)));
-    assert!(!session.snapshot().timeline.scrubbing);
-    assert!(session.snapshot().timeline.seeking);
+    assert!(session.snapshot().timeline.scrubbing);
+    assert!(!session.snapshot().timeline.seeking);
+    assert_eq!(
+        session.snapshot().timeline.preview_state,
+        media_core::TimelinePreviewState::Pending
+    );
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Scrubbing);
 
     let events = session.take_events();
     assert!(events.iter().any(|event| matches!(
         event,
         PlayerEvent::SeekRequested(seek_request) if *seek_request == request
     )));
+}
+
+/// Cold SeekLanding не очищает последний подтверждённый кадр, пока exact frame декодируется.
+#[test]
+fn cold_seek_landing_keeps_old_confirmed_frame_visible_while_pending() {
+    let mut session = PlayerSession::new();
+    let _seek_request_log = install_fake_media_with_seek_request_log(
+        &mut session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+    session
+        .pipeline
+        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(3), 300));
+    let request = SeekRequest::absolute(MediaTime::from_secs(11));
+
+    session
+        .dispatch_command(PlayerCommand::Seek(request))
+        .unwrap();
+
+    assert_eq!(
+        session.pipeline.present_video_frame_pts(),
+        Some(Duration::from_secs(3))
+    );
+    assert!(session.snapshot().timeline.scrubbing);
+    assert!(session.snapshot().timeline.stale_frame);
+    assert_eq!(
+        session.snapshot().timeline.preview_state,
+        media_core::TimelinePreviewState::Pending
+    );
+    assert_eq!(
+        session.snapshot().timeline.target_position,
+        Some(MediaTime::from_secs(11))
+    );
+    assert!(session.seek_commit().is_some());
+    let scrub_events = session.take_scrub_events();
+    assert!(
+        scrub_events
+            .iter()
+            .any(|event| matches!(event, frame_server_core::ScrubEvent::Started(_)))
+    );
+    assert!(scrub_events.iter().any(|event| matches!(
+        event,
+        frame_server_core::ScrubEvent::Progress(progress)
+            if progress.progress.target_status
+                == frame_server_core::ScrubTargetReachStatus::BeforeTarget
+    )));
+    assert!(
+        scrub_events
+            .iter()
+            .any(|event| matches!(event, frame_server_core::ScrubEvent::ResumePending(_)))
+    );
 }
 
 /// PreviewScrub временно является latest-target update и не стартует demux preview.
@@ -433,7 +495,7 @@ fn preview_scrub_target_is_committed_by_end_scrub() {
         event,
         PlayerEvent::SeekRequested(seek_request) if *seek_request == latest_request
     )));
-    assert!(events.iter().any(|event| matches!(
+    assert!(events.iter().all(|event| !matches!(
         event,
         PlayerEvent::PlaybackStateChanged(PlaybackState::Seeking)
     )));

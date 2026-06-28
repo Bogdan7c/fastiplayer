@@ -6,7 +6,7 @@ use capability_core::SystemCapabilities;
 #[cfg(test)]
 use codec_core::VideoCodec;
 use codec_core::VideoDecodeRequirement;
-use frame_server_core::CancelScrubReason;
+use frame_server_core::{CancelScrubReason, ScrubEvent};
 use media_core::{MediaDuration, MediaTime};
 use tracing::{debug, info, warn};
 #[cfg(test)]
@@ -79,6 +79,9 @@ pub struct PlayerSession {
 
     /// События, накопленные после последнего drain.
     pending_events: Vec<PlayerEvent>,
+
+    /// Scrub/SeekLanding события для отдельного S16 worker boundary.
+    pending_scrub_events: Vec<ScrubEvent>,
 
     /// State, принадлежащий media lifecycle boundary.
     media_lifecycle: MediaLifecycleState,
@@ -187,20 +190,29 @@ impl PlayerSession {
 
     /// Возвращает `true`, если demux loop должен читать новые packets.
     #[must_use]
-    pub const fn is_demuxing_active(&self) -> bool {
+    pub fn is_demuxing_active(&self) -> bool {
         matches!(
             self.snapshot.playback_state,
             PlaybackState::Playing | PlaybackState::Buffering | PlaybackState::Seeking
-        )
+        ) || self.seek_landing_decode_active()
     }
 
     /// Возвращает `true`, если scheduler может менять present frame.
     #[must_use]
-    pub const fn can_present_video(&self) -> bool {
+    pub fn can_present_video(&self) -> bool {
         matches!(
             self.snapshot.playback_state,
             PlaybackState::Playing | PlaybackState::Buffering | PlaybackState::Seeking
         ) || self.is_eof_draining()
+            || self.seek_landing_decode_active()
+    }
+
+    /// S17A exception: public `Scrubbing` остаётся не-playback state, но active
+    /// SeekLanding должен демаксить/декодить через уже существующий playback decoder.
+    #[must_use]
+    pub(crate) fn seek_landing_decode_active(&self) -> bool {
+        self.snapshot.playback_state == PlaybackState::Scrubbing
+            && self.seek_runtime.seek_landing_decode_active()
     }
 
     /// Возвращает `true`, если текущая session владеет открытым demuxer-ом.
@@ -400,6 +412,12 @@ impl PlayerSession {
     #[must_use]
     pub fn take_events(&mut self) -> Vec<PlayerEvent> {
         std::mem::take(&mut self.pending_events)
+    }
+
+    /// Забирает normalized scrub events, не смешивая их с обычными player events.
+    #[must_use]
+    pub(crate) fn take_scrub_events(&mut self) -> Vec<ScrubEvent> {
+        std::mem::take(&mut self.pending_scrub_events)
     }
 
     /// Переводит renderer resource ids в новое поколение после полного reset media pipeline.
@@ -869,6 +887,7 @@ impl Default for PlayerSession {
             last_nonzero_volume: None,
             diagnostics: PlaybackDiagnostics::default(),
             pending_events: Vec::new(),
+            pending_scrub_events: Vec::new(),
             media_lifecycle: MediaLifecycleState::default(),
             shutdown_requested: false,
             eof_drain: EofDrainRuntime::default(),

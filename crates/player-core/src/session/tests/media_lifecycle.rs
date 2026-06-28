@@ -41,7 +41,8 @@ fn active_seek_generation_is_rebased_after_track_list_update() {
         seek_after_reset.resume_intent,
         seek_before_reset.resume_intent
     );
-    assert!(session.snapshot().timeline.seeking);
+    assert!(session.snapshot().timeline.scrubbing);
+    assert!(!session.snapshot().timeline.seeking);
     assert_eq!(
         session.snapshot().timeline.target_position,
         Some(MediaTime::from_secs(6))

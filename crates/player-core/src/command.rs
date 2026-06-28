@@ -148,8 +148,8 @@ impl SeekRequest {
 /// Совместимый параметр завершения interactive scrub.
 ///
 /// Текущий player-core временно игнорирует значение policy: `EndScrub` сохраняет
-/// форму public API до будущей переписи preview-пайплайна, но завершает drag обычным
-/// final seek-ом.
+/// форму public API до будущей переписи preview-пайплайна, но завершает drag через
+/// единый SeekLanding route.
 /// Обычные exact seek-команды должны идти через `PlayerCommand::Seek`, чтобы не
 /// наследовать будущую UX policy timeline-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +194,7 @@ pub enum PlayerCommand {
     /// Переключить состояние между play и pause.
     TogglePlayback,
 
-    /// Выполнить exact/accurate final seek текущего media.
+    /// Выполнить exact/accurate seek текущего media через единый SeekLanding route.
     ///
     /// Эта команда не использует `ScrubCommitPolicy` и остаётся route-ом для keyboard seek,
     /// external/MPRIS seek, будущего chapter seek и любого отделённого exact click-to-seek.
@@ -212,7 +212,7 @@ pub enum PlayerCommand {
     /// для `EndScrub`, но player-core preview-пайплайн не стартует.
     PreviewScrub(SeekRequest),
 
-    /// Завершить compatibility scrub обычным final seek-ом в latest target.
+    /// Завершить compatibility scrub единым SeekLanding route в latest target.
     ///
     /// `policy` пока сохраняется только для совместимости public API и не влияет
     /// на выбор target-а: session всегда берёт последний `UpdateScrub`/`PreviewScrub`.

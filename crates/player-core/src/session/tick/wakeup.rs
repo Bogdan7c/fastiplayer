@@ -145,7 +145,7 @@ impl PlayerSession {
         coarse_progress_interval: Duration,
         decoder_activity_status: &VideoDecoderActivityStatus,
     ) -> PlayerWorkerWakeupPlan {
-        if !self.playback_state().is_playback_active() {
+        if !self.playback_state().is_playback_active() && !self.seek_landing_decode_active() {
             return PlayerWorkerWakeupPlan::idle();
         }
 
@@ -163,7 +163,8 @@ impl PlayerSession {
             let reason = if matches!(
                 self.playback_state(),
                 PlaybackState::Buffering | PlaybackState::Seeking
-            ) {
+            ) || self.seek_landing_decode_active()
+            {
                 WorkerWakeupReason::SeekOrPreroll
             } else {
                 WorkerWakeupReason::PipelineWorkReady

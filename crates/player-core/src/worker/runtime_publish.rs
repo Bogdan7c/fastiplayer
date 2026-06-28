@@ -209,6 +209,9 @@ impl PlayerWorkerRuntime {
         for event in self.session.take_events() {
             self.publish_worker_event(PlayerWorkerEvent::Player(event));
         }
+        for event in self.session.take_scrub_events() {
+            self.publish_worker_event(PlayerWorkerEvent::Scrub(event));
+        }
     }
 
     /// Публикует tick telemetry без блокировки worker-а.
