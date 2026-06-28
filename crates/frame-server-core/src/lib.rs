@@ -53,9 +53,10 @@ pub use scrub::{
 pub use working_set::{
     FrameExactnessPolicy, TimelineHoverFrameBucket, TimelineHoverPrepareFrameKey,
     TimelineHoverPrepareFrameLookupRequest, TimelineHoverPrepareLookupMissReason,
-    TimelineHoverPrepareLookupOutcome, TimelineHoverPrepareTimingRejection,
-    TimelineHoverPrepareWorkingSet, TimelineHoverPreparedFrame, TimelineHoverPreparedFrameEntry,
-    TimelineHoverPreparedFrameTiming,
+    TimelineHoverPrepareLookupOutcome, TimelineHoverPreparePromotionOutcome,
+    TimelineHoverPrepareTimingRejection, TimelineHoverPrepareWorkingSet,
+    TimelineHoverPreparedFrame, TimelineHoverPreparedFrameEntry, TimelineHoverPreparedFrameTiming,
+    TimelineHoverPromotedFrameSeekReuse, TimelineHoverPromotedPreparedFrame,
 };
 
 #[cfg(test)]

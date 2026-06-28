@@ -199,6 +199,68 @@ impl<'a, BranchToken> TimelineHoverPreparedFrame<'a, BranchToken> {
     }
 }
 
+/// Owned entry, который уже вышел из hover-retained ownership.
+///
+/// S08B ещё не знает о реальном S17, поэтому тип только переносит lease и
+/// branch token в нового владельца транзакции без копирования pixel payload.
+pub struct TimelineHoverPromotedPreparedFrame<BranchToken = ()> {
+    key: TimelineHoverPrepareFrameKey,
+    entry: TimelineHoverPreparedFrameEntry<BranchToken>,
+}
+
+impl<BranchToken> TimelineHoverPromotedPreparedFrame<BranchToken> {
+    fn from_validated_entry(
+        key: TimelineHoverPrepareFrameKey,
+        entry: TimelineHoverPreparedFrameEntry<BranchToken>,
+    ) -> Self {
+        Self { key, entry }
+    }
+
+    #[must_use]
+    pub const fn key(&self) -> TimelineHoverPrepareFrameKey {
+        self.key
+    }
+
+    #[must_use]
+    pub const fn lease(&self) -> &VideoFrameLease {
+        &self.entry.lease
+    }
+
+    #[must_use]
+    pub const fn timing(&self) -> TimelineHoverPreparedFrameTiming {
+        self.entry.timing
+    }
+
+    #[must_use]
+    pub fn resource_descriptor(&self) -> VideoPresentFrameResourceDescriptor {
+        self.entry.lease.resource_descriptor()
+    }
+
+    #[must_use]
+    pub const fn branch_token(&self) -> Option<&BranchToken> {
+        self.entry.branch_token.as_ref()
+    }
+
+    /// Показывает, можно ли использовать promoted entry как resume-ready branch.
+    #[must_use]
+    pub fn seek_reuse(&self) -> TimelineHoverPromotedFrameSeekReuse<'_, BranchToken> {
+        match self.entry.branch_token.as_ref() {
+            Some(branch_token) => {
+                TimelineHoverPromotedFrameSeekReuse::ResumeReadyBranch { branch_token }
+            }
+            None => TimelineHoverPromotedFrameSeekReuse::VisualOverrideResumePending,
+        }
+    }
+}
+
+/// Как seek transaction может использовать promoted hover entry.
+pub enum TimelineHoverPromotedFrameSeekReuse<'a, BranchToken> {
+    /// Branch continuation token есть, значит owner может продолжать decode branch.
+    ResumeReadyBranch { branch_token: &'a BranchToken },
+    /// Есть только frame/lease: можно показать override и запускать resume_pending.
+    VisualOverrideResumePending,
+}
+
 /// Lookup request: key выбирает candidate, target PTS доказывает exactness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TimelineHoverPrepareFrameLookupRequest {
@@ -232,6 +294,21 @@ impl TimelineHoverPrepareFrameLookupRequest {
 /// Типизированный результат lookup-а без сведения miss/reject к `bool`.
 pub enum TimelineHoverPrepareLookupOutcome<'a, BranchToken = ()> {
     Hit(TimelineHoverPreparedFrame<'a, BranchToken>),
+    Miss(TimelineHoverPrepareLookupMissReason),
+    TimingRejected(TimelineHoverPrepareTimingRejection),
+}
+
+/// Типизированный результат promotion-а без сведения miss/reject к `bool`.
+pub enum TimelineHoverPreparePromotionOutcome<BranchToken = ()> {
+    /// Entry содержит branch token и может перейти в resume-ready seek ownership.
+    PromotedResumeReadyBranch(TimelineHoverPromotedPreparedFrame<BranchToken>),
+    /// Entry содержит только frame lease и подходит только для override/resume_pending.
+    PromotedVisualOverrideResumePending(TimelineHoverPromotedPreparedFrame<BranchToken>),
+    Miss(TimelineHoverPrepareLookupMissReason),
+    TimingRejected(TimelineHoverPrepareTimingRejection),
+}
+
+enum TimelineHoverPrepareLookupFailure {
     Miss(TimelineHoverPrepareLookupMissReason),
     TimingRejected(TimelineHoverPrepareTimingRejection),
 }
@@ -345,31 +422,84 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
         &self,
         request: TimelineHoverPrepareFrameLookupRequest,
     ) -> TimelineHoverPrepareLookupOutcome<'_, BranchToken> {
+        match self.find_validated_entry(&request) {
+            Ok(entry) => TimelineHoverPrepareLookupOutcome::Hit(TimelineHoverPreparedFrame {
+                key: request.key,
+                entry,
+            }),
+            Err(TimelineHoverPrepareLookupFailure::Miss(reason)) => {
+                TimelineHoverPrepareLookupOutcome::Miss(reason)
+            }
+            Err(TimelineHoverPrepareLookupFailure::TimingRejected(rejection)) => {
+                TimelineHoverPrepareLookupOutcome::TimingRejected(rejection)
+            }
+        }
+    }
+
+    /// Валидирует и переносит prepared entry из hover ownership в seek ownership.
+    ///
+    /// Timing/key validation происходит до удаления: rejected candidate остаётся
+    /// во владении hover working set-а и будет освобождён обычным hover cleanup.
+    #[must_use]
+    pub fn promote_prepared_frame(
+        &mut self,
+        request: TimelineHoverPrepareFrameLookupRequest,
+    ) -> TimelineHoverPreparePromotionOutcome<BranchToken> {
+        match self.find_validated_entry(&request) {
+            Ok(_) => {}
+            Err(TimelineHoverPrepareLookupFailure::Miss(reason)) => {
+                return TimelineHoverPreparePromotionOutcome::Miss(reason);
+            }
+            Err(TimelineHoverPrepareLookupFailure::TimingRejected(rejection)) => {
+                return TimelineHoverPreparePromotionOutcome::TimingRejected(rejection);
+            }
+        }
+
+        let entry = self
+            .entries
+            .remove(&request.key)
+            .expect("validated prepared entry must remain present until promotion removes it");
+        self.remove_key_from_indexes(request.key);
+
+        let promoted_frame =
+            TimelineHoverPromotedPreparedFrame::from_validated_entry(request.key, entry);
+
+        if promoted_frame.branch_token().is_some() {
+            TimelineHoverPreparePromotionOutcome::PromotedResumeReadyBranch(promoted_frame)
+        } else {
+            TimelineHoverPreparePromotionOutcome::PromotedVisualOverrideResumePending(
+                promoted_frame,
+            )
+        }
+    }
+
+    fn find_validated_entry(
+        &self,
+        request: &TimelineHoverPrepareFrameLookupRequest,
+    ) -> Result<&TimelineHoverPreparedFrameEntry<BranchToken>, TimelineHoverPrepareLookupFailure>
+    {
         let bucket_keys = match self.bucket_index.get(&request.key.target_bucket) {
             Some(bucket_keys) if !bucket_keys.is_empty() => bucket_keys,
             _ => {
-                return TimelineHoverPrepareLookupOutcome::Miss(
+                return Err(TimelineHoverPrepareLookupFailure::Miss(
                     TimelineHoverPrepareLookupMissReason::NoEntryForBucket {
                         bucket: request.key.target_bucket,
                     },
-                );
+                ));
             }
         };
 
         let Some(entry) = self.entries.get(&request.key) else {
-            return TimelineHoverPrepareLookupOutcome::Miss(
+            return Err(TimelineHoverPrepareLookupFailure::Miss(
                 self.classify_key_miss(request.key, bucket_keys),
-            );
+            ));
         };
 
         if let Some(rejection) = validate_entry_timing(&request, entry.timing) {
-            return TimelineHoverPrepareLookupOutcome::TimingRejected(rejection);
+            return Err(TimelineHoverPrepareLookupFailure::TimingRejected(rejection));
         }
 
-        TimelineHoverPrepareLookupOutcome::Hit(TimelineHoverPreparedFrame {
-            key: request.key,
-            entry,
-        })
+        Ok(entry)
     }
 
     fn evict_entries_over_capacity(&mut self) {
