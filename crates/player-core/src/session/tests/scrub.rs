@@ -91,6 +91,37 @@ fn scrubbing_freezes_audio_and_release_without_target_resumes_playing_output() {
     assert_eq!(audio_output_handle.play_count.load(Ordering::Relaxed), 2);
 }
 
+/// Выход из active Scrubbing инвалидирует in-flight scrub output через playback generation.
+#[test]
+fn end_scrub_without_target_advances_generation_for_resume_safety() {
+    let mut session = PlayerSession::new();
+    install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+    let generation_before_scrub = session.pipeline.seek_generation();
+    let queued_frame =
+        decoded_frame_for_current_seek_generation(&session, Duration::from_millis(40), 40);
+    session.pipeline.enqueue_queued_video_frame(queued_frame);
+
+    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::EndScrub {
+            policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        })
+        .unwrap();
+
+    assert_eq!(
+        session.pipeline.seek_generation(),
+        generation_before_scrub + 1
+    );
+    assert!(
+        !session
+            .pipeline
+            .packet_generation_is_current(generation_before_scrub)
+    );
+    assert!(session.pipeline.video_present_queue_is_empty());
+    assert!(!session.snapshot().timeline.scrubbing);
+    assert!(session.seek_commit().is_none());
+}
+
 /// Play во время active scrub сначала отменяет scrub, но не коммитит latest target.
 #[test]
 fn play_during_scrub_cancels_without_hidden_seek_commit() {

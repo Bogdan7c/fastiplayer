@@ -100,7 +100,11 @@ impl PlayerScrubTransactionDriver {
 
             handled_intents += 1;
             run.intents.push(intent.kind());
-            let outcome = execute_intent(lifecycle, intent);
+            let outcome = execute_intent(
+                lifecycle,
+                intent,
+                self.state_machine.current_scrub_generation(),
+            );
             record_outcome(self, outcome, &mut pending_intents, &mut run);
         }
 
@@ -121,6 +125,8 @@ pub(super) struct ScrubDriverRun {
 /// Здесь намеренно нет методов создания decoder/session: driver должен работать
 /// только с уже установленными owner resources.
 pub(super) trait ScrubTransactionLifecycle {
+    fn current_playback_generation(&self) -> PlaybackGeneration;
+
     fn clear_old_decode_floor(&mut self, context: ScrubTargetContext) -> ScrubLifecycleResult<()>;
 
     fn flush_decoder(&mut self, context: ScrubTargetContext) -> ScrubLifecycleResult<()>;
@@ -360,6 +366,10 @@ impl ScrubLifecycleError {
 }
 
 impl ScrubTransactionLifecycle for PlayerSession {
+    fn current_playback_generation(&self) -> PlaybackGeneration {
+        PlaybackGeneration::new(self.pipeline.seek_generation())
+    }
+
     fn clear_old_decode_floor(&mut self, _context: ScrubTargetContext) -> ScrubLifecycleResult<()> {
         self.clear_active_seek_decoder_output_floor("scrub driver")
             .map_err(player_error_to_scrub_fatal)
@@ -372,9 +382,16 @@ impl ScrubTransactionLifecycle for PlayerSession {
 
     fn begin_nested_scrub_generation(
         &mut self,
-        _generation: ScrubGenerationToken,
+        generation: ScrubGenerationToken,
     ) -> ScrubLifecycleResult<()> {
-        let _next_playback_generation = self.pipeline.begin_seek_generation();
+        let current_generation = ScrubGenerationToken::new(
+            self.current_playback_generation(),
+            generation.scrub_generation,
+        );
+        if let Some(stale_reason) = generation.stale_reason_against(current_generation) {
+            return Err(ScrubLifecycleError::StaleGeneration(stale_reason));
+        }
+
         Ok(())
     }
 
@@ -446,6 +463,8 @@ impl ScrubTransactionLifecycle for PlayerSession {
         context: ScrubTargetContext,
         policy: FinishScrubPolicy,
     ) -> ScrubLifecycleResult<ScrubFinishResult> {
+        self.invalidate_in_flight_scrub_outputs_after_exit("scrub driver finish");
+
         match policy {
             FinishScrubPolicy::CommitVisiblePreview => Ok(ScrubFinishResult::Committed {
                 committed_time: context.target().media_time,
@@ -460,8 +479,12 @@ impl ScrubTransactionLifecycle for PlayerSession {
     fn cancel_scrub(
         &mut self,
         _context: ScrubTargetContext,
-        _reason: CancelScrubReason,
+        reason: CancelScrubReason,
     ) -> ScrubLifecycleResult<()> {
+        if reason != CancelScrubReason::SupersededByNewTarget {
+            self.invalidate_in_flight_scrub_outputs_after_exit("scrub driver cancel");
+        }
+
         Ok(())
     }
 }
@@ -469,7 +492,14 @@ impl ScrubTransactionLifecycle for PlayerSession {
 fn execute_intent(
     lifecycle: &mut impl ScrubTransactionLifecycle,
     intent: ScrubIntent,
+    current_scrub_generation: ScrubGeneration,
 ) -> ScrubDriverOutcome {
+    if let Some(stale_reason) =
+        scrub_intent_stale_reason(lifecycle, intent, current_scrub_generation)
+    {
+        return ScrubLifecycleError::StaleGeneration(stale_reason).into_outcome(*intent.context());
+    }
+
     match intent {
         ScrubIntent::PrepareTarget(payload) => execute_prepare_target(lifecycle, payload.context),
         ScrubIntent::SeekDecodePointBefore(payload) => {
@@ -481,6 +511,39 @@ fn execute_intent(
         ScrubIntent::Finish(payload) => execute_finish(lifecycle, payload.context, payload.policy),
         ScrubIntent::Cancel(payload) => execute_cancel(lifecycle, payload.context, payload.reason),
     }
+}
+
+fn scrub_intent_stale_reason(
+    lifecycle: &impl ScrubTransactionLifecycle,
+    intent: ScrubIntent,
+    current_scrub_generation: ScrubGeneration,
+) -> Option<ScrubStaleReason> {
+    let context_generation = intent.context().generation();
+    let current_generation = ScrubGenerationToken::new(
+        lifecycle.current_playback_generation(),
+        current_scrub_generation,
+    );
+    let stale_reason = context_generation.stale_reason_against(current_generation)?;
+
+    if superseded_cancel_can_release_old_target(intent, stale_reason) {
+        return None;
+    }
+
+    Some(stale_reason)
+}
+
+fn superseded_cancel_can_release_old_target(
+    intent: ScrubIntent,
+    stale_reason: ScrubStaleReason,
+) -> bool {
+    matches!(
+        intent,
+        ScrubIntent::Cancel(payload)
+            if payload.reason == CancelScrubReason::SupersededByNewTarget
+    ) && matches!(
+        stale_reason,
+        ScrubStaleReason::ScrubGenerationMismatch { .. }
+    )
 }
 
 fn execute_prepare_target(

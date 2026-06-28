@@ -1671,6 +1671,7 @@ impl PlayerSession {
             .seek_runtime
             .finish_active_simple_scrub()
             .expect("simple scrub active должен вернуть finished state");
+        self.invalidate_in_flight_scrub_outputs_after_exit("end scrub");
         let confirmed_playback_state = finished_scrub.confirmed_playback_state();
         let latest_request = finished_scrub.latest_request();
         if latest_request.is_some() {
@@ -1715,6 +1716,7 @@ impl PlayerSession {
         let Some(finished_scrub) = self.seek_runtime.finish_active_simple_scrub() else {
             return;
         };
+        self.invalidate_in_flight_scrub_outputs_after_exit("external command cancel");
         let confirmed_playback_state = finished_scrub.confirmed_playback_state();
         let latest_request = finished_scrub.latest_request();
         debug!(
@@ -1726,6 +1728,20 @@ impl PlayerSession {
         self.finish_simple_scrub_without_seek(
             Some(confirmed_playback_state),
             SimpleScrubExitMode::RestoreStateOnly,
+        );
+    }
+
+    /// Делает все in-flight scrub packets/frames/readiness старым playback generation.
+    pub(super) fn invalidate_in_flight_scrub_outputs_after_exit(
+        &mut self,
+        exit_reason: &'static str,
+    ) {
+        let generation = self.pipeline.begin_seek_generation();
+        self.clear_seek_preroll_fallback_frame();
+        self.clear_queued_video_frames();
+        debug!(
+            exit_reason,
+            generation, "Active Scrubbing exit advanced playback generation"
         );
     }
 

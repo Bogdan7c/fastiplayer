@@ -3,9 +3,9 @@ use std::path::Path;
 use frame_server_core::{
     AudioResumeBudgetSource, CancelScrubReason, DecoderBackpressureReason, DemuxUnavailableReason,
     DemuxUnsupportedReason, FeedAndDrainStopCondition, FinishScrubPolicy, FrameServerConfig,
-    HostUploadBackpressureReason, ResourceBusyReason, ScrubDriverOutcome, ScrubExactnessPolicy,
-    ScrubGeneration, ScrubIntentKind, ScrubRequestKind, ScrubStaleReason, ScrubTarget,
-    ScrubTargetUpdate, ScrubTimeoutReason, ScrubTrackSelection,
+    HostUploadBackpressureReason, PlaybackGeneration, ResourceBusyReason, ScrubDriverOutcome,
+    ScrubExactnessPolicy, ScrubGeneration, ScrubGenerationToken, ScrubIntentKind, ScrubRequestKind,
+    ScrubStaleReason, ScrubTarget, ScrubTargetUpdate, ScrubTimeoutReason, ScrubTrackSelection,
 };
 
 use super::super::scrub_driver::{
@@ -78,31 +78,112 @@ fn player_session_scrub_driver_adapter_uses_existing_pipeline_boundaries() {
     let config = FrameServerConfig::default()
         .validate()
         .expect("default frame-server config must validate");
-    let mut session = PlayerSession::new();
-    let seek_request_log = install_fake_media_with_seek_request_log(
-        &mut session,
-        vec![fake_track(7, TrackKind::Video)],
-    );
-    let decoder = SharedFakeVideoDecoderThread::new();
-    session.pipeline.set_video_decoder_thread(decoder.clone());
-    let initial_generation = session.pipeline.seek_generation();
+
+    for decoder_mode in [
+        ScrubFakeDecoderMode::HardwareLike,
+        ScrubFakeDecoderMode::HostUpload,
+    ] {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(7, TrackKind::Video)],
+        );
+        let decoder = SharedFakeVideoDecoderThread::new();
+        decoder_mode.configure(&decoder);
+        session.pipeline.set_video_decoder_thread(decoder.clone());
+        let initial_generation = session.pipeline.seek_generation();
+        let mut driver = PlayerScrubTransactionDriver::new(config, ScrubGeneration::new(0));
+
+        let run = driver.submit_target_update(
+            &mut session,
+            live_scrub_update_for_playback_generation(config, initial_generation),
+        );
+
+        assert_eq!(decoder.flush_count(), 1, "{decoder_mode:?}");
+        assert_eq!(
+            session.pipeline.seek_generation(),
+            initial_generation,
+            "{decoder_mode:?}"
+        );
+        let requests = seek_request_log.lock().expect("seek request log lock");
+        assert_eq!(requests.len(), 1, "{decoder_mode:?}");
+        assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
+        assert_eq!(requests[0].timestamp, Duration::from_millis(1_500));
+        assert!(matches!(
+            run.outcomes.as_slice(),
+            [
+                ScrubDriverOutcome::Prepared(_),
+                ScrubDriverOutcome::DecodePointSeeked(_),
+                ScrubDriverOutcome::AudioResumePending(_),
+            ]
+        ));
+    }
+}
+
+#[test]
+fn scrub_driver_rejects_stale_playback_generation_before_lifecycle_steps() {
+    let config = FrameServerConfig::default()
+        .validate()
+        .expect("default frame-server config must validate");
     let mut driver = PlayerScrubTransactionDriver::new(config, ScrubGeneration::new(0));
+    let mut lifecycle =
+        RecordingScrubLifecycle::with_playback_generation(PlaybackGeneration::new(4));
 
-    let run = driver.submit_target_update(&mut session, live_scrub_update(config));
+    let run = driver.submit_target_update(&mut lifecycle, live_scrub_update(config));
 
-    assert_eq!(decoder.flush_count(), 1);
-    assert_eq!(session.pipeline.seek_generation(), initial_generation + 1);
-    let requests = seek_request_log.lock().expect("seek request log lock");
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
-    assert_eq!(requests[0].timestamp, Duration::from_millis(1_500));
+    assert!(lifecycle.steps.is_empty());
     assert!(matches!(
         run.outcomes.as_slice(),
+        [ScrubDriverOutcome::StaleGeneration(outcome)]
+            if matches!(
+                outcome.reason,
+                ScrubStaleReason::PlaybackGenerationMismatch {
+                    context_generation,
+                    current_generation,
+                } if context_generation == PlaybackGeneration::new(3)
+                    && current_generation == PlaybackGeneration::new(4)
+            )
+    ));
+}
+
+#[test]
+fn fast_target_change_bumps_only_nested_scrub_generation_and_supersedes_old_target() {
+    let config = FrameServerConfig::default()
+        .validate()
+        .expect("default frame-server config must validate");
+    let mut driver = PlayerScrubTransactionDriver::new(config, ScrubGeneration::new(0));
+    let mut lifecycle = RecordingScrubLifecycle::default();
+
+    let first_run = driver.submit_target_update(&mut lifecycle, live_scrub_update(config));
+    let second_run = driver.submit_target_update(
+        &mut lifecycle,
+        live_scrub_update_for_playback_generation(config, 3),
+    );
+
+    assert!(matches!(
+        first_run.outcomes.as_slice(),
         [
             ScrubDriverOutcome::Prepared(_),
             ScrubDriverOutcome::DecodePointSeeked(_),
             ScrubDriverOutcome::AudioResumePending(_),
         ]
+    ));
+    assert_eq!(lifecycle.existing_decoder_flush_count, 2);
+    assert_eq!(
+        lifecycle.begun_generations,
+        vec![
+            ScrubGenerationToken::new(PlaybackGeneration::new(3), ScrubGeneration::new(1)),
+            ScrubGenerationToken::new(PlaybackGeneration::new(3), ScrubGeneration::new(2)),
+        ]
+    );
+    assert!(matches!(
+        second_run.outcomes.as_slice(),
+        [
+            ScrubDriverOutcome::Cancelled(cancelled),
+            ScrubDriverOutcome::Prepared(_),
+            ScrubDriverOutcome::DecodePointSeeked(_),
+            ScrubDriverOutcome::AudioResumePending(_),
+        ] if cancelled.reason == CancelScrubReason::SupersededByNewTarget
     ));
 }
 
@@ -261,6 +342,8 @@ enum LifecycleStep {
 #[derive(Debug)]
 struct RecordingScrubLifecycle {
     steps: Vec<LifecycleStep>,
+    playback_generation: PlaybackGeneration,
+    begun_generations: Vec<ScrubGenerationToken>,
     existing_decoder_flush_count: usize,
     created_decoder_count: usize,
     created_session_count: usize,
@@ -271,6 +354,8 @@ impl Default for RecordingScrubLifecycle {
     fn default() -> Self {
         Self {
             steps: Vec::new(),
+            playback_generation: PlaybackGeneration::new(3),
+            begun_generations: Vec::new(),
             existing_decoder_flush_count: 0,
             created_decoder_count: 0,
             created_session_count: 0,
@@ -284,7 +369,20 @@ impl Default for RecordingScrubLifecycle {
     }
 }
 
+impl RecordingScrubLifecycle {
+    fn with_playback_generation(playback_generation: PlaybackGeneration) -> Self {
+        Self {
+            playback_generation,
+            ..Self::default()
+        }
+    }
+}
+
 impl ScrubTransactionLifecycle for RecordingScrubLifecycle {
+    fn current_playback_generation(&self) -> PlaybackGeneration {
+        self.playback_generation
+    }
+
     fn clear_old_decode_floor(
         &mut self,
         _context: frame_server_core::ScrubTargetContext,
@@ -304,9 +402,10 @@ impl ScrubTransactionLifecycle for RecordingScrubLifecycle {
 
     fn begin_nested_scrub_generation(
         &mut self,
-        _generation: frame_server_core::ScrubGenerationToken,
+        generation: frame_server_core::ScrubGenerationToken,
     ) -> ScrubLifecycleResult<()> {
         self.steps.push(LifecycleStep::BeginNestedScrubGeneration);
+        self.begun_generations.push(generation);
         Ok(())
     }
 
@@ -385,6 +484,26 @@ enum ScrubDriverOutcomeKindForTest {
     Fatal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScrubFakeDecoderMode {
+    HardwareLike,
+    HostUpload,
+}
+
+impl ScrubFakeDecoderMode {
+    fn configure(self, decoder: &SharedFakeVideoDecoderThread) {
+        if self == Self::HostUpload {
+            decoder.set_host_upload_resource_snapshot(video_core::HostUploadResourceSnapshot {
+                host_frames_ready: 0,
+                host_frames_in_flight: 0,
+                upload_slots_capacity: 2,
+                upload_slots_free: 2,
+                upload_failures: 0,
+            });
+        }
+    }
+}
+
 impl From<ScrubDriverOutcome> for ScrubDriverOutcomeKindForTest {
     fn from(outcome: ScrubDriverOutcome) -> Self {
         match outcome {
@@ -403,8 +522,15 @@ impl From<ScrubDriverOutcome> for ScrubDriverOutcomeKindForTest {
 }
 
 fn live_scrub_update(config: frame_server_core::ValidatedFrameServerConfig) -> ScrubTargetUpdate {
+    live_scrub_update_for_playback_generation(config, 3)
+}
+
+fn live_scrub_update_for_playback_generation(
+    config: frame_server_core::ValidatedFrameServerConfig,
+    playback_generation: u64,
+) -> ScrubTargetUpdate {
     ScrubTargetUpdate::new(
-        scrub_update_guards_for_owner(1, 2, 3),
+        scrub_update_guards_for_owner(1, 2, playback_generation),
         ScrubTrackSelection::video_only(TrackId::new(7)),
         scrub_target(),
         ScrubExactnessPolicy::ExactFrame,
