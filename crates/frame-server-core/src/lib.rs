@@ -25,8 +25,13 @@ pub use config::{
     MAX_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS, ValidatedFrameServerConfig,
 };
 pub use diagnostics::{
-    ScrubDriverDiagnosticReason, ScrubDriverOutcomeKind, ScrubEventDiagnostics, ScrubFailureReason,
-    ScrubPublicPhase,
+    CountSummary, DecoderBackpressureReasonCounters, DurationSummary,
+    HostUploadBackpressureReasonCounters, ResourceBusyReasonCounters, ScrubDiagnosticsRecorder,
+    ScrubDiagnosticsSnapshot, ScrubDriverDiagnosticReason, ScrubDriverDiagnosticReasonCounters,
+    ScrubDriverOutcomeCounters, ScrubDriverOutcomeKind, ScrubEventDiagnostics, ScrubFailureReason,
+    ScrubPublicPhase, ScrubRequestKindCounters, ScrubRequestLifecycleCounters,
+    ScrubResourcePressureCounters, ScrubSchedulerDiagnosticCounters,
+    ScrubWorkingSetDiagnosticsCounters,
 };
 pub use error::FrameServerConfigError;
 pub use request::{
@@ -75,6 +80,8 @@ pub use working_set::{
     TimelineHoverRecentSupersededClearReason,
 };
 
+#[cfg(test)]
+mod diagnostics_tests;
 #[cfg(test)]
 mod scheduler_tests;
 #[cfg(test)]
