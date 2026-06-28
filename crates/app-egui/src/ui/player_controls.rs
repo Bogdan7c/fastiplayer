@@ -544,11 +544,19 @@ fn render_fullscreen_toggle_button_at(
 
 /// Выбирает иконку toggle через player-side active semantics, а не через один `Playing`.
 fn playback_toggle_icon(playback_state: PlaybackState) -> IconId {
-    if playback_state.is_playback_active() {
+    match playback_state {
         // Active состояния, включая EOF drain, пользователь воспринимает как pauseable playback.
-        IconId::Pause
-    } else {
-        IconId::Play
+        PlaybackState::Playing
+        | PlaybackState::Buffering
+        | PlaybackState::Seeking
+        | PlaybackState::Draining => IconId::Pause,
+        PlaybackState::Idle
+        | PlaybackState::Opening
+        | PlaybackState::Paused
+        | PlaybackState::Scrubbing
+        | PlaybackState::Ended
+        | PlaybackState::Stopped
+        | PlaybackState::Failed => IconId::Play,
     }
 }
 
@@ -905,6 +913,12 @@ mod tests {
     #[test]
     fn player_controls_show_play_icon_for_ended_toggle() {
         assert_eq!(playback_toggle_icon(PlaybackState::Ended), IconId::Play);
+    }
+
+    /// Scrubbing frozen state не считается active playback для toggle affordance.
+    #[test]
+    fn player_controls_show_play_icon_for_scrubbing_toggle() {
+        assert_eq!(playback_toggle_icon(PlaybackState::Scrubbing), IconId::Play);
     }
 
     /// Проверяет, что skin владеет геометрией центральной и fullscreen-кнопки.

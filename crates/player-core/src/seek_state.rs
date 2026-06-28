@@ -30,6 +30,7 @@ impl PlaybackResumeIntent {
             PlaybackState::Idle
             | PlaybackState::Opening
             | PlaybackState::Paused
+            | PlaybackState::Scrubbing
             | PlaybackState::Ended
             | PlaybackState::Stopped
             | PlaybackState::Failed => Self::Pause,
@@ -114,32 +115,80 @@ pub(crate) struct SimpleScrubState {
 
     /// Последний request, который нужно превратить в ordinary final seek при release.
     latest_request: Option<SeekRequest>,
+
+    /// Последнее подтверждённое playback state до входа в public `Scrubbing`.
+    confirmed_playback_state: Option<PlaybackState>,
+}
+
+/// Закрытый lightweight scrub вместе с state, к которому надо вернуться до command route-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FinishedSimpleScrub {
+    /// Последний request, который `EndScrub` имеет право закоммитить.
+    latest_request: Option<SeekRequest>,
+
+    /// Playback state до scrub; от него считаются cancel-first команды и seek resume intent.
+    confirmed_playback_state: PlaybackState,
+}
+
+impl FinishedSimpleScrub {
+    /// Возвращает latest target для `EndScrub`.
+    #[must_use]
+    pub(crate) const fn latest_request(self) -> Option<SeekRequest> {
+        self.latest_request
+    }
+
+    /// Возвращает подтверждённый state до входа в public `Scrubbing`.
+    #[must_use]
+    pub(crate) const fn confirmed_playback_state(self) -> PlaybackState {
+        self.confirmed_playback_state
+    }
 }
 
 impl SimpleScrubState {
     /// Начинает scrub gesture и сбрасывает старую release-цель.
-    pub(crate) fn begin(&mut self) {
+    pub(crate) fn begin(&mut self, confirmed_playback_state: PlaybackState) {
+        if !self.active {
+            self.confirmed_playback_state = Some(confirmed_playback_state);
+        }
         self.active = true;
         self.latest_request = None;
     }
 
     /// Запоминает latest target по latest-wins policy без запуска demux seek-а.
-    pub(crate) fn store_request(&mut self, request: SeekRequest) {
+    pub(crate) fn store_request(
+        &mut self,
+        request: SeekRequest,
+        confirmed_playback_state: PlaybackState,
+    ) {
+        if !self.active {
+            self.confirmed_playback_state = Some(confirmed_playback_state);
+        }
         self.active = true;
         self.latest_request = Some(request);
     }
 
     /// Закрывает scrub state и возвращает release target, если gesture был активен.
-    pub(crate) fn finish_and_take_latest_request(&mut self) -> Option<SeekRequest> {
-        let latest_request = self.active.then(|| self.latest_request.take()).flatten();
+    pub(crate) fn finish_active(&mut self) -> Option<FinishedSimpleScrub> {
+        if !self.active {
+            self.clear();
+            return None;
+        }
+
+        let finished_scrub = FinishedSimpleScrub {
+            latest_request: self.latest_request.take(),
+            confirmed_playback_state: self
+                .confirmed_playback_state
+                .unwrap_or(PlaybackState::Paused),
+        };
         self.clear();
-        latest_request
+        Some(finished_scrub)
     }
 
     /// Сбрасывает только lightweight scrub state, не трогая active seek transaction.
     pub(crate) fn clear(&mut self) {
         self.active = false;
         self.latest_request = None;
+        self.confirmed_playback_state = None;
     }
 
     /// Проверяет, открыт ли scrub gesture.
@@ -728,18 +777,23 @@ impl SeekRuntimeState {
     }
 
     /// Начинает lightweight scrub gesture.
-    pub(crate) fn begin_simple_scrub(&mut self) {
-        self.simple_scrub.begin();
+    pub(crate) fn begin_simple_scrub(&mut self, confirmed_playback_state: PlaybackState) {
+        self.simple_scrub.begin(confirmed_playback_state);
     }
 
     /// Запоминает latest scrub request по latest-wins policy.
-    pub(crate) fn store_simple_scrub_request(&mut self, request: SeekRequest) {
-        self.simple_scrub.store_request(request);
+    pub(crate) fn store_simple_scrub_request(
+        &mut self,
+        request: SeekRequest,
+        confirmed_playback_state: PlaybackState,
+    ) {
+        self.simple_scrub
+            .store_request(request, confirmed_playback_state);
     }
 
-    /// Закрывает active scrub gesture и возвращает latest target для final seek-а.
-    pub(crate) fn finish_simple_scrub_and_take_latest_request(&mut self) -> Option<SeekRequest> {
-        self.simple_scrub.finish_and_take_latest_request()
+    /// Закрывает active scrub gesture и возвращает state для final/cancel route-а.
+    pub(crate) fn finish_active_simple_scrub(&mut self) -> Option<FinishedSimpleScrub> {
+        self.simple_scrub.finish_active()
     }
 
     /// Сбрасывает lightweight scrub state без изменения active commit-а.
@@ -769,6 +823,7 @@ impl SeekRuntimeState {
     ) {
         self.simple_scrub.active = active;
         self.simple_scrub.latest_request = latest_request;
+        self.simple_scrub.confirmed_playback_state = active.then_some(PlaybackState::Paused);
     }
 
     /// Проверяет, есть ли pending near-EOF fallback marker.

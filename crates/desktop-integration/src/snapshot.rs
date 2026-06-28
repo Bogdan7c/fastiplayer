@@ -134,7 +134,9 @@ fn map_playback_status(playback_state: PlaybackState) -> DesktopPlaybackStatus {
         | PlaybackState::Buffering
         | PlaybackState::Seeking
         | PlaybackState::Draining => DesktopPlaybackStatus::Playing,
-        PlaybackState::Paused | PlaybackState::Ended => DesktopPlaybackStatus::Paused,
+        PlaybackState::Scrubbing | PlaybackState::Paused | PlaybackState::Ended => {
+            DesktopPlaybackStatus::Paused
+        }
         PlaybackState::Idle
         | PlaybackState::Opening
         | PlaybackState::Stopped
@@ -188,6 +190,12 @@ mod tests {
         );
 
         snapshot.playback_state = PlaybackState::Paused;
+        assert_eq!(
+            DesktopSnapshotView::from_player_snapshot(&snapshot).playback_status,
+            DesktopPlaybackStatus::Paused
+        );
+
+        snapshot.playback_state = PlaybackState::Scrubbing;
         assert_eq!(
             DesktopSnapshotView::from_player_snapshot(&snapshot).playback_status,
             DesktopPlaybackStatus::Paused

@@ -34,10 +34,20 @@ fn inactive_end_scrub_clears_simple_state_without_resetting_unrelated_seek_state
 fn direct_dispatch_scrub_api_remains_session_compatibility_path() {
     let mut session = PlayerSession::new();
     install_fake_media(&mut session, Vec::new());
+    let _ = session.take_events();
     let request = SeekRequest::absolute(MediaTime::from_secs(3));
 
     session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
     assert!(session.simple_scrub_active_for_tests());
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Scrubbing);
+    assert!(!PlaybackState::Scrubbing.is_playback_active());
+    assert!(!session.is_demuxing_active());
+    assert!(!session.can_present_video());
+    assert!(
+        session
+            .take_events()
+            .contains(&PlayerEvent::PlaybackStateChanged(PlaybackState::Scrubbing))
+    );
 
     session
         .dispatch_command(PlayerCommand::UpdateScrub(request))
@@ -54,6 +64,198 @@ fn direct_dispatch_scrub_api_remains_session_compatibility_path() {
         })
         .unwrap();
     assert!(!session.snapshot().timeline.scrubbing);
+}
+
+/// Вход в public Scrubbing замораживает audio output, а release без target восстанавливает Playing.
+#[test]
+fn scrubbing_freezes_audio_and_release_without_target_resumes_playing_output() {
+    let mut session = PlayerSession::new();
+    install_fake_media(&mut session, vec![fake_track(1, TrackKind::Audio)]);
+    let audio_output_handle = install_ready_audio_runtime(&mut session, 20.0, None);
+
+    session.dispatch_command(PlayerCommand::Play).unwrap();
+    assert_eq!(audio_output_handle.play_count.load(Ordering::Relaxed), 1);
+
+    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Scrubbing);
+    assert_eq!(audio_output_handle.pause_count.load(Ordering::Relaxed), 1);
+
+    session
+        .dispatch_command(PlayerCommand::EndScrub {
+            policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        })
+        .unwrap();
+
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+    assert_eq!(audio_output_handle.play_count.load(Ordering::Relaxed), 2);
+}
+
+/// Play во время active scrub сначала отменяет scrub, но не коммитит latest target.
+#[test]
+fn play_during_scrub_cancels_without_hidden_seek_commit() {
+    let mut session = PlayerSession::new();
+    let seek_request_log = install_fake_media_with_seek_request_log(
+        &mut session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+
+    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+            MediaTime::from_secs(6),
+        )))
+        .unwrap();
+    let _ = session.take_events();
+
+    session.dispatch_command(PlayerCommand::Play).unwrap();
+
+    assert!(!session.simple_scrub_active_for_tests());
+    assert_eq!(session.simple_scrub_latest_request_for_tests(), None);
+    assert!(!session.snapshot().timeline.scrubbing);
+    assert_eq!(session.snapshot().timeline.target_position, None);
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+    assert!(
+        seek_request_log
+            .lock()
+            .expect("seek request log lock")
+            .is_empty()
+    );
+    let events = session.take_events();
+    assert!(events.contains(&PlayerEvent::PlaybackStateChanged(PlaybackState::Paused)));
+    assert!(events.contains(&PlayerEvent::PlaybackStateChanged(PlaybackState::Playing)));
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, PlayerEvent::SeekRequested(_)))
+    );
+}
+
+/// Pause во время active scrub тоже закрывает scrub без release-seek-а.
+#[test]
+fn pause_during_scrub_cancels_without_hidden_seek_commit() {
+    let mut session = PlayerSession::new();
+    let seek_request_log = install_fake_media_with_seek_request_log(
+        &mut session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+            MediaTime::from_secs(6),
+        )))
+        .unwrap();
+    let _ = session.take_events();
+
+    session.dispatch_command(PlayerCommand::Pause).unwrap();
+
+    assert!(!session.simple_scrub_active_for_tests());
+    assert_eq!(session.simple_scrub_latest_request_for_tests(), None);
+    assert!(!session.snapshot().timeline.scrubbing);
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
+    assert!(
+        seek_request_log
+            .lock()
+            .expect("seek request log lock")
+            .is_empty()
+    );
+    let events = session.take_events();
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, PlayerEvent::SeekRequested(_)))
+    );
+}
+
+/// Toggle во время scrub считается от последнего подтверждённого state до drag-а.
+#[test]
+fn toggle_during_scrub_uses_last_confirmed_playback_state() {
+    let mut playing_session = PlayerSession::new();
+    install_fake_media(&mut playing_session, vec![fake_track(1, TrackKind::Video)]);
+    playing_session
+        .dispatch_command(PlayerCommand::Play)
+        .unwrap();
+    playing_session
+        .dispatch_command(PlayerCommand::BeginScrub)
+        .unwrap();
+    playing_session
+        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+            MediaTime::from_secs(8),
+        )))
+        .unwrap();
+
+    playing_session
+        .dispatch_command(PlayerCommand::TogglePlayback)
+        .unwrap();
+
+    assert!(!playing_session.simple_scrub_active_for_tests());
+    assert_eq!(
+        playing_session.snapshot().playback_state,
+        PlaybackState::Paused
+    );
+
+    let mut paused_session = PlayerSession::new();
+    install_fake_media(&mut paused_session, vec![fake_track(1, TrackKind::Video)]);
+    paused_session
+        .dispatch_command(PlayerCommand::BeginScrub)
+        .unwrap();
+    paused_session
+        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+            MediaTime::from_secs(8),
+        )))
+        .unwrap();
+
+    paused_session
+        .dispatch_command(PlayerCommand::TogglePlayback)
+        .unwrap();
+
+    assert!(!paused_session.simple_scrub_active_for_tests());
+    assert_eq!(
+        paused_session.snapshot().playback_state,
+        PlaybackState::Playing
+    );
+}
+
+/// Ordinary Seek во время scrub отменяет latest preview target и идёт по обычному seek route.
+#[test]
+fn seek_during_scrub_cancels_latest_target_before_normal_seek_route() {
+    let mut session = PlayerSession::new();
+    let seek_request_log = install_fake_media_with_seek_request_log(
+        &mut session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+    let preview_request = SeekRequest::absolute(MediaTime::from_secs(6));
+    let external_seek_request = SeekRequest::absolute(MediaTime::from_secs(2));
+
+    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::PreviewScrub(preview_request))
+        .unwrap();
+    let _ = session.take_events();
+
+    session
+        .dispatch_command(PlayerCommand::Seek(external_seek_request))
+        .unwrap();
+
+    assert!(!session.simple_scrub_active_for_tests());
+    assert_eq!(session.simple_scrub_latest_request_for_tests(), None);
+    assert!(!session.snapshot().timeline.scrubbing);
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Seeking);
+
+    let requests = seek_request_log.lock().expect("seek request log lock");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].timestamp, Duration::from_secs(2));
+
+    let events = session.take_events();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        PlayerEvent::SeekRequested(seek_request) if *seek_request == external_seek_request
+    )));
+    assert!(events.iter().all(|event| !matches!(
+        event,
+        PlayerEvent::SeekRequested(seek_request) if *seek_request == preview_request
+    )));
 }
 
 #[test]
@@ -180,6 +382,7 @@ fn preview_scrub_target_is_committed_by_end_scrub() {
     session
         .dispatch_command(PlayerCommand::PreviewScrub(latest_request))
         .unwrap();
+    let _ = session.take_events();
     session
         .dispatch_command(PlayerCommand::EndScrub {
             policy: ScrubCommitPolicy::CommitVisiblePreview,
@@ -198,6 +401,14 @@ fn preview_scrub_target_is_committed_by_end_scrub() {
     assert!(events.iter().any(|event| matches!(
         event,
         PlayerEvent::SeekRequested(seek_request) if *seek_request == latest_request
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        PlayerEvent::PlaybackStateChanged(PlaybackState::Seeking)
+    )));
+    assert!(events.iter().all(|event| !matches!(
+        event,
+        PlayerEvent::PlaybackStateChanged(PlaybackState::Paused)
     )));
 }
 

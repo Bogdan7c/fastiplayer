@@ -444,6 +444,7 @@ impl AppState {
             .playback_state
             .is_playback_active()
             || self.last_player_snapshot.playback_state == PlaybackState::Opening
+            || self.last_player_snapshot.playback_state == PlaybackState::Scrubbing
             || self.last_player_snapshot.timeline.scrubbing
     }
 

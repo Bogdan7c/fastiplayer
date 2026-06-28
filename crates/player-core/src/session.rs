@@ -6,6 +6,7 @@ use capability_core::SystemCapabilities;
 #[cfg(test)]
 use codec_core::VideoCodec;
 use codec_core::VideoDecodeRequirement;
+use frame_server_core::CancelScrubReason;
 use media_core::{MediaDuration, MediaTime};
 use tracing::{debug, info, warn};
 #[cfg(test)]
@@ -292,6 +293,7 @@ impl PlayerSession {
     /// Переключает playback между пользовательскими смыслами "сейчас слышно/идёт" и "пауза".
     pub fn toggle_playback(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
         if self.playback_state().is_playback_active() {
             // EOF drain тоже active: audio tail ещё может звучать, поэтому toggle обязан ставить pause.
             self.pause()
@@ -542,6 +544,7 @@ impl PlayerSession {
     /// Переводит playback в `Playing` и запускает audio output.
     fn play(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
         if let Some(seek_commit) = self.seek_runtime.active_commit_mut() {
             seek_commit.resume_intent = PlaybackResumeIntent::Play;
             self.set_playback_state(PlaybackState::Seeking);
@@ -620,6 +623,7 @@ impl PlayerSession {
     /// Переводит playback в `Paused` и останавливает audio output.
     fn pause(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
         self.clear_monotonic_media_clock_anchor(Instant::now());
         if let Some(seek_commit) = self.seek_runtime.active_commit_mut() {
             seek_commit.resume_intent = PlaybackResumeIntent::Pause;

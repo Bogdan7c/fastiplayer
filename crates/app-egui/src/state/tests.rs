@@ -251,6 +251,30 @@ fn telemetry_panel_rows_keep_empty_media_state_explicit() {
     assert!(!telemetry_rows_contain(&panel_rows, "[Video]"));
 }
 
+/// Проверяет explicit telemetry mapping нового public Scrubbing state.
+#[test]
+fn telemetry_panel_rows_label_scrubbing_playback_state() {
+    let mut player_snapshot = PlayerSnapshot::empty();
+    player_snapshot.playback_state = PlaybackState::Scrubbing;
+    let telemetry = Telemetry::new();
+    let render_diagnostics = RenderDiagnostics::default();
+    let timeline_ui_state = TimelineUiState::default();
+    let started_at = Instant::now();
+
+    let panel_rows = AppState::build_telemetry_panel_rows(telemetry_panel_state_for_tests(
+        &player_snapshot,
+        &telemetry,
+        &render_diagnostics,
+        &timeline_ui_state,
+        started_at,
+    ));
+
+    assert!(telemetry_rows_contain(
+        &panel_rows,
+        "Playback state: Scrubbing"
+    ));
+}
+
 /// Проверяет, что app shell не читает внутренний present frame из player pipeline.
 #[test]
 fn app_egui_does_not_access_pipeline_present_video_frame_directly() {

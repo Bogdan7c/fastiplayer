@@ -233,6 +233,23 @@ impl AppState {
         panel_rows.into()
     }
 
+    /// Маппит public playback state в стабильный telemetry label.
+    fn playback_state_label_for_telemetry(playback_state: PlaybackState) -> &'static str {
+        match playback_state {
+            PlaybackState::Idle => "Idle",
+            PlaybackState::Opening => "Opening",
+            PlaybackState::Paused => "Paused",
+            PlaybackState::Playing => "Playing",
+            PlaybackState::Buffering => "Buffering",
+            PlaybackState::Seeking => "Seeking",
+            PlaybackState::Scrubbing => "Scrubbing",
+            PlaybackState::Draining => "Draining",
+            PlaybackState::Ended => "Ended",
+            PlaybackState::Stopped => "Stopped",
+            PlaybackState::Failed => "Failed",
+        }
+    }
+
     /// Добавляет верхнюю summary-секцию telemetry panel.
     fn append_telemetry_summary_rows(
         panel_rows: &mut Vec<TelemetryPanelRow>,
@@ -296,6 +313,10 @@ impl AppState {
             frame_pacing_text,
             frame_pacing_tone,
         ));
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "Playback state: {}",
+            Self::playback_state_label_for_telemetry(panel_state.player_snapshot.playback_state)
+        )));
         panel_rows.push(TelemetryPanelRow::normal(format!(
             "Backend: {}",
             panel_state.backend_name

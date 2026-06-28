@@ -199,7 +199,9 @@ impl AppState {
             | PlaybackState::Buffering
             | PlaybackState::Seeking
             | PlaybackState::Draining => self.send_restore_command(PlayerCommand::Play),
-            PlaybackState::Paused => self.send_restore_command(PlayerCommand::Pause),
+            PlaybackState::Scrubbing | PlaybackState::Paused => {
+                self.send_restore_command(PlayerCommand::Pause);
+            }
             PlaybackState::Idle
             | PlaybackState::Opening
             | PlaybackState::Stopped

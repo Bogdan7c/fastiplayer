@@ -19,6 +19,9 @@ pub enum PlaybackState {
     /// Выполняется seek и пересборка очередей.
     Seeking,
 
+    /// Идёт interactive scrub: audio/clock заморожены, обычный playback не продвигается.
+    Scrubbing,
+
     /// EOF уже достигнут, но pipeline ещё дорендеривает buffered packets/frames.
     Draining,
 

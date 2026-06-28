@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use frame_server_core::CancelScrubReason;
 use media_core::{MediaDemuxError, MediaTime, TimelineNotSeekableReason};
 use tracing::{debug, trace, warn};
 
@@ -35,6 +36,16 @@ pub(super) struct SeekProgressGateSnapshot {
 
     /// Сколько video frames требуется текущей resume policy.
     pub(super) required_video_frames: usize,
+}
+
+/// Side effects выхода из lightweight scrub после восстановления public state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SimpleScrubExitMode {
+    /// Только вернуть state; следующая external command сама решит audio/clock route.
+    RestoreStateOnly,
+
+    /// Вернуть state и продолжить playback, если scrub начинался из `Playing`.
+    ResumeConfirmedPlayback,
 }
 
 /// Решение commit gate policy без потери причины soft fallback-а.
@@ -1578,6 +1589,17 @@ impl PlayerSession {
     /// Запускает настоящий seek transaction через текущий demuxer.
     pub(super) fn seek(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
+        let resume_intent = PlaybackResumeIntent::from_playback_state(self.playback_state());
+        self.start_seek_from_request(request, resume_intent)
+    }
+
+    /// Запускает seek request с уже выбранным resume intent.
+    fn start_seek_from_request(
+        &mut self,
+        request: SeekRequest,
+        resume_intent: PlaybackResumeIntent,
+    ) -> PlayerResult<()> {
         let target_position = self.resolve_seek_target(request);
         self.pending_events
             .push(PlayerEvent::SeekRequested(request));
@@ -1593,14 +1615,16 @@ impl PlayerSession {
             return Ok(());
         }
 
-        let resume_intent = PlaybackResumeIntent::from_playback_state(self.playback_state());
         self.start_seek_transaction(target_position, request.mode, resume_intent)
     }
 
     /// Начинает compatibility scrub на уровне контракта без запуска demux seek.
     pub(super) fn begin_scrub(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        self.seek_runtime.begin_simple_scrub();
+        let confirmed_playback_state = self.playback_state_for_new_simple_scrub();
+        self.enter_simple_scrub_public_state();
+        self.seek_runtime
+            .begin_simple_scrub(confirmed_playback_state);
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = false;
         self.snapshot.timeline.target_position = Some(self.snapshot.timeline.current_position);
@@ -1624,7 +1648,10 @@ impl PlayerSession {
     /// Запоминает target compatibility scrub API только для последующего final seek.
     fn store_simple_scrub_request(&mut self, request: SeekRequest) {
         let target_position = self.resolve_seek_target(request);
-        self.seek_runtime.store_simple_scrub_request(request);
+        let confirmed_playback_state = self.playback_state_for_new_simple_scrub();
+        self.enter_simple_scrub_public_state();
+        self.seek_runtime
+            .store_simple_scrub_request(request, confirmed_playback_state);
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.target_position = Some(target_position);
         if !self.snapshot.timeline.seeking {
@@ -1636,27 +1663,101 @@ impl PlayerSession {
     pub(super) fn end_scrub(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         if !self.seek_runtime.simple_scrub_active() {
-            self.finish_simple_scrub_without_seek();
+            self.finish_simple_scrub_without_seek(None, SimpleScrubExitMode::RestoreStateOnly);
             return Ok(());
         }
 
-        let latest_request = self
+        let finished_scrub = self
             .seek_runtime
-            .finish_simple_scrub_and_take_latest_request();
-        self.finish_simple_scrub_without_seek();
+            .finish_active_simple_scrub()
+            .expect("simple scrub active должен вернуть finished state");
+        let confirmed_playback_state = finished_scrub.confirmed_playback_state();
+        let latest_request = finished_scrub.latest_request();
+        if latest_request.is_some() {
+            self.finish_simple_scrub_without_seek(None, SimpleScrubExitMode::RestoreStateOnly);
+        } else {
+            self.finish_simple_scrub_without_seek(
+                Some(confirmed_playback_state),
+                SimpleScrubExitMode::ResumeConfirmedPlayback,
+            );
+        }
         if let Some(request) = latest_request {
-            self.seek(request)?;
+            let resume_intent = PlaybackResumeIntent::from_playback_state(confirmed_playback_state);
+            self.start_seek_from_request(request, resume_intent)?;
         }
         Ok(())
     }
 
     /// Сбрасывает только lightweight scrub-флаги, не трогая текущий active seek.
-    fn finish_simple_scrub_without_seek(&mut self) {
+    fn finish_simple_scrub_without_seek(
+        &mut self,
+        confirmed_playback_state: Option<PlaybackState>,
+        exit_mode: SimpleScrubExitMode,
+    ) {
         self.seek_runtime.clear_simple_scrub();
         self.snapshot.timeline.scrubbing = false;
         if !self.snapshot.timeline.seeking {
             self.snapshot.timeline.target_position = None;
             self.snapshot.timeline.stale_frame = false;
+        }
+        if let Some(playback_state) = confirmed_playback_state {
+            self.set_playback_state(playback_state);
+            if exit_mode == SimpleScrubExitMode::ResumeConfirmedPlayback
+                && playback_state == PlaybackState::Playing
+            {
+                self.resume_audio_and_clock_after_simple_scrub();
+            }
+        }
+    }
+
+    /// Закрывает live scrub перед внешней командой без commit-а latest target-а.
+    pub(super) fn cancel_active_scrub_for_external_command(&mut self, reason: CancelScrubReason) {
+        let Some(finished_scrub) = self.seek_runtime.finish_active_simple_scrub() else {
+            return;
+        };
+        let confirmed_playback_state = finished_scrub.confirmed_playback_state();
+        let latest_request = finished_scrub.latest_request();
+        debug!(
+            reason = ?reason,
+            latest_request = ?latest_request,
+            confirmed_playback_state = ?confirmed_playback_state,
+            "Cancelling active scrub before external command"
+        );
+        self.finish_simple_scrub_without_seek(
+            Some(confirmed_playback_state),
+            SimpleScrubExitMode::RestoreStateOnly,
+        );
+    }
+
+    /// Входит в public `Scrubbing` и замораживает playback-owned audio/clock только один раз.
+    fn enter_simple_scrub_public_state(&mut self) {
+        if !self.seek_runtime.simple_scrub_active() {
+            self.clear_monotonic_media_clock_anchor(Instant::now());
+            self.pause_audio_output_for_seek();
+        }
+        self.set_playback_state(PlaybackState::Scrubbing);
+    }
+
+    /// Возобновляет слышимый playback, если scrub release не запускает seek/command route.
+    fn resume_audio_and_clock_after_simple_scrub(&mut self) {
+        if let Some(play_result) = self.pipeline.play_audio_output() {
+            if let Err(error) = play_result {
+                warn!(error = %error, "Не удалось запустить audio после scrub");
+                self.set_runtime_error(format!("Audio play after scrub error: {error}"));
+            }
+            let observed_at = Instant::now();
+            let audio_now = self.audio_clock_now();
+            self.pipeline
+                .reset_audio_clock_sample(audio_now, observed_at);
+        }
+        self.anchor_monotonic_media_clock_if_needed(Instant::now());
+    }
+
+    /// Возвращает state, от которого cancel-first команды должны продолжать route.
+    fn playback_state_for_new_simple_scrub(&self) -> PlaybackState {
+        match self.playback_state() {
+            PlaybackState::Scrubbing => PlaybackState::Paused,
+            playback_state => playback_state,
         }
     }
 
