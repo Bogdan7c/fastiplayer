@@ -12,7 +12,7 @@ use render_core::{
     RenderLiveSettingsUpdate, RenderViewport,
 };
 use render_wgpu_shell::{RenderFrameDropReason, RenderFrameOutcome, RenderFrameTiming, Renderer};
-use render_wgpu_video::{WgpuFrameTextureViewLookup, WgpuRenderableFrame};
+use render_wgpu_video::WgpuRenderableFrame;
 use rustiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
 use tracing::{debug, error, instrument, trace, warn};
 use video_core::DecodedPixelFormat;
@@ -30,6 +30,14 @@ use crate::state::{
 use crate::system_capabilities::probe_system_capabilities;
 use crate::telemetry::{SeekDiscardReason, Telemetry, VideoDropReason, VideoFrameTelemetryEvent};
 use crate::ui::window_chrome::{WindowChromeAction, WindowChromeResizeDirection};
+
+#[path = "frame_prepare/shared_frame_materialization.rs"]
+mod shared_frame_materialization;
+
+use shared_frame_materialization::{
+    SharedVideoFrameLeaseRole, SharedVideoFrameMaterializationOutcome,
+    SharedVideoFrameMaterializationRequest, materialize_shared_video_frame,
+};
 
 /// Результат UI stage до входа в renderer/surface critical path.
 struct PreparedUiFrame {
@@ -873,22 +881,20 @@ fn prepare_video_frame(
             .with_diagnostics("missing_materializer", timings);
     };
 
-    let stage_started_at = Instant::now();
-    let texture_view_lookup =
-        texture_view_materializer.try_texture_view_lookup(present_frame.decoded_frame());
-    timings.texture_view_lookup = stage_started_at.elapsed();
-
-    let stage_started_at = Instant::now();
-    present_frame.report_resource_lookup_sample(
-        texture_view_lookup.texture_pool_lock_wait(),
-        texture_view_lookup.lookup_was_busy(),
+    let materialization = materialize_shared_video_frame(
+        SharedVideoFrameMaterializationRequest::new(
+            SharedVideoFrameLeaseRole::Playback,
+            present_frame,
+        ),
+        texture_view_materializer.as_ref(),
     );
-    timings.resource_lookup_report = stage_started_at.elapsed();
+    timings.texture_view_lookup = materialization.timings.texture_view_lookup;
+    timings.resource_lookup_report = materialization.timings.resource_lookup_report;
 
     // Эта развилка остаётся до renderer/surface critical path: Busy не ждёт backend lock,
     // а Missing/Error не превращаются в silent fallback.
-    match texture_view_lookup {
-        WgpuFrameTextureViewLookup::Ready { views, .. } => {
+    match materialization.outcome {
+        SharedVideoFrameMaterializationOutcome::Ready { materialized_frame } => {
             let stage_started_at = Instant::now();
             debug_assert_eq!(
                 video_frame_texture_preparation_action(
@@ -898,7 +904,7 @@ fn prepare_video_frame(
                 ),
                 VideoFrameTexturePreparationAction::RenderCurrentFrame
             );
-            let current_renderable_frame = RenderablePresentFrame::new(present_frame, views);
+            let current_renderable_frame = materialized_frame.into_renderable_present_frame();
             app_state.remember_renderable_present_frame(
                 current_renderable_frame.clone(),
                 player_snapshot,
@@ -908,7 +914,9 @@ fn prepare_video_frame(
             PreparedVideoFrame::ready(current_renderable_frame, acquisition_state)
                 .with_diagnostics("ready", timings)
         }
-        WgpuFrameTextureViewLookup::Busy { .. } => {
+        SharedVideoFrameMaterializationOutcome::Busy {
+            present_frame: _present_frame,
+        } => {
             let stage_started_at = Instant::now();
             let reusable_renderable_frame =
                 app_state.reusable_renderable_frame_for_texture_busy(player_snapshot);
@@ -954,7 +962,7 @@ fn prepare_video_frame(
             timings.total = video_prepare_started_at.elapsed();
             prepared_video_frame.with_diagnostics("busy", timings)
         }
-        WgpuFrameTextureViewLookup::Missing { .. } => {
+        SharedVideoFrameMaterializationOutcome::Missing { present_frame } => {
             let stage_started_at = Instant::now();
             let preparation_action = video_frame_texture_preparation_action(
                 TextureViewLookupKind::Missing,
@@ -970,7 +978,7 @@ fn prepare_video_frame(
             timings.total = video_prepare_started_at.elapsed();
             PreparedVideoFrame::empty(acquisition_state).with_diagnostics("missing", timings)
         }
-        WgpuFrameTextureViewLookup::Unsupported { .. } => {
+        SharedVideoFrameMaterializationOutcome::Unsupported { present_frame } => {
             let stage_started_at = Instant::now();
             let preparation_action = video_frame_texture_preparation_action(
                 TextureViewLookupKind::Unsupported,
@@ -986,7 +994,7 @@ fn prepare_video_frame(
             timings.total = video_prepare_started_at.elapsed();
             PreparedVideoFrame::empty(acquisition_state).with_diagnostics("unsupported", timings)
         }
-        WgpuFrameTextureViewLookup::Error { .. } => {
+        SharedVideoFrameMaterializationOutcome::Error { present_frame } => {
             let stage_started_at = Instant::now();
             let preparation_action = video_frame_texture_preparation_action(
                 TextureViewLookupKind::Error,
