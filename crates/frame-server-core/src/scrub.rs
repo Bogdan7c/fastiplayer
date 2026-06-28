@@ -202,6 +202,21 @@ pub struct ProgressedOutcome {
     pub progress: ScrubProgress,
 }
 
+/// Driver сообщает: кадр до target уже отпущен владельцу decoder-а и не опубликован.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreTargetReleasedOutcome {
+    pub context: ScrubTargetContext,
+    pub released_frame: ScrubPreviewFrame,
+    pub progress: ScrubProgress,
+}
+
+/// Driver сообщает: найден первый кадр target-or-after, который можно показать.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExactFrameReadyOutcome {
+    pub context: ScrubTargetContext,
+    pub frame: ScrubPreviewFrame,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreviewFrameReadyOutcome {
     pub context: ScrubTargetContext,
@@ -300,6 +315,8 @@ pub enum ScrubDriverOutcome {
     Prepared(PreparedOutcome),
     DecodePointSeeked(DecodePointSeekedOutcome),
     Progressed(ProgressedOutcome),
+    PreTargetReleased(PreTargetReleasedOutcome),
+    ExactFrameReady(ExactFrameReadyOutcome),
     PreviewFrameReady(PreviewFrameReadyOutcome),
     AudioResumePending(AudioResumePendingOutcome),
     AudioResumeTimedOut(AudioResumeTimedOutOutcome),
@@ -324,6 +341,8 @@ impl ScrubDriverOutcome {
             Self::Prepared(payload) => &payload.context,
             Self::DecodePointSeeked(payload) => &payload.context,
             Self::Progressed(payload) => &payload.context,
+            Self::PreTargetReleased(payload) => &payload.context,
+            Self::ExactFrameReady(payload) => &payload.context,
             Self::PreviewFrameReady(payload) => &payload.context,
             Self::AudioResumePending(payload) => &payload.context,
             Self::AudioResumeTimedOut(payload) => &payload.context,
@@ -348,6 +367,8 @@ impl ScrubDriverOutcome {
             Self::Prepared(_) => ScrubDriverOutcomeKind::Prepared,
             Self::DecodePointSeeked(_) => ScrubDriverOutcomeKind::DecodePointSeeked,
             Self::Progressed(_) => ScrubDriverOutcomeKind::Progressed,
+            Self::PreTargetReleased(_) => ScrubDriverOutcomeKind::PreTargetReleased,
+            Self::ExactFrameReady(_) => ScrubDriverOutcomeKind::ExactFrameReady,
             Self::PreviewFrameReady(_) => ScrubDriverOutcomeKind::PreviewFrameReady,
             Self::AudioResumePending(_) => ScrubDriverOutcomeKind::AudioResumePending,
             Self::AudioResumeTimedOut(_) => ScrubDriverOutcomeKind::AudioResumeTimedOut,
@@ -370,6 +391,14 @@ impl ScrubDriverOutcome {
     pub fn stale_reason_against(&self, current: ScrubCurrentGuards) -> Option<ScrubStaleReason> {
         match self {
             Self::StaleGeneration(payload) => Some(payload.reason),
+            Self::PreTargetReleased(payload) => payload
+                .released_frame
+                .stale_reason_against_generation(current.generation)
+                .or_else(|| self.context().stale_reason_against(current)),
+            Self::ExactFrameReady(payload) => payload
+                .frame
+                .stale_reason_against_generation(current.generation)
+                .or_else(|| self.context().stale_reason_against(current)),
             Self::PreviewFrameReady(payload) => payload
                 .frame
                 .stale_reason_against_generation(current.generation)
@@ -518,6 +547,18 @@ impl ScrubEvent {
                 progress: payload.progress,
                 diagnostics,
             }),
+            ScrubDriverOutcome::PreTargetReleased(payload) => Self::Progress(ScrubProgressEvent {
+                context: payload.context,
+                progress: payload.progress,
+                diagnostics,
+            }),
+            ScrubDriverOutcome::ExactFrameReady(payload) => {
+                Self::PreviewFrameReady(PreviewFrameReadyEvent {
+                    context: payload.context,
+                    frame: payload.frame,
+                    diagnostics,
+                })
+            }
             ScrubDriverOutcome::PreviewFrameReady(payload) => {
                 Self::PreviewFrameReady(PreviewFrameReadyEvent {
                     context: payload.context,

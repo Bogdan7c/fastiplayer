@@ -11,6 +11,8 @@ pub enum ScrubDriverOutcomeKind {
     Prepared,
     DecodePointSeeked,
     Progressed,
+    PreTargetReleased,
+    ExactFrameReady,
     PreviewFrameReady,
     AudioResumePending,
     AudioResumeTimedOut,

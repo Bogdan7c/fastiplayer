@@ -382,7 +382,18 @@ impl ScrubStateMachine {
                     feed_and_drain_intent(active),
                 )
             }
-            ScrubDriverOutcome::PreviewFrameReady(_) => {
+            ScrubDriverOutcome::PreTargetReleased(_) => {
+                if active.phase != ScrubProtocolPhase::FeedingAndDraining {
+                    return self.driver_invariant_failed(active.context);
+                }
+
+                self.active = Some(active);
+                ScrubStep::from_event_and_intent(
+                    ScrubEvent::from_driver_outcome(outcome),
+                    feed_and_drain_intent(active),
+                )
+            }
+            ScrubDriverOutcome::ExactFrameReady(_) | ScrubDriverOutcome::PreviewFrameReady(_) => {
                 if active.phase != ScrubProtocolPhase::FeedingAndDraining {
                     return self.driver_invariant_failed(active.context);
                 }

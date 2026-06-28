@@ -118,8 +118,7 @@ fn context_scrub_generation_mismatch_marks_intent_stale() {
 fn generation_token_mismatch_on_either_field_marks_outcome_frame_and_readiness_stale() {
     let context = context_for_tests(ScrubRequestKind::HoverPreview);
     let frame = preview_frame_for_tests(context.generation());
-    let outcome =
-        ScrubDriverOutcome::PreviewFrameReady(PreviewFrameReadyOutcome { context, frame });
+    let outcome = ScrubDriverOutcome::ExactFrameReady(ExactFrameReadyOutcome { context, frame });
 
     let playback_mismatch = ScrubCurrentGuards::new(
         SourceRevision::new(10),
@@ -271,8 +270,19 @@ fn public_events_are_normalized_and_driver_details_stay_in_diagnostics() {
                 target_status: ScrubTargetReachStatus::BeforeTarget,
             },
         })),
-        ScrubEvent::from_driver_outcome(ScrubDriverOutcome::PreviewFrameReady(
-            PreviewFrameReadyOutcome { context, frame },
+        ScrubEvent::from_driver_outcome(ScrubDriverOutcome::PreTargetReleased(
+            PreTargetReleasedOutcome {
+                context,
+                released_frame: frame,
+                progress: ScrubProgress {
+                    packets_fed: 4,
+                    frames_drained: 2,
+                    target_status: ScrubTargetReachStatus::BeforeTarget,
+                },
+            },
+        )),
+        ScrubEvent::from_driver_outcome(ScrubDriverOutcome::ExactFrameReady(
+            ExactFrameReadyOutcome { context, frame },
         )),
         ScrubEvent::from_driver_outcome(ScrubDriverOutcome::AudioResumePending(
             AudioResumePendingOutcome {
@@ -307,14 +317,35 @@ fn public_events_are_normalized_and_driver_details_stay_in_diagnostics() {
 
     assert!(matches!(events[0], ScrubEvent::Started(_)));
     assert!(matches!(events[1], ScrubEvent::Progress(_)));
-    assert!(matches!(events[2], ScrubEvent::PreviewFrameReady(_)));
-    assert!(matches!(events[3], ScrubEvent::ResumePending(_)));
-    assert!(matches!(events[4], ScrubEvent::Committed(_)));
-    assert!(matches!(events[5], ScrubEvent::MatchedPlayback(_)));
-    assert!(matches!(events[6], ScrubEvent::Cancelled(_)));
-    assert!(matches!(events[7], ScrubEvent::Failed(_)));
+    assert!(matches!(events[2], ScrubEvent::Progress(_)));
+    assert!(matches!(events[3], ScrubEvent::PreviewFrameReady(_)));
+    assert!(matches!(events[4], ScrubEvent::ResumePending(_)));
+    assert!(matches!(events[5], ScrubEvent::Committed(_)));
+    assert!(matches!(events[6], ScrubEvent::MatchedPlayback(_)));
+    assert!(matches!(events[7], ScrubEvent::Cancelled(_)));
+    assert!(matches!(events[8], ScrubEvent::Failed(_)));
 
-    match events[7] {
+    match events[2] {
+        ScrubEvent::Progress(payload) => {
+            assert_eq!(
+                payload.diagnostics.driver_outcome,
+                ScrubDriverOutcomeKind::PreTargetReleased
+            );
+        }
+        other => panic!("ожидали normalized Progress event, получили {other:?}"),
+    }
+
+    match events[3] {
+        ScrubEvent::PreviewFrameReady(payload) => {
+            assert_eq!(
+                payload.diagnostics.driver_outcome,
+                ScrubDriverOutcomeKind::ExactFrameReady
+            );
+        }
+        other => panic!("ожидали normalized PreviewFrameReady event, получили {other:?}"),
+    }
+
+    match events[8] {
         ScrubEvent::Failed(payload) => {
             assert_eq!(
                 payload.diagnostics.driver_outcome,
@@ -354,6 +385,19 @@ fn driver_outcome_variants_use_named_payloads_and_typed_subreasons() {
             context,
             reason: AudioResumeErrorReason::OutputClosed,
             budget: None,
+        }),
+        ScrubDriverOutcome::PreTargetReleased(PreTargetReleasedOutcome {
+            context,
+            released_frame: preview_frame_for_tests(context.generation()),
+            progress: ScrubProgress {
+                packets_fed: 2,
+                frames_drained: 1,
+                target_status: ScrubTargetReachStatus::BeforeTarget,
+            },
+        }),
+        ScrubDriverOutcome::ExactFrameReady(ExactFrameReadyOutcome {
+            context,
+            frame: preview_frame_for_tests(context.generation()),
         }),
         ScrubDriverOutcome::DemuxUnsupported(DemuxUnsupportedOutcome {
             context,
@@ -405,6 +449,8 @@ fn driver_outcome_variants_use_named_payloads_and_typed_subreasons() {
             ScrubDriverOutcomeKind::AudioResumePending,
             ScrubDriverOutcomeKind::AudioResumeTimedOut,
             ScrubDriverOutcomeKind::AudioResumeFailed,
+            ScrubDriverOutcomeKind::PreTargetReleased,
+            ScrubDriverOutcomeKind::ExactFrameReady,
             ScrubDriverOutcomeKind::DemuxUnsupported,
             ScrubDriverOutcomeKind::DemuxUnavailable,
             ScrubDriverOutcomeKind::DecoderBackpressure,
