@@ -7,12 +7,16 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod frame_server;
 mod paths;
 mod schema;
 mod store;
 mod validation;
 
 pub use error::{ConfigError, ConfigResult};
+pub use frame_server::{
+    FrameServerBudgetConfig, FrameServerConfig, FrameServerLiveScrubDecodeModeConfig,
+};
 pub use paths::{CONFIG_FILE_NAME, ConfigPaths};
 pub use schema::{
     AppConfig, AudioConfig, CURRENT_SCHEMA_VERSION, HdrToSdrConfig, HdrToSdrOperatorConfig,

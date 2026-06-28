@@ -5,7 +5,7 @@ use serde::{
     de::{self, Visitor},
 };
 
-use crate::{ConfigResult, validation};
+use crate::{ConfigResult, frame_server::FrameServerConfig, validation};
 
 /// Текущая версия TOML-схемы.
 pub const CURRENT_SCHEMA_VERSION: u32 = 4;
@@ -48,6 +48,11 @@ pub struct AppConfig {
     #[serde(default)]
     #[setting(nested)]
     pub video: VideoConfig,
+
+    /// Persisted TOML-настройки будущего Frame Server слоя.
+    #[serde(default)]
+    #[setting(nested)]
+    pub frame_server: FrameServerConfig,
 
     /// Render-профиль и backend-specific настройки.
     #[serde(default)]
@@ -204,6 +209,41 @@ fn document_schema_version_4_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "[frame_server]",
+        "# Persisted metadata-ready настройки будущего Frame Server; runtime wiring появится позже.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "hover_preview_enabled = true",
+        "# Включает только визуальный HoverPreview; текущий-target prepare не выключается config-ом.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "hover_pool_frames = \"auto\"",
+        "# Budget frame pool для hover: \"auto\" или положительное число без статического upper cap.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "hover_thread_count = \"auto\"",
+        "# Thread budget для hover: \"auto\" или положительное число без fake provider limits.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "hover_leave_grace_ms = 500",
+        "# UX grace после ухода hover; это не decode coverage budget.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "network_hover_prepare_throttle_ms = 300",
+        "# Межстартовый throttle для network hover prepare; 0 убирает только delay.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "live_scrub_decode_mode = \"throttled_latest\"",
+        "# Live scrub policy: throttled_latest или every_drag_event, оба latest-only.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "decoder_ready_queue_frames = 8",
         "# Backend-local ready queue для burst FrameReady events.",
     );
@@ -331,6 +371,7 @@ impl Default for AppConfig {
             schema_version: CURRENT_SCHEMA_VERSION,
             player: PlayerConfig::default(),
             video: VideoConfig::default(),
+            frame_server: FrameServerConfig::default(),
             render: RenderConfig::default(),
             audio: AudioConfig::default(),
             network: NetworkConfig::default(),
@@ -2234,6 +2275,18 @@ mod settings_metadata_tests {
         "video.scheduler.decode_ahead_target_ms",
         "video.scheduler.surface_free_slots_min",
         "video.scheduler.surface_free_slots_target",
+        "frame_server.hover_preview_enabled",
+        "frame_server.hover_pool_frames",
+        "frame_server.hover_thread_count",
+        "frame_server.hover_prepare_window_slots",
+        "frame_server.software_hover_prepare_window_slots",
+        "frame_server.recent_superseded_prepare_slots",
+        "frame_server.software_recent_superseded_prepare_slots",
+        "frame_server.hover_leave_grace_ms",
+        "frame_server.network_hover_prepare_throttle_ms",
+        "frame_server.live_scrub_enabled",
+        "frame_server.live_scrub_decode_mode",
+        "frame_server.live_scrub_max_hz",
         "render.profile",
         "render.hdr_to_sdr.enabled",
         "render.hdr_to_sdr.operator",
@@ -2576,6 +2629,48 @@ mod settings_metadata_tests {
             0_usize,
             validation::MAX_ZERO_COPY_SURFACE_POOL_SLOTS,
         );
+        assert_integer_range(
+            &registry,
+            "frame_server.hover_prepare_window_slots",
+            1_u8,
+            validation::MAX_FRAME_SERVER_HOVER_PREPARE_WINDOW_SLOTS,
+        );
+        assert_integer_range(
+            &registry,
+            "frame_server.software_hover_prepare_window_slots",
+            1_u8,
+            validation::MAX_FRAME_SERVER_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS,
+        );
+        assert_integer_range(
+            &registry,
+            "frame_server.recent_superseded_prepare_slots",
+            0_u8,
+            validation::MAX_FRAME_SERVER_RECENT_SUPERSEDED_PREPARE_SLOTS,
+        );
+        assert_integer_range(
+            &registry,
+            "frame_server.software_recent_superseded_prepare_slots",
+            0_u8,
+            validation::MAX_FRAME_SERVER_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS,
+        );
+        assert_integer_range(
+            &registry,
+            "frame_server.hover_leave_grace_ms",
+            validation::MIN_FRAME_SERVER_HOVER_LEAVE_GRACE_MS,
+            validation::MAX_FRAME_SERVER_HOVER_LEAVE_GRACE_MS,
+        );
+        assert_integer_range(
+            &registry,
+            "frame_server.network_hover_prepare_throttle_ms",
+            validation::MIN_FRAME_SERVER_NETWORK_HOVER_PREPARE_THROTTLE_MS,
+            validation::MAX_FRAME_SERVER_NETWORK_HOVER_PREPARE_THROTTLE_MS,
+        );
+        assert_integer_range(
+            &registry,
+            "frame_server.live_scrub_max_hz",
+            validation::MIN_FRAME_SERVER_LIVE_SCRUB_MAX_HZ,
+            validation::MAX_FRAME_SERVER_LIVE_SCRUB_MAX_HZ,
+        );
         assert_float_range(
             &registry,
             "render.hdr_to_sdr.sdr_reference_white_nits",
@@ -2739,7 +2834,65 @@ mod settings_metadata_tests {
             "render.vulkan.present_mode",
             &["auto", "fifo", "mailbox", "immediate"],
         );
+        assert_select_options(
+            &registry,
+            "frame_server.live_scrub_decode_mode",
+            &["throttled_latest", "every_drag_event"],
+        );
         assert_select_options(&registry, "ui.skin", &[validation::DEFAULT_UI_SKIN]);
+    }
+
+    #[test]
+    fn frame_server_metadata_is_read_only_and_metadata_ready() {
+        let registry = registry();
+        let frame_server_ids = EXPECTED_SETTING_IDS
+            .iter()
+            .copied()
+            .filter(|id| id.starts_with("frame_server."))
+            .collect::<Vec<_>>();
+
+        assert_eq!(frame_server_ids.len(), 12);
+        for id in frame_server_ids {
+            let descriptor = descriptor(&registry, id);
+            assert_eq!(descriptor.access, SettingAccess::ReadOnly);
+            assert_eq!(descriptor.default_behavior, DefaultBehavior::NoReset);
+            assert_eq!(descriptor.placement.section.as_str(), "frame_server");
+            assert_eq!(descriptor.route.as_str(), "frame_server.apply");
+            assert_eq!(descriptor.apply_mode, SettingApplyMode::CommittedApply);
+            assert!(
+                descriptor.text.description.is_some(),
+                "{id} description must explain metadata-only behavior"
+            );
+            assert!(
+                descriptor.text.help.is_some(),
+                "{id} help must explain S12 limitations"
+            );
+        }
+
+        assert_eq!(
+            registry
+                .get_value(
+                    &AppConfig::default(),
+                    &SettingId::from("frame_server.hover_pool_frames")
+                )
+                .expect("budget metadata value readable"),
+            SettingValue::Text("auto".to_owned())
+        );
+
+        let mut config = AppConfig::default();
+        let error = registry
+            .set_value(
+                &mut config,
+                &SettingId::from("frame_server.live_scrub_enabled"),
+                SettingValue::Bool(false),
+            )
+            .expect_err("frame_server setting must reject UI writes in S12");
+        assert_eq!(
+            error,
+            SettingsError::ReadOnlySetting {
+                id: SettingId::from("frame_server.live_scrub_enabled"),
+            }
+        );
     }
 
     #[test]

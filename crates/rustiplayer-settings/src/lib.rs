@@ -1307,6 +1307,34 @@ mod tests {
     }
 
     #[test]
+    fn frame_server_metadata_is_read_only_without_runtime_route() {
+        let registry = app_config_registry().expect("registry builds");
+        let descriptor = registry
+            .descriptor(&settings_core::SettingId::from(
+                "frame_server.live_scrub_enabled",
+            ))
+            .expect("frame_server descriptor exists");
+
+        assert_eq!(descriptor.access, settings_core::SettingAccess::ReadOnly);
+        assert_eq!(descriptor.route.as_str(), "frame_server.apply");
+
+        let mut current = AppConfig::default();
+        current.frame_server.live_scrub_enabled = false;
+        let diff = registry
+            .diff(&AppConfig::default(), &current)
+            .expect("read-only metadata can still report external TOML drift");
+        let error = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
+            .expect_err("frame_server must not have S12 runtime apply route");
+
+        assert!(error.to_string().contains("frame_server.apply"));
+        assert!(
+            error
+                .to_string()
+                .contains("frame_server.live_scrub_enabled")
+        );
+    }
+
+    #[test]
     fn audio_output_device_route_uses_owner_payload_not_deferred_boundary() {
         let registry = app_config_registry().expect("registry builds");
         let mut current = AppConfig::default();

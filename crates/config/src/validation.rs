@@ -84,6 +84,36 @@ pub(crate) const MIN_LIVE_PREVIEW_MAX_HZ: u16 = 1;
 /// Верхняя граница live preview защищает runtime от слишком частых preview updates.
 pub(crate) const MAX_LIVE_PREVIEW_MAX_HZ: u16 = 240;
 
+/// Минимальная live-scrub частота: ноль означал бы выключенный throttle, а не частоту.
+pub(crate) const MIN_FRAME_SERVER_LIVE_SCRUB_MAX_HZ: u16 = 1;
+
+/// Верхняя live-scrub частота защищает будущий runtime от слишком частых decode starts.
+pub(crate) const MAX_FRAME_SERVER_LIVE_SCRUB_MAX_HZ: u16 = 240;
+
+/// Верхний primary hover prepare window без превращения hover в cache.
+pub(crate) const MAX_FRAME_SERVER_HOVER_PREPARE_WINDOW_SLOTS: u8 = 3;
+
+/// Верхний software hover prepare window, где host frames дороже по RAM/upload.
+pub(crate) const MAX_FRAME_SERVER_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS: u8 = 2;
+
+/// Верхний recent-superseded budget для general/hardware path.
+pub(crate) const MAX_FRAME_SERVER_RECENT_SUPERSEDED_PREPARE_SLOTS: u8 = 3;
+
+/// Верхний recent-superseded budget для software path.
+pub(crate) const MAX_FRAME_SERVER_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS: u8 = 2;
+
+/// Ноль означает immediate leave release и остаётся валидным UX policy.
+pub(crate) const MIN_FRAME_SERVER_HOVER_LEAVE_GRACE_MS: u16 = 0;
+
+/// UX grace не должен маскироваться под decode coverage.
+pub(crate) const MAX_FRAME_SERVER_HOVER_LEAVE_GRACE_MS: u16 = 500;
+
+/// Ноль означает no inter-start delay, но latest-only/max-one-inflight остаются будущими invariants.
+pub(crate) const MIN_FRAME_SERVER_NETWORK_HOVER_PREPARE_THROTTLE_MS: u16 = 0;
+
+/// Верхний throttle, выше которого hover network prepare ощущался бы сломанным.
+pub(crate) const MAX_FRAME_SERVER_NETWORK_HOVER_PREPARE_THROTTLE_MS: u16 = 2000;
+
 /// Нижняя граница времени анимации sidebar: ноль валиден и означает «без анимации».
 pub(crate) const MIN_SIDEBAR_SLIDE_DURATION_MS: u16 = 0;
 
@@ -169,6 +199,7 @@ pub(crate) fn validate_app_config(config: &AppConfig) -> ConfigResult<()> {
     validate_youtube_section(config)?;
     validate_render_section(config)?;
     validate_ui_section(config)?;
+    validate_frame_server_section(config)?;
 
     Ok(())
 }
@@ -610,6 +641,79 @@ fn validate_render_color_adjustment(
     Ok(())
 }
 
+/// Проверяет `[frame_server]` как persisted schema, не как runtime resolver.
+fn validate_frame_server_section(config: &AppConfig) -> ConfigResult<()> {
+    validate_frame_server_budget(
+        "frame_server.hover_pool_frames",
+        config.frame_server.hover_pool_frames.fixed_value(),
+    )?;
+    validate_frame_server_budget(
+        "frame_server.hover_thread_count",
+        config.frame_server.hover_thread_count.fixed_value(),
+    )?;
+
+    validate_u8_range(
+        "frame_server.hover_prepare_window_slots",
+        config.frame_server.hover_prepare_window_slots,
+        1,
+        MAX_FRAME_SERVER_HOVER_PREPARE_WINDOW_SLOTS,
+    )?;
+    validate_u8_range(
+        "frame_server.software_hover_prepare_window_slots",
+        config.frame_server.software_hover_prepare_window_slots,
+        1,
+        MAX_FRAME_SERVER_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS,
+    )?;
+    validate_u8_range(
+        "frame_server.recent_superseded_prepare_slots",
+        config.frame_server.recent_superseded_prepare_slots,
+        0,
+        MAX_FRAME_SERVER_RECENT_SUPERSEDED_PREPARE_SLOTS,
+    )?;
+    validate_u8_range(
+        "frame_server.software_recent_superseded_prepare_slots",
+        config.frame_server.software_recent_superseded_prepare_slots,
+        0,
+        MAX_FRAME_SERVER_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS,
+    )?;
+    validate_u16_range(
+        "frame_server.hover_leave_grace_ms",
+        config.frame_server.hover_leave_grace_ms,
+        MIN_FRAME_SERVER_HOVER_LEAVE_GRACE_MS,
+        MAX_FRAME_SERVER_HOVER_LEAVE_GRACE_MS,
+    )?;
+    validate_u16_range(
+        "frame_server.network_hover_prepare_throttle_ms",
+        config.frame_server.network_hover_prepare_throttle_ms,
+        MIN_FRAME_SERVER_NETWORK_HOVER_PREPARE_THROTTLE_MS,
+        MAX_FRAME_SERVER_NETWORK_HOVER_PREPARE_THROTTLE_MS,
+    )?;
+    validate_u16_range(
+        "frame_server.live_scrub_max_hz",
+        config.frame_server.live_scrub_max_hz,
+        MIN_FRAME_SERVER_LIVE_SCRUB_MAX_HZ,
+        MAX_FRAME_SERVER_LIVE_SCRUB_MAX_HZ,
+    )?;
+
+    Ok(())
+}
+
+/// Проверяет только S12-static part budget-а: auto или positive fixed.
+fn validate_frame_server_budget(
+    field: &'static str,
+    fixed_value: Option<usize>,
+) -> ConfigResult<()> {
+    if !matches!(fixed_value, Some(0)) {
+        return Ok(());
+    }
+
+    Err(invalid_value(
+        field,
+        "fixed budget должен быть положительным числом; используйте `auto` для resolver-а"
+            .to_string(),
+    ))
+}
+
 /// Проверяет UI section.
 fn validate_ui_section(config: &AppConfig) -> ConfigResult<()> {
     let language = config.ui.language.trim();
@@ -697,6 +801,18 @@ fn validate_u32_range(field: &'static str, value: u32, min: u32, max: u32) -> Co
 
 /// Проверяет `u16` диапазон с единым сообщением.
 fn validate_u16_range(field: &'static str, value: u16, min: u16, max: u16) -> ConfigResult<()> {
+    if (min..=max).contains(&value) {
+        return Ok(());
+    }
+
+    Err(invalid_value(
+        field,
+        format!("значение должно быть в диапазоне {min}..={max}, получено {value}"),
+    ))
+}
+
+/// Проверяет `u8` диапазон с единым сообщением.
+fn validate_u8_range(field: &'static str, value: u8, min: u8, max: u8) -> ConfigResult<()> {
     if (min..=max).contains(&value) {
         return Ok(());
     }
