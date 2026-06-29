@@ -1090,6 +1090,10 @@ impl PlayerSession {
             return false;
         }
 
+        if self.active_prepared_seek_landing_matches_commit(seek_commit) {
+            return false;
+        }
+
         if !audio_gate_status.can_soft_fallback() {
             return false;
         }
@@ -1104,6 +1108,10 @@ impl PlayerSession {
         resume_video_min_ready_frames: usize,
     ) -> bool {
         if !self.pipeline.has_selected_video_track() {
+            return true;
+        }
+
+        if self.prepared_seek_video_runway_commit_ready(seek_commit) {
             return true;
         }
 
@@ -1376,7 +1384,7 @@ impl PlayerSession {
     }
 
     /// Успешно закрывает seek transaction и применяет сохранённый resume intent.
-    fn complete_seek_commit(&mut self, seek_commit: SeekCommitState) {
+    pub(super) fn complete_seek_commit(&mut self, seek_commit: SeekCommitState) {
         self.complete_final_seek_commit(seek_commit);
     }
 
@@ -1550,11 +1558,21 @@ impl PlayerSession {
         seek_commit: SeekCommitState,
         timeout_blocker: SeekProgressBlocker,
     ) {
+        if self.active_prepared_seek_landing_matches_commit(seek_commit) {
+            let audio_gate_status = self.seek_audio_gate_status(seek_commit, 0.0);
+            self.fail_prepared_seek_landing_audio_resume_on_timeout(
+                seek_commit,
+                audio_gate_status,
+                Instant::now(),
+            );
+            return;
+        }
+
         self.fail_final_seek_commit_on_timeout(seek_commit, timeout_blocker);
     }
 
     /// Прерывает финальный seek transaction по timeout как recoverable error.
-    fn fail_final_seek_commit_on_timeout(
+    pub(super) fn fail_final_seek_commit_on_timeout(
         &mut self,
         seek_commit: SeekCommitState,
         timeout_blocker: SeekProgressBlocker,
@@ -1723,16 +1741,10 @@ impl PlayerSession {
         self.pause_audio_output_for_seek();
         self.seek_runtime
             .begin_seek_landing_request(seek_mode, resume_intent);
-        self.set_playback_state(PlaybackState::Scrubbing);
         self.seek_runtime.clear_eof_fallback_video_position();
         self.clear_seek_preroll_fallback_frame();
         self.pipeline
             .reset_clocks_for_seek(target_position.as_duration());
-        self.snapshot.timeline.target_position = Some(target_position);
-        self.snapshot.timeline.seeking = false;
-        self.snapshot.timeline.scrubbing = true;
-        self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame();
-        self.snapshot.timeline.preview_state = TimelinePreviewState::Pending;
 
         let target = ScrubTarget::new(
             target_position,
@@ -1755,6 +1767,8 @@ impl PlayerSession {
             }
             PreparedSeekLandingStart::Unavailable => {}
         }
+
+        self.enter_seek_landing_public_scrubbing(target_position);
 
         let update = ScrubTargetUpdate::new(
             scrub_update_guards_for_owner(
@@ -1795,6 +1809,19 @@ impl PlayerSession {
             ));
         }
         Ok(())
+    }
+
+    /// Переводит только public state/snapshot в pending SeekLanding.
+    ///
+    /// Lifecycle шаги seek generation, queues, clocks и promoted ownership остаются
+    /// у вызывающего route-а, чтобы prepared instant commit не публиковал Scrubbing.
+    pub(super) fn enter_seek_landing_public_scrubbing(&mut self, target_position: MediaTime) {
+        self.set_playback_state(PlaybackState::Scrubbing);
+        self.snapshot.timeline.target_position = Some(target_position);
+        self.snapshot.timeline.seeking = false;
+        self.snapshot.timeline.scrubbing = true;
+        self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame();
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Pending;
     }
 
     /// Строит target PTS в timebase выбранного video track-а для neutral scrub events.
@@ -2024,7 +2051,7 @@ impl PlayerSession {
     }
 
     /// Проверяет, что текущий video frame уже соответствует target; audio-only media проходит.
-    fn present_frame_covers_target(&self, target_position: Duration) -> bool {
+    pub(super) fn present_frame_covers_target(&self, target_position: Duration) -> bool {
         if !self.pipeline.has_selected_video_track() {
             return true;
         }

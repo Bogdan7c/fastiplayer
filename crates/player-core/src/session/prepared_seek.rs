@@ -2,27 +2,28 @@ use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use frame_server_core::{
-    AudioResumePendingOutcome, BackendRevision, ExactFrameReadyOutcome, FrameExactnessPolicy,
-    FrameServerConfig, PlaybackGeneration, PreparedOutcome, ScrubDriverOutcome, ScrubEvent,
-    ScrubExactnessPolicy, ScrubFrameTiming, ScrubGeneration, ScrubGenerationToken,
-    ScrubPreviewFrame, ScrubRequestKind, ScrubTarget, ScrubTargetContext, ScrubTrackSelection,
-    SourceRevision, TimelineHoverFrameBucket, TimelineHoverPrepareFrameKey,
-    TimelineHoverPrepareFrameLookupRequest, TimelineHoverPreparePromotionOutcome,
-    TimelineHoverPrepareWorkingSet, TimelineHoverPromotedFrameSeekReuse,
-    TimelineHoverPromotedPreparedFrame, TimelineHoverRecentSupersededBudget,
-    ValidatedFrameServerConfig,
+    AudioResumePendingOutcome, AudioResumeTimedOutOutcome, BackendRevision, ExactFrameReadyOutcome,
+    FinishedOutcome, FrameExactnessPolicy, FrameServerConfig, PlaybackGeneration, PreparedOutcome,
+    ScrubDriverOutcome, ScrubEvent, ScrubEventFrameIdentity, ScrubExactnessPolicy,
+    ScrubFrameTiming, ScrubGeneration, ScrubGenerationToken, ScrubPreviewFrame, ScrubRequestKind,
+    ScrubTarget, ScrubTargetContext, ScrubTrackSelection, SourceRevision, TimelineHoverFrameBucket,
+    TimelineHoverPrepareFrameKey, TimelineHoverPrepareFrameLookupRequest,
+    TimelineHoverPreparePromotionOutcome, TimelineHoverPrepareWorkingSet,
+    TimelineHoverPromotedFrameSeekReuse, TimelineHoverPromotedPreparedFrame,
+    TimelineHoverRecentSupersededBudget, ValidatedFrameServerConfig,
 };
 #[cfg(test)]
 use frame_server_core::{TimelineHoverPreparedFrameEntry, TimelineHoverPreparedFrameTiming};
-use media_core::{MediaTime, TrackTimestamp};
+use media_core::{MediaTime, TimelinePreviewState, TrackTimestamp};
 use video_present_core::{VideoFrameLease, VideoPresentFrameIdentity};
 
 use super::PlayerSession;
+use super::audio_runtime::SeekAudioGateStatus;
 use super::scrub_driver::{AudioResumeTimingInput, derive_audio_resume_timeout_budget};
 use crate::seek_state::{
     PlaybackResumeIntent, SeekCommitState, SeekLandingExecution, SeekLandingGenerationStartError,
 };
-use crate::{PlayerError, PlayerErrorKind, PlayerResult, SeekMode};
+use crate::{PlaybackState, PlayerError, PlayerErrorKind, PlayerResult, SeekMode};
 
 /// S17A/S17B пока не имеют отдельного source revision provider-а внутри player-core.
 /// Playback generation остаётся реальным stale guard-ом для decoded frames.
@@ -49,44 +50,37 @@ pub(crate) enum PreparedSeekLandingOverrideHandoff {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PreparedSeekBranchToken {
     continuation: PreparedBranchContinuation,
-    runway: PreparedBranchRunway,
+    runway: VideoResumeRunwayState,
 }
 
 impl PreparedSeekBranchToken {
     /// Создаёт token только для полностью готового continuation/runway.
     #[cfg(test)]
-    pub(crate) const fn resume_ready_for_tests() -> Self {
+    pub(crate) const fn with_video_runway_for_tests(runway: VideoResumeRunwayState) -> Self {
         Self {
             continuation: PreparedBranchContinuation::Ready,
-            runway: PreparedBranchRunway::Ready,
+            runway,
         }
     }
 
-    /// Создаёт token с branch continuation, но без готовой resume runway.
+    /// Создаёт token только для полностью готового continuation/runway.
     #[cfg(test)]
-    pub(crate) const fn continuation_without_runway_for_tests() -> Self {
-        Self {
-            continuation: PreparedBranchContinuation::Ready,
-            runway: PreparedBranchRunway::Pending,
-        }
+    pub(crate) const fn resume_ready_for_tests() -> Self {
+        Self::with_video_runway_for_tests(VideoResumeRunwayState::DisplayableFrameQueued)
     }
 
     /// Fail-closed validation: token presence alone never proves resume readiness.
     fn validate(self) -> PreparedSeekBranchValidation {
-        match (self.continuation, self.runway) {
-            (PreparedBranchContinuation::Ready, PreparedBranchRunway::Ready) => {
+        match self.continuation {
+            PreparedBranchContinuation::Ready if self.runway.is_commit_ready() => {
                 PreparedSeekBranchValidation::ResumeReady
             }
-            (PreparedBranchContinuation::Missing, _) => {
-                PreparedSeekBranchValidation::ResumePending {
-                    reason: PreparedSeekBranchResumePendingReason::ContinuationMissing,
-                }
-            }
-            (PreparedBranchContinuation::Ready, PreparedBranchRunway::Pending) => {
-                PreparedSeekBranchValidation::ResumePending {
-                    reason: PreparedSeekBranchResumePendingReason::RunwayPending,
-                }
-            }
+            PreparedBranchContinuation::Missing => PreparedSeekBranchValidation::ResumePending {
+                reason: PreparedSeekBranchResumePendingReason::ContinuationMissing,
+            },
+            PreparedBranchContinuation::Ready => PreparedSeekBranchValidation::ResumePending {
+                reason: PreparedSeekBranchResumePendingReason::RunwayPending,
+            },
         }
     }
 }
@@ -102,15 +96,37 @@ enum PreparedBranchContinuation {
     Missing,
 }
 
-/// Минимальная S17B readiness runway без S17C audio timeout policy.
+/// Typed состояние video runway для prepared resume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(
     dead_code,
     reason = "S17B token is test-fed until the real hover executor starts constructing branch readiness."
 )]
-enum PreparedBranchRunway {
-    Ready,
+pub(crate) enum VideoResumeRunwayState {
+    /// Branch найден, но decoder/demux ещё не доказали post-target runway.
     Pending,
+
+    /// Demux/decoder был переставлен к target, но готового frame runway ещё нет.
+    Repositioned,
+
+    /// После target уже принят packet, но displayable frame ещё не гарантирован.
+    PostTargetPacketAccepted,
+
+    /// В очереди есть displayable frame, который можно показать после commit.
+    DisplayableFrameQueued,
+
+    /// Следующий displayable frame практически готов и не требует cold path.
+    NextFrameAlmostReady,
+}
+
+impl VideoResumeRunwayState {
+    /// Только эти состояния закрывают video runway для prepared instant commit.
+    const fn is_commit_ready(self) -> bool {
+        matches!(
+            self,
+            Self::DisplayableFrameQueued | Self::NextFrameAlmostReady
+        )
+    }
 }
 
 /// Результат player-side branch validation после neutral promotion.
@@ -133,7 +149,7 @@ pub(crate) enum PreparedSeekBranchResumePendingReason {
 /// Вид prepared promotion-а, который player-core реально принял во владение.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PreparedSeekLandingPromotionKind {
-    /// Branch token доказал continuation + runway, но S17B всё равно не делает instant commit.
+    /// Branch token доказал continuation + commit-ready video runway.
     ResumeReadyBranch,
 
     /// Frame подходит как exact visual override, а resume остаётся pending.
@@ -147,7 +163,7 @@ struct PreparedSeekLandingPromotion {
     promoted_frame: TimelineHoverPromotedPreparedFrame<PreparedSeekBranchToken>,
     #[allow(
         dead_code,
-        reason = "Focused S17B tests inspect the accepted promotion kind; production only needs ownership."
+        reason = "Focused S17 tests inspect the accepted promotion kind; production only needs ownership."
     )]
     kind: PreparedSeekLandingPromotionKind,
 }
@@ -279,11 +295,15 @@ impl PreparedSeekLandingRuntime {
         self.working_set.len()
     }
 
+    fn active_promotion_kind(&self) -> Option<PreparedSeekLandingPromotionKind> {
+        self.promoted.as_ref().map(|promotion| promotion.kind)
+    }
+
     #[cfg(test)]
     pub(crate) fn active_promotion_kind_for_tests(
         &self,
     ) -> Option<PreparedSeekLandingPromotionKind> {
-        self.promoted.as_ref().map(|promotion| promotion.kind)
+        self.active_promotion_kind()
     }
 }
 
@@ -350,6 +370,187 @@ impl PlayerSession {
         self.clear_queued_video_frames();
     }
 
+    /// Публикует normalized scrub-события для prepared exact override.
+    fn publish_prepared_seek_landing_preview_events(
+        &mut self,
+        context: ScrubTargetContext,
+    ) -> ScrubPreviewFrame {
+        self.pending_scrub_events
+            .push(ScrubEvent::from_driver_outcome(
+                ScrubDriverOutcome::Prepared(PreparedOutcome { context }),
+            ));
+        let preview_frame = self.prepared_seek_landing_preview_frame(context);
+        self.pending_scrub_events
+            .push(ScrubEvent::from_driver_outcome(
+                ScrubDriverOutcome::ExactFrameReady(ExactFrameReadyOutcome {
+                    context,
+                    frame: preview_frame,
+                }),
+            ));
+
+        preview_frame
+    }
+
+    /// Публикует scrub commit event для instant prepared route-а.
+    fn publish_prepared_seek_landing_committed(
+        &mut self,
+        context: ScrubTargetContext,
+        seek_commit: SeekCommitState,
+        preview_frame: ScrubPreviewFrame,
+    ) {
+        self.pending_scrub_events
+            .push(ScrubEvent::from_driver_outcome(
+                ScrubDriverOutcome::Finished(FinishedOutcome {
+                    context,
+                    committed_position: seek_commit.target_position,
+                    committed_frame_timing: preview_frame.timing,
+                    frame_identity: ScrubEventFrameIdentity::Video(preview_frame.frame_identity),
+                }),
+            ));
+    }
+
+    /// Публикует pending audio gate с player-core budget metadata.
+    fn publish_prepared_audio_resume_pending(&mut self, context: ScrubTargetContext) {
+        self.pending_scrub_events
+            .push(ScrubEvent::from_driver_outcome(
+                ScrubDriverOutcome::AudioResumePending(AudioResumePendingOutcome {
+                    context,
+                    budget: self.prepared_audio_resume_budget(Duration::ZERO).metadata,
+                }),
+            ));
+    }
+
+    /// Готовность audio gate-а для instant prepared commit без soft fallback.
+    fn prepared_audio_gate_ready_for_commit(
+        &self,
+        seek_commit: SeekCommitState,
+    ) -> SeekAudioGateStatus {
+        self.seek_audio_gate_status(seek_commit, 0.0)
+    }
+
+    /// Возвращает timeline/player state после audio timeout/error prepared route-а.
+    pub(super) fn active_prepared_seek_landing_matches_commit(
+        &self,
+        seek_commit: SeekCommitState,
+    ) -> bool {
+        self.seek_runtime
+            .active_seek_landing(seek_landing_prepared_generation_token(
+                seek_commit.generation,
+            ))
+            .is_some_and(|landing| {
+                landing.execution() == SeekLandingExecution::PreparedVisualOverride
+            })
+    }
+
+    /// Prepared route закрывает video gate только через validated commit-ready runway.
+    pub(super) fn prepared_seek_video_runway_commit_ready(
+        &self,
+        seek_commit: SeekCommitState,
+    ) -> bool {
+        if !self.active_prepared_seek_landing_matches_commit(seek_commit) {
+            return false;
+        }
+
+        matches!(
+            self.prepared_seek_landing.active_promotion_kind(),
+            Some(PreparedSeekLandingPromotionKind::ResumeReadyBranch)
+        )
+    }
+
+    fn active_prepared_seek_landing_context(
+        &self,
+        seek_commit: SeekCommitState,
+    ) -> Option<ScrubTargetContext> {
+        let video_track_id = self.pipeline.selected_video_track_id()?;
+        let target = ScrubTarget::new(
+            seek_commit.target_position,
+            self.seek_landing_target_pts(video_track_id, seek_commit.target_position),
+        );
+        let track_selection = match self.pipeline.selected_audio_track_id() {
+            Some(audio_track_id) => ScrubTrackSelection::with_audio(video_track_id, audio_track_id),
+            None => ScrubTrackSelection::video_only(video_track_id),
+        };
+
+        Some(prepared_seek_landing_context(
+            track_selection,
+            target,
+            seek_commit.generation,
+        ))
+    }
+
+    pub(super) fn fail_prepared_seek_landing_audio_resume_on_timeout(
+        &mut self,
+        seek_commit: SeekCommitState,
+        audio_gate_status: SeekAudioGateStatus,
+        timed_out_at: Instant,
+    ) {
+        let Some(context) = self.active_prepared_seek_landing_context(seek_commit) else {
+            self.fail_final_seek_commit_on_timeout(
+                seek_commit,
+                audio_gate_status
+                    .blocker()
+                    .unwrap_or(crate::SeekProgressBlocker::Unknown),
+            );
+            return;
+        };
+        let budget = self.prepared_audio_resume_budget(
+            timed_out_at.saturating_duration_since(seek_commit.started_at),
+        );
+        self.pending_scrub_events
+            .push(ScrubEvent::from_driver_outcome(
+                ScrubDriverOutcome::AudioResumeTimedOut(AudioResumeTimedOutOutcome {
+                    context,
+                    budget: budget.metadata,
+                }),
+            ));
+
+        self.seek_runtime.clear_active_commit();
+        self.prepared_seek_landing.clear_promoted_seek_ownership();
+        self.seek_runtime.clear_trace();
+        self.seek_runtime.clear_seek_landing();
+        self.seek_runtime.clear_eof_fallback_video_position();
+        self.clear_seek_preroll_fallback_frame();
+        self.snapshot.timeline.target_position = None;
+        self.snapshot.timeline.seeking = false;
+        self.snapshot.timeline.scrubbing = false;
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Failed;
+        self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame()
+            && !self.present_frame_covers_target(seek_commit.target_position.as_duration());
+        let restored_position = self
+            .pipeline
+            .present_video_frame()
+            .map_or(self.snapshot.current_position, |frame| frame.pts);
+        self.pipeline.set_media_clock_base(restored_position);
+        self.pipeline.clear_monotonic_media_clock();
+        self.pause_audio_output_for_seek();
+        match seek_commit.resume_intent {
+            PlaybackResumeIntent::Pause => self.set_playback_state(PlaybackState::Paused),
+            PlaybackResumeIntent::Play => self.set_playback_state(PlaybackState::Playing),
+        }
+
+        let fallback_suffix = if matches!(
+            budget.metadata.source,
+            frame_server_core::AudioResumeBudgetSource::TimingUnknownFallback
+        ) {
+            "; audio_timing_unknown_fallback=true"
+        } else {
+            ""
+        };
+        let error = PlayerError::new(
+            PlayerErrorKind::SeekTimeout,
+            format!(
+                "Prepared seek audio resume timeout: target={} ms, blocker={}, budget={} ms{}",
+                seek_commit.target_position.as_duration().as_millis(),
+                audio_gate_status
+                    .blocker()
+                    .map_or("unknown", crate::SeekProgressBlocker::metric_name),
+                budget.metadata.budget.as_millis(),
+                fallback_suffix
+            ),
+        );
+        self.record_recoverable_error(error);
+    }
+
     /// Пробует prepared frame до cold reused-decoder route.
     pub(super) fn start_prepared_seek_landing_if_available(
         &mut self,
@@ -368,7 +569,7 @@ impl PlayerSession {
         let lookup_request = prepared_seek_landing_lookup_request(context);
         let promotion = self.prepared_seek_landing.promote_for_seek(lookup_request);
 
-        let PreparedSeekLandingPromotionAttempt::Promoted(_promotion_kind) = promotion else {
+        let PreparedSeekLandingPromotionAttempt::Promoted(promotion_kind) = promotion else {
             return Ok(PreparedSeekLandingStart::Unavailable);
         };
 
@@ -397,26 +598,22 @@ impl PlayerSession {
         };
         self.reanchor_clocks_after_seek_accept(seek_commit);
         self.seek_runtime.set_active_commit(seek_commit);
+        let audio_gate_status = self.prepared_audio_gate_ready_for_commit(seek_commit);
 
-        self.pending_scrub_events
-            .push(ScrubEvent::from_driver_outcome(
-                ScrubDriverOutcome::Prepared(PreparedOutcome { context }),
-            ));
-        let preview_frame = self.prepared_seek_landing_preview_frame(context);
-        self.pending_scrub_events
-            .push(ScrubEvent::from_driver_outcome(
-                ScrubDriverOutcome::ExactFrameReady(ExactFrameReadyOutcome {
-                    context,
-                    frame: preview_frame,
-                }),
-            ));
-        self.pending_scrub_events
-            .push(ScrubEvent::from_driver_outcome(
-                ScrubDriverOutcome::AudioResumePending(AudioResumePendingOutcome {
-                    context,
-                    budget: prepared_audio_resume_budget(),
-                }),
-            ));
+        if matches!(
+            promotion_kind,
+            PreparedSeekLandingPromotionKind::ResumeReadyBranch
+        ) && audio_gate_status.is_ready()
+        {
+            let preview_frame = self.publish_prepared_seek_landing_preview_events(context);
+            self.publish_prepared_seek_landing_committed(context, seek_commit, preview_frame);
+            self.complete_seek_commit(seek_commit);
+            return Ok(PreparedSeekLandingStart::Started);
+        }
+
+        self.enter_seek_landing_public_scrubbing(target_position);
+        self.publish_prepared_seek_landing_preview_events(context);
+        self.publish_prepared_audio_resume_pending(context);
 
         Ok(PreparedSeekLandingStart::Started)
     }
@@ -549,6 +746,25 @@ impl PlayerSession {
             None => ScrubTrackSelection::video_only(video_track_id),
         }
     }
+
+    /// Считает player-core audio resume budget для prepared route.
+    ///
+    /// Сейчас boundary знает только текущий output buffer. Callback/device period не
+    /// оцениваем эвристикой: неизвестное timing-поле остаётся typed fallback-ом.
+    fn prepared_audio_resume_budget(
+        &self,
+        elapsed: Duration,
+    ) -> super::scrub_driver::PlayerAudioResumeBudget {
+        let current_output_buffer = self.audio_buffer_level_ms().map(duration_from_millis_f64);
+
+        derive_audio_resume_timeout_budget(
+            AudioResumeTimingInput {
+                current_output_buffer,
+                callback_or_device_period: None,
+            },
+            elapsed,
+        )
+    }
 }
 
 /// Создаёт context, совпадающий с первым context нового one-shot SeekLanding driver-а.
@@ -601,9 +817,13 @@ fn seek_landing_prepared_generation_token(playback_generation: u64) -> ScrubGene
     )
 }
 
-/// ResumePending budget S17B оставляет на текущем player-core fallback policy.
-fn prepared_audio_resume_budget() -> frame_server_core::AudioResumeBudgetMetadata {
-    derive_audio_resume_timeout_budget(AudioResumeTimingInput::unknown(), Duration::ZERO).metadata
+/// Переводит diagnostics buffer level в `Duration`, отсекая NaN/inf/negative значения.
+fn duration_from_millis_f64(milliseconds: f64) -> Duration {
+    if !milliseconds.is_finite() || milliseconds <= 0.0 {
+        return Duration::ZERO;
+    }
+
+    Duration::from_secs_f64(milliseconds / 1_000.0)
 }
 
 /// Мапит generation-start failure в player error без silent fallback-а.

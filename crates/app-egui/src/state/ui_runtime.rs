@@ -63,6 +63,7 @@ impl AppState {
         let pre_ui_setup_started_at = Instant::now();
         let player_snapshot = frame_context.player_snapshot();
         let is_playing = player_snapshot.playback_state == PlaybackState::Playing;
+        let timeline_inline_status = self.timeline_inline_status_message(Instant::now());
 
         if is_playing {
             self.next_frame();
@@ -169,6 +170,7 @@ impl AppState {
                 ui,
                 player_snapshot,
                 &mut timeline_ui_state,
+                timeline_inline_status,
                 &selected_skin,
                 window_is_fullscreen,
             );
@@ -285,6 +287,7 @@ impl AppState {
     /// в worker command. Click и drag release отправляются как `PlayerCommand::Seek`,
     /// чтобы UI не зависел от interactive scrub lifecycle внутри player-core.
     pub(super) fn send_timeline_action(&mut self, action: TimelineAction) {
+        self.clear_timeline_inline_status_for_action();
         let (command, route) = timeline_command_from_action(action);
         let command_for_diagnostics = command.clone();
 

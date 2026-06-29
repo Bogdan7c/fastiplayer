@@ -144,6 +144,12 @@ impl ActiveSeekLandingState {
         self.execution.decode_active()
     }
 
+    /// Возвращает typed route исполнения без раскрытия layout-а state struct.
+    #[must_use]
+    pub(crate) const fn execution(self) -> SeekLandingExecution {
+        self.execution
+    }
+
     /// Возвращает accepted demux position, если demux seek уже состоялся.
     #[must_use]
     pub(crate) const fn actual_decode_position(self) -> Option<MediaTime> {

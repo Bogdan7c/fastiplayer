@@ -54,6 +54,7 @@ mod main_visual_override;
 mod media_jobs;
 mod present_frame_cache;
 mod telemetry_panel;
+mod timeline_inline_status;
 mod ui_runtime;
 mod video_backend;
 
@@ -70,6 +71,7 @@ pub(crate) use video_backend::BackendSwapVideoPhase;
 use main_visual_override::MainVisualOverrideState;
 use present_frame_cache::CachedRenderablePresentFrame;
 use telemetry_panel::TelemetryPanelCache;
+use timeline_inline_status::TimelineInlineStatusState;
 
 /// Immutable данные, зафиксированные один раз для текущего render frame-а.
 pub struct AppFrameContext {
@@ -196,6 +198,9 @@ pub struct AppState {
     /// App-owned main-video override во время scrub/seek visual pending state.
     main_visual_override_state: MainVisualOverrideState,
 
+    /// Короткий inline статус timeline для scrub failures, owned только UI-слоем.
+    timeline_inline_status: TimelineInlineStatusState,
+
     /// WGPU video materializer concrete backend-а; `player-core` его не видит.
     wgpu_frame_materializer: Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
 
@@ -302,6 +307,7 @@ impl AppState {
             pending_redraw_after_worker_command: false,
             cached_renderable_present_frame: None,
             main_visual_override_state: MainVisualOverrideState::default(),
+            timeline_inline_status: TimelineInlineStatusState::default(),
             wgpu_frame_materializer: None,
             current_video_backend_kind: None,
             pending_video_backend_reselection: None,

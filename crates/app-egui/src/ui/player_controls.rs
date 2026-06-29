@@ -41,6 +41,7 @@ pub fn render_bottom_controls(
     ui: &mut Ui,
     player_snapshot: &PlayerSnapshot,
     timeline_state: &mut TimelineUiState,
+    timeline_inline_status: Option<&str>,
     skin: &impl PlayerSkin,
     is_window_fullscreen: bool,
 ) -> Vec<ControlAction> {
@@ -50,7 +51,12 @@ pub fn render_bottom_controls(
     egui::Panel::bottom(panel_id)
         .frame(skin.bottom_panel_frame())
         .show_inside(ui, |ui| {
-            timeline::render_time_labels(ui, &player_snapshot.timeline, timeline_state);
+            timeline::render_time_labels(
+                ui,
+                &player_snapshot.timeline,
+                timeline_state,
+                timeline_inline_status,
+            );
             let timeline_interaction =
                 timeline::render_timeline(ui, &player_snapshot.timeline, timeline_state, skin);
             actions.extend(

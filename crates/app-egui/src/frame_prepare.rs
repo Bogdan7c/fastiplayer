@@ -630,6 +630,7 @@ fn record_worker_events(
             }
             PlayerWorkerEvent::Scrub(scrub_event) => {
                 app_state.handle_main_visual_override_scrub_event(&scrub_event);
+                app_state.handle_timeline_inline_status_scrub_event(&scrub_event);
             }
             PlayerWorkerEvent::RenderError(_) => {
                 app_state.clear_cached_present_frame_after_worker_render_error();

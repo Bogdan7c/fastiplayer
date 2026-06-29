@@ -9,6 +9,7 @@ S14 refactor-only split moved `crates/app-egui/src/state.rs` implementation deta
 - `state/media_jobs.rs`: `ActiveMediaSource`, local file/prepared media/direct/YouTube loading, local open job polling/result application, media reconfigure restore helpers.
 - `state/telemetry_panel.rs`: telemetry panel cache/rows/tone, row building and panel rendering helpers.
 - `state/ui_runtime.rs`: `render_ui`, control actions, timeline action mapping, fullscreen/hotkey/open-file UI glue, center overlay, frame counters snapshot.
+- `state/timeline_inline_status.rs`: app-owned fixed 2500 ms timeline inline failure status for scrub audio resume timeout/error; listens to existing `ScrubEvent::Failed`, clears on next timeline action, and does not add player-core snapshot/public API fields.
 - `state/tests.rs`: former state tests; guard tests build a combined source string from `state.rs` and the child modules so existing architecture assertions still cover moved code.
 
 Visibility policy for this split: no new `pub(crate)`/`pub` boundary beyond preserving existing public/internal API paths; cross-child helpers use only `pub(super)` inside the private `state` parent module. Behavior, config, diagnostics, UI layout/sidebar viewport behavior, backend selection, cached-frame lifecycle, and test assertions were intended to remain unchanged.

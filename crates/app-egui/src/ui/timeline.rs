@@ -121,13 +121,22 @@ pub fn render_timeline(
 }
 
 /// Рисует строку времени вокруг timeline.
-pub fn render_time_labels(ui: &mut Ui, timeline: &TimelineSnapshot, state: &TimelineUiState) {
+pub fn render_time_labels(
+    ui: &mut Ui,
+    timeline: &TimelineSnapshot,
+    state: &TimelineUiState,
+    inline_status: Option<&str>,
+) {
     let display_position = state.display_position(timeline);
     let duration_text = format_media_duration(timeline.duration);
     let position_text = format_media_time(Some(display_position));
 
     ui.horizontal(|ui| {
         ui.monospace(position_text);
+        if let Some(inline_status) = inline_status {
+            ui.add_space(8.0);
+            ui.colored_label(Color32::from_rgb(255, 180, 120), inline_status);
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.monospace(duration_text);
         });
