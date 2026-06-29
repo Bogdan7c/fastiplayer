@@ -298,6 +298,17 @@ impl AppState {
         }
     }
 
+    /// Снимает live-scrub completion-gate по worker landing-сигналу.
+    ///
+    /// `PlayerEvent::SeekTargetFramePresented` означает, что seek/scrub landing
+    /// frame уже стал presented; для active live drag это разблокирует следующий
+    /// newest decode target (frame-by-frame перемотка вместо supersede-голодания).
+    pub(crate) fn note_live_scrub_landing_for_dispatch(&mut self, target_position: Duration) {
+        self.timeline_ui_state.note_live_scrub_landing_presented(
+            media_core::MediaTime::from_duration(target_position),
+        );
+    }
+
     /// Конвертирует pointer timeline action в typed player command(s).
     ///
     /// Обычные click/disabled-drag actions остаются exact `Seek`. Live drag

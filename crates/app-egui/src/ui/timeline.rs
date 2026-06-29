@@ -41,6 +41,14 @@ struct TimelineLiveScrubDispatchState {
 
     /// Новейший target, пропущенный throttle-ом.
     pending_throttled_target: Option<MediaTime>,
+
+    /// Dispatched decode target, чей landing frame ещё не подтверждён worker-ом.
+    ///
+    /// Completion-gate: пока он `Some` и не вышел fallback budget, новые drag
+    /// targets коалесцируются в newest и НЕ суперседят незавершённый exact decode,
+    /// иначе быстрый drag топит worker supersede-флешами быстрее, чем decoder
+    /// успевает показать кадр (latest-only остаётся, exact-only остаётся).
+    awaiting_landing_for_target: Option<MediaTime>,
 }
 
 impl TimelineUiState {
@@ -84,7 +92,26 @@ impl TimelineUiState {
             last_decode_dispatch_at: Some(now),
             last_dispatched_target: Some(initial_target),
             pending_throttled_target: None,
+            awaiting_landing_for_target: Some(initial_target),
         });
+    }
+
+    /// Снимает completion-gate, когда worker подтвердил presented landing frame.
+    ///
+    /// Вызывается на `PlayerEvent::SeekTargetFramePresented`: как только landing
+    /// для dispatched target (или более поздней позиции) показан, следующий newest
+    /// target может уйти в decode. Это и даёт frame-by-frame перемотку: один target
+    /// доезжает до кадра, потом стартует следующий, без supersede-голодания.
+    pub fn note_live_scrub_landing_presented(&mut self, presented_target: MediaTime) {
+        let Some(dispatch) = self.live_scrub_dispatch.as_mut() else {
+            return;
+        };
+        if dispatch
+            .awaiting_landing_for_target
+            .is_some_and(|awaiting| presented_target >= awaiting)
+        {
+            dispatch.awaiting_landing_for_target = None;
+        }
     }
 
     /// Возвращает текущий bounded diagnostics state active live-scrub dispatch-а.
@@ -128,10 +155,28 @@ impl TimelineUiState {
             TimelineLiveScrubDecodeMode::EveryDragEvent => {
                 dispatch.last_decode_dispatch_at = Some(now);
                 dispatch.last_dispatched_target = Some(target);
+                dispatch.awaiting_landing_for_target = Some(target);
                 dispatch.pending_throttled_target = None;
                 Some(target)
             }
             TimelineLiveScrubDecodeMode::ThrottledLatest => {
+                // Completion-gate: пока предыдущий dispatched target ещё не показан
+                // как landing frame и не вышел fallback budget, держим только newest
+                // target и не суперседим in-flight exact decode. Slider/UI остаётся
+                // immediate (transient_drag_position), throttle-ится только decode.
+                let awaiting_landing = dispatch.awaiting_landing_for_target.is_some()
+                    && dispatch
+                        .last_decode_dispatch_at
+                        .is_some_and(|last_dispatch| {
+                            now.saturating_duration_since(last_dispatch)
+                                < LIVE_SCRUB_LANDING_FALLBACK_BUDGET
+                        });
+                if awaiting_landing {
+                    dispatch.pending_throttled_target = Some(target);
+                    dispatch.diagnostics.record_throttled_latest_skip();
+                    return None;
+                }
+
                 let min_period =
                     live_scrub_min_dispatch_period(dispatch.diagnostics.settings_snapshot.max_hz);
                 let can_dispatch = dispatch
@@ -144,6 +189,7 @@ impl TimelineUiState {
                     let newest_target = dispatch.pending_throttled_target.take().unwrap_or(target);
                     dispatch.last_decode_dispatch_at = Some(now);
                     dispatch.last_dispatched_target = Some(newest_target);
+                    dispatch.awaiting_landing_for_target = Some(newest_target);
                     Some(newest_target)
                 } else {
                     dispatch.pending_throttled_target = Some(target);
@@ -177,6 +223,7 @@ impl TimelineUiState {
 
         dispatch.last_decode_dispatch_at = Some(now);
         dispatch.last_dispatched_target = Some(exact_release_target);
+        dispatch.awaiting_landing_for_target = None;
         Some(exact_release_target)
     }
 
@@ -188,6 +235,13 @@ impl TimelineUiState {
             .unwrap_or(timeline.current_position)
     }
 }
+
+/// Верхняя граница ожидания landing frame перед force-dispatch newest target.
+///
+/// Completion-gate держит только newest target, пока worker не покажет landing
+/// предыдущего; этот budget гарантирует прогресс на очень медленном long-GOP
+/// decode (или при потерянном landing-сигнале), сохраняя bounded latency.
+const LIVE_SCRUB_LANDING_FALLBACK_BUDGET: Duration = Duration::from_millis(250);
 
 /// Переводит max Hz в минимальный период между decode attempts.
 fn live_scrub_min_dispatch_period(max_hz: u16) -> Duration {
@@ -664,10 +718,11 @@ mod tests {
     use media_core::{MediaDuration, MediaTime, TimelineRange, TimelineSnapshot};
 
     use super::{
-        DeferredLiveScrubSettingsChange, TimelineAction, TimelineBounds,
-        TimelineLiveScrubDecodeMode, TimelineLiveScrubSettingsSnapshot, TimelinePointerInput,
-        TimelineStyle, TimelineUiState, format_seconds, live_scrub_min_dispatch_period,
-        pointer_fraction, thumb_outline_radius, timeline_track_outline_rect, timeline_track_rect,
+        DeferredLiveScrubSettingsChange, LIVE_SCRUB_LANDING_FALLBACK_BUDGET, TimelineAction,
+        TimelineBounds, TimelineLiveScrubDecodeMode, TimelineLiveScrubSettingsSnapshot,
+        TimelinePointerInput, TimelineStyle, TimelineUiState, format_seconds,
+        live_scrub_min_dispatch_period, pointer_fraction, thumb_outline_radius,
+        timeline_track_outline_rect, timeline_track_rect,
     };
 
     /// Создаёт seekable VOD timeline для mapper tests.
@@ -1002,6 +1057,9 @@ mod tests {
             started_at,
             MediaTime::from_secs(10),
         );
+        // Открываем completion-gate landing-сигналом, чтобы изолированно проверить
+        // именно max_hz throttle (gate проверяется отдельными тестами ниже).
+        state.note_live_scrub_landing_presented(MediaTime::from_secs(10));
 
         let too_soon = started_at + live_scrub_min_dispatch_period(60) / 2;
         assert_eq!(
@@ -1106,6 +1164,82 @@ mod tests {
                 .expect("active live scrub diagnostics")
                 .throttled_latest_skip_count,
             0
+        );
+    }
+
+    /// Completion-gate держит decode до landing, потом отправляет коалесцированный newest.
+    #[test]
+    fn live_scrub_completion_gate_holds_decode_until_landing_then_dispatches_newest() {
+        let mut state = TimelineUiState::default();
+        let started_at = Instant::now();
+        state.begin_live_scrub_dispatch(
+            TimelineLiveScrubSettingsSnapshot {
+                decode_mode: TimelineLiveScrubDecodeMode::ThrottledLatest,
+                max_hz: 60,
+            },
+            started_at,
+            MediaTime::from_secs(10),
+        );
+
+        // max_hz уже удовлетворён, но landing исходного target ещё не подтверждён:
+        // intermediate targets коалесцируются в newest, in-flight decode НЕ
+        // суперседится (иначе быстрый drag голодал бы по landing-кадрам).
+        let after_period = started_at + live_scrub_min_dispatch_period(60);
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(after_period, MediaTime::from_secs(20)),
+            None
+        );
+        let after_more = after_period + Duration::from_millis(1);
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(after_more, MediaTime::from_secs(30)),
+            None
+        );
+        assert_eq!(
+            state
+                .live_scrub_diagnostics()
+                .expect("active live scrub diagnostics")
+                .throttled_latest_skip_count,
+            2
+        );
+
+        // Worker показал landing исходного target → gate открывается и уходит
+        // коалесцированный newest target (frame-by-frame перемотка).
+        state.note_live_scrub_landing_presented(MediaTime::from_secs(10));
+        let after_landing = after_more + live_scrub_min_dispatch_period(60);
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(after_landing, MediaTime::from_secs(30)),
+            Some(MediaTime::from_secs(30))
+        );
+    }
+
+    /// Fallback budget форсирует dispatch даже без landing, сохраняя bounded latency.
+    #[test]
+    fn live_scrub_completion_gate_budget_fallback_forces_dispatch_without_landing() {
+        let mut state = TimelineUiState::default();
+        let started_at = Instant::now();
+        state.begin_live_scrub_dispatch(
+            TimelineLiveScrubSettingsSnapshot {
+                decode_mode: TimelineLiveScrubDecodeMode::ThrottledLatest,
+                max_hz: 60,
+            },
+            started_at,
+            MediaTime::from_secs(10),
+        );
+
+        // landing не пришёл; в пределах budget intermediate target держится.
+        let within_budget = started_at + live_scrub_min_dispatch_period(60);
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(within_budget, MediaTime::from_secs(50)),
+            None
+        );
+
+        // По истечении fallback budget gate форсирует newest target даже без landing,
+        // чтобы очень медленный long-GOP decode всё равно прогрессировал.
+        let after_budget =
+            started_at + LIVE_SCRUB_LANDING_FALLBACK_BUDGET + Duration::from_millis(1);
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(after_budget, MediaTime::from_secs(50)),
+            Some(MediaTime::from_secs(50))
         );
     }
 

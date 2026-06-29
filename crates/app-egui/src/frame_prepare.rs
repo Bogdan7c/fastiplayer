@@ -617,7 +617,6 @@ fn record_player_tick_result(telemetry: &Telemetry, tick_result: &PlayerTickResu
     }
 }
 
-/// Переносит worker event stream в shell telemetry и app-level lifecycle boundaries.
 fn record_worker_events(
     telemetry: &Telemetry,
     app_state: &mut AppState,
@@ -644,6 +643,10 @@ fn record_worker_events(
                     }
                     PlayerEvent::VideoBackendSelectionRequested(request) => {
                         app_state.note_video_backend_reselection_request(request);
+                    }
+                    PlayerEvent::SeekTargetFramePresented(presentation) => {
+                        app_state
+                            .note_live_scrub_landing_for_dispatch(presentation.target_position);
                     }
                     _ => {}
                 }
