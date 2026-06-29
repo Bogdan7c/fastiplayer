@@ -62,7 +62,8 @@ pub use event::{
     SeekAudioResumeInfo, SeekCommitInfo, SeekTargetFramePresentation, VideoBackendSelectionRequest,
 };
 pub use frame_server_core::{
-    BackendRevision, MatchedPlaybackEvent, PlaybackGeneration, PreviewFrameReadyEvent,
+    BackendRevision, DeferredLiveScrubSettingsChange, LiveScrubDiagnostics,
+    LiveScrubSettingsSnapshot, MatchedPlaybackEvent, PlaybackGeneration, PreviewFrameReadyEvent,
     ResumePendingEvent, ScrubCommittedEvent, ScrubDriverOutcomeKind, ScrubEvent,
     ScrubEventDiagnostics, ScrubEventFrameIdentity, ScrubExactnessPolicy, ScrubFrameTiming,
     ScrubGeneration, ScrubGenerationToken, ScrubNoVideoFrameReason, ScrubPreviewFrame,

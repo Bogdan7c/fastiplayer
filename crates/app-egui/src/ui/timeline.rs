@@ -3,6 +3,10 @@
 use std::time::Duration;
 
 use egui::{Color32, Pos2, Rect, Response, Sense, StrokeKind, Ui, Vec2};
+pub use frame_server_core::{
+    DeferredLiveScrubSettingsChange, LiveScrubDecodeMode as TimelineLiveScrubDecodeMode,
+    LiveScrubDiagnostics, LiveScrubSettingsSnapshot as TimelineLiveScrubSettingsSnapshot,
+};
 use media_core::{MediaDuration, MediaTime, TimelineRange, TimelineSnapshot};
 
 use crate::ui::skin::{PlayerSkin, TimelineStyle};
@@ -20,31 +24,14 @@ pub struct TimelineUiState {
     live_scrub_dispatch: Option<TimelineLiveScrubDispatchState>,
 }
 
-/// Snapshot настроек live scrub, захваченный на pointer-down.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TimelineLiveScrubSettingsSnapshot {
-    /// Policy, которая решает, какие drag targets попадут в decoder work.
-    pub decode_mode: TimelineLiveScrubDecodeMode,
-
-    /// Rate limit для `ThrottledLatest`.
-    pub max_hz: u16,
-}
-
-/// Decode launch policy для live timeline scrub-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimelineLiveScrubDecodeMode {
-    /// Decode work не чаще snapshot `max_hz`, skipped targets схлопываются в newest.
-    ThrottledLatest,
-
-    /// Каждый drag event допускается к decode attempt без rate throttle.
-    EveryDragEvent,
-}
-
 /// UI-owned dispatch state одного live scrub gesture-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TimelineLiveScrubDispatchState {
-    /// Snapshot настроек, который не меняется до release/cancel.
-    settings: TimelineLiveScrubSettingsSnapshot,
+    /// Bounded diagnostics текущего drag-а, включая pointer-down settings snapshot.
+    diagnostics: LiveScrubDiagnostics,
+
+    /// Последний committed settings snapshot, замеченный во время active drag-а.
+    last_observed_settings: TimelineLiveScrubSettingsSnapshot,
 
     /// Последний момент, когда app отправил target в player worker.
     last_decode_dispatch_at: Option<std::time::Instant>,
@@ -92,11 +79,39 @@ impl TimelineUiState {
         initial_target: MediaTime,
     ) {
         self.live_scrub_dispatch = Some(TimelineLiveScrubDispatchState {
-            settings,
+            diagnostics: LiveScrubDiagnostics::from_settings_snapshot(settings),
+            last_observed_settings: settings,
             last_decode_dispatch_at: Some(now),
             last_dispatched_target: Some(initial_target),
             pending_throttled_target: None,
         });
+    }
+
+    /// Возвращает текущий bounded diagnostics state active live-scrub dispatch-а.
+    #[must_use]
+    pub fn live_scrub_diagnostics(&self) -> Option<LiveScrubDiagnostics> {
+        self.live_scrub_dispatch
+            .as_ref()
+            .map(|dispatch| dispatch.diagnostics)
+    }
+
+    /// Записывает settings change как deferred до следующего pointer-down.
+    pub fn defer_live_scrub_settings_change(
+        &mut self,
+        new_snapshot: TimelineLiveScrubSettingsSnapshot,
+    ) -> Option<LiveScrubDiagnostics> {
+        let dispatch = self.live_scrub_dispatch.as_mut()?;
+        if dispatch.last_observed_settings == new_snapshot {
+            return Some(dispatch.diagnostics);
+        }
+
+        let change = DeferredLiveScrubSettingsChange {
+            old_snapshot: dispatch.last_observed_settings,
+            new_snapshot,
+        };
+        dispatch.last_observed_settings = new_snapshot;
+        dispatch.diagnostics.record_deferred_settings_change(change);
+        Some(dispatch.diagnostics)
     }
 
     /// Возвращает target, который можно отправить в decoder work для этого drag frame-а.
@@ -109,7 +124,7 @@ impl TimelineUiState {
             return Some(target);
         };
 
-        match dispatch.settings.decode_mode {
+        match dispatch.diagnostics.settings_snapshot.decode_mode {
             TimelineLiveScrubDecodeMode::EveryDragEvent => {
                 dispatch.last_decode_dispatch_at = Some(now);
                 dispatch.last_dispatched_target = Some(target);
@@ -117,7 +132,8 @@ impl TimelineUiState {
                 Some(target)
             }
             TimelineLiveScrubDecodeMode::ThrottledLatest => {
-                let min_period = live_scrub_min_dispatch_period(dispatch.settings.max_hz);
+                let min_period =
+                    live_scrub_min_dispatch_period(dispatch.diagnostics.settings_snapshot.max_hz);
                 let can_dispatch = dispatch
                     .last_decode_dispatch_at
                     .is_none_or(|last_dispatch| {
@@ -131,6 +147,7 @@ impl TimelineUiState {
                     Some(newest_target)
                 } else {
                     dispatch.pending_throttled_target = Some(target);
+                    dispatch.diagnostics.record_throttled_latest_skip();
                     None
                 }
             }
@@ -647,10 +664,10 @@ mod tests {
     use media_core::{MediaDuration, MediaTime, TimelineRange, TimelineSnapshot};
 
     use super::{
-        TimelineAction, TimelineBounds, TimelineLiveScrubDecodeMode,
-        TimelineLiveScrubSettingsSnapshot, TimelinePointerInput, TimelineStyle, TimelineUiState,
-        format_seconds, live_scrub_min_dispatch_period, pointer_fraction, thumb_outline_radius,
-        timeline_track_outline_rect, timeline_track_rect,
+        DeferredLiveScrubSettingsChange, TimelineAction, TimelineBounds,
+        TimelineLiveScrubDecodeMode, TimelineLiveScrubSettingsSnapshot, TimelinePointerInput,
+        TimelineStyle, TimelineUiState, format_seconds, live_scrub_min_dispatch_period,
+        pointer_fraction, thumb_outline_radius, timeline_track_outline_rect, timeline_track_rect,
     };
 
     /// Создаёт seekable VOD timeline для mapper tests.
@@ -991,6 +1008,13 @@ mod tests {
             state.live_scrub_preview_dispatch_target(too_soon, MediaTime::from_secs(20)),
             None
         );
+        assert_eq!(
+            state
+                .live_scrub_diagnostics()
+                .expect("active live scrub diagnostics")
+                .throttled_latest_skip_count,
+            1
+        );
 
         let on_time = started_at + live_scrub_min_dispatch_period(60);
         assert_eq!(
@@ -1004,6 +1028,84 @@ mod tests {
                 MediaTime::from_secs(30),
             ),
             Some(MediaTime::from_secs(30))
+        );
+    }
+
+    /// Mid-drag settings changes are diagnostics-only and apply to the next gesture.
+    #[test]
+    fn live_scrub_deferred_settings_change_keeps_pointer_down_policy_and_latest_only_record() {
+        let mut state = TimelineUiState::default();
+        let started_at = Instant::now();
+        let pointer_down_snapshot = TimelineLiveScrubSettingsSnapshot {
+            decode_mode: TimelineLiveScrubDecodeMode::ThrottledLatest,
+            max_hz: 60,
+        };
+        let changed_snapshot = TimelineLiveScrubSettingsSnapshot {
+            decode_mode: TimelineLiveScrubDecodeMode::EveryDragEvent,
+            max_hz: 120,
+        };
+        let latest_changed_snapshot = TimelineLiveScrubSettingsSnapshot {
+            decode_mode: TimelineLiveScrubDecodeMode::ThrottledLatest,
+            max_hz: 30,
+        };
+
+        state.begin_live_scrub_dispatch(
+            pointer_down_snapshot,
+            started_at,
+            MediaTime::from_secs(10),
+        );
+        state.defer_live_scrub_settings_change(changed_snapshot);
+        state.defer_live_scrub_settings_change(latest_changed_snapshot);
+
+        let too_soon = started_at + live_scrub_min_dispatch_period(60) / 2;
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(too_soon, MediaTime::from_secs(20)),
+            None
+        );
+
+        let diagnostics = state
+            .live_scrub_diagnostics()
+            .expect("active live scrub diagnostics");
+        assert_eq!(diagnostics.settings_snapshot, pointer_down_snapshot);
+        assert_eq!(diagnostics.deferred_live_scrub_settings_change_count, 2);
+        assert_eq!(
+            diagnostics.latest_deferred_live_scrub_settings_change,
+            Some(DeferredLiveScrubSettingsChange {
+                old_snapshot: changed_snapshot,
+                new_snapshot: latest_changed_snapshot,
+            })
+        );
+        assert_eq!(diagnostics.throttled_latest_skip_count, 1);
+    }
+
+    /// Every-drag mode attempts each target and does not report throttle skips.
+    #[test]
+    fn live_scrub_every_drag_event_dispatches_each_target_without_throttle_skip() {
+        let mut state = TimelineUiState::default();
+        let started_at = Instant::now();
+        state.begin_live_scrub_dispatch(
+            TimelineLiveScrubSettingsSnapshot {
+                decode_mode: TimelineLiveScrubDecodeMode::EveryDragEvent,
+                max_hz: 1,
+            },
+            started_at,
+            MediaTime::from_secs(10),
+        );
+
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(started_at, MediaTime::from_secs(20)),
+            Some(MediaTime::from_secs(20))
+        );
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(started_at, MediaTime::from_secs(30)),
+            Some(MediaTime::from_secs(30))
+        );
+        assert_eq!(
+            state
+                .live_scrub_diagnostics()
+                .expect("active live scrub diagnostics")
+                .throttled_latest_skip_count,
+            0
         );
     }
 

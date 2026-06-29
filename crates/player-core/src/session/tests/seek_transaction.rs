@@ -1041,16 +1041,18 @@ fn paused_before_scrub_stays_paused_after_commit() {
     let mut session = PlayerSession::new();
     install_fake_media(&mut session, Vec::new());
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
     session
         .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
             MediaTime::from_secs(6),
         )))
         .unwrap();
     session
-        .dispatch_command(PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        })
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        ))
         .unwrap();
 
     session.finish_seek_commit_if_ready_for_tests(
@@ -1071,7 +1073,9 @@ fn playing_before_scrub_resumes_after_gates() {
     install_fake_media(&mut session, Vec::new());
 
     session.dispatch_command(PlayerCommand::Play).unwrap();
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
     session.dispatch_command(PlayerCommand::Pause).unwrap();
     session
         .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
@@ -1079,9 +1083,9 @@ fn playing_before_scrub_resumes_after_gates() {
         )))
         .unwrap();
     session
-        .dispatch_command(PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        })
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        ))
         .unwrap();
     session.dispatch_command(PlayerCommand::Play).unwrap();
 
@@ -1103,7 +1107,9 @@ fn direct_scrub_pause_command_sets_pause_resume_intent() {
     install_fake_media(&mut session, Vec::new());
 
     session.dispatch_command(PlayerCommand::Play).unwrap();
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
     session.dispatch_command(PlayerCommand::Pause).unwrap();
     session
         .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
@@ -1111,9 +1117,9 @@ fn direct_scrub_pause_command_sets_pause_resume_intent() {
         )))
         .unwrap();
     session
-        .dispatch_command(PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        })
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        ))
         .unwrap();
 
     assert_eq!(

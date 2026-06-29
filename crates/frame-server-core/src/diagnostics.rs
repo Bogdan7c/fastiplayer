@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::config::LiveScrubDecodeMode;
 use crate::request::{ScrubRequestKind, ScrubStaleReason, ScrubTargetContext};
 use crate::scheduler::SchedulerDiagnostic;
 use crate::scrub::{
@@ -78,12 +79,80 @@ pub enum ScrubDriverDiagnosticReason {
     StaleGeneration(ScrubStaleReason),
 }
 
+/// Snapshot live-scrub settings, захваченный owner-ом gesture-а на pointer-down.
+///
+/// Тип нейтрален к UI: он описывает только decode policy, которую player должен
+/// видеть в diagnostics для конкретного drag, но не управляет реальным lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LiveScrubSettingsSnapshot {
+    /// Policy запуска decode work для этого drag gesture-а.
+    pub decode_mode: LiveScrubDecodeMode,
+
+    /// Валидированный верхний лимит decode attempts для `ThrottledLatest`.
+    pub max_hz: u16,
+}
+
+/// Последнее изменение live-scrub settings, отложенное до следующего drag-а.
+///
+/// Здесь нет timestamp/drag id/target: это bounded diagnostics, а не event history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DeferredLiveScrubSettingsChange {
+    /// Snapshot, от которого пользовательские настройки ушли во время active drag.
+    pub old_snapshot: LiveScrubSettingsSnapshot,
+
+    /// Новый committed snapshot, который будет использован только следующим drag-ом.
+    pub new_snapshot: LiveScrubSettingsSnapshot,
+}
+
+/// Bounded diagnostics одного live-scrub gesture-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LiveScrubDiagnostics {
+    /// Snapshot, реально управляющий текущим gesture-ом до release/cancel.
+    pub settings_snapshot: LiveScrubSettingsSnapshot,
+
+    /// Сколько distinct settings changes было отложено для текущего gesture-а.
+    pub deferred_live_scrub_settings_change_count: u64,
+
+    /// Только последнее отложенное изменение; history/ring buffer намеренно нет.
+    pub latest_deferred_live_scrub_settings_change: Option<DeferredLiveScrubSettingsChange>,
+
+    /// Сколько intermediate targets UI-side `ThrottledLatest` не отправил в decoder work.
+    pub throttled_latest_skip_count: u64,
+}
+
+impl LiveScrubDiagnostics {
+    /// Создаёт diagnostics для нового live-scrub gesture-а без deferred changes.
+    #[must_use]
+    pub const fn from_settings_snapshot(settings_snapshot: LiveScrubSettingsSnapshot) -> Self {
+        Self {
+            settings_snapshot,
+            deferred_live_scrub_settings_change_count: 0,
+            latest_deferred_live_scrub_settings_change: None,
+            throttled_latest_skip_count: 0,
+        }
+    }
+
+    /// Запоминает latest-only deferred settings change без накопления истории.
+    pub fn record_deferred_settings_change(&mut self, change: DeferredLiveScrubSettingsChange) {
+        self.deferred_live_scrub_settings_change_count = self
+            .deferred_live_scrub_settings_change_count
+            .saturating_add(1);
+        self.latest_deferred_live_scrub_settings_change = Some(change);
+    }
+
+    /// Записывает UI-side throttle skip отдельно от decoder/resource pressure.
+    pub fn record_throttled_latest_skip(&mut self) {
+        self.throttled_latest_skip_count = self.throttled_latest_skip_count.saturating_add(1);
+    }
+}
+
 /// Diagnostics, которые связывают public event с исходным driver outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScrubEventDiagnostics {
     pub driver_outcome: ScrubDriverOutcomeKind,
     pub driver_reason: Option<ScrubDriverDiagnosticReason>,
     pub stale_reason: Option<ScrubStaleReason>,
+    pub live_scrub: Option<LiveScrubDiagnostics>,
 }
 
 impl ScrubEventDiagnostics {
@@ -93,6 +162,7 @@ impl ScrubEventDiagnostics {
             driver_outcome,
             driver_reason: None,
             stale_reason: None,
+            live_scrub: None,
         }
     }
 
@@ -105,6 +175,7 @@ impl ScrubEventDiagnostics {
             driver_outcome,
             driver_reason: Some(driver_reason),
             stale_reason: None,
+            live_scrub: None,
         }
     }
 
@@ -117,7 +188,15 @@ impl ScrubEventDiagnostics {
             driver_outcome,
             driver_reason: Some(ScrubDriverDiagnosticReason::StaleGeneration(stale_reason)),
             stale_reason: Some(stale_reason),
+            live_scrub: None,
         }
+    }
+
+    /// Прикрепляет bounded live-scrub diagnostics, не меняя public event phase.
+    #[must_use]
+    pub const fn with_live_scrub(mut self, live_scrub: LiveScrubDiagnostics) -> Self {
+        self.live_scrub = Some(live_scrub);
+        self
     }
 }
 
@@ -146,6 +225,7 @@ pub struct ScrubDiagnosticsSnapshot {
     pub packets_from_decode_point_to_target: CountSummary,
     pub pre_target_frame_drops: CountSummary,
     pub working_set: ScrubWorkingSetDiagnosticsCounters,
+    pub latest_live_scrub: Option<LiveScrubDiagnostics>,
 }
 
 /// Mutable accumulator для scrub diagnostics.
@@ -253,6 +333,9 @@ impl ScrubDiagnosticsRecorder {
     /// Записывает diagnostics из normalized event, если caller уже потерял outcome payload.
     pub fn record_event_diagnostics(&mut self, diagnostics: ScrubEventDiagnostics) {
         self.snapshot.outcomes.increment(diagnostics.driver_outcome);
+        if let Some(live_scrub) = diagnostics.live_scrub {
+            self.snapshot.latest_live_scrub = Some(live_scrub);
+        }
         if let Some(reason) = diagnostics.driver_reason {
             self.record_driver_reason(reason);
         } else if let Some(stale_reason) = diagnostics.stale_reason {
@@ -328,6 +411,7 @@ impl ScrubDiagnosticsSnapshot {
             packets_from_decode_point_to_target: CountSummary::new(),
             pre_target_frame_drops: CountSummary::new(),
             working_set: ScrubWorkingSetDiagnosticsCounters::new(),
+            latest_live_scrub: None,
         }
     }
 }

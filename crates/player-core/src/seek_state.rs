@@ -1,7 +1,8 @@
 use std::time::{Duration, Instant};
 
 use frame_server_core::{
-    PlaybackGeneration, ScrubGeneration, ScrubGenerationToken, ScrubRequestKind, ScrubStaleReason,
+    LiveScrubDiagnostics, PlaybackGeneration, ScrubGeneration, ScrubGenerationToken,
+    ScrubRequestKind, ScrubStaleReason,
 };
 use media_core::{DemuxSeekRequest, MediaTime, TrackKind};
 
@@ -118,15 +119,19 @@ pub(crate) enum SeekLandingRoute {
     LiveScrub {
         /// `EndScrub` уже запросил final commit этого target-а.
         commit_requested: bool,
+
+        /// Bounded diagnostics текущего drag-а; не влияет на lifecycle.
+        diagnostics: Option<LiveScrubDiagnostics>,
     },
 }
 
 impl SeekLandingRoute {
     /// Создаёт live route до release: preview можно декодить, commit ещё нельзя.
     #[must_use]
-    pub(crate) const fn live_scrub_preview() -> Self {
+    pub(crate) const fn live_scrub_preview(diagnostics: Option<LiveScrubDiagnostics>) -> Self {
         Self::LiveScrub {
             commit_requested: false,
+            diagnostics,
         }
     }
 
@@ -135,7 +140,9 @@ impl SeekLandingRoute {
     pub(crate) const fn commit_allowed(self) -> bool {
         match self {
             Self::OneShot => true,
-            Self::LiveScrub { commit_requested } => commit_requested,
+            Self::LiveScrub {
+                commit_requested, ..
+            } => commit_requested,
         }
     }
 
@@ -143,6 +150,15 @@ impl SeekLandingRoute {
     #[must_use]
     pub(crate) const fn is_live_scrub(self) -> bool {
         matches!(self, Self::LiveScrub { .. })
+    }
+
+    /// Возвращает live-scrub diagnostics, если route принадлежит active drag-а.
+    #[must_use]
+    pub(crate) const fn live_scrub_diagnostics(self) -> Option<LiveScrubDiagnostics> {
+        match self {
+            Self::OneShot => None,
+            Self::LiveScrub { diagnostics, .. } => diagnostics,
+        }
     }
 
     /// Возвращает neutral request kind для scrub events/diagnostics.
@@ -304,6 +320,9 @@ pub(crate) struct SimpleScrubState {
 
     /// Последнее подтверждённое playback state до входа в public `Scrubbing`.
     confirmed_playback_state: Option<PlaybackState>,
+
+    /// Diagnostics live drag-а, если этот simple scrub запущен real live route-ом.
+    live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
 }
 
 /// Закрытый lightweight scrub вместе с state, к которому надо вернуться до command route-а.
@@ -314,6 +333,9 @@ pub(crate) struct FinishedSimpleScrub {
 
     /// Playback state до scrub; от него считаются cancel-first команды и seek resume intent.
     confirmed_playback_state: PlaybackState,
+
+    /// Последний bounded live-scrub diagnostics state на момент release/cancel.
+    live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
 }
 
 impl FinishedSimpleScrub {
@@ -328,16 +350,27 @@ impl FinishedSimpleScrub {
     pub(crate) const fn confirmed_playback_state(self) -> PlaybackState {
         self.confirmed_playback_state
     }
+
+    /// Возвращает live-scrub diagnostics, накопленные до release/cancel.
+    #[must_use]
+    pub(crate) const fn live_scrub_diagnostics(self) -> Option<LiveScrubDiagnostics> {
+        self.live_scrub_diagnostics
+    }
 }
 
 impl SimpleScrubState {
     /// Начинает scrub gesture и сбрасывает старую release-цель.
-    pub(crate) fn begin(&mut self, confirmed_playback_state: PlaybackState) {
+    pub(crate) fn begin(
+        &mut self,
+        confirmed_playback_state: PlaybackState,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
+    ) {
         if !self.active {
             self.confirmed_playback_state = Some(confirmed_playback_state);
         }
         self.active = true;
         self.latest_request = None;
+        self.live_scrub_diagnostics = live_scrub_diagnostics;
     }
 
     /// Запоминает latest target по latest-wins policy без запуска demux seek-а.
@@ -345,12 +378,16 @@ impl SimpleScrubState {
         &mut self,
         request: SeekRequest,
         confirmed_playback_state: PlaybackState,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
     ) {
         if !self.active {
             self.confirmed_playback_state = Some(confirmed_playback_state);
         }
         self.active = true;
         self.latest_request = Some(request);
+        if let Some(live_scrub_diagnostics) = live_scrub_diagnostics {
+            self.live_scrub_diagnostics = Some(live_scrub_diagnostics);
+        }
     }
 
     /// Закрывает scrub state и возвращает release target, если gesture был активен.
@@ -365,6 +402,7 @@ impl SimpleScrubState {
             confirmed_playback_state: self
                 .confirmed_playback_state
                 .unwrap_or(PlaybackState::Paused),
+            live_scrub_diagnostics: self.live_scrub_diagnostics,
         };
         self.clear();
         Some(finished_scrub)
@@ -375,6 +413,7 @@ impl SimpleScrubState {
         self.active = false;
         self.latest_request = None;
         self.confirmed_playback_state = None;
+        self.live_scrub_diagnostics = None;
     }
 
     /// Проверяет, открыт ли scrub gesture.
@@ -387,6 +426,12 @@ impl SimpleScrubState {
     #[must_use]
     pub(crate) const fn confirmed_playback_state(&self) -> Option<PlaybackState> {
         self.confirmed_playback_state
+    }
+
+    /// Возвращает live-scrub diagnostics текущего gesture-а без изменения lifecycle.
+    #[must_use]
+    pub(crate) const fn live_scrub_diagnostics(&self) -> Option<LiveScrubDiagnostics> {
+        self.live_scrub_diagnostics
     }
 
     /// Возвращает сохранённый latest request для diagnostics/tests.
@@ -976,8 +1021,13 @@ impl SeekRuntimeState {
     }
 
     /// Начинает lightweight scrub gesture.
-    pub(crate) fn begin_simple_scrub(&mut self, confirmed_playback_state: PlaybackState) {
-        self.simple_scrub.begin(confirmed_playback_state);
+    pub(crate) fn begin_simple_scrub(
+        &mut self,
+        confirmed_playback_state: PlaybackState,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
+    ) {
+        self.simple_scrub
+            .begin(confirmed_playback_state, live_scrub_diagnostics);
     }
 
     /// Запоминает latest scrub request по latest-wins policy.
@@ -985,15 +1035,22 @@ impl SeekRuntimeState {
         &mut self,
         request: SeekRequest,
         confirmed_playback_state: PlaybackState,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
     ) {
         self.simple_scrub
-            .store_request(request, confirmed_playback_state);
+            .store_request(request, confirmed_playback_state, live_scrub_diagnostics);
     }
 
     /// Возвращает playback state, подтверждённый до входа в active scrub gesture.
     #[must_use]
     pub(crate) const fn simple_scrub_confirmed_playback_state(&self) -> Option<PlaybackState> {
         self.simple_scrub.confirmed_playback_state()
+    }
+
+    /// Возвращает diagnostics active simple scrub-а, если он пришёл из live drag-а.
+    #[must_use]
+    pub(crate) const fn simple_scrub_live_diagnostics(&self) -> Option<LiveScrubDiagnostics> {
+        self.simple_scrub.live_scrub_diagnostics()
     }
 
     /// Закрывает active scrub gesture и возвращает state для final/cancel route-а.
@@ -1135,6 +1192,41 @@ impl SeekRuntimeState {
         }
     }
 
+    /// Возвращает diagnostics active live route-а без раскрытия layout-а route enum.
+    #[must_use]
+    pub(crate) const fn active_seek_landing_live_diagnostics(
+        &self,
+    ) -> Option<LiveScrubDiagnostics> {
+        match self.active_seek_landing {
+            Some(active) => active.route().live_scrub_diagnostics(),
+            None => None,
+        }
+    }
+
+    /// Обновляет diagnostics active live route-а, если command принёс более свежий state.
+    pub(crate) fn update_active_live_scrub_diagnostics(
+        &mut self,
+        diagnostics: Option<LiveScrubDiagnostics>,
+    ) {
+        let Some(diagnostics) = diagnostics else {
+            return;
+        };
+        let Some(active) = self.active_seek_landing.as_mut() else {
+            return;
+        };
+        let SeekLandingRoute::LiveScrub {
+            commit_requested,
+            diagnostics: _,
+        } = active.route
+        else {
+            return;
+        };
+        active.route = SeekLandingRoute::LiveScrub {
+            commit_requested,
+            diagnostics: Some(diagnostics),
+        };
+    }
+
     /// Возвращает `true`, если active commit можно закрывать прямо сейчас.
     #[must_use]
     pub(crate) const fn active_seek_landing_commit_allowed(&self) -> bool {
@@ -1155,6 +1247,7 @@ impl SeekRuntimeState {
 
         active.route = SeekLandingRoute::LiveScrub {
             commit_requested: true,
+            diagnostics: active.route.live_scrub_diagnostics(),
         };
         if let Some(commit) = self.commit.as_mut() {
             commit.started_at = release_started_at;

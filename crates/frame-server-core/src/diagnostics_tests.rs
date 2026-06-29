@@ -39,6 +39,16 @@ fn stale_generation_reason_for_tests() -> ScrubStaleReason {
     }
 }
 
+fn live_scrub_settings_for_tests(
+    decode_mode: LiveScrubDecodeMode,
+    max_hz: u16,
+) -> LiveScrubSettingsSnapshot {
+    LiveScrubSettingsSnapshot {
+        decode_mode,
+        max_hz,
+    }
+}
+
 fn working_set_key_for_tests() -> TimelineHoverPrepareFrameKey {
     let video_track = TrackId::new(7);
     TimelineHoverPrepareFrameKey::new(
@@ -248,6 +258,56 @@ fn typed_driver_pressure_and_failure_counts_do_not_collapse() {
             .backend_resource_pressure,
         1
     );
+}
+
+#[test]
+fn live_scrub_event_diagnostics_keep_snapshot_deferred_change_and_throttle_skip() {
+    let mut diagnostics = ScrubDiagnosticsRecorder::new();
+    let pointer_down = live_scrub_settings_for_tests(LiveScrubDecodeMode::ThrottledLatest, 60);
+    let changed_once = live_scrub_settings_for_tests(LiveScrubDecodeMode::EveryDragEvent, 60);
+    let changed_latest = live_scrub_settings_for_tests(LiveScrubDecodeMode::EveryDragEvent, 120);
+    let mut live_scrub = LiveScrubDiagnostics::from_settings_snapshot(pointer_down);
+
+    live_scrub.record_throttled_latest_skip();
+    live_scrub.record_deferred_settings_change(DeferredLiveScrubSettingsChange {
+        old_snapshot: pointer_down,
+        new_snapshot: changed_once,
+    });
+    live_scrub.record_deferred_settings_change(DeferredLiveScrubSettingsChange {
+        old_snapshot: changed_once,
+        new_snapshot: changed_latest,
+    });
+
+    diagnostics.record_event_diagnostics(
+        ScrubEventDiagnostics::with_driver_reason(
+            ScrubDriverOutcomeKind::DecoderBackpressure,
+            ScrubDriverDiagnosticReason::DecoderBackpressure(
+                DecoderBackpressureReason::PacketQueueFull,
+            ),
+        )
+        .with_live_scrub(live_scrub),
+    );
+
+    let snapshot = diagnostics.snapshot();
+    let latest_live_scrub = snapshot
+        .latest_live_scrub
+        .expect("live scrub diagnostics must be retained without an event history");
+
+    assert_eq!(latest_live_scrub.settings_snapshot, pointer_down);
+    assert_eq!(latest_live_scrub.throttled_latest_skip_count, 1);
+    assert_eq!(
+        latest_live_scrub.deferred_live_scrub_settings_change_count,
+        2
+    );
+    assert_eq!(
+        latest_live_scrub.latest_deferred_live_scrub_settings_change,
+        Some(DeferredLiveScrubSettingsChange {
+            old_snapshot: changed_once,
+            new_snapshot: changed_latest,
+        })
+    );
+    assert_eq!(snapshot.scheduler.live_scrub_throttled, 0);
+    assert_eq!(snapshot.resource_pressure.decoder_backpressure, 1);
 }
 
 #[test]

@@ -229,9 +229,9 @@ mod tests {
             assert!(
                 player_commands.iter().all(|player_command| !matches!(
                     player_command,
-                    PlayerCommand::BeginScrub
+                    PlayerCommand::BeginScrub { .. }
                         | PlayerCommand::UpdateScrub(_)
-                        | PlayerCommand::PreviewScrub(_)
+                        | PlayerCommand::PreviewScrub { .. }
                         | PlayerCommand::EndScrub { .. }
                 )),
                 "MPRIS mapping must not emit scrub commands: {player_commands:?}"

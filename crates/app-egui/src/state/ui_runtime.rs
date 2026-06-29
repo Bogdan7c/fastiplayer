@@ -318,12 +318,21 @@ impl AppState {
                 self.send_timeline_player_command(
                     action,
                     TimelineCommandRoute::LiveScrubBegin,
-                    PlayerCommand::BeginScrub,
+                    PlayerCommand::begin_live_scrub(
+                        self.timeline_ui_state
+                            .live_scrub_diagnostics()
+                            .expect("begin_live_scrub_dispatch just initialized diagnostics"),
+                    ),
                 );
                 self.send_timeline_player_command(
                     action,
                     TimelineCommandRoute::LiveScrubPreview,
-                    PlayerCommand::PreviewScrub(SeekRequest::absolute(position)),
+                    PlayerCommand::preview_live_scrub(
+                        SeekRequest::absolute(position),
+                        self.timeline_ui_state
+                            .live_scrub_diagnostics()
+                            .expect("begin_live_scrub_dispatch just initialized diagnostics"),
+                    ),
                 );
             }
             TimelineAction::PreviewLiveScrub(position) => {
@@ -336,7 +345,13 @@ impl AppState {
                 self.send_timeline_player_command(
                     action,
                     TimelineCommandRoute::LiveScrubPreview,
-                    PlayerCommand::PreviewScrub(SeekRequest::absolute(target)),
+                    match self.timeline_ui_state.live_scrub_diagnostics() {
+                        Some(live_scrub) => PlayerCommand::preview_live_scrub(
+                            SeekRequest::absolute(target),
+                            live_scrub,
+                        ),
+                        None => PlayerCommand::preview_scrub(SeekRequest::absolute(target)),
+                    },
                 );
             }
             TimelineAction::EndLiveScrub(position) => {
@@ -347,14 +362,24 @@ impl AppState {
                     self.send_timeline_player_command(
                         action,
                         TimelineCommandRoute::LiveScrubPreview,
-                        PlayerCommand::PreviewScrub(SeekRequest::absolute(target)),
+                        match self.timeline_ui_state.live_scrub_diagnostics() {
+                            Some(live_scrub) => PlayerCommand::preview_live_scrub(
+                                SeekRequest::absolute(target),
+                                live_scrub,
+                            ),
+                            None => PlayerCommand::preview_scrub(SeekRequest::absolute(target)),
+                        },
                     );
                 }
                 self.send_timeline_player_command(
                     action,
                     TimelineCommandRoute::LiveScrubEnd,
-                    PlayerCommand::EndScrub {
-                        policy: ScrubCommitPolicy::CommitVisiblePreview,
+                    match self.timeline_ui_state.live_scrub_diagnostics() {
+                        Some(live_scrub) => PlayerCommand::end_live_scrub(
+                            ScrubCommitPolicy::CommitVisiblePreview,
+                            live_scrub,
+                        ),
+                        None => PlayerCommand::end_scrub(ScrubCommitPolicy::CommitVisiblePreview),
                     },
                 );
                 self.timeline_ui_state.clear_live_scrub_dispatch();
@@ -363,8 +388,12 @@ impl AppState {
                 self.send_timeline_player_command(
                     action,
                     TimelineCommandRoute::LiveScrubEnd,
-                    PlayerCommand::EndScrub {
-                        policy: ScrubCommitPolicy::CommitLatestTarget,
+                    match self.timeline_ui_state.live_scrub_diagnostics() {
+                        Some(live_scrub) => PlayerCommand::end_live_scrub(
+                            ScrubCommitPolicy::CommitLatestTarget,
+                            live_scrub,
+                        ),
+                        None => PlayerCommand::end_scrub(ScrubCommitPolicy::CommitLatestTarget),
                     },
                 );
                 self.timeline_ui_state.clear_live_scrub_dispatch();
@@ -396,7 +425,7 @@ impl AppState {
     }
 
     /// Захватывает S19 live scrub settings snapshot для нового pointer gesture-а.
-    fn live_scrub_settings_snapshot(&self) -> TimelineLiveScrubSettingsSnapshot {
+    pub(super) fn live_scrub_settings_snapshot(&self) -> TimelineLiveScrubSettingsSnapshot {
         let decode_mode = match self.committed_config_snapshot.live_scrub_decode_mode() {
             FrameServerLiveScrubDecodeModeConfig::ThrottledLatest => {
                 TimelineLiveScrubDecodeMode::ThrottledLatest

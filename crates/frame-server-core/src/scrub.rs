@@ -4,7 +4,8 @@ use media_core::{MediaTime, TrackTimestamp};
 use video_present_core::{VideoPresentFrameIdentity, VideoPresentFrameResourceDescriptor};
 
 use crate::diagnostics::{
-    ScrubDriverDiagnosticReason, ScrubDriverOutcomeKind, ScrubEventDiagnostics, ScrubFailureReason,
+    LiveScrubDiagnostics, ScrubDriverDiagnosticReason, ScrubDriverOutcomeKind,
+    ScrubEventDiagnostics, ScrubFailureReason,
 };
 use crate::request::{
     CancelScrubReason, ScrubCurrentGuards, ScrubGenerationToken, ScrubStaleReason,
@@ -685,5 +686,22 @@ impl ScrubEvent {
                 diagnostics,
             }),
         }
+    }
+
+    /// Прикрепляет live-scrub diagnostics к событию, не меняя public phase/payload.
+    #[must_use]
+    pub fn with_live_scrub_diagnostics(mut self, live_scrub: LiveScrubDiagnostics) -> Self {
+        let diagnostics = match &mut self {
+            Self::Started(event) => &mut event.diagnostics,
+            Self::Progress(event) => &mut event.diagnostics,
+            Self::PreviewFrameReady(event) => &mut event.diagnostics,
+            Self::ResumePending(event) => &mut event.diagnostics,
+            Self::Committed(event) => &mut event.diagnostics,
+            Self::MatchedPlayback(event) => &mut event.diagnostics,
+            Self::Cancelled(event) => &mut event.diagnostics,
+            Self::Failed(event) => &mut event.diagnostics,
+        };
+        *diagnostics = diagnostics.with_live_scrub(live_scrub);
+        self
     }
 }

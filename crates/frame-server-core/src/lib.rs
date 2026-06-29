@@ -25,8 +25,9 @@ pub use config::{
     MAX_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS, ValidatedFrameServerConfig,
 };
 pub use diagnostics::{
-    CountSummary, DecoderBackpressureReasonCounters, DurationSummary,
-    HostUploadBackpressureReasonCounters, ResourceBusyReasonCounters, ScrubDiagnosticsRecorder,
+    CountSummary, DecoderBackpressureReasonCounters, DeferredLiveScrubSettingsChange,
+    DurationSummary, HostUploadBackpressureReasonCounters, LiveScrubDiagnostics,
+    LiveScrubSettingsSnapshot, ResourceBusyReasonCounters, ScrubDiagnosticsRecorder,
     ScrubDiagnosticsSnapshot, ScrubDriverDiagnosticReason, ScrubDriverDiagnosticReasonCounters,
     ScrubDriverOutcomeCounters, ScrubDriverOutcomeKind, ScrubEventDiagnostics, ScrubFailureReason,
     ScrubPublicPhase, ScrubRequestKindCounters, ScrubRequestLifecycleCounters,

@@ -452,12 +452,14 @@ fn regression_preview_scrub_does_not_mark_target_ready_without_seek() {
     );
     let request = SeekRequest::absolute(MediaTime::from_secs(8));
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
     session
         .dispatch_command(PlayerCommand::UpdateScrub(request))
         .unwrap();
     session
-        .dispatch_command(PlayerCommand::PreviewScrub(request))
+        .dispatch_command(PlayerCommand::preview_scrub(request))
         .unwrap();
     session
         .pipeline
@@ -486,21 +488,23 @@ fn regression_drag_release_uses_seek_landing_even_with_visible_frame() {
     );
     let request = SeekRequest::absolute(MediaTime::from_secs(8));
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
     session
         .dispatch_command(PlayerCommand::UpdateScrub(request))
         .unwrap();
     session
-        .dispatch_command(PlayerCommand::PreviewScrub(request))
+        .dispatch_command(PlayerCommand::preview_scrub(request))
         .unwrap();
     session
         .pipeline
         .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(8), 790));
 
     session
-        .dispatch_command(PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        })
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        ))
         .unwrap();
 
     let requests = seek_request_log.lock().expect("seek request log lock");

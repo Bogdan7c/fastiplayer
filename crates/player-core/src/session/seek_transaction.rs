@@ -1,9 +1,9 @@
 use std::time::{Duration, Instant};
 
 use frame_server_core::{
-    CancelScrubReason, CancelledOutcome, FinishScrubPolicy, ScrubDriverOutcome, ScrubEvent,
-    ScrubExactnessPolicy, ScrubGeneration, ScrubGenerationToken, ScrubTarget, ScrubTargetUpdate,
-    ScrubTrackSelection, ValidatedFrameServerConfig,
+    CancelScrubReason, CancelledOutcome, FinishScrubPolicy, LiveScrubDiagnostics,
+    ScrubDriverOutcome, ScrubEvent, ScrubExactnessPolicy, ScrubGeneration, ScrubGenerationToken,
+    ScrubTarget, ScrubTargetUpdate, ScrubTrackSelection, ValidatedFrameServerConfig,
 };
 use media_core::{
     MediaDemuxError, MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason,
@@ -1692,6 +1692,7 @@ impl PlayerSession {
             request.mode,
             resume_intent,
             SeekLandingRoute::OneShot,
+            None,
             self.frame_server_config,
             FinishScrubPolicy::CommitVisiblePreview,
         )
@@ -1719,6 +1720,7 @@ impl PlayerSession {
         seek_mode: SeekMode,
         resume_intent: PlaybackResumeIntent,
         route: SeekLandingRoute,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
         config: ValidatedFrameServerConfig,
         finish_policy: FinishScrubPolicy,
     ) -> PlayerResult<()> {
@@ -1803,6 +1805,7 @@ impl PlayerSession {
             target,
             route.request_kind(),
             route.commit_allowed(),
+            live_scrub_diagnostics,
         )? {
             PreparedSeekLandingStart::Started => {
                 return Ok(());
@@ -1828,7 +1831,9 @@ impl PlayerSession {
             initial_scrub_generation_before_target(target_scrub_generation)?;
         let mut driver = PlayerScrubTransactionDriver::new(config, initial_scrub_generation);
         let run = driver.submit_target_update(self, update);
-        self.pending_scrub_events.extend(run.events);
+        for event in run.events {
+            self.push_scrub_event_with_live_diagnostics(event, live_scrub_diagnostics);
+        }
 
         if self.seek_landing_decode_active() {
             return Ok(());
@@ -1891,12 +1896,15 @@ impl PlayerSession {
     }
 
     /// Начинает timeline scrub gesture на уровне public state без немедленного commit-а.
-    pub(super) fn begin_scrub(&mut self) -> PlayerResult<()> {
+    pub(super) fn begin_scrub(
+        &mut self,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
+    ) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         let confirmed_playback_state = self.playback_state_for_new_simple_scrub();
         self.enter_simple_scrub_public_state();
         self.seek_runtime
-            .begin_simple_scrub(confirmed_playback_state);
+            .begin_simple_scrub(confirmed_playback_state, live_scrub_diagnostics);
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = false;
         self.snapshot.timeline.target_position = Some(self.snapshot.timeline.current_position);
@@ -1906,12 +1914,16 @@ impl PlayerSession {
     /// Запоминает последнюю цель scrub без изменения текущей playback позиции.
     pub(super) fn update_scrub(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        self.store_simple_scrub_request(request);
+        self.store_simple_scrub_request(request, None);
         Ok(())
     }
 
     /// Сохраняет preview request и запускает live reused-decoder route для timeline drag.
-    pub(super) fn preview_scrub(&mut self, request: SeekRequest) -> PlayerResult<()> {
+    pub(super) fn preview_scrub(
+        &mut self,
+        request: SeekRequest,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
+    ) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         let target_position = self.resolve_seek_target(request);
         let confirmed_playback_state = self
@@ -1919,7 +1931,9 @@ impl PlayerSession {
             .simple_scrub_confirmed_playback_state()
             .unwrap_or_else(|| self.playback_state_for_new_simple_scrub());
         let resume_intent = PlaybackResumeIntent::from_playback_state(confirmed_playback_state);
-        self.store_simple_scrub_request(request);
+        self.store_simple_scrub_request(request, live_scrub_diagnostics);
+        let live_scrub_diagnostics =
+            live_scrub_diagnostics.or_else(|| self.seek_runtime.simple_scrub_live_diagnostics());
 
         if !self.pipeline.has_demuxer() || !self.pipeline.has_selected_video_track() {
             return Ok(());
@@ -1929,7 +1943,8 @@ impl PlayerSession {
             target_position,
             request.mode,
             resume_intent,
-            SeekLandingRoute::live_scrub_preview(),
+            SeekLandingRoute::live_scrub_preview(live_scrub_diagnostics),
+            live_scrub_diagnostics,
             self.frame_server_config,
             FinishScrubPolicy::CommitVisiblePreview,
         )?;
@@ -1937,12 +1952,19 @@ impl PlayerSession {
     }
 
     /// Запоминает latest scrub target и переводит timeline в public scrubbing state.
-    fn store_simple_scrub_request(&mut self, request: SeekRequest) {
+    fn store_simple_scrub_request(
+        &mut self,
+        request: SeekRequest,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
+    ) {
         let target_position = self.resolve_seek_target(request);
         let confirmed_playback_state = self.playback_state_for_new_simple_scrub();
         self.enter_simple_scrub_public_state();
-        self.seek_runtime
-            .store_simple_scrub_request(request, confirmed_playback_state);
+        self.seek_runtime.store_simple_scrub_request(
+            request,
+            confirmed_playback_state,
+            live_scrub_diagnostics,
+        );
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.target_position = Some(target_position);
         if !self.snapshot.timeline.seeking {
@@ -1951,8 +1973,13 @@ impl PlayerSession {
     }
 
     /// Завершает compatibility scrub и передаёт latest target в единый SeekLanding route.
-    pub(super) fn end_scrub(&mut self) -> PlayerResult<()> {
+    pub(super) fn end_scrub(
+        &mut self,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
+    ) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        self.seek_runtime
+            .update_active_live_scrub_diagnostics(live_scrub_diagnostics);
         if !self.seek_runtime.simple_scrub_active() {
             self.finish_simple_scrub_without_seek(None, SimpleScrubExitMode::RestoreStateOnly);
             return Ok(());
@@ -1964,8 +1991,12 @@ impl PlayerSession {
             .expect("simple scrub active должен вернуть finished state");
         let confirmed_playback_state = finished_scrub.confirmed_playback_state();
         let latest_request = finished_scrub.latest_request();
+        let live_scrub_diagnostics =
+            live_scrub_diagnostics.or_else(|| finished_scrub.live_scrub_diagnostics());
 
         if self.seek_runtime.active_seek_landing_is_live_scrub() {
+            self.seek_runtime
+                .update_active_live_scrub_diagnostics(live_scrub_diagnostics);
             self.seek_runtime.request_live_scrub_commit(Instant::now());
             self.snapshot.timeline.scrubbing = true;
             if let Some(request) = latest_request {
@@ -2038,6 +2069,8 @@ impl PlayerSession {
         let next_generation = ScrubGenerationToken::new(playback_generation, next_scrub_generation);
         let release_promoted_to_recent_superseded =
             !self.seek_runtime.active_seek_landing_is_live_scrub();
+        let active_live_scrub_diagnostics =
+            self.seek_runtime.active_seek_landing_live_diagnostics();
         let active_context = self
             .seek_runtime
             .active_commit()
@@ -2055,13 +2088,13 @@ impl PlayerSession {
         }
 
         if let Some(context) = active_context {
-            self.pending_scrub_events
-                .push(ScrubEvent::from_driver_outcome(
-                    ScrubDriverOutcome::Cancelled(CancelledOutcome {
-                        context,
-                        reason: CancelScrubReason::SupersededByNewTarget,
-                    }),
-                ));
+            self.push_scrub_event_with_live_diagnostics(
+                ScrubEvent::from_driver_outcome(ScrubDriverOutcome::Cancelled(CancelledOutcome {
+                    context,
+                    reason: CancelScrubReason::SupersededByNewTarget,
+                })),
+                active_live_scrub_diagnostics,
+            );
         }
 
         let release_context = release_promoted_to_recent_superseded

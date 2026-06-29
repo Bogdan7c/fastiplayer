@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use frame_server_core::LiveScrubDiagnostics;
 use media_core::{MediaTime, TrackId};
 
 /// Идентификатор качества или варианта потока.
@@ -199,7 +200,10 @@ pub enum PlayerCommand {
     Seek(SeekRequest),
 
     /// Начать timeline scrub gesture без немедленного commit-а.
-    BeginScrub,
+    BeginScrub {
+        /// Diagnostics live drag-а, если command пришла из real live-scrub UI route.
+        live_scrub: Option<LiveScrubDiagnostics>,
+    },
 
     /// Запомнить latest target лёгкого scrub-а без запуска demux seek-а.
     UpdateScrub(SeekRequest),
@@ -209,13 +213,25 @@ pub enum PlayerCommand {
     /// Во время active live timeline drag это не ordinary seek event: session
     /// декодит exact preview target, но final commit остаётся заблокирован до
     /// `EndScrub`.
-    PreviewScrub(SeekRequest),
+    PreviewScrub {
+        /// Target, который должен стать latest live preview.
+        request: SeekRequest,
+
+        /// Snapshot/deferred diagnostics текущего live drag-а.
+        live_scrub: Option<LiveScrubDiagnostics>,
+    },
 
     /// Завершить active scrub gesture.
     ///
     /// Для live scrub release это разрешает commit уже активного preview route-а;
     /// для lightweight scrub fallback — запускает единый SeekLanding в latest target.
-    EndScrub { policy: ScrubCommitPolicy },
+    EndScrub {
+        /// UX policy release/cancel для текущего scrub gesture-а.
+        policy: ScrubCommitPolicy,
+
+        /// Последний bounded diagnostics state live drag-а на момент release/cancel.
+        live_scrub: Option<LiveScrubDiagnostics>,
+    },
 
     /// Остановить текущий media без завершения всей session.
     Stop,
@@ -246,4 +262,62 @@ pub enum PlayerCommand {
 
     /// Завершить player session.
     Shutdown,
+}
+
+impl PlayerCommand {
+    /// Создаёт compatibility scrub begin без live-scrub diagnostics.
+    #[must_use]
+    pub const fn begin_scrub() -> Self {
+        Self::BeginScrub { live_scrub: None }
+    }
+
+    /// Создаёт live-scrub begin с per-drag diagnostics snapshot.
+    #[must_use]
+    pub const fn begin_live_scrub(live_scrub: LiveScrubDiagnostics) -> Self {
+        Self::BeginScrub {
+            live_scrub: Some(live_scrub),
+        }
+    }
+
+    /// Создаёт compatibility/live preview command без additional diagnostics.
+    #[must_use]
+    pub const fn preview_scrub(request: SeekRequest) -> Self {
+        Self::PreviewScrub {
+            request,
+            live_scrub: None,
+        }
+    }
+
+    /// Создаёт live preview command с текущим bounded diagnostics state.
+    #[must_use]
+    pub const fn preview_live_scrub(
+        request: SeekRequest,
+        live_scrub: LiveScrubDiagnostics,
+    ) -> Self {
+        Self::PreviewScrub {
+            request,
+            live_scrub: Some(live_scrub),
+        }
+    }
+
+    /// Создаёт compatibility scrub end без live-scrub diagnostics.
+    #[must_use]
+    pub const fn end_scrub(policy: ScrubCommitPolicy) -> Self {
+        Self::EndScrub {
+            policy,
+            live_scrub: None,
+        }
+    }
+
+    /// Создаёт live-scrub release/cancel с последним diagnostics state.
+    #[must_use]
+    pub const fn end_live_scrub(
+        policy: ScrubCommitPolicy,
+        live_scrub: LiveScrubDiagnostics,
+    ) -> Self {
+        Self::EndScrub {
+            policy,
+            live_scrub: Some(live_scrub),
+        }
+    }
 }

@@ -769,10 +769,12 @@ fn command_sender_routes_player_commands_through_worker_queue() {
         PlayerCommand::OpenMedia(open_request)
     );
 
-    command_sender.try_send(PlayerCommand::BeginScrub).unwrap();
+    command_sender
+        .try_send(PlayerCommand::begin_scrub())
+        .unwrap();
     assert_eq!(
         receive_player_command(&command_rx),
-        PlayerCommand::BeginScrub
+        PlayerCommand::begin_scrub()
     );
 
     command_sender
@@ -784,15 +786,13 @@ fn command_sender_routes_player_commands_through_worker_queue() {
     );
 
     command_sender
-        .try_send(PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::CommitLatestTarget,
-        })
+        .try_send(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::CommitLatestTarget,
+        ))
         .unwrap();
     assert_eq!(
         receive_player_command(&command_rx),
-        PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::CommitLatestTarget,
-        }
+        PlayerCommand::end_scrub(ScrubCommitPolicy::CommitLatestTarget)
     );
 }
 
@@ -802,13 +802,13 @@ fn public_scrub_api_uses_session_seek_landing_route() {
     let seek_request_log = Arc::new(Mutex::new(Vec::new()));
 
     install_worker_video_media(&mut runtime, Arc::clone(&seek_request_log));
-    runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::BeginScrub));
+    runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::begin_scrub()));
     runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::UpdateScrub(
         seek_to_millis(20_000),
     )));
-    runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::EndScrub {
-        policy: ScrubCommitPolicy::CommitLatestTarget,
-    }));
+    runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::end_scrub(
+        ScrubCommitPolicy::CommitLatestTarget,
+    )));
 
     let expected_request = DemuxSeekRequest::decode_point_before(Duration::from_secs(20));
     assert_eq!(
@@ -833,7 +833,7 @@ fn stop_during_direct_scrub_is_plain_session_stop() {
     let seek_request_log = Arc::new(Mutex::new(Vec::new()));
 
     install_worker_video_media(&mut runtime, Arc::clone(&seek_request_log));
-    runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::BeginScrub));
+    runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::begin_scrub()));
     runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::UpdateScrub(
         seek_to_millis(900),
     )));

@@ -6,7 +6,9 @@ use capability_core::SystemCapabilities;
 #[cfg(test)]
 use codec_core::VideoCodec;
 use codec_core::VideoDecodeRequirement;
-use frame_server_core::{CancelScrubReason, ScrubEvent, ValidatedFrameServerConfig};
+use frame_server_core::{
+    CancelScrubReason, LiveScrubDiagnostics, ScrubEvent, ValidatedFrameServerConfig,
+};
 use media_core::{MediaDuration, MediaTime};
 use tracing::{debug, info, warn};
 #[cfg(test)]
@@ -319,10 +321,16 @@ impl PlayerSession {
             PlayerCommand::Pause => self.pause(),
             PlayerCommand::TogglePlayback => self.toggle_playback(),
             PlayerCommand::Seek(request) => self.seek(request),
-            PlayerCommand::BeginScrub => self.begin_scrub(),
+            PlayerCommand::BeginScrub { live_scrub } => self.begin_scrub(live_scrub),
             PlayerCommand::UpdateScrub(request) => self.update_scrub(request),
-            PlayerCommand::PreviewScrub(request) => self.preview_scrub(request),
-            PlayerCommand::EndScrub { policy: _ } => self.end_scrub(),
+            PlayerCommand::PreviewScrub {
+                request,
+                live_scrub,
+            } => self.preview_scrub(request, live_scrub),
+            PlayerCommand::EndScrub {
+                policy: _,
+                live_scrub,
+            } => self.end_scrub(live_scrub),
             PlayerCommand::Stop => self.stop(),
             PlayerCommand::SetVolume(volume) => self.set_volume(volume),
             PlayerCommand::ToggleMute { fallback_volume } => self.toggle_mute(fallback_volume),
@@ -451,6 +459,19 @@ impl PlayerSession {
     #[must_use]
     pub(crate) fn take_scrub_events(&mut self) -> Vec<ScrubEvent> {
         std::mem::take(&mut self.pending_scrub_events)
+    }
+
+    /// Добавляет scrub event, прикрепляя live diagnostics только к live-scrub context-ам.
+    pub(crate) fn push_scrub_event_with_live_diagnostics(
+        &mut self,
+        event: ScrubEvent,
+        live_scrub: Option<LiveScrubDiagnostics>,
+    ) {
+        let enriched_event = match live_scrub {
+            Some(live_scrub) => event.with_live_scrub_diagnostics(live_scrub),
+            None => event,
+        };
+        self.pending_scrub_events.push(enriched_event);
     }
 
     /// Переводит renderer resource ids в новое поколение после полного reset media pipeline.

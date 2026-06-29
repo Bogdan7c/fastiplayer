@@ -37,6 +37,23 @@ fn prepared_media_time(millis: u64) -> MediaTime {
     MediaTime::from_millis(millis)
 }
 
+fn live_scrub_settings_for_tests(
+    decode_mode: frame_server_core::LiveScrubDecodeMode,
+    max_hz: u16,
+) -> frame_server_core::LiveScrubSettingsSnapshot {
+    frame_server_core::LiveScrubSettingsSnapshot {
+        decode_mode,
+        max_hz,
+    }
+}
+
+fn live_scrub_diagnostics_for_tests() -> frame_server_core::LiveScrubDiagnostics {
+    frame_server_core::LiveScrubDiagnostics::from_settings_snapshot(live_scrub_settings_for_tests(
+        frame_server_core::LiveScrubDecodeMode::ThrottledLatest,
+        60,
+    ))
+}
+
 fn prepared_lease_for_tests(
     session: &PlayerSession,
     pts_millis: u64,
@@ -122,7 +139,7 @@ fn inactive_end_scrub_clears_simple_state_without_resetting_unrelated_seek_state
         resume_intent: PlaybackResumeIntent::Pause,
     }));
 
-    session.end_scrub().unwrap();
+    session.end_scrub(None).unwrap();
 
     assert!(!session.simple_scrub_active_for_tests());
     assert_eq!(session.simple_scrub_latest_request_for_tests(), None);
@@ -140,7 +157,9 @@ fn direct_dispatch_scrub_api_remains_session_compatibility_path() {
     let _ = session.take_events();
     let request = SeekRequest::absolute(MediaTime::from_secs(3));
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
     assert!(session.simple_scrub_active_for_tests());
     assert_eq!(session.snapshot().playback_state, PlaybackState::Scrubbing);
     assert!(!PlaybackState::Scrubbing.is_playback_active());
@@ -162,9 +181,9 @@ fn direct_dispatch_scrub_api_remains_session_compatibility_path() {
     );
 
     session
-        .dispatch_command(PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        })
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        ))
         .unwrap();
     assert!(!session.snapshot().timeline.scrubbing);
 }
@@ -179,15 +198,17 @@ fn scrubbing_freezes_audio_and_release_without_target_resumes_playing_output() {
     session.dispatch_command(PlayerCommand::Play).unwrap();
     assert_eq!(audio_output_handle.play_count.load(Ordering::Relaxed), 1);
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
 
     assert_eq!(session.snapshot().playback_state, PlaybackState::Scrubbing);
     assert_eq!(audio_output_handle.pause_count.load(Ordering::Relaxed), 1);
 
     session
-        .dispatch_command(PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        })
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        ))
         .unwrap();
 
     assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
@@ -204,11 +225,13 @@ fn end_scrub_without_target_advances_generation_for_resume_safety() {
         decoded_frame_for_current_seek_generation(&session, Duration::from_millis(40), 40);
     session.pipeline.enqueue_queued_video_frame(queued_frame);
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
     session
-        .dispatch_command(PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        })
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        ))
         .unwrap();
 
     assert_eq!(
@@ -234,9 +257,11 @@ fn play_during_scrub_cancels_without_hidden_seek_commit() {
         vec![fake_track(1, TrackKind::Video)],
     );
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
     session
-        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
             MediaTime::from_secs(6),
         )))
         .unwrap();
@@ -275,9 +300,11 @@ fn pause_during_scrub_cancels_without_hidden_seek_commit() {
         vec![fake_track(1, TrackKind::Video)],
     );
     session.dispatch_command(PlayerCommand::Play).unwrap();
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
     session
-        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
             MediaTime::from_secs(6),
         )))
         .unwrap();
@@ -313,10 +340,10 @@ fn toggle_during_scrub_uses_last_confirmed_playback_state() {
         .dispatch_command(PlayerCommand::Play)
         .unwrap();
     playing_session
-        .dispatch_command(PlayerCommand::BeginScrub)
+        .dispatch_command(PlayerCommand::begin_scrub())
         .unwrap();
     playing_session
-        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
             MediaTime::from_secs(8),
         )))
         .unwrap();
@@ -334,10 +361,10 @@ fn toggle_during_scrub_uses_last_confirmed_playback_state() {
     let mut paused_session = PlayerSession::new();
     install_fake_media(&mut paused_session, vec![fake_track(1, TrackKind::Video)]);
     paused_session
-        .dispatch_command(PlayerCommand::BeginScrub)
+        .dispatch_command(PlayerCommand::begin_scrub())
         .unwrap();
     paused_session
-        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
             MediaTime::from_secs(8),
         )))
         .unwrap();
@@ -364,9 +391,11 @@ fn seek_during_scrub_cancels_latest_target_before_one_shot_landing_route() {
     let preview_request = SeekRequest::absolute(MediaTime::from_secs(6));
     let external_seek_request = SeekRequest::absolute(MediaTime::from_secs(2));
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
     session
-        .dispatch_command(PlayerCommand::PreviewScrub(preview_request))
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::preview_scrub(preview_request))
         .unwrap();
     let _ = session.take_events();
 
@@ -420,7 +449,9 @@ fn default_release_after_update_commits_latest_target_without_visible_preview() 
     let _ = session.take_events();
     let request = SeekRequest::absolute(MediaTime::from_secs(7));
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
     session
         .dispatch_command(PlayerCommand::UpdateScrub(request))
         .unwrap();
@@ -439,9 +470,9 @@ fn default_release_after_update_commits_latest_target_without_visible_preview() 
     );
 
     session
-        .dispatch_command(PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        })
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        ))
         .unwrap();
 
     let requests = seek_request_log.lock().expect("seek request log lock");
@@ -1407,14 +1438,16 @@ fn preview_scrub_starts_live_route_without_ordinary_seek_event() {
     );
     let _ = session.take_events();
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
     session
         .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
             MediaTime::from_secs(5),
         )))
         .unwrap();
     session
-        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
             MediaTime::from_secs(8),
         )))
         .unwrap();
@@ -1439,6 +1472,81 @@ fn preview_scrub_starts_live_route_without_ordinary_seek_event() {
     );
 }
 
+/// Live scrub diagnostics проходят через command boundary и переживают supersede.
+#[test]
+fn live_scrub_command_diagnostics_are_attached_to_events_and_supersede_cancel() {
+    let mut session = PlayerSession::new();
+    install_fake_media_with_seek_request_log(&mut session, vec![fake_track(1, TrackKind::Video)]);
+    let first_diagnostics = live_scrub_diagnostics_for_tests();
+    let changed_settings =
+        live_scrub_settings_for_tests(frame_server_core::LiveScrubDecodeMode::EveryDragEvent, 120);
+    let mut latest_diagnostics = first_diagnostics;
+    latest_diagnostics.record_throttled_latest_skip();
+    latest_diagnostics.record_deferred_settings_change(
+        frame_server_core::DeferredLiveScrubSettingsChange {
+            old_snapshot: first_diagnostics.settings_snapshot,
+            new_snapshot: changed_settings,
+        },
+    );
+
+    session
+        .dispatch_command(PlayerCommand::begin_live_scrub(first_diagnostics))
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::preview_live_scrub(
+            SeekRequest::absolute(MediaTime::from_secs(5)),
+            first_diagnostics,
+        ))
+        .unwrap();
+    let _ = session.take_scrub_events();
+
+    session
+        .dispatch_command(PlayerCommand::preview_live_scrub(
+            SeekRequest::absolute(MediaTime::from_secs(8)),
+            latest_diagnostics,
+        ))
+        .unwrap();
+    let events = session.take_scrub_events();
+
+    let supersede_cancel = events
+        .iter()
+        .find_map(|event| match event {
+            frame_server_core::ScrubEvent::Cancelled(cancelled)
+                if cancelled.reason
+                    == frame_server_core::CancelScrubReason::SupersededByNewTarget =>
+            {
+                Some(cancelled)
+            }
+            _ => None,
+        })
+        .expect("replacement target must publish diagnostics-only supersede cancel");
+    assert_eq!(
+        supersede_cancel.diagnostics.live_scrub,
+        Some(first_diagnostics)
+    );
+
+    let replacement_started = events
+        .iter()
+        .find_map(|event| match event {
+            frame_server_core::ScrubEvent::Started(started)
+                if started.context.target().media_time == MediaTime::from_secs(8) =>
+            {
+                Some(started)
+            }
+            _ => None,
+        })
+        .expect("replacement target must publish started event");
+    assert_eq!(
+        replacement_started.diagnostics.live_scrub,
+        Some(latest_diagnostics)
+    );
+    assert_eq!(latest_diagnostics.throttled_latest_skip_count, 1);
+    assert_eq!(
+        latest_diagnostics.deferred_live_scrub_settings_change_count,
+        1
+    );
+}
+
 /// Live scrub переносит prepared branch в transaction ownership без cold decode.
 #[test]
 fn live_scrub_prepared_transfer_waits_for_release_and_retarget_releases_without_demote() {
@@ -1457,9 +1565,11 @@ fn live_scrub_prepared_transfer_waits_for_release_and_retarget_releases_without_
         Arc::clone(&released),
     );
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
     session
-        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
             prepared_media_time(11_000),
         )))
         .unwrap();
@@ -1487,9 +1597,9 @@ fn live_scrub_prepared_transfer_waits_for_release_and_retarget_releases_without_
     );
 
     session
-        .dispatch_command(PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::CommitVisiblePreview,
-        })
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::CommitVisiblePreview,
+        ))
         .unwrap();
     session.finish_seek_commit_if_ready_for_tests(
         Instant::now(),
@@ -1511,14 +1621,16 @@ fn live_scrub_prepared_transfer_waits_for_release_and_retarget_releases_without_
         Some(PreparedSeekBranchToken::resume_ready_for_tests()),
         Arc::clone(&released),
     );
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
     session
-        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
             prepared_media_time(12_000),
         )))
         .unwrap();
     session
-        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
             prepared_media_time(13_000),
         )))
         .unwrap();
@@ -1548,9 +1660,11 @@ fn live_scrub_frame_only_prepared_entry_releases_and_uses_cold_decode_path() {
         Arc::clone(&released),
     );
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
     session
-        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
             prepared_media_time(14_000),
         )))
         .unwrap();
@@ -1579,20 +1693,22 @@ fn end_scrub_commits_active_live_preview_without_second_demux_seek() {
     );
     let latest_request = SeekRequest::absolute(MediaTime::from_secs(9));
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
     session
         .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
             MediaTime::from_secs(4),
         )))
         .unwrap();
     session
-        .dispatch_command(PlayerCommand::PreviewScrub(latest_request))
+        .dispatch_command(PlayerCommand::preview_scrub(latest_request))
         .unwrap();
     let _ = session.take_events();
     session
-        .dispatch_command(PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::CommitVisiblePreview,
-        })
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::CommitVisiblePreview,
+        ))
         .unwrap();
 
     let requests = seek_request_log.lock().expect("seek request log lock");
@@ -1629,11 +1745,13 @@ fn end_scrub_without_latest_target_clears_simple_state_without_seek() {
     );
     let _ = session.take_events();
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
     session
-        .dispatch_command(PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        })
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        ))
         .unwrap();
 
     assert!(
@@ -1667,17 +1785,19 @@ fn scrub_commit_policy_is_ignored_for_simple_fallback() {
         );
         let latest_request = SeekRequest::absolute(MediaTime::from_secs(6));
 
-        session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+        session
+            .dispatch_command(PlayerCommand::begin_scrub())
+            .unwrap();
         session
             .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
                 MediaTime::from_secs(3),
             )))
             .unwrap();
         session
-            .dispatch_command(PlayerCommand::PreviewScrub(latest_request))
+            .dispatch_command(PlayerCommand::preview_scrub(latest_request))
             .unwrap();
         session
-            .dispatch_command(PlayerCommand::EndScrub { policy })
+            .dispatch_command(PlayerCommand::end_scrub(policy))
             .unwrap();
 
         let requests = seek_request_log.lock().expect("seek request log lock");
@@ -1698,7 +1818,9 @@ fn reset_media_state_clears_simple_scrub_latest_request() {
     let mut session = PlayerSession::new();
     install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
     session
         .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
             MediaTime::from_secs(6),
@@ -1719,9 +1841,11 @@ fn stop_clears_simple_scrub_latest_request() {
     let mut session = PlayerSession::new();
     install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
     session
-        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
             MediaTime::from_secs(6),
         )))
         .unwrap();
@@ -1771,7 +1895,9 @@ fn end_scrub_preserves_latest_request_seek_mode() {
         vec![fake_track(2, TrackKind::Audio)],
     );
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
     session
         .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest {
             target: SeekTarget::Absolute(MediaTime::from_secs(8)),
@@ -1779,9 +1905,9 @@ fn end_scrub_preserves_latest_request_seek_mode() {
         }))
         .unwrap();
     session
-        .dispatch_command(PlayerCommand::EndScrub {
-            policy: ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
-        })
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
+        ))
         .unwrap();
 
     let requests = seek_request_log.lock().expect("seek request log lock");
@@ -1801,9 +1927,11 @@ fn preview_scrub_does_not_feed_scheduler_preroll_frame() {
         .pipeline
         .set_video_decoder_thread(fake_decoder.clone());
 
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
     session
-        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
             MediaTime::from_secs(6),
         )))
         .unwrap();

@@ -3,14 +3,14 @@ use std::time::{Duration, Instant};
 use frame_server_core::{
     AudioResumePendingOutcome, AudioResumeTimedOutOutcome, BackendRevision, CancelScrubReason,
     ExactFrameReadyOutcome, FinishedOutcome, FrameExactnessPolicy, FrameServerConfig,
-    PlaybackGeneration, PreparedOutcome, ScrubDriverOutcome, ScrubEvent, ScrubEventFrameIdentity,
-    ScrubExactnessPolicy, ScrubFrameTiming, ScrubGeneration, ScrubGenerationToken,
-    ScrubPreviewFrame, ScrubRequestKind, ScrubTarget, ScrubTargetContext, ScrubTrackSelection,
-    SourceRevision, TimelineHoverFrameBucket, TimelineHoverPrepareDemoteBackOutcome,
-    TimelineHoverPrepareDemoteBackRejection, TimelineHoverPrepareFrameKey,
-    TimelineHoverPrepareFrameLookupRequest, TimelineHoverPreparePromotionOutcome,
-    TimelineHoverPromotedFrameSeekReuse, TimelineHoverPromotedPreparedFrame,
-    ValidatedFrameServerConfig,
+    LiveScrubDiagnostics, PlaybackGeneration, PreparedOutcome, ScrubDriverOutcome, ScrubEvent,
+    ScrubEventFrameIdentity, ScrubExactnessPolicy, ScrubFrameTiming, ScrubGeneration,
+    ScrubGenerationToken, ScrubPreviewFrame, ScrubRequestKind, ScrubTarget, ScrubTargetContext,
+    ScrubTrackSelection, SourceRevision, TimelineHoverFrameBucket,
+    TimelineHoverPrepareDemoteBackOutcome, TimelineHoverPrepareDemoteBackRejection,
+    TimelineHoverPrepareFrameKey, TimelineHoverPrepareFrameLookupRequest,
+    TimelineHoverPreparePromotionOutcome, TimelineHoverPromotedFrameSeekReuse,
+    TimelineHoverPromotedPreparedFrame, ValidatedFrameServerConfig,
 };
 #[cfg(test)]
 use frame_server_core::{TimelineHoverPreparedFrameEntry, TimelineHoverPreparedFrameTiming};
@@ -437,19 +437,24 @@ impl PlayerSession {
     fn publish_prepared_seek_landing_preview_events(
         &mut self,
         context: ScrubTargetContext,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
     ) -> ScrubPreviewFrame {
-        self.pending_scrub_events
-            .push(ScrubEvent::from_driver_outcome(
-                ScrubDriverOutcome::Prepared(PreparedOutcome { context }),
-            ));
+        self.push_scrub_event_with_live_diagnostics(
+            ScrubEvent::from_driver_outcome(ScrubDriverOutcome::Prepared(PreparedOutcome {
+                context,
+            })),
+            live_scrub_diagnostics,
+        );
         let preview_frame = self.prepared_seek_landing_preview_frame(context);
-        self.pending_scrub_events
-            .push(ScrubEvent::from_driver_outcome(
-                ScrubDriverOutcome::ExactFrameReady(ExactFrameReadyOutcome {
+        self.push_scrub_event_with_live_diagnostics(
+            ScrubEvent::from_driver_outcome(ScrubDriverOutcome::ExactFrameReady(
+                ExactFrameReadyOutcome {
                     context,
                     frame: preview_frame,
-                }),
-            ));
+                },
+            )),
+            live_scrub_diagnostics,
+        );
 
         preview_frame
     }
@@ -460,27 +465,34 @@ impl PlayerSession {
         context: ScrubTargetContext,
         seek_commit: SeekCommitState,
         preview_frame: ScrubPreviewFrame,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
     ) {
-        self.pending_scrub_events
-            .push(ScrubEvent::from_driver_outcome(
-                ScrubDriverOutcome::Finished(FinishedOutcome {
-                    context,
-                    committed_position: seek_commit.target_position,
-                    committed_frame_timing: preview_frame.timing,
-                    frame_identity: ScrubEventFrameIdentity::Video(preview_frame.frame_identity),
-                }),
-            ));
+        self.push_scrub_event_with_live_diagnostics(
+            ScrubEvent::from_driver_outcome(ScrubDriverOutcome::Finished(FinishedOutcome {
+                context,
+                committed_position: seek_commit.target_position,
+                committed_frame_timing: preview_frame.timing,
+                frame_identity: ScrubEventFrameIdentity::Video(preview_frame.frame_identity),
+            })),
+            live_scrub_diagnostics,
+        );
     }
 
     /// Публикует pending audio gate с player-core budget metadata.
-    fn publish_prepared_audio_resume_pending(&mut self, context: ScrubTargetContext) {
-        self.pending_scrub_events
-            .push(ScrubEvent::from_driver_outcome(
-                ScrubDriverOutcome::AudioResumePending(AudioResumePendingOutcome {
+    fn publish_prepared_audio_resume_pending(
+        &mut self,
+        context: ScrubTargetContext,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
+    ) {
+        self.push_scrub_event_with_live_diagnostics(
+            ScrubEvent::from_driver_outcome(ScrubDriverOutcome::AudioResumePending(
+                AudioResumePendingOutcome {
                     context,
                     budget: self.prepared_audio_resume_budget(Duration::ZERO).metadata,
-                }),
-            ));
+                },
+            )),
+            live_scrub_diagnostics,
+        );
     }
 
     /// Готовность audio gate-а для instant prepared commit без soft fallback.
@@ -574,13 +586,16 @@ impl PlayerSession {
         let budget = self.prepared_audio_resume_budget(
             timed_out_at.saturating_duration_since(seek_commit.started_at),
         );
-        self.pending_scrub_events
-            .push(ScrubEvent::from_driver_outcome(
-                ScrubDriverOutcome::AudioResumeTimedOut(AudioResumeTimedOutOutcome {
+        let live_scrub_diagnostics = self.seek_runtime.active_seek_landing_live_diagnostics();
+        self.push_scrub_event_with_live_diagnostics(
+            ScrubEvent::from_driver_outcome(ScrubDriverOutcome::AudioResumeTimedOut(
+                AudioResumeTimedOutOutcome {
                     context,
                     budget: budget.metadata,
-                }),
-            ));
+                },
+            )),
+            live_scrub_diagnostics,
+        );
 
         self.seek_runtime.clear_active_commit();
         self.prepared_seek_landing.clear_promoted_seek_ownership();
@@ -640,6 +655,7 @@ impl PlayerSession {
         target: ScrubTarget,
         request_kind: ScrubRequestKind,
         commit_before_release_allowed: bool,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
     ) -> PlayerResult<PreparedSeekLandingStart> {
         if seek_mode != SeekMode::Accurate {
             return Ok(PreparedSeekLandingStart::Unavailable);
@@ -702,15 +718,21 @@ impl PlayerSession {
         ) && audio_gate_status.is_ready()
             && commit_before_release_allowed
         {
-            let preview_frame = self.publish_prepared_seek_landing_preview_events(context);
-            self.publish_prepared_seek_landing_committed(context, seek_commit, preview_frame);
+            let preview_frame =
+                self.publish_prepared_seek_landing_preview_events(context, live_scrub_diagnostics);
+            self.publish_prepared_seek_landing_committed(
+                context,
+                seek_commit,
+                preview_frame,
+                live_scrub_diagnostics,
+            );
             self.complete_seek_commit(seek_commit);
             return Ok(PreparedSeekLandingStart::Started);
         }
 
         self.enter_seek_landing_public_scrubbing(target_position);
-        self.publish_prepared_seek_landing_preview_events(context);
-        self.publish_prepared_audio_resume_pending(context);
+        self.publish_prepared_seek_landing_preview_events(context, live_scrub_diagnostics);
+        self.publish_prepared_audio_resume_pending(context, live_scrub_diagnostics);
 
         Ok(PreparedSeekLandingStart::Started)
     }

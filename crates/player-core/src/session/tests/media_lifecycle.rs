@@ -195,13 +195,15 @@ fn stale_packets_from_old_generation_are_dropped_after_track_list_update() {
 fn preview_scrub_does_not_create_seek_commit_for_track_list_reset() {
     let mut session = PlayerSession::new();
     install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
-    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
     let request = SeekRequest::absolute(MediaTime::from_secs(7));
     session
         .dispatch_command(PlayerCommand::UpdateScrub(request))
         .unwrap();
     session
-        .dispatch_command(PlayerCommand::PreviewScrub(request))
+        .dispatch_command(PlayerCommand::preview_scrub(request))
         .unwrap();
 
     assert!(session.seek_commit().is_some());

@@ -384,6 +384,9 @@ impl AppState {
     /// Обновляет read-only config snapshot из authoritative settings runtime.
     pub(crate) fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
         self.committed_config_snapshot = snapshot;
+        let live_scrub_settings = self.live_scrub_settings_snapshot();
+        self.timeline_ui_state
+            .defer_live_scrub_settings_change(live_scrub_settings);
     }
 
     /// Применяет player runtime settings через request/reply worker boundary.
