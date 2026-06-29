@@ -30,9 +30,9 @@ use crate::{
     PlayerRuntimeApplyReport, PlayerRuntimeApplyResult, PlayerRuntimeDecoderThreadConfigUpdate,
     PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeSettingsUpdate, PlayerRuntimeTickConfigUpdate,
     PlayerRuntimeVideoBackendUpdate, PlayerSession, PlayerSnapshot, PlayerTickConfig,
-    PlayerTickContext, PlayerTickResult, PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan,
-    PreparedMedia, SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend,
-    scheduler_timing_diagnostics,
+    PlayerTickContext, PlayerTickResult, PlayerTimelineHoverPrepareHandoff,
+    PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan, PreparedMedia,
+    SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend, scheduler_timing_diagnostics,
 };
 
 mod handle;
@@ -96,6 +96,9 @@ pub struct PlayerWorkerConfig {
 
     /// Factory audio output-а, которую composition layer устанавливает без CPAL deps в core.
     pub audio_output_factory: Arc<dyn AudioOutputFactory>,
+
+    /// Shared hover prepare storage для app controller и S17 promotion.
+    pub timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff,
 }
 
 impl fmt::Debug for PlayerWorkerConfig {
@@ -113,6 +116,7 @@ impl fmt::Debug for PlayerWorkerConfig {
             .field("default_volume", &self.default_volume)
             .field("audio_decoder_factory", &"<dyn AudioDecoderFactory>")
             .field("audio_output_factory", &"<dyn AudioOutputFactory>")
+            .field("timeline_hover_prepare_handoff", &"<shared>")
             .finish()
     }
 }
@@ -129,6 +133,7 @@ impl PlayerWorkerConfig {
             default_volume: 1.0,
             audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
+            timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff::default(),
         }
     }
 
@@ -143,6 +148,9 @@ impl PlayerWorkerConfig {
             default_volume: config.audio.volume as f32,
             audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
+            timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff::from_app_config(
+                config,
+            ),
         }
     }
 
@@ -163,6 +171,16 @@ impl PlayerWorkerConfig {
         audio_output_factory: Arc<dyn AudioOutputFactory>,
     ) -> Self {
         self.audio_output_factory = audio_output_factory;
+        self
+    }
+
+    /// Подставляет shared hover prepare handoff, которым владеет composition layer.
+    #[must_use]
+    pub fn with_timeline_hover_prepare_handoff(
+        mut self,
+        timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff,
+    ) -> Self {
+        self.timeline_hover_prepare_handoff = timeline_hover_prepare_handoff;
         self
     }
 

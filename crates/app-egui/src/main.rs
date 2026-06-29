@@ -19,6 +19,7 @@ mod startup_media;
 mod state;
 mod system_capabilities;
 mod telemetry;
+mod timeline_hover_prepare;
 mod ui;
 mod video_pipeline_selector;
 

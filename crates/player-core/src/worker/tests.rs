@@ -27,6 +27,7 @@ fn worker_config_for_tests() -> PlayerWorkerConfig {
         default_volume: 1.0,
         audio_decoder_factory: missing_audio_decoder_factory(),
         audio_output_factory: missing_audio_output_factory(),
+        timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff::default(),
     }
 }
 

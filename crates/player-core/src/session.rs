@@ -33,6 +33,7 @@ mod scrub_driver;
 mod seek_transaction;
 mod snapshot_builder;
 mod tick;
+mod timeline_hover_prepare_handoff;
 
 use self::eof_drain::EofDrainRuntime;
 use self::media_lifecycle::MediaLifecycleState;
@@ -45,6 +46,10 @@ pub use self::tick::{
 };
 pub(crate) use self::tick::{
     PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,
+};
+pub use self::timeline_hover_prepare_handoff::{
+    PlayerTimelineHoverPrepareBorrowOutcome, PlayerTimelineHoverPrepareHandoff,
+    PlayerTimelineHoverPreparedFrameBorrow,
 };
 
 #[cfg(test)]
@@ -162,6 +167,23 @@ impl PlayerSession {
         Self {
             audio_decoder_factory,
             audio_output_factory,
+            ..Self::default()
+        }
+    }
+
+    /// Создаёт session с app-owned hover prepare handoff для shared S18/S17 storage.
+    #[must_use]
+    pub(crate) fn with_audio_factories_and_timeline_hover_prepare_handoff(
+        audio_decoder_factory: Arc<dyn AudioDecoderFactory>,
+        audio_output_factory: Arc<dyn AudioOutputFactory>,
+        timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff,
+    ) -> Self {
+        Self {
+            audio_decoder_factory,
+            audio_output_factory,
+            prepared_seek_landing: PreparedSeekLandingRuntime::from_timeline_hover_prepare_handoff(
+                timeline_hover_prepare_handoff,
+            ),
             ..Self::default()
         }
     }

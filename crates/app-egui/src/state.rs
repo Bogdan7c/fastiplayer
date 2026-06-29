@@ -14,9 +14,10 @@ use media_core::TrackKind;
 use player_core::{
     FrameCounters, MediaOpenRequest, MediaSource, PlaybackState, PlayerCommand, PlayerError,
     PlayerErrorKind, PlayerEvent, PlayerRenderError, PlayerRuntimeApplyResult,
-    PlayerRuntimeSettingsUpdate, PlayerSnapshot, PlayerVideoDecoderThreadConfig, PlayerWorker,
-    PlayerWorkerConfig, PlayerWorkerEvent, PreparedMedia, QualitySelection, SeekRequest,
-    VideoBackendSelectionRequest, VideoDecodeRequirement,
+    PlayerRuntimeSettingsUpdate, PlayerSnapshot, PlayerTimelineHoverPrepareHandoff,
+    PlayerVideoDecoderThreadConfig, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
+    PreparedMedia, QualitySelection, SeekRequest, VideoBackendSelectionRequest,
+    VideoDecodeRequirement,
 };
 use render_core::RenderDiagnostics;
 use render_wgpu_video::{
@@ -39,6 +40,10 @@ use crate::local_media;
 use crate::settings_runtime::CommittedConfigSnapshot;
 use crate::settings_ui::{SettingsUiAction, SettingsUiModel};
 use crate::telemetry::Telemetry;
+use crate::timeline_hover_prepare::{
+    AppTimelineHoverPrepareController, AppTimelineHoverPrepareExecutor,
+    TimelineHoverPrepareController,
+};
 use crate::ui::animation::AnimationState;
 use crate::ui::player_controls::{self, ControlAction};
 use crate::ui::sidebar::{self, AppSidebarContent};
@@ -165,6 +170,10 @@ pub struct AppState {
     /// Playback worker владеет `PlayerSession` и media pipeline на отдельном thread.
     pub player_worker: PlayerWorker,
 
+    /// S18 app-owned controller для будущего synthetic timeline hover/focus predecode.
+    #[allow(dead_code)]
+    timeline_hover_prepare_controller: AppTimelineHoverPrepareController,
+
     /// Счётчик кадров shell-анимации.
     pub frame_index: u64,
 
@@ -271,12 +280,19 @@ impl AppState {
             Some(winit::window::Theme::Dark),
             None,
         );
+        let timeline_hover_prepare_handoff = PlayerTimelineHoverPrepareHandoff::from_app_config(
+            committed_config_snapshot.as_config(),
+        );
+        let timeline_hover_prepare_controller = TimelineHoverPrepareController::new(
+            AppTimelineHoverPrepareExecutor::new(timeline_hover_prepare_handoff.clone()),
+        );
         let worker_config =
             PlayerWorkerConfig::from_app_config(committed_config_snapshot.as_config())
                 .with_audio_decoder_factory(Arc::new(audio::ProductionAudioDecoderFactory))
                 .with_audio_output_factory(Arc::new(audio::CpalAudioOutputFactory::new(
                     audio_output_device_controller,
-                )));
+                )))
+                .with_timeline_hover_prepare_handoff(timeline_hover_prepare_handoff);
         let player_worker = PlayerWorker::spawn(worker_config)?;
         let desktop_integration = match DesktopIntegration::spawn(player_worker.command_sender()) {
             Ok(desktop_integration) => Some(desktop_integration),
@@ -296,6 +312,7 @@ impl AppState {
             egui_winit_state,
             desktop_integration,
             player_worker,
+            timeline_hover_prepare_controller,
             frame_index: 0,
             start_time: std::time::Instant::now(),
             telemetry,
@@ -322,6 +339,14 @@ impl AppState {
             sidebar_slide: SlideTransition::closed(),
             sidebar_slide_last_tick: None,
         })
+    }
+
+    /// Internal S18/S24 boundary: сюда позже придёт настоящий timeline hover/focus stream.
+    #[allow(dead_code)]
+    pub(crate) fn timeline_hover_prepare_controller(
+        &mut self,
+    ) -> &mut AppTimelineHoverPrepareController {
+        &mut self.timeline_hover_prepare_controller
     }
 
     /// Продвигает анимацию выезда settings sidebar к runtime open-state.

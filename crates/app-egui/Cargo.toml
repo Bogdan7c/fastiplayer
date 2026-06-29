@@ -35,6 +35,7 @@ desktop-integration.workspace = true
 
 # Композиция playback/media boundary.
 player-core.workspace = true
+frame-server-core.workspace = true
 media-core.workspace = true
 symphonia-demux.workspace = true
 

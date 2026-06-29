@@ -18,6 +18,7 @@ impl PlayerWorker {
         let decoder_thread_config = config.decoder_thread_config;
         let audio_decoder_factory = Arc::clone(&config.audio_decoder_factory);
         let audio_output_factory = Arc::clone(&config.audio_output_factory);
+        let timeline_hover_prepare_handoff = config.timeline_hover_prepare_handoff.clone();
 
         let command_sender = PlayerCommandSender { command_tx };
         let snapshot_rx_for_worker = snapshot_rx.clone();
@@ -26,10 +27,12 @@ impl PlayerWorker {
         let join_handle = thread::Builder::new()
             .name("player-worker".into())
             .spawn(move || {
-                let mut session = PlayerSession::with_audio_factories(
-                    audio_decoder_factory,
-                    audio_output_factory,
-                );
+                let mut session =
+                    PlayerSession::with_audio_factories_and_timeline_hover_prepare_handoff(
+                        audio_decoder_factory,
+                        audio_output_factory,
+                        timeline_hover_prepare_handoff,
+                    );
                 if let Err(error) =
                     session.dispatch_command(PlayerCommand::SetVolume(config.default_volume))
                 {

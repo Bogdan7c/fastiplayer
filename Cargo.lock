@@ -139,6 +139,7 @@ dependencies = [
  "desktop-integration",
  "egui",
  "egui-winit",
+ "frame-server-core",
  "media-core",
  "player-core",
  "pollster",

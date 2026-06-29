@@ -1,4 +1,3 @@
-use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use frame_server_core::{
@@ -10,8 +9,7 @@ use frame_server_core::{
     SourceRevision, TimelineHoverFrameBucket, TimelineHoverPrepareDemoteBackOutcome,
     TimelineHoverPrepareDemoteBackRejection, TimelineHoverPrepareFrameKey,
     TimelineHoverPrepareFrameLookupRequest, TimelineHoverPreparePromotionOutcome,
-    TimelineHoverPrepareWorkingSet, TimelineHoverPromotedFrameSeekReuse,
-    TimelineHoverPromotedPreparedFrame, TimelineHoverRecentSupersededBudget,
+    TimelineHoverPromotedFrameSeekReuse, TimelineHoverPromotedPreparedFrame,
     ValidatedFrameServerConfig,
 };
 #[cfg(test)]
@@ -22,6 +20,7 @@ use video_present_core::{VideoFrameLease, VideoPresentFrameIdentity};
 use super::PlayerSession;
 use super::audio_runtime::SeekAudioGateStatus;
 use super::scrub_driver::{AudioResumeTimingInput, derive_audio_resume_timeout_budget};
+use super::timeline_hover_prepare_handoff::PlayerTimelineHoverPrepareHandoff;
 use crate::seek_state::{
     PlaybackResumeIntent, SeekCommitState, SeekLandingExecution, SeekLandingGenerationStartError,
 };
@@ -197,7 +196,7 @@ impl PreparedSeekLandingPromotion {
 
 /// Runtime bridge между neutral prepared working set и S17 seek transaction.
 pub(super) struct PreparedSeekLandingRuntime {
-    working_set: TimelineHoverPrepareWorkingSet<PreparedSeekBranchToken>,
+    working_set: PlayerTimelineHoverPrepareHandoff,
     promoted: Option<PreparedSeekLandingPromotion>,
     pending_override_handoff: Option<PreparedSeekLandingOverrideHandoff>,
 }
@@ -206,15 +205,18 @@ impl PreparedSeekLandingRuntime {
     /// Создаёт runtime из validated frame-server config без отдельного hardcode capacity.
     #[must_use]
     pub(super) fn from_config(config: ValidatedFrameServerConfig) -> Self {
-        let primary_capacity = NonZeroUsize::new(config.hover_prepare_window_slots() as usize)
-            .expect("validated hover prepare slots must be non-zero");
-        let recent_budget = TimelineHoverRecentSupersededBudget::from_validated_config(config);
+        Self::from_timeline_hover_prepare_handoff(
+            PlayerTimelineHoverPrepareHandoff::from_validated_frame_server_config(config),
+        )
+    }
 
+    /// Создаёт runtime поверх shared handoff, которым владеет app/controller layer.
+    #[must_use]
+    pub(super) fn from_timeline_hover_prepare_handoff(
+        working_set: PlayerTimelineHoverPrepareHandoff,
+    ) -> Self {
         Self {
-            working_set: TimelineHoverPrepareWorkingSet::with_capacity_and_recent_superseded(
-                primary_capacity,
-                recent_budget,
-            ),
+            working_set,
             promoted: None,
             pending_override_handoff: None,
         }
@@ -225,7 +227,9 @@ impl PreparedSeekLandingRuntime {
         &mut self,
         request: TimelineHoverPrepareFrameLookupRequest,
     ) -> PreparedSeekLandingPromotionAttempt {
-        let promotion = self.working_set.promote_prepared_frame(request);
+        let promotion = self
+            .working_set
+            .with_locked_working_set(|working_set| working_set.promote_prepared_frame(request));
 
         match promotion {
             TimelineHoverPreparePromotionOutcome::PromotedResumeReadyBranch(promoted_frame) => {
@@ -303,13 +307,13 @@ impl PreparedSeekLandingRuntime {
             return PreparedSeekLandingReleaseOutcome::ReleasedWithoutDemote;
         };
 
-        match self
-            .working_set
-            .try_demote_promoted_frame_to_recent_superseded(
+        match self.working_set.with_locked_working_set(|working_set| {
+            working_set.try_demote_promoted_frame_to_recent_superseded(
                 promotion.promoted_frame,
                 request,
                 cancel_reason,
-            ) {
+            )
+        }) {
             TimelineHoverPrepareDemoteBackOutcome::DemotedToRecentSuperseded => {
                 PreparedSeekLandingReleaseOutcome::DemotedToRecentSuperseded
             }
@@ -342,17 +346,20 @@ impl PreparedSeekLandingRuntime {
             None => entry,
         };
 
-        self.working_set.insert_prepared_frame(key, entry);
+        self.working_set
+            .with_locked_working_set(|working_set| working_set.insert_prepared_frame(key, entry));
     }
 
     #[cfg(test)]
     pub(crate) fn working_set_len_for_tests(&self) -> usize {
-        self.working_set.len()
+        self.working_set
+            .with_locked_working_set(|working_set| working_set.len())
     }
 
     #[cfg(test)]
     pub(crate) fn recent_superseded_len_for_tests(&self) -> usize {
-        self.working_set.recent_superseded_len()
+        self.working_set
+            .with_locked_working_set(|working_set| working_set.recent_superseded_len())
     }
 
     fn active_promotion_kind(&self) -> Option<PreparedSeekLandingPromotionKind> {
@@ -770,13 +777,10 @@ impl PlayerSession {
     }
 
     #[cfg(test)]
-    pub(crate) fn insert_prepared_seek_landing_frame_for_tests(
-        &mut self,
+    pub(crate) fn prepared_seek_landing_frame_key_for_tests(
+        &self,
         target_position: MediaTime,
-        actual_pts: TrackTimestamp,
-        lease: VideoFrameLease,
-        branch_token: Option<PreparedSeekBranchToken>,
-    ) {
+    ) -> TimelineHoverPrepareFrameKey {
         let video_track_id = self
             .pipeline
             .selected_video_track_id()
@@ -798,14 +802,26 @@ impl PlayerSession {
             .seek_runtime
             .next_seek_landing_scrub_generation_after_supersede()
             .unwrap_or_else(|| ScrubGeneration::new(SEEK_LANDING_FIRST_SCRUB_GENERATION));
-        let key = TimelineHoverPrepareFrameKey::new(
+
+        TimelineHoverPrepareFrameKey::new(
             SourceRevision::new(SEEK_LANDING_SOURCE_REVISION_UNTRACKED),
             track_selection,
             BackendRevision::new(SEEK_LANDING_BACKEND_REVISION_UNTRACKED),
             seek_landing_generation_token(playback_generation.get(), scrub_generation),
             FrameExactnessPolicy::TargetOrAfter,
             prepared_seek_landing_bucket(target_pts),
-        );
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_prepared_seek_landing_frame_for_tests(
+        &mut self,
+        target_position: MediaTime,
+        actual_pts: TrackTimestamp,
+        lease: VideoFrameLease,
+        branch_token: Option<PreparedSeekBranchToken>,
+    ) {
+        let key = self.prepared_seek_landing_frame_key_for_tests(target_position);
 
         self.prepared_seek_landing.insert_prepared_frame_for_tests(
             key,

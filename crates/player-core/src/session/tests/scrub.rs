@@ -6,6 +6,7 @@ use super::super::prepared_seek::{
     PreparedSeekLandingOverrideHandoff, PreparedSeekLandingPromotionKind,
     PreparedSeekLandingReleaseOutcome, VideoResumeRunwayState,
 };
+use super::super::timeline_hover_prepare_handoff::PlayerTimelineHoverPrepareHandoff;
 
 struct RecordingPreparedReleaseSink {
     released: Arc<Mutex<Vec<video_core::FrameResourceHandle>>>,
@@ -815,6 +816,55 @@ fn prepared_commit_ready_video_runway_waits_for_active_audio() {
             .all(|event| !matches!(event, frame_server_core::ScrubEvent::Committed(_)))
     );
     assert_eq!(release_count(&released, 87), 0);
+}
+
+#[test]
+fn shared_timeline_hover_handoff_promotes_same_prepared_branch() {
+    let handoff = PlayerTimelineHoverPrepareHandoff::default();
+    let mut session = PlayerSession::with_audio_factories_and_timeline_hover_prepare_handoff(
+        crate::audio_boundary::missing_audio_decoder_factory(),
+        crate::audio_boundary::missing_audio_output_factory(),
+        handoff.clone(),
+    );
+    let seek_request_log = install_fake_media_with_seek_request_log(
+        &mut session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+    let released = Arc::new(Mutex::new(Vec::new()));
+    let lease = prepared_lease_for_tests(&session, 14_000, 114, Arc::clone(&released));
+    let target_position = prepared_media_time(14_000);
+    let key = session.prepared_seek_landing_frame_key_for_tests(target_position);
+
+    handoff.insert_prepared_frame_for_tests(
+        key,
+        lease,
+        prepared_timestamp(14_000),
+        Some(PreparedSeekBranchToken::resume_ready_for_tests()),
+    );
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(target_position)))
+        .unwrap();
+
+    assert_eq!(
+        seek_request_log
+            .lock()
+            .expect("seek request log mutex must not be poisoned")
+            .len(),
+        0
+    );
+    let scrub_events = session.take_scrub_events();
+    assert!(matches!(
+        scrub_events.as_slice(),
+        [
+            frame_server_core::ScrubEvent::Started(_),
+            frame_server_core::ScrubEvent::PreviewFrameReady(_),
+            frame_server_core::ScrubEvent::Committed(_),
+        ]
+    ));
+    assert_eq!(session.active_prepared_seek_landing_kind_for_tests(), None);
+    assert_eq!(session.prepared_seek_landing_working_set_len_for_tests(), 0);
+    assert_eq!(release_count(&released, 114), 1);
 }
 
 #[test]
