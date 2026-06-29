@@ -2,15 +2,17 @@ use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use frame_server_core::{
-    AudioResumePendingOutcome, AudioResumeTimedOutOutcome, BackendRevision, ExactFrameReadyOutcome,
-    FinishedOutcome, FrameExactnessPolicy, FrameServerConfig, PlaybackGeneration, PreparedOutcome,
-    ScrubDriverOutcome, ScrubEvent, ScrubEventFrameIdentity, ScrubExactnessPolicy,
-    ScrubFrameTiming, ScrubGeneration, ScrubGenerationToken, ScrubPreviewFrame, ScrubRequestKind,
-    ScrubTarget, ScrubTargetContext, ScrubTrackSelection, SourceRevision, TimelineHoverFrameBucket,
-    TimelineHoverPrepareFrameKey, TimelineHoverPrepareFrameLookupRequest,
-    TimelineHoverPreparePromotionOutcome, TimelineHoverPrepareWorkingSet,
-    TimelineHoverPromotedFrameSeekReuse, TimelineHoverPromotedPreparedFrame,
-    TimelineHoverRecentSupersededBudget, ValidatedFrameServerConfig,
+    AudioResumePendingOutcome, AudioResumeTimedOutOutcome, BackendRevision, CancelScrubReason,
+    ExactFrameReadyOutcome, FinishedOutcome, FrameExactnessPolicy, FrameServerConfig,
+    PlaybackGeneration, PreparedOutcome, ScrubDriverOutcome, ScrubEvent, ScrubEventFrameIdentity,
+    ScrubExactnessPolicy, ScrubFrameTiming, ScrubGeneration, ScrubGenerationToken,
+    ScrubPreviewFrame, ScrubRequestKind, ScrubTarget, ScrubTargetContext, ScrubTrackSelection,
+    SourceRevision, TimelineHoverFrameBucket, TimelineHoverPrepareDemoteBackOutcome,
+    TimelineHoverPrepareDemoteBackRejection, TimelineHoverPrepareFrameKey,
+    TimelineHoverPrepareFrameLookupRequest, TimelineHoverPreparePromotionOutcome,
+    TimelineHoverPrepareWorkingSet, TimelineHoverPromotedFrameSeekReuse,
+    TimelineHoverPromotedPreparedFrame, TimelineHoverRecentSupersededBudget,
+    ValidatedFrameServerConfig,
 };
 #[cfg(test)]
 use frame_server_core::{TimelineHoverPreparedFrameEntry, TimelineHoverPreparedFrameTiming};
@@ -35,7 +37,7 @@ pub(super) const SEEK_LANDING_BACKEND_REVISION_UNTRACKED: u64 = 0;
 
 /// `PlayerScrubTransactionDriver::new(..., ScrubGeneration::new(0))` создаёт
 /// первый `SeekLanding` context с nested scrub generation `1`.
-const SEEK_LANDING_PREPARED_SCRUB_GENERATION: u64 = 1;
+pub(super) const SEEK_LANDING_FIRST_SCRUB_GENERATION: u64 = 1;
 
 /// Internal command для worker-side scrub override bridge.
 pub(crate) enum PreparedSeekLandingOverrideHandoff {
@@ -158,6 +160,25 @@ pub(crate) enum PreparedSeekLandingPromotionKind {
     },
 }
 
+/// Итог release/demote promoted prepared resource-а при завершении transaction.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreparedSeekLandingReleaseOutcome {
+    /// Active promoted resource не было.
+    NoPromotedFrame,
+
+    /// Resource возвращён в recent-superseded compartment.
+    DemotedToRecentSuperseded,
+
+    /// Demote-back был запрещён typed validation-ом; resource отпущен transaction path-ом.
+    DemoteRejected {
+        reason: TimelineHoverPrepareDemoteBackRejection,
+    },
+
+    /// Обычный release path без попытки demote-back.
+    ReleasedWithoutDemote,
+}
+
 /// Seek-owned promoted resource после удаления из hover working set-а.
 struct PreparedSeekLandingPromotion {
     promoted_frame: TimelineHoverPromotedPreparedFrame<PreparedSeekBranchToken>,
@@ -260,8 +281,42 @@ impl PreparedSeekLandingRuntime {
 
     /// Очищает seek-owned promotion; hover-owned entries не трогает.
     pub(super) fn clear_promoted_seek_ownership(&mut self) {
-        if self.promoted.take().is_some() {
-            self.pending_override_handoff = Some(PreparedSeekLandingOverrideHandoff::Clear);
+        let _release_outcome =
+            self.release_promoted_seek_ownership(CancelScrubReason::UserCancelled, None);
+    }
+
+    /// Завершает seek-owned promotion с возможным demote-back для supersede.
+    pub(super) fn release_promoted_seek_ownership(
+        &mut self,
+        cancel_reason: CancelScrubReason,
+        current_request: Option<TimelineHoverPrepareFrameLookupRequest>,
+    ) -> PreparedSeekLandingReleaseOutcome {
+        let Some(promotion) = self.promoted.take() else {
+            return PreparedSeekLandingReleaseOutcome::NoPromotedFrame;
+        };
+
+        self.pending_override_handoff = Some(PreparedSeekLandingOverrideHandoff::Clear);
+
+        let Some(request) =
+            current_request.filter(|_| cancel_reason == CancelScrubReason::SupersededByNewTarget)
+        else {
+            return PreparedSeekLandingReleaseOutcome::ReleasedWithoutDemote;
+        };
+
+        match self
+            .working_set
+            .try_demote_promoted_frame_to_recent_superseded(
+                promotion.promoted_frame,
+                request,
+                cancel_reason,
+            ) {
+            TimelineHoverPrepareDemoteBackOutcome::DemotedToRecentSuperseded => {
+                PreparedSeekLandingReleaseOutcome::DemotedToRecentSuperseded
+            }
+            TimelineHoverPrepareDemoteBackOutcome::Rejected {
+                promoted_frame: _released_on_drop,
+                reason,
+            } => PreparedSeekLandingReleaseOutcome::DemoteRejected { reason },
         }
     }
 
@@ -293,6 +348,11 @@ impl PreparedSeekLandingRuntime {
     #[cfg(test)]
     pub(crate) fn working_set_len_for_tests(&self) -> usize {
         self.working_set.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recent_superseded_len_for_tests(&self) -> usize {
+        self.working_set.recent_superseded_len()
     }
 
     fn active_promotion_kind(&self) -> Option<PreparedSeekLandingPromotionKind> {
@@ -329,36 +389,32 @@ pub(super) enum PreparedSeekLandingStart {
 }
 
 impl PlayerSession {
-    /// Начинает playback generation для SeekLanding без смешивания с decode route.
-    pub(super) fn begin_seek_landing_playback_generation(
+    /// Активирует scrub generation для SeekLanding без неявного decoder epoch bump-а.
+    pub(super) fn activate_seek_landing_scrub_generation(
         &mut self,
         generation: ScrubGenerationToken,
         execution: SeekLandingExecution,
+        decode_seek_generation: Option<u64>,
     ) -> Result<(), SeekLandingGenerationStartError> {
-        let pending_seek_landing = self.seek_runtime.pending_seek_landing_request_active();
-        let expected_playback_generation = if pending_seek_landing {
-            self.pipeline
-                .seek_generation()
-                .checked_add(1)
-                .ok_or(SeekLandingGenerationStartError::GenerationOverflow)?
-        } else {
-            self.pipeline.seek_generation()
-        };
-        let current_generation = ScrubGenerationToken::new(
-            PlaybackGeneration::new(expected_playback_generation),
-            generation.scrub_generation,
-        );
-        if let Some(stale_reason) = generation.stale_reason_against(current_generation) {
+        let expected_generation = self
+            .seek_runtime
+            .pending_seek_landing_generation()
+            .unwrap_or_else(|| {
+                let playback_generation = self
+                    .seek_runtime
+                    .seek_landing_playback_generation()
+                    .unwrap_or(generation.playback_generation);
+                ScrubGenerationToken::new(playback_generation, generation.scrub_generation)
+            });
+        if let Some(stale_reason) = generation.stale_reason_against(expected_generation) {
             return Err(SeekLandingGenerationStartError::Stale(stale_reason));
         }
 
-        if pending_seek_landing {
-            let new_playback_generation = self.begin_pipeline_seek_generation();
-            debug_assert_eq!(new_playback_generation, expected_playback_generation);
-        }
-
-        self.seek_runtime
-            .activate_seek_landing_generation(generation, execution);
+        self.seek_runtime.activate_seek_landing_generation(
+            generation,
+            execution,
+            decode_seek_generation,
+        );
         Ok(())
     }
 
@@ -434,9 +490,7 @@ impl PlayerSession {
         seek_commit: SeekCommitState,
     ) -> bool {
         self.seek_runtime
-            .active_seek_landing(seek_landing_prepared_generation_token(
-                seek_commit.generation,
-            ))
+            .active_seek_landing_for_commit_generation(seek_commit.generation)
             .is_some_and(|landing| {
                 landing.execution() == SeekLandingExecution::PreparedVisualOverride
             })
@@ -457,10 +511,14 @@ impl PlayerSession {
         )
     }
 
-    fn active_prepared_seek_landing_context(
+    /// Восстанавливает active SeekLanding context из commit-а и owner state.
+    pub(super) fn active_seek_landing_context(
         &self,
         seek_commit: SeekCommitState,
     ) -> Option<ScrubTargetContext> {
+        let landing = self
+            .seek_runtime
+            .active_seek_landing_for_commit_generation(seek_commit.generation)?;
         let video_track_id = self.pipeline.selected_video_track_id()?;
         let target = ScrubTarget::new(
             seek_commit.target_position,
@@ -474,8 +532,20 @@ impl PlayerSession {
         Some(prepared_seek_landing_context(
             track_selection,
             target,
-            seek_commit.generation,
+            landing.generation(),
         ))
+    }
+
+    /// Отпускает prepared promotion через owner boundary active transaction-а.
+    pub(super) fn release_prepared_seek_landing_for_cancel(
+        &mut self,
+        cancel_reason: CancelScrubReason,
+        context: Option<ScrubTargetContext>,
+    ) -> PreparedSeekLandingReleaseOutcome {
+        let request = context.map(prepared_seek_landing_lookup_request);
+
+        self.prepared_seek_landing
+            .release_promoted_seek_ownership(cancel_reason, request)
     }
 
     pub(super) fn fail_prepared_seek_landing_audio_resume_on_timeout(
@@ -484,7 +554,7 @@ impl PlayerSession {
         audio_gate_status: SeekAudioGateStatus,
         timed_out_at: Instant,
     ) {
-        let Some(context) = self.active_prepared_seek_landing_context(seek_commit) else {
+        let Some(context) = self.active_seek_landing_context(seek_commit) else {
             self.fail_final_seek_commit_on_timeout(
                 seek_commit,
                 audio_gate_status
@@ -557,7 +627,7 @@ impl PlayerSession {
         target_position: MediaTime,
         seek_mode: SeekMode,
         resume_intent: PlaybackResumeIntent,
-        generation: u64,
+        generation: ScrubGenerationToken,
         track_selection: ScrubTrackSelection,
         target: ScrubTarget,
     ) -> PlayerResult<PreparedSeekLandingStart> {
@@ -579,17 +649,19 @@ impl PlayerSession {
             return Err(error);
         }
 
-        if let Err(error) = self.begin_seek_landing_playback_generation(
+        if let Err(error) = self.activate_seek_landing_scrub_generation(
             context.generation(),
             SeekLandingExecution::PreparedVisualOverride,
+            None,
         ) {
             self.prepared_seek_landing.clear_promoted_seek_ownership();
             return Err(player_error_from_seek_landing_generation_error(error));
         }
+        self.reset_audio_runtime_for_seek_landing(context.generation().playback_generation.get());
         self.clear_pending_queues_for_seek_landing();
 
         let seek_commit = SeekCommitState {
-            generation,
+            generation: generation.playback_generation.get(),
             seek_mode,
             target_position,
             actual_position: target_position,
@@ -618,12 +690,27 @@ impl PlayerSession {
         Ok(PreparedSeekLandingStart::Started)
     }
 
-    /// Начинает новый playback seek generation и сбрасывает audio state.
-    fn begin_pipeline_seek_generation(&mut self) -> u64 {
-        let new_playback_generation = self.pipeline.begin_seek_generation();
+    /// Начинает новый decoder seek generation для cold SeekLanding route-а.
+    pub(super) fn begin_cold_seek_landing_decoder_generation(
+        &mut self,
+    ) -> Result<u64, SeekLandingGenerationStartError> {
+        let expected_decoder_generation = self
+            .pipeline
+            .seek_generation()
+            .checked_add(1)
+            .ok_or(SeekLandingGenerationStartError::GenerationOverflow)?;
+        let new_decoder_generation = self.pipeline.begin_seek_generation();
+        debug_assert_eq!(new_decoder_generation, expected_decoder_generation);
         if self.pipeline.has_selected_video_track() {
             self.record_video_decoder_bootstrap_started();
         }
+        self.reset_audio_runtime_for_seek_landing(new_decoder_generation);
+
+        Ok(new_decoder_generation)
+    }
+
+    /// Сбрасывает audio runtime для seek generation, не меняя video decoder epoch.
+    fn reset_audio_runtime_for_seek_landing(&mut self, generation: u64) {
         if let Some(Err(error)) = self.pipeline.reset_audio_decoder() {
             let player_error = PlayerError::new(
                 PlayerErrorKind::RuntimeError,
@@ -631,10 +718,7 @@ impl PlayerSession {
             );
             self.record_recoverable_error(player_error);
         }
-        if let Some(clear_result) = self
-            .pipeline
-            .clear_audio_output_for_seek(new_playback_generation)
-        {
+        if let Some(clear_result) = self.pipeline.clear_audio_output_for_seek(generation) {
             match clear_result {
                 Ok(ack_generation) => {
                     self.pipeline.mark_audio_buffer_clear_ack(ack_generation);
@@ -648,12 +732,9 @@ impl PlayerSession {
                 }
             }
         } else {
-            self.pipeline
-                .mark_audio_buffer_clear_ack(new_playback_generation);
+            self.pipeline.mark_audio_buffer_clear_ack(generation);
             self.pipeline.reset_audio_clock();
         }
-
-        new_playback_generation
     }
 
     /// Собирает preview frame из seek-owned promoted lease-а.
@@ -702,16 +783,26 @@ impl PlayerSession {
             .expect("prepared seek test requires selected video track");
         let target_pts = self.seek_landing_target_pts(video_track_id, target_position);
         let track_selection = self.seek_landing_track_selection_for_tests(video_track_id);
-        let generation = self
-            .pipeline
-            .seek_generation()
-            .checked_add(1)
-            .expect("prepared seek test generation must not overflow");
+        let playback_generation = self
+            .seek_runtime
+            .seek_landing_playback_generation()
+            .unwrap_or_else(|| {
+                PlaybackGeneration::new(
+                    self.pipeline
+                        .seek_generation()
+                        .checked_add(1)
+                        .expect("prepared seek test generation must not overflow"),
+                )
+            });
+        let scrub_generation = self
+            .seek_runtime
+            .next_seek_landing_scrub_generation_after_supersede()
+            .unwrap_or_else(|| ScrubGeneration::new(SEEK_LANDING_FIRST_SCRUB_GENERATION));
         let key = TimelineHoverPrepareFrameKey::new(
             SourceRevision::new(SEEK_LANDING_SOURCE_REVISION_UNTRACKED),
             track_selection,
             BackendRevision::new(SEEK_LANDING_BACKEND_REVISION_UNTRACKED),
-            seek_landing_prepared_generation_token(generation),
+            seek_landing_generation_token(playback_generation.get(), scrub_generation),
             FrameExactnessPolicy::TargetOrAfter,
             prepared_seek_landing_bucket(target_pts),
         );
@@ -727,6 +818,11 @@ impl PlayerSession {
     #[cfg(test)]
     pub(crate) fn prepared_seek_landing_working_set_len_for_tests(&self) -> usize {
         self.prepared_seek_landing.working_set_len_for_tests()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prepared_seek_landing_recent_superseded_len_for_tests(&self) -> usize {
+        self.prepared_seek_landing.recent_superseded_len_for_tests()
     }
 
     #[cfg(test)]
@@ -772,7 +868,7 @@ impl PlayerSession {
 pub(super) fn prepared_seek_landing_context(
     track_selection: ScrubTrackSelection,
     target: ScrubTarget,
-    playback_generation: u64,
+    generation: ScrubGenerationToken,
 ) -> ScrubTargetContext {
     ScrubTargetContext::new(
         SourceRevision::new(SEEK_LANDING_SOURCE_REVISION_UNTRACKED),
@@ -781,7 +877,7 @@ pub(super) fn prepared_seek_landing_context(
         target,
         ScrubExactnessPolicy::ExactFrame,
         ScrubRequestKind::SeekLanding,
-        seek_landing_prepared_generation_token(playback_generation),
+        generation,
     )
 }
 
@@ -809,11 +905,15 @@ fn prepared_seek_landing_bucket(target_pts: TrackTimestamp) -> TimelineHoverFram
     TimelineHoverFrameBucket::new(bucket)
 }
 
-/// Возвращает generation token первого one-shot SeekLanding context-а.
-fn seek_landing_prepared_generation_token(playback_generation: u64) -> ScrubGenerationToken {
+/// Возвращает generation token для player-owned one-shot SeekLanding context-а.
+#[must_use]
+pub(super) fn seek_landing_generation_token(
+    playback_generation: u64,
+    scrub_generation: ScrubGeneration,
+) -> ScrubGenerationToken {
     ScrubGenerationToken::new(
         PlaybackGeneration::new(playback_generation),
-        ScrubGeneration::new(SEEK_LANDING_PREPARED_SCRUB_GENERATION),
+        scrub_generation,
     )
 }
 

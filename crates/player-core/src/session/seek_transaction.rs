@@ -1,8 +1,9 @@
 use std::time::{Duration, Instant};
 
 use frame_server_core::{
-    CancelScrubReason, FinishScrubPolicy, FrameServerConfig, ScrubExactnessPolicy, ScrubGeneration,
-    ScrubRequestKind, ScrubTarget, ScrubTargetUpdate, ScrubTrackSelection,
+    CancelScrubReason, CancelledOutcome, FinishScrubPolicy, FrameServerConfig, ScrubDriverOutcome,
+    ScrubEvent, ScrubExactnessPolicy, ScrubGeneration, ScrubGenerationToken, ScrubRequestKind,
+    ScrubTarget, ScrubTargetUpdate, ScrubTrackSelection,
 };
 use media_core::{
     MediaDemuxError, MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason,
@@ -25,7 +26,8 @@ use crate::{
 use super::audio_runtime::SeekAudioGateStatus;
 use super::prepared_seek::{
     PreparedSeekLandingStart, SEEK_LANDING_BACKEND_REVISION_UNTRACKED,
-    SEEK_LANDING_SOURCE_REVISION_UNTRACKED,
+    SEEK_LANDING_FIRST_SCRUB_GENERATION, SEEK_LANDING_SOURCE_REVISION_UNTRACKED,
+    seek_landing_generation_token,
 };
 use super::scrub_driver::{
     PlayerScrubTransactionDriver, default_scrub_execution_policy, scrub_update_guards_for_owner,
@@ -90,6 +92,19 @@ impl SeekCommitGateDecision {
             Self::Waiting | Self::Ready => None,
         }
     }
+}
+
+fn initial_scrub_generation_before_target(
+    target_scrub_generation: ScrubGeneration,
+) -> PlayerResult<ScrubGeneration> {
+    let Some(initial_generation) = target_scrub_generation.get().checked_sub(1) else {
+        return Err(PlayerError::new(
+            PlayerErrorKind::RuntimeError,
+            "SeekLanding target scrub generation cannot be zero",
+        ));
+    };
+
+    Ok(ScrubGeneration::new(initial_generation))
 }
 
 /// Мапит fatal outcome decoder output-floor boundary в player runtime error.
@@ -1480,6 +1495,7 @@ impl PlayerSession {
         self.seek_runtime.clear_active_commit();
         self.prepared_seek_landing.clear_promoted_seek_ownership();
         self.seek_runtime.clear_trace();
+        self.seek_runtime.clear_seek_landing();
         self.seek_runtime.clear_simple_scrub();
         self.seek_runtime.clear_eof_fallback_video_position();
         self.clear_seek_preroll_fallback_frame();
@@ -1624,8 +1640,14 @@ impl PlayerSession {
     /// Запускает one-shot SeekLanding route для обычной public seek-команды.
     pub(super) fn seek(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
-        let resume_intent = PlaybackResumeIntent::from_playback_state(self.playback_state());
+        let replacing_active_seek_landing = self.seek_runtime.seek_landing_active();
+        let resume_intent = self
+            .seek_runtime
+            .active_seek_landing_resume_intent()
+            .unwrap_or_else(|| PlaybackResumeIntent::from_playback_state(self.playback_state()));
+        if !replacing_active_seek_landing {
+            self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
+        }
         self.start_one_shot_seek_landing_from_request(request, resume_intent)
     }
 
@@ -1727,20 +1749,33 @@ impl PlayerSession {
             self.record_recoverable_error(player_error_from_seek_demux_request_error(error));
             return Ok(());
         }
-        let generation = self
-            .pipeline
-            .seek_generation()
-            .checked_add(1)
-            .ok_or_else(|| {
-                PlayerError::new(
-                    PlayerErrorKind::RuntimeError,
-                    "Seek generation overflow would break SeekLanding stale-frame guards",
+        let replacement_generation = self.supersede_active_seek_landing_for_new_target()?;
+        let replacing_existing_seek_landing = replacement_generation.is_some();
+        let generation_token = match replacement_generation {
+            Some(generation) => generation,
+            None => {
+                let playback_generation = self
+                    .pipeline
+                    .seek_generation()
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        PlayerError::new(
+                            PlayerErrorKind::RuntimeError,
+                            "Seek generation overflow would break SeekLanding stale-frame guards",
+                        )
+                    })?;
+                seek_landing_generation_token(
+                    playback_generation,
+                    ScrubGeneration::new(SEEK_LANDING_FIRST_SCRUB_GENERATION),
                 )
-            })?;
+            }
+        };
+        let generation = generation_token.playback_generation.get();
+        let target_scrub_generation = generation_token.scrub_generation;
 
         self.pause_audio_output_for_seek();
         self.seek_runtime
-            .begin_seek_landing_request(seek_mode, resume_intent);
+            .begin_seek_landing_request(generation_token, seek_mode, resume_intent);
         self.seek_runtime.clear_eof_fallback_video_position();
         self.clear_seek_preroll_fallback_frame();
         self.pipeline
@@ -1758,7 +1793,7 @@ impl PlayerSession {
             target_position,
             seek_mode,
             resume_intent,
-            generation,
+            generation_token,
             track_selection,
             target,
         )? {
@@ -1782,7 +1817,9 @@ impl PlayerSession {
             ScrubRequestKind::SeekLanding,
             default_scrub_execution_policy(config, FinishScrubPolicy::CommitVisiblePreview),
         );
-        let mut driver = PlayerScrubTransactionDriver::new(config, ScrubGeneration::new(0));
+        let initial_scrub_generation =
+            initial_scrub_generation_before_target(target_scrub_generation)?;
+        let mut driver = PlayerScrubTransactionDriver::new(config, initial_scrub_generation);
         let run = driver.submit_target_update(self, update);
         self.pending_scrub_events.extend(run.events);
 
@@ -1790,6 +1827,9 @@ impl PlayerSession {
             return Ok(());
         }
 
+        if replacing_existing_seek_landing {
+            self.invalidate_in_flight_scrub_outputs_after_exit("seek landing replacement failed");
+        }
         self.seek_runtime.clear_active_commit();
         self.prepared_seek_landing.clear_promoted_seek_ownership();
         self.seek_runtime.clear_trace();
@@ -1936,9 +1976,74 @@ impl PlayerSession {
         }
     }
 
+    /// Заменяет active SeekLanding новым target-ом без user-cancel semantics.
+    fn supersede_active_seek_landing_for_new_target(
+        &mut self,
+    ) -> PlayerResult<Option<ScrubGenerationToken>> {
+        if !self.seek_runtime.seek_landing_active() {
+            return Ok(None);
+        }
+
+        let Some(next_scrub_generation) = self
+            .seek_runtime
+            .next_seek_landing_scrub_generation_after_supersede()
+        else {
+            return Err(PlayerError::new(
+                PlayerErrorKind::RuntimeError,
+                "Nested scrub generation overflow would break SeekLanding replacement guards",
+            ));
+        };
+        let Some(playback_generation) = self.seek_runtime.seek_landing_playback_generation() else {
+            return Err(PlayerError::new(
+                PlayerErrorKind::RuntimeError,
+                "Active SeekLanding is missing scrub playback generation",
+            ));
+        };
+        let next_generation = ScrubGenerationToken::new(playback_generation, next_scrub_generation);
+        let active_context = self
+            .seek_runtime
+            .active_commit()
+            .and_then(|seek_commit| self.active_seek_landing_context(seek_commit));
+
+        debug!(
+            target_position = ?self.snapshot.timeline.target_position,
+            next_scrub_generation = next_scrub_generation.get(),
+            "Superseding active SeekLanding with a new target"
+        );
+
+        if let Err(error) = self.clear_active_seek_decoder_output_floor("seek landing superseded") {
+            self.mark_fatal_error(error.clone());
+            return Err(error);
+        }
+
+        if let Some(context) = active_context {
+            self.pending_scrub_events
+                .push(ScrubEvent::from_driver_outcome(
+                    ScrubDriverOutcome::Cancelled(CancelledOutcome {
+                        context,
+                        reason: CancelScrubReason::SupersededByNewTarget,
+                    }),
+                ));
+        }
+
+        let _release_outcome = self.release_prepared_seek_landing_for_cancel(
+            CancelScrubReason::SupersededByNewTarget,
+            active_context,
+        );
+        self.seek_runtime.clear_active_commit();
+        self.seek_runtime.clear_trace();
+        self.seek_runtime.clear_seek_landing();
+        self.seek_runtime.clear_eof_fallback_video_position();
+        self.clear_seek_preroll_fallback_frame();
+        self.pipeline.clear_pending_packets_for_seek();
+        self.clear_queued_video_frames();
+
+        Ok(Some(next_generation))
+    }
+
     /// Закрывает live scrub перед внешней командой без commit-а latest target-а.
     pub(super) fn cancel_active_scrub_for_external_command(&mut self, reason: CancelScrubReason) {
-        if self.seek_landing_decode_active() {
+        if self.seek_runtime.seek_landing_active() {
             self.cancel_active_seek_landing_for_external_command(reason);
             return;
         }
@@ -1973,6 +2078,10 @@ impl PlayerSession {
             target_position = ?self.snapshot.timeline.target_position,
             "Cancelling active SeekLanding before external command"
         );
+        let active_context = self
+            .seek_runtime
+            .active_commit()
+            .and_then(|seek_commit| self.active_seek_landing_context(seek_commit));
         if let Err(error) = self.clear_active_seek_decoder_output_floor("seek landing cancel") {
             self.mark_fatal_error(error);
             return;
@@ -1980,7 +2089,8 @@ impl PlayerSession {
 
         self.invalidate_in_flight_scrub_outputs_after_exit("seek landing external command cancel");
         self.seek_runtime.clear_active_commit();
-        self.prepared_seek_landing.clear_promoted_seek_ownership();
+        let _release_outcome =
+            self.release_prepared_seek_landing_for_cancel(reason, active_context);
         self.seek_runtime.clear_trace();
         self.seek_runtime.clear_seek_landing();
         self.seek_runtime.clear_eof_fallback_video_position();

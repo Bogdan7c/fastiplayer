@@ -379,7 +379,9 @@ impl ScrubLifecycleError {
 
 impl ScrubTransactionLifecycle for PlayerSession {
     fn current_playback_generation(&self) -> PlaybackGeneration {
-        PlaybackGeneration::new(self.pipeline.seek_generation())
+        self.seek_runtime
+            .seek_landing_playback_generation()
+            .unwrap_or_else(|| PlaybackGeneration::new(self.pipeline.seek_generation()))
     }
 
     fn clear_old_decode_floor(&mut self, _context: ScrubTargetContext) -> ScrubLifecycleResult<()> {
@@ -401,9 +403,13 @@ impl ScrubTransactionLifecycle for PlayerSession {
         &mut self,
         generation: ScrubGenerationToken,
     ) -> ScrubLifecycleResult<()> {
-        self.begin_seek_landing_playback_generation(
+        let decode_seek_generation = self
+            .begin_cold_seek_landing_decoder_generation()
+            .map_err(scrub_error_from_seek_landing_generation_start)?;
+        self.activate_seek_landing_scrub_generation(
             generation,
             SeekLandingExecution::ReusedDecoderColdDecode,
+            Some(decode_seek_generation),
         )
         .map_err(scrub_error_from_seek_landing_generation_start)
     }
@@ -472,8 +478,11 @@ impl ScrubTransactionLifecycle for PlayerSession {
                 ));
             };
 
+            let commit_generation = seek_landing
+                .decode_seek_generation()
+                .unwrap_or_else(|| context.generation().playback_generation.get());
             let seek_commit = SeekCommitState {
-                generation: context.generation().playback_generation.get(),
+                generation: commit_generation,
                 seek_mode: seek_landing.seek_mode(),
                 target_position: context.target().media_time,
                 actual_position,
@@ -582,19 +591,8 @@ fn scrub_intent_stale_reason(
 ) -> Option<ScrubStaleReason> {
     let context_generation = intent.context().generation();
     let owner_playback_generation = lifecycle.current_playback_generation();
-    let current_playback_generation = if matches!(intent, ScrubIntent::PrepareTarget(_))
-        && owner_playback_generation
-            .get()
-            .checked_add(1)
-            .is_some_and(|next_generation| {
-                PlaybackGeneration::new(next_generation) == context_generation.playback_generation
-            }) {
-        context_generation.playback_generation
-    } else {
-        owner_playback_generation
-    };
     let current_generation =
-        ScrubGenerationToken::new(current_playback_generation, current_scrub_generation);
+        ScrubGenerationToken::new(owner_playback_generation, current_scrub_generation);
     let stale_reason = context_generation.stale_reason_against(current_generation)?;
 
     if superseded_cancel_can_release_old_target(intent, stale_reason) {

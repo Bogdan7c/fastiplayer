@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
-use frame_server_core::{ScrubGenerationToken, ScrubStaleReason};
+use frame_server_core::{
+    PlaybackGeneration, ScrubGeneration, ScrubGenerationToken, ScrubStaleReason,
+};
 use media_core::{DemuxSeekRequest, MediaTime, TrackKind};
 
 use crate::diagnostics::{
@@ -65,6 +67,9 @@ pub(crate) struct SeekCommitState {
 /// scrub generation от `frame-server-core`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PendingSeekLandingState {
+    /// Planned scrub identity для route-а. Это не decoder packet generation.
+    generation: ScrubGenerationToken,
+
     /// Пользовательский seek mode, который должен попасть в final commit gates.
     seek_mode: SeekMode,
 
@@ -89,6 +94,12 @@ pub(crate) struct ActiveSeekLandingState {
 
     /// Фактическая позиция, куда demuxer принял decode-point seek.
     actual_decode_position: Option<MediaTime>,
+
+    /// Pipeline seek generation для cold decoder route-а.
+    ///
+    /// Prepared visual override не декодирует новый frame, поэтому не имеет
+    /// отдельного decoder generation.
+    decode_seek_generation: Option<u64>,
 }
 
 /// Route исполнения active SeekLanding без неявного `bool` на callsite.
@@ -120,6 +131,12 @@ pub(crate) enum SeekLandingGenerationStartError {
 }
 
 impl ActiveSeekLandingState {
+    /// Возвращает полный guard token active landing-а без раскрытия полей state struct.
+    #[must_use]
+    pub(crate) const fn generation(self) -> ScrubGenerationToken {
+        self.generation
+    }
+
     /// Проверяет, относится ли driver intent/outcome к текущему active landing.
     #[must_use]
     pub(crate) fn matches_generation(self, generation: ScrubGenerationToken) -> bool {
@@ -154,6 +171,19 @@ impl ActiveSeekLandingState {
     #[must_use]
     pub(crate) const fn actual_decode_position(self) -> Option<MediaTime> {
         self.actual_decode_position
+    }
+
+    /// Возвращает pipeline seek generation, если route действительно декодирует.
+    #[must_use]
+    pub(crate) const fn decode_seek_generation(self) -> Option<u64> {
+        self.decode_seek_generation
+    }
+
+    /// Проверяет, может ли commit generation относиться к этому landing-у.
+    #[must_use]
+    pub(crate) fn matches_commit_generation(self, commit_generation: u64) -> bool {
+        self.decode_seek_generation == Some(commit_generation)
+            || self.generation.playback_generation == PlaybackGeneration::new(commit_generation)
     }
 }
 
@@ -908,20 +938,53 @@ impl SeekRuntimeState {
     /// Запоминает public seek параметры до того, как state-machine выдаст context.
     pub(crate) fn begin_seek_landing_request(
         &mut self,
+        generation: ScrubGenerationToken,
         seek_mode: SeekMode,
         resume_intent: PlaybackResumeIntent,
     ) {
         self.pending_seek_landing = Some(PendingSeekLandingState {
+            generation,
             seek_mode,
             resume_intent,
         });
         self.active_seek_landing = None;
     }
 
-    /// Проверяет, ждёт ли S17A route concrete scrub generation от driver-а.
+    /// Возвращает planned scrub identity для pending SeekLanding-а.
     #[must_use]
-    pub(crate) const fn pending_seek_landing_request_active(&self) -> bool {
-        self.pending_seek_landing.is_some()
+    pub(crate) const fn pending_seek_landing_generation(&self) -> Option<ScrubGenerationToken> {
+        match self.pending_seek_landing {
+            Some(pending) => Some(pending.generation),
+            None => None,
+        }
+    }
+
+    /// Возвращает playback guard текущего SeekLanding route-а.
+    ///
+    /// Этот guard принадлежит scrub transaction identity и не обязан совпадать
+    /// с decoder/pipeline seek generation.
+    #[must_use]
+    pub(crate) const fn seek_landing_playback_generation(&self) -> Option<PlaybackGeneration> {
+        match (self.pending_seek_landing, self.active_seek_landing) {
+            (Some(pending), _) => Some(pending.generation.playback_generation),
+            (None, Some(active)) => Some(active.generation.playback_generation),
+            (None, None) => None,
+        }
+    }
+
+    /// Возвращает следующий nested scrub generation для replacement target-а.
+    ///
+    /// Playback generation остаётся решением `PlayerSession`; этот owner-метод
+    /// отвечает только за nested S17 generation, которую нельзя вычислять через
+    /// прямой доступ к `active_seek_landing`.
+    #[must_use]
+    pub(crate) fn next_seek_landing_scrub_generation_after_supersede(
+        &self,
+    ) -> Option<ScrubGeneration> {
+        let active = self.active_seek_landing?;
+        let next_generation = active.generation.scrub_generation.get().checked_add(1)?;
+
+        Some(ScrubGeneration::new(next_generation))
     }
 
     /// Привязывает pending S17 SeekLanding request к concrete scrub generation.
@@ -929,17 +992,20 @@ impl SeekRuntimeState {
         &mut self,
         generation: ScrubGenerationToken,
         execution: SeekLandingExecution,
+        decode_seek_generation: Option<u64>,
     ) {
         let Some(pending) = self.pending_seek_landing.take() else {
             return;
         };
 
+        debug_assert_eq!(pending.generation, generation);
         self.active_seek_landing = Some(ActiveSeekLandingState {
             generation,
             execution,
             seek_mode: pending.seek_mode,
             resume_intent: pending.resume_intent,
             actual_decode_position: None,
+            decode_seek_generation,
         });
     }
 
@@ -967,6 +1033,16 @@ impl SeekRuntimeState {
             .filter(|active| active.matches_generation(generation))
     }
 
+    /// Возвращает active SeekLanding state для commit-а prepared/cold route-а.
+    #[must_use]
+    pub(crate) fn active_seek_landing_for_commit_generation(
+        &self,
+        commit_generation: u64,
+    ) -> Option<ActiveSeekLandingState> {
+        self.active_seek_landing
+            .filter(|active| active.matches_commit_generation(commit_generation))
+    }
+
     /// Возвращает resume intent active SeekLanding-а для cancel-first маршрутов.
     #[must_use]
     pub(crate) const fn active_seek_landing_resume_intent(&self) -> Option<PlaybackResumeIntent> {
@@ -974,6 +1050,12 @@ impl SeekRuntimeState {
             Some(active) => Some(active.resume_intent()),
             None => None,
         }
+    }
+
+    /// Проверяет наличие любого active SeekLanding route-а.
+    #[must_use]
+    pub(crate) const fn seek_landing_active(&self) -> bool {
+        self.active_seek_landing.is_some()
     }
 
     /// Decode loop должен работать в public `Scrubbing` только для S17A SeekLanding.

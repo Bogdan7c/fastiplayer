@@ -3,7 +3,8 @@ use super::*;
 
 use super::super::prepared_seek::{
     PreparedSeekBranchResumePendingReason, PreparedSeekBranchToken,
-    PreparedSeekLandingOverrideHandoff, PreparedSeekLandingPromotionKind, VideoResumeRunwayState,
+    PreparedSeekLandingOverrideHandoff, PreparedSeekLandingPromotionKind,
+    PreparedSeekLandingReleaseOutcome, VideoResumeRunwayState,
 };
 
 struct RecordingPreparedReleaseSink {
@@ -77,6 +78,16 @@ fn take_prepared_override_lease(
             panic!("prepared hit must publish an override lease before clear")
         }
         None => panic!("prepared hit must publish an override lease"),
+    }
+}
+
+fn take_prepared_override_clear(session: &mut PlayerSession) {
+    match session.take_prepared_seek_landing_override_handoff() {
+        Some(PreparedSeekLandingOverrideHandoff::Clear) => {}
+        Some(PreparedSeekLandingOverrideHandoff::Publish(_lease)) => {
+            panic!("prepared replacement must clear the old override before publishing a new one")
+        }
+        None => panic!("prepared replacement must clear the old override"),
     }
 }
 
@@ -715,7 +726,6 @@ fn prepared_commit_ready_video_runway_without_audio_commits_atomically() {
             Some(PreparedSeekBranchToken::with_video_runway_for_tests(runway)),
             Arc::clone(&released),
         );
-
         session
             .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
                 prepared_media_time(target_millis),
@@ -733,6 +743,7 @@ fn prepared_commit_ready_video_runway_without_audio_commits_atomically() {
         assert!(!session.snapshot().timeline.scrubbing);
         assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
         assert!(session.seek_commit().is_none());
+        assert!(!session.seek_runtime.seek_landing_active());
         assert!(!session.take_events().iter().any(|event| matches!(
             event,
             PlayerEvent::PlaybackStateChanged(PlaybackState::Scrubbing)
@@ -804,6 +815,390 @@ fn prepared_commit_ready_video_runway_waits_for_active_audio() {
             .all(|event| !matches!(event, frame_server_core::ScrubEvent::Committed(_)))
     );
     assert_eq!(release_count(&released, 87), 0);
+}
+
+#[test]
+fn prepared_seek_supersede_promotes_new_target_immediately() {
+    let mut session = PlayerSession::new();
+    let seek_request_log = install_fake_media_with_seek_request_log(
+        &mut session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+    let released = Arc::new(Mutex::new(Vec::new()));
+    insert_prepared_seek_frame_for_tests(
+        &mut session,
+        11_000,
+        11_000,
+        91,
+        None,
+        Arc::clone(&released),
+    );
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            prepared_media_time(11_000),
+        )))
+        .unwrap();
+
+    let old_events = session.take_scrub_events();
+    let old_resume_pending = old_events
+        .iter()
+        .find_map(|event| match event {
+            frame_server_core::ScrubEvent::ResumePending(pending) => Some(pending),
+            _ => None,
+        })
+        .expect("old prepared target must enter resume_pending");
+    assert_eq!(
+        old_resume_pending.context.target().media_time,
+        prepared_media_time(11_000)
+    );
+    assert_eq!(
+        session.prepared_seek_landing_recent_superseded_len_for_tests(),
+        0
+    );
+
+    insert_prepared_seek_frame_for_tests(
+        &mut session,
+        12_000,
+        12_000,
+        92,
+        Some(PreparedSeekBranchToken::resume_ready_for_tests()),
+        Arc::clone(&released),
+    );
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            prepared_media_time(12_000),
+        )))
+        .unwrap();
+
+    assert_eq!(
+        seek_request_log
+            .lock()
+            .expect("seek request log mutex must not be poisoned")
+            .len(),
+        0
+    );
+    assert!(session.seek_commit().is_none());
+    assert_eq!(session.active_prepared_seek_landing_kind_for_tests(), None);
+    assert_eq!(
+        session.prepared_seek_landing_recent_superseded_len_for_tests(),
+        1
+    );
+    assert_eq!(release_count(&released, 91), 0);
+    assert_eq!(release_count(&released, 92), 1);
+
+    let replacement_events = session.take_scrub_events();
+    let cancelled = replacement_events
+        .iter()
+        .find_map(|event| match event {
+            frame_server_core::ScrubEvent::Cancelled(cancelled) => Some(cancelled),
+            _ => None,
+        })
+        .expect("supersede must publish diagnostics-only cancellation");
+    let new_preview = replacement_events
+        .iter()
+        .find_map(|event| match event {
+            frame_server_core::ScrubEvent::PreviewFrameReady(preview) => Some(preview),
+            _ => None,
+        })
+        .expect("new prepared target must publish preview immediately");
+
+    assert_eq!(
+        cancelled.reason,
+        frame_server_core::CancelScrubReason::SupersededByNewTarget
+    );
+    assert_eq!(
+        cancelled.context.target().media_time,
+        prepared_media_time(11_000)
+    );
+    assert_eq!(
+        new_preview.context.target().media_time,
+        prepared_media_time(12_000)
+    );
+    assert_eq!(
+        new_preview.context.generation().scrub_generation.get(),
+        old_resume_pending
+            .context
+            .generation()
+            .scrub_generation
+            .get()
+            + 1
+    );
+    assert_eq!(
+        new_preview.context.generation().playback_generation,
+        old_resume_pending.context.generation().playback_generation
+    );
+    assert!(replacement_events.iter().any(|event| matches!(
+        event,
+        frame_server_core::ScrubEvent::Committed(committed)
+            if committed.context.target().media_time == prepared_media_time(12_000)
+    )));
+    assert!(replacement_events.iter().all(|event| !matches!(
+        event,
+        frame_server_core::ScrubEvent::Committed(committed)
+            if committed.context.target().media_time == prepared_media_time(11_000)
+    )));
+    assert!(
+        replacement_events
+            .iter()
+            .all(|event| !matches!(event, frame_server_core::ScrubEvent::Failed(_)))
+    );
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            prepared_media_time(11_000),
+        )))
+        .unwrap();
+
+    assert_eq!(
+        seek_request_log
+            .lock()
+            .expect("seek request log mutex must not be poisoned")
+            .len(),
+        0
+    );
+    assert_eq!(
+        session.active_prepared_seek_landing_kind_for_tests(),
+        Some(
+            PreparedSeekLandingPromotionKind::VisualOverrideResumePending {
+                reason: PreparedSeekBranchResumePendingReason::FrameOnly,
+            }
+        )
+    );
+    assert_eq!(
+        session.prepared_seek_landing_recent_superseded_len_for_tests(),
+        0
+    );
+    assert_eq!(release_count(&released, 91), 0);
+    let click_back_events = session.take_scrub_events();
+    let click_back_preview = click_back_events
+        .iter()
+        .find_map(|event| match event {
+            frame_server_core::ScrubEvent::PreviewFrameReady(preview) => Some(preview),
+            _ => None,
+        })
+        .expect("click-back target must promote from recent-superseded");
+    assert_eq!(
+        click_back_preview.context.target().media_time,
+        prepared_media_time(11_000)
+    );
+    assert_eq!(
+        click_back_preview.context.generation().playback_generation,
+        old_resume_pending.context.generation().playback_generation
+    );
+}
+
+#[test]
+fn cold_seek_supersede_clears_old_override_and_keeps_confirmed_frame() {
+    let mut session = PlayerSession::new();
+    let seek_request_log = install_fake_media_with_seek_request_log(
+        &mut session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+    session
+        .pipeline
+        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(3), 300));
+    session
+        .pipeline
+        .set_media_clock_base(Duration::from_secs(3));
+    session
+        .snapshot
+        .set_timeline_position(MediaTime::from_secs(3));
+    let released = Arc::new(Mutex::new(Vec::new()));
+    insert_prepared_seek_frame_for_tests(
+        &mut session,
+        11_000,
+        11_000,
+        93,
+        None,
+        Arc::clone(&released),
+    );
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            prepared_media_time(11_000),
+        )))
+        .unwrap();
+    let old_override = take_prepared_override_lease(&mut session);
+    let old_events = session.take_scrub_events();
+    let old_resume_pending = old_events
+        .iter()
+        .find_map(|event| match event {
+            frame_server_core::ScrubEvent::ResumePending(pending) => Some(pending),
+            _ => None,
+        })
+        .expect("old prepared target must enter resume_pending");
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            prepared_media_time(12_000),
+        )))
+        .unwrap();
+
+    take_prepared_override_clear(&mut session);
+    assert_eq!(
+        session.pipeline.present_video_frame_pts(),
+        Some(Duration::from_secs(3))
+    );
+    assert_eq!(
+        session.snapshot().timeline.target_position,
+        Some(prepared_media_time(12_000))
+    );
+    assert!(session.snapshot().timeline.scrubbing);
+    assert!(session.snapshot().timeline.stale_frame);
+    assert!(session.seek_landing_decode_active());
+    assert_eq!(session.active_prepared_seek_landing_kind_for_tests(), None);
+    assert_eq!(
+        session.prepared_seek_landing_recent_superseded_len_for_tests(),
+        1
+    );
+    assert_eq!(release_count(&released, 93), 0);
+    assert_eq!(
+        seek_request_log
+            .lock()
+            .expect("seek request log mutex must not be poisoned")
+            .len(),
+        1
+    );
+
+    let replacement_events = session.take_scrub_events();
+    assert!(replacement_events.iter().any(|event| matches!(
+        event,
+        frame_server_core::ScrubEvent::Cancelled(cancelled)
+            if cancelled.reason == frame_server_core::CancelScrubReason::SupersededByNewTarget
+    )));
+    let new_resume_pending = replacement_events
+        .iter()
+        .find_map(|event| match event {
+            frame_server_core::ScrubEvent::ResumePending(pending)
+                if pending.context.target().media_time == prepared_media_time(12_000) =>
+            {
+                Some(pending)
+            }
+            _ => None,
+        })
+        .expect("cold replacement target must enter resume_pending");
+    assert_eq!(
+        new_resume_pending.context.generation().playback_generation,
+        old_resume_pending.context.generation().playback_generation
+    );
+    assert_eq!(
+        new_resume_pending
+            .context
+            .generation()
+            .scrub_generation
+            .get(),
+        old_resume_pending
+            .context
+            .generation()
+            .scrub_generation
+            .get()
+            + 1
+    );
+
+    drop(old_override);
+    assert_eq!(release_count(&released, 93), 0);
+}
+
+#[test]
+fn prepared_demote_release_reports_typed_accept_and_reject() {
+    let mut accepted_session = PlayerSession::new();
+    install_fake_media_with_seek_request_log(
+        &mut accepted_session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+    let accepted_released = Arc::new(Mutex::new(Vec::new()));
+    insert_prepared_seek_frame_for_tests(
+        &mut accepted_session,
+        11_000,
+        11_000,
+        94,
+        None,
+        Arc::clone(&accepted_released),
+    );
+    accepted_session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            prepared_media_time(11_000),
+        )))
+        .unwrap();
+    let accepted_commit = accepted_session
+        .seek_commit()
+        .expect("prepared hit must create a pending commit");
+    let accepted_context = accepted_session
+        .active_seek_landing_context(accepted_commit)
+        .expect("prepared hit must expose active context");
+
+    let accepted_outcome = accepted_session.release_prepared_seek_landing_for_cancel(
+        frame_server_core::CancelScrubReason::SupersededByNewTarget,
+        Some(accepted_context),
+    );
+
+    assert_eq!(
+        accepted_outcome,
+        PreparedSeekLandingReleaseOutcome::DemotedToRecentSuperseded
+    );
+    assert_eq!(
+        accepted_session.prepared_seek_landing_recent_superseded_len_for_tests(),
+        1
+    );
+    assert_eq!(release_count(&accepted_released, 94), 0);
+
+    let mut rejected_session = PlayerSession::new();
+    install_fake_media_with_seek_request_log(
+        &mut rejected_session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+    let rejected_released = Arc::new(Mutex::new(Vec::new()));
+    insert_prepared_seek_frame_for_tests(
+        &mut rejected_session,
+        13_000,
+        13_000,
+        95,
+        None,
+        Arc::clone(&rejected_released),
+    );
+    rejected_session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            prepared_media_time(13_000),
+        )))
+        .unwrap();
+    let rejected_commit = rejected_session
+        .seek_commit()
+        .expect("prepared hit must create a pending commit");
+    let rejected_context = rejected_session
+        .active_seek_landing_context(rejected_commit)
+        .expect("prepared hit must expose active context");
+    let mismatched_context = frame_server_core::ScrubTargetContext::new(
+        rejected_context.source_revision(),
+        rejected_context.backend_revision(),
+        rejected_context.track_selection(),
+        frame_server_core::ScrubTarget::new(
+            prepared_media_time(14_000),
+            prepared_timestamp(14_000),
+        ),
+        rejected_context.exactness_policy(),
+        rejected_context.request_kind(),
+        rejected_context.generation(),
+    );
+
+    let rejected_outcome = rejected_session.release_prepared_seek_landing_for_cancel(
+        frame_server_core::CancelScrubReason::SupersededByNewTarget,
+        Some(mismatched_context),
+    );
+
+    assert!(matches!(
+        rejected_outcome,
+        PreparedSeekLandingReleaseOutcome::DemoteRejected {
+            reason:
+                frame_server_core::TimelineHoverPrepareDemoteBackRejection::PromotedKeyNotCurrent { .. },
+        }
+    ));
+    assert_eq!(
+        rejected_session.prepared_seek_landing_recent_superseded_len_for_tests(),
+        0
+    );
+    assert_eq!(release_count(&rejected_released, 95), 1);
 }
 
 #[test]

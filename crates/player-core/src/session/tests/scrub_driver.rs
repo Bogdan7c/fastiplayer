@@ -92,6 +92,15 @@ fn player_session_scrub_driver_adapter_uses_existing_pipeline_boundaries() {
         decoder_mode.configure(&decoder);
         session.pipeline.set_video_decoder_thread(decoder.clone());
         let initial_generation = session.pipeline.seek_generation();
+        let planned_generation = ScrubGenerationToken::new(
+            PlaybackGeneration::new(initial_generation),
+            ScrubGeneration::new(1),
+        );
+        session.seek_runtime.begin_seek_landing_request(
+            planned_generation,
+            SeekMode::Accurate,
+            PlaybackResumeIntent::Pause,
+        );
         let mut driver = PlayerScrubTransactionDriver::new(config, ScrubGeneration::new(0));
 
         let run = driver.submit_target_update(
@@ -102,7 +111,7 @@ fn player_session_scrub_driver_adapter_uses_existing_pipeline_boundaries() {
         assert_eq!(decoder.flush_count(), 1, "{decoder_mode:?}");
         assert_eq!(
             session.pipeline.seek_generation(),
-            initial_generation,
+            initial_generation + 1,
             "{decoder_mode:?}"
         );
         let requests = seek_request_log.lock().expect("seek request log lock");
