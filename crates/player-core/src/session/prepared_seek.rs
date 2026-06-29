@@ -540,6 +540,7 @@ impl PlayerSession {
             track_selection,
             target,
             landing.generation(),
+            landing.route().request_kind(),
         ))
     }
 
@@ -637,18 +638,34 @@ impl PlayerSession {
         generation: ScrubGenerationToken,
         track_selection: ScrubTrackSelection,
         target: ScrubTarget,
+        request_kind: ScrubRequestKind,
+        commit_before_release_allowed: bool,
     ) -> PlayerResult<PreparedSeekLandingStart> {
         if seek_mode != SeekMode::Accurate {
             return Ok(PreparedSeekLandingStart::Unavailable);
         }
 
-        let context = prepared_seek_landing_context(track_selection, target, generation);
+        let context =
+            prepared_seek_landing_context(track_selection, target, generation, request_kind);
         let lookup_request = prepared_seek_landing_lookup_request(context);
         let promotion = self.prepared_seek_landing.promote_for_seek(lookup_request);
 
         let PreparedSeekLandingPromotionAttempt::Promoted(promotion_kind) = promotion else {
             return Ok(PreparedSeekLandingStart::Unavailable);
         };
+
+        if request_kind == ScrubRequestKind::LiveScrub
+            && !matches!(
+                promotion_kind,
+                PreparedSeekLandingPromotionKind::ResumeReadyBranch
+            )
+        {
+            // LiveScrub transfer берёт только валидированный branch. Frame-only
+            // prepared entry годится для one-shot visual override, но active drag
+            // должен владеть обычным exact decode path-ом и release-ить entry.
+            self.prepared_seek_landing.clear_promoted_seek_ownership();
+            return Ok(PreparedSeekLandingStart::Unavailable);
+        }
 
         if let Err(error) = self.clear_active_seek_decoder_output_floor("prepared seek landing") {
             self.prepared_seek_landing.clear_promoted_seek_ownership();
@@ -683,6 +700,7 @@ impl PlayerSession {
             promotion_kind,
             PreparedSeekLandingPromotionKind::ResumeReadyBranch
         ) && audio_gate_status.is_ready()
+            && commit_before_release_allowed
         {
             let preview_frame = self.publish_prepared_seek_landing_preview_events(context);
             self.publish_prepared_seek_landing_committed(context, seek_commit, preview_frame);
@@ -885,6 +903,7 @@ pub(super) fn prepared_seek_landing_context(
     track_selection: ScrubTrackSelection,
     target: ScrubTarget,
     generation: ScrubGenerationToken,
+    request_kind: ScrubRequestKind,
 ) -> ScrubTargetContext {
     ScrubTargetContext::new(
         SourceRevision::new(SEEK_LANDING_SOURCE_REVISION_UNTRACKED),
@@ -892,7 +911,7 @@ pub(super) fn prepared_seek_landing_context(
         track_selection,
         target,
         ScrubExactnessPolicy::ExactFrame,
-        ScrubRequestKind::SeekLanding,
+        request_kind,
         generation,
     )
 }

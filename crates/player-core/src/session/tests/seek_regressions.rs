@@ -464,13 +464,14 @@ fn regression_preview_scrub_does_not_mark_target_ready_without_seek() {
         .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(8), 790));
     session.note_presented_frame_for_seek(Duration::from_secs(8));
 
-    assert!(
+    assert_eq!(
         seek_request_log
             .lock()
             .expect("seek request log lock")
-            .is_empty()
+            .len(),
+        1
     );
-    assert!(session.seek_commit().is_none());
+    assert!(session.seek_commit().is_some());
     assert!(session.snapshot().timeline.scrubbing);
     assert!(!session.snapshot().timeline.seeking);
     assert_eq!(session.snapshot().current_position, Duration::ZERO);

@@ -19,6 +19,7 @@ impl PlayerWorker {
         let audio_decoder_factory = Arc::clone(&config.audio_decoder_factory);
         let audio_output_factory = Arc::clone(&config.audio_output_factory);
         let timeline_hover_prepare_handoff = config.timeline_hover_prepare_handoff.clone();
+        let frame_server_config = config.frame_server_config;
 
         let command_sender = PlayerCommandSender { command_tx };
         let snapshot_rx_for_worker = snapshot_rx.clone();
@@ -32,6 +33,7 @@ impl PlayerWorker {
                         audio_decoder_factory,
                         audio_output_factory,
                         timeline_hover_prepare_handoff,
+                        frame_server_config,
                     );
                 if let Err(error) =
                     session.dispatch_command(PlayerCommand::SetVolume(config.default_volume))

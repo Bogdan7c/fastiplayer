@@ -22,8 +22,9 @@ use render_core::{
 #[cfg(test)]
 use render_core::{RenderLiveApplyReport, RenderLiveSettingsError};
 use rustiplayer_config::{
-    AppConfig, LoadedConfig, NetworkConfig, PlayerDemuxConfig, RenderProfile, ToneMappingMode,
-    UiConfig, VideoBackendPreference, VulkanConfig, YoutubeConfig,
+    AppConfig, FrameServerLiveScrubDecodeModeConfig, LoadedConfig, NetworkConfig,
+    PlayerDemuxConfig, RenderProfile, ToneMappingMode, UiConfig, VideoBackendPreference,
+    VulkanConfig, YoutubeConfig,
 };
 use rustiplayer_settings::{
     AppConfigStore, AppConfigValidator, AppRouteApplyReport, AppRouteApplyResult,

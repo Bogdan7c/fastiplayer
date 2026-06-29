@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use frame_server_core::{
-    PlaybackGeneration, ScrubGeneration, ScrubGenerationToken, ScrubStaleReason,
+    PlaybackGeneration, ScrubGeneration, ScrubGenerationToken, ScrubRequestKind, ScrubStaleReason,
 };
 use media_core::{DemuxSeekRequest, MediaTime, TrackKind};
 
@@ -75,6 +75,9 @@ pub(crate) struct PendingSeekLandingState {
 
     /// Состояние, в которое session должна вернуться после успешного landing.
     resume_intent: PlaybackResumeIntent,
+
+    /// Кто владеет моментом final commit-а для этого route-а.
+    route: SeekLandingRoute,
 }
 
 /// Active S17 SeekLanding transaction.
@@ -92,6 +95,9 @@ pub(crate) struct ActiveSeekLandingState {
     /// Resume policy, выбранная в момент входа в one-shot route.
     resume_intent: PlaybackResumeIntent,
 
+    /// Кто владеет моментом final commit-а для этого route-а.
+    route: SeekLandingRoute,
+
     /// Фактическая позиция, куда demuxer принял decode-point seek.
     actual_decode_position: Option<MediaTime>,
 
@@ -100,6 +106,53 @@ pub(crate) struct ActiveSeekLandingState {
     /// Prepared visual override не декодирует новый frame, поэтому не имеет
     /// отдельного decoder generation.
     decode_seek_generation: Option<u64>,
+}
+
+/// Commit ownership active SeekLanding route-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SeekLandingRoute {
+    /// Обычный one-shot seek сам commit-ится, когда gates готовы.
+    OneShot,
+
+    /// Timeline live scrub декодит preview во время drag, но commit разрешает только release.
+    LiveScrub {
+        /// `EndScrub` уже запросил final commit этого target-а.
+        commit_requested: bool,
+    },
+}
+
+impl SeekLandingRoute {
+    /// Создаёт live route до release: preview можно декодить, commit ещё нельзя.
+    #[must_use]
+    pub(crate) const fn live_scrub_preview() -> Self {
+        Self::LiveScrub {
+            commit_requested: false,
+        }
+    }
+
+    /// Возвращает `true`, если final commit можно применять на готовых gates.
+    #[must_use]
+    pub(crate) const fn commit_allowed(self) -> bool {
+        match self {
+            Self::OneShot => true,
+            Self::LiveScrub { commit_requested } => commit_requested,
+        }
+    }
+
+    /// Возвращает `true`, если route принадлежит live timeline drag.
+    #[must_use]
+    pub(crate) const fn is_live_scrub(self) -> bool {
+        matches!(self, Self::LiveScrub { .. })
+    }
+
+    /// Возвращает neutral request kind для scrub events/diagnostics.
+    #[must_use]
+    pub(crate) const fn request_kind(self) -> ScrubRequestKind {
+        match self {
+            Self::OneShot => ScrubRequestKind::SeekLanding,
+            Self::LiveScrub { .. } => ScrubRequestKind::LiveScrub,
+        }
+    }
 }
 
 /// Route исполнения active SeekLanding без неявного `bool` на callsite.
@@ -153,6 +206,12 @@ impl ActiveSeekLandingState {
     #[must_use]
     pub(crate) const fn resume_intent(self) -> PlaybackResumeIntent {
         self.resume_intent
+    }
+
+    /// Возвращает commit owner route без раскрытия layout-а state struct.
+    #[must_use]
+    pub(crate) const fn route(self) -> SeekLandingRoute {
+        self.route
     }
 
     /// Проверяет, должен ли tick продолжать cold decode route.
@@ -322,6 +381,12 @@ impl SimpleScrubState {
     #[must_use]
     pub(crate) const fn active(&self) -> bool {
         self.active
+    }
+
+    /// Возвращает state, подтверждённый до входа в scrub gesture.
+    #[must_use]
+    pub(crate) const fn confirmed_playback_state(&self) -> Option<PlaybackState> {
+        self.confirmed_playback_state
     }
 
     /// Возвращает сохранённый latest request для diagnostics/tests.
@@ -925,6 +990,12 @@ impl SeekRuntimeState {
             .store_request(request, confirmed_playback_state);
     }
 
+    /// Возвращает playback state, подтверждённый до входа в active scrub gesture.
+    #[must_use]
+    pub(crate) const fn simple_scrub_confirmed_playback_state(&self) -> Option<PlaybackState> {
+        self.simple_scrub.confirmed_playback_state()
+    }
+
     /// Закрывает active scrub gesture и возвращает state для final/cancel route-а.
     pub(crate) fn finish_active_simple_scrub(&mut self) -> Option<FinishedSimpleScrub> {
         self.simple_scrub.finish_active()
@@ -941,11 +1012,13 @@ impl SeekRuntimeState {
         generation: ScrubGenerationToken,
         seek_mode: SeekMode,
         resume_intent: PlaybackResumeIntent,
+        route: SeekLandingRoute,
     ) {
         self.pending_seek_landing = Some(PendingSeekLandingState {
             generation,
             seek_mode,
             resume_intent,
+            route,
         });
         self.active_seek_landing = None;
     }
@@ -1004,6 +1077,7 @@ impl SeekRuntimeState {
             execution,
             seek_mode: pending.seek_mode,
             resume_intent: pending.resume_intent,
+            route: pending.route,
             actual_decode_position: None,
             decode_seek_generation,
         });
@@ -1049,6 +1123,41 @@ impl SeekRuntimeState {
         match self.active_seek_landing {
             Some(active) => Some(active.resume_intent()),
             None => None,
+        }
+    }
+
+    /// Возвращает `true`, если active route принадлежит live scrub gesture.
+    #[must_use]
+    pub(crate) const fn active_seek_landing_is_live_scrub(&self) -> bool {
+        match self.active_seek_landing {
+            Some(active) => active.route().is_live_scrub(),
+            None => false,
+        }
+    }
+
+    /// Возвращает `true`, если active commit можно закрывать прямо сейчас.
+    #[must_use]
+    pub(crate) const fn active_seek_landing_commit_allowed(&self) -> bool {
+        match self.active_seek_landing {
+            Some(active) => active.route().commit_allowed(),
+            None => true,
+        }
+    }
+
+    /// Переводит active live scrub route в release/commit phase.
+    pub(crate) fn request_live_scrub_commit(&mut self, release_started_at: Instant) {
+        let Some(active) = self.active_seek_landing.as_mut() else {
+            return;
+        };
+        if !active.route.is_live_scrub() {
+            return;
+        }
+
+        active.route = SeekLandingRoute::LiveScrub {
+            commit_requested: true,
+        };
+        if let Some(commit) = self.commit.as_mut() {
+            commit.started_at = release_started_at;
         }
     }
 

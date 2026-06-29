@@ -28,6 +28,9 @@ fn worker_config_for_tests() -> PlayerWorkerConfig {
         audio_decoder_factory: missing_audio_decoder_factory(),
         audio_output_factory: missing_audio_output_factory(),
         timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff::default(),
+        frame_server_config: frame_server_core::FrameServerConfig::default()
+            .validate()
+            .expect("default frame-server config must validate"),
     }
 }
 

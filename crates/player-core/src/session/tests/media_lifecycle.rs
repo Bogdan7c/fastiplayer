@@ -204,7 +204,7 @@ fn preview_scrub_does_not_create_seek_commit_for_track_list_reset() {
         .dispatch_command(PlayerCommand::PreviewScrub(request))
         .unwrap();
 
-    assert!(session.seek_commit().is_none());
+    assert!(session.seek_commit().is_some());
     assert!(session.snapshot().timeline.scrubbing);
     assert_eq!(
         session.snapshot().timeline.target_position,
@@ -218,10 +218,7 @@ fn preview_scrub_does_not_create_seek_commit_for_track_list_reset() {
 
     assert!(session.seek_commit().is_none());
     assert!(!session.snapshot().timeline.scrubbing);
-    assert_eq!(
-        session.simple_scrub_latest_request_for_tests(),
-        Some(request)
-    );
+    assert_eq!(session.simple_scrub_latest_request_for_tests(), None);
 }
 
 #[test]

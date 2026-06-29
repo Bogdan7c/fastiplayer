@@ -9,6 +9,15 @@ pub(super) enum TimelineCommandRoute {
 
     /// Pointer drag release ушёл как exact final seek без scrub generation.
     DragSeek,
+
+    /// Pointer-down начал live scrub gesture.
+    LiveScrubBegin,
+
+    /// Live scrub latest target ушёл в preview route.
+    LiveScrubPreview,
+
+    /// Release завершил active live scrub route.
+    LiveScrubEnd,
 }
 
 impl TimelineCommandRoute {
@@ -17,6 +26,9 @@ impl TimelineCommandRoute {
         match self {
             Self::ClickSeek => "click-seek",
             Self::DragSeek => "drag-seek",
+            Self::LiveScrubBegin => "live-scrub-begin",
+            Self::LiveScrubPreview => "live-scrub-preview",
+            Self::LiveScrubEnd => "live-scrub-end",
         }
     }
 }
@@ -24,16 +36,20 @@ impl TimelineCommandRoute {
 /// Конвертирует timeline action в player command и diagnostic route.
 pub(super) fn timeline_command_from_action(
     action: TimelineAction,
-) -> (PlayerCommand, TimelineCommandRoute) {
+) -> Option<(PlayerCommand, TimelineCommandRoute)> {
     match action {
-        TimelineAction::ClickSeek(position) => (
+        TimelineAction::ClickSeek(position) => Some((
             PlayerCommand::Seek(SeekRequest::absolute(position)),
             TimelineCommandRoute::ClickSeek,
-        ),
-        TimelineAction::CommitDragSeek(position) => (
+        )),
+        TimelineAction::CommitDragSeek(position) => Some((
             PlayerCommand::Seek(SeekRequest::absolute(position)),
             TimelineCommandRoute::DragSeek,
-        ),
+        )),
+        TimelineAction::BeginLiveScrub(_)
+        | TimelineAction::PreviewLiveScrub(_)
+        | TimelineAction::EndLiveScrub(_)
+        | TimelineAction::CancelLiveScrub => None,
     }
 }
 
@@ -173,6 +189,7 @@ impl AppState {
                 timeline_inline_status,
                 &selected_skin,
                 window_is_fullscreen,
+                self.committed_config_snapshot.live_scrub_enabled(),
             );
             bottom_controls_elapsed = stage_started_at.elapsed();
 
@@ -281,14 +298,87 @@ impl AppState {
         }
     }
 
-    /// Конвертирует pointer timeline action в typed player command.
+    /// Конвертирует pointer timeline action в typed player command(s).
     ///
-    /// Здесь находится единственный app-egui route, который переводит timeline intent
-    /// в worker command. Click и drag release отправляются как `PlayerCommand::Seek`,
-    /// чтобы UI не зависел от interactive scrub lifecycle внутри player-core.
+    /// Обычные click/disabled-drag actions остаются exact `Seek`. Live drag
+    /// идёт через Begin/Preview/End scrub route и не отправляет ordinary seek.
     pub(super) fn send_timeline_action(&mut self, action: TimelineAction) {
         self.clear_timeline_inline_status_for_action();
-        let (command, route) = timeline_command_from_action(action);
+        match action {
+            TimelineAction::ClickSeek(_) | TimelineAction::CommitDragSeek(_) => {
+                if let Some((command, route)) = timeline_command_from_action(action) {
+                    self.send_timeline_player_command(action, route, command);
+                }
+            }
+            TimelineAction::BeginLiveScrub(position) => {
+                let now = Instant::now();
+                let settings = self.live_scrub_settings_snapshot();
+                self.timeline_ui_state
+                    .begin_live_scrub_dispatch(settings, now, position);
+                self.send_timeline_player_command(
+                    action,
+                    TimelineCommandRoute::LiveScrubBegin,
+                    PlayerCommand::BeginScrub,
+                );
+                self.send_timeline_player_command(
+                    action,
+                    TimelineCommandRoute::LiveScrubPreview,
+                    PlayerCommand::PreviewScrub(SeekRequest::absolute(position)),
+                );
+            }
+            TimelineAction::PreviewLiveScrub(position) => {
+                let Some(target) = self
+                    .timeline_ui_state
+                    .live_scrub_preview_dispatch_target(Instant::now(), position)
+                else {
+                    return;
+                };
+                self.send_timeline_player_command(
+                    action,
+                    TimelineCommandRoute::LiveScrubPreview,
+                    PlayerCommand::PreviewScrub(SeekRequest::absolute(target)),
+                );
+            }
+            TimelineAction::EndLiveScrub(position) => {
+                if let Some(target) = self
+                    .timeline_ui_state
+                    .live_scrub_release_dispatch_target(Instant::now(), position)
+                {
+                    self.send_timeline_player_command(
+                        action,
+                        TimelineCommandRoute::LiveScrubPreview,
+                        PlayerCommand::PreviewScrub(SeekRequest::absolute(target)),
+                    );
+                }
+                self.send_timeline_player_command(
+                    action,
+                    TimelineCommandRoute::LiveScrubEnd,
+                    PlayerCommand::EndScrub {
+                        policy: ScrubCommitPolicy::CommitVisiblePreview,
+                    },
+                );
+                self.timeline_ui_state.clear_live_scrub_dispatch();
+            }
+            TimelineAction::CancelLiveScrub => {
+                self.send_timeline_player_command(
+                    action,
+                    TimelineCommandRoute::LiveScrubEnd,
+                    PlayerCommand::EndScrub {
+                        policy: ScrubCommitPolicy::CommitLatestTarget,
+                    },
+                );
+                self.timeline_ui_state.clear_live_scrub_dispatch();
+            }
+        }
+    }
+
+    /// Отправляет одну timeline command с единым diagnostics/log path.
+    fn send_timeline_player_command(
+        &mut self,
+        action: TimelineAction,
+        route: TimelineCommandRoute,
+        command: PlayerCommand,
+    ) {
         let command_for_diagnostics = command.clone();
 
         if let Err(error) = self.player_worker.try_send_command(command) {
@@ -303,6 +393,23 @@ impl AppState {
             "Timeline action отправлен в player worker"
         );
         self.mark_pending_worker_redraw();
+    }
+
+    /// Захватывает S19 live scrub settings snapshot для нового pointer gesture-а.
+    fn live_scrub_settings_snapshot(&self) -> TimelineLiveScrubSettingsSnapshot {
+        let decode_mode = match self.committed_config_snapshot.live_scrub_decode_mode() {
+            FrameServerLiveScrubDecodeModeConfig::ThrottledLatest => {
+                TimelineLiveScrubDecodeMode::ThrottledLatest
+            }
+            FrameServerLiveScrubDecodeModeConfig::EveryDragEvent => {
+                TimelineLiveScrubDecodeMode::EveryDragEvent
+            }
+        };
+
+        TimelineLiveScrubSettingsSnapshot {
+            decode_mode,
+            max_hz: self.committed_config_snapshot.live_scrub_max_hz(),
+        }
     }
 
     /// Переключает fullscreen состояние окна.

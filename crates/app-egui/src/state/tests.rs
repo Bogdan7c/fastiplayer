@@ -113,7 +113,8 @@ fn telemetry_rows_contain(panel_rows: &[TelemetryPanelRow], expected_text: &str)
 fn timeline_click_seek_maps_to_exact_player_seek_route() {
     let target_position = MediaTime::from_secs(42);
 
-    let (command, route) = timeline_command_from_action(TimelineAction::ClickSeek(target_position));
+    let (command, route) = timeline_command_from_action(TimelineAction::ClickSeek(target_position))
+        .expect("click seek must map to a player command");
 
     assert_eq!(route.as_str(), "click-seek");
     assert_eq!(
@@ -128,13 +129,29 @@ fn timeline_drag_release_maps_to_exact_player_seek_route() {
     let target_position = MediaTime::from_secs(64);
 
     let (command, route) =
-        timeline_command_from_action(TimelineAction::CommitDragSeek(target_position));
+        timeline_command_from_action(TimelineAction::CommitDragSeek(target_position))
+            .expect("drag seek must map to a player command");
 
     assert_eq!(route.as_str(), "drag-seek");
     assert_eq!(
         command,
         PlayerCommand::Seek(SeekRequest::absolute(target_position))
     );
+}
+
+/// Live scrub actions не должны случайно пройти legacy helper как ordinary Seek.
+#[test]
+fn timeline_live_scrub_actions_do_not_map_to_exact_seek_route() {
+    let target_position = MediaTime::from_secs(12);
+
+    for action in [
+        TimelineAction::BeginLiveScrub(target_position),
+        TimelineAction::PreviewLiveScrub(target_position),
+        TimelineAction::EndLiveScrub(target_position),
+        TimelineAction::CancelLiveScrub,
+    ] {
+        assert_eq!(timeline_command_from_action(action), None);
+    }
 }
 
 /// Проверяет, что UI diagnostics получает active path как renderer-neutral данные.

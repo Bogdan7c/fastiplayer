@@ -1,9 +1,9 @@
 use std::time::{Duration, Instant};
 
 use frame_server_core::{
-    CancelScrubReason, CancelledOutcome, FinishScrubPolicy, FrameServerConfig, ScrubDriverOutcome,
-    ScrubEvent, ScrubExactnessPolicy, ScrubGeneration, ScrubGenerationToken, ScrubRequestKind,
-    ScrubTarget, ScrubTargetUpdate, ScrubTrackSelection,
+    CancelScrubReason, CancelledOutcome, FinishScrubPolicy, ScrubDriverOutcome, ScrubEvent,
+    ScrubExactnessPolicy, ScrubGeneration, ScrubGenerationToken, ScrubTarget, ScrubTargetUpdate,
+    ScrubTrackSelection, ValidatedFrameServerConfig,
 };
 use media_core::{
     MediaDemuxError, MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason,
@@ -13,7 +13,7 @@ use tracing::{debug, trace, warn};
 
 use crate::seek_state::{
     AccuratePrerollDemuxEventKind, FinalSeekCommitPosition, PlaybackResumeIntent, SeekCommitState,
-    SeekDemuxRequestError, demux_seek_request_for_transaction,
+    SeekDemuxRequestError, SeekLandingRoute, demux_seek_request_for_transaction,
 };
 use crate::{
     ActiveSeekDiagnosticsSnapshot, PipelineQueueDepthSnapshot, PlaybackState, PlayerError,
@@ -982,6 +982,10 @@ impl PlayerSession {
             return;
         };
 
+        if !self.seek_runtime.active_seek_landing_commit_allowed() {
+            return;
+        }
+
         let resume_video_min_ready_frames =
             tick_config.effective_seek_resume_video_min_ready_frames();
         let gate_decision = self.seek_commit_gate_decision(
@@ -1687,6 +1691,9 @@ impl PlayerSession {
             target_position,
             request.mode,
             resume_intent,
+            SeekLandingRoute::OneShot,
+            self.frame_server_config,
+            FinishScrubPolicy::CommitVisiblePreview,
         )
     }
 
@@ -1711,6 +1718,9 @@ impl PlayerSession {
         target_position: MediaTime,
         seek_mode: SeekMode,
         resume_intent: PlaybackResumeIntent,
+        route: SeekLandingRoute,
+        config: ValidatedFrameServerConfig,
+        finish_policy: FinishScrubPolicy,
     ) -> PlayerResult<()> {
         if !self.snapshot.timeline.seekable {
             let reason = self
@@ -1734,15 +1744,6 @@ impl PlayerSession {
             );
         };
 
-        let config = match FrameServerConfig::default().validate() {
-            Ok(config) => config,
-            Err(error) => {
-                return Err(PlayerError::new(
-                    PlayerErrorKind::RuntimeError,
-                    format!("Default frame-server config не прошёл validation: {error}"),
-                ));
-            }
-        };
         if let Err(error) =
             demux_seek_request_for_transaction(true, target_position.as_duration(), seek_mode)
         {
@@ -1774,8 +1775,12 @@ impl PlayerSession {
         let target_scrub_generation = generation_token.scrub_generation;
 
         self.pause_audio_output_for_seek();
-        self.seek_runtime
-            .begin_seek_landing_request(generation_token, seek_mode, resume_intent);
+        self.seek_runtime.begin_seek_landing_request(
+            generation_token,
+            seek_mode,
+            resume_intent,
+            route,
+        );
         self.seek_runtime.clear_eof_fallback_video_position();
         self.clear_seek_preroll_fallback_frame();
         self.pipeline
@@ -1796,6 +1801,8 @@ impl PlayerSession {
             generation_token,
             track_selection,
             target,
+            route.request_kind(),
+            route.commit_allowed(),
         )? {
             PreparedSeekLandingStart::Started => {
                 return Ok(());
@@ -1814,8 +1821,8 @@ impl PlayerSession {
             track_selection,
             target,
             ScrubExactnessPolicy::ExactFrame,
-            ScrubRequestKind::SeekLanding,
-            default_scrub_execution_policy(config, FinishScrubPolicy::CommitVisiblePreview),
+            route.request_kind(),
+            default_scrub_execution_policy(config, finish_policy),
         );
         let initial_scrub_generation =
             initial_scrub_generation_before_target(target_scrub_generation)?;
@@ -1883,7 +1890,7 @@ impl PlayerSession {
         TrackTimestamp::new(video_track_id, units.get(), time_base)
     }
 
-    /// Начинает compatibility scrub на уровне контракта без запуска demux seek.
+    /// Начинает timeline scrub gesture на уровне public state без немедленного commit-а.
     pub(super) fn begin_scrub(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         let confirmed_playback_state = self.playback_state_for_new_simple_scrub();
@@ -1903,14 +1910,33 @@ impl PlayerSession {
         Ok(())
     }
 
-    /// Сохраняет preview request как latest target без запуска demux preview-mode seek-а.
+    /// Сохраняет preview request и запускает live reused-decoder route для timeline drag.
     pub(super) fn preview_scrub(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        let target_position = self.resolve_seek_target(request);
+        let confirmed_playback_state = self
+            .seek_runtime
+            .simple_scrub_confirmed_playback_state()
+            .unwrap_or_else(|| self.playback_state_for_new_simple_scrub());
+        let resume_intent = PlaybackResumeIntent::from_playback_state(confirmed_playback_state);
         self.store_simple_scrub_request(request);
+
+        if !self.pipeline.has_demuxer() || !self.pipeline.has_selected_video_track() {
+            return Ok(());
+        }
+
+        self.start_reused_decoder_scrub_landing_transaction(
+            target_position,
+            request.mode,
+            resume_intent,
+            SeekLandingRoute::live_scrub_preview(),
+            self.frame_server_config,
+            FinishScrubPolicy::CommitVisiblePreview,
+        )?;
         Ok(())
     }
 
-    /// Запоминает target compatibility scrub API только для последующего final seek.
+    /// Запоминает latest scrub target и переводит timeline в public scrubbing state.
     fn store_simple_scrub_request(&mut self, request: SeekRequest) {
         let target_position = self.resolve_seek_target(request);
         let confirmed_playback_state = self.playback_state_for_new_simple_scrub();
@@ -1936,21 +1962,31 @@ impl PlayerSession {
             .seek_runtime
             .finish_active_simple_scrub()
             .expect("simple scrub active должен вернуть finished state");
-        self.invalidate_in_flight_scrub_outputs_after_exit("end scrub");
         let confirmed_playback_state = finished_scrub.confirmed_playback_state();
         let latest_request = finished_scrub.latest_request();
-        if latest_request.is_some() {
-            self.finish_simple_scrub_without_seek(None, SimpleScrubExitMode::RestoreStateOnly);
-        } else {
+
+        if self.seek_runtime.active_seek_landing_is_live_scrub() {
+            self.seek_runtime.request_live_scrub_commit(Instant::now());
+            self.snapshot.timeline.scrubbing = true;
+            if let Some(request) = latest_request {
+                self.snapshot.timeline.target_position = Some(self.resolve_seek_target(request));
+            }
+            return Ok(());
+        }
+
+        self.invalidate_in_flight_scrub_outputs_after_exit("end scrub");
+        if latest_request.is_none() {
             self.finish_simple_scrub_without_seek(
                 Some(confirmed_playback_state),
                 SimpleScrubExitMode::ResumeConfirmedPlayback,
             );
+            return Ok(());
         }
-        if let Some(request) = latest_request {
-            let resume_intent = PlaybackResumeIntent::from_playback_state(confirmed_playback_state);
-            self.start_one_shot_seek_landing_from_request(request, resume_intent)?;
-        }
+
+        self.finish_simple_scrub_without_seek(None, SimpleScrubExitMode::RestoreStateOnly);
+        let request = latest_request.expect("checked latest_request is_some");
+        let resume_intent = PlaybackResumeIntent::from_playback_state(confirmed_playback_state);
+        self.start_one_shot_seek_landing_from_request(request, resume_intent)?;
         Ok(())
     }
 
@@ -2000,6 +2036,8 @@ impl PlayerSession {
             ));
         };
         let next_generation = ScrubGenerationToken::new(playback_generation, next_scrub_generation);
+        let release_promoted_to_recent_superseded =
+            !self.seek_runtime.active_seek_landing_is_live_scrub();
         let active_context = self
             .seek_runtime
             .active_commit()
@@ -2026,9 +2064,12 @@ impl PlayerSession {
                 ));
         }
 
+        let release_context = release_promoted_to_recent_superseded
+            .then_some(active_context)
+            .flatten();
         let _release_outcome = self.release_prepared_seek_landing_for_cancel(
             CancelScrubReason::SupersededByNewTarget,
-            active_context,
+            release_context,
         );
         self.seek_runtime.clear_active_commit();
         self.seek_runtime.clear_trace();
@@ -2045,7 +2086,6 @@ impl PlayerSession {
     pub(super) fn cancel_active_scrub_for_external_command(&mut self, reason: CancelScrubReason) {
         if self.seek_runtime.seek_landing_active() {
             self.cancel_active_seek_landing_for_external_command(reason);
-            return;
         }
 
         let Some(finished_scrub) = self.seek_runtime.finish_active_simple_scrub() else {

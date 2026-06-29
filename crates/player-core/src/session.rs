@@ -6,7 +6,7 @@ use capability_core::SystemCapabilities;
 #[cfg(test)]
 use codec_core::VideoCodec;
 use codec_core::VideoDecodeRequirement;
-use frame_server_core::{CancelScrubReason, ScrubEvent};
+use frame_server_core::{CancelScrubReason, ScrubEvent, ValidatedFrameServerConfig};
 use media_core::{MediaDuration, MediaTime};
 use tracing::{debug, info, warn};
 #[cfg(test)]
@@ -109,6 +109,9 @@ pub struct PlayerSession {
     /// playable backend-а из общего system capability report-а.
     active_video_backend_id: Option<String>,
 
+    /// Validated frame-server policy snapshot, с которым создан этот worker/session.
+    frame_server_config: ValidatedFrameServerConfig,
+
     /// Runtime state seek transaction/scrub/trace markers, которым владеет session.
     seek_runtime: SeekRuntimeState,
 
@@ -177,10 +180,12 @@ impl PlayerSession {
         audio_decoder_factory: Arc<dyn AudioDecoderFactory>,
         audio_output_factory: Arc<dyn AudioOutputFactory>,
         timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff,
+        frame_server_config: ValidatedFrameServerConfig,
     ) -> Self {
         Self {
             audio_decoder_factory,
             audio_output_factory,
+            frame_server_config,
             prepared_seek_landing: PreparedSeekLandingRuntime::from_timeline_hover_prepare_handoff(
                 timeline_hover_prepare_handoff,
             ),
@@ -921,6 +926,9 @@ impl Default for PlayerSession {
             eof_drain: EofDrainRuntime::default(),
             capabilities: None,
             active_video_backend_id: None,
+            frame_server_config: frame_server_core::FrameServerConfig::default()
+                .validate()
+                .expect("default frame-server config must validate"),
             seek_runtime: SeekRuntimeState::default(),
             prepared_seek_landing: PreparedSeekLandingRuntime::default(),
             pending_video_backend_reselection: None,

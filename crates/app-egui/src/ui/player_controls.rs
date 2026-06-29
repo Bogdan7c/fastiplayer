@@ -44,6 +44,7 @@ pub fn render_bottom_controls(
     timeline_inline_status: Option<&str>,
     skin: &impl PlayerSkin,
     is_window_fullscreen: bool,
+    live_scrub_enabled: bool,
 ) -> Vec<ControlAction> {
     let mut actions = Vec::new();
     let panel_id = bottom_panel_id(skin.id());
@@ -57,8 +58,13 @@ pub fn render_bottom_controls(
                 timeline_state,
                 timeline_inline_status,
             );
-            let timeline_interaction =
-                timeline::render_timeline(ui, &player_snapshot.timeline, timeline_state, skin);
+            let timeline_interaction = timeline::render_timeline(
+                ui,
+                &player_snapshot.timeline,
+                timeline_state,
+                skin,
+                live_scrub_enabled,
+            );
             actions.extend(
                 timeline_interaction
                     .actions

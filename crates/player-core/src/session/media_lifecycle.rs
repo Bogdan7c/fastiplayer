@@ -1,3 +1,4 @@
+use frame_server_core::CancelScrubReason;
 use media_core::{DemuxSeekability, DemuxTrackListUpdate, TimelineSnapshot};
 use tracing::{debug, info, warn};
 
@@ -144,6 +145,10 @@ impl PlayerSession {
     /// Применяет lifecycle update от demuxer-а после container discontinuity.
     pub(crate) fn handle_demux_track_list_update(&mut self, track_update: DemuxTrackListUpdate) {
         let DemuxTrackListUpdate { tracks, duration } = track_update;
+        if self.seek_runtime.active_seek_landing_is_live_scrub() {
+            self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
+        }
+
         let active_seek_before_update = self.seek_runtime.active_commit();
         let active_timeline_before_update =
             active_seek_before_update.map(|_| self.snapshot.timeline);

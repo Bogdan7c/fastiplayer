@@ -12,6 +12,48 @@ use crate::ui::skin::{PlayerSkin, TimelineStyle};
 pub struct TimelineUiState {
     /// Последняя позиция pointer drag, ещё не обязанная попасть в worker snapshot.
     transient_drag_position: Option<MediaTime>,
+
+    /// Timeline pointer gesture уже владеет live scrub stream-ом.
+    live_scrub_gesture_active: bool,
+
+    /// Snapshot/decode-dispatch policy текущего live scrub gesture-а.
+    live_scrub_dispatch: Option<TimelineLiveScrubDispatchState>,
+}
+
+/// Snapshot настроек live scrub, захваченный на pointer-down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimelineLiveScrubSettingsSnapshot {
+    /// Policy, которая решает, какие drag targets попадут в decoder work.
+    pub decode_mode: TimelineLiveScrubDecodeMode,
+
+    /// Rate limit для `ThrottledLatest`.
+    pub max_hz: u16,
+}
+
+/// Decode launch policy для live timeline scrub-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelineLiveScrubDecodeMode {
+    /// Decode work не чаще snapshot `max_hz`, skipped targets схлопываются в newest.
+    ThrottledLatest,
+
+    /// Каждый drag event допускается к decode attempt без rate throttle.
+    EveryDragEvent,
+}
+
+/// UI-owned dispatch state одного live scrub gesture-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TimelineLiveScrubDispatchState {
+    /// Snapshot настроек, который не меняется до release/cancel.
+    settings: TimelineLiveScrubSettingsSnapshot,
+
+    /// Последний момент, когда app отправил target в player worker.
+    last_decode_dispatch_at: Option<std::time::Instant>,
+
+    /// Последний target, который реально ушёл в player worker.
+    last_dispatched_target: Option<MediaTime>,
+
+    /// Новейший target, пропущенный throttle-ом.
+    pending_throttled_target: Option<MediaTime>,
 }
 
 impl TimelineUiState {
@@ -21,9 +63,104 @@ impl TimelineUiState {
         self.transient_drag_position.is_some()
     }
 
+    /// Возвращает `true`, если текущий pointer gesture уже начал live scrub.
+    #[must_use]
+    pub const fn has_active_live_scrub_gesture(&self) -> bool {
+        self.live_scrub_gesture_active
+    }
+
     /// Сбрасывает transient pointer state после завершения drag.
     pub fn clear_transient_drag(&mut self) {
         self.transient_drag_position = None;
+    }
+
+    /// Завершает UI-owned live scrub gesture marker.
+    pub fn clear_live_scrub_gesture(&mut self) {
+        self.live_scrub_gesture_active = false;
+    }
+
+    /// Полностью очищает dispatch snapshot live scrub-а после отправки End/Cancel.
+    pub fn clear_live_scrub_dispatch(&mut self) {
+        self.live_scrub_dispatch = None;
+    }
+
+    /// Захватывает settings snapshot и помечает initial target уже отправленным.
+    pub fn begin_live_scrub_dispatch(
+        &mut self,
+        settings: TimelineLiveScrubSettingsSnapshot,
+        now: std::time::Instant,
+        initial_target: MediaTime,
+    ) {
+        self.live_scrub_dispatch = Some(TimelineLiveScrubDispatchState {
+            settings,
+            last_decode_dispatch_at: Some(now),
+            last_dispatched_target: Some(initial_target),
+            pending_throttled_target: None,
+        });
+    }
+
+    /// Возвращает target, который можно отправить в decoder work для этого drag frame-а.
+    pub fn live_scrub_preview_dispatch_target(
+        &mut self,
+        now: std::time::Instant,
+        target: MediaTime,
+    ) -> Option<MediaTime> {
+        let Some(dispatch) = self.live_scrub_dispatch.as_mut() else {
+            return Some(target);
+        };
+
+        match dispatch.settings.decode_mode {
+            TimelineLiveScrubDecodeMode::EveryDragEvent => {
+                dispatch.last_decode_dispatch_at = Some(now);
+                dispatch.last_dispatched_target = Some(target);
+                dispatch.pending_throttled_target = None;
+                Some(target)
+            }
+            TimelineLiveScrubDecodeMode::ThrottledLatest => {
+                let min_period = live_scrub_min_dispatch_period(dispatch.settings.max_hz);
+                let can_dispatch = dispatch
+                    .last_decode_dispatch_at
+                    .is_none_or(|last_dispatch| {
+                        now.saturating_duration_since(last_dispatch) >= min_period
+                    });
+
+                if can_dispatch {
+                    let newest_target = dispatch.pending_throttled_target.take().unwrap_or(target);
+                    dispatch.last_decode_dispatch_at = Some(now);
+                    dispatch.last_dispatched_target = Some(newest_target);
+                    Some(newest_target)
+                } else {
+                    dispatch.pending_throttled_target = Some(target);
+                    None
+                }
+            }
+        }
+    }
+
+    /// Возвращает release target, если его ещё нужно отправить перед `EndScrub`.
+    pub fn live_scrub_release_dispatch_target(
+        &mut self,
+        now: std::time::Instant,
+        release_target: MediaTime,
+    ) -> Option<MediaTime> {
+        let dispatch = self.live_scrub_dispatch.as_mut()?;
+        let newest_target = dispatch
+            .pending_throttled_target
+            .take()
+            .unwrap_or(release_target);
+        let exact_release_target = if newest_target == release_target {
+            newest_target
+        } else {
+            release_target
+        };
+
+        if dispatch.last_dispatched_target == Some(exact_release_target) {
+            return None;
+        }
+
+        dispatch.last_decode_dispatch_at = Some(now);
+        dispatch.last_dispatched_target = Some(exact_release_target);
+        Some(exact_release_target)
     }
 
     /// Возвращает позицию, которую нужно показывать во время локального drag preview.
@@ -33,6 +170,13 @@ impl TimelineUiState {
             .or(timeline.target_position)
             .unwrap_or(timeline.current_position)
     }
+}
+
+/// Переводит max Hz в минимальный период между decode attempts.
+fn live_scrub_min_dispatch_period(max_hz: u16) -> Duration {
+    let validated_max_hz = max_hz.clamp(1, 240);
+    let nanos_per_second = 1_000_000_000u64;
+    Duration::from_nanos(nanos_per_second / u64::from(validated_max_hz))
 }
 
 /// Действие timeline, которое `AppState` конвертирует в `PlayerCommand`.
@@ -45,6 +189,18 @@ pub enum TimelineAction {
 
     /// Завершение pointer drag как обычный final seek в выбранную позицию.
     CommitDragSeek(MediaTime),
+
+    /// Pointer-down захватывает live scrub stream и отправляет initial exact target.
+    BeginLiveScrub(MediaTime),
+
+    /// Drag frame обновляет latest target live scrub-а.
+    PreviewLiveScrub(MediaTime),
+
+    /// Release завершает active live scrub без ordinary seek command.
+    EndLiveScrub(MediaTime),
+
+    /// Focus/cancel закрывает active live scrub без нового target-а.
+    CancelLiveScrub,
 }
 
 /// Нормализованный input mapper-а без зависимости от `egui::Response` в тестах.
@@ -89,6 +245,7 @@ pub fn render_timeline(
     timeline: &TimelineSnapshot,
     state: &mut TimelineUiState,
     skin: &impl PlayerSkin,
+    live_scrub_enabled: bool,
 ) -> TimelineInteraction {
     let style = skin.timeline_style();
     let bounds = timeline_bounds(timeline);
@@ -101,9 +258,14 @@ pub fn render_timeline(
     let desired_size = Vec2::new(ui.available_width(), style.hit_height);
     let (response, painter) = ui.allocate_painter(desired_size, sense);
     let pointer_input = pointer_input_from_response(&response, bounds, style);
-    let interaction = map_timeline_interaction(timeline, state, bounds, pointer_input);
+    let interaction =
+        map_timeline_interaction(timeline, state, bounds, pointer_input, live_scrub_enabled);
 
-    if pointer_input.drag_started || pointer_input.dragged || state.has_active_drag() {
+    if pointer_input.drag_started
+        || pointer_input.dragged
+        || state.has_active_drag()
+        || state.has_active_live_scrub_gesture()
+    {
         ui.ctx().request_repaint();
     }
 
@@ -150,9 +312,12 @@ pub fn map_timeline_interaction(
     state: &mut TimelineUiState,
     bounds: Option<TimelineBounds>,
     input: TimelinePointerInput,
+    live_scrub_enabled: bool,
 ) -> TimelineInteraction {
     let Some(bounds) = bounds else {
         state.clear_transient_drag();
+        state.clear_live_scrub_gesture();
+        state.clear_live_scrub_dispatch();
         return TimelineInteraction {
             actions: Vec::new(),
             display_position: timeline.current_position,
@@ -163,6 +328,16 @@ pub fn map_timeline_interaction(
     let pointer_position = input
         .pointer_fraction
         .map(|fraction| bounds.position_from_fraction(fraction));
+
+    if input.lost_focus && state.has_active_live_scrub_gesture() {
+        state.clear_transient_drag();
+        state.clear_live_scrub_gesture();
+        actions.push(TimelineAction::CancelLiveScrub);
+        return TimelineInteraction {
+            actions,
+            display_position: state.display_position(timeline),
+        };
+    }
 
     if input.lost_focus && state.has_active_drag() {
         let commit_position = pointer_position.or(state.transient_drag_position);
@@ -176,12 +351,47 @@ pub fn map_timeline_interaction(
         };
     }
 
-    let wants_drag_position = input.drag_started || input.dragged || input.drag_stopped;
+    let wants_drag_position = input.drag_started
+        || input.dragged
+        || input.drag_stopped
+        || (live_scrub_enabled && (input.pointer_down_on_timeline || input.clicked));
     if wants_drag_position && let Some(position) = pointer_position {
         state.transient_drag_position = Some(position);
     }
 
-    if input.drag_stopped {
+    let mut began_live_scrub_this_frame = false;
+    if live_scrub_enabled
+        && input.pointer_down_on_timeline
+        && !state.has_active_live_scrub_gesture()
+        && let Some(position) = pointer_position
+    {
+        state.live_scrub_gesture_active = true;
+        began_live_scrub_this_frame = true;
+        actions.push(TimelineAction::BeginLiveScrub(position));
+    }
+
+    if live_scrub_enabled
+        && state.has_active_live_scrub_gesture()
+        && !began_live_scrub_this_frame
+        && input.dragged
+        && let Some(position) = pointer_position
+    {
+        actions.push(TimelineAction::PreviewLiveScrub(position));
+    }
+
+    if live_scrub_enabled
+        && state.has_active_live_scrub_gesture()
+        && (input.drag_stopped || input.clicked)
+    {
+        let release_position = pointer_position.or(state.transient_drag_position);
+        state.clear_transient_drag();
+        state.clear_live_scrub_gesture();
+        if let Some(position) = release_position {
+            actions.push(TimelineAction::EndLiveScrub(position));
+        } else {
+            actions.push(TimelineAction::CancelLiveScrub);
+        }
+    } else if input.drag_stopped {
         let commit_position = state.transient_drag_position;
         state.clear_transient_drag();
         if let Some(position) = commit_position {
@@ -431,12 +641,15 @@ fn duration_mul_fraction(duration: MediaDuration, fraction: f64) -> MediaDuratio
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use egui::{Color32, Pos2, Rect, Vec2};
     use media_core::{MediaDuration, MediaTime, TimelineRange, TimelineSnapshot};
 
     use super::{
-        TimelineAction, TimelineBounds, TimelinePointerInput, TimelineStyle, TimelineUiState,
-        format_seconds, map_timeline_interaction, pointer_fraction, thumb_outline_radius,
+        TimelineAction, TimelineBounds, TimelineLiveScrubDecodeMode,
+        TimelineLiveScrubSettingsSnapshot, TimelinePointerInput, TimelineStyle, TimelineUiState,
+        format_seconds, live_scrub_min_dispatch_period, pointer_fraction, thumb_outline_radius,
         timeline_track_outline_rect, timeline_track_rect,
     };
 
@@ -452,6 +665,16 @@ mod tests {
             MediaTime::from_secs(100),
         ))
         .expect("test timeline is seekable")
+    }
+
+    /// Старый mapper mode: live scrub выключен, drag release идёт как exact seek.
+    fn map_timeline_interaction(
+        timeline: &TimelineSnapshot,
+        state: &mut TimelineUiState,
+        bounds: Option<TimelineBounds>,
+        input: TimelinePointerInput,
+    ) -> super::TimelineInteraction {
+        super::map_timeline_interaction(timeline, state, bounds, input, false)
     }
 
     /// Возвращает стиль timeline с заметной outline-шириной для geometry tests.
@@ -661,12 +884,136 @@ mod tests {
         assert!(!state.has_active_drag());
     }
 
+    /// Live mode: pointer-down starts scrub, drag updates preview, release ends scrub.
+    #[test]
+    fn live_scrub_drag_maps_to_begin_preview_end_without_seek_actions() {
+        let timeline = seekable_timeline();
+        let mut state = TimelineUiState::default();
+
+        let start = super::map_timeline_interaction(
+            &timeline,
+            &mut state,
+            Some(seekable_bounds()),
+            TimelinePointerInput {
+                pointer_down_on_timeline: true,
+                pointer_fraction: Some(0.20),
+                ..TimelinePointerInput::default()
+            },
+            true,
+        );
+        assert_eq!(
+            start.actions,
+            vec![TimelineAction::BeginLiveScrub(MediaTime::from_secs(20))]
+        );
+        assert!(state.has_active_live_scrub_gesture());
+
+        let update = super::map_timeline_interaction(
+            &timeline,
+            &mut state,
+            Some(seekable_bounds()),
+            TimelinePointerInput {
+                pointer_down_on_timeline: true,
+                dragged: true,
+                pointer_fraction: Some(0.70),
+                ..TimelinePointerInput::default()
+            },
+            true,
+        );
+        assert_eq!(
+            update.actions,
+            vec![TimelineAction::PreviewLiveScrub(MediaTime::from_secs(70))]
+        );
+
+        let end = super::map_timeline_interaction(
+            &timeline,
+            &mut state,
+            Some(seekable_bounds()),
+            TimelinePointerInput {
+                drag_stopped: true,
+                pointer_fraction: Some(0.90),
+                ..TimelinePointerInput::default()
+            },
+            true,
+        );
+        assert_eq!(
+            end.actions,
+            vec![TimelineAction::EndLiveScrub(MediaTime::from_secs(90))]
+        );
+        assert!(!state.has_active_live_scrub_gesture());
+        assert!(
+            end.actions
+                .iter()
+                .all(|action| !matches!(action, TimelineAction::CommitDragSeek(_)))
+        );
+    }
+
+    /// Pointer-down + dragged в одном frame-е не создаёт duplicate PreviewScrub.
+    #[test]
+    fn live_scrub_pointer_down_drag_frame_sends_only_initial_target() {
+        let timeline = seekable_timeline();
+        let mut state = TimelineUiState::default();
+
+        let interaction = super::map_timeline_interaction(
+            &timeline,
+            &mut state,
+            Some(seekable_bounds()),
+            TimelinePointerInput {
+                pointer_down_on_timeline: true,
+                dragged: true,
+                pointer_fraction: Some(0.30),
+                ..TimelinePointerInput::default()
+            },
+            true,
+        );
+
+        assert_eq!(
+            interaction.actions,
+            vec![TimelineAction::BeginLiveScrub(MediaTime::from_secs(30))]
+        );
+    }
+
+    /// Throttled snapshot схлопывает skipped targets, но release exact target проходит всегда.
+    #[test]
+    fn live_scrub_throttled_snapshot_drops_intermediate_and_release_uses_exact_target() {
+        let mut state = TimelineUiState::default();
+        let started_at = Instant::now();
+        state.begin_live_scrub_dispatch(
+            TimelineLiveScrubSettingsSnapshot {
+                decode_mode: TimelineLiveScrubDecodeMode::ThrottledLatest,
+                max_hz: 60,
+            },
+            started_at,
+            MediaTime::from_secs(10),
+        );
+
+        let too_soon = started_at + live_scrub_min_dispatch_period(60) / 2;
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(too_soon, MediaTime::from_secs(20)),
+            None
+        );
+
+        let on_time = started_at + live_scrub_min_dispatch_period(60);
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(on_time, MediaTime::from_secs(30)),
+            Some(MediaTime::from_secs(20))
+        );
+
+        assert_eq!(
+            state.live_scrub_release_dispatch_target(
+                on_time + Duration::from_millis(1),
+                MediaTime::from_secs(30),
+            ),
+            Some(MediaTime::from_secs(30))
+        );
+    }
+
     /// Проверяет, что disabled timeline не отправляет seek commands.
     #[test]
     fn disabled_timeline_does_not_emit_seek_commands() {
         let timeline = TimelineSnapshot::default();
         let mut state = TimelineUiState {
             transient_drag_position: Some(MediaTime::from_secs(10)),
+            ..TimelineUiState::default()
         };
 
         let interaction = map_timeline_interaction(
@@ -692,6 +1039,7 @@ mod tests {
         let timeline = seekable_timeline();
         let mut state = TimelineUiState {
             transient_drag_position: Some(MediaTime::from_secs(40)),
+            ..TimelineUiState::default()
         };
 
         let interaction = map_timeline_interaction(
@@ -717,6 +1065,7 @@ mod tests {
         let timeline = seekable_timeline();
         let mut state = TimelineUiState {
             transient_drag_position: Some(MediaTime::from_secs(40)),
+            ..TimelineUiState::default()
         };
 
         let interaction = map_timeline_interaction(

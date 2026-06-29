@@ -58,6 +58,24 @@ impl CommittedConfigSnapshot {
         self.config.ui.show_telemetry
     }
 
+    /// Включены ли live preview updates во время timeline drag.
+    #[must_use]
+    pub(crate) fn live_scrub_enabled(&self) -> bool {
+        self.config.frame_server.live_scrub_enabled
+    }
+
+    /// Decode launch policy для следующего timeline live scrub gesture.
+    #[must_use]
+    pub(crate) fn live_scrub_decode_mode(&self) -> FrameServerLiveScrubDecodeModeConfig {
+        self.config.frame_server.live_scrub_decode_mode
+    }
+
+    /// Max decode start rate для `throttled_latest` live scrub gesture.
+    #[must_use]
+    pub(crate) fn live_scrub_max_hz(&self) -> u16 {
+        self.config.frame_server.live_scrub_max_hz
+    }
+
     /// Длительность анимации выезда settings sidebar в секундах; `0` — без анимации.
     #[must_use]
     pub(crate) fn sidebar_slide_duration_seconds(&self) -> f32 {

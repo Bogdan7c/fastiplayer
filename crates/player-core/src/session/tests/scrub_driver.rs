@@ -100,6 +100,7 @@ fn player_session_scrub_driver_adapter_uses_existing_pipeline_boundaries() {
             planned_generation,
             SeekMode::Accurate,
             PlaybackResumeIntent::Pause,
+            crate::seek_state::SeekLandingRoute::OneShot,
         );
         let mut driver = PlayerScrubTransactionDriver::new(config, ScrubGeneration::new(0));
 

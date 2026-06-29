@@ -5,6 +5,12 @@ use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
+use frame_server_core::{
+    FrameServerConfig as RuntimeFrameServerConfig, LiveScrubDecodeMode, ValidatedFrameServerConfig,
+};
+use rustiplayer_config::{
+    FrameServerConfig as PersistedFrameServerConfig, FrameServerLiveScrubDecodeModeConfig,
+};
 use tracing::{debug, warn};
 use video_core::{
     VideoDecoderActivityEpoch, VideoDecoderActivitySnapshot, VideoDecoderActivityUnavailableReason,
@@ -99,6 +105,9 @@ pub struct PlayerWorkerConfig {
 
     /// Shared hover prepare storage для app controller и S17 promotion.
     pub timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff,
+
+    /// Validated S19 scrub/scheduler policy snapshot для session-owned live scrub route.
+    pub frame_server_config: ValidatedFrameServerConfig,
 }
 
 impl fmt::Debug for PlayerWorkerConfig {
@@ -117,6 +126,7 @@ impl fmt::Debug for PlayerWorkerConfig {
             .field("audio_decoder_factory", &"<dyn AudioDecoderFactory>")
             .field("audio_output_factory", &"<dyn AudioOutputFactory>")
             .field("timeline_hover_prepare_handoff", &"<shared>")
+            .field("frame_server_config", &self.frame_server_config)
             .finish()
     }
 }
@@ -134,6 +144,9 @@ impl PlayerWorkerConfig {
             audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
             timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff::default(),
+            frame_server_config: RuntimeFrameServerConfig::default()
+                .validate()
+                .expect("default frame-server config must validate"),
         }
     }
 
@@ -151,6 +164,9 @@ impl PlayerWorkerConfig {
             timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff::from_app_config(
                 config,
             ),
+            frame_server_config: runtime_frame_server_config_from_persisted(&config.frame_server)
+                .validate()
+                .expect("validated app frame_server config must map to frame-server-core config"),
         }
     }
 
@@ -214,6 +230,33 @@ fn decoder_thread_config_from_app_config(
         ..PlayerVideoDecoderThreadConfig::from_env()
     }
     .normalized()
+}
+
+/// Конвертирует persisted `[frame_server]` в neutral runtime policy для player-owned scrub.
+fn runtime_frame_server_config_from_persisted(
+    config: &PersistedFrameServerConfig,
+) -> RuntimeFrameServerConfig {
+    RuntimeFrameServerConfig {
+        live_scrub_max_hz: config.live_scrub_max_hz,
+        live_scrub_decode_mode: runtime_live_scrub_decode_mode(config.live_scrub_decode_mode),
+        hover_prepare_window_slots: config.hover_prepare_window_slots,
+        software_hover_prepare_window_slots: config.software_hover_prepare_window_slots,
+        recent_superseded_prepare_slots: config.recent_superseded_prepare_slots,
+        software_recent_superseded_prepare_slots: config.software_recent_superseded_prepare_slots,
+        ..RuntimeFrameServerConfig::default()
+    }
+}
+
+/// Переводит persisted enum в frame-server-core enum без строковых сравнений.
+const fn runtime_live_scrub_decode_mode(
+    mode: FrameServerLiveScrubDecodeModeConfig,
+) -> LiveScrubDecodeMode {
+    match mode {
+        FrameServerLiveScrubDecodeModeConfig::ThrottledLatest => {
+            LiveScrubDecodeMode::ThrottledLatest
+        }
+        FrameServerLiveScrubDecodeModeConfig::EveryDragEvent => LiveScrubDecodeMode::EveryDragEvent,
+    }
 }
 
 /// Ошибка неблокирующей отправки команды в worker.

@@ -145,13 +145,11 @@ impl SeekRequest {
     }
 }
 
-/// Совместимый параметр завершения interactive scrub.
+/// Policy завершения interactive scrub gesture-а.
 ///
-/// Текущий player-core временно игнорирует значение policy: `EndScrub` сохраняет
-/// форму public API до будущей переписи preview-пайплайна, но завершает drag через
-/// единый SeekLanding route.
-/// Обычные exact seek-команды должны идти через `PlayerCommand::Seek`, чтобы не
-/// наследовать будущую UX policy timeline-а.
+/// Timeline live scrub использует этот intent как UI/UX boundary: release может
+/// коммитить реально видимый preview, тогда как обычные exact seek-команды идут
+/// через `PlayerCommand::Seek` и не наследуют timeline-specific release policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrubCommitPolicy {
     /// Exact final target: всегда выполнить final seek в последнюю цель `UpdateScrub`.
@@ -200,22 +198,23 @@ pub enum PlayerCommand {
     /// external/MPRIS seek, будущего chapter seek и любого отделённого exact click-to-seek.
     Seek(SeekRequest),
 
-    /// Начать compatibility scrub без немедленного seek-а.
+    /// Начать timeline scrub gesture без немедленного commit-а.
     BeginScrub,
 
-    /// Запомнить latest target compatibility scrub-а без запуска demux seek-а.
+    /// Запомнить latest target лёгкого scrub-а без запуска demux seek-а.
     UpdateScrub(SeekRequest),
 
-    /// Запомнить latest target compatibility scrub-а без запуска demux preview-mode seek-а.
+    /// Запустить/обновить live scrub preview target через reused-decoder route.
     ///
-    /// Временный fallback трактует preview как `UpdateScrub`: target сохраняется
-    /// для `EndScrub`, но player-core preview-пайплайн не стартует.
+    /// Во время active live timeline drag это не ordinary seek event: session
+    /// декодит exact preview target, но final commit остаётся заблокирован до
+    /// `EndScrub`.
     PreviewScrub(SeekRequest),
 
-    /// Завершить compatibility scrub единым SeekLanding route в latest target.
+    /// Завершить active scrub gesture.
     ///
-    /// `policy` пока сохраняется только для совместимости public API и не влияет
-    /// на выбор target-а: session всегда берёт последний `UpdateScrub`/`PreviewScrub`.
+    /// Для live scrub release это разрешает commit уже активного preview route-а;
+    /// для lightweight scrub fallback — запускает единый SeekLanding в latest target.
     EndScrub { policy: ScrubCommitPolicy },
 
     /// Остановить текущий media без завершения всей session.

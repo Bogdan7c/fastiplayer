@@ -249,11 +249,12 @@ fn play_during_scrub_cancels_without_hidden_seek_commit() {
     assert!(!session.snapshot().timeline.scrubbing);
     assert_eq!(session.snapshot().timeline.target_position, None);
     assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
-    assert!(
+    assert_eq!(
         seek_request_log
             .lock()
             .expect("seek request log lock")
-            .is_empty()
+            .len(),
+        1
     );
     let events = session.take_events();
     assert!(events.contains(&PlayerEvent::PlaybackStateChanged(PlaybackState::Paused)));
@@ -288,11 +289,12 @@ fn pause_during_scrub_cancels_without_hidden_seek_commit() {
     assert_eq!(session.simple_scrub_latest_request_for_tests(), None);
     assert!(!session.snapshot().timeline.scrubbing);
     assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
-    assert!(
+    assert_eq!(
         seek_request_log
             .lock()
             .expect("seek request log lock")
-            .is_empty()
+            .len(),
+        1
     );
     let events = session.take_events();
     assert!(
@@ -384,8 +386,9 @@ fn seek_during_scrub_cancels_latest_target_before_one_shot_landing_route() {
     assert!(session.seek_commit().is_some());
 
     let requests = seek_request_log.lock().expect("seek request log lock");
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].timestamp, Duration::from_secs(2));
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].timestamp, Duration::from_secs(6));
+    assert_eq!(requests[1].timestamp, Duration::from_secs(2));
 
     let events = session.take_events();
     assert!(events.iter().any(|event| matches!(
@@ -825,6 +828,9 @@ fn shared_timeline_hover_handoff_promotes_same_prepared_branch() {
         crate::audio_boundary::missing_audio_decoder_factory(),
         crate::audio_boundary::missing_audio_output_factory(),
         handoff.clone(),
+        frame_server_core::FrameServerConfig::default()
+            .validate()
+            .expect("default frame-server config must validate"),
     );
     let seek_request_log = install_fake_media_with_seek_request_log(
         &mut session,
@@ -1391,9 +1397,9 @@ fn promoted_prepared_resource_leaves_hover_cleanup_and_releases_once() {
     assert_eq!(release_count(&released, 84), 1);
 }
 
-/// PreviewScrub временно является latest-target update и не стартует demux preview.
+/// PreviewScrub запускает live reused-decoder route, но не ordinary Seek command.
 #[test]
-fn preview_scrub_is_latest_target_update_without_demux_seek() {
+fn preview_scrub_starts_live_route_without_ordinary_seek_event() {
     let mut session = PlayerSession::new();
     let seek_request_log = install_fake_media_with_seek_request_log(
         &mut session,
@@ -1413,13 +1419,12 @@ fn preview_scrub_is_latest_target_update_without_demux_seek() {
         )))
         .unwrap();
 
-    assert!(
-        seek_request_log
-            .lock()
-            .expect("seek request log lock")
-            .is_empty()
-    );
-    assert!(session.seek_commit().is_none());
+    let requests = seek_request_log.lock().expect("seek request log lock");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].timestamp, Duration::from_secs(8));
+    assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
+    drop(requests);
+    assert!(session.seek_commit().is_some());
     assert!(session.snapshot().timeline.scrubbing);
     assert_eq!(
         session.snapshot().timeline.target_position,
@@ -1434,9 +1439,139 @@ fn preview_scrub_is_latest_target_update_without_demux_seek() {
     );
 }
 
-/// EndScrub берёт target последнего PreviewScrub так же, как последнего UpdateScrub.
+/// Live scrub переносит prepared branch в transaction ownership без cold decode.
 #[test]
-fn preview_scrub_target_is_committed_by_end_scrub() {
+fn live_scrub_prepared_transfer_waits_for_release_and_retarget_releases_without_demote() {
+    let mut session = PlayerSession::new();
+    let seek_request_log = install_fake_media_with_seek_request_log(
+        &mut session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+    let released = Arc::new(Mutex::new(Vec::new()));
+    insert_prepared_seek_frame_for_tests(
+        &mut session,
+        11_000,
+        11_000,
+        140,
+        Some(PreparedSeekBranchToken::resume_ready_for_tests()),
+        Arc::clone(&released),
+    );
+
+    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+            prepared_media_time(11_000),
+        )))
+        .unwrap();
+
+    assert!(
+        seek_request_log
+            .lock()
+            .expect("seek request log lock")
+            .is_empty()
+    );
+    assert_eq!(
+        session.active_prepared_seek_landing_kind_for_tests(),
+        Some(PreparedSeekLandingPromotionKind::ResumeReadyBranch)
+    );
+    assert!(session.seek_commit().is_some());
+    assert_ne!(
+        session.snapshot().current_position,
+        prepared_media_time(11_000).as_duration()
+    );
+    assert!(
+        session
+            .take_scrub_events()
+            .iter()
+            .all(|event| !matches!(event, frame_server_core::ScrubEvent::Committed(_)))
+    );
+
+    session
+        .dispatch_command(PlayerCommand::EndScrub {
+            policy: ScrubCommitPolicy::CommitVisiblePreview,
+        })
+        .unwrap();
+    session.finish_seek_commit_if_ready_for_tests(
+        Instant::now(),
+        Duration::from_secs(10),
+        50.0,
+        Duration::from_millis(250),
+        1,
+    );
+    assert_eq!(
+        session.snapshot().current_position,
+        prepared_media_time(11_000).as_duration()
+    );
+
+    insert_prepared_seek_frame_for_tests(
+        &mut session,
+        12_000,
+        12_000,
+        141,
+        Some(PreparedSeekBranchToken::resume_ready_for_tests()),
+        Arc::clone(&released),
+    );
+    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+            prepared_media_time(12_000),
+        )))
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+            prepared_media_time(13_000),
+        )))
+        .unwrap();
+
+    assert_eq!(release_count(&released, 141), 1);
+    assert_eq!(
+        session.prepared_seek_landing_recent_superseded_len_for_tests(),
+        0
+    );
+}
+
+/// Frame-only prepared entry не transfer-ится в LiveScrub как branch.
+#[test]
+fn live_scrub_frame_only_prepared_entry_releases_and_uses_cold_decode_path() {
+    let mut session = PlayerSession::new();
+    let seek_request_log = install_fake_media_with_seek_request_log(
+        &mut session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+    let released = Arc::new(Mutex::new(Vec::new()));
+    insert_prepared_seek_frame_for_tests(
+        &mut session,
+        14_000,
+        14_000,
+        142,
+        None,
+        Arc::clone(&released),
+    );
+
+    session.dispatch_command(PlayerCommand::BeginScrub).unwrap();
+    session
+        .dispatch_command(PlayerCommand::PreviewScrub(SeekRequest::absolute(
+            prepared_media_time(14_000),
+        )))
+        .unwrap();
+
+    let requests = seek_request_log.lock().expect("seek request log lock");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].timestamp, Duration::from_secs(14));
+    assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
+    drop(requests);
+
+    assert_eq!(session.active_prepared_seek_landing_kind_for_tests(), None);
+    assert_eq!(release_count(&released, 142), 1);
+    assert_eq!(
+        session.prepared_seek_landing_recent_superseded_len_for_tests(),
+        0
+    );
+}
+
+/// EndScrub release разрешает commit active live route-а без второго demux seek.
+#[test]
+fn end_scrub_commits_active_live_preview_without_second_demux_seek() {
     let mut session = PlayerSession::new();
     let seek_request_log = install_fake_media_with_seek_request_log(
         &mut session,
@@ -1466,13 +1601,14 @@ fn preview_scrub_target_is_committed_by_end_scrub() {
     assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
     let seek_commit = session
         .seek_commit()
-        .expect("PreviewScrub latest target должен стать final seek");
+        .expect("live preview target должен остаться active commit до gates");
     assert_eq!(seek_commit.target_position, MediaTime::from_secs(9));
     let events = session.take_events();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        PlayerEvent::SeekRequested(seek_request) if *seek_request == latest_request
-    )));
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, PlayerEvent::SeekRequested(_)))
+    );
     assert!(events.iter().all(|event| !matches!(
         event,
         PlayerEvent::PlaybackStateChanged(PlaybackState::Seeking)
@@ -1677,16 +1813,14 @@ fn preview_scrub_does_not_feed_scheduler_preroll_frame() {
         seek_admission_tick_config(2, 4),
     ));
 
-    assert!(
-        seek_request_log
-            .lock()
-            .expect("seek request log lock")
-            .is_empty()
-    );
+    let requests = seek_request_log.lock().expect("seek request log lock");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].timestamp, Duration::from_secs(6));
+    drop(requests);
     assert_eq!(tick_result.decoded_video_frames, 0);
     assert_eq!(tick_result.video_frames_presented, 0);
     assert!(tick_result.dropped_video_frames.is_empty());
     assert!(session.pipeline.present_video_frame().is_none());
     assert!(!session.snapshot().timeline.stale_frame);
-    assert!(session.seek_commit().is_none());
+    assert!(session.seek_commit().is_some());
 }

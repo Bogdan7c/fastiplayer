@@ -16,7 +16,7 @@ use player_core::{
     PlayerErrorKind, PlayerEvent, PlayerRenderError, PlayerRuntimeApplyResult,
     PlayerRuntimeSettingsUpdate, PlayerSnapshot, PlayerTimelineHoverPrepareHandoff,
     PlayerVideoDecoderThreadConfig, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
-    PreparedMedia, QualitySelection, SeekRequest, VideoBackendSelectionRequest,
+    PreparedMedia, QualitySelection, ScrubCommitPolicy, SeekRequest, VideoBackendSelectionRequest,
     VideoDecodeRequirement,
 };
 use render_core::RenderDiagnostics;
@@ -24,7 +24,7 @@ use render_wgpu_video::{
     DmaBufWgpuFrameMaterializer, HostPlanarWgpuFrameMaterializer, WgpuFrameTextureViewMaterializer,
     WgpuFrameTextureViews, wrap_video_backend_for_wgpu_submission,
 };
-use rustiplayer_config::PlayerDemuxConfig;
+use rustiplayer_config::{FrameServerLiveScrubDecodeModeConfig, PlayerDemuxConfig};
 use rustiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
 use tracing::{debug, info, instrument, warn};
 use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;
@@ -48,7 +48,10 @@ use crate::ui::animation::AnimationState;
 use crate::ui::player_controls::{self, ControlAction};
 use crate::ui::sidebar::{self, AppSidebarContent};
 use crate::ui::skin::{self, PlayerSkin};
-use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
+use crate::ui::timeline::{
+    self, TimelineAction, TimelineLiveScrubDecodeMode, TimelineLiveScrubSettingsSnapshot,
+    TimelineUiState,
+};
 use crate::ui::titlebar_icon_area::TitlebarIconAreaAction;
 use crate::ui::window_chrome::{self, WindowChromeAction, WindowChromeInput, WindowChromeStyle};
 use crate::video_pipeline_selector::{
