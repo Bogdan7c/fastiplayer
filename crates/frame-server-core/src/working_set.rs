@@ -49,6 +49,62 @@ pub enum FrameExactnessPolicy {
     TargetOrAfter,
 }
 
+/// Причина полного release-а hover-owned entries после завершения hover session.
+///
+/// Это не provider/resource pressure: caller уже решил, что текущего
+/// timeline hover/focus session больше нет, а working set только освобождает
+/// owned leases и возвращает точные counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TimelineHoverPrepareSessionEndReleaseReason {
+    /// `hover_leave_grace_ms = 0`: release выполняется сразу после leave.
+    ImmediateTimelineLeave,
+
+    /// Pending leave grace истёк без re-enter-а.
+    LeaveGraceExpired,
+
+    /// Пользователь сделал действие вне timeline, поэтому grace отменяется.
+    NonTimelineAction,
+}
+
+/// Итог полного release-а hover-owned entries после завершения session-а.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct TimelineHoverPrepareSessionEndReleaseOutcome {
+    primary_entries_released: usize,
+    recent_superseded_entries_released: usize,
+}
+
+impl TimelineHoverPrepareSessionEndReleaseOutcome {
+    /// Создаёт outcome с раздельными counters для primary и recent compartments.
+    #[must_use]
+    pub const fn new(
+        primary_entries_released: usize,
+        recent_superseded_entries_released: usize,
+    ) -> Self {
+        Self {
+            primary_entries_released,
+            recent_superseded_entries_released,
+        }
+    }
+
+    /// Сколько primary hover entries было освобождено.
+    #[must_use]
+    pub const fn primary_entries_released(self) -> usize {
+        self.primary_entries_released
+    }
+
+    /// Сколько recent-superseded entries было освобождено.
+    #[must_use]
+    pub const fn recent_superseded_entries_released(self) -> usize {
+        self.recent_superseded_entries_released
+    }
+
+    /// Общий счётчик освобождённых hover-owned entries.
+    #[must_use]
+    pub const fn total_entries_released(self) -> usize {
+        self.primary_entries_released + self.recent_superseded_entries_released
+    }
+}
+
 /// Bucket используется только как быстрый индекс и никогда не доказывает точность.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TimelineHoverFrameBucket(i64);
@@ -592,6 +648,28 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
             PressureReleaseMissReason::OnlyProtectedCurrentTarget { protected_key }
         };
         PressureReleaseOutcome::NothingReleased { reason }
+    }
+
+    /// Освобождает все hover-owned entries после завершения hover session.
+    ///
+    /// Promoted `SeekLanding` resources сюда не попадают: promotion уже вынула
+    /// entry из hover storage и передала lease transaction owner-у.
+    #[must_use]
+    pub fn release_hover_owned_entries_for_session_end(
+        &mut self,
+        _reason: TimelineHoverPrepareSessionEndReleaseReason,
+    ) -> TimelineHoverPrepareSessionEndReleaseOutcome {
+        let primary_entries_released = self.entries.len();
+        self.entries.clear();
+        self.insertion_order.clear();
+        self.bucket_index.clear();
+
+        let recent_superseded_entries_released = self.recent_superseded.clear();
+
+        TimelineHoverPrepareSessionEndReleaseOutcome::new(
+            primary_entries_released,
+            recent_superseded_entries_released,
+        )
     }
 
     /// Вставляет prepared entry и evict-ит самые старые записи сверх capacity.

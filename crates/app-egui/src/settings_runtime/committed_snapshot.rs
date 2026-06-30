@@ -102,6 +102,12 @@ impl CommittedConfigSnapshot {
         self.config.frame_server.hover_preview_enabled
     }
 
+    /// UX grace после ухода pointer/focus с timeline; `0` означает immediate release.
+    #[must_use]
+    pub(crate) fn hover_leave_grace_duration(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(u64::from(self.config.frame_server.hover_leave_grace_ms))
+    }
+
     /// Длительность анимации выезда settings sidebar в секундах; `0` — без анимации.
     #[must_use]
     pub(crate) fn sidebar_slide_duration_seconds(&self) -> f32 {

@@ -340,4 +340,26 @@ mod tests {
         assert!(outcome.invisible_prepare_cleared);
         assert!(outcome.visual_presentation_cleared);
     }
+
+    #[test]
+    fn reenter_after_leave_emits_new_invisible_prepare_target() {
+        let mut state = TimelineHoverIntentState::default();
+
+        TimelineHoverFrameCoalescer {
+            latest_intent: Some(TimelineHoverIntent::Target(hover_visual_target(30))),
+        }
+        .finish(&mut state, true);
+        TimelineHoverFrameCoalescer {
+            latest_intent: Some(TimelineHoverIntent::Clear),
+        }
+        .finish(&mut state, true);
+        let reenter = TimelineHoverFrameCoalescer {
+            latest_intent: Some(TimelineHoverIntent::Target(hover_visual_target(30))),
+        }
+        .finish(&mut state, true);
+
+        assert_eq!(state.active_target(), Some(hover_target(30)));
+        assert_eq!(state.invisible_prepare_target_count(), 2);
+        assert_eq!(reenter.invisible_prepare_target, Some(hover_target(30)));
+    }
 }

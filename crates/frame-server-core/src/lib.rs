@@ -86,6 +86,7 @@ pub use working_set::{
     TimelineHoverPrepareLookupOutcome, TimelineHoverPrepareNoOpReason,
     TimelineHoverPreparePressureReleaseMissReason, TimelineHoverPreparePressureReleaseOutcome,
     TimelineHoverPreparePromotionOutcome, TimelineHoverPrepareProviderBudget,
+    TimelineHoverPrepareSessionEndReleaseOutcome, TimelineHoverPrepareSessionEndReleaseReason,
     TimelineHoverPrepareSlotPlan, TimelineHoverPrepareTimingRejection,
     TimelineHoverPrepareWorkingSet, TimelineHoverPreparedFrame, TimelineHoverPreparedFrameEntry,
     TimelineHoverPreparedFrameTiming, TimelineHoverPromotedFrameSeekReuse,

@@ -679,6 +679,77 @@ fn pressure_never_touches_active_seek_owned_promoted_resource() {
 }
 
 #[test]
+fn session_end_release_clears_hover_owned_entries_without_promoted_seek_resource() {
+    let released = Arc::new(Mutex::new(Vec::new()));
+    let first_primary_key = base_key(230);
+    let second_primary_key = base_key(231);
+    let recent_key = base_key(232);
+    let active_seek_key = base_key(233);
+    let mut working_set = TimelineHoverPrepareWorkingSet::with_capacity_and_recent_superseded(
+        capacity(3),
+        recent_budget_for_tests(1, 1),
+    );
+    working_set.insert_prepared_frame(
+        first_primary_key,
+        TimelineHoverPreparedFrameEntry::<FakeBranchToken>::new(
+            hardware_lease(FrameResourceHandle(230), released.clone()),
+            timing(1_250),
+        ),
+    );
+    working_set.insert_prepared_frame(
+        second_primary_key,
+        TimelineHoverPreparedFrameEntry::<FakeBranchToken>::new(
+            hardware_lease(FrameResourceHandle(231), released.clone()),
+            timing(1_260),
+        ),
+    );
+
+    let recent_transaction = promote_branch_entry(
+        &mut working_set,
+        recent_key,
+        FrameResourceHandle(232),
+        released.clone(),
+    );
+    let demote =
+        recent_transaction.supersede_to_recent(&mut working_set, lookup_request(recent_key, 1_200));
+    assert!(matches!(
+        demote,
+        TimelineHoverPrepareDemoteBackOutcome::DemotedToRecentSuperseded
+    ));
+    let active_seek_transaction = promote_branch_entry(
+        &mut working_set,
+        active_seek_key,
+        FrameResourceHandle(233),
+        released.clone(),
+    );
+
+    let release_outcome = working_set.release_hover_owned_entries_for_session_end(
+        TimelineHoverPrepareSessionEndReleaseReason::LeaveGraceExpired,
+    );
+    let repeated_release = working_set.release_hover_owned_entries_for_session_end(
+        TimelineHoverPrepareSessionEndReleaseReason::LeaveGraceExpired,
+    );
+
+    assert_eq!(
+        release_outcome,
+        TimelineHoverPrepareSessionEndReleaseOutcome::new(2, 1)
+    );
+    assert_eq!(
+        repeated_release,
+        TimelineHoverPrepareSessionEndReleaseOutcome::default()
+    );
+    assert_eq!(working_set.len(), 0);
+    assert_eq!(working_set.recent_superseded_len(), 0);
+    assert_eq!(release_count(&released, FrameResourceHandle(230)), 1);
+    assert_eq!(release_count(&released, FrameResourceHandle(231)), 1);
+    assert_eq!(release_count(&released, FrameResourceHandle(232)), 1);
+    assert_eq!(release_count(&released, FrameResourceHandle(233)), 0);
+
+    drop(active_seek_transaction);
+    assert_eq!(release_count(&released, FrameResourceHandle(233)), 1);
+}
+
+#[test]
 fn primary_hover_byproducts_use_latest_n_without_evicting_current_target() {
     let released = Arc::new(Mutex::new(Vec::new()));
     let current_key = base_key(220);

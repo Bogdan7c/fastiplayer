@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use frame_server_core::{
     FrameServerConfig as RuntimeFrameServerConfig, LiveScrubDecodeMode,
     TimelineHoverPrepareFrameLookupRequest, TimelineHoverPrepareLookupMissReason,
-    TimelineHoverPrepareLookupOutcome, TimelineHoverPrepareTimingRejection,
+    TimelineHoverPrepareLookupOutcome, TimelineHoverPrepareSessionEndReleaseOutcome,
+    TimelineHoverPrepareSessionEndReleaseReason, TimelineHoverPrepareTimingRejection,
     TimelineHoverPrepareWorkingSet, TimelineHoverPreparedFrameTiming,
     TimelineHoverRecentSupersededBudget, ValidatedFrameServerConfig,
 };
@@ -92,6 +93,20 @@ impl PlayerTimelineHoverPrepareHandoff {
                     PlayerTimelineHoverPrepareBorrowOutcome::TimingRejected(rejection)
                 }
             }
+        })
+    }
+
+    /// Освобождает hover-owned prepared entries при завершении hover session.
+    ///
+    /// App layer передаёт только причину session-end cleanup-а; storage,
+    /// индексы и release-on-drop semantics остаются у neutral working set-а.
+    #[must_use]
+    pub fn release_hover_owned_entries_for_session_end(
+        &self,
+        reason: TimelineHoverPrepareSessionEndReleaseReason,
+    ) -> TimelineHoverPrepareSessionEndReleaseOutcome {
+        self.with_locked_working_set(|working_set| {
+            working_set.release_hover_owned_entries_for_session_end(reason)
         })
     }
 

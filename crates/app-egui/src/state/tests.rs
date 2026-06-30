@@ -25,12 +25,17 @@ use super::present_frame_cache::{
 use super::telemetry_panel::{
     TELEMETRY_PANEL_REFRESH_INTERVAL, TelemetryPanelCache, TelemetryPanelRow, TelemetryPanelState,
 };
-use super::ui_runtime::timeline_command_from_action;
+use super::ui_runtime::{
+    control_action_cancels_timeline_hover_leave_grace,
+    control_actions_include_timeline_pointer_target, raw_input_has_primary_pointer_press,
+    timeline_command_from_action,
+};
 use super::{AppFrameContext, AppState};
 use crate::telemetry::Telemetry;
 use crate::timeline_hover_intent::{
     TimelineHoverFrameCoalescer, TimelineHoverIntentState, TimelineHoverPreviewSlot,
 };
+use crate::ui::player_controls::ControlAction;
 use crate::ui::timeline::{
     TimelineAction, TimelineHoverIntent, TimelineHoverPreviewPlacement, TimelineHoverTarget,
     TimelineHoverVisualTarget, TimelineUiState,
@@ -55,6 +60,7 @@ fn state_source_for_architecture_tests() -> String {
         include_str!("present_frame_cache.rs"),
         include_str!("telemetry_panel.rs"),
         include_str!("../timeline_hover_intent.rs"),
+        include_str!("timeline_hover_leave_grace.rs"),
         include_str!("ui_runtime.rs"),
         include_str!("video_backend.rs"),
     ]
@@ -178,6 +184,51 @@ fn timeline_hover_intent_has_no_player_command_surface() {
 
     assert!(!hover_source.contains("PlayerCommand"));
     assert!(!hover_source.contains("player_worker"));
+}
+
+#[test]
+fn non_timeline_controls_cancel_pending_hover_leave_grace() {
+    let target_position = MediaTime::from_secs(42);
+
+    for action in [
+        ControlAction::TogglePlayback,
+        ControlAction::OpenFile,
+        ControlAction::SetVolume(0.5),
+        ControlAction::ToggleMute,
+        ControlAction::ToggleFullscreen,
+    ] {
+        assert!(control_action_cancels_timeline_hover_leave_grace(&action));
+    }
+    assert!(!control_action_cancels_timeline_hover_leave_grace(
+        &ControlAction::Timeline(TimelineAction::ClickSeek(target_position))
+    ));
+    assert!(!control_action_cancels_timeline_hover_leave_grace(
+        &ControlAction::TimelineHover(TimelineHoverIntent::Clear)
+    ));
+}
+
+#[test]
+fn timeline_hover_passive_primary_click_without_timeline_interaction_cancels_leave_grace() {
+    let target_position = MediaTime::from_secs(42);
+    let mut egui_input = egui::RawInput::default();
+    egui_input.events.push(egui::Event::PointerButton {
+        pos: egui::pos2(12.0, 34.0),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+
+    assert!(raw_input_has_primary_pointer_press(&egui_input));
+    assert!(!control_actions_include_timeline_pointer_target(&[]));
+    assert!(control_actions_include_timeline_pointer_target(&[
+        ControlAction::Timeline(TimelineAction::ClickSeek(target_position))
+    ]));
+    assert!(control_actions_include_timeline_pointer_target(&[
+        ControlAction::TimelineHover(TimelineHoverIntent::Target(hover_visual_target(42)))
+    ]));
+    assert!(!control_actions_include_timeline_pointer_target(&[
+        ControlAction::TimelineHover(TimelineHoverIntent::Clear)
+    ]));
 }
 
 /// App-owned coalescer применяет только latest hover target одного UI frame-а.

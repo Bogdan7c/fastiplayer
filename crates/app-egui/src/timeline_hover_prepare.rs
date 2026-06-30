@@ -8,6 +8,7 @@ use frame_server_core::{
     BackendRevision, FrameExactnessPolicy, ScrubGenerationToken, ScrubTrackSelection,
     SourceRevision, TimelineHoverFrameBucket, TimelineHoverPrepareFrameKey,
     TimelineHoverPrepareFrameLookupRequest, TimelineHoverPrepareLookupMissReason,
+    TimelineHoverPrepareSessionEndReleaseOutcome, TimelineHoverPrepareSessionEndReleaseReason,
 };
 use media_core::TrackTimestamp;
 use player_core::{PlayerTimelineHoverPrepareBorrowOutcome, PlayerTimelineHoverPrepareHandoff};
@@ -383,6 +384,14 @@ impl AppTimelineHoverPrepareExecutor {
     ) -> PlayerTimelineHoverPrepareBorrowOutcome {
         self.handoff.borrow_prepared_frame(request)
     }
+
+    pub(crate) fn release_hover_owned_entries_for_session_end(
+        &self,
+        reason: TimelineHoverPrepareSessionEndReleaseReason,
+    ) -> TimelineHoverPrepareSessionEndReleaseOutcome {
+        self.handoff
+            .release_hover_owned_entries_for_session_end(reason)
+    }
 }
 
 impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
@@ -586,6 +595,14 @@ impl TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor> {
 
     pub(crate) fn invalidate_hover_source(&mut self) {
         self.executor.invalidate_hover_source();
+    }
+
+    pub(crate) fn release_hover_owned_entries_for_session_end(
+        &self,
+        reason: TimelineHoverPrepareSessionEndReleaseReason,
+    ) -> TimelineHoverPrepareSessionEndReleaseOutcome {
+        self.executor
+            .release_hover_owned_entries_for_session_end(reason)
     }
 }
 

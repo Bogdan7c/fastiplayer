@@ -66,6 +66,7 @@ mod main_visual_override;
 mod media_jobs;
 mod present_frame_cache;
 mod telemetry_panel;
+mod timeline_hover_leave_grace;
 mod timeline_inline_status;
 mod ui_runtime;
 mod video_backend;
@@ -83,6 +84,7 @@ pub(crate) use video_backend::BackendSwapVideoPhase;
 use main_visual_override::MainVisualOverrideState;
 use present_frame_cache::CachedRenderablePresentFrame;
 use telemetry_panel::TelemetryPanelCache;
+use timeline_hover_leave_grace::TimelineHoverLeaveGraceState;
 use timeline_inline_status::TimelineInlineStatusState;
 
 /// Immutable данные, зафиксированные один раз для текущего render frame-а.
@@ -254,6 +256,9 @@ pub struct AppState {
     /// App-owned latest hover intent + placeholder preview state без player commands.
     timeline_hover_intent_state: TimelineHoverIntentState,
 
+    /// UX grace после leave: удерживает prepared entries, но не расширяет decode span.
+    timeline_hover_leave_grace_state: TimelineHoverLeaveGraceState,
+
     /// Materialized hover preview borrow для отдельного render target-а.
     timeline_hover_preview_render_state: TimelineHoverPreviewRenderState,
 
@@ -354,6 +359,7 @@ impl AppState {
             local_file_open_job: None,
             timeline_ui_state: TimelineUiState::default(),
             timeline_hover_intent_state: TimelineHoverIntentState::default(),
+            timeline_hover_leave_grace_state: TimelineHoverLeaveGraceState::default(),
             timeline_hover_preview_render_state: TimelineHoverPreviewRenderState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
             sidebar_slide: SlideTransition::closed(),
@@ -545,6 +551,7 @@ impl AppState {
             || self.last_player_snapshot.playback_state == PlaybackState::Opening
             || self.last_player_snapshot.playback_state == PlaybackState::Scrubbing
             || self.last_player_snapshot.timeline.scrubbing
+            || self.timeline_hover_leave_grace_state.is_pending()
     }
 
     /// Забирает одноразовый follow-up redraw после асинхронной worker command.

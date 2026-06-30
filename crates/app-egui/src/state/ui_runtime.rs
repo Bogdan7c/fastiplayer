@@ -1,7 +1,11 @@
 use super::telemetry_panel::TelemetryPanelState;
+use super::timeline_hover_leave_grace::{
+    TimelineHoverLeaveGraceReleaseReason, TimelineHoverLeaveGraceStartOutcome,
+};
 use super::*;
 use crate::timeline_hover_intent::{TimelineHoverFrameCoalescer, TimelineHoverFrameOutcome};
 use crate::ui::timeline::{TimelineHoverTarget, TimelineHoverVisualTarget};
+use frame_server_core::TimelineHoverPrepareSessionEndReleaseReason;
 use tracing::{trace, warn};
 
 /// Diagnostic route пользовательского timeline intent-а на границе app-egui -> player-core.
@@ -53,6 +57,55 @@ pub(super) fn timeline_command_from_action(
         | TimelineAction::PreviewLiveScrub(_)
         | TimelineAction::EndLiveScrub(_)
         | TimelineAction::CancelLiveScrub => None,
+    }
+}
+
+/// Проверяет, что action не принадлежит timeline и должен оборвать pending leave grace.
+pub(super) fn control_action_cancels_timeline_hover_leave_grace(action: &ControlAction) -> bool {
+    !matches!(
+        action,
+        ControlAction::Timeline(_) | ControlAction::TimelineHover(_)
+    )
+}
+
+/// Проверяет, принадлежит ли primary press текущему timeline target-у/seek-у.
+pub(super) fn control_actions_include_timeline_pointer_target(actions: &[ControlAction]) -> bool {
+    actions.iter().any(|action| match action {
+        ControlAction::Timeline(_) => true,
+        ControlAction::TimelineHover(crate::ui::timeline::TimelineHoverIntent::Target(_)) => true,
+        ControlAction::TimelineHover(crate::ui::timeline::TimelineHoverIntent::Clear) => false,
+        _ => false,
+    })
+}
+
+/// Ищет raw primary press, который может быть пассивным click-ом вне timeline.
+pub(super) fn raw_input_has_primary_pointer_press(egui_input: &egui::RawInput) -> bool {
+    egui_input.events.iter().any(|event| {
+        matches!(
+            event,
+            egui::Event::PointerButton {
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                ..
+            }
+        )
+    })
+}
+
+/// Мапит app-owned UX reason в neutral working-set cleanup reason.
+fn timeline_hover_prepare_session_release_reason(
+    reason: TimelineHoverLeaveGraceReleaseReason,
+) -> TimelineHoverPrepareSessionEndReleaseReason {
+    match reason {
+        TimelineHoverLeaveGraceReleaseReason::ImmediateTimelineLeave => {
+            TimelineHoverPrepareSessionEndReleaseReason::ImmediateTimelineLeave
+        }
+        TimelineHoverLeaveGraceReleaseReason::LeaveGraceExpired => {
+            TimelineHoverPrepareSessionEndReleaseReason::LeaveGraceExpired
+        }
+        TimelineHoverLeaveGraceReleaseReason::NonTimelineAction => {
+            TimelineHoverPrepareSessionEndReleaseReason::NonTimelineAction
+        }
     }
 }
 
@@ -180,6 +233,7 @@ impl AppState {
         let titlebar_height_points = self.committed_config_snapshot.titlebar_height_points();
         let window_is_maximized = window.is_maximized();
         let window_is_fullscreen = window.fullscreen().is_some();
+        let primary_pointer_pressed_this_frame = raw_input_has_primary_pointer_press(&egui_input);
         let mut control_actions = Vec::new();
         let mut settings_actions = Vec::new();
         let mut window_chrome_actions = Vec::new();
@@ -295,7 +349,17 @@ impl AppState {
 
         let post_ui_actions_started_at = Instant::now();
         self.timeline_ui_state = timeline_ui_state;
+        if !settings_actions.is_empty() || !window_chrome_actions.is_empty() {
+            self.release_pending_timeline_hover_leave_grace_for_non_timeline_action();
+        }
+        let primary_pointer_press_outside_timeline = primary_pointer_pressed_this_frame
+            && !control_actions_include_timeline_pointer_target(&control_actions);
+        self.release_expired_timeline_hover_leave_grace(Instant::now());
         self.handle_control_actions(window, player_snapshot, control_actions);
+        if primary_pointer_press_outside_timeline {
+            self.release_pending_timeline_hover_leave_grace_for_non_timeline_action();
+        }
+        self.release_expired_timeline_hover_leave_grace(Instant::now());
         let post_ui_actions_elapsed = post_ui_actions_started_at.elapsed();
 
         RenderedAppUi {
@@ -328,6 +392,10 @@ impl AppState {
         let mut timeline_hover_coalescer = TimelineHoverFrameCoalescer::default();
 
         for action in actions {
+            if control_action_cancels_timeline_hover_leave_grace(&action) {
+                self.release_pending_timeline_hover_leave_grace_for_non_timeline_action();
+            }
+
             match action {
                 ControlAction::TogglePlayback => self.toggle_playback(),
                 ControlAction::OpenFile => self.open_file(window),
@@ -371,7 +439,11 @@ impl AppState {
         );
         let should_retry_pending_preview = hover_frame_outcome.visual_presentation_target.is_none()
             && !hover_frame_outcome.visual_presentation_cleared;
-        self.apply_timeline_hover_frame_outcome(player_snapshot, hover_frame_outcome);
+        self.apply_timeline_hover_frame_outcome(
+            player_snapshot,
+            hover_frame_outcome,
+            Instant::now(),
+        );
         if should_retry_pending_preview
             && let Some(visual_target) = self.timeline_hover_intent_state.pending_visual_target()
         {
@@ -384,17 +456,21 @@ impl AppState {
         &mut self,
         player_snapshot: &PlayerSnapshot,
         outcome: TimelineHoverFrameOutcome,
+        now: Instant,
     ) {
         if outcome.invisible_prepare_cleared {
             self.timeline_hover_prepare_controller
                 .cancel_active_span(TimelineHoverPrepareCancellationReason::TimelineLeft);
+            self.start_timeline_hover_leave_grace(now);
         }
         if outcome.visual_presentation_cleared {
             self.timeline_hover_preview_render_state.clear();
         }
 
         if let Some(target) = outcome.invisible_prepare_target {
-            self.prepare_timeline_hover_target(player_snapshot, target);
+            if self.prepare_timeline_hover_target(player_snapshot, target) {
+                self.cancel_timeline_hover_leave_grace_for_reenter();
+            }
         }
 
         if let Some(visual_target) = outcome.visual_presentation_target {
@@ -407,13 +483,13 @@ impl AppState {
         &mut self,
         player_snapshot: &PlayerSnapshot,
         target: TimelineHoverTarget,
-    ) {
+    ) -> bool {
         let Some(prepare_target) =
             timeline_hover_prepare_target_from_snapshot(player_snapshot, target)
         else {
             self.timeline_hover_prepare_controller
                 .cancel_active_span(TimelineHoverPrepareCancellationReason::SourceSwitched);
-            return;
+            return false;
         };
 
         let controller_outcome = self
@@ -422,6 +498,70 @@ impl AppState {
         trace!(
             outcome = ?controller_outcome,
             "Timeline hover prepare target processed"
+        );
+        true
+    }
+
+    /// Запускает retention grace после leave; active decode span уже отменён caller-ом.
+    fn start_timeline_hover_leave_grace(&mut self, now: Instant) {
+        let grace_duration = self.committed_config_snapshot.hover_leave_grace_duration();
+        match self
+            .timeline_hover_leave_grace_state
+            .note_timeline_left(now, grace_duration)
+        {
+            TimelineHoverLeaveGraceStartOutcome::Pending { expires_at } => {
+                trace!(
+                    ?grace_duration,
+                    ?expires_at,
+                    "Timeline hover leave grace started"
+                );
+            }
+            TimelineHoverLeaveGraceStartOutcome::ReleaseNow { reason } => {
+                self.release_timeline_hover_owned_entries_for_session_end(reason);
+            }
+        }
+    }
+
+    /// Re-enter до expiry сохраняет prepared entries и отменяет pending release.
+    fn cancel_timeline_hover_leave_grace_for_reenter(&mut self) {
+        if self.timeline_hover_leave_grace_state.cancel_for_reenter() {
+            trace!("Timeline hover leave grace cancelled by re-enter");
+        }
+    }
+
+    /// Non-timeline action во время grace завершает hover session без ожидания deadline.
+    fn release_pending_timeline_hover_leave_grace_for_non_timeline_action(&mut self) {
+        if let Some(reason) = self
+            .timeline_hover_leave_grace_state
+            .cancel_for_non_timeline_action()
+        {
+            self.release_timeline_hover_owned_entries_for_session_end(reason);
+        }
+    }
+
+    /// Проверяет expiry в обычном UI frame-е; отдельный поток или queue не нужны.
+    fn release_expired_timeline_hover_leave_grace(&mut self, now: Instant) {
+        if let Some(reason) = self.timeline_hover_leave_grace_state.expire_due(now) {
+            self.release_timeline_hover_owned_entries_for_session_end(reason);
+        }
+    }
+
+    /// Освобождает hover-owned entries через handoff, не читая storage напрямую.
+    fn release_timeline_hover_owned_entries_for_session_end(
+        &mut self,
+        reason: TimelineHoverLeaveGraceReleaseReason,
+    ) {
+        let release_reason = timeline_hover_prepare_session_release_reason(reason);
+        let release_outcome = self
+            .timeline_hover_prepare_controller
+            .release_hover_owned_entries_for_session_end(release_reason);
+        trace!(
+            ?reason,
+            primary_entries_released = release_outcome.primary_entries_released(),
+            recent_superseded_entries_released =
+                release_outcome.recent_superseded_entries_released(),
+            total_entries_released = release_outcome.total_entries_released(),
+            "Timeline hover prepared entries released for session end"
         );
     }
 
@@ -634,14 +774,17 @@ impl AppState {
 
         match key {
             winit::keyboard::KeyCode::Space => {
+                self.release_pending_timeline_hover_leave_grace_for_non_timeline_action();
                 self.toggle_playback();
                 true
             }
             winit::keyboard::KeyCode::KeyF => {
+                self.release_pending_timeline_hover_leave_grace_for_non_timeline_action();
                 Self::toggle_fullscreen(window);
                 true
             }
             winit::keyboard::KeyCode::KeyM => {
+                self.release_pending_timeline_hover_leave_grace_for_non_timeline_action();
                 let player_snapshot = self.refresh_player_snapshot();
                 self.publish_desktop_snapshot(&player_snapshot);
                 if let Err(error) = self
