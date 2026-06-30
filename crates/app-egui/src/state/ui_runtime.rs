@@ -138,14 +138,32 @@ fn timeline_hover_prepare_target_from_snapshot(
         target_context,
         target_pts,
         target_bucket,
-        timeline_hover_prepare_playback_mode(player_snapshot.playback_state),
+        timeline_hover_prepare_playback_mode(
+            player_snapshot.playback_state,
+            prepare_snapshot.interaction(),
+        ),
     ))
 }
 
 /// Runtime playback mode влияет только на typed executor degrade/admission.
-const fn timeline_hover_prepare_playback_mode(
+pub(super) const fn timeline_hover_prepare_playback_mode(
     playback_state: PlaybackState,
+    interaction: player_core::TimelineHoverPrepareInteraction,
 ) -> TimelineHoverPreparePlaybackMode {
+    match interaction {
+        player_core::TimelineHoverPrepareInteraction::LiveScrubActive => {
+            return TimelineHoverPreparePlaybackMode::LiveScrubActive;
+        }
+        player_core::TimelineHoverPrepareInteraction::OneShotSeekLandingResumePending {
+            spare_capacity_available,
+        } => {
+            return TimelineHoverPreparePlaybackMode::ResumePendingAfterSeek {
+                spare_capacity_available,
+            };
+        }
+        player_core::TimelineHoverPrepareInteraction::Ordinary => {}
+    }
+
     match playback_state {
         PlaybackState::Paused
         | PlaybackState::Stopped
@@ -159,6 +177,16 @@ const fn timeline_hover_prepare_playback_mode(
         | PlaybackState::Draining
         | PlaybackState::Failed => TimelineHoverPreparePlaybackMode::ActivePlayback,
     }
+}
+
+/// Проверяет, можно ли visual HoverPreview брать lease из shared prepared working set-а.
+pub(super) const fn timeline_hover_prepare_allows_preview_borrow(
+    playback_mode: TimelineHoverPreparePlaybackMode,
+) -> bool {
+    !matches!(
+        playback_mode,
+        TimelineHoverPreparePlaybackMode::LiveScrubActive
+    )
 }
 
 impl AppState {
@@ -565,6 +593,10 @@ impl AppState {
             self.timeline_hover_preview_render_state.clear();
             return;
         };
+        if !timeline_hover_prepare_allows_preview_borrow(prepare_target.playback_mode()) {
+            self.timeline_hover_preview_render_state.clear();
+            return;
+        }
         let lookup_request = prepare_target.lookup_request();
         let borrow_outcome = self
             .timeline_hover_prepare_controller

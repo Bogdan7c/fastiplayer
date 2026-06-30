@@ -28,13 +28,15 @@ use super::telemetry_panel::{
 use super::ui_runtime::{
     control_action_cancels_timeline_hover_leave_grace,
     control_actions_include_timeline_pointer_target, raw_input_has_primary_pointer_press,
-    timeline_command_from_action,
+    timeline_command_from_action, timeline_hover_prepare_allows_preview_borrow,
+    timeline_hover_prepare_playback_mode,
 };
 use super::{AppFrameContext, AppState};
 use crate::telemetry::Telemetry;
 use crate::timeline_hover_intent::{
     TimelineHoverFrameCoalescer, TimelineHoverIntentState, TimelineHoverPreviewSlot,
 };
+use crate::timeline_hover_prepare::TimelineHoverPreparePlaybackMode;
 use crate::ui::player_controls::ControlAction;
 use crate::ui::timeline::{
     TimelineAction, TimelineHoverIntent, TimelineHoverPreviewPlacement, TimelineHoverTarget,
@@ -175,6 +177,46 @@ fn timeline_live_scrub_actions_do_not_map_to_exact_seek_route() {
     ] {
         assert_eq!(timeline_command_from_action(action), None);
     }
+}
+
+#[test]
+fn timeline_hover_prepare_uses_player_owned_one_shot_resume_pending_mode() {
+    let playback_mode = timeline_hover_prepare_playback_mode(
+        PlaybackState::Scrubbing,
+        player_core::TimelineHoverPrepareInteraction::OneShotSeekLandingResumePending {
+            spare_capacity_available: true,
+        },
+    );
+
+    assert_eq!(
+        playback_mode,
+        TimelineHoverPreparePlaybackMode::ResumePendingAfterSeek {
+            spare_capacity_available: true,
+        }
+    );
+}
+
+#[test]
+fn timeline_hover_prepare_uses_player_owned_live_scrub_mode() {
+    let playback_mode = timeline_hover_prepare_playback_mode(
+        PlaybackState::Playing,
+        player_core::TimelineHoverPrepareInteraction::LiveScrubActive,
+    );
+
+    assert_eq!(
+        playback_mode,
+        TimelineHoverPreparePlaybackMode::LiveScrubActive
+    );
+    assert!(!timeline_hover_prepare_allows_preview_borrow(playback_mode));
+}
+
+#[test]
+fn timeline_hover_preview_borrow_remains_allowed_during_one_shot_resume_pending() {
+    let playback_mode = TimelineHoverPreparePlaybackMode::ResumePendingAfterSeek {
+        spare_capacity_available: false,
+    };
+
+    assert!(timeline_hover_prepare_allows_preview_borrow(playback_mode));
 }
 
 /// Hover intent не входит в command-oriented `TimelineAction -> PlayerCommand` route.

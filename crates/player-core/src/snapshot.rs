@@ -177,28 +177,52 @@ pub struct TimelineHoverPrepareSnapshot {
 
     /// Exactness policy prepared working set-а.
     exactness_policy: FrameExactnessPolicy,
+
+    /// Player-owned режим взаимодействия hover prepare с текущим SeekLanding/live scrub.
+    interaction: TimelineHoverPrepareInteraction,
+}
+
+/// Read-only режим, который говорит app-side hover prepare, кто сейчас владеет scrub ресурсами.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TimelineHoverPrepareInteraction {
+    /// Нет активного S17/live-scrub владельца, поэтому app выбирает обычный режим по playback state.
+    Ordinary,
+
+    /// One-shot SeekLanding уже удерживает promoted/active branch, поэтому hover может идти только при запасе.
+    OneShotSeekLandingResumePending {
+        /// Есть ли хотя бы один hover-owned slot после reservation активного SeekLanding.
+        spare_capacity_available: bool,
+    },
+
+    /// Timeline live scrub gesture активен и полностью приостанавливает hover prepare/preview.
+    LiveScrubActive,
+}
+
+/// Именованные поля для сборки `TimelineHoverPrepareSnapshot` внутри `player-core`.
+pub(crate) struct TimelineHoverPrepareSnapshotParts {
+    pub(crate) video_track: TrackId,
+    pub(crate) audio_track: Option<TrackId>,
+    pub(crate) video_track_time_base: TimeBase,
+    pub(crate) source_revision: SourceRevision,
+    pub(crate) backend_revision: BackendRevision,
+    pub(crate) hover_generation: ScrubGenerationToken,
+    pub(crate) exactness_policy: FrameExactnessPolicy,
+    pub(crate) interaction: TimelineHoverPrepareInteraction,
 }
 
 impl TimelineHoverPrepareSnapshot {
     /// Создаёт snapshot только из player-owned session/snapshot builder-а.
     #[must_use]
-    pub(crate) const fn new(
-        video_track: TrackId,
-        audio_track: Option<TrackId>,
-        video_track_time_base: TimeBase,
-        source_revision: SourceRevision,
-        backend_revision: BackendRevision,
-        hover_generation: ScrubGenerationToken,
-        exactness_policy: FrameExactnessPolicy,
-    ) -> Self {
+    pub(crate) const fn from_parts(parts: TimelineHoverPrepareSnapshotParts) -> Self {
         Self {
-            video_track,
-            audio_track,
-            video_track_time_base,
-            source_revision,
-            backend_revision,
-            hover_generation,
-            exactness_policy,
+            video_track: parts.video_track,
+            audio_track: parts.audio_track,
+            video_track_time_base: parts.video_track_time_base,
+            source_revision: parts.source_revision,
+            backend_revision: parts.backend_revision,
+            hover_generation: parts.hover_generation,
+            exactness_policy: parts.exactness_policy,
+            interaction: parts.interaction,
         }
     }
 
@@ -224,6 +248,12 @@ impl TimelineHoverPrepareSnapshot {
     #[must_use]
     pub const fn exactness_policy(self) -> FrameExactnessPolicy {
         self.exactness_policy
+    }
+
+    /// Возвращает player-owned режим hover prepare без доступа app к seek transaction internals.
+    #[must_use]
+    pub const fn interaction(self) -> TimelineHoverPrepareInteraction {
+        self.interaction
     }
 
     /// Собирает track selection точно в форме, ожидаемой prepared SeekLanding.

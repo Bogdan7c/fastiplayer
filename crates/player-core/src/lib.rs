@@ -88,10 +88,11 @@ pub use session::{
 pub(crate) use session::{
     PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,
 };
+pub(crate) use snapshot::TimelineHoverPrepareSnapshotParts;
 pub use snapshot::{
     AudioBufferSnapshot, BackendSnapshot, FrameCounters, PlayerSnapshot, QualitySummary,
-    QueueSnapshot, TexturePoolSnapshot, TimelineHoverPrepareSnapshot, TrackSelectionSnapshot,
-    TrackSummarySnapshot, VideoFrameSnapshot,
+    QueueSnapshot, TexturePoolSnapshot, TimelineHoverPrepareInteraction,
+    TimelineHoverPrepareSnapshot, TrackSelectionSnapshot, TrackSummarySnapshot, VideoFrameSnapshot,
 };
 pub use state::PlaybackState;
 pub use worker::{

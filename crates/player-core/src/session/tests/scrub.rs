@@ -639,6 +639,58 @@ fn prepared_frame_only_seek_landing_publishes_override_without_cold_decode() {
 }
 
 #[test]
+fn timeline_hover_prepare_snapshot_marks_one_shot_resume_pending() {
+    let mut session = PlayerSession::new();
+    install_fake_media_with_seek_request_log(&mut session, vec![fake_track(1, TrackKind::Video)]);
+    insert_prepared_seek_frame_for_tests(
+        &mut session,
+        11_000,
+        11_000,
+        81,
+        None,
+        Arc::new(Mutex::new(Vec::new())),
+    );
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            prepared_media_time(11_000),
+        )))
+        .unwrap();
+
+    let snapshot = session.snapshot_with_frame_counters(FrameCounters::default());
+    let prepare_snapshot = snapshot
+        .timeline_hover_prepare
+        .expect("loaded video media must expose hover prepare guards");
+
+    assert_eq!(
+        prepare_snapshot.interaction(),
+        crate::TimelineHoverPrepareInteraction::OneShotSeekLandingResumePending {
+            spare_capacity_available: false,
+        }
+    );
+}
+
+#[test]
+fn timeline_hover_prepare_snapshot_marks_live_scrub_on_pointer_down() {
+    let mut session = PlayerSession::new();
+    install_fake_media_with_seek_request_log(&mut session, vec![fake_track(1, TrackKind::Video)]);
+
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+
+    let snapshot = session.snapshot_with_frame_counters(FrameCounters::default());
+    let prepare_snapshot = snapshot
+        .timeline_hover_prepare
+        .expect("loaded video media must expose hover prepare guards");
+
+    assert_eq!(
+        prepare_snapshot.interaction(),
+        crate::TimelineHoverPrepareInteraction::LiveScrubActive
+    );
+}
+
+#[test]
 fn prepared_timing_rejection_falls_back_to_cold_decode_without_promoting() {
     let mut session = PlayerSession::new();
     let seek_request_log = install_fake_media_with_seek_request_log(

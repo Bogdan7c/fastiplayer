@@ -6,8 +6,9 @@ use media_core::TrackInfo;
 
 use crate::{
     AudioBufferSnapshot, BackendSnapshot, FrameCounters, PlayerSnapshot, QueueSnapshot,
-    TexturePoolSnapshot, TimelineHoverPrepareSnapshot, TrackSelectionSnapshot,
-    TrackSummarySnapshot, VideoFrameSnapshot,
+    TexturePoolSnapshot, TimelineHoverPrepareInteraction, TimelineHoverPrepareSnapshot,
+    TimelineHoverPrepareSnapshotParts, TrackSelectionSnapshot, TrackSummarySnapshot,
+    VideoFrameSnapshot,
 };
 
 use super::PlayerSession;
@@ -114,18 +115,49 @@ impl<'session> PlayerSnapshotBuilder<'session> {
                 )
             });
 
-        Some(TimelineHoverPrepareSnapshot::new(
-            video_track_id,
-            self.session.pipeline.selected_audio_track_id(),
-            video_track_time_base,
-            SourceRevision::new(super::prepared_seek::SEEK_LANDING_SOURCE_REVISION_UNTRACKED),
-            BackendRevision::new(super::prepared_seek::SEEK_LANDING_BACKEND_REVISION_UNTRACKED),
-            super::prepared_seek::seek_landing_generation_token(
-                playback_generation,
-                scrub_generation,
-            ),
-            FrameExactnessPolicy::TargetOrAfter,
+        Some(TimelineHoverPrepareSnapshot::from_parts(
+            TimelineHoverPrepareSnapshotParts {
+                video_track: video_track_id,
+                audio_track: self.session.pipeline.selected_audio_track_id(),
+                video_track_time_base,
+                source_revision: SourceRevision::new(
+                    super::prepared_seek::SEEK_LANDING_SOURCE_REVISION_UNTRACKED,
+                ),
+                backend_revision: BackendRevision::new(
+                    super::prepared_seek::SEEK_LANDING_BACKEND_REVISION_UNTRACKED,
+                ),
+                hover_generation: super::prepared_seek::seek_landing_generation_token(
+                    playback_generation,
+                    scrub_generation,
+                ),
+                exactness_policy: FrameExactnessPolicy::TargetOrAfter,
+                interaction: self.timeline_hover_prepare_interaction(),
+            },
         ))
+    }
+
+    /// Строит player-owned режим hover prepare без перекладывания seek/live-scrub логики в UI.
+    fn timeline_hover_prepare_interaction(&self) -> TimelineHoverPrepareInteraction {
+        if self.session.seek_runtime.simple_scrub_active()
+            || self
+                .session
+                .seek_runtime
+                .active_seek_landing_is_live_scrub()
+        {
+            return TimelineHoverPrepareInteraction::LiveScrubActive;
+        }
+
+        if self.session.seek_runtime.seek_landing_active() {
+            return TimelineHoverPrepareInteraction::OneShotSeekLandingResumePending {
+                spare_capacity_available: self
+                    .session
+                    .frame_server_config
+                    .hover_prepare_window_slots()
+                    > 1,
+            };
+        }
+
+        TimelineHoverPrepareInteraction::Ordinary
     }
 
     /// Собирает compact track metadata для UI.
