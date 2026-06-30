@@ -2,12 +2,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use codec_core::VideoColorMetadata;
-#[cfg(feature = "ffmpeg")]
-use video_core::VideoStreamDecodeConfig;
 use video_core::{
     DecodePacket, DecodeThreadError, VideoDecoderActivityNotifier,
     VideoDecoderEndOfStreamDrainState,
 };
+#[cfg(feature = "ffmpeg")]
+use video_core::{SoftwareDecodeThreadBudget, VideoStreamDecodeConfig};
 
 #[cfg(feature = "ffmpeg")]
 use crate::codec_adapter::{
@@ -53,7 +53,10 @@ pub(super) struct RealFfmpegDecodeApi {
 
 #[cfg(feature = "ffmpeg")]
 impl RealFfmpegDecodeApi {
-    pub(super) fn open(config: &VideoStreamDecodeConfig) -> Result<Self, FfmpegOpenDecoderError> {
+    pub(super) fn open(
+        config: &VideoStreamDecodeConfig,
+        software_decode_thread_budget: SoftwareDecodeThreadBudget,
+    ) -> Result<Self, FfmpegOpenDecoderError> {
         let requirement = video_decode_requirement_from_stream_config(config);
         let adapter_plan = plan_ffmpeg_software_decode(&requirement, config.frame_contract)
             .map_err(|error| {
@@ -70,6 +73,7 @@ impl RealFfmpegDecodeApi {
         if adapter_plan.decoder_id() == FfmpegDecoderId::Av1 {
             request = request.with_max_frame_delay(1);
         }
+        request = request.with_software_decode_thread_budget(software_decode_thread_budget);
         if let Some(extradata) = extradata_for_stream_config(config)? {
             request = request.with_extradata(extradata);
         }

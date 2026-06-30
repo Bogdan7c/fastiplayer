@@ -504,6 +504,7 @@ fn player_worker_exposes_decoder_thread_config_for_backend_factory() {
         decoder_ready_queue_frames: 5,
         decoder_surface_pool_frames: 6,
         software_frame_pool_frames: 8,
+        software_decode_thread_budget: video_core::SoftwareDecodeThreadBudget::auto(),
         zero_copy_surface_pool_slots: 7,
         flush_timeout: Duration::from_millis(75),
     };

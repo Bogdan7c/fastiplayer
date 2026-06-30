@@ -400,6 +400,7 @@ mod tests {
             // чтобы тест проверял именно сохранность hardware-релевантных лимитов.
             software_frame_pool_frames: video_core::VideoDecoderThreadConfig::default()
                 .software_frame_pool_frames,
+            software_decode_thread_budget: video_core::SoftwareDecodeThreadBudget::auto(),
             zero_copy_surface_pool_slots: 7,
             flush_timeout: Duration::from_millis(75),
         };

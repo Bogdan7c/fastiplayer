@@ -6,6 +6,7 @@ use std::ffi::{CStr, CString};
 use std::ptr::{self, NonNull};
 
 use codec_core::VideoCodec;
+use video_core::SoftwareDecodeThreadBudget;
 
 use super::error::{FfiResult, FfmpegError};
 use super::frame::OwnedAvFrame;
@@ -26,6 +27,9 @@ pub struct FfmpegCodecContextRequest {
 
     /// Ограничение внутренней задержки decoder-а в кадрах, если backend его поддерживает.
     max_frame_delay: Option<u32>,
+
+    /// Software decoder thread budget; `Auto` маппится на FFmpeg `thread_count = 0`.
+    software_decode_thread_budget: SoftwareDecodeThreadBudget,
 
     /// Codec-private global headers (например MP4 `avcC`/`hvcC`), которые
     /// нужно установить как `AVCodecContext.extradata` до `avcodec_open2`.
@@ -51,6 +55,7 @@ impl FfmpegCodecContextRequest {
             decoder: FfmpegDecoderSelection::DecoderName(codec_name.into()),
             accepted_pixel_formats: SoftwarePixelFormatSet::v1_host_planar(),
             max_frame_delay: None,
+            software_decode_thread_budget: SoftwareDecodeThreadBudget::auto(),
             extradata: None,
         }
     }
@@ -77,6 +82,7 @@ impl FfmpegCodecContextRequest {
             decoder: FfmpegDecoderSelection::DecoderId(decoder_id),
             accepted_pixel_formats,
             max_frame_delay: None,
+            software_decode_thread_budget: SoftwareDecodeThreadBudget::auto(),
             extradata: None,
         }
     }
@@ -85,6 +91,16 @@ impl FfmpegCodecContextRequest {
     #[must_use]
     pub fn with_max_frame_delay(mut self, max_frame_delay: u32) -> Self {
         self.max_frame_delay = Some(max_frame_delay);
+        self
+    }
+
+    /// Устанавливает software thread budget, уже разрешённый внешним budget layer-ом.
+    #[must_use]
+    pub fn with_software_decode_thread_budget(
+        mut self,
+        software_decode_thread_budget: SoftwareDecodeThreadBudget,
+    ) -> Self {
+        self.software_decode_thread_budget = software_decode_thread_budget;
         self
     }
 
@@ -115,6 +131,12 @@ impl FfmpegCodecContextRequest {
     #[must_use]
     pub fn max_frame_delay(&self) -> Option<u32> {
         self.max_frame_delay
+    }
+
+    /// Возвращает requested software thread budget без FFmpeg-specific integer semantics.
+    #[must_use]
+    pub const fn software_decode_thread_budget(&self) -> SoftwareDecodeThreadBudget {
+        self.software_decode_thread_budget
     }
 
     /// Возвращает codec-private global headers, если они заданы.
@@ -267,18 +289,21 @@ impl CodecContext {
                 }
             }
 
-            // Многопоточный software decode. Без этого FFmpeg декодирует в один
-            // поток (thread_count по умолчанию = 1), и на 4K упирается в одно
-            // ядро при свободных остальных. thread_count = 0 просит libavcodec
-            // выбрать число потоков автоматически по av_cpu_count(); thread_type
-            // разрешает оба метода, а libavcodec сам маскирует их по
-            // AVCodec.capabilities (codec без frame/slice threading просто
-            // остаётся однопоточным). Должно быть выставлено до avcodec_open2.
+            let ffmpeg_thread_count =
+                ffmpeg_thread_count_from_budget(request.software_decode_thread_budget())?;
+
+            // Многопоточный software decode. `Auto` сохраняет production path:
+            // thread_count = 0 просит libavcodec выбрать число потоков
+            // автоматически по av_cpu_count(). Hover software session после
+            // budget resolution передаёт `Fixed(N)`, и тогда FFmpeg получает
+            // конкретный положительный `thread_count = N`. thread_type разрешает
+            // frame/slice threading, а libavcodec сам маскирует их по
+            // AVCodec.capabilities. Должно быть выставлено до avcodec_open2.
             // SAFETY: context owned wrapper-ом и валиден до open; поля
             // thread_count/thread_type читаются FFmpeg только внутри open.
             unsafe {
                 let context = raw_context.as_ptr();
-                (*context).thread_count = 0;
+                (*context).thread_count = ffmpeg_thread_count;
                 (*context).thread_type =
                     ffmpeg_sys_next::FF_THREAD_FRAME | ffmpeg_sys_next::FF_THREAD_SLICE;
             }
@@ -675,6 +700,22 @@ fn assign_codec_context_extradata(
     Ok(())
 }
 
+#[cfg(feature = "ffmpeg")]
+fn ffmpeg_thread_count_from_budget(budget: SoftwareDecodeThreadBudget) -> FfiResult<i32> {
+    match budget {
+        SoftwareDecodeThreadBudget::Auto => Ok(0),
+        SoftwareDecodeThreadBudget::Fixed(thread_count) => {
+            i32::try_from(thread_count.get()).map_err(|_| FfmpegError::InvalidInput {
+                operation: "set decoder thread_count",
+                details: format!(
+                    "software decoder thread budget {} does not fit FFmpeg AVCodecContext.thread_count",
+                    thread_count
+                ),
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -717,6 +758,38 @@ mod tests {
             .with_max_frame_delay(1);
 
         assert_eq!(request.max_frame_delay(), Some(1));
+    }
+
+    #[test]
+    fn codec_context_request_preserves_software_decode_thread_budget() {
+        let formats = SoftwarePixelFormatSet::new([SoftwarePixelFormat::Yuv420Planar8])
+            .expect("single software format is valid");
+        let thread_count = std::num::NonZeroUsize::new(2).expect("test value is positive");
+        let budget = SoftwareDecodeThreadBudget::fixed(thread_count);
+        let request = FfmpegCodecContextRequest::for_decoder_id(FfmpegDecoderId::H264, formats)
+            .with_software_decode_thread_budget(budget);
+
+        assert_eq!(request.software_decode_thread_budget(), budget);
+        assert_eq!(
+            FfmpegCodecContextRequest::new("h264").software_decode_thread_budget(),
+            SoftwareDecodeThreadBudget::auto()
+        );
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn software_decode_thread_budget_maps_to_ffmpeg_thread_count_values() {
+        let thread_count = std::num::NonZeroUsize::new(3).expect("test value is positive");
+
+        assert_eq!(
+            ffmpeg_thread_count_from_budget(SoftwareDecodeThreadBudget::auto()).unwrap(),
+            0
+        );
+        assert_eq!(
+            ffmpeg_thread_count_from_budget(SoftwareDecodeThreadBudget::fixed(thread_count))
+                .unwrap(),
+            3
+        );
     }
 
     #[test]

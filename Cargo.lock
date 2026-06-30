@@ -4761,6 +4761,7 @@ dependencies = [
  "codec-core",
  "crossbeam-channel",
  "ffmpeg-sys-next",
+ "frame-server-core",
  "libloading",
  "media-core",
  "pkg-config",

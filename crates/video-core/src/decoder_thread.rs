@@ -1,4 +1,5 @@
 use std::{
+    num::NonZeroUsize,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -1049,6 +1050,45 @@ const DECODER_FLUSH_TIMEOUT_ENV_VAR: &str = "VIDEOPLAYER_DECODER_FLUSH_TIMEOUT_M
 /// Production default flush timeout decoder thread-а в миллисекундах.
 const DEFAULT_DECODER_FLUSH_TIMEOUT_MS: u64 = 2_000;
 
+/// Software decoder thread budget в нейтральной форме.
+///
+/// `Auto` сохраняет текущую production-семантику backend-а: concrete decoder
+/// сам выбирает число потоков. `Fixed` используется только там, где caller уже
+/// разрешил budget policy и доказал, что значение положительное и меньше
+/// matching playback budget-а. Это намеренно не `usize` в config-структуре,
+/// чтобы callsite явно показывал смысл числа.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoftwareDecodeThreadBudget {
+    /// Concrete software backend выбирает число потоков сам.
+    Auto,
+
+    /// Caller передал уже разрешённый положительный лимит потоков.
+    Fixed(NonZeroUsize),
+}
+
+impl SoftwareDecodeThreadBudget {
+    /// Создаёт автоматический budget без backend-specific деталей на callsite-е.
+    #[must_use]
+    pub const fn auto() -> Self {
+        Self::Auto
+    }
+
+    /// Создаёт fixed budget из уже проверенного positive value.
+    #[must_use]
+    pub const fn fixed(thread_count: NonZeroUsize) -> Self {
+        Self::Fixed(thread_count)
+    }
+
+    /// Возвращает concrete positive limit, если caller уже разрешил budget.
+    #[must_use]
+    pub const fn fixed_thread_count(self) -> Option<NonZeroUsize> {
+        match self {
+            Self::Auto => None,
+            Self::Fixed(thread_count) => Some(thread_count),
+        }
+    }
+}
+
 /// Backend-neutral runtime limits decoder thread-а.
 ///
 /// Тип живёт в `video-core`, чтобы player/session code зависел от contract,
@@ -1081,6 +1121,14 @@ pub struct VideoDecoderThreadConfig {
     /// маленьким (меньше memory-bandwidth pressure на iGPU) независимо от
     /// hardware surface pool.
     pub software_frame_pool_frames: usize,
+
+    /// Thread budget только для software decoder backends.
+    ///
+    /// Playback default остаётся `Auto`, чтобы FFmpeg мог выбирать число потоков
+    /// сам (`thread_count = 0`). Active hover после `HoverBudgetCapability` /
+    /// `HoverBudgetAdmission` передаёт сюда `Fixed`, если budget разрешён и
+    /// строго меньше matching playback thread budget-а.
+    pub software_decode_thread_budget: SoftwareDecodeThreadBudget,
 
     /// Zero-copy external import slot capacity.
     pub zero_copy_surface_pool_slots: usize,
@@ -1154,6 +1202,7 @@ impl VideoDecoderThreadConfig {
             decoder_ready_queue_frames: self.decoder_ready_queue_frames.max(1),
             decoder_surface_pool_frames: self.decoder_surface_pool_frames.max(1),
             software_frame_pool_frames: self.software_frame_pool_frames.max(1),
+            software_decode_thread_budget: self.software_decode_thread_budget,
             zero_copy_surface_pool_slots: self.zero_copy_surface_pool_slots.max(1),
             flush_timeout: self.flush_timeout.max(Duration::from_millis(1)),
         }
@@ -1170,6 +1219,7 @@ impl Default for VideoDecoderThreadConfig {
             decoder_ready_queue_frames: DEFAULT_DECODER_READY_QUEUE_FRAMES,
             decoder_surface_pool_frames: DEFAULT_DECODER_SURFACE_POOL_FRAMES,
             software_frame_pool_frames: DEFAULT_SOFTWARE_FRAME_POOL_FRAMES,
+            software_decode_thread_budget: SoftwareDecodeThreadBudget::Auto,
             zero_copy_surface_pool_slots: DEFAULT_ZERO_COPY_SURFACE_POOL_SLOTS,
             flush_timeout: VideoDecoderThreadConfig::default_flush_timeout(),
         }
@@ -1526,6 +1576,7 @@ mod tests {
             decoder_ready_queue_frames: 0,
             decoder_surface_pool_frames: 0,
             software_frame_pool_frames: 0,
+            software_decode_thread_budget: SoftwareDecodeThreadBudget::auto(),
             zero_copy_surface_pool_slots: 0,
             flush_timeout: Duration::ZERO,
         }
@@ -1534,11 +1585,28 @@ mod tests {
         assert_eq!(config.packet_channel_frames, 1);
         assert_eq!(config.frame_channel_frames, 1);
         assert_eq!(config.software_frame_pool_frames, 1);
+        assert_eq!(
+            config.software_decode_thread_budget,
+            SoftwareDecodeThreadBudget::auto()
+        );
         assert_eq!(config.control_channel_frames, 1);
         assert_eq!(config.decoder_ready_queue_frames, 1);
         assert_eq!(config.decoder_surface_pool_frames, 1);
         assert_eq!(config.zero_copy_surface_pool_slots, 1);
         assert_eq!(config.flush_timeout, Duration::from_millis(1));
+    }
+
+    /// Fixed software thread budget хранит только positive value на уровне типа.
+    #[test]
+    fn software_decode_thread_budget_preserves_fixed_positive_value() {
+        let thread_count = NonZeroUsize::new(3).expect("test value is positive");
+        let budget = SoftwareDecodeThreadBudget::fixed(thread_count);
+
+        assert_eq!(budget.fixed_thread_count(), Some(thread_count));
+        assert_eq!(
+            SoftwareDecodeThreadBudget::auto().fixed_thread_count(),
+            None
+        );
     }
 
     /// Проверяет parsing policy env timeout-а без изменения process env.

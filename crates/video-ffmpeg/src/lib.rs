@@ -13,6 +13,7 @@ pub mod decoder_thread;
 pub mod ffi;
 pub mod probe;
 pub mod software_frame;
+pub mod software_hover;
 
 pub use backend_factory::{
     FfmpegBackendFactoryError, FfmpegSoftwareVideoBackendFactory, FfmpegVideoBackendFactory,
@@ -33,6 +34,10 @@ pub use probe::{
     compile_time_probe, minimum_supported_versions, probe_runtime_availability,
 };
 pub use software_frame::{SoftwareFramePlan, SoftwareFramePlanError};
+pub use software_hover::{
+    FfmpegSoftwareHoverAdmission, FfmpegSoftwareHoverContext, FfmpegSoftwareHoverOwner,
+    FfmpegSoftwareHoverReservation, FfmpegSoftwareHoverSnapshot,
+};
 
 /// Canonical backend id для будущего software FFmpeg backend-а.
 pub const FFMPEG_SOFTWARE_BACKEND_ID: &str = "ffmpeg-sw";

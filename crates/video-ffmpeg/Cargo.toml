@@ -16,6 +16,7 @@ codec-core.workspace = true
 crossbeam-channel.workspace = true
 libloading = { workspace = true, optional = true }
 thiserror.workspace = true
+frame-server-core.workspace = true
 video-backend-api.workspace = true
 video-core.workspace = true
 video-frame-contract.workspace = true

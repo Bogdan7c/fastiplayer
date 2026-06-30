@@ -8,8 +8,8 @@ pub use decoder::{DecodedFrame, DecodedPixelFormat, FrameMemoryPath, VideoDecode
 pub use decoder_thread::{
     DecodeBackpressureReason, DecodePacket, DecodeSendError, DecodeThreadError,
     DecoderResourceSnapshot, HostUploadBackpressureReason, HostUploadResourceSnapshot,
-    HostUploadResourceSnapshotStatus, VideoDecoderActivityEpoch, VideoDecoderActivityNotifier,
-    VideoDecoderActivitySnapshot, VideoDecoderActivitySubscription,
+    HostUploadResourceSnapshotStatus, SoftwareDecodeThreadBudget, VideoDecoderActivityEpoch,
+    VideoDecoderActivityNotifier, VideoDecoderActivitySnapshot, VideoDecoderActivitySubscription,
     VideoDecoderActivityUnavailableReason, VideoDecoderActivityWaitOutcome,
     VideoDecoderControlBackpressureReason, VideoDecoderControlChannelPressureSnapshot,
     VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState,

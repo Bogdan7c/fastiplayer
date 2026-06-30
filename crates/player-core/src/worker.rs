@@ -226,6 +226,7 @@ fn decoder_thread_config_from_app_config(
         decoder_ready_queue_frames: config.video.decoder_ready_queue_frames,
         decoder_surface_pool_frames: config.video.decoder_surface_pool_frames,
         software_frame_pool_frames: config.video.sw_decoder_surface_pool_frames,
+        software_decode_thread_budget: video_core::SoftwareDecodeThreadBudget::auto(),
         zero_copy_surface_pool_slots: config.video.zero_copy_surface_pool_slots,
         ..PlayerVideoDecoderThreadConfig::from_env()
     }

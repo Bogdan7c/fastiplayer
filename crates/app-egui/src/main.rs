@@ -9,6 +9,7 @@
 
 mod app_shell;
 mod frame_prepare;
+mod hover_software_session;
 mod local_file_open;
 mod local_media;
 mod redraw_pacing;

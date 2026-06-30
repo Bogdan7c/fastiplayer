@@ -29,6 +29,8 @@ use video_backend_api::{PresentFrameResourceDescriptorLookup, PresentFrameResour
 use video_backend_api::{PresentFrameResourceProvider, PresentFrameResourceProviderHandle};
 #[cfg(feature = "ffmpeg")]
 use video_core::DecodeThreadError;
+#[cfg(feature = "ffmpeg")]
+use video_core::SoftwareDecodeThreadBudget;
 use video_core::VideoDecoderThreadConfig;
 #[cfg(feature = "ffmpeg")]
 use video_core::VideoStreamConfigRejection;
@@ -247,6 +249,7 @@ impl FfmpegVideoDecoderThread {
             pending_packet: None,
             packet_ack_tx,
             error_tx,
+            software_decode_thread_budget: thread_config.software_decode_thread_budget,
         };
 
         std::thread::Builder::new()
@@ -638,6 +641,9 @@ struct FfmpegDecoderWorker {
 
     /// Fatal errors surfaced through `try_recv_error`.
     error_tx: Sender<DecodeThreadError>,
+
+    /// Software decode thread budget, применяемый при открытии FFmpeg context-а.
+    software_decode_thread_budget: SoftwareDecodeThreadBudget,
 }
 
 #[cfg(feature = "ffmpeg")]
@@ -739,7 +745,8 @@ impl FfmpegDecoderWorker {
             return VideoStreamConfigResult::Unchanged;
         }
 
-        let codec_api = match RealFfmpegDecodeApi::open(&config) {
+        let codec_api = match RealFfmpegDecodeApi::open(&config, self.software_decode_thread_budget)
+        {
             Ok(codec_api) => codec_api,
             Err(FfmpegOpenDecoderError::Unsupported(rejection)) => {
                 return VideoStreamConfigResult::Unsupported(rejection);
