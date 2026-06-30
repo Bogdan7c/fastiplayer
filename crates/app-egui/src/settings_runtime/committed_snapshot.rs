@@ -76,6 +76,12 @@ impl CommittedConfigSnapshot {
         self.config.frame_server.live_scrub_max_hz
     }
 
+    /// Включена ли visual HoverPreview presentation; invisible prepare остаётся активным.
+    #[must_use]
+    pub(crate) fn hover_preview_enabled(&self) -> bool {
+        self.config.frame_server.hover_preview_enabled
+    }
+
     /// Длительность анимации выезда settings sidebar в секундах; `0` — без анимации.
     #[must_use]
     pub(crate) fn sidebar_slide_duration_seconds(&self) -> f32 {

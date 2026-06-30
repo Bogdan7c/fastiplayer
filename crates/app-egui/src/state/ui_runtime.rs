@@ -1,5 +1,6 @@
 use super::telemetry_panel::TelemetryPanelState;
 use super::*;
+use crate::timeline_hover_intent::TimelineHoverFrameCoalescer;
 
 /// Diagnostic route пользовательского timeline intent-а на границе app-egui -> player-core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,6 +263,8 @@ impl AppState {
 
     /// Применяет действия controls после завершения egui pass.
     pub(super) fn handle_control_actions(&mut self, window: &Window, actions: Vec<ControlAction>) {
+        let mut timeline_hover_coalescer = TimelineHoverFrameCoalescer::default();
+
         for action in actions {
             match action {
                 ControlAction::TogglePlayback => self.toggle_playback(),
@@ -294,8 +297,16 @@ impl AppState {
                 ControlAction::Timeline(timeline_action) => {
                     self.send_timeline_action(timeline_action);
                 }
+                ControlAction::TimelineHover(hover_intent) => {
+                    timeline_hover_coalescer.record(hover_intent);
+                }
             }
         }
+
+        timeline_hover_coalescer.finish(
+            &mut self.timeline_hover_intent_state,
+            self.committed_config_snapshot.hover_preview_enabled(),
+        );
     }
 
     /// Снимает live-scrub completion-gate по worker landing-сигналу.

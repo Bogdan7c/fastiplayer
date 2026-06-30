@@ -5,7 +5,7 @@ use player_core::{PlaybackState, PlayerSnapshot};
 
 use crate::ui::assets::IconId;
 use crate::ui::skin::{ControlsStyle, PlayerSkin, SkinId};
-use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
+use crate::ui::timeline::{self, TimelineAction, TimelineHoverIntent, TimelineUiState};
 
 const VOLUME_SEPARATOR_WIDTH: f32 = 1.0;
 const VOLUME_SEPARATOR_HEIGHT_FACTOR: f32 = 0.68;
@@ -33,6 +33,9 @@ pub enum ControlAction {
 
     /// Действие timeline.
     Timeline(TimelineAction),
+
+    /// Hover intent timeline-а, отдельный от command route.
+    TimelineHover(TimelineHoverIntent),
 }
 
 /// Рисует нижнюю player controls панель и возвращает действия пользователя.
@@ -70,6 +73,12 @@ pub fn render_bottom_controls(
                     .actions
                     .into_iter()
                     .map(ControlAction::Timeline),
+            );
+            actions.extend(
+                timeline_interaction
+                    .hover_intent
+                    .into_iter()
+                    .map(ControlAction::TimelineHover),
             );
 
             ui.add_space(4.0);

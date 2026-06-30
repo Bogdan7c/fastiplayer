@@ -40,6 +40,7 @@ use crate::local_media;
 use crate::settings_runtime::CommittedConfigSnapshot;
 use crate::settings_ui::{SettingsUiAction, SettingsUiModel};
 use crate::telemetry::Telemetry;
+use crate::timeline_hover_intent::TimelineHoverIntentState;
 use crate::timeline_hover_prepare::{
     AppTimelineHoverPrepareController, AppTimelineHoverPrepareExecutor,
     TimelineHoverPrepareController,
@@ -247,6 +248,9 @@ pub struct AppState {
     /// Transient pointer state timeline; player position здесь не хранится.
     timeline_ui_state: TimelineUiState,
 
+    /// App-owned latest hover intent + placeholder preview state без player commands.
+    timeline_hover_intent_state: TimelineHoverIntentState,
+
     /// Кэш строк telemetry panel; живёт в UI-слое и не владеет playback/render state.
     telemetry_panel_cache: TelemetryPanelCache,
 
@@ -338,6 +342,7 @@ impl AppState {
             active_media_source: None,
             local_file_open_job: None,
             timeline_ui_state: TimelineUiState::default(),
+            timeline_hover_intent_state: TimelineHoverIntentState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
             sidebar_slide: SlideTransition::closed(),
             sidebar_slide_last_tick: None,

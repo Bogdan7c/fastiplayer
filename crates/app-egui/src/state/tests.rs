@@ -28,7 +28,12 @@ use super::telemetry_panel::{
 use super::ui_runtime::timeline_command_from_action;
 use super::{AppFrameContext, AppState};
 use crate::telemetry::Telemetry;
-use crate::ui::timeline::{TimelineAction, TimelineUiState};
+use crate::timeline_hover_intent::{
+    TimelineHoverFrameCoalescer, TimelineHoverIntentState, TimelineHoverPreviewSlot,
+};
+use crate::ui::timeline::{
+    TimelineAction, TimelineHoverIntent, TimelineHoverTarget, TimelineUiState,
+};
 
 /// Собирает source `state` и child-модулей для guard-тестов после split-а.
 fn state_source_for_architecture_tests() -> String {
@@ -38,6 +43,7 @@ fn state_source_for_architecture_tests() -> String {
         include_str!("main_visual_override.rs"),
         include_str!("present_frame_cache.rs"),
         include_str!("telemetry_panel.rs"),
+        include_str!("../timeline_hover_intent.rs"),
         include_str!("ui_runtime.rs"),
         include_str!("video_backend.rs"),
     ]
@@ -151,6 +157,70 @@ fn timeline_live_scrub_actions_do_not_map_to_exact_seek_route() {
         TimelineAction::CancelLiveScrub,
     ] {
         assert_eq!(timeline_command_from_action(action), None);
+    }
+}
+
+/// Hover intent не входит в command-oriented `TimelineAction -> PlayerCommand` route.
+#[test]
+fn timeline_hover_intent_has_no_player_command_surface() {
+    let hover_source = include_str!("../timeline_hover_intent.rs");
+
+    assert!(!hover_source.contains("PlayerCommand"));
+    assert!(!hover_source.contains("player_worker"));
+}
+
+/// App-owned coalescer применяет только latest hover target одного UI frame-а.
+#[test]
+fn state_timeline_hover_updates_coalesce_to_latest_target() {
+    let mut hover_state = TimelineHoverIntentState::default();
+    let mut coalescer = TimelineHoverFrameCoalescer::default();
+    let early_target = TimelineHoverTarget::new(MediaTime::from_secs(10));
+    let latest_target = TimelineHoverTarget::new(MediaTime::from_secs(90));
+
+    coalescer.record(TimelineHoverIntent::Target(early_target));
+    coalescer.record(TimelineHoverIntent::Target(latest_target));
+    let outcome = coalescer.finish(&mut hover_state, true);
+
+    assert_eq!(hover_state.active_target(), Some(latest_target));
+    assert_eq!(hover_state.invisible_prepare_target_count(), 1);
+    assert_eq!(outcome.invisible_prepare_target, Some(latest_target));
+    assert_eq!(outcome.visual_presentation_target, Some(latest_target));
+}
+
+/// `hover_preview_enabled=false` глушит только visual slot, но не invisible prepare intent.
+#[test]
+fn state_timeline_hover_preview_disabled_still_emits_invisible_prepare() {
+    let mut hover_state = TimelineHoverIntentState::default();
+    let mut coalescer = TimelineHoverFrameCoalescer::default();
+    let target = TimelineHoverTarget::new(MediaTime::from_secs(55));
+
+    coalescer.record(TimelineHoverIntent::Target(target));
+    let outcome = coalescer.finish(&mut hover_state, false);
+
+    assert_eq!(hover_state.active_target(), Some(target));
+    assert_eq!(
+        hover_state.preview_slot(),
+        TimelineHoverPreviewSlot::DisabledByConfig
+    );
+    assert_eq!(outcome.invisible_prepare_target, Some(target));
+    assert_eq!(outcome.visual_presentation_target, None);
+}
+
+/// Hover state update не трогает public playback state snapshot.
+#[test]
+fn state_timeline_hover_does_not_change_paused_or_stopped_snapshot_state() {
+    for playback_state in [PlaybackState::Paused, PlaybackState::Stopped] {
+        let mut player_snapshot = PlayerSnapshot::empty();
+        player_snapshot.playback_state = playback_state;
+
+        let mut hover_state = TimelineHoverIntentState::default();
+        let mut coalescer = TimelineHoverFrameCoalescer::default();
+        coalescer.record(TimelineHoverIntent::Target(TimelineHoverTarget::new(
+            MediaTime::from_secs(12),
+        )));
+        coalescer.finish(&mut hover_state, true);
+
+        assert_eq!(player_snapshot.playback_state, playback_state);
     }
 }
 
