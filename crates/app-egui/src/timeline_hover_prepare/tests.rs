@@ -1,13 +1,17 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use frame_server_core::{PlaybackGeneration, ScrubGeneration};
-use media_core::{TimeBase, TrackId};
+use media_core::{
+    DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, Demuxer, MediaDemuxError, Packet, TimeBase,
+    TrackId, TrackInfo,
+};
 
 use crate::timeline_hover_source::{
-    TimelineHoverOpenFailedSourceKind, TimelineHoverSourceIdentity,
+    TimelineHoverOpenFailedSourceKind, TimelineHoverOpenedSource, TimelineHoverSourceIdentity,
 };
 
 use super::*;
@@ -23,6 +27,92 @@ struct FakeExecutor {
 impl FakeExecutor {
     fn push_outcome(&mut self, outcome: TimelineHoverPrepareExecutorOutcome) {
         self.queued_outcomes.push_back(outcome);
+    }
+}
+
+struct FakeHoverDemuxer {
+    tracks: Vec<TrackInfo>,
+    decode_point_before_requests: Arc<Mutex<Vec<DemuxSeekRequest>>>,
+    ordinary_seek_count: Arc<Mutex<usize>>,
+    seek_outcome: FakeHoverDemuxerSeekOutcome,
+}
+
+#[derive(Clone, Copy)]
+enum FakeHoverDemuxerSeekOutcome {
+    Resolved(DemuxSeekResult),
+    UnsupportedDecodePointBefore,
+}
+
+impl FakeHoverDemuxer {
+    fn resolved(
+        seek_result: DemuxSeekResult,
+    ) -> (Self, Arc<Mutex<Vec<DemuxSeekRequest>>>, Arc<Mutex<usize>>) {
+        Self::new(FakeHoverDemuxerSeekOutcome::Resolved(seek_result))
+    }
+
+    fn unsupported_decode_point_before()
+    -> (Self, Arc<Mutex<Vec<DemuxSeekRequest>>>, Arc<Mutex<usize>>) {
+        Self::new(FakeHoverDemuxerSeekOutcome::UnsupportedDecodePointBefore)
+    }
+
+    fn new(
+        seek_outcome: FakeHoverDemuxerSeekOutcome,
+    ) -> (Self, Arc<Mutex<Vec<DemuxSeekRequest>>>, Arc<Mutex<usize>>) {
+        let decode_point_before_requests = Arc::new(Mutex::new(Vec::new()));
+        let ordinary_seek_count = Arc::new(Mutex::new(0));
+        (
+            Self {
+                tracks: Vec::new(),
+                decode_point_before_requests: Arc::clone(&decode_point_before_requests),
+                ordinary_seek_count: Arc::clone(&ordinary_seek_count),
+                seek_outcome,
+            },
+            decode_point_before_requests,
+            ordinary_seek_count,
+        )
+    }
+}
+
+impl Demuxer for FakeHoverDemuxer {
+    fn tracks(&self) -> &[TrackInfo] {
+        &self.tracks
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        Some(Duration::from_secs(30))
+    }
+
+    fn next_packet(&mut self) -> anyhow::Result<Option<Packet>> {
+        Ok(None)
+    }
+
+    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        Ok(DemuxReadEvent::EndOfStream)
+    }
+
+    fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+        *self
+            .ordinary_seek_count
+            .lock()
+            .expect("ordinary seek counter lock must be available") += 1;
+        Ok(DemuxSeekResult {
+            requested_position: media_core::MediaTime::from_duration(timestamp),
+            actual_position: media_core::MediaTime::from_duration(timestamp),
+            actual_track_timestamp: None,
+        })
+    }
+
+    fn seek_with_request(&mut self, request: DemuxSeekRequest) -> anyhow::Result<DemuxSeekResult> {
+        self.decode_point_before_requests
+            .lock()
+            .expect("decode-point-before request log lock must be available")
+            .push(request);
+        match self.seek_outcome {
+            FakeHoverDemuxerSeekOutcome::Resolved(seek_result) => Ok(seek_result),
+            FakeHoverDemuxerSeekOutcome::UnsupportedDecodePointBefore => {
+                Err(MediaDemuxError::UnsupportedSeekMode { mode: request.mode }.into())
+            }
+        }
     }
 }
 
@@ -52,10 +142,6 @@ fn timestamp(millis: i64) -> TrackTimestamp {
         millis,
         TimeBase::new(1, 1_000).expect("valid millisecond timebase"),
     )
-}
-
-fn audio_fixture_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/audio/music_sample.wav")
 }
 
 fn context() -> TimelineHoverPrepareTargetContext {
@@ -105,6 +191,22 @@ fn target_with_context(source_revision: u64, target_millis: i64) -> TimelineHove
     .expect("test target must build a valid dependency span")
 }
 
+fn unresolved_active_target(target_millis: i64) -> TimelineHoverPrepareTarget {
+    TimelineHoverPrepareTarget::unresolved(
+        context(),
+        timestamp(target_millis),
+        TimelineHoverFrameBucket::new(target_millis),
+        TimelineHoverPreparePlaybackMode::ActivePlayback,
+    )
+}
+
+#[test]
+fn unresolved_target_does_not_supply_fake_dependency_span() {
+    let active_target = unresolved_active_target(10_000);
+
+    assert!(active_target.dependency_span().is_none());
+}
+
 #[test]
 fn synthetic_target_drives_executor_without_ordinary_seek() {
     let mut fake_executor = FakeExecutor::default();
@@ -133,6 +235,31 @@ fn synthetic_target_drives_executor_without_ordinary_seek() {
     ));
     assert_eq!(controller.executor().ordinary_seek_commands_sent, 0);
     assert_eq!(controller.executor().requests.len(), 1);
+}
+
+#[test]
+fn resolved_span_clears_stale_pending_unresolved_work() {
+    let mut controller = TimelineHoverPrepareController::new(FakeExecutor::default());
+    controller.pending_unresolved_target = Some(InFlightTimelineHoverPrepareTarget {
+        span_id: TimelineHoverPrepareSpanId(77),
+        latest_target: unresolved_active_target(10_000),
+    });
+
+    let outcome = controller.prepare_hover_target(target(10_000, 9_000, 10_100));
+
+    assert!(controller.pending_unresolved_target.is_none());
+    let cancellation = controller
+        .cancel_active_span(TimelineHoverPrepareCancellationReason::TimelineLeft)
+        .expect("resolved active span must be cancellable");
+
+    assert_eq!(cancellation.span_id, outcome.span_id);
+    assert!(controller.pending_unresolved_target.is_none());
+    assert!(
+        controller
+            .cancel_active_span(TimelineHoverPrepareCancellationReason::TimelineLeft)
+            .is_none()
+    );
+    assert_eq!(controller.executor().cancellations.len(), 1);
 }
 
 #[test]
@@ -314,16 +441,7 @@ fn active_playback_without_source_context_degrades_to_typed_missing_noop() {
     let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
         PlayerTimelineHoverPrepareHandoff::default(),
     ));
-    let active_target = TimelineHoverPrepareTarget::new(
-        context(),
-        timestamp(10_000),
-        TimelineHoverFrameBucket::new(10_000),
-        timestamp(9_000),
-        timestamp(10_100),
-        0,
-        TimelineHoverPreparePlaybackMode::ActivePlayback,
-    )
-    .expect("test target must build a valid dependency span");
+    let active_target = unresolved_active_target(10_000);
 
     let outcome = controller.prepare_hover_target(active_target);
 
@@ -340,24 +458,155 @@ fn active_playback_without_source_context_degrades_to_typed_missing_noop() {
 }
 
 #[test]
-fn active_playback_local_source_opens_hover_source_without_playback_seek() {
+fn active_playback_independent_demuxer_resolves_span_without_playback_seek() {
     let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
         PlayerTimelineHoverPrepareHandoff::default(),
     ));
-    controller.set_hover_source(TimelineHoverSourceIdentity::LocalFile(audio_fixture_path()));
-    let active_target = TimelineHoverPrepareTarget::new(
-        context(),
-        timestamp(10_000),
-        TimelineHoverFrameBucket::new(10_000),
-        timestamp(9_000),
-        timestamp(10_100),
-        0,
-        TimelineHoverPreparePlaybackMode::ActivePlayback,
-    )
-    .expect("test target must build a valid dependency span");
+    let decode_safe_start = timestamp(9_000);
+    let (demuxer, decode_point_before_requests, ordinary_seek_count) =
+        FakeHoverDemuxer::resolved(DemuxSeekResult {
+            requested_position: timestamp(10_000).to_media_time(),
+            actual_position: decode_safe_start.to_media_time(),
+            actual_track_timestamp: Some(decode_safe_start),
+        });
+    controller.executor.active_hover_source =
+        Some(TimelineHoverOpenedSource::from_demuxer(Box::new(demuxer)));
+    let active_target = unresolved_active_target(10_000);
 
     let outcome = controller.prepare_hover_target(active_target);
 
+    assert_eq!(
+        *decode_point_before_requests
+            .lock()
+            .expect("request log lock must be available"),
+        vec![DemuxSeekRequest::decode_point_before(Duration::from_secs(
+            10
+        ))]
+    );
+    assert_eq!(
+        *ordinary_seek_count
+            .lock()
+            .expect("ordinary seek counter lock must be available"),
+        0
+    );
+    assert_eq!(
+        outcome.transition,
+        TimelineHoverPrepareControllerTransition::Started
+    );
+    assert!(matches!(
+        outcome.executor_outcome,
+        TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+            reason: TimelineHoverPrepareIncompleteReason::DecodeExecutionNotWired,
+            ..
+        }
+    ));
+    assert_eq!(
+        outcome.completion_outcome,
+        TimelineHoverPrepareCompletionOutcome::NoPreparedHit
+    );
+    let active_span = controller
+        .active_span
+        .expect("resolved active playback target must install an active span");
+    assert_eq!(active_span.span.decode_safe_start_pts, decode_safe_start);
+    assert_eq!(active_span.span.drain_until_pts, timestamp(10_000));
+
+    let forward_outcome = controller.prepare_hover_target(unresolved_active_target(10_500));
+
+    assert_eq!(
+        *decode_point_before_requests
+            .lock()
+            .expect("request log lock must be available"),
+        vec![DemuxSeekRequest::decode_point_before(Duration::from_secs(
+            10
+        ))]
+    );
+    assert_eq!(
+        forward_outcome.transition,
+        TimelineHoverPrepareControllerTransition::ExtendedForward
+    );
+    assert_eq!(
+        controller
+            .active_span
+            .expect("forward target must keep active span")
+            .span
+            .drain_until_pts,
+        timestamp(10_500)
+    );
+}
+
+#[test]
+fn active_playback_dependency_span_resolver_failure_is_typed_noop() {
+    let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
+        PlayerTimelineHoverPrepareHandoff::default(),
+    ));
+    let (demuxer, decode_point_before_requests, ordinary_seek_count) =
+        FakeHoverDemuxer::unsupported_decode_point_before();
+    controller.executor.active_hover_source =
+        Some(TimelineHoverOpenedSource::from_demuxer(Box::new(demuxer)));
+    let active_target = unresolved_active_target(10_000);
+
+    let outcome = controller.prepare_hover_target(active_target);
+
+    assert_eq!(
+        *decode_point_before_requests
+            .lock()
+            .expect("request log lock must be available"),
+        vec![DemuxSeekRequest::decode_point_before(Duration::from_secs(
+            10
+        ))]
+    );
+    assert_eq!(
+        *ordinary_seek_count
+            .lock()
+            .expect("ordinary seek counter lock must be available"),
+        0
+    );
+    assert!(matches!(
+        outcome.executor_outcome,
+        TimelineHoverPrepareExecutorOutcome::NoOp {
+            reason:
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackDependencySpanSeekUnsupported,
+        }
+    ));
+    assert_eq!(
+        outcome.completion_outcome,
+        TimelineHoverPrepareCompletionOutcome::NoPreparedHit
+    );
+    assert!(controller.active_span.is_none());
+}
+
+#[test]
+fn active_playback_network_source_ready_does_not_seek_on_ui_thread() {
+    let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
+        PlayerTimelineHoverPrepareHandoff::default(),
+    ));
+    controller.set_hover_source(TimelineHoverSourceIdentity::DirectMediaUrl(
+        "https://example.invalid/video.mp4".to_string(),
+    ));
+    let (demuxer, decode_point_before_requests, ordinary_seek_count) =
+        FakeHoverDemuxer::resolved(DemuxSeekResult {
+            requested_position: timestamp(10_000).to_media_time(),
+            actual_position: timestamp(9_000).to_media_time(),
+            actual_track_timestamp: Some(timestamp(9_000)),
+        });
+    controller.executor.active_hover_source =
+        Some(TimelineHoverOpenedSource::from_demuxer(Box::new(demuxer)));
+    let active_target = unresolved_active_target(10_000);
+
+    let outcome = controller.prepare_hover_target(active_target);
+
+    assert!(
+        decode_point_before_requests
+            .lock()
+            .expect("request log lock must be available")
+            .is_empty()
+    );
+    assert_eq!(
+        *ordinary_seek_count
+            .lock()
+            .expect("ordinary seek counter lock must be available"),
+        0
+    );
     assert!(matches!(
         outcome.executor_outcome,
         TimelineHoverPrepareExecutorOutcome::NoOp {
@@ -379,16 +628,7 @@ fn active_playback_network_source_opens_as_background_latest_only_work() {
     controller.set_hover_source(TimelineHoverSourceIdentity::DirectMediaUrl(
         "not-a-valid-url".to_string(),
     ));
-    let active_target = TimelineHoverPrepareTarget::new(
-        context(),
-        timestamp(10_000),
-        TimelineHoverFrameBucket::new(10_000),
-        timestamp(9_000),
-        timestamp(10_100),
-        0,
-        TimelineHoverPreparePlaybackMode::ActivePlayback,
-    )
-    .expect("test target must build a valid dependency span");
+    let active_target = unresolved_active_target(10_000);
 
     let outcome = controller.prepare_hover_target(active_target);
 
@@ -448,16 +688,7 @@ fn cancelling_active_network_hover_drops_pending_open() {
     controller.set_hover_source(TimelineHoverSourceIdentity::DirectMediaUrl(
         "not-a-valid-url".to_string(),
     ));
-    let active_target = TimelineHoverPrepareTarget::new(
-        context(),
-        timestamp(10_000),
-        TimelineHoverFrameBucket::new(10_000),
-        timestamp(9_000),
-        timestamp(10_300),
-        0,
-        TimelineHoverPreparePlaybackMode::ActivePlayback,
-    )
-    .expect("active playback target must be valid");
+    let active_target = unresolved_active_target(10_000);
 
     let outcome = controller.prepare_hover_target(active_target);
 
@@ -471,7 +702,7 @@ fn cancelling_active_network_hover_drops_pending_open() {
 
     controller
         .cancel_active_span(TimelineHoverPrepareCancellationReason::TimelineLeft)
-        .expect("network hover start creates an active span to cancel");
+        .expect("network hover start creates cancellable pending work");
 
     assert!(!controller.executor.network_open_controller.has_active_job());
 }
@@ -484,16 +715,7 @@ fn active_playback_hover_source_open_failure_is_not_a_playback_reset() {
     controller.set_hover_source(TimelineHoverSourceIdentity::LocalFile(PathBuf::from(
         "/tmp/rustiplayer-missing-hover-source-for-controller.wav",
     )));
-    let active_target = TimelineHoverPrepareTarget::new(
-        context(),
-        timestamp(10_000),
-        TimelineHoverFrameBucket::new(10_000),
-        timestamp(9_000),
-        timestamp(10_100),
-        0,
-        TimelineHoverPreparePlaybackMode::ActivePlayback,
-    )
-    .expect("test target must build a valid dependency span");
+    let active_target = unresolved_active_target(10_000);
 
     let outcome = controller.prepare_hover_target(active_target);
 
@@ -517,16 +739,12 @@ fn live_scrub_target_degrades_to_noop_without_executor_work() {
     let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
         PlayerTimelineHoverPrepareHandoff::default(),
     ));
-    let live_target = TimelineHoverPrepareTarget::new(
+    let live_target = TimelineHoverPrepareTarget::unresolved(
         context(),
         timestamp(10_000),
         TimelineHoverFrameBucket::new(10_000),
-        timestamp(9_000),
-        timestamp(10_100),
-        0,
         TimelineHoverPreparePlaybackMode::LiveScrubActive,
-    )
-    .expect("test target must build a valid dependency span");
+    );
 
     let outcome = controller.prepare_hover_target(live_target);
 
@@ -536,4 +754,5 @@ fn live_scrub_target_degrades_to_noop_without_executor_work() {
             reason: TimelineHoverPrepareExecutorNoOpReason::LiveScrubSuspended,
         }
     ));
+    assert!(controller.active_span.is_none());
 }

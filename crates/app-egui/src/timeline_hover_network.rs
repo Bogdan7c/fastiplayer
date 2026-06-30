@@ -257,16 +257,12 @@ mod tests {
             FrameExactnessPolicy::TargetOrAfter,
         );
 
-        TimelineHoverPrepareTarget::new(
+        TimelineHoverPrepareTarget::unresolved(
             context,
             timestamp(target_millis),
             TimelineHoverFrameBucket::new(target_millis),
-            timestamp(target_millis - 100),
-            timestamp(target_millis + 100),
-            0,
             TimelineHoverPreparePlaybackMode::ActivePlayback,
         )
-        .expect("test target must build a valid dependency span")
     }
 
     fn network_source_factory() -> TimelineHoverSourceFactory {

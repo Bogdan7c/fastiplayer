@@ -10,7 +10,7 @@ use frame_server_core::{
     TimelineHoverPrepareFrameLookupRequest, TimelineHoverPrepareLookupMissReason,
     TimelineHoverPrepareSessionEndReleaseOutcome, TimelineHoverPrepareSessionEndReleaseReason,
 };
-use media_core::TrackTimestamp;
+use media_core::{DemuxSeekRequest, MediaDemuxError, TrackTimestamp};
 use player_core::{PlayerTimelineHoverPrepareBorrowOutcome, PlayerTimelineHoverPrepareHandoff};
 use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
 
@@ -39,18 +39,17 @@ pub(crate) struct AppTimelineHoverPrepareExecutor {
 pub(crate) struct TimelineHoverPrepareController<Executor> {
     executor: Executor,
     active_span: Option<InFlightDecodeDependencySpan>,
+    pending_unresolved_target: Option<InFlightTimelineHoverPrepareTarget>,
     next_span_id: TimelineHoverPrepareSpanId,
 }
 
-/// Synthetic/future hover target, из которого controller строит dependency span.
+/// Hover target из UI/player snapshot; factual dependency span может резолвить executor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TimelineHoverPrepareTarget {
     context: TimelineHoverPrepareTargetContext,
     target_pts: TrackTimestamp,
     target_bucket: TimelineHoverFrameBucket,
-    decode_safe_start_pts: TrackTimestamp,
-    drain_until_pts: TrackTimestamp,
-    post_target_reorder_drain_frames: u16,
+    dependency_span: Option<DecodeDependencySpan>,
     playback_mode: TimelineHoverPreparePlaybackMode,
 }
 
@@ -196,6 +195,7 @@ pub(crate) struct TimelineHoverPrepareSpanDiagnostics {
 pub(crate) enum TimelineHoverPrepareIncompleteReason {
     DecodeBudgetExhausted,
     ResourceBudgetExhausted,
+    DecodeExecutionNotWired,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,9 +226,13 @@ pub(crate) enum TimelineHoverPrepareExecutorNoOpReason {
     ActivePlaybackNetworkSourceFailedNoRetry {
         lookup_miss: TimelineHoverPrepareLookupMissReason,
     },
+    ActivePlaybackDependencySpanSeekUnsupported,
+    ActivePlaybackDependencySpanSeekUnavailable,
+    ActivePlaybackDependencySpanResolveFailed,
     PausedStoppedExecutorNotWired {
         lookup_miss: TimelineHoverPrepareLookupMissReason,
     },
+    PausedStoppedDependencySpanResolverNotWired,
     ResumePendingNoSpareCapacity,
     WorkingSetMiss {
         lookup_miss: TimelineHoverPrepareLookupMissReason,
@@ -243,6 +247,14 @@ pub(crate) enum TimelineHoverPreparePressure {
     DecoderBackpressure,
     HostUploadBackpressure,
     ResourceBusy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TimelineHoverDependencySpanResolutionOutcome {
+    Resolved(DecodeDependencySpan),
+    NoOp {
+        reason: TimelineHoverPrepareExecutorNoOpReason,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,6 +304,12 @@ struct InFlightDecodeDependencySpan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InFlightTimelineHoverPrepareTarget {
+    span_id: TimelineHoverPrepareSpanId,
+    latest_target: TimelineHoverPrepareTarget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DecodeDependencySpanChange {
     Compatible,
     ForwardExtension,
@@ -300,6 +318,20 @@ enum DecodeDependencySpanChange {
 }
 
 pub(crate) trait TimelineHoverPrepareExecutor {
+    fn resolve_dependency_span(
+        &mut self,
+        target: TimelineHoverPrepareTarget,
+    ) -> TimelineHoverDependencySpanResolutionOutcome {
+        match target.dependency_span() {
+            Some(span) => TimelineHoverDependencySpanResolutionOutcome::Resolved(span),
+            None => {
+                let reason =
+                    TimelineHoverPrepareExecutorNoOpReason::PausedStoppedDependencySpanResolverNotWired;
+                TimelineHoverDependencySpanResolutionOutcome::NoOp { reason }
+            }
+        }
+    }
+
     fn prepare_exact_dependency_span(
         &mut self,
         request: TimelineHoverPrepareExecutorRequest,
@@ -395,6 +427,38 @@ impl AppTimelineHoverPrepareExecutor {
 }
 
 impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
+    fn resolve_dependency_span(
+        &mut self,
+        target: TimelineHoverPrepareTarget,
+    ) -> TimelineHoverDependencySpanResolutionOutcome {
+        if let Some(span) = target.dependency_span() {
+            return TimelineHoverDependencySpanResolutionOutcome::Resolved(span);
+        }
+
+        match target.playback_mode() {
+            TimelineHoverPreparePlaybackMode::ActivePlayback => {
+                self.resolve_active_playback_dependency_span(target)
+            }
+            TimelineHoverPreparePlaybackMode::LiveScrubActive => {
+                TimelineHoverDependencySpanResolutionOutcome::NoOp {
+                    reason: TimelineHoverPrepareExecutorNoOpReason::LiveScrubSuspended,
+                }
+            }
+            TimelineHoverPreparePlaybackMode::ResumePendingAfterSeek {
+                spare_capacity_available: false,
+            } => TimelineHoverDependencySpanResolutionOutcome::NoOp {
+                reason: TimelineHoverPrepareExecutorNoOpReason::ResumePendingNoSpareCapacity,
+            },
+            TimelineHoverPreparePlaybackMode::PausedOrStopped
+            | TimelineHoverPreparePlaybackMode::ResumePendingAfterSeek {
+                spare_capacity_available: true,
+            } => TimelineHoverDependencySpanResolutionOutcome::NoOp {
+                reason:
+                    TimelineHoverPrepareExecutorNoOpReason::PausedStoppedDependencySpanResolverNotWired,
+            },
+        }
+    }
+
     fn prepare_exact_dependency_span(
         &mut self,
         request: TimelineHoverPrepareExecutorRequest,
@@ -433,6 +497,17 @@ impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
                     request.target.playback_mode(),
                     TimelineHoverPreparePlaybackMode::ActivePlayback
                 ) {
+                    if self.active_hover_source.is_some() {
+                        return TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+                            reason: TimelineHoverPrepareIncompleteReason::DecodeExecutionNotWired,
+                            diagnostics: TimelineHoverPrepareSpanDiagnostics::new(
+                                0,
+                                0,
+                                request.span.post_target_reorder_drain_frames,
+                            ),
+                        };
+                    }
+
                     return TimelineHoverPrepareExecutorOutcome::NoOp {
                         reason: self
                             .active_playback_source_no_op_reason(request.target, lookup_miss),
@@ -460,6 +535,85 @@ impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
 }
 
 impl AppTimelineHoverPrepareExecutor {
+    fn resolve_active_playback_dependency_span(
+        &mut self,
+        target: TimelineHoverPrepareTarget,
+    ) -> TimelineHoverDependencySpanResolutionOutcome {
+        if self.source_factory.active_source_is_network() {
+            let lookup_miss = TimelineHoverPrepareLookupMissReason::NoEntryForKey;
+            let reason = if self.active_hover_source.is_some() {
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceReadyDecodeNotWired {
+                    lookup_miss,
+                }
+            } else {
+                self.active_playback_network_source_no_op_reason(target, lookup_miss)
+            };
+            return TimelineHoverDependencySpanResolutionOutcome::NoOp { reason };
+        }
+
+        let hover_source = match self.ensure_active_playback_hover_source(target) {
+            Ok(hover_source) => hover_source,
+            Err(reason) => {
+                return TimelineHoverDependencySpanResolutionOutcome::NoOp { reason };
+            }
+        };
+
+        let target_position = target.target_pts.to_media_time().as_duration();
+        let seek_result = match hover_source
+            .demuxer_mut()
+            .seek_with_request(DemuxSeekRequest::decode_point_before(target_position))
+        {
+            Ok(seek_result) => seek_result,
+            Err(error) => {
+                return TimelineHoverDependencySpanResolutionOutcome::NoOp {
+                    reason: dependency_span_seek_error_no_op_reason(&error),
+                };
+            }
+        };
+
+        let decode_safe_start_pts = seek_result
+            .actual_track_timestamp
+            .unwrap_or_else(|| target.pts_from_media_time(seek_result.actual_position));
+        let resolved_target = match target.with_dependency_span(
+            decode_safe_start_pts,
+            target.target_pts,
+            0,
+        ) {
+            Ok(resolved_target) => resolved_target,
+            Err(_error) => {
+                let reason =
+                    TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackDependencySpanResolveFailed;
+                return TimelineHoverDependencySpanResolutionOutcome::NoOp { reason };
+            }
+        };
+
+        TimelineHoverDependencySpanResolutionOutcome::Resolved(
+            resolved_target
+                .dependency_span()
+                .expect("resolved target must contain dependency span"),
+        )
+    }
+
+    fn ensure_active_playback_hover_source(
+        &mut self,
+        target: TimelineHoverPrepareTarget,
+    ) -> Result<&mut TimelineHoverOpenedSource, TimelineHoverPrepareExecutorNoOpReason> {
+        if self.active_hover_source.is_none() {
+            let lookup_miss = TimelineHoverPrepareLookupMissReason::NoEntryForKey;
+            let reason = self.active_playback_source_no_op_reason(target, lookup_miss);
+            if !matches!(
+                reason,
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceReadyDecodeNotWired { .. }
+            ) {
+                return Err(reason);
+            }
+        }
+
+        self.active_hover_source.as_mut().ok_or(
+            TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackDependencySpanResolveFailed,
+        )
+    }
+
     fn active_playback_source_no_op_reason(
         &mut self,
         target: TimelineHoverPrepareTarget,
@@ -564,6 +718,7 @@ impl<Executor> TimelineHoverPrepareController<Executor> {
         Self {
             executor,
             active_span: None,
+            pending_unresolved_target: None,
             next_span_id: TimelineHoverPrepareSpanId(1),
         }
     }
@@ -614,7 +769,21 @@ where
         &mut self,
         target: TimelineHoverPrepareTarget,
     ) -> TimelineHoverPrepareControllerOutcome {
-        let requested_span = target.dependency_span();
+        let requested_span = match target
+            .dependency_span()
+            .is_none()
+            .then(|| self.active_span_extension_for_target(target))
+            .flatten()
+        {
+            Some(span) => span,
+            None => match self.executor.resolve_dependency_span(target) {
+                TimelineHoverDependencySpanResolutionOutcome::Resolved(span) => span,
+                TimelineHoverDependencySpanResolutionOutcome::NoOp { reason } => {
+                    return self.unresolved_target_no_op_outcome(target, reason);
+                }
+            },
+        };
+        self.pending_unresolved_target = None;
         let (span_id, controller_transition, executor_transition) =
             self.apply_target_to_active_span(target, requested_span);
         let active_span = self
@@ -642,14 +811,116 @@ where
         &mut self,
         reason: TimelineHoverPrepareCancellationReason,
     ) -> Option<TimelineHoverPrepareCancelRequest> {
-        let active_span = self.active_span.take()?;
-        let request = TimelineHoverPrepareCancelRequest {
-            span_id: active_span.span_id,
-            latest_target: active_span.latest_target,
-            reason,
+        let request = if let Some(active_span) = self.active_span.take() {
+            self.pending_unresolved_target = None;
+            TimelineHoverPrepareCancelRequest {
+                span_id: active_span.span_id,
+                latest_target: active_span.latest_target,
+                reason,
+            }
+        } else {
+            let pending_target = self.pending_unresolved_target.take()?;
+            TimelineHoverPrepareCancelRequest {
+                span_id: pending_target.span_id,
+                latest_target: pending_target.latest_target,
+                reason,
+            }
         };
         self.executor.cancel_dependency_span(request);
         Some(request)
+    }
+
+    fn unresolved_target_no_op_outcome(
+        &mut self,
+        target: TimelineHoverPrepareTarget,
+        reason: TimelineHoverPrepareExecutorNoOpReason,
+    ) -> TimelineHoverPrepareControllerOutcome {
+        let (span_id, transition) = if unresolved_reason_keeps_pending_work(reason) {
+            self.install_pending_unresolved_target(target)
+        } else {
+            self.pending_unresolved_target = None;
+            (
+                self.allocate_span_id(),
+                TimelineHoverPrepareControllerTransition::Started,
+            )
+        };
+
+        TimelineHoverPrepareControllerOutcome {
+            span_id,
+            transition,
+            executor_outcome: TimelineHoverPrepareExecutorOutcome::NoOp { reason },
+            completion_outcome: TimelineHoverPrepareCompletionOutcome::NoPreparedHit,
+        }
+    }
+
+    fn install_pending_unresolved_target(
+        &mut self,
+        target: TimelineHoverPrepareTarget,
+    ) -> (
+        TimelineHoverPrepareSpanId,
+        TimelineHoverPrepareControllerTransition,
+    ) {
+        if let Some(pending_target) = self.pending_unresolved_target {
+            if pending_target.latest_target == target {
+                return (
+                    pending_target.span_id,
+                    TimelineHoverPrepareControllerTransition::RetargetedWithinSpan,
+                );
+            }
+
+            let cancellation = TimelineHoverPrepareCancelRequest {
+                span_id: pending_target.span_id,
+                latest_target: pending_target.latest_target,
+                reason: TimelineHoverPrepareCancellationReason::IncompatibleTargetContext,
+            };
+            self.executor.cancel_dependency_span(cancellation);
+            let span_id = self.allocate_span_id();
+            self.pending_unresolved_target = Some(InFlightTimelineHoverPrepareTarget {
+                span_id,
+                latest_target: target,
+            });
+            return (
+                span_id,
+                TimelineHoverPrepareControllerTransition::Superseded {
+                    cancelled_span_id: pending_target.span_id,
+                    reason: TimelineHoverPrepareCancellationReason::IncompatibleTargetContext,
+                },
+            );
+        }
+
+        let span_id = self.allocate_span_id();
+        self.pending_unresolved_target = Some(InFlightTimelineHoverPrepareTarget {
+            span_id,
+            latest_target: target,
+        });
+        (span_id, TimelineHoverPrepareControllerTransition::Started)
+    }
+
+    fn active_span_extension_for_target(
+        &self,
+        target: TimelineHoverPrepareTarget,
+    ) -> Option<DecodeDependencySpan> {
+        let active_span = self.active_span?;
+        if active_span.span.context != target.context {
+            return None;
+        }
+        if target
+            .target_pts
+            .cmp_timeline_position(active_span.span.decode_safe_start_pts)
+            == Ordering::Less
+        {
+            return None;
+        }
+
+        let mut requested_span = active_span.span;
+        if target
+            .target_pts
+            .cmp_timeline_position(requested_span.drain_until_pts)
+            == Ordering::Greater
+        {
+            requested_span.drain_until_pts = target.target_pts;
+        }
+        Some(requested_span)
     }
 
     fn apply_target_to_active_span(
@@ -850,6 +1121,21 @@ where
 }
 
 impl TimelineHoverPrepareTarget {
+    pub(crate) const fn unresolved(
+        context: TimelineHoverPrepareTargetContext,
+        target_pts: TrackTimestamp,
+        target_bucket: TimelineHoverFrameBucket,
+        playback_mode: TimelineHoverPreparePlaybackMode,
+    ) -> Self {
+        Self {
+            context,
+            target_pts,
+            target_bucket,
+            dependency_span: None,
+            playback_mode,
+        }
+    }
+
     pub(crate) fn new(
         context: TimelineHoverPrepareTargetContext,
         target_pts: TrackTimestamp,
@@ -859,16 +1145,29 @@ impl TimelineHoverPrepareTarget {
         post_target_reorder_drain_frames: u16,
         playback_mode: TimelineHoverPreparePlaybackMode,
     ) -> Result<Self, TimelineHoverPrepareTargetError> {
-        validate_dependency_span_points(target_pts, decode_safe_start_pts, drain_until_pts)?;
-
-        Ok(Self {
-            context,
-            target_pts,
-            target_bucket,
+        Self::unresolved(context, target_pts, target_bucket, playback_mode).with_dependency_span(
             decode_safe_start_pts,
             drain_until_pts,
             post_target_reorder_drain_frames,
-            playback_mode,
+        )
+    }
+
+    pub(crate) fn with_dependency_span(
+        self,
+        decode_safe_start_pts: TrackTimestamp,
+        drain_until_pts: TrackTimestamp,
+        post_target_reorder_drain_frames: u16,
+    ) -> Result<Self, TimelineHoverPrepareTargetError> {
+        validate_dependency_span_points(self.target_pts, decode_safe_start_pts, drain_until_pts)?;
+
+        Ok(Self {
+            dependency_span: Some(DecodeDependencySpan {
+                context: self.context,
+                decode_safe_start_pts,
+                drain_until_pts,
+                post_target_reorder_drain_frames,
+            }),
+            ..self
         })
     }
 
@@ -911,12 +1210,18 @@ impl TimelineHoverPrepareTarget {
         Ok(())
     }
 
-    fn dependency_span(self) -> DecodeDependencySpan {
-        DecodeDependencySpan {
-            context: self.context,
-            decode_safe_start_pts: self.decode_safe_start_pts,
-            drain_until_pts: self.drain_until_pts,
-            post_target_reorder_drain_frames: self.post_target_reorder_drain_frames,
+    fn dependency_span(self) -> Option<DecodeDependencySpan> {
+        self.dependency_span
+    }
+
+    fn pts_from_media_time(self, position: media_core::MediaTime) -> TrackTimestamp {
+        TrackTimestamp {
+            track_id: self.target_pts.track_id,
+            units: self
+                .target_pts
+                .time_base
+                .media_time_to_track_units_saturating(position),
+            time_base: self.target_pts.time_base,
         }
     }
 }
@@ -1043,6 +1348,27 @@ fn no_op_reason_for_missing_executor(
             TimelineHoverPrepareExecutorNoOpReason::LiveScrubSuspended
         }
     }
+}
+
+fn dependency_span_seek_error_no_op_reason(
+    error: &anyhow::Error,
+) -> TimelineHoverPrepareExecutorNoOpReason {
+    match error.downcast_ref::<MediaDemuxError>() {
+        Some(MediaDemuxError::UnsupportedSeekMode { .. }) => {
+            TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackDependencySpanSeekUnsupported
+        }
+        Some(MediaDemuxError::SeekUnavailable { .. }) => {
+            TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackDependencySpanSeekUnavailable
+        }
+        None => TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackDependencySpanResolveFailed,
+    }
+}
+
+fn unresolved_reason_keeps_pending_work(reason: TimelineHoverPrepareExecutorNoOpReason) -> bool {
+    matches!(
+        reason,
+        TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackNetworkSourceOpening { .. }
+    )
 }
 
 #[cfg(test)]

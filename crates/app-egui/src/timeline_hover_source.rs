@@ -80,12 +80,21 @@ impl fmt::Debug for TimelineHoverSourceOpenOutcome {
 
 /// Owned hover source, который не связан с playback demuxer lifecycle.
 pub(crate) struct TimelineHoverOpenedSource {
-    // S26 только создаёт и хранит independent source; будущий decode wiring заберёт demuxer.
-    #[allow(dead_code)]
     demuxer: Box<dyn Demuxer + Send>,
 }
 
 impl TimelineHoverOpenedSource {
+    /// Создаёт owned hover source из demuxer-а, который не связан с playback.
+    #[must_use]
+    pub(crate) fn from_demuxer(demuxer: Box<dyn Demuxer + Send>) -> Self {
+        Self { demuxer }
+    }
+
+    /// Даёт executor-у mutating доступ только к independent hover demuxer-у.
+    pub(crate) fn demuxer_mut(&mut self) -> &mut (dyn Demuxer + Send) {
+        self.demuxer.as_mut()
+    }
+
     /// Передаёт demuxer будущему hover decode executor-у.
     #[must_use]
     #[allow(dead_code)]
@@ -181,9 +190,9 @@ impl TimelineHoverSourceFactory {
 
     fn open_local_source(&self, path: &Path) -> TimelineHoverSourceOpenOutcome {
         match local_media::open_local_demuxer(path, &self.demux_config) {
-            Ok(demuxer) => {
-                TimelineHoverSourceOpenOutcome::Opened(TimelineHoverOpenedSource { demuxer })
-            }
+            Ok(demuxer) => TimelineHoverSourceOpenOutcome::Opened(
+                TimelineHoverOpenedSource::from_demuxer(demuxer),
+            ),
             Err(_error) => TimelineHoverSourceOpenOutcome::OpenFailed {
                 source_kind: TimelineHoverOpenFailedSourceKind::LocalFile,
             },
@@ -196,9 +205,9 @@ impl TimelineHoverSourceFactory {
             &self.network_config,
             &self.demux_config,
         ) {
-            Ok(opened_media) => TimelineHoverSourceOpenOutcome::Opened(TimelineHoverOpenedSource {
-                demuxer: opened_media.into_demuxer(),
-            }),
+            Ok(opened_media) => TimelineHoverSourceOpenOutcome::Opened(
+                TimelineHoverOpenedSource::from_demuxer(opened_media.into_demuxer()),
+            ),
             Err(DirectMediaOpenError::NonSeekable { .. }) => {
                 TimelineHoverSourceOpenOutcome::Unsupported {
                     source_kind: TimelineHoverUnsupportedSourceKind::DirectMediaUrl,
@@ -222,9 +231,9 @@ impl TimelineHoverSourceFactory {
             &self.youtube_config,
             &self.demux_config,
         ) {
-            Ok(opened_media) => TimelineHoverSourceOpenOutcome::Opened(TimelineHoverOpenedSource {
-                demuxer: opened_media.demuxer,
-            }),
+            Ok(opened_media) => TimelineHoverSourceOpenOutcome::Opened(
+                TimelineHoverOpenedSource::from_demuxer(opened_media.demuxer),
+            ),
             Err(
                 YoutubeSeekableVodOpenError::LiveStream
                 | YoutubeSeekableVodOpenError::RangeUnsupported,

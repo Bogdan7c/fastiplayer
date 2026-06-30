@@ -134,24 +134,12 @@ fn timeline_hover_prepare_target_from_snapshot(
         prepare_snapshot.exactness_policy(),
     );
 
-    match TimelineHoverPrepareTarget::new(
+    Some(TimelineHoverPrepareTarget::unresolved(
         target_context,
         target_pts,
         target_bucket,
-        target_pts,
-        target_pts,
-        0,
         timeline_hover_prepare_playback_mode(player_snapshot.playback_state),
-    ) {
-        Ok(prepare_target) => Some(prepare_target),
-        Err(error) => {
-            warn!(
-                ?error,
-                "Timeline hover prepare target rejected internally inconsistent span"
-            );
-            None
-        }
-    }
+    ))
 }
 
 /// Runtime playback mode влияет только на typed executor degrade/admission.
