@@ -1,5 +1,22 @@
 use std::time::Duration;
 
+mod hover;
+mod prepared;
+
+pub use self::hover::{
+    ScrubHoverDependencySpanDiagnosticsCounters, ScrubHoverDependencySpanIncompleteReason,
+    ScrubHoverDependencySpanIncompleteReasonCounters, ScrubHoverDependencySpanOutcome,
+    ScrubHoverDependencySpanProgress, ScrubHoverNetworkDiagnosticsCounters, ScrubHoverNetworkState,
+    ScrubHoverPrepareAdmissionCounters, ScrubHoverPrepareDiagnosticsCounters,
+};
+pub use self::prepared::{
+    ScrubPreparedFrameDemoteRejectionCounters, ScrubPreparedFrameDemoteRejectionKind,
+    ScrubPreparedFrameDiagnosticsCounters, ScrubPreparedFrameHitOutcome,
+    ScrubPreparedFrameOwnershipCounters, ScrubPreparedFrameOwnershipEvent,
+    ScrubPreparedFrameResumePendingReason, ScrubPreparedFrameResumePendingReasonCounters,
+    ScrubResumeRunwayState, ScrubResumeRunwayStateCounters,
+};
+
 use crate::config::LiveScrubDecodeMode;
 use crate::request::{ScrubRequestKind, ScrubStaleReason, ScrubTargetContext};
 use crate::scheduler::SchedulerDiagnostic;
@@ -9,8 +26,9 @@ use crate::scrub::{
     ScrubFatalReason, ScrubTargetReachStatus, ScrubTimeoutReason,
 };
 use crate::working_set::{
-    TimelineHoverPrepareInsertOutcome, TimelineHoverPrepareLookupOutcome,
-    TimelineHoverPreparePressureReleaseOutcome, TimelineHoverPreparePromotionOutcome,
+    TimelineHoverPrepareAdmissionOutcome, TimelineHoverPrepareInsertOutcome,
+    TimelineHoverPrepareLookupOutcome, TimelineHoverPreparePressureReleaseOutcome,
+    TimelineHoverPreparePromotionOutcome, TimelineHoverPrepareProviderBudget,
 };
 
 /// Driver-only outcome kind, который можно положить в diagnostics без раскрытия payload-а UI.
@@ -224,7 +242,9 @@ pub struct ScrubDiagnosticsSnapshot {
     pub demux_seek_latency: DurationSummary,
     pub packets_from_decode_point_to_target: CountSummary,
     pub pre_target_frame_drops: CountSummary,
+    pub prepared_frames: ScrubPreparedFrameDiagnosticsCounters,
     pub working_set: ScrubWorkingSetDiagnosticsCounters,
+    pub hover_prepare: ScrubHoverPrepareDiagnosticsCounters,
     pub latest_live_scrub: Option<LiveScrubDiagnostics>,
 }
 
@@ -284,6 +304,23 @@ impl ScrubDiagnosticsRecorder {
 
     pub fn record_pre_target_frame_drops(&mut self, dropped_frames: u64) {
         self.snapshot.pre_target_frame_drops.record(dropped_frames);
+    }
+
+    pub fn record_prepared_frame_hit(&mut self, outcome: ScrubPreparedFrameHitOutcome) {
+        self.snapshot.prepared_frames.record_prepared_hit(outcome);
+    }
+
+    pub fn record_cold_exact_decode_pending(&mut self) {
+        self.snapshot
+            .prepared_frames
+            .record_cold_exact_decode_pending();
+    }
+
+    pub fn record_prepared_frame_ownership_event(
+        &mut self,
+        event: ScrubPreparedFrameOwnershipEvent,
+    ) {
+        self.snapshot.prepared_frames.record_ownership_event(event);
     }
 
     /// Записывает typed driver outcome без нормализации в public UI phase.
@@ -390,6 +427,78 @@ impl ScrubDiagnosticsRecorder {
         self.snapshot.working_set.record_evictions(evicted_entries);
     }
 
+    pub fn record_hover_prepare_admission_outcome(
+        &mut self,
+        outcome: &TimelineHoverPrepareAdmissionOutcome,
+    ) {
+        self.snapshot
+            .hover_prepare
+            .admission
+            .record_outcome(outcome);
+    }
+
+    pub fn record_hover_prepare_provider_budget(
+        &mut self,
+        provider_budget: TimelineHoverPrepareProviderBudget,
+    ) {
+        self.snapshot
+            .hover_prepare
+            .admission
+            .record_provider_budget(provider_budget);
+    }
+
+    pub fn record_hover_dependency_span_outcome(
+        &mut self,
+        outcome: ScrubHoverDependencySpanOutcome,
+    ) {
+        self.snapshot
+            .hover_prepare
+            .dependency_span
+            .record_outcome(outcome);
+    }
+
+    pub fn record_hover_dependency_span_progress(
+        &mut self,
+        progress: ScrubHoverDependencySpanProgress,
+    ) {
+        self.snapshot
+            .hover_prepare
+            .dependency_span
+            .record_progress(progress);
+    }
+
+    pub fn record_hover_network_state(&mut self, state: ScrubHoverNetworkState) {
+        self.snapshot.hover_prepare.network.record_state(state);
+    }
+
+    pub fn record_hover_network_zero_throttle_no_delay(&mut self) {
+        self.snapshot
+            .hover_prepare
+            .network
+            .record_zero_throttle_no_delay();
+    }
+
+    pub fn record_hover_network_latest_only_replaced_in_flight(&mut self) {
+        self.snapshot
+            .hover_prepare
+            .network
+            .record_latest_only_replaced_in_flight();
+    }
+
+    pub fn record_hover_network_stale_late_result_ignored(&mut self) {
+        self.snapshot
+            .hover_prepare
+            .network
+            .record_stale_late_result_ignored();
+    }
+
+    pub fn record_hover_network_throttle_delay(&mut self, delay: Duration) {
+        self.snapshot
+            .hover_prepare
+            .network
+            .record_throttle_delay(delay);
+    }
+
     pub fn record_driver_reason(&mut self, reason: ScrubDriverDiagnosticReason) {
         self.snapshot.driver_reasons.increment(reason);
         self.snapshot.resource_pressure.record_driver_reason(reason);
@@ -410,7 +519,9 @@ impl ScrubDiagnosticsSnapshot {
             demux_seek_latency: DurationSummary::new(),
             packets_from_decode_point_to_target: CountSummary::new(),
             pre_target_frame_drops: CountSummary::new(),
+            prepared_frames: ScrubPreparedFrameDiagnosticsCounters::new(),
             working_set: ScrubWorkingSetDiagnosticsCounters::new(),
+            hover_prepare: ScrubHoverPrepareDiagnosticsCounters::new(),
             latest_live_scrub: None,
         }
     }

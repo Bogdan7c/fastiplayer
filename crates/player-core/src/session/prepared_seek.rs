@@ -5,12 +5,14 @@ use frame_server_core::{
     ExactFrameReadyOutcome, FinishedOutcome, FrameExactnessPolicy, FrameServerConfig,
     LiveScrubDiagnostics, PlaybackGeneration, PreparedOutcome, ScrubDriverOutcome, ScrubEvent,
     ScrubEventFrameIdentity, ScrubExactnessPolicy, ScrubFrameTiming, ScrubGeneration,
-    ScrubGenerationToken, ScrubPreviewFrame, ScrubRequestKind, ScrubTarget, ScrubTargetContext,
-    ScrubTrackSelection, SourceRevision, TimelineHoverFrameBucket,
-    TimelineHoverPrepareDemoteBackOutcome, TimelineHoverPrepareDemoteBackRejection,
-    TimelineHoverPrepareFrameKey, TimelineHoverPrepareFrameLookupRequest,
-    TimelineHoverPreparePromotionOutcome, TimelineHoverPromotedFrameSeekReuse,
-    TimelineHoverPromotedPreparedFrame, ValidatedFrameServerConfig,
+    ScrubGenerationToken, ScrubPreparedFrameHitOutcome, ScrubPreparedFrameOwnershipEvent,
+    ScrubPreparedFrameResumePendingReason, ScrubPreviewFrame, ScrubRequestKind,
+    ScrubResumeRunwayState, ScrubTarget, ScrubTargetContext, ScrubTrackSelection, SourceRevision,
+    TimelineHoverFrameBucket, TimelineHoverPrepareDemoteBackOutcome,
+    TimelineHoverPrepareDemoteBackRejection, TimelineHoverPrepareFrameKey,
+    TimelineHoverPrepareFrameLookupRequest, TimelineHoverPreparePromotionOutcome,
+    TimelineHoverPromotedFrameSeekReuse, TimelineHoverPromotedPreparedFrame,
+    ValidatedFrameServerConfig,
 };
 #[cfg(test)]
 use frame_server_core::{TimelineHoverPreparedFrameEntry, TimelineHoverPreparedFrameTiming};
@@ -77,13 +79,17 @@ impl PreparedSeekBranchToken {
     fn validate(self) -> PreparedSeekBranchValidation {
         match self.continuation {
             PreparedBranchContinuation::Ready if self.runway.is_commit_ready() => {
-                PreparedSeekBranchValidation::ResumeReady
+                PreparedSeekBranchValidation::ResumeReady {
+                    runway: self.runway,
+                }
             }
             PreparedBranchContinuation::Missing => PreparedSeekBranchValidation::ResumePending {
                 reason: PreparedSeekBranchResumePendingReason::ContinuationMissing,
             },
             PreparedBranchContinuation::Ready => PreparedSeekBranchValidation::ResumePending {
-                reason: PreparedSeekBranchResumePendingReason::RunwayPending,
+                reason: PreparedSeekBranchResumePendingReason::RunwayPending {
+                    runway: self.runway,
+                },
             },
         }
     }
@@ -131,12 +137,24 @@ impl VideoResumeRunwayState {
             Self::DisplayableFrameQueued | Self::NextFrameAlmostReady
         )
     }
+
+    fn diagnostics_state(self) -> ScrubResumeRunwayState {
+        match self {
+            Self::Pending => ScrubResumeRunwayState::Pending,
+            Self::Repositioned => ScrubResumeRunwayState::Repositioned,
+            Self::PostTargetPacketAccepted => ScrubResumeRunwayState::PostTargetPacketAccepted,
+            Self::DisplayableFrameQueued => ScrubResumeRunwayState::DisplayableFrameQueued,
+            Self::NextFrameAlmostReady => ScrubResumeRunwayState::NextFrameAlmostReady,
+        }
+    }
 }
 
 /// Результат player-side branch validation после neutral promotion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreparedSeekBranchValidation {
-    ResumeReady,
+    ResumeReady {
+        runway: VideoResumeRunwayState,
+    },
     ResumePending {
         reason: PreparedSeekBranchResumePendingReason,
     },
@@ -147,19 +165,77 @@ enum PreparedSeekBranchValidation {
 pub(crate) enum PreparedSeekBranchResumePendingReason {
     FrameOnly,
     ContinuationMissing,
-    RunwayPending,
+    RunwayPending { runway: VideoResumeRunwayState },
+}
+
+impl PreparedSeekBranchResumePendingReason {
+    fn diagnostics_reason(self) -> ScrubPreparedFrameResumePendingReason {
+        match self {
+            Self::FrameOnly => ScrubPreparedFrameResumePendingReason::FrameOnly,
+            Self::ContinuationMissing => ScrubPreparedFrameResumePendingReason::ContinuationMissing,
+            Self::RunwayPending { runway } => {
+                ScrubPreparedFrameResumePendingReason::RunwayPending(runway.diagnostics_state())
+            }
+        }
+    }
 }
 
 /// Вид prepared promotion-а, который player-core реально принял во владение.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PreparedSeekLandingPromotionKind {
     /// Branch token доказал continuation + commit-ready video runway.
-    ResumeReadyBranch,
+    ResumeReadyBranch { runway: VideoResumeRunwayState },
 
     /// Frame подходит как exact visual override, а resume остаётся pending.
     VisualOverrideResumePending {
         reason: PreparedSeekBranchResumePendingReason,
     },
+}
+
+impl PreparedSeekLandingPromotionKind {
+    fn ownership_event(self) -> ScrubPreparedFrameOwnershipEvent {
+        match self {
+            Self::ResumeReadyBranch { .. } => {
+                ScrubPreparedFrameOwnershipEvent::PromotedResumeReadyBranch
+            }
+            Self::VisualOverrideResumePending { .. } => {
+                ScrubPreparedFrameOwnershipEvent::PromotedVisualOverrideResumePending
+            }
+        }
+    }
+
+    fn prepared_hit_outcome(
+        self,
+        audio_gate_ready: bool,
+        commit_before_release_allowed: bool,
+    ) -> ScrubPreparedFrameHitOutcome {
+        match self {
+            Self::ResumeReadyBranch { runway }
+                if audio_gate_ready && commit_before_release_allowed =>
+            {
+                ScrubPreparedFrameHitOutcome::ResumeReady {
+                    video_runway: runway.diagnostics_state(),
+                }
+            }
+            Self::ResumeReadyBranch { runway } if !commit_before_release_allowed => {
+                ScrubPreparedFrameHitOutcome::ResumePending {
+                    reason: ScrubPreparedFrameResumePendingReason::CommitGatePending {
+                        video_runway: runway.diagnostics_state(),
+                    },
+                }
+            }
+            Self::ResumeReadyBranch { runway } => ScrubPreparedFrameHitOutcome::ResumePending {
+                reason: ScrubPreparedFrameResumePendingReason::AudioGatePending {
+                    video_runway: runway.diagnostics_state(),
+                },
+            },
+            Self::VisualOverrideResumePending { reason } => {
+                ScrubPreparedFrameHitOutcome::ResumePending {
+                    reason: reason.diagnostics_reason(),
+                }
+            }
+        }
+    }
 }
 
 /// Итог release/demote promoted prepared resource-а при завершении transaction.
@@ -179,6 +255,21 @@ pub(crate) enum PreparedSeekLandingReleaseOutcome {
 
     /// Обычный release path без попытки demote-back.
     ReleasedWithoutDemote,
+}
+
+impl PreparedSeekLandingReleaseOutcome {
+    fn ownership_event(self) -> ScrubPreparedFrameOwnershipEvent {
+        match self {
+            Self::NoPromotedFrame => ScrubPreparedFrameOwnershipEvent::NoPromotedFrameOnRelease,
+            Self::DemotedToRecentSuperseded => {
+                ScrubPreparedFrameOwnershipEvent::DemotedToRecentSuperseded
+            }
+            Self::DemoteRejected { reason } => {
+                ScrubPreparedFrameOwnershipEvent::DemoteRejected(reason.into())
+            }
+            Self::ReleasedWithoutDemote => ScrubPreparedFrameOwnershipEvent::ReleasedWithoutDemote,
+        }
+    }
 }
 
 /// Seek-owned promoted resource после удаления из hover working set-а.
@@ -260,8 +351,8 @@ impl PreparedSeekLandingRuntime {
         let kind = match promoted_frame.seek_reuse() {
             TimelineHoverPromotedFrameSeekReuse::ResumeReadyBranch { branch_token } => {
                 match branch_token.validate() {
-                    PreparedSeekBranchValidation::ResumeReady => {
-                        PreparedSeekLandingPromotionKind::ResumeReadyBranch
+                    PreparedSeekBranchValidation::ResumeReady { runway } => {
+                        PreparedSeekLandingPromotionKind::ResumeReadyBranch { runway }
                     }
                     PreparedSeekBranchValidation::ResumePending { reason } => {
                         PreparedSeekLandingPromotionKind::VisualOverrideResumePending { reason }
@@ -529,7 +620,7 @@ impl PlayerSession {
 
         matches!(
             self.prepared_seek_landing.active_promotion_kind(),
-            Some(PreparedSeekLandingPromotionKind::ResumeReadyBranch)
+            Some(PreparedSeekLandingPromotionKind::ResumeReadyBranch { .. })
         )
     }
 
@@ -567,8 +658,23 @@ impl PlayerSession {
     ) -> PreparedSeekLandingReleaseOutcome {
         let request = context.map(prepared_seek_landing_lookup_request);
 
-        self.prepared_seek_landing
-            .release_promoted_seek_ownership(cancel_reason, request)
+        let outcome = self
+            .prepared_seek_landing
+            .release_promoted_seek_ownership(cancel_reason, request);
+        self.record_prepared_frame_ownership_event(outcome.ownership_event());
+        outcome
+    }
+
+    pub(super) fn clear_prepared_seek_landing_with_diagnostics(&mut self) {
+        if self.prepared_seek_landing.active_promotion_kind().is_none() {
+            self.prepared_seek_landing.clear_promoted_seek_ownership();
+            return;
+        }
+
+        let outcome = self
+            .prepared_seek_landing
+            .release_promoted_seek_ownership(CancelScrubReason::UserCancelled, None);
+        self.record_prepared_frame_ownership_event(outcome.ownership_event());
     }
 
     pub(super) fn fail_prepared_seek_landing_audio_resume_on_timeout(
@@ -601,7 +707,7 @@ impl PlayerSession {
         );
 
         self.seek_runtime.clear_active_commit();
-        self.prepared_seek_landing.clear_promoted_seek_ownership();
+        self.clear_prepared_seek_landing_with_diagnostics();
         self.seek_runtime.clear_trace();
         self.seek_runtime.clear_seek_landing();
         self.seek_runtime.clear_eof_fallback_video_position();
@@ -672,22 +778,23 @@ impl PlayerSession {
         let PreparedSeekLandingPromotionAttempt::Promoted(promotion_kind) = promotion else {
             return Ok(PreparedSeekLandingStart::Unavailable);
         };
+        self.record_prepared_frame_ownership_event(promotion_kind.ownership_event());
 
         if request_kind == ScrubRequestKind::LiveScrub
             && !matches!(
                 promotion_kind,
-                PreparedSeekLandingPromotionKind::ResumeReadyBranch
+                PreparedSeekLandingPromotionKind::ResumeReadyBranch { .. }
             )
         {
             // LiveScrub transfer берёт только валидированный branch. Frame-only
             // prepared entry годится для one-shot visual override, но active drag
             // должен владеть обычным exact decode path-ом и release-ить entry.
-            self.prepared_seek_landing.clear_promoted_seek_ownership();
+            self.clear_prepared_seek_landing_with_diagnostics();
             return Ok(PreparedSeekLandingStart::Unavailable);
         }
 
         if let Err(error) = self.clear_active_seek_decoder_output_floor("prepared seek landing") {
-            self.prepared_seek_landing.clear_promoted_seek_ownership();
+            self.clear_prepared_seek_landing_with_diagnostics();
             self.record_recoverable_error(error.clone());
             return Err(error);
         }
@@ -697,7 +804,7 @@ impl PlayerSession {
             SeekLandingExecution::PreparedVisualOverride,
             None,
         ) {
-            self.prepared_seek_landing.clear_promoted_seek_ownership();
+            self.clear_prepared_seek_landing_with_diagnostics();
             return Err(player_error_from_seek_landing_generation_error(error));
         }
         self.reset_audio_runtime_for_seek_landing(context.generation().playback_generation.get());
@@ -714,10 +821,14 @@ impl PlayerSession {
         self.reanchor_clocks_after_seek_accept(seek_commit);
         self.seek_runtime.set_active_commit(seek_commit);
         let audio_gate_status = self.prepared_audio_gate_ready_for_commit(seek_commit);
+        self.record_prepared_frame_hit(
+            promotion_kind
+                .prepared_hit_outcome(audio_gate_status.is_ready(), commit_before_release_allowed),
+        );
 
         if matches!(
             promotion_kind,
-            PreparedSeekLandingPromotionKind::ResumeReadyBranch
+            PreparedSeekLandingPromotionKind::ResumeReadyBranch { .. }
         ) && audio_gate_status.is_ready()
             && commit_before_release_allowed
         {

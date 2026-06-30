@@ -1,5 +1,8 @@
 use std::time::Duration;
 
+use frame_server_core::{
+    ScrubEventDiagnostics, ScrubPreparedFrameHitOutcome, ScrubPreparedFrameOwnershipEvent,
+};
 use media_core::PacketKeyframe;
 
 use crate::{
@@ -127,6 +130,30 @@ impl PlayerSession {
     pub(crate) fn record_worker_wakeup(&mut self, wakeup: WorkerWakeupDiagnosticsSnapshot) {
         let queues = self.diagnostic_queue_depths();
         self.diagnostics.record_worker_wakeup(wakeup, queues);
+    }
+
+    /// Записывает diagnostics normalized scrub event-а, когда caller уже работает с event.
+    pub(crate) fn record_scrub_event_diagnostics(&mut self, diagnostics: ScrubEventDiagnostics) {
+        self.diagnostics.record_scrub_event_diagnostics(diagnostics);
+    }
+
+    /// Записывает prepared hit route decision без чтения prepared runtime internals.
+    pub(crate) fn record_prepared_frame_hit(&mut self, outcome: ScrubPreparedFrameHitOutcome) {
+        self.diagnostics.record_prepared_frame_hit(outcome);
+    }
+
+    /// Записывает fallback в cold exact decode после prepared miss/unavailable.
+    pub(crate) fn record_cold_exact_decode_pending(&mut self) {
+        self.diagnostics.record_cold_exact_decode_pending();
+    }
+
+    /// Записывает ownership transition promoted prepared frame-а.
+    pub(crate) fn record_prepared_frame_ownership_event(
+        &mut self,
+        event: ScrubPreparedFrameOwnershipEvent,
+    ) {
+        self.diagnostics
+            .record_prepared_frame_ownership_event(event);
     }
 
     /// Записывает результат render acquire.

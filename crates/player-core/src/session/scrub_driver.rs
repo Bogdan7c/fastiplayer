@@ -496,7 +496,7 @@ impl ScrubTransactionLifecycle for PlayerSession {
             if let Err(error) = self.apply_decoder_output_floor_for_seek(seek_commit) {
                 self.record_recoverable_error(error.clone());
                 self.seek_runtime.clear_active_commit();
-                self.prepared_seek_landing.clear_promoted_seek_ownership();
+                self.clear_prepared_seek_landing_with_diagnostics();
                 self.seek_runtime.clear_trace();
                 self.seek_runtime.clear_eof_fallback_video_position();
                 self.clear_seek_preroll_fallback_frame();

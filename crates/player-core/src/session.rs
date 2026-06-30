@@ -471,6 +471,17 @@ impl PlayerSession {
             Some(live_scrub) => event.with_live_scrub_diagnostics(live_scrub),
             None => event,
         };
+        let diagnostics = match &enriched_event {
+            ScrubEvent::Started(event) => event.diagnostics,
+            ScrubEvent::Progress(event) => event.diagnostics,
+            ScrubEvent::PreviewFrameReady(event) => event.diagnostics,
+            ScrubEvent::ResumePending(event) => event.diagnostics,
+            ScrubEvent::Committed(event) => event.diagnostics,
+            ScrubEvent::MatchedPlayback(event) => event.diagnostics,
+            ScrubEvent::Cancelled(event) => event.diagnostics,
+            ScrubEvent::Failed(event) => event.diagnostics,
+        };
+        self.record_scrub_event_diagnostics(diagnostics);
         self.pending_scrub_events.push(enriched_event);
     }
 

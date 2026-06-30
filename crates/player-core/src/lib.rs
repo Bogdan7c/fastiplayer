@@ -64,10 +64,11 @@ pub use event::{
 pub use frame_server_core::{
     BackendRevision, DeferredLiveScrubSettingsChange, LiveScrubDiagnostics,
     LiveScrubSettingsSnapshot, MatchedPlaybackEvent, PlaybackGeneration, PreviewFrameReadyEvent,
-    ResumePendingEvent, ScrubCommittedEvent, ScrubDriverOutcomeKind, ScrubEvent,
-    ScrubEventDiagnostics, ScrubEventFrameIdentity, ScrubExactnessPolicy, ScrubFrameTiming,
-    ScrubGeneration, ScrubGenerationToken, ScrubNoVideoFrameReason, ScrubPreviewFrame,
-    ScrubRequestKind, ScrubTarget, ScrubTargetContext, ScrubTrackSelection, SourceRevision,
+    ResumePendingEvent, ScrubCommittedEvent, ScrubDiagnosticsSnapshot, ScrubDriverOutcomeKind,
+    ScrubEvent, ScrubEventDiagnostics, ScrubEventFrameIdentity, ScrubExactnessPolicy,
+    ScrubFrameTiming, ScrubGeneration, ScrubGenerationToken, ScrubNoVideoFrameReason,
+    ScrubPreviewFrame, ScrubRequestKind, ScrubTarget, ScrubTargetContext, ScrubTrackSelection,
+    SourceRevision,
 };
 pub use media_core::TrackId;
 pub use media_opening::{PreparedMedia, PreparedMediaSource};

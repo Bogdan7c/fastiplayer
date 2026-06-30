@@ -1497,7 +1497,7 @@ impl PlayerSession {
             "Final seek commit завершён"
         );
         self.seek_runtime.clear_active_commit();
-        self.prepared_seek_landing.clear_promoted_seek_ownership();
+        self.clear_prepared_seek_landing_with_diagnostics();
         self.seek_runtime.clear_trace();
         self.seek_runtime.clear_seek_landing();
         self.seek_runtime.clear_simple_scrub();
@@ -1603,7 +1603,7 @@ impl PlayerSession {
         }
 
         self.seek_runtime.clear_active_commit();
-        self.prepared_seek_landing.clear_promoted_seek_ownership();
+        self.clear_prepared_seek_landing_with_diagnostics();
         self.seek_runtime.clear_trace();
         self.seek_runtime.clear_simple_scrub();
         self.seek_runtime.clear_eof_fallback_video_position();
@@ -1813,6 +1813,7 @@ impl PlayerSession {
             PreparedSeekLandingStart::Unavailable => {}
         }
 
+        self.record_cold_exact_decode_pending();
         self.enter_seek_landing_public_scrubbing(target_position);
 
         let update = ScrubTargetUpdate::new(
@@ -1843,7 +1844,7 @@ impl PlayerSession {
             self.invalidate_in_flight_scrub_outputs_after_exit("seek landing replacement failed");
         }
         self.seek_runtime.clear_active_commit();
-        self.prepared_seek_landing.clear_promoted_seek_ownership();
+        self.clear_prepared_seek_landing_with_diagnostics();
         self.seek_runtime.clear_trace();
         self.seek_runtime.clear_seek_landing();
         self.seek_runtime.clear_eof_fallback_video_position();
@@ -2252,7 +2253,7 @@ impl PlayerSession {
     /// Завершает seek transaction до demux seek, если decoder не подтвердил flush.
     fn fail_seek_transaction_on_decoder_flush(&mut self, error: PlayerError) {
         self.seek_runtime.clear_active_commit();
-        self.prepared_seek_landing.clear_promoted_seek_ownership();
+        self.clear_prepared_seek_landing_with_diagnostics();
         self.seek_runtime.clear_trace();
         self.seek_runtime.clear_eof_fallback_video_position();
         self.clear_seek_preroll_fallback_frame();
@@ -2406,7 +2407,7 @@ impl PlayerSession {
                 self.seek_runtime.set_active_commit(seek_commit);
                 if let Err(error) = self.apply_decoder_output_floor_for_seek(seek_commit) {
                     self.seek_runtime.clear_active_commit();
-                    self.prepared_seek_landing.clear_promoted_seek_ownership();
+                    self.clear_prepared_seek_landing_with_diagnostics();
                     self.seek_runtime.clear_trace();
                     self.seek_runtime.clear_simple_scrub();
                     self.seek_runtime.clear_eof_fallback_video_position();
@@ -2418,7 +2419,7 @@ impl PlayerSession {
             }
             Err(error) => {
                 self.seek_runtime.clear_active_commit();
-                self.prepared_seek_landing.clear_promoted_seek_ownership();
+                self.clear_prepared_seek_landing_with_diagnostics();
                 self.seek_runtime.clear_trace();
                 self.seek_runtime.clear_simple_scrub();
                 self.snapshot.timeline.scrubbing = false;
@@ -2471,7 +2472,7 @@ impl PlayerSession {
             Some(seek_commit) => self.seek_runtime.set_active_commit(seek_commit),
             None => {
                 self.seek_runtime.clear_active_commit();
-                self.prepared_seek_landing.clear_promoted_seek_ownership();
+                self.clear_prepared_seek_landing_with_diagnostics();
             }
         }
     }

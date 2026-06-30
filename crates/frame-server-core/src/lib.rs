@@ -31,9 +31,17 @@ pub use diagnostics::{
     LiveScrubSettingsSnapshot, ResourceBusyReasonCounters, ScrubDiagnosticsRecorder,
     ScrubDiagnosticsSnapshot, ScrubDriverDiagnosticReason, ScrubDriverDiagnosticReasonCounters,
     ScrubDriverOutcomeCounters, ScrubDriverOutcomeKind, ScrubEventDiagnostics, ScrubFailureReason,
+    ScrubHoverDependencySpanDiagnosticsCounters, ScrubHoverDependencySpanIncompleteReason,
+    ScrubHoverDependencySpanIncompleteReasonCounters, ScrubHoverDependencySpanOutcome,
+    ScrubHoverDependencySpanProgress, ScrubHoverNetworkDiagnosticsCounters, ScrubHoverNetworkState,
+    ScrubHoverPrepareAdmissionCounters, ScrubHoverPrepareDiagnosticsCounters,
+    ScrubPreparedFrameDemoteRejectionCounters, ScrubPreparedFrameDemoteRejectionKind,
+    ScrubPreparedFrameDiagnosticsCounters, ScrubPreparedFrameHitOutcome,
+    ScrubPreparedFrameOwnershipCounters, ScrubPreparedFrameOwnershipEvent,
+    ScrubPreparedFrameResumePendingReason, ScrubPreparedFrameResumePendingReasonCounters,
     ScrubPublicPhase, ScrubRequestKindCounters, ScrubRequestLifecycleCounters,
-    ScrubResourcePressureCounters, ScrubSchedulerDiagnosticCounters,
-    ScrubWorkingSetDiagnosticsCounters,
+    ScrubResourcePressureCounters, ScrubResumeRunwayState, ScrubResumeRunwayStateCounters,
+    ScrubSchedulerDiagnosticCounters, ScrubWorkingSetDiagnosticsCounters,
 };
 pub use error::FrameServerConfigError;
 pub use hover_budget::{

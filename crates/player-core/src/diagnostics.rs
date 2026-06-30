@@ -1,6 +1,10 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
+use frame_server_core::{
+    ScrubDiagnosticsRecorder, ScrubDiagnosticsSnapshot, ScrubEventDiagnostics,
+    ScrubPreparedFrameHitOutcome, ScrubPreparedFrameOwnershipEvent,
+};
 use media_core::{PacketKeyframe, TrackId};
 use video_core::{DecodedFrame, FrameMemoryPath, VideoFramePublishPressureDiagnostics};
 
@@ -807,6 +811,9 @@ pub struct PlaybackDiagnosticsSnapshot {
 
     /// Последнее решение worker wakeup planner-а.
     pub worker_wakeup: WorkerWakeupDiagnosticsSnapshot,
+
+    /// Neutral frame-server/player scrub diagnostics без UI строк и history.
+    pub frame_server_scrub: ScrubDiagnosticsSnapshot,
 }
 
 impl Default for PlaybackDiagnosticsSnapshot {
@@ -826,6 +833,7 @@ impl Default for PlaybackDiagnosticsSnapshot {
             render_resource_previous_frame_reuse_count: 0,
             decoder_frame_publish_pressure: DecoderFramePublishPressureSnapshot::default(),
             worker_wakeup: WorkerWakeupDiagnosticsSnapshot::default(),
+            frame_server_scrub: ScrubDiagnosticsSnapshot::new(),
         }
     }
 }
@@ -921,6 +929,9 @@ pub(crate) struct PlaybackDiagnostics {
 
     /// Mutable latency counters.
     latency_counters: PipelineLatencyCounters,
+
+    /// Neutral scrub diagnostics recorder; хранит только bounded counters/snapshots.
+    frame_server_scrub: ScrubDiagnosticsRecorder,
 }
 
 impl PlaybackDiagnostics {
@@ -931,6 +942,7 @@ impl PlaybackDiagnostics {
             snapshot: PlaybackDiagnosticsSnapshot::default(),
             recent_worst_samples: VecDeque::with_capacity(RECENT_WORST_SAMPLE_LIMIT),
             latency_counters: PipelineLatencyCounters::default(),
+            frame_server_scrub: ScrubDiagnosticsRecorder::new(),
         }
     }
 
@@ -1269,6 +1281,27 @@ impl PlaybackDiagnostics {
         self.snapshot.queues = queues;
     }
 
+    pub(crate) fn record_scrub_event_diagnostics(&mut self, diagnostics: ScrubEventDiagnostics) {
+        self.frame_server_scrub
+            .record_event_diagnostics(diagnostics);
+    }
+
+    pub(crate) fn record_prepared_frame_hit(&mut self, outcome: ScrubPreparedFrameHitOutcome) {
+        self.frame_server_scrub.record_prepared_frame_hit(outcome);
+    }
+
+    pub(crate) fn record_cold_exact_decode_pending(&mut self) {
+        self.frame_server_scrub.record_cold_exact_decode_pending();
+    }
+
+    pub(crate) fn record_prepared_frame_ownership_event(
+        &mut self,
+        event: ScrubPreparedFrameOwnershipEvent,
+    ) {
+        self.frame_server_scrub
+            .record_prepared_frame_ownership_event(event);
+    }
+
     /// Возвращает snapshot с актуальными queue depths.
     #[must_use]
     pub(crate) fn snapshot_with_queues(
@@ -1278,6 +1311,7 @@ impl PlaybackDiagnostics {
         let mut snapshot = self.snapshot.clone();
         snapshot.queues = queues;
         snapshot.recent_worst_samples = self.recent_worst_samples.iter().copied().collect();
+        snapshot.frame_server_scrub = self.frame_server_scrub.snapshot();
         snapshot
     }
 

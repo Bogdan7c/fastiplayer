@@ -537,6 +537,13 @@ fn cold_seek_landing_keeps_old_confirmed_frame_visible_while_pending() {
         Some(MediaTime::from_secs(11))
     );
     assert!(session.seek_commit().is_some());
+    let diagnostics = session
+        .snapshot_with_frame_counters(FrameCounters::default())
+        .diagnostics
+        .frame_server_scrub;
+    assert_eq!(diagnostics.prepared_frames.cold_exact_decode_pending, 1);
+    assert_eq!(diagnostics.outcomes.prepared, 1);
+    assert_eq!(diagnostics.outcomes.decode_point_seeked, 1);
     let scrub_events = session.take_scrub_events();
     assert!(
         scrub_events
@@ -597,6 +604,27 @@ fn prepared_frame_only_seek_landing_publishes_override_without_cold_decode() {
         )
     );
     assert_eq!(session.prepared_seek_landing_working_set_len_for_tests(), 0);
+    let diagnostics = session
+        .snapshot_with_frame_counters(FrameCounters::default())
+        .diagnostics
+        .frame_server_scrub;
+    assert_eq!(diagnostics.prepared_frames.prepared_frame_hits, 1);
+    assert_eq!(
+        diagnostics
+            .prepared_frames
+            .resume_pending_reasons
+            .frame_only,
+        1
+    );
+    assert_eq!(diagnostics.prepared_frames.resume_ready_prepared_hits, 0);
+    assert_eq!(diagnostics.prepared_frames.cold_exact_decode_pending, 0);
+    assert_eq!(
+        diagnostics
+            .prepared_frames
+            .ownership
+            .promoted_visual_override_resume_pending,
+        1
+    );
 
     let scrub_events = session.take_scrub_events();
     assert!(matches!(
@@ -775,7 +803,7 @@ fn prepared_progress_runway_states_are_fail_closed_resume_pending() {
             session.active_prepared_seek_landing_kind_for_tests(),
             Some(
                 PreparedSeekLandingPromotionKind::VisualOverrideResumePending {
-                    reason: PreparedSeekBranchResumePendingReason::RunwayPending,
+                    reason: PreparedSeekBranchResumePendingReason::RunwayPending { runway },
                 }
             )
         );
@@ -835,6 +863,41 @@ fn prepared_commit_ready_video_runway_without_audio_commits_atomically() {
             event,
             PlayerEvent::PlaybackStateChanged(PlaybackState::Scrubbing)
         )));
+        let diagnostics = session
+            .snapshot_with_frame_counters(FrameCounters::default())
+            .diagnostics
+            .frame_server_scrub;
+        assert_eq!(diagnostics.prepared_frames.prepared_frame_hits, 1);
+        assert_eq!(diagnostics.prepared_frames.resume_ready_prepared_hits, 1);
+        assert_eq!(diagnostics.prepared_frames.video_runway.commit_ready, 1);
+        assert_eq!(
+            diagnostics
+                .prepared_frames
+                .ownership
+                .promoted_resume_ready_branch,
+            1
+        );
+        match runway {
+            VideoResumeRunwayState::DisplayableFrameQueued => {
+                assert_eq!(
+                    diagnostics
+                        .prepared_frames
+                        .video_runway
+                        .displayable_frame_queued,
+                    1
+                );
+            }
+            VideoResumeRunwayState::NextFrameAlmostReady => {
+                assert_eq!(
+                    diagnostics
+                        .prepared_frames
+                        .video_runway
+                        .next_frame_almost_ready,
+                    1
+                );
+            }
+            _ => unreachable!("test covers only commit-ready runway states"),
+        }
         let scrub_events = session.take_scrub_events();
         assert!(matches!(
             scrub_events.as_slice(),
@@ -886,7 +949,9 @@ fn prepared_commit_ready_video_runway_waits_for_active_audio() {
     );
     assert_eq!(
         session.active_prepared_seek_landing_kind_for_tests(),
-        Some(PreparedSeekLandingPromotionKind::ResumeReadyBranch)
+        Some(PreparedSeekLandingPromotionKind::ResumeReadyBranch {
+            runway: VideoResumeRunwayState::DisplayableFrameQueued,
+        })
     );
     assert!(session.snapshot().timeline.scrubbing);
     assert!(session.seek_commit().is_some());
@@ -1634,7 +1699,9 @@ fn live_scrub_prepared_transfer_waits_for_release_and_retarget_releases_without_
     );
     assert_eq!(
         session.active_prepared_seek_landing_kind_for_tests(),
-        Some(PreparedSeekLandingPromotionKind::ResumeReadyBranch)
+        Some(PreparedSeekLandingPromotionKind::ResumeReadyBranch {
+            runway: VideoResumeRunwayState::DisplayableFrameQueued,
+        })
     );
     assert!(session.seek_commit().is_some());
     assert_ne!(
