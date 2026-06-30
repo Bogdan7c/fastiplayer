@@ -11,8 +11,11 @@ use frame_server_core::{
 };
 use media_core::TrackTimestamp;
 use player_core::{PlayerTimelineHoverPrepareBorrowOutcome, PlayerTimelineHoverPrepareHandoff};
-use rustiplayer_config::PlayerDemuxConfig;
+use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
 
+use crate::timeline_hover_network::{
+    TimelineHoverNetworkOpenController, TimelineHoverNetworkOpenOutcome,
+};
 use crate::timeline_hover_source::{
     TimelineHoverOpenFailedSourceKind, TimelineHoverOpenedSource, TimelineHoverSourceFactory,
     TimelineHoverSourceIdentity, TimelineHoverSourceOpenOutcome,
@@ -27,6 +30,7 @@ pub(crate) type AppTimelineHoverPrepareController =
 pub(crate) struct AppTimelineHoverPrepareExecutor {
     handoff: PlayerTimelineHoverPrepareHandoff,
     source_factory: TimelineHoverSourceFactory,
+    network_open_controller: TimelineHoverNetworkOpenController,
     active_hover_source: Option<TimelineHoverOpenedSource>,
 }
 
@@ -209,7 +213,16 @@ pub(crate) enum TimelineHoverPrepareExecutorNoOpReason {
         lookup_miss: TimelineHoverPrepareLookupMissReason,
         source_kind: TimelineHoverOpenFailedSourceKind,
     },
-    ActivePlaybackLocalSourceReadyDecodeNotWired {
+    ActivePlaybackSourceReadyDecodeNotWired {
+        lookup_miss: TimelineHoverPrepareLookupMissReason,
+    },
+    ActivePlaybackNetworkSourceOpening {
+        lookup_miss: TimelineHoverPrepareLookupMissReason,
+    },
+    ActivePlaybackNetworkSourceThrottled {
+        lookup_miss: TimelineHoverPrepareLookupMissReason,
+    },
+    ActivePlaybackNetworkSourceFailedNoRetry {
         lookup_miss: TimelineHoverPrepareLookupMissReason,
     },
     PausedStoppedExecutorNotWired {
@@ -303,27 +316,62 @@ impl AppTimelineHoverPrepareExecutor {
         handoff: PlayerTimelineHoverPrepareHandoff,
         demux_config: PlayerDemuxConfig,
     ) -> Self {
+        Self::with_open_config(
+            handoff,
+            NetworkConfig::default(),
+            YoutubeConfig::default(),
+            demux_config,
+            std::time::Duration::from_millis(300),
+        )
+    }
+
+    pub(crate) fn with_open_config(
+        handoff: PlayerTimelineHoverPrepareHandoff,
+        network_config: NetworkConfig,
+        youtube_config: YoutubeConfig,
+        demux_config: PlayerDemuxConfig,
+        network_hover_prepare_throttle: std::time::Duration,
+    ) -> Self {
         Self {
             handoff,
-            source_factory: TimelineHoverSourceFactory::new(demux_config),
+            source_factory: TimelineHoverSourceFactory::with_open_config(
+                network_config,
+                youtube_config,
+                demux_config,
+            ),
+            network_open_controller: TimelineHoverNetworkOpenController::new(
+                network_hover_prepare_throttle,
+            ),
             active_hover_source: None,
         }
     }
 
-    fn update_demux_config(&mut self, demux_config: PlayerDemuxConfig) {
-        // Demux config влияет на новые local opens, поэтому старый opened hover source
-        // нельзя молча продолжать считать актуальным после config commit-а.
+    fn update_open_config(
+        &mut self,
+        network_config: NetworkConfig,
+        youtube_config: YoutubeConfig,
+        demux_config: PlayerDemuxConfig,
+        network_hover_prepare_throttle: std::time::Duration,
+    ) {
+        // Config влияет на новые opens, поэтому старый hover source и pending
+        // network job нельзя считать актуальными после config commit-а.
         self.active_hover_source = None;
-        self.source_factory.update_demux_config(demux_config);
+        self.network_open_controller.invalidate_source_context();
+        self.network_open_controller
+            .update_inter_start_throttle(network_hover_prepare_throttle);
+        self.source_factory
+            .update_open_config(network_config, youtube_config, demux_config);
     }
 
     fn set_hover_source(&mut self, source: TimelineHoverSourceIdentity) {
         self.active_hover_source = None;
+        self.network_open_controller.invalidate_source_context();
         self.source_factory.set_active_source(source);
     }
 
     fn invalidate_hover_source(&mut self) {
         self.active_hover_source = None;
+        self.network_open_controller.invalidate_source_context();
         self.source_factory.invalidate_active_source();
     }
 
@@ -377,7 +425,8 @@ impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
                     TimelineHoverPreparePlaybackMode::ActivePlayback
                 ) {
                     return TimelineHoverPrepareExecutorOutcome::NoOp {
-                        reason: self.active_playback_source_no_op_reason(lookup_miss),
+                        reason: self
+                            .active_playback_source_no_op_reason(request.target, lookup_miss),
                     };
                 }
 
@@ -396,24 +445,31 @@ impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
         }
     }
 
-    fn cancel_dependency_span(&mut self, _request: TimelineHoverPrepareCancelRequest) {}
+    fn cancel_dependency_span(&mut self, _request: TimelineHoverPrepareCancelRequest) {
+        self.network_open_controller.cancel_pending_target();
+    }
 }
 
 impl AppTimelineHoverPrepareExecutor {
     fn active_playback_source_no_op_reason(
         &mut self,
+        target: TimelineHoverPrepareTarget,
         lookup_miss: TimelineHoverPrepareLookupMissReason,
     ) -> TimelineHoverPrepareExecutorNoOpReason {
         if self.active_hover_source.is_some() {
-            return TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackLocalSourceReadyDecodeNotWired {
+            return TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceReadyDecodeNotWired {
                 lookup_miss,
             };
+        }
+
+        if self.source_factory.active_source_is_network() {
+            return self.active_playback_network_source_no_op_reason(target, lookup_miss);
         }
 
         match self.source_factory.open_active_source() {
             TimelineHoverSourceOpenOutcome::Opened(source) => {
                 self.active_hover_source = Some(source);
-                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackLocalSourceReadyDecodeNotWired {
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceReadyDecodeNotWired {
                     lookup_miss,
                 }
             }
@@ -430,6 +486,64 @@ impl AppTimelineHoverPrepareExecutor {
                 TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceOpenFailed {
                     lookup_miss,
                     source_kind,
+                }
+            }
+        }
+    }
+
+    fn active_playback_network_source_no_op_reason(
+        &mut self,
+        target: TimelineHoverPrepareTarget,
+        lookup_miss: TimelineHoverPrepareLookupMissReason,
+    ) -> TimelineHoverPrepareExecutorNoOpReason {
+        match self
+            .network_open_controller
+            .prepare_network_source(&self.source_factory, target)
+        {
+            TimelineHoverNetworkOpenOutcome::NonNetworkSource => {
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackExecutorUnavailable {
+                    lookup_miss,
+                }
+            }
+            TimelineHoverNetworkOpenOutcome::Opened(source) => {
+                self.active_hover_source = Some(source);
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceReadyDecodeNotWired {
+                    lookup_miss,
+                }
+            }
+            TimelineHoverNetworkOpenOutcome::Opening => {
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackNetworkSourceOpening {
+                    lookup_miss,
+                }
+            }
+            TimelineHoverNetworkOpenOutcome::Throttled => {
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackNetworkSourceThrottled {
+                    lookup_miss,
+                }
+            }
+            TimelineHoverNetworkOpenOutcome::MissingActiveSource => {
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceMissing { lookup_miss }
+            }
+            TimelineHoverNetworkOpenOutcome::Unsupported { source_kind } => {
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceUnsupported {
+                    lookup_miss,
+                    source_kind,
+                }
+            }
+            TimelineHoverNetworkOpenOutcome::OpenFailed { source_kind } => {
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceOpenFailed {
+                    lookup_miss,
+                    source_kind,
+                }
+            }
+            TimelineHoverNetworkOpenOutcome::Disconnected => {
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackExecutorUnavailable {
+                    lookup_miss,
+                }
+            }
+            TimelineHoverNetworkOpenOutcome::FailedTargetHeld => {
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackNetworkSourceFailedNoRetry {
+                    lookup_miss,
                 }
             }
         }
@@ -451,8 +565,19 @@ impl<Executor> TimelineHoverPrepareController<Executor> {
 }
 
 impl TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor> {
-    pub(crate) fn update_hover_demux_config(&mut self, demux_config: PlayerDemuxConfig) {
-        self.executor.update_demux_config(demux_config);
+    pub(crate) fn update_hover_open_config(
+        &mut self,
+        network_config: NetworkConfig,
+        youtube_config: YoutubeConfig,
+        demux_config: PlayerDemuxConfig,
+        network_hover_prepare_throttle: std::time::Duration,
+    ) {
+        self.executor.update_open_config(
+            network_config,
+            youtube_config,
+            demux_config,
+            network_hover_prepare_throttle,
+        );
     }
 
     pub(crate) fn set_hover_source(&mut self, source: TimelineHoverSourceIdentity) {

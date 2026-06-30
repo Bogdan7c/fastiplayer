@@ -249,7 +249,7 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
                     Err(error) => Err(format!("direct media rebuild failed: {error}")),
                 }
             }
-            ActiveMediaSource::YouTubeUrl(source_url) => {
+            ActiveMediaSource::YouTubeUrl { source_url, .. } => {
                 let system_capabilities =
                     probe_system_capabilities(self.renderer.render_capabilities());
                 match resolve_youtube_startup_media(
@@ -259,11 +259,12 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
                     &demux_config,
                     &system_capabilities,
                 ) {
-                    Ok(streaming_media) => {
+                    Ok(prepared_youtube_media) => {
                         let media_loaded = self.app_state.load_youtube_demuxer(
                             source_url,
-                            streaming_media.description,
-                            streaming_media.demuxer,
+                            prepared_youtube_media.streaming_media.description,
+                            prepared_youtube_media.streaming_media.demuxer,
+                            prepared_youtube_media.selected_stream_identity,
                         );
                         if media_loaded {
                             Ok(())

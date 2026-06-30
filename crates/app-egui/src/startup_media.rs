@@ -29,8 +29,17 @@ pub(crate) enum InitialMedia {
     DirectMediaUrl { url: String },
 }
 
+/// Подготовленный YouTube playback source и compact identity выбранной stream-пары.
+pub(crate) struct PreparedYoutubeStartupMedia {
+    /// Уже открытый demuxer для текущего playback open.
+    pub(crate) streaming_media: service_youtube::YoutubeStreamingMedia,
+
+    /// Минимальная identity, по которой hover/reconfigure может восстановить тот же выбор.
+    pub(crate) selected_stream_identity: service_youtube::YoutubeSelectedStreamIdentity,
+}
+
 /// Результат фоновой подготовки CLI YouTube URL.
-type YoutubeStartupResult = std::result::Result<service_youtube::YoutubeStreamingMedia, String>;
+type YoutubeStartupResult = std::result::Result<PreparedYoutubeStartupMedia, String>;
 
 /// Результат фоновой подготовки generic direct media URL.
 type DirectMediaStartupResult =
@@ -358,14 +367,19 @@ pub(crate) fn resolve_youtube_startup_media(
     youtube_config: &YoutubeConfig,
     demux_config: &PlayerDemuxConfig,
     system_capabilities: &SystemCapabilities,
-) -> Result<service_youtube::YoutubeStreamingMedia> {
+) -> Result<PreparedYoutubeStartupMedia> {
     let stream_candidates =
         service_youtube::resolve_youtube_stream_candidates_with_config(source_url, youtube_config)
             .context("Не удалось получить YouTube stream candidates")?;
     let selected_stream = select_youtube_startup_candidate(&stream_candidates, system_capabilities)
         .context("Не удалось выбрать YouTube stream по system capabilities")?;
 
-    service_youtube::open_streaming_media_from_candidates_with_demux_config(
+    let selected_stream_identity = service_youtube::YoutubeSelectedStreamIdentity::from_candidates(
+        &stream_candidates,
+        &selected_stream.stream_id,
+    )
+    .context("Не удалось сохранить выбранную YouTube stream identity")?;
+    let streaming_media = service_youtube::open_streaming_media_from_candidates_with_demux_config(
         source_url,
         &stream_candidates,
         &selected_stream.stream_id,
@@ -378,6 +392,11 @@ pub(crate) fn resolve_youtube_startup_media(
             "Не удалось открыть выбранный YouTube stream {}",
             selected_stream.stream_id
         )
+    })?;
+
+    Ok(PreparedYoutubeStartupMedia {
+        streaming_media,
+        selected_stream_identity,
     })
 }
 
@@ -486,17 +505,18 @@ fn poll_youtube_startup_job(
     *job_slot = None;
 
     match resolve_result {
-        Ok(streaming_media) => {
+        Ok(prepared_youtube_media) => {
             *startup_error_slot = None;
             info!(
                 source = %source_url,
-                description = %streaming_media.description,
+                description = %prepared_youtube_media.streaming_media.description,
                 "YouTube media подготовлен для streaming playback"
             );
             app_state.load_youtube_demuxer(
                 source_url,
-                streaming_media.description,
-                streaming_media.demuxer,
+                prepared_youtube_media.streaming_media.description,
+                prepared_youtube_media.streaming_media.demuxer,
+                prepared_youtube_media.selected_stream_identity,
             );
         }
         Err(error) => {

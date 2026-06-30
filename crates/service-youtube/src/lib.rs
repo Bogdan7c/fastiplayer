@@ -38,14 +38,14 @@ pub use dto::{
     YoutubeVideoRequirement,
 };
 pub use resolver::{
-    resolve_youtube_direct_streams, resolve_youtube_stream_candidates,
-    resolve_youtube_stream_candidates_with_config,
+    YoutubeSelectedStreamIdentity, resolve_youtube_direct_streams,
+    resolve_youtube_stream_candidates, resolve_youtube_stream_candidates_with_config,
 };
 
 use http_refresh::{RefreshContext, YoutubeRefreshingRangeSource};
 use resolver::{
-    YoutubeDirectStreamResolver, YoutubeSelectedStreamIdentity, YtDlpDirectStreamResolver,
-    YtDlpSelectedStreamResolver, build_streaming_description,
+    YoutubeDirectStreamResolver, YtDlpDirectStreamResolver, YtDlpSelectedStreamResolver,
+    build_streaming_description, direct_streams_from_matching_candidate,
     direct_streams_from_selected_candidate,
 };
 
@@ -193,6 +193,121 @@ pub fn open_streaming_media_from_candidates_with_demux_config(
         description,
         direct_streams,
     })
+}
+
+/// Причина, почему YouTube source нельзя открыть как seekable hover source.
+#[derive(Debug)]
+pub enum YoutubeSeekableVodOpenError {
+    /// Config/source/demux setup или yt-dlp refresh завершились ошибкой.
+    Open(anyhow::Error),
+
+    /// Live streams не имеют обязательного exact byte-seek контракта для hover.
+    LiveStream,
+
+    /// HTTP Range probe не подтвердил seekability; playback path может fallback-ить, hover нет.
+    RangeUnsupported,
+}
+
+impl std::fmt::Display for YoutubeSeekableVodOpenError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Open(error) => write!(formatter, "{error:#}"),
+            Self::LiveStream => formatter.write_str("YouTube live stream не поддержан для hover"),
+            Self::RangeUnsupported => {
+                formatter.write_str("YouTube VOD не подтвердил обязательный HTTP Range seek")
+            }
+        }
+    }
+}
+
+impl std::error::Error for YoutubeSeekableVodOpenError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Open(error) => Some(error.as_ref()),
+            Self::LiveStream | Self::RangeUnsupported => None,
+        }
+    }
+}
+
+impl From<anyhow::Error> for YoutubeSeekableVodOpenError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Open(error)
+    }
+}
+
+/// Открывает YouTube VOD только как seekable Range-backed source для hover.
+///
+/// В отличие от playback API, этот путь не fallback-ит на streaming reader:
+/// hover обязан быть exact-seekable или вернуть typed unsupported.
+pub fn open_seekable_vod_from_selected_identity_with_demux_config(
+    video_url: &str,
+    selected_stream_identity: &YoutubeSelectedStreamIdentity,
+    network_config: &NetworkConfig,
+    youtube_config: &YoutubeConfig,
+    demux_config: &PlayerDemuxConfig,
+) -> std::result::Result<YoutubeStreamingMedia, YoutubeSeekableVodOpenError> {
+    let source_config = SourceRuntimeConfig::from_network_config(network_config)
+        .context("Network config нельзя использовать для YouTube hover source")?;
+    let prefetch_config = prefetch_config_from_network_config(network_config)
+        .context("Network config нельзя использовать для YouTube hover prefetch")?;
+    let demuxer_options = demuxer_options_from_config(demux_config);
+    let stream_candidates =
+        resolve_youtube_stream_candidates_with_config(video_url, youtube_config)
+            .context("Не удалось refresh-нуть YouTube stream candidates для hover")?;
+    let mut direct_streams =
+        direct_streams_from_matching_candidate(&stream_candidates, selected_stream_identity)
+            .context("Не удалось восстановить выбранный YouTube stream для hover")?;
+    let description = build_streaming_description(&direct_streams);
+    let resolver: Arc<dyn YoutubeDirectStreamResolver> = Arc::new(
+        YtDlpSelectedStreamResolver::from_youtube_config(
+            youtube_config,
+            selected_stream_identity.clone(),
+        )
+        .context("Не удалось создать YouTube selected-stream resolver для hover")?,
+    );
+
+    let demuxer = build_seekable_vod_demuxer_from_direct_streams(
+        video_url,
+        &mut direct_streams,
+        source_config,
+        prefetch_config,
+        resolver,
+        demuxer_options,
+    )?;
+
+    Ok(YoutubeStreamingMedia {
+        demuxer,
+        description,
+        direct_streams,
+    })
+}
+
+fn build_seekable_vod_demuxer_from_direct_streams(
+    original_video_url: &str,
+    direct_streams: &mut YoutubeDirectStreams,
+    source_config: SourceRuntimeConfig,
+    prefetch_config: media_prefetch::PrefetchConfig,
+    resolver: Arc<dyn YoutubeDirectStreamResolver>,
+    demuxer_options: DemuxerOptions,
+) -> std::result::Result<Box<dyn symphonia_demux::Demuxer + Send>, YoutubeSeekableVodOpenError> {
+    if direct_streams.live {
+        return Err(YoutubeSeekableVodOpenError::LiveStream);
+    }
+
+    let Some(demuxer) = open_range_backed_demuxer(
+        original_video_url,
+        direct_streams,
+        source_config,
+        prefetch_config,
+        resolver,
+        demuxer_options,
+    )
+    .context("Не удалось открыть YouTube hover Range-backed demuxer")?
+    else {
+        return Err(YoutubeSeekableVodOpenError::RangeUnsupported);
+    };
+
+    Ok(demuxer)
 }
 
 /// Строит seekable Range demuxer для VOD или unseekable streaming fallback.
@@ -1126,6 +1241,39 @@ mod tests {
                 .iter()
                 .any(|request| !request.headers.contains_key("range"))
         );
+    }
+
+    #[test]
+    fn range_unsupported_is_typed_unsupported_for_hover() {
+        let Some(media) = test_webm_bytes() else {
+            return;
+        };
+        let video_media = Arc::clone(&media);
+        let audio_media = Arc::clone(&media);
+        let video_server = TestHttpServer::spawn(move |_index, _request, stream| {
+            respond_with_full_body(stream, &video_media);
+        });
+        let audio_server = TestHttpServer::spawn(move |_index, _request, stream| {
+            respond_with_full_body(stream, &audio_media);
+        });
+        let mut streams = direct_streams(video_server.url.clone(), audio_server.url.clone());
+        let resolver = Arc::new(FakeResolver::new(streams.clone()));
+
+        let error = build_seekable_vod_demuxer_from_direct_streams(
+            "http://youtube.test/watch",
+            &mut streams,
+            test_source_config(),
+            test_prefetch_config(),
+            resolver,
+            DemuxerOptions::default(),
+        )
+        .map(|_| ())
+        .expect_err("hover must not fallback to streaming");
+
+        assert!(matches!(
+            error,
+            YoutubeSeekableVodOpenError::RangeUnsupported
+        ));
     }
 
     #[test]

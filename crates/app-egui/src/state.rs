@@ -296,12 +296,14 @@ impl AppState {
         let timeline_hover_prepare_handoff = PlayerTimelineHoverPrepareHandoff::from_app_config(
             committed_config_snapshot.as_config(),
         );
-        let timeline_hover_prepare_controller = TimelineHoverPrepareController::new(
-            AppTimelineHoverPrepareExecutor::with_demux_config(
+        let timeline_hover_prepare_controller =
+            TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::with_open_config(
                 timeline_hover_prepare_handoff.clone(),
+                committed_config_snapshot.network_config_for_open(),
+                committed_config_snapshot.youtube_config_for_open(),
                 committed_config_snapshot.demux_config_for_open(),
-            ),
-        );
+                committed_config_snapshot.network_hover_prepare_throttle(),
+            ));
         let worker_config =
             PlayerWorkerConfig::from_app_config(committed_config_snapshot.as_config())
                 .with_audio_decoder_factory(Arc::new(audio::ProductionAudioDecoderFactory))
@@ -414,11 +416,28 @@ impl AppState {
     /// Обновляет read-only config snapshot из authoritative settings runtime.
     pub(crate) fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
         let previous_demux_config = self.committed_config_snapshot.demux_config_for_open();
+        let previous_network_config = self.committed_config_snapshot.network_config_for_open();
+        let previous_youtube_config = self.committed_config_snapshot.youtube_config_for_open();
+        let previous_network_hover_throttle = self
+            .committed_config_snapshot
+            .network_hover_prepare_throttle();
         let next_demux_config = snapshot.demux_config_for_open();
+        let next_network_config = snapshot.network_config_for_open();
+        let next_youtube_config = snapshot.youtube_config_for_open();
+        let next_network_hover_throttle = snapshot.network_hover_prepare_throttle();
         self.committed_config_snapshot = snapshot;
-        if next_demux_config != previous_demux_config {
+        if next_demux_config != previous_demux_config
+            || next_network_config != previous_network_config
+            || next_youtube_config != previous_youtube_config
+            || next_network_hover_throttle != previous_network_hover_throttle
+        {
             self.timeline_hover_prepare_controller
-                .update_hover_demux_config(next_demux_config);
+                .update_hover_open_config(
+                    next_network_config,
+                    next_youtube_config,
+                    next_demux_config,
+                    next_network_hover_throttle,
+                );
         }
         let live_scrub_settings = self.live_scrub_settings_snapshot();
         self.timeline_ui_state

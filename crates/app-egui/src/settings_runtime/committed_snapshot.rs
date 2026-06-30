@@ -34,6 +34,26 @@ impl CommittedConfigSnapshot {
         self.config.player.demux
     }
 
+    /// Network settings, которые network source open должен захватить в момент запуска.
+    #[must_use]
+    pub(crate) fn network_config_for_open(&self) -> NetworkConfig {
+        self.config.network.clone()
+    }
+
+    /// YouTube settings, которые YouTube source open должен захватить в момент запуска.
+    #[must_use]
+    pub(crate) fn youtube_config_for_open(&self) -> YoutubeConfig {
+        self.config.youtube.clone()
+    }
+
+    /// Inter-start throttle для network hover open/prepare.
+    #[must_use]
+    pub(crate) fn network_hover_prepare_throttle(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(u64::from(
+            self.config.frame_server.network_hover_prepare_throttle_ms,
+        ))
+    }
+
     /// Committed intent выбора video backend-а для app-owned pipeline selector-а.
     #[must_use]
     pub(crate) fn video_backend_preference(&self) -> VideoBackendPreference {

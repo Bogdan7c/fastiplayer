@@ -2,7 +2,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use media_core::Demuxer;
-use rustiplayer_config::PlayerDemuxConfig;
+use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
+use service_direct_media::DirectMediaOpenError;
+use service_youtube::YoutubeSeekableVodOpenError;
 
 use crate::local_media;
 
@@ -12,11 +14,17 @@ pub(crate) enum TimelineHoverSourceIdentity {
     /// Local file переоткрывается через тот же app-level helper, что и playback local open.
     LocalFile(PathBuf),
 
-    /// Direct URL пока намеренно не переоткрывается в S26.
-    DirectMediaUrl,
+    /// Direct URL переоткрывается через service-direct-media seekable Range policy.
+    DirectMediaUrl(String),
 
-    /// YouTube URL пока намеренно не переоткрывается в S26.
-    YouTubeUrl,
+    /// YouTube VOD переоткрывается через compact selected stream identity.
+    YouTubeUrl {
+        /// Исходный YouTube page URL.
+        source_url: String,
+
+        /// Выбранная stream-пара без хранения полного candidates manifest-а.
+        selected_stream_identity: service_youtube::YoutubeSelectedStreamIdentity,
+    },
 }
 
 /// Source kind для typed unsupported outcome-ов.
@@ -30,6 +38,8 @@ pub(crate) enum TimelineHoverUnsupportedSourceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TimelineHoverOpenFailedSourceKind {
     LocalFile,
+    DirectMediaUrl,
+    YouTubeUrl,
 }
 
 /// Результат попытки получить независимый hover source.
@@ -85,23 +95,50 @@ impl TimelineHoverOpenedSource {
 }
 
 /// Factory хранит только app-level source identity и demux config для новых hover opens.
+#[derive(Clone)]
 pub(crate) struct TimelineHoverSourceFactory {
     active_source: Option<TimelineHoverSourceIdentity>,
+    network_config: NetworkConfig,
+    youtube_config: YoutubeConfig,
     demux_config: PlayerDemuxConfig,
 }
 
 impl TimelineHoverSourceFactory {
     /// Создаёт factory без active source; source приходит позже из media open lifecycle.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn new(demux_config: PlayerDemuxConfig) -> Self {
+        Self::with_open_config(
+            NetworkConfig::default(),
+            YoutubeConfig::default(),
+            demux_config,
+        )
+    }
+
+    /// Создаёт factory с committed config snapshot-ом для новых source opens.
+    #[must_use]
+    pub(crate) fn with_open_config(
+        network_config: NetworkConfig,
+        youtube_config: YoutubeConfig,
+        demux_config: PlayerDemuxConfig,
+    ) -> Self {
         Self {
             active_source: None,
+            network_config,
+            youtube_config,
             demux_config,
         }
     }
 
-    /// Обновляет config для следующих hover opens.
-    pub(crate) fn update_demux_config(&mut self, demux_config: PlayerDemuxConfig) {
+    /// Обновляет committed config snapshot для следующих hover opens.
+    pub(crate) fn update_open_config(
+        &mut self,
+        network_config: NetworkConfig,
+        youtube_config: YoutubeConfig,
+        demux_config: PlayerDemuxConfig,
+    ) {
+        self.network_config = network_config;
+        self.youtube_config = youtube_config;
         self.demux_config = demux_config;
     }
 
@@ -115,20 +152,29 @@ impl TimelineHoverSourceFactory {
         self.active_source = None;
     }
 
+    /// Возвращает `true`, если текущий source нужно открывать только на background thread-е.
+    #[must_use]
+    pub(crate) fn active_source_is_network(&self) -> bool {
+        matches!(
+            self.active_source.as_ref(),
+            Some(
+                TimelineHoverSourceIdentity::DirectMediaUrl(_)
+                    | TimelineHoverSourceIdentity::YouTubeUrl { .. }
+            )
+        )
+    }
+
     /// Открывает independent source для active-playback hover executor-а.
     pub(crate) fn open_active_source(&self) -> TimelineHoverSourceOpenOutcome {
         match self.active_source.as_ref() {
             Some(TimelineHoverSourceIdentity::LocalFile(path)) => self.open_local_source(path),
-            Some(TimelineHoverSourceIdentity::DirectMediaUrl) => {
-                TimelineHoverSourceOpenOutcome::Unsupported {
-                    source_kind: TimelineHoverUnsupportedSourceKind::DirectMediaUrl,
-                }
+            Some(TimelineHoverSourceIdentity::DirectMediaUrl(source_url)) => {
+                self.open_direct_media_source(source_url)
             }
-            Some(TimelineHoverSourceIdentity::YouTubeUrl) => {
-                TimelineHoverSourceOpenOutcome::Unsupported {
-                    source_kind: TimelineHoverUnsupportedSourceKind::YouTubeUrl,
-                }
-            }
+            Some(TimelineHoverSourceIdentity::YouTubeUrl {
+                source_url,
+                selected_stream_identity,
+            }) => self.open_youtube_source(source_url, selected_stream_identity),
             None => TimelineHoverSourceOpenOutcome::MissingActiveSource,
         }
     }
@@ -141,6 +187,55 @@ impl TimelineHoverSourceFactory {
             Err(_error) => TimelineHoverSourceOpenOutcome::OpenFailed {
                 source_kind: TimelineHoverOpenFailedSourceKind::LocalFile,
             },
+        }
+    }
+
+    fn open_direct_media_source(&self, source_url: &str) -> TimelineHoverSourceOpenOutcome {
+        match service_direct_media::open_direct_media_url(
+            source_url,
+            &self.network_config,
+            &self.demux_config,
+        ) {
+            Ok(opened_media) => TimelineHoverSourceOpenOutcome::Opened(TimelineHoverOpenedSource {
+                demuxer: opened_media.into_demuxer(),
+            }),
+            Err(DirectMediaOpenError::NonSeekable { .. }) => {
+                TimelineHoverSourceOpenOutcome::Unsupported {
+                    source_kind: TimelineHoverUnsupportedSourceKind::DirectMediaUrl,
+                }
+            }
+            Err(_error) => TimelineHoverSourceOpenOutcome::OpenFailed {
+                source_kind: TimelineHoverOpenFailedSourceKind::DirectMediaUrl,
+            },
+        }
+    }
+
+    fn open_youtube_source(
+        &self,
+        source_url: &str,
+        selected_stream_identity: &service_youtube::YoutubeSelectedStreamIdentity,
+    ) -> TimelineHoverSourceOpenOutcome {
+        match service_youtube::open_seekable_vod_from_selected_identity_with_demux_config(
+            source_url,
+            selected_stream_identity,
+            &self.network_config,
+            &self.youtube_config,
+            &self.demux_config,
+        ) {
+            Ok(opened_media) => TimelineHoverSourceOpenOutcome::Opened(TimelineHoverOpenedSource {
+                demuxer: opened_media.demuxer,
+            }),
+            Err(
+                YoutubeSeekableVodOpenError::LiveStream
+                | YoutubeSeekableVodOpenError::RangeUnsupported,
+            ) => TimelineHoverSourceOpenOutcome::Unsupported {
+                source_kind: TimelineHoverUnsupportedSourceKind::YouTubeUrl,
+            },
+            Err(YoutubeSeekableVodOpenError::Open(_error)) => {
+                TimelineHoverSourceOpenOutcome::OpenFailed {
+                    source_kind: TimelineHoverOpenFailedSourceKind::YouTubeUrl,
+                }
+            }
         }
     }
 }
@@ -186,22 +281,16 @@ mod tests {
     }
 
     #[test]
-    fn network_sources_return_typed_unsupported() {
+    fn direct_network_source_returns_typed_open_failure_without_network_io_for_invalid_url() {
         let mut factory = TimelineHoverSourceFactory::new(PlayerDemuxConfig::default());
 
-        factory.set_active_source(TimelineHoverSourceIdentity::DirectMediaUrl);
-        assert!(matches!(
-            factory.open_active_source(),
-            TimelineHoverSourceOpenOutcome::Unsupported {
-                source_kind: TimelineHoverUnsupportedSourceKind::DirectMediaUrl,
-            }
+        factory.set_active_source(TimelineHoverSourceIdentity::DirectMediaUrl(
+            "not-a-valid-url".to_string(),
         ));
-
-        factory.set_active_source(TimelineHoverSourceIdentity::YouTubeUrl);
         assert!(matches!(
             factory.open_active_source(),
-            TimelineHoverSourceOpenOutcome::Unsupported {
-                source_kind: TimelineHoverUnsupportedSourceKind::YouTubeUrl,
+            TimelineHoverSourceOpenOutcome::OpenFailed {
+                source_kind: TimelineHoverOpenFailedSourceKind::DirectMediaUrl,
             }
         ));
     }

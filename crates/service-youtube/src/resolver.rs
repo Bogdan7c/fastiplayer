@@ -31,8 +31,8 @@ pub(crate) struct YtDlpDirectStreamResolver {
 }
 
 /// Stable identity выбранного candidate-а для refresh-а direct URL.
-#[derive(Debug, Clone)]
-pub(crate) struct YoutubeSelectedStreamIdentity {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct YoutubeSelectedStreamIdentity {
     /// Stream id из первого service manifest-а.
     stream_id: String,
 
@@ -73,7 +73,7 @@ impl YoutubeDirectStreamResolver for YtDlpDirectStreamResolver {
 impl YoutubeSelectedStreamIdentity {
     /// Запоминает выбранные ids без владения полным manifest-ом.
     #[must_use]
-    pub(crate) fn from_candidate(candidate: &YoutubeStreamCandidate) -> Self {
+    pub fn from_candidate(candidate: &YoutubeStreamCandidate) -> Self {
         Self {
             stream_id: candidate.stream_id.clone(),
             format_id: candidate.format_id.clone(),
@@ -83,6 +83,28 @@ impl YoutubeSelectedStreamIdentity {
                 .as_ref()
                 .and_then(|audio| audio.format_id.clone()),
         }
+    }
+
+    /// Находит выбранный candidate в service manifest-е и сохраняет только reconstructible ids.
+    pub fn from_candidates(
+        stream_candidates: &YoutubeStreamCandidates,
+        selected_stream_id: &str,
+    ) -> Result<Self> {
+        let selected_candidate = stream_candidates
+            .candidates
+            .iter()
+            .find(|candidate| candidate.stream_id == selected_stream_id)
+            .with_context(|| {
+                format!("selected YouTube stream id не найден в candidates: {selected_stream_id}")
+            })?;
+
+        Ok(Self::from_candidate(selected_candidate))
+    }
+
+    /// Stable stream id из первого manifest-а; нужен app-side diagnostics/tests.
+    #[must_use]
+    pub fn stream_id(&self) -> &str {
+        &self.stream_id
     }
 
     /// Проверяет, что fresh manifest содержит ту же video/audio пару.
@@ -264,7 +286,7 @@ pub(crate) fn direct_streams_from_selected_candidate(
 }
 
 /// Повторно находит выбранный stream после refresh-а manifest-а.
-fn direct_streams_from_matching_candidate(
+pub(crate) fn direct_streams_from_matching_candidate(
     stream_candidates: &YoutubeStreamCandidates,
     selected_stream: &YoutubeSelectedStreamIdentity,
 ) -> Result<YoutubeDirectStreams> {

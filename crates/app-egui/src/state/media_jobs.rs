@@ -9,8 +9,11 @@ pub(crate) enum ActiveMediaSource {
     /// Локальный файл можно переоткрыть через local media owner.
     LocalFile(PathBuf),
 
-    /// YouTube URL переоткрывается через service-youtube startup flow.
-    YouTubeUrl(String),
+    /// YouTube URL переоткрывается через service-youtube по сохранённой выбранной stream-паре.
+    YouTubeUrl {
+        source_url: String,
+        selected_stream_identity: service_youtube::YoutubeSelectedStreamIdentity,
+    },
 
     /// Direct HTTP media URL переоткрывается через service-direct-media flow.
     DirectMediaUrl(String),
@@ -90,6 +93,7 @@ impl AppState {
         source_url: String,
         label: String,
         demuxer: Box<dyn symphonia_demux::Demuxer + Send>,
+        selected_stream_identity: service_youtube::YoutubeSelectedStreamIdentity,
     ) -> bool {
         let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
@@ -103,7 +107,10 @@ impl AppState {
             return false;
         }
 
-        self.remember_active_media_source(ActiveMediaSource::YouTubeUrl(source_url));
+        self.remember_active_media_source(ActiveMediaSource::YouTubeUrl {
+            source_url,
+            selected_stream_identity,
+        });
         self.mark_pending_worker_redraw();
         true
     }
@@ -297,9 +304,15 @@ fn hover_source_identity_from_active_source(
 ) -> TimelineHoverSourceIdentity {
     match source {
         ActiveMediaSource::LocalFile(path) => TimelineHoverSourceIdentity::LocalFile(path.clone()),
-        ActiveMediaSource::YouTubeUrl(_source_url) => TimelineHoverSourceIdentity::YouTubeUrl,
-        ActiveMediaSource::DirectMediaUrl(_source_url) => {
-            TimelineHoverSourceIdentity::DirectMediaUrl
+        ActiveMediaSource::YouTubeUrl {
+            source_url,
+            selected_stream_identity,
+        } => TimelineHoverSourceIdentity::YouTubeUrl {
+            source_url: source_url.clone(),
+            selected_stream_identity: selected_stream_identity.clone(),
+        },
+        ActiveMediaSource::DirectMediaUrl(source_url) => {
+            TimelineHoverSourceIdentity::DirectMediaUrl(source_url.clone())
         }
     }
 }

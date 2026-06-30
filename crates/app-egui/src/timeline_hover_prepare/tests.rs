@@ -1,12 +1,13 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::thread;
+use std::time::Duration;
 
 use frame_server_core::{PlaybackGeneration, ScrubGeneration};
 use media_core::{TimeBase, TrackId};
 
 use crate::timeline_hover_source::{
     TimelineHoverOpenFailedSourceKind, TimelineHoverSourceIdentity,
-    TimelineHoverUnsupportedSourceKind,
 };
 
 use super::*;
@@ -361,9 +362,7 @@ fn active_playback_local_source_opens_hover_source_without_playback_seek() {
         outcome.executor_outcome,
         TimelineHoverPrepareExecutorOutcome::NoOp {
             reason:
-                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackLocalSourceReadyDecodeNotWired {
-                    ..
-                },
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceReadyDecodeNotWired { .. },
         }
     ));
     assert_eq!(
@@ -373,11 +372,13 @@ fn active_playback_local_source_opens_hover_source_without_playback_seek() {
 }
 
 #[test]
-fn active_playback_network_source_returns_typed_unsupported_noop() {
+fn active_playback_network_source_opens_as_background_latest_only_work() {
     let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
         PlayerTimelineHoverPrepareHandoff::default(),
     ));
-    controller.set_hover_source(TimelineHoverSourceIdentity::DirectMediaUrl);
+    controller.set_hover_source(TimelineHoverSourceIdentity::DirectMediaUrl(
+        "not-a-valid-url".to_string(),
+    ));
     let active_target = TimelineHoverPrepareTarget::new(
         context(),
         timestamp(10_000),
@@ -394,16 +395,85 @@ fn active_playback_network_source_returns_typed_unsupported_noop() {
     assert!(matches!(
         outcome.executor_outcome,
         TimelineHoverPrepareExecutorOutcome::NoOp {
-            reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceUnsupported {
-                source_kind: TimelineHoverUnsupportedSourceKind::DirectMediaUrl,
-                ..
-            },
+            reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackNetworkSourceOpening { .. },
         }
     ));
     assert_eq!(
         outcome.completion_outcome,
         TimelineHoverPrepareCompletionOutcome::NoPreparedHit
     );
+
+    let mut retry_outcome = None;
+    for _attempt in 0..20 {
+        thread::sleep(Duration::from_millis(5));
+        let next_outcome = controller.prepare_hover_target(active_target);
+        if !matches!(
+            next_outcome.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::NoOp {
+                reason:
+                    TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackNetworkSourceOpening { .. },
+            }
+        ) {
+            retry_outcome = Some(next_outcome);
+            break;
+        }
+    }
+    let retry_outcome = retry_outcome.expect("background direct open must finish");
+
+    assert!(matches!(
+        retry_outcome.executor_outcome,
+        TimelineHoverPrepareExecutorOutcome::NoOp {
+            reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceOpenFailed {
+                source_kind: TimelineHoverOpenFailedSourceKind::DirectMediaUrl,
+                ..
+            },
+        }
+    ));
+
+    let held_failure = controller.prepare_hover_target(active_target);
+    assert!(matches!(
+        held_failure.executor_outcome,
+        TimelineHoverPrepareExecutorOutcome::NoOp {
+            reason:
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackNetworkSourceFailedNoRetry { .. },
+        }
+    ));
+}
+
+#[test]
+fn cancelling_active_network_hover_drops_pending_open() {
+    let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
+        PlayerTimelineHoverPrepareHandoff::default(),
+    ));
+    controller.set_hover_source(TimelineHoverSourceIdentity::DirectMediaUrl(
+        "not-a-valid-url".to_string(),
+    ));
+    let active_target = TimelineHoverPrepareTarget::new(
+        context(),
+        timestamp(10_000),
+        TimelineHoverFrameBucket::new(10_000),
+        timestamp(9_000),
+        timestamp(10_300),
+        0,
+        TimelineHoverPreparePlaybackMode::ActivePlayback,
+    )
+    .expect("active playback target must be valid");
+
+    let outcome = controller.prepare_hover_target(active_target);
+
+    assert!(matches!(
+        outcome.executor_outcome,
+        TimelineHoverPrepareExecutorOutcome::NoOp {
+            reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackNetworkSourceOpening { .. },
+        }
+    ));
+    assert!(controller.executor.network_open_controller.has_active_job());
+
+    controller
+        .cancel_active_span(TimelineHoverPrepareCancellationReason::TimelineLeft)
+        .expect("network hover start creates an active span to cancel");
+
+    assert!(!controller.executor.network_open_controller.has_active_job());
 }
 
 #[test]
