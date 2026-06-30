@@ -1,3 +1,5 @@
+use crate::timeline_hover_source::TimelineHoverSourceIdentity;
+
 use super::present_frame_cache::CachedPresentFrameDiscardReason;
 use super::*;
 
@@ -34,7 +36,7 @@ impl AppState {
                     warn!(error = %error, "Не удалось отправить подготовленный файл в worker");
                     return;
                 }
-                self.active_media_source = Some(ActiveMediaSource::LocalFile(path.to_path_buf()));
+                self.remember_active_media_source(ActiveMediaSource::LocalFile(path.to_path_buf()));
             }
             Err(error) => {
                 warn!(error = %error, "Не удалось открыть файл");
@@ -78,7 +80,7 @@ impl AppState {
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.clear_startup_status();
         self.current_local_file = Some(path.clone());
-        self.active_media_source = Some(ActiveMediaSource::LocalFile(path));
+        self.remember_active_media_source(ActiveMediaSource::LocalFile(path));
         self.mark_pending_worker_redraw();
     }
 
@@ -101,7 +103,7 @@ impl AppState {
             return false;
         }
 
-        self.active_media_source = Some(ActiveMediaSource::YouTubeUrl(source_url));
+        self.remember_active_media_source(ActiveMediaSource::YouTubeUrl(source_url));
         self.mark_pending_worker_redraw();
         true
     }
@@ -140,7 +142,7 @@ impl AppState {
         prepared_media: PreparedMedia,
     ) -> bool {
         if self.load_prepared_external_media(label, prepared_media) {
-            self.active_media_source = Some(ActiveMediaSource::DirectMediaUrl(source_url));
+            self.remember_active_media_source(ActiveMediaSource::DirectMediaUrl(source_url));
             true
         } else {
             false
@@ -163,6 +165,12 @@ impl AppState {
     #[must_use]
     pub(crate) fn demux_config_for_open(&self) -> PlayerDemuxConfig {
         self.committed_config_snapshot.demux_config_for_open()
+    }
+
+    fn remember_active_media_source(&mut self, source: ActiveMediaSource) {
+        self.timeline_hover_prepare_controller
+            .set_hover_source(hover_source_identity_from_active_source(&source));
+        self.active_media_source = Some(source);
     }
 
     /// Восстанавливает runtime playback controls после controlled media reopen.
@@ -280,6 +288,18 @@ impl AppState {
                 warn!(error = %error, "Local file open job завершился ошибкой");
                 self.set_startup_error(format!("Ошибка открытия media-файла: {error}"));
             }
+        }
+    }
+}
+
+fn hover_source_identity_from_active_source(
+    source: &ActiveMediaSource,
+) -> TimelineHoverSourceIdentity {
+    match source {
+        ActiveMediaSource::LocalFile(path) => TimelineHoverSourceIdentity::LocalFile(path.clone()),
+        ActiveMediaSource::YouTubeUrl(_source_url) => TimelineHoverSourceIdentity::YouTubeUrl,
+        ActiveMediaSource::DirectMediaUrl(_source_url) => {
+            TimelineHoverSourceIdentity::DirectMediaUrl
         }
     }
 }

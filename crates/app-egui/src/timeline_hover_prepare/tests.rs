@@ -1,7 +1,13 @@
 use std::collections::VecDeque;
+use std::path::PathBuf;
 
 use frame_server_core::{PlaybackGeneration, ScrubGeneration};
 use media_core::{TimeBase, TrackId};
+
+use crate::timeline_hover_source::{
+    TimelineHoverOpenFailedSourceKind, TimelineHoverSourceIdentity,
+    TimelineHoverUnsupportedSourceKind,
+};
 
 use super::*;
 
@@ -45,6 +51,10 @@ fn timestamp(millis: i64) -> TrackTimestamp {
         millis,
         TimeBase::new(1, 1_000).expect("valid millisecond timebase"),
     )
+}
+
+fn audio_fixture_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/audio/music_sample.wav")
 }
 
 fn context() -> TimelineHoverPrepareTargetContext {
@@ -299,7 +309,7 @@ fn exact_labeled_hit_before_target_is_rejected() {
 }
 
 #[test]
-fn active_playback_without_safe_executor_degrades_to_working_set_only_noop() {
+fn active_playback_without_source_context_degrades_to_typed_missing_noop() {
     let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
         PlayerTimelineHoverPrepareHandoff::default(),
     ));
@@ -319,7 +329,111 @@ fn active_playback_without_safe_executor_degrades_to_working_set_only_noop() {
     assert!(matches!(
         outcome.executor_outcome,
         TimelineHoverPrepareExecutorOutcome::NoOp {
-            reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackExecutorUnavailable { .. },
+            reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceMissing { .. },
+        }
+    ));
+    assert_eq!(
+        outcome.completion_outcome,
+        TimelineHoverPrepareCompletionOutcome::NoPreparedHit
+    );
+}
+
+#[test]
+fn active_playback_local_source_opens_hover_source_without_playback_seek() {
+    let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
+        PlayerTimelineHoverPrepareHandoff::default(),
+    ));
+    controller.set_hover_source(TimelineHoverSourceIdentity::LocalFile(audio_fixture_path()));
+    let active_target = TimelineHoverPrepareTarget::new(
+        context(),
+        timestamp(10_000),
+        TimelineHoverFrameBucket::new(10_000),
+        timestamp(9_000),
+        timestamp(10_100),
+        0,
+        TimelineHoverPreparePlaybackMode::ActivePlayback,
+    )
+    .expect("test target must build a valid dependency span");
+
+    let outcome = controller.prepare_hover_target(active_target);
+
+    assert!(matches!(
+        outcome.executor_outcome,
+        TimelineHoverPrepareExecutorOutcome::NoOp {
+            reason:
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackLocalSourceReadyDecodeNotWired {
+                    ..
+                },
+        }
+    ));
+    assert_eq!(
+        outcome.completion_outcome,
+        TimelineHoverPrepareCompletionOutcome::NoPreparedHit
+    );
+}
+
+#[test]
+fn active_playback_network_source_returns_typed_unsupported_noop() {
+    let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
+        PlayerTimelineHoverPrepareHandoff::default(),
+    ));
+    controller.set_hover_source(TimelineHoverSourceIdentity::DirectMediaUrl);
+    let active_target = TimelineHoverPrepareTarget::new(
+        context(),
+        timestamp(10_000),
+        TimelineHoverFrameBucket::new(10_000),
+        timestamp(9_000),
+        timestamp(10_100),
+        0,
+        TimelineHoverPreparePlaybackMode::ActivePlayback,
+    )
+    .expect("test target must build a valid dependency span");
+
+    let outcome = controller.prepare_hover_target(active_target);
+
+    assert!(matches!(
+        outcome.executor_outcome,
+        TimelineHoverPrepareExecutorOutcome::NoOp {
+            reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceUnsupported {
+                source_kind: TimelineHoverUnsupportedSourceKind::DirectMediaUrl,
+                ..
+            },
+        }
+    ));
+    assert_eq!(
+        outcome.completion_outcome,
+        TimelineHoverPrepareCompletionOutcome::NoPreparedHit
+    );
+}
+
+#[test]
+fn active_playback_hover_source_open_failure_is_not_a_playback_reset() {
+    let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
+        PlayerTimelineHoverPrepareHandoff::default(),
+    ));
+    controller.set_hover_source(TimelineHoverSourceIdentity::LocalFile(PathBuf::from(
+        "/tmp/rustiplayer-missing-hover-source-for-controller.wav",
+    )));
+    let active_target = TimelineHoverPrepareTarget::new(
+        context(),
+        timestamp(10_000),
+        TimelineHoverFrameBucket::new(10_000),
+        timestamp(9_000),
+        timestamp(10_100),
+        0,
+        TimelineHoverPreparePlaybackMode::ActivePlayback,
+    )
+    .expect("test target must build a valid dependency span");
+
+    let outcome = controller.prepare_hover_target(active_target);
+
+    assert!(matches!(
+        outcome.executor_outcome,
+        TimelineHoverPrepareExecutorOutcome::NoOp {
+            reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceOpenFailed {
+                source_kind: TimelineHoverOpenFailedSourceKind::LocalFile,
+                ..
+            },
         }
     ));
     assert_eq!(

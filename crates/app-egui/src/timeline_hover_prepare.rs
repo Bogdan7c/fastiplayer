@@ -11,14 +11,23 @@ use frame_server_core::{
 };
 use media_core::TrackTimestamp;
 use player_core::{PlayerTimelineHoverPrepareBorrowOutcome, PlayerTimelineHoverPrepareHandoff};
+use rustiplayer_config::PlayerDemuxConfig;
+
+use crate::timeline_hover_source::{
+    TimelineHoverOpenFailedSourceKind, TimelineHoverOpenedSource, TimelineHoverSourceFactory,
+    TimelineHoverSourceIdentity, TimelineHoverSourceOpenOutcome,
+    TimelineHoverUnsupportedSourceKind,
+};
 
 /// Controller type, которым владеет `AppState`.
 pub(crate) type AppTimelineHoverPrepareController =
     TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor>;
 
-/// Production executor S18: проверяет общий working set и честно no-op-ит real decode.
+/// Production executor: проверяет общий working set и владеет app-side hover source.
 pub(crate) struct AppTimelineHoverPrepareExecutor {
     handoff: PlayerTimelineHoverPrepareHandoff,
+    source_factory: TimelineHoverSourceFactory,
+    active_hover_source: Option<TimelineHoverOpenedSource>,
 }
 
 /// App-owned controller для будущего unified timeline hover/focus intent-а.
@@ -189,6 +198,20 @@ pub(crate) enum TimelineHoverPrepareExecutorNoOpReason {
     ActivePlaybackExecutorUnavailable {
         lookup_miss: TimelineHoverPrepareLookupMissReason,
     },
+    ActivePlaybackSourceMissing {
+        lookup_miss: TimelineHoverPrepareLookupMissReason,
+    },
+    ActivePlaybackSourceUnsupported {
+        lookup_miss: TimelineHoverPrepareLookupMissReason,
+        source_kind: TimelineHoverUnsupportedSourceKind,
+    },
+    ActivePlaybackSourceOpenFailed {
+        lookup_miss: TimelineHoverPrepareLookupMissReason,
+        source_kind: TimelineHoverOpenFailedSourceKind,
+    },
+    ActivePlaybackLocalSourceReadyDecodeNotWired {
+        lookup_miss: TimelineHoverPrepareLookupMissReason,
+    },
     PausedStoppedExecutorNotWired {
         lookup_miss: TimelineHoverPrepareLookupMissReason,
     },
@@ -273,7 +296,35 @@ pub(crate) trait TimelineHoverPrepareExecutor {
 
 impl AppTimelineHoverPrepareExecutor {
     pub(crate) fn new(handoff: PlayerTimelineHoverPrepareHandoff) -> Self {
-        Self { handoff }
+        Self::with_demux_config(handoff, PlayerDemuxConfig::default())
+    }
+
+    pub(crate) fn with_demux_config(
+        handoff: PlayerTimelineHoverPrepareHandoff,
+        demux_config: PlayerDemuxConfig,
+    ) -> Self {
+        Self {
+            handoff,
+            source_factory: TimelineHoverSourceFactory::new(demux_config),
+            active_hover_source: None,
+        }
+    }
+
+    fn update_demux_config(&mut self, demux_config: PlayerDemuxConfig) {
+        // Demux config влияет на новые local opens, поэтому старый opened hover source
+        // нельзя молча продолжать считать актуальным после config commit-а.
+        self.active_hover_source = None;
+        self.source_factory.update_demux_config(demux_config);
+    }
+
+    fn set_hover_source(&mut self, source: TimelineHoverSourceIdentity) {
+        self.active_hover_source = None;
+        self.source_factory.set_active_source(source);
+    }
+
+    fn invalidate_hover_source(&mut self) {
+        self.active_hover_source = None;
+        self.source_factory.invalidate_active_source();
     }
 
     /// Borrow shared prepared entry для HoverPreview без promotion ownership transfer.
@@ -321,6 +372,15 @@ impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
                 }
             }
             PlayerTimelineHoverPrepareBorrowOutcome::Miss(lookup_miss) => {
+                if matches!(
+                    request.target.playback_mode(),
+                    TimelineHoverPreparePlaybackMode::ActivePlayback
+                ) {
+                    return TimelineHoverPrepareExecutorOutcome::NoOp {
+                        reason: self.active_playback_source_no_op_reason(lookup_miss),
+                    };
+                }
+
                 TimelineHoverPrepareExecutorOutcome::NoOp {
                     reason: no_op_reason_for_missing_executor(
                         request.target.playback_mode(),
@@ -339,6 +399,43 @@ impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
     fn cancel_dependency_span(&mut self, _request: TimelineHoverPrepareCancelRequest) {}
 }
 
+impl AppTimelineHoverPrepareExecutor {
+    fn active_playback_source_no_op_reason(
+        &mut self,
+        lookup_miss: TimelineHoverPrepareLookupMissReason,
+    ) -> TimelineHoverPrepareExecutorNoOpReason {
+        if self.active_hover_source.is_some() {
+            return TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackLocalSourceReadyDecodeNotWired {
+                lookup_miss,
+            };
+        }
+
+        match self.source_factory.open_active_source() {
+            TimelineHoverSourceOpenOutcome::Opened(source) => {
+                self.active_hover_source = Some(source);
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackLocalSourceReadyDecodeNotWired {
+                    lookup_miss,
+                }
+            }
+            TimelineHoverSourceOpenOutcome::MissingActiveSource => {
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceMissing { lookup_miss }
+            }
+            TimelineHoverSourceOpenOutcome::Unsupported { source_kind } => {
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceUnsupported {
+                    lookup_miss,
+                    source_kind,
+                }
+            }
+            TimelineHoverSourceOpenOutcome::OpenFailed { source_kind } => {
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceOpenFailed {
+                    lookup_miss,
+                    source_kind,
+                }
+            }
+        }
+    }
+}
+
 impl<Executor> TimelineHoverPrepareController<Executor> {
     pub(crate) fn new(executor: Executor) -> Self {
         Self {
@@ -350,6 +447,20 @@ impl<Executor> TimelineHoverPrepareController<Executor> {
 
     pub(crate) fn executor(&self) -> &Executor {
         &self.executor
+    }
+}
+
+impl TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor> {
+    pub(crate) fn update_hover_demux_config(&mut self, demux_config: PlayerDemuxConfig) {
+        self.executor.update_demux_config(demux_config);
+    }
+
+    pub(crate) fn set_hover_source(&mut self, source: TimelineHoverSourceIdentity) {
+        self.executor.set_hover_source(source);
+    }
+
+    pub(crate) fn invalidate_hover_source(&mut self) {
+        self.executor.invalidate_hover_source();
     }
 }
 

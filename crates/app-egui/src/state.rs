@@ -297,7 +297,10 @@ impl AppState {
             committed_config_snapshot.as_config(),
         );
         let timeline_hover_prepare_controller = TimelineHoverPrepareController::new(
-            AppTimelineHoverPrepareExecutor::new(timeline_hover_prepare_handoff.clone()),
+            AppTimelineHoverPrepareExecutor::with_demux_config(
+                timeline_hover_prepare_handoff.clone(),
+                committed_config_snapshot.demux_config_for_open(),
+            ),
         );
         let worker_config =
             PlayerWorkerConfig::from_app_config(committed_config_snapshot.as_config())
@@ -410,7 +413,13 @@ impl AppState {
 
     /// Обновляет read-only config snapshot из authoritative settings runtime.
     pub(crate) fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
+        let previous_demux_config = self.committed_config_snapshot.demux_config_for_open();
+        let next_demux_config = snapshot.demux_config_for_open();
         self.committed_config_snapshot = snapshot;
+        if next_demux_config != previous_demux_config {
+            self.timeline_hover_prepare_controller
+                .update_hover_demux_config(next_demux_config);
+        }
         let live_scrub_settings = self.live_scrub_settings_snapshot();
         self.timeline_ui_state
             .defer_live_scrub_settings_change(live_scrub_settings);

@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use media_core::Demuxer;
 use player_core::PreparedMedia;
 use rustiplayer_config::PlayerDemuxConfig;
 
@@ -18,13 +19,23 @@ pub fn prepare_local_file(
     path: &Path,
     demux_config: &PlayerDemuxConfig,
 ) -> anyhow::Result<PreparedMedia> {
+    let demuxer = open_local_demuxer(path, demux_config)?;
+
+    Ok(PreparedMedia::from_local_file(path.to_path_buf(), demuxer))
+}
+
+/// Открывает новый local demuxer вне `player-core`.
+///
+/// Playback и hover вызывают этот helper отдельно: каждый вызов создаёт свой
+/// demuxer, поэтому hover не двигает playback demuxer и не делит с ним cursor.
+pub(crate) fn open_local_demuxer(
+    path: &Path,
+    demux_config: &PlayerDemuxConfig,
+) -> anyhow::Result<Box<dyn Demuxer + Send>> {
     let demuxer_options = demuxer_options_from_config(demux_config);
     let demuxer = symphonia_demux::SymphoniaDemuxer::from_file_with_options(path, demuxer_options)?;
 
-    Ok(PreparedMedia::from_local_file(
-        path.to_path_buf(),
-        Box::new(demuxer),
-    ))
+    Ok(Box::new(demuxer))
 }
 
 /// Конвертирует validated TOML config приложения в options Symphonia demux adapter-а.

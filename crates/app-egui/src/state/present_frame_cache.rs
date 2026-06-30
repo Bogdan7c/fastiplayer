@@ -427,6 +427,8 @@ impl AppState {
         if reason.clears_timeline_hover_source_context() {
             self.timeline_hover_prepare_controller
                 .cancel_active_span(TimelineHoverPrepareCancellationReason::SourceSwitched);
+            self.timeline_hover_prepare_controller
+                .invalidate_hover_source();
         }
         self.timeline_hover_preview_render_state.clear();
         self.cached_renderable_present_frame = None;
