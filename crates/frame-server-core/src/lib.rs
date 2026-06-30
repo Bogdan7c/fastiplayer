@@ -9,6 +9,7 @@
 pub mod config;
 pub mod diagnostics;
 pub mod error;
+pub mod hover_budget;
 pub mod request;
 pub mod scheduler;
 pub mod scrub;
@@ -35,6 +36,17 @@ pub use diagnostics::{
     ScrubWorkingSetDiagnosticsCounters,
 };
 pub use error::FrameServerConfigError;
+pub use hover_budget::{
+    HoverBudgetAdmissionFatalReason, HoverBudgetAdmissionOutcome, HoverBudgetAdmissionRejection,
+    HoverBudgetAdmissionReport, HoverBudgetAdmissionUnavailableReason, HoverBudgetCapability,
+    HoverBudgetCapabilityMinimum, HoverBudgetCapabilityReport,
+    HoverBudgetCapabilityUnavailableReason, HoverBudgetRequest, HoverBudgetRequirement,
+    HoverBudgetResolutionOutcome, HoverBudgetResolutionSource,
+    HoverBudgetResolutionUnavailableReason, HoverBudgetResolutionUnsupportedReason,
+    HoverBudgetResourceClass, HoverBudgetResourcePressureReason, HoverBudgetSetting,
+    HoverBudgetUnsupportedReason, HoverPlaybackResourceBudget, HoverPositiveBudgetError,
+    HoverResolvedBudget, HoverResolvedBudgetResource, admit_hover_budget, resolve_hover_budget,
+};
 pub use request::{
     BackendRevision, CancelScrubIntent, CancelScrubReason, FeedAndDrainIntent,
     FeedAndDrainStopCondition, FinishScrubIntent, FinishScrubPolicy,
@@ -83,6 +95,8 @@ pub use working_set::{
 
 #[cfg(test)]
 mod diagnostics_tests;
+#[cfg(test)]
+mod hover_budget_tests;
 #[cfg(test)]
 mod scheduler_tests;
 #[cfg(test)]
