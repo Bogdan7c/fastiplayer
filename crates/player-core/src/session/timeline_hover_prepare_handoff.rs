@@ -1,16 +1,17 @@
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+#[cfg(test)]
+use frame_server_core::TimelineHoverPreparedFrameEntry;
 use frame_server_core::{
     FrameServerConfig as RuntimeFrameServerConfig, LiveScrubDecodeMode,
+    TimelineHoverPrepareCapacityReconfigureOutcome, TimelineHoverPrepareFrameKey,
     TimelineHoverPrepareFrameLookupRequest, TimelineHoverPrepareLookupMissReason,
     TimelineHoverPrepareLookupOutcome, TimelineHoverPrepareSessionEndReleaseOutcome,
     TimelineHoverPrepareSessionEndReleaseReason, TimelineHoverPrepareTimingRejection,
     TimelineHoverPrepareWorkingSet, TimelineHoverPreparedFrameTiming,
     TimelineHoverRecentSupersededBudget, ValidatedFrameServerConfig,
 };
-#[cfg(test)]
-use frame_server_core::{TimelineHoverPrepareFrameKey, TimelineHoverPreparedFrameEntry};
 #[cfg(test)]
 use media_core::TrackTimestamp;
 use rustiplayer_config::{
@@ -107,6 +108,20 @@ impl PlayerTimelineHoverPrepareHandoff {
     ) -> TimelineHoverPrepareSessionEndReleaseOutcome {
         self.with_locked_working_set(|working_set| {
             working_set.release_hover_owned_entries_for_session_end(reason)
+        })
+    }
+
+    /// Меняет primary hover capacity через owner working-set boundary.
+    ///
+    /// Caller передаёт уже validated capacity; full runtime Settings routing
+    /// остаётся задачей S30C и не выполняется на этом уровне.
+    pub fn reconfigure_hover_prepare_primary_capacity(
+        &self,
+        new_capacity: NonZeroUsize,
+        protected_key: TimelineHoverPrepareFrameKey,
+    ) -> TimelineHoverPrepareCapacityReconfigureOutcome {
+        self.with_locked_working_set(|working_set| {
+            working_set.reconfigure_primary_capacity(new_capacity, protected_key)
         })
     }
 

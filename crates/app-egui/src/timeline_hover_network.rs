@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 
 use crate::timeline_hover_prepare::TimelineHoverPrepareTarget;
 use crate::timeline_hover_source::{
-    TimelineHoverOpenedSource, TimelineHoverSourceFactory, TimelineHoverSourceOpenOutcome,
+    TimelineHoverOpenedSource, TimelineHoverSourceFactory, TimelineHoverSourceIdentity,
+    TimelineHoverSourceOpenOutcome,
 };
 
 /// App-owned guard для network hover opens: latest-only, max-one-inflight, no queue.
@@ -18,7 +19,7 @@ pub(crate) struct TimelineHoverNetworkOpenController {
     /// Последний реальный старт background open-а.
     last_started_at: Option<Instant>,
 
-    /// Единственный in-flight network open для текущего source generation.
+    /// Единственный tracked in-flight network open. Для того же source он держит one-in-flight.
     active_job: Option<TimelineHoverNetworkOpenJob>,
 
     /// Terminal target не auto-retry-ится, пока target/source generation не изменится.
@@ -49,19 +50,20 @@ impl TimelineHoverNetworkOpenController {
         self.active_job.is_some()
     }
 
-    /// Отменяет pending network work при уходе/замене hover target-а.
+    /// Отменяет pending network intent при уходе/замене hover target-а.
     pub(crate) fn cancel_pending_target(&mut self) {
         if let Some(job) = self.active_job.as_mut() {
+            // Service APIs пока не дают cancellation token-а: receiver остаётся
+            // у controller-а, чтобы тот же source не получил второй in-flight open.
             job.mark_stale();
         }
-        self.active_job = None;
-        self.held_terminal_target = None;
     }
 
     /// Инвалидирует pending network work при source/config boundary change.
     pub(crate) fn invalidate_source_context(&mut self) {
         self.source_generation = self.source_generation.wrapping_add(1);
         self.cancel_pending_target();
+        self.held_terminal_target = None;
     }
 
     /// Пытается получить network hover source без блокировки UI/render thread-а.
@@ -74,21 +76,28 @@ impl TimelineHoverNetworkOpenController {
             return completed_outcome;
         }
 
-        if !source_factory.active_source_is_network() {
+        let Some(source_identity) = source_factory.active_network_source_identity() else {
             return TimelineHoverNetworkOpenOutcome::NonNetworkSource;
-        }
+        };
 
         if self.held_terminal_target_matches(target) {
             return TimelineHoverNetworkOpenOutcome::FailedTargetHeld;
         }
 
         if let Some(job) = self.active_job.as_mut() {
-            if job.target != target {
-                // В текущих service APIs нет cancellation token-а, поэтому отмена выражена
-                // как stale marker. Поздний result будет считан и проигнорирован.
+            if job.source_identity != source_identity {
+                // Новый source не обязан ждать старый remote open. Receiver drop разрывает
+                // result channel, а late worker не блокирует UI/render thread.
                 job.mark_stale();
+                self.active_job = None;
+            } else {
+                if job.target != target {
+                    // Для того же source target replacement остаётся latest-only:
+                    // stale result будет drained/ignored, а второй open не стартует.
+                    job.mark_stale();
+                }
+                return TimelineHoverNetworkOpenOutcome::Opening;
             }
-            return TimelineHoverNetworkOpenOutcome::Opening;
         }
 
         let now = Instant::now();
@@ -99,6 +108,7 @@ impl TimelineHoverNetworkOpenController {
         let receiver = spawn_network_open(source_factory.clone());
         self.active_job = Some(TimelineHoverNetworkOpenJob {
             target,
+            source_identity,
             source_generation: self.source_generation,
             stale: false,
             receiver,
@@ -144,6 +154,11 @@ impl TimelineHoverNetworkOpenController {
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
                 let completed_job = self.active_job.take().expect("job was just observed");
+                if completed_job.stale || completed_job.source_generation != self.source_generation
+                {
+                    return Some(TimelineHoverNetworkOpenOutcome::Opening);
+                }
+
                 self.held_terminal_target = Some(HeldNetworkHoverTarget {
                     target: completed_job.target,
                     source_generation: completed_job.source_generation,
@@ -192,6 +207,7 @@ pub(crate) enum TimelineHoverNetworkOpenOutcome {
 
 struct TimelineHoverNetworkOpenJob {
     target: TimelineHoverPrepareTarget,
+    source_identity: TimelineHoverSourceIdentity,
     source_generation: u64,
     stale: bool,
     receiver: Receiver<TimelineHoverSourceOpenOutcome>,
@@ -280,6 +296,9 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         controller.active_job = Some(TimelineHoverNetworkOpenJob {
             target,
+            source_identity: TimelineHoverSourceIdentity::DirectMediaUrl(
+                "https://example.invalid/video.mp4".to_string(),
+            ),
             source_generation: controller.source_generation,
             stale: false,
             receiver,
@@ -407,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn source_invalidation_drops_pending_job_and_terminal_target() {
+    fn source_invalidation_marks_pending_job_stale_and_clears_terminal_target() {
         let mut controller = TimelineHoverNetworkOpenController::new(Duration::ZERO);
         let failed_target = hover_target(1000);
         let _manual_sender = install_manual_job(&mut controller, failed_target);
@@ -419,12 +438,16 @@ mod tests {
         controller.invalidate_source_context();
 
         assert_eq!(controller.source_generation, 1);
-        assert!(controller.active_job.is_none());
+        let active_job = controller
+            .active_job
+            .as_ref()
+            .expect("old in-flight job stays tracked until stale result is drained");
+        assert!(active_job.stale);
         assert!(controller.held_terminal_target.is_none());
     }
 
     #[test]
-    fn target_cancellation_drops_pending_job_and_allows_future_retry() {
+    fn target_cancellation_keeps_same_source_inflight_and_failure_hold() {
         let mut controller = TimelineHoverNetworkOpenController::new(Duration::ZERO);
         let failed_target = hover_target(1000);
         let _manual_sender = install_manual_job(&mut controller, failed_target);
@@ -436,7 +459,18 @@ mod tests {
         controller.cancel_pending_target();
 
         assert_eq!(controller.source_generation, 0);
-        assert!(controller.active_job.is_none());
-        assert!(controller.held_terminal_target.is_none());
+        let active_job = controller
+            .active_job
+            .as_ref()
+            .expect("same-source in-flight job must stay tracked after cancel");
+        assert!(active_job.stale);
+        assert!(controller.held_terminal_target_matches(failed_target));
+
+        let retry_outcome =
+            controller.prepare_network_source(&network_source_factory(), failed_target);
+        assert!(matches!(
+            retry_outcome,
+            TimelineHoverNetworkOpenOutcome::FailedTargetHeld
+        ));
     }
 }

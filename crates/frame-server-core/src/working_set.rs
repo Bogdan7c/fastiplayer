@@ -105,6 +105,47 @@ impl TimelineHoverPrepareSessionEndReleaseOutcome {
     }
 }
 
+/// Итог live reconfigure primary hover capacity.
+///
+/// `released_entries` сохраняет порядок pressure release step-ов: сначала
+/// recent-superseded, затем primary byproducts, и никогда protected current target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimelineHoverPrepareCapacityReconfigureOutcome {
+    old_capacity: usize,
+    new_capacity: usize,
+    released_entries: Vec<TimelineHoverPreparePressureReleaseOutcome>,
+}
+
+impl TimelineHoverPrepareCapacityReconfigureOutcome {
+    #[must_use]
+    pub fn new(
+        old_capacity: NonZeroUsize,
+        new_capacity: NonZeroUsize,
+        released_entries: Vec<TimelineHoverPreparePressureReleaseOutcome>,
+    ) -> Self {
+        Self {
+            old_capacity: old_capacity.get(),
+            new_capacity: new_capacity.get(),
+            released_entries,
+        }
+    }
+
+    #[must_use]
+    pub const fn old_capacity(&self) -> usize {
+        self.old_capacity
+    }
+
+    #[must_use]
+    pub const fn new_capacity(&self) -> usize {
+        self.new_capacity
+    }
+
+    #[must_use]
+    pub fn released_entries(&self) -> &[TimelineHoverPreparePressureReleaseOutcome] {
+        &self.released_entries
+    }
+}
+
 /// Bucket используется только как быстрый индекс и никогда не доказывает точность.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TimelineHoverFrameBucket(i64);
@@ -648,6 +689,40 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
             PressureReleaseMissReason::OnlyProtectedCurrentTarget { protected_key }
         };
         PressureReleaseOutcome::NothingReleased { reason }
+    }
+
+    /// Меняет primary hover capacity без refill/restart текущего span-а.
+    ///
+    /// При shrink освобождает excess entries через тот же pressure order, что
+    /// provider/resource pressure. Grow только увеличивает будущий admission budget.
+    #[must_use]
+    pub fn reconfigure_primary_capacity(
+        &mut self,
+        new_capacity: NonZeroUsize,
+        protected_key: TimelineHoverPrepareFrameKey,
+    ) -> TimelineHoverPrepareCapacityReconfigureOutcome {
+        let old_capacity = self.capacity;
+        self.capacity = new_capacity;
+
+        let mut released_entries = Vec::new();
+        while self.entries.len() > self.capacity.get() {
+            let release_outcome = self.release_one_for_resource_pressure(protected_key);
+            let released_entry = matches!(
+                release_outcome,
+                PressureReleaseOutcome::ReleasedRecentSuperseded { .. }
+                    | PressureReleaseOutcome::ReleasedPrimaryByproduct { .. }
+            );
+            released_entries.push(release_outcome);
+            if !released_entry {
+                break;
+            }
+        }
+
+        TimelineHoverPrepareCapacityReconfigureOutcome::new(
+            old_capacity,
+            new_capacity,
+            released_entries,
+        )
     }
 
     /// Освобождает все hover-owned entries после завершения hover session.

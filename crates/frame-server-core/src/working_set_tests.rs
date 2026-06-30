@@ -643,6 +643,111 @@ fn pressure_releases_recent_before_primary_byproducts_and_protects_current_targe
 }
 
 #[test]
+fn live_capacity_shrink_releases_excess_entries_by_pressure_order() {
+    let released = Arc::new(Mutex::new(Vec::new()));
+    let current_key = base_key(250);
+    let first_byproduct_key = base_key(251);
+    let second_byproduct_key = base_key(252);
+    let recent_key = base_key(253);
+    let mut working_set = TimelineHoverPrepareWorkingSet::with_capacity_and_recent_superseded(
+        capacity(3),
+        recent_budget_for_tests(1, 1),
+    );
+    for (key, handle) in [
+        (current_key, FrameResourceHandle(250)),
+        (first_byproduct_key, FrameResourceHandle(251)),
+        (second_byproduct_key, FrameResourceHandle(252)),
+    ] {
+        working_set.insert_prepared_frame(
+            key,
+            TimelineHoverPreparedFrameEntry::<FakeBranchToken>::new(
+                hardware_lease(handle, released.clone()),
+                timing(1_250),
+            ),
+        );
+    }
+    let mut transaction_source = working_set_with_recent(0, 0);
+    let transaction = promote_branch_entry(
+        &mut transaction_source,
+        recent_key,
+        FrameResourceHandle(253),
+        released.clone(),
+    );
+    let demote =
+        transaction.supersede_to_recent(&mut working_set, lookup_request(recent_key, 1_200));
+    assert!(matches!(
+        demote,
+        TimelineHoverPrepareDemoteBackOutcome::DemotedToRecentSuperseded
+    ));
+
+    let outcome = working_set.reconfigure_primary_capacity(capacity(1), current_key);
+
+    assert_eq!(outcome.old_capacity(), 3);
+    assert_eq!(outcome.new_capacity(), 1);
+    assert_eq!(
+        outcome.released_entries(),
+        &[
+            TimelineHoverPreparePressureReleaseOutcome::ReleasedRecentSuperseded {
+                released_key: recent_key,
+            },
+            TimelineHoverPreparePressureReleaseOutcome::ReleasedPrimaryByproduct {
+                released_key: first_byproduct_key,
+            },
+            TimelineHoverPreparePressureReleaseOutcome::ReleasedPrimaryByproduct {
+                released_key: second_byproduct_key,
+            },
+        ]
+    );
+    assert_eq!(working_set.capacity().get(), 1);
+    assert_eq!(working_set.len(), 1);
+    assert!(matches!(
+        working_set.lookup_prepared_frame(lookup_request(current_key, 1_200)),
+        TimelineHoverPrepareLookupOutcome::Hit(_)
+    ));
+    assert_eq!(release_count(&released, FrameResourceHandle(250)), 0);
+    assert_eq!(release_count(&released, FrameResourceHandle(251)), 1);
+    assert_eq!(release_count(&released, FrameResourceHandle(252)), 1);
+    assert_eq!(release_count(&released, FrameResourceHandle(253)), 1);
+}
+
+#[test]
+fn live_capacity_grow_only_changes_future_admission_without_refill() {
+    let released = Arc::new(Mutex::new(Vec::new()));
+    let current_key = base_key(260);
+    let next_key = base_key(261);
+    let mut working_set =
+        TimelineHoverPrepareWorkingSet::<FakeBranchToken>::with_capacity(capacity(1));
+    working_set.insert_prepared_frame(
+        current_key,
+        TimelineHoverPreparedFrameEntry::new(
+            hardware_lease(FrameResourceHandle(260), released.clone()),
+            timing(1_250),
+        ),
+    );
+
+    let outcome = working_set.reconfigure_primary_capacity(capacity(3), current_key);
+
+    assert_eq!(outcome.old_capacity(), 1);
+    assert_eq!(outcome.new_capacity(), 3);
+    assert!(outcome.released_entries().is_empty());
+    assert_eq!(working_set.len(), 1);
+    assert_eq!(release_count(&released, FrameResourceHandle(260)), 0);
+
+    let admitted = working_set.evaluate_prepare_admission(admission_request(
+        next_key,
+        current_key,
+        TimelineHoverPrepareAdmissionMode::ResumePendingAfterSeekPin,
+        TimelineHoverPrepareProviderBudget::SpareSlotAvailable,
+    ));
+    assert_eq!(
+        admitted,
+        TimelineHoverPrepareAdmissionOutcome::Admitted {
+            slot_plan: TimelineHoverPrepareSlotPlan::UseSparePrimarySlot,
+        }
+    );
+}
+
+#[test]
 fn pressure_never_touches_active_seek_owned_promoted_resource() {
     let released = Arc::new(Mutex::new(Vec::new()));
     let promoted_key = base_key(210);

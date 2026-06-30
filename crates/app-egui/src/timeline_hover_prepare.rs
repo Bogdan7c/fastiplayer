@@ -145,6 +145,13 @@ pub(crate) struct TimelineHoverPrepareControllerOutcome {
     completion_outcome: TimelineHoverPrepareCompletionOutcome,
 }
 
+impl TimelineHoverPrepareControllerOutcome {
+    #[must_use]
+    pub(crate) const fn executor_outcome(self) -> TimelineHoverPrepareExecutorOutcome {
+        self.executor_outcome
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TimelineHoverPrepareControllerTransition {
     Started,

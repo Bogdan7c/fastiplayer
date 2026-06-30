@@ -173,6 +173,16 @@ impl TimelineHoverSourceFactory {
         )
     }
 
+    /// Возвращает identity только для sources, которые hover открывает на background thread-е.
+    #[must_use]
+    pub(crate) fn active_network_source_identity(&self) -> Option<TimelineHoverSourceIdentity> {
+        match self.active_source.as_ref()? {
+            active_source @ (TimelineHoverSourceIdentity::DirectMediaUrl(_)
+            | TimelineHoverSourceIdentity::YouTubeUrl { .. }) => Some(active_source.clone()),
+            TimelineHoverSourceIdentity::LocalFile(_) => None,
+        }
+    }
+
     /// Открывает independent source для active-playback hover executor-а.
     pub(crate) fn open_active_source(&self) -> TimelineHoverSourceOpenOutcome {
         match self.active_source.as_ref() {

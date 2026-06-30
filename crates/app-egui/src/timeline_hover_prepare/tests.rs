@@ -681,7 +681,7 @@ fn active_playback_network_source_opens_as_background_latest_only_work() {
 }
 
 #[test]
-fn cancelling_active_network_hover_drops_pending_open() {
+fn cancelling_active_network_hover_stale_marks_pending_open() {
     let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
         PlayerTimelineHoverPrepareHandoff::default(),
     ));
@@ -704,7 +704,10 @@ fn cancelling_active_network_hover_drops_pending_open() {
         .cancel_active_span(TimelineHoverPrepareCancellationReason::TimelineLeft)
         .expect("network hover start creates cancellable pending work");
 
-    assert!(!controller.executor.network_open_controller.has_active_job());
+    assert!(
+        controller.executor.network_open_controller.has_active_job(),
+        "same-source remote open stays tracked until its stale result is drained"
+    );
 }
 
 #[test]

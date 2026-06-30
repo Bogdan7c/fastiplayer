@@ -8,6 +8,12 @@ use crate::ui::timeline::{TimelineHoverTarget, TimelineHoverVisualTarget};
 use frame_server_core::TimelineHoverPrepareSessionEndReleaseReason;
 use tracing::{trace, warn};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TimelineHoverPrepareUiOutcome {
+    request_accepted: bool,
+    preview_load_state: TimelineHoverPreviewLoadState,
+}
+
 /// Diagnostic route пользовательского timeline intent-а на границе app-egui -> player-core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TimelineCommandRoute {
@@ -187,6 +193,19 @@ pub(super) const fn timeline_hover_prepare_allows_preview_borrow(
         playback_mode,
         TimelineHoverPreparePlaybackMode::LiveScrubActive
     )
+}
+
+const fn timeline_hover_preview_load_state(
+    target: TimelineHoverTarget,
+    executor_outcome: TimelineHoverPrepareExecutorOutcome,
+) -> TimelineHoverPreviewLoadState {
+    match executor_outcome {
+        TimelineHoverPrepareExecutorOutcome::NoOp {
+            reason:
+                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackNetworkSourceOpening { .. },
+        } => TimelineHoverPreviewLoadState::NetworkOpening { target },
+        _ => TimelineHoverPreviewLoadState::Idle,
+    }
 }
 
 impl AppState {
@@ -463,7 +482,11 @@ impl AppState {
         if should_retry_pending_preview
             && let Some(visual_target) = self.timeline_hover_intent_state.pending_visual_target()
         {
-            self.update_timeline_hover_preview(player_snapshot, visual_target);
+            self.update_timeline_hover_preview(
+                player_snapshot,
+                visual_target,
+                TimelineHoverPreviewLoadState::Idle,
+            );
         }
     }
 
@@ -483,14 +506,17 @@ impl AppState {
             self.timeline_hover_preview_render_state.clear();
         }
 
+        let mut preview_load_state = TimelineHoverPreviewLoadState::Idle;
         if let Some(target) = outcome.invisible_prepare_target {
-            if self.prepare_timeline_hover_target(player_snapshot, target) {
+            let prepare_outcome = self.prepare_timeline_hover_target(player_snapshot, target);
+            preview_load_state = prepare_outcome.preview_load_state;
+            if prepare_outcome.request_accepted {
                 self.cancel_timeline_hover_leave_grace_for_reenter();
             }
         }
 
         if let Some(visual_target) = outcome.visual_presentation_target {
-            self.update_timeline_hover_preview(player_snapshot, visual_target);
+            self.update_timeline_hover_preview(player_snapshot, visual_target, preview_load_state);
         }
     }
 
@@ -499,23 +525,31 @@ impl AppState {
         &mut self,
         player_snapshot: &PlayerSnapshot,
         target: TimelineHoverTarget,
-    ) -> bool {
+    ) -> TimelineHoverPrepareUiOutcome {
         let Some(prepare_target) =
             timeline_hover_prepare_target_from_snapshot(player_snapshot, target)
         else {
             self.timeline_hover_prepare_controller
                 .cancel_active_span(TimelineHoverPrepareCancellationReason::SourceSwitched);
-            return false;
+            return TimelineHoverPrepareUiOutcome {
+                request_accepted: false,
+                preview_load_state: TimelineHoverPreviewLoadState::Idle,
+            };
         };
 
         let controller_outcome = self
             .timeline_hover_prepare_controller
             .prepare_hover_target(prepare_target);
+        let preview_load_state =
+            timeline_hover_preview_load_state(target, controller_outcome.executor_outcome());
         trace!(
             outcome = ?controller_outcome,
             "Timeline hover prepare target processed"
         );
-        true
+        TimelineHoverPrepareUiOutcome {
+            request_accepted: true,
+            preview_load_state,
+        }
     }
 
     /// Запускает retention grace после leave; active decode span уже отменён caller-ом.
@@ -586,6 +620,7 @@ impl AppState {
         &mut self,
         player_snapshot: &PlayerSnapshot,
         visual_target: TimelineHoverVisualTarget,
+        load_state: TimelineHoverPreviewLoadState,
     ) {
         let Some(prepare_target) =
             timeline_hover_prepare_target_from_snapshot(player_snapshot, visual_target.target())
@@ -606,6 +641,7 @@ impl AppState {
         let preview_outcome = self.timeline_hover_preview_render_state.update_from_borrow(
             visual_target,
             borrow_outcome,
+            load_state,
             materializer,
         );
         trace!(

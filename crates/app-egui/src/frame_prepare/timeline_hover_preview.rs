@@ -34,6 +34,9 @@ const HOVER_PREVIEW_TIMELINE_GAP_POINTS: f32 = 10.0;
 pub(crate) struct TimelineHoverPreviewRenderState {
     /// Последний materialized borrow, который можно показать или повторить при Busy.
     ready: Option<TimelineHoverPreviewReadyFrame>,
+
+    /// Текущий visual target, для которого remote source ещё открывается.
+    loading: Option<TimelineHoverVisualTarget>,
 }
 
 /// Materialized hover preview frame; ownership остаётся clone lease-а, не branch entry.
@@ -54,9 +57,28 @@ pub(crate) struct TimelineHoverPreviewRenderInput<'frame> {
     pub(crate) viewport: RenderViewport,
 }
 
+/// Preview-only loading state: он не попадает в timeline inline status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TimelineHoverPreviewLoadState {
+    Idle,
+    NetworkOpening { target: TimelineHoverTarget },
+}
+
+impl TimelineHoverPreviewLoadState {
+    fn matches_visual_target(self, visual_target: TimelineHoverVisualTarget) -> bool {
+        matches!(
+            self,
+            Self::NetworkOpening { target } if target == visual_target.target()
+        )
+    }
+}
+
 /// Результат обновления preview state; нужен для tests/diagnostics без bool-смешения.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TimelineHoverPreviewUpdateOutcome {
+    /// Remote source ещё открывается; loading хранится только в preview state.
+    Loading,
+
     /// Preview готов и заменил предыдущий ready frame.
     Ready,
 
@@ -89,6 +111,7 @@ impl TimelineHoverPreviewRenderState {
     /// Полностью очищает visual preview borrow/render state.
     pub(crate) fn clear(&mut self) {
         self.ready = None;
+        self.loading = None;
     }
 
     /// Обновляет preview из shared prepared entry borrow-а.
@@ -96,16 +119,17 @@ impl TimelineHoverPreviewRenderState {
         &mut self,
         visual_target: TimelineHoverVisualTarget,
         borrow_outcome: PlayerTimelineHoverPrepareBorrowOutcome,
+        load_state: TimelineHoverPreviewLoadState,
         materializer: Option<&dyn WgpuFrameTextureViewMaterializer>,
     ) -> TimelineHoverPreviewUpdateOutcome {
-        let Some(materializer) = materializer else {
-            self.clear();
-            return TimelineHoverPreviewUpdateOutcome::MissingMaterializer;
-        };
-
         let borrowed_frame = match borrow_outcome {
             PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(borrowed_frame) => borrowed_frame,
             PlayerTimelineHoverPrepareBorrowOutcome::Miss(_reason) => {
+                if load_state.matches_visual_target(visual_target) {
+                    self.show_loading(visual_target);
+                    return TimelineHoverPreviewUpdateOutcome::Loading;
+                }
+
                 self.clear();
                 return TimelineHoverPreviewUpdateOutcome::WorkingSetMiss;
             }
@@ -113,6 +137,11 @@ impl TimelineHoverPreviewRenderState {
                 self.clear();
                 return TimelineHoverPreviewUpdateOutcome::TimingRejected;
             }
+        };
+
+        let Some(materializer) = materializer else {
+            self.clear();
+            return TimelineHoverPreviewUpdateOutcome::MissingMaterializer;
         };
 
         self.materialize_borrowed_frame(visual_target, borrowed_frame, materializer)
@@ -163,6 +192,7 @@ impl TimelineHoverPreviewRenderState {
 
         match materialization.outcome {
             SharedVideoFrameMaterializationOutcome::Ready { materialized_frame } => {
+                self.loading = None;
                 self.ready = Some(TimelineHoverPreviewReadyFrame {
                     visual_target,
                     renderable_frame: materialized_frame.into_renderable_present_frame(),
@@ -202,6 +232,18 @@ impl TimelineHoverPreviewRenderState {
             .map(|ready| ready.visual_target.target() == target)
             .unwrap_or(false)
     }
+
+    fn show_loading(&mut self, visual_target: TimelineHoverVisualTarget) {
+        // Loading не должен показывать старый кадр как nearest/approximate preview.
+        self.ready = None;
+        self.loading = Some(visual_target);
+    }
+
+    #[cfg(test)]
+    fn is_loading_for_target(&self, target: TimelineHoverTarget) -> bool {
+        self.loading
+            .is_some_and(|loading| loading.target() == target)
+    }
 }
 
 /// Строит physical viewport preview-а из logical egui placement-а.
@@ -233,4 +275,65 @@ fn hover_preview_viewport(
     );
 
     raw_viewport_from_ui_rect(preview_rect, pixels_per_point)
+}
+
+#[cfg(test)]
+mod tests {
+    use frame_server_core::TimelineHoverPrepareLookupMissReason;
+    use media_core::MediaTime;
+
+    use super::*;
+
+    fn visual_target(seconds: u64) -> TimelineHoverVisualTarget {
+        TimelineHoverVisualTarget::new(
+            TimelineHoverTarget::new(MediaTime::from_secs(seconds)),
+            crate::ui::timeline::TimelineHoverPreviewPlacement::new(
+                egui::pos2(50.0, 20.0),
+                egui::Rect::from_min_size(egui::pos2(0.0, 10.0), egui::vec2(100.0, 12.0)),
+            ),
+        )
+    }
+
+    #[test]
+    fn network_opening_sets_preview_only_loading_state() {
+        let mut state = TimelineHoverPreviewRenderState::default();
+        let visual_target = visual_target(12);
+        let borrow_outcome = PlayerTimelineHoverPrepareBorrowOutcome::Miss(
+            TimelineHoverPrepareLookupMissReason::NoEntryForKey,
+        );
+
+        let outcome = state.update_from_borrow(
+            visual_target,
+            borrow_outcome,
+            TimelineHoverPreviewLoadState::NetworkOpening {
+                target: visual_target.target(),
+            },
+            None,
+        );
+
+        assert_eq!(outcome, TimelineHoverPreviewUpdateOutcome::Loading);
+        assert!(state.is_loading_for_target(visual_target.target()));
+    }
+
+    #[test]
+    fn network_opening_for_other_target_stays_working_set_miss() {
+        let mut state = TimelineHoverPreviewRenderState::default();
+        let current_visual_target = visual_target(12);
+        let other_target = visual_target(13).target();
+        let borrow_outcome = PlayerTimelineHoverPrepareBorrowOutcome::Miss(
+            TimelineHoverPrepareLookupMissReason::NoEntryForKey,
+        );
+
+        let outcome = state.update_from_borrow(
+            current_visual_target,
+            borrow_outcome,
+            TimelineHoverPreviewLoadState::NetworkOpening {
+                target: other_target,
+            },
+            None,
+        );
+
+        assert_eq!(outcome, TimelineHoverPreviewUpdateOutcome::WorkingSetMiss);
+        assert!(!state.is_loading_for_target(current_visual_target.target()));
+    }
 }

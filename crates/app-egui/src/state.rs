@@ -32,7 +32,9 @@ use video_present_core::VideoFrameLease;
 use video_vaapi::VaapiVideoBackendFactory;
 use winit::window::Window;
 
-use crate::frame_prepare::{TimelineHoverPreviewRenderInput, TimelineHoverPreviewRenderState};
+use crate::frame_prepare::{
+    TimelineHoverPreviewLoadState, TimelineHoverPreviewRenderInput, TimelineHoverPreviewRenderState,
+};
 use crate::local_file_open::{
     LocalFileOpenEvent, LocalFileOpenJob, LocalFileOpenResult, local_file_prepare_error_message,
     preparing_local_file_message,
@@ -45,6 +47,7 @@ use crate::timeline_hover_intent::TimelineHoverIntentState;
 use crate::timeline_hover_prepare::{
     AppTimelineHoverPrepareController, AppTimelineHoverPrepareExecutor,
     TimelineHoverPrepareCancellationReason, TimelineHoverPrepareController,
+    TimelineHoverPrepareExecutorNoOpReason, TimelineHoverPrepareExecutorOutcome,
     TimelineHoverPreparePlaybackMode, TimelineHoverPrepareTarget,
     TimelineHoverPrepareTargetContext,
 };
