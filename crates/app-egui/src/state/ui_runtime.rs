@@ -1,6 +1,8 @@
 use super::telemetry_panel::TelemetryPanelState;
 use super::*;
-use crate::timeline_hover_intent::TimelineHoverFrameCoalescer;
+use crate::timeline_hover_intent::{TimelineHoverFrameCoalescer, TimelineHoverFrameOutcome};
+use crate::ui::timeline::{TimelineHoverTarget, TimelineHoverVisualTarget};
+use tracing::{trace, warn};
 
 /// Diagnostic route пользовательского timeline intent-а на границе app-egui -> player-core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +62,61 @@ pub(super) const fn settings_action_from_titlebar_icon_action(
 ) -> SettingsUiAction {
     match action {
         TitlebarIconAreaAction::ToggleSettingsSidebar => SettingsUiAction::ToggleOpen,
+    }
+}
+
+/// Строит S18 prepare target из player-owned guarded snapshot context-а.
+fn timeline_hover_prepare_target_from_snapshot(
+    player_snapshot: &PlayerSnapshot,
+    target: TimelineHoverTarget,
+) -> Option<TimelineHoverPrepareTarget> {
+    let prepare_snapshot = player_snapshot.timeline_hover_prepare?;
+    let target_pts = prepare_snapshot.target_pts(target.position());
+    let target_bucket = player_core::TimelineHoverPrepareSnapshot::target_bucket(target_pts);
+    let target_context = TimelineHoverPrepareTargetContext::new(
+        prepare_snapshot.source_revision(),
+        prepare_snapshot.backend_revision(),
+        prepare_snapshot.track_selection(),
+        prepare_snapshot.hover_generation(),
+        prepare_snapshot.exactness_policy(),
+    );
+
+    match TimelineHoverPrepareTarget::new(
+        target_context,
+        target_pts,
+        target_bucket,
+        target_pts,
+        target_pts,
+        0,
+        timeline_hover_prepare_playback_mode(player_snapshot.playback_state),
+    ) {
+        Ok(prepare_target) => Some(prepare_target),
+        Err(error) => {
+            warn!(
+                ?error,
+                "Timeline hover prepare target rejected internally inconsistent span"
+            );
+            None
+        }
+    }
+}
+
+/// Runtime playback mode влияет только на typed executor degrade/admission.
+const fn timeline_hover_prepare_playback_mode(
+    playback_state: PlaybackState,
+) -> TimelineHoverPreparePlaybackMode {
+    match playback_state {
+        PlaybackState::Paused
+        | PlaybackState::Stopped
+        | PlaybackState::Idle
+        | PlaybackState::Ended => TimelineHoverPreparePlaybackMode::PausedOrStopped,
+        PlaybackState::Scrubbing => TimelineHoverPreparePlaybackMode::LiveScrubActive,
+        PlaybackState::Opening
+        | PlaybackState::Playing
+        | PlaybackState::Buffering
+        | PlaybackState::Seeking
+        | PlaybackState::Draining
+        | PlaybackState::Failed => TimelineHoverPreparePlaybackMode::ActivePlayback,
     }
 }
 
@@ -238,7 +295,7 @@ impl AppState {
 
         let post_ui_actions_started_at = Instant::now();
         self.timeline_ui_state = timeline_ui_state;
-        self.handle_control_actions(window, control_actions);
+        self.handle_control_actions(window, player_snapshot, control_actions);
         let post_ui_actions_elapsed = post_ui_actions_started_at.elapsed();
 
         RenderedAppUi {
@@ -262,7 +319,12 @@ impl AppState {
     }
 
     /// Применяет действия controls после завершения egui pass.
-    pub(super) fn handle_control_actions(&mut self, window: &Window, actions: Vec<ControlAction>) {
+    pub(super) fn handle_control_actions(
+        &mut self,
+        window: &Window,
+        player_snapshot: &PlayerSnapshot,
+        actions: Vec<ControlAction>,
+    ) {
         let mut timeline_hover_coalescer = TimelineHoverFrameCoalescer::default();
 
         for action in actions {
@@ -303,9 +365,92 @@ impl AppState {
             }
         }
 
-        timeline_hover_coalescer.finish(
+        let hover_frame_outcome = timeline_hover_coalescer.finish(
             &mut self.timeline_hover_intent_state,
             self.committed_config_snapshot.hover_preview_enabled(),
+        );
+        let should_retry_pending_preview = hover_frame_outcome.visual_presentation_target.is_none()
+            && !hover_frame_outcome.visual_presentation_cleared;
+        self.apply_timeline_hover_frame_outcome(player_snapshot, hover_frame_outcome);
+        if should_retry_pending_preview
+            && let Some(visual_target) = self.timeline_hover_intent_state.pending_visual_target()
+        {
+            self.update_timeline_hover_preview(player_snapshot, visual_target);
+        }
+    }
+
+    /// Применяет coalesced S24 hover intent к единому S18/S25 prepare+preview path-у.
+    fn apply_timeline_hover_frame_outcome(
+        &mut self,
+        player_snapshot: &PlayerSnapshot,
+        outcome: TimelineHoverFrameOutcome,
+    ) {
+        if outcome.invisible_prepare_cleared {
+            self.timeline_hover_prepare_controller
+                .cancel_active_span(TimelineHoverPrepareCancellationReason::TimelineLeft);
+        }
+        if outcome.visual_presentation_cleared {
+            self.timeline_hover_preview_render_state.clear();
+        }
+
+        if let Some(target) = outcome.invisible_prepare_target {
+            self.prepare_timeline_hover_target(player_snapshot, target);
+        }
+
+        if let Some(visual_target) = outcome.visual_presentation_target {
+            self.update_timeline_hover_preview(player_snapshot, visual_target);
+        }
+    }
+
+    /// Запускает controller request для invisible prepare stream-а.
+    fn prepare_timeline_hover_target(
+        &mut self,
+        player_snapshot: &PlayerSnapshot,
+        target: TimelineHoverTarget,
+    ) {
+        let Some(prepare_target) =
+            timeline_hover_prepare_target_from_snapshot(player_snapshot, target)
+        else {
+            self.timeline_hover_prepare_controller
+                .cancel_active_span(TimelineHoverPrepareCancellationReason::SourceSwitched);
+            return;
+        };
+
+        let controller_outcome = self
+            .timeline_hover_prepare_controller
+            .prepare_hover_target(prepare_target);
+        trace!(
+            outcome = ?controller_outcome,
+            "Timeline hover prepare target processed"
+        );
+    }
+
+    /// Borrow/materialize visual preview из того же shared prepared working set-а.
+    fn update_timeline_hover_preview(
+        &mut self,
+        player_snapshot: &PlayerSnapshot,
+        visual_target: TimelineHoverVisualTarget,
+    ) {
+        let Some(prepare_target) =
+            timeline_hover_prepare_target_from_snapshot(player_snapshot, visual_target.target())
+        else {
+            self.timeline_hover_preview_render_state.clear();
+            return;
+        };
+        let lookup_request = prepare_target.lookup_request();
+        let borrow_outcome = self
+            .timeline_hover_prepare_controller
+            .executor()
+            .borrow_prepared_frame(lookup_request);
+        let materializer = self.wgpu_frame_materializer.as_deref();
+        let preview_outcome = self.timeline_hover_preview_render_state.update_from_borrow(
+            visual_target,
+            borrow_outcome,
+            materializer,
+        );
+        trace!(
+            outcome = ?preview_outcome,
+            "Timeline hover preview materialization processed"
         );
     }
 

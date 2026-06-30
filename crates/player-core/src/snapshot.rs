@@ -1,7 +1,12 @@
 use std::time::Duration;
 
+use frame_server_core::{
+    BackendRevision, FrameExactnessPolicy, ScrubGenerationToken, ScrubTrackSelection,
+    SourceRevision, TimelineHoverFrameBucket,
+};
 use media_core::{
-    MediaDuration, MediaTime, TimelineNotSeekableReason, TimelineSnapshot, TrackKind,
+    MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason, TimelineSnapshot, TrackKind,
+    TrackTimestamp,
 };
 use video_core::{DecodedPixelFormat, FrameMemoryPath};
 
@@ -48,6 +53,9 @@ pub struct PlayerSnapshot {
 
     /// Кадр, который renderer может показать сейчас.
     pub current_video_frame: Option<VideoFrameSnapshot>,
+
+    /// Player-owned guarded context для hover prepare/preview shared working set-а.
+    pub timeline_hover_prepare: Option<TimelineHoverPrepareSnapshot>,
 
     /// Поколение render resources; меняется при полной смене media pipeline.
     pub render_generation: u64,
@@ -130,6 +138,7 @@ impl Default for PlayerSnapshot {
             available_qualities: Vec::new(),
             active_backend: BackendSnapshot::default(),
             current_video_frame: None,
+            timeline_hover_prepare: None,
             render_generation: 0,
             video_frame_duration_estimate: Duration::ZERO,
             audio_buffer: AudioBufferSnapshot::default(),
@@ -139,6 +148,111 @@ impl Default for PlayerSnapshot {
             last_error: None,
             capability_summary: None,
         }
+    }
+}
+
+/// Player-owned context для S25 hover prepare/preview shared working set-а.
+///
+/// App получает только guard-значения и timebase для построения того же lookup key,
+/// который `player-core` позже использует при S17 SeekLanding promotion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimelineHoverPrepareSnapshot {
+    /// Активный video track, в timebase которого строится target PTS.
+    video_track: TrackId,
+
+    /// Активный audio track; нужен для совпадения prepared key с SeekLanding.
+    audio_track: Option<TrackId>,
+
+    /// Timebase video track-а для детерминированного MediaTime -> TrackTimestamp.
+    video_track_time_base: TimeBase,
+
+    /// Source guard из player-owned prepared seek context-а.
+    source_revision: SourceRevision,
+
+    /// Backend guard из player-owned prepared seek context-а.
+    backend_revision: BackendRevision,
+
+    /// Поколение будущего SeekLanding/scrub target-а.
+    hover_generation: ScrubGenerationToken,
+
+    /// Exactness policy prepared working set-а.
+    exactness_policy: FrameExactnessPolicy,
+}
+
+impl TimelineHoverPrepareSnapshot {
+    /// Создаёт snapshot только из player-owned session/snapshot builder-а.
+    #[must_use]
+    pub(crate) const fn new(
+        video_track: TrackId,
+        audio_track: Option<TrackId>,
+        video_track_time_base: TimeBase,
+        source_revision: SourceRevision,
+        backend_revision: BackendRevision,
+        hover_generation: ScrubGenerationToken,
+        exactness_policy: FrameExactnessPolicy,
+    ) -> Self {
+        Self {
+            video_track,
+            audio_track,
+            video_track_time_base,
+            source_revision,
+            backend_revision,
+            hover_generation,
+            exactness_policy,
+        }
+    }
+
+    /// Возвращает source guard без раскрытия способа хранения snapshot-а.
+    #[must_use]
+    pub const fn source_revision(self) -> SourceRevision {
+        self.source_revision
+    }
+
+    /// Возвращает backend guard без доступа к player session internals.
+    #[must_use]
+    pub const fn backend_revision(self) -> BackendRevision {
+        self.backend_revision
+    }
+
+    /// Возвращает generation token, который совпадает с будущим SeekLanding key.
+    #[must_use]
+    pub const fn hover_generation(self) -> ScrubGenerationToken {
+        self.hover_generation
+    }
+
+    /// Возвращает exactness policy для shared prepared working set lookup-а.
+    #[must_use]
+    pub const fn exactness_policy(self) -> FrameExactnessPolicy {
+        self.exactness_policy
+    }
+
+    /// Собирает track selection точно в форме, ожидаемой prepared SeekLanding.
+    #[must_use]
+    pub fn track_selection(self) -> ScrubTrackSelection {
+        match self.audio_track {
+            Some(audio_track) => ScrubTrackSelection::with_audio(self.video_track, audio_track),
+            None => ScrubTrackSelection::video_only(self.video_track),
+        }
+    }
+
+    /// Переводит media position в PTS выбранного video track-а.
+    #[must_use]
+    pub fn target_pts(self, target_position: MediaTime) -> TrackTimestamp {
+        let units = self
+            .video_track_time_base
+            .duration_to_track_units_saturating(MediaDuration::from_duration(
+                target_position.as_duration(),
+            ));
+        TrackTimestamp::new(self.video_track, units.get(), self.video_track_time_base)
+    }
+
+    /// Строит bucket тем же способом, что S17 promotion lookup.
+    #[must_use]
+    pub fn target_bucket(target_pts: TrackTimestamp) -> TimelineHoverFrameBucket {
+        let micros = target_pts.to_media_time().as_duration().as_micros();
+        let bucket = i64::try_from(micros).unwrap_or(i64::MAX);
+
+        TimelineHoverFrameBucket::new(bucket)
     }
 }
 

@@ -123,6 +123,25 @@ pub(super) enum CachedPresentFrameDiscardReason {
     PlayerFatalError,
 }
 
+impl CachedPresentFrameDiscardReason {
+    /// Эти причины означают смену/закрытие source context-а для hover prepare key.
+    const fn clears_timeline_hover_source_context(self) -> bool {
+        matches!(
+            self,
+            Self::MediaOpenBoundary
+                | Self::CurrentVideoFrameMissing
+                | Self::SourceLabelChanged
+                | Self::RenderGenerationChanged
+                | Self::PlayerMediaOpenRequested
+                | Self::PlayerMediaOpened
+                | Self::PlayerStopped
+                | Self::PlayerFailed
+                | Self::PlayerShutdownRequested
+                | Self::PlayerFatalError
+        )
+    }
+}
+
 /// Данные для pure-проверки, остаётся ли cached frame валидным для текущего player snapshot-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CachedPresentFrameValidationState {
@@ -405,6 +424,11 @@ impl AppState {
         if self.cached_renderable_present_frame.is_some() {
             debug!(?reason, "Clearing cached present frame");
         }
+        if reason.clears_timeline_hover_source_context() {
+            self.timeline_hover_prepare_controller
+                .cancel_active_span(TimelineHoverPrepareCancellationReason::SourceSwitched);
+        }
+        self.timeline_hover_preview_render_state.clear();
         self.cached_renderable_present_frame = None;
     }
 

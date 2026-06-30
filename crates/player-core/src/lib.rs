@@ -90,8 +90,8 @@ pub(crate) use session::{
 };
 pub use snapshot::{
     AudioBufferSnapshot, BackendSnapshot, FrameCounters, PlayerSnapshot, QualitySummary,
-    QueueSnapshot, TexturePoolSnapshot, TrackSelectionSnapshot, TrackSummarySnapshot,
-    VideoFrameSnapshot,
+    QueueSnapshot, TexturePoolSnapshot, TimelineHoverPrepareSnapshot, TrackSelectionSnapshot,
+    TrackSummarySnapshot, VideoFrameSnapshot,
 };
 pub use state::PlaybackState;
 pub use worker::{

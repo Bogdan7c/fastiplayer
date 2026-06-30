@@ -33,10 +33,15 @@ use crate::ui::window_chrome::{WindowChromeAction, WindowChromeResizeDirection};
 
 #[path = "frame_prepare/shared_frame_materialization.rs"]
 mod shared_frame_materialization;
+#[path = "frame_prepare/timeline_hover_preview.rs"]
+mod timeline_hover_preview;
 
 use shared_frame_materialization::{
     SharedVideoFrameLeaseRole, SharedVideoFrameMaterializationOutcome,
     SharedVideoFrameMaterializationRequest, materialize_shared_video_frame,
+};
+pub(crate) use timeline_hover_preview::{
+    TimelineHoverPreviewRenderInput, TimelineHoverPreviewRenderState,
 };
 
 /// Результат UI stage до входа в renderer/surface critical path.
@@ -1455,18 +1460,38 @@ fn submit_render_frame(
         }
     };
     let submitted_video_frame = video_frame.is_some();
+    let hover_preview_frame =
+        match app_state.timeline_hover_preview_render_input(prepared_ui_frame.screen) {
+            Ok(hover_preview_frame) => hover_preview_frame,
+            Err(error) => {
+                report_video_render_boundary_error(app_state, error);
+                None
+            }
+        };
+    let submitted_hover_preview_frame = hover_preview_frame.is_some();
+    let hover_preview = hover_preview_frame.as_ref().map(|hover_preview_frame| {
+        render_wgpu_shell::RenderVideoOverlayInput {
+            frame: &hover_preview_frame.video_frame,
+            viewport: hover_preview_frame.viewport,
+        }
+    });
 
     let render_frame_outcome = renderer.render_frame(render_wgpu_shell::RenderFrameInput {
         window,
         video_frame: video_frame.as_ref(),
+        hover_preview,
         egui_paint_jobs: prepared_ui_frame.paint_jobs,
         egui_textures_delta: prepared_ui_frame.textures_delta,
         screen: prepared_ui_frame.screen,
         video_viewport: prepared_ui_frame.video_viewport,
         video_exclusion_rects: prepared_ui_frame.video_exclusion_rects,
     });
+    drop(hover_preview_frame);
     if render_outcome_marks_video_submitted(&render_frame_outcome, submitted_video_frame) {
         prepared_video_frame.mark_submitted_to_renderer();
+    }
+    if render_outcome_marks_video_submitted(&render_frame_outcome, submitted_hover_preview_frame) {
+        app_state.mark_timeline_hover_preview_submitted_to_renderer();
     }
 
     match render_frame_outcome {

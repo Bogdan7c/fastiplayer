@@ -1,0 +1,7 @@
+# Render Video Hover Preview S25
+
+- S25 introduces an optional hover-preview video overlay pass without changing the main playback video pass semantics. `render-wgpu-shell::RenderFrameInput` now has `hover_preview: Option<RenderVideoOverlayInput<'_>>`, where the overlay input contains a borrowed `WgpuRenderableFrame` plus a renderer-neutral physical `RenderViewport`.
+- Shell render order is main video pass -> egui overlay pass -> optional hover-preview video overlay pass -> submit/present. The preview viewport is computed by `app-egui` from egui logical hover geometry and passed as physical pixels; the renderer still letterboxes the actual video frame inside that viewport.
+- `render-wgpu-video::WgpuVideoRenderer::render_or_clear` remains the main path: `None` clears the target to black, `Some(frame)` renders with `VideoRenderTargetLoad::ClearBlack`, and diagnostics continue to describe the main video pass. `WgpuVideoRenderer::render_overlay` is the preview path: it renders only when a frame is present, uses `VideoRenderTargetLoad::LoadExisting`, and intentionally does not overwrite main video diagnostics.
+- Concrete NV12, P010, and HostPlanar renderers read `pass_context.target_load.as_wgpu_load_op()` and always keep `StoreOp::Store`; overlay must never use `LoadOp::Clear`, or it will erase the main video/egui target. Focused test: `cargo test -p render-wgpu-video overlay_video_target_load`.
+- No CPU thumbnail/RGBA fallback was added. Preview uses the same WGPU materialization paths as playback/scrub override through app-egui's S15 shared helper.

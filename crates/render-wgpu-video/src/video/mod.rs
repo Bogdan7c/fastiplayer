@@ -410,6 +410,29 @@ pub(crate) struct VideoRenderPassContext<'pass> {
 
     /// Видимые scissor-области, в которых video pass реально рисует кадр.
     pub(crate) draw_rects: Vec<RenderViewport>,
+
+    /// LoadOp render target-а для main/overlay video pass-а.
+    pub(crate) target_load: VideoRenderTargetLoad,
+}
+
+/// Явный load mode video pass-а, чтобы overlay preview не очищал main surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VideoRenderTargetLoad {
+    /// Main video pass начинает кадр с black clear.
+    ClearBlack,
+
+    /// Overlay pass сохраняет уже нарисованные video/egui pixels.
+    LoadExisting,
+}
+
+impl VideoRenderTargetLoad {
+    /// Преобразует intent в WGPU attachment load operation.
+    pub(crate) const fn as_wgpu_load_op(self) -> wgpu::LoadOp<wgpu::Color> {
+        match self {
+            Self::ClearBlack => wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            Self::LoadExisting => wgpu::LoadOp::Load,
+        }
+    }
 }
 
 /// Контракт одного video render pass-а между shell и renderer.
@@ -806,6 +829,29 @@ impl WgpuVideoRenderer {
     ///
     /// Возвращает `true`, если video pass реально нарисовал кадр.
     pub fn render_or_clear(&mut self, input: WgpuVideoRenderInput<'_, '_>) -> Result<bool> {
+        if input.frame.is_none() {
+            self.diagnostics = RenderDiagnostics::default();
+            clear_to_black(input.target, input.encoder);
+            return Ok(false);
+        }
+        self.render_video_frame(input, VideoRenderTargetLoad::ClearBlack, true)
+    }
+
+    /// Рендерит video overlay поверх уже нарисованного target-а без clear.
+    pub fn render_overlay(&mut self, input: WgpuVideoRenderInput<'_, '_>) -> Result<bool> {
+        if input.frame.is_none() {
+            return Ok(false);
+        }
+        self.render_video_frame(input, VideoRenderTargetLoad::LoadExisting, false)
+    }
+
+    /// Общий path для main и overlay video pass-ов.
+    fn render_video_frame(
+        &mut self,
+        input: WgpuVideoRenderInput<'_, '_>,
+        target_load: VideoRenderTargetLoad,
+        update_diagnostics: bool,
+    ) -> Result<bool> {
         let WgpuVideoRenderInput {
             frame,
             video_viewport,
@@ -816,15 +862,17 @@ impl WgpuVideoRenderer {
             queue,
         } = input;
         let Some(frame) = frame else {
-            self.diagnostics = RenderDiagnostics::default();
-            clear_to_black(target, encoder);
             return Ok(false);
         };
-        self.diagnostics = RenderDiagnostics::default();
+        if update_diagnostics {
+            self.diagnostics = RenderDiagnostics::default();
+        }
         let video_viewport =
             video_viewport.clamp_to_surface(self.surface_size.0, self.surface_size.1);
         let draw_rects = visible_video_draw_rects(video_viewport, video_exclusion_rects);
-        self.diagnostics.video_draw_rect_count = draw_rects.len();
+        if update_diagnostics {
+            self.diagnostics.video_draw_rect_count = draw_rects.len();
+        }
         let mut pass_context = VideoRenderPassContext {
             target,
             encoder,
@@ -832,6 +880,7 @@ impl WgpuVideoRenderer {
             queue,
             viewport: video_viewport,
             draw_rects,
+            target_load,
         };
 
         if !frame.metadata.has_display_size() {
@@ -853,7 +902,9 @@ impl WgpuVideoRenderer {
                     uv_view,
                     &mut pass_context,
                 )?;
-                self.diagnostics.active_color_path = Some(active_color_path);
+                if update_diagnostics {
+                    self.diagnostics.active_color_path = Some(active_color_path);
+                }
                 Ok(true)
             }
             RendererDispatch::P010 => {
@@ -866,8 +917,11 @@ impl WgpuVideoRenderer {
                     uv_view,
                     &mut pass_context,
                 )?;
-                self.diagnostics.active_color_path = Some(p010_diagnostics.active_color_path);
-                self.diagnostics.hdr_reference_defaults = p010_diagnostics.hdr_reference_defaults;
+                if update_diagnostics {
+                    self.diagnostics.active_color_path = Some(p010_diagnostics.active_color_path);
+                    self.diagnostics.hdr_reference_defaults =
+                        p010_diagnostics.hdr_reference_defaults;
+                }
                 Ok(true)
             }
             RendererDispatch::HostYuvPlanar => {
@@ -886,9 +940,12 @@ impl WgpuVideoRenderer {
                     v_view,
                     &mut pass_context,
                 )?;
-                self.diagnostics.active_color_path = Some(host_yuv_diagnostics.active_color_path);
-                self.diagnostics.hdr_reference_defaults =
-                    host_yuv_diagnostics.hdr_reference_defaults;
+                if update_diagnostics {
+                    self.diagnostics.active_color_path =
+                        Some(host_yuv_diagnostics.active_color_path);
+                    self.diagnostics.hdr_reference_defaults =
+                        host_yuv_diagnostics.hdr_reference_defaults;
+                }
                 Ok(true)
             }
         }
@@ -1377,6 +1434,18 @@ mod tests {
             visible_video_draw_rects(video_viewport, &[]),
             vec![video_viewport]
         );
+    }
+
+    #[test]
+    fn overlay_video_target_load_preserves_existing_surface_contents() {
+        assert!(matches!(
+            VideoRenderTargetLoad::LoadExisting.as_wgpu_load_op(),
+            wgpu::LoadOp::Load
+        ));
+        assert!(matches!(
+            VideoRenderTargetLoad::ClearBlack.as_wgpu_load_op(),
+            wgpu::LoadOp::Clear(_)
+        ));
     }
 
     /// Строит renderer-neutral frame с заданным render-размером для letterbox тестов.

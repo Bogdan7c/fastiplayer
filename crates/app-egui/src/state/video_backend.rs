@@ -106,6 +106,9 @@ impl AppState {
         }
 
         self.clear_main_visual_override();
+        self.timeline_hover_prepare_controller
+            .cancel_active_span(TimelineHoverPrepareCancellationReason::BackendSwitched);
+        self.timeline_hover_preview_render_state.clear();
         self.wgpu_frame_materializer = Some(frame_materializer);
 
         // Живая смена backend-а (класс реально меняется): морозим последний кадр, пока

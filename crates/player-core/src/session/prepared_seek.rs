@@ -24,7 +24,10 @@ use super::timeline_hover_prepare_handoff::PlayerTimelineHoverPrepareHandoff;
 use crate::seek_state::{
     PlaybackResumeIntent, SeekCommitState, SeekLandingExecution, SeekLandingGenerationStartError,
 };
-use crate::{PlaybackState, PlayerError, PlayerErrorKind, PlayerResult, SeekMode};
+use crate::{
+    PlaybackState, PlayerError, PlayerErrorKind, PlayerResult, SeekMode,
+    TimelineHoverPrepareSnapshot,
+};
 
 /// S17A/S17B пока не имеют отдельного source revision provider-а внутри player-core.
 /// Playback generation остаётся реальным stale guard-ом для decoded frames.
@@ -956,10 +959,7 @@ fn prepared_seek_landing_lookup_request(
 
 /// Индексирует target PTS по normalized timeline; actual exactness проверяет working set.
 fn prepared_seek_landing_bucket(target_pts: TrackTimestamp) -> TimelineHoverFrameBucket {
-    let micros = target_pts.to_media_time().as_duration().as_micros();
-    let bucket = i64::try_from(micros).unwrap_or(i64::MAX);
-
-    TimelineHoverFrameBucket::new(bucket)
+    TimelineHoverPrepareSnapshot::target_bucket(target_pts)
 }
 
 /// Возвращает generation token для player-owned one-shot SeekLanding context-а.

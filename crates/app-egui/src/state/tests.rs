@@ -32,8 +32,19 @@ use crate::timeline_hover_intent::{
     TimelineHoverFrameCoalescer, TimelineHoverIntentState, TimelineHoverPreviewSlot,
 };
 use crate::ui::timeline::{
-    TimelineAction, TimelineHoverIntent, TimelineHoverTarget, TimelineUiState,
+    TimelineAction, TimelineHoverIntent, TimelineHoverPreviewPlacement, TimelineHoverTarget,
+    TimelineHoverVisualTarget, TimelineUiState,
 };
+
+fn hover_visual_target(seconds: u64) -> TimelineHoverVisualTarget {
+    TimelineHoverVisualTarget::new(
+        TimelineHoverTarget::new(MediaTime::from_secs(seconds)),
+        TimelineHoverPreviewPlacement::new(
+            egui::pos2(50.0, 20.0),
+            egui::Rect::from_min_size(egui::pos2(0.0, 10.0), egui::vec2(100.0, 12.0)),
+        ),
+    )
+}
 
 /// Собирает source `state` и child-модулей для guard-тестов после split-а.
 fn state_source_for_architecture_tests() -> String {
@@ -174,17 +185,19 @@ fn timeline_hover_intent_has_no_player_command_surface() {
 fn state_timeline_hover_updates_coalesce_to_latest_target() {
     let mut hover_state = TimelineHoverIntentState::default();
     let mut coalescer = TimelineHoverFrameCoalescer::default();
-    let early_target = TimelineHoverTarget::new(MediaTime::from_secs(10));
     let latest_target = TimelineHoverTarget::new(MediaTime::from_secs(90));
 
-    coalescer.record(TimelineHoverIntent::Target(early_target));
-    coalescer.record(TimelineHoverIntent::Target(latest_target));
+    coalescer.record(TimelineHoverIntent::Target(hover_visual_target(10)));
+    coalescer.record(TimelineHoverIntent::Target(hover_visual_target(90)));
     let outcome = coalescer.finish(&mut hover_state, true);
 
     assert_eq!(hover_state.active_target(), Some(latest_target));
     assert_eq!(hover_state.invisible_prepare_target_count(), 1);
     assert_eq!(outcome.invisible_prepare_target, Some(latest_target));
-    assert_eq!(outcome.visual_presentation_target, Some(latest_target));
+    assert_eq!(
+        outcome.visual_presentation_target,
+        Some(hover_visual_target(90))
+    );
 }
 
 /// `hover_preview_enabled=false` глушит только visual slot, но не invisible prepare intent.
@@ -194,7 +207,7 @@ fn state_timeline_hover_preview_disabled_still_emits_invisible_prepare() {
     let mut coalescer = TimelineHoverFrameCoalescer::default();
     let target = TimelineHoverTarget::new(MediaTime::from_secs(55));
 
-    coalescer.record(TimelineHoverIntent::Target(target));
+    coalescer.record(TimelineHoverIntent::Target(hover_visual_target(55)));
     let outcome = coalescer.finish(&mut hover_state, false);
 
     assert_eq!(hover_state.active_target(), Some(target));
@@ -215,9 +228,7 @@ fn state_timeline_hover_does_not_change_paused_or_stopped_snapshot_state() {
 
         let mut hover_state = TimelineHoverIntentState::default();
         let mut coalescer = TimelineHoverFrameCoalescer::default();
-        coalescer.record(TimelineHoverIntent::Target(TimelineHoverTarget::new(
-            MediaTime::from_secs(12),
-        )));
+        coalescer.record(TimelineHoverIntent::Target(hover_visual_target(12)));
         coalescer.finish(&mut hover_state, true);
 
         assert_eq!(player_snapshot.playback_state, playback_state);

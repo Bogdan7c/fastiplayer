@@ -32,6 +32,7 @@ use video_present_core::VideoFrameLease;
 use video_vaapi::VaapiVideoBackendFactory;
 use winit::window::Window;
 
+use crate::frame_prepare::{TimelineHoverPreviewRenderInput, TimelineHoverPreviewRenderState};
 use crate::local_file_open::{
     LocalFileOpenEvent, LocalFileOpenJob, LocalFileOpenResult, local_file_prepare_error_message,
     preparing_local_file_message,
@@ -43,7 +44,9 @@ use crate::telemetry::Telemetry;
 use crate::timeline_hover_intent::TimelineHoverIntentState;
 use crate::timeline_hover_prepare::{
     AppTimelineHoverPrepareController, AppTimelineHoverPrepareExecutor,
-    TimelineHoverPrepareController,
+    TimelineHoverPrepareCancellationReason, TimelineHoverPrepareController,
+    TimelineHoverPreparePlaybackMode, TimelineHoverPrepareTarget,
+    TimelineHoverPrepareTargetContext,
 };
 use crate::ui::animation::AnimationState;
 use crate::ui::player_controls::{self, ControlAction};
@@ -251,6 +254,9 @@ pub struct AppState {
     /// App-owned latest hover intent + placeholder preview state без player commands.
     timeline_hover_intent_state: TimelineHoverIntentState,
 
+    /// Materialized hover preview borrow для отдельного render target-а.
+    timeline_hover_preview_render_state: TimelineHoverPreviewRenderState,
+
     /// Кэш строк telemetry panel; живёт в UI-слое и не владеет playback/render state.
     telemetry_panel_cache: TelemetryPanelCache,
 
@@ -343,6 +349,7 @@ impl AppState {
             local_file_open_job: None,
             timeline_ui_state: TimelineUiState::default(),
             timeline_hover_intent_state: TimelineHoverIntentState::default(),
+            timeline_hover_preview_render_state: TimelineHoverPreviewRenderState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
             sidebar_slide: SlideTransition::closed(),
             sidebar_slide_last_tick: None,
@@ -355,6 +362,21 @@ impl AppState {
         &mut self,
     ) -> &mut AppTimelineHoverPrepareController {
         &mut self.timeline_hover_prepare_controller
+    }
+
+    /// Собирает borrowed render input текущего hover preview state-а.
+    pub(crate) fn timeline_hover_preview_render_input(
+        &self,
+        screen: render_wgpu_shell::RenderScreenDescriptor,
+    ) -> Result<Option<TimelineHoverPreviewRenderInput<'_>>, PlayerRenderError> {
+        self.timeline_hover_preview_render_state
+            .render_input(screen)
+    }
+
+    /// Помечает preview lease как отправленный renderer-у после successful present.
+    pub(crate) fn mark_timeline_hover_preview_submitted_to_renderer(&self) {
+        self.timeline_hover_preview_render_state
+            .mark_submitted_to_renderer();
     }
 
     /// Продвигает анимацию выезда settings sidebar к runtime open-state.

@@ -275,6 +275,15 @@ impl AppTimelineHoverPrepareExecutor {
     pub(crate) fn new(handoff: PlayerTimelineHoverPrepareHandoff) -> Self {
         Self { handoff }
     }
+
+    /// Borrow shared prepared entry для HoverPreview без promotion ownership transfer.
+    #[must_use]
+    pub(crate) fn borrow_prepared_frame(
+        &self,
+        request: TimelineHoverPrepareFrameLookupRequest,
+    ) -> PlayerTimelineHoverPrepareBorrowOutcome {
+        self.handoff.borrow_prepared_frame(request)
+    }
 }
 
 impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {

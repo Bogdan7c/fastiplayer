@@ -1,11 +1,13 @@
 use std::time::Duration;
 
 use codec_core::{ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction};
+use frame_server_core::{BackendRevision, FrameExactnessPolicy, SourceRevision};
 use media_core::TrackInfo;
 
 use crate::{
     AudioBufferSnapshot, BackendSnapshot, FrameCounters, PlayerSnapshot, QueueSnapshot,
-    TexturePoolSnapshot, TrackSelectionSnapshot, TrackSummarySnapshot, VideoFrameSnapshot,
+    TexturePoolSnapshot, TimelineHoverPrepareSnapshot, TrackSelectionSnapshot,
+    TrackSummarySnapshot, VideoFrameSnapshot,
 };
 
 use super::PlayerSession;
@@ -46,6 +48,7 @@ impl<'session> PlayerSnapshotBuilder<'session> {
         snapshot.tracks = self.track_summary_snapshot();
         snapshot.active_backend = self.backend_snapshot();
         snapshot.current_video_frame = self.current_video_frame_snapshot();
+        snapshot.timeline_hover_prepare = self.timeline_hover_prepare_snapshot();
         snapshot.render_generation = self.session.pipeline.render_generation();
         snapshot.video_frame_duration_estimate =
             self.session.pipeline.video_frame_duration_estimate();
@@ -83,6 +86,46 @@ impl<'session> PlayerSnapshotBuilder<'session> {
             audio_track: self.session.pipeline.selected_audio_track_id(),
             subtitle_track: self.session.snapshot.selected_tracks.subtitle_track,
         }
+    }
+
+    /// Собирает player-owned guard context для app-side hover preview lookup-а.
+    fn timeline_hover_prepare_snapshot(&self) -> Option<TimelineHoverPrepareSnapshot> {
+        let video_track_id = self.session.pipeline.selected_video_track_id()?;
+        let video_track_time_base = self
+            .session
+            .pipeline
+            .tracks()
+            .iter()
+            .find(|track| track.id == video_track_id && track.kind == media_core::TrackKind::Video)
+            .and_then(|track| track.time_base)?;
+        let playback_generation = self
+            .session
+            .seek_runtime
+            .seek_landing_playback_generation()
+            .map(frame_server_core::PlaybackGeneration::get)
+            .or_else(|| self.session.pipeline.seek_generation().checked_add(1))?;
+        let scrub_generation = self
+            .session
+            .seek_runtime
+            .next_seek_landing_scrub_generation_after_supersede()
+            .unwrap_or_else(|| {
+                frame_server_core::ScrubGeneration::new(
+                    super::prepared_seek::SEEK_LANDING_FIRST_SCRUB_GENERATION,
+                )
+            });
+
+        Some(TimelineHoverPrepareSnapshot::new(
+            video_track_id,
+            self.session.pipeline.selected_audio_track_id(),
+            video_track_time_base,
+            SourceRevision::new(super::prepared_seek::SEEK_LANDING_SOURCE_REVISION_UNTRACKED),
+            BackendRevision::new(super::prepared_seek::SEEK_LANDING_BACKEND_REVISION_UNTRACKED),
+            super::prepared_seek::seek_landing_generation_token(
+                playback_generation,
+                scrub_generation,
+            ),
+            FrameExactnessPolicy::TargetOrAfter,
+        ))
     }
 
     /// Собирает compact track metadata для UI.

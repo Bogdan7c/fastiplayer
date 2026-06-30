@@ -228,7 +228,7 @@ impl Nv12VideoRenderer {
                     view: pass_context.target,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: pass_context.target_load.as_wgpu_load_op(),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
