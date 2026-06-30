@@ -8,6 +8,7 @@ pub mod internal_vaapi_frame;
 pub mod player_core_adapter;
 pub mod probe;
 pub mod resource_pool;
+mod shared_hardware_owner;
 pub mod zero_copy_surface_pool;
 
 #[cfg(test)]

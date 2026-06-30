@@ -30,6 +30,9 @@ use crate::codec_adapter::{
 };
 use crate::frame_pool::DmaFramePool;
 use crate::resource_pool::FrameResourcePool;
+use crate::shared_hardware_owner::{
+    VaapiPlaybackHardwareReservation, VaapiSharedHardwareOwner, VaapiSharedHardwareOwnerContext,
+};
 
 /// Production default количества кадров в VA DMA-пуле.
 ///
@@ -1351,6 +1354,12 @@ pub struct VaapiVideoDecoder {
     /// и из render thread (descriptor lookup / release).
     resource_pool: Arc<Mutex<FrameResourcePool>>,
 
+    /// Shared VA owner boundary для playback/hover branch reservation accounting.
+    _shared_hardware_owner: VaapiSharedHardwareOwner,
+
+    /// Playback reservation живёт столько же, сколько VA decoder.
+    _playback_hardware_reservation: VaapiPlaybackHardwareReservation,
+
     /// Очередь готовых к отображению кадров.
     ///
     /// Кадры добавляются при обработке `FrameReady` event и возвращаются
@@ -1472,11 +1481,31 @@ impl VaapiVideoDecoder {
         )
         .map_err(|e| anyhow::anyhow!("Failed to create frame pool: {}", e))?;
 
+        // V1 hardware-hover minimum follows the backend ready-publish window:
+        // it is backend-reported context, not a generic hardcoded `1`.
+        let hover_surface_capability_minimum_frames = runtime_config.ready_queue_frames;
+        let shared_hardware_context = VaapiSharedHardwareOwnerContext::from_surface_accounting(
+            runtime_config.surface_pool_frames,
+            hover_surface_capability_minimum_frames,
+        );
+        let shared_hardware_owner = VaapiSharedHardwareOwner::new(shared_hardware_context);
+        let playback_hardware_reservation = shared_hardware_owner
+            .reserve_playback_branch()
+            .map_err(|error| anyhow::anyhow!("Failed to reserve VAAPI playback branch: {error}"))?;
+        let hover_capability_report = shared_hardware_owner.hover_capability_report();
+
         info!(
             backend_name,
             codec = %adapter_codec,
             surface_pool_frames = runtime_config.surface_pool_frames,
             ready_queue_frames = runtime_config.ready_queue_frames,
+            playback_reserved_surface_frames = playback_hardware_reservation.surface_frames().get(),
+            hover_surface_minimum_frames = shared_hardware_context
+                .hover_surface_capability_minimum()
+                .get(),
+            hover_surface_provider_capacity = shared_hardware_context
+                .hover_surface_provider_capacity(),
+            hover_capability_report = ?hover_capability_report,
             max_suppressed_reclaim_frames = runtime_config.max_suppressed_reclaim_frames,
             approximate_available_reclaim_slots =
                 reclaim_capacity.approximate_available_reclaim_slots(0),
@@ -1490,6 +1519,8 @@ impl VaapiVideoDecoder {
             adapter,
             frame_pool,
             resource_pool,
+            _shared_hardware_owner: shared_hardware_owner,
+            _playback_hardware_reservation: playback_hardware_reservation,
             ready_queue: VecDeque::new(),
             runtime_config,
             suppressed_reclaim_queue: VecDeque::new(),

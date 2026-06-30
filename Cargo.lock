@@ -4797,6 +4797,7 @@ dependencies = [
  "codec-core",
  "cros-codecs 0.0.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "crossbeam-channel",
+ "frame-server-core",
  "gbm",
  "gbm-sys",
  "media-core",
