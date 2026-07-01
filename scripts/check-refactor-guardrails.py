@@ -86,6 +86,13 @@ VIDEO_PRESENT_CORE_ALLOWED_DEPENDENCIES = frozenset(
     }
 )
 
+FRAME_SERVER_CORE_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "media-core",
+        "video-present-core",
+    }
+)
+
 FFMPEG_FORBIDDEN_DEPENDENCIES = frozenset(
     {
         "ac-ffmpeg",
@@ -323,6 +330,192 @@ FFMPEG_HARDWARE_DECODE_PATTERNS = (
     ),
 )
 
+DIRECT_VAAPI_DISPLAY_ALLOWED_ROOTS = (
+    Path("crates/video-vaapi"),
+    Path("crates/cros-codecs-patch"),
+    Path("crates/cros-libva-patch"),
+)
+
+DIRECT_VAAPI_DISPLAY_PATTERNS = (
+    (
+        re.compile(r"\b(?:cros_codecs::libva|libva)::Display::open(?:_drm_display)?\b"),
+        "VA display/session открывается только внутри video-vaapi owner boundary",
+    ),
+    (
+        re.compile(r"\bopen_drm_display\s*\("),
+        "DRM VA display/session открывается только внутри video-vaapi owner boundary",
+    ),
+    (
+        re.compile(r"\bVADisplay\b|\bvaGetDisplay\b|\bvaInitialize\b"),
+        "raw VA display handle/API не должен выходить за video-vaapi boundary",
+    ),
+)
+
+MAIN_VIDEO_REUSED_DECODER_SCAN_PATHS = (
+    Path("crates/player-core/src/session/scrub_driver.rs"),
+    Path("crates/player-core/src/session/prepared_seek.rs"),
+)
+
+MAIN_VIDEO_SECOND_SESSION_PATTERNS = (
+    (
+        re.compile(
+            r"\b(PlayerSession::new|PlayerWorker::new|VideoBackendFactory|StartedVideoBackend)\b"
+        ),
+        "main-video SeekLanding/LiveScrub должен reuse playback session/decoder, а не стартовать вторую session/backend",
+    ),
+    (
+        re.compile(
+            r"\b(VaapiVideoBackendFactory|FfmpegSoftwareVideoBackendFactory)::new"
+        ),
+        "main-video scrub/prepared seek не должен создавать второй decoder backend",
+    ),
+)
+
+HARDWARE_HOVER_SHARED_OWNER_SCAN_PATHS = (
+    Path("crates/app-egui/src/timeline_hover_prepare.rs"),
+    Path("crates/app-egui/src/frame_prepare/timeline_hover_preview.rs"),
+    Path("crates/app-egui/src/state/ui_runtime.rs"),
+    Path("crates/frame-server-core/src"),
+)
+
+HARDWARE_HOVER_INDEPENDENT_SESSION_PATTERNS = (
+    (
+        re.compile(
+            r"\b(VaapiVideoBackendFactory|VideoBackendFactory|StartedVideoBackend)\b"
+        ),
+        "active-playback hardware hover должен идти через shared VA owner/resource pool, а не через independent backend session",
+    ),
+    *DIRECT_VAAPI_DISPLAY_PATTERNS,
+)
+
+PREPARED_BRANCH_PROMOTION_ALLOWED_ROOTS = (
+    Path("crates/frame-server-core"),
+    Path("crates/player-core/src/session/prepared_seek.rs"),
+)
+
+PREPARED_BRANCH_PROMOTION_PATTERNS = (
+    (
+        re.compile(r"\bpromote_prepared_frame\s*\("),
+        "prepared branch promotion разрешён только frame-server-core boundary и S17 player-core owner-у",
+    ),
+    (
+        re.compile(r"\bTimelineHoverPreparePromotionOutcome\b"),
+        "promotion outcome не должен становиться app/render/backend ownership API",
+    ),
+)
+
+HOVER_PREVIEW_OWNERSHIP_SCAN_PATHS = (
+    Path("crates/app-egui/src/frame_prepare/timeline_hover_preview.rs"),
+)
+
+HOVER_PREVIEW_OWNERSHIP_PATTERNS = (
+    (
+        re.compile(r"\bpromote_prepared_frame\s*\("),
+        "HoverPreview может только borrow/materialize prepared frame, но не promote branch ownership",
+    ),
+    (
+        re.compile(r"\btry_demote_promoted_frame_to_recent_superseded\s*\("),
+        "HoverPreview не владеет demote-back/recent-superseded branch ownership",
+    ),
+    (
+        re.compile(r"\brelease_hover_owned_entries_for_session_end\s*\("),
+        "HoverPreview render state не должен release-ить hover-owned branch storage",
+    ),
+    (
+        re.compile(r"\bTimelineHoverPreparePromotionOutcome\b"),
+        "HoverPreview не должен принимать promotion outcome вместо borrow outcome",
+    ),
+)
+
+REQUIRED_SOURCE_ANCHORS = (
+    (
+        Path("crates/config/src/frame_server.rs"),
+        (
+            "hover_pool_frames: FrameServerBudgetConfig::Auto,",
+            "hover_thread_count: FrameServerBudgetConfig::Auto,",
+        ),
+        "hover budget persisted defaults должны оставаться `auto`",
+    ),
+    (
+        Path("crates/frame-server-core/src/hover_budget_tests.rs"),
+        (
+            "fn hover_auto_selects_smallest_reported_positive_minimum_not_one()",
+            "fn hover_auto_does_not_use_playback_minus_one_maximize_policy()",
+            "fn hover_context_change_recomputes_backend_minimum_without_global_cache()",
+            "fn hover_fixed_budget_rejects_zero_and_has_no_static_upper_cap()",
+            "fn hover_pairwise_requires_hardware_surface_budget_below_playback()",
+            "fn hover_pairwise_requires_software_pool_and_thread_budgets_below_playback()",
+            "fn hover_capability_success_then_admission_pressure_failure_remains_distinct()",
+        ),
+        "frame-server-core hover budget tests должны закреплять auto/fixed/pairwise/admission semantics",
+    ),
+    (
+        Path("crates/app-egui/src/frame_server_budget.rs"),
+        (
+            "fn diagnostics_resolve_auto_from_backend_reported_minimums()",
+            "fn preflight_rejects_changed_fixed_budget_without_rewriting_config()",
+            "fn already_loaded_fixed_too_large_is_diagnostics_only()",
+            "fn admission_pressure_is_reported_without_preflight_reject()",
+        ),
+        "app hover budget preflight не должен clamp/rewrite fixed-too-large config и должен отделять pressure",
+    ),
+    (
+        Path("crates/video-vaapi/src/shared_hardware_owner/tests.rs"),
+        (
+            "fn capability_minimum_uses_context_and_is_not_global_one()",
+            "fn hover_admission_rejects_budget_at_or_above_playback_budget()",
+            "fn hover_admission_rejects_provider_pressure_separately_from_capability()",
+        ),
+        "VAAPI shared owner tests должны закреплять context minima и admission pressure",
+    ),
+    (
+        Path("crates/video-ffmpeg/src/software_hover.rs"),
+        (
+            "fn capability_reports_current_pool_and_thread_minimums()",
+            "fn admission_rejects_capacity_pressure_without_rewriting_capability()",
+        ),
+        "software hover owner tests должны закреплять current-context minima и pressure split",
+    ),
+    (
+        Path("crates/app-egui/src/state/ui_runtime.rs"),
+        (
+            ".borrow_prepared_frame(lookup_request)",
+            "update_from_borrow(",
+        ),
+        "HoverPreview должен брать prepared frame через borrow boundary",
+    ),
+    (
+        Path("crates/app-egui/src/frame_prepare/timeline_hover_preview.rs"),
+        (
+            "SharedVideoFrameLeaseRole::HoverPreview",
+            "materialize_shared_video_frame(",
+        ),
+        "HoverPreview должен materialize borrowed lease через shared helper",
+    ),
+    (
+        Path("crates/render-wgpu-shell/src/frame.rs"),
+        (
+            "hover_preview: Option<RenderVideoOverlayInput",
+            "pub struct RenderVideoOverlayInput",
+        ),
+        "HoverPreview должен идти в отдельный preview render target/overlay input",
+    ),
+    (
+        Path("crates/player-core/src/session/prepared_seek.rs"),
+        (
+            "working_set.promote_prepared_frame(request)",
+        ),
+        "S17 player-core остаётся owner-ом promotion prepared branch into playback ownership",
+    ),
+    (
+        Path("crates/app-egui/src/state/tests.rs"),
+        (
+            "fn state_timeline_hover_preview_disabled_still_emits_invisible_prepare()",
+        ),
+        "`hover_preview_enabled=false` должен выключать только visual preview, не invisible prepare",
+    ),
+)
+
 
 class GuardrailError(RuntimeError):
     """Ошибка входных данных или запуска Cargo, а не нарушение архитектурной policy."""
@@ -556,6 +749,14 @@ def find_dependency_violations(
         )
     )
     violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"frame-server-core"}),
+            FRAME_SERVER_CORE_ALLOWED_DEPENDENCIES,
+            "frame-server-core остаётся нейтральным frame-server boundary без player/app/render/backend/service deps",
+        )
+    )
+    violations.extend(
         find_forbidden_dependencies(
             all_dependency_map,
             frozenset(all_dependency_map).difference({"video-ffmpeg"}),
@@ -630,6 +831,12 @@ def find_source_policy_violations(repo_root: Path) -> list[SourcePolicyViolation
     violations.extend(find_direct_ffmpeg_type_violations(repo_root))
     violations.extend(find_cpu_rgb_conversion_violations(repo_root))
     violations.extend(find_ffmpeg_hardware_decode_violations(repo_root))
+    violations.extend(find_direct_vaapi_display_violations(repo_root))
+    violations.extend(find_main_video_second_session_violations(repo_root))
+    violations.extend(find_hardware_hover_independent_session_violations(repo_root))
+    violations.extend(find_prepared_branch_promotion_violations(repo_root))
+    violations.extend(find_hover_preview_ownership_violations(repo_root))
+    violations.extend(find_required_source_anchor_violations(repo_root))
     return sorted(
         violations,
         key=lambda violation: (str(violation.path), violation.line_number, violation.rule),
@@ -752,6 +959,103 @@ def find_ffmpeg_hardware_decode_violations(repo_root: Path) -> list[SourcePolicy
     )
 
 
+def find_direct_vaapi_display_violations(repo_root: Path) -> list[SourcePolicyViolation]:
+    """Запрещает raw VA display/session API за пределами `video-vaapi` owner-а."""
+
+    violations: list[SourcePolicyViolation] = []
+    for relative_path in iter_files_with_suffixes(
+        repo_root,
+        SOURCE_POLICY_SCAN_ROOTS,
+        RUST_SOURCE_SUFFIXES,
+    ):
+        if path_is_under_any(relative_path, DIRECT_VAAPI_DISPLAY_ALLOWED_ROOTS):
+            continue
+        violations.extend(
+            find_regex_line_violations(repo_root, relative_path, DIRECT_VAAPI_DISPLAY_PATTERNS)
+        )
+    return violations
+
+
+def find_main_video_second_session_violations(repo_root: Path) -> list[SourcePolicyViolation]:
+    """Проверяет, что main-video scrub/seek route не создаёт второй backend/session."""
+
+    return find_regex_violations_in_paths(
+        repo_root,
+        MAIN_VIDEO_REUSED_DECODER_SCAN_PATHS,
+        MAIN_VIDEO_SECOND_SESSION_PATTERNS,
+    )
+
+
+def find_hardware_hover_independent_session_violations(
+    repo_root: Path,
+) -> list[SourcePolicyViolation]:
+    """Запрещает hardware hover backend/session вне shared VA owner/resource pool."""
+
+    return find_regex_violations_in_paths(
+        repo_root,
+        HARDWARE_HOVER_SHARED_OWNER_SCAN_PATHS,
+        HARDWARE_HOVER_INDEPENDENT_SESSION_PATTERNS,
+    )
+
+
+def find_prepared_branch_promotion_violations(repo_root: Path) -> list[SourcePolicyViolation]:
+    """Проверяет, что branch promotion не становится app/render/backend API."""
+
+    violations: list[SourcePolicyViolation] = []
+    for relative_path in iter_files_with_suffixes(
+        repo_root,
+        SOURCE_POLICY_SCAN_ROOTS,
+        RUST_SOURCE_SUFFIXES,
+    ):
+        if path_is_under_any(relative_path, PREPARED_BRANCH_PROMOTION_ALLOWED_ROOTS):
+            continue
+        violations.extend(
+            find_regex_line_violations(repo_root, relative_path, PREPARED_BRANCH_PROMOTION_PATTERNS)
+        )
+    return violations
+
+
+def find_hover_preview_ownership_violations(repo_root: Path) -> list[SourcePolicyViolation]:
+    """Проверяет, что visual HoverPreview не владеет promotion/release lifecycle."""
+
+    return find_regex_violations_in_paths(
+        repo_root,
+        HOVER_PREVIEW_OWNERSHIP_SCAN_PATHS,
+        HOVER_PREVIEW_OWNERSHIP_PATTERNS,
+    )
+
+
+def find_required_source_anchor_violations(repo_root: Path) -> list[SourcePolicyViolation]:
+    """Проверяет наличие focused тестов и boundary callsites, закрепляющих S31 policy."""
+
+    violations: list[SourcePolicyViolation] = []
+    for relative_path, required_anchors, rule in REQUIRED_SOURCE_ANCHORS:
+        path = repo_root / relative_path
+        if not path.is_file():
+            violations.append(
+                SourcePolicyViolation(
+                    path=relative_path,
+                    line_number=0,
+                    rule=rule,
+                    matched_text="required source file is missing",
+                )
+            )
+            continue
+
+        text = read_text_lossy(path)
+        for required_anchor in required_anchors:
+            if required_anchor not in text:
+                violations.append(
+                    SourcePolicyViolation(
+                        path=relative_path,
+                        line_number=0,
+                        rule=rule,
+                        matched_text=f"missing `{required_anchor}`",
+                    )
+                )
+    return violations
+
+
 def find_regex_violations_in_roots(
     repo_root: Path,
     relative_roots: tuple[str, ...],
@@ -762,6 +1066,19 @@ def find_regex_violations_in_roots(
 
     violations: list[SourcePolicyViolation] = []
     for relative_path in iter_files_with_suffixes(repo_root, relative_roots, suffixes):
+        violations.extend(find_regex_line_violations(repo_root, relative_path, patterns))
+    return violations
+
+
+def find_regex_violations_in_paths(
+    repo_root: Path,
+    relative_paths: tuple[Path, ...],
+    patterns: tuple[tuple[re.Pattern[str], str], ...],
+) -> list[SourcePolicyViolation]:
+    """Ищет regex guardrails в точечных файлах/директориях."""
+
+    violations: list[SourcePolicyViolation] = []
+    for relative_path in iter_paths_with_suffixes(repo_root, relative_paths, RUST_SOURCE_SUFFIXES):
         violations.extend(find_regex_line_violations(repo_root, relative_path, patterns))
     return violations
 
@@ -812,6 +1129,31 @@ def iter_files_with_suffixes(
             if path.is_file() and path.suffix in suffixes:
                 text_files.append(path.relative_to(repo_root))
     return sorted(text_files)
+
+
+def iter_paths_with_suffixes(
+    repo_root: Path,
+    relative_paths: tuple[Path, ...],
+    suffixes: frozenset[str],
+) -> list[Path]:
+    """Возвращает файлы из точечных path-ов, где path может быть файлом или директорией."""
+
+    source_files: set[Path] = set()
+    for relative_path in relative_paths:
+        path = repo_root / relative_path
+        if not path.exists():
+            raise GuardrailError(f"source path `{relative_path}` отсутствует")
+        if path.is_file():
+            if path.suffix in suffixes:
+                source_files.add(relative_path)
+            continue
+        if path.is_dir():
+            for child_path in path.rglob("*"):
+                if child_path.is_file() and child_path.suffix in suffixes:
+                    source_files.add(child_path.relative_to(repo_root))
+            continue
+        raise GuardrailError(f"source path `{relative_path}` не файл и не директория")
+    return sorted(source_files)
 
 
 def path_is_under_any(relative_path: Path, allowed_roots: tuple[Path, ...]) -> bool:
