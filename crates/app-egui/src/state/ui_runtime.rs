@@ -277,6 +277,7 @@ impl AppState {
         let mut telemetry_panel_cache_elapsed = Duration::ZERO;
         let telemetry_panel_rows = if show_telemetry {
             let telemetry_panel_cache_started_at = Instant::now();
+            let frame_server_diagnostics = self.frame_server_diagnostics_snapshot();
             let panel_rows = self.telemetry_panel_cache.rows_for_frame(
                 Instant::now(),
                 TelemetryPanelState {
@@ -284,6 +285,7 @@ impl AppState {
                     telemetry: &telemetry,
                     render_diagnostics,
                     timeline_ui_state: &timeline_ui_state,
+                    frame_server_diagnostics,
                     backend_name: &backend_name,
                     start_time,
                     frame_duration_estimate_ms,
@@ -504,10 +506,15 @@ impl AppState {
         }
         if outcome.visual_presentation_cleared {
             self.timeline_hover_preview_render_state.clear();
+            self.frame_server_diagnostics.record_hover_preview_cleared();
         }
 
         let mut preview_load_state = TimelineHoverPreviewLoadState::Idle;
         if let Some(target) = outcome.invisible_prepare_target {
+            if !self.committed_config_snapshot.hover_preview_enabled() {
+                self.frame_server_diagnostics
+                    .record_hover_preview_disabled_by_config();
+            }
             let prepare_outcome = self.prepare_timeline_hover_target(player_snapshot, target);
             preview_load_state = prepare_outcome.preview_load_state;
             if prepare_outcome.request_accepted {
@@ -542,6 +549,12 @@ impl AppState {
             .prepare_hover_target(prepare_target);
         let preview_load_state =
             timeline_hover_preview_load_state(target, controller_outcome.executor_outcome());
+        self.frame_server_diagnostics.record_hover_prepare_outcome(
+            controller_outcome.transition(),
+            controller_outcome.executor_outcome(),
+            controller_outcome.completion_outcome(),
+            preview_load_state,
+        );
         trace!(
             outcome = ?controller_outcome,
             "Timeline hover prepare target processed"
@@ -560,6 +573,8 @@ impl AppState {
             .note_timeline_left(now, grace_duration)
         {
             TimelineHoverLeaveGraceStartOutcome::Pending { expires_at } => {
+                self.frame_server_diagnostics
+                    .record_hover_leave_grace_started();
                 trace!(
                     ?grace_duration,
                     ?expires_at,
@@ -575,6 +590,8 @@ impl AppState {
     /// Re-enter до expiry сохраняет prepared entries и отменяет pending release.
     fn cancel_timeline_hover_leave_grace_for_reenter(&mut self) {
         if self.timeline_hover_leave_grace_state.cancel_for_reenter() {
+            self.frame_server_diagnostics
+                .record_hover_leave_grace_reentered_before_expiry();
             trace!("Timeline hover leave grace cancelled by re-enter");
         }
     }
@@ -613,6 +630,8 @@ impl AppState {
             total_entries_released = release_outcome.total_entries_released(),
             "Timeline hover prepared entries released for session end"
         );
+        self.frame_server_diagnostics
+            .record_hover_leave_grace_release(reason, release_outcome);
     }
 
     /// Borrow/materialize visual preview из того же shared prepared working set-а.
@@ -626,10 +645,12 @@ impl AppState {
             timeline_hover_prepare_target_from_snapshot(player_snapshot, visual_target.target())
         else {
             self.timeline_hover_preview_render_state.clear();
+            self.frame_server_diagnostics.record_hover_preview_cleared();
             return;
         };
         if !timeline_hover_prepare_allows_preview_borrow(prepare_target.playback_mode()) {
             self.timeline_hover_preview_render_state.clear();
+            self.frame_server_diagnostics.record_hover_preview_cleared();
             return;
         }
         let lookup_request = prepare_target.lookup_request();
@@ -648,6 +669,8 @@ impl AppState {
             outcome = ?preview_outcome,
             "Timeline hover preview materialization processed"
         );
+        self.frame_server_diagnostics
+            .record_hover_preview_update(load_state, preview_outcome);
     }
 
     /// Снимает live-scrub completion-gate по worker landing-сигналу.

@@ -24,6 +24,49 @@ pub(crate) struct TimelineHoverNetworkOpenController {
 
     /// Terminal target не auto-retry-ится, пока target/source generation не изменится.
     held_terminal_target: Option<HeldNetworkHoverTarget>,
+
+    /// Bounded diagnostics controller-owned событий без target/source history.
+    diagnostics: TimelineHoverNetworkOpenDiagnosticsCounters,
+}
+
+/// Read-only diagnostics network open controller-а без source URL/target history.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TimelineHoverNetworkOpenDiagnosticsSnapshot {
+    /// Текущий throttle между starts network opens.
+    pub(crate) inter_start_throttle: Duration,
+
+    /// Generation source/config context-а для stale-result diagnostics.
+    pub(crate) source_generation: u64,
+
+    /// Количество in-flight jobs; controller policy допускает только 0 или 1.
+    pub(crate) in_flight_count: u8,
+
+    /// Есть ли terminal target, который не будет auto-retry без смены target/source.
+    pub(crate) failed_target_held: bool,
+
+    /// Сколько starts прошло без задержки из-за `network_hover_prepare_throttle_ms = 0`.
+    pub(crate) zero_throttle_no_delay_count: u64,
+
+    /// Сколько раз новый target заменил in-flight intent без второго parallel open-а.
+    pub(crate) latest_only_replaced_in_flight_count: u64,
+
+    /// Сколько late results были проигнорированы как stale.
+    pub(crate) stale_late_result_ignored_count: u64,
+
+    /// Сколько раз throttle заблокировал старт.
+    pub(crate) throttle_delay_count: u64,
+
+    /// Последняя рассчитанная задержка до разрешённого старта.
+    pub(crate) latest_throttle_delay: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TimelineHoverNetworkOpenDiagnosticsCounters {
+    zero_throttle_no_delay_count: u64,
+    latest_only_replaced_in_flight_count: u64,
+    stale_late_result_ignored_count: u64,
+    throttle_delay_count: u64,
+    latest_throttle_delay: Option<Duration>,
 }
 
 impl TimelineHoverNetworkOpenController {
@@ -36,12 +79,30 @@ impl TimelineHoverNetworkOpenController {
             last_started_at: None,
             active_job: None,
             held_terminal_target: None,
+            diagnostics: TimelineHoverNetworkOpenDiagnosticsCounters::default(),
         }
     }
 
     /// Обновляет throttle из committed config; source identity при этом не меняется.
     pub(crate) fn update_inter_start_throttle(&mut self, inter_start_throttle: Duration) {
         self.inter_start_throttle = inter_start_throttle;
+    }
+
+    /// Возвращает compact state для telemetry без доступа к job receiver/source identity.
+    pub(crate) fn diagnostics_snapshot(&self) -> TimelineHoverNetworkOpenDiagnosticsSnapshot {
+        TimelineHoverNetworkOpenDiagnosticsSnapshot {
+            inter_start_throttle: self.inter_start_throttle,
+            source_generation: self.source_generation,
+            in_flight_count: u8::from(self.active_job.is_some()),
+            failed_target_held: self.held_terminal_target.is_some(),
+            zero_throttle_no_delay_count: self.diagnostics.zero_throttle_no_delay_count,
+            latest_only_replaced_in_flight_count: self
+                .diagnostics
+                .latest_only_replaced_in_flight_count,
+            stale_late_result_ignored_count: self.diagnostics.stale_late_result_ignored_count,
+            throttle_delay_count: self.diagnostics.throttle_delay_count,
+            latest_throttle_delay: self.diagnostics.latest_throttle_delay,
+        }
     }
 
     /// Test-only наблюдение за pending job без раскрытия storage в production API.
@@ -95,17 +156,22 @@ impl TimelineHoverNetworkOpenController {
                     // Для того же source target replacement остаётся latest-only:
                     // stale result будет drained/ignored, а второй open не стартует.
                     job.mark_stale();
+                    self.diagnostics.record_latest_only_replaced_in_flight();
                 }
                 return TimelineHoverNetworkOpenOutcome::Opening;
             }
         }
 
         let now = Instant::now();
-        if !self.throttle_allows_start(now) {
+        if let Some(delay) = self.throttle_blocking_delay(now) {
+            self.diagnostics.record_throttle_delay(delay);
             return TimelineHoverNetworkOpenOutcome::Throttled;
         }
 
         let receiver = spawn_network_open(source_factory.clone());
+        if self.inter_start_throttle.is_zero() {
+            self.diagnostics.record_zero_throttle_no_delay();
+        }
         self.active_job = Some(TimelineHoverNetworkOpenJob {
             target,
             source_identity,
@@ -124,6 +190,7 @@ impl TimelineHoverNetworkOpenController {
                 let completed_job = self.active_job.take().expect("job was just observed");
                 if completed_job.stale || completed_job.source_generation != self.source_generation
                 {
+                    self.diagnostics.record_stale_late_result_ignored();
                     return Some(TimelineHoverNetworkOpenOutcome::Opening);
                 }
 
@@ -156,6 +223,7 @@ impl TimelineHoverNetworkOpenController {
                 let completed_job = self.active_job.take().expect("job was just observed");
                 if completed_job.stale || completed_job.source_generation != self.source_generation
                 {
+                    self.diagnostics.record_stale_late_result_ignored();
                     return Some(TimelineHoverNetworkOpenOutcome::Opening);
                 }
 
@@ -177,14 +245,37 @@ impl TimelineHoverNetworkOpenController {
             })
     }
 
-    fn throttle_allows_start(&self, now: Instant) -> bool {
+    fn throttle_blocking_delay(&self, now: Instant) -> Option<Duration> {
         if self.inter_start_throttle.is_zero() {
-            return true;
+            return None;
         }
 
-        self.last_started_at
-            .and_then(|last_started_at| now.checked_duration_since(last_started_at))
-            .is_none_or(|elapsed| elapsed >= self.inter_start_throttle)
+        let elapsed = self
+            .last_started_at
+            .and_then(|last_started_at| now.checked_duration_since(last_started_at))?;
+        (elapsed < self.inter_start_throttle)
+            .then_some(self.inter_start_throttle.saturating_sub(elapsed))
+    }
+}
+
+impl TimelineHoverNetworkOpenDiagnosticsCounters {
+    fn record_zero_throttle_no_delay(&mut self) {
+        self.zero_throttle_no_delay_count = self.zero_throttle_no_delay_count.saturating_add(1);
+    }
+
+    fn record_latest_only_replaced_in_flight(&mut self) {
+        self.latest_only_replaced_in_flight_count =
+            self.latest_only_replaced_in_flight_count.saturating_add(1);
+    }
+
+    fn record_stale_late_result_ignored(&mut self) {
+        self.stale_late_result_ignored_count =
+            self.stale_late_result_ignored_count.saturating_add(1);
+    }
+
+    fn record_throttle_delay(&mut self, delay: Duration) {
+        self.throttle_delay_count = self.throttle_delay_count.saturating_add(1);
+        self.latest_throttle_delay = Some(delay);
     }
 }
 
@@ -319,6 +410,13 @@ mod tests {
             TimelineHoverNetworkOpenOutcome::Throttled
         ));
         assert!(controller.active_job.is_none());
+        let diagnostics = controller.diagnostics_snapshot();
+        assert_eq!(diagnostics.throttle_delay_count, 1);
+        assert!(
+            diagnostics
+                .latest_throttle_delay
+                .is_some_and(|delay| delay <= Duration::from_secs(10))
+        );
     }
 
     #[test]
@@ -339,6 +437,12 @@ mod tests {
         assert!(
             active_job.stale,
             "new target must stale-mark the old job instead of queueing another open"
+        );
+        assert_eq!(
+            controller
+                .diagnostics_snapshot()
+                .latest_only_replaced_in_flight_count,
+            1
         );
     }
 
@@ -366,6 +470,12 @@ mod tests {
         assert!(
             controller.held_terminal_target.is_none(),
             "stale failures must not block retry of the latest target"
+        );
+        assert_eq!(
+            controller
+                .diagnostics_snapshot()
+                .stale_late_result_ignored_count,
+            1
         );
     }
 

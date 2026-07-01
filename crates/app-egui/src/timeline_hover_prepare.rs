@@ -15,7 +15,8 @@ use player_core::{PlayerTimelineHoverPrepareBorrowOutcome, PlayerTimelineHoverPr
 use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
 
 use crate::timeline_hover_network::{
-    TimelineHoverNetworkOpenController, TimelineHoverNetworkOpenOutcome,
+    TimelineHoverNetworkOpenController, TimelineHoverNetworkOpenDiagnosticsSnapshot,
+    TimelineHoverNetworkOpenOutcome,
 };
 use crate::timeline_hover_source::{
     TimelineHoverOpenFailedSourceKind, TimelineHoverOpenedSource, TimelineHoverSourceFactory,
@@ -147,8 +148,18 @@ pub(crate) struct TimelineHoverPrepareControllerOutcome {
 
 impl TimelineHoverPrepareControllerOutcome {
     #[must_use]
+    pub(crate) const fn transition(self) -> TimelineHoverPrepareControllerTransition {
+        self.transition
+    }
+
+    #[must_use]
     pub(crate) const fn executor_outcome(self) -> TimelineHoverPrepareExecutorOutcome {
         self.executor_outcome
+    }
+
+    #[must_use]
+    pub(crate) const fn completion_outcome(self) -> TimelineHoverPrepareCompletionOutcome {
+        self.completion_outcome
     }
 }
 
@@ -430,6 +441,14 @@ impl AppTimelineHoverPrepareExecutor {
     ) -> TimelineHoverPrepareSessionEndReleaseOutcome {
         self.handoff
             .release_hover_owned_entries_for_session_end(reason)
+    }
+
+    /// Read-only network open state для telemetry без раскрытия controller storage.
+    #[must_use]
+    pub(crate) fn network_open_diagnostics_snapshot(
+        &self,
+    ) -> TimelineHoverNetworkOpenDiagnosticsSnapshot {
+        self.network_open_controller.diagnostics_snapshot()
     }
 }
 
@@ -1289,6 +1308,18 @@ impl TimelineHoverPrepareSpanDiagnostics {
             decoded_frames,
             post_target_reorder_drain_frames,
         }
+    }
+
+    pub(crate) const fn decoded_packets(self) -> u32 {
+        self.decoded_packets
+    }
+
+    pub(crate) const fn decoded_frames(self) -> u32 {
+        self.decoded_frames
+    }
+
+    pub(crate) const fn post_target_reorder_drain_frames(self) -> u16 {
+        self.post_target_reorder_drain_frames
     }
 }
 

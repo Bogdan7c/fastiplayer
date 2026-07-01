@@ -85,7 +85,43 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::{TIMELINE_INLINE_FAILURE_DURATION, TimelineInlineStatusState};
+    use frame_server_core::{
+        BackendRevision, PlaybackGeneration, ScrubDriverOutcomeKind, ScrubEvent,
+        ScrubEventDiagnostics, ScrubExactnessPolicy, ScrubFailedEvent, ScrubFailureReason,
+        ScrubGeneration, ScrubGenerationToken, ScrubRequestKind, ScrubTarget, ScrubTargetContext,
+        ScrubTrackSelection, SourceRevision,
+    };
+    use media_core::{MediaTime, TimeBase, TrackId, TrackTimestamp};
     use std::time::{Duration, Instant};
+
+    fn scrub_context_for_tests() -> ScrubTargetContext {
+        let video_track = TrackId::new(7);
+        let time_base = TimeBase::new(1, 1_000).expect("валидная test timebase");
+
+        ScrubTargetContext::new(
+            SourceRevision::new(10),
+            BackendRevision::new(20),
+            ScrubTrackSelection::with_audio(video_track, TrackId::new(8)),
+            ScrubTarget::new(
+                MediaTime::from_millis(1_250),
+                TrackTimestamp::new(video_track, 1_250, time_base),
+            ),
+            ScrubExactnessPolicy::TargetOrAfter,
+            ScrubRequestKind::SeekLanding,
+            ScrubGenerationToken::new(PlaybackGeneration::new(30), ScrubGeneration::new(40)),
+        )
+    }
+
+    fn failed_scrub_event_for_tests(
+        reason: ScrubFailureReason,
+        driver_outcome: ScrubDriverOutcomeKind,
+    ) -> ScrubEvent {
+        ScrubEvent::Failed(ScrubFailedEvent {
+            context: scrub_context_for_tests(),
+            reason,
+            diagnostics: ScrubEventDiagnostics::new(driver_outcome),
+        })
+    }
 
     #[test]
     fn audio_failure_status_lives_for_fixed_2500_ms() {
@@ -113,6 +149,20 @@ mod tests {
 
         state.show_failure_for_tests("Audio resume failed", now);
         state.clear_for_timeline_action();
+
+        assert_eq!(state.visible_message(now), None);
+    }
+
+    #[test]
+    fn non_audio_frame_server_failure_stays_diagnostics_only() {
+        let mut state = TimelineInlineStatusState::default();
+        let now = Instant::now();
+        let event = failed_scrub_event_for_tests(
+            ScrubFailureReason::DecoderBackpressure,
+            ScrubDriverOutcomeKind::DecoderBackpressure,
+        );
+
+        state.handle_scrub_event(&event, now);
 
         assert_eq!(state.visible_message(now), None);
     }

@@ -65,6 +65,7 @@ use crate::video_pipeline_selector::{
     VideoBackendKind, VideoPipelinePlan, select_video_pipeline_plan,
 };
 
+mod frame_server_diagnostics;
 mod main_visual_override;
 mod media_jobs;
 mod present_frame_cache;
@@ -84,6 +85,9 @@ pub use present_frame_cache::PresentFrameAcquisition;
 pub use present_frame_cache::RenderablePresentFrame;
 pub(crate) use video_backend::BackendSwapVideoPhase;
 
+use frame_server_diagnostics::{
+    AppFrameServerDiagnosticsRecorder, AppFrameServerDiagnosticsSnapshot,
+};
 use main_visual_override::MainVisualOverrideState;
 use present_frame_cache::CachedRenderablePresentFrame;
 use telemetry_panel::TelemetryPanelCache;
@@ -222,6 +226,9 @@ pub struct AppState {
     /// Короткий inline статус timeline для scrub failures, owned только UI-слоем.
     timeline_inline_status: TimelineInlineStatusState,
 
+    /// App-owned diagnostics для hover/preview/grace state, который не живёт в player-core.
+    frame_server_diagnostics: AppFrameServerDiagnosticsRecorder,
+
     /// WGPU video materializer concrete backend-а; `player-core` его не видит.
     wgpu_frame_materializer: Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
 
@@ -351,6 +358,7 @@ impl AppState {
             cached_renderable_present_frame: None,
             main_visual_override_state: MainVisualOverrideState::default(),
             timeline_inline_status: TimelineInlineStatusState::default(),
+            frame_server_diagnostics: AppFrameServerDiagnosticsRecorder::default(),
             wgpu_frame_materializer: None,
             current_video_backend_kind: None,
             pending_video_backend_reselection: None,
@@ -376,6 +384,20 @@ impl AppState {
         &mut self,
     ) -> &mut AppTimelineHoverPrepareController {
         &mut self.timeline_hover_prepare_controller
+    }
+
+    /// Read-only diagnostics boundary для telemetry без доступа к AppState storage.
+    fn frame_server_diagnostics_snapshot(&self) -> AppFrameServerDiagnosticsSnapshot {
+        self.frame_server_diagnostics.snapshot(
+            self.committed_config_snapshot.hover_leave_grace_duration(),
+            self.timeline_hover_leave_grace_state.is_pending(),
+            self.committed_config_snapshot.hover_preview_enabled(),
+            self.timeline_hover_preview_render_state
+                .diagnostics_snapshot(),
+            self.timeline_hover_prepare_controller
+                .executor()
+                .network_open_diagnostics_snapshot(),
+        )
     }
 
     /// Собирает borrowed render input текущего hover preview state-а.

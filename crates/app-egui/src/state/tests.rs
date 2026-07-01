@@ -2,6 +2,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
+use frame_server_core::{
+    DeferredLiveScrubSettingsChange, LiveScrubDecodeMode, LiveScrubDiagnostics,
+    LiveScrubSettingsSnapshot, ScrubDiagnosticsRecorder, ScrubPreparedFrameDemoteRejectionKind,
+    ScrubPreparedFrameHitOutcome, ScrubPreparedFrameOwnershipEvent, ScrubResumeRunwayState,
+    TimelineHoverPrepareLookupMissReason, TimelineHoverPrepareSessionEndReleaseOutcome,
+};
 use media_core::MediaTime;
 use player_core::{
     MediaOpenRequest, MediaSource, MediaSummary, PlaybackResumeIntent, PlaybackState,
@@ -16,6 +22,9 @@ use video_core::{DecodedFrame, FrameResourceHandle};
 use video_frame_contract::VideoFramePixelLayout;
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
+use super::frame_server_diagnostics::{
+    AppFrameServerDiagnosticsRecorder, AppFrameServerDiagnosticsSnapshot,
+};
 use super::present_frame_cache::{
     CachedPresentFrameDiscardReason, CachedPresentFrameValidationState, PresentFrameIdentity,
     TextureBusyFallbackRejectReason, TextureBusyFallbackReuseState,
@@ -25,6 +34,7 @@ use super::present_frame_cache::{
 use super::telemetry_panel::{
     TELEMETRY_PANEL_REFRESH_INTERVAL, TelemetryPanelCache, TelemetryPanelRow, TelemetryPanelState,
 };
+use super::timeline_hover_leave_grace::TimelineHoverLeaveGraceReleaseReason;
 use super::ui_runtime::{
     control_action_cancels_timeline_hover_leave_grace,
     control_actions_include_timeline_pointer_target, raw_input_has_primary_pointer_press,
@@ -32,11 +42,20 @@ use super::ui_runtime::{
     timeline_hover_prepare_playback_mode,
 };
 use super::{AppFrameContext, AppState};
+use crate::frame_prepare::{
+    TimelineHoverPreviewLoadState, TimelineHoverPreviewRenderDiagnosticsSnapshot,
+    TimelineHoverPreviewUpdateOutcome,
+};
 use crate::telemetry::Telemetry;
 use crate::timeline_hover_intent::{
     TimelineHoverFrameCoalescer, TimelineHoverIntentState, TimelineHoverPreviewSlot,
 };
-use crate::timeline_hover_prepare::TimelineHoverPreparePlaybackMode;
+use crate::timeline_hover_network::TimelineHoverNetworkOpenDiagnosticsSnapshot;
+use crate::timeline_hover_prepare::{
+    TimelineHoverPrepareCompletionOutcome, TimelineHoverPrepareControllerTransition,
+    TimelineHoverPrepareExecutorNoOpReason, TimelineHoverPrepareExecutorOutcome,
+    TimelineHoverPreparePlaybackMode,
+};
 use crate::ui::player_controls::ControlAction;
 use crate::ui::timeline::{
     TimelineAction, TimelineHoverIntent, TimelineHoverPreviewPlacement, TimelineHoverTarget,
@@ -57,6 +76,7 @@ fn hover_visual_target(seconds: u64) -> TimelineHoverVisualTarget {
 fn state_source_for_architecture_tests() -> String {
     [
         include_str!("../state.rs"),
+        include_str!("frame_server_diagnostics.rs"),
         include_str!("media_jobs.rs"),
         include_str!("main_visual_override.rs"),
         include_str!("present_frame_cache.rs"),
@@ -115,11 +135,31 @@ fn telemetry_panel_state_for_tests<'state>(
     timeline_ui_state: &'state TimelineUiState,
     start_time: Instant,
 ) -> TelemetryPanelState<'state> {
+    telemetry_panel_state_for_tests_with_frame_server_diagnostics(
+        player_snapshot,
+        telemetry,
+        render_diagnostics,
+        timeline_ui_state,
+        start_time,
+        AppFrameServerDiagnosticsSnapshot::default(),
+    )
+}
+
+/// Создаёт input telemetry panel с явным frame-server snapshot.
+fn telemetry_panel_state_for_tests_with_frame_server_diagnostics<'state>(
+    player_snapshot: &'state PlayerSnapshot,
+    telemetry: &'state Telemetry,
+    render_diagnostics: &'state RenderDiagnostics,
+    timeline_ui_state: &'state TimelineUiState,
+    start_time: Instant,
+    frame_server_diagnostics: AppFrameServerDiagnosticsSnapshot,
+) -> TelemetryPanelState<'state> {
     TelemetryPanelState {
         player_snapshot,
         telemetry,
         render_diagnostics,
         timeline_ui_state,
+        frame_server_diagnostics,
         backend_name: "test-backend",
         start_time,
         frame_duration_estimate_ms: 16.67,
@@ -312,6 +352,124 @@ fn state_timeline_hover_preview_disabled_still_emits_invisible_prepare() {
     assert_eq!(outcome.visual_presentation_target, None);
 }
 
+/// App-owned diagnostics maps network hover opening to neutral S29A counters.
+#[test]
+fn frame_server_diagnostics_records_network_hover_opening() {
+    let mut diagnostics = AppFrameServerDiagnosticsRecorder::default();
+    let target = TimelineHoverTarget::new(MediaTime::from_secs(12));
+    let load_state = TimelineHoverPreviewLoadState::NetworkOpening { target };
+
+    diagnostics.record_hover_prepare_outcome(
+        TimelineHoverPrepareControllerTransition::Started,
+        TimelineHoverPrepareExecutorOutcome::NoOp {
+            reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackNetworkSourceOpening {
+                lookup_miss: TimelineHoverPrepareLookupMissReason::NoEntryForKey,
+            },
+        },
+        TimelineHoverPrepareCompletionOutcome::NoPreparedHit,
+        load_state,
+    );
+
+    let snapshot = diagnostics.snapshot(
+        Duration::from_millis(500),
+        false,
+        true,
+        TimelineHoverPreviewRenderDiagnosticsSnapshot::default(),
+        TimelineHoverNetworkOpenDiagnosticsSnapshot::default(),
+    );
+
+    assert_eq!(
+        snapshot
+            .scrub
+            .requests
+            .accepted
+            .timeline_hover_prepare_window,
+        1
+    );
+    assert_eq!(snapshot.scrub.working_set.misses, 1);
+    assert_eq!(snapshot.scrub.hover_prepare.network.opening, 1);
+    assert_eq!(
+        snapshot.scrub.hover_prepare.network.zero_throttle_no_delay,
+        0
+    );
+    assert_eq!(
+        snapshot
+            .scrub
+            .hover_prepare
+            .dependency_span
+            .incomplete_reasons
+            .network_opening,
+        1
+    );
+    assert_eq!(snapshot.hover_preview.latest_load_state, load_state);
+}
+
+/// App-owned diagnostics exposes leave grace and visual preview state as read-only snapshot.
+#[test]
+fn frame_server_diagnostics_snapshot_keeps_app_owned_hover_state() {
+    let mut diagnostics = AppFrameServerDiagnosticsRecorder::default();
+    let release_outcome = TimelineHoverPrepareSessionEndReleaseOutcome::new(2, 1);
+    let preview_render_state = TimelineHoverPreviewRenderDiagnosticsSnapshot {
+        ready: true,
+        loading_preview_only: false,
+    };
+    let network_open = TimelineHoverNetworkOpenDiagnosticsSnapshot {
+        inter_start_throttle: Duration::from_millis(300),
+        source_generation: 7,
+        in_flight_count: 1,
+        failed_target_held: true,
+        ..TimelineHoverNetworkOpenDiagnosticsSnapshot::default()
+    };
+
+    diagnostics.record_hover_leave_grace_started();
+    diagnostics.record_hover_leave_grace_reentered_before_expiry();
+    diagnostics.record_hover_leave_grace_release(
+        TimelineHoverLeaveGraceReleaseReason::NonTimelineAction,
+        release_outcome,
+    );
+    diagnostics.record_hover_preview_disabled_by_config();
+    diagnostics.record_hover_preview_update(
+        TimelineHoverPreviewLoadState::Idle,
+        TimelineHoverPreviewUpdateOutcome::Ready,
+    );
+    diagnostics.record_hover_preview_cleared();
+
+    let snapshot = diagnostics.snapshot(
+        Duration::from_millis(500),
+        true,
+        false,
+        preview_render_state,
+        network_open,
+    );
+
+    assert!(snapshot.hover_leave_grace.pending);
+    assert_eq!(
+        snapshot.hover_leave_grace.configured_grace,
+        Duration::from_millis(500)
+    );
+    assert_eq!(snapshot.hover_leave_grace.started_count, 1);
+    assert_eq!(snapshot.hover_leave_grace.reentered_before_expiry_count, 1);
+    assert_eq!(
+        snapshot.hover_leave_grace.non_timeline_cancel_release_count,
+        1
+    );
+    assert_eq!(
+        snapshot.hover_leave_grace.latest_release_reason,
+        Some(TimelineHoverLeaveGraceReleaseReason::NonTimelineAction)
+    );
+    assert_eq!(
+        snapshot.hover_leave_grace.latest_release_outcome,
+        Some(release_outcome)
+    );
+    assert!(!snapshot.hover_preview.visual_preview_enabled);
+    assert_eq!(snapshot.hover_preview.disabled_by_config_count, 1);
+    assert_eq!(snapshot.hover_preview.ready_count, 1);
+    assert_eq!(snapshot.hover_preview.clear_count, 1);
+    assert_eq!(snapshot.hover_preview.unavailable_count, 0);
+    assert_eq!(snapshot.hover_preview.render_state, preview_render_state);
+    assert_eq!(snapshot.network_open, network_open);
+}
+
 /// Hover state update не трогает public playback state snapshot.
 #[test]
 fn state_timeline_hover_does_not_change_paused_or_stopped_snapshot_state() {
@@ -464,6 +622,156 @@ fn telemetry_panel_rows_label_scrubbing_playback_state() {
     assert!(telemetry_rows_contain(
         &panel_rows,
         "Playback state: Scrubbing"
+    ));
+}
+
+/// Проверяет, что S29B telemetry читает player/app frame-server diagnostics boundary.
+#[test]
+fn telemetry_panel_rows_map_frame_server_diagnostics() {
+    let mut player_scrub_recorder = ScrubDiagnosticsRecorder::new();
+    let old_live_scrub_settings = LiveScrubSettingsSnapshot {
+        decode_mode: LiveScrubDecodeMode::ThrottledLatest,
+        max_hz: 60,
+    };
+    let new_live_scrub_settings = LiveScrubSettingsSnapshot {
+        decode_mode: LiveScrubDecodeMode::EveryDragEvent,
+        max_hz: 120,
+    };
+    let mut live_scrub = LiveScrubDiagnostics::from_settings_snapshot(old_live_scrub_settings);
+
+    player_scrub_recorder.record_prepared_frame_hit(ScrubPreparedFrameHitOutcome::ResumeReady {
+        video_runway: ScrubResumeRunwayState::DisplayableFrameQueued,
+    });
+    player_scrub_recorder.record_cold_exact_decode_pending();
+    player_scrub_recorder.record_prepared_frame_ownership_event(
+        ScrubPreparedFrameOwnershipEvent::PromotedResumeReadyBranch,
+    );
+    player_scrub_recorder.record_prepared_frame_ownership_event(
+        ScrubPreparedFrameOwnershipEvent::DemotedToRecentSuperseded,
+    );
+    player_scrub_recorder.record_prepared_frame_ownership_event(
+        ScrubPreparedFrameOwnershipEvent::DemoteRejected(
+            ScrubPreparedFrameDemoteRejectionKind::PromotedKeyNotCurrent,
+        ),
+    );
+    player_scrub_recorder.record_hover_network_zero_throttle_no_delay();
+    live_scrub.record_deferred_settings_change(DeferredLiveScrubSettingsChange {
+        old_snapshot: old_live_scrub_settings,
+        new_snapshot: new_live_scrub_settings,
+    });
+    live_scrub.record_throttled_latest_skip();
+    player_scrub_recorder.record_event_diagnostics(
+        frame_server_core::ScrubEventDiagnostics::new(
+            frame_server_core::ScrubDriverOutcomeKind::Progressed,
+        )
+        .with_live_scrub(live_scrub),
+    );
+
+    let mut player_snapshot = PlayerSnapshot::empty();
+    player_snapshot.diagnostics.frame_server_scrub = player_scrub_recorder.snapshot();
+
+    let mut app_diagnostics = AppFrameServerDiagnosticsRecorder::default();
+    let hover_target = TimelineHoverTarget::new(MediaTime::from_secs(12));
+    app_diagnostics.record_hover_prepare_outcome(
+        TimelineHoverPrepareControllerTransition::Started,
+        TimelineHoverPrepareExecutorOutcome::NoOp {
+            reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackNetworkSourceOpening {
+                lookup_miss: TimelineHoverPrepareLookupMissReason::NoEntryForKey,
+            },
+        },
+        TimelineHoverPrepareCompletionOutcome::NoPreparedHit,
+        TimelineHoverPreviewLoadState::NetworkOpening {
+            target: hover_target,
+        },
+    );
+    app_diagnostics.record_hover_preview_disabled_by_config();
+    app_diagnostics.record_hover_preview_update(
+        TimelineHoverPreviewLoadState::Idle,
+        TimelineHoverPreviewUpdateOutcome::Ready,
+    );
+    app_diagnostics.record_hover_leave_grace_started();
+    app_diagnostics.record_hover_leave_grace_reentered_before_expiry();
+    app_diagnostics.record_hover_leave_grace_release(
+        TimelineHoverLeaveGraceReleaseReason::NonTimelineAction,
+        TimelineHoverPrepareSessionEndReleaseOutcome::new(2, 1),
+    );
+
+    let app_frame_server = app_diagnostics.snapshot(
+        Duration::from_millis(500),
+        true,
+        false,
+        TimelineHoverPreviewRenderDiagnosticsSnapshot {
+            ready: true,
+            loading_preview_only: true,
+        },
+        TimelineHoverNetworkOpenDiagnosticsSnapshot {
+            inter_start_throttle: Duration::from_millis(300),
+            source_generation: 7,
+            in_flight_count: 1,
+            failed_target_held: true,
+            zero_throttle_no_delay_count: 2,
+            latest_only_replaced_in_flight_count: 3,
+            stale_late_result_ignored_count: 4,
+            throttle_delay_count: 5,
+            latest_throttle_delay: Some(Duration::from_millis(125)),
+        },
+    );
+    let telemetry = Telemetry::new();
+    let render_diagnostics = RenderDiagnostics::default();
+    let timeline_ui_state = TimelineUiState::default();
+    let started_at = Instant::now();
+
+    let panel_rows = AppState::build_telemetry_panel_rows(
+        telemetry_panel_state_for_tests_with_frame_server_diagnostics(
+            &player_snapshot,
+            &telemetry,
+            &render_diagnostics,
+            &timeline_ui_state,
+            started_at,
+            app_frame_server,
+        ),
+    );
+
+    assert!(telemetry_rows_contain(&panel_rows, "[Frame Server]"));
+    assert!(telemetry_rows_contain(
+        &panel_rows,
+        "FS shared prepared branch: hover_preview_ready_borrow=1 s17_promoted_branch=1"
+    ));
+    assert!(telemetry_rows_contain(
+        &panel_rows,
+        "FS player prepared: hits=1 resume_ready=1 resume_runway_pending=0 commit_gate_pending=0 audio_gate_pending=0 cold_exact_pending=1"
+    ));
+    assert!(telemetry_rows_contain(
+        &panel_rows,
+        "FS player prepared ownership: promoted=1 resume_ready_branch=1 visual_override_resume_pending=0 demoted_recent_superseded=1 demote_rejected=1 released_without_demote=0 no_promoted_on_release=0"
+    ));
+    assert!(telemetry_rows_contain(
+        &panel_rows,
+        "FS player demote rejections: cancel_reason=0 promoted_key_not_current=1 timing=0 recent_disabled=0"
+    ));
+    assert!(telemetry_rows_contain(
+        &panel_rows,
+        "FS app hover incomplete: decode_not_wired=0 resolver_not_wired=0 seek_unsupported=0 seek_unavailable=0 resolve_failed=0 network_opening=1 network_throttled=0 network_failed_no_retry=0 source_unavailable=0 stale_generation=0 resource_pressure=0 fatal=0"
+    ));
+    assert!(telemetry_rows_contain(
+        &panel_rows,
+        "FS hover preview visual: enabled=false disabled_visual_only=1 invisible_prepare_requests=1"
+    ));
+    assert!(telemetry_rows_contain(
+        &panel_rows,
+        "FS hover preview render: ready=true loading_preview_only=true"
+    ));
+    assert!(telemetry_rows_contain(
+        &panel_rows,
+        "FS hover leave grace: configured=500.00ms pending=true started=1 reentered=1 zero_grace_immediate=0 expired=0 non_timeline_cancel=1 latest_reason=non_timeline_action"
+    ));
+    assert!(telemetry_rows_contain(
+        &panel_rows,
+        "FS network open: throttle=300.00ms generation=7 in_flight=1 failed_target_held=true zero_throttle_no_delay=2 latest_only_replaced=3 stale_late_ignored=4 throttle_delay_count=5 latest_delay=125.00ms"
+    ));
+    assert!(telemetry_rows_contain(
+        &panel_rows,
+        "FS live scrub: mode=throttled_latest max_hz=60 deferred_changes=1 latest_change=throttled_latest / 60hz -> every_drag_event / 120hz throttle_skips=1"
     ));
 }
 

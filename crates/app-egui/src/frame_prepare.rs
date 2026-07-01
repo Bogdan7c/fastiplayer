@@ -41,7 +41,9 @@ use shared_frame_materialization::{
     SharedVideoFrameMaterializationRequest, materialize_shared_video_frame,
 };
 pub(crate) use timeline_hover_preview::{
-    TimelineHoverPreviewLoadState, TimelineHoverPreviewRenderInput, TimelineHoverPreviewRenderState,
+    TimelineHoverPreviewLoadState, TimelineHoverPreviewRenderDiagnosticsSnapshot,
+    TimelineHoverPreviewRenderInput, TimelineHoverPreviewRenderState,
+    TimelineHoverPreviewUpdateOutcome,
 };
 
 /// Результат UI stage до входа в renderer/surface critical path.

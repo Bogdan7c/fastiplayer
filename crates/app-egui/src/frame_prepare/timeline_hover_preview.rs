@@ -39,6 +39,16 @@ pub(crate) struct TimelineHoverPreviewRenderState {
     loading: Option<TimelineHoverVisualTarget>,
 }
 
+/// Read-only diagnostics visual preview state-а без доступа к leases/materializer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TimelineHoverPreviewRenderDiagnosticsSnapshot {
+    /// Есть ли готовый preview frame для overlay render pass-а.
+    pub(crate) ready: bool,
+
+    /// Есть ли preview-only loading state для network hover open-а.
+    pub(crate) loading_preview_only: bool,
+}
+
 /// Materialized hover preview frame; ownership остаётся clone lease-а, не branch entry.
 struct TimelineHoverPreviewReadyFrame {
     /// Visual target с placement; media target используется для stale/Busy checks.
@@ -58,10 +68,13 @@ pub(crate) struct TimelineHoverPreviewRenderInput<'frame> {
 }
 
 /// Preview-only loading state: он не попадает в timeline inline status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TimelineHoverPreviewLoadState {
+    #[default]
     Idle,
-    NetworkOpening { target: TimelineHoverTarget },
+    NetworkOpening {
+        target: TimelineHoverTarget,
+    },
 }
 
 impl TimelineHoverPreviewLoadState {
@@ -108,6 +121,14 @@ pub(crate) enum TimelineHoverPreviewUpdateOutcome {
 }
 
 impl TimelineHoverPreviewRenderState {
+    /// Возвращает compact snapshot без раскрытия renderable frame/lease.
+    pub(crate) fn diagnostics_snapshot(&self) -> TimelineHoverPreviewRenderDiagnosticsSnapshot {
+        TimelineHoverPreviewRenderDiagnosticsSnapshot {
+            ready: self.ready.is_some(),
+            loading_preview_only: self.loading.is_some(),
+        }
+    }
+
     /// Полностью очищает visual preview borrow/render state.
     pub(crate) fn clear(&mut self) {
         self.ready = None;
