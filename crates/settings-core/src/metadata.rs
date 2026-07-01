@@ -277,6 +277,9 @@ pub struct SettingPlacement {
 
     /// Preferred visual surface for this setting.
     pub preferred_surface: SettingsSurfaceId,
+
+    /// Initial open-state hint for this field's group on a fresh UI session.
+    pub group_default_open: bool,
 }
 
 impl SettingPlacement {
@@ -291,7 +294,15 @@ impl SettingPlacement {
             section: section.into(),
             group: group.into(),
             preferred_surface: preferred_surface.into(),
+            group_default_open: true,
         }
+    }
+
+    /// Overrides the initial open-state hint for this field's visual group.
+    #[must_use]
+    pub const fn with_group_default_open(mut self, group_default_open: bool) -> Self {
+        self.group_default_open = group_default_open;
+        self
     }
 }
 
@@ -392,6 +403,9 @@ pub enum SettingEditor {
     /// Text input editor.
     Text(TextDescriptor),
 
+    /// `auto` or a positive fixed integer stored as text.
+    AutoFixedPositiveInteger(AutoFixedPositiveIntegerDescriptor),
+
     /// Fixed-length numeric vector editor.
     Vector(VectorDescriptor),
 
@@ -412,6 +426,9 @@ impl SettingEditor {
             Self::Select(descriptor) => descriptor.validate_value(value_type, value),
             Self::SelectList(descriptor) => descriptor.validate_value(value_type, value),
             Self::Text(descriptor) => descriptor.validate_value(value_type, value),
+            Self::AutoFixedPositiveInteger(descriptor) => {
+                descriptor.validate_value(value_type, value)
+            }
             Self::Vector(descriptor) => descriptor.validate_value(value_type, value),
             Self::ReadOnly => validate_read_only_value_type(value_type, value),
         }
@@ -652,6 +669,68 @@ impl SelectListDescriptor {
 
         Ok(())
     }
+}
+
+/// Editor metadata for values stored as `auto` or an explicit positive integer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoFixedPositiveIntegerDescriptor {
+    /// Label for automatic resolver mode.
+    pub auto_label: SettingText,
+
+    /// Label for explicit fixed mode.
+    pub fixed_label: SettingText,
+
+    /// Optional unit displayed near the fixed integer.
+    pub unit: Option<SettingUnit>,
+}
+
+impl AutoFixedPositiveIntegerDescriptor {
+    /// Creates Auto/Fixed-positive editor metadata.
+    #[must_use]
+    pub fn new(
+        auto_label: SettingText,
+        fixed_label: SettingText,
+        unit: Option<SettingUnit>,
+    ) -> Self {
+        Self {
+            auto_label,
+            fixed_label,
+            unit,
+        }
+    }
+
+    fn validate_value(
+        &self,
+        value_type: SettingValueType,
+        value: &SettingValue,
+    ) -> Result<(), SettingValueError> {
+        validate_value_type(value_type, SettingValueType::Text, value)?;
+        let SettingValue::Text(text) = value else {
+            return Err(SettingValueError::UnexpectedType {
+                expected: SettingValueType::Text,
+                actual: value.kind(),
+            });
+        };
+
+        if auto_fixed_positive_integer_text_is_valid(text) {
+            Ok(())
+        } else {
+            Err(SettingValueError::InvalidAutoFixedPositiveInteger {
+                actual: text.clone(),
+            })
+        }
+    }
+}
+
+fn auto_fixed_positive_integer_text_is_valid(text: &str) -> bool {
+    let trimmed_text = text.trim();
+    if trimmed_text == "auto" {
+        return true;
+    }
+
+    trimmed_text
+        .parse::<usize>()
+        .is_ok_and(|fixed_value| fixed_value > 0)
 }
 
 /// Text editor metadata.

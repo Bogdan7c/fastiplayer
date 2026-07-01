@@ -2,9 +2,12 @@ use super::frame_server_diagnostics::AppFrameServerDiagnosticsSnapshot;
 use super::timeline_hover_leave_grace::TimelineHoverLeaveGraceReleaseReason;
 use super::*;
 use crate::frame_prepare::{TimelineHoverPreviewLoadState, TimelineHoverPreviewUpdateOutcome};
+use crate::frame_server_budget::{
+    admission_outcome_label, budget_setting_label, resource_class_label,
+};
 use frame_server_core::{
-    CountSummary, DurationSummary, LiveScrubDecodeMode, ScrubDiagnosticsSnapshot,
-    ScrubHoverNetworkState,
+    CountSummary, DurationSummary, HoverBudgetResolutionOutcome, LiveScrubDecodeMode,
+    ScrubDiagnosticsSnapshot, ScrubHoverNetworkState,
 };
 
 /// Частота обновления тяжёлого текста telemetry panel.
@@ -467,6 +470,7 @@ impl AppState {
         Self::append_frame_server_hover_preview_rows(panel_rows, panel_state);
         Self::append_frame_server_hover_leave_grace_rows(panel_rows, panel_state);
         Self::append_frame_server_network_rows(panel_rows, panel_state);
+        Self::append_frame_server_hover_budget_rows(panel_rows, panel_state);
         Self::append_frame_server_live_scrub_rows(panel_rows, player_scrub);
     }
 
@@ -738,6 +742,36 @@ impl AppState {
         )));
     }
 
+    /// Добавляет active-hover budget resolver/admission diagnostics из backend provider-а.
+    fn append_frame_server_hover_budget_rows(
+        panel_rows: &mut Vec<TelemetryPanelRow>,
+        panel_state: &TelemetryPanelState<'_>,
+    ) {
+        let Some(hover_budget) = &panel_state.frame_server_diagnostics.hover_budget else {
+            panel_rows.push(TelemetryPanelRow::normal(
+                "FS hover budget: provider=unavailable",
+            ));
+            return;
+        };
+
+        panel_rows.push(TelemetryPanelRow::normal(format!(
+            "FS hover budget: backend={} resolution={} admission={}",
+            hover_budget.backend_kind.label(),
+            Self::hover_budget_resolution_label(&hover_budget.resolution_outcome),
+            admission_outcome_label(&hover_budget.admission_outcome)
+        )));
+        for resource in &hover_budget.resources {
+            panel_rows.push(TelemetryPanelRow::normal(format!(
+                "FS hover budget resource: class={} setting={} playback={} backend_min={} resolved={}",
+                resource_class_label(resource.resource_class),
+                budget_setting_label(resource.setting),
+                Self::optional_non_zero_for_telemetry(resource.playback_budget),
+                Self::optional_non_zero_for_telemetry(resource.backend_reported_minimum),
+                Self::optional_non_zero_for_telemetry(resource.resolved_hover_budget)
+            )));
+        }
+    }
+
     /// Добавляет latest-only live scrub settings diagnostics без user-facing hint/status.
     fn append_frame_server_live_scrub_rows(
         panel_rows: &mut Vec<TelemetryPanelRow>,
@@ -784,6 +818,20 @@ impl AppState {
         duration
             .map(Self::duration_for_telemetry)
             .unwrap_or_else(|| "none".to_string())
+    }
+
+    fn hover_budget_resolution_label(outcome: &HoverBudgetResolutionOutcome) -> &'static str {
+        match outcome {
+            HoverBudgetResolutionOutcome::Resolved(_) => "resolved",
+            HoverBudgetResolutionOutcome::Unsupported(_) => "unsupported",
+            HoverBudgetResolutionOutcome::Unavailable(_) => "unavailable",
+        }
+    }
+
+    fn optional_non_zero_for_telemetry(value: Option<NonZeroUsize>) -> String {
+        value
+            .map(|value| value.get().to_string())
+            .unwrap_or_else(|| "n/a".to_string())
     }
 
     /// Форматирует bounded duration summary в одну compact строку.

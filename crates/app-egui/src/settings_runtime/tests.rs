@@ -4,7 +4,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use player_core::{PlayerRuntimeApplyResult, PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate};
+use player_core::{
+    PlayerRuntimeApplyResult, PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate,
+    PlayerWorkerConfig,
+};
 use render_core::{
     RenderLiveApplyPhase, RenderLiveApplyReport, RenderLiveSettingId, RenderLiveSettings,
     RenderLiveSettingsAdapter, RenderLiveSettingsError, RenderLiveSettingsUpdate,
@@ -12,8 +15,9 @@ use render_core::{
 use rustiplayer_config::{AppConfig, LoadedConfig};
 use rustiplayer_settings::{
     AppRouteApplyResult, AppRuntimeRoute, AppRuntimeRouteApplier, AppRuntimeRouteGroup,
-    AppRuntimeRouteGroupUpdate, MediaServiceRuntimeSettingsUpdate, PlayerCommittedSettingsUpdate,
-    RuntimeCommittedRoute, RuntimeCommittedUpdate, render_live_settings_from_config,
+    AppRuntimeRouteGroupUpdate, FrameServerRuntimeSettingsUpdate,
+    MediaServiceRuntimeSettingsUpdate, PlayerCommittedSettingsUpdate, RuntimeCommittedRoute,
+    RuntimeCommittedUpdate, render_live_settings_from_config,
 };
 use settings_core::{
     ApplyFinalState, ApplyMechanism, OptionProviderId, SettingId, SettingOption,
@@ -30,6 +34,13 @@ use crate::render_settings::{
     color_pipeline_settings_from_config, hdr_to_sdr_settings_from_config,
 };
 use crate::settings_ui::SettingsUiAction;
+use crate::video_pipeline_selector::VideoBackendKind;
+use video_backend_api::{
+    BackendHoverBudgetAdmissionReport, BackendHoverBudgetCapabilityMinimum,
+    BackendHoverBudgetCapabilityReport, BackendHoverBudgetResourceClass,
+    BackendHoverResolvedBudget, HoverBudgetDiagnosticsProvider,
+    HoverBudgetDiagnosticsProviderHandle,
+};
 
 fn loaded_config_for_test(config: AppConfig) -> LoadedConfig {
     LoadedConfig {
@@ -247,6 +258,10 @@ struct RecordingRuntimeAdapter {
     media_updates: usize,
     fail_player: bool,
     fail_media: bool,
+    frame_server_preflight_calls: usize,
+    frame_server_budget_backend: Option<VideoBackendKind>,
+    frame_server_budget_provider: Option<HoverBudgetDiagnosticsProviderHandle>,
+    decoder_thread_config: player_core::PlayerVideoDecoderThreadConfig,
 }
 
 impl RecordingRuntimeAdapter {
@@ -257,6 +272,12 @@ impl RecordingRuntimeAdapter {
             media_updates: 0,
             fail_player: false,
             fail_media: false,
+            frame_server_preflight_calls: 0,
+            frame_server_budget_backend: None,
+            frame_server_budget_provider: None,
+            decoder_thread_config: PlayerWorkerConfig::decoder_thread_config_from_app_config(
+                config,
+            ),
         })
     }
 }
@@ -285,6 +306,24 @@ impl RenderLiveSettingsAdapter for RecordingRuntimeAdapter {
 }
 
 impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
+    fn preflight_frame_server_hover_budget_change(
+        &mut self,
+        current: &rustiplayer_config::FrameServerConfig,
+        draft: &rustiplayer_config::FrameServerConfig,
+    ) -> Result<
+        Option<crate::frame_server_budget::FrameServerHoverBudgetDiagnosticsSnapshot>,
+        Box<crate::frame_server_budget::FrameServerHoverBudgetPreflightRejection>,
+    > {
+        self.frame_server_preflight_calls += 1;
+        crate::frame_server_budget::preflight_frame_server_hover_budget_change(
+            current,
+            draft,
+            self.frame_server_budget_backend,
+            self.decoder_thread_config,
+            self.frame_server_budget_provider.as_ref(),
+        )
+    }
+
     fn apply_player_runtime_settings(
         &mut self,
         update: PlayerRuntimeSettingsUpdate,
@@ -308,6 +347,44 @@ impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
         }
         AppRouteApplyResult::Applied
     }
+}
+
+#[derive(Clone)]
+struct ScriptedHoverBudgetProvider {
+    capability_report: BackendHoverBudgetCapabilityReport,
+    admission_report: BackendHoverBudgetAdmissionReport,
+}
+
+impl HoverBudgetDiagnosticsProvider for ScriptedHoverBudgetProvider {
+    fn hover_capability_report(&self) -> BackendHoverBudgetCapabilityReport {
+        self.capability_report.clone()
+    }
+
+    fn hover_admission_report(
+        &self,
+        _resolved_budget: &BackendHoverResolvedBudget,
+    ) -> BackendHoverBudgetAdmissionReport {
+        self.admission_report
+    }
+}
+
+fn software_hover_budget_provider(
+    pool_minimum: usize,
+    thread_minimum: usize,
+) -> HoverBudgetDiagnosticsProviderHandle {
+    HoverBudgetDiagnosticsProviderHandle::new(ScriptedHoverBudgetProvider {
+        capability_report: BackendHoverBudgetCapabilityReport::Supported(vec![
+            BackendHoverBudgetCapabilityMinimum::reported(
+                BackendHoverBudgetResourceClass::SoftwareFramePoolFrames,
+                pool_minimum,
+            ),
+            BackendHoverBudgetCapabilityMinimum::reported(
+                BackendHoverBudgetResourceClass::SoftwareThreadCount,
+                thread_minimum,
+            ),
+        ]),
+        admission_report: BackendHoverBudgetAdmissionReport::Admitted,
+    })
 }
 
 fn custom_config_for_test() -> AppConfig {
@@ -617,6 +694,151 @@ fn media_service_route_keeps_snapshot_when_owner_rebuild_fails() {
     assert_eq!(report.mechanism, ApplyMechanism::WorkerReconfigure);
     assert_eq!(report.groups[0].result, report.result);
     assert_eq!(appliers.media_service, original_snapshot);
+}
+
+#[test]
+fn frame_server_route_applies_player_policy_and_commits_snapshot() {
+    let config = custom_config_for_test();
+    let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
+        .expect("route appliers должны принять валидированный config");
+    let mut runtime_adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+    let mut next_frame_server = config.frame_server.clone();
+    next_frame_server.hover_preview_enabled = false;
+    let route = RuntimeCommittedRoute {
+        route: AppRuntimeRoute::FrameServer,
+        source_routes: vec![SettingRouteId::from("frame_server.apply")],
+        affected_settings: vec![SettingId::from("frame_server.hover_preview_enabled")],
+        groups: vec![AppRuntimeRouteGroupUpdate {
+            group: AppRuntimeRouteGroup::FrameServerSettings,
+            affected_settings: vec![SettingId::from("frame_server.hover_preview_enabled")],
+        }],
+        update: RuntimeCommittedUpdate::FrameServer(Box::new(FrameServerRuntimeSettingsUpdate {
+            frame_server: next_frame_server.clone(),
+            player_core: PlayerRuntimeSettingsUpdate::empty().with_frame_server_policy(
+                PlayerWorkerConfig::frame_server_config_from_app_config(&AppConfig {
+                    frame_server: next_frame_server.clone(),
+                    ..config.clone()
+                }),
+                [PlayerRuntimeSettingId::FrameServerHoverPreviewEnabled],
+            ),
+        })),
+    };
+
+    let report = appliers
+        .apply_committed_route_with_render_adapter(route, &mut runtime_adapter)
+        .expect("frame_server route должен построить report");
+
+    assert_eq!(runtime_adapter.player_updates.len(), 1);
+    assert!(
+        runtime_adapter.player_updates[0]
+            .frame_server_policy
+            .is_some()
+    );
+    assert_eq!(appliers.frame_server, next_frame_server);
+    assert_eq!(report.result, AppRouteApplyResult::Applied);
+    assert_eq!(report.mechanism, ApplyMechanism::WorkerReconfigure);
+    assert_eq!(report.groups[0].result, AppRouteApplyResult::Applied);
+}
+
+#[test]
+fn frame_server_route_keeps_snapshot_when_player_policy_apply_fails() {
+    let config = custom_config_for_test();
+    let original_frame_server = config.frame_server.clone();
+    let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
+        .expect("route appliers должны принять валидированный config");
+    let mut runtime_adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+    runtime_adapter.fail_player = true;
+    let mut next_frame_server = config.frame_server.clone();
+    next_frame_server.live_scrub_max_hz = 120;
+    let route = RuntimeCommittedRoute {
+        route: AppRuntimeRoute::FrameServer,
+        source_routes: vec![SettingRouteId::from("frame_server.apply")],
+        affected_settings: vec![SettingId::from("frame_server.live_scrub_max_hz")],
+        groups: vec![AppRuntimeRouteGroupUpdate {
+            group: AppRuntimeRouteGroup::FrameServerSettings,
+            affected_settings: vec![SettingId::from("frame_server.live_scrub_max_hz")],
+        }],
+        update: RuntimeCommittedUpdate::FrameServer(Box::new(FrameServerRuntimeSettingsUpdate {
+            frame_server: next_frame_server.clone(),
+            player_core: PlayerRuntimeSettingsUpdate::empty().with_frame_server_policy(
+                PlayerWorkerConfig::frame_server_config_from_app_config(&AppConfig {
+                    frame_server: next_frame_server,
+                    ..config.clone()
+                }),
+                [PlayerRuntimeSettingId::FrameServerLiveScrubMaxHz],
+            ),
+        })),
+    };
+
+    let report = appliers
+        .apply_committed_route_with_render_adapter(route, &mut runtime_adapter)
+        .expect("frame_server route должен построить failure report");
+
+    assert_eq!(runtime_adapter.player_updates.len(), 1);
+    assert!(matches!(
+        report.result,
+        AppRouteApplyResult::Failed { ref message }
+            if message.contains("player runtime apply failed")
+    ));
+    assert_eq!(report.mechanism, ApplyMechanism::WorkerReconfigure);
+    assert_eq!(report.groups[0].result, report.result);
+    assert_eq!(appliers.frame_server, original_frame_server);
+}
+
+#[test]
+fn frame_server_fixed_too_large_preflight_blocks_persist_and_runtime_mutation() {
+    let path = temp_config_path("frame-server-fixed-too-large-preflight");
+    remove_file_if_exists(&path);
+    let mut config = custom_config_for_test();
+    config.video.sw_decoder_surface_pool_frames = 8;
+    let original_frame_server = config.frame_server.clone();
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+        config.clone(),
+        path.clone(),
+    ))
+    .expect("settings runtime должен стартовать");
+    let mut runtime_adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+    runtime_adapter.frame_server_budget_backend = Some(VideoBackendKind::FfmpegSoftware);
+    runtime_adapter.frame_server_budget_provider = Some(software_hover_budget_provider(2, 1));
+
+    runtime
+        .handle_ui_actions_with_runtime_adapter(
+            vec![
+                SettingsUiAction::Open,
+                SettingsUiAction::SetValue {
+                    setting_id: SettingId::from("frame_server.hover_pool_frames"),
+                    value: SettingValue::Text("12".to_string()),
+                },
+                SettingsUiAction::Apply,
+            ],
+            &mut runtime_adapter,
+        )
+        .expect("preflight rejection должен вернуться как apply report, не hard error");
+
+    let report = runtime
+        .latest_apply_report()
+        .expect("preflight должен оставить apply report");
+    assert_eq!(report.final_state, ApplyFinalState::ValidationFailed);
+    assert!(report.persistence.is_none());
+    assert!(report.routes.is_empty());
+    assert!(report.errors.iter().any(|error| {
+        error
+            .to_string()
+            .contains("Frame Server hover budget отклонён")
+    }));
+    assert_eq!(runtime_adapter.player_updates.len(), 0);
+    assert_eq!(runtime_adapter.frame_server_preflight_calls, 1);
+    assert_eq!(
+        runtime.committed_config().frame_server,
+        original_frame_server
+    );
+    assert!(
+        !path.exists(),
+        "preflight reject должен случиться до TOML persist"
+    );
 }
 
 #[test]

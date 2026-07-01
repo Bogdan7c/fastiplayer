@@ -10,7 +10,8 @@ use frame_server_core::{
     TimelineHoverPrepareLookupOutcome, TimelineHoverPrepareSessionEndReleaseOutcome,
     TimelineHoverPrepareSessionEndReleaseReason, TimelineHoverPrepareTimingRejection,
     TimelineHoverPrepareWorkingSet, TimelineHoverPreparedFrameTiming,
-    TimelineHoverRecentSupersededBudget, ValidatedFrameServerConfig,
+    TimelineHoverRecentSupersededBudget, TimelineHoverRecentSupersededReconfigureOutcome,
+    ValidatedFrameServerConfig,
 };
 #[cfg(test)]
 use media_core::TrackTimestamp;
@@ -120,8 +121,30 @@ impl PlayerTimelineHoverPrepareHandoff {
         new_capacity: NonZeroUsize,
         protected_key: TimelineHoverPrepareFrameKey,
     ) -> TimelineHoverPrepareCapacityReconfigureOutcome {
+        self.reconfigure_hover_prepare_primary_capacity_protecting(
+            new_capacity,
+            Some(protected_key),
+        )
+    }
+
+    /// Меняет primary hover capacity, когда текущей protected цели может не быть.
+    pub fn reconfigure_hover_prepare_primary_capacity_protecting(
+        &self,
+        new_capacity: NonZeroUsize,
+        protected_key: Option<TimelineHoverPrepareFrameKey>,
+    ) -> TimelineHoverPrepareCapacityReconfigureOutcome {
         self.with_locked_working_set(|working_set| {
-            working_set.reconfigure_primary_capacity(new_capacity, protected_key)
+            working_set.reconfigure_primary_capacity_protecting(new_capacity, protected_key)
+        })
+    }
+
+    /// Меняет click-back retention budget через owner working-set boundary.
+    pub fn reconfigure_recent_superseded_budget(
+        &self,
+        new_budget: TimelineHoverRecentSupersededBudget,
+    ) -> TimelineHoverRecentSupersededReconfigureOutcome {
+        self.with_locked_working_set(|working_set| {
+            working_set.reconfigure_recent_superseded_budget(new_budget)
         })
     }
 

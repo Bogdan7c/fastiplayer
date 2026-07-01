@@ -6,6 +6,18 @@ use super::*;
 /// Этот trait передаётся только из app composition/frame слоя, где эти owners
 /// реально доступны и где можно сохранить порядок команд.
 pub(crate) trait SettingsRuntimeReconfigureHost {
+    /// Read-only preflight для active backend hover budget до TOML persist.
+    fn preflight_frame_server_hover_budget_change(
+        &mut self,
+        _current: &rustiplayer_config::FrameServerConfig,
+        _draft: &rustiplayer_config::FrameServerConfig,
+    ) -> Result<
+        Option<FrameServerHoverBudgetDiagnosticsSnapshot>,
+        Box<FrameServerHoverBudgetPreflightRejection>,
+    > {
+        Ok(None)
+    }
+
     /// Синхронизирует внешний owner с committed config-ом перед owner-level apply.
     fn sync_committed_config_snapshot(&mut self, _snapshot: CommittedConfigSnapshot) {}
 
@@ -124,6 +136,13 @@ pub(super) fn simulated_player_runtime_report(
             "decoder thread config accepted by test host",
         ));
     }
+    if let Some(frame_server_policy_update) = update.frame_server_policy {
+        report.push(simulated_player_group(
+            PlayerRuntimeApplyGroup::FrameServerPolicy,
+            frame_server_policy_update.affected_settings,
+            "frame-server policy accepted by test host",
+        ));
+    }
     if !update.unsupported_settings.is_empty() {
         report.push(PlayerRuntimeApplyGroupReport::unsupported(
             PlayerRuntimeApplyGroup::UnsupportedSettings,
@@ -239,6 +258,9 @@ pub(super) struct SettingsRuntimeRouteAppliers {
 
     /// Последний media/service policy snapshot.
     pub(super) media_service: MediaServiceRuntimeSnapshot,
+
+    /// Последний committed Frame Server snapshot после успешного live policy apply.
+    pub(super) frame_server: rustiplayer_config::FrameServerConfig,
 }
 
 impl SettingsRuntimeRouteAppliers {
@@ -253,6 +275,7 @@ impl SettingsRuntimeRouteAppliers {
                 config.audio.output_device.clone(),
             ),
             media_service: MediaServiceRuntimeSnapshot::from_config(config),
+            frame_server: config.frame_server.clone(),
         })
     }
 
@@ -348,6 +371,14 @@ impl SettingsRuntimeRouteAppliers {
                     ApplyMechanism::WorkerReconfigure,
                 ))
             }
+            RuntimeCommittedUpdate::FrameServer(update) => {
+                let result = self.apply_frame_server_update(&update, reconfigure_host);
+                Ok(Self::route_report(
+                    route,
+                    result,
+                    ApplyMechanism::WorkerReconfigure,
+                ))
+            }
             RuntimeCommittedUpdate::RenderPreview(_update) => unreachable!(
                 "render preview committed route requires render adapter promotion path"
             ),
@@ -362,6 +393,32 @@ impl SettingsRuntimeRouteAppliers {
 
         self.ui = update.ui.clone();
         AppRouteApplyResult::Applied
+    }
+
+    /// Применяет Frame Server policy через player/app runtime boundaries.
+    fn apply_frame_server_update(
+        &mut self,
+        update: &FrameServerRuntimeSettingsUpdate,
+        reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
+    ) -> AppRouteApplyResult {
+        if self.frame_server == update.frame_server {
+            return AppRouteApplyResult::Noop;
+        }
+        let local_snapshot_result = AppRouteApplyResult::Applied;
+
+        let player_result =
+            match reconfigure_host.apply_player_runtime_settings(update.player_core.clone()) {
+                Ok(report) => player_runtime_report_result(&report),
+                Err(error) => AppRouteApplyResult::Failed {
+                    message: player_runtime_error_message(error),
+                },
+            };
+        if !player_result.is_success() {
+            return player_result;
+        }
+
+        self.frame_server = update.frame_server.clone();
+        combine_player_in_place_results([local_snapshot_result, player_result])
     }
 
     /// Фиксирует committed render lifecycle snapshot без пересоздания renderer-а в S09.
@@ -764,6 +821,12 @@ impl SettingsRuntime {
         A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
         self.invalidate_ui_model();
+        if let Some(report) = self.frame_server_hover_budget_preflight_report(runtime_adapter)? {
+            self.latest_apply_report = Some(report.clone());
+            self.status = status_from_apply_report(&report);
+            return Ok(report);
+        }
+
         let mut delegate = SettingsRuntimeApplyDelegate {
             validator: AppConfigValidator,
             store: &mut self.store,
@@ -775,5 +838,37 @@ impl SettingsRuntime {
         self.status = status_from_apply_report(&report);
 
         Ok(report)
+    }
+
+    fn frame_server_hover_budget_preflight_report<A>(
+        &mut self,
+        runtime_adapter: &mut A,
+    ) -> SettingsResult<Option<ApplyReport>>
+    where
+        A: SettingsRuntimeReconfigureHost,
+    {
+        let changed_settings = self.controller.diff()?;
+        if changed_settings.is_empty() {
+            return Ok(None);
+        }
+
+        match runtime_adapter.preflight_frame_server_hover_budget_change(
+            &self.controller.committed().frame_server,
+            &self.controller.draft().frame_server,
+        ) {
+            Ok(_diagnostics) => Ok(None),
+            Err(rejection) => {
+                let error = SettingsError::access_failed(rejection.message());
+                Ok(Some(ApplyReport {
+                    validation: None,
+                    persistence: None,
+                    routes: Vec::new(),
+                    changed_settings,
+                    final_state: ApplyFinalState::ValidationFailed,
+                    conflicts: Vec::new(),
+                    errors: vec![error],
+                }))
+            }
+        }
     }
 }

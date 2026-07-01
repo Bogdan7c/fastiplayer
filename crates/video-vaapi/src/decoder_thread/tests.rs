@@ -380,6 +380,13 @@ fn decoder_thread_for_control_tests(
         }
         .normalized(),
         backend_name: "VA-API test",
+        hover_budget_diagnostics_provider: HoverBudgetDiagnosticsProviderHandle::new(
+            crate::shared_hardware_owner::VaapiSharedHardwareOwner::new(
+                crate::shared_hardware_owner::VaapiSharedHardwareOwnerContext::from_surface_accounting(
+                    4, 1,
+                ),
+            ),
+        ),
     }
 }
 

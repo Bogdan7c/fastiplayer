@@ -227,10 +227,11 @@ mod tests {
     use std::path::Path;
 
     use settings_core::{
-        DefaultBehavior, NumericDescriptor, NumericRange, NumericStep, SelectDescriptor,
-        SettingAccess, SettingApplyMode, SettingDescriptorText, SettingEditor, SettingOption,
-        SettingOptionCurrentValue, SettingOptions, SettingOptionsStatus, SettingPlacement,
-        SettingRouteId, SettingText, SettingValue, TextDescriptor, TextFormat,
+        AutoFixedPositiveIntegerDescriptor, DefaultBehavior, NumericDescriptor, NumericRange,
+        NumericStep, SelectDescriptor, SettingAccess, SettingApplyMode, SettingDescriptorText,
+        SettingEditor, SettingOption, SettingOptionCurrentValue, SettingOptions,
+        SettingOptionsStatus, SettingPlacement, SettingRouteId, SettingText, SettingValue,
+        TextDescriptor, TextFormat,
     };
 
     use super::*;
@@ -471,11 +472,25 @@ mod tests {
                 ),
                 SettingValue::Select("default".into()),
             ),
+            SettingsUiField::new(
+                descriptor(
+                    "frame_server.hover_pool_frames",
+                    SettingEditor::AutoFixedPositiveInteger(
+                        AutoFixedPositiveIntegerDescriptor::new(
+                            text("settings.frame_server.budget.auto", "Авто"),
+                            text("settings.frame_server.budget.fixed", "Фиксированно"),
+                            None,
+                        ),
+                    ),
+                    settings_core::SettingValueType::Text,
+                ),
+                SettingValue::Text("auto".to_string()),
+            ),
         ];
 
         let model = SettingsUiModel::new(true, fields, false);
 
-        assert_eq!(model.fields.len(), 3);
+        assert_eq!(model.fields.len(), 4);
         assert!(model.command_state.can_ok());
     }
 }

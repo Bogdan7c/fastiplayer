@@ -31,12 +31,12 @@ pub use error::{
     ValueRangeLimit,
 };
 pub use metadata::{
-    DefaultBehavior, NumericDescriptor, NumericRange, NumericStep, SelectDescriptor,
-    SelectListDescriptor, SettingAccess, SettingApplyMode, SettingDescriptor,
-    SettingDescriptorText, SettingEditor, SettingGroupId, SettingId, SettingPath, SettingPlacement,
-    SettingRouteId, SettingSectionId, SettingText, SettingTextId, SettingUnit, SettingValue,
-    SettingValueKind, SettingValueType, SettingsSurfaceId, TextDescriptor, TextFormat,
-    VectorDescriptor,
+    AutoFixedPositiveIntegerDescriptor, DefaultBehavior, NumericDescriptor, NumericRange,
+    NumericStep, SelectDescriptor, SelectListDescriptor, SettingAccess, SettingApplyMode,
+    SettingDescriptor, SettingDescriptorText, SettingEditor, SettingGroupId, SettingId,
+    SettingPath, SettingPlacement, SettingRouteId, SettingSectionId, SettingText, SettingTextId,
+    SettingUnit, SettingValue, SettingValueKind, SettingValueType, SettingsSurfaceId,
+    TextDescriptor, TextFormat, VectorDescriptor,
 };
 pub use options::{
     OptionProviderId, SettingOption, SettingOptionCurrentValue, SettingOptionId,

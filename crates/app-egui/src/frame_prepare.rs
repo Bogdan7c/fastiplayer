@@ -177,6 +177,18 @@ impl RenderLiveSettingsAdapter for FrameSettingsRuntimeAdapter<'_> {
 }
 
 impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
+    fn preflight_frame_server_hover_budget_change(
+        &mut self,
+        current: &rustiplayer_config::FrameServerConfig,
+        draft: &rustiplayer_config::FrameServerConfig,
+    ) -> Result<
+        Option<crate::frame_server_budget::FrameServerHoverBudgetDiagnosticsSnapshot>,
+        Box<crate::frame_server_budget::FrameServerHoverBudgetPreflightRejection>,
+    > {
+        self.app_state
+            .preflight_frame_server_hover_budget_change(current, draft)
+    }
+
     fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
         self.app_state.sync_committed_config_snapshot(snapshot);
     }

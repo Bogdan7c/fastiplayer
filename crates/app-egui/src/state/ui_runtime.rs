@@ -125,7 +125,7 @@ pub(super) const fn settings_action_from_titlebar_icon_action(
 }
 
 /// Строит S18 prepare target из player-owned guarded snapshot context-а.
-fn timeline_hover_prepare_target_from_snapshot(
+pub(super) fn timeline_hover_prepare_target_from_snapshot(
     player_snapshot: &PlayerSnapshot,
     target: TimelineHoverTarget,
 ) -> Option<TimelineHoverPrepareTarget> {

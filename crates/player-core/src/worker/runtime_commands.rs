@@ -102,6 +102,10 @@ impl PlayerWorkerRuntime {
             self.apply_runtime_video_backend(video_backend_update, &mut report);
         }
 
+        if let Some(frame_server_policy_update) = update.frame_server_policy {
+            self.apply_runtime_frame_server_policy(frame_server_policy_update, &mut report);
+        }
+
         if !update.unsupported_settings.is_empty() {
             report.push(PlayerRuntimeApplyGroupReport::unsupported(
                 PlayerRuntimeApplyGroup::UnsupportedSettings,
@@ -209,6 +213,29 @@ impl PlayerWorkerRuntime {
             update.affected_settings,
             PlayerRuntimeAcceptedChange::Applied,
             "video backend preference applied via app-owned pipeline rebuild",
+        ));
+    }
+
+    /// Обновляет session-owned frame-server policy без перезапуска hover/live scrub work.
+    fn apply_runtime_frame_server_policy(
+        &mut self,
+        update: PlayerRuntimeFrameServerPolicyUpdate,
+        report: &mut PlayerRuntimeApplyReport,
+    ) {
+        let change = if self.config.frame_server_config == update.frame_server_config {
+            PlayerRuntimeAcceptedChange::Unchanged
+        } else {
+            self.config.frame_server_config = update.frame_server_config;
+            self.session
+                .apply_frame_server_policy_config(update.frame_server_config);
+            PlayerRuntimeAcceptedChange::Applied
+        };
+
+        report.push(PlayerRuntimeApplyGroupReport::accepted(
+            PlayerRuntimeApplyGroup::FrameServerPolicy,
+            update.affected_settings,
+            change,
+            "frame-server player policy updated in-place",
         ));
     }
 

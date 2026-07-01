@@ -681,6 +681,35 @@ fn active_playback_network_source_opens_as_background_latest_only_work() {
 }
 
 #[test]
+fn network_hover_throttle_live_update_preserves_source_context_and_inflight_job() {
+    let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
+        PlayerTimelineHoverPrepareHandoff::default(),
+    ));
+    controller.set_hover_source(TimelineHoverSourceIdentity::DirectMediaUrl(
+        "not-a-valid-url".to_string(),
+    ));
+    let active_target = unresolved_active_target(10_000);
+
+    let outcome = controller.prepare_hover_target(active_target);
+
+    assert!(matches!(
+        outcome.executor_outcome,
+        TimelineHoverPrepareExecutorOutcome::NoOp {
+            reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackNetworkSourceOpening { .. },
+        }
+    ));
+    let before = controller.executor.network_open_diagnostics_snapshot();
+    assert_eq!(before.in_flight_count, 1);
+
+    controller.update_network_hover_prepare_throttle(Duration::ZERO);
+
+    let after = controller.executor.network_open_diagnostics_snapshot();
+    assert_eq!(after.source_generation, before.source_generation);
+    assert_eq!(after.in_flight_count, 1);
+    assert_eq!(after.inter_start_throttle, Duration::ZERO);
+}
+
+#[test]
 fn cancelling_active_network_hover_stale_marks_pending_open() {
     let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
         PlayerTimelineHoverPrepareHandoff::default(),

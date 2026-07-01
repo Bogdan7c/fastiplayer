@@ -13,6 +13,13 @@ use frame_server_core::hover_budget::{
     HoverBudgetCapabilityReport, HoverBudgetCapabilityUnavailableReason, HoverBudgetResourceClass,
     HoverBudgetResourcePressureReason, HoverResolvedBudget,
 };
+use video_backend_api::{
+    BackendHoverBudgetAdmissionFatalReason, BackendHoverBudgetAdmissionReport,
+    BackendHoverBudgetAdmissionUnavailableReason, BackendHoverBudgetCapabilityMinimum,
+    BackendHoverBudgetCapabilityReport, BackendHoverBudgetCapabilityUnavailableReason,
+    BackendHoverBudgetResourceClass, BackendHoverBudgetResourcePressureReason,
+    BackendHoverResolvedBudget, HoverBudgetDiagnosticsProvider,
+};
 use video_core::{SoftwareDecodeThreadBudget, VideoDecoderThreadConfig};
 
 const DEFAULT_HOVER_SOFTWARE_FRAME_POOL_MINIMUM: usize = 2;
@@ -164,6 +171,36 @@ impl FfmpegSoftwareHoverOwner {
     }
 
     #[must_use]
+    pub fn hover_admission_report(
+        &self,
+        resolved_budget: &HoverResolvedBudget,
+    ) -> HoverBudgetAdmissionReport {
+        let Some(requested_frame_pool_frames) =
+            resolved_budget.budget_for(HoverBudgetResourceClass::SoftwareFramePoolFrames)
+        else {
+            return HoverBudgetAdmissionReport::Unavailable(
+                HoverBudgetAdmissionUnavailableReason::ResourceProviderUnavailable,
+            );
+        };
+        let Some(requested_thread_count) =
+            resolved_budget.budget_for(HoverBudgetResourceClass::SoftwareThreadCount)
+        else {
+            return HoverBudgetAdmissionReport::Unavailable(
+                HoverBudgetAdmissionUnavailableReason::ResourceProviderUnavailable,
+            );
+        };
+
+        match self.inner.lock() {
+            Ok(inner) => {
+                inner.hover_admission_report(requested_frame_pool_frames, requested_thread_count)
+            }
+            Err(_) => HoverBudgetAdmissionReport::Fatal(
+                HoverBudgetAdmissionFatalReason::ProviderInvariantViolated,
+            ),
+        }
+    }
+
+    #[must_use]
     pub fn snapshot(&self) -> Option<FfmpegSoftwareHoverSnapshot> {
         let inner = self.inner.lock().ok()?;
 
@@ -174,6 +211,164 @@ impl FfmpegSoftwareHoverOwner {
             hover_frame_pool_provider_capacity: inner.context.hover_frame_pool_provider_capacity,
             hover_thread_provider_capacity: inner.context.hover_thread_provider_capacity,
         })
+    }
+}
+
+impl HoverBudgetDiagnosticsProvider for FfmpegSoftwareHoverOwner {
+    fn hover_capability_report(&self) -> BackendHoverBudgetCapabilityReport {
+        backend_capability_report_from_core(FfmpegSoftwareHoverOwner::hover_capability_report(self))
+    }
+
+    fn hover_admission_report(
+        &self,
+        resolved_budget: &BackendHoverResolvedBudget,
+    ) -> BackendHoverBudgetAdmissionReport {
+        let core_budget = core_resolved_budget_from_backend(resolved_budget);
+        backend_admission_report_from_core(FfmpegSoftwareHoverOwner::hover_admission_report(
+            self,
+            &core_budget,
+        ))
+    }
+}
+
+fn backend_capability_report_from_core(
+    report: HoverBudgetCapabilityReport,
+) -> BackendHoverBudgetCapabilityReport {
+    match report {
+        HoverBudgetCapabilityReport::Supported(capability) => {
+            BackendHoverBudgetCapabilityReport::Supported(
+                capability
+                    .minimums()
+                    .iter()
+                    .copied()
+                    .map(|minimum| {
+                        BackendHoverBudgetCapabilityMinimum::reported(
+                            resource_class_to_backend(minimum.resource_class()),
+                            minimum.reported_minimum(),
+                        )
+                    })
+                    .collect(),
+            )
+        }
+        HoverBudgetCapabilityReport::Unsupported(reason) => {
+            BackendHoverBudgetCapabilityReport::Unsupported(match reason {
+                frame_server_core::HoverBudgetUnsupportedReason::MissingPlayableOutput => {
+                    video_backend_api::BackendHoverBudgetUnsupportedReason::MissingPlayableOutput
+                }
+                frame_server_core::HoverBudgetUnsupportedReason::BackendDoesNotSupportHover => {
+                    video_backend_api::BackendHoverBudgetUnsupportedReason::BackendDoesNotSupportHover
+                }
+                frame_server_core::HoverBudgetUnsupportedReason::UnsupportedResourceClass {
+                    resource_class,
+                } => video_backend_api::BackendHoverBudgetUnsupportedReason::UnsupportedResourceClass {
+                    resource_class: resource_class_to_backend(resource_class),
+                },
+            })
+        }
+        HoverBudgetCapabilityReport::Unavailable(reason) => {
+            BackendHoverBudgetCapabilityReport::Unavailable(match reason {
+                frame_server_core::HoverBudgetCapabilityUnavailableReason::BackendNotReady => {
+                    BackendHoverBudgetCapabilityUnavailableReason::BackendNotReady
+                }
+                frame_server_core::HoverBudgetCapabilityUnavailableReason::MediaContextUnavailable => {
+                    BackendHoverBudgetCapabilityUnavailableReason::MediaContextUnavailable
+                }
+                frame_server_core::HoverBudgetCapabilityUnavailableReason::ResourceProviderUnavailable => {
+                    BackendHoverBudgetCapabilityUnavailableReason::ResourceProviderUnavailable
+                }
+            })
+        }
+    }
+}
+
+fn core_resolved_budget_from_backend(
+    resolved_budget: &BackendHoverResolvedBudget,
+) -> HoverResolvedBudget {
+    HoverResolvedBudget::new(
+        resolved_budget
+            .resources()
+            .iter()
+            .copied()
+            .filter_map(|resource| {
+                NonZeroUsize::new(resource.resolved_budget()).map(|budget| {
+                    frame_server_core::HoverResolvedBudgetResource::new(
+                        resource_class_from_backend(resource.resource_class()),
+                        budget,
+                        frame_server_core::HoverBudgetResolutionSource::FixedConfig,
+                    )
+                })
+            })
+            .collect(),
+    )
+}
+
+fn backend_admission_report_from_core(
+    report: HoverBudgetAdmissionReport,
+) -> BackendHoverBudgetAdmissionReport {
+    match report {
+        HoverBudgetAdmissionReport::Admitted => BackendHoverBudgetAdmissionReport::Admitted,
+        HoverBudgetAdmissionReport::ResourcePressure(reason) => {
+            BackendHoverBudgetAdmissionReport::ResourcePressure(match reason {
+                HoverBudgetResourcePressureReason::ActivePlaybackReservation => {
+                    BackendHoverBudgetResourcePressureReason::ActivePlaybackReservation
+                }
+                HoverBudgetResourcePressureReason::ExistingHoverReservation => {
+                    BackendHoverBudgetResourcePressureReason::ExistingHoverReservation
+                }
+                HoverBudgetResourcePressureReason::ProviderCapacityExhausted => {
+                    BackendHoverBudgetResourcePressureReason::ProviderCapacityExhausted
+                }
+            })
+        }
+        HoverBudgetAdmissionReport::Unavailable(reason) => {
+            BackendHoverBudgetAdmissionReport::Unavailable(match reason {
+                HoverBudgetAdmissionUnavailableReason::ReservationOwnerUnavailable => {
+                    BackendHoverBudgetAdmissionUnavailableReason::ReservationOwnerUnavailable
+                }
+                HoverBudgetAdmissionUnavailableReason::ResourceProviderUnavailable => {
+                    BackendHoverBudgetAdmissionUnavailableReason::ResourceProviderUnavailable
+                }
+            })
+        }
+        HoverBudgetAdmissionReport::Fatal(reason) => {
+            BackendHoverBudgetAdmissionReport::Fatal(match reason {
+                HoverBudgetAdmissionFatalReason::ProviderInvariantViolated => {
+                    BackendHoverBudgetAdmissionFatalReason::ProviderInvariantViolated
+                }
+            })
+        }
+    }
+}
+
+fn resource_class_to_backend(
+    resource_class: HoverBudgetResourceClass,
+) -> BackendHoverBudgetResourceClass {
+    match resource_class {
+        HoverBudgetResourceClass::HardwareSurfaceFrames => {
+            BackendHoverBudgetResourceClass::HardwareSurfaceFrames
+        }
+        HoverBudgetResourceClass::SoftwareFramePoolFrames => {
+            BackendHoverBudgetResourceClass::SoftwareFramePoolFrames
+        }
+        HoverBudgetResourceClass::SoftwareThreadCount => {
+            BackendHoverBudgetResourceClass::SoftwareThreadCount
+        }
+    }
+}
+
+fn resource_class_from_backend(
+    resource_class: BackendHoverBudgetResourceClass,
+) -> HoverBudgetResourceClass {
+    match resource_class {
+        BackendHoverBudgetResourceClass::HardwareSurfaceFrames => {
+            HoverBudgetResourceClass::HardwareSurfaceFrames
+        }
+        BackendHoverBudgetResourceClass::SoftwareFramePoolFrames => {
+            HoverBudgetResourceClass::SoftwareFramePoolFrames
+        }
+        BackendHoverBudgetResourceClass::SoftwareThreadCount => {
+            HoverBudgetResourceClass::SoftwareThreadCount
+        }
     }
 }
 
@@ -211,26 +406,9 @@ impl FfmpegSoftwareHoverOwnerInner {
         requested_frame_pool_frames: NonZeroUsize,
         requested_thread_count: NonZeroUsize,
     ) -> Result<ActiveSoftwareHoverReservation, HoverBudgetAdmissionReport> {
-        if self.hover_reservation.is_some() {
-            return Err(HoverBudgetAdmissionReport::ResourcePressure(
-                HoverBudgetResourcePressureReason::ExistingHoverReservation,
-            ));
-        }
-
-        if requested_frame_pool_frames >= self.context.playback_frame_pool_budget
-            || requested_thread_count >= self.context.playback_thread_budget
-        {
-            return Err(HoverBudgetAdmissionReport::ResourcePressure(
-                HoverBudgetResourcePressureReason::ProviderCapacityExhausted,
-            ));
-        }
-
-        if requested_frame_pool_frames.get() > self.context.hover_frame_pool_provider_capacity
-            || requested_thread_count.get() > self.context.hover_thread_provider_capacity
-        {
-            return Err(HoverBudgetAdmissionReport::ResourcePressure(
-                HoverBudgetResourcePressureReason::ProviderCapacityExhausted,
-            ));
+        match self.hover_admission_report(requested_frame_pool_frames, requested_thread_count) {
+            HoverBudgetAdmissionReport::Admitted => {}
+            rejection => return Err(rejection),
         }
 
         let active_reservation = ActiveSoftwareHoverReservation {
@@ -242,6 +420,36 @@ impl FfmpegSoftwareHoverOwnerInner {
         self.hover_reservation = Some(active_reservation);
 
         Ok(active_reservation)
+    }
+
+    fn hover_admission_report(
+        &self,
+        requested_frame_pool_frames: NonZeroUsize,
+        requested_thread_count: NonZeroUsize,
+    ) -> HoverBudgetAdmissionReport {
+        if self.hover_reservation.is_some() {
+            return HoverBudgetAdmissionReport::ResourcePressure(
+                HoverBudgetResourcePressureReason::ExistingHoverReservation,
+            );
+        }
+
+        if requested_frame_pool_frames >= self.context.playback_frame_pool_budget
+            || requested_thread_count >= self.context.playback_thread_budget
+        {
+            return HoverBudgetAdmissionReport::ResourcePressure(
+                HoverBudgetResourcePressureReason::ProviderCapacityExhausted,
+            );
+        }
+
+        if requested_frame_pool_frames.get() > self.context.hover_frame_pool_provider_capacity
+            || requested_thread_count.get() > self.context.hover_thread_provider_capacity
+        {
+            return HoverBudgetAdmissionReport::ResourcePressure(
+                HoverBudgetResourcePressureReason::ProviderCapacityExhausted,
+            );
+        }
+
+        HoverBudgetAdmissionReport::Admitted
     }
 
     fn release_hover_reservation(

@@ -15,6 +15,7 @@ use cros_codecs::libva::{
 };
 use media_core::Packet;
 use tracing::{debug, info, trace, warn};
+use video_backend_api::HoverBudgetDiagnosticsProviderHandle;
 use video_core::{
     DecodedFrame, DecodedPixelFormat, FrameResourceHandle, VideoDecoder,
     VideoDecoderActivityNotifier, VideoDecoderDiagnosticEvent, VideoDecoderDropReason,
@@ -1538,6 +1539,11 @@ impl VaapiVideoDecoder {
             preroll_output_floor: PrerollOutputFloorState::default(),
             preroll_fallback_candidate: None,
         })
+    }
+
+    /// Возвращает cloneable read-only provider для Frame Server budget diagnostics.
+    pub(crate) fn hover_budget_diagnostics_provider(&self) -> HoverBudgetDiagnosticsProviderHandle {
+        HoverBudgetDiagnosticsProviderHandle::new(self._shared_hardware_owner.clone())
     }
 
     /// Освобождает decoder-owned frame, который не был отправлен renderer GPU work-у.

@@ -34,11 +34,12 @@ use crate::{
     PlayerErrorKind, PlayerEvent, PlayerResult, PlayerRuntimeAcceptedChange,
     PlayerRuntimeApplyError, PlayerRuntimeApplyGroup, PlayerRuntimeApplyGroupReport,
     PlayerRuntimeApplyReport, PlayerRuntimeApplyResult, PlayerRuntimeDecoderThreadConfigUpdate,
-    PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeSettingsUpdate, PlayerRuntimeTickConfigUpdate,
-    PlayerRuntimeVideoBackendUpdate, PlayerSession, PlayerSnapshot, PlayerTickConfig,
-    PlayerTickContext, PlayerTickResult, PlayerTimelineHoverPrepareHandoff,
-    PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan, PreparedMedia,
-    SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend, scheduler_timing_diagnostics,
+    PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeFrameServerPolicyUpdate,
+    PlayerRuntimeSettingsUpdate, PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate,
+    PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
+    PlayerTimelineHoverPrepareHandoff, PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan,
+    PreparedMedia, SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend,
+    scheduler_timing_diagnostics,
 };
 
 mod handle;
@@ -164,9 +165,7 @@ impl PlayerWorkerConfig {
             timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff::from_app_config(
                 config,
             ),
-            frame_server_config: runtime_frame_server_config_from_persisted(&config.frame_server)
-                .validate()
-                .expect("validated app frame_server config must map to frame-server-core config"),
+            frame_server_config: Self::frame_server_config_from_app_config(config),
         }
     }
 
@@ -206,6 +205,16 @@ impl PlayerWorkerConfig {
         config: &rustiplayer_config::AppConfig,
     ) -> PlayerVideoDecoderThreadConfig {
         decoder_thread_config_from_app_config(config)
+    }
+
+    /// Возвращает validated frame-server policy тем же маппингом, что startup worker config.
+    #[must_use]
+    pub fn frame_server_config_from_app_config(
+        config: &rustiplayer_config::AppConfig,
+    ) -> ValidatedFrameServerConfig {
+        runtime_frame_server_config_from_persisted(&config.frame_server)
+            .validate()
+            .expect("validated app frame_server config must map to frame-server-core config")
     }
 }
 

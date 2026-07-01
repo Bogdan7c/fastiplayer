@@ -148,7 +148,12 @@ fn render_section(
             group.as_str(),
             group_index,
         ));
-        CollapsingState::load_with_default_open(ui.ctx(), group_state_id, group_index == 0)
+        let group_allows_default_open = group_fields
+            .iter()
+            .all(|field| field.descriptor.placement.group_default_open);
+        let group_default_open = group_index == 0 && group_allows_default_open;
+
+        CollapsingState::load_with_default_open(ui.ctx(), group_state_id, group_default_open)
             .show_header(ui, |ui| {
                 render_group_header(ui, &section.section, group, actions);
             })

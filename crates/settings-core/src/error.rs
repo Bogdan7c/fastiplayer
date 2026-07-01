@@ -161,6 +161,12 @@ pub enum SettingValueError {
         /// Actual character count.
         actual: usize,
     },
+
+    /// Auto/fixed-positive integer text is neither `auto` nor a positive integer.
+    InvalidAutoFixedPositiveInteger {
+        /// User supplied text.
+        actual: String,
+    },
 }
 
 impl fmt::Display for SettingValueError {
@@ -208,6 +214,10 @@ impl fmt::Display for SettingValueError {
             } => write!(
                 formatter,
                 "{limit} text length violation: expected {expected}, got {actual}"
+            ),
+            Self::InvalidAutoFixedPositiveInteger { actual } => write!(
+                formatter,
+                "expected `auto` or a positive integer, got `{actual}`"
             ),
         }
     }

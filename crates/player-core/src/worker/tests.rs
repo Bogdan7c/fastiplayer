@@ -556,6 +556,53 @@ fn runtime_apply_tick_config_updates_worker_owned_config() {
 }
 
 #[test]
+fn runtime_apply_frame_server_policy_updates_worker_and_session_owned_config() {
+    let mut runtime = runtime_for_tests(Instant::now());
+    let requested_frame_server_config = frame_server_core::FrameServerConfig {
+        live_scrub_max_hz: 120,
+        hover_prepare_window_slots: 2,
+        recent_superseded_prepare_slots: 0,
+        ..frame_server_core::FrameServerConfig::default()
+    }
+    .validate()
+    .expect("test frame-server policy must validate");
+
+    let report = runtime.apply_runtime_settings(
+        PlayerRuntimeSettingsUpdate::empty().with_frame_server_policy(
+            requested_frame_server_config,
+            [
+                PlayerRuntimeSettingId::FrameServerLiveScrubMaxHz,
+                PlayerRuntimeSettingId::FrameServerHoverPrepareWindowSlots,
+                PlayerRuntimeSettingId::FrameServerRecentSupersededPrepareSlots,
+            ],
+        ),
+    );
+
+    assert_eq!(
+        runtime.config.frame_server_config,
+        requested_frame_server_config
+    );
+    assert_eq!(
+        runtime.session.frame_server_policy_config(),
+        requested_frame_server_config
+    );
+    let frame_server_report =
+        apply_group_report(&report, PlayerRuntimeApplyGroup::FrameServerPolicy);
+    assert_eq!(
+        frame_server_report.outcome,
+        PlayerRuntimeApplyOutcome::Accepted(PlayerRuntimeAcceptedChange::Applied)
+    );
+    assert_eq!(
+        frame_server_report.affected_settings,
+        vec![
+            PlayerRuntimeSettingId::FrameServerLiveScrubMaxHz,
+            PlayerRuntimeSettingId::FrameServerHoverPrepareWindowSlots,
+            PlayerRuntimeSettingId::FrameServerRecentSupersededPrepareSlots,
+        ]
+    );
+}
+
+#[test]
 fn runtime_apply_default_volume_does_not_mutate_current_playback_volume() {
     let mut runtime = runtime_for_tests(Instant::now());
     runtime

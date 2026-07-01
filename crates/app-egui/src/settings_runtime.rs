@@ -29,10 +29,10 @@ use rustiplayer_config::{
 use rustiplayer_settings::{
     AppConfigStore, AppConfigValidator, AppRouteApplyReport, AppRouteApplyResult,
     AppRouteGroupReport, AppRuntimeRouteApplier, AppRuntimeRouteGroup, AppRuntimeRouteGroupUpdate,
-    MediaServiceRuntimeSettingsUpdate, PlayerCommittedSettingsUpdate, RENDER_PREVIEW_ROUTE_ID,
-    RenderCommittedSettingsUpdate, RuntimeCommittedRoute, RuntimeCommittedUpdate,
-    UiRuntimeSettingsUpdate, app_config_registry, committed_routes_from_update,
-    render_live_settings_from_config,
+    FrameServerRuntimeSettingsUpdate, MediaServiceRuntimeSettingsUpdate,
+    PlayerCommittedSettingsUpdate, RENDER_PREVIEW_ROUTE_ID, RenderCommittedSettingsUpdate,
+    RuntimeCommittedRoute, RuntimeCommittedUpdate, UiRuntimeSettingsUpdate, app_config_registry,
+    committed_routes_from_update, render_live_settings_from_config,
 };
 use settings_core::{
     ApplyFinalState, ApplyMechanism, ApplyReport, ApplyRouteReport, ApplyRouteResult, CancelReport,
@@ -42,10 +42,13 @@ use settings_core::{
     RollbackResult, SelectDescriptor, SettingEditor, SettingGroupId, SettingId, SettingOption,
     SettingOptionCurrentValue, SettingOptionId, SettingOptionProvider, SettingOptions,
     SettingOptionsError, SettingOptionsRequest, SettingOptionsStatus, SettingRouteId, SettingText,
-    SettingValue, SettingsController, SettingsPersister, SettingsRegistry, SettingsResult,
-    SettingsSurfaceId, SettingsValidator, ValidationReport, ValidationRequest,
+    SettingValue, SettingsController, SettingsError, SettingsPersister, SettingsRegistry,
+    SettingsResult, SettingsSurfaceId, SettingsValidator, ValidationReport, ValidationRequest,
 };
 
+use crate::frame_server_budget::{
+    FrameServerHoverBudgetDiagnosticsSnapshot, FrameServerHoverBudgetPreflightRejection,
+};
 use crate::render_settings::{
     color_pipeline_settings_from_config, hdr_to_sdr_settings_from_config,
 };

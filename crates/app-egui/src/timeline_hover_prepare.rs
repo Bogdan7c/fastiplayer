@@ -3,12 +3,15 @@
 #![allow(dead_code)]
 
 use std::cmp::Ordering;
+use std::num::NonZeroUsize;
 
 use frame_server_core::{
     BackendRevision, FrameExactnessPolicy, ScrubGenerationToken, ScrubTrackSelection,
-    SourceRevision, TimelineHoverFrameBucket, TimelineHoverPrepareFrameKey,
-    TimelineHoverPrepareFrameLookupRequest, TimelineHoverPrepareLookupMissReason,
-    TimelineHoverPrepareSessionEndReleaseOutcome, TimelineHoverPrepareSessionEndReleaseReason,
+    SourceRevision, TimelineHoverFrameBucket, TimelineHoverPrepareCapacityReconfigureOutcome,
+    TimelineHoverPrepareFrameKey, TimelineHoverPrepareFrameLookupRequest,
+    TimelineHoverPrepareLookupMissReason, TimelineHoverPrepareSessionEndReleaseOutcome,
+    TimelineHoverPrepareSessionEndReleaseReason, TimelineHoverRecentSupersededBudget,
+    TimelineHoverRecentSupersededReconfigureOutcome,
 };
 use media_core::{DemuxSeekRequest, MediaDemuxError, TrackTimestamp};
 use player_core::{PlayerTimelineHoverPrepareBorrowOutcome, PlayerTimelineHoverPrepareHandoff};
@@ -414,6 +417,14 @@ impl AppTimelineHoverPrepareExecutor {
             .update_open_config(network_config, youtube_config, demux_config);
     }
 
+    fn update_network_hover_prepare_throttle(
+        &mut self,
+        network_hover_prepare_throttle: std::time::Duration,
+    ) {
+        self.network_open_controller
+            .update_inter_start_throttle(network_hover_prepare_throttle);
+    }
+
     fn set_hover_source(&mut self, source: TimelineHoverSourceIdentity) {
         self.active_hover_source = None;
         self.network_open_controller.invalidate_source_context();
@@ -441,6 +452,23 @@ impl AppTimelineHoverPrepareExecutor {
     ) -> TimelineHoverPrepareSessionEndReleaseOutcome {
         self.handoff
             .release_hover_owned_entries_for_session_end(reason)
+    }
+
+    pub(crate) fn reconfigure_hover_prepare_primary_capacity(
+        &self,
+        new_capacity: NonZeroUsize,
+        protected_key: Option<TimelineHoverPrepareFrameKey>,
+    ) -> TimelineHoverPrepareCapacityReconfigureOutcome {
+        self.handoff
+            .reconfigure_hover_prepare_primary_capacity_protecting(new_capacity, protected_key)
+    }
+
+    pub(crate) fn reconfigure_recent_superseded_budget(
+        &self,
+        new_budget: TimelineHoverRecentSupersededBudget,
+    ) -> TimelineHoverRecentSupersededReconfigureOutcome {
+        self.handoff
+            .reconfigure_recent_superseded_budget(new_budget)
     }
 
     /// Read-only network open state для telemetry без раскрытия controller storage.
@@ -770,6 +798,14 @@ impl TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor> {
         );
     }
 
+    pub(crate) fn update_network_hover_prepare_throttle(
+        &mut self,
+        network_hover_prepare_throttle: std::time::Duration,
+    ) {
+        self.executor
+            .update_network_hover_prepare_throttle(network_hover_prepare_throttle);
+    }
+
     pub(crate) fn set_hover_source(&mut self, source: TimelineHoverSourceIdentity) {
         self.executor.set_hover_source(source);
     }
@@ -784,6 +820,23 @@ impl TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor> {
     ) -> TimelineHoverPrepareSessionEndReleaseOutcome {
         self.executor
             .release_hover_owned_entries_for_session_end(reason)
+    }
+
+    pub(crate) fn reconfigure_hover_prepare_primary_capacity(
+        &self,
+        new_capacity: NonZeroUsize,
+        protected_key: Option<TimelineHoverPrepareFrameKey>,
+    ) -> TimelineHoverPrepareCapacityReconfigureOutcome {
+        self.executor
+            .reconfigure_hover_prepare_primary_capacity(new_capacity, protected_key)
+    }
+
+    pub(crate) fn reconfigure_recent_superseded_budget(
+        &self,
+        new_budget: TimelineHoverRecentSupersededBudget,
+    ) -> TimelineHoverRecentSupersededReconfigureOutcome {
+        self.executor
+            .reconfigure_recent_superseded_budget(new_budget)
     }
 }
 

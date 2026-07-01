@@ -9,6 +9,7 @@
 
 mod app_shell;
 mod frame_prepare;
+mod frame_server_budget;
 mod hover_software_session;
 mod local_file_open;
 mod local_media;

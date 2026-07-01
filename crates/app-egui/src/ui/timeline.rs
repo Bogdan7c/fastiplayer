@@ -570,8 +570,7 @@ pub fn map_timeline_interaction(
         actions.push(TimelineAction::BeginLiveScrub(position));
     }
 
-    if live_scrub_enabled
-        && state.has_active_live_scrub_gesture()
+    if state.has_active_live_scrub_gesture()
         && !began_live_scrub_this_frame
         && input.dragged
         && let Some(position) = pointer_position
@@ -579,10 +578,7 @@ pub fn map_timeline_interaction(
         actions.push(TimelineAction::PreviewLiveScrub(position));
     }
 
-    if live_scrub_enabled
-        && state.has_active_live_scrub_gesture()
-        && (input.drag_stopped || input.clicked)
-    {
+    if state.has_active_live_scrub_gesture() && (input.drag_stopped || input.clicked) {
         let release_position = pointer_position.or(state.transient_drag_position);
         state.clear_transient_drag();
         state.clear_live_scrub_gesture();
@@ -1298,6 +1294,66 @@ mod tests {
                 .iter()
                 .all(|action| !matches!(action, TimelineAction::CommitDragSeek(_)))
         );
+    }
+
+    /// Live-scrub enable switch влияет на новые gestures, но не меняет уже захваченный drag.
+    #[test]
+    fn active_live_scrub_keeps_pointer_down_route_when_live_scrub_is_disabled_mid_drag() {
+        let timeline = seekable_timeline();
+        let mut state = TimelineUiState::default();
+
+        let start = super::map_timeline_interaction(
+            &timeline,
+            &mut state,
+            Some(seekable_bounds()),
+            TimelinePointerInput {
+                pointer_down_on_timeline: true,
+                pointer_fraction: Some(0.20),
+                ..TimelinePointerInput::default()
+            },
+            Some(hover_preview_placement()),
+            true,
+        );
+        assert_eq!(
+            start.actions,
+            vec![TimelineAction::BeginLiveScrub(MediaTime::from_secs(20))]
+        );
+
+        let update_after_disable = super::map_timeline_interaction(
+            &timeline,
+            &mut state,
+            Some(seekable_bounds()),
+            TimelinePointerInput {
+                pointer_down_on_timeline: true,
+                dragged: true,
+                pointer_fraction: Some(0.60),
+                ..TimelinePointerInput::default()
+            },
+            Some(hover_preview_placement()),
+            false,
+        );
+        assert_eq!(
+            update_after_disable.actions,
+            vec![TimelineAction::PreviewLiveScrub(MediaTime::from_secs(60))]
+        );
+
+        let end_after_disable = super::map_timeline_interaction(
+            &timeline,
+            &mut state,
+            Some(seekable_bounds()),
+            TimelinePointerInput {
+                drag_stopped: true,
+                pointer_fraction: Some(0.80),
+                ..TimelinePointerInput::default()
+            },
+            Some(hover_preview_placement()),
+            false,
+        );
+        assert_eq!(
+            end_after_disable.actions,
+            vec![TimelineAction::EndLiveScrub(MediaTime::from_secs(80))]
+        );
+        assert!(!state.has_active_live_scrub_gesture());
     }
 
     /// Pointer-down + dragged в одном frame-е не создаёт duplicate PreviewScrub.

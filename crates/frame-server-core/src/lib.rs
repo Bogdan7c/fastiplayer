@@ -100,6 +100,7 @@ pub use working_set::{
     TimelineHoverPreparedFrame, TimelineHoverPreparedFrameEntry, TimelineHoverPreparedFrameTiming,
     TimelineHoverPromotedFrameSeekReuse, TimelineHoverPromotedPreparedFrame,
     TimelineHoverRecentSupersededBudget, TimelineHoverRecentSupersededClearReason,
+    TimelineHoverRecentSupersededReconfigureOutcome,
 };
 
 #[cfg(test)]

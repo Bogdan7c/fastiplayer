@@ -1491,6 +1491,78 @@ fn latest_n_recent_superseded_evicts_oldest_demoted_entry() {
 }
 
 #[test]
+fn live_recent_budget_shrink_releases_oldest_over_budget_and_grow_only_changes_future_budget() {
+    let released = Arc::new(Mutex::new(Vec::new()));
+    let mut working_set = TimelineHoverPrepareWorkingSet::with_capacity_and_recent_superseded(
+        capacity(1),
+        recent_budget_for_tests(2, 2),
+    );
+
+    for (bucket, handle) in [
+        (133, FrameResourceHandle(133)),
+        (134, FrameResourceHandle(134)),
+    ] {
+        let key = base_key(bucket);
+        let transaction = promote_branch_entry(&mut working_set, key, handle, released.clone());
+        let demote = transaction.supersede_to_recent(&mut working_set, lookup_request(key, 1_200));
+        assert!(matches!(
+            demote,
+            TimelineHoverPrepareDemoteBackOutcome::DemotedToRecentSuperseded
+        ));
+    }
+
+    for (bucket, handle) in [
+        (135, FrameResourceHandle(135)),
+        (136, FrameResourceHandle(136)),
+    ] {
+        let key = base_key(bucket);
+        working_set.insert_prepared_frame(
+            key,
+            TimelineHoverPreparedFrameEntry::new(
+                software_lease(handle, released.clone()),
+                timing(1_250),
+            )
+            .with_branch_token(FakeBranchToken {
+                branch_id: bucket as u64,
+            }),
+        );
+        let promotion = working_set.promote_prepared_frame(lookup_request(key, 1_200));
+        let TimelineHoverPreparePromotionOutcome::PromotedResumeReadyBranch(promoted_frame) =
+            promotion
+        else {
+            panic!("software branch entry must promote before demote");
+        };
+        let demote = working_set.try_demote_promoted_frame_to_recent_superseded(
+            promoted_frame,
+            lookup_request(key, 1_200),
+            CancelScrubReason::SupersededByNewTarget,
+        );
+        assert!(matches!(
+            demote,
+            TimelineHoverPrepareDemoteBackOutcome::DemotedToRecentSuperseded
+        ));
+    }
+
+    let shrink = working_set.reconfigure_recent_superseded_budget(recent_budget_for_tests(1, 1));
+
+    assert_eq!(shrink.old_budget(), recent_budget_for_tests(2, 2));
+    assert_eq!(shrink.new_budget(), recent_budget_for_tests(1, 1));
+    assert_eq!(shrink.released_entries(), &[base_key(133), base_key(135)]);
+    assert_eq!(working_set.recent_superseded_len(), 2);
+    assert_eq!(release_count(&released, FrameResourceHandle(133)), 1);
+    assert_eq!(release_count(&released, FrameResourceHandle(135)), 1);
+    assert_eq!(release_count(&released, FrameResourceHandle(134)), 0);
+    assert_eq!(release_count(&released, FrameResourceHandle(136)), 0);
+
+    let grow = working_set.reconfigure_recent_superseded_budget(recent_budget_for_tests(2, 2));
+
+    assert!(grow.released_entries().is_empty());
+    assert_eq!(working_set.recent_superseded_len(), 2);
+    assert_eq!(release_count(&released, FrameResourceHandle(134)), 0);
+    assert_eq!(release_count(&released, FrameResourceHandle(136)), 0);
+}
+
+#[test]
 fn full_recent_compartment_does_not_evict_primary_hover_entry() {
     let released = Arc::new(Mutex::new(Vec::new()));
     let primary_key = base_key(140);

@@ -11,6 +11,7 @@ use crate::frame_prepare::{
     TimelineHoverPreviewLoadState, TimelineHoverPreviewRenderDiagnosticsSnapshot,
     TimelineHoverPreviewUpdateOutcome,
 };
+use crate::frame_server_budget::FrameServerHoverBudgetDiagnosticsSnapshot;
 use crate::timeline_hover_network::TimelineHoverNetworkOpenDiagnosticsSnapshot;
 use crate::timeline_hover_prepare::{
     TimelineHoverPrepareCancellationReason, TimelineHoverPrepareCompletionOutcome,
@@ -33,7 +34,7 @@ pub(super) struct AppFrameServerDiagnosticsRecorder {
 }
 
 /// Read-only snapshot для telemetry panel без доступа к private AppState fields.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct AppFrameServerDiagnosticsSnapshot {
     /// Нейтральный scrub/hover snapshot, накопленный app-owned hover executor-ом.
     pub(super) scrub: ScrubDiagnosticsSnapshot,
@@ -46,6 +47,9 @@ pub(super) struct AppFrameServerDiagnosticsSnapshot {
 
     /// Read-only state network open controller-а без URL/source/target history.
     pub(super) network_open: TimelineHoverNetworkOpenDiagnosticsSnapshot,
+
+    /// Active-backend hover budget diagnostics, если backend дал read-only provider.
+    pub(super) hover_budget: Option<FrameServerHoverBudgetDiagnosticsSnapshot>,
 }
 
 /// Snapshot UX lifetime grace-а: это retention lifetime, не decode coverage.
@@ -150,6 +154,7 @@ impl AppFrameServerDiagnosticsRecorder {
         visual_preview_enabled: bool,
         preview_render_state: TimelineHoverPreviewRenderDiagnosticsSnapshot,
         network_open: TimelineHoverNetworkOpenDiagnosticsSnapshot,
+        hover_budget: Option<FrameServerHoverBudgetDiagnosticsSnapshot>,
     ) -> AppFrameServerDiagnosticsSnapshot {
         AppFrameServerDiagnosticsSnapshot {
             scrub: self.scrub.snapshot(),
@@ -160,6 +165,7 @@ impl AppFrameServerDiagnosticsRecorder {
                 .hover_preview
                 .snapshot(visual_preview_enabled, preview_render_state),
             network_open,
+            hover_budget,
         }
     }
 

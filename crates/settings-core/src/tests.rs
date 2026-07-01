@@ -1,14 +1,15 @@
 use crate::{
-    ApplyFinalState, ApplyRouteReport, ApplyRouteResult, CommittedApplyRequest,
-    CommittedSettingsApplier, DefaultBehavior, ListLengthLimitKind, NumericDescriptor,
-    NumericRange, NumericStep, PersistReport, PersistRequest, PreviewApplyReport,
-    PreviewApplyRequest, PreviewApplyResult, PreviewRollbackRequest, PreviewRollbacker,
-    PreviewSettingsApplier, RollbackReport, RouteGeneration, SelectListDescriptor, SettingAccess,
-    SettingApplyMode, SettingDescriptor, SettingDescriptorText, SettingEditor, SettingId,
-    SettingOption, SettingOptionCurrentValue, SettingOptionId, SettingOptions, SettingPlacement,
-    SettingRouteId, SettingText, SettingValue, SettingValueError, SettingValueType,
-    SettingsController, SettingsError, SettingsPersister, SettingsRegistry, SettingsValidator,
-    TextDescriptor, TextFormat, ValidationReport, ValidationRequest, VectorDescriptor,
+    ApplyFinalState, ApplyRouteReport, ApplyRouteResult, AutoFixedPositiveIntegerDescriptor,
+    CommittedApplyRequest, CommittedSettingsApplier, DefaultBehavior, ListLengthLimitKind,
+    NumericDescriptor, NumericRange, NumericStep, PersistReport, PersistRequest,
+    PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult, PreviewRollbackRequest,
+    PreviewRollbacker, PreviewSettingsApplier, RollbackReport, RouteGeneration,
+    SelectListDescriptor, SettingAccess, SettingApplyMode, SettingDescriptor,
+    SettingDescriptorText, SettingEditor, SettingId, SettingOption, SettingOptionCurrentValue,
+    SettingOptionId, SettingOptions, SettingPlacement, SettingRouteId, SettingText, SettingValue,
+    SettingValueError, SettingValueType, SettingsController, SettingsError, SettingsPersister,
+    SettingsRegistry, SettingsValidator, TextDescriptor, TextFormat, ValidationReport,
+    ValidationRequest, VectorDescriptor,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -424,6 +425,55 @@ fn select_list_validation_rejects_unknown_duplicate_and_out_of_range_items() {
             actual: 0,
         }
     );
+}
+
+#[test]
+fn auto_fixed_positive_integer_validation_accepts_only_auto_or_positive_fixed() {
+    let descriptor = SettingDescriptor {
+        id: SettingId::from("frame_server.hover_pool_frames"),
+        path: "frame_server.hover_pool_frames".into(),
+        text: SettingDescriptorText::new(SettingText::new(
+            "settings.frame_server.hover_pool_frames.label",
+            "Бюджет hover-кадров",
+        )),
+        placement: SettingPlacement::new("frame_server", "resources", "main-settings-window")
+            .with_group_default_open(false),
+        value_type: SettingValueType::Text,
+        editor: SettingEditor::AutoFixedPositiveInteger(AutoFixedPositiveIntegerDescriptor::new(
+            SettingText::new("settings.frame_server.budget.auto", "Авто"),
+            SettingText::new("settings.frame_server.budget.fixed", "Фиксированно"),
+            None,
+        )),
+        access: SettingAccess::ReadWrite,
+        default_behavior: DefaultBehavior::FromDefaultDocument,
+        route: SettingRouteId::from("frame_server.apply"),
+        apply_mode: SettingApplyMode::CommittedApply,
+    };
+
+    descriptor
+        .validate_value(&SettingValue::Text("auto".to_owned()))
+        .expect("auto must be accepted");
+    descriptor
+        .validate_value(&SettingValue::Text("42".to_owned()))
+        .expect("positive fixed value must be accepted");
+
+    assert_eq!(
+        descriptor
+            .validate_value(&SettingValue::Text("0".to_owned()))
+            .expect_err("zero must not become a hidden off switch"),
+        SettingValueError::InvalidAutoFixedPositiveInteger {
+            actual: "0".to_owned(),
+        }
+    );
+    assert_eq!(
+        descriptor
+            .validate_value(&SettingValue::Text("latest".to_owned()))
+            .expect_err("arbitrary text must be rejected"),
+        SettingValueError::InvalidAutoFixedPositiveInteger {
+            actual: "latest".to_owned(),
+        }
+    );
+    assert!(!descriptor.placement.group_default_open);
 }
 
 #[test]

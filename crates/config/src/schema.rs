@@ -210,7 +210,7 @@ fn document_schema_version_4_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
         "[frame_server]",
-        "# Persisted metadata-ready настройки будущего Frame Server; runtime wiring появится позже.",
+        "# Сохраняемые metadata-ready настройки будущего Frame Server; runtime-подключение появится позже.",
     );
     insert_default_config_comment(
         toml_text,
@@ -220,12 +220,32 @@ fn document_schema_version_4_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
         "hover_pool_frames = \"auto\"",
-        "# Budget frame pool для hover: \"auto\" или положительное число без статического upper cap.",
+        "# Бюджет кадрового пула hover: \"auto\" или положительное число без статического верхнего лимита.",
     );
     insert_default_config_comment(
         toml_text,
         "hover_thread_count = \"auto\"",
-        "# Thread budget для hover: \"auto\" или положительное число без fake provider limits.",
+        "# Бюджет потоков hover: \"auto\" или положительное число без искусственного provider-лимита.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "hover_prepare_window_slots = 1",
+        "# Основные слоты hover prepare window; допустимо 1..=3.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "software_hover_prepare_window_slots = 1",
+        "# Основные слоты software hover prepare window; допустимо 1..=2.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "recent_superseded_prepare_slots = 1",
+        "# Удержание недавно заменённых целей для быстрого возврата; 0 отключает только этот retention path.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "software_recent_superseded_prepare_slots = 1",
+        "# Удержание недавно заменённых software-целей для быстрого возврата; 0 отключает только этот retention path.",
     );
     insert_default_config_comment(
         toml_text,
@@ -239,8 +259,18 @@ fn document_schema_version_4_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "live_scrub_enabled = true",
+        "# Включает live drag preview updates; точный seek по click/release остаётся активным.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "live_scrub_decode_mode = \"throttled_latest\"",
-        "# Live scrub policy: throttled_latest или every_drag_event, оба latest-only.",
+        "# Политика live scrub: throttled_latest или every_drag_event, оба latest-only.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "live_scrub_max_hz = 60",
+        "# Максимальная частота live scrub decode-work для throttled_latest; допустимо 1..=240.",
     );
     insert_default_config_comment(
         toml_text,
@@ -2843,7 +2873,7 @@ mod settings_metadata_tests {
     }
 
     #[test]
-    fn frame_server_metadata_is_read_only_and_metadata_ready() {
+    fn frame_server_metadata_is_editable_and_metadata_ready() {
         let registry = registry();
         let frame_server_ids = EXPECTED_SETTING_IDS
             .iter()
@@ -2854,19 +2884,39 @@ mod settings_metadata_tests {
         assert_eq!(frame_server_ids.len(), 12);
         for id in frame_server_ids {
             let descriptor = descriptor(&registry, id);
-            assert_eq!(descriptor.access, SettingAccess::ReadOnly);
-            assert_eq!(descriptor.default_behavior, DefaultBehavior::NoReset);
+            assert_eq!(descriptor.access, SettingAccess::ReadWrite);
+            assert_eq!(
+                descriptor.default_behavior,
+                DefaultBehavior::FromDefaultDocument
+            );
             assert_eq!(descriptor.placement.section.as_str(), "frame_server");
+            assert!(!descriptor.placement.group_default_open);
             assert_eq!(descriptor.route.as_str(), "frame_server.apply");
             assert_eq!(descriptor.apply_mode, SettingApplyMode::CommittedApply);
-            assert!(
-                descriptor.text.description.is_some(),
-                "{id} description must explain metadata-only behavior"
-            );
-            assert!(
-                descriptor.text.help.is_some(),
-                "{id} help must explain S12 limitations"
-            );
+            assert_russian_fallback(&descriptor.text.label.fallback_ru, id);
+            let description =
+                descriptor.text.description.as_ref().unwrap_or_else(|| {
+                    panic!("{id} description must explain frame_server behavior")
+                });
+            assert_russian_fallback(&description.fallback_ru, id);
+            let help = descriptor
+                .text
+                .help
+                .as_ref()
+                .unwrap_or_else(|| panic!("{id} help must explain S30B limitations"));
+            assert_russian_fallback(&help.fallback_ru, id);
+        }
+
+        for id in [
+            "frame_server.hover_pool_frames",
+            "frame_server.hover_thread_count",
+        ] {
+            let SettingEditor::AutoFixedPositiveInteger(editor) = &descriptor(&registry, id).editor
+            else {
+                panic!("{id} must use Auto/Fixed-positive budget UI");
+            };
+            assert_eq!(editor.auto_label.fallback_ru, "Авто");
+            assert_eq!(editor.fixed_label.fallback_ru, "Фиксированно");
         }
 
         assert_eq!(
@@ -2880,18 +2930,24 @@ mod settings_metadata_tests {
         );
 
         let mut config = AppConfig::default();
-        let error = registry
+        registry
             .set_value(
                 &mut config,
                 &SettingId::from("frame_server.live_scrub_enabled"),
                 SettingValue::Bool(false),
             )
-            .expect_err("frame_server setting must reject UI writes in S12");
+            .expect("frame_server bool setting must be writable in S30B");
+        registry
+            .set_value(
+                &mut config,
+                &SettingId::from("frame_server.hover_pool_frames"),
+                SettingValue::Text("12".to_owned()),
+            )
+            .expect("frame_server fixed budget setting must be writable in S30B");
+        assert!(!config.frame_server.live_scrub_enabled);
         assert_eq!(
-            error,
-            SettingsError::ReadOnlySetting {
-                id: SettingId::from("frame_server.live_scrub_enabled"),
-            }
+            config.frame_server.hover_pool_frames,
+            crate::frame_server::FrameServerBudgetConfig::Fixed(12)
         );
     }
 
@@ -3063,6 +3119,18 @@ mod settings_metadata_tests {
             panic!("{id} must use static select-list editor");
         };
         assert_eq!(option_ids(options), expected);
+    }
+
+    fn assert_russian_fallback(text: &str, id: &str) {
+        assert!(
+            text.chars().any(|character| {
+                ('а'..='я').contains(&character)
+                    || ('А'..='Я').contains(&character)
+                    || character == 'ё'
+                    || character == 'Ё'
+            }),
+            "{id} fallback must contain Russian text",
+        );
     }
 
     fn option_ids(options: &[settings_core::SettingOption]) -> Vec<&str> {

@@ -8,6 +8,13 @@ use frame_server_core::hover_budget::{
     HoverBudgetResourcePressureReason, HoverResolvedBudget,
 };
 use tracing::warn;
+use video_backend_api::{
+    BackendHoverBudgetAdmissionFatalReason, BackendHoverBudgetAdmissionReport,
+    BackendHoverBudgetAdmissionUnavailableReason, BackendHoverBudgetCapabilityMinimum,
+    BackendHoverBudgetCapabilityReport, BackendHoverBudgetCapabilityUnavailableReason,
+    BackendHoverBudgetResourceClass, BackendHoverBudgetResourcePressureReason,
+    BackendHoverResolvedBudget, HoverBudgetDiagnosticsProvider,
+};
 
 /// VAAPI-local контекст, из которого owner строит capability/admission решения.
 ///
@@ -142,6 +149,27 @@ impl VaapiSharedHardwareOwner {
         }
     }
 
+    #[must_use]
+    pub(crate) fn hover_admission_report(
+        &self,
+        resolved_budget: &HoverResolvedBudget,
+    ) -> HoverBudgetAdmissionReport {
+        let Some(requested_surface_frames) =
+            resolved_budget.budget_for(HoverBudgetResourceClass::HardwareSurfaceFrames)
+        else {
+            return HoverBudgetAdmissionReport::Unavailable(
+                HoverBudgetAdmissionUnavailableReason::ResourceProviderUnavailable,
+            );
+        };
+
+        match self.inner.lock() {
+            Ok(inner) => inner.hover_admission_report(requested_surface_frames),
+            Err(_) => HoverBudgetAdmissionReport::Fatal(
+                HoverBudgetAdmissionFatalReason::ProviderInvariantViolated,
+            ),
+        }
+    }
+
     #[cfg(test)]
     fn snapshot_for_tests(&self) -> VaapiSharedHardwareOwnerSnapshot {
         let inner = self
@@ -154,6 +182,164 @@ impl VaapiSharedHardwareOwner {
             hover_active: inner.hover_reservation.is_some(),
             playback_surface_budget: inner.context.playback_surface_budget(),
             hover_surface_provider_capacity: inner.context.hover_surface_provider_capacity(),
+        }
+    }
+}
+
+impl HoverBudgetDiagnosticsProvider for VaapiSharedHardwareOwner {
+    fn hover_capability_report(&self) -> BackendHoverBudgetCapabilityReport {
+        backend_capability_report_from_core(VaapiSharedHardwareOwner::hover_capability_report(self))
+    }
+
+    fn hover_admission_report(
+        &self,
+        resolved_budget: &BackendHoverResolvedBudget,
+    ) -> BackendHoverBudgetAdmissionReport {
+        let core_budget = core_resolved_budget_from_backend(resolved_budget);
+        backend_admission_report_from_core(VaapiSharedHardwareOwner::hover_admission_report(
+            self,
+            &core_budget,
+        ))
+    }
+}
+
+fn backend_capability_report_from_core(
+    report: HoverBudgetCapabilityReport,
+) -> BackendHoverBudgetCapabilityReport {
+    match report {
+        HoverBudgetCapabilityReport::Supported(capability) => {
+            BackendHoverBudgetCapabilityReport::Supported(
+                capability
+                    .minimums()
+                    .iter()
+                    .copied()
+                    .map(|minimum| {
+                        BackendHoverBudgetCapabilityMinimum::reported(
+                            resource_class_to_backend(minimum.resource_class()),
+                            minimum.reported_minimum(),
+                        )
+                    })
+                    .collect(),
+            )
+        }
+        HoverBudgetCapabilityReport::Unsupported(reason) => {
+            BackendHoverBudgetCapabilityReport::Unsupported(match reason {
+                frame_server_core::HoverBudgetUnsupportedReason::MissingPlayableOutput => {
+                    video_backend_api::BackendHoverBudgetUnsupportedReason::MissingPlayableOutput
+                }
+                frame_server_core::HoverBudgetUnsupportedReason::BackendDoesNotSupportHover => {
+                    video_backend_api::BackendHoverBudgetUnsupportedReason::BackendDoesNotSupportHover
+                }
+                frame_server_core::HoverBudgetUnsupportedReason::UnsupportedResourceClass {
+                    resource_class,
+                } => video_backend_api::BackendHoverBudgetUnsupportedReason::UnsupportedResourceClass {
+                    resource_class: resource_class_to_backend(resource_class),
+                },
+            })
+        }
+        HoverBudgetCapabilityReport::Unavailable(reason) => {
+            BackendHoverBudgetCapabilityReport::Unavailable(match reason {
+                HoverBudgetCapabilityUnavailableReason::BackendNotReady => {
+                    BackendHoverBudgetCapabilityUnavailableReason::BackendNotReady
+                }
+                HoverBudgetCapabilityUnavailableReason::MediaContextUnavailable => {
+                    BackendHoverBudgetCapabilityUnavailableReason::MediaContextUnavailable
+                }
+                HoverBudgetCapabilityUnavailableReason::ResourceProviderUnavailable => {
+                    BackendHoverBudgetCapabilityUnavailableReason::ResourceProviderUnavailable
+                }
+            })
+        }
+    }
+}
+
+fn core_resolved_budget_from_backend(
+    resolved_budget: &BackendHoverResolvedBudget,
+) -> HoverResolvedBudget {
+    HoverResolvedBudget::new(
+        resolved_budget
+            .resources()
+            .iter()
+            .copied()
+            .filter_map(|resource| {
+                NonZeroUsize::new(resource.resolved_budget()).map(|budget| {
+                    frame_server_core::HoverResolvedBudgetResource::new(
+                        resource_class_from_backend(resource.resource_class()),
+                        budget,
+                        frame_server_core::HoverBudgetResolutionSource::FixedConfig,
+                    )
+                })
+            })
+            .collect(),
+    )
+}
+
+fn backend_admission_report_from_core(
+    report: HoverBudgetAdmissionReport,
+) -> BackendHoverBudgetAdmissionReport {
+    match report {
+        HoverBudgetAdmissionReport::Admitted => BackendHoverBudgetAdmissionReport::Admitted,
+        HoverBudgetAdmissionReport::ResourcePressure(reason) => {
+            BackendHoverBudgetAdmissionReport::ResourcePressure(match reason {
+                HoverBudgetResourcePressureReason::ActivePlaybackReservation => {
+                    BackendHoverBudgetResourcePressureReason::ActivePlaybackReservation
+                }
+                HoverBudgetResourcePressureReason::ExistingHoverReservation => {
+                    BackendHoverBudgetResourcePressureReason::ExistingHoverReservation
+                }
+                HoverBudgetResourcePressureReason::ProviderCapacityExhausted => {
+                    BackendHoverBudgetResourcePressureReason::ProviderCapacityExhausted
+                }
+            })
+        }
+        HoverBudgetAdmissionReport::Unavailable(reason) => {
+            BackendHoverBudgetAdmissionReport::Unavailable(match reason {
+                HoverBudgetAdmissionUnavailableReason::ReservationOwnerUnavailable => {
+                    BackendHoverBudgetAdmissionUnavailableReason::ReservationOwnerUnavailable
+                }
+                HoverBudgetAdmissionUnavailableReason::ResourceProviderUnavailable => {
+                    BackendHoverBudgetAdmissionUnavailableReason::ResourceProviderUnavailable
+                }
+            })
+        }
+        HoverBudgetAdmissionReport::Fatal(reason) => {
+            BackendHoverBudgetAdmissionReport::Fatal(match reason {
+                HoverBudgetAdmissionFatalReason::ProviderInvariantViolated => {
+                    BackendHoverBudgetAdmissionFatalReason::ProviderInvariantViolated
+                }
+            })
+        }
+    }
+}
+
+fn resource_class_to_backend(
+    resource_class: HoverBudgetResourceClass,
+) -> BackendHoverBudgetResourceClass {
+    match resource_class {
+        HoverBudgetResourceClass::HardwareSurfaceFrames => {
+            BackendHoverBudgetResourceClass::HardwareSurfaceFrames
+        }
+        HoverBudgetResourceClass::SoftwareFramePoolFrames => {
+            BackendHoverBudgetResourceClass::SoftwareFramePoolFrames
+        }
+        HoverBudgetResourceClass::SoftwareThreadCount => {
+            BackendHoverBudgetResourceClass::SoftwareThreadCount
+        }
+    }
+}
+
+fn resource_class_from_backend(
+    resource_class: BackendHoverBudgetResourceClass,
+) -> HoverBudgetResourceClass {
+    match resource_class {
+        BackendHoverBudgetResourceClass::HardwareSurfaceFrames => {
+            HoverBudgetResourceClass::HardwareSurfaceFrames
+        }
+        BackendHoverBudgetResourceClass::SoftwareFramePoolFrames => {
+            HoverBudgetResourceClass::SoftwareFramePoolFrames
+        }
+        BackendHoverBudgetResourceClass::SoftwareThreadCount => {
+            HoverBudgetResourceClass::SoftwareThreadCount
         }
     }
 }
@@ -204,28 +390,9 @@ impl VaapiSharedHardwareOwnerInner {
         &mut self,
         requested_surface_frames: NonZeroUsize,
     ) -> Result<ActiveHardwareReservation, HoverBudgetAdmissionReport> {
-        if self.playback_reservation.is_none() {
-            return Err(HoverBudgetAdmissionReport::Unavailable(
-                HoverBudgetAdmissionUnavailableReason::ReservationOwnerUnavailable,
-            ));
-        }
-
-        if self.hover_reservation.is_some() {
-            return Err(HoverBudgetAdmissionReport::ResourcePressure(
-                HoverBudgetResourcePressureReason::ExistingHoverReservation,
-            ));
-        }
-
-        if requested_surface_frames >= self.context.playback_surface_budget() {
-            return Err(HoverBudgetAdmissionReport::ResourcePressure(
-                HoverBudgetResourcePressureReason::ProviderCapacityExhausted,
-            ));
-        }
-
-        if requested_surface_frames.get() > self.context.hover_surface_provider_capacity() {
-            return Err(HoverBudgetAdmissionReport::ResourcePressure(
-                HoverBudgetResourcePressureReason::ProviderCapacityExhausted,
-            ));
+        match self.hover_admission_report(requested_surface_frames) {
+            HoverBudgetAdmissionReport::Admitted => {}
+            rejection => return Err(rejection),
         }
 
         let active_reservation = self
@@ -233,6 +400,37 @@ impl VaapiSharedHardwareOwnerInner {
         self.hover_reservation = Some(active_reservation);
 
         Ok(active_reservation)
+    }
+
+    fn hover_admission_report(
+        &self,
+        requested_surface_frames: NonZeroUsize,
+    ) -> HoverBudgetAdmissionReport {
+        if self.playback_reservation.is_none() {
+            return HoverBudgetAdmissionReport::Unavailable(
+                HoverBudgetAdmissionUnavailableReason::ReservationOwnerUnavailable,
+            );
+        }
+
+        if self.hover_reservation.is_some() {
+            return HoverBudgetAdmissionReport::ResourcePressure(
+                HoverBudgetResourcePressureReason::ExistingHoverReservation,
+            );
+        }
+
+        if requested_surface_frames >= self.context.playback_surface_budget() {
+            return HoverBudgetAdmissionReport::ResourcePressure(
+                HoverBudgetResourcePressureReason::ProviderCapacityExhausted,
+            );
+        }
+
+        if requested_surface_frames.get() > self.context.hover_surface_provider_capacity() {
+            return HoverBudgetAdmissionReport::ResourcePressure(
+                HoverBudgetResourcePressureReason::ProviderCapacityExhausted,
+            );
+        }
+
+        HoverBudgetAdmissionReport::Admitted
     }
 
     fn release_reservation(

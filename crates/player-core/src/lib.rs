@@ -77,8 +77,8 @@ pub use runtime_settings::{
     PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyOutcome, PlayerRuntimeApplyReport,
     PlayerRuntimeApplyResult, PlayerRuntimeDecoderThreadConfigUpdate,
-    PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate,
-    PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate,
+    PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeFrameServerPolicyUpdate, PlayerRuntimeSettingId,
+    PlayerRuntimeSettingsUpdate, PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate,
 };
 pub use seek_state::PlaybackResumeIntent;
 pub use session::{

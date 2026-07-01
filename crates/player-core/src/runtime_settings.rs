@@ -1,6 +1,8 @@
 use std::fmt;
 use std::time::Duration;
 
+use frame_server_core::ValidatedFrameServerConfig;
+
 use crate::{PlayerTickConfig, PlayerVideoDecoderThreadConfig};
 
 /// Typed id настройки player runtime, который можно вернуть в apply report.
@@ -99,6 +101,42 @@ pub enum PlayerRuntimeSettingId {
 
     /// `video.preferred_backend`: применяется через app-owned pipeline rebuild.
     VideoPreferredBackend,
+
+    /// `frame_server.hover_preview_enabled`.
+    FrameServerHoverPreviewEnabled,
+
+    /// `frame_server.live_scrub_enabled`.
+    FrameServerLiveScrubEnabled,
+
+    /// `frame_server.live_scrub_decode_mode`.
+    FrameServerLiveScrubDecodeMode,
+
+    /// `frame_server.live_scrub_max_hz`.
+    FrameServerLiveScrubMaxHz,
+
+    /// `frame_server.hover_prepare_window_slots`.
+    FrameServerHoverPrepareWindowSlots,
+
+    /// `frame_server.software_hover_prepare_window_slots`.
+    FrameServerSoftwareHoverPrepareWindowSlots,
+
+    /// `frame_server.recent_superseded_prepare_slots`.
+    FrameServerRecentSupersededPrepareSlots,
+
+    /// `frame_server.software_recent_superseded_prepare_slots`.
+    FrameServerSoftwareRecentSupersededPrepareSlots,
+
+    /// `frame_server.hover_leave_grace_ms`.
+    FrameServerHoverLeaveGraceMs,
+
+    /// `frame_server.network_hover_prepare_throttle_ms`.
+    FrameServerNetworkHoverPrepareThrottleMs,
+
+    /// `frame_server.hover_pool_frames`.
+    FrameServerHoverPoolFrames,
+
+    /// `frame_server.hover_thread_count`.
+    FrameServerHoverThreadCount,
 }
 
 impl PlayerRuntimeSettingId {
@@ -146,6 +184,26 @@ impl PlayerRuntimeSettingId {
                 "video.scheduler.surface_free_slots_target"
             }
             Self::VideoPreferredBackend => "video.preferred_backend",
+            Self::FrameServerHoverPreviewEnabled => "frame_server.hover_preview_enabled",
+            Self::FrameServerLiveScrubEnabled => "frame_server.live_scrub_enabled",
+            Self::FrameServerLiveScrubDecodeMode => "frame_server.live_scrub_decode_mode",
+            Self::FrameServerLiveScrubMaxHz => "frame_server.live_scrub_max_hz",
+            Self::FrameServerHoverPrepareWindowSlots => "frame_server.hover_prepare_window_slots",
+            Self::FrameServerSoftwareHoverPrepareWindowSlots => {
+                "frame_server.software_hover_prepare_window_slots"
+            }
+            Self::FrameServerRecentSupersededPrepareSlots => {
+                "frame_server.recent_superseded_prepare_slots"
+            }
+            Self::FrameServerSoftwareRecentSupersededPrepareSlots => {
+                "frame_server.software_recent_superseded_prepare_slots"
+            }
+            Self::FrameServerHoverLeaveGraceMs => "frame_server.hover_leave_grace_ms",
+            Self::FrameServerNetworkHoverPrepareThrottleMs => {
+                "frame_server.network_hover_prepare_throttle_ms"
+            }
+            Self::FrameServerHoverPoolFrames => "frame_server.hover_pool_frames",
+            Self::FrameServerHoverThreadCount => "frame_server.hover_thread_count",
         }
     }
 }
@@ -261,6 +319,33 @@ impl PlayerRuntimeVideoBackendUpdate {
     }
 }
 
+/// Frame-server policy snapshot, которым владеет player session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerRuntimeFrameServerPolicyUpdate {
+    /// Validated neutral policy для SeekLanding/LiveScrub/prepare snapshot.
+    pub frame_server_config: ValidatedFrameServerConfig,
+
+    /// Конкретные persisted settings ids, которые привели к policy update.
+    pub affected_settings: Vec<PlayerRuntimeSettingId>,
+}
+
+impl PlayerRuntimeFrameServerPolicyUpdate {
+    /// Создаёт frame-server policy update с явным списком затронутых settings.
+    #[must_use]
+    pub fn new<I>(frame_server_config: ValidatedFrameServerConfig, affected_settings: I) -> Self
+    where
+        I: IntoIterator<Item = PlayerRuntimeSettingId>,
+    {
+        Self {
+            frame_server_config,
+            affected_settings: collect_or_default(
+                affected_settings,
+                &[PlayerRuntimeSettingId::FrameServerLiveScrubMaxHz],
+            ),
+        }
+    }
+}
+
 /// Typed committed update, который settings layer отправляет в player owner.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PlayerRuntimeSettingsUpdate {
@@ -275,6 +360,9 @@ pub struct PlayerRuntimeSettingsUpdate {
 
     /// Backend preference change, применяемый через app-owned pipeline rebuild.
     pub video_backend: Option<PlayerRuntimeVideoBackendUpdate>,
+
+    /// Session-owned frame-server policy для SeekLanding/LiveScrub/prepare snapshot.
+    pub frame_server_policy: Option<PlayerRuntimeFrameServerPolicyUpdate>,
 
     /// Settings, которые player-core пока не умеет применять.
     pub unsupported_settings: Vec<PlayerRuntimeSettingId>,
@@ -344,6 +432,23 @@ impl PlayerRuntimeSettingsUpdate {
         self
     }
 
+    /// Добавляет frame-server policy update для player-owned session state.
+    #[must_use]
+    pub fn with_frame_server_policy<I>(
+        mut self,
+        frame_server_config: ValidatedFrameServerConfig,
+        affected_settings: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = PlayerRuntimeSettingId>,
+    {
+        self.frame_server_policy = Some(PlayerRuntimeFrameServerPolicyUpdate::new(
+            frame_server_config,
+            affected_settings,
+        ));
+        self
+    }
+
     /// Добавляет settings, для которых в S07 нет runtime owner boundary.
     #[must_use]
     pub fn with_unsupported_settings<I>(mut self, affected_settings: I) -> Self
@@ -361,6 +466,7 @@ impl PlayerRuntimeSettingsUpdate {
             && self.default_volume.is_none()
             && self.decoder_thread_config.is_none()
             && self.video_backend.is_none()
+            && self.frame_server_policy.is_none()
             && self.unsupported_settings.is_empty()
     }
 }
@@ -382,6 +488,9 @@ pub enum PlayerRuntimeApplyGroup {
 
     /// Backend preference, применяемый через app-owned pipeline rebuild.
     VideoBackend,
+
+    /// Session-owned frame-server policy.
+    FrameServerPolicy,
 
     /// Неподдержанные в S07 player settings.
     UnsupportedSettings,

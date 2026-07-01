@@ -80,7 +80,6 @@ pub(crate) struct TimelineHoverIntentState {
 
 impl TimelineHoverIntentState {
     /// Возвращает текущий active target invisible prepare stream-а.
-    #[cfg(test)]
     #[must_use]
     pub(crate) const fn active_target(&self) -> Option<TimelineHoverTarget> {
         self.active_target

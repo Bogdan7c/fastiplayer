@@ -13,6 +13,193 @@ use std::time::Duration;
 pub type VideoBackendDecoderThreadHandle =
     dyn video_core::VideoDecoderThreadHandle<ResourceProvider = PresentFrameResourceProviderHandle>;
 
+/// Resource class, по которому backend сообщает hover budget facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BackendHoverBudgetResourceClass {
+    HardwareSurfaceFrames,
+    SoftwareFramePoolFrames,
+    SoftwareThreadCount,
+}
+
+/// Backend-reported minimum для одного resource class-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BackendHoverBudgetCapabilityMinimum {
+    resource_class: BackendHoverBudgetResourceClass,
+    reported_minimum: usize,
+}
+
+impl BackendHoverBudgetCapabilityMinimum {
+    #[must_use]
+    pub const fn reported(
+        resource_class: BackendHoverBudgetResourceClass,
+        reported_minimum: usize,
+    ) -> Self {
+        Self {
+            resource_class,
+            reported_minimum,
+        }
+    }
+
+    #[must_use]
+    pub const fn resource_class(self) -> BackendHoverBudgetResourceClass {
+        self.resource_class
+    }
+
+    #[must_use]
+    pub const fn reported_minimum(self) -> usize {
+        self.reported_minimum
+    }
+}
+
+/// Backend capability report без зависимости на frame-server-core.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendHoverBudgetCapabilityReport {
+    Supported(Vec<BackendHoverBudgetCapabilityMinimum>),
+    Unsupported(BackendHoverBudgetUnsupportedReason),
+    Unavailable(BackendHoverBudgetCapabilityUnavailableReason),
+}
+
+/// Unsupported значит, что active-hover path невозможен для backend-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BackendHoverBudgetUnsupportedReason {
+    MissingPlayableOutput,
+    BackendDoesNotSupportHover,
+    UnsupportedResourceClass {
+        resource_class: BackendHoverBudgetResourceClass,
+    },
+}
+
+/// Unavailable значит, что path существует, но текущий context не даёт facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BackendHoverBudgetCapabilityUnavailableReason {
+    BackendNotReady,
+    MediaContextUnavailable,
+    ResourceProviderUnavailable,
+}
+
+/// Resolved hover budget resource, который app передаёт в read-only admission query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BackendHoverResolvedBudgetResource {
+    resource_class: BackendHoverBudgetResourceClass,
+    resolved_budget: usize,
+}
+
+impl BackendHoverResolvedBudgetResource {
+    #[must_use]
+    pub const fn new(
+        resource_class: BackendHoverBudgetResourceClass,
+        resolved_budget: usize,
+    ) -> Self {
+        Self {
+            resource_class,
+            resolved_budget,
+        }
+    }
+
+    #[must_use]
+    pub const fn resource_class(self) -> BackendHoverBudgetResourceClass {
+        self.resource_class
+    }
+
+    #[must_use]
+    pub const fn resolved_budget(self) -> usize {
+        self.resolved_budget
+    }
+}
+
+/// Resolved budget DTO без frame-server-core dependency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendHoverResolvedBudget {
+    resources: Vec<BackendHoverResolvedBudgetResource>,
+}
+
+impl BackendHoverResolvedBudget {
+    #[must_use]
+    pub fn new(resources: Vec<BackendHoverResolvedBudgetResource>) -> Self {
+        Self { resources }
+    }
+
+    #[must_use]
+    pub fn resources(&self) -> &[BackendHoverResolvedBudgetResource] {
+        &self.resources
+    }
+}
+
+/// Read-only admission report без reservation side effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BackendHoverBudgetAdmissionReport {
+    Admitted,
+    ResourcePressure(BackendHoverBudgetResourcePressureReason),
+    Unavailable(BackendHoverBudgetAdmissionUnavailableReason),
+    Fatal(BackendHoverBudgetAdmissionFatalReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BackendHoverBudgetResourcePressureReason {
+    ActivePlaybackReservation,
+    ExistingHoverReservation,
+    ProviderCapacityExhausted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BackendHoverBudgetAdmissionUnavailableReason {
+    ReservationOwnerUnavailable,
+    ResourceProviderUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BackendHoverBudgetAdmissionFatalReason {
+    ProviderInvariantViolated,
+}
+
+/// Backend-owned read-only provider для active-hover budget diagnostics.
+///
+/// Provider живёт рядом с concrete backend startup artifact-ом. Он не раскрывает
+/// VAAPI/FFmpeg owner internals, не создаёт reservation и не меняет playback
+/// decoder state: app/settings code получает только backend-neutral facts.
+pub trait HoverBudgetDiagnosticsProvider: Send + Sync {
+    /// Возвращает backend-reported minima для текущего context-а.
+    fn hover_capability_report(&self) -> BackendHoverBudgetCapabilityReport;
+
+    /// Проверяет текущий provider pressure для уже разрешённого budget-а без reservation.
+    fn hover_admission_report(
+        &self,
+        resolved_budget: &BackendHoverResolvedBudget,
+    ) -> BackendHoverBudgetAdmissionReport;
+}
+
+/// Cloneable handle к read-only hover budget provider-у.
+#[derive(Clone)]
+pub struct HoverBudgetDiagnosticsProviderHandle {
+    /// Type-erased provider, принадлежащий concrete backend crate-у.
+    provider: Arc<dyn HoverBudgetDiagnosticsProvider>,
+}
+
+impl HoverBudgetDiagnosticsProviderHandle {
+    /// Создаёт handle без раскрытия concrete provider type.
+    #[must_use]
+    pub fn new(provider: impl HoverBudgetDiagnosticsProvider + 'static) -> Self {
+        Self {
+            provider: Arc::new(provider),
+        }
+    }
+
+    /// Делегирует capability query concrete backend owner-у.
+    #[must_use]
+    pub fn hover_capability_report(&self) -> BackendHoverBudgetCapabilityReport {
+        self.provider.hover_capability_report()
+    }
+
+    /// Делегирует read-only admission query concrete backend owner-у.
+    #[must_use]
+    pub fn hover_admission_report(
+        &self,
+        resolved_budget: &BackendHoverResolvedBudget,
+    ) -> BackendHoverBudgetAdmissionReport {
+        self.provider.hover_admission_report(resolved_budget)
+    }
+}
+
 /// Запущенный video backend, подготовленный composition layer-ом для playback pipeline.
 pub struct StartedVideoBackend {
     /// Canonical backend id из capability report-а, например `vaapi` или `ffmpeg-sw`.
@@ -20,6 +207,9 @@ pub struct StartedVideoBackend {
 
     /// Decoder thread остаётся за neutral handle boundary.
     decoder_thread: Box<VideoBackendDecoderThreadHandle>,
+
+    /// Optional read-only provider для Frame Server budget diagnostics.
+    hover_budget_diagnostics_provider: Option<HoverBudgetDiagnosticsProviderHandle>,
 }
 
 impl StartedVideoBackend {
@@ -34,13 +224,32 @@ impl StartedVideoBackend {
         Self {
             backend_id: backend_id.into(),
             decoder_thread: Box::new(decoder_thread),
+            hover_budget_diagnostics_provider: None,
         }
+    }
+
+    /// Прикрепляет backend-owned diagnostics provider без изменения decoder handle.
+    #[must_use]
+    pub fn with_hover_budget_diagnostics_provider(
+        mut self,
+        provider: HoverBudgetDiagnosticsProviderHandle,
+    ) -> Self {
+        self.hover_budget_diagnostics_provider = Some(provider);
+        self
     }
 
     /// Возвращает canonical backend id для связи active backend-а с capability output-ами.
     #[must_use]
     pub fn backend_id(&self) -> &str {
         &self.backend_id
+    }
+
+    /// Возвращает cloneable read-only diagnostics provider, если backend его поддерживает.
+    #[must_use]
+    pub fn hover_budget_diagnostics_provider(
+        &self,
+    ) -> Option<HoverBudgetDiagnosticsProviderHandle> {
+        self.hover_budget_diagnostics_provider.clone()
     }
 
     /// Передаёт decoder handle playback layer-у без раскрытия concrete backend type.

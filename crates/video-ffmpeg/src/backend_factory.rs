@@ -1,10 +1,13 @@
 //! `video-backend-api` factory scaffold for the future FFmpeg backend.
 
 use thiserror::Error;
-use video_backend_api::{StartedVideoBackend, VideoBackendFactory};
+use video_backend_api::{
+    HoverBudgetDiagnosticsProviderHandle, StartedVideoBackend, VideoBackendFactory,
+};
 use video_core::VideoDecoderThreadConfig;
 
 use crate::decoder_thread::{FfmpegDecoderThreadConfig, FfmpegDecoderThreadError};
+use crate::software_hover::{FfmpegSoftwareHoverContext, FfmpegSoftwareHoverOwner};
 
 /// Concrete software factory type that keeps startup wiring outside `player-core`.
 #[derive(Debug, Clone, Copy, Default)]
@@ -43,8 +46,18 @@ impl FfmpegSoftwareVideoBackendFactory {
 impl VideoBackendFactory for FfmpegSoftwareVideoBackendFactory {
     /// Стартует playback-facing FFmpeg decoder thread без раскрытия FFmpeg internals.
     fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend> {
+        let hover_owner = FfmpegSoftwareHoverOwner::new(
+            FfmpegSoftwareHoverContext::from_playback_decoder_config(
+                self.decoder_config.thread_config(),
+            ),
+        );
         crate::decoder_thread::start_decoder_thread(self.decoder_config)
             .map_err(FfmpegBackendFactoryError::from)
+            .map(|backend| {
+                backend.with_hover_budget_diagnostics_provider(
+                    HoverBudgetDiagnosticsProviderHandle::new(hover_owner),
+                )
+            })
             .map_err(Into::into)
     }
 }

@@ -385,9 +385,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        CURRENT_SCHEMA_VERSION, FrameServerBudgetConfig, FrameServerLiveScrubDecodeModeConfig,
-        HdrToSdrOperatorConfig, PausedCommitBehavior, ToneMappingMode, VideoBackendPreference,
-        validation,
+        CURRENT_SCHEMA_VERSION, FrameServerBudgetConfig, FrameServerConfig,
+        FrameServerLiveScrubDecodeModeConfig, HdrToSdrOperatorConfig, PausedCommitBehavior,
+        ToneMappingMode, VideoBackendPreference, validation,
     };
 
     /// Проверяет, что default schema остаётся самосогласованной.
@@ -733,7 +733,7 @@ skin = "minimal"
         assert_eq!(loaded.config.ui.animations.sidebar_slide_duration_ms, 500);
     }
 
-    /// Проверяет, что старый config без `[frame_server]` получает S12 defaults.
+    /// Проверяет, что старый config без `[frame_server]` получает V1 defaults.
     #[test]
     fn existing_config_without_frame_server_gets_frame_server_defaults() {
         let temp_dir = tempfile::tempdir().expect("temp dir created");
@@ -751,25 +751,13 @@ language = "ru"
 
         let loaded = load_from_path(&config_path).expect("old config loads with defaults");
 
-        assert!(loaded.config.frame_server.hover_preview_enabled);
-        assert_eq!(
-            loaded.config.frame_server.hover_pool_frames,
-            FrameServerBudgetConfig::Auto
-        );
-        assert_eq!(
-            loaded.config.frame_server.hover_thread_count,
-            FrameServerBudgetConfig::Auto
-        );
-        assert_eq!(loaded.config.frame_server.live_scrub_max_hz, 60);
+        assert_default_frame_server_config(&loaded.config.frame_server);
+
         let generated_toml = loaded
             .config
             .to_pretty_toml()
             .expect("defaulted config serializes");
-        assert!(generated_toml.contains("[frame_server]"));
-        assert!(generated_toml.contains("hover_pool_frames = \"auto\""));
-        assert!(!generated_toml.contains("warm"));
-        assert!(!generated_toml.contains("global"));
-        assert!(!generated_toml.contains("thumbnail_cache"));
+        assert_generated_frame_server_toml_documents_all_v1_knobs(&generated_toml);
     }
 
     /// Проверяет strict schema отказ от запрещённых/legacy frame-server knobs.
@@ -779,6 +767,8 @@ language = "ru"
             "enabled",
             "network_hover_prepare_enabled",
             "hover_debounce_ms",
+            "warm_cache_frames",
+            "global_cache_frames",
         ] {
             let temp_dir = tempfile::tempdir().expect("temp dir created");
             let config_path = temp_dir.path().join("config.toml");
@@ -803,7 +793,7 @@ schema_version = 4
         }
     }
 
-    /// Проверяет edge values S12 ranges для `[frame_server]`.
+    /// Проверяет edge values V1 ranges для `[frame_server]`.
     #[test]
     fn frame_server_range_edges_are_accepted() {
         let mut config = AppConfig::default();
@@ -870,25 +860,29 @@ schema_version = 4
         }
     }
 
-    /// Проверяет S12 budget semantics: auto или positive fixed, без upper cap.
+    /// Проверяет V1 budget semantics: auto или positive fixed, без upper cap.
     #[test]
     fn frame_server_budget_zero_rejects_but_positive_fixed_has_no_static_upper_cap() {
-        let temp_dir = tempfile::tempdir().expect("temp dir created");
-        let config_path = temp_dir.path().join("config.toml");
-        fs::write(
-            &config_path,
-            r#"
+        for field in ["hover_pool_frames", "hover_thread_count"] {
+            let temp_dir = tempfile::tempdir().expect("temp dir created");
+            let config_path = temp_dir.path().join("config.toml");
+            fs::write(
+                &config_path,
+                format!(
+                    r#"
 schema_version = 4
 
 [frame_server]
-hover_pool_frames = 0
-"#,
-        )
-        .expect("zero budget config written");
+{field} = 0
+"#
+                ),
+            )
+            .expect("zero budget config written");
 
-        let error = load_from_path(&config_path).expect_err("zero fixed budget rejected");
+            let error = load_from_path(&config_path).expect_err("zero fixed budget rejected");
 
-        assert!(error.to_string().contains("frame_server.hover_pool_frames"));
+            assert!(error.to_string().contains(&format!("frame_server.{field}")));
+        }
 
         let mut config = AppConfig::default();
         config.frame_server.hover_pool_frames = FrameServerBudgetConfig::Fixed(1);
@@ -896,7 +890,7 @@ hover_pool_frames = 0
 
         config
             .validate()
-            .expect("positive fixed budgets have no static upper cap in S12");
+            .expect("positive fixed budgets have no static upper cap");
     }
 
     /// Проверяет TOML roundtrip и strict варианты live scrub decode mode.
@@ -956,6 +950,80 @@ live_scrub_decode_mode = "nearest_frame"
         let error = load_from_path(&config_path).expect_err("unknown live mode rejected");
 
         assert!(error.to_string().contains("live_scrub_decode_mode"));
+    }
+
+    fn assert_default_frame_server_config(frame_server: &FrameServerConfig) {
+        assert!(frame_server.hover_preview_enabled);
+        assert_eq!(
+            frame_server.hover_pool_frames,
+            FrameServerBudgetConfig::Auto
+        );
+        assert_eq!(
+            frame_server.hover_thread_count,
+            FrameServerBudgetConfig::Auto
+        );
+        assert_eq!(frame_server.hover_prepare_window_slots, 1);
+        assert_eq!(frame_server.software_hover_prepare_window_slots, 1);
+        assert_eq!(frame_server.recent_superseded_prepare_slots, 1);
+        assert_eq!(frame_server.software_recent_superseded_prepare_slots, 1);
+        assert_eq!(frame_server.hover_leave_grace_ms, 500);
+        assert_eq!(frame_server.network_hover_prepare_throttle_ms, 300);
+        assert!(frame_server.live_scrub_enabled);
+        assert_eq!(
+            frame_server.live_scrub_decode_mode,
+            FrameServerLiveScrubDecodeModeConfig::ThrottledLatest,
+        );
+        assert_eq!(frame_server.live_scrub_max_hz, 60);
+    }
+
+    fn assert_generated_frame_server_toml_documents_all_v1_knobs(generated_toml: &str) {
+        for expected_fragment in [
+            "[frame_server]",
+            "# Сохраняемые metadata-ready настройки будущего Frame Server",
+            "hover_preview_enabled = true",
+            "# Включает только визуальный HoverPreview",
+            "hover_pool_frames = \"auto\"",
+            "# Бюджет кадрового пула hover",
+            "hover_thread_count = \"auto\"",
+            "# Бюджет потоков hover",
+            "hover_prepare_window_slots = 1",
+            "# Основные слоты hover prepare window",
+            "software_hover_prepare_window_slots = 1",
+            "# Основные слоты software hover prepare window",
+            "recent_superseded_prepare_slots = 1",
+            "# Удержание недавно заменённых целей для быстрого возврата",
+            "software_recent_superseded_prepare_slots = 1",
+            "# Удержание недавно заменённых software-целей для быстрого возврата",
+            "hover_leave_grace_ms = 500",
+            "# UX grace после ухода hover",
+            "network_hover_prepare_throttle_ms = 300",
+            "# Межстартовый throttle для network hover prepare",
+            "live_scrub_enabled = true",
+            "# Включает live drag preview updates",
+            "live_scrub_decode_mode = \"throttled_latest\"",
+            "# Политика live scrub: throttled_latest или every_drag_event",
+            "live_scrub_max_hz = 60",
+            "# Максимальная частота live scrub decode-work",
+        ] {
+            assert!(
+                generated_toml.contains(expected_fragment),
+                "generated frame_server TOML must contain {expected_fragment:?}",
+            );
+        }
+
+        for forbidden_fragment in [
+            "frame_server.enabled",
+            "network_hover_prepare_enabled",
+            "hover_debounce_ms",
+            "warm",
+            "global",
+            "thumbnail_cache",
+        ] {
+            assert!(
+                !generated_toml.contains(forbidden_fragment),
+                "generated frame_server TOML must not contain {forbidden_fragment:?}",
+            );
+        }
     }
 
     /// Проверяет, что кастомный titlebar остаётся в понятном desktop диапазоне.

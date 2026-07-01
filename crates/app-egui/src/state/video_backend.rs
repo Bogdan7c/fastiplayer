@@ -100,6 +100,7 @@ impl AppState {
         };
 
         let previous_backend_kind = self.current_video_backend_kind;
+        let hover_budget_diagnostics_provider = player_backend.hover_budget_diagnostics_provider();
 
         if let Err(error) = self.player_worker.set_video_backend(player_backend) {
             return Err(format!("video backend command delivery failed: {error}"));
@@ -118,6 +119,7 @@ impl AppState {
             self.begin_backend_swap_video_freeze();
         }
         self.current_video_backend_kind = Some(plan_backend_kind);
+        self.current_hover_budget_diagnostics_provider = hover_budget_diagnostics_provider;
         info!(plan = plan_label, "Selected video pipeline");
         self.mark_pending_worker_redraw();
         Ok(())

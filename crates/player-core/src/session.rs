@@ -846,6 +846,20 @@ impl PlayerSession {
         Ok(())
     }
 
+    /// Обновляет session-owned frame-server policy без сброса текущего SeekLanding.
+    pub(crate) fn apply_frame_server_policy_config(
+        &mut self,
+        frame_server_config: ValidatedFrameServerConfig,
+    ) {
+        self.frame_server_config = frame_server_config;
+    }
+
+    /// Возвращает read-only session-owned frame-server policy snapshot.
+    #[cfg(test)]
+    pub(crate) const fn frame_server_policy_config(&self) -> ValidatedFrameServerConfig {
+        self.frame_server_config
+    }
+
     /// Переводит session в stopped state.
     fn shutdown(&mut self) -> PlayerResult<()> {
         self.shutdown_requested = true;

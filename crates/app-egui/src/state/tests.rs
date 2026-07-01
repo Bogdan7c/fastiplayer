@@ -376,6 +376,7 @@ fn frame_server_diagnostics_records_network_hover_opening() {
         true,
         TimelineHoverPreviewRenderDiagnosticsSnapshot::default(),
         TimelineHoverNetworkOpenDiagnosticsSnapshot::default(),
+        None,
     );
 
     assert_eq!(
@@ -440,6 +441,7 @@ fn frame_server_diagnostics_snapshot_keeps_app_owned_hover_state() {
         false,
         preview_render_state,
         network_open,
+        None,
     );
 
     assert!(snapshot.hover_leave_grace.pending);
@@ -715,6 +717,7 @@ fn telemetry_panel_rows_map_frame_server_diagnostics() {
             throttle_delay_count: 5,
             latest_throttle_delay: Some(Duration::from_millis(125)),
         },
+        None,
     );
     let telemetry = Telemetry::new();
     let render_diagnostics = RenderDiagnostics::default();
@@ -768,6 +771,10 @@ fn telemetry_panel_rows_map_frame_server_diagnostics() {
     assert!(telemetry_rows_contain(
         &panel_rows,
         "FS network open: throttle=300.00ms generation=7 in_flight=1 failed_target_held=true zero_throttle_no_delay=2 latest_only_replaced=3 stale_late_ignored=4 throttle_delay_count=5 latest_delay=125.00ms"
+    ));
+    assert!(telemetry_rows_contain(
+        &panel_rows,
+        "FS hover budget: provider=unavailable"
     ));
     assert!(telemetry_rows_contain(
         &panel_rows,

@@ -146,6 +146,47 @@ impl TimelineHoverPrepareCapacityReconfigureOutcome {
     }
 }
 
+/// Итог live reconfigure click-back retention budget-а.
+///
+/// Primary hover entries не участвуют в этом outcome-е: recent-superseded
+/// является отдельным compartment-ом с собственным bounded budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimelineHoverRecentSupersededReconfigureOutcome {
+    old_budget: TimelineHoverRecentSupersededBudget,
+    new_budget: TimelineHoverRecentSupersededBudget,
+    released_entries: Vec<TimelineHoverPrepareFrameKey>,
+}
+
+impl TimelineHoverRecentSupersededReconfigureOutcome {
+    #[must_use]
+    pub fn new(
+        old_budget: TimelineHoverRecentSupersededBudget,
+        new_budget: TimelineHoverRecentSupersededBudget,
+        released_entries: Vec<TimelineHoverPrepareFrameKey>,
+    ) -> Self {
+        Self {
+            old_budget,
+            new_budget,
+            released_entries,
+        }
+    }
+
+    #[must_use]
+    pub const fn old_budget(&self) -> TimelineHoverRecentSupersededBudget {
+        self.old_budget
+    }
+
+    #[must_use]
+    pub const fn new_budget(&self) -> TimelineHoverRecentSupersededBudget {
+        self.new_budget
+    }
+
+    #[must_use]
+    pub fn released_entries(&self) -> &[TimelineHoverPrepareFrameKey] {
+        &self.released_entries
+    }
+}
+
 /// Bucket используется только как быстрый индекс и никогда не доказывает точность.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TimelineHoverFrameBucket(i64);
@@ -675,18 +716,31 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
         &mut self,
         protected_key: TimelineHoverPrepareFrameKey,
     ) -> TimelineHoverPreparePressureReleaseOutcome {
+        self.release_one_for_resource_pressure_protecting(Some(protected_key))
+    }
+
+    fn release_one_for_resource_pressure_protecting(
+        &mut self,
+        protected_key: Option<TimelineHoverPrepareFrameKey>,
+    ) -> TimelineHoverPreparePressureReleaseOutcome {
         if let Some(released_key) = self.recent_superseded.remove_oldest_for_pressure() {
             return PressureReleaseOutcome::ReleasedRecentSuperseded { released_key };
         }
 
-        if let Some(released_key) = self.remove_oldest_primary_byproduct(protected_key) {
+        if let Some(released_key) = self.remove_oldest_primary_byproduct_protecting(protected_key) {
             return PressureReleaseOutcome::ReleasedPrimaryByproduct { released_key };
         }
 
         let reason = if self.entries.is_empty() {
             PressureReleaseMissReason::NoHoverOwnedEntries
-        } else {
+        } else if let Some(protected_key) = protected_key {
             PressureReleaseMissReason::OnlyProtectedCurrentTarget { protected_key }
+        } else {
+            debug_assert!(
+                self.entries.is_empty(),
+                "unprotected pressure release should remove an existing primary entry"
+            );
+            PressureReleaseMissReason::NoHoverOwnedEntries
         };
         PressureReleaseOutcome::NothingReleased { reason }
     }
@@ -701,12 +755,26 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
         new_capacity: NonZeroUsize,
         protected_key: TimelineHoverPrepareFrameKey,
     ) -> TimelineHoverPrepareCapacityReconfigureOutcome {
+        self.reconfigure_primary_capacity_protecting(new_capacity, Some(protected_key))
+    }
+
+    /// Меняет primary hover capacity, когда текущей protected цели может не быть.
+    ///
+    /// Caller должен передавать `Some(current_key)`, если pointer/focus сейчас
+    /// удерживает primary target; `None` разрешает release старейших primary
+    /// entries при shrink-е без создания фиктивного ключа.
+    #[must_use]
+    pub fn reconfigure_primary_capacity_protecting(
+        &mut self,
+        new_capacity: NonZeroUsize,
+        protected_key: Option<TimelineHoverPrepareFrameKey>,
+    ) -> TimelineHoverPrepareCapacityReconfigureOutcome {
         let old_capacity = self.capacity;
         self.capacity = new_capacity;
 
         let mut released_entries = Vec::new();
         while self.entries.len() > self.capacity.get() {
-            let release_outcome = self.release_one_for_resource_pressure(protected_key);
+            let release_outcome = self.release_one_for_resource_pressure_protecting(protected_key);
             let released_entry = matches!(
                 release_outcome,
                 PressureReleaseOutcome::ReleasedRecentSuperseded { .. }
@@ -721,6 +789,21 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
         TimelineHoverPrepareCapacityReconfigureOutcome::new(
             old_capacity,
             new_capacity,
+            released_entries,
+        )
+    }
+
+    /// Меняет recent-superseded budget без refill/restart текущего hover span-а.
+    #[must_use]
+    pub fn reconfigure_recent_superseded_budget(
+        &mut self,
+        new_budget: TimelineHoverRecentSupersededBudget,
+    ) -> TimelineHoverRecentSupersededReconfigureOutcome {
+        let old_budget = self.recent_superseded.budget();
+        let released_entries = self.recent_superseded.reconfigure_budget(new_budget);
+        TimelineHoverRecentSupersededReconfigureOutcome::new(
+            old_budget,
+            new_budget,
             released_entries,
         )
     }
@@ -1003,8 +1086,15 @@ impl<BranchToken> TimelineHoverPrepareWorkingSet<BranchToken> {
         &mut self,
         protected_key: TimelineHoverPrepareFrameKey,
     ) -> Option<TimelineHoverPrepareFrameKey> {
+        self.remove_oldest_primary_byproduct_protecting(Some(protected_key))
+    }
+
+    fn remove_oldest_primary_byproduct_protecting(
+        &mut self,
+        protected_key: Option<TimelineHoverPrepareFrameKey>,
+    ) -> Option<TimelineHoverPrepareFrameKey> {
         let released_key = self.insertion_order.iter().copied().find(|stored_key| {
-            *stored_key != protected_key && self.entries.contains_key(stored_key)
+            protected_key != Some(*stored_key) && self.entries.contains_key(stored_key)
         })?;
 
         self.entries.remove(&released_key);

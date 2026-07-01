@@ -99,6 +99,10 @@ impl<BranchToken> TimelineHoverRecentSupersededEntries<BranchToken> {
         self.entries.len()
     }
 
+    pub(super) const fn budget(&self) -> TimelineHoverRecentSupersededBudget {
+        self.budget
+    }
+
     pub(super) fn budget_for_descriptor(
         &self,
         descriptor: VideoPresentFrameResourceDescriptor,
@@ -129,6 +133,18 @@ impl<BranchToken> TimelineHoverRecentSupersededEntries<BranchToken> {
             .push(key);
 
         self.evict_entries_over_path_budget(resource_path);
+    }
+
+    /// Меняет budget click-back retention без влияния на primary hover entries.
+    ///
+    /// Grow только меняет будущие admission/insert решения. Shrink освобождает
+    /// oldest recent entries, которые теперь превышают свой resource-path budget.
+    pub(super) fn reconfigure_budget(
+        &mut self,
+        new_budget: TimelineHoverRecentSupersededBudget,
+    ) -> Vec<TimelineHoverPrepareFrameKey> {
+        self.budget = new_budget;
+        self.evict_entries_over_budget()
     }
 
     pub(super) fn find_validated_entry(
@@ -219,6 +235,28 @@ impl<BranchToken> TimelineHoverRecentSupersededEntries<BranchToken> {
             self.entries.remove(&oldest_key);
             self.remove_key_from_indexes(oldest_key);
         }
+    }
+
+    fn evict_entries_over_budget(&mut self) -> Vec<TimelineHoverPrepareFrameKey> {
+        let mut released_keys = Vec::new();
+        while let Some(oldest_key) = self.oldest_key_over_budget() {
+            self.entries.remove(&oldest_key);
+            self.remove_key_from_indexes(oldest_key);
+            released_keys.push(oldest_key);
+        }
+
+        released_keys
+    }
+
+    fn oldest_key_over_budget(&self) -> Option<TimelineHoverPrepareFrameKey> {
+        self.insertion_order.iter().copied().find(|key| {
+            self.entries.get(key).is_some_and(|entry| {
+                let resource_path = TimelineHoverRecentSupersededResourcePath::from_descriptor(
+                    entry.resource_descriptor(),
+                );
+                self.path_entry_count(resource_path) > self.budget.slots_for_path(resource_path)
+            })
+        })
     }
 
     fn path_entry_count(&self, resource_path: TimelineHoverRecentSupersededResourcePath) -> usize {

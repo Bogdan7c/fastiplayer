@@ -1,11 +1,12 @@
 //! Generic field widgets по neutral `SettingEditor`.
 
-use egui::{ComboBox, RichText, Slider, TextEdit, Ui};
+use egui::{ComboBox, DragValue, RichText, Slider, TextEdit, Ui};
 use settings_core::{
-    DefaultBehavior, NumericDescriptor, NumericRange, NumericStep, OptionProviderId,
-    SelectDescriptor, SelectListDescriptor, SettingAccess, SettingEditor, SettingId, SettingOption,
-    SettingOptionCurrentValue, SettingOptionId, SettingOptions, SettingOptionsStatus, SettingValue,
-    TextDescriptor, TextFormat, VectorDescriptor,
+    AutoFixedPositiveIntegerDescriptor, DefaultBehavior, NumericDescriptor, NumericRange,
+    NumericStep, OptionProviderId, SelectDescriptor, SelectListDescriptor, SettingAccess,
+    SettingEditor, SettingId, SettingOption, SettingOptionCurrentValue, SettingOptionId,
+    SettingOptions, SettingOptionsStatus, SettingValue, TextDescriptor, TextFormat,
+    VectorDescriptor,
 };
 
 use super::{SettingsUiAction, SettingsUiField};
@@ -21,6 +22,12 @@ pub struct SelectDisplayOption {
 
     /// Доступна ли option в текущем cached provider snapshot-е.
     pub available: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoFixedPositiveMode {
+    Auto,
+    Fixed,
 }
 
 /// Рисует один field по neutral descriptor-у.
@@ -97,6 +104,9 @@ fn render_editor(ui: &mut Ui, field: &SettingsUiField, actions: &mut Vec<Setting
         SettingEditor::Select(descriptor) => render_select(ui, field, descriptor, actions),
         SettingEditor::SelectList(descriptor) => render_select_list(ui, field, descriptor, actions),
         SettingEditor::Text(descriptor) => render_text(ui, field, descriptor, actions),
+        SettingEditor::AutoFixedPositiveInteger(descriptor) => {
+            render_auto_fixed_positive_integer(ui, field, descriptor, actions);
+        }
         SettingEditor::Vector(descriptor) => render_vector(ui, field, descriptor, actions),
         SettingEditor::ReadOnly => render_read_only_value(ui, &field.draft_value),
     }
@@ -322,6 +332,92 @@ fn render_text(
             &field.descriptor.id,
             SettingValue::Text(edited_text),
         ));
+    }
+}
+
+/// Рисует Auto/Fixed-positive editor без project-specific setting id special cases.
+fn render_auto_fixed_positive_integer(
+    ui: &mut Ui,
+    field: &SettingsUiField,
+    descriptor: &AutoFixedPositiveIntegerDescriptor,
+    actions: &mut Vec<SettingsUiAction>,
+) {
+    let SettingValue::Text(current_text) = &field.draft_value else {
+        render_type_mismatch(ui);
+        return;
+    };
+
+    let current_mode = auto_fixed_positive_mode(current_text);
+    let mut selected_mode = current_mode;
+    let mut fixed_value = fixed_positive_value_or_default(current_text);
+
+    ui.horizontal(|ui| {
+        ComboBox::from_id_salt((field.descriptor.id.as_str(), "auto_fixed_mode"))
+            .selected_text(auto_fixed_positive_mode_label(descriptor, selected_mode))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut selected_mode,
+                    AutoFixedPositiveMode::Auto,
+                    descriptor.auto_label.fallback_ru.as_str(),
+                );
+                ui.selectable_value(
+                    &mut selected_mode,
+                    AutoFixedPositiveMode::Fixed,
+                    descriptor.fixed_label.fallback_ru.as_str(),
+                );
+            });
+
+        if selected_mode == AutoFixedPositiveMode::Fixed {
+            let mut drag_value = DragValue::new(&mut fixed_value)
+                .range(1..=usize::MAX)
+                .speed(1);
+            if let Some(unit) = &descriptor.unit {
+                drag_value = drag_value.suffix(format!(" {}", unit.as_str()));
+            }
+            if ui.add(drag_value).changed() && fixed_value > 0 {
+                actions.push(set_value_action(
+                    &field.descriptor.id,
+                    SettingValue::Text(fixed_value.to_string()),
+                ));
+            }
+        }
+    });
+
+    if selected_mode != current_mode {
+        let next_value = match selected_mode {
+            AutoFixedPositiveMode::Auto => "auto".to_string(),
+            AutoFixedPositiveMode::Fixed => fixed_value.to_string(),
+        };
+        actions.push(set_value_action(
+            &field.descriptor.id,
+            SettingValue::Text(next_value),
+        ));
+    }
+}
+
+fn auto_fixed_positive_mode(text: &str) -> AutoFixedPositiveMode {
+    if text.trim() == "auto" {
+        AutoFixedPositiveMode::Auto
+    } else {
+        AutoFixedPositiveMode::Fixed
+    }
+}
+
+fn fixed_positive_value_or_default(text: &str) -> usize {
+    text.trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|value| *value > 0)
+        .unwrap_or(1)
+}
+
+fn auto_fixed_positive_mode_label(
+    descriptor: &AutoFixedPositiveIntegerDescriptor,
+    mode: AutoFixedPositiveMode,
+) -> &str {
+    match mode {
+        AutoFixedPositiveMode::Auto => descriptor.auto_label.fallback_ru.as_str(),
+        AutoFixedPositiveMode::Fixed => descriptor.fixed_label.fallback_ru.as_str(),
     }
 }
 
