@@ -19,8 +19,8 @@ use player_core::{
 use tracing::{debug, trace, warn};
 use video_backend_api::{PresentFrameResourceProviderHandle, VideoBackendDecoderThreadHandle};
 use video_core::{
-    DecodePacket, DecodeSendError, DecodedFrame, VideoDecoderEndOfStreamDrainState,
-    VideoStreamConfigResult,
+    DecodePacket, DecodeSendError, DecodedFrame, VideoDecoderEndOfStreamDrainResult,
+    VideoDecoderEndOfStreamDrainState, VideoStreamConfigResult,
 };
 use video_ffmpeg::FfmpegSoftwareHoverReservation;
 use video_present_core::{
@@ -135,11 +135,41 @@ pub(crate) struct HoverSpanDecodeState {
     generation: u64,
     pending_packet: Option<DecodePacket>,
     packets_fed: u32,
+    packets_in_flight: u32,
     frames_drained: u32,
-    demux_eof: bool,
+    eof_drain: HoverSpanEofDrainState,
+}
+
+/// Состояние EOF-drain для span-а после конца demux-потока.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoverSpanEofDrainState {
+    /// Demuxer ещё может отдавать normal packets.
+    ReadingPackets,
+
+    /// Demuxer уже дошёл до EOF, но decoder worker ещё не подтвердил старые packets.
+    WaitingForQueuedPackets,
+
+    /// EOF отправлен в decoder, теперь можно только дренировать tail frames.
+    DrainingDecoder,
 }
 
 impl HoverSpanDecodeState {
+    fn note_packet_sent(&mut self) {
+        self.packets_fed = self.packets_fed.saturating_add(1);
+        self.packets_in_flight = self.packets_in_flight.saturating_add(1);
+    }
+
+    fn drain_completed_packets(&mut self, completed_packets: usize) {
+        let completed_packets = u32::try_from(completed_packets).unwrap_or(u32::MAX);
+        self.packets_in_flight = self.packets_in_flight.saturating_sub(completed_packets);
+    }
+
+    fn has_decoder_packet_work_before_eof_drain(&self, decoder_packet_queue_depth: usize) -> bool {
+        self.pending_packet.is_some()
+            || self.packets_in_flight > 0
+            || decoder_packet_queue_depth > 0
+    }
+
     fn diagnostics(
         &self,
         post_target_reorder_drain_frames: u16,
@@ -268,9 +298,11 @@ pub(crate) fn drive_hover_span_decode(
             generation: session.generation,
             pending_packet: None,
             packets_fed: 0,
+            packets_in_flight: 0,
             frames_drained: 0,
-            demux_eof: false,
+            eof_drain: HoverSpanEofDrainState::ReadingPackets,
         });
+        let _ = session.decoder_thread.drain_completed_packet_count();
         trace!(
             span_id = ?request.span_id,
             generation = session.generation,
@@ -285,6 +317,9 @@ pub(crate) fn drive_hover_span_decode(
     let mut fed_this_pass: u32 = 0;
 
     loop {
+        let completed_packets = session.decoder_thread.drain_completed_packet_count();
+        state.drain_completed_packets(completed_packets);
+
         // 1. Сначала выгребаем готовые кадры: pre-target release, target-or-after — hit.
         while let Some(frame) = session.decoder_thread.try_recv_frame() {
             if frame.generation != state.generation {
@@ -319,20 +354,63 @@ pub(crate) fn drive_hover_span_decode(
             };
         }
 
-        // 3. После demux EOF остаётся только дождаться decoder drain-а.
-        if state.demux_eof {
-            return match session.decoder_thread.end_of_stream_drain_state() {
-                VideoDecoderEndOfStreamDrainState::Drained { .. } => {
-                    HoverSpanDecodeDrive::Incomplete {
-                        reason: TimelineHoverPrepareIncompleteReason::EndOfStreamBeforeTarget,
+        // 3. После demux EOF сначала ждём normal-packet ACK-и, затем запускаем EOF drain.
+        match state.eof_drain {
+            HoverSpanEofDrainState::ReadingPackets => {}
+            HoverSpanEofDrainState::WaitingForQueuedPackets => {
+                if state.has_decoder_packet_work_before_eof_drain(
+                    session.decoder_thread.packet_queue_depth(),
+                ) {
+                    return HoverSpanDecodeDrive::Incomplete {
+                        reason: TimelineHoverPrepareIncompleteReason::DecodeBudgetExhausted,
                         diagnostics: state.diagnostics(post_target_reorder),
+                    };
+                }
+
+                match session
+                    .decoder_thread
+                    .begin_end_of_stream_drain(state.generation)
+                {
+                    VideoDecoderEndOfStreamDrainResult::Started(_)
+                    | VideoDecoderEndOfStreamDrainResult::Unchanged(_) => {
+                        state.eof_drain = HoverSpanEofDrainState::DrainingDecoder;
+                        continue;
+                    }
+                    VideoDecoderEndOfStreamDrainResult::Backpressure(reason) => {
+                        trace!(%reason, "Hover decoder EOF drain control backpressure");
+                        return HoverSpanDecodeDrive::Pressure {
+                            pressure: TimelineHoverPreparePressure::ResourceBusy,
+                        };
+                    }
+                    VideoDecoderEndOfStreamDrainResult::AbsentDecoder => {
+                        warn!("Hover decoder absent during EOF drain");
+                        return HoverSpanDecodeDrive::Failed {
+                            failure: HoverSpanDecodeFailure::DecoderFatal,
+                        };
+                    }
+                    VideoDecoderEndOfStreamDrainResult::Fatal(error) => {
+                        warn!(error = %error.message(), "Hover decoder EOF drain failed");
+                        session.fatal_error = Some(error.message().to_owned());
+                        return HoverSpanDecodeDrive::Failed {
+                            failure: HoverSpanDecodeFailure::DecoderFatal,
+                        };
                     }
                 }
-                _ => HoverSpanDecodeDrive::Incomplete {
-                    reason: TimelineHoverPrepareIncompleteReason::DecodeBudgetExhausted,
-                    diagnostics: state.diagnostics(post_target_reorder),
-                },
-            };
+            }
+            HoverSpanEofDrainState::DrainingDecoder => {
+                return match session.decoder_thread.end_of_stream_drain_state() {
+                    VideoDecoderEndOfStreamDrainState::Drained { .. } => {
+                        HoverSpanDecodeDrive::Incomplete {
+                            reason: TimelineHoverPrepareIncompleteReason::EndOfStreamBeforeTarget,
+                            diagnostics: state.diagnostics(post_target_reorder),
+                        }
+                    }
+                    _ => HoverSpanDecodeDrive::Incomplete {
+                        reason: TimelineHoverPrepareIncompleteReason::DecodeBudgetExhausted,
+                        diagnostics: state.diagnostics(post_target_reorder),
+                    },
+                };
+            }
         }
 
         // 4. Feed budget на этот UI-кадр исчерпан — честный incomplete, продолжим.
@@ -354,10 +432,7 @@ pub(crate) fn drive_hover_span_decode(
                     decode_packet_from_demux_packet(packet, state.generation, stream_context)
                 }
                 Ok(DemuxReadEvent::EndOfStream) => {
-                    state.demux_eof = true;
-                    let _ = session
-                        .decoder_thread
-                        .begin_end_of_stream_drain(state.generation);
+                    state.eof_drain = HoverSpanEofDrainState::WaitingForQueuedPackets;
                     continue;
                 }
                 Ok(DemuxReadEvent::TracksChanged(_)) => {
@@ -378,7 +453,7 @@ pub(crate) fn drive_hover_span_decode(
         // 6. Push в decoder channel; на backpressure пакет сохраняется без потери.
         match session.decoder_thread.send_packet(decode_packet.clone()) {
             Ok(()) => {
-                state.packets_fed = state.packets_fed.saturating_add(1);
+                state.note_packet_sent();
                 fed_this_pass += 1;
             }
             Err(DecodeSendError::Backpressure(reason)) => {

@@ -3,12 +3,14 @@ use std::time::{Duration, Instant};
 
 use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
 use frame_server_core::{
-    DeferredLiveScrubSettingsChange, LiveScrubDecodeMode, LiveScrubDiagnostics,
-    LiveScrubSettingsSnapshot, ScrubDiagnosticsRecorder, ScrubPreparedFrameDemoteRejectionKind,
+    BackendRevision, DeferredLiveScrubSettingsChange, FrameExactnessPolicy, LiveScrubDecodeMode,
+    LiveScrubDiagnostics, LiveScrubSettingsSnapshot, PlaybackGeneration, ScrubDiagnosticsRecorder,
+    ScrubGeneration, ScrubGenerationToken, ScrubPreparedFrameDemoteRejectionKind,
     ScrubPreparedFrameHitOutcome, ScrubPreparedFrameOwnershipEvent, ScrubResumeRunwayState,
+    ScrubTrackSelection, SourceRevision, TimelineHoverFrameBucket,
     TimelineHoverPrepareLookupMissReason, TimelineHoverPrepareSessionEndReleaseOutcome,
 };
-use media_core::MediaTime;
+use media_core::{MediaTime, TimeBase, TrackId, TrackTimestamp};
 use player_core::{
     MediaOpenRequest, MediaSource, MediaSummary, PlaybackResumeIntent, PlaybackState,
     PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot, SeekCommitInfo,
@@ -28,8 +30,9 @@ use super::frame_server_diagnostics::{
 use super::present_frame_cache::{
     CachedPresentFrameDiscardReason, CachedPresentFrameValidationState, PresentFrameIdentity,
     TextureBusyFallbackRejectReason, TextureBusyFallbackReuseState,
-    cached_present_frame_discard_reason_for_player_event, cached_present_frame_stale_reason,
-    texture_busy_fallback_can_reuse_previous_frame, texture_busy_fallback_reject_reason,
+    TimelineHoverSourceContextReset, cached_present_frame_discard_reason_for_player_event,
+    cached_present_frame_stale_reason, texture_busy_fallback_can_reuse_previous_frame,
+    texture_busy_fallback_reject_reason,
 };
 use super::telemetry_panel::{
     TELEMETRY_PANEL_REFRESH_INTERVAL, TelemetryPanelCache, TelemetryPanelRow, TelemetryPanelState,
@@ -39,7 +42,8 @@ use super::ui_runtime::{
     control_action_cancels_timeline_hover_leave_grace,
     control_actions_include_timeline_pointer_target, raw_input_has_primary_pointer_press,
     timeline_command_from_action, timeline_hover_prepare_allows_preview_borrow,
-    timeline_hover_prepare_playback_mode,
+    timeline_hover_prepare_outcome_requests_repaint, timeline_hover_prepare_playback_mode,
+    timeline_hover_preview_update_outcome_requests_repaint,
 };
 use super::{AppFrameContext, AppState};
 use crate::frame_prepare::{
@@ -52,9 +56,14 @@ use crate::timeline_hover_intent::{
 };
 use crate::timeline_hover_network::TimelineHoverNetworkOpenDiagnosticsSnapshot;
 use crate::timeline_hover_prepare::{
-    TimelineHoverPrepareCompletionOutcome, TimelineHoverPrepareControllerTransition,
-    TimelineHoverPrepareExecutorNoOpReason, TimelineHoverPrepareExecutorOutcome,
-    TimelineHoverPreparePlaybackMode,
+    TimelineHoverPrepareCancelRequest, TimelineHoverPrepareCompletionOutcome,
+    TimelineHoverPrepareController, TimelineHoverPrepareControllerTransition,
+    TimelineHoverPrepareExecutor, TimelineHoverPrepareExecutorNoOpReason,
+    TimelineHoverPrepareExecutorOutcome, TimelineHoverPrepareExecutorRequest,
+    TimelineHoverPrepareIncompleteReason, TimelineHoverPreparePlaybackMode,
+    TimelineHoverPreparePreparedHitExactness, TimelineHoverPreparePressure,
+    TimelineHoverPrepareSpanDiagnostics, TimelineHoverPrepareTarget,
+    TimelineHoverPrepareTargetContext,
 };
 use crate::ui::player_controls::ControlAction;
 use crate::ui::timeline::{
@@ -70,6 +79,73 @@ fn hover_visual_target(seconds: u64) -> TimelineHoverVisualTarget {
             egui::Rect::from_min_size(egui::pos2(0.0, 10.0), egui::vec2(100.0, 12.0)),
         ),
     )
+}
+
+struct RepaintPolicyFakeExecutor {
+    next_outcome: Option<TimelineHoverPrepareExecutorOutcome>,
+}
+
+impl RepaintPolicyFakeExecutor {
+    const fn new(next_outcome: TimelineHoverPrepareExecutorOutcome) -> Self {
+        Self {
+            next_outcome: Some(next_outcome),
+        }
+    }
+}
+
+impl TimelineHoverPrepareExecutor for RepaintPolicyFakeExecutor {
+    fn prepare_exact_dependency_span(
+        &mut self,
+        _request: TimelineHoverPrepareExecutorRequest,
+    ) -> TimelineHoverPrepareExecutorOutcome {
+        self.next_outcome
+            .take()
+            .expect("fake executor must receive one queued repaint-policy outcome")
+    }
+
+    fn cancel_dependency_span(&mut self, _request: TimelineHoverPrepareCancelRequest) {}
+}
+
+fn repaint_policy_timestamp(millis: i64) -> TrackTimestamp {
+    TrackTimestamp::new(
+        TrackId::new(1),
+        millis,
+        TimeBase::new(1, 1_000).expect("millisecond timebase must be valid"),
+    )
+}
+
+fn repaint_policy_prepare_context() -> TimelineHoverPrepareTargetContext {
+    TimelineHoverPrepareTargetContext::new(
+        SourceRevision::new(1),
+        BackendRevision::new(1),
+        ScrubTrackSelection::video_only(TrackId::new(1)),
+        ScrubGenerationToken::new(PlaybackGeneration::new(1), ScrubGeneration::new(1)),
+        FrameExactnessPolicy::TargetOrAfter,
+    )
+}
+
+fn repaint_policy_prepare_target() -> TimelineHoverPrepareTarget {
+    TimelineHoverPrepareTarget::new(
+        repaint_policy_prepare_context(),
+        repaint_policy_timestamp(1_000),
+        TimelineHoverFrameBucket::new(1_000),
+        repaint_policy_timestamp(900),
+        repaint_policy_timestamp(1_000),
+        0,
+        TimelineHoverPreparePlaybackMode::ActivePlayback,
+    )
+    .expect("repaint-policy target must contain a valid dependency span")
+}
+
+fn completion_outcome_from_controller(
+    executor_outcome: TimelineHoverPrepareExecutorOutcome,
+) -> TimelineHoverPrepareCompletionOutcome {
+    let mut controller =
+        TimelineHoverPrepareController::new(RepaintPolicyFakeExecutor::new(executor_outcome));
+
+    controller
+        .prepare_hover_target(repaint_policy_prepare_target())
+        .completion_outcome()
 }
 
 /// Собирает source `state` и child-модулей для guard-тестов после split-а.
@@ -257,6 +333,140 @@ fn timeline_hover_preview_borrow_remains_allowed_during_one_shot_resume_pending(
     };
 
     assert!(timeline_hover_prepare_allows_preview_borrow(playback_mode));
+}
+
+#[test]
+fn pending_hover_decode_continuation_requests_repaint() {
+    let executor_outcome = TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+        reason: TimelineHoverPrepareIncompleteReason::DecodeBudgetExhausted,
+        diagnostics: TimelineHoverPrepareSpanDiagnostics::new(32, 0, 0),
+    };
+
+    assert!(timeline_hover_prepare_outcome_requests_repaint(
+        executor_outcome,
+        TimelineHoverPrepareCompletionOutcome::NoPreparedHit,
+    ));
+}
+
+#[test]
+fn hover_decode_retryable_pressure_requests_repaint() {
+    for pressure in [
+        TimelineHoverPreparePressure::DecoderBackpressure,
+        TimelineHoverPreparePressure::ResourceBusy,
+        TimelineHoverPreparePressure::HostUploadBackpressure,
+    ] {
+        assert!(
+            timeline_hover_prepare_outcome_requests_repaint(
+                TimelineHoverPrepareExecutorOutcome::Pressure { pressure },
+                TimelineHoverPrepareCompletionOutcome::NoPreparedHit,
+            ),
+            "retryable pressure must request repaint: {pressure:?}"
+        );
+    }
+}
+
+#[test]
+fn prepared_or_working_set_hit_requests_preview_retry_repaint() {
+    let prepared_hit_outcome = TimelineHoverPrepareExecutorOutcome::PreparedHit {
+        actual_pts: repaint_policy_timestamp(1_000),
+        exactness: TimelineHoverPreparePreparedHitExactness::ExactTargetOrAfter,
+        diagnostics: TimelineHoverPrepareSpanDiagnostics::new(1, 1, 0),
+    };
+    let prepared_completion = completion_outcome_from_controller(prepared_hit_outcome);
+
+    assert!(matches!(
+        prepared_completion,
+        TimelineHoverPrepareCompletionOutcome::AcceptedExactPreparedHit { .. }
+    ));
+    assert!(timeline_hover_prepare_outcome_requests_repaint(
+        prepared_hit_outcome,
+        prepared_completion,
+    ));
+
+    let working_set_hit_outcome = TimelineHoverPrepareExecutorOutcome::WorkingSetHit {
+        actual_pts: repaint_policy_timestamp(1_000),
+    };
+    let working_set_completion = completion_outcome_from_controller(working_set_hit_outcome);
+
+    assert!(matches!(
+        working_set_completion,
+        TimelineHoverPrepareCompletionOutcome::AcceptedWorkingSetHit { .. }
+    ));
+    assert!(timeline_hover_prepare_outcome_requests_repaint(
+        working_set_hit_outcome,
+        working_set_completion,
+    ));
+}
+
+#[test]
+fn terminal_hover_outcomes_do_not_request_repaint() {
+    for executor_outcome in [
+        TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+            reason: TimelineHoverPrepareIncompleteReason::EndOfStreamBeforeTarget,
+            diagnostics: TimelineHoverPrepareSpanDiagnostics::new(32, 0, 0),
+        },
+        TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+            reason: TimelineHoverPrepareIncompleteReason::ResourceBudgetExhausted,
+            diagnostics: TimelineHoverPrepareSpanDiagnostics::new(32, 0, 0),
+        },
+        TimelineHoverPrepareExecutorOutcome::Pressure {
+            pressure: TimelineHoverPreparePressure::ProviderBudgetExhausted,
+        },
+        TimelineHoverPrepareExecutorOutcome::NoOp {
+            reason: TimelineHoverPrepareExecutorNoOpReason::WorkingSetMiss {
+                lookup_miss: TimelineHoverPrepareLookupMissReason::NoEntryForKey,
+            },
+        },
+    ] {
+        assert!(
+            !timeline_hover_prepare_outcome_requests_repaint(
+                executor_outcome,
+                TimelineHoverPrepareCompletionOutcome::NoPreparedHit,
+            ),
+            "terminal hover outcome must not request repaint: {executor_outcome:?}"
+        );
+    }
+}
+
+#[test]
+fn hover_preview_busy_materialization_requests_repaint() {
+    for update_outcome in [
+        TimelineHoverPreviewUpdateOutcome::BusyEmpty,
+        TimelineHoverPreviewUpdateOutcome::BusyKeptLastReady,
+    ] {
+        assert!(
+            timeline_hover_preview_update_outcome_requests_repaint(update_outcome, false),
+            "busy preview materialization must request retry repaint: {update_outcome:?}"
+        );
+    }
+}
+
+#[test]
+fn hover_preview_working_set_miss_repaints_only_for_pending_decode_work() {
+    assert!(timeline_hover_preview_update_outcome_requests_repaint(
+        TimelineHoverPreviewUpdateOutcome::WorkingSetMiss,
+        true,
+    ));
+    assert!(!timeline_hover_preview_update_outcome_requests_repaint(
+        TimelineHoverPreviewUpdateOutcome::WorkingSetMiss,
+        false,
+    ));
+}
+
+#[test]
+fn terminal_hover_preview_outcomes_do_not_request_repaint() {
+    for update_outcome in [
+        TimelineHoverPreviewUpdateOutcome::MissingMaterializer,
+        TimelineHoverPreviewUpdateOutcome::Missing,
+        TimelineHoverPreviewUpdateOutcome::Unsupported,
+        TimelineHoverPreviewUpdateOutcome::Error,
+        TimelineHoverPreviewUpdateOutcome::TimingRejected,
+    ] {
+        assert!(
+            !timeline_hover_preview_update_outcome_requests_repaint(update_outcome, true),
+            "terminal preview outcome must not request repaint: {update_outcome:?}"
+        );
+    }
 }
 
 /// Hover intent не входит в command-oriented `TimelineAction -> PlayerCommand` route.
@@ -1077,6 +1287,53 @@ fn player_lifecycle_events_invalidate_cached_present_frame_at_boundaries() {
         )),
         None
     );
+}
+
+/// Player media-open events пересоздают playback session, но не должны стирать
+/// source identity, которую `AppState::remember_active_media_source` уже отдал
+/// hover executor-у. Иначе software hover preview получает `MissingActiveSource`.
+#[test]
+fn media_open_lifecycle_keeps_hover_source_identity_for_reopen() {
+    for reason in [
+        CachedPresentFrameDiscardReason::CurrentVideoFrameMissing,
+        CachedPresentFrameDiscardReason::SourceLabelChanged,
+        CachedPresentFrameDiscardReason::RenderGenerationChanged,
+        CachedPresentFrameDiscardReason::PlayerMediaOpenRequested,
+        CachedPresentFrameDiscardReason::PlayerMediaOpened,
+        CachedPresentFrameDiscardReason::PlayerStopped,
+    ] {
+        assert_eq!(
+            reason.timeline_hover_source_context_reset(),
+            TimelineHoverSourceContextReset::DropOpenedSourcePreservingIdentity,
+            "{reason:?} must preserve hover source identity"
+        );
+    }
+
+    for reason in [
+        CachedPresentFrameDiscardReason::MediaOpenBoundary,
+        CachedPresentFrameDiscardReason::PlayerFailed,
+        CachedPresentFrameDiscardReason::PlayerShutdownRequested,
+        CachedPresentFrameDiscardReason::PlayerFatalError,
+    ] {
+        assert_eq!(
+            reason.timeline_hover_source_context_reset(),
+            TimelineHoverSourceContextReset::ForgetSourceIdentity,
+            "{reason:?} must forget hover source identity"
+        );
+    }
+
+    for reason in [
+        CachedPresentFrameDiscardReason::RuntimeDrop,
+        CachedPresentFrameDiscardReason::SurfaceLifecycleBreak,
+        CachedPresentFrameDiscardReason::RenderFailure,
+        CachedPresentFrameDiscardReason::WorkerRenderError,
+    ] {
+        assert_eq!(
+            reason.timeline_hover_source_context_reset(),
+            TimelineHoverSourceContextReset::None,
+            "{reason:?} must not touch hover source context"
+        );
+    }
 }
 
 /// Проверяет, что reuse identity различает новый decoded frame на той же texture.

@@ -367,6 +367,8 @@ pub(crate) trait TimelineHoverPrepareExecutor {
     ) -> TimelineHoverPrepareExecutorOutcome;
 
     fn cancel_dependency_span(&mut self, request: TimelineHoverPrepareCancelRequest);
+
+    fn finish_completed_span_decode(&mut self, _span_id: TimelineHoverPrepareSpanId) {}
 }
 
 impl AppTimelineHoverPrepareExecutor {
@@ -476,6 +478,15 @@ impl AppTimelineHoverPrepareExecutor {
         }
     }
 
+    /// Завершает decode state span-а после финального PreparedHit без потери source/session identity.
+    fn finish_completed_span_decode(&mut self, _span_id: TimelineHoverPrepareSpanId) {
+        if let Some(session) = self.decode_session.as_mut() {
+            cancel_hover_span_decode(session, &mut self.span_decode_state);
+        } else {
+            self.span_decode_state = None;
+        }
+    }
+
     fn update_network_hover_prepare_throttle(
         &mut self,
         network_hover_prepare_throttle: std::time::Duration,
@@ -491,10 +502,17 @@ impl AppTimelineHoverPrepareExecutor {
         self.source_factory.set_active_source(source);
     }
 
-    fn invalidate_hover_source(&mut self) {
+    fn reset_opened_hover_source_preserving_identity(&mut self) {
+        // Player/render lifecycle может сделать уже открытый hover demuxer
+        // устаревшим, но сам media source остаётся текущим и пригодным для
+        // повторного independent open-а на следующем hover target-е.
         self.reset_span_decode_for_source_loss();
         self.active_hover_source = None;
         self.network_open_controller.invalidate_source_context();
+    }
+
+    fn invalidate_hover_source(&mut self) {
+        self.reset_opened_hover_source_preserving_identity();
         self.source_factory.invalidate_active_source();
     }
 
@@ -551,7 +569,8 @@ impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
         }
 
         match target.playback_mode() {
-            TimelineHoverPreparePlaybackMode::ActivePlayback => {
+            TimelineHoverPreparePlaybackMode::ActivePlayback
+            | TimelineHoverPreparePlaybackMode::PausedOrStopped => {
                 self.resolve_active_playback_dependency_span(target)
             }
             TimelineHoverPreparePlaybackMode::LiveScrubActive => {
@@ -564,8 +583,7 @@ impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
             } => TimelineHoverDependencySpanResolutionOutcome::NoOp {
                 reason: TimelineHoverPrepareExecutorNoOpReason::ResumePendingNoSpareCapacity,
             },
-            TimelineHoverPreparePlaybackMode::PausedOrStopped
-            | TimelineHoverPreparePlaybackMode::ResumePendingAfterSeek {
+            TimelineHoverPreparePlaybackMode::ResumePendingAfterSeek {
                 spare_capacity_available: true,
             } => TimelineHoverDependencySpanResolutionOutcome::NoOp {
                 reason:
@@ -608,10 +626,7 @@ impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
                 }
             }
             PlayerTimelineHoverPrepareBorrowOutcome::Miss(lookup_miss) => {
-                if matches!(
-                    request.target.playback_mode(),
-                    TimelineHoverPreparePlaybackMode::ActivePlayback
-                ) {
+                if playback_mode_uses_independent_hover_decode(request.target.playback_mode()) {
                     if self.active_hover_source.is_some() {
                         return self.execute_active_playback_span_decode(request, lookup_miss);
                     }
@@ -644,6 +659,10 @@ impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
         } else {
             self.span_decode_state = None;
         }
+    }
+
+    fn finish_completed_span_decode(&mut self, span_id: TimelineHoverPrepareSpanId) {
+        AppTimelineHoverPrepareExecutor::finish_completed_span_decode(self, span_id);
     }
 }
 
@@ -696,14 +715,11 @@ impl AppTimelineHoverPrepareExecutor {
             HoverSpanDecodeDrive::PreparedHit {
                 actual_pts,
                 diagnostics,
-            } => {
-                self.span_decode_state = None;
-                TimelineHoverPrepareExecutorOutcome::PreparedHit {
-                    actual_pts,
-                    exactness: TimelineHoverPreparePreparedHitExactness::ExactTargetOrAfter,
-                    diagnostics,
-                }
-            }
+            } => TimelineHoverPrepareExecutorOutcome::PreparedHit {
+                actual_pts,
+                exactness: TimelineHoverPreparePreparedHitExactness::ExactTargetOrAfter,
+                diagnostics,
+            },
             HoverSpanDecodeDrive::Incomplete {
                 reason,
                 diagnostics,
@@ -960,6 +976,11 @@ impl TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor> {
         self.executor.set_hover_source(source);
     }
 
+    pub(crate) fn reset_opened_hover_source_preserving_identity(&mut self) {
+        self.executor
+            .reset_opened_hover_source_preserving_identity();
+    }
+
     pub(crate) fn invalidate_hover_source(&mut self) {
         self.executor.invalidate_hover_source();
     }
@@ -1033,6 +1054,12 @@ where
         let executor_outcome = self.executor.prepare_exact_dependency_span(request);
         let completion_outcome =
             self.completion_outcome_for_executor_result(span_id, target, executor_outcome);
+        if matches!(
+            executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit { .. }
+        ) {
+            self.finish_completed_decode_span(span_id);
+        }
 
         TimelineHoverPrepareControllerOutcome {
             span_id,
@@ -1251,6 +1278,15 @@ where
             },
             TimelineHoverPrepareExecutorTransition::Start,
         )
+    }
+
+    fn finish_completed_decode_span(&mut self, span_id: TimelineHoverPrepareSpanId) {
+        if matches!(self.active_span, Some(active_span) if active_span.span_id == span_id) {
+            // PreparedHit завершает dependency span: controller закрывает свой
+            // active_span, а executor отдельно flush-ит только decode work.
+            self.executor.finish_completed_span_decode(span_id);
+            self.active_span = None;
+        }
     }
 
     fn completion_outcome_for_executor_result(
@@ -1610,6 +1646,18 @@ fn no_op_reason_for_missing_executor(
             TimelineHoverPrepareExecutorNoOpReason::LiveScrubSuspended
         }
     }
+}
+
+const fn playback_mode_uses_independent_hover_decode(
+    playback_mode: TimelineHoverPreparePlaybackMode,
+) -> bool {
+    // Software hover session декодирует через отдельный backend/source,
+    // поэтому paused/stopped не нуждается в live playback tick-е.
+    matches!(
+        playback_mode,
+        TimelineHoverPreparePlaybackMode::ActivePlayback
+            | TimelineHoverPreparePlaybackMode::PausedOrStopped
+    )
 }
 
 fn dependency_span_seek_error_no_op_reason(

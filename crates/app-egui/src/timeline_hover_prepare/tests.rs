@@ -200,6 +200,15 @@ fn unresolved_active_target(target_millis: i64) -> TimelineHoverPrepareTarget {
     )
 }
 
+fn unresolved_paused_target(target_millis: i64) -> TimelineHoverPrepareTarget {
+    TimelineHoverPrepareTarget::unresolved(
+        context(),
+        timestamp(target_millis),
+        TimelineHoverFrameBucket::new(target_millis),
+        TimelineHoverPreparePlaybackMode::PausedOrStopped,
+    )
+}
+
 #[test]
 fn unresolved_target_does_not_supply_fake_dependency_span() {
     let active_target = unresolved_active_target(10_000);
@@ -387,9 +396,42 @@ fn stale_previous_target_completion_cannot_commit() {
     );
     assert_eq!(
         late_old_hit,
-        TimelineHoverPrepareCompletionOutcome::RejectedStaleTarget {
-            completion_span_id: latest.span_id
+        TimelineHoverPrepareCompletionOutcome::RejectedStaleSpan {
+            completion_span_id: latest.span_id,
+            active_span_id: None,
         }
+    );
+}
+
+#[test]
+fn prepared_hit_finishes_span_before_next_decode_target() {
+    let mut fake_executor = FakeExecutor::default();
+    fake_executor.push_outcome(TimelineHoverPrepareExecutorOutcome::PreparedHit {
+        actual_pts: timestamp(10_000),
+        exactness: TimelineHoverPreparePreparedHitExactness::ExactTargetOrAfter,
+        diagnostics: TimelineHoverPrepareSpanDiagnostics::new(10, 2, 0),
+    });
+    let mut controller = TimelineHoverPrepareController::new(fake_executor);
+
+    let completed = controller.prepare_hover_target(target(10_000, 9_000, 10_100));
+    let next = controller.prepare_hover_target(target(10_200, 9_000, 10_500));
+
+    assert!(matches!(
+        completed.completion_outcome,
+        TimelineHoverPrepareCompletionOutcome::AcceptedExactPreparedHit { .. }
+    ));
+    assert_ne!(completed.span_id, next.span_id);
+    assert_eq!(
+        next.transition,
+        TimelineHoverPrepareControllerTransition::Started
+    );
+    assert_eq!(
+        controller.executor().requests[1].transition,
+        TimelineHoverPrepareExecutorTransition::Start
+    );
+    assert!(
+        controller.executor().cancellations.is_empty(),
+        "finished span must not be cancelled after executor already returned a final hit"
     );
 }
 
@@ -768,6 +810,41 @@ fn active_playback_hover_source_open_failure_is_not_a_playback_reset() {
 }
 
 #[test]
+fn resetting_opened_hover_source_preserves_reopen_identity() {
+    let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
+        PlayerTimelineHoverPrepareHandoff::default(),
+    ));
+    let missing_reopen_path =
+        PathBuf::from("/tmp/rustiplayer-missing-hover-source-after-lifecycle-reset.wav");
+    let (demuxer, _decode_point_before_requests, _ordinary_seek_count) =
+        FakeHoverDemuxer::resolved(DemuxSeekResult {
+            requested_position: timestamp(10_000).to_media_time(),
+            actual_position: timestamp(9_000).to_media_time(),
+            actual_track_timestamp: Some(timestamp(9_000)),
+        });
+    controller.set_hover_source(TimelineHoverSourceIdentity::LocalFile(missing_reopen_path));
+    controller.executor.active_hover_source =
+        Some(TimelineHoverOpenedSource::from_demuxer(Box::new(demuxer)));
+
+    controller.reset_opened_hover_source_preserving_identity();
+    let outcome = controller.prepare_hover_target(unresolved_active_target(10_000));
+
+    assert!(matches!(
+        outcome.executor_outcome,
+        TimelineHoverPrepareExecutorOutcome::NoOp {
+            reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceOpenFailed {
+                source_kind: TimelineHoverOpenFailedSourceKind::LocalFile,
+                ..
+            },
+        }
+    ));
+    assert_eq!(
+        outcome.completion_outcome,
+        TimelineHoverPrepareCompletionOutcome::NoPreparedHit
+    );
+}
+
+#[test]
 fn live_scrub_target_degrades_to_noop_without_executor_work() {
     let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
         PlayerTimelineHoverPrepareHandoff::default(),
@@ -822,7 +899,6 @@ mod decode_execution {
     use super::*;
     use crate::timeline_hover_decode::TimelineHoverDecodeSession;
 
-    #[derive(Default)]
     struct FakeHoverDecoderShared {
         sent_packets: Vec<DecodePacket>,
         flush_count: usize,
@@ -832,6 +908,25 @@ mod decode_execution {
         released_handles: Vec<u64>,
         backpressure_after_packets: Option<usize>,
         eos_drain_generation: Option<u64>,
+        completed_packet_count: usize,
+        auto_complete_packets: bool,
+    }
+
+    impl Default for FakeHoverDecoderShared {
+        fn default() -> Self {
+            Self {
+                sent_packets: Vec::new(),
+                flush_count: 0,
+                configured: Vec::new(),
+                scripted_frames: VecDeque::new(),
+                frames_ready_after_packets: 0,
+                released_handles: Vec::new(),
+                backpressure_after_packets: None,
+                eos_drain_generation: None,
+                completed_packet_count: 0,
+                auto_complete_packets: true,
+            }
+        }
     }
 
     struct FakeHoverDecoderThread {
@@ -866,6 +961,9 @@ mod decode_execution {
                 ));
             }
             shared.sent_packets.push(packet);
+            if shared.auto_complete_packets {
+                shared.completed_packet_count = shared.completed_packet_count.saturating_add(1);
+            }
             Ok(())
         }
 
@@ -942,11 +1040,10 @@ mod decode_execution {
         }
 
         fn drain_completed_packet_count(&self) -> usize {
-            self.shared
-                .lock()
-                .expect("fake decoder lock")
-                .sent_packets
-                .len()
+            let mut shared = self.shared.lock().expect("fake decoder lock");
+            let completed_packet_count = shared.completed_packet_count;
+            shared.completed_packet_count = 0;
+            completed_packet_count
         }
     }
 
@@ -1170,7 +1267,10 @@ mod decode_execution {
         ));
 
         let shared = harness.shared.lock().expect("fake decoder lock");
-        assert_eq!(shared.flush_count, 1);
+        assert_eq!(
+            shared.flush_count, 2,
+            "span start flushes once and completed PreparedHit flushes decode state once"
+        );
         assert_eq!(shared.configured.len(), 1);
         assert_eq!(shared.sent_packets.len(), 3);
         // Pre-target кадр released обратно в decoder pool, не вставлен.
@@ -1208,9 +1308,98 @@ mod decode_execution {
                 .lock()
                 .expect("fake decoder lock")
                 .flush_count,
-            1,
+            2,
             "working-set hit must not restart decode span"
         );
+    }
+
+    #[test]
+    fn prepared_hit_flushes_completed_decode_and_keeps_frame_borrowable() {
+        let mut harness = decode_harness(vec![video_packet(10_020, true)]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 1;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(10_020, 1, 8)]);
+        }
+        let active_target = unresolved_active_target(10_000);
+
+        let outcome = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            outcome.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit {
+                actual_pts,
+                exactness: TimelineHoverPreparePreparedHitExactness::ExactTargetOrAfter,
+                ..
+            } if actual_pts == timestamp(10_020)
+        ));
+        assert!(matches!(
+            outcome.completion_outcome,
+            TimelineHoverPrepareCompletionOutcome::AcceptedExactPreparedHit { actual_pts, .. }
+                if actual_pts == timestamp(10_020)
+        ));
+        assert!(
+            harness.controller.active_span.is_none(),
+            "PreparedHit must close the controller span before the next target"
+        );
+        assert_eq!(
+            harness
+                .shared
+                .lock()
+                .expect("fake decoder lock")
+                .flush_count,
+            2,
+            "real App executor must flush at span start and after completed PreparedHit"
+        );
+        assert!(matches!(
+            harness
+                .handoff
+                .borrow_prepared_frame(active_target.lookup_request()),
+            PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn paused_hover_uses_independent_software_decode_session() {
+        let mut harness = decode_harness(vec![video_packet(10_020, true)]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 1;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(10_020, 1, 8)]);
+        }
+        let paused_target = unresolved_paused_target(10_000);
+
+        let outcome = harness.controller.prepare_hover_target(paused_target);
+
+        assert!(matches!(
+            outcome.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit {
+                actual_pts,
+                exactness: TimelineHoverPreparePreparedHitExactness::ExactTargetOrAfter,
+                ..
+            } if actual_pts == timestamp(10_020)
+        ));
+        assert!(matches!(
+            outcome.completion_outcome,
+            TimelineHoverPrepareCompletionOutcome::AcceptedExactPreparedHit { actual_pts, .. }
+                if actual_pts == timestamp(10_020)
+        ));
+        assert_eq!(
+            harness
+                .seek_requests
+                .lock()
+                .expect("seek log lock must be available")
+                .as_slice(),
+            &[DemuxSeekRequest::decode_point_before(Duration::from_secs(
+                10
+            ))]
+        );
+        assert!(matches!(
+            harness
+                .handoff
+                .borrow_prepared_frame(paused_target.lookup_request()),
+            PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(_)
+        ));
     }
 
     #[test]
@@ -1250,8 +1439,8 @@ mod decode_execution {
         ));
         let shared = harness.shared.lock().expect("fake decoder lock");
         assert_eq!(
-            shared.flush_count, 1,
-            "same-span continuation must not flush"
+            shared.flush_count, 2,
+            "same-span continuation must not flush before PreparedHit; completion flushes once"
         );
         drop(shared);
         assert_eq!(
@@ -1327,6 +1516,58 @@ mod decode_execution {
                 .borrow_prepared_frame(active_target.lookup_request()),
             PlayerTimelineHoverPrepareBorrowOutcome::Miss(_)
         ));
+    }
+
+    #[test]
+    fn demux_eof_waits_for_decoder_packet_acks_before_eof_drain() {
+        let mut harness =
+            decode_harness(vec![video_packet(9_400, true), video_packet(9_600, false)]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.auto_complete_packets = false;
+        }
+        let active_target = unresolved_active_target(10_000);
+
+        let waiting_for_acks = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            waiting_for_acks.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+                reason: TimelineHoverPrepareIncompleteReason::DecodeBudgetExhausted,
+                ..
+            }
+        ));
+        {
+            let shared = harness.shared.lock().expect("fake decoder lock");
+            assert_eq!(shared.sent_packets.len(), 2);
+            assert_eq!(
+                shared.eos_drain_generation, None,
+                "EOF drain must not overtake normal packets queued in decoder thread"
+            );
+        }
+
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.completed_packet_count = 2;
+        }
+        let drained_after_acks = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            drained_after_acks.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+                reason: TimelineHoverPrepareIncompleteReason::EndOfStreamBeforeTarget,
+                ..
+            }
+        ));
+        assert_eq!(
+            harness
+                .shared
+                .lock()
+                .expect("fake decoder lock")
+                .eos_drain_generation,
+            Some(1),
+            "EOF drain may start only after queued packet ACKs are observed"
+        );
     }
 
     #[test]

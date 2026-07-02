@@ -3,7 +3,12 @@ use super::timeline_hover_leave_grace::{
     TimelineHoverLeaveGraceReleaseReason, TimelineHoverLeaveGraceStartOutcome,
 };
 use super::*;
+use crate::frame_prepare::TimelineHoverPreviewUpdateOutcome;
 use crate::timeline_hover_intent::{TimelineHoverFrameCoalescer, TimelineHoverFrameOutcome};
+use crate::timeline_hover_prepare::{
+    TimelineHoverPrepareCompletionOutcome, TimelineHoverPrepareIncompleteReason,
+    TimelineHoverPreparePressure,
+};
 use crate::ui::timeline::{TimelineHoverTarget, TimelineHoverVisualTarget};
 use frame_server_core::TimelineHoverPrepareSessionEndReleaseReason;
 use tracing::{trace, warn};
@@ -205,6 +210,59 @@ const fn timeline_hover_preview_load_state(
                 TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackNetworkSourceOpening { .. },
         } => TimelineHoverPreviewLoadState::NetworkOpening { target },
         _ => TimelineHoverPreviewLoadState::Idle,
+    }
+}
+
+/// Решает, нужен ли ещё один UI frame для продолжения hover prepare/preview.
+pub(super) const fn timeline_hover_prepare_outcome_requests_repaint(
+    executor_outcome: TimelineHoverPrepareExecutorOutcome,
+    completion_outcome: TimelineHoverPrepareCompletionOutcome,
+) -> bool {
+    match completion_outcome {
+        TimelineHoverPrepareCompletionOutcome::AcceptedExactPreparedHit { .. }
+        | TimelineHoverPrepareCompletionOutcome::AcceptedWorkingSetHit { .. } => return true,
+        TimelineHoverPrepareCompletionOutcome::RejectedStaleSpan { .. }
+        | TimelineHoverPrepareCompletionOutcome::RejectedStaleTarget { .. }
+        | TimelineHoverPrepareCompletionOutcome::RejectedApproximate { .. }
+        | TimelineHoverPrepareCompletionOutcome::RejectedTiming { .. }
+        | TimelineHoverPrepareCompletionOutcome::NoPreparedHit => {}
+    }
+
+    match executor_outcome {
+        TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+            reason: TimelineHoverPrepareIncompleteReason::DecodeBudgetExhausted,
+            ..
+        }
+        | TimelineHoverPrepareExecutorOutcome::Pressure {
+            pressure:
+                TimelineHoverPreparePressure::DecoderBackpressure
+                | TimelineHoverPreparePressure::HostUploadBackpressure
+                | TimelineHoverPreparePressure::ResourceBusy,
+        } => true,
+        TimelineHoverPrepareExecutorOutcome::PreparedHit { .. }
+        | TimelineHoverPrepareExecutorOutcome::WorkingSetHit { .. }
+        | TimelineHoverPrepareExecutorOutcome::IncompleteSpan { .. }
+        | TimelineHoverPrepareExecutorOutcome::NoOp { .. }
+        | TimelineHoverPrepareExecutorOutcome::Pressure { .. } => false,
+    }
+}
+
+/// Решает, нужен ли следующий UI frame для повторной materialization preview.
+pub(super) const fn timeline_hover_preview_update_outcome_requests_repaint(
+    update_outcome: TimelineHoverPreviewUpdateOutcome,
+    pending_span_decode_work: bool,
+) -> bool {
+    match update_outcome {
+        TimelineHoverPreviewUpdateOutcome::BusyEmpty
+        | TimelineHoverPreviewUpdateOutcome::BusyKeptLastReady => true,
+        TimelineHoverPreviewUpdateOutcome::WorkingSetMiss => pending_span_decode_work,
+        TimelineHoverPreviewUpdateOutcome::Loading
+        | TimelineHoverPreviewUpdateOutcome::Ready
+        | TimelineHoverPreviewUpdateOutcome::MissingMaterializer
+        | TimelineHoverPreviewUpdateOutcome::TimingRejected
+        | TimelineHoverPreviewUpdateOutcome::Missing
+        | TimelineHoverPreviewUpdateOutcome::Unsupported
+        | TimelineHoverPreviewUpdateOutcome::Error => false,
     }
 }
 
@@ -529,14 +587,21 @@ impl AppState {
         let controller_outcome = self
             .timeline_hover_prepare_controller
             .prepare_hover_target(target);
+        let executor_outcome = controller_outcome.executor_outcome();
+        let completion_outcome = controller_outcome.completion_outcome();
         // Continuation работает только для local source, network-opening state
         // здесь невозможен — preview load state остаётся Idle.
         self.frame_server_diagnostics.record_hover_prepare_outcome(
             controller_outcome.transition(),
-            controller_outcome.executor_outcome(),
-            controller_outcome.completion_outcome(),
+            executor_outcome,
+            completion_outcome,
             TimelineHoverPreviewLoadState::Idle,
         );
+        if timeline_hover_prepare_outcome_requests_repaint(executor_outcome, completion_outcome) {
+            // prepare_ui_frame читает egui repaint flag сразу после render_ui,
+            // поэтому pending hover decode получает следующий UI frame без worker side effect.
+            self.egui_ctx.request_repaint();
+        }
         trace!(
             outcome = ?controller_outcome,
             "Timeline hover decode continuation pumped"
@@ -598,14 +663,20 @@ impl AppState {
         let controller_outcome = self
             .timeline_hover_prepare_controller
             .prepare_hover_target(prepare_target);
-        let preview_load_state =
-            timeline_hover_preview_load_state(target, controller_outcome.executor_outcome());
+        let executor_outcome = controller_outcome.executor_outcome();
+        let completion_outcome = controller_outcome.completion_outcome();
+        let preview_load_state = timeline_hover_preview_load_state(target, executor_outcome);
         self.frame_server_diagnostics.record_hover_prepare_outcome(
             controller_outcome.transition(),
-            controller_outcome.executor_outcome(),
-            controller_outcome.completion_outcome(),
+            executor_outcome,
+            completion_outcome,
             preview_load_state,
         );
+        if timeline_hover_prepare_outcome_requests_repaint(executor_outcome, completion_outcome) {
+            // Это UI-owned continuation/retry signal: player-core working set
+            // остаётся владельцем prepared frames, app только просит следующий frame.
+            self.egui_ctx.request_repaint();
+        }
         trace!(
             outcome = ?controller_outcome,
             "Timeline hover prepare target processed"
@@ -722,6 +793,21 @@ impl AppState {
         );
         self.frame_server_diagnostics
             .record_hover_preview_update(load_state, preview_outcome);
+        let pending_span_decode_work = matches!(
+            preview_outcome,
+            TimelineHoverPreviewUpdateOutcome::WorkingSetMiss
+        ) && self
+            .timeline_hover_prepare_controller
+            .executor()
+            .has_pending_span_decode_work();
+        if timeline_hover_preview_update_outcome_requests_repaint(
+            preview_outcome,
+            pending_span_decode_work,
+        ) {
+            // request_repaint будит egui под ControlFlow::Wait, чтобы retry
+            // materialization случился без нового pointer event-а.
+            self.egui_ctx.request_repaint();
+        }
     }
 
     /// Выбирает materializer с provider-ом, которому принадлежит borrowed lease.
