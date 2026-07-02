@@ -476,11 +476,15 @@ impl AppState {
         );
         let should_retry_pending_preview = hover_frame_outcome.visual_presentation_target.is_none()
             && !hover_frame_outcome.visual_presentation_cleared;
+        let prepare_ran_this_frame = hover_frame_outcome.invisible_prepare_target.is_some();
         self.apply_timeline_hover_frame_outcome(
             player_snapshot,
             hover_frame_outcome,
             Instant::now(),
         );
+        if !prepare_ran_this_frame {
+            self.pump_timeline_hover_decode_continuation(player_snapshot);
+        }
         if should_retry_pending_preview
             && let Some(visual_target) = self.timeline_hover_intent_state.pending_visual_target()
         {
@@ -490,6 +494,53 @@ impl AppState {
                 TimelineHoverPreviewLoadState::Idle,
             );
         }
+    }
+
+    /// Продолжает незавершённый hover decode span в UI-кадрах без hover intent-а.
+    ///
+    /// Incremental feed/drain исполняется по бюджету на кадр, поэтому span может
+    /// не успеть за один вызов; без pump-а неподвижный pointer остановил бы decode.
+    fn pump_timeline_hover_decode_continuation(&mut self, player_snapshot: &PlayerSnapshot) {
+        if !self
+            .timeline_hover_prepare_controller
+            .executor()
+            .has_pending_span_decode_work()
+        {
+            return;
+        }
+        // Guard по актуальному snapshot-у: активный live scrub или потеря hover
+        // prepare context прекращают continuation typed-ом внутри executor-а.
+        let Some(hover_prepare) = player_snapshot.timeline_hover_prepare.as_ref() else {
+            return;
+        };
+        if matches!(
+            hover_prepare.interaction(),
+            player_core::TimelineHoverPrepareInteraction::LiveScrubActive
+        ) {
+            return;
+        }
+        let Some(target) = self
+            .timeline_hover_prepare_controller
+            .active_span_latest_target()
+        else {
+            return;
+        };
+
+        let controller_outcome = self
+            .timeline_hover_prepare_controller
+            .prepare_hover_target(target);
+        // Continuation работает только для local source, network-opening state
+        // здесь невозможен — preview load state остаётся Idle.
+        self.frame_server_diagnostics.record_hover_prepare_outcome(
+            controller_outcome.transition(),
+            controller_outcome.executor_outcome(),
+            controller_outcome.completion_outcome(),
+            TimelineHoverPreviewLoadState::Idle,
+        );
+        trace!(
+            outcome = ?controller_outcome,
+            "Timeline hover decode continuation pumped"
+        );
     }
 
     /// Применяет coalesced S24 hover intent к единому S18/S25 prepare+preview path-у.
@@ -658,12 +709,12 @@ impl AppState {
             .timeline_hover_prepare_controller
             .executor()
             .borrow_prepared_frame(lookup_request);
-        let materializer = self.wgpu_frame_materializer.as_deref();
+        let materializer = self.timeline_hover_preview_materializer_for_borrow(&borrow_outcome);
         let preview_outcome = self.timeline_hover_preview_render_state.update_from_borrow(
             visual_target,
             borrow_outcome,
             load_state,
-            materializer,
+            materializer.as_deref(),
         );
         trace!(
             outcome = ?preview_outcome,
@@ -671,6 +722,40 @@ impl AppState {
         );
         self.frame_server_diagnostics
             .record_hover_preview_update(load_state, preview_outcome);
+    }
+
+    /// Выбирает materializer с provider-ом, которому принадлежит borrowed lease.
+    ///
+    /// Resource handle валиден только внутри своего provider-а: lease hover
+    /// decode session-а нельзя резолвить playback provider-ом (риск чужого
+    /// кадра при совпадении handle), и наоборот.
+    fn timeline_hover_preview_materializer_for_borrow(
+        &self,
+        borrow_outcome: &player_core::PlayerTimelineHoverPrepareBorrowOutcome,
+    ) -> Option<std::sync::Arc<dyn WgpuFrameTextureViewMaterializer>> {
+        let player_core::PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(borrowed) =
+            borrow_outcome
+        else {
+            return self.wgpu_frame_materializer.clone();
+        };
+
+        let lease_is_hover_owned = match (
+            borrowed.lease().resource_provider(),
+            self.timeline_hover_prepare_controller
+                .executor()
+                .decode_session_resource_provider(),
+        ) {
+            (Some(lease_provider), Some(session_provider)) => {
+                lease_provider.same_provider(session_provider)
+            }
+            _ => false,
+        };
+
+        if lease_is_hover_owned {
+            self.timeline_hover_decode_materializer.clone()
+        } else {
+            self.wgpu_frame_materializer.clone()
+        }
     }
 
     /// Снимает live-scrub completion-gate по worker landing-сигналу.

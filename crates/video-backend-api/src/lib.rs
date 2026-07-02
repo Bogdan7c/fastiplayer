@@ -475,6 +475,15 @@ impl PresentFrameResourceProviderHandle {
     pub fn release_frame(&self, handle: video_core::FrameResourceHandle) {
         self.provider.release_frame(handle);
     }
+
+    /// Проверяет, указывают ли два handle-а на один и тот же provider instance.
+    ///
+    /// Resource handle валиден только внутри своего provider-а, поэтому owner
+    /// presentation path обязан сравнивать provider identity перед lookup-ом.
+    #[must_use]
+    pub fn same_provider(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.provider, &other.provider)
+    }
 }
 
 /// Factory playback-facing video backend-а без привязки к concrete decoder crate-у.

@@ -563,6 +563,9 @@ const fn hover_incomplete_reason_from_executor_incomplete(
         | TimelineHoverPrepareIncompleteReason::ResourceBudgetExhausted => {
             ScrubHoverDependencySpanIncompleteReason::ResourcePressure
         }
+        TimelineHoverPrepareIncompleteReason::EndOfStreamBeforeTarget => {
+            ScrubHoverDependencySpanIncompleteReason::EndOfStreamBeforeTarget
+        }
         TimelineHoverPrepareIncompleteReason::DecodeExecutionNotWired => {
             ScrubHoverDependencySpanIncompleteReason::DecodeExecutionNotWired
         }

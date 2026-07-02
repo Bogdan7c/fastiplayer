@@ -316,6 +316,12 @@ impl PreparedSeekLandingRuntime {
         }
     }
 
+    /// Возвращает shared handoff для player-side публикаций (stream context, insert boundary).
+    #[must_use]
+    pub(super) fn hover_prepare_handoff(&self) -> &PlayerTimelineHoverPrepareHandoff {
+        &self.working_set
+    }
+
     /// Пробует promoted prepared frame для конкретного guarded seek target-а.
     fn promote_for_seek(
         &mut self,

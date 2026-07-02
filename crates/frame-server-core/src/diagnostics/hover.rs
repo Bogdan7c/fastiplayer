@@ -139,6 +139,7 @@ pub enum ScrubHoverDependencySpanIncompleteReason {
     NetworkThrottled,
     NetworkFailedNoRetry,
     SourceUnavailable,
+    EndOfStreamBeforeTarget,
     StaleGeneration,
     ResourcePressure,
     Fatal,
@@ -238,6 +239,7 @@ pub struct ScrubHoverDependencySpanIncompleteReasonCounters {
     pub network_throttled: u64,
     pub network_failed_no_retry: u64,
     pub source_unavailable: u64,
+    pub end_of_stream_before_target: u64,
     pub stale_generation: u64,
     pub resource_pressure: u64,
     pub fatal: u64,
@@ -256,6 +258,7 @@ impl ScrubHoverDependencySpanIncompleteReasonCounters {
             network_throttled: 0,
             network_failed_no_retry: 0,
             source_unavailable: 0,
+            end_of_stream_before_target: 0,
             stale_generation: 0,
             resource_pressure: 0,
             fatal: 0,
@@ -290,6 +293,10 @@ impl ScrubHoverDependencySpanIncompleteReasonCounters {
             }
             ScrubHoverDependencySpanIncompleteReason::SourceUnavailable => {
                 self.source_unavailable = self.source_unavailable.saturating_add(1);
+            }
+            ScrubHoverDependencySpanIncompleteReason::EndOfStreamBeforeTarget => {
+                self.end_of_stream_before_target =
+                    self.end_of_stream_before_target.saturating_add(1);
             }
             ScrubHoverDependencySpanIncompleteReason::StaleGeneration => {
                 self.stale_generation = self.stale_generation.saturating_add(1);

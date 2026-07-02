@@ -239,6 +239,12 @@ pub struct AppState {
     /// WGPU video materializer concrete backend-а; `player-core` его не видит.
     wgpu_frame_materializer: Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
 
+    /// Отдельный WGPU materializer для hover decode session provider-а.
+    ///
+    /// Resource handle валиден только внутри своего provider-а, поэтому hover
+    /// leases нельзя материализовать playback materializer-ом.
+    timeline_hover_decode_materializer: Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
+
     /// Класс активного video backend-а, чтобы не пересоздавать pipeline без нужды.
     current_video_backend_kind: Option<VideoBackendKind>,
 
@@ -370,6 +376,7 @@ impl AppState {
             timeline_inline_status: TimelineInlineStatusState::default(),
             frame_server_diagnostics: AppFrameServerDiagnosticsRecorder::default(),
             wgpu_frame_materializer: None,
+            timeline_hover_decode_materializer: None,
             current_video_backend_kind: None,
             current_hover_budget_diagnostics_provider: None,
             pending_video_backend_reselection: None,

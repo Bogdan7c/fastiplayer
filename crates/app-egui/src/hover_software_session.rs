@@ -72,6 +72,21 @@ impl SoftwareHoverSession {
     pub(crate) fn reservation(&self) -> &FfmpegSoftwareHoverReservation {
         &self.reservation
     }
+
+    /// Разбирает session на started backend и владение reservation/budget.
+    ///
+    /// Используется decode wiring-ом: backend оборачивается в WGPU release
+    /// boundary, а reservation должна жить, пока живёт hover decoder thread.
+    #[must_use]
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        StartedVideoBackend,
+        FfmpegSoftwareHoverReservation,
+        HoverResolvedBudget,
+    ) {
+        (self.started_backend, self.reservation, self.resolved_budget)
+    }
 }
 
 impl std::fmt::Debug for SoftwareHoverSession {

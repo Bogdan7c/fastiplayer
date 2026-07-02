@@ -64,6 +64,9 @@ pub enum TimelineHoverPrepareSessionEndReleaseReason {
 
     /// Пользователь сделал действие вне timeline, поэтому grace отменяется.
     NonTimelineAction,
+
+    /// Source/backend provider entries сменился; старые leases больше невалидны.
+    SourceOrBackendSwitched,
 }
 
 /// Итог полного release-а hover-owned entries после завершения session-а.

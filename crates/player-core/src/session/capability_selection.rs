@@ -19,7 +19,7 @@ use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 use crate::event::VideoBackendSelectionRequest;
 use crate::{PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, SeekRequest, TrackId};
 
-use super::{PendingVideoBackendReselection, PlayerSession};
+use super::{PendingVideoBackendReselection, PlayerHoverStreamDecodeContext, PlayerSession};
 
 /// Принятый video stream после capability validation.
 struct AcceptedVideoSelection {
@@ -375,9 +375,17 @@ impl PlayerSession {
         frame_contract: VideoFrameContract,
     ) -> PlayerResult<()> {
         let config = video_stream_decode_config_from_track(track, requirement, frame_contract)?;
+        let hover_context = PlayerHoverStreamDecodeContext {
+            stream_config: config.clone(),
+            resolved_color: requirement.color.clone(),
+        };
         player_result_from_stream_config_result(
             self.pipeline.configure_video_decoder_stream(config),
         )?;
+        // Только принятый decoder-ом config публикуется для app hover decode executor-а.
+        self.prepared_seek_landing
+            .hover_prepare_handoff()
+            .publish_hover_stream_decode_context(hover_context);
         Ok(())
     }
 

@@ -526,6 +526,15 @@ impl VideoFrameLease {
         VideoPresentFrameResourceDescriptor::from_decoded_frame(self.render_generation, &self.frame)
     }
 
+    /// Возвращает provider handle, которому принадлежит resource этого lease-а.
+    ///
+    /// Нужен owner-у presentation path, чтобы выбрать materializer с matching
+    /// provider-ом: resource handle валиден только внутри своего provider-а.
+    #[must_use]
+    pub fn resource_provider(&self) -> Option<&PresentFrameResourceProviderHandle> {
+        self.resource_provider.as_ref()
+    }
+
     /// Пытается проверить доступность present resource-а без GPU handles.
     #[must_use]
     pub fn try_resource_lookup(&self) -> VideoPresentFrameResourceLookup {

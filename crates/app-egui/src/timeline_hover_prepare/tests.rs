@@ -493,11 +493,12 @@ fn active_playback_independent_demuxer_resolves_span_without_playback_seek() {
         outcome.transition,
         TimelineHoverPrepareControllerTransition::Started
     );
+    // Без hover decode session (backend build не подключал её) resolved span
+    // деградирует typed-ом: executor недоступен, span остаётся pending.
     assert!(matches!(
         outcome.executor_outcome,
-        TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
-            reason: TimelineHoverPrepareIncompleteReason::DecodeExecutionNotWired,
-            ..
+        TimelineHoverPrepareExecutorOutcome::NoOp {
+            reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackExecutorUnavailable { .. },
         }
     ));
     assert_eq!(
@@ -787,4 +788,602 @@ fn live_scrub_target_degrades_to_noop_without_executor_work() {
         }
     ));
     assert!(controller.active_span.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Active-playback hover decode execution (feed/drain driver + insert boundary)
+// ---------------------------------------------------------------------------
+
+mod decode_execution {
+    use std::num::NonZeroUsize;
+    use std::time::Duration;
+
+    use codec_core::{VideoCodec, VideoColorMetadata, VideoDisplayOrientation};
+    use frame_server_core::{
+        HoverBudgetResolutionSource, HoverBudgetResourceClass, HoverResolvedBudget,
+        HoverResolvedBudgetResource,
+    };
+    use media_core::TrackKind;
+    use player_core::PlayerHoverStreamDecodeContext;
+    use video_backend_api::{
+        PresentFrameResourceProvider, PresentFrameResourceProviderHandle,
+        PresentFrameResourceProviderLookup,
+    };
+    use video_core::{
+        DecodePacket, DecodeSendError, DecodeThreadError, DecodedFrame, DecoderResourceSnapshot,
+        FrameResourceHandle, VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState,
+        VideoDecoderThreadHandle, VideoFrameDiagnostics, VideoStreamConfigResult,
+        VideoStreamDecodeConfig,
+    };
+    use video_ffmpeg::software_hover::FfmpegSoftwareHoverContext;
+    use video_ffmpeg::{FfmpegSoftwareHoverAdmission, FfmpegSoftwareHoverOwner};
+    use video_frame_contract::VideoFrameContract;
+
+    use super::*;
+    use crate::timeline_hover_decode::TimelineHoverDecodeSession;
+
+    #[derive(Default)]
+    struct FakeHoverDecoderShared {
+        sent_packets: Vec<DecodePacket>,
+        flush_count: usize,
+        configured: Vec<VideoStreamDecodeConfig>,
+        scripted_frames: VecDeque<DecodedFrame>,
+        frames_ready_after_packets: usize,
+        released_handles: Vec<u64>,
+        backpressure_after_packets: Option<usize>,
+        eos_drain_generation: Option<u64>,
+    }
+
+    struct FakeHoverDecoderThread {
+        shared: Arc<Mutex<FakeHoverDecoderShared>>,
+        provider: PresentFrameResourceProviderHandle,
+    }
+
+    impl FakeHoverDecoderThread {
+        fn new(shared: Arc<Mutex<FakeHoverDecoderShared>>) -> Self {
+            let provider = PresentFrameResourceProviderHandle::new(FakeHoverResourceProvider);
+            Self { shared, provider }
+        }
+    }
+
+    impl VideoDecoderThreadHandle for FakeHoverDecoderThread {
+        type ResourceProvider = PresentFrameResourceProviderHandle;
+
+        fn backend_name(&self) -> &'static str {
+            "fake-hover-decoder"
+        }
+
+        fn send_packet(&self, packet: DecodePacket) -> Result<(), DecodeSendError> {
+            let mut shared = self.shared.lock().expect("fake decoder lock");
+            if let Some(limit) = shared.backpressure_after_packets
+                && shared.sent_packets.len() >= limit
+            {
+                return Err(DecodeSendError::Backpressure(
+                    video_core::DecodeBackpressureReason::PacketQueueFull {
+                        queued_packets: shared.sent_packets.len(),
+                        capacity: limit,
+                    },
+                ));
+            }
+            shared.sent_packets.push(packet);
+            Ok(())
+        }
+
+        fn configure_stream(&self, config: VideoStreamDecodeConfig) -> VideoStreamConfigResult {
+            self.shared
+                .lock()
+                .expect("fake decoder lock")
+                .configured
+                .push(config);
+            VideoStreamConfigResult::Configured
+        }
+
+        fn begin_end_of_stream_drain(&self, generation: u64) -> VideoDecoderEndOfStreamDrainResult {
+            self.shared
+                .lock()
+                .expect("fake decoder lock")
+                .eos_drain_generation = Some(generation);
+            VideoDecoderEndOfStreamDrainResult::Started(
+                VideoDecoderEndOfStreamDrainState::Drained { generation },
+            )
+        }
+
+        fn end_of_stream_drain_state(&self) -> VideoDecoderEndOfStreamDrainState {
+            match self
+                .shared
+                .lock()
+                .expect("fake decoder lock")
+                .eos_drain_generation
+            {
+                Some(generation) => VideoDecoderEndOfStreamDrainState::Drained { generation },
+                None => VideoDecoderEndOfStreamDrainState::Idle,
+            }
+        }
+
+        fn release_frame(&self, handle: FrameResourceHandle) {
+            self.shared
+                .lock()
+                .expect("fake decoder lock")
+                .released_handles
+                .push(handle.0);
+        }
+
+        fn try_recv_frame(&self) -> Option<DecodedFrame> {
+            let mut shared = self.shared.lock().expect("fake decoder lock");
+            if shared.sent_packets.len() < shared.frames_ready_after_packets {
+                return None;
+            }
+            shared.scripted_frames.pop_front()
+        }
+
+        fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent> {
+            None
+        }
+
+        fn try_recv_error(&self) -> Option<DecodeThreadError> {
+            None
+        }
+
+        fn flush(&self) -> anyhow::Result<()> {
+            self.shared.lock().expect("fake decoder lock").flush_count += 1;
+            Ok(())
+        }
+
+        fn resource_provider(&self) -> Self::ResourceProvider {
+            self.provider.clone()
+        }
+
+        fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {
+            None
+        }
+
+        fn packet_queue_depth(&self) -> usize {
+            0
+        }
+
+        fn drain_completed_packet_count(&self) -> usize {
+            self.shared
+                .lock()
+                .expect("fake decoder lock")
+                .sent_packets
+                .len()
+        }
+    }
+
+    struct FakeHoverResourceProvider;
+
+    impl PresentFrameResourceProvider for FakeHoverResourceProvider {
+        fn resource_lookup(
+            &self,
+            _handle: FrameResourceHandle,
+        ) -> PresentFrameResourceProviderLookup {
+            PresentFrameResourceProviderLookup::Ready {
+                resource_pool_lock_wait: Duration::ZERO,
+            }
+        }
+
+        fn release_frame(&self, _handle: FrameResourceHandle) {}
+    }
+
+    /// Demuxer, отдающий заранее заданный поток packet/EOS событий после seek-а.
+    struct ScriptedPacketDemuxer {
+        tracks: Vec<TrackInfo>,
+        events: VecDeque<DemuxReadEvent>,
+        seek_requests: Arc<Mutex<Vec<DemuxSeekRequest>>>,
+    }
+
+    impl ScriptedPacketDemuxer {
+        fn new(events: Vec<DemuxReadEvent>) -> (Self, Arc<Mutex<Vec<DemuxSeekRequest>>>) {
+            let seek_requests = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    tracks: Vec::new(),
+                    events: events.into(),
+                    seek_requests: Arc::clone(&seek_requests),
+                },
+                seek_requests,
+            )
+        }
+    }
+
+    impl Demuxer for ScriptedPacketDemuxer {
+        fn tracks(&self) -> &[TrackInfo] {
+            &self.tracks
+        }
+
+        fn duration(&self) -> Option<Duration> {
+            Some(Duration::from_secs(30))
+        }
+
+        fn next_packet(&mut self) -> anyhow::Result<Option<Packet>> {
+            match self.next_event()? {
+                DemuxReadEvent::Packet(packet) => Ok(Some(packet)),
+                _ => Ok(None),
+            }
+        }
+
+        fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+            Ok(self
+                .events
+                .pop_front()
+                .unwrap_or(DemuxReadEvent::EndOfStream))
+        }
+
+        fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+            panic!("hover decode must not use ordinary accurate seek");
+        }
+
+        fn seek_with_request(
+            &mut self,
+            request: DemuxSeekRequest,
+        ) -> anyhow::Result<DemuxSeekResult> {
+            self.seek_requests
+                .lock()
+                .expect("seek request log lock")
+                .push(request);
+            Ok(DemuxSeekResult {
+                requested_position: request.timestamp.into(),
+                actual_position: timestamp(9_400).to_media_time(),
+                actual_track_timestamp: Some(timestamp(9_400)),
+            })
+        }
+    }
+
+    fn video_packet(pts_millis: u64, keyframe: bool) -> DemuxReadEvent {
+        DemuxReadEvent::Packet(Packet::new(
+            TrackId::new(1),
+            TrackKind::Video,
+            Duration::from_millis(pts_millis),
+            None,
+            keyframe,
+            vec![0u8; 4].into(),
+        ))
+    }
+
+    fn decoded_frame(pts_millis: u64, generation: u64, resource_handle: u64) -> DecodedFrame {
+        DecodedFrame {
+            generation,
+            pts: Duration::from_millis(pts_millis),
+            frame_contract: VideoFrameContract::host_yuv420_planar8(),
+            width: 640,
+            height: 360,
+            render_width: 640,
+            render_height: 360,
+            display_orientation: VideoDisplayOrientation::Identity,
+            color: VideoColorMetadata::sdr_bt709_limited(),
+            resource_handle: FrameResourceHandle(resource_handle),
+            diagnostics: VideoFrameDiagnostics::default(),
+        }
+    }
+
+    fn hover_stream_context() -> PlayerHoverStreamDecodeContext {
+        PlayerHoverStreamDecodeContext {
+            stream_config: VideoStreamDecodeConfig {
+                track_id: TrackId::new(1),
+                codec: VideoCodec::H264,
+                profile: None,
+                bit_depth: None,
+                chroma: None,
+                coded_width: Some(640),
+                coded_height: Some(360),
+                display_orientation: VideoDisplayOrientation::Identity,
+                frame_contract: VideoFrameContract::host_yuv420_planar8(),
+                codec_private: None,
+                packetization: None,
+            },
+            resolved_color: None,
+        }
+    }
+
+    fn nz(value: usize) -> NonZeroUsize {
+        NonZeroUsize::new(value).expect("non-zero test value")
+    }
+
+    fn decode_session_with_shared(
+        shared: Arc<Mutex<FakeHoverDecoderShared>>,
+    ) -> TimelineHoverDecodeSession {
+        let owner = FfmpegSoftwareHoverOwner::new(
+            FfmpegSoftwareHoverContext::from_playback_decoder_config(
+                video_core::VideoDecoderThreadConfig::default(),
+            ),
+        );
+        let resolved_budget = HoverResolvedBudget::new(vec![
+            HoverResolvedBudgetResource::new(
+                HoverBudgetResourceClass::SoftwareFramePoolFrames,
+                nz(2),
+                HoverBudgetResolutionSource::BackendMinimumAuto,
+            ),
+            HoverResolvedBudgetResource::new(
+                HoverBudgetResourceClass::SoftwareThreadCount,
+                nz(1),
+                HoverBudgetResolutionSource::BackendMinimumAuto,
+            ),
+        ]);
+        let reservation = match owner.admit_hover_reservation(&resolved_budget) {
+            FfmpegSoftwareHoverAdmission::Admitted(reservation) => reservation,
+            FfmpegSoftwareHoverAdmission::Rejected(report) => {
+                panic!("test hover reservation must be admitted: {report:?}")
+            }
+        };
+        let thread = FakeHoverDecoderThread::new(shared);
+        let provider = thread.resource_provider();
+        TimelineHoverDecodeSession::new(Box::new(thread), provider, reservation, resolved_budget)
+    }
+
+    struct DecodeHarness {
+        controller: TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor>,
+        handoff: PlayerTimelineHoverPrepareHandoff,
+        shared: Arc<Mutex<FakeHoverDecoderShared>>,
+        seek_requests: Arc<Mutex<Vec<DemuxSeekRequest>>>,
+    }
+
+    fn decode_harness(events: Vec<DemuxReadEvent>) -> DecodeHarness {
+        let handoff = PlayerTimelineHoverPrepareHandoff::default();
+        handoff.publish_hover_stream_decode_context(hover_stream_context());
+        let mut controller = TimelineHoverPrepareController::new(
+            AppTimelineHoverPrepareExecutor::new(handoff.clone()),
+        );
+        let shared = Arc::new(Mutex::new(FakeHoverDecoderShared::default()));
+        controller.executor.decode_session = Some(decode_session_with_shared(Arc::clone(&shared)));
+        let (demuxer, seek_requests) = ScriptedPacketDemuxer::new(events);
+        controller.executor.active_hover_source =
+            Some(TimelineHoverOpenedSource::from_demuxer(Box::new(demuxer)));
+        DecodeHarness {
+            controller,
+            handoff,
+            shared,
+            seek_requests,
+        }
+    }
+
+    #[test]
+    fn decode_prepares_first_target_or_after_frame_and_releases_pre_target() {
+        let mut harness = decode_harness(vec![
+            video_packet(9_400, true),
+            video_packet(9_600, false),
+            video_packet(10_020, false),
+        ]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 3;
+            shared.scripted_frames = VecDeque::from(vec![
+                decoded_frame(9_600, 1, 7),
+                decoded_frame(10_020, 1, 8),
+            ]);
+        }
+        let active_target = unresolved_active_target(10_000);
+
+        let outcome = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            outcome.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit {
+                actual_pts,
+                exactness: TimelineHoverPreparePreparedHitExactness::ExactTargetOrAfter,
+                ..
+            } if actual_pts == timestamp(10_020)
+        ));
+        assert!(matches!(
+            outcome.completion_outcome,
+            TimelineHoverPrepareCompletionOutcome::AcceptedExactPreparedHit { actual_pts, .. }
+                if actual_pts == timestamp(10_020)
+        ));
+
+        let shared = harness.shared.lock().expect("fake decoder lock");
+        assert_eq!(shared.flush_count, 1);
+        assert_eq!(shared.configured.len(), 1);
+        assert_eq!(shared.sent_packets.len(), 3);
+        // Pre-target кадр released обратно в decoder pool, не вставлен.
+        assert_eq!(shared.released_handles, vec![7]);
+        drop(shared);
+
+        // Первый target-or-after кадр реально вставлен в shared working set.
+        match harness
+            .handoff
+            .borrow_prepared_frame(active_target.lookup_request())
+        {
+            PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(borrowed) => {
+                assert_eq!(borrowed.timing().actual_pts(), timestamp(10_020));
+            }
+            other_outcome => panic!(
+                "prepared frame must be borrowable: miss/timing unexpected ({})",
+                match other_outcome {
+                    PlayerTimelineHoverPrepareBorrowOutcome::Miss(_) => "miss",
+                    PlayerTimelineHoverPrepareBorrowOutcome::TimingRejected(_) => "timing",
+                    PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(_) => unreachable!(),
+                }
+            ),
+        }
+
+        // Повторный prepare того же target-а — working set hit без нового декода.
+        let repeat_outcome = harness.controller.prepare_hover_target(active_target);
+        assert!(matches!(
+            repeat_outcome.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::WorkingSetHit { actual_pts }
+                if actual_pts == timestamp(10_020)
+        ));
+        assert_eq!(
+            harness
+                .shared
+                .lock()
+                .expect("fake decoder lock")
+                .flush_count,
+            1,
+            "working-set hit must not restart decode span"
+        );
+    }
+
+    #[test]
+    fn decode_budget_exhausts_and_continues_without_reseek() {
+        let mut events: Vec<DemuxReadEvent> = (0..40)
+            .map(|index| video_packet(9_400 + index * 20, index == 0))
+            .collect();
+        events.push(video_packet(10_200, false));
+        let mut harness = decode_harness(events);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 41;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(10_040, 1, 3)]);
+        }
+        let active_target = unresolved_active_target(10_000);
+
+        let first_pass = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            first_pass.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+                reason: TimelineHoverPrepareIncompleteReason::DecodeBudgetExhausted,
+                diagnostics,
+            } if diagnostics.decoded_packets() == 32
+        ));
+        assert_eq!(
+            harness.seek_requests.lock().expect("seek log lock").len(),
+            1
+        );
+
+        let second_pass = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            second_pass.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit { actual_pts, .. }
+                if actual_pts == timestamp(10_040)
+        ));
+        let shared = harness.shared.lock().expect("fake decoder lock");
+        assert_eq!(
+            shared.flush_count, 1,
+            "same-span continuation must not flush"
+        );
+        drop(shared);
+        assert_eq!(
+            harness.seek_requests.lock().expect("seek log lock").len(),
+            1,
+            "same-span continuation must not reseek demuxer"
+        );
+    }
+
+    #[test]
+    fn decode_backpressure_keeps_pending_packet_without_loss() {
+        let mut harness =
+            decode_harness(vec![video_packet(9_400, true), video_packet(9_600, false)]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.backpressure_after_packets = Some(1);
+            shared.frames_ready_after_packets = 2;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(10_020, 1, 5)]);
+        }
+        let active_target = unresolved_active_target(10_000);
+
+        let first_pass = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            first_pass.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::Pressure {
+                pressure: TimelineHoverPreparePressure::DecoderBackpressure,
+            }
+        ));
+
+        harness
+            .shared
+            .lock()
+            .expect("fake decoder lock")
+            .backpressure_after_packets = None;
+
+        let second_pass = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            second_pass.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit { .. }
+        ));
+        let shared = harness.shared.lock().expect("fake decoder lock");
+        let sent_pts: Vec<Duration> = shared
+            .sent_packets
+            .iter()
+            .map(|packet| packet.pts)
+            .collect();
+        assert_eq!(
+            sent_pts,
+            vec![Duration::from_millis(9_400), Duration::from_millis(9_600)],
+            "backpressured packet must be delivered exactly once without loss"
+        );
+    }
+
+    #[test]
+    fn decode_end_of_stream_before_target_is_typed_incomplete() {
+        let mut harness = decode_harness(vec![video_packet(9_400, true)]);
+        let active_target = unresolved_active_target(10_000);
+
+        let outcome = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            outcome.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+                reason: TimelineHoverPrepareIncompleteReason::EndOfStreamBeforeTarget,
+                ..
+            }
+        ));
+        assert!(matches!(
+            harness
+                .handoff
+                .borrow_prepared_frame(active_target.lookup_request()),
+            PlayerTimelineHoverPrepareBorrowOutcome::Miss(_)
+        ));
+    }
+
+    #[test]
+    fn stale_generation_frames_are_released_without_insert() {
+        let mut harness = decode_harness(vec![video_packet(9_400, true)]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            // generation 99 не совпадает с session generation 1 → stale release.
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(10_020, 99, 11)]);
+        }
+        let active_target = unresolved_active_target(10_000);
+
+        let outcome = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            outcome.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+                reason: TimelineHoverPrepareIncompleteReason::EndOfStreamBeforeTarget,
+                ..
+            }
+        ));
+        let shared = harness.shared.lock().expect("fake decoder lock");
+        assert_eq!(shared.released_handles, vec![11]);
+        drop(shared);
+        assert!(matches!(
+            harness
+                .handoff
+                .borrow_prepared_frame(active_target.lookup_request()),
+            PlayerTimelineHoverPrepareBorrowOutcome::Miss(_)
+        ));
+    }
+
+    #[test]
+    fn missing_stream_context_degrades_typed_without_decode() {
+        let harness_handoff = PlayerTimelineHoverPrepareHandoff::default();
+        let mut controller = TimelineHoverPrepareController::new(
+            AppTimelineHoverPrepareExecutor::new(harness_handoff.clone()),
+        );
+        let shared = Arc::new(Mutex::new(FakeHoverDecoderShared::default()));
+        controller.executor.decode_session = Some(decode_session_with_shared(Arc::clone(&shared)));
+        let (demuxer, _seek_requests) = ScriptedPacketDemuxer::new(vec![video_packet(9_400, true)]);
+        controller.executor.active_hover_source =
+            Some(TimelineHoverOpenedSource::from_demuxer(Box::new(demuxer)));
+        let active_target = unresolved_active_target(10_000);
+
+        let outcome = controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            outcome.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::NoOp {
+                reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackExecutorUnavailable { .. },
+            }
+        ));
+        assert_eq!(
+            shared.lock().expect("fake decoder lock").sent_packets.len(),
+            0,
+            "decode must not start without published stream config"
+        );
+    }
 }

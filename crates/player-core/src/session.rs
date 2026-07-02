@@ -50,7 +50,8 @@ pub(crate) use self::tick::{
     PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,
 };
 pub use self::timeline_hover_prepare_handoff::{
-    PlayerTimelineHoverPrepareBorrowOutcome, PlayerTimelineHoverPrepareHandoff,
+    PlayerHoverStreamDecodeContext, PlayerTimelineHoverPrepareBorrowOutcome,
+    PlayerTimelineHoverPrepareHandoff, PlayerTimelineHoverPrepareInsertOutcome,
     PlayerTimelineHoverPreparedFrameBorrow,
 };
 

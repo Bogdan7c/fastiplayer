@@ -16,7 +16,12 @@ use frame_server_core::{
 use media_core::{DemuxSeekRequest, MediaDemuxError, TrackTimestamp};
 use player_core::{PlayerTimelineHoverPrepareBorrowOutcome, PlayerTimelineHoverPrepareHandoff};
 use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
+use tracing::trace;
 
+use crate::timeline_hover_decode::{
+    HoverSpanDecodeDrive, HoverSpanDecodeFailure, HoverSpanDecodeState, TimelineHoverDecodeSession,
+    cancel_hover_span_decode, drive_hover_span_decode,
+};
 use crate::timeline_hover_network::{
     TimelineHoverNetworkOpenController, TimelineHoverNetworkOpenDiagnosticsSnapshot,
     TimelineHoverNetworkOpenOutcome,
@@ -37,6 +42,8 @@ pub(crate) struct AppTimelineHoverPrepareExecutor {
     source_factory: TimelineHoverSourceFactory,
     network_open_controller: TimelineHoverNetworkOpenController,
     active_hover_source: Option<TimelineHoverOpenedSource>,
+    decode_session: Option<TimelineHoverDecodeSession>,
+    span_decode_state: Option<HoverSpanDecodeState>,
 }
 
 /// App-owned controller для будущего unified timeline hover/focus intent-а.
@@ -110,10 +117,10 @@ pub(crate) struct TimelineHoverPrepareSpanId(u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TimelineHoverPrepareExecutorRequest {
-    span_id: TimelineHoverPrepareSpanId,
-    transition: TimelineHoverPrepareExecutorTransition,
-    target: TimelineHoverPrepareTarget,
-    span: DecodeDependencySpan,
+    pub(crate) span_id: TimelineHoverPrepareSpanId,
+    pub(crate) transition: TimelineHoverPrepareExecutorTransition,
+    pub(crate) target: TimelineHoverPrepareTarget,
+    pub(crate) span: DecodeDependencySpan,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,6 +223,7 @@ pub(crate) struct TimelineHoverPrepareSpanDiagnostics {
 pub(crate) enum TimelineHoverPrepareIncompleteReason {
     DecodeBudgetExhausted,
     ResourceBudgetExhausted,
+    EndOfStreamBeforeTarget,
     DecodeExecutionNotWired,
 }
 
@@ -397,7 +405,47 @@ impl AppTimelineHoverPrepareExecutor {
                 network_hover_prepare_throttle,
             ),
             active_hover_source: None,
+            decode_session: None,
+            span_decode_state: None,
         }
+    }
+
+    /// Устанавливает/заменяет active-playback hover decode session после backend build.
+    ///
+    /// Замена session делает hover-owned leases старого provider-а невалидными,
+    /// поэтому они освобождаются через существующий session-end boundary.
+    pub(crate) fn set_decode_session(&mut self, session: Option<TimelineHoverDecodeSession>) {
+        self.span_decode_state = None;
+        if self.decode_session.take().is_some() {
+            let release_outcome = self.handoff.release_hover_owned_entries_for_session_end(
+                TimelineHoverPrepareSessionEndReleaseReason::SourceOrBackendSwitched,
+            );
+            trace!(
+                total_entries_released = release_outcome.total_entries_released(),
+                "Hover decode session replaced; hover-owned entries released"
+            );
+        }
+        self.decode_session = session;
+    }
+
+    /// Provider активной decode session-и для выбора matching preview materializer-а.
+    #[must_use]
+    pub(crate) fn decode_session_resource_provider(
+        &self,
+    ) -> Option<&video_backend_api::PresentFrameResourceProviderHandle> {
+        self.decode_session
+            .as_ref()
+            .map(TimelineHoverDecodeSession::resource_provider)
+    }
+
+    /// Остался ли незавершённый decode continuation у активного span-а.
+    #[must_use]
+    pub(crate) fn has_pending_span_decode_work(&self) -> bool {
+        self.span_decode_state.is_some()
+            && self
+                .decode_session
+                .as_ref()
+                .is_some_and(|session| !session.is_failed())
     }
 
     fn update_open_config(
@@ -409,12 +457,23 @@ impl AppTimelineHoverPrepareExecutor {
     ) {
         // Config влияет на новые opens, поэтому старый hover source и pending
         // network job нельзя считать актуальными после config commit-а.
+        self.reset_span_decode_for_source_loss();
         self.active_hover_source = None;
         self.network_open_controller.invalidate_source_context();
         self.network_open_controller
             .update_inter_start_throttle(network_hover_prepare_throttle);
         self.source_factory
             .update_open_config(network_config, youtube_config, demux_config);
+    }
+
+    /// Decode continuation привязан к demux-позиции активного hover source-а,
+    /// поэтому потеря source-а обязана сбрасывать span decode state.
+    fn reset_span_decode_for_source_loss(&mut self) {
+        if let Some(session) = self.decode_session.as_mut() {
+            cancel_hover_span_decode(session, &mut self.span_decode_state);
+        } else {
+            self.span_decode_state = None;
+        }
     }
 
     fn update_network_hover_prepare_throttle(
@@ -426,12 +485,14 @@ impl AppTimelineHoverPrepareExecutor {
     }
 
     fn set_hover_source(&mut self, source: TimelineHoverSourceIdentity) {
+        self.reset_span_decode_for_source_loss();
         self.active_hover_source = None;
         self.network_open_controller.invalidate_source_context();
         self.source_factory.set_active_source(source);
     }
 
     fn invalidate_hover_source(&mut self) {
+        self.reset_span_decode_for_source_loss();
         self.active_hover_source = None;
         self.network_open_controller.invalidate_source_context();
         self.source_factory.invalidate_active_source();
@@ -552,14 +613,7 @@ impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
                     TimelineHoverPreparePlaybackMode::ActivePlayback
                 ) {
                     if self.active_hover_source.is_some() {
-                        return TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
-                            reason: TimelineHoverPrepareIncompleteReason::DecodeExecutionNotWired,
-                            diagnostics: TimelineHoverPrepareSpanDiagnostics::new(
-                                0,
-                                0,
-                                request.span.post_target_reorder_drain_frames,
-                            ),
-                        };
+                        return self.execute_active_playback_span_decode(request, lookup_miss);
                     }
 
                     return TimelineHoverPrepareExecutorOutcome::NoOp {
@@ -585,10 +639,102 @@ impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
 
     fn cancel_dependency_span(&mut self, _request: TimelineHoverPrepareCancelRequest) {
         self.network_open_controller.cancel_pending_target();
+        if let Some(session) = self.decode_session.as_mut() {
+            cancel_hover_span_decode(session, &mut self.span_decode_state);
+        } else {
+            self.span_decode_state = None;
+        }
     }
 }
 
 impl AppTimelineHoverPrepareExecutor {
+    /// Исполняет resolved dependency span через hover decode session.
+    fn execute_active_playback_span_decode(
+        &mut self,
+        request: TimelineHoverPrepareExecutorRequest,
+        lookup_miss: TimelineHoverPrepareLookupMissReason,
+    ) -> TimelineHoverPrepareExecutorOutcome {
+        let Some(session) = self.decode_session.as_mut() else {
+            return TimelineHoverPrepareExecutorOutcome::NoOp {
+                reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackExecutorUnavailable {
+                    lookup_miss,
+                },
+            };
+        };
+        if session.is_failed() {
+            return TimelineHoverPrepareExecutorOutcome::NoOp {
+                reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackExecutorUnavailable {
+                    lookup_miss,
+                },
+            };
+        }
+        let Some(hover_source) = self.active_hover_source.as_mut() else {
+            return TimelineHoverPrepareExecutorOutcome::NoOp {
+                reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackSourceMissing {
+                    lookup_miss,
+                },
+            };
+        };
+        let Some(stream_context) = self.handoff.hover_stream_decode_context() else {
+            return TimelineHoverPrepareExecutorOutcome::NoOp {
+                reason: TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackExecutorUnavailable {
+                    lookup_miss,
+                },
+            };
+        };
+
+        let drive = drive_hover_span_decode(
+            session,
+            &mut self.span_decode_state,
+            hover_source,
+            &self.handoff,
+            &stream_context,
+            &request,
+        );
+
+        match drive {
+            HoverSpanDecodeDrive::PreparedHit {
+                actual_pts,
+                diagnostics,
+            } => {
+                self.span_decode_state = None;
+                TimelineHoverPrepareExecutorOutcome::PreparedHit {
+                    actual_pts,
+                    exactness: TimelineHoverPreparePreparedHitExactness::ExactTargetOrAfter,
+                    diagnostics,
+                }
+            }
+            HoverSpanDecodeDrive::Incomplete {
+                reason,
+                diagnostics,
+            } => TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+                reason,
+                diagnostics,
+            },
+            HoverSpanDecodeDrive::Pressure { pressure } => {
+                TimelineHoverPrepareExecutorOutcome::Pressure { pressure }
+            }
+            HoverSpanDecodeDrive::Failed { failure } => {
+                self.span_decode_state = None;
+                let reason = match failure {
+                    HoverSpanDecodeFailure::StreamConfigRejected
+                    | HoverSpanDecodeFailure::DecoderFatal => {
+                        TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackExecutorUnavailable {
+                            lookup_miss,
+                        }
+                    }
+                    HoverSpanDecodeFailure::DemuxReadFailed
+                    | HoverSpanDecodeFailure::TracksChanged => {
+                        // Старый hover source больше не может честно исполнять span.
+                        self.invalidate_hover_source();
+                        TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackDependencySpanResolveFailed
+                    }
+                };
+                TimelineHoverPrepareExecutorOutcome::NoOp { reason }
+            }
+        }
+    }
+
     fn resolve_active_playback_dependency_span(
         &mut self,
         target: TimelineHoverPrepareTarget,
@@ -780,6 +926,10 @@ impl<Executor> TimelineHoverPrepareController<Executor> {
     pub(crate) fn executor(&self) -> &Executor {
         &self.executor
     }
+
+    pub(crate) fn executor_mut(&mut self) -> &mut Executor {
+        &mut self.executor
+    }
 }
 
 impl TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor> {
@@ -844,6 +994,12 @@ impl<Executor> TimelineHoverPrepareController<Executor>
 where
     Executor: TimelineHoverPrepareExecutor,
 {
+    /// Latest target активного span-а для decode continuation pump-а.
+    #[must_use]
+    pub(crate) fn active_span_latest_target(&self) -> Option<TimelineHoverPrepareTarget> {
+        self.active_span.map(|span| span.latest_target)
+    }
+
     pub(crate) fn prepare_hover_target(
         &mut self,
         target: TimelineHoverPrepareTarget,
@@ -1293,7 +1449,16 @@ impl TimelineHoverPrepareTarget {
         self.dependency_span
     }
 
-    fn pts_from_media_time(self, position: media_core::MediaTime) -> TrackTimestamp {
+    /// Возвращает `true`, если actual PTS декодированного кадра ещё до target-а.
+    ///
+    /// Используется decode driver-ом для pre-target release; track id совпадает
+    /// по построению (driver конвертирует media time через этот же target).
+    #[must_use]
+    pub(crate) fn actual_pts_is_before_target(self, actual_pts: TrackTimestamp) -> bool {
+        actual_pts.cmp_timeline_position(self.target_pts) == Ordering::Less
+    }
+
+    pub(crate) fn pts_from_media_time(self, position: media_core::MediaTime) -> TrackTimestamp {
         TrackTimestamp {
             track_id: self.target_pts.track_id,
             units: self
@@ -1324,6 +1489,12 @@ impl TimelineHoverPrepareTargetContext {
 }
 
 impl DecodeDependencySpan {
+    /// Сколько post-target кадров decoder может отдать из reorder/DPB буфера.
+    #[must_use]
+    pub(crate) const fn post_target_reorder_drain_frames(self) -> u16 {
+        self.post_target_reorder_drain_frames
+    }
+
     fn compare_requested_span(self, requested: Self) -> DecodeDependencySpanChange {
         if self.context != requested.context {
             return DecodeDependencySpanChange::IncompatibleContext;
