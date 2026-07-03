@@ -5,8 +5,8 @@ use frame_server_core::{
     SourceRevision, TimelineHoverFrameBucket,
 };
 use media_core::{
-    MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason, TimelineSnapshot, TrackKind,
-    TrackTimestamp,
+    MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason, TimelineRange, TimelineSnapshot,
+    TrackKind, TrackTimestamp,
 };
 use video_core::{DecodedPixelFormat, FrameMemoryPath};
 
@@ -151,6 +151,13 @@ impl Default for PlayerSnapshot {
     }
 }
 
+/// Шаг смыслового hover target-а: 250 мс достаточно мелкий для отзывчивого preview,
+/// но крупнее субпиксельного дрожания pointer-а и поэтому стабилизирует prepared cache key.
+pub const HOVER_TARGET_QUANTIZATION_STEP: Duration = Duration::from_millis(250);
+
+const MICROS_PER_SECOND: u128 = 1_000_000;
+const NANOS_PER_MICRO: u32 = 1_000;
+
 /// Player-owned context для S25 hover prepare/preview shared working set-а.
 ///
 /// App получает только guard-значения и timebase для построения того же lookup key,
@@ -276,14 +283,64 @@ impl TimelineHoverPrepareSnapshot {
         TrackTimestamp::new(self.video_track, units.get(), self.video_track_time_base)
     }
 
-    /// Строит bucket тем же способом, что S17 promotion lookup.
+    /// Квантует смысловой hover target вверх к общей сетке и не выпускает его за seekable range.
+    #[must_use]
+    pub fn quantize_hover_target_position(
+        target_position: MediaTime,
+        seekable_range: TimelineRange,
+    ) -> MediaTime {
+        let clamped_position = seekable_range.clamp(target_position);
+        let quantized_duration = duration_from_micros_saturating(ceil_micros_to_hover_grid(
+            clamped_position.as_duration().as_micros(),
+        ));
+
+        seekable_range.clamp(MediaTime::from_duration(quantized_duration))
+    }
+
+    /// Строит bucket как индекс ceil-кванта, а не как raw timestamp.
+    ///
+    /// Bucket остаётся только быстрым индексом working set-а: точность кадра дальше
+    /// проверяется отдельным `target_pts` в lookup request-е.
     #[must_use]
     pub fn target_bucket(target_pts: TrackTimestamp) -> TimelineHoverFrameBucket {
-        let micros = target_pts.to_media_time().as_duration().as_micros();
-        let bucket = i64::try_from(micros).unwrap_or(i64::MAX);
-
-        TimelineHoverFrameBucket::new(bucket)
+        TimelineHoverFrameBucket::new(hover_grid_bucket_index(target_pts.to_media_time()))
     }
+}
+
+fn hover_grid_bucket_index(position: MediaTime) -> i64 {
+    let quantized_micros = ceil_micros_to_hover_grid(position.as_duration().as_micros());
+    let bucket_index = quantized_micros / hover_target_quantization_step_micros();
+
+    i64::try_from(bucket_index).unwrap_or(i64::MAX)
+}
+
+fn ceil_micros_to_hover_grid(position_micros: u128) -> u128 {
+    let step_micros = hover_target_quantization_step_micros();
+    let remainder = position_micros % step_micros;
+
+    if remainder == 0 {
+        position_micros
+    } else {
+        position_micros.saturating_add(step_micros - remainder)
+    }
+}
+
+fn hover_target_quantization_step_micros() -> u128 {
+    HOVER_TARGET_QUANTIZATION_STEP.as_micros()
+}
+
+fn duration_from_micros_saturating(micros: u128) -> Duration {
+    let seconds = micros / MICROS_PER_SECOND;
+    if seconds > u128::from(u64::MAX) {
+        return Duration::MAX;
+    }
+
+    let subsecond_micros = micros % MICROS_PER_SECOND;
+    Duration::new(
+        u64::try_from(seconds).expect("checked seconds must fit into u64"),
+        u32::try_from(subsecond_micros).expect("subsecond micros must stay below one second")
+            * NANOS_PER_MICRO,
+    )
 }
 
 /// Snapshot выбранных tracks без владения demuxer state.
@@ -451,4 +508,89 @@ pub struct FrameCounters {
 
     /// Количество повторных показов предыдущего кадра.
     pub repeated: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use media_core::{TimeBase, TimelineRange, TrackId, TrackTimestamp};
+
+    use super::*;
+
+    fn seekable_range(end_millis: u64) -> TimelineRange {
+        TimelineRange::from_bounds_saturating(MediaTime::ZERO, MediaTime::from_millis(end_millis))
+    }
+
+    fn timestamp_millis(millis: u64) -> TrackTimestamp {
+        let time_base = TimeBase::new(1, 1_000).expect("millisecond timebase must be valid");
+
+        TrackTimestamp::new(
+            TrackId::new(1),
+            i64::try_from(millis).expect("test timestamp must fit into i64"),
+            time_base,
+        )
+    }
+
+    #[test]
+    fn hover_target_quantization_ceil_rounds_to_next_grid_boundary() {
+        let range = seekable_range(2_000);
+
+        assert_eq!(
+            TimelineHoverPrepareSnapshot::quantize_hover_target_position(
+                MediaTime::from_millis(1_000),
+                range,
+            ),
+            MediaTime::from_millis(1_000)
+        );
+        assert_eq!(
+            TimelineHoverPrepareSnapshot::quantize_hover_target_position(
+                MediaTime::from_millis(1_001),
+                range,
+            ),
+            MediaTime::from_millis(1_250)
+        );
+    }
+
+    #[test]
+    fn hover_target_quantization_clamps_last_cell_to_seekable_end() {
+        let range = seekable_range(1_120);
+
+        assert_eq!(
+            TimelineHoverPrepareSnapshot::quantize_hover_target_position(
+                MediaTime::from_millis(1_001),
+                range,
+            ),
+            MediaTime::from_millis(1_120)
+        );
+        assert_eq!(
+            TimelineHoverPrepareSnapshot::quantize_hover_target_position(
+                MediaTime::from_millis(1_120),
+                range,
+            ),
+            MediaTime::from_millis(1_120)
+        );
+    }
+
+    #[test]
+    fn hover_target_quantization_and_bucket_are_stable_inside_one_cell() {
+        let range = seekable_range(2_000);
+        let first_position = MediaTime::from_millis(1_001);
+        let second_position = MediaTime::from_millis(1_249);
+
+        assert_eq!(
+            TimelineHoverPrepareSnapshot::quantize_hover_target_position(first_position, range),
+            MediaTime::from_millis(1_250)
+        );
+        assert_eq!(
+            TimelineHoverPrepareSnapshot::quantize_hover_target_position(second_position, range),
+            MediaTime::from_millis(1_250)
+        );
+        assert_eq!(
+            TimelineHoverPrepareSnapshot::target_bucket(timestamp_millis(1_001)),
+            TimelineHoverPrepareSnapshot::target_bucket(timestamp_millis(1_249))
+        );
+        assert_eq!(
+            TimelineHoverPrepareSnapshot::target_bucket(timestamp_millis(1_001)).get(),
+            5
+        );
+    }
 }

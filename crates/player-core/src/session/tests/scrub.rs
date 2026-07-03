@@ -667,6 +667,67 @@ fn prepared_frame_only_seek_landing_publishes_override_without_cold_decode() {
 }
 
 #[test]
+fn prepared_seek_landing_promotes_quantized_hover_target_for_clicks_inside_same_cell() {
+    for (index, click_millis) in [11_001_u64, 11_125, 11_250].into_iter().enumerate() {
+        let mut session = PlayerSession::new();
+        let seek_request_log = install_fake_media_with_seek_request_log(
+            &mut session,
+            vec![fake_track(1, TrackKind::Video)],
+        );
+        let released = Arc::new(Mutex::new(Vec::new()));
+        let resource_handle = 180 + u64::try_from(index).expect("test index must fit into u64");
+
+        insert_prepared_seek_frame_for_tests(
+            &mut session,
+            11_250,
+            11_250,
+            resource_handle,
+            Some(PreparedSeekBranchToken::resume_ready_for_tests()),
+            Arc::clone(&released),
+        );
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                prepared_media_time(click_millis),
+            )))
+            .unwrap();
+
+        assert_eq!(
+            seek_request_log
+                .lock()
+                .expect("seek request log mutex must not be poisoned")
+                .len(),
+            0,
+            "click inside quantized hover cell must reuse the prepared frame"
+        );
+
+        let scrub_events = session.take_scrub_events();
+        assert!(matches!(
+            scrub_events.as_slice(),
+            [
+                frame_server_core::ScrubEvent::Started(_),
+                frame_server_core::ScrubEvent::PreviewFrameReady(_),
+                frame_server_core::ScrubEvent::Committed(_),
+            ]
+        ));
+        assert!(scrub_events.iter().any(|event| matches!(
+            event,
+            frame_server_core::ScrubEvent::Committed(committed)
+                if committed.context.target().media_time == prepared_media_time(click_millis)
+        )));
+        let preview = scrub_events
+            .iter()
+            .find_map(|event| match event {
+                frame_server_core::ScrubEvent::PreviewFrameReady(preview) => Some(preview),
+                _ => None,
+            })
+            .expect("prepared hit must publish PreviewFrameReady");
+        assert_eq!(preview.frame.timing.pts, prepared_timestamp(11_250));
+        assert_eq!(release_count(&released, resource_handle), 1);
+    }
+}
+
+#[test]
 fn timeline_hover_prepare_snapshot_marks_one_shot_resume_pending() {
     let mut session = PlayerSession::new();
     install_fake_media_with_seek_request_log(&mut session, vec![fake_track(1, TrackKind::Video)]);
