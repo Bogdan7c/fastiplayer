@@ -143,6 +143,46 @@ pub(crate) struct HoverSpanDecodeState {
     eof_drain: HoverSpanEofDrainState,
 }
 
+/// Decoder position, которую можно сохранить после `PreparedHit`.
+///
+/// Это не `bool`: controller должен видеть, чем закончился span. Обычное
+/// чтение packets можно продолжать вперёд, а span после начала EOF drain
+/// требует fresh seek+flush из-за правил FFmpeg draining mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HoverSpanCompletedDecodePosition {
+    last_decoded_pts: TrackTimestamp,
+    forward_reuse: HoverSpanCompletedForwardReuse,
+}
+
+impl HoverSpanCompletedDecodePosition {
+    #[must_use]
+    pub(crate) const fn last_decoded_pts(self) -> TrackTimestamp {
+        self.last_decoded_pts
+    }
+
+    #[must_use]
+    pub(crate) const fn forward_reuse(self) -> HoverSpanCompletedForwardReuse {
+        self.forward_reuse
+    }
+}
+
+/// Typed разрешение на continuation completed span-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HoverSpanCompletedForwardReuse {
+    /// Decoder ещё в normal packet mode, поэтому можно читать дальше без flush.
+    Ready,
+
+    /// Decoder уже вошёл в режим drain, поэтому следующий target обязан быть fresh span.
+    RequiresFreshSpan(HoverSpanFreshSpanRequiredReason),
+}
+
+/// Причина, почему completed span нельзя продолжить без fresh seek+flush.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HoverSpanFreshSpanRequiredReason {
+    /// Был вызван EOF drain (`send_packet(NULL)`), после него FFmpeg требует flush.
+    EofDrainStarted,
+}
+
 /// Состояние EOF-drain для span-а после конца demux-потока.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HoverSpanEofDrainState {
@@ -157,6 +197,11 @@ enum HoverSpanEofDrainState {
 }
 
 impl HoverSpanDecodeState {
+    #[must_use]
+    pub(crate) const fn span_id(&self) -> TimelineHoverPrepareSpanId {
+        self.span_id
+    }
+
     fn note_packet_sent(&mut self) {
         self.packets_fed = self.packets_fed.saturating_add(1);
         self.packets_in_flight = self.packets_in_flight.saturating_add(1);
@@ -171,6 +216,26 @@ impl HoverSpanDecodeState {
         self.pending_packet.is_some()
             || self.packets_in_flight > 0
             || decoder_packet_queue_depth > 0
+    }
+
+    pub(crate) fn completed_position(
+        &self,
+        last_decoded_pts: TrackTimestamp,
+    ) -> HoverSpanCompletedDecodePosition {
+        let forward_reuse = match self.eof_drain {
+            HoverSpanEofDrainState::ReadingPackets => HoverSpanCompletedForwardReuse::Ready,
+            HoverSpanEofDrainState::WaitingForQueuedPackets
+            | HoverSpanEofDrainState::DrainingDecoder => {
+                HoverSpanCompletedForwardReuse::RequiresFreshSpan(
+                    HoverSpanFreshSpanRequiredReason::EofDrainStarted,
+                )
+            }
+        };
+
+        HoverSpanCompletedDecodePosition {
+            last_decoded_pts,
+            forward_reuse,
+        }
     }
 
     fn diagnostics(

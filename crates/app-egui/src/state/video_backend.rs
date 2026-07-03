@@ -129,7 +129,6 @@ impl AppState {
         self.timeline_hover_prepare_controller
             .cancel_active_span(TimelineHoverPrepareCancellationReason::BackendSwitched);
         self.timeline_hover_prepare_controller
-            .executor_mut()
             .set_decode_session(hover_decode_session);
         self.timeline_hover_decode_materializer = hover_decode_materializer;
         self.timeline_hover_preview_render_state.clear();

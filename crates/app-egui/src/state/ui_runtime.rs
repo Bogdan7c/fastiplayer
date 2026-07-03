@@ -563,8 +563,7 @@ impl AppState {
     fn pump_timeline_hover_decode_continuation(&mut self, player_snapshot: &PlayerSnapshot) {
         if !self
             .timeline_hover_prepare_controller
-            .executor()
-            .has_pending_span_decode_work()
+            .has_active_span_decode_work()
         {
             return;
         }
@@ -811,8 +810,7 @@ impl AppState {
             TimelineHoverPreviewUpdateOutcome::WorkingSetMiss
         ) && self
             .timeline_hover_prepare_controller
-            .executor()
-            .has_pending_span_decode_work();
+            .has_active_span_decode_work();
         if timeline_hover_preview_update_outcome_requests_repaint(
             preview_outcome,
             pending_span_decode_work,

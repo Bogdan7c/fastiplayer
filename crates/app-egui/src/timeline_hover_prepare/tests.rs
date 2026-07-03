@@ -535,7 +535,7 @@ fn stale_previous_target_completion_cannot_commit() {
 }
 
 #[test]
-fn prepared_hit_finishes_span_before_next_decode_target() {
+fn prepared_hit_without_completed_position_starts_next_span() {
     let mut fake_executor = FakeExecutor::default();
     fake_executor.push_outcome(TimelineHoverPrepareExecutorOutcome::PreparedHit {
         actual_pts: timestamp(10_000),
@@ -545,6 +545,9 @@ fn prepared_hit_finishes_span_before_next_decode_target() {
     let mut controller = TimelineHoverPrepareController::new(fake_executor);
 
     let completed = controller.prepare_hover_target(target(10_000, 9_000, 10_100));
+    // FakeExecutor использует default boundary и не возвращает completed decoder
+    // position. Production App executor покрыт decode_execution тестами ниже и
+    // может продолжить completed span вперёд без fresh start.
     let next = controller.prepare_hover_target(target(10_200, 9_000, 10_500));
 
     assert!(matches!(
@@ -1435,8 +1438,8 @@ mod decode_execution {
 
         let shared = harness.shared.lock().expect("fake decoder lock");
         assert_eq!(
-            shared.flush_count, 2,
-            "span start flushes once and completed PreparedHit flushes decode state once"
+            shared.flush_count, 1,
+            "span start flushes once; completed PreparedHit keeps decoder position live"
         );
         assert_eq!(shared.configured.len(), 1);
         assert_eq!(shared.sent_packets.len(), 3);
@@ -1657,7 +1660,7 @@ mod decode_execution {
     }
 
     #[test]
-    fn prepared_hit_flushes_completed_decode_and_keeps_frame_borrowable() {
+    fn prepared_hit_keeps_completed_decoder_position_and_keeps_frame_borrowable() {
         let mut harness = decode_harness(vec![video_packet(10_020, true)]);
         {
             let mut shared = harness.shared.lock().expect("fake decoder lock");
@@ -1685,14 +1688,18 @@ mod decode_execution {
             harness.controller.active_span.is_none(),
             "PreparedHit must close the controller span before the next target"
         );
+        assert!(
+            harness.controller.completed_span.is_some(),
+            "PreparedHit must keep typed completed span metadata for possible forward reuse"
+        );
         assert_eq!(
             harness
                 .shared
                 .lock()
                 .expect("fake decoder lock")
                 .flush_count,
-            2,
-            "real App executor must flush at span start and after completed PreparedHit"
+            1,
+            "PreparedHit must not flush the hover decoder; only span start flushes"
         );
         assert!(matches!(
             harness
@@ -1700,6 +1707,236 @@ mod decode_execution {
                 .borrow_prepared_frame(active_target.lookup_request()),
             PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(_)
         ));
+    }
+
+    #[test]
+    fn prepared_hit_forward_target_reuses_decoder_position_without_reseek_or_flush() {
+        let mut harness = decode_harness(vec![
+            video_packet(10_020, true),
+            video_packet(10_060, false),
+        ]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 1;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(10_020, 1, 8)]);
+        }
+        let first_target = unresolved_active_target(10_000);
+
+        let first_hit = harness.controller.prepare_hover_target(first_target);
+
+        assert!(matches!(
+            first_hit.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit { actual_pts, .. }
+                if actual_pts == timestamp(10_020)
+        ));
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 2;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(10_060, 1, 9)]);
+        }
+        let forward_target = unresolved_active_target(10_040);
+
+        let forward_hit = harness.controller.prepare_hover_target(forward_target);
+
+        assert_eq!(
+            forward_hit.transition,
+            TimelineHoverPrepareControllerTransition::ExtendedForward
+        );
+        assert!(matches!(
+            forward_hit.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit { actual_pts, .. }
+                if actual_pts == timestamp(10_060)
+        ));
+        assert_eq!(
+            harness.seek_requests.lock().expect("seek log lock").len(),
+            1,
+            "completed forward reuse must not resolve/seek again"
+        );
+        let shared = harness.shared.lock().expect("fake decoder lock");
+        assert_eq!(
+            shared.flush_count, 1,
+            "completed forward reuse must not flush after PreparedHit"
+        );
+        assert_eq!(
+            shared.sent_packets.len(),
+            2,
+            "second target must continue feeding from the current demux position"
+        );
+        assert_eq!(shared.sent_packets[1].pts, Duration::from_millis(10_060));
+    }
+
+    #[test]
+    fn prepared_hit_backward_target_starts_fresh_span_with_reseek() {
+        let mut harness =
+            decode_harness(vec![video_packet(10_020, true), video_packet(9_980, true)]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 1;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(10_020, 1, 8)]);
+        }
+        let first_target = unresolved_active_target(10_000);
+
+        let first_hit = harness.controller.prepare_hover_target(first_target);
+
+        assert!(matches!(
+            first_hit.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit { actual_pts, .. }
+                if actual_pts == timestamp(10_020)
+        ));
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 2;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(9_980, 2, 9)]);
+        }
+        let backward_target = unresolved_active_target(9_980);
+
+        let fresh_hit = harness.controller.prepare_hover_target(backward_target);
+
+        assert_eq!(
+            fresh_hit.transition,
+            TimelineHoverPrepareControllerTransition::Started
+        );
+        assert!(matches!(
+            fresh_hit.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit { actual_pts, .. }
+                if actual_pts == timestamp(9_980)
+        ));
+        assert_eq!(
+            harness.seek_requests.lock().expect("seek log lock").len(),
+            2,
+            "target before completed decoder position must resolve a fresh span"
+        );
+        let shared = harness.shared.lock().expect("fake decoder lock");
+        assert_eq!(
+            shared.flush_count, 3,
+            "fresh span discards completed decoder work and starts with a new flush"
+        );
+        assert_eq!(shared.sent_packets[1].pts, Duration::from_millis(9_980));
+    }
+
+    #[test]
+    fn prepared_hit_after_eof_drain_starts_fresh_span_for_forward_target() {
+        let mut harness = decode_harness(vec![
+            video_packet(9_400, true),
+            DemuxReadEvent::EndOfStream,
+            video_packet(10_060, false),
+        ]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = usize::MAX;
+        }
+        let first_target = unresolved_active_target(10_000);
+
+        let eof_incomplete = harness.controller.prepare_hover_target(first_target);
+
+        assert!(matches!(
+            eof_incomplete.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+                reason: TimelineHoverPrepareIncompleteReason::EndOfStreamBeforeTarget,
+                ..
+            }
+        ));
+        assert_eq!(
+            harness
+                .shared
+                .lock()
+                .expect("fake decoder lock")
+                .eos_drain_generation,
+            Some(1),
+            "test must put the hover decoder into EOF drain before PreparedHit"
+        );
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 1;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(10_020, 1, 8)]);
+        }
+
+        let eof_tail_hit = harness.controller.prepare_hover_target(first_target);
+
+        assert!(matches!(
+            eof_tail_hit.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit { actual_pts, .. }
+                if actual_pts == timestamp(10_020)
+        ));
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 2;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(10_060, 2, 9)]);
+        }
+        let forward_target = unresolved_active_target(10_040);
+
+        let fresh_hit = harness.controller.prepare_hover_target(forward_target);
+
+        assert_eq!(
+            fresh_hit.transition,
+            TimelineHoverPrepareControllerTransition::Started
+        );
+        assert!(matches!(
+            fresh_hit.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit { actual_pts, .. }
+                if actual_pts == timestamp(10_060)
+        ));
+        assert_eq!(
+            harness.seek_requests.lock().expect("seek log lock").len(),
+            2,
+            "completed span after EOF drain must not be forward-reused"
+        );
+        assert_eq!(
+            harness
+                .shared
+                .lock()
+                .expect("fake decoder lock")
+                .flush_count,
+            3,
+            "EOF-drained completed span must be flushed before the fresh decode"
+        );
+    }
+
+    #[test]
+    fn leave_after_completed_prepared_hit_releases_hover_frame_once() {
+        let mut harness = decode_harness(vec![video_packet(10_020, true)]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 1;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(10_020, 1, 8)]);
+        }
+        let active_target = unresolved_active_target(10_000);
+
+        let hit = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            hit.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit { actual_pts, .. }
+                if actual_pts == timestamp(10_020)
+        ));
+
+        harness
+            .controller
+            .cancel_active_span(TimelineHoverPrepareCancellationReason::TimelineLeft);
+        harness
+            .controller
+            .cancel_active_span(TimelineHoverPrepareCancellationReason::TimelineLeft);
+        harness
+            .controller
+            .release_hover_owned_entries_for_session_end(
+                TimelineHoverPrepareSessionEndReleaseReason::ImmediateTimelineLeave,
+            );
+        harness
+            .controller
+            .release_hover_owned_entries_for_session_end(
+                TimelineHoverPrepareSessionEndReleaseReason::ImmediateTimelineLeave,
+            );
+
+        let shared = harness.shared.lock().expect("fake decoder lock");
+        assert_eq!(
+            shared.provider_released_handles,
+            vec![8],
+            "completed prepared frame must be released exactly once on leave/session cleanup"
+        );
+        assert_eq!(
+            shared.flush_count, 2,
+            "leave must flush the completed decoder position once after the start flush"
+        );
     }
 
     #[test]
@@ -1782,8 +2019,8 @@ mod decode_execution {
         ));
         let shared = harness.shared.lock().expect("fake decoder lock");
         assert_eq!(
-            shared.flush_count, 2,
-            "same-span continuation must not flush before PreparedHit; completion flushes once"
+            shared.flush_count, 1,
+            "same-span continuation and PreparedHit completion must not flush"
         );
         drop(shared);
         assert_eq!(

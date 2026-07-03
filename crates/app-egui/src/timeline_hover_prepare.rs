@@ -24,7 +24,8 @@ use crate::timeline_hover_approx_preview::{
     TimelineHoverApproximatePreviewSlot,
 };
 use crate::timeline_hover_decode::{
-    HoverSpanDecodeDrive, HoverSpanDecodeFailure, HoverSpanDecodeState, TimelineHoverDecodeSession,
+    HoverSpanCompletedDecodePosition, HoverSpanCompletedForwardReuse, HoverSpanDecodeDrive,
+    HoverSpanDecodeFailure, HoverSpanDecodeState, TimelineHoverDecodeSession,
     cancel_hover_span_decode, drive_hover_span_decode,
 };
 use crate::timeline_hover_network::{
@@ -63,6 +64,7 @@ pub(crate) struct AppTimelineHoverPrepareExecutor {
 pub(crate) struct TimelineHoverPrepareController<Executor> {
     executor: Executor,
     active_span: Option<InFlightDecodeDependencySpan>,
+    completed_span: Option<CompletedDecodeDependencySpan>,
     pending_unresolved_target: Option<InFlightTimelineHoverPrepareTarget>,
     next_span_id: TimelineHoverPrepareSpanId,
 }
@@ -134,6 +136,12 @@ pub(crate) struct TimelineHoverPrepareExecutorRequest {
     pub(crate) transition: TimelineHoverPrepareExecutorTransition,
     pub(crate) target: TimelineHoverPrepareTarget,
     pub(crate) span: DecodeDependencySpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TimelineHoverCompletedSpanDecodeRequest {
+    span_id: TimelineHoverPrepareSpanId,
+    actual_pts: TrackTimestamp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -353,6 +361,20 @@ struct InFlightTimelineHoverPrepareTarget {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CompletedDecodeDependencySpan {
+    span_id: TimelineHoverPrepareSpanId,
+    span: DecodeDependencySpan,
+    latest_target: TimelineHoverPrepareTarget,
+    decoder_position: HoverSpanCompletedDecodePosition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CompletedDecodeDependencySpanReuse {
+    span_id: TimelineHoverPrepareSpanId,
+    span: DecodeDependencySpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DecodeDependencySpanChange {
     Compatible,
     ForwardExtension,
@@ -383,7 +405,14 @@ pub(crate) trait TimelineHoverPrepareExecutor {
 
     fn cancel_dependency_span(&mut self, request: TimelineHoverPrepareCancelRequest);
 
-    fn finish_completed_span_decode(&mut self, _span_id: TimelineHoverPrepareSpanId) {}
+    fn finish_completed_span_decode(
+        &mut self,
+        _request: TimelineHoverCompletedSpanDecodeRequest,
+    ) -> Option<HoverSpanCompletedDecodePosition> {
+        None
+    }
+
+    fn discard_completed_span_decode(&mut self, _span_id: TimelineHoverPrepareSpanId) {}
 }
 
 impl AppTimelineHoverPrepareExecutor {
@@ -510,10 +539,33 @@ impl AppTimelineHoverPrepareExecutor {
         }
     }
 
-    /// Завершает decode state span-а после финального PreparedHit без потери source/session identity.
-    fn finish_completed_span_decode(&mut self, span_id: TimelineHoverPrepareSpanId) {
-        self.approximate_preview_slot
-            .clear(TimelineHoverApproximatePreviewClearReason::ExactPreparedHit { span_id });
+    /// Фиксирует clean `PreparedHit`, не сбрасывая decoder/demux позицию.
+    fn finish_completed_span_decode(
+        &mut self,
+        request: TimelineHoverCompletedSpanDecodeRequest,
+    ) -> Option<HoverSpanCompletedDecodePosition> {
+        self.approximate_preview_slot.clear(
+            TimelineHoverApproximatePreviewClearReason::ExactPreparedHit {
+                span_id: request.span_id,
+            },
+        );
+
+        self.span_decode_state
+            .as_ref()
+            .filter(|state| state.span_id() == request.span_id)
+            .map(|state| state.completed_position(request.actual_pts))
+    }
+
+    /// Отбрасывает completed decoder position перед fresh span-ом или lifecycle reset-ом.
+    fn discard_completed_span_decode(&mut self, span_id: TimelineHoverPrepareSpanId) {
+        let should_discard = self
+            .span_decode_state
+            .as_ref()
+            .is_some_and(|state| state.span_id() == span_id);
+        if !should_discard {
+            return;
+        }
+
         if let Some(session) = self.decode_session.as_mut() {
             cancel_hover_span_decode(session, &mut self.span_decode_state);
         } else {
@@ -702,8 +754,15 @@ impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
         }
     }
 
-    fn finish_completed_span_decode(&mut self, span_id: TimelineHoverPrepareSpanId) {
-        AppTimelineHoverPrepareExecutor::finish_completed_span_decode(self, span_id);
+    fn finish_completed_span_decode(
+        &mut self,
+        request: TimelineHoverCompletedSpanDecodeRequest,
+    ) -> Option<HoverSpanCompletedDecodePosition> {
+        AppTimelineHoverPrepareExecutor::finish_completed_span_decode(self, request)
+    }
+
+    fn discard_completed_span_decode(&mut self, span_id: TimelineHoverPrepareSpanId) {
+        AppTimelineHoverPrepareExecutor::discard_completed_span_decode(self, span_id);
     }
 }
 
@@ -976,6 +1035,7 @@ impl<Executor> TimelineHoverPrepareController<Executor> {
         Self {
             executor,
             active_span: None,
+            completed_span: None,
             pending_unresolved_target: None,
             next_span_id: TimelineHoverPrepareSpanId(1),
         }
@@ -998,6 +1058,7 @@ impl TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor> {
         demux_config: PlayerDemuxConfig,
         network_hover_prepare_throttle: std::time::Duration,
     ) {
+        self.clear_controller_decode_span_state();
         self.executor.update_open_config(
             network_config,
             youtube_config,
@@ -1015,24 +1076,38 @@ impl TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor> {
     }
 
     pub(crate) fn set_hover_source(&mut self, source: TimelineHoverSourceIdentity) {
+        self.clear_controller_decode_span_state();
         self.executor.set_hover_source(source);
     }
 
     pub(crate) fn reset_opened_hover_source_preserving_identity(&mut self) {
+        self.clear_controller_decode_span_state();
         self.executor
             .reset_opened_hover_source_preserving_identity();
     }
 
     pub(crate) fn invalidate_hover_source(&mut self) {
+        self.clear_controller_decode_span_state();
         self.executor.invalidate_hover_source();
+    }
+
+    pub(crate) fn set_decode_session(&mut self, session: Option<TimelineHoverDecodeSession>) {
+        self.clear_controller_decode_span_state();
+        self.executor.set_decode_session(session);
     }
 
     pub(crate) fn release_hover_owned_entries_for_session_end(
         &mut self,
         reason: TimelineHoverPrepareSessionEndReleaseReason,
     ) -> TimelineHoverPrepareSessionEndReleaseOutcome {
+        self.discard_completed_span_decode_state();
         self.executor
             .release_hover_owned_entries_for_session_end(reason)
+    }
+
+    #[must_use]
+    pub(crate) fn has_active_span_decode_work(&self) -> bool {
+        self.active_span.is_some() && self.executor.has_pending_span_decode_work()
     }
 
     /// Borrow approximate keyframe-а, если он принадлежит текущему active span-у.
@@ -1061,6 +1136,12 @@ impl TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor> {
         self.executor
             .reconfigure_recent_superseded_budget(new_budget)
     }
+
+    fn clear_controller_decode_span_state(&mut self) {
+        self.active_span = None;
+        self.completed_span = None;
+        self.pending_unresolved_target = None;
+    }
 }
 
 impl<Executor> TimelineHoverPrepareController<Executor>
@@ -1077,14 +1158,17 @@ where
         &mut self,
         target: TimelineHoverPrepareTarget,
     ) -> TimelineHoverPrepareControllerOutcome {
-        let requested_span = match target
-            .dependency_span()
-            .is_none()
+        let target_needs_resolution = target.dependency_span().is_none();
+        let active_span_extension = target_needs_resolution
             .then(|| self.active_span_extension_for_target(target))
-            .flatten()
-        {
-            Some(span) => span,
-            None => match self.executor.resolve_dependency_span(target) {
+            .flatten();
+        let completed_span_reuse = (target_needs_resolution && active_span_extension.is_none())
+            .then(|| self.completed_span_reuse_for_target(target))
+            .flatten();
+        let requested_span = match (active_span_extension, completed_span_reuse) {
+            (Some(span), _) => span,
+            (None, Some(completed_reuse)) => completed_reuse.span,
+            (None, None) => match self.executor.resolve_dependency_span(target) {
                 TimelineHoverDependencySpanResolutionOutcome::Resolved(span) => span,
                 TimelineHoverDependencySpanResolutionOutcome::NoOp { reason } => {
                     return self.unresolved_target_no_op_outcome(target, reason);
@@ -1093,7 +1177,7 @@ where
         };
         self.pending_unresolved_target = None;
         let (span_id, controller_transition, executor_transition) =
-            self.apply_target_to_active_span(target, requested_span);
+            self.apply_target_to_active_span(target, requested_span, completed_span_reuse);
         let active_span = self
             .active_span
             .expect("prepare_hover_target must install an active span before executor call");
@@ -1106,11 +1190,10 @@ where
         let executor_outcome = self.executor.prepare_exact_dependency_span(request);
         let completion_outcome =
             self.completion_outcome_for_executor_result(span_id, target, executor_outcome);
-        if matches!(
-            executor_outcome,
-            TimelineHoverPrepareExecutorOutcome::PreparedHit { .. }
-        ) {
-            self.finish_completed_decode_span(span_id);
+        if let TimelineHoverPrepareExecutorOutcome::PreparedHit { actual_pts, .. } =
+            executor_outcome
+        {
+            self.finish_completed_decode_span(span_id, actual_pts);
         }
 
         TimelineHoverPrepareControllerOutcome {
@@ -1127,9 +1210,17 @@ where
     ) -> Option<TimelineHoverPrepareCancelRequest> {
         let request = if let Some(active_span) = self.active_span.take() {
             self.pending_unresolved_target = None;
+            self.completed_span = None;
             TimelineHoverPrepareCancelRequest {
                 span_id: active_span.span_id,
                 latest_target: active_span.latest_target,
+                reason,
+            }
+        } else if let Some(completed_span) = self.completed_span.take() {
+            self.pending_unresolved_target = None;
+            TimelineHoverPrepareCancelRequest {
+                span_id: completed_span.span_id,
+                latest_target: completed_span.latest_target,
                 reason,
             }
         } else {
@@ -1232,12 +1323,9 @@ where
             .cmp_timeline_position(requested_span.drain_until_pts)
             == Ordering::Greater
         {
-            // Контроллер не видит дешёвую "последнюю реально декодированную PTS":
-            // `span_decode_state` живёт внутри executor-а, а публичная диагностика
-            // `frames_drained` не хранит timestamp. Поэтому используем текущий
-            // `drain_until_pts` активного span-а как консервативный хвост: если
-            // следующий target уже дальше этого хвоста больше чем на лимит,
-            // перескок через resolver/reseek дешевле, чем длинный sequential decode.
+            // Пока span in-flight, controller ещё не получил фактическую decoded PTS,
+            // поэтому лимит считаем от requested tail-а. После `PreparedHit` тот же
+            // лимит считается уже от сохранённой decoder position.
             if hover_span_forward_extension_exceeds_limit(
                 requested_span.drain_until_pts,
                 target.target_pts,
@@ -1249,16 +1337,79 @@ where
         Some(requested_span)
     }
 
+    fn completed_span_reuse_for_target(
+        &self,
+        target: TimelineHoverPrepareTarget,
+    ) -> Option<CompletedDecodeDependencySpanReuse> {
+        let completed_span = self.completed_span?;
+        if completed_span.span.context != target.context {
+            return None;
+        }
+        if !matches!(
+            completed_span.decoder_position.forward_reuse(),
+            HoverSpanCompletedForwardReuse::Ready
+        ) {
+            return None;
+        }
+        if target
+            .target_pts
+            .cmp_timeline_position(completed_span.decoder_position.last_decoded_pts())
+            == Ordering::Less
+        {
+            return None;
+        }
+        if hover_span_forward_extension_exceeds_limit(
+            completed_span.decoder_position.last_decoded_pts(),
+            target.target_pts,
+        ) {
+            return None;
+        }
+
+        let mut requested_span = completed_span.span;
+        if target
+            .target_pts
+            .cmp_timeline_position(requested_span.drain_until_pts)
+            == Ordering::Greater
+        {
+            requested_span.drain_until_pts = target.target_pts;
+        }
+
+        Some(CompletedDecodeDependencySpanReuse {
+            span_id: completed_span.span_id,
+            span: requested_span,
+        })
+    }
+
     fn apply_target_to_active_span(
         &mut self,
         target: TimelineHoverPrepareTarget,
         requested_span: DecodeDependencySpan,
+        completed_span_reuse: Option<CompletedDecodeDependencySpanReuse>,
     ) -> (
         TimelineHoverPrepareSpanId,
         TimelineHoverPrepareControllerTransition,
         TimelineHoverPrepareExecutorTransition,
     ) {
+        if let Some(completed_reuse) = completed_span_reuse {
+            debug_assert!(
+                self.active_span.is_none(),
+                "completed span reuse must not race active span reuse"
+            );
+            self.completed_span = None;
+            self.active_span = Some(InFlightDecodeDependencySpan {
+                span_id: completed_reuse.span_id,
+                span: completed_reuse.span,
+                latest_target: target,
+            });
+            return (
+                completed_reuse.span_id,
+                TimelineHoverPrepareControllerTransition::ExtendedForward,
+                TimelineHoverPrepareExecutorTransition::ExtendForward,
+            );
+        }
+
         let Some(mut active_span) = self.active_span else {
+            self.discard_completed_span_decode_state();
             let span_id = self.allocate_span_id();
             self.active_span = Some(InFlightDecodeDependencySpan {
                 span_id,
@@ -1350,12 +1501,36 @@ where
         )
     }
 
-    fn finish_completed_decode_span(&mut self, span_id: TimelineHoverPrepareSpanId) {
+    fn discard_completed_span_decode_state(&mut self) {
+        if let Some(completed_span) = self.completed_span.take() {
+            self.executor
+                .discard_completed_span_decode(completed_span.span_id);
+        }
+    }
+
+    fn finish_completed_decode_span(
+        &mut self,
+        span_id: TimelineHoverPrepareSpanId,
+        actual_pts: TrackTimestamp,
+    ) {
         if matches!(self.active_span, Some(active_span) if active_span.span_id == span_id) {
-            // PreparedHit завершает dependency span: controller закрывает свой
-            // active_span, а executor отдельно flush-ит только decode work.
-            self.executor.finish_completed_span_decode(span_id);
-            self.active_span = None;
+            let active_span = self
+                .active_span
+                .take()
+                .expect("matched active span must still be present");
+            let request = TimelineHoverCompletedSpanDecodeRequest {
+                span_id,
+                actual_pts,
+            };
+            self.completed_span =
+                self.executor
+                    .finish_completed_span_decode(request)
+                    .map(|decoder_position| CompletedDecodeDependencySpan {
+                        span_id,
+                        span: active_span.span,
+                        latest_target: active_span.latest_target,
+                        decoder_position,
+                    });
         }
     }
 
