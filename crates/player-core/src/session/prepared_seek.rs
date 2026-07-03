@@ -262,7 +262,7 @@ impl PlayerSession {
     }
 
     /// Сбрасывает audio runtime для seek generation, не меняя video decoder epoch.
-    fn reset_audio_runtime_for_seek_landing(&mut self, generation: u64) {
+    pub(super) fn reset_audio_runtime_for_seek_landing(&mut self, generation: u64) {
         if let Some(Err(error)) = self.pipeline.reset_audio_decoder() {
             let player_error = PlayerError::new(
                 PlayerErrorKind::RuntimeError,

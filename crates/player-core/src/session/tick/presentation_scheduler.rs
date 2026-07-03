@@ -643,6 +643,65 @@ pub(super) fn present_seek_preroll_fallback_after_eof(
     true
 }
 
+/// Показывает «прокат» live scrub: держит только новейший pre-target кадр и
+/// презентует его немедленно, пока exact landing frame ещё не готов.
+///
+/// Возвращает `true`, если scheduler-pass обработан этой веткой и обычная
+/// A/V-логика выполняться не должна. Как только в очереди появился
+/// target-or-after кадр текущего generation-а, ветка дропает pre-target кадры
+/// перед ним и уступает существующей landing-логике (force present + gates).
+pub(super) fn present_live_scrub_preroll_roll(
+    session: &mut PlayerSession,
+    tick_result: &mut PlayerTickResult,
+) -> bool {
+    if !session.active_seek_presents_preroll_progressively() {
+        return false;
+    }
+
+    let landing_frame_in_queue = session
+        .pipeline
+        .queued_video_frames()
+        .any(|frame| session.active_seek_frame_ready_for_scheduler(frame.pts, frame.generation));
+    if landing_frame_in_queue {
+        // Landing уже декодирован: прокат больше не нужен, расчищаем pre-target
+        // кадры перед ним и передаём present обычному seek-путю этого же tick-а.
+        while session
+            .pipeline
+            .front_queued_video_frame()
+            .is_some_and(|frame| {
+                !session.active_seek_frame_ready_for_scheduler(frame.pts, frame.generation)
+            })
+        {
+            if !drop_front_queued_video_frame(
+                session,
+                tick_result,
+                PlayerVideoDropReason::SeekPreroll,
+            ) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    // Latest-wins: показываем самый свежий декодированный кадр прохода, более
+    // старые сразу release-им, чтобы texture pool продолжал крутить decode.
+    while session.pipeline.video_present_queue_len() > 1 {
+        if !drop_front_queued_video_frame(session, tick_result, PlayerVideoDropReason::SeekPreroll)
+        {
+            break;
+        }
+    }
+
+    if session.pipeline.video_present_queue_is_empty() {
+        // Новых кадров прохода ещё нет — держим текущую картинку до следующего tick-а.
+        repeat_present_video_frame(session, tick_result, None);
+        return true;
+    }
+
+    present_front_queued_video_frame(session, tick_result);
+    true
+}
+
 /// Проверяет, что после EOF больше нет decoder work, способного дать точный target frame.
 pub(super) fn seek_preroll_fallback_ready_after_eof(session: &PlayerSession) -> bool {
     if session.active_final_seek_target().is_none() || !session.is_eof_draining() {
@@ -983,6 +1042,18 @@ pub(super) fn process_pending_video_packets(
     let scheduler_started_at = Instant::now();
 
     if present_seek_preroll_fallback_after_eof(session, tick_result) {
+        session.record_pipeline_latency(
+            PipelineLatencyStage::WorkerScheduler,
+            scheduler_started_at.elapsed(),
+            None,
+            None,
+        );
+        return;
+    }
+
+    // Прокат live scrub идёт до audio-stall/target-window логики: во время drag
+    // audio запаузено, и обычный путь показал бы старейший кадр вместо новейшего.
+    if present_live_scrub_preroll_roll(session, tick_result) {
         session.record_pipeline_latency(
             PipelineLatencyStage::WorkerScheduler,
             scheduler_started_at.elapsed(),

@@ -524,15 +524,17 @@ fn live_scrub_command_diagnostics_are_attached_to_events_and_supersede_cancel() 
         .unwrap();
     session
         .dispatch_command(PlayerCommand::preview_live_scrub(
-            SeekRequest::absolute(MediaTime::from_secs(5)),
+            SeekRequest::absolute(MediaTime::from_secs(8)),
             first_diagnostics,
         ))
         .unwrap();
     let _ = session.take_scrub_events();
 
+    // Цель назад: forward extension неприменим, replacement идёт cold-маршрутом
+    // с diagnostics-only supersede cancel.
     session
         .dispatch_command(PlayerCommand::preview_live_scrub(
-            SeekRequest::absolute(MediaTime::from_secs(8)),
+            SeekRequest::absolute(MediaTime::from_secs(5)),
             latest_diagnostics,
         ))
         .unwrap();
@@ -559,7 +561,7 @@ fn live_scrub_command_diagnostics_are_attached_to_events_and_supersede_cancel() 
         .iter()
         .find_map(|event| match event {
             frame_server_core::ScrubEvent::Started(started)
-                if started.context.target().media_time == MediaTime::from_secs(8) =>
+                if started.context.target().media_time == MediaTime::from_secs(5) =>
             {
                 Some(started)
             }
@@ -845,4 +847,331 @@ fn preview_scrub_does_not_feed_scheduler_preroll_frame() {
     assert!(session.pipeline.present_video_frame().is_none());
     assert!(!session.snapshot().timeline.stale_frame);
     assert!(session.seek_commit().is_some());
+}
+
+/// Прокат live scrub: pre-target кадры показываются latest-wins, не открывая commit gates.
+#[test]
+fn live_scrub_preroll_frames_present_progressively_without_opening_gates() {
+    let video_track = fake_track(1, TrackKind::Video);
+    let target = Duration::from_secs(8);
+    let actual = Duration::from_millis(7_800);
+    let mid_roll = Duration::from_millis(7_900);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        target,
+        actual,
+        vec![
+            fake_video_packet_with_keyframe(video_track.id, actual, PacketKeyframe::Keyframe),
+            fake_video_packet_with_keyframe(video_track.id, mid_roll, PacketKeyframe::NotKeyframe),
+            fake_video_packet_with_keyframe(video_track.id, target, PacketKeyframe::NotKeyframe),
+        ],
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+
+    harness
+        .session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    harness
+        .session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
+            MediaTime::from_duration(target),
+        )))
+        .unwrap();
+    let _ = harness.session.take_events();
+
+    // Прокат активен только для LiveScrub route до первого landing frame.
+    assert!(harness.session.active_seek_presents_preroll_progressively());
+    // Pre-target кадры в прокате не считаются подавляемым preroll-ом.
+    assert!(!harness.session.should_drop_decoded_frame_for_seek(actual));
+
+    let first_tick = harness.tick_once_fast_preroll();
+    assert_eq!(first_tick.demuxed_packets.len(), 3);
+
+    // Первый декодированный кадр прохода (keyframe) показывается немедленно.
+    harness.push_decoded_frame(actual, 79, 1);
+    let keyframe_tick = harness.tick_once_fast_preroll();
+    assert_eq!(keyframe_tick.video_frames_presented, 1);
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(actual)
+    );
+    // Гейты закрыты: commit жив, публичное состояние остаётся Scrubbing.
+    assert!(harness.session.seek_commit().is_some());
+    assert!(harness.session.snapshot().timeline.scrubbing);
+    assert!(!harness.session.snapshot().timeline.stale_frame);
+    // Landing событие ещё не публиковалось: pre-target кадр не считается landing frame.
+    let events = harness.session.take_events();
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, PlayerEvent::SeekTargetFramePresented(_)))
+    );
+
+    // Следующий кадр прохода заменяет предыдущий (latest-wins).
+    harness.push_decoded_frame(mid_roll, 80, 1);
+    let roll_tick = harness.tick_once_fast_preroll();
+    assert_eq!(roll_tick.video_frames_presented, 1);
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(mid_roll)
+    );
+    assert!(harness.session.seek_commit().is_some());
+
+    // Landing frame выключает прокат и идёт через обычный seek-путь.
+    harness.push_decoded_frame(target, 81, 1);
+    let landing_tick = harness.tick_once_fast_preroll();
+    assert_eq!(landing_tick.video_frames_presented, 1);
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(target)
+    );
+    assert!(!harness.session.active_seek_presents_preroll_progressively());
+    // LiveScrub route не коммитится без EndScrub: состояние остаётся Scrubbing.
+    assert!(harness.session.seek_commit().is_some());
+    assert!(harness.session.snapshot().timeline.scrubbing);
+    let events = harness.session.take_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::SeekTargetFramePresented(_)))
+    );
+}
+
+/// Прокат latest-wins: несколько pre-target кадров в очереди показывают новейший,
+/// старшие release-ятся как SeekPreroll и возвращают текстуры в пул.
+#[test]
+fn live_scrub_roll_presents_newest_queued_frame_and_releases_older() {
+    let video_track = fake_track(1, TrackKind::Video);
+    let target = Duration::from_secs(8);
+    let actual = Duration::from_millis(7_700);
+    let mid_roll = Duration::from_millis(7_800);
+    let late_roll = Duration::from_millis(7_900);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        target,
+        actual,
+        vec![
+            fake_video_packet_with_keyframe(video_track.id, actual, PacketKeyframe::Keyframe),
+            fake_video_packet_with_keyframe(video_track.id, mid_roll, PacketKeyframe::NotKeyframe),
+            fake_video_packet_with_keyframe(video_track.id, late_roll, PacketKeyframe::NotKeyframe),
+        ],
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+
+    harness
+        .session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    harness
+        .session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
+            MediaTime::from_duration(target),
+        )))
+        .unwrap();
+
+    let _ = harness.tick_once_fast_preroll();
+
+    // Три кадра прохода приходят до следующего tick-а: показан должен быть новейший.
+    harness.push_decoded_frame(actual, 90, 1);
+    harness.push_decoded_frame(mid_roll, 91, 1);
+    harness.push_decoded_frame(late_roll, 92, 1);
+    let roll_tick = harness.tick_once_fast_preroll();
+
+    assert_eq!(roll_tick.video_frames_presented, 1);
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(late_roll)
+    );
+    // Старшие кадры прохода released как seek preroll, а не застряли в очереди.
+    assert!(
+        roll_tick
+            .dropped_video_frames
+            .iter()
+            .any(|drop| drop.reason == PlayerVideoDropReason::SeekPreroll)
+    );
+    assert!(harness.session.pipeline.video_present_queue_is_empty());
+    assert!(harness.session.seek_commit().is_some());
+}
+
+/// Forward extension: цель вперёд в пределах капа продолжает активный decode-проход
+/// без второго demux seek, сохраняя generation и pending video packets.
+#[test]
+fn live_scrub_forward_target_extends_active_pass_without_second_demux_seek() {
+    let video_track = fake_track(1, TrackKind::Video);
+    let first_target = Duration::from_secs(8);
+    let extended_target = Duration::from_millis(8_500);
+    let actual = Duration::from_millis(7_800);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        first_target,
+        actual,
+        vec![
+            fake_video_packet_with_keyframe(video_track.id, actual, PacketKeyframe::Keyframe),
+            fake_video_packet_with_keyframe(
+                video_track.id,
+                first_target,
+                PacketKeyframe::NotKeyframe,
+            ),
+            fake_video_packet_with_keyframe(
+                video_track.id,
+                extended_target,
+                PacketKeyframe::NotKeyframe,
+            ),
+        ],
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+
+    harness
+        .session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    harness
+        .session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
+            MediaTime::from_duration(first_target),
+        )))
+        .unwrap();
+    let first_commit = harness.aligned_seek_commit();
+    let _ = harness.tick_once_fast_preroll();
+    let sent_after_first = harness.sent_packets().len();
+    assert!(sent_after_first > 0);
+
+    // Цель на +500мс вперёд: extension вместо supersede.
+    harness
+        .session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
+            MediaTime::from_duration(extended_target),
+        )))
+        .unwrap();
+
+    // Demux seek остался один: extension не делает второй cold seek.
+    assert_eq!(harness.seek_requests().len(), 1);
+    let extended_commit = harness.aligned_seek_commit();
+    assert_eq!(extended_commit.generation, first_commit.generation);
+    assert_eq!(
+        extended_commit.target_position,
+        MediaTime::from_duration(extended_target)
+    );
+    assert_eq!(
+        harness.session.snapshot().timeline.target_position,
+        Some(MediaTime::from_duration(extended_target))
+    );
+    assert!(harness.session.snapshot().timeline.scrubbing);
+
+    // Кадр старой цели теперь pre-target кадр проката: показывается, но не landing.
+    harness.push_decoded_frame(first_target, 70, 1);
+    let roll_tick = harness.tick_once_fast_preroll();
+    assert_eq!(roll_tick.video_frames_presented, 1);
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(first_target)
+    );
+    assert!(harness.session.seek_commit().is_some());
+    let events = harness.session.take_events();
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, PlayerEvent::SeekTargetFramePresented(_)))
+    );
+
+    // Landing расширенной цели снова публикует SeekTargetFramePresented для UI gate.
+    harness.push_decoded_frame(extended_target, 71, 1);
+    let landing_tick = harness.tick_once_fast_preroll();
+    assert_eq!(landing_tick.video_frames_presented, 1);
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(extended_target)
+    );
+    let events = harness.session.take_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::SeekTargetFramePresented(_)))
+    );
+}
+
+/// Forward extension не применяется к цели назад и к прыжку дальше капа.
+#[test]
+fn live_scrub_backward_or_far_forward_target_takes_cold_route() {
+    let mut session = PlayerSession::new();
+    let seek_request_log = install_fake_media_with_seek_request_log(
+        &mut session,
+        vec![fake_track(1, TrackKind::Video)],
+    );
+
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
+            MediaTime::from_secs(10),
+        )))
+        .unwrap();
+
+    // Назад: cold route со вторым demux seek.
+    session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
+            MediaTime::from_secs(6),
+        )))
+        .unwrap();
+    assert_eq!(
+        seek_request_log
+            .lock()
+            .expect("seek request log lock")
+            .len(),
+        2
+    );
+
+    // Далеко вперёд (за капом): тоже cold route.
+    session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
+            MediaTime::from_secs(20),
+        )))
+        .unwrap();
+    assert_eq!(
+        seek_request_log
+            .lock()
+            .expect("seek request log lock")
+            .len(),
+        3
+    );
+
+    // Вперёд в пределах капа: extension, без нового demux seek.
+    session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
+            MediaTime::from_secs(21),
+        )))
+        .unwrap();
+    assert_eq!(
+        seek_request_log
+            .lock()
+            .expect("seek request log lock")
+            .len(),
+        3
+    );
 }

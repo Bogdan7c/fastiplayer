@@ -33,6 +33,16 @@ use super::scrub_driver::{
 };
 use super::{PlayerSession, PlayerTickConfig};
 
+/// Максимальный шаг вперёд, при котором live scrub продолжает текущий decode-проход
+/// вместо нового cold seek на keyframe-before.
+///
+/// Движение вперёд в пределах этого окна почти всегда дешевле продолжить с текущей
+/// позиции декодера (прокат едет только вперёд, без скачка назад на keyframe).
+/// Большой прыжок вперёд декодировал бы все промежуточные кадры и стал бы
+/// патологически дорогим, поэтому он идёт обычным cold-маршрутом (аналог капа
+/// forward extension из hover Сессии 3).
+const LIVE_SCRUB_FORWARD_EXTENSION_MAX: Duration = Duration::from_secs(3);
+
 /// Read-only срез gate-состояния, нужный только для диагностики active seek-а.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SeekProgressGateSnapshot {
@@ -518,7 +528,28 @@ impl PlayerSession {
 
         self.pipeline.has_selected_video_track()
             && seek_commit.drops_decode_preroll_before_target()
+            && !self.active_seek_presents_preroll_progressively()
             && frame_pts < seek_commit.target_position.as_duration()
+    }
+
+    /// Проверяет, показывает ли активный seek preroll-кадры «прокатом» (live scrub).
+    ///
+    /// Прокат включён только для LiveScrub route и только пока exact landing frame
+    /// ещё не показан: каждый декодированный pre-target кадр становится видимым
+    /// (latest-wins), как «живая перемотка» в монтажных программах. Commit-гейты
+    /// это не ослабляет: landing frame по-прежнему обязан быть target-or-after.
+    /// После показа landing frame прокат выключается, чтобы decode-ahead для
+    /// resume не уводил картинку дальше цели, пока пользователь держит позицию.
+    #[must_use]
+    pub(crate) fn active_seek_presents_preroll_progressively(&self) -> bool {
+        let Some(seek_commit) = self.seek_runtime.active_commit() else {
+            return false;
+        };
+
+        self.pipeline.has_selected_video_track()
+            && seek_commit.drops_decode_preroll_before_target()
+            && self.seek_runtime.active_seek_landing_is_live_scrub()
+            && !self.seek_presented_frame_ready(seek_commit)
     }
 
     /// Проверяет, является ли video packet частью accurate seek preroll до user target.
@@ -707,6 +738,19 @@ impl PlayerSession {
             return Ok(());
         }
 
+        // Прокат live scrub: pre-target кадры должны выйти из декодера и стать
+        // видимыми, поэтому decoder-side floor не ставим. Подавление кадров и
+        // texture-capacity bypass остаются политикой one-shot Accurate seek-а.
+        if self.active_seek_presents_preroll_progressively() {
+            debug!(
+                kind = "seek",
+                generation = seek_commit.generation,
+                target_ms = seek_commit.target_position.as_duration().as_millis(),
+                "Live scrub прокат: decoder output floor пропущен"
+            );
+            return Ok(());
+        }
+
         let floor_pts = seek_commit.target_position.as_duration();
         let floor = VideoPrerollOutputFloor {
             generation: seek_commit.generation,
@@ -888,6 +932,17 @@ impl PlayerSession {
             present_frame_generation,
             false,
         ) {
+            // Прокат live scrub: показанный pre-target кадр текущего generation-а —
+            // это живая картинка и валидный EOF fallback, а не устаревший кадр.
+            // Landing-гейт он всё равно не открывает (guard выше уже отказал).
+            if present_frame_generation == seek_commit.generation
+                && frame_pts < seek_commit.target_position.as_duration()
+                && self.active_seek_presents_preroll_progressively()
+            {
+                self.seek_runtime
+                    .set_eof_fallback_video_position(MediaTime::from_duration(frame_pts));
+                self.snapshot.timeline.stale_frame = false;
+            }
             debug!(
                 kind = "seek",
                 target_ms = seek_commit.target_position.as_duration().as_millis(),
@@ -1745,6 +1800,15 @@ impl PlayerSession {
             );
         };
 
+        if route.is_live_scrub()
+            && self.try_extend_active_live_scrub_landing_forward(
+                target_position,
+                live_scrub_diagnostics,
+            )
+        {
+            return Ok(());
+        }
+
         if let Err(error) =
             demux_seek_request_for_transaction(true, target_position.as_duration(), seek_mode)
         {
@@ -1855,6 +1919,86 @@ impl PlayerSession {
             ));
         }
         Ok(())
+    }
+
+    /// Продолжает активный live scrub проход к более поздней цели без нового cold seek.
+    ///
+    /// Реюз позиции декодера: движение вперёд в пределах капа не делает flush
+    /// декодера и demux seek на keyframe-before — уже идущий decode-проход просто
+    /// доезжает до новой цели, а прокат показывает кадры по пути. Generation,
+    /// pending video packets и очередь кадров остаются валидными. Audio runtime
+    /// сбрасывается под новый target: уже декодированный PCM от старой цели
+    /// очищается, clock base перепривязывается, и trace начинается заново, чтобы
+    /// landing новой цели снова опубликовал `SeekTargetFramePresented`.
+    ///
+    /// Возвращает `true`, если расширение применено и cold route не нужен.
+    fn try_extend_active_live_scrub_landing_forward(
+        &mut self,
+        target_position: MediaTime,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
+    ) -> bool {
+        let Some(seek_commit) = self.seek_runtime.active_commit() else {
+            return false;
+        };
+
+        // Расширять можно только активный live scrub decode-проход до EndScrub:
+        // после запрошенного commit-а целью владеет release-логика.
+        if !self.seek_runtime.active_seek_landing_is_live_scrub()
+            || !self.seek_runtime.seek_landing_decode_active()
+            || self.seek_runtime.active_seek_landing_commit_allowed()
+        {
+            return false;
+        }
+
+        // Accurate-политика проката обязана быть активной, иначе окажемся в
+        // расширении неподдерживаемого маршрута.
+        if !seek_commit.drops_decode_preroll_before_target() {
+            return false;
+        }
+
+        // EOF drain: demuxer уже не читает — новая цель обязана пройти cold route,
+        // который заново seek-ает demuxer и выходит из drain-а.
+        if self.is_eof_draining() {
+            return false;
+        }
+
+        let current_target = seek_commit.target_position.as_duration();
+        let new_target = target_position.as_duration();
+        if new_target < current_target {
+            return false;
+        }
+        if new_target.saturating_sub(current_target) > LIVE_SCRUB_FORWARD_EXTENSION_MAX {
+            return false;
+        }
+
+        // Audio под новый target: буфер от старой цели очищается, decoder
+        // сбрасывается, clock base перепривязывается. Video decoder не трогаем.
+        self.reset_audio_runtime_for_seek_landing(seek_commit.generation);
+        self.pipeline.reset_clocks_for_seek(new_target);
+
+        self.seek_runtime.set_active_commit(SeekCommitState {
+            target_position,
+            started_at: Instant::now(),
+            ..seek_commit
+        });
+
+        // Trace заново: landing новой цели снова должен эмитить
+        // `SeekTargetFramePresented`, иначе UI completion-gate ждёт fallback budget.
+        self.seek_runtime.clear_trace();
+        self.seek_runtime.begin_trace(seek_commit.generation);
+        self.seek_runtime
+            .update_active_live_scrub_diagnostics(live_scrub_diagnostics);
+
+        self.enter_seek_landing_public_scrubbing(target_position);
+
+        debug!(
+            kind = "seek",
+            old_target_ms = current_target.as_millis(),
+            new_target_ms = new_target.as_millis(),
+            generation = seek_commit.generation,
+            "Live scrub: цель расширена вперёд без нового cold seek"
+        );
+        true
     }
 
     /// Переводит только public state/snapshot в pending SeekLanding.
@@ -1992,6 +2136,12 @@ impl PlayerSession {
             self.seek_runtime
                 .update_active_live_scrub_diagnostics(live_scrub_diagnostics);
             self.seek_runtime.request_live_scrub_commit(Instant::now());
+            debug!(
+                kind = "seek",
+                target_ms = latest_request
+                    .map(|request| self.resolve_seek_target(request).as_duration().as_millis()),
+                "EndScrub: live scrub commit запрошен"
+            );
             self.snapshot.timeline.scrubbing = true;
             if let Some(request) = latest_request {
                 self.snapshot.timeline.target_position = Some(self.resolve_seek_target(request));
