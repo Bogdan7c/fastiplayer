@@ -702,18 +702,16 @@ fn assign_codec_context_extradata(
 
 #[cfg(feature = "ffmpeg")]
 fn ffmpeg_thread_count_from_budget(budget: SoftwareDecodeThreadBudget) -> FfiResult<i32> {
-    match budget {
-        SoftwareDecodeThreadBudget::Auto => Ok(0),
-        SoftwareDecodeThreadBudget::Fixed(thread_count) => {
-            i32::try_from(thread_count.get()).map_err(|_| FfmpegError::InvalidInput {
-                operation: "set decoder thread_count",
-                details: format!(
-                    "software decoder thread budget {} does not fit FFmpeg AVCodecContext.thread_count",
-                    thread_count
-                ),
-            })
-        }
-    }
+    // Auto резолвится в `video-core` (ядра − 2, мин 2), а не в FFmpeg-овский `0`
+    // (= все ядра): полный набор decode worker-ов вытесняет render/upload поток.
+    let thread_count = budget.resolved_thread_count();
+    i32::try_from(thread_count.get()).map_err(|_| FfmpegError::InvalidInput {
+        operation: "set decoder thread_count",
+        details: format!(
+            "software decoder thread budget {} does not fit FFmpeg AVCodecContext.thread_count",
+            thread_count
+        ),
+    })
 }
 
 #[cfg(test)]

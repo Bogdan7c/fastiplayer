@@ -1078,6 +1078,7 @@ fn player_decoder_thread_setting(setting_id: &str) -> bool {
             | "video.decoder_ready_queue_frames"
             | "video.decoder_surface_pool_frames"
             | "video.sw_decoder_surface_pool_frames"
+            | "video.sw_decode_threads"
             | "video.zero_copy_surface_pool_slots"
     )
 }
@@ -1128,6 +1129,7 @@ fn player_runtime_setting_id(setting_id: &str) -> Option<PlayerRuntimeSettingId>
         "video.sw_decoder_surface_pool_frames" => {
             PlayerRuntimeSettingId::VideoSoftwareDecoderSurfacePoolFrames
         }
+        "video.sw_decode_threads" => PlayerRuntimeSettingId::VideoSoftwareDecodeThreads,
         "video.zero_copy_surface_pool_slots" => {
             PlayerRuntimeSettingId::VideoZeroCopySurfacePoolSlots
         }

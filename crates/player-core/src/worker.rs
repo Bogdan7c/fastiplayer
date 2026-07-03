@@ -235,11 +235,26 @@ fn decoder_thread_config_from_app_config(
         decoder_ready_queue_frames: config.video.decoder_ready_queue_frames,
         decoder_surface_pool_frames: config.video.decoder_surface_pool_frames,
         software_frame_pool_frames: config.video.sw_decoder_surface_pool_frames,
-        software_decode_thread_budget: video_core::SoftwareDecodeThreadBudget::auto(),
+        software_decode_thread_budget: software_decode_thread_budget_from_config(
+            config.video.sw_decode_threads,
+        ),
         zero_copy_surface_pool_slots: config.video.zero_copy_surface_pool_slots,
         ..PlayerVideoDecoderThreadConfig::from_env()
     }
     .normalized()
+}
+
+/// Конвертирует `video.sw_decode_threads` в neutral thread budget.
+///
+/// `0` = auto (резолв «ядра − 2» живёт в `SoftwareDecodeThreadBudget`),
+/// положительное значение = уже разрешённый пользователем лимит.
+fn software_decode_thread_budget_from_config(
+    sw_decode_threads: usize,
+) -> video_core::SoftwareDecodeThreadBudget {
+    match std::num::NonZeroUsize::new(sw_decode_threads) {
+        Some(thread_count) => video_core::SoftwareDecodeThreadBudget::fixed(thread_count),
+        None => video_core::SoftwareDecodeThreadBudget::auto(),
+    }
 }
 
 /// Конвертирует persisted `[frame_server]` в neutral runtime policy для player-owned scrub.

@@ -1087,6 +1087,31 @@ impl SoftwareDecodeThreadBudget {
             Self::Fixed(thread_count) => Some(thread_count),
         }
     }
+
+    /// Резолвит budget в конкретное число потоков software-декода.
+    ///
+    /// `Auto` = `max(2, доступный параллелизм − 2)`: два hardware thread-а
+    /// остаются render/upload/worker путям, иначе полный набор decode worker-ов
+    /// вытесняет render-поток и UI-кадры регулярно вылетают за бюджет
+    /// (замерено на 4K60 AV1 software: 7.8% → 0.7% кадров сверх 16.7мс).
+    #[must_use]
+    pub fn resolved_thread_count(self) -> NonZeroUsize {
+        match self {
+            Self::Auto => {
+                let host_parallelism = std::thread::available_parallelism()
+                    .map(NonZeroUsize::get)
+                    .unwrap_or(1);
+                let reserved_for_render_and_worker = 2;
+                let auto_threads = host_parallelism
+                    .saturating_sub(reserved_for_render_and_worker)
+                    .max(2)
+                    .min(host_parallelism);
+                NonZeroUsize::new(auto_threads)
+                    .unwrap_or_else(|| NonZeroUsize::new(1).expect("1 is non-zero"))
+            }
+            Self::Fixed(thread_count) => thread_count,
+        }
+    }
 }
 
 /// Backend-neutral runtime limits decoder thread-а.

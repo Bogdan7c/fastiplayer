@@ -30,6 +30,12 @@ pub(crate) const MAX_DECODER_SURFACE_POOL_FRAMES: usize = 64;
 /// Верхний предел zero-copy import slots.
 pub(crate) const MAX_ZERO_COPY_SURFACE_POOL_SLOTS: usize = 64;
 
+/// Минимум потоков software-декода; 0 = auto (ядра − 2).
+pub(crate) const MIN_SW_DECODE_THREADS: usize = 0;
+
+/// Верхний предел потоков software-декода.
+pub(crate) const MAX_SW_DECODE_THREADS: usize = 64;
+
 /// Верхний предел demux work за tick, чтобы ошибочный config не блокировал worker.
 pub(crate) const MAX_SCHEDULER_DEMUX_PACKETS_PER_TICK: usize = 512;
 
@@ -336,6 +342,12 @@ fn validate_video_section(config: &AppConfig) -> ConfigResult<()> {
         config.video.sw_decoder_surface_pool_frames,
         MIN_DECODER_QUEUE_FRAMES,
         MAX_DECODER_SURFACE_POOL_FRAMES,
+    )?;
+    validate_usize_range(
+        "video.sw_decode_threads",
+        config.video.sw_decode_threads,
+        MIN_SW_DECODE_THREADS,
+        MAX_SW_DECODE_THREADS,
     )?;
     validate_usize_range(
         "video.zero_copy_surface_pool_slots",

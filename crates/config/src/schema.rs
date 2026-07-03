@@ -289,6 +289,11 @@ fn document_schema_version_4_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "sw_decode_threads = 0",
+        "# Потоки software-декода; 0 = авто (ядра − 2, чтобы render-поток не голодал).",
+    );
+    insert_default_config_comment(
+        toml_text,
         "zero_copy_surface_pool_slots = 24",
         "# Zero-copy external import slots; CPU fallback всё равно запрещён.",
     );
@@ -945,6 +950,26 @@ pub struct VideoConfig {
     )]
     pub sw_decoder_surface_pool_frames: usize,
 
+    /// Лимит потоков software (FFmpeg) декода; 0 = auto (ядра − 2, минимум 2).
+    #[setting(
+        id = "video.sw_decode_threads",
+        path = "video.sw_decode_threads",
+        section = "video",
+        group = "decode",
+        surface = "main-settings-window",
+        label_id = "settings.video.sw_decode_threads.label",
+        label_ru = "Software decode потоки",
+        description_id = "settings.video.sw_decode_threads.description",
+        description_ru = "Сколько потоков отдавать software-декодеру (FFmpeg). 0 = авто: все ядра минус 2 — запас, чтобы render/upload поток не голодал и FPS рендера оставался стабильным. Полный набор ядер (например, 8 из 8) ускоряет чистый декод, но вытесняет рендер и даёт рывки на 4K60. Применяется на лету.",
+        editor = "integer",
+        min = crate::validation::MIN_SW_DECODE_THREADS,
+        max = crate::validation::MAX_SW_DECODE_THREADS,
+        step = 1,
+        unit = "threads",
+        apply = "video.apply"
+    )]
+    pub sw_decode_threads: usize,
+
     /// Количество zero-copy external import slots.
     #[setting(
         id = "video.zero_copy_surface_pool_slots",
@@ -982,6 +1007,7 @@ impl Default for VideoConfig {
             decoder_ready_queue_frames: 8,
             decoder_surface_pool_frames: 24,
             sw_decoder_surface_pool_frames: 8,
+            sw_decode_threads: 0,
             zero_copy_surface_pool_slots: 24,
             scheduler: VideoSchedulerConfig::default(),
         }
@@ -2295,6 +2321,7 @@ mod settings_metadata_tests {
         "video.decoder_ready_queue_frames",
         "video.decoder_surface_pool_frames",
         "video.sw_decoder_surface_pool_frames",
+        "video.sw_decode_threads",
         "video.zero_copy_surface_pool_slots",
         "video.scheduler.demux_packets_per_tick",
         "video.scheduler.video_packets_per_tick",
@@ -2598,6 +2625,12 @@ mod settings_metadata_tests {
             "video.sw_decoder_surface_pool_frames",
             validation::MIN_DECODER_QUEUE_FRAMES,
             validation::MAX_DECODER_SURFACE_POOL_FRAMES,
+        );
+        assert_integer_range(
+            &registry,
+            "video.sw_decode_threads",
+            validation::MIN_SW_DECODE_THREADS,
+            validation::MAX_SW_DECODE_THREADS,
         );
         assert_integer_range(
             &registry,

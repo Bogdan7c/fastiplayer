@@ -69,6 +69,9 @@ pub enum PlayerRuntimeSettingId {
     /// `video.sw_decoder_surface_pool_frames`.
     VideoSoftwareDecoderSurfacePoolFrames,
 
+    /// `video.sw_decode_threads`.
+    VideoSoftwareDecodeThreads,
+
     /// `video.zero_copy_surface_pool_slots`.
     VideoZeroCopySurfacePoolSlots,
 
@@ -169,6 +172,7 @@ impl PlayerRuntimeSettingId {
             Self::VideoDecoderReadyQueueFrames => "video.decoder_ready_queue_frames",
             Self::VideoDecoderSurfacePoolFrames => "video.decoder_surface_pool_frames",
             Self::VideoSoftwareDecoderSurfacePoolFrames => "video.sw_decoder_surface_pool_frames",
+            Self::VideoSoftwareDecodeThreads => "video.sw_decode_threads",
             Self::VideoZeroCopySurfacePoolSlots => "video.zero_copy_surface_pool_slots",
             Self::VideoSchedulerDemuxPacketsPerTick => "video.scheduler.demux_packets_per_tick",
             Self::VideoSchedulerVideoPacketsPerTick => "video.scheduler.video_packets_per_tick",

@@ -547,12 +547,9 @@ pub struct FfmpegSoftwareHoverSnapshot {
 pub fn playback_thread_budget_from_decoder_config(
     config: VideoDecoderThreadConfig,
 ) -> NonZeroUsize {
-    match config.software_decode_thread_budget {
-        SoftwareDecodeThreadBudget::Auto => {
-            std::thread::available_parallelism().unwrap_or_else(|_| non_zero_or_one(1))
-        }
-        SoftwareDecodeThreadBudget::Fixed(thread_count) => thread_count,
-    }
+    // Единый резолв с ffmpeg_thread_count_from_budget: hover accounting обязан
+    // видеть тот же playback thread budget, который реально получит декодер.
+    config.software_decode_thread_budget.resolved_thread_count()
 }
 
 #[must_use]
