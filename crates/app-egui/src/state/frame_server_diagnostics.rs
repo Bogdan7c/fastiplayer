@@ -536,7 +536,8 @@ impl TimelineHoverPreviewDiagnosticsRecorder {
             TimelineHoverPreviewUpdateOutcome::Loading => {
                 self.loading_count = self.loading_count.saturating_add(1);
             }
-            TimelineHoverPreviewUpdateOutcome::Ready => {
+            TimelineHoverPreviewUpdateOutcome::Ready
+            | TimelineHoverPreviewUpdateOutcome::ApproximateReady => {
                 self.ready_count = self.ready_count.saturating_add(1);
             }
             TimelineHoverPreviewUpdateOutcome::BusyKeptLastReady => {

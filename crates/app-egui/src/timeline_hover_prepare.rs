@@ -18,6 +18,10 @@ use player_core::{PlayerTimelineHoverPrepareBorrowOutcome, PlayerTimelineHoverPr
 use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
 use tracing::trace;
 
+use crate::timeline_hover_approx_preview::{
+    TimelineHoverApproximatePreviewBorrow, TimelineHoverApproximatePreviewClearReason,
+    TimelineHoverApproximatePreviewSlot,
+};
 use crate::timeline_hover_decode::{
     HoverSpanDecodeDrive, HoverSpanDecodeFailure, HoverSpanDecodeState, TimelineHoverDecodeSession,
     cancel_hover_span_decode, drive_hover_span_decode,
@@ -44,6 +48,7 @@ pub(crate) struct AppTimelineHoverPrepareExecutor {
     active_hover_source: Option<TimelineHoverOpenedSource>,
     decode_session: Option<TimelineHoverDecodeSession>,
     span_decode_state: Option<HoverSpanDecodeState>,
+    approximate_preview_slot: TimelineHoverApproximatePreviewSlot,
 }
 
 /// App-owned controller для будущего unified timeline hover/focus intent-а.
@@ -409,6 +414,7 @@ impl AppTimelineHoverPrepareExecutor {
             active_hover_source: None,
             decode_session: None,
             span_decode_state: None,
+            approximate_preview_slot: TimelineHoverApproximatePreviewSlot::default(),
         }
     }
 
@@ -419,6 +425,8 @@ impl AppTimelineHoverPrepareExecutor {
     pub(crate) fn set_decode_session(&mut self, session: Option<TimelineHoverDecodeSession>) {
         self.span_decode_state = None;
         if self.decode_session.take().is_some() {
+            self.approximate_preview_slot
+                .clear(TimelineHoverApproximatePreviewClearReason::SourceOrBackendSwitched);
             let release_outcome = self.handoff.release_hover_owned_entries_for_session_end(
                 TimelineHoverPrepareSessionEndReleaseReason::SourceOrBackendSwitched,
             );
@@ -438,6 +446,18 @@ impl AppTimelineHoverPrepareExecutor {
         self.decode_session
             .as_ref()
             .map(TimelineHoverDecodeSession::resource_provider)
+    }
+
+    /// Borrow approximate keyframe-а для resolved active span-а.
+    ///
+    /// Caller не получает ownership slot-а: только clone lease-а для visual
+    /// materialization тем же shared helper-ом, что и exact borrow.
+    #[must_use]
+    pub(crate) fn borrow_approximate_preview_for_span(
+        &self,
+        span: DecodeDependencySpan,
+    ) -> Option<TimelineHoverApproximatePreviewBorrow> {
+        self.approximate_preview_slot.borrow_for_span(span)
     }
 
     /// Остался ли незавершённый decode continuation у активного span-а.
@@ -471,6 +491,8 @@ impl AppTimelineHoverPrepareExecutor {
     /// Decode continuation привязан к demux-позиции активного hover source-а,
     /// поэтому потеря source-а обязана сбрасывать span decode state.
     fn reset_span_decode_for_source_loss(&mut self) {
+        self.approximate_preview_slot
+            .clear(TimelineHoverApproximatePreviewClearReason::SourceLost);
         if let Some(session) = self.decode_session.as_mut() {
             cancel_hover_span_decode(session, &mut self.span_decode_state);
         } else {
@@ -479,7 +501,9 @@ impl AppTimelineHoverPrepareExecutor {
     }
 
     /// Завершает decode state span-а после финального PreparedHit без потери source/session identity.
-    fn finish_completed_span_decode(&mut self, _span_id: TimelineHoverPrepareSpanId) {
+    fn finish_completed_span_decode(&mut self, span_id: TimelineHoverPrepareSpanId) {
+        self.approximate_preview_slot
+            .clear(TimelineHoverApproximatePreviewClearReason::ExactPreparedHit { span_id });
         if let Some(session) = self.decode_session.as_mut() {
             cancel_hover_span_decode(session, &mut self.span_decode_state);
         } else {
@@ -526,9 +550,11 @@ impl AppTimelineHoverPrepareExecutor {
     }
 
     pub(crate) fn release_hover_owned_entries_for_session_end(
-        &self,
+        &mut self,
         reason: TimelineHoverPrepareSessionEndReleaseReason,
     ) -> TimelineHoverPrepareSessionEndReleaseOutcome {
+        self.approximate_preview_slot
+            .clear(TimelineHoverApproximatePreviewClearReason::SessionEnded { reason });
         self.handoff
             .release_hover_owned_entries_for_session_end(reason)
     }
@@ -652,7 +678,12 @@ impl TimelineHoverPrepareExecutor for AppTimelineHoverPrepareExecutor {
         }
     }
 
-    fn cancel_dependency_span(&mut self, _request: TimelineHoverPrepareCancelRequest) {
+    fn cancel_dependency_span(&mut self, request: TimelineHoverPrepareCancelRequest) {
+        self.approximate_preview_slot.clear(
+            TimelineHoverApproximatePreviewClearReason::SpanCancelled {
+                span_id: request.span_id,
+            },
+        );
         self.network_open_controller.cancel_pending_target();
         if let Some(session) = self.decode_session.as_mut() {
             cancel_hover_span_decode(session, &mut self.span_decode_state);
@@ -705,6 +736,7 @@ impl AppTimelineHoverPrepareExecutor {
         let drive = drive_hover_span_decode(
             session,
             &mut self.span_decode_state,
+            &mut self.approximate_preview_slot,
             hover_source,
             &self.handoff,
             &stream_context,
@@ -986,11 +1018,21 @@ impl TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor> {
     }
 
     pub(crate) fn release_hover_owned_entries_for_session_end(
-        &self,
+        &mut self,
         reason: TimelineHoverPrepareSessionEndReleaseReason,
     ) -> TimelineHoverPrepareSessionEndReleaseOutcome {
         self.executor
             .release_hover_owned_entries_for_session_end(reason)
+    }
+
+    /// Borrow approximate keyframe-а, если он принадлежит текущему active span-у.
+    #[must_use]
+    pub(crate) fn borrow_approximate_preview_for_active_span(
+        &self,
+    ) -> Option<TimelineHoverApproximatePreviewBorrow> {
+        let active_span = self.active_span?;
+        self.executor
+            .borrow_approximate_preview_for_span(active_span.span)
     }
 
     pub(crate) fn reconfigure_hover_prepare_primary_capacity(
@@ -1481,7 +1523,7 @@ impl TimelineHoverPrepareTarget {
         Ok(())
     }
 
-    fn dependency_span(self) -> Option<DecodeDependencySpan> {
+    pub(crate) fn dependency_span(self) -> Option<DecodeDependencySpan> {
         self.dependency_span
     }
 
@@ -1529,6 +1571,16 @@ impl DecodeDependencySpan {
     #[must_use]
     pub(crate) const fn post_target_reorder_drain_frames(self) -> u16 {
         self.post_target_reorder_drain_frames
+    }
+
+    /// Проверяет, можно ли использовать approximate keyframe для другого target-а.
+    ///
+    /// Visual fallback допускается только внутри того же source/backend/track/
+    /// generation/exactness context-а и того же decode-safe start. `drain_until`
+    /// намеренно не участвует: forward extension span-а не делает keyframe хуже.
+    #[must_use]
+    pub(crate) fn matches_approximate_preview_anchor(self, other: Self) -> bool {
+        self.context == other.context && self.decode_safe_start_pts == other.decode_safe_start_pts
     }
 
     fn compare_requested_span(self, requested: Self) -> DecodeDependencySpanChange {

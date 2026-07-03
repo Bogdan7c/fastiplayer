@@ -894,6 +894,7 @@ impl AppState {
         match outcome {
             Some(TimelineHoverPreviewUpdateOutcome::Loading) => "loading",
             Some(TimelineHoverPreviewUpdateOutcome::Ready) => "ready",
+            Some(TimelineHoverPreviewUpdateOutcome::ApproximateReady) => "approximate_ready",
             Some(TimelineHoverPreviewUpdateOutcome::BusyKeptLastReady) => "busy_kept_last_ready",
             Some(TimelineHoverPreviewUpdateOutcome::BusyEmpty) => "busy_empty",
             Some(TimelineHoverPreviewUpdateOutcome::MissingMaterializer) => "missing_materializer",

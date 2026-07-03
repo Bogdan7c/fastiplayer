@@ -442,6 +442,14 @@ fn hover_preview_busy_materialization_requests_repaint() {
 }
 
 #[test]
+fn hover_preview_approximate_ready_requests_repaint() {
+    assert!(timeline_hover_preview_update_outcome_requests_repaint(
+        TimelineHoverPreviewUpdateOutcome::ApproximateReady,
+        false,
+    ));
+}
+
+#[test]
 fn hover_preview_working_set_miss_repaints_only_for_pending_decode_work() {
     assert!(timeline_hover_preview_update_outcome_requests_repaint(
         TimelineHoverPreviewUpdateOutcome::WorkingSetMiss,

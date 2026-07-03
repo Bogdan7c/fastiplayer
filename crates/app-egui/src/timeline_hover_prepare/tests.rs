@@ -888,7 +888,8 @@ mod decode_execution {
     };
     use video_core::{
         DecodePacket, DecodeSendError, DecodeThreadError, DecodedFrame, DecoderResourceSnapshot,
-        FrameResourceHandle, VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState,
+        FrameResourceHandle, HostUploadResourceSnapshot, HostUploadResourceSnapshotStatus,
+        VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState,
         VideoDecoderThreadHandle, VideoFrameDiagnostics, VideoStreamConfigResult,
         VideoStreamDecodeConfig,
     };
@@ -906,10 +907,12 @@ mod decode_execution {
         scripted_frames: VecDeque<DecodedFrame>,
         frames_ready_after_packets: usize,
         released_handles: Vec<u64>,
+        provider_released_handles: Vec<u64>,
         backpressure_after_packets: Option<usize>,
         eos_drain_generation: Option<u64>,
         completed_packet_count: usize,
         auto_complete_packets: bool,
+        host_upload_snapshot: HostUploadResourceSnapshotStatus,
     }
 
     impl Default for FakeHoverDecoderShared {
@@ -921,10 +924,12 @@ mod decode_execution {
                 scripted_frames: VecDeque::new(),
                 frames_ready_after_packets: 0,
                 released_handles: Vec::new(),
+                provider_released_handles: Vec::new(),
                 backpressure_after_packets: None,
                 eos_drain_generation: None,
                 completed_packet_count: 0,
                 auto_complete_packets: true,
+                host_upload_snapshot: HostUploadResourceSnapshotStatus::UnsupportedBackend,
             }
         }
     }
@@ -936,7 +941,9 @@ mod decode_execution {
 
     impl FakeHoverDecoderThread {
         fn new(shared: Arc<Mutex<FakeHoverDecoderShared>>) -> Self {
-            let provider = PresentFrameResourceProviderHandle::new(FakeHoverResourceProvider);
+            let provider = PresentFrameResourceProviderHandle::new(FakeHoverResourceProvider {
+                shared: Arc::clone(&shared),
+            });
             Self { shared, provider }
         }
     }
@@ -1035,6 +1042,13 @@ mod decode_execution {
             None
         }
 
+        fn host_upload_resource_snapshot(&self) -> HostUploadResourceSnapshotStatus {
+            self.shared
+                .lock()
+                .expect("fake decoder lock")
+                .host_upload_snapshot
+        }
+
         fn packet_queue_depth(&self) -> usize {
             0
         }
@@ -1047,7 +1061,9 @@ mod decode_execution {
         }
     }
 
-    struct FakeHoverResourceProvider;
+    struct FakeHoverResourceProvider {
+        shared: Arc<Mutex<FakeHoverDecoderShared>>,
+    }
 
     impl PresentFrameResourceProvider for FakeHoverResourceProvider {
         fn resource_lookup(
@@ -1059,7 +1075,17 @@ mod decode_execution {
             }
         }
 
-        fn release_frame(&self, _handle: FrameResourceHandle) {}
+        fn release_frame(&self, handle: FrameResourceHandle) {
+            let mut shared = self.shared.lock().expect("fake decoder lock");
+            shared.provider_released_handles.push(handle.0);
+            if let HostUploadResourceSnapshotStatus::Available(mut snapshot) =
+                shared.host_upload_snapshot
+            {
+                snapshot.host_frames_in_flight = snapshot.host_frames_in_flight.saturating_sub(1);
+                snapshot.upload_slots_free = snapshot.upload_slots_free.saturating_add(1);
+                shared.host_upload_snapshot = HostUploadResourceSnapshotStatus::Available(snapshot);
+            }
+        }
     }
 
     /// Demuxer, отдающий заранее заданный поток packet/EOS событий после seek-а.
@@ -1207,6 +1233,16 @@ mod decode_execution {
         TimelineHoverDecodeSession::new(Box::new(thread), provider, reservation, resolved_budget)
     }
 
+    fn full_host_upload_pool_snapshot() -> HostUploadResourceSnapshotStatus {
+        HostUploadResourceSnapshotStatus::Available(HostUploadResourceSnapshot {
+            host_frames_ready: 0,
+            host_frames_in_flight: 2,
+            upload_slots_capacity: 2,
+            upload_slots_free: 0,
+            upload_failures: 0,
+        })
+    }
+
     struct DecodeHarness {
         controller: TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor>,
         handoff: PlayerTimelineHoverPrepareHandoff,
@@ -1234,7 +1270,7 @@ mod decode_execution {
     }
 
     #[test]
-    fn decode_prepares_first_target_or_after_frame_and_releases_pre_target() {
+    fn decode_publishes_first_keyframe_approximate_then_prepares_exact_frame() {
         let mut harness = decode_harness(vec![
             video_packet(9_400, true),
             video_packet(9_600, false),
@@ -1273,8 +1309,12 @@ mod decode_execution {
         );
         assert_eq!(shared.configured.len(), 1);
         assert_eq!(shared.sent_packets.len(), 3);
-        // Pre-target кадр released обратно в decoder pool, не вставлен.
-        assert_eq!(shared.released_handles, vec![7]);
+        // Первый pre-target кадр удерживается approximate visual slot-ом, а не
+        // release-ится прямым decoder path-ом.
+        assert_eq!(shared.released_handles, Vec::<u64>::new());
+        // После exact PreparedHit controller закрывает span и approximate lease
+        // возвращается в provider pool ровно один раз через RAII drop.
+        assert_eq!(shared.provider_released_handles, vec![7]);
         drop(shared);
 
         // Первый target-or-after кадр реально вставлен в shared working set.
@@ -1310,6 +1350,178 @@ mod decode_execution {
                 .flush_count,
             2,
             "working-set hit must not restart decode span"
+        );
+    }
+
+    #[test]
+    fn approximate_slot_released_once_on_timeline_leave() {
+        let mut harness = decode_harness(vec![video_packet(9_400, true)]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 1;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(9_400, 1, 7)]);
+        }
+        let active_target = unresolved_active_target(10_000);
+
+        let first_pass = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            first_pass.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+                reason: TimelineHoverPrepareIncompleteReason::EndOfStreamBeforeTarget,
+                ..
+            }
+        ));
+        assert!(
+            harness
+                .controller
+                .borrow_approximate_preview_for_active_span()
+                .is_some(),
+            "first keyframe must stay available as approximate preview"
+        );
+
+        harness
+            .controller
+            .cancel_active_span(TimelineHoverPrepareCancellationReason::TimelineLeft);
+        harness
+            .controller
+            .cancel_active_span(TimelineHoverPrepareCancellationReason::TimelineLeft);
+
+        assert_eq!(
+            harness
+                .shared
+                .lock()
+                .expect("fake decoder lock")
+                .provider_released_handles,
+            vec![7],
+            "timeline leave must release approximate lease exactly once"
+        );
+    }
+
+    #[test]
+    fn approximate_slot_released_once_on_span_switch() {
+        let mut harness = decode_harness(vec![video_packet(9_400, true)]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 1;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(9_400, 1, 7)]);
+        }
+        let active_target = unresolved_active_target(10_000);
+
+        let first_pass = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            first_pass.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::IncompleteSpan { .. }
+        ));
+
+        let switched_span_target = target_with_context(2, 10_500);
+        let _ = harness
+            .controller
+            .prepare_hover_target(switched_span_target);
+
+        assert_eq!(
+            harness
+                .shared
+                .lock()
+                .expect("fake decoder lock")
+                .provider_released_handles,
+            vec![7],
+            "span supersede must release old approximate lease exactly once"
+        );
+    }
+
+    #[test]
+    fn approximate_slot_released_once_on_session_switch() {
+        let mut harness = decode_harness(vec![video_packet(9_400, true)]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 1;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(9_400, 1, 7)]);
+        }
+        let active_target = unresolved_active_target(10_000);
+
+        let first_pass = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            first_pass.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::IncompleteSpan { .. }
+        ));
+
+        harness.controller.executor.set_decode_session(None);
+        harness.controller.executor.set_decode_session(None);
+
+        assert_eq!(
+            harness
+                .shared
+                .lock()
+                .expect("fake decoder lock")
+                .provider_released_handles,
+            vec![7],
+            "session switch must release approximate lease exactly once"
+        );
+    }
+
+    #[test]
+    fn pool_pressure_evicts_approximate_slot_and_exact_decode_continues() {
+        let mut harness =
+            decode_harness(vec![video_packet(9_400, true), video_packet(10_020, false)]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 1;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(9_400, 1, 7)]);
+            shared.host_upload_snapshot = full_host_upload_pool_snapshot();
+        }
+        let active_target = unresolved_active_target(10_000);
+
+        let first_pass = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            first_pass.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
+                reason: TimelineHoverPrepareIncompleteReason::DecodeBudgetExhausted,
+                ..
+            }
+        ));
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            assert_eq!(
+                shared.provider_released_handles,
+                vec![7],
+                "pool pressure must evict approximate lease before exact decode"
+            );
+            assert_eq!(
+                shared.sent_packets.len(),
+                1,
+                "driver returns after eviction and continues on next UI pass"
+            );
+            shared.frames_ready_after_packets = 2;
+            shared
+                .scripted_frames
+                .push_back(decoded_frame(10_020, 1, 8));
+        }
+
+        let second_pass = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            second_pass.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit { actual_pts, .. }
+                if actual_pts == timestamp(10_020)
+        ));
+        assert!(matches!(
+            harness
+                .handoff
+                .borrow_prepared_frame(active_target.lookup_request()),
+            PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(_)
+        ));
+        assert_eq!(
+            harness
+                .shared
+                .lock()
+                .expect("fake decoder lock")
+                .provider_released_handles,
+            vec![7],
+            "exact path must not release the already-evicted approximate twice"
         );
     }
 

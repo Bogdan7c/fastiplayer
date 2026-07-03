@@ -4,6 +4,7 @@ use super::timeline_hover_leave_grace::{
 };
 use super::*;
 use crate::frame_prepare::TimelineHoverPreviewUpdateOutcome;
+use crate::timeline_hover_approx_preview::TimelineHoverApproximatePreviewBorrow;
 use crate::timeline_hover_intent::{TimelineHoverFrameCoalescer, TimelineHoverFrameOutcome};
 use crate::timeline_hover_prepare::{
     TimelineHoverPrepareCompletionOutcome, TimelineHoverPrepareIncompleteReason,
@@ -254,7 +255,8 @@ pub(super) const fn timeline_hover_preview_update_outcome_requests_repaint(
 ) -> bool {
     match update_outcome {
         TimelineHoverPreviewUpdateOutcome::BusyEmpty
-        | TimelineHoverPreviewUpdateOutcome::BusyKeptLastReady => true,
+        | TimelineHoverPreviewUpdateOutcome::BusyKeptLastReady
+        | TimelineHoverPreviewUpdateOutcome::ApproximateReady => true,
         TimelineHoverPreviewUpdateOutcome::WorkingSetMiss => pending_span_decode_work,
         TimelineHoverPreviewUpdateOutcome::Loading
         | TimelineHoverPreviewUpdateOutcome::Ready
@@ -780,10 +782,21 @@ impl AppState {
             .timeline_hover_prepare_controller
             .executor()
             .borrow_prepared_frame(lookup_request);
-        let materializer = self.timeline_hover_preview_materializer_for_borrow(&borrow_outcome);
+        let approximate_borrow = match borrow_outcome {
+            player_core::PlayerTimelineHoverPrepareBorrowOutcome::Miss(_) => self
+                .timeline_hover_prepare_controller
+                .borrow_approximate_preview_for_active_span(),
+            player_core::PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(_)
+            | player_core::PlayerTimelineHoverPrepareBorrowOutcome::TimingRejected(_) => None,
+        };
+        let materializer = self.timeline_hover_preview_materializer_for_borrow(
+            &borrow_outcome,
+            approximate_borrow.as_ref(),
+        );
         let preview_outcome = self.timeline_hover_preview_render_state.update_from_borrow(
             visual_target,
             borrow_outcome,
+            approximate_borrow,
             load_state,
             materializer.as_deref(),
         );
@@ -818,15 +831,24 @@ impl AppState {
     fn timeline_hover_preview_materializer_for_borrow(
         &self,
         borrow_outcome: &player_core::PlayerTimelineHoverPrepareBorrowOutcome,
+        approximate_borrow: Option<&TimelineHoverApproximatePreviewBorrow>,
     ) -> Option<std::sync::Arc<dyn WgpuFrameTextureViewMaterializer>> {
-        let player_core::PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(borrowed) =
-            borrow_outcome
-        else {
+        let lease = match borrow_outcome {
+            player_core::PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(borrowed) => {
+                Some(borrowed.lease())
+            }
+            player_core::PlayerTimelineHoverPrepareBorrowOutcome::Miss(_) => {
+                approximate_borrow.map(TimelineHoverApproximatePreviewBorrow::lease)
+            }
+            player_core::PlayerTimelineHoverPrepareBorrowOutcome::TimingRejected(_) => None,
+        };
+
+        let Some(lease) = lease else {
             return self.wgpu_frame_materializer.clone();
         };
 
         let lease_is_hover_owned = match (
-            borrowed.lease().resource_provider(),
+            lease.resource_provider(),
             self.timeline_hover_prepare_controller
                 .executor()
                 .decode_session_resource_provider(),

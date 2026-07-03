@@ -8,8 +8,8 @@
 //! переиспользования playback demuxer/decoder здесь нет.
 
 use frame_server_core::{
-    HoverResolvedBudget, TimelineHoverPrepareAdmissionMode, TimelineHoverPrepareAdmissionRequest,
-    TimelineHoverPrepareProviderBudget,
+    HoverBudgetResourceClass, HoverResolvedBudget, TimelineHoverPrepareAdmissionMode,
+    TimelineHoverPrepareAdmissionRequest, TimelineHoverPrepareProviderBudget,
 };
 use media_core::{DemuxReadEvent, MediaTime, Packet, PacketKeyframe, TrackKind, TrackTimestamp};
 use player_core::{
@@ -19,8 +19,8 @@ use player_core::{
 use tracing::{debug, trace, warn};
 use video_backend_api::{PresentFrameResourceProviderHandle, VideoBackendDecoderThreadHandle};
 use video_core::{
-    DecodePacket, DecodeSendError, DecodedFrame, VideoDecoderEndOfStreamDrainResult,
-    VideoDecoderEndOfStreamDrainState, VideoStreamConfigResult,
+    DecodePacket, DecodeSendError, DecodedFrame, HostUploadResourceSnapshotStatus,
+    VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState, VideoStreamConfigResult,
 };
 use video_ffmpeg::FfmpegSoftwareHoverReservation;
 use video_present_core::{
@@ -28,6 +28,9 @@ use video_present_core::{
     VideoFrameReleaseSink,
 };
 
+use crate::timeline_hover_approx_preview::{
+    TimelineHoverApproximatePreviewClearReason, TimelineHoverApproximatePreviewSlot,
+};
 use crate::timeline_hover_prepare::{
     TimelineHoverPrepareExecutorRequest, TimelineHoverPrepareIncompleteReason,
     TimelineHoverPreparePlaybackMode, TimelineHoverPreparePressure,
@@ -224,6 +227,7 @@ pub(crate) enum HoverSpanDecodeFailure {
 pub(crate) fn drive_hover_span_decode(
     session: &mut TimelineHoverDecodeSession,
     span_state: &mut Option<HoverSpanDecodeState>,
+    approximate_preview_slot: &mut TimelineHoverApproximatePreviewSlot,
     hover_source: &mut TimelineHoverOpenedSource,
     handoff: &PlayerTimelineHoverPrepareHandoff,
     stream_context: &PlayerHoverStreamDecodeContext,
@@ -242,6 +246,12 @@ pub(crate) fn drive_hover_span_decode(
     // Начало нового span-а: реконфигурация stream-а (если поменялся) + flush.
     let needs_new_state = !matches!(span_state, Some(state) if state.span_id == request.span_id);
     if needs_new_state {
+        approximate_preview_slot.clear(
+            TimelineHoverApproximatePreviewClearReason::NewSpanStarted {
+                span_id: request.span_id,
+            },
+        );
+
         if session.configured_stream.as_ref() != Some(stream_context) {
             match session
                 .decoder_thread
@@ -330,7 +340,17 @@ pub(crate) fn drive_hover_span_decode(
 
             let actual_pts = target.pts_from_media_time(MediaTime::from_duration(frame.pts));
             if target.actual_pts_is_before_target(actual_pts) {
-                session.release_decoded_frame(&frame);
+                if state.frames_drained == 1 {
+                    publish_approximate_preview_frame(
+                        session,
+                        approximate_preview_slot,
+                        request,
+                        frame,
+                        actual_pts,
+                    );
+                } else {
+                    session.release_decoded_frame(&frame);
+                }
                 continue;
             }
 
@@ -343,6 +363,17 @@ pub(crate) fn drive_hover_span_decode(
                 actual_pts,
                 post_target_reorder,
             );
+        }
+
+        if evict_approximate_preview_for_exact_decode_pool_pressure(
+            session,
+            approximate_preview_slot,
+            state,
+        ) {
+            return HoverSpanDecodeDrive::Incomplete {
+                reason: TimelineHoverPrepareIncompleteReason::DecodeBudgetExhausted,
+                diagnostics: state.diagnostics(post_target_reorder),
+            };
         }
 
         // 2. Fatal decoder error делает session непригодной typed-ом, не паникой.
@@ -497,10 +528,7 @@ fn insert_target_or_after_frame(
     actual_pts: TrackTimestamp,
     post_target_reorder: u16,
 ) -> HoverSpanDecodeDrive {
-    let lease = VideoFrameLease::new(
-        VideoFrameLeaseConfig::new(frame.generation, frame, session.release_sink.clone())
-            .with_resource_provider(session.resource_provider.clone()),
-    );
+    let lease = lease_decoded_frame(session, frame);
 
     let admission_mode = match request.target.playback_mode() {
         TimelineHoverPreparePlaybackMode::ResumePendingAfterSeek { .. } => {
@@ -539,6 +567,89 @@ fn insert_target_or_after_frame(
             }
         }
     }
+}
+
+/// Создаёт shared lease из decoded frame-а hover provider-а.
+///
+/// Один и тот же helper используется для approximate visual slot-а и exact
+/// working-set insert-а, чтобы release sink/provider identity не расходились.
+fn lease_decoded_frame(
+    session: &TimelineHoverDecodeSession,
+    frame: DecodedFrame,
+) -> VideoFrameLease {
+    VideoFrameLease::new(
+        VideoFrameLeaseConfig::new(frame.generation, frame, session.release_sink.clone())
+            .with_resource_provider(session.resource_provider.clone()),
+    )
+}
+
+/// Публикует первый decoded pre-target кадр как visual approximate preview.
+fn publish_approximate_preview_frame(
+    session: &TimelineHoverDecodeSession,
+    approximate_preview_slot: &mut TimelineHoverApproximatePreviewSlot,
+    request: &TimelineHoverPrepareExecutorRequest,
+    frame: DecodedFrame,
+    actual_pts: TrackTimestamp,
+) {
+    let lease = lease_decoded_frame(session, frame);
+    let outcome = approximate_preview_slot.publish_first_frame(
+        request.span_id,
+        request.span,
+        lease,
+        actual_pts,
+    );
+    trace!(
+        span_id = ?request.span_id,
+        ?actual_pts,
+        ?outcome,
+        "Hover decode span published approximate keyframe preview"
+    );
+}
+
+/// Освобождает approximate keyframe, если он блокирует дальнейший exact decode.
+///
+/// Software hover auto-budget до отдельной сессии может быть всего 2 кадра.
+/// Approximate slot удерживает один lease, поэтому при полном host-upload pool-е
+/// он уступает место exact target-or-after decode. Это локальное visual eviction:
+/// working set и seek landing ownership при этом не меняются.
+fn evict_approximate_preview_for_exact_decode_pool_pressure(
+    session: &TimelineHoverDecodeSession,
+    approximate_preview_slot: &mut TimelineHoverApproximatePreviewSlot,
+    state: &HoverSpanDecodeState,
+) -> bool {
+    if !approximate_preview_slot.is_occupied() {
+        return false;
+    }
+
+    let ready_queue_capacity = session
+        .resolved_budget
+        .budget_for(HoverBudgetResourceClass::SoftwareFramePoolFrames)
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(0);
+
+    let HostUploadResourceSnapshotStatus::Available(snapshot) =
+        session.decoder_thread.host_upload_resource_snapshot()
+    else {
+        return false;
+    };
+
+    let Some(pressure) = snapshot.backpressure_reason(ready_queue_capacity) else {
+        return false;
+    };
+
+    let clear_outcome = approximate_preview_slot.clear(
+        TimelineHoverApproximatePreviewClearReason::ExactDecodePoolPressure {
+            span_id: state.span_id,
+            pressure,
+        },
+    );
+    trace!(
+        span_id = ?state.span_id,
+        ?pressure,
+        ?clear_outcome,
+        "Approximate hover preview evicted to unblock exact decode"
+    );
+    clear_outcome.cleared_slot()
 }
 
 fn decode_packet_from_demux_packet(
