@@ -14,7 +14,7 @@ use frame_server_core::{
 use media_core::{DemuxReadEvent, MediaTime, Packet, PacketKeyframe, TrackKind, TrackTimestamp};
 use player_core::{
     PlayerHoverStreamDecodeContext, PlayerTimelineHoverPrepareHandoff,
-    PlayerTimelineHoverPrepareInsertOutcome,
+    PlayerTimelineHoverPrepareRetainedInsertOutcome,
 };
 use tracing::{debug, trace, warn};
 use video_backend_api::{PresentFrameResourceProviderHandle, VideoBackendDecoderThreadHandle};
@@ -132,15 +132,32 @@ impl VideoFrameReleaseSink for HoverProviderReleaseSink {
 }
 
 /// Продолжаемое состояние decode одного in-flight dependency span-а.
-#[derive(Debug)]
 pub(crate) struct HoverSpanDecodeState {
     span_id: TimelineHoverPrepareSpanId,
     generation: u64,
+    startup: HoverSpanDecodeStartupState,
     pending_packet: Option<DecodePacket>,
+    pending_insert: Option<HoverSpanPendingInsert>,
     packets_fed: u32,
     packets_in_flight: u32,
     frames_drained: u32,
     eof_drain: HoverSpanEofDrainState,
+}
+
+/// Startup-фаза fresh span-а до первого packet feed-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoverSpanDecodeStartupState {
+    /// Нужно повторять `configure_stream`/flush перед normal decode.
+    PendingStreamConfigure,
+
+    /// Decoder настроен, generation выдан, можно feed/drain packets.
+    Ready,
+}
+
+/// Уже decoded target-or-after кадр, который ждёт working-set admission.
+struct HoverSpanPendingInsert {
+    lease: VideoFrameLease,
+    actual_pts: TrackTimestamp,
 }
 
 /// Decoder position, которую можно сохранить после `PreparedHit`.
@@ -197,9 +214,42 @@ enum HoverSpanEofDrainState {
 }
 
 impl HoverSpanDecodeState {
+    fn pending_stream_configure(span_id: TimelineHoverPrepareSpanId, generation: u64) -> Self {
+        Self {
+            span_id,
+            generation,
+            startup: HoverSpanDecodeStartupState::PendingStreamConfigure,
+            pending_packet: None,
+            pending_insert: None,
+            packets_fed: 0,
+            packets_in_flight: 0,
+            frames_drained: 0,
+            eof_drain: HoverSpanEofDrainState::ReadingPackets,
+        }
+    }
+
     #[must_use]
     pub(crate) const fn span_id(&self) -> TimelineHoverPrepareSpanId {
         self.span_id
+    }
+
+    fn begin_ready_decode(&mut self, generation: u64) {
+        self.generation = generation;
+        self.startup = HoverSpanDecodeStartupState::Ready;
+        self.pending_packet = None;
+        self.pending_insert = None;
+        self.packets_fed = 0;
+        self.packets_in_flight = 0;
+        self.frames_drained = 0;
+        self.eof_drain = HoverSpanEofDrainState::ReadingPackets;
+    }
+
+    fn needs_stream_configure(&self) -> bool {
+        self.startup == HoverSpanDecodeStartupState::PendingStreamConfigure
+    }
+
+    fn should_flush_on_cancel(&self) -> bool {
+        self.startup == HoverSpanDecodeStartupState::Ready
     }
 
     fn note_packet_sent(&mut self) {
@@ -317,6 +367,20 @@ pub(crate) fn drive_hover_span_decode(
             },
         );
 
+        *span_state = Some(HoverSpanDecodeState::pending_stream_configure(
+            request.span_id,
+            session.generation,
+        ));
+        trace!(
+            span_id = ?request.span_id,
+            "Hover decode span queued for stream configuration"
+        );
+    }
+    let state = span_state
+        .as_mut()
+        .expect("hover span decode state must exist after span start");
+
+    if state.needs_stream_configure() {
         if session.configured_stream.as_ref() != Some(stream_context) {
             match session
                 .decoder_thread
@@ -368,15 +432,7 @@ pub(crate) fn drive_hover_span_decode(
             };
         }
         session.generation = session.generation.wrapping_add(1);
-        *span_state = Some(HoverSpanDecodeState {
-            span_id: request.span_id,
-            generation: session.generation,
-            pending_packet: None,
-            packets_fed: 0,
-            packets_in_flight: 0,
-            frames_drained: 0,
-            eof_drain: HoverSpanEofDrainState::ReadingPackets,
-        });
+        state.begin_ready_decode(session.generation);
         let _ = session.decoder_thread.drain_completed_packet_count();
         trace!(
             span_id = ?request.span_id,
@@ -384,9 +440,6 @@ pub(crate) fn drive_hover_span_decode(
             "Hover decode span started"
         );
     }
-    let state = span_state
-        .as_mut()
-        .expect("hover span decode state must exist after span start");
 
     let video_track_id = stream_context.stream_config.track_id;
     let mut fed_this_pass: u32 = 0;
@@ -395,7 +448,26 @@ pub(crate) fn drive_hover_span_decode(
         let completed_packets = session.decoder_thread.drain_completed_packet_count();
         state.drain_completed_packets(completed_packets);
 
-        // 1. Сначала выгребаем готовые кадры: pre-target release, target-or-after — hit.
+        // 1. Сначала повторяем deferred insert уже decoded target-frame-а.
+        if let Some(pending_insert) = state.pending_insert.take() {
+            if target.actual_pts_is_before_target(pending_insert.actual_pts) {
+                trace!(
+                    span_id = ?request.span_id,
+                    actual_pts = ?pending_insert.actual_pts,
+                    "Pending hover prepared frame no longer satisfies retargeted target"
+                );
+            } else {
+                return insert_target_or_after_frame(
+                    handoff,
+                    request,
+                    state,
+                    pending_insert,
+                    post_target_reorder,
+                );
+            }
+        }
+
+        // 2. Затем выгребаем готовые кадры: pre-target release, target-or-after — hit.
         while let Some(frame) = session.decoder_thread.try_recv_frame() {
             if frame.generation != state.generation {
                 session.release_decoded_frame(&frame);
@@ -419,13 +491,15 @@ pub(crate) fn drive_hover_span_decode(
                 continue;
             }
 
+            let pending_insert = HoverSpanPendingInsert {
+                lease: lease_decoded_frame(session, frame),
+                actual_pts,
+            };
             return insert_target_or_after_frame(
-                session,
                 handoff,
                 request,
                 state,
-                frame,
-                actual_pts,
+                pending_insert,
                 post_target_reorder,
             );
         }
@@ -441,7 +515,7 @@ pub(crate) fn drive_hover_span_decode(
             };
         }
 
-        // 2. Fatal decoder error делает session непригодной typed-ом, не паникой.
+        // 3. Fatal decoder error делает session непригодной typed-ом, не паникой.
         if let Some(error) = session.decoder_thread.try_recv_error() {
             warn!(error = %error.message(), "Hover decoder thread reported fatal error");
             session.fatal_error = Some(error.message().to_owned());
@@ -450,7 +524,7 @@ pub(crate) fn drive_hover_span_decode(
             };
         }
 
-        // 3. После demux EOF сначала ждём normal-packet ACK-и, затем запускаем EOF drain.
+        // 4. После demux EOF сначала ждём normal-packet ACK-и, затем запускаем EOF drain.
         match state.eof_drain {
             HoverSpanEofDrainState::ReadingPackets => {}
             HoverSpanEofDrainState::WaitingForQueuedPackets => {
@@ -509,7 +583,7 @@ pub(crate) fn drive_hover_span_decode(
             }
         }
 
-        // 4. Feed budget на этот UI-кадр исчерпан — честный incomplete, продолжим.
+        // 5. Feed budget на этот UI-кадр исчерпан — честный incomplete, продолжим.
         if fed_this_pass >= HOVER_DECODE_FEED_PACKETS_PER_UI_FRAME {
             return HoverSpanDecodeDrive::Incomplete {
                 reason: TimelineHoverPrepareIncompleteReason::DecodeBudgetExhausted,
@@ -517,7 +591,7 @@ pub(crate) fn drive_hover_span_decode(
             };
         }
 
-        // 5. Берём отложенный (backpressure) пакет или читаем следующий из demuxer-а.
+        // 6. Берём отложенный (backpressure) пакет или читаем следующий из demuxer-а.
         let decode_packet = match state.pending_packet.take() {
             Some(packet) => packet,
             None => match hover_source.demuxer_mut().next_event() {
@@ -546,7 +620,7 @@ pub(crate) fn drive_hover_span_decode(
             },
         };
 
-        // 6. Push в decoder channel; на backpressure пакет сохраняется без потери.
+        // 7. Push в decoder channel; на backpressure пакет сохраняется без потери.
         match session.decoder_thread.send_packet(decode_packet.clone()) {
             Ok(()) => {
                 state.note_packet_sent();
@@ -575,7 +649,11 @@ pub(crate) fn cancel_hover_span_decode(
     session: &mut TimelineHoverDecodeSession,
     span_state: &mut Option<HoverSpanDecodeState>,
 ) {
+    let should_flush = span_state
+        .as_ref()
+        .is_some_and(HoverSpanDecodeState::should_flush_on_cancel);
     if span_state.take().is_some()
+        && should_flush
         && session.fatal_error.is_none()
         && let Err(error) = session.decoder_thread.flush()
     {
@@ -585,15 +663,13 @@ pub(crate) fn cancel_hover_span_decode(
 }
 
 fn insert_target_or_after_frame(
-    session: &TimelineHoverDecodeSession,
     handoff: &PlayerTimelineHoverPrepareHandoff,
     request: &TimelineHoverPrepareExecutorRequest,
-    state: &HoverSpanDecodeState,
-    frame: DecodedFrame,
-    actual_pts: TrackTimestamp,
+    state: &mut HoverSpanDecodeState,
+    pending_insert: HoverSpanPendingInsert,
     post_target_reorder: u16,
 ) -> HoverSpanDecodeDrive {
-    let lease = lease_decoded_frame(session, frame);
+    let HoverSpanPendingInsert { lease, actual_pts } = pending_insert;
 
     let admission_mode = match request.target.playback_mode() {
         TimelineHoverPreparePlaybackMode::ResumePendingAfterSeek { .. } => {
@@ -609,8 +685,8 @@ fn insert_target_or_after_frame(
         TimelineHoverPrepareProviderBudget::SpareSlotAvailable,
     );
 
-    match handoff.insert_hover_prepared_frame(admission, lease, actual_pts) {
-        PlayerTimelineHoverPrepareInsertOutcome::Inserted {
+    match handoff.insert_hover_prepared_frame_retaining_no_op(admission, lease, actual_pts) {
+        PlayerTimelineHoverPrepareRetainedInsertOutcome::Inserted {
             evicted_primary_byproducts,
         } => {
             trace!(
@@ -625,10 +701,15 @@ fn insert_target_or_after_frame(
                 diagnostics: state.diagnostics(post_target_reorder),
             }
         }
-        PlayerTimelineHoverPrepareInsertOutcome::NoOp { reason } => {
+        PlayerTimelineHoverPrepareRetainedInsertOutcome::NoOp { reason, lease } => {
             debug!(?reason, "Hover prepared frame insert rejected by admission");
+            debug_assert!(
+                state.pending_insert.is_none(),
+                "pending insert must be taken before retrying handoff"
+            );
+            state.pending_insert = Some(HoverSpanPendingInsert { lease, actual_pts });
             HoverSpanDecodeDrive::Pressure {
-                pressure: TimelineHoverPreparePressure::ProviderBudgetExhausted,
+                pressure: TimelineHoverPreparePressure::ProviderBudgetExhaustedWithPendingInsert,
             }
         }
     }

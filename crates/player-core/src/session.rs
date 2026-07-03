@@ -52,7 +52,7 @@ pub(crate) use self::tick::{
 pub use self::timeline_hover_prepare_handoff::{
     PlayerHoverStreamDecodeContext, PlayerTimelineHoverPrepareBorrowOutcome,
     PlayerTimelineHoverPrepareHandoff, PlayerTimelineHoverPrepareInsertOutcome,
-    PlayerTimelineHoverPreparedFrameBorrow,
+    PlayerTimelineHoverPrepareRetainedInsertOutcome, PlayerTimelineHoverPreparedFrameBorrow,
 };
 
 #[cfg(test)]

@@ -84,17 +84,21 @@ impl FfmpegSoftwareHoverContext {
             non_zero_or_one(DEFAULT_HOVER_SOFTWARE_FRAME_POOL_MINIMUM);
         let hover_thread_capability_minimum = default_hover_thread_capability_minimum();
 
+        // Provider capacity — максимальный грант, удовлетворяющий политике
+        // «hover строго ниже playback» (pairwise hover < playback). Раньше здесь
+        // стояло `playback - hover_minimum`, что учитывало minimum дважды:
+        // admission требовал `requested + minimum <= playback`, и после подъёма
+        // auto-minimums (pool 4, threads clamp(cores/2, 2, 6)) hover session
+        // переставала стартовать даже при minimum < playback. Hover пул и
+        // потоки — отдельные ресурсы hover-декодера, а не вычет из playback
+        // пула, поэтому единственное честное ограничение — строгая пара.
         Self::new(
             playback_frame_pool_budget,
             playback_thread_budget,
             hover_frame_pool_capability_minimum,
             hover_thread_capability_minimum,
-            playback_frame_pool_budget
-                .get()
-                .saturating_sub(hover_frame_pool_capability_minimum.get()),
-            playback_thread_budget
-                .get()
-                .saturating_sub(hover_thread_capability_minimum.get()),
+            playback_frame_pool_budget.get().saturating_sub(1),
+            playback_thread_budget.get().saturating_sub(1),
         )
     }
 
@@ -680,6 +684,32 @@ mod tests {
             ),
             hover_thread_capability_minimum_for_host_parallelism(host_parallelism).get()
         );
+    }
+
+    #[test]
+    fn playback_config_capacity_allows_any_budget_strictly_below_playback() {
+        // Регрессия: capacity считалась как playback - minimum, из-за чего auto
+        // budget (requested == minimum) отклонялся уже при 2*minimum > playback,
+        // хотя политика требует только strict pairwise hover < playback.
+        let playback_config = VideoDecoderThreadConfig {
+            software_frame_pool_frames: 8,
+            software_decode_thread_budget: SoftwareDecodeThreadBudget::fixed(nz(5)),
+            ..VideoDecoderThreadConfig::default()
+        };
+        let owner = FfmpegSoftwareHoverOwner::new(
+            FfmpegSoftwareHoverContext::from_playback_decoder_config(playback_config),
+        );
+
+        let snapshot = owner.snapshot().expect("hover owner snapshot must exist");
+        assert_eq!(snapshot.hover_frame_pool_provider_capacity, 7);
+        assert_eq!(snapshot.hover_thread_provider_capacity, 4);
+
+        // Сценарий пользователя: pool 4 < 8, threads 4 < 5 — must admit.
+        let admission = owner.admit_hover_reservation(&resolved_software_budget(4, 4));
+        assert!(matches!(
+            admission,
+            FfmpegSoftwareHoverAdmission::Admitted(_)
+        ));
     }
 
     #[test]

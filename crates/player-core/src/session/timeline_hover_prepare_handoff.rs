@@ -4,15 +4,15 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use codec_core::VideoColorMetadata;
 use frame_server_core::{
     FrameServerConfig as RuntimeFrameServerConfig, LiveScrubDecodeMode,
-    TimelineHoverPrepareAdmissionRequest, TimelineHoverPrepareCapacityReconfigureOutcome,
-    TimelineHoverPrepareFrameKey, TimelineHoverPrepareFrameLookupRequest,
-    TimelineHoverPrepareInsertOutcome, TimelineHoverPrepareLookupMissReason,
-    TimelineHoverPrepareLookupOutcome, TimelineHoverPrepareNoOpReason,
-    TimelineHoverPrepareSessionEndReleaseOutcome, TimelineHoverPrepareSessionEndReleaseReason,
-    TimelineHoverPrepareTimingRejection, TimelineHoverPrepareWorkingSet,
-    TimelineHoverPreparedFrameEntry, TimelineHoverPreparedFrameTiming,
-    TimelineHoverRecentSupersededBudget, TimelineHoverRecentSupersededReconfigureOutcome,
-    ValidatedFrameServerConfig,
+    TimelineHoverPrepareAdmissionOutcome, TimelineHoverPrepareAdmissionRequest,
+    TimelineHoverPrepareCapacityReconfigureOutcome, TimelineHoverPrepareFrameKey,
+    TimelineHoverPrepareFrameLookupRequest, TimelineHoverPrepareInsertOutcome,
+    TimelineHoverPrepareLookupMissReason, TimelineHoverPrepareLookupOutcome,
+    TimelineHoverPrepareNoOpReason, TimelineHoverPrepareSessionEndReleaseOutcome,
+    TimelineHoverPrepareSessionEndReleaseReason, TimelineHoverPrepareTimingRejection,
+    TimelineHoverPrepareWorkingSet, TimelineHoverPreparedFrameEntry,
+    TimelineHoverPreparedFrameTiming, TimelineHoverRecentSupersededBudget,
+    TimelineHoverRecentSupersededReconfigureOutcome, ValidatedFrameServerConfig,
 };
 use media_core::TrackTimestamp;
 use rustiplayer_config::{
@@ -53,6 +53,29 @@ pub enum PlayerTimelineHoverPrepareInsertOutcome {
     NoOp {
         /// Typed причина no-op из neutral working set-а.
         reason: TimelineHoverPrepareNoOpReason,
+    },
+}
+
+/// Итог insert-а, где caller сохраняет lease при admission NoOp.
+///
+/// Этот API нужен incremental hover decode: decoded target-frame уже дорогой,
+/// поэтому при временном pressure caller кладёт lease в pending_insert и
+/// повторяет handoff без повторного decode. Старый `insert_hover_prepared_frame`
+/// сохраняет release-on-NoOp семантику для мест, где retry не нужен.
+pub enum PlayerTimelineHoverPrepareRetainedInsertOutcome {
+    /// Entry вставлена в primary hover storage.
+    Inserted {
+        /// Сколько старых primary byproducts было вытеснено при вставке.
+        evicted_primary_byproducts: usize,
+    },
+
+    /// Admission отклонил вставку; lease остаётся у caller-а.
+    NoOp {
+        /// Typed причина no-op из neutral working set-а.
+        reason: TimelineHoverPrepareNoOpReason,
+
+        /// Lease decoded frame-а, который caller может повторно вставить позже.
+        lease: VideoFrameLease,
     },
 }
 
@@ -154,6 +177,49 @@ impl PlayerTimelineHoverPrepareHandoff {
                 TimelineHoverPrepareInsertOutcome::NoOp { entry, reason } => {
                     drop(entry);
                     PlayerTimelineHoverPrepareInsertOutcome::NoOp { reason }
+                }
+            }
+        })
+    }
+
+    /// Production вставка с возвратом lease-а при NoOp для retry continuation.
+    ///
+    /// Admission проверяется под тем же lock-ом, что и insert. Если storage уже
+    /// не готов принять frame, lease даже не заворачивается в working-set entry
+    /// и остаётся у caller-а для exactly-once повторной вставки.
+    #[must_use]
+    pub fn insert_hover_prepared_frame_retaining_no_op(
+        &self,
+        admission: TimelineHoverPrepareAdmissionRequest,
+        lease: VideoFrameLease,
+        actual_pts: TrackTimestamp,
+    ) -> PlayerTimelineHoverPrepareRetainedInsertOutcome {
+        self.with_locked_working_set(|working_set| {
+            match working_set.evaluate_prepare_admission(admission) {
+                TimelineHoverPrepareAdmissionOutcome::NoOp { reason } => {
+                    return PlayerTimelineHoverPrepareRetainedInsertOutcome::NoOp {
+                        reason,
+                        lease,
+                    };
+                }
+                TimelineHoverPrepareAdmissionOutcome::Admitted { .. } => {}
+            }
+
+            let entry = TimelineHoverPreparedFrameEntry::new(
+                lease,
+                TimelineHoverPreparedFrameTiming::new(actual_pts),
+            );
+            match working_set.try_insert_prepared_frame(admission, entry) {
+                TimelineHoverPrepareInsertOutcome::Inserted {
+                    evicted_primary_byproducts,
+                    ..
+                } => PlayerTimelineHoverPrepareRetainedInsertOutcome::Inserted {
+                    evicted_primary_byproducts,
+                },
+                TimelineHoverPrepareInsertOutcome::NoOp { .. } => {
+                    unreachable!(
+                        "working-set admission changed while PlayerTimelineHoverPrepareHandoff held the lock"
+                    )
                 }
             }
         })
@@ -521,5 +587,46 @@ mod handoff_tests {
             )),
             PlayerTimelineHoverPrepareBorrowOutcome::Miss(_)
         ));
+    }
+
+    #[test]
+    fn retained_insert_admission_no_op_returns_lease_without_release() {
+        let handoff = PlayerTimelineHoverPrepareHandoff::default();
+        let sink = Arc::new(CountingReleaseSink::default());
+        let key = test_key(10_000);
+        let pressured_admission = TimelineHoverPrepareAdmissionRequest::new(
+            key,
+            key,
+            TimelineHoverPrepareAdmissionMode::NormalHover,
+            TimelineHoverPrepareProviderBudget::ExhaustedAfterActivePins,
+        );
+
+        let outcome = handoff.insert_hover_prepared_frame_retaining_no_op(
+            pressured_admission,
+            test_lease(10_020, 7, Arc::clone(&sink)),
+            test_timestamp(10_020),
+        );
+
+        let returned_lease = match outcome {
+            PlayerTimelineHoverPrepareRetainedInsertOutcome::NoOp { reason, lease } => {
+                assert_eq!(
+                    reason,
+                    TimelineHoverPrepareNoOpReason::ProviderResourcePressure
+                );
+                lease
+            }
+            PlayerTimelineHoverPrepareRetainedInsertOutcome::Inserted { .. } => {
+                panic!("pressured admission must not insert retained hover frame")
+            }
+        };
+        assert_eq!(
+            *sink.releases.lock().expect("release sink lock"),
+            Vec::<u64>::new(),
+            "retained NoOp must keep caller-owned lease alive"
+        );
+
+        drop(returned_lease);
+
+        assert_eq!(*sink.releases.lock().expect("release sink lock"), vec![7]);
     }
 }

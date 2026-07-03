@@ -1012,10 +1012,11 @@ mod decode_execution {
     use codec_core::{VideoCodec, VideoColorMetadata, VideoDisplayOrientation};
     use frame_server_core::{
         HoverBudgetResolutionSource, HoverBudgetResourceClass, HoverResolvedBudget,
-        HoverResolvedBudgetResource,
+        HoverResolvedBudgetResource, TimelineHoverPrepareAdmissionMode,
+        TimelineHoverPrepareAdmissionRequest, TimelineHoverPrepareProviderBudget,
     };
     use media_core::TrackKind;
-    use player_core::PlayerHoverStreamDecodeContext;
+    use player_core::{PlayerHoverStreamDecodeContext, PlayerTimelineHoverPrepareInsertOutcome};
     use video_backend_api::{
         PresentFrameResourceProvider, PresentFrameResourceProviderHandle,
         PresentFrameResourceProviderLookup,
@@ -1023,16 +1024,24 @@ mod decode_execution {
     use video_core::{
         DecodePacket, DecodeSendError, DecodeThreadError, DecodedFrame, DecoderResourceSnapshot,
         FrameResourceHandle, HostUploadResourceSnapshot, HostUploadResourceSnapshotStatus,
-        VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState,
-        VideoDecoderThreadHandle, VideoFrameDiagnostics, VideoStreamConfigResult,
-        VideoStreamDecodeConfig,
+        VideoDecoderControlBackpressureReason, VideoDecoderEndOfStreamDrainResult,
+        VideoDecoderEndOfStreamDrainState, VideoDecoderThreadHandle, VideoFrameDiagnostics,
+        VideoStreamConfigResult, VideoStreamDecodeConfig,
     };
     use video_ffmpeg::software_hover::FfmpegSoftwareHoverContext;
     use video_ffmpeg::{FfmpegSoftwareHoverAdmission, FfmpegSoftwareHoverOwner};
     use video_frame_contract::VideoFrameContract;
+    use video_present_core::{
+        VideoFrameLease, VideoFrameLeaseConfig, VideoFrameRelease, VideoFrameReleaseOutcome,
+        VideoFrameReleaseSink,
+    };
 
     use super::*;
-    use crate::timeline_hover_decode::TimelineHoverDecodeSession;
+    use crate::timeline_hover_approx_preview::TimelineHoverApproximatePreviewSlot;
+    use crate::timeline_hover_decode::{
+        HoverSpanDecodeDrive, TimelineHoverDecodeSession, cancel_hover_span_decode,
+        drive_hover_span_decode,
+    };
 
     struct FakeHoverDecoderShared {
         sent_packets: Vec<DecodePacket>,
@@ -1043,6 +1052,7 @@ mod decode_execution {
         released_handles: Vec<u64>,
         provider_released_handles: Vec<u64>,
         backpressure_after_packets: Option<usize>,
+        configure_backpressure_remaining: usize,
         eos_drain_generation: Option<u64>,
         completed_packet_count: usize,
         auto_complete_packets: bool,
@@ -1060,6 +1070,7 @@ mod decode_execution {
                 released_handles: Vec::new(),
                 provider_released_handles: Vec::new(),
                 backpressure_after_packets: None,
+                configure_backpressure_remaining: 0,
                 eos_drain_generation: None,
                 completed_packet_count: 0,
                 auto_complete_packets: true,
@@ -1109,11 +1120,17 @@ mod decode_execution {
         }
 
         fn configure_stream(&self, config: VideoStreamDecodeConfig) -> VideoStreamConfigResult {
-            self.shared
-                .lock()
-                .expect("fake decoder lock")
-                .configured
-                .push(config);
+            let mut shared = self.shared.lock().expect("fake decoder lock");
+            shared.configured.push(config);
+            if shared.configure_backpressure_remaining > 0 {
+                shared.configure_backpressure_remaining -= 1;
+                return VideoStreamConfigResult::Backpressure(
+                    VideoDecoderControlBackpressureReason::ControlChannelFull {
+                        queued_messages: 1,
+                        capacity: 1,
+                    },
+                );
+            }
             VideoStreamConfigResult::Configured
         }
 
@@ -1311,6 +1328,38 @@ mod decode_execution {
             resource_handle: FrameResourceHandle(resource_handle),
             diagnostics: VideoFrameDiagnostics::default(),
         }
+    }
+
+    fn resolved_target_with_playback_mode(
+        target_millis: i64,
+        playback_mode: TimelineHoverPreparePlaybackMode,
+    ) -> TimelineHoverPrepareTarget {
+        TimelineHoverPrepareTarget::new(
+            context(),
+            timestamp(target_millis),
+            TimelineHoverFrameBucket::new(target_millis),
+            timestamp(target_millis - 600),
+            timestamp(target_millis + 100),
+            0,
+            playback_mode,
+        )
+        .expect("test target must build a valid dependency span")
+    }
+
+    struct NoopHoverTestReleaseSink;
+
+    impl VideoFrameReleaseSink for NoopHoverTestReleaseSink {
+        fn release_frame(&self, _release: VideoFrameRelease) -> VideoFrameReleaseOutcome {
+            VideoFrameReleaseOutcome::NoOp
+        }
+    }
+
+    fn filler_lease(resource_handle: u64) -> VideoFrameLease {
+        VideoFrameLease::new(VideoFrameLeaseConfig::new(
+            1,
+            decoded_frame(8_000, 1, resource_handle),
+            Arc::new(NoopHoverTestReleaseSink),
+        ))
     }
 
     fn hover_stream_context() -> PlayerHoverStreamDecodeContext {
@@ -2073,6 +2122,258 @@ mod decode_execution {
             sent_pts,
             vec![Duration::from_millis(9_400), Duration::from_millis(9_600)],
             "backpressured packet must be delivered exactly once without loss"
+        );
+    }
+
+    #[test]
+    fn admission_no_op_keeps_pending_insert_and_retries_same_frame_without_decode() {
+        let mut harness = decode_harness(vec![video_packet(10_020, true)]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 1;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(10_020, 1, 8)]);
+        }
+        let occupied_target = target(8_000, 7_400, 8_100);
+        let retained_target = resolved_target_with_playback_mode(
+            10_000,
+            TimelineHoverPreparePlaybackMode::ResumePendingAfterSeek {
+                spare_capacity_available: true,
+            },
+        );
+        let admission = TimelineHoverPrepareAdmissionRequest::new(
+            occupied_target.prepared_key(),
+            occupied_target.prepared_key(),
+            TimelineHoverPrepareAdmissionMode::NormalHover,
+            TimelineHoverPrepareProviderBudget::SpareSlotAvailable,
+        );
+        let inserted = harness.handoff.insert_hover_prepared_frame(
+            admission,
+            filler_lease(100),
+            timestamp(8_000),
+        );
+        assert!(matches!(
+            inserted,
+            PlayerTimelineHoverPrepareInsertOutcome::Inserted { .. }
+        ));
+
+        let request = TimelineHoverPrepareExecutorRequest {
+            span_id: TimelineHoverPrepareSpanId(1),
+            transition: TimelineHoverPrepareExecutorTransition::Start,
+            target: retained_target,
+            span: retained_target
+                .dependency_span()
+                .expect("retained insert test target must be resolved"),
+        };
+        let stream_context = hover_stream_context();
+        let mut span_state = None;
+        let mut approximate_preview_slot = TimelineHoverApproximatePreviewSlot::default();
+        let executor = &mut harness.controller.executor;
+        let session = executor
+            .decode_session
+            .as_mut()
+            .expect("decode session must exist");
+        let hover_source = executor
+            .active_hover_source
+            .as_mut()
+            .expect("hover source must exist");
+
+        let pressure = drive_hover_span_decode(
+            session,
+            &mut span_state,
+            &mut approximate_preview_slot,
+            hover_source,
+            &harness.handoff,
+            &stream_context,
+            &request,
+        );
+
+        assert!(matches!(
+            pressure,
+            HoverSpanDecodeDrive::Pressure {
+                pressure: TimelineHoverPreparePressure::ProviderBudgetExhaustedWithPendingInsert,
+            }
+        ));
+        {
+            let shared = harness.shared.lock().expect("fake decoder lock");
+            assert_eq!(shared.sent_packets.len(), 1);
+            assert_eq!(
+                shared.provider_released_handles,
+                Vec::<u64>::new(),
+                "NoOp must not release retained decoded frame"
+            );
+        }
+        let release_outcome = harness.handoff.release_hover_owned_entries_for_session_end(
+            TimelineHoverPrepareSessionEndReleaseReason::SourceOrBackendSwitched,
+        );
+        assert_eq!(release_outcome.total_entries_released(), 1);
+
+        let inserted = drive_hover_span_decode(
+            session,
+            &mut span_state,
+            &mut approximate_preview_slot,
+            hover_source,
+            &harness.handoff,
+            &stream_context,
+            &request,
+        );
+
+        assert!(matches!(
+            inserted,
+            HoverSpanDecodeDrive::PreparedHit { actual_pts, .. }
+                if actual_pts == timestamp(10_020)
+        ));
+        assert_eq!(
+            harness
+                .shared
+                .lock()
+                .expect("fake decoder lock")
+                .sent_packets
+                .len(),
+            1,
+            "pending insert retry must not decode another packet"
+        );
+        assert!(matches!(
+            harness
+                .handoff
+                .borrow_prepared_frame(retained_target.lookup_request()),
+            PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn cancel_span_with_pending_insert_releases_lease_once() {
+        let mut harness = decode_harness(vec![video_packet(10_020, true)]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.frames_ready_after_packets = 1;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(10_020, 1, 8)]);
+        }
+        let occupied_target = target(8_000, 7_400, 8_100);
+        let retained_target = resolved_target_with_playback_mode(
+            10_000,
+            TimelineHoverPreparePlaybackMode::ResumePendingAfterSeek {
+                spare_capacity_available: true,
+            },
+        );
+        let admission = TimelineHoverPrepareAdmissionRequest::new(
+            occupied_target.prepared_key(),
+            occupied_target.prepared_key(),
+            TimelineHoverPrepareAdmissionMode::NormalHover,
+            TimelineHoverPrepareProviderBudget::SpareSlotAvailable,
+        );
+        let inserted = harness.handoff.insert_hover_prepared_frame(
+            admission,
+            filler_lease(100),
+            timestamp(8_000),
+        );
+        assert!(matches!(
+            inserted,
+            PlayerTimelineHoverPrepareInsertOutcome::Inserted { .. }
+        ));
+
+        let request = TimelineHoverPrepareExecutorRequest {
+            span_id: TimelineHoverPrepareSpanId(1),
+            transition: TimelineHoverPrepareExecutorTransition::Start,
+            target: retained_target,
+            span: retained_target
+                .dependency_span()
+                .expect("retained insert test target must be resolved"),
+        };
+        let stream_context = hover_stream_context();
+        let mut span_state = None;
+        let mut approximate_preview_slot = TimelineHoverApproximatePreviewSlot::default();
+        let executor = &mut harness.controller.executor;
+        let session = executor
+            .decode_session
+            .as_mut()
+            .expect("decode session must exist");
+        let hover_source = executor
+            .active_hover_source
+            .as_mut()
+            .expect("hover source must exist");
+
+        let pressure = drive_hover_span_decode(
+            session,
+            &mut span_state,
+            &mut approximate_preview_slot,
+            hover_source,
+            &harness.handoff,
+            &stream_context,
+            &request,
+        );
+
+        assert!(matches!(
+            pressure,
+            HoverSpanDecodeDrive::Pressure {
+                pressure: TimelineHoverPreparePressure::ProviderBudgetExhaustedWithPendingInsert,
+            }
+        ));
+        cancel_hover_span_decode(session, &mut span_state);
+        cancel_hover_span_decode(session, &mut span_state);
+
+        assert_eq!(
+            harness
+                .shared
+                .lock()
+                .expect("fake decoder lock")
+                .provider_released_handles,
+            vec![8],
+            "pending insert lease must be released exactly once on span cancel"
+        );
+    }
+
+    #[test]
+    fn configure_backpressure_on_fresh_span_keeps_pending_work_and_retries_configure() {
+        let mut harness = decode_harness(vec![video_packet(10_020, true)]);
+        {
+            let mut shared = harness.shared.lock().expect("fake decoder lock");
+            shared.configure_backpressure_remaining = 1;
+            shared.frames_ready_after_packets = 1;
+            shared.scripted_frames = VecDeque::from(vec![decoded_frame(10_020, 1, 8)]);
+        }
+        let active_target = unresolved_active_target(10_000);
+
+        let first_pass = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            first_pass.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::Pressure {
+                pressure: TimelineHoverPreparePressure::ResourceBusy,
+            }
+        ));
+        assert!(
+            harness.controller.has_active_span_decode_work(),
+            "fresh-span configure backpressure must leave visible pending decode work"
+        );
+        assert_eq!(
+            harness
+                .shared
+                .lock()
+                .expect("fake decoder lock")
+                .flush_count,
+            0,
+            "configure backpressure must not flush before stream config is accepted"
+        );
+
+        let second_pass = harness.controller.prepare_hover_target(active_target);
+
+        assert!(matches!(
+            second_pass.executor_outcome,
+            TimelineHoverPrepareExecutorOutcome::PreparedHit { actual_pts, .. }
+                if actual_pts == timestamp(10_020)
+        ));
+        let shared = harness.shared.lock().expect("fake decoder lock");
+        assert_eq!(
+            shared.configured.len(),
+            2,
+            "continuation pump path must retry configure_stream"
+        );
+        assert_eq!(shared.flush_count, 1);
+        drop(shared);
+        assert_eq!(
+            harness.seek_requests.lock().expect("seek log lock").len(),
+            1,
+            "configure retry must not resolve/reseek the same active span"
         );
     }
 

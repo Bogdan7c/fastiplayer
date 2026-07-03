@@ -295,6 +295,7 @@ pub(crate) enum TimelineHoverPrepareExecutorNoOpReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TimelineHoverPreparePressure {
     ProviderBudgetExhausted,
+    ProviderBudgetExhaustedWithPendingInsert,
     DecoderBackpressure,
     HostUploadBackpressure,
     ResourceBusy,

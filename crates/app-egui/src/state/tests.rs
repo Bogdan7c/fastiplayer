@@ -354,6 +354,7 @@ fn hover_decode_retryable_pressure_requests_repaint() {
         TimelineHoverPreparePressure::DecoderBackpressure,
         TimelineHoverPreparePressure::ResourceBusy,
         TimelineHoverPreparePressure::HostUploadBackpressure,
+        TimelineHoverPreparePressure::ProviderBudgetExhaustedWithPendingInsert,
     ] {
         assert!(
             timeline_hover_prepare_outcome_requests_repaint(

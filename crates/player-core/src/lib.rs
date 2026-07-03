@@ -85,7 +85,8 @@ pub use session::{
     PlayerHoverStreamDecodeContext, PlayerPipelinePause, PlayerSession, PlayerTickConfig,
     PlayerTickContext, PlayerTickPacket, PlayerTickResult, PlayerTimelineHoverPrepareBorrowOutcome,
     PlayerTimelineHoverPrepareHandoff, PlayerTimelineHoverPrepareInsertOutcome,
-    PlayerTimelineHoverPreparedFrameBorrow, PlayerVideoDropReason, PlayerVideoFrameDrop,
+    PlayerTimelineHoverPrepareRetainedInsertOutcome, PlayerTimelineHoverPreparedFrameBorrow,
+    PlayerVideoDropReason, PlayerVideoFrameDrop,
 };
 pub(crate) use session::{
     PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,

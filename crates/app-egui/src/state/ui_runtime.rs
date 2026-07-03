@@ -215,6 +215,17 @@ const fn timeline_hover_preview_load_state(
 }
 
 /// Решает, нужен ли ещё один UI frame для продолжения hover prepare/preview.
+///
+/// Таблица continuation:
+/// - `AcceptedExactPreparedHit` / `AcceptedWorkingSetHit`: repaint нужен, чтобы
+///   visual preview заново borrowed/materialized уже готовый exact кадр.
+/// - `DecodeBudgetExhausted`: span жив, pump продолжит feed/drain на следующем кадре.
+/// - `DecoderBackpressure`, `HostUploadBackpressure`, `ResourceBusy`: ресурс может
+///   освободиться к следующему UI frame, pump повторит ту же активную работу.
+/// - `ProviderBudgetExhaustedWithPendingInsert`: decoded target-frame сохранён в
+///   `pending_insert`; repaint нужен, чтобы повторить insert без повторного decode.
+/// - `ProviderBudgetExhausted` без pending insert, terminal `IncompleteSpan`,
+///   `NoOp` и rejected completion: repaint не нужен, иначе получим idle loop.
 pub(super) const fn timeline_hover_prepare_outcome_requests_repaint(
     executor_outcome: TimelineHoverPrepareExecutorOutcome,
     completion_outcome: TimelineHoverPrepareCompletionOutcome,
@@ -238,7 +249,8 @@ pub(super) const fn timeline_hover_prepare_outcome_requests_repaint(
             pressure:
                 TimelineHoverPreparePressure::DecoderBackpressure
                 | TimelineHoverPreparePressure::HostUploadBackpressure
-                | TimelineHoverPreparePressure::ResourceBusy,
+                | TimelineHoverPreparePressure::ResourceBusy
+                | TimelineHoverPreparePressure::ProviderBudgetExhaustedWithPendingInsert,
         } => true,
         TimelineHoverPrepareExecutorOutcome::PreparedHit { .. }
         | TimelineHoverPrepareExecutorOutcome::WorkingSetHit { .. }
